@@ -56,10 +56,15 @@ int bagman_get_blue_team_score();
 int bagman_get_score_tick_ms();
 void bagman_set_red_team_score(int v);
 void bagman_set_blue_team_score(int v);
+void bagman_add_team_score(rf::Player* player, int delta);
 void bagman_force_state_sync_to(rf::Player* player);
 void bagman_broadcast_state();
 bool bagman_local_player_is_carrier();
 bool bagman_viewer_is_carrier_first_person();
+// Swaps the bag mesh onto a freshly created bag item.
+void bagman_apply_bag_mesh(rf::Item* item, int item_type);
+// True while the bag has a home but no item: item_create keeps one pool slot free for it.
+bool bagman_reserves_item_slot(int item_type);
 bool bagman_get_client_pickup_pos(rf::Vector3* out_pos);
 bool bagman_query_pickup_bag_outline(rf::VifLodMesh** out_lod_mesh, rf::Vector3* out_pos, rf::Matrix3* out_orient);
 bool bagman_query_carrier_bag_outline(rf::VifLodMesh** out_lod_mesh, rf::Vector3* out_pos, rf::Matrix3* out_orient);

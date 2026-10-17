@@ -33,6 +33,10 @@ const char* get_type_display_name(DedObjectType type);
 void alpine_graveyard_add(DedObject* obj);
 void alpine_graveyard_clear();
 
+// Copy and paste of the selection, the user's clipboards kept; the copies become the selection. Returns the paste's
+// create entry, which holds every copy, or null if none was pushed.
+UndoEntry* alpine_duplicate_selection(CDedLevel* level);
+
 inline void alpine_remove_from_groups(CDedLevel* level, DedObject* obj)
 {
     auto& mg = level->moving_groups;

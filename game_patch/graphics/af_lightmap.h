@@ -8,20 +8,12 @@ namespace rf
     class File;
     struct VFile;
     struct GSolid;
+    struct GFace;
     struct Vector3;
 }
 
 // Alpine Lightmaps (RFL section 0x0AFBAE09), game side. The D3D11 renderer holds the atlas
 // (gr::d3d11::AfLightmapRenderer); terrain charts also feed the CPU light sampler on every renderer.
-
-// A level whose alpine props set d3d11_only_lightmaps carries no stock 0x1200 lightmaps section,
-// so the legacy renderers would draw its whole world fullbright. Pure, so the matrix that decides
-// it can be exercised without a device.
-constexpr bool af_lightmap_level_refused(bool d3d11_only, bool dedicated_server, bool headless,
-                                         bool renderer_is_d3d11)
-{
-    return d3d11_only && !dedicated_server && !headless && !renderer_is_d3d11;
-}
 
 void af_lightmap_level_reset();
 
@@ -44,6 +36,7 @@ void af_lightmap_load_chunk(rf::File& file, std::size_t chunk_len);
 
 // Run once the level has loaded (terrains and the section both read): logs how many terrains have a
 // chart (matched by uid, grid size and alpine_terrain::lighting_fingerprint when the section loaded).
+// Also releases the overflow face capture when no overflow table is in use.
 void af_lightmap_resolve_terrains();
 
 // The baked light at world (x, z) on terrain `terrain_index` (alpine_terrain_get_all order) as a
@@ -100,3 +93,27 @@ struct AfTerrainChart
 // For terrain `terrain_index` (alpine_terrain_get_all order), when the atlas is live and the level
 // carries a chart af_lightmap_resolve_terrains matched to it.
 bool af_lightmap_terrain_chart(int terrain_index, AfTerrainChart& out);
+
+// ─── overflow charts: static faces past RED's 32767 lightmap surfaces, on D3D11-only levels ───
+
+// The level solid's static geometry section loader brackets its faces with begin and end; the solid face list
+// reports each face it appends and each it drops again. Faces are known by their ordinal in the section.
+void af_lightmap_overflow_capture_begin();
+void af_lightmap_overflow_capture_face(rf::GFace* face);
+void af_lightmap_overflow_capture_drop(rf::GFace* face);
+void af_lightmap_overflow_capture_end();
+// After load a destroyed face loses its chart and a clone (a geomod split or remnant) takes its source's.
+void af_lightmap_overflow_face_destroyed(rf::GFace* face);
+void af_lightmap_overflow_face_cloned(rf::GFace* source, rf::GFace* clone);
+
+// The overflow chart lighting a face of the level solid, while the D3D11 renderer holds the atlas.
+struct AfOverflowFace
+{
+    int chart = -1;
+    std::uint32_t record = 0;
+};
+bool af_lightmap_overflow_face(const rf::GSolid* solid, const rf::GFace* face, AfOverflowFace& out);
+// The chart coordinate of `pos`; false when the chart is gone.
+bool af_lightmap_overflow_texel(const AfOverflowFace& face, const rf::Vector3& pos, float& out_u, float& out_v);
+// The face's chart mean as a stock lightmap texel, 0..1 per channel and drawn doubled.
+bool af_lightmap_overflow_light(const rf::GSolid* solid, const rf::GFace* face, float (&texel)[3]);

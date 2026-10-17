@@ -155,7 +155,7 @@ static void rope_clamp_properties(DedRopeEmitter* rope)
 void DestroyDedRopeEmitter(DedRopeEmitter* rope)
 {
     if (!rope) return;
-    rope->field_4.free();
+    rope->class_mesh_filename.free();
     rope->script_name.free();
     rope->class_name.free();
     delete rope;
@@ -1803,6 +1803,11 @@ void rope_emitter_paste_objects(CDedLevel* level)
             level->add_to_selection(static_cast<DedObject*>(clone));
         }
     }
+}
+
+void rope_emitter_swap_clipboard(std::vector<DedRopeEmitter*>& other)
+{
+    g_rope_emitter_clipboard.swap(other);
 }
 
 void rope_emitter_clear_clipboard()

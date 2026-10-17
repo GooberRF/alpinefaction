@@ -42,7 +42,7 @@ static void note_load_icon()
 void DestroyDedNote(DedNote* note)
 {
     if (!note) return;
-    note->field_4.free();
+    note->class_mesh_filename.free();
     note->script_name.free();
     note->class_name.free();
     delete note;
@@ -506,6 +506,11 @@ void note_paste_objects(CDedLevel* level)
             level->add_to_selection(static_cast<DedObject*>(clone));
         }
     }
+}
+
+void note_swap_clipboard(std::vector<DedNote*>& other)
+{
+    g_note_clipboard.swap(other);
 }
 
 void note_clear_clipboard()

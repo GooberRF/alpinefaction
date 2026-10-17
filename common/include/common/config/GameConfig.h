@@ -76,6 +76,7 @@ struct GameConfig
     CfgVar<bool> keep_launcher_open = true;
     CfgVar<bool> reduced_speed_in_background = false;
     CfgVar<bool> autoplay_af_demos = false;
+    CfgVar<bool> editor_large_address_aware = false;
 
     // Internal
     CfgVar<std::string> alpine_faction_version{""};

@@ -7,6 +7,7 @@
 #include <d3d11.h>
 #include <common/ComPtr.h>
 #include "gr_d3d11_transform.h"
+#include "../gr.h"
 #include "../../rf/gr/gr.h"
 #include "../../rf/math/matrix.h"
 #include "../../rf/math/vector.h"
@@ -19,15 +20,15 @@ namespace gr::d3d11
     // collects from the whole level, so long water bodies routinely span more than eight rooms.
     constexpr int max_liquid_volumes = 16;
 
-    // Never below stock's value, and only up to gr::default_wfar, which the engine reloads each
-    // frame. Zero/negative/NaN pass through to the engine's own handling.
+    // Never below stock's value, and only up to the far clip each frame starts with.
+    // Zero/negative/NaN pass through to the engine's own handling.
     constexpr float liquid_far_clip_scale = 4.0f;
     inline float liquid_far_clip(float liquid_visibility)
     {
         if (!(liquid_visibility > 0.0f)) {
             return liquid_visibility;
         }
-        return std::max(liquid_visibility, std::min(liquid_visibility * liquid_far_clip_scale, rf::gr::default_wfar));
+        return std::max(liquid_visibility, std::min(liquid_visibility * liquid_far_clip_scale, level_default_far_clip()));
     }
 
     // Box arrives pre-expanded and already capped at the surface plane
@@ -50,11 +51,12 @@ namespace gr::d3d11
         std::array<float, 4> params;
         float far_clip; float num_volumes; float dark_surface_y; float viewport_y;
         LiquidVolumeGPUData volumes[max_liquid_volumes];
-        float depth_sz; float depth_tz; float depth_mode; float _pad2;
+        float depth_sz; float depth_tz; float depth_mode; float over_fog_near;
     };
     static_assert(sizeof(LiquidBufferData) == 160 + 32 * max_liquid_volumes);
     static_assert(offsetof(LiquidBufferData, volumes) == 144);
     static_assert(offsetof(LiquidBufferData, depth_sz) == 144 + 32 * max_liquid_volumes);
+    static_assert(offsetof(LiquidBufferData, over_fog_near) == 156 + 32 * max_liquid_volumes);
     static_assert(sizeof(LiquidBufferData) % 16 == 0);
 
     struct LiquidState
@@ -68,6 +70,7 @@ namespace gr::d3d11
         bool eye_room_liquid = false;   // the camera's own room holds the liquid, not a room it can see into
         rf::Vector3 over_fog_color{0.0f, 0.0f, 0.0f};
         float over_fog_far = 0.0f;  // <= 0 means the level applies no distance fog
+        float over_fog_near = 0.0f; // static per level, so it is not blended
 
         // Consumers want these, not the raw targets above
         rf::Vector3 blended_color{1.0f, 1.0f, 1.0f};

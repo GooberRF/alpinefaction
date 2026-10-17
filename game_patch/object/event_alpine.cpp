@@ -112,6 +112,7 @@ FunHook<int(const rf::String* name)> event_lookup_type_hook{
                 {"Climbing_Region_State", 160},
                 {"When_Destroyed", 161},
                 {"Rope_State", 162},
+                {"Mesh_Set_Scale", 163},
             };
 
             auto it = custom_event_ids.find(name->c_str());
@@ -200,6 +201,7 @@ FunHook<rf::Event*(int event_type)> event_allocate_hook{
                 {160, []() { return new EventClimbingRegionState(); }},
                 {161, []() { return new EventWhenDestroyed(); }},
                 {162, []() { return new EventRopeState(); }},
+                {163, []() { return new EventMeshSetScale(); }},
             };
 
             // find type and allocate
@@ -294,6 +296,7 @@ FunHook<void(rf::Event*)> event_deallocate_hook{
                 {160, [](rf::Event* e) { delete static_cast<EventClimbingRegionState*>(e); }},
                 {161, [](rf::Event* e) { delete static_cast<EventWhenDestroyed*>(e); }},
                 {162, [](rf::Event* e) { delete static_cast<EventRopeState*>(e); }},
+                {163, [](rf::Event* e) { delete static_cast<EventMeshSetScale*>(e); }},
             };
 
             // find type and deallocate
@@ -357,7 +360,8 @@ bool is_forward_exempt(rf::EventType event_type) {
         rf::EventType::Display_Projection,
         rf::EventType::Climbing_Region_State,
         rf::EventType::When_Destroyed,
-        rf::EventType::Rope_State
+        rf::EventType::Rope_State,
+        rf::EventType::Mesh_Set_Scale
     };
 
     // AF_Heal should be forward exempt, but this was missed when AF_Heal was added in RFL v300
@@ -848,6 +852,17 @@ static std::unordered_map<rf::EventType, EventFactory> event_factories {
             auto* event = dynamic_cast<EventMeshSetCollision*>(base_event);
             if (event) {
                 event->collision_type = params.int1;
+            }
+            return event;
+        }
+    },
+    // Mesh_Set_Scale
+    {
+        rf::EventType::Mesh_Set_Scale, [](const EventCreateParams& params) {
+            auto* base_event = rf::event_create(params.pos, std::to_underlying(rf::EventType::Mesh_Set_Scale));
+            auto* event = dynamic_cast<EventMeshSetScale*>(base_event);
+            if (event) {
+                event->scale = params.float1;
             }
             return event;
         }

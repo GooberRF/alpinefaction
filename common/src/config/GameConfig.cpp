@@ -164,6 +164,7 @@ bool GameConfig::visit_vars(T&& visitor, bool is_save)
     result &= visitor(alpine_faction_key, "Language", language);
     result &= visitor(alpine_faction_key, "Reduced Speed In Background", reduced_speed_in_background);
     result &= visitor(alpine_faction_key, "Autoplay AF Demos", autoplay_af_demos);
+    result &= visitor(alpine_faction_key, "Editor Large Address Aware", editor_large_address_aware);
     result &= visitor(alpine_faction_key, "FFLink Token", fflink_token);
     result &= visitor(alpine_faction_key, "FFLink Username", fflink_username);
     result &= visitor(alpine_faction_key, "AF Stats PSK", afstats_psk);

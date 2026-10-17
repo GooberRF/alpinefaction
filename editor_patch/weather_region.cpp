@@ -37,7 +37,7 @@ static void weather_region_load_icon()
 void DestroyDedWeatherRegion(DedWeatherRegion* weather_region)
 {
     if (!weather_region) return;
-    weather_region->field_4.free();
+    weather_region->class_mesh_filename.free();
     weather_region->script_name.free();
     weather_region->class_name.free();
     delete weather_region;
@@ -907,6 +907,11 @@ void weather_region_paste_objects(CDedLevel* level)
             level->add_to_selection(static_cast<DedObject*>(clone));
         }
     }
+}
+
+void weather_region_swap_clipboard(std::vector<DedWeatherRegion*>& other)
+{
+    g_weather_region_clipboard.swap(other);
 }
 
 void weather_region_clear_clipboard()

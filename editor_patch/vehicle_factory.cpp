@@ -4,6 +4,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
+#include <numbers>
+#include <optional>
 #include <string>
 #include <algorithm>
 #include <vector>
@@ -47,6 +49,15 @@ bool vehicle_factory_class_is_unsupported(const std::string& class_name)
         [&](const char* name) { return string_iequals(class_name, name); });
 }
 
+// The stock turret names stand in when entity.tbl could not be read.
+bool vehicle_factory_class_is_turret(const std::string& class_name)
+{
+    if (const auto* ei = entity_tbl_find(class_name.c_str())) {
+        return ei->use_function == ENTITY_USE_TURRET;
+    }
+    return string_iequals(class_name, "Stationary Turret_Plain") || string_iequals(class_name, "Stationary Turret");
+}
+
 // Preview meshes for the stock classes, used only when entity.tbl is unavailable.
 const AlpineVehicleClassMesh g_fallback_meshes[] = {
     {"Jeep01", "jeep01.v3c"},
@@ -66,6 +77,8 @@ constexpr float vehicle_factory_fallback_radius = 0.75f;
 // DedVehicleFactory's own default, used wherever a delay arrives non-finite.
 constexpr float vehicle_factory_default_respawn_delay_s = 30.0f;
 constexpr float vehicle_factory_max_respawn_delay_s = 3600.0f;
+
+constexpr uint8_t vehicle_factory_default_yaw_limit_deg = 80;
 
 // ─── Globals ─────────────────────────────────────────────────────────────────
 
@@ -113,45 +126,6 @@ void vehicle_factory_bound_sphere(const DedVehicleFactory* factory, float* out_c
     out_center[2] = center.z;
     *out_radius = factory->preview_bound_radius > 0.0f ? factory->preview_bound_radius
                                                        : vehicle_factory_fallback_radius;
-}
-
-// The AF override the game will apply wins; otherwise entity.tbl is authoritative (it carries the
-// extension) and the fallback table covers the stock classes.
-std::string vehicle_factory_mesh_for_class(const std::string& class_name)
-{
-    std::string filename;
-    // The game rewrites $V3D Filename for these classes at level init, so the preview has to show
-    // the hull that will actually spawn.
-    for (const auto& entry : alpine_vehicle_class_meshes) {
-        if (!string_iequals(entry.class_name, class_name)) {
-            continue;
-        }
-        // Probed, so an install without the AF assets still previews the stock hull.
-        rf::File file;
-        if (file.open(entry.vmesh_filename)) {
-            filename = entry.vmesh_filename;
-        }
-        break;
-    }
-    if (filename.empty()) {
-        if (const auto* ei = entity_tbl_find(class_name.c_str())) {
-            filename = ei->v3d_filename;
-        }
-    }
-    if (filename.empty()) {
-        for (const auto& entry : g_fallback_meshes) {
-            if (string_iequals(entry.class_name, class_name)) {
-                filename = entry.vmesh_filename;
-                break;
-            }
-        }
-    }
-    if (filename.empty()) {
-        return filename;
-    }
-    replace_ext_if(filename, "v3d", "v3m");
-    replace_ext_if(filename, "vcm", "v3c");
-    return filename;
 }
 
 void vehicle_factory_load_preview(DedVehicleFactory* factory)
@@ -206,6 +180,90 @@ void vehicle_factory_load_preview(DedVehicleFactory* factory)
 
 std::vector<DedVehicleFactory*> g_selected_factories;
 
+// The dialog's unsaved yaw limit, as OK would apply it.
+struct VehicleFactoryYawStage
+{
+    std::optional<bool> turret;      // the chosen class is a turret; empty: each factory keeps its own class
+    UINT state = BST_INDETERMINATE;
+    std::optional<uint8_t> deg;      // empty for a blank field: each factory keeps its own angle
+
+    bool applies_to(const DedVehicleFactory* f) const
+    {
+        return turret.value_or(vehicle_factory_class_is_turret(f->vehicle_class));
+    }
+};
+
+// Drawn on the dialog's factories while it is open.
+struct VehicleFactoryPreview
+{
+    bool active = false;
+    VehicleFactoryYawStage yaw;
+};
+VehicleFactoryPreview g_factory_preview;
+
+// Reads the selection, not the window text: a drop-list has no edit control. False when no class is
+// chosen, which leaves each factory's own.
+bool vehicle_factory_dlg_class(HWND hdlg, char (&class_buf)[64])
+{
+    HWND cls = GetDlgItem(hdlg, IDC_VEHICLE_FACTORY_CLASS);
+    const int cur = static_cast<int>(SendMessage(cls, CB_GETCURSEL, 0, 0));
+    if (cur == CB_ERR || SendMessage(cls, CB_GETLBTEXTLEN, cur, 0) >= static_cast<LRESULT>(sizeof(class_buf))) {
+        return false;
+    }
+    SendMessageA(cls, CB_GETLBTEXT, cur, reinterpret_cast<LPARAM>(class_buf));
+    return true;
+}
+
+VehicleFactoryYawStage vehicle_factory_read_yaw_stage(HWND hdlg)
+{
+    VehicleFactoryYawStage stage;
+    if (char class_buf[64] = {}; vehicle_factory_dlg_class(hdlg, class_buf)) {
+        stage.turret = vehicle_factory_class_is_turret(class_buf);
+    }
+    stage.state = IsDlgButtonChecked(hdlg, IDC_VEHICLE_FACTORY_YAW_LIMIT);
+    char text[16] = {};
+    GetDlgItemTextA(hdlg, IDC_VEHICLE_FACTORY_YAW_LIMIT_DEG, text, sizeof(text));
+    if (std::strspn(text, " \t") < std::strlen(text)) {
+        stage.deg = static_cast<uint8_t>(
+            std::clamp(std::atoi(text), 1, static_cast<int>(vehicle_turret_max_yaw_limit_deg)));
+    }
+    return stage;
+}
+
+// A non-turret class keeps whatever limit it had; the game ignores it.
+uint8_t vehicle_factory_staged_yaw_limit(const VehicleFactoryYawStage& stage, const DedVehicleFactory* f)
+{
+    if (!stage.applies_to(f) || stage.state == BST_INDETERMINATE) {
+        return f->turret_yaw_limit_deg;
+    }
+    if (stage.state == BST_UNCHECKED) {
+        return 0;
+    }
+    if (stage.deg) {
+        return *stage.deg;
+    }
+    return f->turret_yaw_limit_deg != 0 ? f->turret_yaw_limit_deg : vehicle_factory_default_yaw_limit_deg;
+}
+
+// The yaw limit is offered while any factory would be a turret, and its angle only while the limit is on.
+void vehicle_factory_update_yaw_limit_controls(HWND hdlg)
+{
+    const VehicleFactoryYawStage stage = vehicle_factory_read_yaw_stage(hdlg);
+    const bool turret = std::any_of(g_selected_factories.begin(), g_selected_factories.end(),
+        [&](const DedVehicleFactory* f) { return stage.applies_to(f); });
+    EnableWindow(GetDlgItem(hdlg, IDC_VEHICLE_FACTORY_YAW_LIMIT), turret);
+    const bool angle = turret && IsDlgButtonChecked(hdlg, IDC_VEHICLE_FACTORY_YAW_LIMIT) == BST_CHECKED;
+    EnableWindow(GetDlgItem(hdlg, IDC_VEHICLE_FACTORY_YAW_LIMIT_DEG), angle);
+    EnableWindow(GetDlgItem(hdlg, IDC_VEHICLE_FACTORY_YAW_LIMIT_DEG_SPIN), angle);
+}
+
+void vehicle_factory_refresh_preview(HWND hdlg)
+{
+    if (!g_factory_preview.active) return;
+    g_factory_preview.yaw = vehicle_factory_read_yaw_stage(hdlg);
+    redraw_all_viewports();
+}
+
 INT_PTR CALLBACK VehicleFactoryDialogProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg) {
@@ -227,20 +285,8 @@ INT_PTR CALLBACK VehicleFactoryDialogProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM
         // The classes this install's entity.tbl offers the game, less the unsupported ones; a class
         // already on the object (unsupported or not) is appended rather than dropped.
         HWND cls = GetDlgItem(hdlg, IDC_VEHICLE_FACTORY_CLASS);
-        const std::vector<std::string> tbl_classes =
-            entity_tbl_class_names_with_use({ENTITY_USE_VEHICLE, ENTITY_USE_TURRET});
-        if (tbl_classes.empty()) {
-            // entity.tbl is missing or its .vpp is not mounted, so nothing was parsed.
-            for (const char* name : g_stock_vehicle_classes) {
-                SendMessageA(cls, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(name));
-            }
-        }
-        else {
-            for (const std::string& name : tbl_classes) {
-                if (!vehicle_factory_class_is_unsupported(name)) {
-                    SendMessageA(cls, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(name.c_str()));
-                }
-            }
+        for (const std::string& name : vehicle_factory_class_choices()) {
+            SendMessageA(cls, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(name.c_str()));
         }
         if (uniform(&DedVehicleFactory::vehicle_class)) {
             int cls_sel = static_cast<int>(SendMessageA(cls, CB_FINDSTRINGEXACT, static_cast<WPARAM>(-1),
@@ -274,29 +320,65 @@ INT_PTR CALLBACK VehicleFactoryDialogProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM
         CheckDlgButton(hdlg, IDC_VEHICLE_FACTORY_LOCK_TEAM, check_state(&DedVehicleFactory::lock_to_team));
         CheckDlgButton(hdlg, IDC_VEHICLE_FACTORY_ACTIVE, check_state(&DedVehicleFactory::active_by_default));
 
+        // Judged on the turrets alone: anything else keeps a limit the game ignores.
+        std::vector<const DedVehicleFactory*> turrets;
+        for (const auto* f : g_selected_factories) {
+            if (vehicle_factory_class_is_turret(f->vehicle_class)) {
+                turrets.push_back(f);
+            }
+        }
+        if (turrets.empty()) {
+            turrets.assign(g_selected_factories.begin(), g_selected_factories.end());
+        }
+        const uint8_t yaw_deg = turrets[0]->turret_yaw_limit_deg;
+        const bool yaw_uniform_on = std::all_of(turrets.begin(), turrets.end(),
+            [&](const DedVehicleFactory* f) { return (f->turret_yaw_limit_deg != 0) == (yaw_deg != 0); });
+        const bool yaw_uniform_deg = std::all_of(turrets.begin(), turrets.end(),
+            [&](const DedVehicleFactory* f) { return f->turret_yaw_limit_deg == yaw_deg; });
+        CheckDlgButton(hdlg, IDC_VEHICLE_FACTORY_YAW_LIMIT,
+            !yaw_uniform_on ? BST_INDETERMINATE : yaw_deg != 0 ? BST_CHECKED : BST_UNCHECKED);
+        if (yaw_uniform_deg) {
+            SetDlgItemInt(hdlg, IDC_VEHICLE_FACTORY_YAW_LIMIT_DEG,
+                yaw_deg != 0 ? yaw_deg : vehicle_factory_default_yaw_limit_deg, FALSE);
+        }
+        alpine_spinner_init_int(hdlg, IDC_VEHICLE_FACTORY_YAW_LIMIT_DEG, IDC_VEHICLE_FACTORY_YAW_LIMIT_DEG_SPIN, 1,
+                                1, vehicle_turret_max_yaw_limit_deg);
+        vehicle_factory_update_yaw_limit_controls(hdlg);
+
+        g_factory_preview.yaw = vehicle_factory_read_yaw_stage(hdlg);
+        g_factory_preview.active = true;
+
         return TRUE;
     }
     case WM_COMMAND:
         switch (LOWORD(wp)) {
         case IDC_VEHICLE_FACTORY_LOCK_TEAM:
         case IDC_VEHICLE_FACTORY_ACTIVE:
+        case IDC_VEHICLE_FACTORY_YAW_LIMIT:
             // Indeterminate is only a starting state: clicking cycles between the two real values.
             if (IsDlgButtonChecked(hdlg, LOWORD(wp)) == BST_INDETERMINATE) {
                 CheckDlgButton(hdlg, LOWORD(wp), BST_UNCHECKED);
             }
+            vehicle_factory_update_yaw_limit_controls(hdlg);
+            vehicle_factory_refresh_preview(hdlg);
             return TRUE;
+        case IDC_VEHICLE_FACTORY_CLASS:
+            if (HIWORD(wp) == CBN_SELCHANGE) {
+                vehicle_factory_update_yaw_limit_controls(hdlg);
+                vehicle_factory_refresh_preview(hdlg);
+                return TRUE;
+            }
+            break;
+        case IDC_VEHICLE_FACTORY_YAW_LIMIT_DEG:
+            if (HIWORD(wp) == EN_CHANGE) {
+                vehicle_factory_refresh_preview(hdlg);
+            }
+            break;
         case IDOK: {
             char name_buf[256] = {};
             GetDlgItemTextA(hdlg, IDC_VEHICLE_FACTORY_SCRIPT_NAME, name_buf, sizeof(name_buf));
-            // Read the selection, not the window text: a drop-list has no edit control.
             char class_buf[64] = {};
-            HWND cls_ok = GetDlgItem(hdlg, IDC_VEHICLE_FACTORY_CLASS);
-            const int cls_cur = static_cast<int>(SendMessage(cls_ok, CB_GETCURSEL, 0, 0));
-            const bool have_class = cls_cur != CB_ERR
-                && SendMessage(cls_ok, CB_GETLBTEXTLEN, cls_cur, 0) < static_cast<LRESULT>(sizeof(class_buf));
-            if (have_class) {
-                SendMessageA(cls_ok, CB_GETLBTEXT, cls_cur, reinterpret_cast<LPARAM>(class_buf));
-            }
+            const bool have_class = vehicle_factory_dlg_class(hdlg, class_buf);
             // The script name is the factory's identity, so it alone does not bulk-apply.
             const bool single = g_selected_factories.size() == 1;
 
@@ -317,6 +399,8 @@ INT_PTR CALLBACK VehicleFactoryDialogProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM
                                                          : VehicleFactoryTeam::none;
             const UINT lock_state = IsDlgButtonChecked(hdlg, IDC_VEHICLE_FACTORY_LOCK_TEAM);
             const UINT active_state = IsDlgButtonChecked(hdlg, IDC_VEHICLE_FACTORY_ACTIVE);
+
+            const VehicleFactoryYawStage yaw = vehicle_factory_read_yaw_stage(hdlg);
 
             for (auto* f : g_selected_factories) {
                 if (single) {
@@ -343,6 +427,7 @@ INT_PTR CALLBACK VehicleFactoryDialogProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM
                 if (active_state != BST_INDETERMINATE) {
                     f->active_by_default = active_state == BST_CHECKED;
                 }
+                f->turret_yaw_limit_deg = vehicle_factory_staged_yaw_limit(yaw, f);
             }
             EndDialog(hdlg, IDOK);
             return TRUE;
@@ -360,6 +445,57 @@ INT_PTR CALLBACK VehicleFactoryDialogProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM
 }
 
 } // namespace
+
+std::vector<std::string> vehicle_factory_class_choices()
+{
+    std::vector<std::string> classes =
+        entity_tbl_class_names_with_use({ENTITY_USE_VEHICLE, ENTITY_USE_TURRET});
+    if (classes.empty()) {
+        // entity.tbl is missing or its .vpp is not mounted, so nothing was parsed.
+        return std::vector<std::string>(std::begin(g_stock_vehicle_classes), std::end(g_stock_vehicle_classes));
+    }
+    std::erase_if(classes, vehicle_factory_class_is_unsupported);
+    return classes;
+}
+
+// The AF override the game will apply wins; otherwise entity.tbl is authoritative (it carries the
+// extension) and the fallback table covers the stock classes.
+std::string vehicle_factory_mesh_for_class(const std::string& class_name)
+{
+    std::string filename;
+    // The game rewrites $V3D Filename for these classes at level init, so the preview has to show
+    // the hull that will actually spawn.
+    for (const auto& entry : alpine_vehicle_class_meshes) {
+        if (!string_iequals(entry.class_name, class_name)) {
+            continue;
+        }
+        // Probed, so an install without the AF assets still previews the stock hull.
+        rf::File file;
+        if (file.open(entry.vmesh_filename)) {
+            filename = entry.vmesh_filename;
+        }
+        break;
+    }
+    if (filename.empty()) {
+        if (const auto* ei = entity_tbl_find(class_name.c_str())) {
+            filename = ei->v3d_filename;
+        }
+    }
+    if (filename.empty()) {
+        for (const auto& entry : g_fallback_meshes) {
+            if (string_iequals(entry.class_name, class_name)) {
+                filename = entry.vmesh_filename;
+                break;
+            }
+        }
+    }
+    if (filename.empty()) {
+        return filename;
+    }
+    replace_ext_if(filename, "v3d", "v3m");
+    replace_ext_if(filename, "vcm", "v3c");
+    return filename;
+}
 
 void ShowVehicleFactoryPropertiesDialog(CDedLevel* level)
 {
@@ -380,6 +516,9 @@ void ShowVehicleFactoryPropertiesDialog(CDedLevel* level)
             VehicleFactoryDialogProc,
             0
         );
+        g_factory_preview.active = false;
+        // A cancelled preview must not stay on screen until something else repaints.
+        redraw_all_viewports();
     }
 
     g_selected_factories.clear();
@@ -396,7 +535,7 @@ void DestroyDedVehicleFactory(DedVehicleFactory* factory)
 {
     if (!factory) return;
     vehicle_factory_free_preview(factory);
-    factory->field_4.free();
+    factory->class_mesh_filename.free();
     factory->script_name.free();
     factory->class_name.free();
     delete factory;
@@ -432,10 +571,11 @@ void vehicle_factory_serialize_chunk(CDedLevel& level, rf::File& file)
         write_rfl_string(file, factory->script_name);
         write_rfl_string(file, factory->vehicle_class);
         file.write<float>(factory->respawn_delay_s);
-        // 5 bytes: team (0xFF none), two reserved, lock_to_team, active_by_default.
+        // 5 bytes: team (0xFF none), turret yaw limit (degrees, 0 none), one reserved, lock_to_team,
+        // active_by_default.
         file.write<uint8_t>(factory->team == VehicleFactoryTeam::none
             ? 0xFFu : static_cast<uint8_t>(factory->team));
-        file.write<uint8_t>(0u);
+        file.write<uint8_t>(factory->turret_yaw_limit_deg);
         file.write<uint8_t>(0u);
         file.write<uint8_t>(factory->lock_to_team ? 1u : 0u);
         file.write<uint8_t>(factory->active_by_default ? 1u : 0u);
@@ -504,8 +644,11 @@ void vehicle_factory_deserialize_chunk(CDedLevel& level, rf::File& file, std::si
         if (!reader.read_bytes(&team, sizeof(team))) { DestroyDedVehicleFactory(factory); return; }
         factory->team = (team == 0 || team == 1) ? static_cast<VehicleFactoryTeam>(team)
                                                  : VehicleFactoryTeam::none;
-        uint8_t reserved[2] = {};
-        if (!reader.read_bytes(reserved, sizeof(reserved))) { DestroyDedVehicleFactory(factory); return; }
+        uint8_t yaw_limit_deg = 0;
+        if (!reader.read_bytes(&yaw_limit_deg, sizeof(yaw_limit_deg))) { DestroyDedVehicleFactory(factory); return; }
+        factory->turret_yaw_limit_deg = yaw_limit_deg <= vehicle_turret_max_yaw_limit_deg ? yaw_limit_deg : uint8_t{0};
+        uint8_t reserved = 0;
+        if (!reader.read_bytes(&reserved, sizeof(reserved))) { DestroyDedVehicleFactory(factory); return; }
         uint8_t lock_to_team = 0;
         if (!reader.read_bytes(&lock_to_team, sizeof(lock_to_team))) { DestroyDedVehicleFactory(factory); return; }
         // A team-none factory keeps its lock: a control point can hand it a team later.
@@ -523,10 +666,11 @@ void vehicle_factory_deserialize_chunk(CDedLevel& level, rf::File& file, std::si
 
 // ─── Object Lifecycle ───────────────────────────────────────────────────────
 
-void PlaceNewVehicleFactoryObject()
+DedVehicleFactory* PlaceNewVehicleFactoryObject(const std::string& vehicle_class, const Vector3& pos,
+                                                const Matrix3& orient)
 {
     auto* level = CDedLevel::Get();
-    if (!level) return;
+    if (!level) return nullptr;
 
     auto* factory = new DedVehicleFactory();
     memset(static_cast<DedObject*>(factory), 0, sizeof(DedObject));
@@ -534,17 +678,11 @@ void PlaceNewVehicleFactoryObject()
     factory->type = DedObjectType::DED_VEHICLE_FACTORY;
 
     factory->script_name.assign_0("Vehicle Factory");
-
-    auto* viewport = get_active_viewport();
-    if (viewport && viewport->view_data) {
-        factory->pos = viewport->view_data->camera_pos;
-        factory->orient = viewport->view_data->camera_orient;
+    if (!vehicle_class.empty()) {
+        factory->vehicle_class = vehicle_class;
     }
-    else {
-        factory->orient.rvec = {1.0f, 0.0f, 0.0f};
-        factory->orient.uvec = {0.0f, 1.0f, 0.0f};
-        factory->orient.fvec = {0.0f, 0.0f, 1.0f};
-    }
+    factory->pos = pos;
+    factory->orient = orient;
 
     factory->uid = generate_uid();
 
@@ -554,6 +692,7 @@ void PlaceNewVehicleFactoryObject()
     level->clear_selection();
     level->add_to_selection(static_cast<DedObject*>(factory));
     level->update_console_display();
+    return factory;
 }
 
 DedVehicleFactory* CloneVehicleFactoryObject(DedVehicleFactory* source, bool add_to_level)
@@ -574,6 +713,7 @@ DedVehicleFactory* CloneVehicleFactoryObject(DedVehicleFactory* source, bool add
     factory->team = source->team;
     factory->lock_to_team = source->lock_to_team;
     factory->active_by_default = source->active_by_default;
+    factory->turret_yaw_limit_deg = source->turret_yaw_limit_deg;
 
     factory->uid = generate_uid();
 
@@ -655,6 +795,36 @@ void vehicle_factory_render(CDedLevel* level)
             factory->pos.y + factory->orient.fvec.y * 2.0f,
             factory->pos.z + factory->orient.fvec.z * 2.0f,
             selected ? 255 : 0, selected ? 0 : 255, 255);
+
+        // The yaw limit's two stops, about world up from the spawn facing the game will upright. The
+        // open dialog's factories show what OK would give them.
+        uint8_t yaw_limit_deg = factory->turret_yaw_limit_deg;
+        bool yaw_turret = false;
+        if (g_factory_preview.active
+            && std::find(g_selected_factories.begin(), g_selected_factories.end(), factory)
+                != g_selected_factories.end()) {
+            yaw_limit_deg = vehicle_factory_staged_yaw_limit(g_factory_preview.yaw, factory);
+            yaw_turret = g_factory_preview.yaw.applies_to(factory);
+        }
+        else if (yaw_limit_deg != 0) {
+            yaw_turret = vehicle_factory_class_is_turret(factory->vehicle_class);
+        }
+        const float fx = factory->orient.fvec.x;
+        const float fz = factory->orient.fvec.z;
+        const float horiz = std::sqrt(fx * fx + fz * fz);
+        if (yaw_limit_deg != 0 && yaw_turret && horiz > 0.01f) {
+            const float limit = static_cast<float>(yaw_limit_deg) * (std::numbers::pi_v<float> / 180.0f);
+            for (const float a : {-limit, limit}) {
+                const float c = std::cos(a);
+                const float s = std::sin(a);
+                const float dx = (fx * c + fz * s) / horiz;
+                const float dz = (fz * c - fx * s) / horiz;
+                draw_3d_arrow(
+                    factory->pos.x, factory->pos.y, factory->pos.z,
+                    factory->pos.x + dx * 1.5f, factory->pos.y, factory->pos.z + dz * 1.5f,
+                    255, 255, 0);
+            }
+        }
 
         if (selected) {
             draw_wireframe_sphere(sphere_center[0], sphere_center[1], sphere_center[2],
@@ -760,6 +930,11 @@ void vehicle_factory_paste_objects(CDedLevel* level)
             level->add_to_selection(static_cast<DedObject*>(clone));
         }
     }
+}
+
+void vehicle_factory_swap_clipboard(std::vector<DedVehicleFactory*>& other)
+{
+    g_vehicle_factory_clipboard.swap(other);
 }
 
 void vehicle_factory_clear_clipboard()

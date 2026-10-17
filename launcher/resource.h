@@ -83,6 +83,7 @@
 // #define IDC_SCREENSHAKE                 1064
 // #define IDC_DAMAGEFLASH                 1065
 // #define IDC_POW2TEX                     1066
+#define IDC_EDITOR_LAA_CHECK            1067
 
 #define IDC_VERSION_TEXT                3050
 
@@ -179,7 +180,7 @@
 #ifndef APSTUDIO_READONLY_SYMBOLS
 #define _APS_NEXT_RESOURCE_VALUE        112
 #define _APS_NEXT_COMMAND_VALUE         32771
-#define _APS_NEXT_CONTROL_VALUE         1060
+#define _APS_NEXT_CONTROL_VALUE         1068
 #define _APS_NEXT_SYMED_VALUE           101
 #endif
 #endif

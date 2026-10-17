@@ -3776,6 +3776,8 @@ static void build_af_vehicle_state_packet(af_vehicle_state_packet& pkt, int vehi
     pkt.flags = attrs.flags;
     pkt.unoccupied_s = attrs.unoccupied_s;
     std::memcpy(pkt.vel, attrs.vel, sizeof(pkt.vel));
+    pkt.yaw_base = attrs.yaw_base;
+    pkt.yaw_limit_deg = attrs.yaw_limit_deg;
 }
 
 void af_send_vehicle_state_packet(rf::Player* player, int vehicle_handle, const int32_t* seat_rider,
@@ -3836,7 +3838,7 @@ void af_process_vehicle_state_packet(const void* data, size_t len, const rf::Net
     vehicle_apply_seat_occupancy_from_packet(pkt.vehicle_handle, pkt.seat_rider, pkt.seat_count,
                                              pkt.changed_seat, pkt.vel);
     vehicle_apply_hull_attrs_from_packet(pkt.vehicle_handle, pkt.team, pkt.flags, pkt.unoccupied_s,
-                                         pkt.seat_rider, pkt.seat_count);
+                                         pkt.seat_rider, pkt.seat_count, pkt.yaw_base, pkt.yaw_limit_deg);
 }
 
 static void build_af_vehicle_fire_packet(af_vehicle_fire_packet& pkt, int vehicle_handle,

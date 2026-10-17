@@ -101,6 +101,11 @@ namespace
         jeep.upright_air_scale = 0.50f;
         jeep.tilt_damp = 2.5f;
         jeep.chassis_trim_side = 0.20f;
+        jeep.chassis_trim_top = 0.15f;
+        // Only the roll cage, windshield and gun mount rise above the hood and rear deck.
+        jeep.chassis_cab_z_min = -1.10f;
+        jeep.chassis_cab_z_max = 1.10f;
+        jeep.chassis_body_top = 0.80f;
         jeep.chassis_clearance = 0.10f;
         jeep.step_climb_height = 0.60f;
         jeep.cam_enable = 1.0f;
@@ -407,11 +412,6 @@ namespace
             if (!owned->body) {
                 continue;
             }
-            // WANTS_DEACTIVATION too: buildIslands puts such a body to sleep on the next substep.
-            const int state = owned->body->getActivationState();
-            if (state != ISLAND_SLEEPING && state != WANTS_DEACTIVATION) {
-                continue;
-            }
             btVector3 blo;
             btVector3 bhi;
             owned->body->getAabb(blo, bhi);
@@ -419,8 +419,15 @@ namespace
             blo.setY(blo.y() - (owned->wheel_reach + 0.5f));
             blo -= bpad;
             bhi += bpad;
-            if (blo.x() <= hi.x() && bhi.x() >= lo.x() && blo.y() <= hi.y()
-                && bhi.y() >= lo.y() && blo.z() <= hi.z() && bhi.z() >= lo.z()) {
+            if (blo.x() > hi.x() || bhi.x() < lo.x() || blo.y() > hi.y() || bhi.y() < lo.y()
+                || blo.z() > hi.z() || bhi.z() < lo.z()) {
+                continue;
+            }
+            // Awake or not: a hull resting here may be replaying wheel casts against what just changed.
+            owned->wheel_casts.clear();
+            // WANTS_DEACTIVATION too: buildIslands puts such a body to sleep on the next substep.
+            const int state = owned->body->getActivationState();
+            if (state == ISLAND_SLEEPING || state == WANTS_DEACTIVATION) {
                 owned->body->activate(true);
             }
         }
@@ -542,7 +549,9 @@ namespace
         if (face.attributes.portal_id != 0) {
             return false; // portals are not solid
         }
-        return true;
+        // Bullet's triangles are two-sided, so the buried wall between two chunks snags a hull on the edge a
+        // crater exposes where its tunnel crosses the seam.
+        return !alpine_terrain_is_interior_seam_face(face);
     }
 
     // The verts/indices survive, so a chunk being REBUILT in place can be freed and finished again.
@@ -906,6 +915,7 @@ void level_mesh_build()
         return;
     }
     g_level_mesh_built = true;
+    const AlpineTerrainSeamScope seam_scope;
     int rooms = 0;
     // A null level solid is not a reason to skip the movers, so only the room pass is guarded.
     if (rf::GSolid* solid = rf::level.geometry) {
@@ -1050,6 +1060,7 @@ void level_mesh_rebuild_pending()
         changed_lo.setMin(to_bt(m.aabb_min));
         changed_hi.setMax(to_bt(m.aabb_max));
     };
+    const AlpineTerrainSeamScope seam_scope;
     for (auto& pending : g_remesh_pending) {
         rf::GRoom* room = pending.first;
         const RemeshRequest& req = pending.second;
@@ -1174,6 +1185,16 @@ void level_mesh_poll_remesh()
 bool level_mesh_active()
 {
     return g_level_mesh_built && !(level_mesh_chunk_count() == 0 && g_mover_mesh.empty());
+}
+
+uint32_t level_mesh_rebuild_serial()
+{
+    return g_level_mesh_rebuild_serial;
+}
+
+bool level_mesh_remesh_pending()
+{
+    return !g_remesh_pending.empty();
 }
 
 void level_mesh_debug_collect(const rf::Vector3& center, float radius,
@@ -1712,9 +1733,6 @@ void vehicle_physics_notify_geomod(const rf::Vector3& pos, float radius)
         }
         // (b) every face the crater touches, marked in the cell owning its CENTROID - possibly far away.
         for (rf::GFace& face : room->face_list) {
-            if (!level_mesh_face_is_solid(face)) {
-                continue;
-            }
             rf::Vector3 centroid;
             rf::Vector3 flo;
             rf::Vector3 fhi;
@@ -1723,6 +1741,9 @@ void vehicle_physics_notify_geomod(const rf::Vector3& pos, float radius)
             }
             if (fhi.x < lo.x || flo.x > hi.x || fhi.y < lo.y || flo.y > hi.y || fhi.z < lo.z
                 || flo.z > hi.z) {
+                continue;
+            }
+            if (!level_mesh_face_is_solid(face)) {
                 continue;
             }
             remesh_mark_cell(req, level_mesh_cell_of(centroid));

@@ -41,6 +41,17 @@ float gr_sun_get_mesh_scale(const float* ambient);
 // The D3D11 mesh ambient for a custom ambient (a lightmap colour 0..1): mostly the level ambient, tinted by it.
 void gr_mesh_blend_ambient(const float (&lightmap)[3], float (&out)[3]);
 
+// Fog near clip the Direct3D 11 fog starts at; levels below RFL 306 keep stock fog, which starts at the eye
+float gr_fog_near_clip();
+// The level's camera far clip, clamped on the legacy renderers; 0 when it sets none
+float level_camera_far_clip();
+// gr::default_wfar, unless the level sets a camera far clip
+float level_default_far_clip();
+// Far clip the engine culls at with a dry eye
+float level_dry_far_clip();
+// Far plane of the Direct3D 11 projection, where drawn geometry ends
+float level_projection_far();
+
 bool gr_is_antialiasing_err();
 bool gr_supports_sample_count(uint32_t sample_count);
 void gr_flush_frame_buffers();

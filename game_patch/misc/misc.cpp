@@ -169,6 +169,22 @@ bool multi_join_game(const rf::NetAddr& addr, const std::string& password)
     return true;
 }
 
+FunHook<void(rf::GameState, rf::GameState, bool)> rf_close_state_hook{
+    0x004B1BF0,
+    [] (const rf::GameState state, const rf::GameState new_state, const bool immediately) {
+        const bool discarded = immediately || !rf::gameseq_pending_push;
+        if (discarded
+            && (state == rf::GS_MULTI_LEVEL_DOWNLOAD
+                || state == rf::GS_MULTI_LIMBO_JUST_JOINED
+                || state == rf::GS_MULTI_LIMBO))
+        {
+            g_gameseq_defer_new_level = false;
+        }
+
+        rf_close_state_hook.call_target(state, new_state, immediately);
+    }
+};
+
 FunHook<void(rf::GameState, rf::GameState)> rf_init_state_hook{
     0x004B1AC0,
     [] (rf::GameState state, rf::GameState old_state) {
@@ -180,10 +196,6 @@ FunHook<void(rf::GameState, rf::GameState)> rf_init_state_hook{
             std::to_underlying(old_state),
             g_jump_to_multi_server_list
         );
-
-        if (old_state == rf::GS_MULTI_LIMBO_JUST_JOINED) {
-            g_multi_limbo_just_joined_req_leave = false;
-        }
 
         const bool exiting_game = state == rf::GS_MAIN_MENU
             && (old_state == rf::GS_END_GAME || old_state == rf::GS_NEW_LEVEL);
@@ -201,7 +213,7 @@ FunHook<void(rf::GameState, rf::GameState)> rf_init_state_hook{
                 xlog::trace("jump to mp menu!");
                 set_sound_enabled(false);
                 AddrCaller{0x00443C20}.c_call(); // open_multi_menu
-                rf::gameseq_close_state(state, old_state, false);
+                rf::rf_close_state(state, old_state, false);
                 old_state = state;
                 state = rf::gameseq_process_deferred_change();
                 rf_init_state_hook.call_target(state, old_state);
@@ -209,7 +221,7 @@ FunHook<void(rf::GameState, rf::GameState)> rf_init_state_hook{
 
             if (state == rf::GS_MULTI_MENU) {
                 AddrCaller{0x00448B70}.c_call(); // on_mp_join_game_btn_click
-                rf::gameseq_close_state(state, old_state, false);
+                rf::rf_close_state(state, old_state, false);
                 old_state = state;
                 state = rf::gameseq_process_deferred_change();
                 rf_init_state_hook.call_target(state, old_state);
@@ -243,7 +255,7 @@ FunHook<void(rf::GameState, rf::GameState)> rf_init_state_hook{
                     rf::game_shutdown();
                 }
                 AddrCaller{0x00443C70}.c_call(); // mainmenu_open_extras
-                rf::gameseq_close_state(state, old_state, false);
+                rf::rf_close_state(state, old_state, false);
                 old_state = state;
                 state = rf::gameseq_process_deferred_change();
                 rf_init_state_hook.call_target(state, old_state);
@@ -467,6 +479,18 @@ CodeInjection vif_chunk_tex_count_overflow_fix{
     },
 };
 
+// A .vfx ribbon (CHNE) chunk's vertices are copied into a 16-entry stack buffer when drawn (0x0053EF90).
+CodeInjection vfx_ribbon_vertex_count_overflow_fix{
+    0x0053E53F,
+    [](auto& regs) {
+        const int num_vertices = regs.eax;
+        if (num_vertices < 0 || num_vertices > 16) {
+            xlog::warn("Clamping vfx ribbon vertex count {} to 16", num_vertices);
+            regs.eax = std::clamp(num_vertices, 0, 16);
+        }
+    },
+};
+
 FunHook<void(const char*, int)> lcl_add_message_bof_fix{
     0x004B0720,
     [](const char* str, int id) {
@@ -684,13 +708,6 @@ CodeInjection level_read_header_patch{
     }
 };
 
-CodeInjection level_read_geometry_header_patch{
-    0x00461A62, [](auto& regs) {
-
-        write_mem<float>(0x00646018, 1120403456.0f);
-    }
-};
-
 CodeInjection static_bomb_code_patch{
     0x0043B4C7,
     [](auto& regs) {
@@ -735,20 +752,9 @@ void misc_init()
     // GeoMod chunk physics
     geo_chunk_physics_cmd.register_cmd();
 
-    //gr_set_far_clip_hook.install();
-    //AsmWriter{0x0051806F}.jmp(0x00518083); // stops far clip from derendering geometry covered by fog, buggy
-
     // Allow loading of rfl files with supported AF-specific versions
     level_read_header_patch.install();
     AsmWriter{0x004461BF}.jmp(0x00446200); // load Level Name from all rfls (any version) on listen server create panel
-
-
-    // fog experimentation - attempting to stop fp weapon cutoff. Success when using static values but not when rfl has specified values
-    //fog_near_clip_patch.install();
-    //gr_fog_set_hook.install();
-    //AsmWriter{0x00461A5C}.nop(6);
-    //level_read_geometry_header_patch.install();
-    //AsmWriter(0x00461A5C).nop(6);
 
     // Display a more informative message to user if they try to load an unsupported rfl
     static char new_unsupported_version_message[] =
@@ -784,6 +790,8 @@ void misc_init()
     // It is not visible in game because other things are drawn over it
     AsmWriter(0x0041AE47, 0x0041AE4C).nop();
 
+    rf_close_state_hook.install();
+
     // Open server list menu instead of main menu when leaving multiplayer game
     rf_init_state_hook.install();
     rf_state_is_closed_hook.install();
@@ -817,6 +825,7 @@ void misc_init()
     v3d_csphere_count_overflow_fix.install();
     vif_chunk_reader_hook.install();
     vif_chunk_tex_count_overflow_fix.install();
+    vfx_ribbon_vertex_count_overflow_fix.install();
 
     // Fix killed glass restoration from a save file
     AsmWriter(0x0043604A).nop(5);

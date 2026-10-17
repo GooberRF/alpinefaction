@@ -39,6 +39,7 @@ This file is intended to help Codex, Claude, and other assistants (and other aut
   - Consolidates code where reasonable using `common/`
   - Reuses existing shared logic where possible (such as the utilities in `common/utils`)
   - Adheres to existing codebase style convention and `STYLE.md`
+  - No unexpected regressions affecting existing behaviour
 
 ## Change guidelines
 - Keep changes minimal and focused on the requested task.

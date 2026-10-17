@@ -22,7 +22,7 @@ static void bag_load_icon()
 void DestroyDedBag(DedBag* bag)
 {
     if (!bag) return;
-    bag->field_4.free();
+    bag->class_mesh_filename.free();
     bag->script_name.free();
     bag->class_name.free();
     delete bag;
@@ -276,6 +276,11 @@ void bag_paste_objects(CDedLevel* level)
             level->add_to_selection(static_cast<DedObject*>(clone));
         }
     }
+}
+
+void bag_swap_clipboard(std::vector<DedBag*>& other)
+{
+    g_bag_clipboard.swap(other);
 }
 
 void bag_clear_clipboard()

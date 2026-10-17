@@ -9,7 +9,10 @@ struct MeshOccluderTri
 {
     Vector3 v0, v1, v2;
     int uid;
-    bool alpha;
+    bool alpha; // the mesh's own texture has an alpha channel
+    bool additive; // drawn with additive blending
+    int bitmap; // the texture drawn, the object's override included; -1 for none or no UVs
+    float uv[3][2];
 };
 
 // Appends every Alpine mesh object's triangles when the level sets "Meshes block light".

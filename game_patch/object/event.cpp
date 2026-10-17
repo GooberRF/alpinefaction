@@ -11,6 +11,7 @@
 #include <format>
 #include "../misc/misc.h"
 #include "../misc/alpine_settings.h"
+#include "../misc/level.h"
 #include "../rf/file/file.h"
 #include "../rf/object.h"
 #include "../rf/event.h"
@@ -125,6 +126,7 @@ CodeInjection switch_model_event_obj_lighting_and_physics_fix{
             }
             rf::physics_delete_object(&obj->p_data);
             rf::physics_create_object(&obj->p_data, &oci);
+            alpine_mesh_rebind_scale(obj);
 
             // Refresh mesh lighting data for the new mesh (old data was sized for previous mesh)
             obj_mesh_lighting_free_one(obj);

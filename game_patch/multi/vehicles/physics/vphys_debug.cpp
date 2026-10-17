@@ -22,9 +22,9 @@ namespace
             g_vphys_dbg = enable ? *enable != 0 : !g_vphys_dbg;
             rf::console::print("dbg_vphys is {}", g_vphys_dbg ? "enabled" : "disabled");
             if (g_vphys_dbg) {
-                rf::console::print("  car: grey=table box  cyan=chassis contact box (trimmed, this "
-                                   "is what meets the level mesh)  yellow=cyan +chassis_clearance "
-                                   "(size reference only)");
+                rf::console::print("  car: grey=table box  cyan=chassis contact box(es) (trimmed, "
+                                   "this is what meets the level mesh)  yellow=outer contact box "
+                                   "+chassis_clearance (size reference only)");
                 rf::console::print("  flyer/sub: cyan=hull_radius sphere  yellow=hull_standoff "
                                    "sphere (the bt shape)");
                 rf::console::print("  magenta=vehicle-vs-vehicle volume (untrimmed +{:.2f})",
@@ -249,8 +249,12 @@ void vphys_render_debug()
         if (vphys_class_is_automobile(cls)) {
             const HullBox box = driven ? sim->car_box
                                        : hull_contact_box(base, p, hull_bottom_raise(p, &entity, sim));
+            HullBox parts[car_max_shape_parts];
+            const int part_count = driven ? sim->car_shape_count : hull_contact_parts(box, p, parts);
             rf::gr::set_color(driven ? 0 : 90, driven ? 220 : 170, driven ? 255 : 190, 255);
-            vphys_dbg_draw_box(&entity, box);
+            for (int i = 0; i < part_count; ++i) {
+                vphys_dbg_draw_box(&entity, driven ? sim->car_shape_parts[i] : parts[i]);
+            }
             rf::gr::set_color(240, 220, 60, 255);
             vphys_dbg_draw_box(&entity, dbg_inflate(box, std::max(p.chassis_clearance, 0.0f)));
             if (driven) {

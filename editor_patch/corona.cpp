@@ -44,7 +44,7 @@ static void corona_load_icon()
 void DestroyDedCorona(DedCorona* corona)
 {
     if (!corona) return;
-    corona->field_4.free();
+    corona->class_mesh_filename.free();
     corona->script_name.free();
     corona->class_name.free();
     delete corona;
@@ -732,6 +732,11 @@ void corona_paste_objects(CDedLevel* level)
             level->add_to_selection(static_cast<DedObject*>(clone));
         }
     }
+}
+
+void corona_swap_clipboard(std::vector<DedCorona*>& other)
+{
+    g_corona_clipboard.swap(other);
 }
 
 void corona_clear_clipboard()

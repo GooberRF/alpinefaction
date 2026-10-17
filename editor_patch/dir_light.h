@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <vector>
 #include <common/alpine_dir_light.h>
 #include "mfc_types.h"
 #include "level.h"
@@ -29,6 +30,8 @@ void directional_light_tree_add_object_type(EditorTreeCtrl* tree);
 bool directional_light_copy_object(DedObject* source);
 void directional_light_paste_objects(CDedLevel* level);
 void directional_light_clear_clipboard();
+// Swaps the staged clones with `other`, so a duplicate can copy and paste with the user's clipboard set aside.
+void directional_light_swap_clipboard(std::vector<DedDirectionalLight*>& other);
 void directional_light_handle_delete_or_cut(DedObject* obj);
 void directional_light_ensure_uid(int& uid);
 
@@ -41,3 +44,17 @@ DedSunArrow* sun_arrow_click_pick(float click_x, float click_y);
 void sun_arrow_remove_from_selection(CDedLevel* level);
 // Hides the arrow and drops it from the selection; it never enters master_objects or a group.
 void sun_arrow_detach(CDedLevel* level);
+
+// The sun's angles with the arrow forward last derived from them. Put back together, the next sync sees no turn, so
+// nothing is converted (yaw 0 would come back as 359.99997) or marked modified.
+struct SunArrowState
+{
+    float sun_yaw = 0.0f;
+    float sun_pitch = 90.0f;
+    Vector3 synced_fvec;
+};
+SunArrowState sun_arrow_state(CDedLevel* level);
+// What sun_arrow_sync makes of the arrow pointing along `fvec`.
+SunArrowState sun_arrow_state_toward(CDedLevel* level, const Vector3& fvec);
+// Sets the angles, the arrow's roll-free orient and the synced forward.
+void sun_arrow_restore(CDedLevel* level, const SunArrowState& state);

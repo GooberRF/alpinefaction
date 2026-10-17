@@ -4,12 +4,14 @@
 #include <cstdint>
 #include <cstring>
 #include <algorithm>
+#include <array>
 #include <map>
 #include <new>
 #include <set>
 #include <vector>
 #include <string>
 #include <xlog/xlog.h>
+#include <common/alpine_mesh_scale.h>
 #include <common/scope_guard.h>
 #include <common/utils/string-utils.h>
 #include <common/version/version.h>
@@ -31,10 +33,12 @@
 #include "dir_light.h"
 #include "terrain_preview.h"
 #include "event.h"
+#include "placement_panel.h"
 #include "mfc_types.h"
 #include "level.h"
 #include "vtypes.h"
 #include "resources.h"
+#include "brush_preview.h"
 #include "tbl.h"
 
 // ─── Utilities ──────────────────────────────────────────────────────────────
@@ -77,6 +81,30 @@ static std::vector<CopyLinkEntry> g_copy_directional_light_entries;
 
 // Set of all UIDs that were part of the copied selection (for filtering external links)
 static std::set<int> g_copy_all_uids;
+
+// Every per-type snapshot list, in paste order
+constexpr int copy_link_list_count = 11;
+static std::array<std::vector<CopyLinkEntry>*, copy_link_list_count> copy_link_lists()
+{
+    return {&g_copy_stock_entries,           &g_copy_mesh_entries,          &g_copy_note_entries,
+            &g_copy_corona_entries,          &g_copy_bag_entries,           &g_copy_weather_region_entries,
+            &g_copy_vehicle_factory_entries, &g_copy_projection_camera_entries, &g_copy_rope_emitter_entries,
+            &g_copy_terrain_entries,         &g_copy_directional_light_entries};
+}
+
+static void alpine_clear_clipboards()
+{
+    mesh_clear_clipboard();
+    note_clear_clipboard();
+    corona_clear_clipboard();
+    bag_clear_clipboard();
+    weather_region_clear_clipboard();
+    vehicle_factory_clear_clipboard();
+    projection_camera_clear_clipboard();
+    rope_emitter_clear_clipboard();
+    terrain_clear_clipboard();
+    directional_light_clear_clipboard();
+}
 
 static bool is_alpine_type(DedObjectType type)
 {
@@ -151,17 +179,9 @@ static int remap_event_uid_fields(DedObject* const* objects, int count,
 // the original objects with their original links.
 static void capture_copy_link_snapshot()
 {
-    g_copy_stock_entries.clear();
-    g_copy_mesh_entries.clear();
-    g_copy_note_entries.clear();
-    g_copy_corona_entries.clear();
-    g_copy_bag_entries.clear();
-    g_copy_weather_region_entries.clear();
-    g_copy_vehicle_factory_entries.clear();
-    g_copy_projection_camera_entries.clear();
-    g_copy_rope_emitter_entries.clear();
-    g_copy_terrain_entries.clear();
-    g_copy_directional_light_entries.clear();
+    for (auto* list : copy_link_lists()) {
+        list->clear();
+    }
     g_copy_all_uids.clear();
 
     auto* level = CDedLevel::Get();
@@ -772,16 +792,7 @@ CodeInjection alpine_copy_begin_hook{
         auto* level = reinterpret_cast<CDedLevel*>(static_cast<uintptr_t>(regs.ecx));
         if (level->edit_mode == DedEditMode::Texture)
             return;
-        mesh_clear_clipboard();
-        note_clear_clipboard();
-        corona_clear_clipboard();
-        bag_clear_clipboard();
-        weather_region_clear_clipboard();
-        vehicle_factory_clear_clipboard();
-        projection_camera_clear_clipboard();
-        rope_emitter_clear_clipboard();
-        terrain_clear_clipboard();
-        directional_light_clear_clipboard();
+        alpine_clear_clipboards();
         capture_copy_link_snapshot();
     },
 };
@@ -858,6 +869,7 @@ static void __fastcall alpine_paste_wrapper(void* ecx_level, void* /*edx_unused*
 
     // Stock paste: clones stock clipboard entries, assigns new UIDs, remaps stock→stock links.
     // After this, selection contains newly pasted stock objects in clipboard order.
+    const UndoEntry* top_before = undo_stack_top(level->undo_stack);
     level->paste_objects();
     // Stock pastes a copied face texture in texture mode and no objects, so neither do we.
     if (level->edit_mode == DedEditMode::Texture)
@@ -908,6 +920,104 @@ static void __fastcall alpine_paste_wrapper(void* ecx_level, void* /*edx_unused*
     fix_paste_links(level, stock_count, mesh_count, note_count, corona_count, bag_count,
         weather_region_count, vehicle_factory_count, projection_camera_count, rope_emitter_count, terrain_count,
         directional_light_count);
+
+    // Alpine copies join stock's create entry so one Undo removes the whole paste; undo, redo and flush go through the
+    // graveyard hooks.
+    UndoEntry* entry = undo_stack_top(level->undo_stack);
+    if (entry && entry != top_before && entry->type == undo_create_objects_and_brushes) {
+        for (int i = stock_count; i < level->selection.size; i++) {
+            entry->objects.push_back(level->selection.data_ptr[i]);
+        }
+    }
+}
+
+// ─── Duplicate ──────────────────────────────────────────────────────────────
+
+namespace
+{
+
+// Everything Ctrl+C fills, set aside while a duplicate copies and pastes.
+struct ClipboardStash
+{
+    std::vector<DedObject*> stock_objects;
+    std::vector<BrushNode*> stock_brushes;
+    std::vector<void*> stock_304;
+    std::vector<DedMesh*> meshes;
+    std::vector<DedNote*> notes;
+    std::vector<DedCorona*> coronas;
+    std::vector<DedBag*> bags;
+    std::vector<DedWeatherRegion*> weather_regions;
+    std::vector<DedVehicleFactory*> vehicle_factories;
+    std::vector<DedProjectionCamera*> projection_cameras;
+    std::vector<DedRopeEmitter*> rope_emitters;
+    std::vector<DedTerrain*> terrains;
+    std::vector<DedDirectionalLight*> directional_lights;
+    std::array<std::vector<CopyLinkEntry>, copy_link_list_count> link_entries;
+    std::set<int> link_uids;
+
+    // Each Alpine clipboard and the link snapshot trade places with this one.
+    void swap_alpine()
+    {
+        mesh_swap_clipboard(meshes);
+        note_swap_clipboard(notes);
+        corona_swap_clipboard(coronas);
+        bag_swap_clipboard(bags);
+        weather_region_swap_clipboard(weather_regions);
+        vehicle_factory_swap_clipboard(vehicle_factories);
+        projection_camera_swap_clipboard(projection_cameras);
+        rope_emitter_swap_clipboard(rope_emitters);
+        terrain_swap_clipboard(terrains);
+        directional_light_swap_clipboard(directional_lights);
+        const auto live = copy_link_lists();
+        for (int i = 0; i < copy_link_list_count; i++) {
+            live[i]->swap(link_entries[i]);
+        }
+        g_copy_all_uids.swap(link_uids);
+    }
+};
+
+// The stock clipboard's pointers come out and its arrays are emptied in place (their buffers stay stock's), so
+// FUN_00414140 at the start of the copy frees nothing of the user's.
+template<typename T>
+void take_stock_array(VArray<T>& array, std::vector<T>& out)
+{
+    out.assign(array.data_ptr, array.data_ptr + std::max(array.size, 0));
+    array.size = 0;
+}
+
+template<typename T>
+void put_stock_array(VArray<T>& array, const std::vector<T>& items)
+{
+    for (T item : items) {
+        array.push_back(item);
+    }
+}
+
+} // namespace
+
+UndoEntry* alpine_duplicate_selection(CDedLevel* level)
+{
+    if (!level) return nullptr;
+    ClipboardStash stash;
+    take_stock_array(level->object_clipboard, stash.stock_objects);
+    take_stock_array(level->brush_clipboard, stash.stock_brushes);
+    take_stock_array(level->clipboard_304, stash.stock_304);
+    stash.swap_alpine();
+    // The duplicate's own clipboard is freed and the user's put back, however the paste ends.
+    ScopeGuard restore{[&] {
+        level->clear_clipboard();
+        alpine_clear_clipboards();
+        stash.swap_alpine();
+        put_stock_array(level->object_clipboard, stash.stock_objects);
+        put_stock_array(level->brush_clipboard, stash.stock_brushes);
+        put_stock_array(level->clipboard_304, stash.stock_304);
+    }};
+
+    const UndoEntry* top_before = undo_stack_top(level->undo_stack);
+    level->copy_selection();
+    alpine_paste_wrapper(level, nullptr);
+    UndoEntry* top = undo_stack_top(level->undo_stack);
+    return top != top_before ? top : nullptr;
 }
 
 // ─── Delete / Cut ───────────────────────────────────────────────────────────
@@ -1165,8 +1275,8 @@ CodeInjection alpine_undo_readd_patch{
     },
 };
 
-// FUN_0043d550 re-adds an undo record's objects through the injection above (for Alpine objects only ever
-// an undo of a delete: no create record holds one); any terrain it refused is still out of the level.
+// FUN_0043d550 re-adds an undo record's objects through the injection above (an undo of a delete, or a redo of a
+// paste); any terrain it refused is still out of the level.
 void __fastcall level_undo_apply_hooked(CDedLevel* level, int edx, UndoEntry* record);
 FunHook<decltype(level_undo_apply_hooked)> level_undo_apply_hook{
     0x0043d550,
@@ -1325,7 +1435,10 @@ CodeInjection alpine_create_object_patch{
                 PlaceNewWeatherRegionObject();
             }
             else if (g_alpine_create_type == 6) {
-                PlaceNewVehicleFactoryObject();
+                Vector3 pos;
+                Matrix3 orient;
+                editor_new_object_pose(pos, orient);
+                PlaceNewVehicleFactoryObject({}, pos, orient);
             }
             else if (g_alpine_create_type == 7) {
                 PlaceNewProjectionCameraObject();
@@ -1340,7 +1453,10 @@ CodeInjection alpine_create_object_patch{
                 PlaceNewDirectionalLightObject();
             }
             else {
-                PlaceNewMeshObject();
+                Vector3 pos;
+                Matrix3 orient;
+                editor_new_object_pose(pos, orient);
+                PlaceNewMeshObject(mesh_object_default_filename, pos, orient);
             }
             g_alpine_create_type = 0;
             regs.eip = 0x004435be;
@@ -1370,6 +1486,7 @@ CodeInjection alpine_render_surfaces_3d_patch{
         if (!level || view->view_type != editor_view_type_perspective) return;
         // Set by FUN_0041e4c0 only after the level; the preview's repaint requests read it.
         painting_view_index = view->view_index;
+        brush_preview_view_paint(*level);
         if (!terrain_view_draws_solid()) return;
         // The level pass draws level->solid (none: no level pass).
         const bool portal_walk = (level_render_mode == LEVEL_RENDER_CURRENT_ROOM ||
@@ -1402,6 +1519,49 @@ CodeInjection alpine_render_surfaces_patch{
     },
 };
 
+// The stock vmesh pass walks master_objects and passes each object's own pos to these calls.
+static DedObject* stock_vmesh_pass_object(const Vector3* pos)
+{
+    return reinterpret_cast<DedObject*>(reinterpret_cast<uintptr_t>(pos) - offsetof(DedObject, pos));
+}
+
+// Mesh objects are drawn by mesh_render, with their draw scale.
+CallHook<void(EditorVMesh*, const Vector3*, const Matrix3*, const EditorRenderParams*)> stock_vmesh_pass_render_hook{
+    0x0041f23c,
+    [](EditorVMesh* vmesh, const Vector3* pos, const Matrix3* orient, const EditorRenderParams* params) {
+        if (stock_vmesh_pass_object(pos)->type != DedObjectType::DED_MESH) {
+            stock_vmesh_pass_render_hook.call_target(vmesh, pos, orient, params);
+        }
+    },
+};
+
+CallHook<bool(const Vector3*, float, uint32_t)> stock_vmesh_pass_selection_sphere_hook{
+    0x0041f211,
+    [](const Vector3* center, float radius, uint32_t mode) {
+        DedObject* obj = stock_vmesh_pass_object(center);
+        if (obj->type == DedObjectType::DED_MESH) {
+            radius *= static_cast<DedMesh*>(obj)->draw_scale;
+        }
+        return stock_vmesh_pass_selection_sphere_hook.call_target(center, radius, mode);
+    },
+};
+
+// .vfx part draws invert their instance transform with the orient's transpose, which a scaled orient breaks.
+// Draw with the orthonormal orient and the part's object-space data scaled instead, as the game does.
+FunHook<void __fastcall(EditorVfxPart*, int, float, Vector3*, Matrix3*)> vfx_part_render_hook{
+    0x004FB060,
+    [](EditorVfxPart* part, int edx, float frame, Vector3* pos, Matrix3* orient) FASTCALL_LAMBDA {
+        const float scale = orient ? alpine_mesh_scale::orient_scale(*orient) : 1.0f;
+        if (scale == 1.0f || !part->chunk) {
+            vfx_part_render_hook.call_target(part, edx, frame, pos, orient);
+            return;
+        }
+        Matrix3 unit_orient = alpine_mesh_scale::scale_orient(*orient, 1.0f / scale);
+        alpine_mesh_scale::ScopedVfxPartScale scaled_part{*part, scale};
+        vfx_part_render_hook.call_target(part, edx, frame, pos, &unit_orient);
+    },
+};
+
 // Hook into the editor's 3D render function to render Alpine objects.
 // Inject after the main object render loop in FUN_0041f6d0, before the icon pass.
 CodeInjection alpine_render_patch{
@@ -1423,6 +1583,7 @@ CodeInjection alpine_render_patch{
         terrain_render(level);
         directional_light_render(level);
         sun_arrow_render(level);
+        placement_panel_render_ghost();
     },
 };
 
@@ -3364,6 +3525,9 @@ void ApplyAlpineObjectPatches()
     alpine_render_surfaces_portal_hook.install();
     alpine_render_surfaces_patch.install();
     alpine_render_patch.install();
+    stock_vmesh_pass_render_hook.install();
+    stock_vmesh_pass_selection_sphere_hook.install();
+    vfx_part_render_hook.install();
     alpine_group_save_clear_hook.install();
     alpine_group_brush_save_capture_hook.install();
     alpine_group_type_collect_hook.install();

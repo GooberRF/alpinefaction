@@ -26,8 +26,13 @@
 #include "dir_light.h"
 #include "level.h"
 #include "lightmap_mesh_occluders.h"
+#include "lightmap_alpha_masks.h"
 #include "alpine_lightmaps.h"
+#include "bake_progress.h"
 #include "headless_bake.h"
+#include "memory_guard.h"
+#include "overflow_charts.h"
+#include "terrain_build.h"
 #include "textures.h"
 #include "work_pool.h"
 
@@ -37,6 +42,14 @@ static constexpr int lm_highres_page_size = static_cast<int>(alpine_lightmap::st
 static constexpr int lm_stock_fragment_max = 64;
 static constexpr int lm_highres_fragment_max = 254;
 static constexpr int lm_max_fragment_texels = lm_highres_fragment_max * lm_highres_fragment_max;
+
+// A surface pass gave the level's surfaces the minimum size: a bake must not reuse them until another pass has run.
+static bool g_lightmaps_shrunk = false;
+
+void lightmap_surfaces_shrunk_reset()
+{
+    g_lightmaps_shrunk = false;
+}
 
 // Max lights that can be processed per face (shadow mask buffer limit).
 // Faces with more lights than this get the pink fill safety fallback.
@@ -67,6 +80,11 @@ static bool shadow_mask_reserve(int texels, int lights)
         }
         if (!shadow_mask_pool) {
             xlog::error("Lightmap: cannot allocate {} shadow masks of {} texels", lights, texels);
+            // the caller pink fills the surface: a bake is cancelled rather than kept (RED's viewport relight of a
+            // single surface, outside one, keeps the pink)
+            if (bake_progress_active()) {
+                memory_guard_trip();
+            }
             return false;
         }
         shadow_mask_pool_bytes = bytes;
@@ -119,6 +137,12 @@ static bool alpha_faces_occlude_active()
 {
     auto* level = CDedLevel::Get();
     return level && level->GetAlpineLevelProperties().alpha_faces_occlude;
+}
+
+static bool alpha_tested_occlusion_active()
+{
+    auto* level = CDedLevel::Get();
+    return level && level->GetAlpineLevelProperties().alpha_tested_occlusion_active();
 }
 
 // Which compiled faces belong to a brush flagged "No shadow cast".
@@ -540,11 +564,24 @@ static void lightmap_collect_room_ambient(uintptr_t gsolid)
     delete[] room_bboxes;
 }
 
+// FUN_004aabf0 lights the level solid first, then each mover's.
+static void lightmap_progress_batch(uintptr_t solid)
+{
+    auto* level = CDedLevel::Get();
+    if (level && reinterpret_cast<GSolid*>(solid) == level->solid) {
+        bake_progress_phase(BakePhase::surfaces, solid_surfaces(level->solid).size());
+    }
+    else {
+        bake_progress_phase(BakePhase::movers);
+    }
+}
+
 CodeInjection lightmap_apply_room_ambient_injection{
     0x004aabf0, // entry of FUN_004aabf0 (batch lightmap calculator)
     [](auto& regs) {
         // ECX at FUN_004aabf0 entry is the GSolid used for lightmap calculation.
         lightmap_collect_room_ambient(regs.ecx);
+        lightmap_progress_batch(regs.ecx);
     },
 };
 
@@ -777,6 +814,20 @@ static constexpr float lm_oneside_eps = 1.0e-4f;
 // Synthetic OccTri flag, outside the 16 bit face flags word: the face's texture carries an alpha
 // channel, which is what the stock occluder filter rejects it for (FUN_004bcc60 at 0x004aed62).
 static constexpr unsigned lm_occ_alpha_texture = 0x80000000u;
+// A ray that keeps less of its light than this is fully shadowed.
+static constexpr float lm_alpha_blocked = 1.0f / 512.0f;
+// The alpha is averaged over this many receiving texels: one alone leaves moire where a grate's holes
+// land a few texels apart.
+static constexpr float lm_alpha_filter_width = 2.0f;
+// Grazing hits are filtered as if at this cosine, so their footprint stays finite.
+static constexpr float lm_alpha_min_cosine = 0.25f;
+// Parallel hits on one texture this close along their normal are one layer: both faces of a thin grate brush
+// or back to back mesh cards, whose holes line up. So are hits at one point, either side of a shared edge.
+static constexpr float lm_alpha_layer_gap = 0.25f;
+static constexpr float lm_alpha_layer_parallel = 0.9f;
+static constexpr float lm_alpha_layer_coincident = 1.0e-3f;
+// Distinct layers a ray keeps apart before folding the rest straight into its transmittance.
+static constexpr int lm_alpha_max_layers = 8;
 
 namespace {
 
@@ -818,6 +869,16 @@ struct OccTri {
     int surf_id;
     int mesh_uid; // owning alpine mesh object, -1 for a brush face
     unsigned flags;
+    int alpha = -1; // OccluderTree::alpha_tris_ index of a triangle that blocks by its texture's alpha
+};
+
+// The texture mapping of an alpha-tested triangle: uv = uv0 + u * duv1 + v * duv2 at barycentrics (u, v).
+struct OccAlphaTri {
+    const LightmapAlphaMask* mask;
+    float u0, v0, du1, dv1, du2, dv2;
+    float density; // texels of the mask's finest level per world unit
+    bool in_rect;  // the triangle maps inside one texture repeat, so it samples only its own texture area
+    LightmapAlphaMask::Rect rect;
 };
 
 // A node build_range never got to finish (bad_alloc deeper in the recursion) has to read as an
@@ -842,6 +903,8 @@ struct OccQuery {
     int skip_surf;
     unsigned skip_flags;    // face flags that make a triangle transparent to this light
     unsigned oneside_flags; // face flags that make it block only rays hitting its front
+    float footprint = 0.0f; // world width of the receiving texel, which alpha-tested hits are filtered over
+    float converge = 0.0f;  // 1 / distance to a point light the footprint narrows onto, 0 for parallel rays
 };
 
 class OccluderTree
@@ -852,18 +915,23 @@ public:
     void clear()
     {
         tris_.clear();
+        alpha_tris_.clear();
         order_.clear();
         nodes_.clear();
         skipped_faces_ = 0;
     }
     int skipped_faces() const { return skipped_faces_; }
-    bool occluded(const OccQuery& q) const;
+    // The fraction of the ray's light that reaches tmax: 0 at an opaque hit, the product of what the
+    // alpha-tested triangles it crosses let through otherwise.
+    float transmittance(const OccQuery& q) const;
 
 private:
     int build_range(int begin, int end, int depth);
+    bool add_alpha(OccTri& t, const LightmapAlphaMask* mask, const float* uv0, const float* uv1, const float* uv2);
 
     int skipped_faces_ = 0;
     std::vector<OccTri> tris_;
+    std::vector<OccAlphaTri> alpha_tris_;
     std::vector<int> order_;
     std::vector<OccNode> nodes_;
 };
@@ -987,15 +1055,55 @@ bool occ_make_tri(const Vec3f& a, const Vec3f& b, const Vec3f& c, OccTri& t)
     return true;
 }
 
+// False, leaving `t` as it is, for non-finite texture coordinates.
+bool OccluderTree::add_alpha(OccTri& t, const LightmapAlphaMask* mask, const float* uv0, const float* uv1,
+                             const float* uv2)
+{
+    for (const float* uv : {uv0, uv1, uv2}) {
+        if (!std::isfinite(uv[0]) || !std::isfinite(uv[1])) {
+            return false;
+        }
+    }
+    OccAlphaTri a{mask, uv0[0], uv0[1], uv1[0] - uv0[0], uv1[1] - uv0[1], uv2[0] - uv0[0], uv2[1] - uv0[1], 0.0f,
+                  false, {}};
+    // an atlas part or a card: filtering must not reach the texture around it
+    const float lo_u = std::min({uv0[0], uv1[0], uv2[0]});
+    const float lo_v = std::min({uv0[1], uv1[1], uv2[1]});
+    const float tile_u = std::floor(lo_u + 1e-4f);
+    const float tile_v = std::floor(lo_v + 1e-4f);
+    const float hi_u = std::max({uv0[0], uv1[0], uv2[0]}) - tile_u;
+    const float hi_v = std::max({uv0[1], uv1[1], uv2[1]}) - tile_v;
+    if (hi_u <= 1.0f + 1e-4f && hi_v <= 1.0f + 1e-4f) {
+        a.in_rect = true;
+        a.u0 -= tile_u;
+        a.v0 -= tile_v;
+        a.rect = {std::max(lo_u - tile_u, 0.0f), std::max(lo_v - tile_v, 0.0f), std::min(hi_u, 1.0f),
+                  std::min(hi_v, 1.0f)};
+    }
+    const Vec3f n = vcross(t.e1, t.e2);
+    const float world = std::sqrt(vdot(n, n));
+    const auto& finest = mask->levels.front();
+    const float texels = std::abs(a.du1 * a.dv2 - a.du2 * a.dv1) * static_cast<float>(finest.w) *
+                         static_cast<float>(finest.h);
+    const float density = std::sqrt(texels / world);
+    a.density = std::isfinite(density) ? density : 0.0f;
+    t.alpha = static_cast<int>(alpha_tris_.size());
+    alpha_tris_.push_back(a);
+    return true;
+}
+
 bool OccluderTree::build(uintptr_t solid, const NoShadowCastFilter& no_shadow_cast, bool local_space)
 {
     tris_.clear();
+    alpha_tris_.clear();
     order_.clear();
     nodes_.clear();
     skipped_faces_ = 0;
     if (!solid) {
         return false;
     }
+    const bool alpha_tested = alpha_tested_occlusion_active();
+    int alpha_face_tris = 0;
     constexpr int max_faces = 1 << 21;
     int guard = 0;
     for (uintptr_t face = *reinterpret_cast<uintptr_t*>(solid + 0x70); face && guard < max_faces;
@@ -1003,8 +1111,15 @@ bool OccluderTree::build(uintptr_t solid, const NoShadowCastFilter& no_shadow_ca
         // the engine's face flags are the 16 bit RFL word, so the synthetic bits below own
         // everything above it; masking keeps a stray high bit out of the alpha texture test
         unsigned flags = *reinterpret_cast<unsigned*>(face + 0x28) & 0xffffu;
-        if (flags & 0x40u) {
-            continue;
+        const int bitmap = *reinterpret_cast<int*>(face + 0x30);
+        // A see-through face is drawn alpha blended, so alpha-tested occlusion lets it block by its texels'
+        // alpha. Glass (no FACE_HAS_HOLES) keeps letting light through.
+        const LightmapAlphaMask* alpha_mask = nullptr;
+        if (flags & FACE_SEE_THRU) {
+            alpha_mask = alpha_tested && (flags & FACE_HAS_HOLES) ? lightmap_alpha_mask(bitmap) : nullptr;
+            if (!alpha_mask) {
+                continue;
+            }
         }
         if (*reinterpret_cast<std::int16_t*>(face + 0x34) > 0) {
             continue;
@@ -1018,10 +1133,9 @@ bool OccluderTree::build(uintptr_t solid, const NoShadowCastFilter& no_shadow_ca
                 continue;
             }
         }
-        const int bitmap = *reinterpret_cast<int*>(face + 0x30);
         // liquid and invisible faces answer to their own level property, so the stock rejection
         // never gets to overrule it - a water texture is alpha capable practically by definition
-        if (!(flags & 0x2004u) && bitmap != -1 && bm_has_alpha(bitmap) != 0) {
+        if (!alpha_mask && !(flags & 0x2004u) && bitmap != -1 && bm_has_alpha(bitmap) != 0) {
             flags |= lm_occ_alpha_texture;
         }
         const int surf_id = *reinterpret_cast<std::int16_t*>(face + 0x36);
@@ -1029,6 +1143,7 @@ bool OccluderTree::build(uintptr_t solid, const NoShadowCastFilter& no_shadow_ca
         // half of them; the face's own plane normal is what "front" has to mean
         const auto* face_normal = reinterpret_cast<const float*>(face);
         Vec3f verts[occ_max_face_verts];
+        float uvs[occ_max_face_verts][2];
         int n = 0;
         bool truncated = false;
         const uintptr_t head = *reinterpret_cast<uintptr_t*>(face + 0x40);
@@ -1041,6 +1156,8 @@ bool OccluderTree::build(uintptr_t solid, const NoShadowCastFilter& no_shadow_ca
             if (!pos) {
                 break;
             }
+            uvs[n][0] = reinterpret_cast<const GFaceVertex*>(node)->u;
+            uvs[n][1] = reinterpret_cast<const GFaceVertex*>(node)->v;
             verts[n++] = {pos[0], pos[1], pos[2]};
             node = *reinterpret_cast<uintptr_t*>(node + 0x14);
             if (node == head) {
@@ -1071,9 +1188,16 @@ bool OccluderTree::build(uintptr_t solid, const NoShadowCastFilter& no_shadow_ca
             t.surf_id = surf_id;
             t.mesh_uid = -1;
             t.flags = flags;
+            if (alpha_mask) {
+                if (!add_alpha(t, alpha_mask, uvs[fan[i * 3]], uvs[fan[i * 3 + 1]], uvs[fan[i * 3 + 2]])) {
+                    continue;
+                }
+                alpha_face_tris++;
+            }
             tris_.push_back(t);
         }
     }
+    int alpha_mesh_tris = 0;
     // Alpine mesh objects and terrain decorations live in world space, so they only belong to the
     // static solid's tree; a mover's tree is brush local and answers only the rays cast onto that mover.
     if (!local_space) {
@@ -1081,18 +1205,39 @@ bool OccluderTree::build(uintptr_t solid, const NoShadowCastFilter& no_shadow_ca
         lightmap_collect_mesh_occluders(mesh_tris);
         lightmap_collect_decoration_occluders(mesh_tris);
         for (const MeshOccluderTri& m : mesh_tris) {
+            // additive glows and beams add light, they never stop it
+            if (alpha_tested && m.additive) {
+                continue;
+            }
             OccTri t{};
             if (!occ_make_tri({m.v0.x, m.v0.y, m.v0.z}, {m.v1.x, m.v1.y, m.v1.z}, {m.v2.x, m.v2.y, m.v2.z},
                               t)) {
                 continue;
             }
             // no surface owns a mesh triangle and none of the face flag classes apply to it,
-            // so it is a plain two-sided occluder that only answers to the alpha property
+            // so it is a plain two-sided occluder that only answers to the alpha properties
             t.surf_id = -1;
             t.mesh_uid = m.uid;
             t.flags = m.alpha ? lm_occ_alpha_texture : 0u;
+            // the texture drawn decides, an override included; one whose alpha cannot be sampled keeps
+            // the whole-triangle rule of "Alpha-textured faces block light"
+            if (alpha_tested && m.bitmap != -1) {
+                const LightmapAlphaMask* mask = lightmap_alpha_mask(m.bitmap);
+                if (mask && add_alpha(t, mask, m.uv[0], m.uv[1], m.uv[2])) {
+                    t.flags = 0u;
+                    alpha_mesh_tris++;
+                }
+                else {
+                    t.flags = bm_has_alpha(m.bitmap) != 0 ? lm_occ_alpha_texture : 0u;
+                }
+            }
             tris_.push_back(t);
         }
+    }
+    if (alpha_face_tris + alpha_mesh_tris > 0) {
+        xlog::info("[AlphaOcclusion] solid {:#x}: {} see-through face triangles and {} mesh triangles block "
+                   "light by their texture's alpha",
+                   solid, alpha_face_tris, alpha_mesh_tris);
     }
     if (tris_.empty()) {
         return true;
@@ -1160,10 +1305,10 @@ int OccluderTree::build_range(int begin, int end, int depth)
     return self;
 }
 
-bool OccluderTree::occluded(const OccQuery& qy) const
+float OccluderTree::transmittance(const OccQuery& qy) const
 {
     if (nodes_.empty()) {
-        return false;
+        return 1.0f;
     }
     // axis aligned rays are the common case here, and a zero component would turn the slab test
     // into 0 * inf = NaN on any node whose face lies exactly on the ray origin
@@ -1181,6 +1326,22 @@ bool OccluderTree::occluded(const OccQuery& qy) const
     constexpr int stack_size = static_cast<int>(sizeof(stack) / sizeof(stack[0]));
     int sp = 0;
     stack[sp++] = 0;
+    struct Layer {
+        const LightmapAlphaMask* mask;
+        Vec3f normal;
+        float dist;
+        float cover;
+    };
+    Layer layers[lm_alpha_max_layers];
+    int layer_count = 0;
+    float folded = 1.0f;
+    auto passed = [&] {
+        float p = folded;
+        for (int k = 0; k < layer_count; k++) {
+            p *= 1.0f - layers[k].cover;
+        }
+        return p;
+    };
     while (sp > 0) {
         const int node_index = stack[--sp];
         if (node_index < 0 || static_cast<std::size_t>(node_index) >= nodes_.size()) {
@@ -1240,12 +1401,53 @@ bool OccluderTree::occluded(const OccQuery& qy) const
                     continue;
                 }
                 // reject the receiving surface's own plane rather than everything within a ray
-                // distance of it, so geometry a few hundredths above the surface still occludes
-                if (lm_ray_lift + dist * qy.nd < lm_ray_band &&
+                // distance of it, so geometry a few hundredths above the surface still occludes;
+                // both sides, or rays toward a light behind the face pass the far side of a slab
+                if (std::abs(lm_ray_lift + dist * qy.nd) < lm_ray_band &&
                     std::abs(vdot(t.normal, qy.surf_normal)) > 0.999f) {
                     continue;
                 }
-                return true;
+                if (t.alpha < 0 || static_cast<std::size_t>(t.alpha) >= alpha_tris_.size()) {
+                    return 0.0f;
+                }
+                // The alpha is averaged over the receiving texel's footprint where the ray meets the
+                // triangle, laid onto its plane, so detail finer than a lightmap texel shades evenly.
+                const OccAlphaTri& a = alpha_tris_[t.alpha];
+                const float facing = std::abs(vdot(d, t.normal));
+                const float width = qy.footprint * std::max(0.0f, 1.0f - dist * qy.converge);
+                float lod = 0.0f;
+                if (a.density > 0.0f && width > 0.0f) {
+                    const float texels =
+                        lm_alpha_filter_width * width / std::max(facing, lm_alpha_min_cosine) * a.density;
+                    lod = texels > 1.0f ? std::log2(texels) : 0.0f;
+                }
+                const float cover =
+                    a.mask->coverage(a.u0 + a.du1 * u + a.du2 * v, a.v0 + a.dv1 * u + a.dv2 * v, lod,
+                                     a.in_rect ? &a.rect : nullptr);
+                // a layer that lines up with one already crossed casts its holes onto the same spots
+                bool merged = false;
+                for (int k = 0; k < layer_count && !merged; k++) {
+                    Layer& l = layers[k];
+                    const float gap = std::abs(dist - l.dist);
+                    if (l.mask == a.mask &&
+                        (gap <= lm_alpha_layer_coincident ||
+                         (gap * facing <= lm_alpha_layer_gap &&
+                          std::abs(vdot(t.normal, l.normal)) > lm_alpha_layer_parallel))) {
+                        l.cover = std::max(l.cover, cover);
+                        merged = true;
+                    }
+                }
+                if (!merged) {
+                    if (layer_count < lm_alpha_max_layers) {
+                        layers[layer_count++] = {a.mask, t.normal, dist, cover};
+                    }
+                    else {
+                        folded *= 1.0f - cover;
+                    }
+                }
+                if (passed() < lm_alpha_blocked) {
+                    return 0.0f;
+                }
             }
         }
         else {
@@ -1259,7 +1461,7 @@ bool OccluderTree::occluded(const OccQuery& qy) const
             }
         }
     }
-    return false;
+    return passed();
 }
 
 // Soft directional light sampling: the axis plus two rings of four, all fixed - bakes must be reproducible.
@@ -1371,6 +1573,8 @@ struct SolidCache {
     OccluderTree tree;
     bool tree_built = false;
     std::unordered_map<int, std::vector<uintptr_t>> faces_by_surface;
+    // the whole face list was indexed
+    bool complete = false;
 };
 
 static std::unordered_map<uintptr_t, std::unique_ptr<SolidCache>> g_solid_cache;
@@ -1387,18 +1591,25 @@ static SolidCache* lightmap_solid_cache(uintptr_t solid)
     try {
         auto cache = std::make_unique<SolidCache>();
         int guard = 0;
-        for (uintptr_t face = *reinterpret_cast<uintptr_t*>(solid + 0x70); face && guard < (1 << 21);
-             face = *reinterpret_cast<uintptr_t*>(face + 0x54), guard++) {
-            const int surf_id = *reinterpret_cast<std::int16_t*>(face + 0x36);
-            if (surf_id >= 0) {
-                cache->faces_by_surface[surf_id].push_back(face);
+        GFace* face = reinterpret_cast<GSolid*>(solid)->face_list_head;
+        for (; face && guard < (1 << 21); face = face->next_solid, guard++) {
+            if (face->surface_index >= 0) {
+                cache->faces_by_surface[face->surface_index].push_back(reinterpret_cast<uintptr_t>(face));
             }
         }
+        cache->complete = !face;
         return g_solid_cache.emplace(solid, std::move(cache)).first->second.get();
     }
     catch (...) {
-        xlog::error("Lightmap: out of memory indexing a solid's faces, falling back to the stock "
-                    "bake for it");
+        xlog::error("Lightmap: out of memory indexing a solid's faces");
+        // the callers' stock fallbacks would bake visibly wrong shadows; the bake is cancelled instead
+        memory_guard_trip();
+        // remembered, so the per-surface callers do not retry it
+        try {
+            g_solid_cache.emplace(solid, nullptr);
+        }
+        catch (...) {
+        }
         return nullptr;
     }
 }
@@ -1423,11 +1634,12 @@ static const OccluderTree* lightmap_occluder_tree(uintptr_t solid)
         }
         catch (...) {
             // build() leaves the triangle list populated and the node array half written, which
-            // reads as a usable tree; drop it so empty() reports it and the stock projector, which
-            // the message promises, is what actually runs
+            // reads as a usable tree; drop it so empty() reports it. The stock projector covers the
+            // rest of this surface, its sun shadows visibly wrong; the trip cancels the bake at its
+            // next progress step.
             cache->tree.clear();
-            xlog::error("Lightmap: out of memory building the occluder tree, falling back to the "
-                        "stock shadow projector");
+            xlog::error("Lightmap: out of memory building the occluder tree");
+            memory_guard_trip();
         }
         cache->tree_built = true;
     }
@@ -1438,6 +1650,7 @@ static void lightmap_release_occluders()
 {
     g_solid_cache.clear();
     lightmap_mesh_occluders_release();
+    lightmap_alpha_masks_release();
 }
 
 // Face ids only reach the compiled solid through Build Geometry, so a brush flagged after the last
@@ -1556,12 +1769,12 @@ static bool light_rays_setup(uintptr_t light, LightRays& lr)
 }
 
 // The light's mask byte at one receiving point: 255 fully lit, 0 fully shadowed. The rays start
-// `lift` off the point along the receiver's normal `ns`.
+// `lift` off the point along the receiver's normal `ns`; `footprint` is the receiving texel's width.
 static std::uint8_t light_rays_visibility(const OccluderTree& tree, const LightRays& lr, const Vec3f& pos,
-                                          const Vec3f& ns, float lift, int skip_surf)
+                                          const Vec3f& ns, float lift, int skip_surf, float footprint)
 {
     const Vec3f origin{pos.x + ns.x * lift, pos.y + ns.y * lift, pos.z + ns.z * lift};
-    int lit = 0;
+    float lit = 0.0f;
     int taken = 0;
     OccQuery q{};
     q.origin = origin;
@@ -1570,6 +1783,7 @@ static std::uint8_t light_rays_visibility(const OccluderTree& tree, const LightR
     q.skip_surf = skip_surf;
     q.skip_flags = lr.skip_flags;
     q.oneside_flags = lr.oneside_flags;
+    q.footprint = std::isfinite(footprint) && footprint > 0.0f ? footprint : 0.0f;
     if (lr.type == LT_DIRECTIONAL) {
         q.tmax = 1.0e6f;
         const alpine_dir_light::Vec3 world_origin =
@@ -1583,9 +1797,7 @@ static std::uint8_t light_rays_visibility(const OccluderTree& tree, const LightR
                 q.tmax = std::min(1.0e6f, exit);
             }
             taken++;
-            if (!tree.occluded(q)) {
-                lit++;
-            }
+            lit += tree.transmittance(q);
         }
     }
     else {
@@ -1596,7 +1808,7 @@ static std::uint8_t light_rays_visibility(const OccluderTree& tree, const LightR
             const float len = std::sqrt(vdot(d, d));
             if (!(len >= 1e-4f)) {
                 taken++;
-                lit++;
+                lit += 1.0f;
                 continue;
             }
             if (lr.radius > 0.0f && len > lr.radius) {
@@ -1605,24 +1817,35 @@ static std::uint8_t light_rays_visibility(const OccluderTree& tree, const LightR
             q.dir = {d.x / len, d.y / len, d.z / len};
             q.nd = vdot(ns, q.dir);
             q.tmax = len - lm_ray_eps;
+            q.converge = 1.0f / len;
             taken++;
-            if (!tree.occluded(q)) {
-                lit++;
-            }
+            lit += tree.transmittance(q);
         }
     }
-    return taken == 0 ? 0xffu : static_cast<std::uint8_t>((lit * 255 + taken / 2) / taken);
+    if (taken == 0) {
+        return 0xffu;
+    }
+    // exact for whole rays, so a bake without alpha-tested occluders rounds as it always has
+    const int lit255 = static_cast<int>(std::lround(lit * 255.0f));
+    return static_cast<std::uint8_t>((lit255 + taken / 2) / taken);
 }
 
-// Farthest the accumulator may weigh a texel from its texel_to_world point (a diagonal, or the smooth vertex snap).
-static float texel_weight_point_reach(const SurfaceUVParams& p)
+// A texel's world space edges along its column and row.
+static void texel_edges(const SurfaceUVParams& p, Vec3f& ec, Vec3f& er)
 {
     float x0, y0, z0, x1, y1, z1, x2, y2, z2;
     texel_to_world(p, 0, 0, x0, y0, z0);
     texel_to_world(p, 1, 0, x1, y1, z1);
     texel_to_world(p, 0, 1, x2, y2, z2);
-    const Vec3f ec{x1 - x0, y1 - y0, z1 - z0};
-    const Vec3f er{x2 - x0, y2 - y0, z2 - z0};
+    ec = {x1 - x0, y1 - y0, z1 - z0};
+    er = {x2 - x0, y2 - y0, z2 - z0};
+}
+
+// Farthest the accumulator may weigh a texel from its texel_to_world point (a diagonal, or the smooth vertex snap).
+static float texel_weight_point_reach(const SurfaceUVParams& p)
+{
+    Vec3f ec, er;
+    texel_edges(p, ec, er);
     const float edges2 = vdot(ec, ec) + vdot(er, er);
     const float diag = std::sqrt(edges2 + 2.0f * std::abs(vdot(ec, er)));
     const float tu = p.inv_lm_w;
@@ -1660,6 +1883,9 @@ static bool lightmap_raycast_mask(uintptr_t solid, uintptr_t surface, uintptr_t 
     }
     const int skip_surf = surf->index;
     const Vec3f ns{p.nx, p.ny, p.nz};
+    Vec3f ec, er;
+    texel_edges(p, ec, er);
+    const float footprint = std::sqrt(std::sqrt(vdot(ec, ec)) * std::sqrt(vdot(er, er)));
 
     // Texels the accumulator will weight 0 anyway need no rays. Its weight point is within
     // texel_weight_point_reach of the texel centre, and the inside distance is 1-Lipschitz.
@@ -1678,7 +1904,8 @@ static bool lightmap_raycast_mask(uintptr_t solid, uintptr_t surface, uintptr_t 
                     mask[row * width + col] = 0;
                     continue;
                 }
-                mask[row * width + col] = light_rays_visibility(*tree, lr, {wx, wy, wz}, ns, lm_ray_lift, skip_surf);
+                mask[row * width + col] =
+                    light_rays_visibility(*tree, lr, {wx, wy, wz}, ns, lm_ray_lift, skip_surf, footprint);
             }
         }
     };
@@ -1826,6 +2053,8 @@ static bool lighting_calc_fits(std::uint32_t pages, std::uint64_t headroom, cons
     if (shortfall.empty()) {
         return true;
     }
+    // explains any allocation the emergency reserve served on the way here too, so the idle warning stays quiet
+    memory_guard_take_tripped();
     lighting_calc_report_refusal(shortfall.c_str());
     return false;
 }
@@ -1837,10 +2066,15 @@ static constexpr std::uint64_t lighting_surface_pass_headroom = 64ull << 20;
 // after the surface pass. Only surface charts (which movers follow) and terrain charts take pages.
 bool lighting_calc_memory_admits()
 {
+    if (!memory_guard_ready()) {
+        lighting_calc_report_refusal(
+            (std::string{"Calculate Lighting was not started: "} + memory_guard_warning).c_str());
+        return false;
+    }
     auto* level = CDedLevel::Get();
     const auto* props = level ? &level->GetAlpineLevelProperties() : nullptr;
     const bool alpine_pages = props && (props->surface_charts_enabled() || !props->terrain_objects.empty());
-    return lighting_calc_fits(alpine_pages ? alpine_lightmap::max_pages : 0, lighting_surface_pass_headroom,
+    return lighting_calc_fits(alpine_pages ? alpine_lightmap::stage_page_budget : 0, lighting_surface_pass_headroom,
                               "Save the level and restart RED.");
 }
 
@@ -1922,10 +2156,23 @@ private:
 
 // The blend and ring copy passes after FUN_004ac470 address every flagged surface's rect in its
 // page with no bound, so a layout that does not fit its pages must not be baked at all.
-static bool lighting_calc_refused()
+static bool lighting_calc_refused(bool surface_pass_ran)
 {
     // the surface-pass hook already reported it
     if (alpine_lm_take_lighting_refused()) {
+        return true;
+    }
+    // a surface pass that ran out of memory left lightmaps at the smallest size, which no bake may light
+    if (g_lightmaps_shrunk) {
+        memory_guard_take_tripped();
+        lighting_calc_report_refusal(
+            (surface_pass_ran ? std::string{"Calculate Lighting ran out of memory preparing the lightmaps and was "
+                                            "not run; the level has no baked lighting. "} +
+                                    memory_guard_advice()
+                              : std::string{"Calculate Lighting was not run: RED ran out of memory while preparing "
+                                            "the lightmaps, and some were left at the smallest size. Run Calculate "
+                                            "Maps and Light instead."})
+                .c_str());
         return true;
     }
     auto* level = CDedLevel::Get();
@@ -1972,30 +2219,139 @@ static FunHook<void __fastcall(void*)> lighting_calc_shadows_hook{0x00448f20, li
 static void __fastcall lighting_calc_no_shadows_new(void* self);
 static FunHook<void __fastcall(void*)> lighting_calc_no_shadows_hook{0x004492d0, lighting_calc_no_shadows_new};
 
-static void lighting_calc_bake(void* self, bool shadows, bool surface_pass_ran)
+// The phases a bake of the level goes through, as far as the level's settings tell before the layout.
+static unsigned lighting_calc_phases(std::uint64_t mover_surfaces)
 {
-    if (lighting_calc_refused()) {
-        return;
+    unsigned phases = bake_phase_bit(BakePhase::layout) | bake_phase_bit(BakePhase::surfaces) |
+                      bake_phase_bit(BakePhase::blend) | bake_phase_bit(BakePhase::smoothing);
+    if (mover_surfaces) {
+        phases |= bake_phase_bit(BakePhase::movers);
     }
-    BakeScope bake;
-    g_bake_mode = shadows ? 1 : 0;
-    AlpineBakeScope af_bake{surface_pass_ran};
-    if (!af_bake.admitted()) {
-        return;
+    auto* level = CDedLevel::Get();
+    if (!level) {
+        return phases;
     }
-    if (shadows) {
-        lighting_calc_shadows_hook.call_target(self);
+    const auto& props = level->GetAlpineLevelProperties();
+    if (!props.terrain_objects.empty()) {
+        phases |= bake_phase_bit(BakePhase::terrain) | bake_phase_bit(BakePhase::encode);
     }
-    else {
-        lighting_calc_no_shadows_hook.call_target(self);
+    if (props.surface_charts_enabled()) {
+        phases |= bake_phase_bit(BakePhase::encode);
+        if (props.d3d11_only_lightmaps) {
+            phases |= bake_phase_bit(BakePhase::overflow);
+        }
     }
-    af_bake.finish();
+    return phases;
 }
 
-// Entered directly (the Calculate Lighting menu items and Shift+L), the bake runs without the surface
-// pass, whose hook otherwise makes this check.
+// After the layout: the phases it left nothing for are marked, the rest get their expected steps.
+static void lighting_calc_expect(std::uint64_t mover_surfaces)
+{
+    auto* level = CDedLevel::Get();
+    const std::uint64_t surfaces = level && level->solid ? solid_surfaces(level->solid).size() : 0;
+    bake_progress_expect(BakePhase::surfaces, surfaces);
+    bake_progress_expect(BakePhase::blend, surfaces);
+    bake_progress_expect(BakePhase::smoothing, surfaces);
+    bake_progress_expect(BakePhase::movers, mover_surfaces);
+    const AlpineBakePlan plan = alpine_lm_bake_plan();
+    if (plan.terrains) {
+        bake_progress_expect(BakePhase::terrain, plan.terrains);
+    }
+    else {
+        bake_progress_skip(BakePhase::terrain);
+    }
+    if (plan.active && overflow_has_table()) {
+        bake_progress_expect(BakePhase::overflow, overflow_table_tiles());
+    }
+    else {
+        bake_progress_skip(BakePhase::overflow);
+    }
+    if (plan.active) {
+        bake_progress_expect(BakePhase::encode, plan.encode_steps);
+    }
+    else {
+        bake_progress_skip(BakePhase::encode);
+    }
+}
+
+// A cancelled bake leaves the level as its surface pass does: blank lightmaps and no alpine section. The stock pass
+// runs without the hook's checks: they guard a bake that no longer runs, and a refusal would only leave the
+// cancelled bake's partial lighting behind.
+static void lighting_calc_discard(void* self, bool out_of_memory)
+{
+    // the pass allocates every surface's lightmap again, which the spent reserve may be needed for once more
+    if (out_of_memory) {
+        memory_guard_rearm();
+    }
+    lighting_surfaces_stock(self);
+    if (out_of_memory) {
+        // a trip in this pass only shrank the lightmaps it was blanking; the report below covers it
+        memory_guard_take_tripped();
+        lighting_calc_report_refusal(
+            (std::string{"Calculate Lighting ran out of memory and was cancelled; the level has no baked lighting. "} +
+             memory_guard_advice())
+                .c_str());
+    }
+    else {
+        editor_report(EditorReportLevel::info, "Lightmap",
+                      "Calculate Lighting was cancelled, the level has no baked lighting", true);
+    }
+}
+
+static void lighting_calc_bake(void* self, bool shadows, bool surface_pass_ran)
+{
+    if (bake_progress_active() || lighting_calc_refused(surface_pass_ran)) {
+        return;
+    }
+    bool cancelled = false;
+    bool out_of_memory = false;
+    {
+        const std::uint64_t mover_surfaces = mover_bake_surfaces();
+        BakeProgressScope progress{lighting_calc_phases(mover_surfaces)};
+        BakeScope bake;
+        g_bake_mode = shadows ? 1 : 0;
+        bake_progress_phase(BakePhase::layout, 0);
+        AlpineBakeScope af_bake{surface_pass_ran};
+        if (!af_bake.admitted()) {
+            return;
+        }
+        lighting_calc_expect(mover_surfaces);
+        // an interrupted stock bake leaves the movers in world space; nothing may run on that state
+        try {
+            if (shadows) {
+                lighting_calc_shadows_hook.call_target(self);
+            }
+            else {
+                lighting_calc_no_shadows_hook.call_target(self);
+            }
+        }
+        catch (...) {
+            memory_guard_fatal("Calculate Lighting");
+        }
+        // a trip after the last progress step still cancels
+        bake_progress_poll();
+        if (!bake_progress_cancelled()) {
+            af_bake.finish();
+        }
+        cancelled = bake_progress_cancelled();
+        out_of_memory = bake_progress_out_of_memory();
+    }
+    if (cancelled) {
+        lighting_calc_discard(self, out_of_memory);
+    }
+}
+
+// Entered directly (the Calculate Lighting menu items and Shift+L). Without a surface pass first, the memory check
+// its hook makes is made here.
 static void lighting_calc_bake_alone(void* self, bool shadows)
 {
+    // faces Build Geometry left without a surface would stay unlit, so the surface pass runs first, as Calculate
+    // Maps and Light runs it
+    if (auto* level = CDedLevel::Get(); level && lighting_surfaces_missing(*level)) {
+        lighting_surfaces_checked(self);
+        lighting_calc_bake(self, shadows, true);
+        return;
+    }
     if (!lighting_calc_memory_admits()) {
         return;
     }
@@ -2035,6 +2391,7 @@ void lightmap_reset_level_state()
     s_ambient_room_count = 0;
     g_stock_layout_synthesized = false;
     g_synth_page = nullptr;
+    g_lightmaps_shrunk = false;
     alpine_lm_note_lighting_refused(false);
     g_no_shadow_cast_dropped.clear();
     g_occluder_tree_built = false;
@@ -2728,6 +3085,8 @@ CodeInjection lightmap_border_duplicate_skip_injection{
             }
         }
         catch (...) {
+            // the ring is left unwritten, a visible seam: the bake is cancelled rather than kept
+            memory_guard_trip();
         }
     },
     false, // no trampoline: the injection fully replaces the 5 byte block
@@ -2755,6 +3114,8 @@ CodeInjection lightmap_alpha_texture_occluder_injection{
 
 // High resolution lightmaps
 static float g_lm_fragment_max_f = static_cast<float>(lm_stock_fragment_max);
+// Texels per metre that round every surface down to FUN_004a9d30's minimum size (4 or 8 texels across).
+static constexpr float lm_min_density = 1e-6f;
 
 CodeInjection lightmap_highres_setup_injection{
     0x004a9d49,
@@ -2768,6 +3129,24 @@ CodeInjection lightmap_highres_setup_injection{
         }
         else {
             *reinterpret_cast<int*>(0x0144ac24) = lm_stock_page_size;
+        }
+        // Past an allocation the emergency reserve served, the rest of this pass gives each surface the smallest
+        // lightmap RED allows, so it can finish instead of running out again. A CSG step's surfaces (a build, which is
+        // then cancelled, or a brush tool) are redone by the next build or surface pass; the surface pass's
+        // (FUN_004aa610, returning to 0x004aab73) stay until the next surface pass, and a bake must not reuse them.
+        const std::uint32_t caller = *reinterpret_cast<std::uint32_t*>(esp + 0x8c);
+        if (memory_guard_tripped()) {
+            *reinterpret_cast<float*>(esp + 0x9c) = lm_min_density;
+            if (caller == 0x004aab73) {
+                g_lightmaps_shrunk = true;
+            }
+        }
+        // Build Geometry's CSG steps (FUN_004ab6d0, returning to 0x004ab757) give each new face of the build's working
+        // solid a lightmap that its final tick frees unused; at high resolution they would take over a gigabyte.
+        else if (caller == 0x004ab757) {
+            if (auto* level = CDedLevel::Get(); level && level->build_running) {
+                *reinterpret_cast<float*>(esp + 0x9c) = lm_min_density;
+            }
         }
         regs.eip = 0x004a9d50;
     },
@@ -2837,7 +3216,6 @@ public:
     bool build(uintptr_t entries, int count)
     {
         try {
-            entries_ = entries;
             count_ = count;
             for (int e = 0; e < count; e++) {
                 const auto& faces = reinterpret_cast<const LightmapBlendEntry*>(entries)[e].faces;
@@ -2867,13 +3245,16 @@ public:
         }
     }
 
-    bool entry_has_candidates(uintptr_t fa, uintptr_t entry)
+    // The first entry at or after `e` that can hold a candidate, `last` when none can; `e` itself when the pass
+    // is left to stock for this face.
+    int next_candidate_entry(uintptr_t fa, int e, int last)
     {
         if (!select(fa)) {
-            return true;
+            return e;
         }
-        const auto e = static_cast<std::size_t>((entry - entries_) / blend_entry_stride);
-        return e < candidate_entries_.size() && candidate_entries_[e];
+        const auto end = candidate_entries_.begin() + std::min(last, count_);
+        const auto it = std::find(candidate_entries_.begin() + std::min(e, count_), end, char{1});
+        return it == end ? last : static_cast<int>(it - candidate_entries_.begin());
     }
 
     bool face_is_candidate(uintptr_t fa, uintptr_t fb)
@@ -2957,7 +3338,6 @@ private:
         return selected_ok_;
     }
 
-    uintptr_t entries_ = 0;
     int count_ = 0;
     std::unordered_map<Cell, std::vector<uintptr_t>, CellHash> cells_;
     std::unordered_multimap<uintptr_t, int> face_entry_;
@@ -2980,19 +3360,35 @@ uintptr_t blend_current_face(uintptr_t esp)
 
 } // namespace
 
-// Replaces "MOV EAX,[EBX-4]; MOV ECX,[EDI]" (5 bytes) at the head of the B-entry loop (EDI = entry),
-// which is also the loop's back-edge target; 0x004ab07c moves to the next entry, as the stock room check does.
+// Replaces "MOV EAX,[EBX-4]; MOV ECX,[EDI]" (5 bytes) at the head of the B-entry loop, which is also its
+// back-edge target. EDI and [ESP+0x1c] are the entry, [ESP+0x24] the entries left including it, [ESP+0xc8] the
+// array. A run of entries without candidates is stepped over at once, as 0x004ab07c (where the stock room check
+// sends them) would one at a time; when none are left the loop exits to 0x004ab092 as its JNZ would.
 CodeInjection lightmap_blend_entry_cull_injection{
     0x004aaf05,
     [](auto& regs) {
         const uintptr_t esp = static_cast<uintptr_t>(regs.esp);
-        const uintptr_t entry = static_cast<uintptr_t>(regs.edi);
+        uintptr_t entry = static_cast<uintptr_t>(regs.edi);
+        if (g_blend_cull) {
+            const uintptr_t base = *reinterpret_cast<uintptr_t*>(esp + 0xc8);
+            int& left = *reinterpret_cast<int*>(esp + 0x24);
+            const int at = static_cast<int>((entry - base) / blend_entry_stride);
+            const int next = g_blend_cull->next_candidate_entry(blend_current_face(esp), at, at + left);
+            if (next != at) {
+                left -= next - at;
+                entry = base + static_cast<uintptr_t>(next) * blend_entry_stride;
+                regs.edi = entry;
+                *reinterpret_cast<uintptr_t*>(esp + 0x1c) = entry;
+                if (left == 0) {
+                    regs.eax = 0;
+                    regs.eip = 0x004ab092;
+                    return;
+                }
+            }
+        }
         regs.eax = *reinterpret_cast<uintptr_t*>(static_cast<uintptr_t>(regs.ebx) - 4);
         regs.ecx = *reinterpret_cast<uintptr_t*>(entry);
         regs.eip = 0x004aaf0a;
-        if (g_blend_cull && !g_blend_cull->entry_has_candidates(blend_current_face(esp), entry)) {
-            regs.eip = 0x004ab07c;
-        }
     },
     false, // no trampoline: the injection replaces the two loads
 };
@@ -3382,6 +3778,18 @@ static FunHook<void __cdecl(void*, int)> lightmap_blend_pass_hook{0x004aae80, li
 
 static void __cdecl lightmap_blend_pass_new(void* entries, int count)
 {
+    if (bake_progress_cancelled()) {
+        return;
+    }
+    // the level's blend and second pass are phases of their own; a mover's count as the movers phase
+    const bool level_pass = bake_progress_current() == BakePhase::surfaces;
+    if (level_pass) {
+        std::uint64_t faces = 0;
+        for (int e = 0; e < count; e++) {
+            faces += reinterpret_cast<const LightmapBlendEntry*>(entries)[e].faces.size;
+        }
+        bake_progress_phase(BakePhase::blend, faces);
+    }
     g_blend_edges.clear();
     blend_sides_clear();
     {
@@ -3392,6 +3800,9 @@ static void __cdecl lightmap_blend_pass_new(void* entries, int count)
     }
     g_blend_edges.clear();
     blend_sides_clear();
+    if (level_pass) {
+        bake_progress_phase(BakePhase::smoothing, static_cast<std::uint64_t>(std::max(count, 0)));
+    }
 }
 
 // Skips the per-pair done list scan at 0x004aaf29-0x004aaf56 so every shared edge of a pair reaches
@@ -3417,6 +3828,9 @@ static uintptr_t g_face_vert_nodes[lm_max_face_verts];
 CodeInjection lightmap_blend_face_verts_injection{
     0x004aaecb,
     [](auto& regs) {
+        if (bake_progress_current() == BakePhase::blend) {
+            bake_progress_step();
+        }
         regs.eip = 0x004aaeef;
         const uintptr_t face = *reinterpret_cast<uintptr_t*>(static_cast<uintptr_t>(regs.eax));
         const uintptr_t head = face ? *reinterpret_cast<uintptr_t*>(face + 0x40) : 0;
@@ -3487,8 +3901,8 @@ CodeInjection lightmap_blend_face_vert_index_injection{
 // command casts shadows, and light_accum_at_texel with the point's own normal and a smooth receiver,
 // clamped at zero.
 
-bool lightmap_light_terrain_points(const LightmapPoint* points, int count, float lift, float* out_r,
-                                   float* out_g, float* out_b)
+bool lightmap_light_terrain_points(const LightmapPoint* points, int count, float lift, float texel_size,
+                                   float* out_r, float* out_g, float* out_b)
 {
     auto* level = CDedLevel::Get();
     if (!g_bake_active || !level || !level->solid || !points || count <= 0) {
@@ -3569,7 +3983,7 @@ bool lightmap_light_terrain_points(const LightmapPoint* points, int count, float
             }
             ray_masks[w] = light_rays_visibility(*tree, rays[k], {pt.pos[0], pt.pos[1], pt.pos[2]},
                                                  {pt.normal[0], pt.normal[1], pt.normal[2]}, lift,
-                                                 std::numeric_limits<int>::min());
+                                                 std::numeric_limits<int>::min(), texel_size);
         }
     };
     constexpr std::size_t items_per_task = 256;
@@ -3607,6 +4021,10 @@ static FunHook<void __fastcall(GSurface*, int, void*, int)> lightmap_shade_surfa
 
 static void __fastcall lightmap_shade_surface_new(GSurface* surface, int edx, void* solid, int mode)
 {
+    // a cancelled bake is discarded, so nothing more is shaded
+    if (bake_progress_cancelled()) {
+        return;
+    }
     if (alpine_lm_tile_pass_active()) {
         lightmap_shade_surface_hook.call_target(surface, edx, solid, mode);
         return;
@@ -3642,6 +4060,10 @@ static void __fastcall lightmap_shade_surface_new(GSurface* surface, int edx, vo
     lightmap_shade_surface_hook.call_target(surface, edx, solid, mode);
     if ((state & (SURFACE_SHADE | SURFACE_SHADE_RUNTIME)) && !fullbright) {
         alpine_lm_shade_surface(static_cast<GSolid*>(solid), surface, mode);
+    }
+    // FUN_004aabf0's second pass (state 8) re-shades a mover's smoothed surfaces, which its count already holds
+    if (state != 8 || bake_progress_current() != BakePhase::movers) {
+        bake_progress_step();
     }
 }
 
@@ -3703,8 +4125,8 @@ CodeInjection lightmap_force_should_smooth_injection{
 };
 
 // Merged surfaces span rooms, so the per-room light and face lists no longer describe them. These
-// three sites each branch on surface->room_index == -1 to pick the global list instead; the branch
-// is forced when merging is on. Every handler reproduces the skipped stock instructions exactly.
+// sites each branch on surface->room_index == -1 to pick the global list instead; the branch is
+// forced when merging is on.
 
 // FUN_004ac470 shadow-pass gather: "MOV ECX,[ESI+0x68]; XOR EAX,EAX" (5 bytes).
 CodeInjection lightmap_global_lights_shadow_injection{
@@ -3739,13 +4161,35 @@ CodeInjection lightmap_global_faces_shadow_injection{
     false, // no trampoline: the injection fully replaces the 11 byte store
 };
 
-// FUN_004ad160 lumel face list: "MOV dword ptr [ESP+0x28c],EBX" (a single 7 byte store, EBX = 0).
+// FUN_004ad160 lumel face list: "MOV dword ptr [ESP+0x28c],EBX" (a single 7 byte store, EBX = 0;
+// EAX = surface->room_index). The global list is the solid's faces carrying this surface's index in
+// list order, which the bake's face index already holds, so it fills the stack VArray at [ESP+0x5c]
+// from that and skips the walk (0x004ad262-0x004ad297), leaving EDI and EBP as the walk does.
 CodeInjection lightmap_global_faces_lumel_injection{
     0x004ad20f,
     [](auto& regs) {
-        *reinterpret_cast<std::uint32_t*>(static_cast<uintptr_t>(regs.esp) + 0x28c) =
-            static_cast<std::uint32_t>(static_cast<int>(regs.ebx));
-        regs.eip = bake_fixes_active() ? 0x004ad262 : 0x004ad216;
+        const uintptr_t esp = static_cast<uintptr_t>(regs.esp);
+        *reinterpret_cast<std::uint32_t*>(esp + 0x28c) = static_cast<std::uint32_t>(static_cast<int>(regs.ebx));
+        if (!bake_fixes_active() && static_cast<int>(regs.eax) != -1) {
+            regs.eip = 0x004ad216;
+            return;
+        }
+        auto* solid = *reinterpret_cast<GSolid**>(esp + 0x294);
+        const int surf_id = reinterpret_cast<const GSurface*>(static_cast<uintptr_t>(regs.esi))->index;
+        const SolidCache* cache = surf_id >= 0 ? lightmap_solid_cache(reinterpret_cast<uintptr_t>(solid)) : nullptr;
+        if (!cache || !cache->complete) {
+            regs.eip = 0x004ad262;
+            return;
+        }
+        if (auto faces = cache->faces_by_surface.find(surf_id); faces != cache->faces_by_surface.end()) {
+            auto* list = reinterpret_cast<VArray<GFace*>*>(esp + 0x5c);
+            for (uintptr_t face : faces->second) {
+                list->push_back(reinterpret_cast<GFace*>(face));
+            }
+        }
+        regs.edi = 0;
+        regs.ebp = reinterpret_cast<uintptr_t>(&solid->face_list_head);
+        regs.eip = 0x004ad299;
     },
     false, // no trampoline: the injection fully replaces the 7 byte store
 };

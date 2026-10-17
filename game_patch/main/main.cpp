@@ -219,29 +219,41 @@ CodeInjection after_level_render_hook{
     },
 };
 
+FunHook<void()> game_render_cursor_hook{
+    0x00435460,
+    [] {
+        if (gameseq_is_visible()) {
+            game_render_cursor_hook.call_target();
+        }
+    },
+};
+
 CodeInjection after_frame_render_hook{
     0x004B2DC2,
     [] {
-        const rf::GameState state = rf::gameseq_get_state();
-        if (!rf::is_dedicated_server
-            && !is_headless_mode()
-            && state != rf::GS_QUITING
-            && state != rf::GS_NEW_LEVEL
-            && state != rf::GS_MULTI_GETTING_STATE_INFO) {
-            // Draw on top (after scene)
-            demo_playback_render_seek_overlay(); // first: covers the stale frame, UI below stays on top
-            frametime_render_ui();
-            achievement_system_do_frame();
-            awards_client_do_frame();
-            fullscreen_overlay_do_frame();
+        if (!rf::is_dedicated_server) {
             gas_region_transition_do_frame();
-            spray_picker_render();
-            demo_browser_render();
+
+            if (gameseq_is_visible() && !is_headless_mode()) {
+                // Draw on top (after scene)
+                g_solid_render_ui();
+                awards_client_do_frame();
+                fullscreen_overlay_do_frame();
+                achievement_system_do_frame();
+                demo_playback_render_seek_overlay();
+                frametime_render_ui();
+                demo_browser_render();
+                spray_picker_render();
 #if !defined(NDEBUG) && defined(HAS_EXPERIMENTAL)
-            experimental_render();
+                experimental_render();
 #endif
-            debug_render_ui();
-            g_solid_render_ui();
+                debug_render_ui();
+            }
+
+            // To dim our screen, and display "LOADING...", exit limbo here instead.
+            if (g_gameseq_defer_new_level) {
+                rf::gameseq_set_state(rf::GS_NEW_LEVEL, false);
+            }
         }
     },
 };
@@ -619,6 +631,7 @@ extern "C" DWORD __declspec(dllexport) Init([[maybe_unused]] void* unused)
     rf_do_frame_hook.install();
     after_level_render_hook.install();
     after_frame_render_hook.install();
+    game_render_cursor_hook.install();
     level_load_hook.install();
     level_init_post_hook.install();
 

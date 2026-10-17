@@ -3,6 +3,7 @@
 #include <patch_common/CallHook.h>
 #include <patch_common/CodeInjection.h>
 #include <patch_common/ShortTypes.h>
+#include <algorithm>
 #include <array>
 #include <xlog/xlog.h>
 #include "../multi/server.h"
@@ -236,6 +237,70 @@ FunHook<bool(rf::Weapon*)> weapon_possibly_richochet {
     },
 };
 
+// Stock flies the beam's tip on along the beam until the round dies, so past a pierced surface it leaves
+// the round's path. Fly it along that path instead and end it where the round stops. Runs after
+// obj_move_all, which deletes rounds flagged dead only on the next frame.
+// No trampoline: eip is always redirected, so the overwritten FLD and FMUL never run.
+CodeInjection rail_gun_beam_tip_on_round_path{
+    0x004C2462,
+    [](auto& regs) {
+        rf::RailBeam* beam = regs.esi;
+        const rf::Weapon* round = regs.eax;
+        // Only a round that can't ricochet, deflect, home or fall keeps to a fixed path (stock rail does)
+        constexpr int straight_flags2 = rf::WTF2_PIERCES_ALL | rf::WTF2_UNDEVIATING;
+        const bool on_path = g_alpine_game_config.rail_beam_fix
+            && (round->info->flags2 & straight_flags2) == straight_flags2
+            && !(round->info->flags & (rf::WTF_HOMING | rf::WTF_GRAVITY));
+        if (!on_path) {
+            beam->tip += beam->orient.fvec * (beam->speed * beam->age);
+        }
+        else {
+            const rf::Vector3& path_dir = round->orient.fvec;
+            const float round_dist = (round->pos - round->firing_pos).dot_prod(path_dir);
+            if (round->obj_flags & rf::OF_DELAYED_DELETE) {
+                // A round stopping short of the beam's start would turn the beam back toward the shooter
+                const rf::Vector3 start = beam->tail + beam->orient.fvec * 0.5f;
+                if (round_dist > (start - round->firing_pos).dot_prod(path_dir)) {
+                    beam->tip = round->pos;
+                }
+                beam->weapon_handle = -1;
+            }
+            else {
+                const float tip_dist = (beam->tip - round->firing_pos).dot_prod(path_dir) + beam->speed * beam->age;
+                beam->tip = round->firing_pos + path_dir * std::max(tip_dist, round_dist);
+            }
+        }
+        regs.eip = 0x004C2481;
+    },
+    false,
+};
+
+// The server's lag-comp ghost of each shot, swept along the shot by multi_lag_comp_weapon_fire for the
+// rewind raycast, gets its own beam too, doubling the real one. In multiplayer, the only place a ghost
+// exists, a beam aged 1 draws at zero alpha and the next update frees it.
+CallHook<rf::Weapon*(int, int, rf::Vector3*, rf::Matrix3*, int, int)> rail_gun_lag_comp_ghost_create_hook{
+    0x004266F8,
+    [](int weapon_type, int parent_handle, rf::Vector3* pos, rf::Matrix3* orient, int alt_fire, int flags) {
+        rf::Weapon* ghost =
+            rail_gun_lag_comp_ghost_create_hook.call_target(weapon_type, parent_handle, pos, orient, alt_fire, flags);
+        rf::RailBeam* newest = rf::rail_beam_list ? rf::rail_beam_list->prev : nullptr;
+        if (g_alpine_game_config.rail_beam_fix && ghost && newest && newest->weapon_handle == ghost->handle) {
+            newest->age = 1.0f;
+        }
+        return ghost;
+    },
+};
+
+ConsoleCommand2 rail_beam_fix_cmd{
+    "cl_railbeamfix",
+    []() {
+        g_alpine_game_config.rail_beam_fix = !g_alpine_game_config.rail_beam_fix;
+        rf::console::print("Rail Driver beam path fix is {}",
+            g_alpine_game_config.rail_beam_fix ? "enabled" : "disabled");
+    },
+    "Toggles whether the Rail Driver beam follows the shot's path through pierced surfaces",
+};
+
 ConsoleCommand2 gaussian_spread_cmd{
     "sp_spreadmode",
     []() {
@@ -419,9 +484,14 @@ void apply_weapon_patches()
     // Fix rockets not making damage after hitting a detail brush
     weapon_hit_wall_obj_apply_radius_damage_hook.install();
 
+    // Fix rail driver beam veering off the round's path after the round pierces a surface
+    rail_gun_beam_tip_on_round_path.install();
+    rail_gun_lag_comp_ghost_create_hook.install();
+
     // commands
     multi_ricochet_cmd.register_cmd();
     show_enemy_bullets_cmd.register_cmd();
+    rail_beam_fix_cmd.register_cmd();
     gaussian_spread_cmd.register_cmd();
     unlimited_semi_auto_cmd.register_cmd();
     always_autoswitch_empty_cmd.register_cmd();

@@ -1813,6 +1813,36 @@ static void hud_salvage_carrier_ensure() {
         HudNotificationType::SalvageCarrier, false);
 }
 
+// Keep the bag carrier overlay alive: the carrier's own, or his teammates' in Team Bagman.
+static void hud_bag_carrier_ensure() {
+    if (rf::is_dedicated_server) return;
+
+    const char* text = nullptr;
+    if (bagman_local_player_is_carrier()) {
+        text = "You have the bag";
+    } else if (gt_is_tbag() && g_bagman_info.carrier && rf::local_player && !multi_spectate_is_spectating()
+        && g_bagman_info.carrier->team == rf::local_player->team) {
+        text = "Your team has the bag";
+    }
+
+    if (!text) {
+        if (g_hud_notification.type == HudNotificationType::BagCarrier) {
+            hud_notification_remove(HudNotificationType::BagCarrier, false);
+        }
+        return;
+    }
+
+    if (g_hud_notification.type == HudNotificationType::BagCarrier
+        && !g_hud_notification.fade_start.valid() && g_hud_notification.text == text) {
+        return;
+    }
+    if (g_hud_notification.type != HudNotificationType::None
+        && g_hud_notification.type != HudNotificationType::BagCarrier) {
+        return;
+    }
+    hud_notification_show(text, -1, HudNotificationType::BagCarrier, false);
+}
+
 // Drop a queued player into freelook spectate when the server has flagged it.
 void hud_pit_queue_auto_spectate() {
     if (rf::is_server) return;
@@ -2103,18 +2133,10 @@ CodeInjection multi_hud_render_patch{
             hud_render_vote_notification();
         }
 
-        static bool s_was_bag_carrier = false;
-        const bool is_bag_carrier = bagman_local_player_is_carrier();
-        if (is_bag_carrier && !s_was_bag_carrier) {
-            hud_notification_show("You have the bag", -1, HudNotificationType::BagCarrier, false);
-        } else if (!is_bag_carrier && s_was_bag_carrier) {
-            hud_notification_remove(HudNotificationType::BagCarrier, false);
-        }
-        s_was_bag_carrier = is_bag_carrier;
-
         hud_ready_prompt_ensure();
         hud_pit_queue_ensure();
         hud_salvage_carrier_ensure();
+        hud_bag_carrier_ensure();
         hud_vehicle_prompt_ensure();
         hud_render_notification();
         hud_render_big_notification();

@@ -279,6 +279,12 @@ struct AlpineGameSettings
     {
         underwater_fx = std::clamp(value, 0, 3);
     }
+    // 0=off, 1=light, 2=heavy scope lens (d3d11 only)
+    int scope_glass = 2;
+    void set_scope_glass(int value)
+    {
+        scope_glass = std::clamp(value, 0, 2);
+    }
     bool show_enemy_bullets = true;
     bool fps_counter = true;
     static constexpr int min_fps_counter_average_ms = 0;
@@ -327,6 +333,7 @@ struct AlpineGameSettings
     bool scoreboard_anim = true;
     bool legacy_bob = false;
     bool weapon_sway = false;
+    bool rail_beam_fix = true;
     bool scoreboard_split_simple = true;
     bool scoreboard_split_spectators = true;
     bool scoreboard_split_bots = false;

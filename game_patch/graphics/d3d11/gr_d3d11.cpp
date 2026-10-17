@@ -476,6 +476,19 @@ namespace gr::d3d11
         return true;
     }
 
+    void Renderer::copy_scene_to_postfx_source()
+    {
+        // CopyResource forbids the source being bound as a render target, and without MSAA
+        // scene_texture_ is exactly that.
+        context_->OMSetRenderTargets(0, nullptr, nullptr);
+        if (msaa_render_target_) {
+            context_->ResolveSubresource(postfx_source_, 0, msaa_render_target_, 0, swap_chain_format);
+        }
+        else {
+            context_->CopyResource(postfx_source_, scene_texture_);
+        }
+    }
+
     void Renderer::init_depth_stencil_buffer(const uint32_t sample_count)
     {
         D3D11_TEXTURE2D_DESC depth_stencil_desc;
@@ -1056,7 +1069,22 @@ namespace gr::d3d11
         solid_renderer_->render_solid(solid, rooms, num_rooms);
         // With the opaque world, before objects and alpha detail draw over it
         if (solid == rf::level.geometry && !solid_renderer_->decoration_chunks().empty()) {
-            decoration_renderer_->render(solid, solid_renderer_->decoration_chunks());
+            const bool multisampled = msaa_render_target_ && render_target_bm_handle_ == -1;
+            decoration_renderer_->render(solid, solid_renderer_->decoration_chunks(), DecorationPass::core,
+                                         multisampled);
+        }
+    }
+
+    void Renderer::render_room_decoration_edges(rf::GSolid* solid, rf::GRoom* room)
+    {
+        if (solid != rf::level.geometry) {
+            return;
+        }
+        const auto& chunks = solid_renderer_->room_decoration_chunks(solid, room);
+        if (decoration_renderer_->has_soft_edges(chunks)) {
+            dyn_geo_renderer_->flush();
+            decoration_renderer_->render(solid, chunks, DecorationPass::edge);
+            render_context_->set_draw_room_uid(object_room_uid_);
         }
     }
 
@@ -1093,6 +1121,11 @@ namespace gr::d3d11
     void Renderer::render_sky_room(rf::GRoom *room, rf::Vector3& out_sky_transform_pos, rf::Matrix3& out_sky_transform_orient)
     {
         dyn_geo_renderer_->flush();
+        // The projection ends at the camera far clip, which must not cut the sky; the far clip set after the sky
+        // pass re-enables depth clipping
+        if (level_camera_far_clip() > 0.0f) {
+            set_far_clip(false);
+        }
         solid_renderer_->render_sky_room(room, out_sky_transform_pos, out_sky_transform_orient);
     }
 
@@ -1298,15 +1331,7 @@ namespace gr::d3d11
         render_context_->set_clip();
 
         if (distort) {
-            // CopyResource forbids the source being bound as a render target, and without MSAA
-            // scene_texture_ is exactly that.
-            context_->OMSetRenderTargets(0, nullptr, nullptr);
-            if (msaa_render_target_) {
-                context_->ResolveSubresource(postfx_source_, 0, msaa_render_target_, 0, swap_chain_format);
-            }
-            else {
-                context_->CopyResource(postfx_source_, scene_texture_);
-            }
+            copy_scene_to_postfx_source();
             scene_post_pass_->render(context_, postfx_source_srv_, default_render_target_view_, data);
         }
         else {
@@ -1314,6 +1339,36 @@ namespace gr::d3d11
         }
 
         liquid_tint_drawn_frame_ = rf::frame_count;
+
+        render_context_->invalidate_cached_state();
+        render_context_->set_render_target(default_render_target_view_, depth_stencil_view_);
+        render_context_->set_clip();
+    }
+
+    void Renderer::run_scope_glass_pass()
+    {
+        if (g_alpine_game_config.scope_glass < 1 || render_target_bm_handle_ != -1 || !ensure_postfx_source()) {
+            return;
+        }
+
+        const ScopeGlassTier& tier = g_alpine_game_config.scope_glass >= 2
+            ? scenefx_scope_glass_heavy
+            : scenefx_scope_glass_light;
+
+        SceneFxBufferData data{};
+        data.rt_size = {static_cast<float>(rt_width_), static_cast<float>(rt_height_)};
+        data.flags = static_cast<float>(scenefx_flag_scope_glass);
+        data.viewport_rect = current_viewport_rect();
+        data.scope_glass = {tier.distortion, tier.rim_distortion, tier.dispersion, tier.vignette};
+        data.scope_rim = {tier.rim_start, tier.rim_end, tier.vignette_start, tier.fringe};
+
+        // Runs before the stock scope ring and reticle are drawn, so they stay sharp on top of the lens
+        flush_outlines_before_2d();
+        dyn_geo_renderer_->flush();
+        render_context_->set_clip();
+
+        copy_scene_to_postfx_source();
+        scene_post_pass_->render(context_, postfx_source_srv_, default_render_target_view_, data);
 
         render_context_->invalidate_cached_state();
         render_context_->set_render_target(default_render_target_view_, depth_stencil_view_);

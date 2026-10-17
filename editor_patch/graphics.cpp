@@ -243,11 +243,23 @@ CodeInjection gr_d3d_render_geometry_face_patch_2{
     },
 };
 
+static BOOL CALLBACK grow_to_monitor(HMONITOR, HDC, LPRECT rect, LPARAM size)
+{
+    auto& s = *reinterpret_cast<SIZE*>(size);
+    s.cx = std::max(s.cx, rect->right - rect->left);
+    s.cy = std::max(s.cy, rect->bottom - rect->top);
+    return TRUE;
+}
+
+// The back buffer the views draw into is as big as the largest monitor, so a view (or the Texture Browser) on any of
+// them can use all of it
 CallHook<void(int, int, int, int, int, HWND, float, bool, int, D3DFORMAT)> gr_init_hook{
     0x00482B78,
     [](int max_w, int max_h, int bit_depth, int mode, int window_mode, HWND hwnd, float far_zvalue, bool sync_blit, int video_card, D3DFORMAT backbuffer_format) {
-        max_w = GetSystemMetrics(SM_CXSCREEN);
-        max_h = GetSystemMetrics(SM_CYSCREEN);
+        SIZE largest{GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)};
+        EnumDisplayMonitors(nullptr, nullptr, grow_to_monitor, reinterpret_cast<LPARAM>(&largest));
+        max_w = largest.cx;
+        max_h = largest.cy;
         gr_init_hook.call_target(max_w, max_h, bit_depth, mode, window_mode, hwnd, far_zvalue, sync_blit, video_card, backbuffer_format);
     },
 };
@@ -353,6 +365,33 @@ CodeInjection detail_room_overflow_check{
             regs.eip = 0x0049b764; // skip write + inc + store
         }
     },
+};
+
+// FUN_0049b550 numbers a room cache's vertices in an int16, so past 0x8000 its writes land before the cache. Such
+// a room gets no cache, and only Render Everything draws it.
+static const void* g_oversize_room_warned_solid = nullptr;
+CodeInjection room_cache_vertex_limit{
+    0x0049bb19, // MOV EAX, [0x010a84c0] — the pool end; EBX is the room's vertex count
+    [](auto& regs) {
+        const auto esp = static_cast<uintptr_t>(regs.esp);
+        if (static_cast<u32>(regs.ebx) > static_cast<u32>(max_room_render_verts)) {
+            const auto* solid = *reinterpret_cast<const void**>(esp + 0xb0);
+            if (solid != g_oversize_room_warned_solid) {
+                g_oversize_room_warned_solid = solid;
+                const auto* room = *reinterpret_cast<const GRoom**>(esp + 0xb4);
+                xlog::warn("[Viewport] The room centred at ({:.1f}, {:.1f}, {:.1f}) has more than {} vertices with "
+                           "its detail rooms, so only Render Everything draws it",
+                           (room->bbox_min.x + room->bbox_max.x) * 0.5f, (room->bbox_min.y + room->bbox_max.y) * 0.5f,
+                           (room->bbox_min.z + room->bbox_max.z) * 0.5f, max_room_render_verts);
+            }
+            // nothing is taken from the pool yet; a null cache makes the caller skip the room without a flush-all retry
+            regs.eip = 0x0049c553;
+            return;
+        }
+        regs.eax = reinterpret_cast<uintptr_t>(geo_cache_pool_end);
+        regs.eip = 0x0049bb1e;
+    },
+    false, // no trampoline: the injection replays the load
 };
 
 CodeInjection gr_d3d_prepare_buffers_lock_hr{
@@ -527,6 +566,23 @@ CallHook<void()> gr_d3d_device_reset_state_recovery{
     },
 };
 
+// Render Everything draws the level face by face without the sky the portal walk draws behind it (FUN_00425950);
+// its face loop already leaves out sky faces.
+CallHook<void __fastcall(GSolid*, int, char, int, char, const Vector3*, const Matrix3*, int, int, int)>
+    level_render_everything_hook{
+    0x0047AF79,
+    [](GSolid* solid, int edx, char outline, int face_outlines, char vertex_marks, const Vector3* pos,
+       const Matrix3* orient, int r, int g, int b) FASTCALL_LAMBDA {
+        if (GRoom* sky = level_sky_room(solid)) {
+            room_draw_clip_set(sky);
+            sky_room_draw(solid, sky, 0);
+            room_draw_clip_set(nullptr);
+        }
+        level_render_everything_hook.call_target(solid, edx, outline, face_outlines, vertex_marks, pos, orient, r, g,
+                                                 b);
+    },
+};
+
 
 void ApplyGraphicsPatches()
 {
@@ -613,6 +669,7 @@ void ApplyGraphicsPatches()
     write_mem_ptr(0x0049b760, &detail_room_count);  // FUN_0049b550: count store after inc
     // Bounds check (must install after write_mem_ptr so saved bytes have new addresses)
     detail_room_overflow_check.install();
+    room_cache_vertex_limit.install();
 
     // Expand geo_cache limits for large room geometry rendering
 
@@ -749,4 +806,7 @@ void ApplyGraphicsPatches()
 
     // Restore render state after D3D device Reset()
     gr_d3d_device_reset_state_recovery.install();
+
+    // Draw the sky in Render Everything as the portal modes do
+    level_render_everything_hook.install();
 }

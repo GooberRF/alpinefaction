@@ -115,6 +115,10 @@ namespace
             VehicleState& st = g_vehicle_state.hull_state[ep->handle];
             st.team = info ? info->team : -1;
             st.lock_to_team = info && info->lock_to_team;
+            st.yaw_limit_deg = slot.is_turret && info ? info->turret_yaw_limit_deg : uint8_t{0};
+            // entity_create uprighted the factory's matrix, so this is the facing the hull spawned with.
+            st.yaw_base = vehicle_quantize_angle(vehicle_make_orient_phb(ep->orient).y);
+            st.yaw_rel = 0.0f;
             if (announce) {
                 vehicle_slot_announce(slot);
                 // Nothing else states a fresh hull's team and lock; the join sweep covers a
@@ -431,8 +435,11 @@ void vehicle_factory_load_chunk(rf::File& file, std::size_t chunk_len)
         uint8_t team = 0xFF;
         if (!reader.read_bytes(&team, sizeof(team))) return;
         info.team = (team == 0 || team == 1) ? static_cast<int32_t>(team) : -1;
-        uint8_t reserved[2] = {};
-        if (!reader.read_bytes(reserved, sizeof(reserved))) return;
+        uint8_t yaw_limit_deg = 0;
+        if (!reader.read_bytes(&yaw_limit_deg, sizeof(yaw_limit_deg))) return;
+        info.turret_yaw_limit_deg = yaw_limit_deg <= vehicle_turret_max_yaw_limit_deg ? yaw_limit_deg : uint8_t{0};
+        uint8_t reserved = 0;
+        if (!reader.read_bytes(&reserved, sizeof(reserved))) return;
         uint8_t lock_to_team = 0;
         if (!reader.read_bytes(&lock_to_team, sizeof(lock_to_team))) return;
         // A team-none factory keeps its lock: a control point can hand it a team later, and

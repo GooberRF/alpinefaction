@@ -363,7 +363,8 @@ namespace rf
         Display_Projection,
         Climbing_Region_State,
         When_Destroyed,
-        Rope_State
+        Rope_State,
+        Mesh_Set_Scale
     };
 
     std::vector<rf::Event*> find_all_events_by_type(rf::EventType event_type);

@@ -1407,6 +1407,18 @@ namespace
         },
     };
 
+    // The geomod rock update damages a player the rocks hit. Disable this in multiplayer for
+    // vehicle riders.
+    CallHook<rf::GRoom* __fastcall(rf::Entity*)> geomod_rock_hit_room_hook{
+        0x0048F6BD,
+        [](rf::Entity* ep) FASTCALL_LAMBDA -> rf::GRoom* {
+            if (rf::is_multi && rf::entity_in_vehicle(ep)) {
+                return nullptr; // a rock's room is set non-null at creation and never changes
+            }
+            return geomod_rock_hit_room_hook.call_target(ep);
+        },
+    };
+
     // A turret's $Corpse V3D is created on every machine unsynced, right where its factory respawns it.
     CallHook<rf::Corpse*(rf::Entity*, const char*, const rf::Vector3*, const rf::Matrix3*, int, int)>
         entity_die_corpse_create_hook{
@@ -2080,6 +2092,7 @@ void vehicle_damage_apply_patch()
     obj_damage_vehicle_crush_injection.install();
     entity_die_occupant_kill_injection.install();
     entity_damage_ignite_berserk_hook.install();
+    geomod_rock_hit_room_hook.install();
     entity_die_corpse_create_hook.install();
     item_pickup_hook.install();
     cockpit_vfx_armor_readout_hook.install();

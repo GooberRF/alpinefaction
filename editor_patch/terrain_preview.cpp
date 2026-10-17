@@ -18,6 +18,7 @@
 #include <xlog/xlog.h>
 #include "alpine_lightmaps.h"
 #include "alpine_obj.h"
+#include "brush_preview.h"
 #include "level.h"
 #include "mfc_types.h"
 #include "terrain.h"
@@ -388,6 +389,7 @@ bool same_casting(const std::vector<std::pair<std::size_t, DedTerrainDecoration>
         DedTerrainDecoration deco = d.decorations[i];
         deco.draw_distance = 0.0f;
         deco.dither_fade = false;
+        deco.edges = {};
         if (cast[n++].second != deco) return false;
     }
     return n == cast.size();
@@ -401,6 +403,7 @@ std::vector<std::pair<std::size_t, DedTerrainDecoration>> casting_decorations(co
         out.emplace_back(i, d.decorations[i]);
         out.back().second.draw_distance = 0.0f;
         out.back().second.dither_fade = false;
+        out.back().second.edges = {};
     }
     return out;
 }
@@ -1214,7 +1217,7 @@ void draw_surface(CDedLevel& level, Preview& p, const DedTerrain& terrain, const
 
 void level_face_draw_hooked(GSolid* solid, GFace* face, char outline)
 {
-    if (face && terrain_preview_hides_room(face->which_room)) {
+    if (face && (terrain_preview_hides_room(face->which_room) || brush_preview_hides(*face))) {
         CDedLevel* level = CDedLevel::Get();
         if (level && solid == level->solid) return;
     }
@@ -1222,6 +1225,34 @@ void level_face_draw_hooked(GSolid* solid, GFace* face, char outline)
 }
 
 } // namespace
+
+bool editor_bitmap_texture_live(int bm)
+{
+    const GrTextureSlot* slot = bm >= 0 ? gr_texture_slot_of(bm) : nullptr;
+    return slot && slot->bm_handle == bm && slot->section_count == 1 && slot->sections && slot->sections[0].texture;
+}
+
+bool editor_bitmap_upload_rgb(int bm, std::uint32_t w, std::uint32_t h, const std::uint8_t* rgb)
+{
+    if (!rgb || !preview_texture_ready(bm)) return false;
+    GrLockInfo lock{};
+    if (!gr_lock(bm, 0, &lock, 2)) return false;
+    const int bpp = texel_bytes(lock.format);
+    if (!bpp || !lock.data || lock.w < static_cast<int>(w) || lock.h < static_cast<int>(h)) {
+        gr_unlock(&lock);
+        return false;
+    }
+    for (std::uint32_t y = 0; y < h; y++) {
+        std::uint8_t* row = lock.data + static_cast<std::size_t>(y) * lock.stride_in_bytes;
+        for (std::uint32_t x = 0; x < w; x++) {
+            const std::uint8_t* src = rgb + (static_cast<std::size_t>(y) * w + x) * 3;
+            const float c[3] = {static_cast<float>(src[0]), static_cast<float>(src[1]), static_cast<float>(src[2])};
+            write_texel(row + static_cast<std::size_t>(x) * bpp, lock.format, c);
+        }
+    }
+    gr_unlock(&lock);
+    return true;
+}
 
 bool terrain_view_draws_solid()
 {
@@ -1410,9 +1441,8 @@ bool terrain_preview_hides_room(const GRoom* room)
 
 TerrainRay terrain_screen_ray(float screen_x, float screen_y)
 {
-    float ray[8] = {};
-    screen_to_ray(ray, screen_x, screen_y);
-    return TerrainRay{{ray[0], ray[1], ray[2]}, {ray[3], ray[4], ray[5]}};
+    const EditorRay ray = editor_screen_ray(screen_x, screen_y);
+    return TerrainRay{{ray.o.x, ray.o.y, ray.o.z}, {ray.d.x, ray.d.y, ray.d.z}};
 }
 
 bool terrain_ray_hit(const DedTerrain& t, const TerrainRay& ray, float t_max, float& hit_t, bool ignore_holes)

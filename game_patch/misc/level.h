@@ -9,6 +9,7 @@
 #include <xlog/xlog.h>
 #include <common/rfl_chunk_reader.h>
 #include <common/alpine_dir_light.h>
+#include <common/alpine_camera_far_clip.h>
 #include <common/lightmap/alpine_lightmap.h>
 #include <common/terrain/alpine_terrain.h>
 #include "../rf/geometry.h"
@@ -34,6 +35,14 @@ constexpr int stock_lightmaps_chunk_id = 0x1200;
 constexpr std::size_t max_bitmap_name = 32;
 
 using AlpineChunkReader = RflChunkReader<rf::File>;
+
+// A level that needs D3D11 (D3D11-only lightmaps leave no stock lightmaps section, mesh draw scale
+// misplaces meshes on the legacy renderers) is refused there; servers and headless runs draw nothing.
+constexpr bool level_refused_without_d3d11(bool require_d3d11, bool dedicated_server, bool headless,
+                                           bool renderer_is_d3d11)
+{
+    return require_d3d11 && !dedicated_server && !headless && !renderer_is_d3d11;
+}
 
 // should match structure in editor_patch\level.h
 struct AlpineLevelProperties
@@ -90,6 +99,8 @@ struct AlpineLevelProperties
     rf::Vector3 minimap_world_min{};
     rf::Vector3 minimap_world_max{};
     float minimap_cut_height = 0.0f; // editor-side bake parameter, no effect in game
+    bool require_d3d11 = false; // refuse the level on the other renderers
+    float camera_far_clip = 0.0f; // 0 = the stock far clip (fog far clip, else gr::default_wfar)
 
     // should match SanitizeSunProperties in editor_patch\level.h
     // A level file can carry anything; these floats end up in the lights constant buffer and in the
@@ -400,6 +411,17 @@ struct AlpineLevelProperties
             minimap_world_max = world_max;
             minimap_enabled = enabled && bounds_ok;
             xlog::debug("[AlpineLevelProps] minimap {} bitmap '{}'", minimap_enabled, minimap_bitmap);
+            // Any bit set means the editor found a reason the level needs D3D11
+            if (!reader.read_bytes(&u8, sizeof(u8)))
+                return;
+            require_d3d11 = u8 != 0;
+            float far_clip = 0.0f;
+            if (!reader.read_bytes(&far_clip, sizeof(far_clip)))
+                return;
+            camera_far_clip = alpine_camera_far_clip::sanitize(far_clip);
+            if (!(camera_far_clip == far_clip)) {
+                xlog::warn("[AlpineLevelProps] Camera far clip {} corrected to {}", far_clip, camera_far_clip);
+            }
         }
     }
 };
@@ -460,13 +482,14 @@ struct AlpineMeshInfo {
 };
 
 void level_shutdown();
+void level_sanitize_fog_near_clip();
 void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len, int content_version);
 void alpine_mesh_do_frame();
 void alpine_mesh_clear_state();
 void alpine_mesh_free_collision_proxies();
 
 // Mesh event helpers
-namespace rf { struct Object; struct PhysicsData; }
+namespace rf { struct Object; struct PhysicsData; struct VMesh; struct VMeshCollisionInput; }
 bool alpine_mesh_is_collision_mesh(rf::Object* objp);
 void alpine_mesh_free_collision_solid(int obj_handle);
 bool alpine_mesh_has_collision_solids();
@@ -494,6 +517,18 @@ bool alpine_mesh_resume_anim(rf::Object* obj, int type, const std::string& anim_
 void alpine_mesh_set_texture(rf::Object* obj, int slot, const std::string& texture_filename);
 void alpine_mesh_clear_texture(rf::Object* obj, int slot);
 void alpine_mesh_set_collision(rf::Object* obj, int collision_type);
+void alpine_mesh_set_scale(rf::Object* obj, float scale);
+// 1 for unscaled meshes and any other object
+float alpine_mesh_draw_scale(const rf::Object* obj);
+// 1 when the vmesh does not belong to a scaled mesh
+float alpine_mesh_vmesh_draw_scale(const rf::VMesh* vmesh);
+// Called when an object's vmesh is deleted
+void alpine_mesh_release_scale_vmesh(const rf::Object* obj);
+// Re-applies a kept draw scale after Switch_Model gives the object a new vmesh
+void alpine_mesh_rebind_scale(rf::Object* obj);
+// Called when the object itself is deleted; its handle can be reused
+void alpine_mesh_free_scale(const rf::Object* obj);
+void alpine_mesh_scale_collision_input(rf::VMeshCollisionInput& in, float scale);
 
 // Alpine corona object info, loaded from RFL
 struct AlpineCoronaInfo {
@@ -531,6 +566,8 @@ struct AlpineVehicleFactoryInfo {
     int32_t team = -1;
     bool lock_to_team = false;
     bool active_by_default = true;
+    // Turret classes only: degrees the turret may yaw either side of its spawn facing; 0 = unrestricted.
+    uint8_t turret_yaw_limit_deg = 0;
 };
 
 void vehicle_factory_load_chunk(rf::File& file, std::size_t chunk_len);

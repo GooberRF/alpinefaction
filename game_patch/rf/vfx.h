@@ -91,7 +91,8 @@ namespace rf
         char pad_8A[0x02];          // 0x8A
         int render_type;            // 0x8C: 0 = triangle mesh, 1 = alternate object
                                     //       (FUN_0053ee90 switches on this)
-        char pad_90[0x14];          // 0x90
+        char pad_90[0x10];          // 0x90
+        float radius;               // 0xA0: billboard and glow sprite radius
         int num_anim_keys;          // 0xA4: keyframe count (FUN_0053f060 disables the chunk outside it)
         float start_time;           // 0xA8: animation start time in seconds
         char pad_AC[0x04];          // 0xAC
@@ -107,7 +108,8 @@ namespace rf
         void* compressed_verts;     // 0xD0: compressed vertex data (ushort[3] per vertex)
         void* uv_frames;            // 0xD4: array of per-keyframe VfxFaceUv buffers
         void* vertex_positions;     // 0xD8
-        char pad_DC[0x34];          // 0xDC
+        char pad_DC[0x30];          // 0xDC
+        float ribbon_width;         // 0x10C: CHNE ribbon width
         int glow_bitmap;            // 0x110: > 0 adds a glow sprite pass (gr_d3d_render_vfx_glow)
         unsigned int render_flags;  // 0x114: render behaviour bits. FUN_0053ee90 sends a chunk with
                                     //        (render_flags & 0x801) down the facing/glow path
@@ -116,7 +118,10 @@ namespace rf
     };
     static_assert(sizeof(VfxSfxoChunk) == 0x124);
     static_assert(offsetof(VfxSfxoChunk, geo) == 0x84);
+    static_assert(offsetof(VfxSfxoChunk, radius) == 0xA0);
     static_assert(offsetof(VfxSfxoChunk, start_time) == 0xA8);
+    static_assert(offsetof(VfxSfxoChunk, num_vertices) == 0xB0);
+    static_assert(offsetof(VfxSfxoChunk, ribbon_width) == 0x10C);
     static_assert(offsetof(VfxSfxoChunk, vertex_records) == 0xC8);
     static_assert(offsetof(VfxSfxoChunk, render_flags) == 0x114);
 
@@ -181,7 +186,9 @@ namespace rf
                                     //       reads chunk->render_type / chunk->render_flags off it.
         Vector3 pivot;              // 0x04: chunk pivot in object space. FUN_00553ee0 rotates it by
                                     //       render_orient and adds render_pos to get a world point.
-        char pad_10[0x0C];          // 0x10
+        float width;                // 0x10: billboard width, or beam width (per-tick key value)
+        float height;               // 0x14: billboard height, or beam length (per-tick key value)
+        char pad_18[0x04];          // 0x18
         unsigned int flags;         // 0x1C: bit 31 marks the chunk hidden - FUN_0053ee90 returns
                                     //       without drawing anything when it is set.
         Vector3 pos_20;             // 0x20: second cached transform pair, also built by FUN_0054d290
@@ -196,11 +203,28 @@ namespace rf
         char pad_91[0x07];          // 0x91
     };
     static_assert(sizeof(VfxSfxoRenderObj) == 0x98);
+    static_assert(offsetof(VfxSfxoRenderObj, width) == 0x10);
+    static_assert(offsetof(VfxSfxoRenderObj, height) == 0x14);
     static_assert(offsetof(VfxSfxoRenderObj, flags) == 0x1C);
     static_assert(offsetof(VfxSfxoRenderObj, render_pos) == 0x50);
     static_assert(offsetof(VfxSfxoRenderObj, render_orient) == 0x5C);
     static_assert(offsetof(VfxSfxoRenderObj, vertex_positions) == 0x80);
     static_assert(offsetof(VfxSfxoRenderObj, active) == 0x90);
+
+    // PART (particle emitter) instance. Size: 0xA4. Array at VfxInstance::part_instances.
+    // Simulated in world space by FUN_00542e90; each particle is drawn by FUN_005431d0 -> FUN_00557460.
+    struct VfxPartInstance
+    {
+        void* chunk;                // 0x00: PART chunk (0xDC)
+        char pad_04[0x34];          // 0x04
+        Matrix3 orient;             // 0x38: orient the emitter was last processed with
+        char pad_5C[0x24];          // 0x5C
+        float particle_radius;      // 0x80: per-tick key value; a particle is drawn twice this size
+        char pad_84[0x20];          // 0x84
+    };
+    static_assert(sizeof(VfxPartInstance) == 0xA4);
+    static_assert(offsetof(VfxPartInstance, orient) == 0x38);
+    static_assert(offsetof(VfxPartInstance, particle_radius) == 0x80);
 
     // VFX instance: per-object wrapper stored at VMesh::instance for MESH_TYPE_ANIM_FX.
     // Size: 0x24 bytes. Allocated and constructed by FUN_0054b0d0.
@@ -224,7 +248,7 @@ namespace rf
                                         //       threaded through gr_render_mesh_chunk / gr_d3d_render_vfx
         VfxSfxoRenderObj* sfxo_instances; // 0x14: per-chunk render instances (0x98 each)
         void* algt_instances;           // 0x18: per-ALGT chunk instances (0x3C each)
-        void* part_instances;           // 0x1C: per-PART chunk instances (0xA4 each)
+        VfxPartInstance* part_instances; // 0x1C: per-PART chunk instances (0xA4 each)
         void* dmmy_instances;           // 0x20: per-DMMY chunk instances (0x28 each)
     };
     static_assert(sizeof(VfxInstance) == 0x24);

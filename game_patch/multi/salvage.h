@@ -89,6 +89,8 @@ rf::Player* salvage_get_carrier();
 bool salvage_player_is_carrier(const rf::Player* player);
 const rf::Vector3& salvage_get_spawn_pos();
 bool salvage_spawn_is_known(); // false until the server has resolved/replicated the home
+// True while the flag has a home but no item: item_create keeps one pool slot free for it.
+bool salvage_reserves_item_slot(int item_type);
 // Nothing about the bases is replicated: both sides resolve them from the
 // level-placed base items. Servers do it eagerly at level init and lazily on
 // first use before that; clients only lazily.

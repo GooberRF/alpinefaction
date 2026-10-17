@@ -117,19 +117,6 @@ void vehicle_update_interp_ownership(rf::Entity* vehicle, bool driver_boarding)
 
 namespace
 {
-    // int16 across [-pi, pi], finer than the stock row's own angle slots.
-    constexpr float vehicle_orient_quant = 32767.0f / std::numbers::pi_v<float>;
-
-    int16_t vehicle_quantize_angle(float radians)
-    {
-        return static_cast<int16_t>(std::clamp(radians * vehicle_orient_quant, -32767.0f, 32767.0f));
-    }
-
-    float vehicle_dequantize_angle(int16_t quantized)
-    {
-        return static_cast<float>(quantized) / vehicle_orient_quant;
-    }
-
     // WIRE-FROZEN range: one signed byte across a FIXED +-0.75 rad, NOT the sending class's
     // steer_lock, so a shipped receiver reconstructs the angle from the byte alone.
     constexpr float vehicle_steer_quant_range = 0.75f;
@@ -185,6 +172,89 @@ namespace
 
     void vehicle_apply_aim_orient(rf::Entity* vehicle, VehicleAimSource source);
 
+    // A turret's frames never bank, so the right vector stays horizontal at any pitch; the forward
+    // vector does not.
+    float vehicle_unbanked_heading(const rf::Matrix3& m)
+    {
+        return std::atan2(-m.rvec.z, m.rvec.x);
+    }
+
+    // Positive turns the forward vector from +z towards +x, the direction a heading grows.
+    void vehicle_rotate_about_world_up(rf::Matrix3& m, float angle)
+    {
+        const float c = std::cos(angle);
+        const float s = std::sin(angle);
+        for (rf::Vector3* v : {&m.rvec, &m.uvec, &m.fvec}) {
+            const float x = v->x;
+            v->x = x * c + v->z * s;
+            v->z = v->z * c - x * s;
+        }
+    }
+
+    // The heading off base on whichever side of the back of the arc lies nearer `prev_rel`, so a turn
+    // through the back still reads as past the stop it crossed.
+    float vehicle_rel_heading(float heading, float base, float prev_rel)
+    {
+        return prev_rel + vehicle_wrap_pi(heading - base - prev_rel);
+    }
+
+    // The rotation that brought the frame back inside the stops, 0 if it was already inside.
+    float vehicle_clamp_heading(rf::Matrix3& m, float base, float prev_rel, float limit)
+    {
+        const float rel = vehicle_rel_heading(vehicle_unbanked_heading(m), base, prev_rel);
+        if (!std::isfinite(rel)) {
+            return 0.0f;
+        }
+        const float correction = std::clamp(rel, -limit, limit) - rel;
+        if (correction != 0.0f) {
+            vehicle_rotate_about_world_up(m, correction);
+        }
+        return correction;
+    }
+
+    // Watched copies get this much past the stop: obj_update quantises the heading they are rebuilt from.
+    constexpr float vehicle_turret_yaw_slack = 0.5f * vehicle_deg_to_rad;
+
+    // Every machine holds a limited turret inside its stops, the server included, so a gunner whose
+    // client ignores them still fires within them.
+    void vehicle_clamp_turret_yaw(rf::Entity* ep)
+    {
+        if (!vehicle_hull_is_turret(ep)) {
+            return;
+        }
+        VehicleState* st = vehicle_hull_state(ep->handle);
+        if (!st || st->yaw_limit_deg == 0) {
+            return;
+        }
+        // The gunner's own copy turns on from where it was clamped; a watched copy is a stream of
+        // samples, any of which may be a legal heading far from the last.
+        const bool watched = (ep->p_data.flags & rf::PF_NET_PLAYER) != 0;
+        const float prev_rel = watched || !std::isfinite(st->yaw_rel) ? 0.0f : st->yaw_rel;
+        const float limit =
+            static_cast<float>(st->yaw_limit_deg) * vehicle_deg_to_rad + (watched ? vehicle_turret_yaw_slack : 0.0f);
+        const float base = vehicle_dequantize_angle(st->yaw_base);
+        bool corrected = vehicle_clamp_heading(ep->orient, base, prev_rel, limit) != 0.0f;
+        vehicle_clamp_heading(ep->p_data.orient, base, prev_rel, limit);
+        vehicle_clamp_heading(ep->p_data.next_orient, base, prev_rel, limit);
+        vehicle_clamp_heading(ep->eye_orient, base, prev_rel, limit);
+        // physics_simulate_entity builds the next frame from phb, so a heading left past the stop would
+        // have to be turned back through before the turret moved again.
+        float& head = ep->control_data.phb.y;
+        const float rel_head = vehicle_rel_heading(head, base, prev_rel);
+        if (std::fabs(rel_head) > limit) {
+            head += std::copysign(limit, rel_head) - rel_head;
+            corrected = true;
+        }
+        if (const float rel = vehicle_rel_heading(vehicle_unbanked_heading(ep->orient), base, prev_rel);
+            std::isfinite(rel)) {
+            st->yaw_rel = rel;
+        }
+        if (corrected) {
+            ep->p_data.rotvel.y = 0.0f;
+            ep->control_data.delta_phb.y = 0.0f;
+        }
+    }
+
     FunHook<void(rf::Entity*)> physics_update_entity_hook{
         0x0049FE40,
         [](rf::Entity* ep) {
@@ -204,6 +274,7 @@ namespace
             }
             if (!vehicle_orient_rebuild_must_be_undone(ep)) {
                 physics_update_entity_hook.call_target(ep);
+                vehicle_clamp_turret_yaw(ep);
                 return;
             }
             const rf::Matrix3 authoritative_orient = ep->p_data.orient;
@@ -212,6 +283,7 @@ namespace
             ep->p_data.next_orient = authoritative_orient;
             ep->orient = authoritative_orient;
             if (vehicle_hull_is_turret(ep)) {
+                vehicle_clamp_turret_yaw(ep);
                 return;
             }
             vehicle_rebuild_eye_orient(ep, authoritative_orient);
@@ -702,6 +774,8 @@ namespace
         }
         // RAW for the instant the muzzle is read; the next frame's application puts the eased back.
         vehicle_apply_aim_orient(vehicle, VehicleAimSource::raw);
+        // Whatever wrote the hull since its physics tick, the shot leaves within its stops.
+        vehicle_clamp_turret_yaw(vehicle);
         if (alt) {
             const int before = vehicle->ai.next_fire_secondary.value;
             rf::entity_fire_secondary_weapon(vehicle, force ? 1 : 0);

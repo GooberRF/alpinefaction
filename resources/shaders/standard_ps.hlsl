@@ -6,7 +6,8 @@ struct VsOutput
     float2 uv0 : TEXCOORD0;
     // xy: stock lightmap page UV, or alpine chart texel coords when z >= 0
     // z:  alpine lightmap chart (its af_lm_index chart record), -1 for the stock path
-    float3 uv1 : TEXCOORD1;
+    // centroid: under MSAA an edge sample stays on the face, so it cannot read a neighbouring chart's texels
+    centroid float3 uv1 : TEXCOORD1;
     float4 world_pos_and_depth : TEXCOORD2;
 #ifdef INSTANCE_LIGHT
     // Terrain decoration: rgb its mesh ambient, a its sun scale
@@ -34,6 +35,7 @@ cbuffer RenderModeBuffer : register(b0)
     float sky_room;             // sky fragments carry authored, not viewed, world positions
     float draw_room_uid;        // room this draw belongs to, -1 when it has none
     float liquid_surface;       // this draw is the liquid surface pass
+    float fog_near;             // view depth the fog starts at, 0 below RFL 306
 };
 
 struct PointLight {
@@ -173,7 +175,7 @@ cbuffer LiquidBuffer : register(b6)
     float  liq_dark_surface_y; float liq_viewport_y;   // blended surface, depth darkening only
     LiquidVolume liq_volumes[MAX_LIQUID_VOLUMES];
     float  liq_depth_sz;       float liq_depth_tz;     // view z = tz / (device depth - sz)
-    float  liq_depth_mode;     float _liq_pad2;        // 0 none, 1 Texture2D
+    float  liq_depth_mode;     float liq_over_fog_near; // 0 none, 1 Texture2D; level fog start
 };
 
 // Directional Light objects over this draw, GPU-lit meshes only. Layout owned by gr_d3d11_context.cpp
@@ -236,6 +238,35 @@ static const float2 pcf_offsets[15] = {
 };
 
 #ifdef INSTANCE_LIGHT
+// Layout owned by gr_d3d11_decoration.cpp (DecorationBufferData), also the vertex shader's b4
+cbuffer DecorationBuffer : register(b9)
+{
+    float3 decoration_submesh_center;
+    float decoration_draw_distance;
+    float decoration_fade_band;
+    float decoration_dither_fade;
+    // An AlphaPass of gr_d3d11_decoration.cpp
+    float decoration_alpha_pass;
+};
+
+static const int decoration_pass_soft_core = 1;
+static const int decoration_pass_soft_edge = 2;
+static const int decoration_pass_hard = 3;
+static const int decoration_pass_hard_coverage = 4;
+// Where a blended material is cut: the solid side writes depth
+static const float decoration_edge_alpha = 0.5f;
+
+// A hard cutout's alpha, grown with the mip level so averaged mips keep the blade's coverage at range
+float decoration_cutout_alpha(float a, float2 uv)
+{
+    float2 tex_size;
+    tex0.GetDimensions(tex_size.x, tex_size.y);
+    float2 texel_dx = ddx(uv * tex_size);
+    float2 texel_dy = ddy(uv * tex_size);
+    float mip = 0.5f * log2(max(dot(texel_dx, texel_dx), dot(texel_dy, texel_dy)));
+    return a * (1.0f + max(mip, 0.0f) * 0.25f);
+}
+
 static const float bayer4x4[16] = {
      0.0f,  8.0f,  2.0f, 10.0f,
     12.0f,  4.0f, 14.0f,  6.0f,
@@ -771,7 +802,8 @@ float4 finish_fragment(VsOutput input, float4 target, float3 tex0_rgb, float3 li
         // by the liquid fog in b0, so the level values come from b6 instead.
         float3 over_color = liq_eye_under > 0.5f ? liq_over_fog_color : fog_color;
         float over_far = liq_eye_under > 0.5f ? liq_over_fog_far : fog_far;
-        float over_fog = over_far < 1e30f ? saturate(over_len / over_far) : 0.0f;
+        float over_near = liq_eye_under > 0.5f ? liq_over_fog_near : fog_near;
+        float over_fog = over_far < 1e30f ? saturate((over_len - over_near) / max(over_far - over_near, 1e-3f)) : 0.0f;
 
         // Below-surface part: per-channel Beer-Lambert, dominant channels of the liquid color
         // surviving longest, in-scatter darkened with depth below the surface.
@@ -831,7 +863,7 @@ float4 finish_fragment(VsOutput input, float4 target, float3 tex0_rgb, float3 li
         }
     }
     else {
-        float fog = saturate(input.world_pos_and_depth.w / fog_far);
+        float fog = saturate((input.world_pos_and_depth.w - fog_near) / max(fog_far - fog_near, 1e-3f));
         target.rgb = fog * fog_color + (1 - fog) * target.rgb;
     }
 
@@ -941,7 +973,29 @@ float4 main(VsOutput input) : SV_TARGET
         target.a *= input.world_pos_and_depth.y < ghost_fill_y ? 1.0f : ghost_alpha_ratio;
     }
 
+#ifdef INSTANCE_LIGHT
+    // Blended materials that write depth hide what is drawn behind their edges later, so by their layer's edges they
+    // are cut at decoration_edge_alpha unblended (hard), or cut and the rest blended without depth after the opaque
+    // objects (soft). Under MSAA a hard cut is alpha to coverage, its alpha sharpened to about a pixel.
+    int alpha_pass = (int)(decoration_alpha_pass + 0.5f);
+    if (alpha_pass == decoration_pass_hard_coverage) {
+        float a = decoration_cutout_alpha(target.a, scaled_uv0);
+        target.a = saturate((a - decoration_edge_alpha) / max(fwidth(a), 1e-4f) + 0.5f);
+        clip(target.a - 1.0f / 255.0f);
+    } else if (alpha_pass == decoration_pass_hard) {
+        clip(decoration_cutout_alpha(target.a, scaled_uv0) - decoration_edge_alpha);
+    } else if (alpha_pass == decoration_pass_soft_edge) {
+        if (target.a >= decoration_edge_alpha || target.a < 1.0f / 255.0f) {
+            discard;
+        }
+    } else if (alpha_pass == decoration_pass_soft_core) {
+        clip(target.a - decoration_edge_alpha);
+    } else {
+        clip(target.a - alpha_test);
+    }
+#else
     clip(target.a - alpha_test);
+#endif
 
     float3 light_color;
 #ifdef INSTANCE_LIGHT

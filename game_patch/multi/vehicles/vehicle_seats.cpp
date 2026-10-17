@@ -970,6 +970,8 @@ af_vehicle_state_attrs vehicle_build_hull_attrs(int vehicle_handle)
     if (st->lock_to_team) {
         attrs.flags |= AF_VEHICLE_STATE_LOCK_TO_TEAM;
     }
+    attrs.yaw_limit_deg = st->yaw_limit_deg;
+    attrs.yaw_base = st->yaw_base;
     if (st->entered_once) {
         attrs.flags |= AF_VEHICLE_STATE_ENTERED_ONCE;
     }
@@ -1482,7 +1484,7 @@ void vehicle_retry_pending_seat_occupancy()
 
 void vehicle_apply_hull_attrs_from_packet(int vehicle_handle, uint8_t team, uint8_t flags,
                                           uint16_t unoccupied_s, const int32_t* seat_rider,
-                                          int seat_count)
+                                          int seat_count, int16_t yaw_base, uint8_t yaw_limit_deg)
 {
     rf::Object* vehicle_obj = rf::obj_from_remote_handle(vehicle_handle);
     // LIVE, not merely synced: entity_on_dead has already erased this hull's record and a packet
@@ -1504,6 +1506,9 @@ void vehicle_apply_hull_attrs_from_packet(int vehicle_handle, uint8_t team, uint
     st.lock_to_team = (flags & AF_VEHICLE_STATE_LOCK_TO_TEAM) != 0;
     st.entered_once = (flags & AF_VEHICLE_STATE_ENTERED_ONCE) != 0;
     st.horn = (flags & AF_VEHICLE_STATE_HORN) != 0;
+    st.yaw_limit_deg = vehicle_hull_is_turret(vehicle) && yaw_limit_deg <= vehicle_turret_max_yaw_limit_deg
+        ? yaw_limit_deg : uint8_t{0};
+    st.yaw_base = yaw_base;
     // Ticked locally from here: the server states the timer once, when it starts.
     if (any_rider || !(flags & AF_VEHICLE_STATE_UNOCCUPIED_RUNNING)) {
         st.unoccupied_deadline_ms = 0;

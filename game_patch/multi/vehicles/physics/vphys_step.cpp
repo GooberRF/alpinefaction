@@ -284,6 +284,14 @@ namespace
                 g_vphys.world->addVehicle(b.raycast_vehicle);
                 b.car_action_in_world = true;
                 b.raycast_vehicle->resetSuspension();
+                // Whatever woke it may have changed the ground, and resetSuspension leaves the old contacts
+                // standing: the handbrake would pin on them before this step's casts land.
+                for (int i = 0; i < b.raycast_vehicle->getNumWheels(); ++i) {
+                    btWheelInfo::RaycastInfo& ri = b.raycast_vehicle->getWheelInfo(i).m_raycastInfo;
+                    ri.m_isInContact = false;
+                    ri.m_groundObject = nullptr;
+                }
+                b.wheel_casts.clear();
             }
         }
         if (b.server_owned && body->getActivationState() == ISLAND_SLEEPING) {
@@ -339,12 +347,23 @@ namespace
     {
         for (const auto& owned : g_vphys.bodies) {
             owned->chassis_ground_contact_pass = false;
+            owned->paired_with_kinematic = false;
         }
+        const auto awake_kinematic = [](const btCollisionObject* obj) {
+            return obj->isKinematicObject() && obj->getActivationState() != ISLAND_SLEEPING;
+        };
         const int nm = g_vphys.dispatcher->getNumManifolds();
         for (int m = 0; m < nm; ++m) {
             const btPersistentManifold* pm = g_vphys.dispatcher->getManifoldByIndexInternal(m);
             VehicleSimBody* car0 = car_body_of(pm->getBody0());
             VehicleSimBody* car1 = car_body_of(pm->getBody1());
+            // Contacts or none, as Bullet's island manager has it.
+            if (car0 && awake_kinematic(pm->getBody1())) {
+                car0->paired_with_kinematic = true;
+            }
+            if (car1 && awake_kinematic(pm->getBody0())) {
+                car1->paired_with_kinematic = true;
+            }
             // getBody1 is the flipped side: its ground normal is the negated m_normalWorldOnB.
             if ((!car0 || car0->chassis_ground_contact_pass)
                 && (!car1 || car1->chassis_ground_contact_pass)) {
@@ -534,6 +553,35 @@ namespace
         }
     }
 
+    // A never-entered hull pinned on its handbrake holds still until something moves it, so it need not
+    // wait out Bullet's 2 s of deactivation time. A hull a mover keeps awake would only flicker.
+    bool vphys_parked_hull_can_sleep(const VehicleSimBody& b)
+    {
+        return b.server_owned && b.handbrake_pin && b.auto_handbrake && !b.paired_with_kinematic;
+    }
+
+    // At the pose the entity was just given, so neither it nor a later wake moves the hull. The wheels come
+    // off here rather than at the next pre-step, so a wake in between takes the same re-attach path.
+    void vphys_body_sleep_now(VehicleSimBody& b)
+    {
+        if (b.car_action_in_world) {
+            g_vphys.world->removeVehicle(b.raycast_vehicle);
+            b.car_action_in_world = false;
+        }
+        btRigidBody* body = b.body;
+        btTransform t;
+        b.motion_state->getWorldTransform(t);
+        body->setWorldTransform(t);
+        body->setInterpolationWorldTransform(t);
+        const btVector3 zero(0.0f, 0.0f, 0.0f);
+        body->setLinearVelocity(zero);
+        body->setAngularVelocity(zero);
+        body->setInterpolationLinearVelocity(zero);
+        body->setInterpolationAngularVelocity(zero);
+        body->clearForces();
+        body->setActivationState(ISLAND_SLEEPING);
+    }
+
     void vphys_body_post_step(BodyStepScratch& s, float step_time, std::vector<VehicleImpact>& impacts)
     {
         VehicleSimBody& b = *s.b;
@@ -614,6 +662,10 @@ namespace
         vehicle_refresh_aim_orient(ep); // the aim outranks this hull-derived seed
         b.written_pos = ep->pos;
         vehicle_note_observed_pose(ep->handle, pos, std::atan2(orient.fvec.x, orient.fvec.z));
+
+        if (vphys_parked_hull_can_sleep(b)) {
+            vphys_body_sleep_now(b);
+        }
     }
 
     void vphys_step_frame()

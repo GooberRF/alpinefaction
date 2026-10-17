@@ -28,6 +28,9 @@ namespace gr::d3d11
         sampler_desc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
         sampler_desc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
         DF_GR_D3D11_CHECK_HR(device_->CreateSamplerState(&sampler_desc, &point_sampler_));
+        // The scope lens samples at sub-pixel offsets
+        sampler_desc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+        DF_GR_D3D11_CHECK_HR(device_->CreateSamplerState(&sampler_desc, &linear_sampler_));
 
         CD3D11_BLEND_DESC blend_desc{D3D11_DEFAULT};
         auto& rt_blend = blend_desc.RenderTarget[0];
@@ -75,7 +78,8 @@ namespace gr::d3d11
 
         if (scene_srv) {
             context->PSSetShaderResources(0, 1, &scene_srv);
-            ID3D11SamplerState* samplers[] = {point_sampler_};
+            const bool scope_glass = (static_cast<unsigned>(data.flags) & scenefx_flag_scope_glass) != 0;
+            ID3D11SamplerState* samplers[] = {scope_glass ? linear_sampler_.get() : point_sampler_.get()};
             context->PSSetSamplers(0, 1, samplers);
         }
 
