@@ -85,6 +85,8 @@ struct AlpineGameSettings
     bool mouse_linear_pitch = true;
     int mouse_scale = 0; // 0=Classic (RF native), 1=Raw (pure degrees), 2=Modern (id Tech/Source 0.022 deg/pixel)
     bool big_hud = false;
+    bool big_hud_health = true;
+    bool big_hud_ammo = true;
     int skip_cutscene_bind_alias = -1;
     bool try_disable_weapon_shake = false;
     bool try_fullbright_characters = false;
