@@ -48,7 +48,7 @@ void bot_context_deactivate(BotContext& ctx)
 bool bot_backend_weapon_busy(rf::Player& pp, rf::Entity& ep)
 {
     if (bot_ctx().is_server_bot) {
-        return rf::entity_is_reloading(&ep) || multi_is_selecting_weapon(&pp);
+        return server_bot_is_reloading(pp, ep) || multi_is_selecting_weapon(&pp);
     }
     return rf::player_fpgun_action_anim_is_playing(&pp, rf::WeaponAction::WA_RELOAD)
         || rf::player_fpgun_action_anim_is_playing(&pp, rf::WeaponAction::WA_HOLSTER)
@@ -74,7 +74,7 @@ void bot_backend_reload(rf::Player& pp)
 {
     if (bot_ctx().is_server_bot) {
         if (const rf::Entity* const ep = rf::entity_from_handle(pp.entity_handle)) {
-            multi_reload_weapon_server_side(&pp, ep->ai.current_primary_weapon);
+            server_bot_reload(pp, ep->ai.current_primary_weapon);
         }
         return;
     }

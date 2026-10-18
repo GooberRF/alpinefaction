@@ -69,6 +69,10 @@ namespace rf
         WA_CUSTOM_START = 0xA,
         WA_CUSTOM_LEAVE = 0xB,
     };
+    constexpr int num_weapon_actions = WA_CUSTOM_LEAVE + 1;
+
+    // weapons.tbl "+Action" names, indexed by WeaponAction
+    static auto& weapon_action_names = addr_as_ref<const char* const[num_weapon_actions]>(0x005A0B00);
 
     static auto& player_fpgun_action_anim_exists = addr_as_ref<bool(int weapon_class, WeaponAction action)>(0x004A9EC0);
     static auto& player_fpgun_action_anim_is_playing = addr_as_ref<bool(Player* pp, WeaponAction action)>(0x004AD8C0);

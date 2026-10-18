@@ -45,6 +45,7 @@
 #include "../multi/server.h"
 #include "../multi/server_internal.h"
 #include "../multi/alpine_packets.h"
+#include "../multi/bots/server_bots.h"
 #include "../multi/awards.h"
 #include "../fflink/fflink.h"
 #include "../misc/misc.h"
@@ -362,6 +363,7 @@ FunHook<void(bool)> level_init_post_hook{
         // After gametype init so the demo snapshot includes koth/bagman/salvage/pit state
         demo_server_on_level_init_post();
         gib_flames_level_init();
+        server_bots_on_level_init();
         // Multiplayer resets the jetpack from its own level-init injection.
         if (!rf::is_multi) {
             jetpack_level_init();

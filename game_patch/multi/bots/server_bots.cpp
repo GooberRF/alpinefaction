@@ -15,6 +15,7 @@
 #include "../../misc/waypoints.h"
 #include "../../os/os.h"
 #include "../../rf/entity.h"
+#include "../../rf/file/file.h"
 #include "../../rf/gameseq.h"
 #include "../../rf/level.h"
 #include "../../rf/localize.h"
@@ -23,14 +24,17 @@
 #include "../../rf/os/frametime.h"
 #include "../../rf/os/timestamp.h"
 #include "../../rf/player/player.h"
+#include "../../rf/player/player_fpgun.h"
 #include "../../rf/sound/sound.h"
 #include "../../rf/weapon.h"
 #include "../../sound/sound.h"
 #include <common/rfproto.h>
 #include <common/utils/list-utils.h>
+#include <common/utils/string-utils.h>
 #include <common/version/version.h>
 #include <patch_common/CallHook.h>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -49,6 +53,14 @@ struct ServerBotPendingThrow
     bool alt_fire = false;
 };
 
+// A wait for one entity and weapon that a player's client would still be in.
+struct ServerBotWeaponHold
+{
+    rf::Timestamp done;
+    int entity_handle = -1;
+    int weapon_type = -1;
+};
+
 struct ServerBot
 {
     BotContext ctx;
@@ -56,6 +68,8 @@ struct ServerBot
     float pending_dt = 0.0f;
     float think_wait = 0.0f;
     ServerBotPendingThrow pending_throw;
+    ServerBotWeaponHold fire_anim;
+    ServerBotWeaponHold client_reload;
 };
 
 namespace
@@ -93,15 +107,129 @@ void server_bot_apply_config(BotContext& ctx, const ServerBotConfig& config)
         &config.personality_overrides, &config.skill_overrides);
 }
 
+// An .rfa anim starts with this header; its length (0x0051C2E0) is (end - start) / 160 / 30 s.
+struct RfaHeader
+{
+    int32_t signature;
+    int32_t version;
+    float pos_reduction;
+    float rot_reduction;
+    int32_t start_time;
+    int32_t end_time;
+};
+static_assert(sizeof(RfaHeader) == 0x18);
+constexpr int32_t k_rfa_signature = 0x46564D56; // "VMVF"
+constexpr int k_rfa_ticks_per_sec = 4800;
+constexpr int64_t k_rfa_max_ticks = 10 * k_rfa_ticks_per_sec;
+// A player's own reload lasts 2/3 of the clip reload time (0x0042553F: x 666.6 ms).
+constexpr float k_client_reload_ms_per_clip_reload_sec = 666.6f;
+
+using FpgunAnimLengths = std::array<std::array<int, rf::num_weapon_actions>, rf::max_weapon_types>;
+
+FpgunAnimLengths unread_fpgun_anim_lengths()
+{
+    FpgunAnimLengths lengths{};
+    for (auto& row : lengths) {
+        row.fill(-1);
+    }
+    return lengths;
+}
+
+// Per weapon type and action, -1 until read; cleared at level init, as a level's packfile can replace the anims.
+FpgunAnimLengths g_fpgun_anim_ms = unread_fpgun_anim_lengths();
+
+int rfa_length_ms(const std::string& filename)
+{
+    rf::File file;
+    if (file.open(filename.c_str()) != 0) {
+        return 0;
+    }
+    RfaHeader header{};
+    const int bytes_read = file.read(&header, sizeof(header));
+    file.close();
+    if (bytes_read != sizeof(header) || header.signature != k_rfa_signature) {
+        return 0;
+    }
+    const int64_t ticks = std::clamp<int64_t>(int64_t{header.end_time} - header.start_time, 0, k_rfa_max_ticks);
+    return static_cast<int>(ticks * 1000 / k_rfa_ticks_per_sec);
+}
+
+// A dedicated server loads no first-person weapon meshes, so the lengths come from the anim files a client plays
+// (weapons.tbl names them .mvf, the packfiles hold .rfa).
+int fpgun_action_anim_ms(const int weapon_type, const rf::WeaponAction action)
+{
+    int& length = g_fpgun_anim_ms[weapon_type][action];
+    if (length < 0) {
+        length = 0;
+        const rf::WeaponInfo& info = rf::weapon_types[weapon_type];
+        const int num_actions = std::min(info.num_first_person_action_anims,
+            static_cast<int>(std::size(info.first_person_action_anims)));
+        for (int i = 0; i < num_actions; ++i) {
+            const rf::WeaponStateAction& anim = info.first_person_action_anims[i];
+            if (string_iequals(anim.name.c_str(), rf::weapon_action_names[action])) {
+                length = rfa_length_ms(std::string{get_filename_without_ext(anim.anim_name.c_str())} + ".rfa");
+                break;
+            }
+        }
+    }
+    return length;
+}
+
+void server_bot_set_hold(ServerBotWeaponHold& hold, const rf::Entity& ep, const int weapon_type, const int ms)
+{
+    hold.done.set(ms);
+    hold.entity_handle = ep.handle;
+    hold.weapon_type = weapon_type;
+}
+
+// Milliseconds left; a hold for another entity or weapon is dropped.
+int server_bot_hold_left(ServerBotWeaponHold& hold, const rf::Entity& ep)
+{
+    if (!hold.done.valid()) {
+        return 0;
+    }
+    if (hold.entity_handle != ep.handle || hold.weapon_type != ep.ai.current_primary_weapon) {
+        hold = {};
+        return 0;
+    }
+    return std::max(hold.done.time_until(), 0);
+}
+
+void server_bot_note_fire_anim(ServerBot& bot, const rf::Entity& ep, const int weapon_type, const bool alt_fire)
+{
+    server_bot_set_hold(bot.fire_anim, ep, weapon_type,
+        fpgun_action_anim_ms(weapon_type, alt_fire ? rf::WA_ALT_FIRE : rf::WA_FIRE));
+}
+
+bool server_bot_weapon_reloading(ServerBot& bot, rf::Entity& ep)
+{
+    return rf::entity_is_reloading(&ep) || server_bot_hold_left(bot.client_reload, ep) > 0;
+}
+
+// A client's next shot after a reload waits out its fpgun fire anim, then its own reload and the fpgun reload anim.
+void server_bot_reload(ServerBot& bot, rf::Player& pp, const int weapon_type)
+{
+    rf::Entity* const ep = rf::entity_from_handle(pp.entity_handle);
+    const bool was_reloading = ep && rf::entity_is_reloading(ep);
+    multi_reload_weapon_server_side(&pp, weapon_type);
+    if (!ep || was_reloading || !rf::entity_is_reloading(ep)) {
+        return;
+    }
+    const int engine_ms = static_cast<int>(
+        rf::weapon_types[weapon_type].clip_reload_time_secs * k_client_reload_ms_per_clip_reload_sec);
+    const int reload_ms = std::max(engine_ms, fpgun_action_anim_ms(weapon_type, rf::WA_RELOAD));
+    server_bot_set_hold(bot.client_reload, *ep, weapon_type, server_bot_hold_left(bot.fire_anim, *ep) + reload_ms);
+}
+
 // The fire validator refuses an empty clip but does not check a reload in progress, so a server bot waits out its
 // reload and starts one for a spent clip itself.
-bool server_bot_clip_ready(rf::Player& pp, rf::Entity& ep, const int weapon_type)
+bool server_bot_clip_ready(ServerBot& bot, rf::Player& pp, rf::Entity& ep, const int weapon_type)
 {
-    if (rf::entity_is_reloading(&ep)) {
+    if (server_bot_weapon_reloading(bot, ep)) {
         return false;
     }
     if (rf::weapon_uses_clip(weapon_type) && ep.ai.clip_ammo[weapon_type] <= 0) {
-        multi_reload_weapon_server_side(&pp, weapon_type);
+        server_bot_reload(bot, pp, weapon_type);
         return false;
     }
     return true;
@@ -121,6 +249,7 @@ void server_bot_fire(rf::Entity& ep, const int weapon_type, const bool alt_fire)
 void server_bot_throw(ServerBot& bot, rf::Entity& ep, const int weapon_type, const bool alt_fire)
 {
     rf::entity_play_attack_anim(&ep, alt_fire);
+    server_bot_note_fire_anim(bot, ep, weapon_type, alt_fire);
     const int delay_ms = bot_weapon_create_delay_ms(weapon_type, alt_fire);
     if (delay_ms <= 0) {
         server_bot_fire(ep, weapon_type, alt_fire);
@@ -175,7 +304,7 @@ void server_bot_apply_fire(ServerBot& bot, rf::Player& pp, rf::Entity& ep, const
     const bool weapon_is_on = rf::entity_weapon_is_on(ep.handle, weapon_type);
 
     if (rf::weapon_is_on_off_weapon(weapon_type, alt_fire)) {
-        if (down && !weapon_is_on && !rf::entity_is_reloading(&ep) && !multi_is_selecting_weapon(&pp)) {
+        if (down && !weapon_is_on && !server_bot_weapon_reloading(bot, ep) && !multi_is_selecting_weapon(&pp)) {
             multi_turn_weapon_on(&ep, &pp, alt_fire);
         }
         else if (!down && weapon_is_on) {
@@ -193,7 +322,7 @@ void server_bot_apply_fire(ServerBot& bot, rf::Player& pp, rf::Entity& ep, const
     const bool trigger = rf::weapon_is_semi_automatic(weapon_type) ? just_pressed : down && (thought || !splash);
     if (!trigger
         || (ep.ai.next_fire_primary.valid() && !ep.ai.next_fire_primary.elapsed())
-        || !server_bot_clip_ready(pp, ep, weapon_type)) {
+        || !server_bot_clip_ready(bot, pp, ep, weapon_type)) {
         return;
     }
     if (multi_weapon_fire_is_thrown(weapon_type, alt_fire)) {
@@ -201,6 +330,7 @@ void server_bot_apply_fire(ServerBot& bot, rf::Player& pp, rf::Entity& ep, const
     }
     else {
         server_bot_fire(ep, weapon_type, alt_fire);
+        server_bot_note_fire_anim(bot, ep, weapon_type, alt_fire);
     }
     // Thrown weapons are created inline by the remote-fire handler, which never re-arms the fire wait; a player's
     // wait starts at the press.
@@ -613,6 +743,22 @@ ServerBot* server_bot_from_entity(const rf::Entity* entity)
     return server_bot_from_player(rf::player_from_entity_handle(entity->handle));
 }
 
+bool server_bot_is_reloading(const rf::Player& pp, rf::Entity& ep)
+{
+    ServerBot* const bot = server_bot_from_player(&pp);
+    return bot ? server_bot_weapon_reloading(*bot, ep) : rf::entity_is_reloading(&ep);
+}
+
+void server_bot_reload(rf::Player& pp, const int weapon_type)
+{
+    if (ServerBot* const bot = server_bot_from_player(&pp)) {
+        server_bot_reload(*bot, pp, weapon_type);
+    }
+    else {
+        multi_reload_weapon_server_side(&pp, weapon_type);
+    }
+}
+
 int server_bots_num_evictable()
 {
     return static_cast<int>(std::count_if(g_server_bots.begin(), g_server_bots.end(), [](const auto& bot) {
@@ -673,6 +819,11 @@ void server_bots_on_player_destroyed(const rf::Player* const player)
         --g_server_bot_think_cursor;
     }
     g_server_bots.erase(it);
+}
+
+void server_bots_on_level_init()
+{
+    g_fpgun_anim_ms = unread_fpgun_anim_lengths();
 }
 
 void server_bots_on_multi_stop()
