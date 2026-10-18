@@ -404,6 +404,16 @@ struct AlpineGameSettings
         freelook_cam_slide = std::clamp(value, min_freelook_cam_slide, max_freelook_cam_slide);
     }
     bool gib_flames = true;
+    bool shell_casings = true;
+    bool shell_casings_collide = true;
+    static constexpr int min_shell_casing_lifetime_ms = 1000;
+    static constexpr int max_shell_casing_lifetime_ms = 10000;
+    int shell_casing_lifetime_ms = 2000;
+    void set_shell_casing_lifetime_ms(int lifetime_ms)
+    {
+        shell_casing_lifetime_ms = std::clamp(lifetime_ms, min_shell_casing_lifetime_ms, max_shell_casing_lifetime_ms);
+    }
+    bool ejected_magazines = true;
     bool real_armor_values = false;
     bool always_show_spectators = false;
     RemoteServerCfgPopup::DisplayMode remote_server_cfg_display_mode =

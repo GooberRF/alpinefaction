@@ -348,6 +348,22 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.gib_flames = std::stoi(settings["GibFlames"]);
         processed_keys.insert("GibFlames");
     }
+    if (settings.count("ShellCasings")) {
+        g_alpine_game_config.shell_casings = std::stoi(settings["ShellCasings"]);
+        processed_keys.insert("ShellCasings");
+    }
+    if (settings.count("ShellCasingsCollide")) {
+        g_alpine_game_config.shell_casings_collide = std::stoi(settings["ShellCasingsCollide"]);
+        processed_keys.insert("ShellCasingsCollide");
+    }
+    if (settings.count("ShellCasingLifetimeMs")) {
+        g_alpine_game_config.set_shell_casing_lifetime_ms(std::stoi(settings["ShellCasingLifetimeMs"]));
+        processed_keys.insert("ShellCasingLifetimeMs");
+    }
+    if (settings.count("EjectedMagazines")) {
+        g_alpine_game_config.ejected_magazines = std::stoi(settings["EjectedMagazines"]);
+        processed_keys.insert("EjectedMagazines");
+    }
 
     if (settings.count("ShowFPGun")) {
         player->settings.render_fpgun = std::stoi(settings["ShowFPGun"]);
@@ -1574,6 +1590,10 @@ void alpine_player_settings_save(rf::Player* player)
     file << "GibLifetimeMs=" << g_alpine_game_config.gib_lifetime_ms << "\n";
     file << "FreelookCamSlide=" << g_alpine_game_config.freelook_cam_slide << "\n";
     file << "GibFlames=" << g_alpine_game_config.gib_flames << "\n";
+    file << "ShellCasings=" << g_alpine_game_config.shell_casings << "\n";
+    file << "ShellCasingsCollide=" << g_alpine_game_config.shell_casings_collide << "\n";
+    file << "ShellCasingLifetimeMs=" << g_alpine_game_config.shell_casing_lifetime_ms << "\n";
+    file << "EjectedMagazines=" << g_alpine_game_config.ejected_magazines << "\n";
     file << "ShowFPGun=" << player->settings.render_fpgun << "\n";
     file << "AutoswitchWeapons=" << player->settings.autoswitch_weapons << "\n";
     file << "NeverAutoswitchExplosives=" << player->settings.dont_autoswitch_to_explosives << "\n";

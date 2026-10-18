@@ -376,6 +376,7 @@ FunHook<void(bool)> level_init_post_hook{
         // After gametype init so the demo snapshot includes koth/bagman/salvage/pit state
         demo_server_on_level_init_post();
         gib_flames_level_init();
+        shell_casings_level_init();
         // Multiplayer resets the jetpack from its own level-init injection.
         if (!rf::is_multi) {
             jetpack_level_init();

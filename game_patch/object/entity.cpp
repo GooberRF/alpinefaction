@@ -3,8 +3,11 @@
 #include <patch_common/CallHook.h>
 #include <patch_common/AsmWriter.h>
 #include <patch_common/MemUtils.h>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <deque>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -700,6 +703,124 @@ ConsoleCommand2 cl_gibflames_cmd{
     "Toggle flames on gib chunks",
 };
 
+// The live shell casings, oldest first: past the cap the oldest still alive goes.
+struct ShellCasingRecord
+{
+    int handle;
+    int64_t spawn_ms;
+};
+static std::deque<ShellCasingRecord> g_shell_casings;
+static constexpr std::size_t max_live_shell_casings = 500;
+
+void shell_casings_level_init()
+{
+    g_shell_casings.clear();
+}
+
+// Spawns one ejected shell casing as cosmetic local debris.
+FunHook<void(rf::Entity*)> entity_eject_shell_hook{
+    0x0042A1D0,
+    [](rf::Entity* ep) {
+        if (rf::is_dedicated_server || !g_alpine_game_config.shell_casings) {
+            return;
+        }
+        // debris_create appends to the debris list, so a casing made here is its new tail.
+        const rf::Debris* const tail_before = rf::debris_list.prev;
+        entity_eject_shell_hook.call_target(ep);
+        const rf::Debris* const tail = rf::debris_list.prev;
+        if (tail == tail_before || tail == &rf::debris_list) {
+            return;
+        }
+        const int64_t now = timer::get_i64(1000);
+        g_shell_casings.push_back({tail->handle, now});
+        while (g_shell_casings.size() > max_live_shell_casings) {
+            const ShellCasingRecord oldest = g_shell_casings.front();
+            g_shell_casings.pop_front();
+            // Older than any casing lives: already gone, and its handle may since name another object.
+            if (now - oldest.spawn_ms > AlpineGameSettings::max_shell_casing_lifetime_ms) {
+                continue;
+            }
+            rf::Object* casing = rf::obj_from_handle(oldest.handle);
+            if (casing && casing->type == rf::OT_DEBRIS) {
+                rf::obj_flag_dead(casing);
+            }
+        }
+    },
+};
+
+// Just past the stock lifetime (0.8 s, 1.2 s for a player's) going into the casing's DebrisCreateStruct.
+CodeInjection entity_eject_shell_lifetime_injection{
+    0x0042A4F0,
+    [](auto& regs) {
+        addr_as_ref<int>(regs.esp + 0x64) = g_alpine_game_config.shell_casing_lifetime_ms;
+    },
+};
+
+// Keep the PF_COLLIDE_WORLD flag instead of removing it like the stock function does.
+CodeInjection entity_eject_shell_collide_injection{
+    0x0042A565,
+    [](auto& regs) {
+        if (g_alpine_game_config.shell_casings_collide) {
+            regs.edx = static_cast<int32_t>(regs.edx) | rf::PF_COLLIDE_WORLD;
+        }
+    },
+};
+
+// Spawns the local player's ejected magazine as debris, from the reload's eject timer.
+FunHook<void(rf::Entity*, rf::WeaponInfo*)> entity_eject_magazine_hook{
+    0x00419DF0,
+    [](rf::Entity* ep, rf::WeaponInfo* info) {
+        if (g_alpine_game_config.ejected_magazines) {
+            entity_eject_magazine_hook.call_target(ep, info);
+        }
+    },
+};
+
+ConsoleCommand2 cl_shellcasings_cmd{
+    "cl_shellcasings",
+    [](std::optional<bool> enabled) {
+        g_alpine_game_config.shell_casings = enabled.value_or(!g_alpine_game_config.shell_casings);
+        rf::console::print("Ejected shell casings are {}",
+            g_alpine_game_config.shell_casings ? "enabled" : "disabled");
+    },
+    "Toggle shell casings ejected by firing weapons",
+    "cl_shellcasings [bool]",
+};
+
+ConsoleCommand2 cl_shellcollide_cmd{
+    "cl_shellcollide",
+    [](std::optional<bool> enabled) {
+        g_alpine_game_config.shell_casings_collide = enabled.value_or(!g_alpine_game_config.shell_casings_collide);
+        rf::console::print("Shell casings colliding with the level is {}",
+            g_alpine_game_config.shell_casings_collide ? "enabled" : "disabled");
+    },
+    "Toggle ejected shell casings bouncing off the level instead of falling through it",
+    "cl_shellcollide [bool]",
+};
+
+ConsoleCommand2 cl_shelllifetime_cmd{
+    "cl_shelllifetime",
+    [](std::optional<float> lifetime_s) {
+        if (lifetime_s && std::isfinite(*lifetime_s)) {
+            g_alpine_game_config.set_shell_casing_lifetime_ms(static_cast<int>(std::lround(*lifetime_s * 1000.0f)));
+        }
+        rf::console::print("Shell casing lifetime is {:.1f} s",
+            g_alpine_game_config.shell_casing_lifetime_ms / 1000.0f);
+    },
+    "Set ejected shell casing lifetime in seconds (1-10)",
+    "cl_shelllifetime [seconds]",
+};
+
+ConsoleCommand2 cl_magazines_cmd{
+    "cl_magazines",
+    [](std::optional<bool> enabled) {
+        g_alpine_game_config.ejected_magazines = enabled.value_or(!g_alpine_game_config.ejected_magazines);
+        rf::console::print("Ejected magazines are {}", g_alpine_game_config.ejected_magazines ? "enabled" : "disabled");
+    },
+    "Toggle magazines ejected when you reload",
+    "cl_magazines [bool]",
+};
+
 // makes some entities red - unfinished
 CodeInjection player_create_entity_patch {
     0x004A4234,
@@ -966,6 +1087,12 @@ void entity_do_patch()
     // in entity_eject_shell. Fixed debris pool being exhausted when local player is dead.
     AsmWriter(0x0042A223, 0x0042A232).mov(asm_regs::ecx, {&rf::local_player});
 
+    // Toggle ejected shell casings and magazines, and let casings bounce off the level
+    entity_eject_shell_hook.install();
+    entity_eject_shell_lifetime_injection.install();
+    entity_eject_shell_collide_injection.install();
+    entity_eject_magazine_hook.install();
+
     // Fix move sound not being muted if entity is created hidden (example: jeep in L18S3)
     entity_process_post_hidden_injection.install();
 
@@ -1003,6 +1130,10 @@ void entity_do_patch()
     cl_gibvelocityscale_cmd.register_cmd();
     cl_giblifetimems_cmd.register_cmd();
     cl_gibflames_cmd.register_cmd();
+    cl_shellcasings_cmd.register_cmd();
+    cl_shellcollide_cmd.register_cmd();
+    cl_shelllifetime_cmd.register_cmd();
+    cl_magazines_cmd.register_cmd();
     cl_painsounds_cmd.register_cmd();
     cl_footsteps_cmd.register_cmd();
 }

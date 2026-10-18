@@ -130,6 +130,8 @@ Version 1.5.0 (Trillium): Not yet released
   - Add `dbg_particles` overlay and `dbg_particles_log` to measure particle performance, and `dbg_particlewarmup` to toggle replaying a hidden particle emitter when it comes back into view
 - Raise the pitch of hit sounds as consecutive hits land, toggleable with `cl_hitsounds_streakpitch`
 - Raise the limit of simultaneously playing sounds from 64 to 127
+- Ejected shell casings now bounce off the level and play their impact sounds instead of falling through it, toggleable with `cl_shellcollide`, and last 2 seconds by default, adjustable with `cl_shelllifetime`
+- Add `cl_shellcasings` and `cl_magazines` to toggle ejected shell casings and magazines
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color
