@@ -344,8 +344,9 @@ static_assert(sizeof(VehicleUseReqPayload) == 5);
 enum af_vehicle_crush_kind : uint8_t
 {
     AF_VEHICLE_CRUSH_RUNOVER = 0, // victim_handle names who the hull ran over
-    AF_VEHICLE_CRUSH_WALL = 1,    // impact_dv: the hull hit the level or a mover
+    AF_VEHICLE_CRUSH_WALL = 1,    // impact_dv: the hull hit the level, a mover or a prop
     AF_VEHICLE_CRUSH_GROUND = 2,  // impact_dv: the hull landed
+    AF_VEHICLE_CRUSH_SCRAPE = 3,  // impact_dv: units of slide past the class's free speed, in wall terms
 };
 
 // Roadkill or hull impact report from the hull's driver; handles are server handles, and the server
@@ -355,7 +356,7 @@ struct VehicleCrushReqPayload
     int32_t vehicle_handle = -1;
     int32_t victim_handle = -1; // -1 unless kind is AF_VEHICLE_CRUSH_RUNOVER
     uint8_t kind = AF_VEHICLE_CRUSH_RUNOVER;
-    float impact_dv = 0.0f;     // u/s along the contact normal; 0 for a run-over
+    float impact_dv = 0.0f;     // u/s along the contact normal, or a scrape's slide; 0 for a run-over
 };
 static_assert(sizeof(VehicleCrushReqPayload) == 13);
 
@@ -699,8 +700,15 @@ struct af_vehicle_health_packet
     int32_t secondary_ammo;
     int8_t hit_dir[3];      // world travel direction of the latest attributed hit, x127; all zero = none
     uint16_t refill_ms[2];  // per weapon slot, ms until its ammo refills; 0 = none pending
+    uint8_t flags;          // af_vehicle_health_flags
 };
-static_assert(sizeof(af_vehicle_health_packet) == sizeof(RF_GamePacketHeader) + 27);
+static_assert(sizeof(af_vehicle_health_packet) == sizeof(RF_GamePacketHeader) + 28);
+
+enum af_vehicle_health_flags : uint8_t
+{
+    // Every blow noted on the hull since the last packet was scrape damage: the riders get no damage flash.
+    AF_VEHICLE_HEALTH_SCRAPE_ONLY = 0x1,
+};
 
 // Hull angles the stock obj_update row has no slot for; tick keys them to the matching ObjInterp keyframe.
 struct af_vehicle_orient_packet
@@ -1072,7 +1080,8 @@ void af_send_vehicle_health_packet(rf::Player* player, int vehicle_handle, float
                                    int primary_ammo, int secondary_ammo, const uint16_t refill_ms[2]);
 void af_send_vehicle_health_packet_to_all(int vehicle_handle, float life, float max_life,
                                           int primary_ammo, int secondary_ammo, const uint16_t refill_ms[2],
-                                          bool is_reliable, const rf::Vector3* hit_dir = nullptr);
+                                          bool is_reliable, const rf::Vector3* hit_dir = nullptr,
+                                          uint8_t flags = 0);
 void af_process_vehicle_health_packet(const void* data, size_t len, const rf::NetAddr&);
 // client -> server: the hull pitch/bank of the vehicle the local player drives
 void af_send_vehicle_orient_request(int vehicle_handle, uint16_t tick, int16_t pitch, int16_t bank,
@@ -1129,6 +1138,7 @@ void af_send_stats_pssk(const std::string& pssk);
 void af_send_vehicle_use_request(int vehicle_handle, uint8_t seat_index);
 void af_send_vehicle_crush_report(int vehicle_handle, int victim_handle);
 void af_send_vehicle_crash_report(int vehicle_handle, bool ground, float impact_dv);
+void af_send_vehicle_scrape_report(int vehicle_handle, float slide_excess);
 
 // vote system (client -> server)
 void af_send_vote_call(const AfVoteCallParams& params);

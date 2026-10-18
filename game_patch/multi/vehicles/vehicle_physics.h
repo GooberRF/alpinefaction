@@ -124,6 +124,27 @@ bool vehicle_physics_server_owns(int vehicle_handle);
 void vehicle_physics_entity_hull_box(const rf::Entity* ep, rf::Vector3* out_half,
                                      rf::Vector3* out_center);
 
+// The radius of a flyer's or sub's physics sphere, which holds its origin this far off any surface; 0 for a
+// wheeled hull or anything the physics does not shape.
+float vehicle_physics_hull_standoff(const rf::Entity* ep);
+
+// A hull surface at or within this distance of the level is touching it.
+inline constexpr float vehicle_physics_touch_dist = 0.02f;
+
+struct VehiclePhysicsContact
+{
+    rf::Vector3 point;       // on the surface
+    rf::Vector3 normal;      // out of the surface
+    rf::Vector3 surface_vel; // the surface's own velocity there: a mover's, else zero
+};
+
+// The level, mover and prop surfaces a sphere at center touches in this machine's vehicle physics world - what a
+// hull body of that radius collides with, to vehicle_physics_touch_dist; props exist only around the hulls this
+// machine simulates. One contact per surface, however finely it is split into triangles. Fills at most
+// max_contacts; 0 when there is no world.
+int vehicle_physics_sphere_contacts(const rf::Vector3& center, float radius, VehiclePhysicsContact* out,
+                                    int max_contacts);
+
 // The SERVER body's live velocity; p_data.vel is deliberately zero for one, so it is no source.
 bool vehicle_physics_server_velocity(int vehicle_handle, rf::Vector3* out);
 

@@ -879,12 +879,21 @@ void vehicle_server_stop_fire(rf::Entity* vehicle)
 // the demo recorder is a virtual observer player.
 void vehicle_broadcast_health(rf::Entity* vehicle, bool is_reliable, const rf::Vector3* hit_dir)
 {
+    // Every send takes the blows noted since the last one. A settle keeps a scrape-only stream's word: it carries
+    // the scrape residue the stream's 1-life floor held back, or a lost streamed drop.
+    VehicleHealthSync& sync = g_vehicle_state.health_sync[vehicle->handle];
+    const bool scrape_only = (sync.scraped || sync.last_streamed_scrape_only) && !sync.hurt_unscraped;
+    sync.scraped = false;
+    sync.hurt_unscraped = false;
+    sync.last_streamed_scrape_only = !is_reliable && scrape_only;
+    const uint8_t flags = scrape_only ? AF_VEHICLE_HEALTH_SCRAPE_ONLY : 0;
+
     uint16_t refill_ms[2];
     vehicle_wire_refill_ms(vehicle, timer::get_i64(1000), refill_ms);
     af_send_vehicle_health_packet_to_all(vehicle->handle, vehicle->life, vehicle_hud_max_life(vehicle),
                                          vehicle_weapon_ammo(vehicle, vehicle->ai.current_primary_weapon),
                                          vehicle_weapon_ammo(vehicle, vehicle->ai.current_secondary_weapon),
-                                         refill_ms, is_reliable, hit_dir);
+                                         refill_ms, is_reliable, hit_dir, flags);
 }
 
 // Streaming UNRELIABLE, settling RELIABLE: each unreliable packet supersedes the last, so only the
@@ -949,6 +958,7 @@ void vehicle_drop_combat_state(int vehicle_handle)
     g_vehicle_state.lethal_killer.erase(vehicle_handle);
     g_vehicle_state.observed_speed.erase(vehicle_handle);
     g_vehicle_state.crash_cooldown.erase(vehicle_handle);
+    g_vehicle_state.scrape.erase(vehicle_handle);
     g_vehicle_state.health.erase(vehicle_handle);
     g_vehicle_state.ammo_mirror.erase(vehicle_handle);
     g_vehicle_state.hull_state.erase(vehicle_handle);
@@ -1917,7 +1927,7 @@ void vehicle_rider_damage_feedback(int vehicle_handle, const rf::Vector3* hit_di
 
 void vehicle_store_health_from_packet(int vehicle_handle, float life, float max_life, int primary_ammo,
                                       int secondary_ammo, uint16_t primary_refill_ms, uint16_t secondary_refill_ms,
-                                      const rf::Vector3* hit_dir)
+                                      const rf::Vector3* hit_dir, bool scrape_only)
 {
     rf::Object* obj = rf::obj_from_remote_handle(vehicle_handle);
     if (!obj) {
@@ -1931,7 +1941,8 @@ void vehicle_store_health_from_packet(int vehicle_handle, float life, float max_
     const auto prev = g_vehicle_state.health.find(obj->handle);
     const bool hull_hurt = prev != g_vehicle_state.health.end() && life < prev->second.life;
     g_vehicle_state.health[obj->handle] = VehicleHealth{life, max_life};
-    if (hull_hurt) {
+    // A scrape says so with its scrape effects and the gauge, not a flash every quarter second.
+    if (hull_hurt && !scrape_only) {
         vehicle_rider_damage_feedback(obj->handle, hit_dir);
     }
 

@@ -581,7 +581,8 @@ struct GibConfig
 
 struct VehicleConfig
 {
-    // Hulls take damage from hitting the level or a mover hard, and from hard landings.
+    // Hulls take damage from hitting the level, a mover or a prop hard, from hard landings, and (the fighter)
+    // from scraping along the level.
     bool crash_damage = true;
 };
 

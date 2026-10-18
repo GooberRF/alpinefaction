@@ -379,6 +379,56 @@ float vehicle_collision_reach_along(rf::Entity* ep, const rf::Vector3& dir)
     return reach;
 }
 
+int vehicle_hull_probe(rf::Entity* ep, const rf::Vector3& vel, bool flyer, bool ends_only,
+                       VehicleHullProbeHit (&out)[vehicle_hull_probe_max_hits])
+{
+    int num_hits = 0;
+    const auto add_hit = [&](const rf::Vector3& point, const rf::Vector3& normal, const rf::Vector3& rel_vel,
+                             int material) {
+        VehicleHullProbeHit& hit = out[num_hits++];
+        hit.point = point;
+        hit.normal = normal;
+        hit.along = rel_vel - normal * rel_vel.dot_prod(normal);
+        hit.along_speed = hit.along.len();
+        hit.material = material;
+    };
+    // A flyer's rays leave movers to its sphere, which measures the slide against their own motion.
+    const auto cast = [&](const rf::Vector3& dir, float reach) {
+        rf::PCollisionOut o{};
+        if (vphys_collide_solid_segment(ep->pos, ep->pos + dir * reach, rf::CF_PROCESS_INVISIBLE_FACES, o)
+            && (!flyer || o.obj_handle < 0)) {
+            add_hit(o.hit_point, o.hit_normal, vel, o.material);
+        }
+    };
+    if (!flyer) {
+        // A car's sides only ever light effects.
+        constexpr float car_gap = 0.15f;
+        for (const rf::Vector3& dir : {ep->orient.rvec, ep->orient.rvec * -1.0f}) {
+            cast(dir, vehicle_collision_reach_along(ep, dir) + car_gap);
+        }
+        return num_hits;
+    }
+    // The body itself, at any angle: what its sphere touches is what its physics and its scrape damage feel.
+    const float standoff = vehicle_physics_hull_standoff(ep);
+    constexpr int end_rays = 2;
+    if (!ends_only && standoff > 0.0f) {
+        VehiclePhysicsContact contacts[vehicle_hull_probe_max_hits - end_rays];
+        const int num_contacts =
+            vehicle_physics_sphere_contacts(ep->pos, standoff, contacts, static_cast<int>(std::size(contacts)));
+        for (int i = 0; i < num_contacts; ++i) {
+            add_hit(contacts[i].point, contacts[i].normal, vel - contacts[i].surface_vel, rf::MATERIAL_DEFAULT);
+        }
+    }
+    // The nose and tail (end_rays of them), where the hull reaches past its sphere.
+    for (const rf::Vector3& dir : {ep->orient.fvec, ep->orient.fvec * -1.0f}) {
+        const float reach = vehicle_collision_reach_along(ep, dir);
+        if (reach > standoff) {
+            cast(dir, reach + vehicle_physics_touch_dist);
+        }
+    }
+    return num_hits;
+}
+
 bool vehicle_hull_is_turret(const rf::Entity* ep)
 {
     return ep && ep->info && ep->info->use_function == rf::ENTITY_USE_TURRET;
@@ -494,6 +544,8 @@ void vehicle_client_do_frame()
         std::erase_if(g_vehicle_state.orient, handle_is_gone);
         std::erase_if(g_vehicle_state.orient_sent, handle_is_gone);
         std::erase_if(g_vehicle_state.observed_speed, handle_is_gone);
+        std::erase_if(g_vehicle_state.crash_cooldown, handle_is_gone);
+        std::erase_if(g_vehicle_state.scrape, handle_is_gone);
         // The mirror the auto-return label and the entry rules read; nothing else drops it on a
         // client, since vehicle_do_frame's own sweep is server side.
         std::erase_if(g_vehicle_state.hull_state, handle_is_gone);

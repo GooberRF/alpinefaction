@@ -98,6 +98,24 @@ bool vehicle_fp_apc_aim_split(const rf::Entity* vehicle, const rf::Entity* drive
 // How far the hull's cspheres reach beyond the origin along dir (a UNIT vector).
 float vehicle_collision_reach_along(rf::Entity* ep, const rf::Vector3& dir);
 
+// One surface the hull scrape probe found the hull touching: a ray's hit or a sphere contact.
+struct VehicleHullProbeHit
+{
+    rf::Vector3 point;
+    rf::Vector3 normal;
+    rf::Vector3 along; // the hull velocity's part along the surface; a sphere contact's is against a mover's motion
+    float along_speed = 0.0f;
+    int material = 0; // rays only: a sphere contact is MATERIAL_DEFAULT
+};
+inline constexpr int vehicle_hull_probe_max_hits = 8;
+
+// The scrape probe the effects and the scrape damage share, with vel the hull's velocity. A flyer: what its
+// physics sphere touches (the vehicle physics world's level, movers and props, at any angle; not with ends_only),
+// and rays along its nose and tail where the hull reaches past that sphere. A car: rays along its sides. Returns
+// how many of out it filled.
+int vehicle_hull_probe(rf::Entity* ep, const rf::Vector3& vel, bool flyer, bool ends_only,
+                       VehicleHullProbeHit (&out)[vehicle_hull_probe_max_hits]);
+
 // A synced use_function-1 vehicle that is neither PF_AUTOMOBILE nor water-bound.
 bool vehicle_is_flyer(rf::Entity* ep);
 
@@ -252,10 +270,11 @@ void vehicle_apply_orient_from_packet(int vehicle_handle, uint16_t tick, int16_t
                                       int16_t bank_q, int16_t aim_pitch_q, int16_t aim_head_q,
                                       int8_t steer_q);
 
-// Client: store an af_vehicle_health update, and the values the HUD shows for a vehicle.
+// Client: store an af_vehicle_health update, and the values the HUD shows for a vehicle. A scrape_only drop
+// gives the riders no damage flash.
 void vehicle_store_health_from_packet(int vehicle_handle, float life, float max_life, int primary_ammo,
                                       int secondary_ammo, uint16_t primary_refill_ms, uint16_t secondary_refill_ms,
-                                      const rf::Vector3* hit_dir = nullptr);
+                                      const rf::Vector3* hit_dir = nullptr, bool scrape_only = false);
 // Total ammo (clip + reserve) for one weapon type, or -1 for a weapon with no ammo pool at all.
 // Only an exact 0 means EMPTY, so a caller gating on emptiness must test == 0, never <= 0.
 int vehicle_weapon_ammo(const rf::Entity* vehicle, int weapon_type);
@@ -300,10 +319,16 @@ void vehicle_note_hull_damage(rf::Entity* vehicle, float life_before, int killer
 // Server: a client reported that the vehicle it drives ran a player over.
 void vehicle_server_handle_crush_report(rf::Player* pp, int vehicle_handle, int victim_handle);
 
-// The machine simulating this hull measured an impact against the level or a mover: the velocity
-// change along the contact normal, and whether it was ground rather than a wall. The server applies
-// it; a driver's client reports it.
+// The machine simulating this hull measured an impact against the level, a mover or a prop: the velocity
+// change along the contact normal, and whether it was ground rather than a wall. The server applies it; a
+// driver's client reports it.
 void vehicle_crash_impact(rf::Entity* vehicle, float impact_dv, bool ground);
+
+// The machine simulating this hull, once per counted physics step: its velocity and its body's fastest slide
+// along a wall or ceiling and along ground it touches (0 for none), over step_time of simulated time. The hull
+// scrape probe's nose and tail rays add what reaches past the body. Banked and dealt, or reported.
+void vehicle_scrape_contact(rf::Entity* vehicle, const rf::Vector3& vel, float wall_slide, float ground_slide,
+                            float step_time);
 
 // One authoritative pose of a hull (a received row, or the body this machine simulates), for the
 // run-over motion test.
@@ -312,6 +337,9 @@ void vehicle_note_observed_pose(int vehicle_handle, const rf::Vector3& pos, floa
 // Server: a client reported an impact on the vehicle it drives.
 void vehicle_server_handle_crash_report(rf::Player* pp, int vehicle_handle, bool ground,
                                         float impact_dv);
+
+// Server: a client reported its hull's banked slide (u of sliding past the class's free speed).
+void vehicle_server_handle_scrape_report(rf::Player* pp, int vehicle_handle, float slide_excess);
 
 // Server, from entity_damage: the VehicleDamageClass of the hull that ran this victim over, or -1.
 // Must be asked BEFORE the damage lands, while the victim still resolves.

@@ -9,6 +9,7 @@
 #include <xlog/xlog.h>
 #include <common/utils/list-utils.h>
 #include "vehicle.h"
+#include "vehicle_crash_tuning.h"
 #include "vehicle_fx.h"
 #include "vehicle_internal.h"
 #include "vehicle_physics.h"
@@ -111,6 +112,12 @@ namespace
         "Amb_Wind_02.wav",
         "Amb_Water_Fall_02.wav",
     };
+
+    // The fighter's scrape loop (alpinefaction.vpp).
+    constexpr const char* fx_scrape_sound_file = "af_fighter_scrape_loop.wav";
+    // How long a scrape probe's finding keeps the loop going; the last fx_scrape_fade_s of it fades it out.
+    constexpr float fx_scrape_hold_s = 0.2f;
+    constexpr float fx_scrape_fade_s = 0.1f;
 
     enum FxBitmap
     {
@@ -283,6 +290,7 @@ namespace
         float debris_cooldown = 0.0f;
         float scrape_snd_timer = 0.0f;
         float scrape_flash_timer = 0.0f;
+        float scrape_burst_timer = 0.0f;
         float splash_snd_timer = 0.0f;
         float fire_light_timer = 0.0f;
         bool bottom_in_water = false;
@@ -297,6 +305,13 @@ namespace
         int burn_snd = -1;
         float wash_snd_retry = 0.0f;
         float burn_snd_retry = 0.0f;
+        // Held across the probes: a probe's slide, 0 to 1 over the damage span, and where it was.
+        float scrape_hold = 0.0f;
+        float scrape_level = 0.0f;
+        rf::Vector3 scrape_pos{};
+        int scrape_snd = -1;
+        float scrape_snd_retry = 0.0f;
+        float scrape_snd_pitch = 0.0f; // last ratio set on scrape_snd; 0 for none yet
         bool hold_loops = false; // a skipped frame decided nothing about them
 
         float dust_accum = 0.0f;
@@ -322,6 +337,7 @@ namespace
     int g_fx_num_emitters = 0;
     std::array<int, FXS_COUNT> g_fx_foley = fx_unloaded<FXS_COUNT>();
     std::array<int, std::size(fx_wash_sound_files)> g_fx_wash_sounds = fx_unloaded<std::size(fx_wash_sound_files)>();
+    int g_fx_scrape_sound = -1;
     rf::ImpactSoundSet* g_fx_big_debris_iss = nullptr;
     rf::ImpactSoundSet* g_fx_small_debris_iss = nullptr;
     bool g_fx_sounds_loaded = false;
@@ -402,6 +418,11 @@ namespace
             if (g_fx_wash_sounds[i] < 0 && rf::sound_enabled) {
                 xlog::warn("[vehicle_fx] failed to load sound '{}'", fx_wash_sound_files[i]);
             }
+        }
+        // Full volume out to 10: loud in the cockpit, and plain to anyone near the hull.
+        g_fx_scrape_sound = rf::snd_get_handle(fx_scrape_sound_file, 10.0f, 1.0f, 1.0f);
+        if (g_fx_scrape_sound < 0 && rf::sound_enabled) {
+            xlog::warn("[vehicle_fx] failed to load sound '{}'", fx_scrape_sound_file);
         }
         g_fx_big_debris_iss = fx_find_iss("big debris bounce");
         g_fx_small_debris_iss = fx_find_iss("small debris bounce");
@@ -585,6 +606,7 @@ namespace
         fx_destroy_emitters(fx);
         fx_stop_loop(fx.wash_snd);
         fx_stop_loop(fx.burn_snd);
+        fx_stop_loop(fx.scrape_snd);
     }
 
     void fx_spawn(HullFx& fx, const ParticleSpec& s, const rf::Vector3& pos, const rf::Vector3& vel,
@@ -834,6 +856,10 @@ namespace
         if (fx.impact_cooldown > 0.0f) {
             return;
         }
+        // A fighter's effects start where its crash damage does, so a slam that shows costs hull and a soft
+        // landing shows nothing.
+        const float wall_min = flyer ? vehicle_crash_tuning[VDC_FIGHTER].wall_threshold : fx_impact_min_dv;
+        const float land_min = flyer ? vehicle_crash_tuning[VDC_FIGHTER].ground_threshold : fx_impact_min_dv;
         const bool was_airborne = fx.airborne_age < fx_landing_airborne_window;
         const float land_dv = was_airborne && fx.vel_slow.y < 0.0f ? std::max(fx.vel.y - fx.vel_slow.y, 0.0f) : 0.0f;
         const rf::Vector3 slow_h{fx.vel_slow.x, 0.0f, fx.vel_slow.z};
@@ -841,21 +867,21 @@ namespace
         float wall_dv = 0.0f;
         float wall_kept = 0.0f;
         rf::Vector3 wall_dir{};
-        if (slow_h_speed > fx_impact_min_dv) {
+        if (slow_h_speed > wall_min) {
             wall_dir = slow_h * (1.0f / slow_h_speed);
             wall_kept = std::max(rf::Vector3{fx.vel.x, 0.0f, fx.vel.z}.dot_prod(wall_dir), 0.0f);
             wall_dv = slow_h_speed - wall_kept;
         }
-        const float dv = std::max(land_dv, wall_dv);
-        if (dv < fx_impact_min_dv) {
+        const bool landing = land_dv >= land_min && land_dv >= wall_dv;
+        if (!landing && wall_dv < wall_min) {
             return;
         }
         // A wall only takes the speed it stopped.
-        const float impact_speed = land_dv >= wall_dv ? fx.peak_fall : fx.peak_h - wall_kept;
-        const float strength =
-            std::clamp((impact_speed - fx_impact_min_dv) / (fx_impact_full_dv - fx_impact_min_dv), 0.15f, 1.0f);
+        const float impact_speed = landing ? fx.peak_fall : fx.peak_h - wall_kept;
+        const float min_dv = landing ? land_min : wall_min;
+        const float strength = std::clamp((impact_speed - min_dv) / (fx_impact_full_dv - min_dv), 0.15f, 1.0f);
 
-        const rf::Vector3 dir = land_dv >= wall_dv ? rf::Vector3{0.0f, -1.0f, 0.0f} : wall_dir;
+        const rf::Vector3 dir = landing ? rf::Vector3{0.0f, -1.0f, 0.0f} : wall_dir;
         rf::PCollisionOut o{};
         // Generous reach: suspension and wheels start slowing a landing hull before its body is near the ground.
         if (!fx_cast(ep.pos, ep.pos + dir * (vehicle_collision_reach_along(&ep, dir) + 2.5f), o)) {
@@ -874,11 +900,14 @@ namespace
         fx_impact(ep, fx, o, strength, lod, water ? liquid_y : std::nullopt);
     }
 
-    // Body contact while moving along a wall (and, for flyers, a ceiling, or a floor while airborne).
+    // Body contact while moving along a wall (and, for flyers, a ceiling or the ground, or nose or tail first).
+    // A flyer runs the probe and the free speeds its scrape damage does, so what sparks costs hull, and looks and
+    // sounds the same on any surface; a car's follows the material.
     void fx_scrape(rf::Entity& ep, HullFx& fx, bool flyer, float lod)
     {
         fx_tick(fx.scrape_snd_timer);
         fx_tick(fx.scrape_flash_timer);
+        fx_tick(fx.scrape_burst_timer);
         fx.scrape_timer -= g_fx_dt;
         if (fx.scrape_timer > 0.0f) {
             return;
@@ -887,50 +916,68 @@ namespace
         if (fx.vel.len() < 3.0f) {
             return;
         }
-        const rf::Vector3 dirs[] = {ep.orient.rvec, ep.orient.rvec * -1.0f, ep.orient.uvec, ep.orient.uvec * -1.0f};
-        // A fighter resting or taxiing on its belly is not scraping it.
-        const int num_dirs = !flyer ? 2 : fx_grounded(ep, fx) ? 3 : 4;
-        for (int i = 0; i < num_dirs; ++i) {
-            const rf::Vector3& dir = dirs[i];
-            rf::PCollisionOut o{};
-            if (!fx_cast(ep.pos, ep.pos + dir * (vehicle_collision_reach_along(&ep, dir) + 0.15f), o)) {
+        VehicleHullProbeHit hits[vehicle_hull_probe_max_hits];
+        const int num_hits = vehicle_hull_probe(&ep, fx.vel, flyer, false, hits);
+        float loop_level = -1.0f;
+        rf::Vector3 loop_pos{};
+        for (int i = 0; i < num_hits; ++i) {
+            const VehicleHullProbeHit& o = hits[i];
+            const rf::Vector3& along = o.along;
+            const float along_speed = o.along_speed;
+            float free_speed = 3.0f;
+            if (flyer) {
+                const VehicleScrapeTuning& scrape = vehicle_scrape_tuning[VDC_FIGHTER];
+                free_speed = o.normal.y >= vehicle_crash_ground_ny ? scrape.ground_min_speed : scrape.min_speed;
+                const float level =
+                    std::clamp((along_speed - free_speed) / std::max(scrape.ref_speed - free_speed, 1.0f), 0.0f, 1.0f);
+                if (along_speed >= free_speed && level > loop_level) {
+                    loop_level = level;
+                    loop_pos = o.point;
+                }
+            }
+            else if (o.normal.dot_prod(ep.orient.uvec) > 0.5f) {
+                continue; // a side ray tipped into the ground by a rolled hull finds the floor, not a wall
+            }
+            if (along_speed < free_speed) {
                 continue;
             }
-            // A side ray tipped into the ground by a rolled hull finds the floor, not a wall.
-            if (i < 2 && o.hit_normal.dot_prod(ep.orient.uvec) > 0.5f) {
-                continue;
-            }
-            const rf::Vector3 along = fx.vel - o.hit_normal * fx.vel.dot_prod(o.hit_normal);
-            const float along_speed = along.len();
-            if (along_speed < 3.0f) {
-                continue;
-            }
-            const SurfaceFx s = surface_fx(o.material);
-            const int count = static_cast<int>(std::min(along_speed * 0.15f, 3.0f) * lod + 0.5f);
+            const SurfaceFx s = flyer ? SurfaceFx{0.0f, {}, true} : surface_fx(o.material);
+            const int count = flyer ? static_cast<int>(std::min(along_speed * 0.25f, 5.0f) * lod + 0.5f)
+                                    : static_cast<int>(std::min(along_speed * 0.15f, 3.0f) * lod + 0.5f);
             if (s.sparks) {
                 for (int k = 0; k < count; ++k) {
-                    const rf::Vector3 vel = along * -fx_rand(0.2f, 0.5f) + o.hit_normal * fx_rand(1.0f, 3.0f)
-                                          + fx_rand_dir_off(o.hit_normal) * 1.5f;
-                    fx_spawn(fx, spark_spec, o.hit_point, vel);
+                    const rf::Vector3 vel = along * -fx_rand(0.2f, 0.5f) + o.normal * fx_rand(1.0f, 3.0f)
+                                          + fx_rand_dir_off(o.normal) * 1.5f;
+                    fx_spawn(fx, spark_spec, o.point, vel);
                 }
+                if (flyer && fx.scrape_burst_timer <= 0.0f) {
+                    fx.scrape_burst_timer = fx_rand(0.2f, 0.35f);
+                    fx_burst_off(fx, spark_spec, static_cast<int>((4.0f + 0.4f * along_speed) * lod), o.point,
+                                 o.normal, 3.0f + 0.2f * along_speed);
+                }
+                // Under a flyer's scrape loop, a crackle rather than the whole sound.
                 if (fx.scrape_snd_timer <= 0.0f) {
                     fx.scrape_snd_timer = fx_rand(0.12f, 0.25f);
-                    fx_play(FXS_SPARK, o.hit_point, std::clamp(along_speed / 15.0f, 0.3f, 1.0f));
+                    fx_play(FXS_SPARK, o.point, std::clamp(along_speed / 15.0f, 0.3f, 1.0f) * (flyer ? 0.5f : 1.0f));
                 }
                 if (fx.scrape_flash_timer <= 0.0f) {
                     fx.scrape_flash_timer = fx_rand(0.25f, 0.4f);
-                    fx_flash(o.hit_point + o.hit_normal * 0.3f, 2.5f, 0.5f, 90);
+                    fx_flash(o.point + o.normal * 0.3f, 2.5f, 0.5f, 90);
                 }
             }
             else if (s.dust > 0.0f) {
-                fx_spawn(fx, dust_spec(s, 0.8f, fx.spawn_seq++ % 2 != 0), o.hit_point,
-                         o.hit_normal * 0.8f + along * -0.1f);
+                fx_spawn(fx, dust_spec(s, 0.8f, fx.spawn_seq++ % 2 != 0), o.point, o.normal * 0.8f + along * -0.1f);
                 if (fx.scrape_snd_timer <= 0.0f) {
                     fx.scrape_snd_timer = fx_rand(0.4f, 0.7f);
-                    fx_play_iss(g_fx_small_debris_iss, o.material, o.hit_point,
+                    fx_play_iss(g_fx_small_debris_iss, o.material, o.point,
                                 std::clamp(along_speed / 20.0f, 0.2f, 0.6f));
                 }
             }
+        }
+        if (loop_level >= 0.0f) {
+            fx.scrape_hold = fx_scrape_hold_s;
+            fx.scrape_level = loop_level;
+            fx.scrape_pos = loop_pos;
         }
     }
 
@@ -1167,6 +1214,24 @@ namespace
             fx_stop_loop(fx.wash_snd);
             fx.wash_snd_retry = 0.0f;
         }
+        // Louder and higher the faster the slide; out over the hold's last stretch once the probes find none.
+        if (fx.scrape_hold > 0.0f && g_fx_scrape_sound >= 0) {
+            const float volume =
+                (0.45f + 0.55f * fx.scrape_level) * std::min(fx.scrape_hold / fx_scrape_fade_s, 1.0f);
+            fx_update_loop(fx.scrape_snd, fx.scrape_snd_retry, fx.scrape_pos, fx.vel, volume, [&] {
+                fx.scrape_snd_pitch = 0.0f;
+                return snd_play_3d_looping(g_fx_scrape_sound, fx.scrape_pos, volume, rf::SOUND_GROUP_EFFECTS);
+            });
+            const float pitch = 0.9f + 0.35f * fx.scrape_level;
+            if (pitch != fx.scrape_snd_pitch) {
+                snd_instance_set_pitch(fx.scrape_snd, pitch);
+                fx.scrape_snd_pitch = pitch;
+            }
+        }
+        else {
+            fx_stop_loop(fx.scrape_snd);
+            fx.scrape_snd_retry = 0.0f;
+        }
         if (fx.burning) {
             fx_update_loop(fx.burn_snd, fx.burn_snd_retry, fx.vent, fx.vel, 1.0f,
                            [&] { return fx_play_handle(fx_sound_handle(FXS_BURNING), fx.vent, 1.0f); });
@@ -1256,6 +1321,7 @@ void vehicle_fx_do_frame()
         }
         fx.wash_level = 0.0f;
         fx.burning = false;
+        fx.scrape_hold = std::max(fx.scrape_hold - dt, 0.0f);
         for (int layer = 0; layer < fx_num_layers; ++layer) {
             if (const rf::ParticleEmitter* emitter = fx.emitters[layer]) {
                 const int n = fx_count_particles(emitter);

@@ -42,6 +42,11 @@ struct VehicleHealthSync
     bool settled_sent = true; // nothing has changed since the last reliable send
     rf::Vector3 hit_dir{};    // travel direction of the latest attributed hit, for the riders' indicators
     int64_t hit_ms = -1;
+    // Since the last send: scrape damage landed, and any other noted blow did; and whether the last send was a
+    // scrape-only stream packet.
+    bool scraped = false;
+    bool hurt_unscraped = false;
+    bool last_streamed_scrape_only = false;
 };
 
 // Client: the last af_vehicle_health for a vehicle, by local object handle.
@@ -214,6 +219,25 @@ struct VehicleSpawnSlot
     bool given_up = false;
 };
 
+// One hull's open crash window and the largest life fraction billed (server) or reported (client) in it: a
+// harder hit inside the window takes only what it adds over that.
+struct VehicleCrashWindow
+{
+    rf::Timestamp window;
+    float billed_frac = 0.0f;
+};
+
+// The machine simulating a hull: units of slide past the class's free speed banked toward the next scrape
+// flush, due at flush_at_ms (timer::get_i64(1000); 0 = none open). Server: when the last client scrape report
+// for the hull landed, and the refilling budget of sliding time the reports may still bill.
+struct VehicleScrapeBank
+{
+    float slide_excess = 0.0f;
+    int64_t flush_at_ms = 0;
+    int64_t last_report_ms = 0;
+    float report_budget_s = 0.0f;
+};
+
 // Server: who a COASTING hull still answers for, and until when - the attribution and crush windows
 // are one. Keyed by NET ID: the ex-driver can disconnect, die and respawn inside the window.
 struct VehicleCoastMemory
@@ -255,7 +279,7 @@ struct VehicleLethalKiller
 // every machine, the FIRST pose (received row, or this machine's own body) noted in each bucket, and when.
 struct VehicleObservedSpeed
 {
-    static constexpr int bucket_count = 4;
+    static constexpr int bucket_count = 8;
     float bucket_peak[bucket_count]{}; // [0] is the current bucket
     rf::Vector3 bucket_pos[bucket_count]{};
     float bucket_heading[bucket_count]{};
@@ -348,10 +372,9 @@ struct VehicleModuleState
     std::unordered_map<int, rf::Timestamp> crush_report_cooldown; // by player id
     // One roadkill per victim per cooldown: one contact can span several physics substeps.
     std::unordered_map<int, rf::Timestamp> crush_cooldown; // by victim entity handle
-    // One crash per hull per cooldown; the client keeps a slightly longer window to spare the report.
-    std::unordered_map<int, rf::Timestamp> crash_cooldown; // by vehicle handle
-    // Server: bounds one sender's crash reports, apart from his roadkill reports.
-    std::unordered_map<int, rf::Timestamp> crash_report_cooldown; // by player id
+    // The client keeps a slightly longer window to spare the report.
+    std::unordered_map<int, VehicleCrashWindow> crash_cooldown; // by vehicle handle
+    std::unordered_map<int, VehicleScrapeBank> scrape; // by vehicle handle
     // Server: an entry exists only inside the memory window.
     std::unordered_map<int, VehicleCoastMemory> coast_memory;
     std::map<VehicleRamKey, VehicleRamPair> ram_pairs;

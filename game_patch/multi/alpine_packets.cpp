@@ -1981,6 +1981,9 @@ static void af_process_client_req_packet(const void* data, size_t len, const rf:
                 vehicle_server_handle_crash_report(player, req.vehicle_handle,
                                                    req.kind == AF_VEHICLE_CRUSH_GROUND, req.impact_dv);
             }
+            else if (req.kind == AF_VEHICLE_CRUSH_SCRAPE) {
+                vehicle_server_handle_scrape_report(player, req.vehicle_handle, req.impact_dv);
+            }
             break;
         }
         case af_client_req_type::af_req_stats_pssk: {
@@ -3988,10 +3991,12 @@ void af_process_vehicle_orient_packet(const void* data, size_t len, const rf::Ne
 
 static void build_af_vehicle_health_packet(af_vehicle_health_packet& pkt, int vehicle_handle, float life,
                                            float max_life, int primary_ammo, int secondary_ammo,
-                                           const uint16_t refill_ms[2], const rf::Vector3* hit_dir = nullptr)
+                                           const uint16_t refill_ms[2], const rf::Vector3* hit_dir = nullptr,
+                                           uint8_t flags = 0)
 {
     pkt.header.type = static_cast<uint8_t>(af_packet_type::af_vehicle_health);
     pkt.header.size = static_cast<uint16_t>(sizeof(pkt) - sizeof(RF_GamePacketHeader));
+    pkt.flags = flags;
     pkt.vehicle_handle = vehicle_handle;
     pkt.life = life;
     pkt.max_life = max_life;
@@ -4027,7 +4032,7 @@ void af_send_vehicle_health_packet(rf::Player* player, int vehicle_handle, float
 // server -> everyone, not just occupants: spectator HUDs and the demo recorder need it too
 void af_send_vehicle_health_packet_to_all(int vehicle_handle, float life, float max_life,
                                           int primary_ammo, int secondary_ammo, const uint16_t refill_ms[2],
-                                          bool is_reliable, const rf::Vector3* hit_dir)
+                                          bool is_reliable, const rf::Vector3* hit_dir, uint8_t flags)
 {
     if (!rf::is_server) {
         return;
@@ -4035,7 +4040,7 @@ void af_send_vehicle_health_packet_to_all(int vehicle_handle, float life, float 
 
     af_vehicle_health_packet pkt{};
     build_af_vehicle_health_packet(pkt, vehicle_handle, life, max_life, primary_ammo, secondary_ammo, refill_ms,
-                                   hit_dir);
+                                   hit_dir, flags);
 
     af_broadcast_to_af_clients(&pkt, sizeof(pkt), is_reliable);
 }
@@ -4056,7 +4061,8 @@ void af_process_vehicle_health_packet(const void* data, size_t len, const rf::Ne
     const bool has_hit_dir = pkt.hit_dir[0] != 0 || pkt.hit_dir[1] != 0 || pkt.hit_dir[2] != 0;
     vehicle_store_health_from_packet(pkt.vehicle_handle, pkt.life, pkt.max_life, pkt.primary_ammo,
                                     pkt.secondary_ammo, pkt.refill_ms[0], pkt.refill_ms[1],
-                                    has_hit_dir ? &hit_dir : nullptr);
+                                    has_hit_dir ? &hit_dir : nullptr,
+                                    (pkt.flags & AF_VEHICLE_HEALTH_SCRAPE_ONLY) != 0);
 }
 
 static void build_af_vehicle_factory_state_packet(af_vehicle_factory_state_packet& pkt,
@@ -4138,7 +4144,7 @@ void af_send_vehicle_use_request(int vehicle_handle, uint8_t seat_index)
     af_send_client_req_packet(packet, true); // reliable
 }
 
-void af_send_vehicle_crush_report(int vehicle_handle, int victim_handle)
+static void af_send_vehicle_crush_req(const VehicleCrushReqPayload& payload)
 {
     if (!rf::is_multi || rf::is_server) {
         return;
@@ -4148,25 +4154,25 @@ void af_send_vehicle_crush_report(int vehicle_handle, int victim_handle)
     packet.header.type = static_cast<uint8_t>(af_packet_type::af_client_req);
     packet.header.size = sizeof(uint8_t) + sizeof(VehicleCrushReqPayload);
     packet.req_type = af_client_req_type::af_req_vehicle_crush;
-    packet.payload = VehicleCrushReqPayload{vehicle_handle, victim_handle, AF_VEHICLE_CRUSH_RUNOVER, 0.0f};
+    packet.payload = payload;
 
     af_send_client_req_packet(packet, true); // reliable
 }
 
+void af_send_vehicle_crush_report(int vehicle_handle, int victim_handle)
+{
+    af_send_vehicle_crush_req({vehicle_handle, victim_handle, AF_VEHICLE_CRUSH_RUNOVER, 0.0f});
+}
+
 void af_send_vehicle_crash_report(int vehicle_handle, bool ground, float impact_dv)
 {
-    if (!rf::is_multi || rf::is_server) {
-        return;
-    }
+    af_send_vehicle_crush_req(
+        {vehicle_handle, -1, ground ? AF_VEHICLE_CRUSH_GROUND : AF_VEHICLE_CRUSH_WALL, impact_dv});
+}
 
-    af_client_req_packet packet{};
-    packet.header.type = static_cast<uint8_t>(af_packet_type::af_client_req);
-    packet.header.size = sizeof(uint8_t) + sizeof(VehicleCrushReqPayload);
-    packet.req_type = af_client_req_type::af_req_vehicle_crush;
-    packet.payload = VehicleCrushReqPayload{
-        vehicle_handle, -1, ground ? AF_VEHICLE_CRUSH_GROUND : AF_VEHICLE_CRUSH_WALL, impact_dv};
-
-    af_send_client_req_packet(packet, true); // reliable
+void af_send_vehicle_scrape_report(int vehicle_handle, float slide_excess)
+{
+    af_send_vehicle_crush_req({vehicle_handle, -1, AF_VEHICLE_CRUSH_SCRAPE, slide_excess});
 }
 
 void af_send_koth_hill_captured_packet(rf::Player* player, uint8_t hill_uid, HillOwner owner, const std::vector<uint8_t>& new_owner_player_ids)
