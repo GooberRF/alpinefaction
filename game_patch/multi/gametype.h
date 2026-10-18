@@ -187,6 +187,7 @@ bool gt_is_pit();
 bool gt_is_wipeout();
 bool gt_is_gungame();
 bool gt_is_salvage();
+bool gt_is_scavenger();
 const char* multi_gametype_help_text(rf::NetGameType game_type);
 
 // Score is driven by gametype-specific logic rather than directly by frags.

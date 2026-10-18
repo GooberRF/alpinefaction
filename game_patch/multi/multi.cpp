@@ -397,7 +397,8 @@ FunHook<void()> multi_limbo_init{
                 blue = multi_koth_get_blue_team_score();
                 break;
             }
-            case rf::NG_TYPE_SAL: {
+            case rf::NG_TYPE_SAL:
+            case rf::NG_TYPE_SCAV: {
                 red = salvage_get_red_team_score();
                 blue = salvage_get_blue_team_score();
                 break;
@@ -991,6 +992,8 @@ std::string_view multi_game_type_name(const rf::NetGameType game_type) {
         return std::string_view{"Gun Game"};
     } else if (game_type == rf::NG_TYPE_SAL) {
         return std::string_view{"Salvage"};
+    } else if (game_type == rf::NG_TYPE_SCAV) {
+        return std::string_view{"Scavenger"};
     } else if (game_type == rf::NG_TYPE_UNK) {
         return std::string_view{"Unknown"};
     } else {
@@ -1028,6 +1031,8 @@ std::string_view multi_game_type_name_upper(const rf::NetGameType game_type) {
         return std::string_view{"GUN GAME"};
     } else if (game_type == rf::NG_TYPE_SAL) {
         return std::string_view{"SALVAGE"};
+    } else if (game_type == rf::NG_TYPE_SCAV) {
+        return std::string_view{"SCAVENGER"};
     } else if (game_type == rf::NG_TYPE_UNK) {
         return std::string_view{"UNKNOWN"};
     } else {
@@ -1065,6 +1070,8 @@ std::string_view multi_game_type_name_short(const rf::NetGameType game_type) {
         return std::string_view{"GG"};
     } else if (game_type == rf::NG_TYPE_SAL) {
         return std::string_view{"SAL"};
+    } else if (game_type == rf::NG_TYPE_SCAV) {
+        return std::string_view{"SCAV"};
     } else if (game_type == rf::NG_TYPE_UNK) {
         return std::string_view{"UNK"};
     } else {
@@ -1104,6 +1111,8 @@ std::string_view multi_game_type_prefix(const rf::NetGameType game_type) {
         return std::string_view{"gg"};
     } else if (game_type == rf::NG_TYPE_SAL) {
         return std::string_view{"ctf"};
+    } else if (game_type == rf::NG_TYPE_SCAV) {
+        return std::string_view{"scav"};
     } else if (game_type == rf::NG_TYPE_UNK) {
         // No real level-name prefix for unknown game types; "dm" is the safest fallback.
         return std::string_view{"dm"};
@@ -1161,7 +1170,8 @@ bool multi_game_type_uses_any_level(rf::NetGameType game_type)
         || game_type == rf::NetGameType::NG_TYPE_BAG
         || game_type == rf::NetGameType::NG_TYPE_TBAG
         || game_type == rf::NetGameType::NG_TYPE_WO
-        || game_type == rf::NetGameType::NG_TYPE_PIT;
+        || game_type == rf::NetGameType::NG_TYPE_PIT
+        || game_type == rf::NetGameType::NG_TYPE_SCAV;
 }
 
 // True if the level filename starts with any standard MP gametype prefix. Used
@@ -1236,7 +1246,7 @@ void configure_custom_gametype_listen_server_settings() {
     g_alpine_server_config.allow_outlines = true;
 }
 
-void start_level_in_multi(std::string filename) {
+void start_level_in_multi(std::string filename, std::optional<rf::NetGameType> game_type) {
 
     auto [is_valid, valid_filename] = is_level_name_valid(filename);
 
@@ -1252,7 +1262,8 @@ void start_level_in_multi(std::string filename) {
         rf::netgame.geomod_limit = 64;
         rf::netgame.max_captures = 5;
         rf::netgame.flags = 0; // no broadcast to tracker
-        rf::netgame.type = string_istarts_with(filename, "ctf") ? rf::NetGameType::NG_TYPE_CTF
+        rf::netgame.type = game_type ? *game_type
+            : string_istarts_with(filename, "ctf") ? rf::NetGameType::NG_TYPE_CTF
             : string_istarts_with(filename, "koth") ? rf::NetGameType::NG_TYPE_KOTH
             : string_istarts_with(filename, "dc") ? rf::NetGameType::NG_TYPE_DC
             : string_istarts_with(filename, "rev") ? rf::NetGameType::NG_TYPE_REV
@@ -1263,6 +1274,9 @@ void start_level_in_multi(std::string filename) {
         rf::netgame.password = "password";
 
         configure_custom_gametype_listen_server_settings();
+        if (rf::netgame.type == rf::NetGameType::NG_TYPE_SCAV) {
+            rf::netgame.max_captures = g_alpine_server_config_active_rules.scavenger.cap_limit;
+        }
 
         rf::set_in_mp_flag();
         rf::multi_start(0, 0);
@@ -1279,6 +1293,23 @@ CodeInjection multi_customize_listen_server_settings_patch {
     },
 };
 
+void start_local_multi_game(std::string_view filename, std::optional<rf::NetGameType> game_type)
+{
+    auto [is_valid, valid_filename] = is_level_name_valid(filename);
+    if (!is_valid) {
+        rf::console::print("Level '{}' is not available!", filename);
+        return;
+    }
+    start_levelm_load_sequence(valid_filename, game_type);
+    rf::gameseq_set_state(rf::GS_MAIN_MENU, true);
+    if (game_type) {
+        rf::console::print("Starting local {} game on {}", multi_game_type_name(*game_type), valid_filename);
+    }
+    else {
+        rf::console::print("Starting local multiplayer game on {}", valid_filename);
+    }
+}
+
 ConsoleCommand2 levelm_cmd{
     "levelm",
     [](std::string filename) {
@@ -1286,14 +1317,7 @@ ConsoleCommand2 levelm_cmd{
             rf::console::print("This command is not available on dedicated servers");
             return;
         }
-        auto [is_valid, valid_filename] = is_level_name_valid(filename);
-        if (!is_valid) {
-            rf::console::print("Level '{}' is not available!", filename);
-            return;
-        }
-        start_levelm_load_sequence(valid_filename);
-        rf::gameseq_set_state(rf::GS_MAIN_MENU, true);
-        rf::console::print("Starting local multiplayer game on {}", valid_filename);
+        start_local_multi_game(filename, std::nullopt);
     },
     "Start a new local multiplayer game on the specified level",
     "levelm <filename>",

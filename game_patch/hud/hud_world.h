@@ -118,6 +118,8 @@ struct NameLabelTex
 };
 
 void hud_world_do_frame();
+// Session-lifetime 8x8 white bitmap for untextured quads drawn through textured render modes.
+int world_hud_white_bitmap();
 void load_world_hud_assets();
 void clear_koth_name_textures();
 void populate_world_hud_sprite_events();

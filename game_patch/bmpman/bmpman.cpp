@@ -1,5 +1,6 @@
 #include <cassert>
 #include <algorithm>
+#include <functional>
 #include <vector>
 #include <patch_common/FunHook.h>
 #include <patch_common/CodeInjection.h>
@@ -600,6 +601,47 @@ bool bm_fill(int bm_handle, uint32_t argb)
     std::vector<uint32_t> row(static_cast<size_t>(lock.w), argb);
     return bm_convert_format(lock.data, lock.format, row.data(), rf::bm::FORMAT_8888_ARGB,
                              lock.w, lock.h, lock.stride_in_bytes, 0, nullptr);
+}
+
+static bool bm_fill_procedural(int bm_handle, const std::function<uint32_t(int x, int y)>& argb_at)
+{
+    rf::gr::LockInfo lock{};
+    if (!rf::gr::lock(bm_handle, 0, &lock, rf::gr::LOCK_READ_ONLY_WRITE)) {
+        return false;
+    }
+
+    ScopeGuard lock_guard{[&] { rf::gr::unlock(&lock); }};
+
+    if (!bm_is_blit_format(lock.format) || lock.w <= 0 || lock.h <= 0) {
+        return false;
+    }
+
+    std::vector<uint32_t> row(static_cast<size_t>(lock.w));
+    for (int y = 0; y < lock.h; ++y) {
+        for (int x = 0; x < lock.w; ++x) {
+            row[static_cast<size_t>(x)] = argb_at(x, y);
+        }
+        if (!bm_convert_format(lock.data + y * lock.stride_in_bytes, lock.format, row.data(),
+                               rf::bm::FORMAT_8888_ARGB, lock.w, 1, lock.stride_in_bytes, 0, nullptr)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+int bm_create_procedural(int w, int h, const std::function<uint32_t(int x, int y)>& argb_at)
+{
+    const int bm = rf::bm::create(rf::bm::FORMAT_8888_ARGB, w, h);
+    if (bm == -1) {
+        return -1;
+    }
+    if (!bm_fill_procedural(bm, argb_at)) {
+        rf::gr::mark_texture_dirty(bm);
+        rf::bm::release(bm);
+        return -1;
+    }
+    rf::bm::texture_add_ref(bm);
+    return bm;
 }
 
 void bm_apply_patch()

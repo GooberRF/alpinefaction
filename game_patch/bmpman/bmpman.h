@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <string_view>
 #include <xlog/xlog.h>
 #include "../rf/bmpman.h"
@@ -42,6 +43,9 @@ int bm_calculate_rows(int h, rf::bm::Format format);
 bool bm_blend_pixels(const rf::gr::LockInfo& dst_lock, int dst_x, int dst_y, const rf::gr::LockInfo& src_lock,
                      int src_x, int src_y, int w, int h);
 bool bm_fill(int bm_handle, uint32_t argb);
+// An 8888 bitmap with every pixel from argb_at, referenced for the session (texture_add_ref).
+// -1 on failure.
+int bm_create_procedural(int w, int h, const std::function<uint32_t(int x, int y)>& argb_at);
 
 inline int bm_bytes_per_pixel(rf::bm::Format format)
 {

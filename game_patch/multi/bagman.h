@@ -66,6 +66,8 @@ void bagman_apply_bag_mesh(rf::Item* item, int item_type);
 // True while the bag has a home but no item: item_create keeps one pool slot free for it.
 bool bagman_reserves_item_slot(int item_type);
 bool bagman_get_client_pickup_pos(rf::Vector3* out_pos);
+// LOD 0 of a static VMesh's first submesh, or null for any other mesh type.
+rf::VifLodMesh* static_vmesh_lod0(rf::VMesh* vmesh);
 bool bagman_query_pickup_bag_outline(rf::VifLodMesh** out_lod_mesh, rf::Vector3* out_pos, rf::Matrix3* out_orient);
 bool bagman_query_carrier_bag_outline(rf::VifLodMesh** out_lod_mesh, rf::Vector3* out_pos, rf::Matrix3* out_orient);
 rf::VMesh* bagman_get_carrier_mesh();

@@ -106,6 +106,9 @@ namespace rf
     static auto snd_set_group_volume = addr_as_ref<void(int group, float volume)>(0x00505840);
 
     static auto& sound_pc_inited = addr_as_ref<bool>(0x01CFC5D0);
+    // 0.05f literal shared by many unrelated sites; snd_pc stream play (0x00543B10 / 0x00543B90) rejects play
+    // volumes below it. Never write to it.
+    static auto& snd_pc_stream_min_play_volume = addr_as_ref<const float>(0x005894F4);
 
     static auto snd_load_hint = addr_as_ref<int(int handle)>(0x005054D0);
     static auto snd_play = addr_as_ref<int(int handle, int group, float pan, float volume)>(0x00505560);
@@ -134,6 +137,7 @@ namespace rf
     static auto snd_pc_change_listener = addr_as_ref<void(const Vector3& pos, const Vector3& vel, const Matrix3& orient)>(0x00543480);
     static auto snd_pc_calc_volume_3d = addr_as_ref<float(int handle, const Vector3& pos, float vol_scale)>(0x00543C20);
     static auto snd_pc_load_hint = addr_as_ref<int(int handle, bool skip_data_loading, bool is_bluebeard_btz)>(0x00543760);
+    static auto snd_pc_calc_play_volume = addr_as_ref<float(int handle, float vol_scale)>(0x00543A60);
     static auto snd_pc_is_ds3d_enabled = addr_as_ref<bool()>(0x00544750);
     static auto snd_pc_calculate_pan = addr_as_ref<float(const Vector3& pos)>(0x00543EA0);
 

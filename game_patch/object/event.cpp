@@ -20,6 +20,7 @@
 #include "../rf/level.h"
 #include "../rf/multi.h"
 #include "../rf/player/player.h"
+#include "../rf/sound/sound.h"
 #include "../rf/os/console.h"
 #include "../os/console.h"
 #include "../rf/v3d.h"
@@ -27,6 +28,7 @@
 #include <common/config/GameConfig.h>
 #include "../main/main.h"
 #include "../graphics/d3d11/gr_d3d11_mesh.h"
+#include "../sound/sound.h"
 #include "object.h"
 
 bool event_debug_enabled;
@@ -492,6 +494,85 @@ CodeInjection level_read_events_patch {
     }
 };
 
+// RED's Looping checkbox on Play_Sound and Music_Start, ignored before RFL 306.
+static bool level_honours_sound_looping_checkbox()
+{
+    return level_rfl_version_at_least(306);
+}
+
+static bool play_sound_event_loops(const rf::PlaySoundEvent* event)
+{
+    return event->looping && level_honours_sound_looping_checkbox();
+}
+
+// Music_Start loader case: the checkbox is bool1 ([esp+0x10]), which the create function (0x004B8740) never receives.
+// The jump table enters the case at 0x00462754, so nothing branches into this LEA + PUSH EDX.
+CodeInjection level_read_events_music_start_looping_injection{
+    0x00462758,
+    [](auto& regs) {
+        if (addr_as_ref<bool>(regs.esp + 0x10) && level_honours_sound_looping_checkbox()) {
+            const auto& filename = addr_as_ref<rf::String>(regs.esp + 0x3C); // str1
+            snd_level_looping_add(filename.c_str());
+        }
+    },
+};
+
+FunHook<rf::Event*(const rf::Vector3*, const char*, const char*, float, float, bool, int)> event_play_sound_create_hook{
+    0x004B7C10,
+    [](const rf::Vector3* pos, const char* sound_file, const char* alt_sound_file, float min_dist, float duration,
+       bool looping, int speaker_uid) -> rf::Event* {
+        auto* event = static_cast<rf::PlaySoundEvent*>(event_play_sound_create_hook.call_target(
+            pos, sound_file, alt_sound_file, min_dist, duration, looping, speaker_uid));
+        // The alt file is the one-shot "off" sound: Off plays it and nothing would ever stop it if it looped.
+        if (event && play_sound_event_loops(event)) {
+            snd_level_looping_add(event->sound_file.c_str());
+        }
+        return event;
+    },
+};
+
+// Off points sound_handle at the alt file and On plays whatever sound_handle holds, so a looping event could not
+// restart its own loop after an Off.
+static void __fastcall event_play_sound_turn_on(rf::PlaySoundEvent* event);
+FunHook<decltype(event_play_sound_turn_on)> event_play_sound_turn_on_hook{0x004BA440, event_play_sound_turn_on};
+static void __fastcall event_play_sound_turn_on(rf::PlaySoundEvent* event)
+{
+    if (play_sound_event_loops(event)) {
+        // Same lookup as the create function (0x004B7CA6), which finds the existing entry
+        event->sound_handle = rf::snd_get_handle(event->sound_file.c_str(), event->min_dist, 1.0f, 1.0f);
+    }
+    event_play_sound_turn_on_hook.call_target(event);
+}
+
+// With an alt file, stock Off only switches sounds: a speaker's voice keeps playing, and an alt file that does not
+// resolve returns at 0x004BA6D5 before stopping anything. Either way the loop would run until the level ends.
+static void __fastcall event_play_sound_turn_off(rf::PlaySoundEvent* event);
+FunHook<decltype(event_play_sound_turn_off)> event_play_sound_turn_off_hook{0x004BA690, event_play_sound_turn_off};
+static void __fastcall event_play_sound_turn_off(rf::PlaySoundEvent* event)
+{
+    event_play_sound_turn_off_hook.call_target(event);
+    if (!play_sound_event_loops(event) || event->alt_sound_file.empty()) {
+        return;
+    }
+    // Stops whatever line the speaker is voicing, as stock Off without an alt file does (0x004BA7CF)
+    if (event->speaker_uid > 0) {
+        if (rf::Object* speaker = rf::obj_lookup_from_uid(event->speaker_uid)) {
+            if (rf::Entity* ep = rf::entity_from_handle(speaker->handle)) {
+                rf::entity_stop_voice(ep);
+            }
+        }
+    }
+    // Mirrors stock Off without an alt file (0x004BA7DB)
+    if (event->sound_handle == -1 && event->sound_instance != -1) {
+        if (event->duration > 0.0f) {
+            event->duration_timestamp.invalidate();
+        }
+        rf::snd_stop(event->sound_instance);
+        event->sound_instance = -1;
+        event->is_on = false;
+    }
+}
+
 FunHook<char*(char*)> hud_translate_special_character_token_hook{
     0x004385C0,
     [](char* token) {
@@ -624,6 +705,12 @@ void apply_event_patches()
 {
     // allow custom directional events
     level_read_events_patch.install();
+
+    // Make the Looping checkbox on Play_Sound and Music_Start work (RFL v306+)
+    level_read_events_music_start_looping_injection.install();
+    event_play_sound_create_hook.install();
+    event_play_sound_turn_on_hook.install();
+    event_play_sound_turn_off_hook.install();
 
     // HUD Message magic word handling
     hud_translate_special_character_token_hook.install();

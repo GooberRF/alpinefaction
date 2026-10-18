@@ -26,6 +26,7 @@ Version 1.5.0 (Trillium): Not yet released
   - Mirror `Terrain Tools` brush strokes across the terrain's X and/or Z axis, with movable mirror lines
   - Up to 4 detail overlays (leaves, debris) and 8 mesh decoration layers per terrain (grass, rocks, bushes)
   - `Geoable` terrains are carved by RF2-style geomod craters, with their own underside and crater textures
+- Add new multiplayer game type: Scavenger (`SCAV`)
 
 [@GooberRF](https://github.com/GooberRF) & [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add multiplayer vehicles and turrets
@@ -132,6 +133,11 @@ Version 1.5.0 (Trillium): Not yet released
 - Raise the limit of simultaneously playing sounds from 64 to 127
 - Ejected shell casings now bounce off the level and play their impact sounds instead of falling through it, toggleable with `cl_shellcollide`, and last 2 seconds by default, adjustable with `cl_shelllifetime`
 - Add `cl_shellcasings` and `cl_magazines` to toggle ejected shell casings and magazines
+- Add `$Looping Sound` `mapname_info.tbl` option to make custom sound files loop
+- Make the `Looping` checkbox on `Play_Sound` and `Music_Start` events work (RFL v306+)
+- Allow `sv_gametype` (`gt`) to start a local game on a level in a chosen game type
+- Add console tab completion of game types and level names for `sv_gametype` (`gt`)
+- Add Salvage flag placement for community level `CTF_TERROR.rfl`
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color
@@ -269,6 +275,8 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix the level editor `UV Unwrap` window selecting vertices when a mouse button pressed outside its view is released over it
 - Fix spectate control hints overlapping the team scores in Wipeout
 - Fix long key names in spectate control hints running off the left edge of the screen
+- Fix listen server hosts only seeing automated server messages in the console instead of in chat
+- Fix music not starting while the music volume is muted or very low
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize

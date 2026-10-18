@@ -214,10 +214,10 @@ CallHook<void*(size_t)> GPool_allocate_new_hook{
     },
 };
 
-// Reads the version directly because level items are created during load, before LEVEL_LOADED is set.
+// Level items are created during load, before LEVEL_LOADED is set.
 bool level_allows_extra_items()
 {
-    return rf::level.version >= 306;
+    return level_rfl_version_at_least(306);
 }
 
 CodeInjection obj_create_item_limit_patch{

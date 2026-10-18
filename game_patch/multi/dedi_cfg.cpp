@@ -314,6 +314,31 @@ static KillRewardConfig parse_kill_reward_config(const toml::table& t, KillRewar
     return c;
 }
 
+// Shared by Wipeout and Scavenger: 200 / 200 spawns and a fixed Pistol / AR / SR / RL / SG loadout
+// with infinite reloads and large reserves (effectively infinite ammo). Both modes hide every level
+// item, so no weapon/amp drops either.
+static void apply_fixed_loadout_defaults(AlpineServerConfigRules& rules)
+{
+    rules.location_pinging = true;
+
+    rules.spawn_life.enabled = true;
+    rules.spawn_life.set_value(200.0f);
+    rules.spawn_armour.enabled = true;
+    rules.spawn_armour.set_value(200.0f);
+
+    constexpr int fixed_reserve = 999;
+    rules.spawn_loadout.add("12mm handgun", fixed_reserve, false, true);
+    rules.spawn_loadout.add("Assault Rifle", fixed_reserve, false, true);
+    rules.spawn_loadout.add("Sniper Rifle", fixed_reserve, false, true);
+    rules.spawn_loadout.add("Rocket Launcher", fixed_reserve, false, true);
+    rules.spawn_loadout.add("Shotgun", fixed_reserve, false, true);
+    rules.weapon_infinite_magazines = true;
+    rules.default_player_weapon.set_weapon("Assault Rifle");
+
+    rules.drop_weapons = false;
+    rules.drop_amps = false;
+}
+
 void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigRules& rules)
 {
     // A game_type change rebuilds the loadout/defaults, so clear any mutator
@@ -424,6 +449,13 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
             break;
         }
 
+        case rf::NetGameType::NG_TYPE_SCAV: {
+            apply_fixed_loadout_defaults(rules);
+            rules.spawn_delay.enabled = true;
+            rules.spawn_delay.set_base_value(2.0f);
+            break;
+        }
+
         case rf::NetGameType::NG_TYPE_PIT: {
             rules.spawn_delay.enabled = false;
             rules.force_respawn = false;
@@ -465,35 +497,13 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
 
         case rf::NetGameType::NG_TYPE_WO: {
             // Round-based team wipe mode.
-            rules.location_pinging = true;
-
-            // 200 / 200 spawn health and armor.
-            rules.spawn_life.enabled = true;
-            rules.spawn_life.set_value(200.0f);
-            rules.spawn_armour.enabled = true;
-            rules.spawn_armour.set_value(200.0f);
+            apply_fixed_loadout_defaults(rules);
 
             // Base respawn delay of 5s; the death hook multiplies it by the
             // player's death count this round (escalating 5s/10s/15s...).
             rules.spawn_delay.enabled = true;
             rules.spawn_delay.set_base_value(5.0f);
             rules.force_respawn = false; // wipeout_do_frame auto-respawns once the delay elapses
-
-            // Fixed loadout: Pistol / AR / SR / RL / SG, with infinite reloads
-            // and large reserves (effectively infinite ammo).
-            constexpr int wo_reserve = 999;
-            rules.spawn_loadout.add("12mm handgun", wo_reserve, false, true);
-            rules.spawn_loadout.add("Assault Rifle", wo_reserve, false, true);
-            rules.spawn_loadout.add("Sniper Rifle", wo_reserve, false, true);
-            rules.spawn_loadout.add("Rocket Launcher", wo_reserve, false, true);
-            rules.spawn_loadout.add("Shotgun", wo_reserve, false, true);
-            rules.weapon_infinite_magazines = true;
-            rules.default_player_weapon.set_weapon("Assault Rifle");
-
-            // No item spawns, no weapon/amp drops (wipeout also hides all level
-            // items each round; see wipeout.cpp).
-            rules.drop_weapons = false;
-            rules.drop_amps = false;
 
             // Best-of-7, untimed rounds (a round ends only on a team wipe).
             rules.rounds.set_max_rounds(7);
@@ -577,6 +587,18 @@ static void apply_rules_keys_from_toml(const toml::table& t, AlpineServerConfigR
         o.salvage.set_flag_capture_respawn_delay(*v);
     if (auto v = t["sal_flag_return_time"].value<float>())
         o.salvage.set_flag_return_time(*v);
+    if (auto v = t["scav_cap_limit"].value<int>())
+        o.scavenger.set_cap_limit(*v);
+    if (auto v = t["scav_cartridge_spawn_delay"].value<float>())
+        o.scavenger.set_objective_spawn_delay(*v);
+    if (auto v = t["scav_cartridge_capture_respawn_delay"].value<float>())
+        o.scavenger.set_objective_capture_respawn_delay(*v);
+    if (auto v = t["scav_cartridge_return_time"].value<float>())
+        o.scavenger.set_objective_return_time(*v);
+    if (auto v = t["scav_target_timeout"].value<float>())
+        o.scavenger.set_zone_timeout(*v);
+    if (auto v = t["scav_target_radius"].value<float>())
+        o.scavenger.set_zone_radius(*v);
     if (auto v = t["geo_limit"].value<int>())
         o.set_geo_limit(*v);
     if (auto v = t["rf2_geo_limit"].value<int>())
@@ -1804,6 +1826,8 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         std::format_to(iter, "  TBAG team score limit:                 {}\n", rules.bagman.tbag_score_limit);
     if (base || rules.salvage.cap_limit != b.salvage.cap_limit)
         std::format_to(iter, "  SAL flag capture limit:                {}\n", rules.salvage.cap_limit);
+    if (base || rules.scavenger.cap_limit != b.scavenger.cap_limit)
+        std::format_to(iter, "  SCAV cartridge capture limit:          {}\n", rules.scavenger.cap_limit);
 
     // common limits & flags
     if (base || rules.geo_limit != b.geo_limit)
@@ -1837,6 +1861,16 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         std::format_to(iter, "  SAL flag respawn delay after capture:  {} sec\n", rules.salvage.flag_capture_respawn_delay_ms / 1000.0f);
     if (base || rules.salvage.flag_return_time_ms != b.salvage.flag_return_time_ms)
         std::format_to(iter, "  SAL dropped flag return time:          {} sec\n", rules.salvage.flag_return_time_ms / 1000.0f);
+    if (base || rules.scavenger.objective_spawn_delay_ms != b.scavenger.objective_spawn_delay_ms)
+        std::format_to(iter, "  SCAV cartridge spawn delay:            {} sec\n", rules.scavenger.objective_spawn_delay_ms / 1000.0f);
+    if (base || rules.scavenger.objective_capture_respawn_delay_ms != b.scavenger.objective_capture_respawn_delay_ms)
+        std::format_to(iter, "  SCAV cartridge delay after capture:    {} sec\n", rules.scavenger.objective_capture_respawn_delay_ms / 1000.0f);
+    if (base || rules.scavenger.objective_return_time_ms != b.scavenger.objective_return_time_ms)
+        std::format_to(iter, "  SCAV dropped cartridge return time:    {} sec\n", rules.scavenger.objective_return_time_ms / 1000.0f);
+    if (base || rules.scavenger.zone_timeout_ms != b.scavenger.zone_timeout_ms)
+        std::format_to(iter, "  SCAV target timeout:                   {} sec\n", rules.scavenger.zone_timeout_ms / 1000.0f);
+    if (base || rules.scavenger.zone_radius != b.scavenger.zone_radius)
+        std::format_to(iter, "  SCAV target radius:                    {} m\n", rules.scavenger.zone_radius);
     if (base || rules.flag_dropping != b.flag_dropping)
         std::format_to(iter, "  CTF flag dropping:                     {}\n", rules.flag_dropping);
     if (base || rules.flag_captures_while_stolen != b.flag_captures_while_stolen)
@@ -2451,6 +2485,9 @@ void apply_alpine_dedicated_server_rules(rf::NetGameInfo& netgame, const AlpineS
             break;
         case rf::NetGameType::NG_TYPE_SAL:
             netgame.max_captures = r.salvage.cap_limit;
+            break;
+        case rf::NetGameType::NG_TYPE_SCAV:
+            netgame.max_captures = r.scavenger.cap_limit;
             break;
         default:
             netgame.max_kills = r.individual_kill_limit;

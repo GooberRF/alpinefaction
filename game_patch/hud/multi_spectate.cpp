@@ -2318,6 +2318,7 @@ static int spectate_bottom_left_hud_top()
     case rf::NG_TYPE_TBAG:
     case rf::NG_TYPE_WO:
     case rf::NG_TYPE_SAL:
+    case rf::NG_TYPE_SCAV:
         return clip_h - (big ? 80 : 55) - 10;
     default:
         return clip_h; // no bottom-left cluster
@@ -2558,7 +2559,7 @@ void multi_spectate_render() {
             const rf::NetGameType game_type = rf::multi_get_game_type();
             const bool is_ctf = game_type == rf::NG_TYPE_CTF;
             const bool is_tdm = game_type == rf::NG_TYPE_TEAMDM;
-            const bool is_sal = game_type == rf::NG_TYPE_SAL;
+            const bool is_sal = game_type == rf::NG_TYPE_SAL || game_type == rf::NG_TYPE_SCAV;
             const bool is_koth = game_type == rf::NG_TYPE_KOTH;
             const bool is_dc = game_type == rf::NG_TYPE_DC;
             const bool is_esc = game_type == rf::NG_TYPE_ESC;

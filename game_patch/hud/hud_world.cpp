@@ -14,6 +14,8 @@
 #include "../multi/gametype.h"
 #include "../multi/bagman.h"
 #include "../multi/salvage.h"
+#include "../multi/scavenger.h"
+#include "scavenger_zone.h"
 #include "../misc/alpine_settings.h"
 #include "../sound/sound.h"
 #include "../multi/demo/demo.h"
@@ -498,25 +500,9 @@ void do_render_world_hud_text_label(const NameLabelTex& label, const rf::Vector3
 }
 
 // Session-lifetime, like the font atlases: lets a solid quad share the textured labels' render modes.
-static int world_hud_white_bitmap()
+int world_hud_white_bitmap()
 {
-    static int white_bm = -1;
-    static bool failed = false;
-    if (white_bm == -1 && !failed) {
-        const int bm = rf::bm::create(rf::bm::FORMAT_8888_ARGB, 8, 8);
-        if (bm == -1) {
-            failed = true;
-            return -1;
-        }
-        if (!bm_fill(bm, 0xFFFFFFFFu)) {
-            rf::gr::mark_texture_dirty(bm);
-            rf::bm::release(bm);
-            failed = true;
-            return -1;
-        }
-        rf::bm::texture_add_ref(bm);
-        white_bm = bm;
-    }
+    static const int white_bm = bm_create_procedural(8, 8, [](int, int) { return 0xFFFFFFFFu; });
     return white_bm;
 }
 
@@ -1056,6 +1042,25 @@ static int salvage_deliver_base_team()
     return -1;
 }
 
+// Scavenger's capture zone, with its timeout countdown near the end. The deliver sprite for the carrier.
+static void build_scavenger_zone_icon(WorldHUDRenderMode render_mode)
+{
+    rf::Vector3 zone_pos{};
+    if (!scavenger_get_zone(&zone_pos)) return;
+
+    rf::Player* viewer = world_hud_viewed_player();
+    int bitmap_handle = g_world_hud_assets.koth_neutral;
+    if (salvage_player_is_carrier(viewer)) {
+        bitmap_handle = viewer->team == rf::TEAM_RED ? sal_icon_deliver_red() : sal_icon_deliver_blue();
+    }
+    zone_pos.y += WorldHUDRender::ctf_flag_offset;
+    render_salvage_sprite(zone_pos, bitmap_handle, render_mode);
+    const int time_left_ms = scavenger_get_zone_time_left_ms();
+    if (time_left_ms <= kScavZoneCountdownVisibleMs) {
+        render_world_hud_countdown(zone_pos, WorldHUDRender::bag_countdown_offset, time_left_ms);
+    }
+}
+
 // Draw Salvage's flag sprites.
 void build_salvage_icons()
 {
@@ -1074,6 +1079,7 @@ void build_salvage_icons()
         render_salvage_sprite(base_blue,
             deliver_team == rf::TEAM_BLUE ? sal_icon_deliver_blue() : sal_icon_base_blue(), render_mode);
     }
+    build_scavenger_zone_icon(render_mode);
 
     if (state == SalFlagState::Carried) {
         rf::Player* carrier = salvage_get_carrier();
@@ -1467,7 +1473,9 @@ void hud_world_do_frame() {
     if (rf::is_multi && g_alpine_game_config.world_hud_ctf_icons && rf::multi_get_game_type() == rf::NetGameType::NG_TYPE_CTF) {
         build_ctf_flag_icons();
     }
-    if (rf::is_multi && gt_is_salvage()) {
+    // Unconditional: it also deletes the zone light once Scavenger is gone.
+    scavenger_zone_render();
+    if (rf::is_multi && salvage_framework_active()) {
         salvage_update_dynamic_light();
         if (g_alpine_game_config.world_hud_ctf_icons) {
             build_salvage_icons();

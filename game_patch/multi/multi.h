@@ -204,7 +204,10 @@ void multi_turn_weapon_on(rf::Entity* ep, rf::Player* pp, bool alt_fire);
 void multi_turn_weapon_off(rf::Entity* ep);
 bool is_remote_charge_pair(int weapon_a, int weapon_b);
 void multi_hide_level_items(const std::vector<int>& allowed_item_type_indices, bool preserve_ctf_objects = false);
-void start_level_in_multi(std::string filename);
+// Without a game type, the type is inferred from the level name's prefix.
+void start_level_in_multi(std::string filename, std::optional<rf::NetGameType> game_type = std::nullopt);
+// Leaves the current game and hosts a local listen server on the level, as levelm does.
+void start_local_multi_game(std::string_view filename, std::optional<rf::NetGameType> game_type);
 std::optional<std::string> multi_ban_unban_last();
 std::string_view multi_game_type_name(rf::NetGameType game_type);
 std::string_view multi_game_type_name_upper(rf::NetGameType game_type);

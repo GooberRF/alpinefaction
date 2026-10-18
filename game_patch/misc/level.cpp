@@ -26,6 +26,7 @@
 #include "../object/mover.h"
 #include "../hud/hud_world.h"
 #include "../hud/minimap.h"
+#include "../sound/sound.h"
 #include "../graphics/af_lightmap.h"
 #include "../graphics/d3d11/gr_d3d11_hooks.h"
 #include "../graphics/weather.h"
@@ -158,6 +159,7 @@ void level_shutdown()
     gr::d3d11::release_terrain_gpu();
     alpine_mesh_free_collision_proxies();
     vehicle_physics_level_reset(); // the Bullet world keys on GRoom*, so it goes before the rooms
+    snd_level_looping_reset(); // the stock close that follows stops every channel, so nothing still plays the loop
 }
 
 // Reached from quit-to-menu and leaving for the multiplayer menu (via game_shutdown), the
@@ -377,7 +379,7 @@ FunHook<void(rf::File*)> level_read_mp_respawns_hook{
 // Below RFL 306 the near clip has no effect, and stock behaviour stays as it is.
 void level_sanitize_fog_near_clip()
 {
-    if (rf::level.version < 306) {
+    if (!level_rfl_version_at_least(306)) {
         return;
     }
     const float near_clip = g_level_fog_near_clip;

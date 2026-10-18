@@ -35,6 +35,7 @@
 #include "wipeout.h"
 #include "gungame.h"
 #include "salvage.h"
+#include "scavenger.h"
 #include "vehicles/vehicle.h"
 #include "vehicles/vehicle_tracers.h"
 #include "../os/console.h"
@@ -671,9 +672,9 @@ static bool g_ctf_drop_is_manual = false;
 
 static void handle_drop_flag_request(rf::Player* player)
 {
-    const bool is_salvage = gt_is_salvage();
+    const bool is_salvage = salvage_framework_active();
     if (rf::multi_get_game_type() != rf::NG_TYPE_CTF && !is_salvage) {
-        return; // can't drop flags unless in CTF or SAL
+        return; // can't drop flags unless in CTF, SAL or SCAV
     }
 
     if (!g_alpine_server_config_active_rules.flag_dropping) {
@@ -699,7 +700,7 @@ void multi_force_drop_carried_flag(rf::Player* player)
     if (!rf::is_server || !player) {
         return;
     }
-    if (gt_is_salvage()) {
+    if (salvage_framework_active()) {
         salvage_force_drop_flag(player);
         return;
     }
@@ -923,6 +924,10 @@ std::optional<rf::NetGameType> resolve_gametype_from_name(std::string_view gamet
         string_iequals(gametype_name, "salvage")) {
         return rf::NetGameType::NG_TYPE_SAL;
     }
+    if (string_iequals(gametype_name, "scav") ||
+        string_iequals(gametype_name, "scavenger")) {
+        return rf::NetGameType::NG_TYPE_SCAV;
+    }
 
     return std::nullopt;
 }
@@ -946,7 +951,24 @@ bool multi_set_gametype_alpine(std::string_view gametype_name)
 ConsoleCommand2 sv_game_type_cmd{
     "sv_gametype",
     [](std::optional<std::string> new_game_type, std::optional<std::string> level_name) {
-        if (g_dedicated_launched_from_ads && rf::is_dedicated_server) {
+        if (!rf::is_dedicated_server) {
+            if (rf::is_multi && !rf::is_server && !demo_playback_active()) {
+                rf::console::print("Connected to a server: use rcon sv_gametype to change its game type.\n");
+                return;
+            }
+            if (!new_game_type || !level_name) {
+                rf::console::print("Usage: sv_gametype (gt) <game type> <level>\n");
+                return;
+            }
+            auto resolved_type = resolve_gametype_from_name(new_game_type.value());
+            if (!resolved_type) {
+                rf::console::print("Unknown game type '{}'.\n", new_game_type.value());
+                return;
+            }
+            start_local_multi_game(level_name.value(), resolved_type);
+            return;
+        }
+        if (g_dedicated_launched_from_ads) {
             if (rf::gameseq_get_state() != rf::GameState::GS_GAMEPLAY) {
                 rf::console::print("You cannot change the game type while between levels.\n");
                 return;
@@ -1004,8 +1026,9 @@ ConsoleCommand2 sv_game_type_cmd{
             rf::console::print("This command is only available for Alpine Faction dedicated servers launched with the -ads switch.\n");
         }
     },
-    "Load a specific gametype. Loads level if specificed, otherwise restarts current level. Only available for ADS dedicated servers.",
-    "sv_gametype <dm|tdm|ctf|koth|dc|rev|run|esc|bag|tbag|pit|wo|gg> [level]",
+    "Load a specific gametype. On an ADS dedicated server, loads the level if specified, otherwise restarts the "
+    "current level. Elsewhere, starts a local game on the level, like levelm.",
+    "sv_gametype <dm|tdm|ctf|koth|dc|rev|run|esc|bag|tbag|pit|wo|gg|sal|scav> [level]",
 };
 
 DcCommandAlias gt_cmd{
@@ -3710,6 +3733,7 @@ static int pick_weaker_team()
         blue_score = multi_koth_get_blue_team_score();
         break;
     case rf::NG_TYPE_SAL:
+    case rf::NG_TYPE_SCAV:
         red_score = salvage_get_red_team_score();
         blue_score = salvage_get_blue_team_score();
         break;
@@ -4289,7 +4313,8 @@ bool round_is_tied(rf::NetGameType game_type)
     case rf::NG_TYPE_TBAG: {
         return bagman_get_red_team_score() == bagman_get_blue_team_score();
     }
-    case rf::NG_TYPE_SAL: {
+    case rf::NG_TYPE_SAL:
+    case rf::NG_TYPE_SCAV: {
         const int red_score = salvage_get_red_team_score();
         const int blue_score = salvage_get_blue_team_score();
 
@@ -4431,7 +4456,8 @@ FunHook<void()> multi_check_for_round_end_hook{
                 }
                 break;
             }
-            case rf::NG_TYPE_SAL: {
+            case rf::NG_TYPE_SAL:
+            case rf::NG_TYPE_SCAV: {
                 if (salvage_get_red_team_score() >= rf::multi_cap_limit ||
                     salvage_get_blue_team_score() >= rf::multi_cap_limit) {
                     round_over = true;
@@ -4685,6 +4711,39 @@ FunHook<void(rf::Vector3*, rf::Matrix3*, rf::Player*)> multi_respawn_get_next_po
         // player as spawned this round so the NEXT respawn uses teammate logic.
         if (gt_is_wipeout()) {
             player->wipeout_spawned_this_round = true;
+        }
+
+        // Scavenger: ignore spawn-point team flags and roulette-select, weighting each point
+        // down near the objective, the capture zone and the nearest enemy.
+        if (rf::is_server && scavenger_spawn_weighting_active()) {
+            const auto scav_clients = get_clients(false, true);
+
+            std::vector<rf::AlpineRespawnPoint*> scav_eligible;
+            std::vector<double> scav_weights;
+            scav_eligible.reserve(g_alpine_respawn_points.size());
+            scav_weights.reserve(g_alpine_respawn_points.size());
+            for (auto& point : g_alpine_respawn_points) {
+                if (!point.enabled) {
+                    continue; // team flags intentionally ignored
+                }
+                if (config.always_avoid_last && last_index == (&point - &g_alpine_respawn_points[0])) {
+                    continue;
+                }
+                const float enemy_dist_sq = get_nearest_other_player(scav_clients, player, &point.position, true);
+                scav_eligible.push_back(&point);
+                scav_weights.push_back(scavenger_spawn_point_weight(point.position, enemy_dist_sq));
+            }
+
+            if (!scav_eligible.empty()) {
+                std::discrete_distribution<size_t> dist(scav_weights.begin(), scav_weights.end());
+                const size_t sel = dist(g_rng);
+                const int global_index = std::distance(g_alpine_respawn_points.data(), scav_eligible[sel]);
+                *pos = scav_eligible[sel]->position;
+                *orient = scav_eligible[sel]->orientation;
+                player->last_spawn_point_index = global_index;
+                return;
+            }
+            // No eligible points - fall through to the standard path below.
         }
 
         //xlog::debug("Spawn point requested! Player: {}, Team: {}, Last Spawn Index: {}", player->name, team, last_index);
@@ -5479,6 +5538,7 @@ void server_do_frame()
     gungame_do_frame();
     server_topup_nonclip_ammo(); // after gungame's per-frame weapon grants
     salvage_do_frame();
+    scavenger_do_frame(); // after salvage_do_frame has validated the carrier
     vehicle_do_frame();
     rounds_do_frame();
     auto_team_balance_do_frame();
@@ -5707,6 +5767,12 @@ std::tuple<bool, int, bool, bool> server_features_require_alpine_client()
         requires_alpine = true;
         hard_reject = true;
         min_minor_version = std::max(min_minor_version, 4);
+    }
+
+    if (g_alpine_server_config_active_rules.game_type == rf::NG_TYPE_SCAV) {
+        requires_alpine = true;
+        hard_reject = true;
+        min_minor_version = std::max(min_minor_version, 5);
     }
 
     // Only v306+ levels carry vehicle factories, so a legacy client is already excluded by version.

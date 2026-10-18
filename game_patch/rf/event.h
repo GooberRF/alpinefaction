@@ -179,6 +179,35 @@ namespace rf
     };
     static_assert(sizeof(ContinuousDamageEvent) == 0x2C0);
 
+    struct PlaySoundEvent : Event
+    {
+        char padding[3];
+        String sound_file;              // +0x2B8
+        String alt_sound_file;          // +0x2C0, played by the off signal instead of stopping
+        bool field_2c8;                 // +0x2C8
+        char padding2[3];
+        int sound_handle;               // +0x2CC
+        int sound_instance;             // +0x2D0
+        float min_dist;                 // +0x2D4, 0 plays it 2D
+        float duration;                 // +0x2D8
+        bool looping;                   // +0x2DC
+        bool is_on;                     // +0x2DD
+        char padding3[2];
+        Timestamp duration_timestamp;   // +0x2E0
+        int speaker_uid;                // +0x2E4
+    };
+    static_assert(offsetof(PlaySoundEvent, sound_file) == 0x2B8);
+    static_assert(offsetof(PlaySoundEvent, alt_sound_file) == 0x2C0);
+    static_assert(offsetof(PlaySoundEvent, sound_handle) == 0x2CC);
+    static_assert(offsetof(PlaySoundEvent, sound_instance) == 0x2D0);
+    static_assert(offsetof(PlaySoundEvent, min_dist) == 0x2D4);
+    static_assert(offsetof(PlaySoundEvent, duration) == 0x2D8);
+    static_assert(offsetof(PlaySoundEvent, looping) == 0x2DC);
+    static_assert(offsetof(PlaySoundEvent, is_on) == 0x2DD);
+    static_assert(offsetof(PlaySoundEvent, duration_timestamp) == 0x2E0);
+    static_assert(offsetof(PlaySoundEvent, speaker_uid) == 0x2E4);
+    static_assert(sizeof(PlaySoundEvent) == 0x2E8);
+
     struct PersistentGoalEvent
     {
         rf::String name;

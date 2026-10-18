@@ -49,6 +49,7 @@ enum class af_packet_type : uint8_t
     af_vehicle_health = 0x67,           // Alpine 1.5
     af_vehicle_orient = 0x68,           // Alpine 1.5
     af_vehicle_factory_state = 0x69,    // Alpine 1.5
+    af_scavenger_state = 0x6A,          // Alpine 1.5
 };
 
 struct af_ping_location_req_packet
@@ -620,6 +621,20 @@ struct af_salvage_state_packet
 };
 static_assert(sizeof(af_salvage_state_packet) == 35);
 
+// af_salvage_state's layout (header included), then the capture zone.
+struct af_scavenger_state_packet
+{
+    af_salvage_state_packet flag;
+    float zone_x;
+    float zone_y;
+    float zone_z;
+    float zone_radius;
+    float zone_floor_y;
+    uint32_t zone_time_left_ms;
+};
+static_assert(sizeof(af_scavenger_state_packet) == 59);
+static_assert(offsetof(af_scavenger_state_packet, zone_x) == sizeof(af_salvage_state_packet));
+
 // Seat occupancy, server -> client. Handles are server handles. The packet states the hull's FULL
 // occupancy rather than an enter/exit event, so a receiver converges on it with no event history.
 constexpr int af_vehicle_state_max_seats = 6;
@@ -1062,6 +1077,9 @@ void af_process_gungame_order_packet(const void* data, size_t len, const rf::Net
 void af_send_salvage_state_packet(rf::Player* player);
 void af_send_salvage_state_packet_to_all();
 void af_process_salvage_state_packet(const void* data, size_t len, const rf::NetAddr&);
+void af_send_scavenger_state_packet(rf::Player* player);
+void af_send_scavenger_state_packet_to_all();
+void af_process_scavenger_state_packet(const void* data, size_t len, const rf::NetAddr&);
 void af_send_vehicle_state_packet(rf::Player* player, int vehicle_handle, const int32_t* seat_rider,
                                   uint8_t seat_count, uint8_t changed_seat,
                                   const af_vehicle_state_attrs& attrs);

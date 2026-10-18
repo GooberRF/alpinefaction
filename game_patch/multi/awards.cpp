@@ -785,8 +785,8 @@ void check_x_ray(rf::Player* attacker, rf::Player* victim, int weapon_type)
     if (state->last_scanner_ms != 0 && now - state->last_scanner_ms <= x_ray_scanner_lockout_ms) {
         return;
     }
-    // Only the Salvage and Bagman carriers are outlined through walls, so exclude them.
-    if ((gt_is_salvage() && salvage_get_carrier() == victim) || g_bagman_info.carrier == victim) {
+    // Only the Salvage, Scavenger and Bagman carriers are outlined through walls, so exclude them.
+    if ((salvage_framework_active() && salvage_get_carrier() == victim) || g_bagman_info.carrier == victim) {
         return;
     }
     rf::Entity* attacker_ep = rf::entity_from_handle(attacker->entity_handle);
@@ -1228,7 +1228,8 @@ void awards_on_ctf_capture(rf::Player* player)
 
 void awards_on_sal_flag_taken(rf::Player* player, bool from_spawn)
 {
-    if (!awards_tracking_active()) {
+    // The shared objective engine also runs Scavenger, which has no awards of its own yet.
+    if (!gt_is_salvage() || !awards_tracking_active()) {
         return;
     }
     if (AwardPlayerState* state = state_for(player)) {
@@ -1238,6 +1239,9 @@ void awards_on_sal_flag_taken(rf::Player* player, bool from_spawn)
 
 void awards_on_sal_flag_dropped(rf::Player* player)
 {
+    if (!gt_is_salvage()) {
+        return;
+    }
     if (AwardPlayerState* state = state_for(player)) {
         state->clean_steal = false;
     }
@@ -1245,7 +1249,7 @@ void awards_on_sal_flag_dropped(rf::Player* player)
 
 void awards_on_sal_capture(rf::Player* player)
 {
-    if (!awards_tracking_active()) {
+    if (!gt_is_salvage() || !awards_tracking_active()) {
         return;
     }
     AwardPlayerState* state = state_for(player);

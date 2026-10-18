@@ -68,6 +68,7 @@ namespace rf
     static auto snd_ds_estimate_duration = addr_as_ref<float(int sid)>(0x00523170);
     static auto snd_ds_play_3d = addr_as_ref<int(int sid, const Vector3& pos, const Vector3& vel, float min_dist, float max_dist, float volume, bool is_looping, float unused)>(0x005222B0);
     static auto snd_ds_set_volume = addr_as_ref<void(int sig, float volume)>(0x00522D30);
+    static auto snd_ds_play = addr_as_ref<int(int buf_id, float volume, float pan, bool is_looping, float unused)>(0x005226B0);
 
     static auto snd_ds3d_update_buffer = addr_as_ref<int(int chnl, float min_dist, float max_dist, const Vector3& pos, const Vector3& vel)>(0x00562DB0);
 }

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cmath>
 #include <string_view>
 #include <string>
 #include <set>
@@ -176,6 +177,58 @@ struct SalvageConfig
     void set_flag_return_time(float in_seconds)
     {
         flag_return_time_ms = std::clamp(static_cast<int>(in_seconds * 1000.0f), 1000, 60000);
+    }
+};
+
+struct ScavengerConfig
+{
+    int cap_limit = 15;
+    int objective_spawn_delay_ms = 10000;
+    int objective_capture_respawn_delay_ms = 5000;
+    int objective_return_time_ms = 30000;
+    int zone_timeout_ms = 120000;
+    float zone_radius = 1.5f;
+
+    void set_cap_limit(int count)
+    {
+        cap_limit = std::clamp(count, 1, 65535);
+    }
+
+    // Clamped in float so an out-of-range value never reaches the int cast; non-finite input
+    // keeps the current value.
+    static void set_clamped_ms(int& out_ms, float in_seconds, float min_ms, float max_ms)
+    {
+        if (std::isfinite(in_seconds)) {
+            out_ms = static_cast<int>(std::clamp(in_seconds * 1000.0f, min_ms, max_ms));
+        }
+    }
+
+    void set_objective_spawn_delay(float in_seconds)
+    {
+        // 2 bytes (uint16_t) on the wire
+        set_clamped_ms(objective_spawn_delay_ms, in_seconds, 0.0f, 60000.0f);
+    }
+
+    void set_objective_capture_respawn_delay(float in_seconds)
+    {
+        set_clamped_ms(objective_capture_respawn_delay_ms, in_seconds, 0.0f, 60000.0f);
+    }
+
+    void set_objective_return_time(float in_seconds)
+    {
+        set_clamped_ms(objective_return_time_ms, in_seconds, 1000.0f, 60000.0f);
+    }
+
+    void set_zone_timeout(float in_seconds)
+    {
+        set_clamped_ms(zone_timeout_ms, in_seconds, 10000.0f, 600000.0f);
+    }
+
+    void set_zone_radius(float in_meters)
+    {
+        if (std::isfinite(in_meters)) {
+            zone_radius = std::clamp(in_meters, 1.0f, 10.0f);
+        }
     }
 };
 
@@ -778,6 +831,7 @@ struct AlpineServerConfigRules
     WeaponStayExemptionConfig weapon_stay_exemptions;
     BagmanConfig bagman;
     SalvageConfig salvage;
+    ScavengerConfig scavenger;
     std::map<std::string, std::string> item_replacements;
     std::map<std::string, int> item_respawn_time_overrides;
     DelayedItemsConfig delayed_items;
@@ -899,6 +953,7 @@ struct AlpineServerConfigRules
         switch (game_type) {
             case rf::NetGameType::NG_TYPE_CTF:     return cap_limit;
             case rf::NetGameType::NG_TYPE_SAL:     return salvage.cap_limit;
+            case rf::NetGameType::NG_TYPE_SCAV:    return scavenger.cap_limit;
             case rf::NetGameType::NG_TYPE_TEAMDM:  return team_kill_limit;
             case rf::NetGameType::NG_TYPE_KOTH:    return koth_score_limit;
             case rf::NetGameType::NG_TYPE_DC:      return dc_score_limit;
@@ -922,6 +977,7 @@ struct AlpineServerConfigRules
         switch (game_type) {
             case rf::NetGameType::NG_TYPE_CTF:     set_cap_limit(count); return true;
             case rf::NetGameType::NG_TYPE_SAL:     salvage.set_cap_limit(count); return true;
+            case rf::NetGameType::NG_TYPE_SCAV:    scavenger.set_cap_limit(count); return true;
             case rf::NetGameType::NG_TYPE_TEAMDM:  set_team_kill_limit(count); return true;
             case rf::NetGameType::NG_TYPE_KOTH:    set_koth_score_limit(count); return true;
             case rf::NetGameType::NG_TYPE_DC:      set_dc_score_limit(count); return true;

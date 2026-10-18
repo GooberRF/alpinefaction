@@ -304,7 +304,8 @@ namespace
         }
 
         const int text_pad = std::max(4, s(8.0f));
-        lo.show_caps = g_detail.header.game_type == rf::NG_TYPE_CTF || g_detail.header.game_type == rf::NG_TYPE_SAL;
+        lo.show_caps = g_detail.header.game_type == rf::NG_TYPE_CTF || g_detail.header.game_type == rf::NG_TYPE_SAL
+            || g_detail.header.game_type == rf::NG_TYPE_SCAV;
         lo.col_ping_r = lo.content_w - std::max(6, s(12.0f)) - text_pad; // stays clear of the scrollbar
         lo.col_caps_r = lo.col_ping_r - s(70.0f);
         lo.col_score_r = (lo.show_caps ? lo.col_caps_r : lo.col_ping_r) - s(80.0f);

@@ -37,6 +37,7 @@
 #include "server.h"
 #include "server_internal.h"
 #include "salvage.h"
+#include "scavenger.h"
 #include "vehicles/vehicle.h"
 #include "vehicles/vehicle_physics.h"
 #include "bagman.h"
@@ -298,7 +299,8 @@ enum packet_type : uint8_t {
     af_vehicle_fire        = 0x66,
     af_vehicle_health      = 0x67,
     af_vehicle_orient      = 0x68,
-    af_vehicle_factory_state = 0x69
+    af_vehicle_factory_state = 0x69,
+    af_scavenger_state     = 0x6A
 };
 
 // client -> server
@@ -395,7 +397,8 @@ std::array g_client_side_packet_whitelist{
     af_vehicle_fire,
     af_vehicle_health,
     af_vehicle_orient,
-    af_vehicle_factory_state
+    af_vehicle_factory_state,
+    af_scavenger_state
 };
 // clang-format on
 
@@ -2990,6 +2993,7 @@ FunHook<void()> multi_stop_hook{
         multi_hud_reset_gametype_help(); // show gametype help when joining a server
         reset_local_pending_game_type(); // clear pending game type when leaving
         salvage_on_multi_shutdown(); // put the flag_red item class back to items.tbl
+        scavenger_on_multi_shutdown(); // forget the zone and its light handle
         bagman_on_multi_shutdown();  // put the amp aura bitmap back to its stock value
         vehicle_on_multi_shutdown(); // drop the per-level vehicle/turret records
         vehicle_physics_on_multi_shutdown(); // tear down the Bullet world with the session

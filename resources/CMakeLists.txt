@@ -252,6 +252,10 @@ add_packfile(alpinefaction.vpp
     images/hud_miniflag_sal.vbm
     images/hud_microflag_sal.vbm
     images/hud_flag_sal.vbm
+    images/hud_miniflag_scav_1.tga
+    images/hud_miniflag_scav.tga
+    images/hud_microflag_scav.tga
+    images/hud_flag_scav.tga
     images/CTFflag-afgr.tga
     images/noclip_ammo_bar_1.tga
     images/Icon_EAX.tga
@@ -284,6 +288,7 @@ add_packfile(alpinefaction.vpp
     images/dec_af_csp09.tga
     images/dec_af_csp10.tga
     images/af-jetpack1skin1.tga
+    images/af_scavpumap1.dds
     images/af_jeeptire1.tga
     images/af_apctread1.atx
     images/af_apctreadbm.tga
@@ -365,6 +370,7 @@ add_packfile(alpinefaction.vpp
     meshes/meatchunk4.v3m
     meshes/meatchunk5.v3m
     meshes/af_pickup-bag.v3m
+    meshes/af-scavpumap1.v3m
     meshes/af-jetpack1.v3m
     meshes/AFSALflag1.vfx
     meshes/af-jg1.v3m

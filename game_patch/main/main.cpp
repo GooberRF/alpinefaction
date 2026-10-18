@@ -63,6 +63,7 @@
 #include "../graphics/af_lightmap.h"
 #include "../object/alpine_corona.h"
 #include "../object/alpine_rope.h"
+#include "../sound/sound.h"
 #include "../input/input.h"
 #include "../rf/gr/gr.h"
 #include "../rf/multi.h"
@@ -275,6 +276,7 @@ FunHook<int(rf::String&, rf::String&, char*)> level_load_hook{
 
         // attempt to load level_info tbl file
         load_level_info_config(level_filename);
+        snd_level_looping_init(g_alpine_level_info_config.looping_sounds);
 
         // evaluate and cache vertex lighting mode for this level (D3D11 only)
         if (is_d3d11()) {

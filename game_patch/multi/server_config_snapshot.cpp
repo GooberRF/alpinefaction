@@ -67,6 +67,13 @@ std::vector<std::pair<std::string, SettingValue>> build_gametype_settings(rf::Ne
             add("flag_capture_respawn_delay_ms", rules.salvage.flag_capture_respawn_delay_ms);
             add("flag_return_time_ms", rules.salvage.flag_return_time_ms);
             break;
+        case rf::NG_TYPE_SCAV:
+            add("objective_spawn_delay_ms", rules.scavenger.objective_spawn_delay_ms);
+            add("objective_capture_respawn_delay_ms", rules.scavenger.objective_capture_respawn_delay_ms);
+            add("objective_return_time_ms", rules.scavenger.objective_return_time_ms);
+            add("zone_timeout_ms", rules.scavenger.zone_timeout_ms);
+            out.emplace_back("zone_radius", SettingValue{static_cast<double>(rules.scavenger.zone_radius)});
+            break;
         case rf::NG_TYPE_CTF:
             add("flag_return_time_ms", rules.ctf_flag_return_time_ms);
             break;
