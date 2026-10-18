@@ -1024,10 +1024,16 @@ void movers_update_all(bool step_will_run, float step_time, float engine_dt)
         // A machine with no body to step never refreshes the broadphase or derives a kinematic velocity, yet
         // the scrape probe asks this world for what a watched hull touches.
         if (!step_will_run) {
-            const rf::Vector3 vel = moved && engine_dt > 0.0f ? (op->pos - m.carry_pos) * (1.0f / engine_dt)
-                                                              : rf::Vector3{};
-            m.body->setLinearVelocity(to_bt(vel));
-            m.body->setAngularVelocity(btVector3(0.0f, 0.0f, 0.0f));
+            // As saveKinematicState derives it, angular part included: a turntable's surface moves too.
+            btVector3 lin_vel(0.0f, 0.0f, 0.0f);
+            btVector3 ang_vel(0.0f, 0.0f, 0.0f);
+            if (moved && engine_dt > 0.0f) {
+                const btTransform from(to_bt(m.carry_orient), to_bt(m.carry_pos));
+                const btTransform to(to_bt(op->orient), to_bt(op->pos));
+                btTransformUtil::calculateVelocity(from, to, engine_dt, lin_vel, ang_vel);
+            }
+            m.body->setLinearVelocity(lin_vel);
+            m.body->setAngularVelocity(ang_vel);
             if (moved) {
                 g_vphys.world->updateSingleAabb(m.body);
             }
@@ -1683,8 +1689,7 @@ namespace
                     btVector3 bhi;
                     if (owned->body) {
                         owned->body->getAabb(blo, bhi);
-                        owned->impact_prop_built |= blo.x() <= hi.x() && bhi.x() >= lo.x() && blo.y() <= hi.y()
-                                                 && bhi.y() >= lo.y() && blo.z() <= hi.z() && bhi.z() >= lo.z();
+                        owned->impact_prop_built |= TestAabbAgainstAabb2(blo, bhi, lo, hi);
                     }
                 }
             }

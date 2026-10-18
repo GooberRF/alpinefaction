@@ -300,6 +300,21 @@ namespace gr::d3d11
         return mode.get_alpha_source() != rf::gr::ALPHA_SOURCE_TEXTURE;
     }
 
+    // White, with src's colour and alpha wherever the mode takes them from the vertex.
+    static inline rf::Color vertex_color_for_mode(rf::gr::Mode mode, const rf::Color& src)
+    {
+        rf::Color color{255, 255, 255, 255};
+        if (mode_uses_vertex_color(mode)) {
+            color.red = src.red;
+            color.green = src.green;
+            color.blue = src.blue;
+        }
+        if (mode_uses_vertex_alpha(mode)) {
+            color.alpha = src.alpha;
+        }
+        return color;
+    }
+
     static inline std::array<int, 2> normalize_texture_handles_for_mode(rf::gr::Mode mode, const std::array<int, 2>& textures)
     {
         switch (mode.get_texture_source()) {

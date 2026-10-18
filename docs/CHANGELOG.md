@@ -127,7 +127,7 @@ Version 1.5.0 (Trillium): Not yet released
   - Test distant particles for world collision less often (`cl_particlecollidelod`)
   - Raise the particle pool size to 8192 (`cl_particlepoolsize`)
   - Raise the particle emitter limit from 128 to 8192
-  - Render particles, plankton, rain and snow on the GPU with instancing, and simulate rain and snow motion on the GPU (Direct3D 11 renderer only)
+  - Render particles, plankton, rain and snow on the GPU with instancing, and simulate rain and snow motion on the GPU (Direct3D 11 renderer only), toggleable with `dbg_particlegpu`
   - Add `dbg_particles` overlay and `dbg_particles_log` to measure particle performance, and `dbg_particlewarmup` to toggle replaying a hidden particle emitter when it comes back into view
 - Raise the pitch of hit sounds as consecutive hits land, toggleable with `cl_hitsounds_streakpitch`
 - Raise the limit of simultaneously playing sounds from 64 to 127

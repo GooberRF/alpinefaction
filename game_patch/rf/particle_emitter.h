@@ -33,7 +33,7 @@ enum ParticleFlags : unsigned
     PTF_HIT_CALLBACK = 0x20,
     PTF_ACCELERATE = 0x40,
     PTF_EXPLODE = 0x80,
-    PTF_LOOP = 0x100, // cycle the frame set at 15 fps instead of once over the lifetime
+    PTF_LOOP = 0x100, // stock frame index frac(age) * 15 / n each second, not once over the lifetime
     PTF_RANDOM_ORIENT = 0x200,
     PTF_COLLIDE_LIQUID = 0x400,
     PTF_COLLIDE_AND_DIE = 0x800,
@@ -300,7 +300,8 @@ static auto& particle_create = addr_as_ref<void(int pool_id, ParticleCreateInfo&
     GRoom* room, Vector3* a4, int parent_obj, Particle** result,
     ParticleEmitter* emitter)>(0x00496840);
 
-// Pool 0 holds 500 particles, pool 1 holds 1100. Particle::pool_id selects one.
+// Stock pool 0 holds 500 particles and pool 1 1100, until particle_sim's relink_pools resizes them.
+// Particle::pool_id selects one.
 static auto& particle_pools = addr_as_ref<ParticlePool[2]>(0x007A3B00);
 
 // List sentinel: only next/prev are meaningful, the rest of the record is not an emitter.
@@ -325,6 +326,8 @@ static auto& particle_list_move = addr_as_ref<void(Particle* list, float dt)>(0x
 
 // Moves one particle by dt with world collision, leaving pos at the post move position.
 static auto& particle_move_collide = addr_as_ref<void(Particle* particle, float dt)>(0x00495880);
+// Set by the level's particle init; while 0, particle_move_collide only clears PTF_COLLIDE and moves nothing.
+static auto& particle_collide_world_enabled = addr_as_ref<int>(0x007A3AE8);
 
 // Array of particle emitter type template pointers loaded from emitters.tbl (64 slots)
 static auto& g_particle_emitter_types = addr_as_ref<ParticleEmitterType*[64]>(0x007B2770);

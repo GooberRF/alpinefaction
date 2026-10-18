@@ -84,7 +84,10 @@ int hud_side_gauge_label_y(const HudSideGaugeRect& rect);
 // Its label above and an optional value below; alpha scales the whole gauge.
 void hud_draw_side_gauge(bool left, float frac, const rf::Color& fill, const char* label, const char* value,
                          float alpha);
-// Centred text over a shadow pass, so it keeps its edges over bright geometry.
+// Centred text over a shadow pass, so it keeps its edges over bright geometry; the gauge and hint defaults.
+inline constexpr int hud_shadowed_text_alpha = 200;
+inline constexpr int hud_shadowed_text_shadow_alpha = 160;
+inline constexpr int hud_shadowed_text_shadow_offset_px = 1;
 void hud_draw_shadowed_text(int x, int y, const char* text, int font, const rf::Color& color, rf::ubyte shadow_alpha,
                             int shadow_offset);
 // A vehicle HUD bar's alpha: rising while it has something to show, fading once full. One per bar;

@@ -437,7 +437,8 @@ constexpr short vphys_group_hull = 0x80;
 constexpr short vphys_group_level = 0x40;
 // The clutter props: Bullet's own static group and mask, which nothing else in the world is given.
 constexpr short vphys_group_prop = btBroadphaseProxy::StaticFilter;
-constexpr short vphys_mask_prop = btBroadphaseProxy::AllFilter ^ btBroadphaseProxy::StaticFilter;// A hull pairs with everything EXCEPT another hull: vehicle-vs-vehicle is vphys_apply_pair_response.
+constexpr short vphys_mask_prop = btBroadphaseProxy::AllFilter ^ btBroadphaseProxy::StaticFilter;
+// A hull pairs with everything EXCEPT another hull: vehicle-vs-vehicle is vphys_apply_pair_response.
 constexpr short vphys_mask_no_hull = static_cast<short>(~vphys_group_hull);
 
 enum class VehicleOrbitSeat

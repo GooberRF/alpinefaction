@@ -7,6 +7,7 @@
 #include <vector>
 #include "../../rf/math/vector.h"
 #include "../../rf/math/matrix.h"
+#include "../../rf/physics.h"
 
 namespace rf
 {
@@ -105,7 +106,7 @@ struct VehicleHullProbeHit
     rf::Vector3 normal;
     rf::Vector3 along; // the hull velocity's part along the surface; a sphere contact's is against a mover's motion
     float along_speed = 0.0f;
-    int material = 0; // rays only: a sphere contact is MATERIAL_DEFAULT
+    int material = rf::MATERIAL_DEFAULT; // rays only: a sphere contact keeps the default
 };
 inline constexpr int vehicle_hull_probe_max_hits = 8;
 

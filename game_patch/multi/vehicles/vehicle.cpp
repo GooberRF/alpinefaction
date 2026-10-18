@@ -88,7 +88,6 @@ namespace
     constexpr float vehicle_strand_warn_s = 2.0f;        // a sub out of the water
     constexpr float vehicle_hazard_drain_s = 3.0f;       // empties a full hull in this
     constexpr float vehicle_hazard_recover_rate = 2.0f;  // the clock runs back this much faster once clear
-    constexpr float vehicle_hazard_credit_s = 5.0f;      // credit reach past the time spent in the medium
 
     constexpr float vehicle_void_probe = 300.0f; // world units of clear air below = out of the level
     constexpr float vehicle_void_time = 2.0f;    // held this long before the kill
@@ -385,6 +384,9 @@ int vehicle_hull_probe(rf::Entity* ep, const rf::Vector3& vel, bool flyer, bool 
     int num_hits = 0;
     const auto add_hit = [&](const rf::Vector3& point, const rf::Vector3& normal, const rf::Vector3& rel_vel,
                              int material) {
+        if (num_hits >= vehicle_hull_probe_max_hits) {
+            return;
+        }
         VehicleHullProbeHit& hit = out[num_hits++];
         hit.point = point;
         hit.normal = normal;
@@ -703,8 +705,8 @@ namespace
         return max_life / vehicle_hazard_drain_s * (0.4f + 1.2f * progress);
     }
 
-    // The Bullet body is released first so nothing fights the death animation. The blow itself credits nobody;
-    // a drown or strand scuttle may have named the destroyer first.
+    // The Bullet body is released first so nothing fights the death animation. The blow is unattributed: it
+    // goes to a hit from the last vehicle_hit_credit_s, or one a drown or strand scuttle named first.
     void vehicle_server_scuttle(rf::Entity* ep, float damage)
     {
         const int handle = ep->handle;
@@ -954,7 +956,7 @@ void vehicle_do_frame()
             const float drain = vehicle_hazard_drain_rate(vehicle_hud_max_life(ep), drained_s) * rf::frametime;
             ep->life = std::max(ep->life - drain, last_life);
             if (ep->life <= last_life || drained_s >= 2.0f * vehicle_hazard_drain_s) {
-                vehicle_note_hazard_destroyer(ep, hazard_s + vehicle_hazard_credit_s);
+                vehicle_note_hazard_destroyer(ep, hazard_s + vehicle_hit_credit_s);
                 vehicle_server_scuttle(ep, vehicle_scuttle_lethal_damage(ep));
                 continue;
             }

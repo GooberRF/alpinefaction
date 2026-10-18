@@ -62,9 +62,6 @@ constexpr int JETPACK_STATE_SYNC_INTERVAL_MS = 100;
 // a keybind hint offers itself under the reticle until the pack is first used.
 constexpr int JETPACK_REVEAL_MS = 2500;
 constexpr const char* JETPACK_GAUGE_LABEL = "JETPACK";
-constexpr int JETPACK_TEXT_ALPHA = 200;
-constexpr int JETPACK_TEXT_SHADOW_ALPHA = 160;
-constexpr int JETPACK_TEXT_SHADOW_OFFSET_PX = 1;
 constexpr int JETPACK_HINT_FADE_MS = 150;
 constexpr int JETPACK_HINT_OFFSET_PX = 48;          // below screen center
 constexpr int JETPACK_HINT_OFFSET_PX_BIG = 72;
@@ -803,10 +800,10 @@ void jetpack_draw_thrust_hint(int alpha_scale)
     const int offset = big ? JETPACK_HINT_OFFSET_PX_BIG : JETPACK_HINT_OFFSET_PX;
     const int x = rf::gr::clip_width() / 2;
     const int y = rf::gr::clip_height() / 2 + offset;
-    const rf::Color color{255, 255, 255, static_cast<rf::ubyte>((JETPACK_TEXT_ALPHA * alpha_scale) / 255)};
+    const rf::Color color{255, 255, 255, static_cast<rf::ubyte>((hud_shadowed_text_alpha * alpha_scale) / 255)};
     hud_draw_shadowed_text(x, y, g_jetpack_hint_text.c_str(), hud_get_default_font(), color,
-                           static_cast<rf::ubyte>((JETPACK_TEXT_SHADOW_ALPHA * alpha_scale) / 255),
-                           JETPACK_TEXT_SHADOW_OFFSET_PX);
+                           static_cast<rf::ubyte>((hud_shadowed_text_shadow_alpha * alpha_scale) / 255),
+                           hud_shadowed_text_shadow_offset_px);
 }
 
 } // namespace

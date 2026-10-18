@@ -901,7 +901,7 @@ namespace gr::d3d11
     void Renderer::tmapper(int nv, const rf::gr::Vertex **vertices, int vertex_attributes, rf::gr::Mode mode)
     {
         // A pending batch was collected before this poly and has to be drawn before it. No-op
-        // unless a batched pass (particles, weather, plankton) is open.
+        // unless a batched pass (particles, plankton) is open.
         particle_renderer_->flush_batch();
         std::array<int, 2> tex_handles{rf::gr::screen.current_texture_1, rf::gr::screen.current_texture_2};
         dyn_geo_renderer_->add_poly(nv, vertices, vertex_attributes, tex_handles, mode);

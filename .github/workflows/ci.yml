@@ -35,7 +35,7 @@ jobs:
     - name: Create a build environment
       run: cmake -E make_directory ./build
 
-    # Shaders would need Wine + vkd3d, which miscompiles them; the packfile ships from the MSVC job
+    # Shaders would need Wine + vkd3d, which crashes on some of them; the packfile ships from the MSVC job
     - name: Configure CMake
       working-directory: ./build
       run: |

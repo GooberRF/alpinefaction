@@ -137,10 +137,13 @@ void hud_draw_side_gauge(bool left, float frac, const rf::Color& fill, const cha
     }
 
     const int font = hud_get_small_font();
-    const rf::Color text_color{255, 255, 255, scaled(200)};
-    hud_draw_shadowed_text(x + w / 2, hud_side_gauge_label_y(rect), label, font, text_color, scaled(160), 1);
+    const rf::Color text_color{255, 255, 255, scaled(hud_shadowed_text_alpha)};
+    const rf::ubyte shadow_alpha = scaled(hud_shadowed_text_shadow_alpha);
+    hud_draw_shadowed_text(x + w / 2, hud_side_gauge_label_y(rect), label, font, text_color, shadow_alpha,
+                           hud_shadowed_text_shadow_offset_px);
     if (value) {
-        hud_draw_shadowed_text(x + w / 2, y + h + hud_side_gauge_text_gap, value, font, text_color, scaled(160), 1);
+        hud_draw_shadowed_text(x + w / 2, y + h + hud_side_gauge_text_gap, value, font, text_color, shadow_alpha,
+                               hud_shadowed_text_shadow_offset_px);
     }
 }
 

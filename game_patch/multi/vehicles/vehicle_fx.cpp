@@ -83,19 +83,19 @@ namespace
 
     enum FxSound
     {
-        FXS_IMPACT_METAL,
-        FXS_IMPACT_ROCK,
-        FXS_IMPACT_GLASS,
-        FXS_SPLASH_SMALL,
-        FXS_SPLASH_MEDIUM,
-        FXS_SPLASH_LARGE,
-        FXS_SPLASH_HUGE,
-        FXS_SPARK,
-        FXS_BURNING,
-        FXS_COUNT,
+        fx_sound_impact_metal,
+        fx_sound_impact_rock,
+        fx_sound_impact_glass,
+        fx_sound_splash_small,
+        fx_sound_splash_medium,
+        fx_sound_splash_large,
+        fx_sound_splash_huge,
+        fx_sound_spark,
+        fx_sound_burning,
+        fx_sound_count,
     };
 
-    constexpr const char* fx_foley_names[FXS_COUNT] = {
+    constexpr const char* fx_foley_names[fx_sound_count] = {
         "Riot Impact Metal",
         "Riot Impact Rock",
         "Glass Land",
@@ -121,16 +121,16 @@ namespace
 
     enum FxBitmap
     {
-        FXB_SMOKE,
-        FXB_DARK_SMOKE,
-        FXB_SPARK,
-        FXB_FIRE,
-        FXB_BUBBLE,
-        FXB_COUNT,
+        fx_bitmap_smoke,
+        fx_bitmap_dark_smoke,
+        fx_bitmap_spark,
+        fx_bitmap_fire,
+        fx_bitmap_bubble,
+        fx_bitmap_count,
     };
 
     // Stock bitmaps the stock emitters.tbl already uses.
-    constexpr const char* fx_bitmap_filenames[FXB_COUNT] = {
+    constexpr const char* fx_bitmap_filenames[fx_bitmap_count] = {
         "smoketest.tga",
         "smokedark.tga",
         "Flame01_02.tga",
@@ -154,35 +154,35 @@ namespace
     };
 
     constexpr ParticleSpec spark_spec{
-        FXB_SPARK, {255, 255, 255, 255}, {128, 128, 128, 0}, 0.08f, 0.13f, 0.0f, 0.25f, 0.5f, 2.0f, 0.0f,
+        fx_bitmap_spark, {255, 255, 255, 255}, {128, 128, 128, 0}, 0.08f, 0.13f, 0.0f, 0.25f, 0.5f, 2.0f, 0.0f,
         rf::PTF_GLOW | rf::PTF_VEL_STRETCH,
     };
     // The bubble bitmap's white specks read as droplets; the stock corona has an orange core.
     constexpr ParticleSpec spray_spec{
-        FXB_BUBBLE, {220, 235, 255, 220}, {220, 235, 255, 0}, 0.12f, 0.25f, -0.1f, 0.4f, 0.8f, 1.0f, 0.0f,
+        fx_bitmap_bubble, {220, 235, 255, 220}, {220, 235, 255, 0}, 0.12f, 0.25f, -0.1f, 0.4f, 0.8f, 1.0f, 0.0f,
         rf::PTF_GLOW | rf::PTF_RANDOM_ORIENT,
     };
     constexpr ParticleSpec mist_spec{
-        FXB_SMOKE, {225, 235, 245, 110}, {225, 235, 245, 0}, 0.3f, 0.6f, 1.5f, 0.8f, 1.4f, -0.05f, -1.5f,
+        fx_bitmap_smoke, {225, 235, 245, 110}, {225, 235, 245, 0}, 0.3f, 0.6f, 1.5f, 0.8f, 1.4f, -0.05f, -1.5f,
         rf::PTF_GLOW | rf::PTF_RANDOM_ORIENT,
     };
     constexpr ParticleSpec smoke_spec{
-        FXB_SMOKE, {120, 120, 120, 90}, {90, 90, 90, 0}, 0.3f, 0.5f, 0.4f, 1.2f, 2.0f, -0.12f, -1.0f,
+        fx_bitmap_smoke, {120, 120, 120, 90}, {90, 90, 90, 0}, 0.3f, 0.5f, 0.4f, 1.2f, 2.0f, -0.12f, -1.0f,
         rf::PTF_RANDOM_ORIENT,
     };
     constexpr ParticleSpec dark_smoke_spec{
-        FXB_DARK_SMOKE, {255, 255, 255, 150}, {255, 255, 255, 0}, 0.4f, 0.6f, 0.9f, 2.4f, 3.4f, -0.3f, -1.0f,
+        fx_bitmap_dark_smoke, {255, 255, 255, 150}, {255, 255, 255, 0}, 0.4f, 0.6f, 0.9f, 2.4f, 3.4f, -0.3f, -1.0f,
         rf::PTF_RANDOM_ORIENT,
     };
     constexpr ParticleSpec fire_spec{
-        FXB_FIRE, {255, 255, 255, 190}, {255, 255, 255, 0}, 0.35f, 0.6f, -0.3f, 0.45f, 0.8f, -0.6f, -3.0f,
+        fx_bitmap_fire, {255, 255, 255, 190}, {255, 255, 255, 0}, 0.35f, 0.6f, -0.3f, 0.45f, 0.8f, -0.6f, -3.0f,
         rf::PTF_GLOW | rf::PTF_RANDOM_ORIENT,
     };
     constexpr ParticleSpec bubble_spec{
-        FXB_BUBBLE, {255, 255, 255, 160}, {255, 255, 255, 0}, 0.05f, 0.12f, 0.0f, 1.0f, 2.0f, -0.5f, 0.0f, 0,
+        fx_bitmap_bubble, {255, 255, 255, 160}, {255, 255, 255, 0}, 0.05f, 0.12f, 0.0f, 1.0f, 2.0f, -0.5f, 0.0f, 0,
     };
 
-    constexpr int fx_num_layers = FXB_COUNT * 2;
+    constexpr int fx_num_layers = fx_bitmap_count * 2;
 
     int fx_layer(const ParticleSpec& s)
     {
@@ -229,7 +229,7 @@ namespace
         rf::Color dest = clr;
         dest.alpha = 0;
         const unsigned flags = haze ? rf::PTF_GLOW | rf::PTF_RANDOM_ORIENT : rf::PTF_RANDOM_ORIENT;
-        return {FXB_SMOKE, clr, dest, 0.25f * size, 0.45f * size, 0.8f, 0.6f, 1.1f, -0.05f, -2.0f, flags};
+        return {fx_bitmap_smoke, clr, dest, 0.25f * size, 0.45f * size, 0.8f, 0.6f, 1.1f, -0.05f, -2.0f, flags};
     }
 
     // A landing or crash throws a heavier, longer-lived cloud than a rolling wheel.
@@ -331,11 +331,11 @@ namespace
     }
 
     std::unordered_map<int, HullFx> g_hull_fx;
-    std::array<int, FXB_COUNT> g_fx_bitmaps = fx_unloaded<FXB_COUNT>();
+    std::array<int, fx_bitmap_count> g_fx_bitmaps = fx_unloaded<fx_bitmap_count>();
     bool g_fx_bitmaps_loaded = false;
     int g_fx_live_particles = 0;
     int g_fx_num_emitters = 0;
-    std::array<int, FXS_COUNT> g_fx_foley = fx_unloaded<FXS_COUNT>();
+    std::array<int, fx_sound_count> g_fx_foley = fx_unloaded<fx_sound_count>();
     std::array<int, std::size(fx_wash_sound_files)> g_fx_wash_sounds = fx_unloaded<std::size(fx_wash_sound_files)>();
     int g_fx_scrape_sound = -1;
     rf::ImpactSoundSet* g_fx_big_debris_iss = nullptr;
@@ -383,7 +383,7 @@ namespace
             return;
         }
         g_fx_bitmaps_loaded = true;
-        for (int i = 0; i < FXB_COUNT; ++i) {
+        for (int i = 0; i < fx_bitmap_count; ++i) {
             g_fx_bitmaps[i] = rf::bm::load(fx_bitmap_filenames[i], -1, true);
             if (g_fx_bitmaps[i] < 0) {
                 xlog::warn("[vehicle_fx] failed to load bitmap '{}'", fx_bitmap_filenames[i]);
@@ -406,7 +406,7 @@ namespace
             return;
         }
         g_fx_sounds_loaded = true;
-        for (int i = 0; i < FXS_COUNT; ++i) {
+        for (int i = 0; i < fx_sound_count; ++i) {
             g_fx_foley[i] = rf::foley_lookup_by_name(fx_foley_names[i]);
             if (g_fx_foley[i] < 0) {
                 xlog::warn("[vehicle_fx] no foley '{}'", fx_foley_names[i]);
@@ -580,7 +580,7 @@ namespace
         type.pos = fx.last_pos;
         type.min_spawn_delay = 1.0f;
         type.max_spawn_delay = 1.0f;
-        type.bitmap = g_fx_bitmaps[FXB_SMOKE];
+        type.bitmap = g_fx_bitmaps[fx_bitmap_smoke];
         type.num_frames = 1;
         // Parent 0 is no object (handle signatures start at 1) but counts as parented, which stock needs to fit
         // the cull radius to the particles (0x00497E0A). Never ticked: particle_emitter_create does not link it.
@@ -765,11 +765,11 @@ namespace
     {
         switch (material) {
             case rf::MATERIAL_METAL:
-                return FXS_IMPACT_METAL;
+                return fx_sound_impact_metal;
             case rf::MATERIAL_GLASS:
-                return FXS_IMPACT_GLASS;
+                return fx_sound_impact_glass;
             default:
-                return FXS_IMPACT_ROCK;
+                return fx_sound_impact_rock;
         }
     }
 
@@ -808,7 +808,8 @@ namespace
                 3.0f + 4.0f * strength, (3.0f + 4.0f * strength) * size, size);
         fx_ring(fx, mist_spec, static_cast<int>((4.0f + 8.0f * strength) * amount), surface, 2.0f * size, 1.5f,
                 1.0f * size, 1.5f * size);
-        constexpr FxSound splashes[] = {FXS_SPLASH_SMALL, FXS_SPLASH_MEDIUM, FXS_SPLASH_LARGE, FXS_SPLASH_HUGE};
+        constexpr FxSound splashes[] = {fx_sound_splash_small, fx_sound_splash_medium, fx_sound_splash_large,
+                                        fx_sound_splash_huge};
         const int tier = (strength < 0.35f ? 0 : strength < 0.7f ? 1 : 2) + (size > 1.0f ? 1 : 0);
         fx_play(splashes[tier], surface, 0.5f + 0.5f * strength);
     }
@@ -958,7 +959,8 @@ namespace
                 // Under a flyer's scrape loop, a crackle rather than the whole sound.
                 if (fx.scrape_snd_timer <= 0.0f) {
                     fx.scrape_snd_timer = fx_rand(0.12f, 0.25f);
-                    fx_play(FXS_SPARK, o.point, std::clamp(along_speed / 15.0f, 0.3f, 1.0f) * (flyer ? 0.5f : 1.0f));
+                    fx_play(fx_sound_spark, o.point,
+                            std::clamp(along_speed / 15.0f, 0.3f, 1.0f) * (flyer ? 0.5f : 1.0f));
                 }
                 if (fx.scrape_flash_timer <= 0.0f) {
                     fx.scrape_flash_timer = fx_rand(0.25f, 0.4f);
@@ -1020,7 +1022,7 @@ namespace
             if (speed > 1.5f && fx.splash_snd_timer <= 0.0f) {
                 const float pace = std::clamp((speed - 1.5f) / 12.0f, 0.0f, 1.0f);
                 fx.splash_snd_timer = 0.6f - 0.4f * pace;
-                fx_play(FXS_SPLASH_SMALL, rf::Vector3{ep.pos.x, *liquid_y, ep.pos.z}, 0.3f + 0.4f * pace);
+                fx_play(fx_sound_splash_small, rf::Vector3{ep.pos.x, *liquid_y, ep.pos.z}, 0.3f + 0.4f * pace);
             }
             return;
         }
@@ -1111,7 +1113,7 @@ namespace
             }
             if (speed > 3.0f && fx.splash_snd_timer <= 0.0f) {
                 fx.splash_snd_timer = fx_rand(0.8f, 1.6f);
-                fx_play(FXS_SPLASH_SMALL, rf::Vector3{bow.x, *liquid_y, bow.z}, 0.3f);
+                fx_play(fx_sound_splash_small, rf::Vector3{bow.x, *liquid_y, bow.z}, 0.3f);
             }
         }
     }
@@ -1234,7 +1236,7 @@ namespace
         }
         if (fx.burning) {
             fx_update_loop(fx.burn_snd, fx.burn_snd_retry, fx.vent, fx.vel, 1.0f,
-                           [&] { return fx_play_handle(fx_sound_handle(FXS_BURNING), fx.vent, 1.0f); });
+                           [&] { return fx_play_handle(fx_sound_handle(fx_sound_burning), fx.vent, 1.0f); });
         }
         else {
             fx_stop_loop(fx.burn_snd);
@@ -1253,8 +1255,9 @@ namespace
 
     bool fx_active()
     {
+        // A demo seek's fast-forward frames are culled when it ends, as the tracers are.
         return rf::is_multi && !rf::is_dedicated_server && g_alpine_game_config.vehicle_effects
-            && vehicle_level_has_factories();
+            && vehicle_level_has_factories() && !demo_playback_is_seeking();
     }
 
     ConsoleCommand2 vehiclefx_cmd{

@@ -549,7 +549,7 @@ CodeInjection particle_collide_lod_injection{
     0x004951E6,
     [](auto& regs) {
         rf::Particle* particle = regs.esi;
-        if (!collide_lod_enabled() || (particle->flags2 & rf::PTF2_DAMAGES)
+        if (!collide_lod_enabled() || !rf::particle_collide_world_enabled || (particle->flags2 & rf::PTF2_DAMAGES)
             || (particle->flags & rf::PTF_HIT_CALLBACK)) {
             return;
         }
@@ -790,7 +790,8 @@ ConsoleCommand2 gpu_particles_cmd{
         rf::console::print("GPU particle rendering: {}{}", g_gpu_particles ? "on" : "off",
             is_d3d11() ? "" : " (Direct3D 11 only, currently inactive)");
     },
-    "Toggles GPU rendering of particles, plankton and weather (off = stock CPU path)",
+    "Toggle GPU rendering of particles, plankton and weather (off = stock CPU path)",
+    "dbg_particlegpu",
 };
 
 ConsoleCommand2 particle_collide_lod_cmd{

@@ -82,10 +82,8 @@ inline constexpr float vehicle_crash_max_over_ref = 1.25f;
 // A hit under this fraction of max life is a graze and deals nothing; a row's min_frac lifts every hit past its
 // threshold above it.
 inline constexpr float vehicle_crash_min_life_frac = 0.01f;
-// Server: a hull's crashes inside this window bill only the largest one.
-inline constexpr int vehicle_crash_server_cooldown_ms = 400;
-// Client: the same for reports; longer than the server's so a late report lands.
-inline constexpr int vehicle_crash_client_cooldown_ms = 500;
+// A hull's crashes inside this window bill only what each adds over the largest; the client's reports alike.
+inline constexpr int vehicle_crash_bill_window_ms = 400;
 // Simulated time an impact's velocity change is summed over (suspension spreads a landing).
 inline constexpr float vehicle_crash_window_s = 0.1f;
 // A ground window opened within this much contact time of airtime is a landing...

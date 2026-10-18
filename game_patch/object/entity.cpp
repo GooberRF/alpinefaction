@@ -3,6 +3,7 @@
 #include <patch_common/CallHook.h>
 #include <patch_common/AsmWriter.h>
 #include <patch_common/MemUtils.h>
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -703,14 +704,17 @@ ConsoleCommand2 cl_gibflames_cmd{
     "Toggle flames on gib chunks",
 };
 
-// The live shell casings, oldest first: past the cap the oldest still alive goes.
-struct ShellCasingRecord
+namespace
 {
-    int handle;
-    int64_t spawn_ms;
-};
-static std::deque<ShellCasingRecord> g_shell_casings;
-static constexpr std::size_t max_live_shell_casings = 500;
+    // The live shell casings, oldest first: past the cap the oldest still alive goes.
+    struct ShellCasingRecord
+    {
+        int handle;
+        rf::Timestamp expired; // game time, as the casing's own lifetime
+    };
+    std::deque<ShellCasingRecord> g_shell_casings;
+    constexpr std::size_t max_live_shell_casings = 500;
+}
 
 void shell_casings_level_init()
 {
@@ -731,13 +735,14 @@ FunHook<void(rf::Entity*)> entity_eject_shell_hook{
         if (tail == tail_before || tail == &rf::debris_list) {
             return;
         }
-        const int64_t now = timer::get_i64(1000);
-        g_shell_casings.push_back({tail->handle, now});
+        ShellCasingRecord& record = g_shell_casings.emplace_back();
+        record.handle = tail->handle;
+        record.expired.set(AlpineGameSettings::max_shell_casing_lifetime_ms);
         while (g_shell_casings.size() > max_live_shell_casings) {
             const ShellCasingRecord oldest = g_shell_casings.front();
             g_shell_casings.pop_front();
             // Older than any casing lives: already gone, and its handle may since name another object.
-            if (now - oldest.spawn_ms > AlpineGameSettings::max_shell_casing_lifetime_ms) {
+            if (oldest.expired.elapsed()) {
                 continue;
             }
             rf::Object* casing = rf::obj_from_handle(oldest.handle);
@@ -802,7 +807,9 @@ ConsoleCommand2 cl_shelllifetime_cmd{
     "cl_shelllifetime",
     [](std::optional<float> lifetime_s) {
         if (lifetime_s && std::isfinite(*lifetime_s)) {
-            g_alpine_game_config.set_shell_casing_lifetime_ms(static_cast<int>(std::lround(*lifetime_s * 1000.0f)));
+            const float clamped_s = std::clamp(*lifetime_s, AlpineGameSettings::min_shell_casing_lifetime_ms / 1000.0f,
+                                               AlpineGameSettings::max_shell_casing_lifetime_ms / 1000.0f);
+            g_alpine_game_config.set_shell_casing_lifetime_ms(static_cast<int>(std::lround(clamped_s * 1000.0f)));
         }
         rf::console::print("Shell casing lifetime is {:.1f} s",
             g_alpine_game_config.shell_casing_lifetime_ms / 1000.0f);

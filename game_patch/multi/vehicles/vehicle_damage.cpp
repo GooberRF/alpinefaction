@@ -96,6 +96,9 @@ namespace
     // A sleeping hull does not react late, it does not react at all: wake the pair before contact.
     constexpr float vehicle_ram_wake_closing = 0.5f;
 
+    // A ram is head-on, each hull the other's rammer, when the slower closes at least this share of the faster.
+    constexpr float vehicle_ram_mutual_ratio = 0.5f;
+
     // Per second, scaled by frametime at the point of use; dealt as DT_CRUSH through the ram mint.
     constexpr float vehicle_drill_damage_per_sec = 200.0f;
     // Matches the driller's physics drill probe reach, so damage and carve describe the same bits.
@@ -815,14 +818,22 @@ void vehicle_server_ram_sweep()
             const float dmg_a = vehicle_ram_damage(a.ep, eff_closing, b.mass / a.mass);
             const float dmg_b = vehicle_ram_damage(b.ep, eff_closing, a.mass / b.mass);
 
-            // The RAMMER carries more of the closing speed; a stationary hull is never the rammer.
+            // The RAMMER carries more of the closing speed; a stationary hull is never the rammer. Head-on, with
+            // neither clearly faster, each hull rammed the other.
             const bool a_is_rammer = eff_a_toward >= eff_b_toward;
+            const bool mutual = std::min(eff_a_toward, eff_b_toward)
+                             >= vehicle_ram_mutual_ratio * std::max(eff_a_toward, eff_b_toward);
             rf::Entity* rammer = a_is_rammer ? a.ep : b.ep;
             rf::Entity* rammed = a_is_rammer ? b.ep : a.ep;
             const float rammer_damage = a_is_rammer ? dmg_a : dmg_b;
             const float rammed_damage = a_is_rammer ? dmg_b : dmg_a;
             rf::Entity* credit = vehicle_ram_credit(rammer);
             const int killer_handle = credit ? credit->handle : -1;
+            rf::Entity* rammed_credit = mutual ? vehicle_ram_credit(rammed) : nullptr;
+            const int rammed_killer_handle = rammed_credit ? rammed_credit->handle : -1;
+            // A team-mate's blow the friendly-fire rule would drop: the rammer still pays his own share.
+            const bool mutual_credit = mutual && rammed_killer_handle != -1
+                                    && !vehicle_occupied_by_friendly(rammer, rammed_killer_handle);
 
             // Latch BEFORE the damage: obj_damage can destroy either hull, and a hull's death runs
             // vehicle_drop_combat_state, which erases this entry. Nothing may touch `pair` after.
@@ -851,7 +862,13 @@ void vehicle_server_ram_sweep()
             const int rammer_handle = rammer->handle;
             const int rammed_handle = rammed->handle;
             vehicle_ram_mint_damage(rammed_handle, killer_handle, rammed_damage, rammer);
-            // The rammer's share is nobody's kill, so killer -1 and no minting hull - which also
+            if (mutual_credit) {
+                // Taken as the other's blow too, so the tuning table scales it as it does the rammed share.
+                vehicle_ram_mint_damage(rammer_handle, rammed_killer_handle, rammer_damage,
+                                        rf::entity_from_handle(rammed_handle));
+                continue;
+            }
+            // Otherwise the rammer's share is nobody's kill, so killer -1 and no minting hull - which also
             // exempts it from the tuning table, which never scales an unattributed blow.
             vehicle_ram_mint_damage(rammer_handle, -1, rammer_damage, nullptr);
         }
@@ -1038,7 +1055,7 @@ namespace
         if (frac <= 0.0f) {
             return;
         }
-        const float bill = vehicle_crash_window_bill(vehicle->handle, frac, vehicle_crash_server_cooldown_ms);
+        const float bill = vehicle_crash_window_bill(vehicle->handle, frac, vehicle_crash_bill_window_ms);
         if (bill <= 0.0f) {
             return;
         }
@@ -1084,7 +1101,7 @@ void vehicle_crash_impact(rf::Entity* vehicle, float impact_dv, bool ground)
     }
     const float reported_dv = std::min(impact_dv, vehicle_crash_max_impact_dv(vdc));
     const float frac = vehicle_crash_life_frac(vdc, reported_dv, ground);
-    if (frac <= 0.0f || vehicle_crash_window_bill(vehicle->handle, frac, vehicle_crash_client_cooldown_ms) <= 0.0f) {
+    if (frac <= 0.0f || vehicle_crash_window_bill(vehicle->handle, frac, vehicle_crash_bill_window_ms) <= 0.0f) {
         return;
     }
     af_send_vehicle_crash_report(vehicle->server_handle, ground, reported_dv);
@@ -1642,8 +1659,8 @@ namespace
         if (vehicle_blast_damage_is_mint(victim->handle)) {
             rf::Entity* vehicle = vehicle_synced_entity(g_vehicle_blast_mint.vehicle_handle);
             if (vehicle) {
-                // An unattributed lethal blow (drowned or stranded with no recent hit to blame, returned,
-                // void, own ram share) is the rider's own death; whoever softened the hull is paid in assists.
+                // An unattributed lethal blow with no recent hit to blame (drowned, stranded, returned, void, a
+                // crash or scrape, own ram share) is the rider's own death; whoever softened it is paid in assists.
                 auto lethal = g_vehicle_state.lethal_killer.find(vehicle->handle);
                 if (lethal != g_vehicle_state.lethal_killer.end() && lethal->second.entity_handle == -1) {
                     return victim->handle;
@@ -1833,8 +1850,8 @@ int vehicle_occupant_death_blast_hull(int victim_handle, int damage_type)
         ? g_vehicle_blast_mint.vehicle_handle : -1;
 }
 
-// Ahead of a drown or strand scuttle, which is unattributed: the last player blow that hurt the hull
-// within window_s names its destroyer, so the riders it takes die to him rather than by their own hand.
+// Ahead of an unattributed lethal blow (a drown or strand scuttle, a crash): the last player blow that hurt the
+// hull within window_s names its destroyer, so the riders it takes die to him rather than by their own hand.
 void vehicle_note_hazard_destroyer(rf::Entity* vehicle, float window_s)
 {
     auto it = g_vehicle_state.last_hurt.find(vehicle->handle);
@@ -1907,6 +1924,10 @@ void vehicle_note_hull_damage(rf::Entity* vehicle, float life_before, int killer
         return lethal;
     };
     if (vehicle->life <= 0.0f) {
+        // An unattributed lethal blow (a crash, a scrape, the own ram share) goes to whoever just hurt the hull.
+        if (killer_handle == -1) {
+            vehicle_note_hazard_destroyer(vehicle, vehicle_hit_credit_s);
+        }
         g_vehicle_state.lethal_killer.try_emplace(vehicle->handle, blow());
     }
     else if (real_damage > 0.0f) {

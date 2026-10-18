@@ -288,15 +288,7 @@ namespace gr::d3d11
 
         // Stock feeds the colour through gr_set_color, so the quad picks it up from the screen
         // colour exactly where the dynamic geometry batcher would have.
-        rf::Color color{255, 255, 255, 255};
-        if (mode_uses_vertex_color(mode)) {
-            color.red = particle.clr_current.red;
-            color.green = particle.clr_current.green;
-            color.blue = particle.clr_current.blue;
-        }
-        if (mode_uses_vertex_alpha(mode)) {
-            color.alpha = particle.clr_current.alpha;
-        }
+        const rf::Color color = vertex_color_for_mode(mode, particle.clr_current);
 
         State state{
             Primitive::billboard,
@@ -359,15 +351,7 @@ namespace gr::d3d11
         if (!instancing_ok_ || !rf::gr::perspective_projection) {
             return false;
         }
-        rf::Color color{255, 255, 255, 255};
-        if (mode_uses_vertex_color(mode)) {
-            color.red = rf::gr::screen.current_color.red;
-            color.green = rf::gr::screen.current_color.green;
-            color.blue = rf::gr::screen.current_color.blue;
-        }
-        if (mode_uses_vertex_alpha(mode)) {
-            color.alpha = rf::gr::screen.current_color.alpha;
-        }
+        const rf::Color color = vertex_color_for_mode(mode, rf::gr::screen.current_color);
         const int bm_handle = rf::gr::screen.current_texture_1;
         const State state{
             Primitive::billboard,
@@ -523,15 +507,7 @@ namespace gr::d3d11
         upload_view();
 
         // Colour from the mode, exactly as add_billboard takes it from the screen state
-        rf::Color color{255, 255, 255, 255};
-        if (mode_uses_vertex_color(draw.mode)) {
-            color.red = draw.color.red;
-            color.green = draw.color.green;
-            color.blue = draw.color.blue;
-        }
-        if (mode_uses_vertex_alpha(draw.mode)) {
-            color.alpha = draw.color.alpha;
-        }
+        const rf::Color color = vertex_color_for_mode(draw.mode, draw.color);
 
         auto vec = [](const rf::Vector3& v) {
             return std::array<float, 3>{v.x, v.y, v.z};

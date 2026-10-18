@@ -71,16 +71,7 @@ namespace gr::d3d11
 
     static inline rf::Color get_vertex_color_from_screen(rf::gr::Mode mode)
     {
-        rf::Color color{255, 255, 255, 255};
-        if (mode_uses_vertex_color(mode)) {
-            color.red = rf::gr::screen.current_color.red;
-            color.green = rf::gr::screen.current_color.green;
-            color.blue = rf::gr::screen.current_color.blue;
-        }
-        if (mode_uses_vertex_alpha(mode)) {
-            color.alpha = rf::gr::screen.current_color.alpha;
-        }
-        return color;
+        return vertex_color_for_mode(mode, rf::gr::screen.current_color);
     }
 
     inline std::array<float, 4> DynamicGeometryRenderer::convert_pos(const rf::gr::Vertex& v, bool is_3d)

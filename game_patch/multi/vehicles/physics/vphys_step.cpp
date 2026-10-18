@@ -634,9 +634,17 @@ namespace
 
         rf::Vector3 capped_vel = vel;
         const bool speed_clamped = vphys_clamp_class_velocity(cls, capped_vel);
-        // Every counted step, a slide of 0 included: that is what flushes a scrape once the hull comes away.
-        if (b.impact_armed && !b.impact_skip && !speed_clamped && step_time > 0.0f) {
-            scrapes.push_back({b.vehicle_handle, vel, b.scrape_speed, b.scrape_ground_speed, step_time});
+        // Every counted step, a slide of 0 included: that is what flushes a scrape once the hull comes away. A
+        // clamped step counts too, at the capped speed.
+        if (b.impact_armed && !b.impact_skip && step_time > 0.0f) {
+            float wall_slide = b.scrape_speed;
+            float ground_slide = b.scrape_ground_speed;
+            if (speed_clamped) {
+                const float cap = vphys_class_speed_cap(cls);
+                wall_slide = std::min(wall_slide, cap);
+                ground_slide = std::min(ground_slide, cap);
+            }
+            scrapes.push_back({b.vehicle_handle, capped_vel, wall_slide, ground_slide, step_time});
         }
         vphys_impact_measure(b, speed_clamped, step_time, impacts);
         if (speed_clamped) {

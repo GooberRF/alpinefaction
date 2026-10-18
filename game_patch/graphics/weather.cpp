@@ -949,11 +949,11 @@ bool weather_draw_gpu(int index, WeatherRegion& region, WeatherRegionState& stat
     draw.count = state.length;
     draw.box_min = rf::Vector3{box.center.x - box.half_x, box.center.y - box.half_y, box.center.z - box.half_z};
     draw.box_size = rf::Vector3{box.half_x * 2.0f, box.half_y * 2.0f, box.half_z * 2.0f};
-    double lateral_laps = 0.0;
+    double unused_laps = 0.0;
     double vertical_laps = 0.0;
-    draw.box_shift.x = weather_lattice_shift(velocity.x, draw.box_min.x, draw.box_size.x, lateral_laps);
+    draw.box_shift.x = weather_lattice_shift(velocity.x, draw.box_min.x, draw.box_size.x, unused_laps);
     draw.box_shift.y = weather_lattice_shift(velocity.y, draw.box_min.y, draw.box_size.y, vertical_laps);
-    draw.box_shift.z = weather_lattice_shift(velocity.z, draw.box_min.z, draw.box_size.z, lateral_laps);
+    draw.box_shift.z = weather_lattice_shift(velocity.z, draw.box_min.z, draw.box_size.z, unused_laps);
     // Only ever hashed, so the lap count wrapping round 32 bits is harmless
     draw.wrap_base = static_cast<uint32_t>(static_cast<int64_t>(std::fmod(vertical_laps, 4294967296.0)));
     draw.salt = static_cast<uint32_t>(index);
