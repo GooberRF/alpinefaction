@@ -33,6 +33,7 @@ Version 1.5.0 (Trillium): Not yet released
   - A kicked server bot stays removed until `sv_bot_add` or a config reload adds it again
   - A listen server host can add and remove server bots with the same `sv_bot_*` console commands; they use automatic profiles there (no ADS config)
   - Server bots load waypoints like bot clients, including the FactionFiles AWP autodownload, and sit out on levels without waypoints
+- Add new multiplayer game type: Scavenger (`SCAV`)
 
 [@GooberRF](https://github.com/GooberRF) & [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add multiplayer vehicles and turrets
@@ -125,6 +126,33 @@ Version 1.5.0 (Trillium): Not yet released
 - Make bots use explosives safely (no splash fire that would kill the bot or reach a teammate, backing out of their own blast before firing; the only exception is a sure kill when cornered with the only weapon left, such as a GunGame fusion launcher; rockets aimed at the feet, geomod craters fired from a distance), top up their clip once the enemy is out of sight, and stop leaving fights for pickups that are not on the way
 - Make bots walk straight to objectives, items and enemies only when nothing (including glass and fences) is in the way and there is no ledge to drop off, and look ahead round corners or toward where a threat was last noticed instead of crab-walking and sweeping their view while moving; the `navigation_strafe_bias` personality field now only switches this look-ahead on (above 0) or off (0)
 - Ignore connected human players who are not playing (not spawned and not killed in the last 5 seconds) when picking a joining bot's team
+- Add `Fit`, `Fit Aspect`, `Justify`, and `Wrap` buttons to texture mode in the level editor
+- Show the texture, size and texel density of the face under the cursor (or the selected face) in the level editor status bar in texture mode, and outline it in the viewports
+- Add a `Texture lock` toggle (hotkey 6, off by default) to the level editor top bar
+- Add a `Textured brush preview` toggle (hotkey 7, also in the `View` menu, off by default) to the level editor top bar
+- Add `Sphere` mapping and X/Y/Z axis buttons to texture mode in the level editor, and make `Snap Map` also fit a cylinder or sphere map to the selected faces
+- Make texture paste in the level editor also apply the copied face's texture (toggleable with `Paste texture`), and align the copied texture onto faces with a different number of corners instead of skipping them
+- Add undo for texture paste and `Face Properties` in the level editor
+- Add `Select All`, `Fit UVs` and `Auto Unwrap`, and a `Color each face` option to the level editor `UV Unwrap` window
+- Add 256 x 256 and 512 x 512 thumbnail sizes and a `Format` filter to the level editor texture browser, make it resizable and scroll it with the mouse wheel
+- Draw the sky in the level editor's `Render Everything` mode when `Draw Sky` is on, as the portal render modes do
+- Improve particle handling and performance:
+  - Stop simulating level-placed decorative particle emitters while they are out of view (`cl_particlecull`)
+  - Step particles at a fixed rate (`cl_particlefixedstep`, `cl_particlerate`)
+  - Test distant particles for world collision less often (`cl_particlecollidelod`)
+  - Raise the particle pool size to 8192 (`cl_particlepoolsize`)
+  - Raise the particle emitter limit from 128 to 8192
+  - Render particles, plankton, rain and snow on the GPU with instancing, and simulate rain and snow motion on the GPU (Direct3D 11 renderer only), toggleable with `dbg_particlegpu`
+  - Add `dbg_particles` overlay and `dbg_particles_log` to measure particle performance, and `dbg_particlewarmup` to toggle replaying a hidden particle emitter when it comes back into view
+- Raise the pitch of hit sounds as consecutive hits land, toggleable with `cl_hitsounds_streakpitch`
+- Raise the limit of simultaneously playing sounds from 64 to 127
+- Ejected shell casings now bounce off the level and play their impact sounds instead of falling through it, toggleable with `cl_shellcollide`, and last 2 seconds by default, adjustable with `cl_shelllifetime`
+- Add `cl_shellcasings` and `cl_magazines` to toggle ejected shell casings and magazines
+- Add `$Looping Sound` `mapname_info.tbl` option to make custom sound files loop
+- Make the `Looping` checkbox on `Play_Sound` and `Music_Start` events work (RFL v306+)
+- Allow `sv_gametype` (`gt`) to start a local game on a level in a chosen game type
+- Add console tab completion of game types and level names for `sv_gametype` (`gt`)
+- Add Salvage flag placement for community level `CTF_TERROR.rfl`
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color
@@ -132,6 +160,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Load levels with very large face counts or many level sounds much faster
 
 [@is-this-c](https://github.com/is-this-c)
+- Add `bighud_health` and `bighud_ammo` console variables to disable `bighud` for health and ammo, which is useful for mods incompatible with `bighud`
 - Render `LOADING...` upon level changes in multi
 - Support TrueType fonts in 3D text rendering
 - Render world HUD text (player labels, damage numbers, ping labels, countdowns) in 3D for smooth sub-pixel motion
@@ -254,12 +283,23 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix a listen server host's respawn countdown restarting, and their queued spawn being dropped, whenever another player died while spawn delays were enabled
 - Fix a listen server host being respawned while still alive after another player died with spawn delays and forced respawns enabled
 - Fix a listen server host getting no damage numbers or hit sounds when damaging other players
-- Fix a listen server host not seeing private and broadcast server chat messages, such as end-of-round stats and spawn refusals
 - Fix a listen server host's "spectating you" list never filling
 - Fix chat commands (such as `/stats`) typed or picked from the Commands chat menu by a listen server host being sent as chat instead of running
 - Fix "You are on team" showing on every spawn of a listen server host in team modes; it now shows when their team is assigned or changes
 - Fix a spectating listen server host not seeing the spectated player's ammo, weapon fire animations, damage numbers, awards or critical hit flashes
 - Fix bot clients losing the `personality_overrides` and `skill_overrides` of their bot profile (such as `taunt_on_kill_chance`) when the server sent their skill preset
+- Fix level editor viewports only showing texture coordinate changes immediately in `Render Everything` mode
+- Fix undo and redo of texture changes in the level editor not updating the level geometry until it is rebuilt
+- Fix level editor viewports not using all of a monitor larger than the primary one
+- Fix rotating texture coordinates in the level editor `UV Unwrap` window skewing non-square textures, toggleable with `Preserve aspect ratio when rotating`
+- Fix particle emitters in the level editor moving, expiring and spawning faster than in game
+- Fix the `Material` filter in the level editor texture browser not working properly
+- Fix a very long `Name` filter in the level editor texture browser corrupting the editor's memory
+- Fix the level editor `UV Unwrap` window selecting vertices when a mouse button pressed outside its view is released over it
+- Fix spectate control hints overlapping the team scores in Wipeout
+- Fix long key names in spectate control hints running off the left edge of the screen
+- Fix listen server hosts only seeing automated server messages in the console instead of in chat
+- Fix music not starting while the music volume is muted or very low
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize

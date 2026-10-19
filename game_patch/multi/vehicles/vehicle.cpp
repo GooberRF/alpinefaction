@@ -16,7 +16,9 @@
 #include "vehicle_render.h"
 #include "vehicle_spawn.h"
 #include "vehicle_tracers.h"
+#include "vehicle_fx.h"
 #include "../alpine_packets.h"
+#include "../demo/demo.h"
 #include "../multi.h"
 #include "../server_internal.h"
 #include "../../hud/hud.h"
@@ -81,8 +83,11 @@ namespace
 {
     // Far above any vehicle's max_life (5000), so it kills through the non-player damage scale.
     constexpr float vehicle_drown_damage = 1000000.0f;
-    constexpr int64_t vehicle_drown_time_ms = 2000;
-    constexpr int64_t vehicle_strand_time_ms = 3000; // a sub out of the water this long is scuttled
+    // In its lethal medium a hull first warns its riders, then drains to the scuttle; getting clear stops it.
+    constexpr float vehicle_drown_warn_s = 1.5f;
+    constexpr float vehicle_strand_warn_s = 2.0f;        // a sub out of the water
+    constexpr float vehicle_hazard_drain_s = 3.0f;       // empties a full hull in this
+    constexpr float vehicle_hazard_recover_rate = 2.0f;  // the clock runs back this much faster once clear
 
     constexpr float vehicle_void_probe = 300.0f; // world units of clear air below = out of the level
     constexpr float vehicle_void_time = 2.0f;    // held this long before the kill
@@ -373,9 +378,67 @@ float vehicle_collision_reach_along(rf::Entity* ep, const rf::Vector3& dir)
     return reach;
 }
 
+int vehicle_hull_probe(rf::Entity* ep, const rf::Vector3& vel, bool flyer, bool ends_only,
+                       VehicleHullProbeHit (&out)[vehicle_hull_probe_max_hits])
+{
+    int num_hits = 0;
+    const auto add_hit = [&](const rf::Vector3& point, const rf::Vector3& normal, const rf::Vector3& rel_vel,
+                             int material) {
+        if (num_hits >= vehicle_hull_probe_max_hits) {
+            return;
+        }
+        VehicleHullProbeHit& hit = out[num_hits++];
+        hit.point = point;
+        hit.normal = normal;
+        hit.along = rel_vel - normal * rel_vel.dot_prod(normal);
+        hit.along_speed = hit.along.len();
+        hit.material = material;
+    };
+    // A flyer's rays leave movers to its sphere, which measures the slide against their own motion.
+    const auto cast = [&](const rf::Vector3& dir, float reach) {
+        rf::PCollisionOut o{};
+        if (vphys_collide_solid_segment(ep->pos, ep->pos + dir * reach, rf::CF_PROCESS_INVISIBLE_FACES, o)
+            && (!flyer || o.obj_handle < 0)) {
+            add_hit(o.hit_point, o.hit_normal, vel, o.material);
+        }
+    };
+    if (!flyer) {
+        // A car's sides only ever light effects.
+        constexpr float car_gap = 0.15f;
+        for (const rf::Vector3& dir : {ep->orient.rvec, ep->orient.rvec * -1.0f}) {
+            cast(dir, vehicle_collision_reach_along(ep, dir) + car_gap);
+        }
+        return num_hits;
+    }
+    // The body itself, at any angle: what its sphere touches is what its physics and its scrape damage feel.
+    const float standoff = vehicle_physics_hull_standoff(ep);
+    constexpr int end_rays = 2;
+    if (!ends_only && standoff > 0.0f) {
+        VehiclePhysicsContact contacts[vehicle_hull_probe_max_hits - end_rays];
+        const int num_contacts =
+            vehicle_physics_sphere_contacts(ep->pos, standoff, contacts, static_cast<int>(std::size(contacts)));
+        for (int i = 0; i < num_contacts; ++i) {
+            add_hit(contacts[i].point, contacts[i].normal, vel - contacts[i].surface_vel, rf::MATERIAL_DEFAULT);
+        }
+    }
+    // The nose and tail (end_rays of them), where the hull reaches past its sphere.
+    for (const rf::Vector3& dir : {ep->orient.fvec, ep->orient.fvec * -1.0f}) {
+        const float reach = vehicle_collision_reach_along(ep, dir);
+        if (reach > standoff) {
+            cast(dir, reach + vehicle_physics_touch_dist);
+        }
+    }
+    return num_hits;
+}
+
 bool vehicle_hull_is_turret(const rf::Entity* ep)
 {
     return ep && ep->info && ep->info->use_function == rf::ENTITY_USE_TURRET;
+}
+
+bool vehicle_alt_fire_zooms(rf::Entity* hull)
+{
+    return vehicle_hull_is_turret(hull) || (hull && rf::entity_is_jeep(hull));
 }
 
 bool vehicle_is_flyer(rf::Entity* ep)
@@ -428,6 +491,8 @@ void vehicle_client_do_frame()
     if (!rf::is_dedicated_server) {
         vehicle_update_jeep_wheels();
         vehicle_update_treads();
+        vehicle_fx_do_frame();
+        vehicle_hazard_client_do_frame();
         // Ahead of the engine frame the hook wraps (0x004B2D90), so the cockpit is stepped first.
         vehicle_process_spectated_cockpit();
     }
@@ -481,6 +546,8 @@ void vehicle_client_do_frame()
         std::erase_if(g_vehicle_state.orient, handle_is_gone);
         std::erase_if(g_vehicle_state.orient_sent, handle_is_gone);
         std::erase_if(g_vehicle_state.observed_speed, handle_is_gone);
+        std::erase_if(g_vehicle_state.crash_cooldown, handle_is_gone);
+        std::erase_if(g_vehicle_state.scrape, handle_is_gone);
         // The mirror the auto-return label and the entry rules read; nothing else drops it on a
         // client, since vehicle_do_frame's own sweep is server side.
         std::erase_if(g_vehicle_state.hull_state, handle_is_gone);
@@ -504,9 +571,9 @@ void vehicle_client_do_frame()
         primary_held = rf::control_is_control_down(controls, rf::CC_ACTION_PRIMARY_ATTACK);
         alt_held = rf::control_is_control_down(controls, rf::CC_ACTION_SECONDARY_ATTACK);
     }
-    // A turret's alt trigger is its operator's zoom and is never reported.
-    vehicle_turret_zoom_do_frame();
-    alt_held = alt_held && !vehicle_hull_is_turret(vehicle);
+    // A turret's or jeep's alt trigger is its gunner's zoom and is never reported.
+    vehicle_gun_zoom_do_frame();
+    alt_held = alt_held && !vehicle_alt_fire_zooms(vehicle);
 
     auto report = [](rf::Entity* target, bool fire_held, bool fire_alt) {
         if (!target) {
@@ -544,6 +611,7 @@ void vehicle_client_do_frame()
         g_vehicle_state.reported_fire_vehicle = handle;
         g_vehicle_state.reported_primary_held = false;
         g_vehicle_state.reported_alt_held = false;
+        g_vehicle_state.torpedo_press_hull = -1;
     }
 
     if (primary_held != g_vehicle_state.reported_primary_held) {
@@ -551,6 +619,12 @@ void vehicle_client_do_frame()
         g_vehicle_state.reported_primary_held = primary_held;
     }
     if (alt_held != g_vehicle_state.reported_alt_held) {
+        // The pilot's own armed torpedoes go off at the press; the server's DETONATE covers the rest.
+        if (alt_held && vehicle && !rf::is_server && rf::entity_is_sub(vehicle)) {
+            vehicle_detonate_armed_torpedoes(vehicle, vehicle_torpedo_arm_pilot_s);
+            g_vehicle_state.torpedo_press_hull = vehicle->handle;
+            g_vehicle_state.torpedo_press.set(0);
+        }
         report(vehicle, alt_held, true);
         g_vehicle_state.reported_alt_held = alt_held;
     }
@@ -588,18 +662,132 @@ namespace
         return std::max(vehicle_drown_damage, ep->life + ep->armor + vehicle_drown_damage);
     }
 
-    // The Bullet body is released first so nothing fights the death animation; nobody is credited.
+    // A non-sub with its ORIGIN below its room's liquid plane, the threshold the sub's board gate uses,
+    // or a sub with it above. A turret never moves, so it neither drowns nor strands.
+    bool vehicle_in_hazard(rf::Entity* ep)
+    {
+        if (vehicle_hull_is_turret(ep)) {
+            return false;
+        }
+        const bool submerged = ep->room && ep->room->contains_liquid
+                            && ep->pos.y < ep->room->bbox_min.y + ep->room->liquid_depth;
+        return submerged != rf::entity_is_sub(ep);
+    }
+
+    float vehicle_hazard_warn_s(rf::Entity* ep)
+    {
+        return rf::entity_is_sub(ep) ? vehicle_strand_warn_s : vehicle_drown_warn_s;
+    }
+
+    // Counts up in the medium and back down faster out of it, so a splash or a bob at the waterline
+    // neither restarts the warning nor escapes it.
+    float vehicle_hazard_step(int handle, bool in_hazard, float dt)
+    {
+        if (in_hazard) {
+            return g_vehicle_state.hazard_time[handle] += dt;
+        }
+        auto it = g_vehicle_state.hazard_time.find(handle);
+        if (it == g_vehicle_state.hazard_time.end()) {
+            return 0.0f;
+        }
+        it->second -= dt * vehicle_hazard_recover_rate;
+        if (it->second > 0.0f) {
+            return it->second;
+        }
+        g_vehicle_state.hazard_time.erase(it);
+        return 0.0f;
+    }
+
+    // Life per second, slow at first and quickening, so a full hull empties in vehicle_hazard_drain_s.
+    float vehicle_hazard_drain_rate(float max_life, float drained_s)
+    {
+        const float progress = std::min(drained_s / vehicle_hazard_drain_s, 1.0f);
+        return max_life / vehicle_hazard_drain_s * (0.4f + 1.2f * progress);
+    }
+
+    // The Bullet body is released first so nothing fights the death animation. The blow is unattributed: it
+    // goes to a hit from the last vehicle_hit_credit_s, or one a drown or strand scuttle named first.
     void vehicle_server_scuttle(rf::Entity* ep, float damage)
     {
         const int handle = ep->handle;
         g_vehicle_state.kinematics.erase(handle);
-        g_vehicle_state.hazard_since.erase(handle);
+        g_vehicle_state.hazard_time.erase(handle);
         g_vehicle_state.void_timer.erase(handle);
         g_vehicle_state.coast_memory.erase(handle);
         vehicle_physics_server_release(handle);
         rf::obj_damage(handle, damage, -1, -1, rf::DT_ENERGY, nullptr, -1, 0);
     }
 } // namespace
+
+bool vehicle_hazard_view(rf::Entity* vehicle, VehicleHazardView& out)
+{
+    if (!vehicle || rf::entity_is_dying(vehicle) || !vehicle_in_hazard(vehicle)) {
+        return false;
+    }
+    auto it = g_vehicle_state.hazard_time.find(vehicle->handle);
+    if (it == g_vehicle_state.hazard_time.end()) {
+        return false;
+    }
+    const float warn_s = vehicle_hazard_warn_s(vehicle);
+    out.is_sub = rf::entity_is_sub(vehicle);
+    out.warn_left = std::max(warn_s - it->second, 0.0f);
+    out.drain_frac = std::clamp((it->second - warn_s) / vehicle_hazard_drain_s, 0.0f, 1.0f);
+    return true;
+}
+
+bool vehicle_hazard_on_clock(int vehicle_handle)
+{
+    return g_vehicle_state.hazard_time.count(vehicle_handle) != 0;
+}
+
+void vehicle_hazard_clear_client_clocks()
+{
+    if (!rf::is_server) {
+        g_vehicle_state.hazard_time.clear();
+    }
+}
+
+// A client runs the server's clock on its own view of the hulls, for the riders' warning; on a
+// listen host the server pass keeps it. The alarm is the local rider's, or the watched one's.
+void vehicle_hazard_client_do_frame()
+{
+    // On demo time, so a paused or slowed replay holds or slows the countdown with its hulls.
+    const float dt = rf::frametime * demo_playback_sim_time_scale();
+    if (!rf::is_server && dt > 0.0f) {
+        for (auto it = g_vehicle_state.hazard_time.begin(); it != g_vehicle_state.hazard_time.end();) {
+            it = rf::entity_from_handle(it->first) ? std::next(it) : g_vehicle_state.hazard_time.erase(it);
+        }
+        for (rf::Entity& entity : DoublyLinkedList{rf::entity_list}) {
+            if (vehicle_is_synced_entity_type(&entity) && !rf::entity_is_dying(&entity)) {
+                vehicle_hazard_step(entity.handle, vehicle_in_hazard(&entity), dt);
+            }
+        }
+    }
+
+    rf::Entity* hull = vehicle_ridden_hull(rf::local_player_entity);
+    rf::Player* watched = multi_spectate_get_target_player();
+    if (!hull && watched && watched != rf::local_player && !multi_spectate_is_freelook()) {
+        hull = vehicle_ridden_hull(rf::entity_from_handle(watched->entity_handle));
+    }
+    int& alarm = g_vehicle_state.hazard_alarm_snd;
+    VehicleHazardView view;
+    if (!hull || !vehicle_hazard_view(hull, view)) {
+        if (alarm >= 0) {
+            rf::snd_stop(alarm);
+            alarm = -1;
+        }
+        return;
+    }
+    if (!snd_instance_is_playing(alarm)) {
+        static const int foley = rf::foley_lookup_by_name("Alarm 3");
+        const int sound = foley >= 0 ? rf::foley_get_sound_handle(foley) : -1;
+        alarm = sound >= 0 ? rf::snd_play(sound, rf::SOUND_GROUP_EFFECTS, 0.0f, 0.8f) : -1;
+    }
+    // Rising as the hull drains.
+    if (view.drain_frac > 0.0f) {
+        snd_instance_set_pitch(alarm, 1.0f + 0.25f * view.drain_frac);
+    }
+}
 
 void vehicle_apply_factory_state_from_packet(uint16_t factory_index, uint8_t state,
                                              uint16_t s_remaining, uint8_t team)
@@ -688,15 +876,19 @@ float vehicle_factory_ui_progress(int i, int64_t now)
     return std::clamp(1.0f - left_ms / total_ms, 0.0f, 1.0f);
 }
 
-void vehicle_level_init()
+void vehicle_level_init(bool load_assets)
 {
     vehicle_horn_level_init();
+    if (g_vehicle_state.hazard_alarm_snd >= 0) {
+        rf::snd_stop(g_vehicle_state.hazard_alarm_snd);
+    }
     g_vehicle_state = VehicleModuleState{};
     vehicle_clear_local_enclosed_flag();
     vehicle_drop_jeep_tire_mesh();
     vehicle_view_level_init();
     vehicle_markers_level_init();
     vehicle_tracers_level_init();
+    vehicle_fx_level_init(load_assets);
     // The bm cache is rebuilt per level, so a handle resolved for the last one means nothing here.
     vehicle_tread_runtime_reset();
     vehicle_ammo_regen_runtime_reset();
@@ -721,7 +913,7 @@ void vehicle_do_frame()
         if (!ep) {
             vehicle_drop_combat_state(handle);
             g_vehicle_state.void_timer.erase(handle);
-            g_vehicle_state.hazard_since.erase(handle);
+            g_vehicle_state.hazard_time.erase(handle);
             dropped.push_back(handle);
             continue;
         }
@@ -742,7 +934,7 @@ void vehicle_do_frame()
 
         if (rf::entity_is_dying(ep)) {
             g_vehicle_state.kinematics.erase(handle); // a dying vehicle neither coasts nor sinks
-            g_vehicle_state.hazard_since.erase(handle);
+            g_vehicle_state.hazard_time.erase(handle);
             g_vehicle_state.coast_memory.erase(handle); // ...nor runs anybody over
 
             // A Bullet body still writing pos/orient into the wreck would fight the death animation.
@@ -753,24 +945,20 @@ void vehicle_do_frame()
         // A turret never moves, so it neither drowns nor falls into the void.
         const bool is_turret = vehicle_hull_is_turret(ep);
 
-        // Submerged = the hull ORIGIN below this room's liquid plane, the threshold the sub's board
-        // gate uses. A non-sub drowns under water, a sub strands out of it; the dwell absorbs a splash,
-        // a landing bounce or a breach. Killer -1 credits nobody.
-        if (!is_turret) {
-            const bool is_sub = rf::entity_is_sub(ep);
-            const bool submerged = ep->room && ep->room->contains_liquid
-                                && ep->pos.y < ep->room->bbox_min.y + ep->room->liquid_depth;
-            if (submerged == is_sub) {
-                g_vehicle_state.hazard_since.erase(handle);
-            }
-            else {
-                const int64_t now = timer::get_i64(1000);
-                const int64_t since =
-                    g_vehicle_state.hazard_since.try_emplace(handle, now).first->second;
-                if (now - since >= (is_sub ? vehicle_strand_time_ms : vehicle_drown_time_ms)) {
-                    vehicle_server_scuttle(ep, vehicle_scuttle_lethal_damage(ep));
-                    continue;
-                }
+        // A non-sub drowns under water, a sub strands out of it. Past the warning the hull drains, writing
+        // life the way regen does so the health stream carries it, down to the scuttle; whoever hit it
+        // shortly before or during is named its destroyer, so its riders die to him, not by their own hand.
+        const bool in_hazard = vehicle_in_hazard(ep);
+        const float hazard_s = vehicle_hazard_step(handle, in_hazard, rf::frametime);
+        const float drained_s = hazard_s - vehicle_hazard_warn_s(ep);
+        if (in_hazard && drained_s > 0.0f) {
+            constexpr float last_life = 1.0f; // the scuttle's own blow takes the last of it
+            const float drain = vehicle_hazard_drain_rate(vehicle_hud_max_life(ep), drained_s) * rf::frametime;
+            ep->life = std::max(ep->life - drain, last_life);
+            if (ep->life <= last_life || drained_s >= 2.0f * vehicle_hazard_drain_s) {
+                vehicle_note_hazard_destroyer(ep, hazard_s + vehicle_hit_credit_s);
+                vehicle_server_scuttle(ep, vehicle_scuttle_lethal_damage(ep));
+                continue;
             }
         }
 
@@ -894,7 +1082,7 @@ void vehicle_do_frame()
 void vehicle_on_multi_shutdown()
 {
     vehicle_tbl_overrides_revert(); // put weapons.tbl/entity.tbl back before the session ends
-    vehicle_level_init();
+    vehicle_level_init(false);
 }
 
 namespace
@@ -928,5 +1116,6 @@ void vehicle_apply_patches()
 
     vehicle_spawn_install();
     vehicle_tracers_install();
+    vehicle_fx_install();
     vehicle_horn_install();
 }

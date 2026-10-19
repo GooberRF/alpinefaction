@@ -389,6 +389,21 @@ void load_level_info_config(const std::string& level_filename)
             continue;
         }
 
+        // handle looping sounds
+        if (option_name == "$Looping Sound") {
+            std::string filename = trim(trim(option_value, true), false);
+            // Sound entries are bare file names, so a path or a stray quote could never match one
+            if (!filename.empty() && filename.find_first_of("/\\\"") == std::string::npos) {
+                g_alpine_level_info_config.looping_sounds.insert(string_to_lower(filename));
+                xlog::debug("Looping Sound Added: {} in {}", filename, level_filename);
+            }
+            else {
+                xlog::warn("Invalid looping sound format in {}", info_filename);
+            }
+
+            continue;
+        }
+
         // handle other level info options
         auto meta_it = level_info_metadata.find(option_name);
         if (meta_it != level_info_metadata.end()) {

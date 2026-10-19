@@ -5,6 +5,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <variant>
 #include <cstddef>
 #include <xlog/xlog.h>
@@ -153,12 +154,14 @@ struct AlpineLevelInfoConfig
     std::string current_level;
     std::unordered_map<AlpineLevelInfoID, LevelInfoValue> level_options;
     std::unordered_map<std::string, std::string> mesh_replacements; // stored lowercase
+    std::unordered_set<std::string> looping_sounds; // stored lowercase
 
     void reset_for_level(const std::string& level)
     {
         current_level = level;
         level_options.clear();
         mesh_replacements.clear();
+        looping_sounds.clear();
     }
 
     // Check if an option exists for a given level

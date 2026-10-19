@@ -20,6 +20,7 @@
 #include "../awards.h"
 #include "../vehicles/vehicle.h"
 #include "../vehicles/vehicle_tracers.h"
+#include "../vehicles/vehicle_fx.h"
 #include "../../misc/misc.h"
 #include "../../misc/alpine_settings.h"
 #include "../../hud/multi_spectate.h"
@@ -754,6 +755,8 @@ namespace
         rf::particle_level_release();
         explosion_flash_lights_destroy_all();
         vehicle_tracers_clear();
+        vehicle_fx_clear();
+        vehicle_hazard_clear_client_clocks();
     }
 
     // A burst that ends between a fire-ON and fire-OFF obj_update leaves the entity's

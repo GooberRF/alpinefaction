@@ -10,8 +10,13 @@ namespace rf
     struct Entity;
     struct GeomodParams;
     struct GRoom;
+    struct PCollisionOut;
     struct Vector3;
 }
+
+// collide_linesegment_world plus mover_brush_is_solid: a see-through mover the hulls pass through is
+// skipped. `flags` are rf::CollideFlags.
+bool vphys_collide_solid_segment(const rf::Vector3& a, const rf::Vector3& b, int flags, rf::PCollisionOut& out);
 
 // True means the camera entity is already posed and camera_do_frame must not run (orbit view).
 bool vehicle_physics_camera_do_frame(rf::Camera* camera);
@@ -22,6 +27,8 @@ bool vehicle_physics_camera_toggle_view();
 
 // Whether the local player's current seat is viewed through the orbit camera.
 bool vehicle_physics_camera_local_seat_is_orbit();
+// Whether the local player's seat offers a third-person view to toggle into.
+bool vehicle_physics_camera_local_can_toggle_view();
 
 // A third-person driver's mouse and look keys turn the orbit, not the hull.
 bool vehicle_physics_camera_owns_driver_look();
@@ -116,6 +123,27 @@ bool vehicle_physics_server_owns(int vehicle_handle);
 // The hull box every sweep measures, from the entity alone. Either output may be null.
 void vehicle_physics_entity_hull_box(const rf::Entity* ep, rf::Vector3* out_half,
                                      rf::Vector3* out_center);
+
+// The radius of a flyer's or sub's physics sphere, which holds its origin this far off any surface; 0 for a
+// wheeled hull or anything the physics does not shape.
+float vehicle_physics_hull_standoff(const rf::Entity* ep);
+
+// A hull surface at or within this distance of the level is touching it.
+inline constexpr float vehicle_physics_touch_dist = 0.02f;
+
+struct VehiclePhysicsContact
+{
+    rf::Vector3 point;       // on the surface
+    rf::Vector3 normal;      // out of the surface
+    rf::Vector3 surface_vel; // the surface's own velocity there: a mover's, else zero
+};
+
+// The level, mover and prop surfaces a sphere at center touches in this machine's vehicle physics world - what a
+// hull body of that radius collides with, to vehicle_physics_touch_dist; props exist only around the hulls this
+// machine simulates. One contact per surface, however finely it is split into triangles. Fills at most
+// max_contacts; 0 when there is no world.
+int vehicle_physics_sphere_contacts(const rf::Vector3& center, float radius, VehiclePhysicsContact* out,
+                                    int max_contacts);
 
 // The SERVER body's live velocity; p_data.vel is deliberately zero for one, so it is no source.
 bool vehicle_physics_server_velocity(int vehicle_handle, rf::Vector3* out);

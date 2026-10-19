@@ -15,6 +15,7 @@
 #include "wipeout.h"
 #include "gungame.h"
 #include "salvage.h"
+#include "scavenger.h"
 #include "vehicles/vehicle.h"
 #include "vehicles/vehicle_render.h"
 #include "vehicles/vehicle_markers.h"
@@ -60,6 +61,8 @@ static char gg_name[] = "GG";
 static char* gg_slot = gg_name;
 static char sal_name[] = "SAL";
 static char* sal_slot = sal_name;
+static char scav_name[] = "SCAV";
+static char* scav_slot = scav_name;
 // UNK is the sentinel; new game types must be added above
 static char unk_name[] = "UNK";
 static char* unk_slot = unk_name;
@@ -105,6 +108,7 @@ void populate_gametype_table() {
     g_af_gametype_names[rf::NG_TYPE_WO]     = &wo_slot;
     g_af_gametype_names[rf::NG_TYPE_GG]     = &gg_slot;
     g_af_gametype_names[rf::NG_TYPE_SAL]    = &sal_slot;
+    g_af_gametype_names[rf::NG_TYPE_SCAV]   = &scav_slot;
     g_af_gametype_names[rf::NG_TYPE_UNK]    = &unk_slot;
 
     for (int i = 0; i < 5; ++i) {
@@ -155,6 +159,7 @@ bool multi_game_type_is_team_type(rf::NetGameType game_type)
         case rf::NG_TYPE_TBAG:
         case rf::NG_TYPE_WO:
         case rf::NG_TYPE_SAL:
+        case rf::NG_TYPE_SCAV:
             return true;
         default:
             return false;
@@ -283,6 +288,11 @@ bool gt_is_salvage()
     return rf::multi_get_game_type() == rf::NetGameType::NG_TYPE_SAL;
 }
 
+bool gt_is_scavenger()
+{
+    return rf::multi_get_game_type() == rf::NetGameType::NG_TYPE_SCAV;
+}
+
 const char* multi_gametype_help_text(rf::NetGameType game_type)
 {
     switch (game_type) {
@@ -314,6 +324,8 @@ const char* multi_gametype_help_text(rf::NetGameType game_type)
             return "Gun Game: Get frags to advance to a new weapon";
         case rf::NG_TYPE_SAL:
             return "Salvage: Steal the flag and take it to your base";
+        case rf::NG_TYPE_SCAV:
+            return "Scavenger: Find the cartridge and take it to the target";
         default:
             return nullptr;
     }
@@ -2147,6 +2159,7 @@ void multi_level_init_post_gametypes()
     hill_mode_level_init_post();
     bagman_level_init_post();
     salvage_level_init_post();
+    scavenger_level_init_post();
     pit_level_init_post();
     wipeout_level_init_post();
     gungame_level_init_post();
@@ -2186,6 +2199,7 @@ CodeInjection multi_level_init_gametypes_injection{
         bagman_level_init();
         jetpack_level_init();
         salvage_level_init();
+        scavenger_level_init();
         pit_level_init();
         wipeout_level_init();
         gungame_level_init();
@@ -2232,8 +2246,8 @@ CodeInjection send_team_score_state_info_patch{
             }
         }
 
-        // send salvage flag state packet on join
-        if (gt_is_salvage()) {
+        // send salvage/scavenger flag state packet on join
+        if (salvage_framework_active()) {
             if (rf::Player* pp = regs.edi) {
                 salvage_force_state_sync_to(pp);
             }
@@ -2303,7 +2317,7 @@ CodeInjection send_team_score_patch{
             regs.ax = blue_score;
             regs.eip = 0x00472176; // use stock game packet send
         }
-        else if (gt_is_salvage()) {
+        else if (salvage_framework_active()) {
             const uint16_t red_score = (uint16_t)std::clamp(salvage_get_red_team_score(), 0, 0xFFFF);
             const uint16_t blue_score = (uint16_t)std::clamp(salvage_get_blue_team_score(), 0, 0xFFFF);
             regs.si = red_score;
@@ -2335,7 +2349,7 @@ CodeInjection process_team_score_patch{
             wipeout_set_red_team_score(red_score);
             wipeout_set_blue_team_score(blue_score);
         }
-        else if (gt_is_salvage()) {
+        else if (salvage_framework_active()) {
             int red_score = static_cast<uint16_t>(regs.si.value);
             int blue_score = static_cast<uint16_t>(regs.di.value);
             salvage_set_red_team_score(red_score);

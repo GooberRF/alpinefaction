@@ -74,6 +74,18 @@ namespace gr::d3d11
         ctx->Unmap(buffer, 0);
     }
 
+    // The neutral objective's outline when its mesh is static (the Scavenger cartridge).
+    static bool query_static_objective_outline(rf::VifLodMesh** out_lod_mesh, rf::Vector3* out_pos,
+                                               rf::Matrix3* out_orient)
+    {
+        rf::VMesh* vmesh = nullptr;
+        if (!salvage_query_flag_outline(&vmesh, out_pos, out_orient)) {
+            return false;
+        }
+        *out_lod_mesh = static_vmesh_lod0(vmesh);
+        return *out_lod_mesh != nullptr;
+    }
+
     OutlineRenderer::OutlineRenderer(ID3D11Device* device, ShaderManager& shader_manager, StateManager& state_manager, RenderContext& render_context)
         : device_{device}
         , shader_manager_{shader_manager}
@@ -393,7 +405,7 @@ namespace gr::d3d11
         }
 
         // Outline the salvage flag carrier player, the same way.
-        if (gt_is_salvage() && !salvage_viewer_is_carrier_first_person()) {
+        if (salvage_framework_active() && !salvage_viewer_is_carrier_first_person()) {
             outline_objective_carrier(g_salvage_info.carrier, objective_info());
         }
 
@@ -416,6 +428,20 @@ namespace gr::d3d11
             }
         }
 
+        // A static objective (the Scavenger cartridge) is outlined like the bag: cached
+        // here and queued from its natural render_v3d_vif draw.
+        objective_static_xray_ = ForcedV3dXrayEntry{};
+        if (salvage_framework_active()) {
+            rf::VifLodMesh* lod = nullptr;
+            rf::Vector3 op{};
+            rf::Matrix3 oo{};
+            if (query_static_objective_outline(&lod, &op, &oo)) {
+                objective_static_xray_.lod_mesh = lod;
+                objective_static_xray_.pos = op;
+                objective_static_xray_.orient = oo;
+            }
+        }
+
         // Queue the salvage flag outline for this frame. Unlike the bag there is no
         // natural-render path to piggyback on: the flag is a .vfx mesh drawn by
         // gr_poly, which never reaches render_v3d_vif, so nothing queues it while the
@@ -425,11 +451,11 @@ namespace gr::d3d11
         // explicitly because the engine has moved on by then. Its stencil ref
         // must be its own — a shared ref would let the flag and the carrier erase
         // each other's silhouettes.
-        if (gt_is_salvage() && next_stencil_ref_ <= 255) {
+        if (salvage_framework_active() && !objective_static_xray_.lod_mesh && next_stencil_ref_ <= 255) {
             rf::VMesh* flag_vmesh = nullptr;
             rf::Vector3 fp{};
             rf::Matrix3 fo{};
-            if (salvage_query_flag_outline(&flag_vmesh, &fp, &fo)) {
+            if (salvage_query_flag_outline(&flag_vmesh, &fp, &fo) && flag_vmesh->type == rf::MESH_TYPE_ANIM_FX) {
                 QueuedVfxOutline entry{};
                 entry.vmesh = flag_vmesh;
                 entry.pos = fp;
@@ -448,7 +474,7 @@ namespace gr::d3d11
             return;
         }
 
-        const bool is_salvage = gt_is_salvage();
+        const bool is_salvage = salvage_framework_active();
         rf::Player* local_player = rf::local_player;
         if (!local_player) {
             return;
@@ -616,16 +642,19 @@ namespace gr::d3d11
         rf::VifLodMesh* lod_mesh, int lod_index,
         const rf::Vector3& pos, const rf::Matrix3& orient)
     {
-        // Match the rendered lod against either cached bag (pickup or carrier)
-        // and queue a green xray outline. Marks the matched entry as naturally
-        // rendered so flush_forced_xray doesn't double it on portal-cull
-        // recovery.
+        // Match the rendered lod against a cached static objective (bag pickup,
+        // bag carrier or static flag) and queue a green xray outline. Marks the
+        // matched entry as naturally rendered so flush_forced_xray doesn't double it
+        // on portal-cull recovery.
         ForcedV3dXrayEntry* match = nullptr;
         if (bagman_pickup_xray_.lod_mesh == lod_mesh) {
             match = &bagman_pickup_xray_;
         }
         else if (bagman_carrier_xray_.lod_mesh == lod_mesh) {
             match = &bagman_carrier_xray_;
+        }
+        else if (objective_static_xray_.lod_mesh == lod_mesh) {
+            match = &objective_static_xray_;
         }
         if (!match) return;
         if (next_stencil_ref_ > 255) return;
@@ -689,7 +718,7 @@ namespace gr::d3d11
         rf::VMesh* flag_vmesh = nullptr;
         rf::Vector3 fp{};
         rf::Matrix3 fo{};
-        if (!gt_is_salvage() || !salvage_query_flag_outline(&flag_vmesh, &fp, &fo)) {
+        if (!salvage_framework_active() || !salvage_query_flag_outline(&flag_vmesh, &fp, &fo)) {
             vfx_queue_.clear();
             return;
         }
@@ -762,6 +791,8 @@ namespace gr::d3d11
             bagman_pickup_xray_.lod_mesh && !bagman_pickup_xray_.naturally_rendered;
         const bool need_forced_carrier =
             bagman_carrier_xray_.lod_mesh && !bagman_carrier_xray_.naturally_rendered;
+        const bool need_forced_objective =
+            objective_static_xray_.lod_mesh && !objective_static_xray_.naturally_rendered;
 
         // Only xray hulls qualify: a depth-tested outline drawn this late has no scene depth to test.
         const bool need_forced_static = std::ranges::any_of(
@@ -772,7 +803,7 @@ namespace gr::d3d11
             });
 
         if (queue_.empty() && v3d_queue_.empty() && vfx_queue_.empty()
-            && !need_forced_pickup && !need_forced_carrier && !need_forced_static) {
+            && !need_forced_pickup && !need_forced_carrier && !need_forced_objective && !need_forced_static) {
             xray_forced_.clear();
             vehicle_target_count_ = 0;
             return;
@@ -832,11 +863,20 @@ namespace gr::d3d11
                 push_forced_bag(lod, p, o);
             }
         }
+        if (need_forced_objective) {
+            rf::VifLodMesh* lod = nullptr;
+            rf::Vector3 p{};
+            rf::Matrix3 o{};
+            if (query_static_objective_outline(&lod, &p, &o)) {
+                push_forced_bag(lod, p, o);
+            }
+        }
         // Everything cached for this frame has now been turned into a draw, so drop the
         // bag entries too. That makes a second call in the same frame a no-op, which is
         // what lets the screenshot path flush early and flip() flush again harmlessly.
         bagman_pickup_xray_ = ForcedV3dXrayEntry{};
         bagman_carrier_xray_ = ForcedV3dXrayEntry{};
+        objective_static_xray_ = ForcedV3dXrayEntry{};
 
         for (const auto& target : vehicle_targets()) {
             if (!target.has_info || !target.info.xray || target.naturally_rendered) {

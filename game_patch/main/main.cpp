@@ -31,6 +31,7 @@
 #include "../hud/multi_scoreboard.h"
 #include "../hud/multi_spectate.h"
 #include "../object/object.h"
+#include "../object/particle_sim.h"
 #include "../multi/multi.h"
 #include "../multi/demo/demo.h"
 #include "../multi/gametype.h"
@@ -63,6 +64,7 @@
 #include "../graphics/af_lightmap.h"
 #include "../object/alpine_corona.h"
 #include "../object/alpine_rope.h"
+#include "../sound/sound.h"
 #include "../input/input.h"
 #include "../rf/gr/gr.h"
 #include "../rf/multi.h"
@@ -249,6 +251,7 @@ CodeInjection after_frame_render_hook{
                 experimental_render();
 #endif
                 debug_render_ui();
+                particle_sim_render_ui();
             }
 
             // To dim our screen, and display "LOADING...", exit limbo here instead.
@@ -267,12 +270,14 @@ FunHook<int(rf::String&, rf::String&, char*)> level_load_hook{
         waypoints_level_reset();
         projector_clear_all();
         atx_level_reset();
+        particle_sim_level_reset();
         alpine_camera_clear_static_mode();
         if (!save_filename.empty())
             xlog::info("Restoring game from save file: {}", save_filename);
 
         // attempt to load level_info tbl file
         load_level_info_config(level_filename);
+        snd_level_looping_init(g_alpine_level_info_config.looping_sounds);
 
         // evaluate and cache vertex lighting mode for this level (D3D11 only)
         if (is_d3d11()) {
@@ -364,6 +369,7 @@ FunHook<void(bool)> level_init_post_hook{
         demo_server_on_level_init_post();
         gib_flames_level_init();
         server_bots_on_level_init();
+        shell_casings_level_init();
         // Multiplayer resets the jetpack from its own level-init injection.
         if (!rf::is_multi) {
             jetpack_level_init();

@@ -21,6 +21,8 @@
 #include "mfc_types.h"
 #include "resources.h"
 #include "terrain_paint.h"
+#include "texture_lock.h"
+#include "texture_mode.h"
 #include "vtypes.h"
 
 extern HMODULE g_module;
@@ -74,14 +76,12 @@ constexpr DWORD hover_refresh_ms = 150;
 constexpr uint8_t occluded_alpha = 70;
 // A plane handle's fill, as a fraction of the pass alpha until hovered.
 constexpr float plane_fill_alpha = 0.6f;
-// Alpha blended; the overlay ignores the depth buffer, the depth tested pass reads it without writing.
-constexpr uint32_t mode_overlay = gr_mode(0, 0, 0, 3, 0, 0);
+// The depth tested pass reads the depth buffer without writing it.
 constexpr uint32_t mode_depth_tested = mode_vertex_alpha;
 
 constexpr std::array<float, 6> scale_steps{0.01f, 0.05f, 0.1f, 0.25f, 0.5f, 1.0f};
 constexpr int default_scale_step = 2;
 
-constexpr float two_pi = 6.2831853f;
 constexpr float deg_per_rad = 57.2957795f;
 // The status bar is ANSI: the code page's degree sign.
 constexpr char degree_sign = '\xB0';
@@ -109,11 +109,6 @@ const Vector3& frame_axis(const Matrix3& m, int axis)
 const Vector3& world_axis(int axis)
 {
     return frame_axis(identity_orient, axis);
-}
-
-Vector3 any_perpendicular(const Vector3& a)
-{
-    return normalized(cross(a, std::abs(a.x) < 0.9f ? Vector3{1.0f, 0.0f, 0.0f} : Vector3{0.0f, 1.0f, 0.0f}));
 }
 
 // The rows made orthonormal: forward kept, up made orthogonal to it, right = up x forward with the sign of the old
@@ -310,6 +305,8 @@ struct Settings
     Mode mode = Mode::select;
     bool snap = true;
     int scale_step = default_scale_step; // index into scale_steps
+    bool texture_lock = false;
+    bool textured_preview = false;
 };
 Settings g_settings;
 
@@ -328,6 +325,10 @@ constexpr DialogTooltip top_bar_tips[] = {
     {ID_GIZMO_ROTATE, "Rotate (3)"},
     {ID_GIZMO_SCALE, "Scale (4)"},
     {ID_GIZMO_SNAP, "Snap (5): grid / angle / scale steps; Ctrl inverts while dragging"},
+    {ID_GIZMO_TEXLOCK, "Texture lock (6): scaling brushes, or moving or stretching their faces and vertices, keeps "
+                        "their textures in place in the world"},
+    {ID_GIZMO_TEXPREVIEW, "Textured brush preview (7): brushes changed since the last Build show a textured preview"
+                        "in the 3D view"},
     {IDC_GIZMO_SCALE_STEP, "Scale snap step"},
 };
 
@@ -339,13 +340,15 @@ HWND top_bar_hwnd()
 
 bool is_icon_button(UINT id)
 {
-    return id == ID_GIZMO_SNAP ||
+    return id == ID_GIZMO_SNAP || id == ID_GIZMO_TEXLOCK || id == ID_GIZMO_TEXPREVIEW ||
            std::find(mode_button_ids.begin(), mode_button_ids.end(), id) != mode_button_ids.end();
 }
 
 bool icon_button_on(UINT id)
 {
     if (id == ID_GIZMO_SNAP) return g_settings.snap;
+    if (id == ID_GIZMO_TEXLOCK) return g_settings.texture_lock;
+    if (id == ID_GIZMO_TEXPREVIEW) return g_settings.textured_preview;
     const auto it = std::find(mode_button_ids.begin(), mode_button_ids.end(), id);
     return it != mode_button_ids.end() && static_cast<int>(g_settings.mode) == it - mode_button_ids.begin();
 }
@@ -455,6 +458,19 @@ void draw_glyph(const Glyph& g, UINT id)
             g.stroke({{0.5f, 4.5f}, {15.5f, 4.5f}}, 1.2f, g.paper);
             break;
         }
+        case ID_GIZMO_TEXLOCK:
+            // A padlock
+            g.stroke(glyph_arc(8.0f, 6.5f, 3.5f, 0.0f, 180.0f, 12), 1.6f);
+            g.stroke({{4.5f, 6.5f}, {4.5f, 8.0f}}, 1.6f);
+            g.stroke({{11.5f, 6.5f}, {11.5f, 8.0f}}, 1.6f);
+            g.fill({{2.5f, 8.0f}, {13.5f, 8.0f}, {13.5f, 15.0f}, {2.5f, 15.0f}});
+            break;
+        case ID_GIZMO_TEXPREVIEW:
+            // A checkered tile
+            g.stroke({{1.5f, 1.5f}, {14.5f, 1.5f}, {14.5f, 14.5f}, {1.5f, 14.5f}, {1.5f, 1.5f}}, 1.3f);
+            g.fill({{1.5f, 1.5f}, {8.0f, 1.5f}, {8.0f, 8.0f}, {1.5f, 8.0f}});
+            g.fill({{8.0f, 8.0f}, {14.5f, 8.0f}, {14.5f, 14.5f}, {8.0f, 14.5f}});
+            break;
         default:
             break;
     }
@@ -526,13 +542,16 @@ void sync_top_bar()
     }
     const Settings& shown = g_top_bar.shown;
     if (g_top_bar.synced && shown.mode == g_settings.mode && shown.snap == g_settings.snap &&
-        shown.scale_step == g_settings.scale_step) {
+        shown.scale_step == g_settings.scale_step && shown.texture_lock == g_settings.texture_lock &&
+        shown.textured_preview == g_settings.textured_preview) {
         return;
     }
     for (UINT id : mode_button_ids) {
         InvalidateRect(GetDlgItem(bar, static_cast<int>(id)), nullptr, FALSE);
     }
     InvalidateRect(GetDlgItem(bar, ID_GIZMO_SNAP), nullptr, FALSE);
+    InvalidateRect(GetDlgItem(bar, ID_GIZMO_TEXLOCK), nullptr, FALSE);
+    InvalidateRect(GetDlgItem(bar, ID_GIZMO_TEXPREVIEW), nullptr, FALSE);
     SendDlgItemMessageA(bar, IDC_GIZMO_SCALE_STEP, CB_SETCURSEL, g_settings.scale_step, 0);
     g_top_bar.shown = g_settings;
     g_top_bar.synced = true;
@@ -846,13 +865,14 @@ struct BrushShape
 {
     std::vector<Vector3> verts;
     std::vector<FaceShape> faces;
+    std::vector<float> uvs; // u, v of each face's corners in order, with Texture Lock
     Vector3 bbox_min;
     Vector3 bbox_max;
     float sphere_radius = 0.0f;
     Vector3 sphere_center;
 };
 
-BrushShape read_brush_shape(const GSolid& solid)
+BrushShape read_brush_shape(const GSolid& solid, bool uvs)
 {
     BrushShape shape;
     for (int i = 0; i < solid.vertices.size; i++) {
@@ -861,6 +881,12 @@ BrushShape read_brush_shape(const GSolid& solid)
     }
     for (const GFace* face = solid.face_list_head; face; face = face->next_solid) {
         shape.faces.push_back({face->plane, face->bounding_box_min, face->bounding_box_max});
+        if (uvs) {
+            for_each_face_corner(*face, [&](GFaceVertex& fv) {
+                shape.uvs.push_back(fv.u);
+                shape.uvs.push_back(fv.v);
+            });
+        }
     }
     shape.bbox_min = solid.bbox_min;
     shape.bbox_max = solid.bbox_max;
@@ -872,11 +898,13 @@ BrushShape read_brush_shape(const GSolid& solid)
 bool shape_fits(const GSolid& solid, const BrushShape& shape)
 {
     int faces = 0;
+    std::size_t uvs = 0;
     for (const GFace* face = solid.face_list_head; face; face = face->next_solid) {
         faces++;
+        for_each_face_corner(*face, [&](GFaceVertex&) { uvs += 2; });
     }
     return solid.vertices.size == static_cast<int>(shape.verts.size()) &&
-           faces == static_cast<int>(shape.faces.size());
+           faces == static_cast<int>(shape.faces.size()) && (shape.uvs.empty() || uvs == shape.uvs.size());
 }
 
 void write_brush_shape(GSolid& solid, const BrushShape& shape)
@@ -893,6 +921,13 @@ void write_brush_shape(GSolid& solid, const BrushShape& shape)
         face->bounding_box_min = shape.faces[n].bbox_min;
         face->bounding_box_max = shape.faces[n].bbox_max;
         n++;
+    }
+    std::size_t uv = 0;
+    for (GFace* face = solid.face_list_head; face && !shape.uvs.empty(); face = face->next_solid) {
+        for_each_face_corner(*face, [&](GFaceVertex& fv) {
+            fv.u = shape.uvs[uv++];
+            fv.v = shape.uvs[uv++];
+        });
     }
     solid.bbox_min = shape.bbox_min;
     solid.bbox_max = shape.bbox_max;
@@ -1520,6 +1555,7 @@ struct BrushStart
     Vector3 pos;
     Matrix3 orient;
     BrushShape shape; // Scale: its geometry at the press
+    std::vector<FaceTextureLock> texture_lock; // Scale with Texture Lock: its faces' textures at the press
 };
 
 // Copies a Shift drag made of the selection, to take out again if the drag comes to nothing.
@@ -1620,12 +1656,6 @@ struct Hover
     DWORD refreshed = 0;
 };
 Hover g_hover;
-
-HWND status_bar_hwnd()
-{
-    const HWND bar = g_main_frame ? g_main_frame->status_bar_hwnd() : nullptr;
-    return bar && IsWindow(bar) ? bar : nullptr;
-}
 
 bool selection_unchanged(const Drag& d)
 {
@@ -1875,6 +1905,7 @@ void place_brush_vertices(const Drag& d, const BrushStart& b, bool scaled)
         }
     }
     refresh_solid(*solid);
+    texture_lock_apply(*b.brush, b.texture_lock, &d.pivot);
 }
 
 // Each target back to its press pose, or given the drag's transform.
@@ -1939,7 +1970,7 @@ const char* handle_name(const Drag& d)
 
 void show_status(const Drag& d, bool snap, float step)
 {
-    const HWND bar = status_bar_hwnd();
+    const HWND bar = editor_status_bar();
     if (!bar) return;
     std::string text = d.duplicated ? "Duplicate + " : "";
     if (d.mode == Mode::rotate) {
@@ -2094,7 +2125,7 @@ SideRecord side_record_for(const Drag& d)
         for (const BrushStart& b : d.brushes) {
             const auto* solid = static_cast<const GSolid*>(b.brush->geometry);
             if (solid && shape_fits(*solid, b.shape)) {
-                r.brushes.push_back({b.brush, solid, b.shape, read_brush_shape(*solid)});
+                r.brushes.push_back({b.brush, solid, b.shape, read_brush_shape(*solid, !b.shape.uvs.empty())});
             }
         }
     }
@@ -2106,7 +2137,7 @@ SideRecord side_record_for(const Drag& d)
 // Releases what the drag holds: capture, the status bar message.
 void end_drag_ui(const Drag& d)
 {
-    if (const HWND bar = status_bar_hwnd()) {
+    if (const HWND bar = editor_status_bar()) {
         SetWindowTextA(bar, d.saved_status.c_str());
     }
     if (d.hwnd && GetCapture() == d.hwnd) {
@@ -2380,7 +2411,10 @@ void capture_targets(Drag& d, const Targets& targets)
         BrushStart start{brush, brush->pos, brush->orient, {}};
         const auto* solid = static_cast<const GSolid*>(brush->geometry);
         if (d.mode == Mode::scale && solid) {
-            start.shape = read_brush_shape(*solid);
+            start.shape = read_brush_shape(*solid, g_settings.texture_lock);
+            if (g_settings.texture_lock) {
+                start.texture_lock = texture_lock_capture(*brush);
+            }
         }
         d.brushes.push_back(std::move(start));
     }
@@ -2440,7 +2474,7 @@ bool begin_drag(CDedLevel& level, EditorViewport* view, Pt cursor)
     capture_targets(d, targets);
     d.last_cursor = {static_cast<LONG>(cursor.x), static_cast<LONG>(cursor.y)};
     d.last_snap = snapping();
-    if (const HWND bar = status_bar_hwnd()) {
+    if (const HWND bar = editor_status_bar()) {
         char text[256] = {};
         GetWindowTextA(bar, text, sizeof(text));
         d.saved_status = text;
@@ -2723,19 +2757,39 @@ bool hotkeys_usable(HWND focus)
            GetAncestor(focus, GA_ROOTOWNER) == main && !typing_in(focus);
 }
 
+void toggle_texture_lock()
+{
+    g_settings.texture_lock = !g_settings.texture_lock;
+    sync_top_bar();
+}
+
+void toggle_textured_preview()
+{
+    g_settings.textured_preview = !g_settings.textured_preview;
+    sync_top_bar();
+    editor_views_mark_repaint_all();
+}
+
 void run_hotkey(int index)
 {
     if (index < mode_count) {
         set_mode(static_cast<Mode>(index));
     }
-    else {
+    else if (index == mode_count) {
         toggle_snap();
+    }
+    else if (index == mode_count + 1) {
+        toggle_texture_lock();
+    }
+    else if (index == mode_count + 2) {
+        toggle_textured_preview();
     }
 }
 
-// 1-4 pick the mode, 5 toggles Snap (unbound in stock and AF). A focused view gives them through DirectInput; elsewhere
-// in the frame the window message runs them and is dropped, so no tree or list type-ahead selects on the digit.
-constexpr int hotkey_count = 5;
+// 1-4 pick the mode, 5 toggles Snap, 6 Texture Lock and 7 Textured Brush Preview (unbound in stock and AF). A focused
+// view gives them through DirectInput; elsewhere in the frame the window message runs them and is dropped, so no tree
+// or list type-ahead selects on the digit.
+constexpr int hotkey_count = 7;
 bool g_hotkey_down[hotkey_count] = {};
 bool g_hotkey_message_taken[hotkey_count] = {};
 HHOOK g_hotkey_msg_hook = nullptr;
@@ -2890,6 +2944,12 @@ CallHook<void()> view_paint_flip_hook{
         catch (const std::exception& e) {
             report("render", e);
         }
+        try {
+            texture_mode_render_view();
+        }
+        catch (const std::exception& e) {
+            xlog::error("[Texture] outline: {}", e.what());
+        }
         // What stock set just before the flip (0x0047B9B4).
         set_draw_color(255, 255, 255, 255);
         view_paint_flip_hook.call_target();
@@ -2994,6 +3054,16 @@ bool gizmo_view_mbutton_down(EditorViewport* /*view*/)
     return g_drag.active;
 }
 
+bool gizmo_texture_lock()
+{
+    return g_settings.texture_lock;
+}
+
+bool gizmo_textured_preview()
+{
+    return g_settings.textured_preview;
+}
+
 bool gizmo_dragging()
 {
     return g_drag.active;
@@ -3022,6 +3092,12 @@ void gizmo_button_clicked(UINT id)
     try {
         if (id == ID_GIZMO_SNAP) {
             toggle_snap();
+        }
+        else if (id == ID_GIZMO_TEXLOCK) {
+            toggle_texture_lock();
+        }
+        else if (id == ID_GIZMO_TEXPREVIEW) {
+            toggle_textured_preview();
         }
         else {
             const auto it = std::find(mode_button_ids.begin(), mode_button_ids.end(), id);

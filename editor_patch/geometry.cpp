@@ -12,6 +12,7 @@
 #include "level.h"
 #include "mfc_types.h"
 #include "resources.h"
+#include "texture_mode.h"
 
 
 // Recompute a GSolid's bounding box from its face bounding boxes.
@@ -1316,6 +1317,7 @@ void __fastcall level_undo_hooked(CDedLevel* level, void* edx_unused)
     level_undo_hook.call_target(level, edx_unused);
     if (undone && undo_stack_top(level->redo_stack) == undone) {
         gizmo_undo_entry_applied(undone, true);
+        texture_undo_entry_applied(*level, *undone);
     }
     if (snapshot && undo_stack_top(level->undo_stack) == snapshot) {
         level_undo_hook.call_target(level, edx_unused);
@@ -1330,6 +1332,7 @@ void __fastcall level_redo_hooked(CDedLevel* level, void* edx_unused)
     level_redo_hook.call_target(level, edx_unused);
     if (redone && undo_stack_top(level->undo_stack) == redone) {
         gizmo_undo_entry_applied(redone, false);
+        texture_undo_entry_applied(*level, *redone);
     }
     if (redone && fuse_linked_snapshot(undo_stack_top(level->redo_stack)) == redone) {
         level_redo_hook.call_target(level, edx_unused);

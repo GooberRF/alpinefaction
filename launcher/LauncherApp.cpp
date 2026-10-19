@@ -160,8 +160,21 @@ std::wstring build_demo_confirm_text(const DemoDisplayInfo& info)
 std::string demo_game_type_name(int32_t game_type)
 {
     static const char* const names[] = {
-        "Deathmatch", "Capture the Flag", "Team Deathmatch", "King of the Hill", "Damage Control",
-        "Revolt", "Run", "Escalation", "Bagman", "Team Bagman", "Pit", "Wipeout", "Gun Game", "Salvage",
+        "Deathmatch",
+        "Capture the Flag",
+        "Team Deathmatch",
+        "King of the Hill",
+        "Damage Control",
+        "Revolt",
+        "Run",
+        "Escalation",
+        "Bagman",
+        "Team Bagman",
+        "Pit",
+        "Wipeout",
+        "Gun Game",
+        "Salvage",
+        "Scavenger",
     };
     if (game_type < 0 || game_type >= static_cast<int32_t>(ARRAYSIZE(names)))
         return {};

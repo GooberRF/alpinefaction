@@ -22,6 +22,10 @@
 #include "../server_internal.h"
 #include "../../hud/hud.h"
 #include "../../hud/multi_spectate.h"
+#include "../../hud/remote_server_cfg_ui.h"
+#include "../../misc/vote_panel.h"
+#include "../../input/input.h"
+#include "../../misc/alpine_settings.h"
 #include "../../misc/level.h"
 #include "../../misc/player.h"
 #include "../../os/console.h"
@@ -749,15 +753,16 @@ namespace
     }
 
     // The first step of the freelook spectate zoom.
-    constexpr float vehicle_turret_zoom_fov_divisor = 2.0f;
+    constexpr float vehicle_gun_zoom_fov_divisor = 2.0f;
 
-    rf::Entity* vehicle_local_operated_turret()
+    rf::Entity* vehicle_local_zoom_gun()
     {
         if (!rf::is_multi || rf::is_dedicated_server || multi_spectate_is_spectating()) {
             return nullptr;
         }
         rf::Entity* hull = vehicle_local_firing_vehicle();
-        return vehicle_hull_is_turret(hull) ? hull : nullptr;
+        // A third-person jeep gunner's camera orbits the hull, not along his aim.
+        return vehicle_alt_fire_zooms(hull) && !vehicle_physics_camera_local_seat_is_orbit() ? hull : nullptr;
     }
 } // namespace
 
@@ -779,30 +784,91 @@ void vehicle_view_level_init()
     g_apc_minigun_cache.clear();
 }
 
-float vehicle_turret_zoom_fov_scale()
+void vehicle_render_control_hints()
 {
-    const rf::Entity* turret = vehicle_local_operated_turret();
-    return turret && turret->handle == g_vehicle_state.turret_zoom_handle ? vehicle_turret_zoom_fov_divisor
-                                                                          : 1.0f;
+    if (!g_alpine_game_config.vehicle_control_hints || !rf::is_multi || rf::gameseq_get_state() != rf::GS_GAMEPLAY
+        || multi_spectate_is_spectating() || is_hud_effectively_hidden() || g_remote_server_cfg_popup.is_active()
+        || vote_panel_is_gameplay_overlay_active()) {
+        return;
+    }
+    rf::Entity* rider = rf::local_player_entity;
+    rf::Entity* hull = rider && !rf::entity_is_dying(rider) ? vehicle_ridden_live_hull(rider) : nullptr;
+    if (!hull) {
+        return;
+    }
+
+    // Each label names what the trigger does in THIS seat.
+    const auto weapon_label = [](int weapon) {
+        return weapon >= 0 && weapon < rf::num_weapon_types
+            ? "Fire " + std::string{rf::weapon_types[weapon].display_name.c_str()}
+            : std::string{};
+    };
+    std::string primary_label;
+    std::string alt_label;
+    const bool driller = rf::entity_is_driller(hull);
+    if (vehicle_firing_seat_occupant(hull) == rider) {
+        primary_label = driller ? "Use Drill" : weapon_label(hull->ai.current_primary_weapon);
+        // A third-person jeep gunner's alt does nothing: his zoom is off in the orbit view. The driller's alt
+        // is the stock cockpit camera cycle (0x004A8630), which only the first-person view shows.
+        const bool orbit = vehicle_physics_camera_local_seat_is_orbit();
+        alt_label = vehicle_alt_fire_zooms(hull) ? (vehicle_local_zoom_gun() ? "Zoom" : "")
+                  : rf::entity_is_sub(hull)      ? "Detonate Torpedoes"
+                  : driller                      ? (orbit ? "" : "Cycle Camera View")
+                                                 : weapon_label(hull->ai.current_secondary_weapon);
+    }
+    else if (rf::entity_is_jeep(hull) && vehicle_seat_leech(hull, 0) == rider->handle) {
+        primary_label = "Horn";
+    }
+
+    const std::string primary_bind = get_action_bind_name(rf::CC_ACTION_PRIMARY_ATTACK).c_str();
+    const std::string alt_bind = get_action_bind_name(rf::CC_ACTION_SECONDARY_ATTACK).c_str();
+    const std::string view_bind = get_action_bind_name(get_af_control(rf::AF_ACTION_SPECTATE_CHANGE_VIEW)).c_str();
+    const std::string use_bind = get_action_bind_name(rf::CC_ACTION_USE).c_str();
+    // The seat keys are fixed: vehicle_poll_seat_hotkeys reads 1-6 directly.
+    const int seats = std::min(vehicle_seat_count(hull), 6);
+    const std::string seat_keys = "1-" + std::to_string(seats);
+
+    std::pair<const char*, const char*> hints[5];
+    int n = 0;
+    if (!primary_label.empty()) {
+        hints[n++] = {primary_bind.c_str(), primary_label.c_str()};
+    }
+    if (!alt_label.empty()) {
+        hints[n++] = {alt_bind.c_str(), alt_label.c_str()};
+    }
+    if (vehicle_physics_camera_local_can_toggle_view()) {
+        hints[n++] = {view_bind.c_str(), "First / Third Person View"};
+    }
+    if (seats > 1) {
+        hints[n++] = {seat_keys.c_str(), "Change Seat"};
+    }
+    hints[n++] = {use_bind.c_str(), vehicle_hull_is_turret(hull) ? "Exit Turret" : "Exit Vehicle"};
+    hud_draw_control_hints(hints, n);
 }
 
-void vehicle_turret_zoom_do_frame()
+float vehicle_gun_zoom_fov_scale()
 {
-    // Any frame without the zoomed turret manned drops the zoom, whatever ended the operator's turn.
-    const rf::Entity* turret = vehicle_local_operated_turret();
-    if (!turret || turret->handle != g_vehicle_state.turret_zoom_handle) {
-        g_vehicle_state.turret_zoom_handle = -1;
+    const rf::Entity* gun = vehicle_local_zoom_gun();
+    return gun && gun->handle == g_vehicle_state.gun_zoom_handle ? vehicle_gun_zoom_fov_divisor : 1.0f;
+}
+
+void vehicle_gun_zoom_do_frame()
+{
+    // Any frame without the zoomed gun manned drops the zoom, whatever ended the gunner's turn.
+    const rf::Entity* gun = vehicle_local_zoom_gun();
+    if (!gun || gun->handle != g_vehicle_state.gun_zoom_handle) {
+        g_vehicle_state.gun_zoom_handle = -1;
     }
-    // Tracked off the turret and through pauses too, so a press held from before is never an edge.
+    // Tracked off the gun and through pauses too, so a press held from before is never an edge.
     const bool alt_down = rf::local_player
         && rf::control_is_control_down(&rf::local_player->settings.controls, rf::CC_ACTION_SECONDARY_ATTACK);
-    const bool pressed = alt_down && !g_vehicle_state.turret_zoom_alt_down;
-    g_vehicle_state.turret_zoom_alt_down = alt_down;
-    if (!pressed || !turret || rf::game_paused || rf::gameseq_get_state() != rf::GS_GAMEPLAY
+    const bool pressed = alt_down && !g_vehicle_state.gun_zoom_alt_down;
+    g_vehicle_state.gun_zoom_alt_down = alt_down;
+    if (!pressed || !gun || rf::game_paused || rf::gameseq_get_state() != rf::GS_GAMEPLAY
         || rf::console::console_is_visible() || rf::multi_chat_is_say_visible()) {
         return;
     }
-    g_vehicle_state.turret_zoom_handle = g_vehicle_state.turret_zoom_handle == -1 ? turret->handle : -1;
+    g_vehicle_state.gun_zoom_handle = g_vehicle_state.gun_zoom_handle == -1 ? gun->handle : -1;
 }
 
 VehicleFpShotStart vehicle_fp_own_shot_start(rf::Entity* hull, rf::Entity* shooter, const rf::Vector3& fire_pos,

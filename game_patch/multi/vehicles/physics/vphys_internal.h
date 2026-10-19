@@ -363,14 +363,19 @@ struct VehicleSimBody
     btVector3 impact_pre_vel{0.0f, 0.0f, 0.0f};
     bool impact_armed = false;
     bool impact_skip = false;
+    bool impact_prop_built = false; // a prop box was just built overlapping the hull: its pop is no crash
     bool impact_drilling = false; // the drill face's contacts are not crashes
-    // This frame's best level/mover chassis contact: the largest velocity change along its normal,
+    // This frame's best level/mover/prop chassis contact: the largest velocity change along its normal,
     // and the pre-step speed into the surface along that normal.
     bool impact_contact = false;
     float impact_contact_dvn = 0.0f;
     float impact_contact_ny = 0.0f;
     float impact_contact_approach = 0.0f;
     btVector3 impact_contact_n{0.0f, 1.0f, 0.0f};
+    // This frame's fastest post-step slide along a touched level/mover/prop wall or ceiling, and along touched
+    // ground; 0 with none.
+    float scrape_speed = 0.0f;
+    float scrape_ground_speed = 0.0f;
     // Simulated time the hull has been touching anything, capped; 0 on a frame with no contact.
     float impact_grounded_s = 1.0f;
     // The open window: simulated time left (0 = closed), the signed running sum and its peak, and
@@ -430,6 +435,9 @@ struct VehiclePhysicsWorld
 // Bullet requires the filter to match BOTH ways: (maskA & groupB) && (maskB & groupA).
 constexpr short vphys_group_hull = 0x80;
 constexpr short vphys_group_level = 0x40;
+// The clutter props: Bullet's own static group and mask, which nothing else in the world is given.
+constexpr short vphys_group_prop = btBroadphaseProxy::StaticFilter;
+constexpr short vphys_mask_prop = btBroadphaseProxy::AllFilter ^ btBroadphaseProxy::StaticFilter;
 // A hull pairs with everything EXCEPT another hull: vehicle-vs-vehicle is vphys_apply_pair_response.
 constexpr short vphys_mask_no_hull = static_cast<short>(~vphys_group_hull);
 
@@ -535,8 +543,6 @@ void vehicle_physics_notify_geomod(const rf::Vector3& pos, float radius);
 bool mover_brush_is_solid(const rf::Object& mb);
 
 // ---- vphys_car.cpp ----
-// collide_linesegment_world plus the mover-brush solidity rule above. `flags` are rf::CollideFlags.
-bool vphys_collide_solid_segment(const rf::Vector3& a, const rf::Vector3& b, int flags, rf::PCollisionOut& out);
 void car_teardown(VehicleSimBody& b);
 HullBox hull_contact_box(const HullBox& base, const VehiclePhysicsParams& p, float bottom_raise);
 // Splits the trimmed contact box into the chassis's collision parts; returns how many (1 or 2).

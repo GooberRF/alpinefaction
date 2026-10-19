@@ -321,6 +321,8 @@ namespace rf
     constexpr int max_weapon_types = 64;
 
     static auto& weapon_types = addr_as_ref<WeaponInfo[max_weapon_types]>(0x0085CD08);
+    // Sentinel of the live weapon list, linked through Weapon::next/prev.
+    static auto& weapon_list = addr_as_ref<Weapon>(0x00872128);
     static auto& remote_charge_det_weapon_type = addr_as_ref<int>(0x0085CCE0);
     static auto& machine_pistol_special_weapon_type = addr_as_ref<int>(0x0085CD00);
     static auto& machine_pistol_weapon_type = addr_as_ref<int>(0x0085CCD8);

@@ -319,7 +319,9 @@ namespace
             // Last, so every velocity write above is the step's input and never reads as an impact.
             b.impact_pre_vel = body->getLinearVelocity();
             b.impact_armed = true;
-            b.impact_skip = reseeded || pushed || timer::get_i64(1000) < b.shove_brake_until_ms;
+            b.impact_skip = reseeded || pushed || b.impact_prop_built
+                         || timer::get_i64(1000) < b.shove_brake_until_ms;
+            b.impact_prop_built = false;
             b.impact_drilling = is_car && car_drills_on(ep, p);
         }
     }
@@ -371,7 +373,7 @@ namespace
             }
             for (int c = 0; c < pm->getNumContacts(); ++c) {
                 const btManifoldPoint& cp = pm->getContactPoint(c);
-                if (cp.getDistance() > 0.02f) {
+                if (cp.getDistance() > vehicle_physics_touch_dist) {
                     continue;
                 }
                 const float ny = cp.m_normalWorldOnB.y();
@@ -394,17 +396,22 @@ namespace
         return b && b->body == obj && b->impact_armed ? b : nullptr;
     }
 
+    // The level mesh, the movers and the clutter props.
     bool impact_is_level_object(const btCollisionObject* obj)
     {
         const btBroadphaseProxy* proxy = obj ? obj->getBroadphaseHandle() : nullptr;
-        return proxy && proxy->m_collisionFilterGroup == vphys_group_level;
+        return proxy
+            && (proxy->m_collisionFilterGroup == vphys_group_level
+                || proxy->m_collisionFilterGroup == vphys_group_prop);
     }
 
-    // The level mesh and movers only: another hull's box forms no pair, and hull on hull is the ram's.
+    // Another hull's box forms no pair, and hull on hull is the ram's.
     void vphys_impact_contact_pass()
     {
         for (const auto& owned : g_vphys.bodies) {
             owned->impact_contact = false;
+            owned->scrape_speed = 0.0f;
+            owned->scrape_ground_speed = 0.0f;
         }
         const int nm = g_vphys.dispatcher->getNumManifolds();
         for (int m = 0; m < nm; ++m) {
@@ -424,7 +431,7 @@ namespace
             const btRigidBody* other = btRigidBody::upcast(side > 0.0f ? pm->getBody1() : pm->getBody0());
             for (int c = 0; c < pm->getNumContacts(); ++c) {
                 const btManifoldPoint& cp = pm->getContactPoint(c);
-                if (cp.getDistance() > 0.02f) {
+                if (cp.getDistance() > vehicle_physics_touch_dist) {
                     continue;
                 }
                 const btVector3 n = cp.m_normalWorldOnB * side;
@@ -432,13 +439,17 @@ namespace
                     && n.dot(fwd) < vehicle_crash_drill_face_dot) {
                     continue;
                 }
+                btVector3 surface_vel(0.0f, 0.0f, 0.0f);
+                if (other) {
+                    const btVector3& p = side > 0.0f ? cp.getPositionWorldOnB() : cp.getPositionWorldOnA();
+                    surface_vel = other->getVelocityInLocalPoint(p - other->getCenterOfMassPosition());
+                }
+                const btVector3 rel_post = b->body->getLinearVelocity() - surface_vel;
+                float& scrape = n.y() < vehicle_crash_ground_ny ? b->scrape_speed : b->scrape_ground_speed;
+                scrape = std::max(scrape, (rel_post - n * rel_post.dot(n)).length());
                 const float dvn = dv.dot(n);
                 if (!b->impact_contact || dvn > b->impact_contact_dvn) {
-                    btVector3 rel_pre = b->impact_pre_vel;
-                    if (other) {
-                        const btVector3& p = side > 0.0f ? cp.getPositionWorldOnB() : cp.getPositionWorldOnA();
-                        rel_pre -= other->getVelocityInLocalPoint(p - other->getCenterOfMassPosition());
-                    }
+                    const btVector3 rel_pre = b->impact_pre_vel - surface_vel;
                     b->impact_contact = true;
                     b->impact_contact_dvn = dvn;
                     b->impact_contact_ny = n.y();
@@ -454,6 +465,15 @@ namespace
         int vehicle_handle;
         float impact_dv;
         bool ground;
+    };
+
+    struct VehicleScrape
+    {
+        int vehicle_handle;
+        rf::Vector3 vel; // post-step, capped
+        float wall_slide;
+        float ground_slide;
+        float step_time;
     };
 
     void vphys_impact_measure(VehicleSimBody& b, bool speed_clamped, float step_time,
@@ -582,7 +602,8 @@ namespace
         body->setActivationState(ISLAND_SLEEPING);
     }
 
-    void vphys_body_post_step(BodyStepScratch& s, float step_time, std::vector<VehicleImpact>& impacts)
+    void vphys_body_post_step(BodyStepScratch& s, float step_time, std::vector<VehicleImpact>& impacts,
+                              std::vector<VehicleScrape>& scrapes)
     {
         VehicleSimBody& b = *s.b;
         rf::Entity* ep = s.ep;
@@ -613,6 +634,18 @@ namespace
 
         rf::Vector3 capped_vel = vel;
         const bool speed_clamped = vphys_clamp_class_velocity(cls, capped_vel);
+        // Every counted step, a slide of 0 included: that is what flushes a scrape once the hull comes away. A
+        // clamped step counts too, at the capped speed.
+        if (b.impact_armed && !b.impact_skip && step_time > 0.0f) {
+            float wall_slide = b.scrape_speed;
+            float ground_slide = b.scrape_ground_speed;
+            if (speed_clamped) {
+                const float cap = vphys_class_speed_cap(cls);
+                wall_slide = std::min(wall_slide, cap);
+                ground_slide = std::min(ground_slide, cap);
+            }
+            scrapes.push_back({b.vehicle_handle, capped_vel, wall_slide, ground_slide, step_time});
+        }
         vphys_impact_measure(b, speed_clamped, step_time, impacts);
         if (speed_clamped) {
             vel = capped_vel;
@@ -724,14 +757,20 @@ namespace
             vphys_impact_contact_pass();
         }
         std::vector<VehicleImpact> impacts;
+        std::vector<VehicleScrape> scrapes;
         for (BodyStepScratch& s : step) {
-            vphys_body_post_step(s, step_time, impacts);
+            vphys_body_post_step(s, step_time, impacts, scrapes);
         }
         g_vphys.manifolds_dirty = false;
         // After the walk: the damage can destroy a hull, and its body with it.
         for (const VehicleImpact& impact : impacts) {
             if (rf::Entity* ep = rf::entity_from_handle(impact.vehicle_handle)) {
                 vehicle_crash_impact(ep, impact.impact_dv, impact.ground);
+            }
+        }
+        for (const VehicleScrape& scrape : scrapes) {
+            if (rf::Entity* ep = rf::entity_from_handle(scrape.vehicle_handle)) {
+                vehicle_scrape_contact(ep, scrape.vel, scrape.wall_slide, scrape.ground_slide, scrape.step_time);
             }
         }
     }
@@ -1056,6 +1095,76 @@ float vehicle_physics_class_top_speed(int vdc_class)
 {
     const int cls = vphys_class_from_vdc(vdc_class);
     return cls < 0 ? 0.0f : vphys_class_top_speed(cls);
+}
+
+float vehicle_physics_hull_standoff(const rf::Entity* ep)
+{
+    const int cls = ep ? vphys_class_for(ep) : -1;
+    if (cls < 0 || vphys_class_is_automobile(cls)) {
+        return 0.0f;
+    }
+    return hull_standoff(params_for_class(cls), ep);
+}
+
+int vehicle_physics_sphere_contacts(const rf::Vector3& center, float radius, VehiclePhysicsContact* out,
+                                    int max_contacts)
+{
+    if (!g_vphys.world || !(radius > 0.0f) || max_contacts <= 0 || !vehicle_vector_is_finite(center)) {
+        return 0;
+    }
+    struct SphereContactCallback : btCollisionWorld::ContactResultCallback
+    {
+        const btCollisionObject* probe = nullptr;
+        VehiclePhysicsContact* out = nullptr;
+        int max_contacts = 0;
+        int num_contacts = 0;
+
+        btScalar addSingleResult(btManifoldPoint& cp, const btCollisionObjectWrapper* wrap0, int, int,
+                                 const btCollisionObjectWrapper* wrap1, int, int) override
+        {
+            if (num_contacts >= max_contacts || cp.getDistance() > vehicle_physics_touch_dist) {
+                return 0.0f;
+            }
+            // m_normalWorldOnB points at object A.
+            const bool probe_is_a = wrap0->getCollisionObject() == probe;
+            const btCollisionObject* surface = probe_is_a ? wrap1->getCollisionObject() : wrap0->getCollisionObject();
+            const btVector3 point = probe_is_a ? cp.getPositionWorldOnB() : cp.getPositionWorldOnA();
+            const btVector3 normal = probe_is_a ? cp.m_normalWorldOnB : -cp.m_normalWorldOnB;
+            // Every triangle reports its own point, so one face split into several gives several of one touch.
+            constexpr float same_point_dist_sq = 0.25f * 0.25f;
+            constexpr float same_normal_dot = 0.9f;
+            for (int i = 0; i < num_contacts; ++i) {
+                if ((from_bt(point) - out[i].point).len_sq() < same_point_dist_sq
+                    && from_bt(normal).dot_prod(out[i].normal) > same_normal_dot) {
+                    return 0.0f;
+                }
+            }
+            btVector3 surface_vel(0.0f, 0.0f, 0.0f);
+            if (const btRigidBody* body = btRigidBody::upcast(surface)) {
+                surface_vel = body->getVelocityInLocalPoint(point - body->getCenterOfMassPosition());
+            }
+            out[num_contacts++] = {from_bt(point), from_bt(normal), from_bt(surface_vel)};
+            return 0.0f;
+        }
+    };
+
+    btSphereShape shape(radius);
+    btCollisionObject probe;
+    probe.setCollisionShape(&shape);
+    btTransform t;
+    t.setIdentity();
+    t.setOrigin(to_bt(center));
+    probe.setWorldTransform(t);
+
+    SphereContactCallback cb;
+    cb.probe = &probe;
+    cb.out = out;
+    cb.max_contacts = max_contacts;
+    // As a hull: the level, the movers and the props, never another hull.
+    cb.m_collisionFilterGroup = vphys_group_hull;
+    cb.m_collisionFilterMask = vphys_group_level | vphys_group_prop;
+    g_vphys.world->contactTest(&probe, cb);
+    return cb.num_contacts;
 }
 
 float vehicle_physics_class_bounce_gain(int vdc_class)

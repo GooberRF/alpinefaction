@@ -938,6 +938,11 @@ bool vehicle_physics_camera_toggle_view()
     }
 }
 
+bool vehicle_physics_camera_local_can_toggle_view()
+{
+    return vcam_local_choice_seat(false) != VehicleOrbitSeat::none;
+}
+
 bool vehicle_physics_camera_local_seat_is_orbit()
 {
     rf::Entity* rider = rf::local_player_entity;

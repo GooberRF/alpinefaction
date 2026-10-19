@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <unordered_set>
 #include <windows.h>
+#include <commctrl.h>
 #include <xlog/xlog.h>
 #include <patch_common/MemUtils.h>
 #include <patch_common/FunHook.h>
@@ -19,6 +20,7 @@
 #include "sounds.h"
 #include "event.h"
 #include "bitmap_loaders.h"
+#include "resources.h"
 #include <common/utils/string-utils.h>
 
 // Subdirectory names registered during init, used by VPP packing fix
@@ -180,14 +182,44 @@ static int __cdecl permissive_texture_browser_validator(void* entry)
     return browser_extension_allowed(ext) ? 1 : 0;
 }
 
+// The Format filter's choices after All; a .jpeg counts as JPG
+static constexpr const char* texture_browser_formats[] = {"TGA", "VBM", "DDS", "PNG", "JPG", "ATX"};
+// Its selection for the session, 0 for All
+static int g_texture_browser_format = 0;
+
+static bool texture_browser_format_matches(const char* filename)
+{
+    const int sel = g_texture_browser_format;
+    if (sel <= 0 || sel > static_cast<int>(std::size(texture_browser_formats))) return true;
+    const char* ext = std::strrchr(filename, '.');
+    if (!ext) return false;
+    const char* format = texture_browser_formats[sel - 1];
+    return _stricmp(ext + 1, format) == 0 || (std::strcmp(format, "JPG") == 0 && _stricmp(ext + 1, "jpeg") == 0);
+}
+
+// The stock validator's Material filter: one of the material's prefixes starts the name
+static bool texture_browser_material_matches(const char* filename)
+{
+    const int sel = texture_browser_material_index;
+    if (sel <= 0 || sel > texture_browser_materials.size) return true;
+    const TextureBrowserMaterial* material = texture_browser_materials.data_ptr[sel - 1];
+    if (!material) return true;
+    for (int i = 0; i < material->bitmap_prefixes.size; i++) {
+        const char* prefix = material->bitmap_prefixes.data_ptr[i].c_str();
+        if (_strnicmp(filename, prefix, std::strlen(prefix)) == 0) return true;
+    }
+    return false;
+}
+
 static int __cdecl filtered_texture_browser_validator(void* entry)
 {
     if (!permissive_texture_browser_validator(entry)) return 0;
 
-    auto& texture_browser_filter = addr_as_ref<char[256]>(0x006ca408);
+    const char* filename = static_cast<const char*>(entry) + 8;
+    if (!texture_browser_format_matches(filename) || !texture_browser_material_matches(filename)) return 0;
+
     if (!texture_browser_filter[0]) return 1;
 
-    const char* filename = static_cast<const char*>(entry) + 8;
     return string_icontains(filename, static_cast<const char*>(texture_browser_filter)) ? 1 : 0;
 }
 
@@ -200,6 +232,205 @@ FunHook<int __cdecl(void*)> texture_sidebar_validator_hook{
     0x004451C0,
     permissive_texture_browser_validator
 };
+
+// FUN_0046f880 lays the thumbnail grid out at 32, 64 or 128 px by Display Size; 256 and 512 follow those, and One To
+// One moves after them (its dispatch at 0x0046fccc compares with 5 instead of 3). No trampoline: it always resumes past
+// the size switch at 0x0046f8c2, so the replaced mov eax, [esi+0x2b8] is never needed.
+static constexpr int texture_browser_one_to_one = 5;
+CodeInjection texture_browser_thumbnail_size_injection{
+    0x0046f89e,
+    [](auto& regs) {
+        static constexpr int sizes[] = {32, 64, 128, 256, 512};
+        const TextureBrowserPanel* panel = regs.esi;
+        const int mode = panel->display_size;
+        regs.ebp = mode >= 0 && mode < static_cast<int>(std::size(sizes)) ? sizes[mode] : 64;
+        regs.eip = 0x0046f8c2;
+    },
+    false,
+};
+
+// A frame narrower than one 512 px cell would give no columns, which the layout divides by
+CodeInjection texture_browser_min_columns_injection{
+    0x0046f8f0,
+    [](auto& regs) {
+        if (static_cast<int>(regs.eax) < 1) {
+            regs.eax = 1;
+        }
+    },
+};
+
+// The Texture Browser resizes: its view grows with the window and the grid is laid out again for it, the favorites
+// strip and the buttons keep to the bottom. Its size is kept for the session, and the mouse wheel scrolls it.
+namespace
+{
+struct TextureBrowserLayout
+{
+    SIZE min_size{};
+    SIZE client{};
+    SIZE applied{};
+    int wheel = 0;
+    RECT view{};
+    std::vector<std::pair<int, POINT>> to_bottom;
+};
+TextureBrowserLayout g_texture_browser_layout;
+SIZE g_texture_browser_size{};
+
+// the favorites strip, its Change buttons, OK and Cancel
+constexpr int texture_browser_bottom_ids[] = {1506, 1507, 1508, 1509, 1510, 1511, 1512, 1513, 1514, IDOK, IDCANCEL};
+
+// As if the scroll bar were hidden: the grid's layout shows and hides it, which must not resize the view again
+SIZE texture_browser_client_size(HWND hdlg)
+{
+    RECT r{};
+    GetClientRect(hdlg, &r);
+    const bool scroll_bar = (GetWindowLongA(hdlg, GWL_STYLE) & WS_VSCROLL) != 0;
+    return {r.right + (scroll_bar ? GetSystemMetrics(SM_CXVSCROLL) : 0), r.bottom};
+}
+
+RECT texture_browser_child_rect(HWND hdlg, int id)
+{
+    RECT r{};
+    if (const HWND child = GetDlgItem(hdlg, id)) {
+        GetWindowRect(child, &r);
+        MapWindowPoints(nullptr, hdlg, reinterpret_cast<POINT*>(&r), 2);
+    }
+    return r;
+}
+
+void texture_browser_layout_init(HWND hdlg)
+{
+    TextureBrowserLayout& layout = g_texture_browser_layout;
+    RECT window{};
+    GetWindowRect(hdlg, &window);
+    layout.min_size = {window.right - window.left, window.bottom - window.top};
+    layout.client = texture_browser_client_size(hdlg);
+    layout.applied = layout.client;
+    layout.wheel = 0;
+    layout.view = texture_browser_child_rect(hdlg, IDC_TEXTURE_BROWSER_VIEW);
+    layout.to_bottom.clear();
+    for (int id : texture_browser_bottom_ids) {
+        const RECT r = texture_browser_child_rect(hdlg, id);
+        layout.to_bottom.emplace_back(id, POINT{r.left, r.top});
+    }
+}
+
+void texture_browser_layout_apply(HWND hdlg, SIZE size)
+{
+    const TextureBrowserLayout& layout = g_texture_browser_layout;
+    const int dx = std::max(0, static_cast<int>(size.cx - layout.client.cx));
+    const int dy = std::max(0, static_cast<int>(size.cy - layout.client.cy));
+    if (const HWND view = GetDlgItem(hdlg, IDC_TEXTURE_BROWSER_VIEW)) {
+        // no bigger than the back buffer it is drawn from
+        const int width = std::min(static_cast<int>(layout.view.right - layout.view.left) + dx, gr_get_max_width());
+        const int height = std::min(static_cast<int>(layout.view.bottom - layout.view.top) + dy, gr_get_max_height());
+        SetWindowPos(view, nullptr, 0, 0, width, height, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    for (const auto& [id, pos] : layout.to_bottom) {
+        if (const HWND child = GetDlgItem(hdlg, id)) {
+            SetWindowPos(child, nullptr, pos.x, pos.y + dy, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+    }
+    InvalidateRect(hdlg, nullptr, TRUE);
+}
+} // namespace
+
+static LRESULT CALLBACK texture_browser_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam, UINT_PTR subclass_id,
+                                             DWORD_PTR panel)
+{
+    if (msg == WM_GETMINMAXINFO) {
+        auto* info = reinterpret_cast<MINMAXINFO*>(lparam);
+        info->ptMinTrackSize = {g_texture_browser_layout.min_size.cx, g_texture_browser_layout.min_size.cy};
+        return 0;
+    }
+    if (msg == WM_MOUSEWHEEL) {
+        // a step per notch, as the scroll bar's arrows go
+        int& wheel = g_texture_browser_layout.wheel;
+        wheel += GET_WHEEL_DELTA_WPARAM(wparam);
+        for (; wheel >= WHEEL_DELTA; wheel -= WHEEL_DELTA) {
+            SendMessageA(hwnd, WM_VSCROLL, SB_LINEUP, 0);
+        }
+        for (; wheel <= -WHEEL_DELTA; wheel += WHEEL_DELTA) {
+            SendMessageA(hwnd, WM_VSCROLL, SB_LINEDOWN, 0);
+        }
+        return 0;
+    }
+    if (msg == WM_SIZE && wparam != SIZE_MINIMIZED && g_texture_browser_layout.client.cx > 0) {
+        const SIZE size = texture_browser_client_size(hwnd);
+        SIZE& applied = g_texture_browser_layout.applied;
+        if (size.cx != applied.cx || size.cy != applied.cy) {
+            applied = size;
+            texture_browser_layout_apply(hwnd, size);
+            // the scroll range follows the rows, and the view keeps its scroll position
+            auto* browser = reinterpret_cast<TextureBrowserPanel*>(panel);
+            const int scrolled = GetScrollPos(hwnd, SB_VERT);
+            texture_browser_relayout(browser, true, 0, 0);
+            if (scrolled > 0) {
+                texture_browser_relayout(browser, false, SB_THUMBPOSITION, scrolled);
+            }
+        }
+        if (wparam == SIZE_RESTORED) {
+            RECT window{};
+            GetWindowRect(hwnd, &window);
+            g_texture_browser_size = {window.right - window.left, window.bottom - window.top};
+        }
+    }
+    if (msg == WM_COMMAND && LOWORD(wparam) == IDC_TEXTURE_BROWSER_FORMAT && HIWORD(wparam) == CBN_SELCHANGE) {
+        const int sel = static_cast<int>(SendMessageA(reinterpret_cast<HWND>(lparam), CB_GETCURSEL, 0, 0));
+        g_texture_browser_format = sel > 0 ? sel : 0;
+        texture_browser_refresh(reinterpret_cast<TextureBrowserPanel*>(panel));
+        return 0;
+    }
+    if (msg == WM_NCDESTROY) {
+        RemoveWindowSubclass(hwnd, texture_browser_proc, subclass_id);
+    }
+    return DefSubclassProc(hwnd, msg, wparam, lparam);
+}
+
+// FUN_00470a10: the browser's OnInitDialog
+static BOOL __fastcall texture_browser_init_dialog_hooked(TextureBrowserPanel* panel);
+FunHook<decltype(texture_browser_init_dialog_hooked)> texture_browser_init_dialog_hook{
+    0x00470a10,
+    texture_browser_init_dialog_hooked
+};
+static BOOL __fastcall texture_browser_init_dialog_hooked(TextureBrowserPanel* panel)
+{
+    const BOOL result = texture_browser_init_dialog_hook.call_target(panel);
+    HWND hdlg = WndToHandle(reinterpret_cast<CWnd*>(panel));
+
+    // stock selected the size before these existed
+    HWND sizes = GetDlgItem(hdlg, IDC_TEXTURE_BROWSER_SIZES);
+    SendMessageA(sizes, CB_INSERTSTRING, 3, reinterpret_cast<LPARAM>("256 x 256"));
+    SendMessageA(sizes, CB_INSERTSTRING, 4, reinterpret_cast<LPARAM>("512 x 512"));
+    SendMessageA(sizes, CB_SETCURSEL, panel->display_size, 0);
+
+    HWND formats = GetDlgItem(hdlg, IDC_TEXTURE_BROWSER_FORMAT);
+    SendMessageA(formats, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("All"));
+    for (const char* format : texture_browser_formats) {
+        SendMessageA(formats, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(format));
+    }
+    SendMessageA(formats, CB_SETCURSEL, g_texture_browser_format, 0);
+
+    // The Name handler copies the text unbounded into its buffer
+    SendDlgItemMessageA(hdlg, IDC_TEXTURE_BROWSER_NAME, EM_LIMITTEXT, sizeof(texture_browser_filter) - 1, 0);
+
+    texture_browser_layout_init(hdlg);
+    SetWindowSubclass(hdlg, texture_browser_proc, 1, reinterpret_cast<DWORD_PTR>(panel));
+    if (g_texture_browser_size.cx > 0) {
+        // a size kept from a bigger monitor still fits this one
+        SIZE size = g_texture_browser_size;
+        const HWND owner = GetWindow(hdlg, GW_OWNER);
+        MONITORINFO info{};
+        info.cbSize = sizeof(info);
+        if (GetMonitorInfoA(MonitorFromWindow(owner ? owner : hdlg, MONITOR_DEFAULTTONEAREST), &info)) {
+            const SIZE& min_size = g_texture_browser_layout.min_size;
+            size.cx = std::max(min_size.cx, std::min(size.cx, info.rcWork.right - info.rcWork.left));
+            size.cy = std::max(min_size.cy, std::min(size.cy, info.rcWork.bottom - info.rcWork.top));
+        }
+        SetWindowPos(hdlg, nullptr, 0, 0, size.cx, size.cy, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+        alpine_center_dialog_on_owner(hdlg);
+    }
+    return result;
+}
 
 // FUN_00477460 saves texture categories to red.cfg. Skip "Custom - " subdirectory
 // categories so they don't pollute red.cfg (they're re-added dynamically at startup).
@@ -1092,6 +1323,10 @@ void ApplyTexturesPatches() {
     texture_config_init_hook.install();
     texture_browser_validator_hook.install();
     texture_sidebar_validator_hook.install();
+    texture_browser_thumbnail_size_injection.install();
+    texture_browser_min_columns_injection.install();
+    write_mem<int8_t>(0x0046fcce, texture_browser_one_to_one);
+    texture_browser_init_dialog_hook.install();
     custom_category_check_hook.install();
     sidebar_custom_texture_path_injection.install();
     texture_reverse_lookup_fix.install();

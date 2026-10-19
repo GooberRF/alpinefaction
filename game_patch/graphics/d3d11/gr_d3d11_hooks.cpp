@@ -17,6 +17,7 @@
 #include "../../rf/geometry.h"
 #include "../../rf/mover.h"
 #include "../../rf/object.h"
+#include "../../rf/particle_emitter.h"
 #include "../../rf/player/player.h"
 #include "../../rf/vmesh.h"
 #include "../../rf/vfx.h"
@@ -790,6 +791,57 @@ namespace gr::d3d11
         }
     }
 
+    bool render_particle_emitter(rf::ParticleEmitter* emitter, float interp_dt, int* out_drawn, int* out_draws)
+    {
+        // Called from the emitter render callback, which also runs without a D3D11 renderer.
+        if (!renderer) {
+            return false;
+        }
+        return renderer->render_particle_emitter(emitter, interp_dt, out_drawn, out_draws);
+    }
+
+    bool batched_billboard(const rf::Vector3& pos, float angle, float radius, rf::gr::Mode mode)
+    {
+        if (!renderer) {
+            return false;
+        }
+        return renderer->batched_billboard(pos, angle, radius, mode);
+    }
+
+    bool batched_particle(const rf::Particle& particle)
+    {
+        return renderer && renderer->batched_particle(particle);
+    }
+
+    void flush_batched_quads()
+    {
+        if (renderer) {
+            renderer->flush_batched_quads();
+        }
+    }
+
+    bool upload_weather_seeds(const std::vector<WeatherSeed>& seeds)
+    {
+        return renderer && renderer->upload_weather_seeds(seeds);
+    }
+
+    bool update_weather_columns(int slot, int num_cells, int first, const std::vector<WeatherColumn>& cells)
+    {
+        return renderer && renderer->update_weather_columns(slot, num_cells, first, cells);
+    }
+
+    void release_weather_columns()
+    {
+        if (renderer) {
+            renderer->release_weather_columns();
+        }
+    }
+
+    bool draw_weather(const WeatherDraw& draw)
+    {
+        return renderer && renderer->draw_weather(draw);
+    }
+
     void clear_solid_render_cache()
     {
         if (renderer) {
@@ -1006,8 +1058,21 @@ namespace gr::d3d11
             }
             g_render_room_objects_hook.call_target(room, solid, num_objects, portal_objects);
             if (renderer) {
+                renderer->flush_batched_quads();
                 renderer->set_object_room_uid(-1);
             }
+        },
+    };
+
+    // Draws one item of the room's render list. Particles no emitter owns stay batched from one item to
+    // the next (batched_particle), so any other item has to find them in the framebuffer first.
+    static FunHook<void __fastcall(rf::GRoomRenderItem*, int, void*, rf::GSolid*)> g_room_render_item_render_hook{
+        0x004D3460,
+        [](rf::GRoomRenderItem* item, int edx, void* user, rf::GSolid* solid) FASTCALL_LAMBDA {
+            if (renderer && item->render_fn != reinterpret_cast<rf::GRoomRenderItemFn>(&rf::particle_render_item)) {
+                renderer->flush_batched_quads();
+            }
+            g_room_render_item_render_hook.call_target(item, edx, user, solid);
         },
     };
 
@@ -1330,6 +1395,7 @@ void gr_d3d11_apply_patch()
     sniper_scope_overlay_glass_injection.install();
     precision_scope_overlay_glass_injection.install();
     g_render_room_objects_hook.install();
+    g_room_render_item_render_hook.install();
     obj_render_all_hook.install();
     g_render_room_objects_render_liquid_injection.install();
     g_render_room_objects_decoration_edges_injection.install();

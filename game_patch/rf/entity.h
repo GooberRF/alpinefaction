@@ -520,6 +520,8 @@ namespace rf
     };
 
     static auto& entity_from_handle = addr_as_ref<Entity*(int handle)>(0x00426FC0);
+    // Stops voice_handle, the sound a speaker plays through 0x004299B0 (Play_Sound with a speaker uid)
+    static auto& entity_stop_voice = addr_as_ref<void(Entity* ep)>(0x00429AB0);
     static auto& entity_lookup_type = addr_as_ref<int(const char* name)>(0x004251C0);
     // use_function == ENTITY_USE_VEHICLE; the MP level entity filter (0x00464657) drops these, turrets excluded
     static auto& entity_type_has_vehicle_use = addr_as_ref<bool __cdecl(int type_index)>(0x0042CDD0);

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include "math/vector.h"
 #include "os/timestamp.h"
 #include "os/array.h"
@@ -29,9 +30,10 @@ enum ParticleFlags : unsigned
     PTF_CLR_CHANGE = 0x4,
     PTF_GRAVITY = 0x8,
     PTF_COLLIDE = 0x10,
+    PTF_HIT_CALLBACK = 0x20,
     PTF_ACCELERATE = 0x40,
     PTF_EXPLODE = 0x80,
-    PTF_LOOP = 0x100,
+    PTF_LOOP = 0x100, // stock frame index frac(age) * 15 / n each second, not once over the lifetime
     PTF_RANDOM_ORIENT = 0x200,
     PTF_COLLIDE_LIQUID = 0x400,
     PTF_COLLIDE_AND_DIE = 0x800,
@@ -46,7 +48,7 @@ enum ParticleFlags : unsigned
 enum ParticleFlags2
 {
     PTF2_DAMAGES = 0x1,
-    PTF2_HOLD_LAST_FRAME = 0x4,
+    PTF2_HOLD_LAST_FRAME = 0x4, // the frame set finishes at age_pct_to_finish_vbm of the lifetime
     PTF2_FIRE_DAMAGE = 0x8,
     PTF2_DAMAGE_FACTOR_MASK = 0xF000, // $damage_factor 0-15 << 12
 };
@@ -100,7 +102,7 @@ struct ParticleCreateInfo
     Color clr_dest;
     int flags;
     int flags2;
-    int age_pct_to_finish_vbm;
+    float age_pct_to_finish_vbm;
     int hit_callback;
 };
 static_assert(sizeof(ParticleCreateInfo) == 0x4C);
@@ -127,13 +129,30 @@ struct Particle
     char pool_id;
     float bitmap_orient;
     int flags;
-    int age_pct_to_finish_vbm;
+    float age_pct_to_finish_vbm;
     void (*hit_callback)(Vector3 *hit_pos, const Vector3 *vel, Vector3 *normal, float *, int *is_liquid, int *hit_obj_uid);
     GRoom *room;
     ParticleEmitter *emitter;
     Vector3 last_pos;
 };
 static_assert(sizeof(Particle) == 0x78);
+
+// Fixed size particle pool (particle_pools_init 0x00494E70). free_list and active_list are sentinel
+// nodes: the free list is empty when free_list.next points back at free_list, and particle_create
+// silently fails then. Only pool 0's active_list is simulated and drawn, so a pool 1 particle must be
+// created into an emitter.
+struct ParticlePool
+{
+    Particle* particles;  // +0x00
+    int capacity;         // +0x04
+    Particle free_list;   // +0x08
+    Particle active_list; // +0x80 the particles no emitter owns
+    int num_used;         // +0xF8
+};
+static_assert(offsetof(ParticlePool, free_list) == 0x08);
+static_assert(offsetof(ParticlePool, active_list) == 0x80);
+static_assert(offsetof(ParticlePool, num_used) == 0xF8);
+static_assert(sizeof(ParticlePool) == 0xFC);
 
 // Underwater plankton mote. Not emitter driven.
 struct PlanktonParticle
@@ -214,6 +233,9 @@ struct ParticleEmitter
         AddrCaller{0x00497D80}.c_call(this);
     }
 };
+static_assert(offsetof(ParticleEmitter, particle_list) == 0xB0);
+static_assert(offsetof(ParticleEmitter, next) == 0x148);
+static_assert(offsetof(ParticleEmitter, prev) == 0x14C);
 static_assert(sizeof(ParticleEmitter) == 0x158);
 
 struct BoltInfo
@@ -278,10 +300,49 @@ static auto& particle_create = addr_as_ref<void(int pool_id, ParticleCreateInfo&
     GRoom* room, Vector3* a4, int parent_obj, Particle** result,
     ParticleEmitter* emitter)>(0x00496840);
 
+// Stock pool 0 holds 500 particles and pool 1 1100, until particle_sim's relink_pools resizes them.
+// Particle::pool_id selects one.
+static auto& particle_pools = addr_as_ref<ParticlePool[2]>(0x007A3B00);
+
+// List sentinel: only next/prev are meaningful, the rest of the record is not an emitter.
+static auto& particle_emitter_list_head = addr_as_ref<ParticleEmitter>(0x007BD6E8);
+
+// Sentinel of the list destroyed emitters hand their live particles to; particle_move_all walks it
+// after the pool 0 active list and the emitter lists.
+static auto& particle_secondary_list = addr_as_ref<Particle>(0x007BD670);
+
+// Both are zeroed by particle_move_all and filled during the simulate and render passes.
+static auto& num_particles_simulated_this_frame = addr_as_ref<int>(0x007B2768);
+static auto& num_particles_rendered_this_frame = addr_as_ref<int>(0x007B276C);
+
+// Room pass render item callback of a particle no emitter owns (queued by 0x004967A0): calls particle_render.
+static auto& particle_render_item = addr_as_ref<void(Particle* particle)>(0x00496830);
+
+// Debug switch: particle_render also draws a bounding box per particle while this is set.
+static auto& particle_draw_bbox = addr_as_ref<bool>(0x007B2759);
+
+// Simulates one particle list (a sentinel node): the global list, an emitter list or the secondary list.
+static auto& particle_list_move = addr_as_ref<void(Particle* list, float dt)>(0x00495120);
+
+// Moves one particle by dt with world collision, leaving pos at the post move position.
+static auto& particle_move_collide = addr_as_ref<void(Particle* particle, float dt)>(0x00495880);
+// Set by the level's particle init; while 0, particle_move_collide only clears PTF_COLLIDE and moves nothing.
+static auto& particle_collide_world_enabled = addr_as_ref<int>(0x007A3AE8);
+
 // Array of particle emitter type template pointers loaded from emitters.tbl (64 slots)
 static auto& g_particle_emitter_types = addr_as_ref<ParticleEmitterType*[64]>(0x007B2770);
 static auto& g_num_particle_emitter_types = addr_as_ref<int>(0x007BD99C);
 static auto& particle_emitter_type_lookup = addr_as_ref<int(const char* name)>(0x00497550);
+
+// The stock emitter records: a static array of 128 (pool init 0x004973F0) on a circular free list whose
+// sentinel is a full record. particle_emitter_create pops its head and returns null when it is empty;
+// particle_emitter_destroy appends at its tail. Nothing indexes the array, so records may live anywhere.
+constexpr int particle_emitter_stock_capacity = 128;
+static auto& particle_emitter_free_list_head = addr_as_ref<ParticleEmitter>(0x007BD840);
+static auto& particle_emitter_num_used = addr_as_ref<int>(0x007BD998);
+// The constructor the stock array's static initialiser runs on every record.
+static auto& particle_emitter_construct =
+    addr_as_ref<ParticleEmitter* __fastcall(ParticleEmitter* emitter)>(0x00496FD0);
 
 static auto& particle_emitter_create = addr_as_ref<ParticleEmitter*(
     int parent_handle, ParticleEmitterType& type, GRoom* room, Vector3& pos, bool is_on)>(0x00497CA0);

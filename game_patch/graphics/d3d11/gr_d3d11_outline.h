@@ -171,6 +171,7 @@ namespace gr::d3d11
         const OutlineInfo* current_character_outline_ = nullptr; // outline info of last rendered character
         ForcedV3dXrayEntry bagman_pickup_xray_{};
         ForcedV3dXrayEntry bagman_carrier_xray_{};
+        ForcedV3dXrayEntry objective_static_xray_{};
         // Frame-persistent: this renders every frame, so elements are reset and reused instead of
         // destroyed, and each one's lod_meshes keeps its buffer. vehicle_target_count_ is the live prefix.
         std::vector<VehicleOutlineTarget> vehicle_targets_;

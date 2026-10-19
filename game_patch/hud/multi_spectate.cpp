@@ -2321,7 +2321,9 @@ static int spectate_bottom_left_hud_top()
     case rf::NG_TYPE_CTF:
     case rf::NG_TYPE_TEAMDM:
     case rf::NG_TYPE_TBAG:
+    case rf::NG_TYPE_WO:
     case rf::NG_TYPE_SAL:
+    case rf::NG_TYPE_SCAV:
         return clip_h - (big ? 80 : 55) - 10;
     default:
         return clip_h; // no bottom-left cluster
@@ -2381,6 +2383,23 @@ static void draw_spectate_hints(const std::pair<const char*, const char*>* hints
     }
 }
 
+void hud_draw_control_hints(const std::pair<const char*, const char*>* hints, int count)
+{
+    const int font = hud_get_default_font();
+    const int font_h = rf::gr::get_font_height(font);
+    const bool big = g_alpine_game_config.big_hud;
+    // The binds are right-aligned on left_x: pushed right as far as a long one (e.g. "Caps Lock") needs.
+    int widest = 0;
+    for (int i = 0; i < count; ++i) {
+        widest = std::max(widest, rf::gr::get_string_size(hints[i].first, font).first);
+    }
+    const int left_x = std::max(big ? 120 : 70, widest + (big ? 16 : 8));
+    const int right_x = left_x + (big ? 20 : 10);
+    int y = rf::gr::screen_height() - (big ? 200 : 120) + font_h * 2;
+    y = spectate_raise_hints_above_hud(y, count, font_h);
+    draw_spectate_hints(hints, count, left_x, right_x, y, font, font_h);
+}
+
 // Top y of the "Spectating: <name>" plaque at the bottom of the screen (same
 // math as the plaque draw below, using font heights for the two text lines).
 // The mode-label block anchors here: at this position in non-follow modes
@@ -2410,10 +2429,8 @@ void multi_spectate_render() {
     if (multi_spectate_is_static()) {
         if (!g_alpine_game_config.spectate_mode_minimal_ui && !g_remote_server_cfg_popup.is_active() && !vote_panel_is_gameplay_overlay_active() && !demo_controls_ui_is_open()) {
             int medium_font = hud_get_default_font();
-            int medium_font_h = rf::gr::get_font_height(medium_font);
             int large_font = hud_get_large_font();
             int scr_w = rf::gr::screen_width();
-            int scr_h = rf::gr::screen_height();
 
             rf::Color white_clr{255, 255, 255, 255};
             rf::Color shadow_clr{0, 0, 0, 128};
@@ -2438,10 +2455,6 @@ void multi_spectate_render() {
             rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xB0);
             rf::gr::string_aligned(rf::gr::ALIGN_CENTER, title_x, title_y + large_font_h,
                 cam_subtitle.c_str(), medium_font);
-
-            int hints_y = scr_h - (g_alpine_game_config.big_hud ? 200 : 120) + medium_font_h * 2;
-            int hints_left_x = g_alpine_game_config.big_hud ? 120 : 70;
-            int hints_right_x = g_alpine_game_config.big_hud ? 140 : 80;
 
             std::string attach_text = get_action_bind_name(
                 get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_ATTACH));
@@ -2471,19 +2484,15 @@ void multi_spectate_render() {
             if (!demo_playback_active())
                 hints[nh++] = {exit_spec_text.c_str(), "Exit Spectate Mode"};
             nh = append_demo_playback_hints(hints, nh, demo_binds);
-            hints_y = spectate_raise_hints_above_hud(hints_y, nh, medium_font_h);
-            draw_spectate_hints(hints, nh, hints_left_x, hints_right_x, hints_y, medium_font, medium_font_h);
+            hud_draw_control_hints(hints, nh);
         }
         return;
     }
 
     if (multi_spectate_is_freelook()) {
         if (!g_alpine_game_config.spectate_mode_minimal_ui && !g_remote_server_cfg_popup.is_active() && !vote_panel_is_gameplay_overlay_active() && !demo_controls_ui_is_open()) {
-            int medium_font = hud_get_default_font();
-            int medium_font_h = rf::gr::get_font_height(medium_font);
             int large_font = hud_get_large_font();
             int scr_w = rf::gr::screen_width();
-            int scr_h = rf::gr::screen_height();
 
             rf::Color white_clr{255, 255, 255, 255};
             rf::Color shadow_clr{0, 0, 0, 128};
@@ -2498,9 +2507,6 @@ void multi_spectate_render() {
                     rf::gr::string_aligned(rf::gr::ALIGN_CENTER, x, y, "FREELOOK SPECTATE", large_font);
                 }
             );
-
-            int hints_left_x = g_alpine_game_config.big_hud ? 120 : 70;
-            int hints_right_x = g_alpine_game_config.big_hud ? 140 : 80;
 
             std::string attach_text = get_action_bind_name(
                 get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_ATTACH)
@@ -2531,9 +2537,7 @@ void multi_spectate_render() {
             if (!demo_playback_active())
                 hints[nh++] = {exit_spec_text.c_str(), "Exit Spectate Mode"};
             nh = append_demo_playback_hints(hints, nh, demo_binds);
-            int hints_y = scr_h - (g_alpine_game_config.big_hud ? 200 : 120) + medium_font_h * 2;
-            hints_y = spectate_raise_hints_above_hud(hints_y, nh, medium_font_h);
-            draw_spectate_hints(hints, nh, hints_left_x, hints_right_x, hints_y, medium_font, medium_font_h);
+            hud_draw_control_hints(hints, nh);
         }
         return;
     }
@@ -2560,7 +2564,7 @@ void multi_spectate_render() {
             const rf::NetGameType game_type = rf::multi_get_game_type();
             const bool is_ctf = game_type == rf::NG_TYPE_CTF;
             const bool is_tdm = game_type == rf::NG_TYPE_TEAMDM;
-            const bool is_sal = game_type == rf::NG_TYPE_SAL;
+            const bool is_sal = game_type == rf::NG_TYPE_SAL || game_type == rf::NG_TYPE_SCAV;
             const bool is_koth = game_type == rf::NG_TYPE_KOTH;
             const bool is_dc = game_type == rf::NG_TYPE_DC;
             const bool is_esc = game_type == rf::NG_TYPE_ESC;
@@ -2644,8 +2648,6 @@ void multi_spectate_render() {
             view_subtitle.c_str(), medium_font);
 
         if (!g_remote_server_cfg_popup.is_active() && !vote_panel_is_gameplay_overlay_active() && !demo_controls_ui_is_open()) {
-            int hints_left_x = g_alpine_game_config.big_hud ? 120 : 70;
-            int hints_right_x = g_alpine_game_config.big_hud ? 140 : 80;
             std::string attach_text = get_action_bind_name(
                 get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_ATTACH)
             );
@@ -2675,9 +2677,7 @@ void multi_spectate_render() {
             if (!demo_playback_active())
                 hints[nh++] = {exit_spec_text.c_str(), "Exit Spectate Mode"};
             nh = append_demo_playback_hints(hints, nh, demo_binds);
-            int hints_y = scr_h - (g_alpine_game_config.big_hud ? 200 : 120) + medium_font_h * 2;
-            hints_y = spectate_raise_hints_above_hud(hints_y, nh, medium_font_h);
-            draw_spectate_hints(hints, nh, hints_left_x, hints_right_x, hints_y, medium_font, medium_font_h);
+            hud_draw_control_hints(hints, nh);
         }
     }
 

@@ -779,7 +779,10 @@ namespace rf
     {
         AddrCaller{0x004D7F70}.this_call<void>(&g_decal_pass_list_b, normal);
     }
-    static auto& geomod_create_rock_debris = addr_as_ref<int(Vector3* orientation, float scaled_radius,
+    // Up to 16 small rocks from the shared 80-rock pool burst from pos along source_dir. It first relaunches
+    // every live rock within scaled_radius of pos (all but those resting on a breakable detail brush), and
+    // once the pool is full each new rock recycles the oldest live one (0x00490100).
+    static auto& geomod_create_rock_debris = addr_as_ref<int(Vector3* pos, float scaled_radius,
         Vector3* source_dir, int texture, int room_ptr)>(0x0048FE30);
     // Recycles every live glass shard back into the pool and re-resolves foley sounds/bitmaps
     // (cached lookups). Does not touch broken-pane state (that lives in room/face data);
@@ -804,8 +807,24 @@ namespace rf
     static auto& g_get_room_render_list = addr_as_ref<void(GRoom ***rooms, int *num_rooms)>(0x004D3330);
 
     using GRoomRenderItemFn = void(*)(void* user, GSolid* solid);
+
+    // One entry of the room pass render list (stock 0x0088FD20, resized in particle_sim.cpp) that
+    // g_room_render_item_add fills
+    struct GRoomRenderItem
+    {
+        void* user;                   // +0x00
+        Vector3 pos;                  // +0x04
+        float radius;                 // +0x10
+        bool sortable;                // +0x14
+        char padding[0x2C - 0x15];
+        GRoomRenderItemFn render_fn;  // +0x2C
+    };
+    static_assert(offsetof(GRoomRenderItem, radius) == 0x10);
+    static_assert(offsetof(GRoomRenderItem, sortable) == 0x14);
+    static_assert(offsetof(GRoomRenderItem, render_fn) == 0x2C);
+    static_assert(sizeof(GRoomRenderItem) == 0x30);
     // Queues a render item for the current room pass. Returns false when the sphere (cull_pos, radius)
-    // is frustum culled or the 2048 entry list is full; a null render_fn queues nothing.
+    // is frustum culled or the list is full; a null render_fn queues nothing.
     static auto& g_room_render_item_add = addr_as_ref<bool(void* user, const Vector3& pos, const Vector3& cull_pos,
         float radius, GRoomRenderItemFn render_fn, bool sortable, const Plane* group_plane,
         const Vector3* liquid_test_low, const Vector3* liquid_test_high, bool gather_lights,

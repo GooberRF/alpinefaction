@@ -33,6 +33,8 @@
 #include "alpine_obj.h"
 #include "alpine_spinner.h"
 #include "textures.h"
+#include "texture_mode.h"
+#include "brush_preview.h"
 #include "minimap_bake.h"
 #include "terrain.h"
 #include "terrain_build.h"
@@ -181,6 +183,8 @@ void __fastcall CDedLevel_DeleteContents_hooked(CDedLevel* level, void* edx_unus
     // File > Open applies the existing-level defaults again before it reads the file (0x0042F136)
     props.LoadNewLevelDefaults();
     lightmap_reset_level_state();
+    texture_mode_level_reset();
+    brush_preview_level_reset();
     // Also runs as the document closes at exit, when the views may be gone, so nothing is repainted.
     alpine_lm_reset_level_state();
 }
@@ -1030,6 +1034,7 @@ void __fastcall build_geometry_start_hooked(CDedLevel* level, void* edx_unused)
     }
     // the build frees the faces the overflow preview is keyed on
     overflow_preview_clear();
+    brush_preview_build_started(*level);
     build_geometry_start_hook.call_target(level, edx_unused);
 }
 

@@ -69,34 +69,9 @@ namespace gr::d3d11
         render_context_.draw_indexed(num_index, start_index, start_vertex);
     }
 
-    static inline bool mode_uses_vertex_color(rf::gr::Mode mode)
-    {
-        if (mode.get_texture_source() == rf::gr::TEXTURE_SOURCE_NONE) {
-            return true;
-        }
-        return mode.get_color_source() != rf::gr::COLOR_SOURCE_TEXTURE;
-    }
-
-    static inline bool mode_uses_vertex_alpha(rf::gr::Mode mode)
-    {
-        if (mode.get_texture_source() == rf::gr::TEXTURE_SOURCE_NONE) {
-            return true;
-        }
-        return mode.get_alpha_source() != rf::gr::ALPHA_SOURCE_TEXTURE;
-    }
-
     static inline rf::Color get_vertex_color_from_screen(rf::gr::Mode mode)
     {
-        rf::Color color{255, 255, 255, 255};
-        if (mode_uses_vertex_color(mode)) {
-            color.red = rf::gr::screen.current_color.red;
-            color.green = rf::gr::screen.current_color.green;
-            color.blue = rf::gr::screen.current_color.blue;
-        }
-        if (mode_uses_vertex_alpha(mode)) {
-            color.alpha = rf::gr::screen.current_color.alpha;
-        }
-        return color;
+        return vertex_color_for_mode(mode, rf::gr::screen.current_color);
     }
 
     inline std::array<float, 4> DynamicGeometryRenderer::convert_pos(const rf::gr::Vertex& v, bool is_3d)

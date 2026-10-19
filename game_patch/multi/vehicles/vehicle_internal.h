@@ -42,6 +42,11 @@ struct VehicleHealthSync
     bool settled_sent = true; // nothing has changed since the last reliable send
     rf::Vector3 hit_dir{};    // travel direction of the latest attributed hit, for the riders' indicators
     int64_t hit_ms = -1;
+    // Since the last send: scrape damage landed, and any other noted blow did; and whether the last send was a
+    // scrape-only stream packet.
+    bool scraped = false;
+    bool hurt_unscraped = false;
+    bool last_streamed_scrape_only = false;
 };
 
 // Client: the last af_vehicle_health for a vehicle, by local object handle.
@@ -214,6 +219,25 @@ struct VehicleSpawnSlot
     bool given_up = false;
 };
 
+// One hull's open crash window and the largest life fraction billed (server) or reported (client) in it: a
+// harder hit inside the window takes only what it adds over that.
+struct VehicleCrashWindow
+{
+    rf::Timestamp window;
+    float billed_frac = 0.0f;
+};
+
+// The machine simulating a hull: units of slide past the class's free speed banked toward the next scrape
+// flush, due at flush_at_ms (timer::get_i64(1000); 0 = none open). Server: when the last client scrape report
+// for the hull landed, and the refilling budget of sliding time the reports may still bill.
+struct VehicleScrapeBank
+{
+    float slide_excess = 0.0f;
+    int64_t flush_at_ms = 0;
+    int64_t last_report_ms = 0;
+    float report_budget_s = 0.0f;
+};
+
 // Server: who a COASTING hull still answers for, and until when - the attribution and crush windows
 // are one. Keyed by NET ID: the ex-driver can disconnect, die and respawn inside the window.
 struct VehicleCoastMemory
@@ -255,7 +279,7 @@ struct VehicleLethalKiller
 // every machine, the FIRST pose (received row, or this machine's own body) noted in each bucket, and when.
 struct VehicleObservedSpeed
 {
-    static constexpr int bucket_count = 4;
+    static constexpr int bucket_count = 8;
     float bucket_peak[bucket_count]{}; // [0] is the current bucket
     rf::Vector3 bucket_pos[bucket_count]{};
     float bucket_heading[bucket_count]{};
@@ -297,6 +321,13 @@ struct VehicleTreadScroll
     int config = -1;     // which vehicle_tread_configs row this hull is
 };
 
+// Server: the last player blow that took life off a hull, recorded as its destroyer would be, and when.
+struct VehicleLastHurt
+{
+    VehicleLethalKiller blow;
+    int64_t ms = 0;
+};
+
 // Every map here is keyed by the vehicle's local object handle and dropped wholesale on level init.
 struct VehicleModuleState
 {
@@ -306,6 +337,8 @@ struct VehicleModuleState
     std::unordered_map<int, rf::Timestamp> fire_rearm;
     std::unordered_map<int, VehicleHealthSync> health_sync;
     std::unordered_map<int, int> last_damager; // vehicle handle -> attacker entity handle
+    // What an unattributed lethal blow (a scuttle, a crash) credits, if it came soon after.
+    std::unordered_map<int, VehicleLastHurt> last_hurt;
     std::unordered_map<int, VehicleLethalKiller> lethal_killer;
     // What bounds a crash report and gates a run-over; fed by received rows and local bodies.
     std::unordered_map<int, VehicleObservedSpeed> observed_speed;
@@ -320,9 +353,15 @@ struct VehicleModuleState
     std::unordered_map<int, VehicleRegen> regen;
     // Server: how long each vehicle has had nothing beneath it, for the void-fall death.
     std::unordered_map<int, float> void_timer;
-    // Server: an entry exists only while the hull is continuously in its lethal medium - under water
-    // for a non-sub, out of it for a sub.
-    std::unordered_map<int, int64_t> hazard_since;
+    // Every machine: seconds each hull has spent in its lethal medium - under water for a non-sub, out
+    // of it for a sub - counting back down once clear. An entry exists only while that is above zero.
+    std::unordered_map<int, float> hazard_time;
+    // Client: the cockpit alarm of the hull the local player rides or watches.
+    int hazard_alarm_snd = -1;
+    // Client: the sub this machine's pilot last pressed alt in, and when, for the server's DETONATE that answers it.
+    // On game time, the clock a torpedo's lifeleft runs on.
+    int torpedo_press_hull = -1;
+    rf::Timestamp torpedo_press;
     // Factory-spawned hull attributes; team is NOT obj->team, which feeds the engine's friendliness
     // rules. Maintained on the server and mirrored on clients, both keyed by local object handle.
     std::unordered_map<int, VehicleState> hull_state;
@@ -333,10 +372,9 @@ struct VehicleModuleState
     std::unordered_map<int, rf::Timestamp> crush_report_cooldown; // by player id
     // One roadkill per victim per cooldown: one contact can span several physics substeps.
     std::unordered_map<int, rf::Timestamp> crush_cooldown; // by victim entity handle
-    // One crash per hull per cooldown; the client keeps a slightly longer window to spare the report.
-    std::unordered_map<int, rf::Timestamp> crash_cooldown; // by vehicle handle
-    // Server: bounds one sender's crash reports, apart from his roadkill reports.
-    std::unordered_map<int, rf::Timestamp> crash_report_cooldown; // by player id
+    // The client keeps a slightly longer window to spare the report.
+    std::unordered_map<int, VehicleCrashWindow> crash_cooldown; // by vehicle handle
+    std::unordered_map<int, VehicleScrapeBank> scrape; // by vehicle handle
     // Server: an entry exists only inside the memory window.
     std::unordered_map<int, VehicleCoastMemory> coast_memory;
     std::map<VehicleRamKey, VehicleRamPair> ram_pairs;
@@ -349,9 +387,9 @@ struct VehicleModuleState
     int reported_fire_vehicle = -1;
     bool reported_primary_held = false;
     bool reported_alt_held = false;
-    // Client: the turret the local operator has zoomed in, -1 for none, and last frame's alt trigger.
-    int turret_zoom_handle = -1;
-    bool turret_zoom_alt_down = false;
+    // Client: the turret or jeep the local gunner has zoomed in, -1 for none, and last frame's alt trigger.
+    int gun_zoom_handle = -1;
+    bool gun_zoom_alt_down = false;
     // Server: an entry exists only while the jeep's driver holds the horn.
     std::unordered_map<int, VehicleHorn> horn;
     std::unordered_map<int, rf::Timestamp> horn_cooldown; // by player id
@@ -438,6 +476,17 @@ rf::Player* vehicle_seat_occupant_player(const rf::Entity* vehicle, int seat);
 VehicleSpawnSlot* vehicle_slot_for_hull(int vehicle_handle);
 // Any seat the occupancy packet can state holds a rider.
 bool vehicle_hull_occupied(const rf::Entity* vehicle);
+bool vehicle_hazard_on_clock(int vehicle_handle);
+void vehicle_hazard_client_do_frame();
+// A torpedo arms after vehicle_torpedo_arm_s of flight on the server. The server's copy can be a little younger than
+// the pilot's (it fires in a later pass, and the press arrives with jitter), so he predicts only well past it.
+inline constexpr float vehicle_torpedo_arm_s = 0.2f;
+inline constexpr float vehicle_torpedo_arm_pilot_s = 0.3f;
+// Sets off the hull's armed torpedoes; false when there were none. still_flying gets how many are left in flight.
+bool vehicle_detonate_armed_torpedoes(rf::Entity* hull, float arm_s, int* still_flying = nullptr);
+// How far back the last player blow on a hull is credited with an unattributed lethal one.
+inline constexpr float vehicle_hit_credit_s = 5.0f;
+void vehicle_note_hazard_destroyer(rf::Entity* vehicle, float window_s);
 // Server: re-state a turret factory whose hull just changed occupancy; other slots are unaffected.
 void vehicle_slot_announce_for_hull(int vehicle_handle);
 // Server: every boarding - the hull takes the boarder's team, clears the auto-return, and the first

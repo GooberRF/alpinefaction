@@ -25,6 +25,8 @@ namespace rf
     struct CharacterInstance;
     struct Player;
     struct VfxSfxoRenderObj;
+    struct Particle;
+    struct ParticleEmitter;
 }
 
 namespace alpine_lightmap
@@ -38,6 +40,10 @@ namespace gr::d3d11
     class ShaderManager;
     class TextureManager;
     class DynamicGeometryRenderer;
+    class ParticleRenderer;
+    struct WeatherSeed;
+    struct WeatherColumn;
+    struct WeatherDraw;
     class RenderContext;
     class AfLightmapRenderer;
     class SolidRenderer;
@@ -91,6 +97,14 @@ namespace gr::d3d11
         bool movable_solid_has_alpha(rf::GSolid* solid);
         void render_movable_solid_alpha(rf::GSolid* solid, const rf::Vector3& pos, const rf::Matrix3& orient);
         void render_alpha_detail_room(rf::GRoom *room, rf::GSolid *solid);
+        bool render_particle_emitter(rf::ParticleEmitter* emitter, float interp_dt, int* out_drawn, int* out_draws);
+        bool batched_billboard(const rf::Vector3& pos, float angle, float radius, rf::gr::Mode mode);
+        bool batched_particle(const rf::Particle& particle);
+        void flush_batched_quads();
+        bool upload_weather_seeds(const std::vector<WeatherSeed>& seeds);
+        bool update_weather_columns(int slot, int num_cells, int first, const std::vector<WeatherColumn>& cells);
+        void release_weather_columns();
+        bool draw_weather(const WeatherDraw& draw);
         void render_sky_room(rf::GRoom *room, rf::Vector3& out_sky_transform_pos, rf::Matrix3& out_sky_transform_orient);
         void render_room_liquid_surface(rf::GSolid* solid, rf::GRoom* room);
         void render_room_decoration_edges(rf::GSolid* solid, rf::GRoom* room);
@@ -191,6 +205,7 @@ namespace gr::d3d11
         std::unique_ptr<ShaderManager> shader_manager_;
         std::unique_ptr<TextureManager> texture_manager_;
         std::unique_ptr<DynamicGeometryRenderer> dyn_geo_renderer_;
+        std::unique_ptr<ParticleRenderer> particle_renderer_;
         std::unique_ptr<RenderContext> render_context_;
         std::unique_ptr<AfLightmapRenderer> af_lightmap_renderer_;
         std::unique_ptr<SolidRenderer> solid_renderer_;
@@ -267,6 +282,37 @@ namespace gr::d3d11
     {
         // assume little endian
         return (color.alpha << 24) | (color.blue << 16) | (color.green << 8) | color.red;
+    }
+
+    static inline bool mode_uses_vertex_color(rf::gr::Mode mode)
+    {
+        if (mode.get_texture_source() == rf::gr::TEXTURE_SOURCE_NONE) {
+            return true;
+        }
+        return mode.get_color_source() != rf::gr::COLOR_SOURCE_TEXTURE;
+    }
+
+    static inline bool mode_uses_vertex_alpha(rf::gr::Mode mode)
+    {
+        if (mode.get_texture_source() == rf::gr::TEXTURE_SOURCE_NONE) {
+            return true;
+        }
+        return mode.get_alpha_source() != rf::gr::ALPHA_SOURCE_TEXTURE;
+    }
+
+    // White, with src's colour and alpha wherever the mode takes them from the vertex.
+    static inline rf::Color vertex_color_for_mode(rf::gr::Mode mode, const rf::Color& src)
+    {
+        rf::Color color{255, 255, 255, 255};
+        if (mode_uses_vertex_color(mode)) {
+            color.red = src.red;
+            color.green = src.green;
+            color.blue = src.blue;
+        }
+        if (mode_uses_vertex_alpha(mode)) {
+            color.alpha = src.alpha;
+        }
+        return color;
     }
 
     static inline std::array<int, 2> normalize_texture_handles_for_mode(rf::gr::Mode mode, const std::array<int, 2>& textures)

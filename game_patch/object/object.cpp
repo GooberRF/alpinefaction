@@ -43,6 +43,7 @@
 #include "obj_collision.h"
 #include "object.h"
 #include "object_private.h"
+#include "particle_sim.h"
 #include "../misc/level.h"
 
 std::string get_object_type_string(int type) {
@@ -213,10 +214,10 @@ CallHook<void*(size_t)> GPool_allocate_new_hook{
     },
 };
 
-// Reads the version directly because level items are created during load, before LEVEL_LOADED is set.
+// Level items are created during load, before LEVEL_LOADED is set.
 bool level_allows_extra_items()
 {
-    return rf::level.version >= 306;
+    return level_rfl_version_at_least(306);
 }
 
 CodeInjection obj_create_item_limit_patch{
@@ -1352,6 +1353,7 @@ void object_do_patch()
     monitor_do_patch();
     mover_do_patch();
     particle_do_patch();
+    particle_sim_do_patch();
     obj_light_apply_patch();
     obj_collision_apply_patch();
     clock_do_patch();

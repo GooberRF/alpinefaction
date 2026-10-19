@@ -80,6 +80,8 @@ set(SRCS
     graphics/d3d11/gr_d3d11_texture.h
     graphics/d3d11/gr_d3d11_dynamic_geometry.cpp
     graphics/d3d11/gr_d3d11_dynamic_geometry.h
+    graphics/d3d11/gr_d3d11_particle.cpp
+    graphics/d3d11/gr_d3d11_particle.h
     graphics/d3d11/gr_d3d11_context.cpp
     graphics/d3d11/gr_d3d11_context.h
     graphics/d3d11/gr_d3d11_shader.cpp
@@ -130,6 +132,8 @@ set(SRCS
     hud/hud.h
     hud/hud_world.cpp
     hud/hud_world.h
+    hud/scavenger_zone.h
+    hud/scavenger_zone.cpp
     hud/minimap.cpp
     hud/minimap.h
     hud/remote_server_cfg_ui.cpp
@@ -172,6 +176,8 @@ set(SRCS
     multi/gungame.cpp
     multi/salvage.h
     multi/salvage.cpp
+    multi/scavenger.h
+    multi/scavenger.cpp
     multi/vehicles/vehicle.h
     multi/vehicles/vehicle.cpp
     multi/vehicles/vehicle_internal.h
@@ -192,6 +198,8 @@ set(SRCS
     multi/vehicles/vehicle_markers.cpp
     multi/vehicles/vehicle_tracers.h
     multi/vehicles/vehicle_tracers.cpp
+    multi/vehicles/vehicle_fx.cpp
+    multi/vehicles/vehicle_fx.h
     multi/vehicles/vehicle_horn.h
     multi/vehicles/vehicle_horn.cpp
     multi/vehicles/vehicle_physics.h
@@ -349,6 +357,8 @@ set(SRCS
     object/mover.cpp
     object/monitor.cpp
     object/particle.cpp
+    object/particle_sim.cpp
+    object/particle_sim.h
     object/obj_light.cpp
     object/obj_collision.cpp
     object/obj_collision.h

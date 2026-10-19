@@ -44,6 +44,9 @@ cd build
 cmake .. -DCMAKE_TOOLCHAIN_FILE=../cmake/mingw-ubuntu.cmake -DCMAKE_BUILD_TYPE=Release
 ```
 
+Compiling the shaders and `alpinefaction.vpp` runs the shader compiler under Wine (vkd3d-shader). Add
+`-DALPINE_BUILD_PACKFILE=OFF` to skip them and build only the binaries; take `alpinefaction.vpp` from a Windows build.
+
 Start build:
 
 ```

@@ -343,6 +343,7 @@ namespace
         // entity_die credits the last damager with every occupant it kills, and whoever softened
         // this hull while it stood empty is not responsible for the people who just got in.
         g_vehicle_state.last_damager.erase(vehicle->handle);
+        g_vehicle_state.last_hurt.erase(vehicle->handle);
         // A new occupant in ANY seat takes the vehicle over.
         g_vehicle_state.kinematics.erase(vehicle->handle);
         g_vehicle_state.coast_memory.erase(vehicle->handle);
@@ -1149,7 +1150,6 @@ void vehicle_on_player_disconnect(rf::Player* pp)
         const int player_id = pp->net_data->player_id;
         g_vehicle_state.use_cooldown.erase(player_id);
         g_vehicle_state.crush_report_cooldown.erase(player_id);
-        g_vehicle_state.crash_report_cooldown.erase(player_id);
         g_vehicle_state.orient_relay_cooldown.erase(player_id);
         g_vehicle_state.horn_cooldown.erase(player_id);
     }

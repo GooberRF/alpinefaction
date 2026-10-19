@@ -2238,6 +2238,7 @@ void team_scores(rf::NetGameType type, int& red, int& blue)
             blue = multi_koth_get_blue_team_score();
             break;
         case rf::NG_TYPE_SAL:
+        case rf::NG_TYPE_SCAV:
             red = salvage_get_red_team_score();
             blue = salvage_get_blue_team_score();
             break;

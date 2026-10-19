@@ -74,12 +74,8 @@ namespace
     // Closing speed = relative velocity along the line between the two box centres.
     constexpr float vehicle_ram_min_speed = 5.0f; // world u/s of closing before a contact is a ram
 
-    // Damage goes as the SQUARE of the overspeed.
-    constexpr float vehicle_ram_damage_scale = 0.26f;
-
-    // Ratio of the OTHER hull's mass to its own (rf::PhysicsData::mass), clamped.
+    // Floor on the ratio of the OTHER hull's mass to its own (rf::PhysicsData::mass); the ceiling is per class.
     constexpr float vehicle_ram_mass_ratio_min = 0.25f;
-    constexpr float vehicle_ram_mass_ratio_max = 4.0f;
 
     // Dwell before a hit is minted. Wall clock, not frames: the phantom it rejects is per sample.
     constexpr int64_t vehicle_ram_confirm_ms = 25;
@@ -99,6 +95,9 @@ namespace
 
     // A sleeping hull does not react late, it does not react at all: wake the pair before contact.
     constexpr float vehicle_ram_wake_closing = 0.5f;
+
+    // A ram is head-on, each hull the other's rammer, when the slower closes at least this share of the faster.
+    constexpr float vehicle_ram_mutual_ratio = 0.5f;
 
     // Per second, scaled by frametime at the point of use; dealt as DT_CRUSH through the ram mint.
     constexpr float vehicle_drill_damage_per_sec = 200.0f;
@@ -359,6 +358,7 @@ namespace
         int damage_class = -1; // the minting hull's VDC row, or -1 for an unattributed blow
         bool squash = false;   // a run-over or the drill, never a hull-on-hull ram
         float speed = 0.0f;    // the run-over hull's |v|; 0 for the drill and rams
+        bool scrape = false;   // a hull's own scrape damage
     };
     VehicleCrushMint g_vehicle_crush_mint;
 
@@ -366,11 +366,11 @@ namespace
     {
     public:
         VehicleCrushMintScope(int victim_handle, const rf::Entity* vehicle, bool squash = false,
-                              float speed = 0.0f)
+                              float speed = 0.0f, bool scrape = false)
             : saved_(g_vehicle_crush_mint)
         {
             g_vehicle_crush_mint =
-                VehicleCrushMint{victim_handle, vehicle_damage_class(vehicle), squash, speed};
+                VehicleCrushMint{victim_handle, vehicle_damage_class(vehicle), squash, speed, scrape};
         }
         ~VehicleCrushMintScope()
         {
@@ -535,13 +535,31 @@ namespace
     // The scope is what carries the blow past obj_damage's MP crush nullification. `vehicle` is the
     // hull dealing it, and null for a blow nothing is to be credited with.
     void vehicle_ram_mint_damage(int victim_handle, int killer_handle, float damage,
-                                 const rf::Entity* vehicle, bool squash = false)
+                                 const rf::Entity* vehicle, bool squash = false, bool scrape = false)
     {
         if (damage <= 0.0f) {
             return;
         }
-        const VehicleCrushMintScope scope{victim_handle, vehicle, squash};
+        const VehicleCrushMintScope scope{victim_handle, vehicle, squash, 0.0f, scrape};
         rf::obj_damage(victim_handle, damage, killer_handle, -1, rf::DT_CRUSH, nullptr, -1, 0);
+    }
+
+    // One hull's share of a ram: its class row of vehicle_ram_tuning on its own spawn max life, times the
+    // other hull's mass over its own, clamped.
+    float vehicle_ram_damage(const rf::Entity* victim, float closing, float mass_ratio)
+    {
+        const int vdc = vehicle_damage_class(victim);
+        if (vdc < 0 || vdc >= VDC_COUNT) {
+            return 0.0f;
+        }
+        const VehicleRamTuning& t = vehicle_ram_tuning[vdc];
+        const float span = t.ref_closing - vehicle_ram_min_speed;
+        if (span <= 0.0f) {
+            return 0.0f;
+        }
+        const float x = (closing - vehicle_ram_min_speed) / span;
+        return vehicle_hud_max_life(victim) * t.frac * x * x
+            * std::clamp(mass_ratio, vehicle_ram_mass_ratio_min, t.mass_ratio_max);
     }
 
     // Its seated driver, or the ex-driver it is still coasting for. Null for a turret or an expired
@@ -559,6 +577,13 @@ namespace
     // `stock_indicated`: stock weapon damage has already lit a local rider's indicator (0x004C6183, 0x00489195).
     void vehicle_note_hull_hit(rf::Entity* vehicle, int killer_handle, bool stock_indicated)
     {
+        // Scrape damage flashes nobody: the health packets carrying only it say so.
+        VehicleHealthSync& health = g_vehicle_state.health_sync[vehicle->handle];
+        if (vehicle_crush_damage_is_mint(vehicle->handle) && g_vehicle_crush_mint.scrape) {
+            health.scraped = true;
+            return;
+        }
+        health.hurt_unscraped = true;
         rf::Entity* source = killer_handle != -1 ? rf::entity_from_handle(killer_handle) : nullptr;
         if (rf::Entity* hull = vehicle_ridden_hull(source)) {
             source = hull;
@@ -570,9 +595,8 @@ namespace
         const bool has_dir = dir.len_sq() > 1e-4f;
         if (has_dir) {
             dir.normalize();
-            VehicleHealthSync& sync = g_vehicle_state.health_sync[vehicle->handle];
-            sync.hit_dir = dir;
-            sync.hit_ms = timer::get_i64(1000);
+            health.hit_dir = dir;
+            health.hit_ms = timer::get_i64(1000);
         }
         // A listen host is sent no 0x67 of his own.
         if (!rf::is_dedicated_server) {
@@ -791,23 +815,25 @@ void vehicle_server_ram_sweep()
                 continue; // parking, nudging, grinding: free
             }
 
-            const float excess = eff_closing - vehicle_ram_min_speed;
-            const float base = vehicle_ram_damage_scale * excess * excess;
-            const float dmg_a = base
-                * std::clamp(b.mass / a.mass, vehicle_ram_mass_ratio_min,
-                             vehicle_ram_mass_ratio_max);
-            const float dmg_b = base
-                * std::clamp(a.mass / b.mass, vehicle_ram_mass_ratio_min,
-                             vehicle_ram_mass_ratio_max);
+            const float dmg_a = vehicle_ram_damage(a.ep, eff_closing, b.mass / a.mass);
+            const float dmg_b = vehicle_ram_damage(b.ep, eff_closing, a.mass / b.mass);
 
-            // The RAMMER carries more of the closing speed; a stationary hull is never the rammer.
+            // The RAMMER carries more of the closing speed; a stationary hull is never the rammer. Head-on, with
+            // neither clearly faster, each hull rammed the other.
             const bool a_is_rammer = eff_a_toward >= eff_b_toward;
+            const bool mutual = std::min(eff_a_toward, eff_b_toward)
+                             >= vehicle_ram_mutual_ratio * std::max(eff_a_toward, eff_b_toward);
             rf::Entity* rammer = a_is_rammer ? a.ep : b.ep;
             rf::Entity* rammed = a_is_rammer ? b.ep : a.ep;
             const float rammer_damage = a_is_rammer ? dmg_a : dmg_b;
             const float rammed_damage = a_is_rammer ? dmg_b : dmg_a;
             rf::Entity* credit = vehicle_ram_credit(rammer);
             const int killer_handle = credit ? credit->handle : -1;
+            rf::Entity* rammed_credit = mutual ? vehicle_ram_credit(rammed) : nullptr;
+            const int rammed_killer_handle = rammed_credit ? rammed_credit->handle : -1;
+            // A team-mate's blow the friendly-fire rule would drop: the rammer still pays his own share.
+            const bool mutual_credit = mutual && rammed_killer_handle != -1
+                                    && !vehicle_occupied_by_friendly(rammer, rammed_killer_handle);
 
             // Latch BEFORE the damage: obj_damage can destroy either hull, and a hull's death runs
             // vehicle_drop_combat_state, which erases this entry. Nothing may touch `pair` after.
@@ -836,7 +862,13 @@ void vehicle_server_ram_sweep()
             const int rammer_handle = rammer->handle;
             const int rammed_handle = rammed->handle;
             vehicle_ram_mint_damage(rammed_handle, killer_handle, rammed_damage, rammer);
-            // The rammer's share is nobody's kill, so killer -1 and no minting hull - which also
+            if (mutual_credit) {
+                // Taken as the other's blow too, so the tuning table scales it as it does the rammed share.
+                vehicle_ram_mint_damage(rammer_handle, rammed_killer_handle, rammer_damage,
+                                        rf::entity_from_handle(rammed_handle));
+                continue;
+            }
+            // Otherwise the rammer's share is nobody's kill, so killer -1 and no minting hull - which also
             // exempts it from the tuning table, which never scales an unattributed blow.
             vehicle_ram_mint_damage(rammer_handle, -1, rammer_damage, nullptr);
         }
@@ -847,7 +879,10 @@ namespace
 {
     // Over each report bound: gravity and drive keep acting across the summing window.
     constexpr float vehicle_crash_report_slack = 3.0f;
-    // Four buckets of this: the observed peak spans at least the last 375 ms of rows, at most 500.
+    // Over the scrape report bound: the observed peak is a row's speed, and a slide can run a little past it.
+    constexpr float vehicle_scrape_report_slack = 3.0f;
+    // Eight buckets of this: the observed peak spans at least the last 875 ms of rows, at most 1 s - room for
+    // a report sent after a landing's extended window and a laggy sender's trip.
     constexpr int64_t vehicle_observed_speed_bucket_ms = 125;
     // Net extremity speed a run-over needs: between a parked driven APC's measured creep (0.047 u/s on a
     // 20 deg slope, 0.075 u/s while a walker shoves it) and the 0.1 u/s that must count.
@@ -857,6 +892,9 @@ namespace
     // A step past it every <= 200 ms needs only 0.05 u/s, well under the speed floor.
     constexpr float vehicle_crush_change_min_extent = 0.01f;
     constexpr int64_t vehicle_crush_motion_window_ms = 500;
+    // The motion rate is taken over the newest buckets only: a span of 250-375 ms plus the newest bucket's age.
+    constexpr int vehicle_crush_motion_buckets = 4;
+    static_assert(vehicle_crush_motion_buckets <= VehicleObservedSpeed::bucket_count);
     // The victim's 2.2 x 25 ms interp delay, the server's relay tick and a ~120 ms report round trip.
     constexpr int64_t vehicle_crush_motion_tail_ms = 200;
 
@@ -923,7 +961,7 @@ namespace
         if (!s.changed || now - s.changed_ms > vehicle_crush_motion_tail_ms) {
             return {};
         }
-        for (int i = VehicleObservedSpeed::bucket_count - 1; i >= 0; --i) {
+        for (int i = vehicle_crush_motion_buckets - 1; i >= 0; --i) {
             if (!s.bucket_posed[i] || now - s.bucket_pose_ms[i] > vehicle_crush_motion_window_ms) {
                 continue;
             }
@@ -979,13 +1017,31 @@ namespace
             return 0.0f;
         }
         const float x = std::min(over / ref_over, vehicle_crash_max_over_ref);
-        const float frac = (ground ? t.land_frac : t.wall_frac) * x * x;
+        const float frac = std::max((ground ? t.land_frac : t.wall_frac) * x * x, t.min_frac);
         return frac >= vehicle_crash_min_life_frac ? frac : 0.0f;
     }
 
     float vehicle_crash_max_impact_dv(int vdc)
     {
         return vehicle_physics_class_max_impact_speed(vdc) + vehicle_crash_report_slack;
+    }
+
+    // What of a crash's life fraction its hull's window still owes: all of it when none is open (opening one),
+    // else only what it adds over the window's largest, so a graze can never swallow the slam right after it.
+    float vehicle_crash_window_bill(int vehicle_handle, float frac, int window_ms)
+    {
+        VehicleCrashWindow& w = g_vehicle_state.crash_cooldown[vehicle_handle];
+        if (!w.window.valid() || w.window.elapsed()) {
+            w.window.set(window_ms);
+            w.billed_frac = frac;
+            return frac;
+        }
+        const float extra = frac - w.billed_frac;
+        if (extra <= 0.0f) {
+            return 0.0f;
+        }
+        w.billed_frac = frac;
+        return extra;
     }
 
     // Killer -1 and no minting hull, as the rammer's own share: an environment blow on the hull alone.
@@ -999,20 +1055,42 @@ namespace
         if (frac <= 0.0f) {
             return;
         }
-        rf::Timestamp& cooldown = g_vehicle_state.crash_cooldown[vehicle->handle];
-        if (cooldown.valid() && !cooldown.elapsed()) {
+        const float bill = vehicle_crash_window_bill(vehicle->handle, frac, vehicle_crash_bill_window_ms);
+        if (bill <= 0.0f) {
             return;
         }
-        cooldown.set(vehicle_crash_server_cooldown_ms);
-        vehicle_ram_mint_damage(vehicle->handle, -1, frac * vehicle_hud_max_life(vehicle), nullptr);
+        vehicle_ram_mint_damage(vehicle->handle, -1, bill * vehicle_hud_max_life(vehicle), nullptr);
+    }
+
+    // Unattributed, like a crash, and under the same rule.
+    void vehicle_server_apply_scrape(rf::Entity* vehicle, float slide_excess)
+    {
+        if (!g_alpine_server_config_active_rules.vehicles.crash_damage || vehicle->life <= 0.0f
+            || rf::entity_is_dying(vehicle) || vehicle_hull_is_turret(vehicle) || !(slide_excess > 0.0f)) {
+            return;
+        }
+        const int vdc = vehicle_damage_class(vehicle);
+        if (vdc < 0 || vdc >= VDC_COUNT) {
+            return;
+        }
+        const VehicleScrapeTuning& t = vehicle_scrape_tuning[vdc];
+        const float span = t.ref_speed - t.min_speed;
+        if (t.frac_per_s <= 0.0f || span <= 0.0f) {
+            return;
+        }
+        vehicle_ram_mint_damage(vehicle->handle, -1,
+                                vehicle_hud_max_life(vehicle) * t.frac_per_s * slide_excess / span, nullptr,
+                                false, true);
     }
 } // namespace
 
 void vehicle_crash_impact(rf::Entity* vehicle, float impact_dv, bool ground)
 {
-    if (!rf::is_multi || !vehicle || !std::isfinite(impact_dv)) {
+    if (!rf::is_multi || !vehicle || vehicle->life <= 0.0f || rf::entity_is_dying(vehicle)
+        || !std::isfinite(impact_dv)) {
         return;
     }
+    const int vdc = vehicle_damage_class(vehicle);
     if (rf::is_server) {
         vehicle_server_apply_crash(vehicle, impact_dv, ground);
         return;
@@ -1021,31 +1099,22 @@ void vehicle_crash_impact(rf::Entity* vehicle, float impact_dv, bool ground)
     if (vehicle_local_driven_vehicle() != vehicle || vehicle_hull_is_turret(vehicle)) {
         return;
     }
-    const int vdc = vehicle_damage_class(vehicle);
-    if (vehicle_crash_life_frac(vdc, impact_dv, ground) <= 0.0f) {
+    const float reported_dv = std::min(impact_dv, vehicle_crash_max_impact_dv(vdc));
+    const float frac = vehicle_crash_life_frac(vdc, reported_dv, ground);
+    if (frac <= 0.0f || vehicle_crash_window_bill(vehicle->handle, frac, vehicle_crash_bill_window_ms) <= 0.0f) {
         return;
     }
-    rf::Timestamp& cooldown = g_vehicle_state.crash_cooldown[vehicle->handle];
-    if (cooldown.valid() && !cooldown.elapsed()) {
-        return;
-    }
-    cooldown.set(vehicle_crash_client_cooldown_ms);
-    af_send_vehicle_crash_report(vehicle->server_handle, ground,
-                                 std::min(impact_dv, vehicle_crash_max_impact_dv(vdc)));
+    af_send_vehicle_crash_report(vehicle->server_handle, ground, reported_dv);
 }
 
 void vehicle_server_handle_crash_report(rf::Player* pp, int vehicle_handle, bool ground,
                                         float impact_dv)
 {
+    // No per-sender cooldown: only the driver's own hull is billed, its window bills the largest hit once, and a
+    // reliable report retransmitted together with the next must not lose it.
     if (!rf::is_multi || !rf::is_server || !pp || !pp->net_data || pp->entity_handle == -1) {
         return;
     }
-    rf::Timestamp& report_cooldown = g_vehicle_state.crash_report_cooldown[pp->net_data->player_id];
-    if (report_cooldown.valid() && !report_cooldown.elapsed()) {
-        return;
-    }
-    report_cooldown.set(vehicle_crash_report_cooldown_ms);
-
     if (!std::isfinite(impact_dv) || impact_dv <= 0.0f) {
         return;
     }
@@ -1062,6 +1131,116 @@ void vehicle_server_handle_crash_report(rf::Player* pp, int vehicle_handle, bool
     const float observed_dv = vehicle_observed_speed_peak(vehicle->handle) * vehicle_physics_class_bounce_gain(vdc)
         + vehicle_crash_report_slack;
     vehicle_server_apply_crash(vehicle, std::min({impact_dv, vehicle_crash_max_impact_dv(vdc), observed_dv}), ground);
+}
+
+void vehicle_scrape_contact(rf::Entity* vehicle, const rf::Vector3& vel, float wall_slide, float ground_slide,
+                            float step_time)
+{
+    if (!rf::is_multi || !vehicle || vehicle->life <= 0.0f || rf::entity_is_dying(vehicle)
+        || !vehicle_vector_is_finite(vel) || !std::isfinite(wall_slide) || !std::isfinite(ground_slide)
+        || !(step_time > 0.0f)) {
+        return;
+    }
+    const int vdc = vehicle_damage_class(vehicle);
+    if (vdc < 0 || vdc >= VDC_COUNT || vehicle_scrape_tuning[vdc].frac_per_s <= 0.0f) {
+        return;
+    }
+    // Only the hull this client drives is its to measure.
+    if (!rf::is_server && vehicle_local_driven_vehicle() != vehicle) {
+        return;
+    }
+    const VehicleScrapeTuning& t = vehicle_scrape_tuning[vdc];
+    // The scrape effects' nose and tail rays, which reach past the body; its own contacts, mover-relative, cover
+    // the rest. No slide can outrun the hull.
+    if (vel.len() >= std::min(t.min_speed, t.ground_min_speed)) {
+        VehicleHullProbeHit hits[vehicle_hull_probe_max_hits];
+        const int num_hits = vehicle_hull_probe(vehicle, vel, vehicle_is_flyer(vehicle), true, hits);
+        for (int i = 0; i < num_hits; ++i) {
+            float& slide = hits[i].normal.y >= vehicle_crash_ground_ny ? ground_slide : wall_slide;
+            slide = std::max(slide, hits[i].along_speed);
+        }
+    }
+    // In wall units: ground sliding is free up to its own speed, then billed over the same span to ref_speed.
+    const float wall_excess = std::max(wall_slide - t.min_speed, 0.0f);
+    const float ground_span = t.ref_speed - t.ground_min_speed;
+    const float ground_excess = ground_span > 0.0f
+        ? std::max(ground_slide - t.ground_min_speed, 0.0f) * (t.ref_speed - t.min_speed) / ground_span
+        : 0.0f;
+    const float excess = std::max(wall_excess, ground_excess) * step_time;
+    auto it = g_vehicle_state.scrape.find(vehicle->handle);
+    if (it == g_vehicle_state.scrape.end()) {
+        if (excess <= 0.0f) {
+            return;
+        }
+        it = g_vehicle_state.scrape.emplace(vehicle->handle, VehicleScrapeBank{}).first;
+    }
+    VehicleScrapeBank& bank = it->second;
+    const int64_t now = timer::get_i64(1000);
+    // A deadline long gone is a bank left by the last drive of this hull (its samples stopped with it).
+    if (bank.flush_at_ms != 0 && now - bank.flush_at_ms > vehicle_scrape_flush_ms) {
+        bank.slide_excess = 0.0f;
+        bank.flush_at_ms = 0;
+    }
+    bank.slide_excess += excess;
+    // Opened by the first slide and closed by its flush, so a hull that is not sliding keeps no deadline.
+    if (bank.flush_at_ms == 0) {
+        if (bank.slide_excess > 0.0f) {
+            bank.flush_at_ms = now + vehicle_scrape_flush_ms;
+        }
+        return;
+    }
+    if (now < bank.flush_at_ms) {
+        return;
+    }
+    const float slide_excess = bank.slide_excess;
+    bank.slide_excess = 0.0f;
+    bank.flush_at_ms = 0;
+    // Nothing may touch `bank` past here: the damage can destroy the hull, and its entry with it.
+    if (rf::is_server) {
+        vehicle_server_apply_scrape(vehicle, slide_excess);
+    }
+    else {
+        af_send_vehicle_scrape_report(vehicle->server_handle, slide_excess);
+    }
+}
+
+void vehicle_server_handle_scrape_report(rf::Player* pp, int vehicle_handle, float slide_excess)
+{
+    if (!rf::is_multi || !rf::is_server || !pp || !pp->net_data || pp->entity_handle == -1) {
+        return;
+    }
+    if (!std::isfinite(slide_excess) || slide_excess <= 0.0f) {
+        return;
+    }
+    rf::Entity* vehicle = vehicle_live_synced_entity(vehicle_handle);
+    if (!vehicle || vehicle_hull_is_turret(vehicle)) {
+        return;
+    }
+    // Only the seated driver simulates the hull, so only he measured the slide.
+    if (vehicle_seat_leech(vehicle, 0) != pp->entity_handle) {
+        return;
+    }
+    const int vdc = vehicle_damage_class(vehicle);
+    if (vdc < 0 || vdc >= VDC_COUNT || vehicle_scrape_tuning[vdc].frac_per_s <= 0.0f) {
+        return;
+    }
+    // Clamped, not rejected: no more slide than the speed this server last saw allows over sliding time it
+    // banks by its own clock, so a flood of reports bills nothing more and needs no cooldown, and two that
+    // arrive together still share the time between them.
+    VehicleScrapeBank& bank = g_vehicle_state.scrape[vehicle->handle];
+    const int64_t now = timer::get_i64(1000);
+    const float max_window_s = static_cast<float>(vehicle_scrape_report_max_window_ms) * 0.001f;
+    const int64_t since_ms = std::max<int64_t>(now - bank.last_report_ms, 0);
+    bank.report_budget_s = std::min(bank.report_budget_s + static_cast<float>(since_ms) * 0.001f, max_window_s);
+    bank.last_report_ms = now;
+    const float max_speed_excess = vehicle_observed_speed_peak(vehicle->handle) + vehicle_scrape_report_slack
+                                 - vehicle_scrape_tuning[vdc].min_speed;
+    if (!(max_speed_excess > 0.0f)) {
+        return;
+    }
+    const float billed = std::min(slide_excess, max_speed_excess * bank.report_budget_s);
+    bank.report_budget_s -= billed / max_speed_excess;
+    vehicle_server_apply_scrape(vehicle, billed);
 }
 
 void vehicle_note_observed_speed(int vehicle_handle, float speed)
@@ -1480,8 +1659,8 @@ namespace
         if (vehicle_blast_damage_is_mint(victim->handle)) {
             rf::Entity* vehicle = vehicle_synced_entity(g_vehicle_blast_mint.vehicle_handle);
             if (vehicle) {
-                // An unattributed lethal blow (drowned, stranded, returned, void, own ram share) is the
-                // rider's own death, whoever softened the hull first; they are paid in assists instead.
+                // An unattributed lethal blow with no recent hit to blame (drowned, stranded, returned, void, a
+                // crash or scrape, own ram share) is the rider's own death; whoever softened it is paid in assists.
                 auto lethal = g_vehicle_state.lethal_killer.find(vehicle->handle);
                 if (lethal != g_vehicle_state.lethal_killer.end() && lethal->second.entity_handle == -1) {
                     return victim->handle;
@@ -1540,7 +1719,7 @@ namespace
             && wi.ammo_type < static_cast<int>(std::extent_v<decltype(rf::AiInfo::ammo)>);
     }
 
-    // Slot 0 is the primary weapon, slot 1 the secondary; a turret's alt trigger is never stored.
+    // Slot 0 is the primary weapon, slot 1 the secondary; a zooming alt trigger is never stored.
     bool vehicle_ammo_slot_trigger_held(const rf::Entity* ep, int slot_index)
     {
         auto it = g_vehicle_state.fire.find(ep->handle);
@@ -1671,6 +1850,34 @@ int vehicle_occupant_death_blast_hull(int victim_handle, int damage_type)
         ? g_vehicle_blast_mint.vehicle_handle : -1;
 }
 
+// Ahead of an unattributed lethal blow (a drown or strand scuttle, a crash): the last player blow that hurt the
+// hull within window_s names its destroyer, so the riders it takes die to him rather than by their own hand.
+void vehicle_note_hazard_destroyer(rf::Entity* vehicle, float window_s)
+{
+    auto it = g_vehicle_state.last_hurt.find(vehicle->handle);
+    if (it == g_vehicle_state.last_hurt.end()
+        || timer::get_i64(1000) - it->second.ms > static_cast<int64_t>(window_s * 1000.0f)) {
+        return;
+    }
+    // A team-mate's graze, friendly fire or not, never makes the riders' drowning his team kills.
+    const VehicleLethalKiller& blow = it->second.blow;
+    const rf::Player* attacker = blow.player_id != 0xFF ? rf::multi_find_player_by_id(blow.player_id)
+                                                        : rf::player_from_entity_handle(blow.entity_handle);
+    if (!attacker) {
+        return;
+    }
+    if (multi_is_team_game_type()) {
+        for (int i = 0; i < vehicle_seat_count(vehicle); ++i) {
+            const int leech = vehicle_seat_leech(vehicle, i);
+            const rf::Player* rider = leech != -1 ? rf::player_from_entity_handle(leech) : nullptr;
+            if (rider && rider != attacker && rider->team == attacker->team) {
+                return;
+            }
+        }
+    }
+    g_vehicle_state.lethal_killer.try_emplace(vehicle->handle, blow);
+}
+
 bool vehicle_lethal_blow_attribution(int vehicle_handle, const rf::Player* killer_player, int& weapon_type,
                                      bool& splash, int& vehicle_class)
 {
@@ -1692,7 +1899,8 @@ void vehicle_note_hull_damage(rf::Entity* vehicle, float life_before, int killer
         || life_before <= 0.0f) {
         return; // a blow on a wreck neither kills it again nor softens it for anybody
     }
-    if (vehicle->life <= 0.0f) {
+    // This blow as the hull's destroyer.
+    const auto blow = [&] {
         VehicleLethalKiller lethal;
         rf::Entity* killer = killer_handle != -1 ? rf::entity_from_handle(killer_handle) : nullptr;
         // A rider's own shot is his own death, as the own ram share is: suicides and assists.
@@ -1713,11 +1921,23 @@ void vehicle_note_hull_damage(rf::Entity* vehicle, float life_before, int killer
                 lethal.splash = splash;
             }
         }
-        g_vehicle_state.lethal_killer.try_emplace(vehicle->handle, lethal);
+        return lethal;
+    };
+    if (vehicle->life <= 0.0f) {
+        // An unattributed lethal blow (a crash, a scrape, the own ram share) goes to whoever just hurt the hull.
+        if (killer_handle == -1) {
+            vehicle_note_hazard_destroyer(vehicle, vehicle_hit_credit_s);
+        }
+        g_vehicle_state.lethal_killer.try_emplace(vehicle->handle, blow());
     }
     else if (real_damage > 0.0f) {
         const bool stock_indicated = splash || (kill_attribution_in_projectile_impact() && weapon_type >= 0);
         vehicle_note_hull_hit(vehicle, killer_handle, stock_indicated);
+        if (killer_handle != -1 && rf::player_from_entity_handle(killer_handle)) {
+            if (VehicleLethalKiller hurt = blow(); hurt.entity_handle != -1) {
+                g_vehicle_state.last_hurt[vehicle->handle] = {hurt, timer::get_i64(1000)};
+            }
+        }
     }
     if (killer_handle == -1 || real_damage <= 0.0f) {
         return; // player_from_entity_handle does not validate -1
@@ -2077,7 +2297,7 @@ void vehicle_regen_do_frame(rf::Entity* ep)
         return;
     }
     // A hull on the drown or strand clock is not on the repair clock.
-    if (g_vehicle_state.hazard_since.count(ep->handle) != 0) {
+    if (g_vehicle_state.hazard_time.count(ep->handle) != 0) {
         return;
     }
 

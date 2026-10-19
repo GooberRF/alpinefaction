@@ -4,10 +4,12 @@
 #include <cmath>
 #include <algorithm>
 #include <array>
+#include <initializer_list>
 #include <limits>
 #include <optional>
 #include <ranges>
 #include <span>
+#include <string_view>
 #include <unordered_map>
 #include <common/utils/bool-utils.h>
 #include <common/utils/list-utils.h>
@@ -34,6 +36,7 @@
 #include "jetpack.h"
 #include "pit.h"
 #include "salvage.h"
+#include "scavenger.h"
 #include "vehicles/vehicle.h"
 #include "vote_client.h"
 #include "../misc/player.h"
@@ -169,6 +172,10 @@ bool af_process_packet(
         }
         case af_packet_type::af_salvage_state: {
             af_process_salvage_state_packet(data, static_cast<size_t>(len), addr);
+            return true;
+        }
+        case af_packet_type::af_scavenger_state: {
+            af_process_scavenger_state_packet(data, static_cast<size_t>(len), addr);
             return true;
         }
         case af_packet_type::af_crit_shot: {
@@ -1997,6 +2004,9 @@ static void af_process_client_req_packet(const void* data, size_t len, const rf:
                 vehicle_server_handle_crash_report(player, req.vehicle_handle,
                                                    req.kind == AF_VEHICLE_CRUSH_GROUND, req.impact_dv);
             }
+            else if (req.kind == AF_VEHICLE_CRUSH_SCRAPE) {
+                vehicle_server_handle_scrape_report(player, req.vehicle_handle, req.impact_dv);
+            }
             break;
         }
         case af_client_req_type::af_req_stats_pssk: {
@@ -3605,12 +3615,9 @@ void af_process_bagman_state_packet(const void* data, size_t len, const rf::NetA
     bagman_update_bot_waypoints();
 }
 
-// Build the wire packet once from the current salvage state.
-static void build_af_salvage_state_packet(af_salvage_state_packet& pkt)
+// The flag fields shared by af_salvage_state and af_scavenger_state, from the current flag state.
+static void fill_salvage_state_fields(af_salvage_state_packet& pkt)
 {
-    pkt.header.type = static_cast<uint8_t>(af_packet_type::af_salvage_state);
-    pkt.header.size = static_cast<uint16_t>(sizeof(af_salvage_state_packet) - sizeof(RF_GamePacketHeader));
-
     pkt.state = static_cast<uint8_t>(salvage_get_state());
     rf::Player* carrier = salvage_get_carrier();
     pkt.carrier_player_id = (carrier && carrier->net_data) ? carrier->net_data->player_id : 0xFF;
@@ -3630,6 +3637,65 @@ static void build_af_salvage_state_packet(af_salvage_state_packet& pkt)
     pkt.flag_x = flag_pos.x;
     pkt.flag_y = flag_pos.y;
     pkt.flag_z = flag_pos.z;
+}
+
+// Build the wire packet once from the current salvage state.
+static void build_af_salvage_state_packet(af_salvage_state_packet& pkt)
+{
+    pkt.header.type = static_cast<uint8_t>(af_packet_type::af_salvage_state);
+    pkt.header.size = static_cast<uint16_t>(sizeof(af_salvage_state_packet) - sizeof(RF_GamePacketHeader));
+    fill_salvage_state_fields(pkt);
+}
+
+// Receive-side size checks shared by the flag state packets: declared payload against the
+// buffer, the buffer against the struct, and the declared payload against the struct.
+static bool flag_state_packet_size_ok(const void* data, size_t len, size_t packet_size, std::string_view tag)
+{
+    RF_GamePacketHeader hdr{};
+    std::memcpy(&hdr, data, sizeof(hdr));
+    if (sizeof(RF_GamePacketHeader) + hdr.size > len) {
+        xlog::warn("{}: truncated (declared={}, len={})", tag, hdr.size, len);
+        return false;
+    }
+    if (len < packet_size) {
+        xlog::warn("{}: short packet ({}<{})", tag, len, packet_size);
+        return false;
+    }
+    const size_t expected_payload = packet_size - sizeof(RF_GamePacketHeader);
+    if (hdr.size != expected_payload) {
+        xlog::warn("{}: bad payload size {} (expected {})", tag, hdr.size, expected_payload);
+        return false;
+    }
+    return true;
+}
+
+// One warning per 5 s for rejected flag state packets, whatever the reason.
+static bool flag_state_reject_warn_due()
+{
+    static rf::Timestamp reject_warn_throttle;
+    if (reject_warn_throttle.valid() && !reject_warn_throttle.elapsed()) {
+        return false;
+    }
+    reject_warn_throttle.set(5000);
+    return true;
+}
+
+// A NaN, infinity or absurd magnitude here would reach the flag item's position,
+// the world HUD projection and the bot navigation, and poison them for the rest
+// of the level. The bound is far outside any legitimate RF level, so it only ever
+// catches garbage.
+// This guard will probably never actually trigger, but costs virtually nothing
+// and is best practice.
+static bool flag_state_coords_ok(std::initializer_list<float> coords, std::string_view tag)
+{
+    constexpr float kFlagStateMaxCoordMagnitude = 100000.0f;
+    const bool sane = std::all_of(coords.begin(), coords.end(), [](float v) {
+        return std::isfinite(v) && std::fabs(v) <= kFlagStateMaxCoordMagnitude;
+    });
+    if (!sane && flag_state_reject_warn_due()) {
+        xlog::warn("{}: rejecting packet with out-of-range coordinates", tag);
+    }
+    return sane;
 }
 
 void af_send_salvage_state_packet(rf::Player* player)
@@ -3683,49 +3749,119 @@ void af_process_salvage_state_packet(const void* data, size_t len, const rf::Net
         return;
     }
 
-    RF_GamePacketHeader hdr{};
-    std::memcpy(&hdr, data, sizeof(hdr));
-    if (sizeof(RF_GamePacketHeader) + hdr.size > len) {
-        xlog::warn("salvage_state: truncated (declared={}, len={})", hdr.size, len);
-        return;
-    }
-    if (len < sizeof(af_salvage_state_packet)) {
-        xlog::warn("salvage_state: short packet ({}<{})", len, sizeof(af_salvage_state_packet));
+    if (!flag_state_packet_size_ok(data, len, sizeof(af_salvage_state_packet), "salvage_state")) {
         return;
     }
 
     af_salvage_state_packet pkt{};
     std::memcpy(&pkt, data, sizeof(pkt));
 
-    const size_t expected_payload = sizeof(af_salvage_state_packet) - sizeof(RF_GamePacketHeader);
-    if (pkt.header.size != expected_payload) {
-        xlog::warn("salvage_state: bad payload size {} (expected {})", pkt.header.size, expected_payload);
-        return;
-    }
-
-    // A NaN, infinity or absurd magnitude here would reach the flag item's position,
-    // the world HUD projection and the bot navigation, and poison them for the rest
-    // of the level. The bound is far outside any legitimate RF level, so it only ever
-    // catches garbage.
-    // This guard will probably never actually trigger, but costs virtually nothing
-    // and is best practice.
-    constexpr float kSalvageMaxCoordMagnitude = 100000.0f;
-    const auto coord_is_sane = [](float v) {
-        return std::isfinite(v) && std::fabs(v) <= kSalvageMaxCoordMagnitude;
-    };
-    if (!coord_is_sane(pkt.spawn_x) || !coord_is_sane(pkt.spawn_y) || !coord_is_sane(pkt.spawn_z)
-        || !coord_is_sane(pkt.flag_x) || !coord_is_sane(pkt.flag_y) || !coord_is_sane(pkt.flag_z)) {
-        static rf::Timestamp non_finite_warn_throttle;
-        if (!non_finite_warn_throttle.valid() || non_finite_warn_throttle.elapsed()) {
-            non_finite_warn_throttle.set(5000);
-            xlog::warn("salvage_state: rejecting packet with out-of-range coordinates");
-        }
+    if (!flag_state_coords_ok({pkt.spawn_x, pkt.spawn_y, pkt.spawn_z, pkt.flag_x, pkt.flag_y, pkt.flag_z},
+                              "salvage_state")) {
         return;
     }
 
     salvage_apply_state_from_packet(pkt.state, pkt.carrier_player_id, pkt.time_left_ms,
         pkt.red_caps, pkt.blue_caps, rf::Vector3{pkt.spawn_x, pkt.spawn_y, pkt.spawn_z},
         rf::Vector3{pkt.flag_x, pkt.flag_y, pkt.flag_z});
+}
+
+static void build_af_scavenger_state_packet(af_scavenger_state_packet& pkt)
+{
+    pkt.flag.header.type = static_cast<uint8_t>(af_packet_type::af_scavenger_state);
+    pkt.flag.header.size = static_cast<uint16_t>(sizeof(af_scavenger_state_packet) - sizeof(RF_GamePacketHeader));
+    fill_salvage_state_fields(pkt.flag);
+
+    const rf::Vector3& zone_pos = scavenger_get_zone_pos();
+    pkt.zone_x = zone_pos.x;
+    pkt.zone_y = zone_pos.y;
+    pkt.zone_z = zone_pos.z;
+    pkt.zone_radius = scavenger_get_zone_radius();
+    pkt.zone_floor_y = scavenger_get_zone_floor_y();
+    pkt.zone_time_left_ms = static_cast<uint32_t>(std::max(0, scavenger_get_zone_time_left_ms()));
+}
+
+void af_send_scavenger_state_packet(rf::Player* player)
+{
+    // server -> single client
+    if (!rf::is_server) {
+        return;
+    }
+    if (!player) {
+        xlog::error("af_scavenger_state_packet: Attempted to send to an invalid player");
+        return;
+    }
+
+    af_scavenger_state_packet pkt{};
+    build_af_scavenger_state_packet(pkt);
+
+    std::byte buf[sizeof(pkt)];
+    std::memcpy(buf, &pkt, sizeof(pkt));
+    af_send_packet(player, buf, static_cast<int>(sizeof(pkt)), true);
+}
+
+void af_send_scavenger_state_packet_to_all()
+{
+    // server -> all clients
+    if (!rf::is_server)
+        return;
+
+    af_scavenger_state_packet pkt{};
+    build_af_scavenger_state_packet(pkt);
+
+    std::byte buf[sizeof(pkt)];
+    std::memcpy(buf, &pkt, sizeof(pkt));
+
+    SinglyLinkedList<rf::Player> players{rf::player_list};
+    for (auto& p : players) {
+        if (!p.net_data)
+            continue;
+        af_send_packet(&p, buf, static_cast<int>(sizeof(pkt)), true);
+    }
+}
+
+void af_process_scavenger_state_packet(const void* data, size_t len, const rf::NetAddr&)
+{
+    // Receive: client <- server
+    if (!rf::is_multi || rf::is_server)
+        return;
+    if (len < sizeof(RF_GamePacketHeader))
+        return;
+
+    if (!gt_is_scavenger()) {
+        return;
+    }
+
+    if (!flag_state_packet_size_ok(data, len, sizeof(af_scavenger_state_packet), "scavenger_state")) {
+        return;
+    }
+
+    af_scavenger_state_packet pkt{};
+    std::memcpy(&pkt, data, sizeof(pkt));
+
+    const af_salvage_state_packet& flag = pkt.flag;
+    if (!flag_state_coords_ok({flag.spawn_x, flag.spawn_y, flag.spawn_z, flag.flag_x, flag.flag_y, flag.flag_z,
+                               pkt.zone_x, pkt.zone_y, pkt.zone_z, pkt.zone_floor_y},
+                              "scavenger_state")) {
+        return;
+    }
+    if (!std::isfinite(pkt.zone_radius) || pkt.zone_radius <= 0.0f || pkt.zone_radius > 10.0f) {
+        if (flag_state_reject_warn_due()) {
+            xlog::warn("scavenger_state: rejecting packet with zone radius {}", pkt.zone_radius);
+        }
+        return;
+    }
+
+    const SalFlagState prev_state = salvage_get_state();
+    if (!salvage_apply_state_from_packet(flag.state, flag.carrier_player_id, flag.time_left_ms,
+            flag.red_caps, flag.blue_caps, rf::Vector3{flag.spawn_x, flag.spawn_y, flag.spawn_z},
+            rf::Vector3{flag.flag_x, flag.flag_y, flag.flag_z})) {
+        return;
+    }
+    // Carried -> Delayed only ever happens on a capture, which also retires the zone.
+    const bool captured = prev_state == SalFlagState::Carried && salvage_get_state() == SalFlagState::Delayed;
+    scavenger_apply_zone_from_packet(rf::Vector3{pkt.zone_x, pkt.zone_y, pkt.zone_z}, pkt.zone_radius,
+        pkt.zone_floor_y, pkt.zone_time_left_ms, captured);
 }
 
 // server -> every AF 1.5+ client, optionally skipping one
@@ -3995,10 +4131,12 @@ void af_process_vehicle_orient_packet(const void* data, size_t len, const rf::Ne
 
 static void build_af_vehicle_health_packet(af_vehicle_health_packet& pkt, int vehicle_handle, float life,
                                            float max_life, int primary_ammo, int secondary_ammo,
-                                           const uint16_t refill_ms[2], const rf::Vector3* hit_dir = nullptr)
+                                           const uint16_t refill_ms[2], const rf::Vector3* hit_dir = nullptr,
+                                           uint8_t flags = 0)
 {
     pkt.header.type = static_cast<uint8_t>(af_packet_type::af_vehicle_health);
     pkt.header.size = static_cast<uint16_t>(sizeof(pkt) - sizeof(RF_GamePacketHeader));
+    pkt.flags = flags;
     pkt.vehicle_handle = vehicle_handle;
     pkt.life = life;
     pkt.max_life = max_life;
@@ -4034,7 +4172,7 @@ void af_send_vehicle_health_packet(rf::Player* player, int vehicle_handle, float
 // server -> everyone, not just occupants: spectator HUDs and the demo recorder need it too
 void af_send_vehicle_health_packet_to_all(int vehicle_handle, float life, float max_life,
                                           int primary_ammo, int secondary_ammo, const uint16_t refill_ms[2],
-                                          bool is_reliable, const rf::Vector3* hit_dir)
+                                          bool is_reliable, const rf::Vector3* hit_dir, uint8_t flags)
 {
     if (!rf::is_server) {
         return;
@@ -4042,7 +4180,7 @@ void af_send_vehicle_health_packet_to_all(int vehicle_handle, float life, float 
 
     af_vehicle_health_packet pkt{};
     build_af_vehicle_health_packet(pkt, vehicle_handle, life, max_life, primary_ammo, secondary_ammo, refill_ms,
-                                   hit_dir);
+                                   hit_dir, flags);
 
     af_broadcast_to_af_clients(&pkt, sizeof(pkt), is_reliable);
 }
@@ -4063,7 +4201,8 @@ void af_process_vehicle_health_packet(const void* data, size_t len, const rf::Ne
     const bool has_hit_dir = pkt.hit_dir[0] != 0 || pkt.hit_dir[1] != 0 || pkt.hit_dir[2] != 0;
     vehicle_store_health_from_packet(pkt.vehicle_handle, pkt.life, pkt.max_life, pkt.primary_ammo,
                                     pkt.secondary_ammo, pkt.refill_ms[0], pkt.refill_ms[1],
-                                    has_hit_dir ? &hit_dir : nullptr);
+                                    has_hit_dir ? &hit_dir : nullptr,
+                                    (pkt.flags & AF_VEHICLE_HEALTH_SCRAPE_ONLY) != 0);
 }
 
 static void build_af_vehicle_factory_state_packet(af_vehicle_factory_state_packet& pkt,
@@ -4145,7 +4284,7 @@ void af_send_vehicle_use_request(int vehicle_handle, uint8_t seat_index)
     af_send_client_req_packet(packet, true); // reliable
 }
 
-void af_send_vehicle_crush_report(int vehicle_handle, int victim_handle)
+static void af_send_vehicle_crush_req(const VehicleCrushReqPayload& payload)
 {
     if (!rf::is_multi || rf::is_server) {
         return;
@@ -4155,25 +4294,25 @@ void af_send_vehicle_crush_report(int vehicle_handle, int victim_handle)
     packet.header.type = static_cast<uint8_t>(af_packet_type::af_client_req);
     packet.header.size = sizeof(uint8_t) + sizeof(VehicleCrushReqPayload);
     packet.req_type = af_client_req_type::af_req_vehicle_crush;
-    packet.payload = VehicleCrushReqPayload{vehicle_handle, victim_handle, AF_VEHICLE_CRUSH_RUNOVER, 0.0f};
+    packet.payload = payload;
 
     af_send_client_req_packet(packet, true); // reliable
 }
 
+void af_send_vehicle_crush_report(int vehicle_handle, int victim_handle)
+{
+    af_send_vehicle_crush_req({vehicle_handle, victim_handle, AF_VEHICLE_CRUSH_RUNOVER, 0.0f});
+}
+
 void af_send_vehicle_crash_report(int vehicle_handle, bool ground, float impact_dv)
 {
-    if (!rf::is_multi || rf::is_server) {
-        return;
-    }
+    af_send_vehicle_crush_req(
+        {vehicle_handle, -1, ground ? AF_VEHICLE_CRUSH_GROUND : AF_VEHICLE_CRUSH_WALL, impact_dv});
+}
 
-    af_client_req_packet packet{};
-    packet.header.type = static_cast<uint8_t>(af_packet_type::af_client_req);
-    packet.header.size = sizeof(uint8_t) + sizeof(VehicleCrushReqPayload);
-    packet.req_type = af_client_req_type::af_req_vehicle_crush;
-    packet.payload = VehicleCrushReqPayload{
-        vehicle_handle, -1, ground ? AF_VEHICLE_CRUSH_GROUND : AF_VEHICLE_CRUSH_WALL, impact_dv};
-
-    af_send_client_req_packet(packet, true); // reliable
+void af_send_vehicle_scrape_report(int vehicle_handle, float slide_excess)
+{
+    af_send_vehicle_crush_req({vehicle_handle, -1, AF_VEHICLE_CRUSH_SCRAPE, slide_excess});
 }
 
 void af_send_koth_hill_captured_packet(rf::Player* player, uint8_t hill_uid, HillOwner owner, const std::vector<uint8_t>& new_owner_player_ids)
@@ -4485,6 +4624,7 @@ static void build_af_server_info_packet(af_server_info_packet& pkt)
     switch (get_upcoming_game_type()) {
         case rf::NetGameType::NG_TYPE_CTF:
         case rf::NetGameType::NG_TYPE_SAL:
+        case rf::NetGameType::NG_TYPE_SCAV:
             pkt.win_condition = static_cast<uint32_t>(rf::netgame.max_captures);
             break;
         case rf::NetGameType::NG_TYPE_KOTH:
@@ -4647,6 +4787,7 @@ static void af_process_server_info_packet(const void* data, size_t len, const rf
         switch (game_type) {
             case rf::NetGameType::NG_TYPE_CTF:
             case rf::NetGameType::NG_TYPE_SAL:
+            case rf::NetGameType::NG_TYPE_SCAV:
                 rf::netgame.max_captures = static_cast<int>(pkt.win_condition);
                 break;
             case rf::NetGameType::NG_TYPE_KOTH:
@@ -5028,15 +5169,18 @@ af_server_msg_packet_buf build_server_console_msg_packet(
     return buf;
 }
 
-static void af_show_automated_chat_msg(const std::string_view msg)
+// Shows an automated server message in chat, as clients and the listen-server host both do.
+// False when the local player filters it out. multi_chat_print also echoes the line to the console.
+static bool print_automated_chat_msg(const std::string_view msg)
 {
     if (!g_alpine_game_config.show_domination_msgs && awards_is_domination_chat_msg(msg)) {
-        return;
+        return false;
     }
     rf::multi_chat_print(rf::String{msg}, rf::ChatMsgColor::gold_white, rf::String{"Server: "});
     if (!g_alpine_game_config.simple_server_chat_msgs) {
         rf::snd_play(stock_sound_id::end_voice, 0, 0.f, 1.f);
     }
+    return true;
 }
 
 void af_broadcast_automated_chat_msg(const std::string_view msg) {
@@ -5044,7 +5188,7 @@ void af_broadcast_automated_chat_msg(const std::string_view msg) {
         return;
     }
 
-    if (rf::is_dedicated_server) {
+    if (rf::is_dedicated_server || !print_automated_chat_msg(msg)) {
         rf::console::print("Server: {}", msg);
     }
 
@@ -5052,7 +5196,6 @@ void af_broadcast_automated_chat_msg(const std::string_view msg) {
 
     for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
         if (&player == rf::local_player) {
-            af_show_automated_chat_msg(msg); // also prints the console line
             continue;
         }
 
@@ -5156,8 +5299,7 @@ void af_send_automated_chat_msg(const std::string_view msg, rf::Player* player, 
     }
 
     if (player == rf::local_player) {
-        // Listen-server host: show it locally; packets to the host are never delivered.
-        af_show_automated_chat_msg(msg);
+        print_automated_chat_msg(msg);
         return;
     }
 
@@ -5362,7 +5504,7 @@ void af_process_server_msg_packet(
         const char* ptr = static_cast<const char*>(data) + sizeof(msg_packet);
         const std::string_view msg_sv{ptr, len - sizeof(msg_packet)};
         handle_vote_or_ready_up_msg(msg_sv);
-        af_show_automated_chat_msg(msg_sv);
+        print_automated_chat_msg(msg_sv);
     } else if (msg_packet.type == static_cast<uint8_t>(AF_SERVER_MSG_TYPE_CONSOLE)) {
         const char* ptr = static_cast<const char*>(data) + sizeof(msg_packet);
         const std::string msg{ptr, len - sizeof(msg_packet)};

@@ -69,6 +69,7 @@ bool g_jump_to_multi_server_list = false;
 bool g_jump_to_demo_browser = false;
 std::optional<JoinMpGameData> g_join_mp_game_seq_data;
 std::optional<std::string> g_levelm_filename;
+std::optional<rf::NetGameType> g_levelm_game_type;
 std::optional<rf::NetGameType> g_local_pending_game_type; // used for pending gt received from server. I don't like this being here, todo: refactor
 std::optional<int> g_local_pending_win_condition;
 
@@ -101,6 +102,11 @@ bool rfl_version_minimum(int check_version)
     else {
         return false;
     }
+}
+
+bool level_rfl_version_at_least(int check_version)
+{
+    return rf::level.version >= check_version;
 }
 
 // check if we're currently in an Alpine level
@@ -147,10 +153,11 @@ void start_join_multi_game_sequence(const rf::NetAddr& addr, const std::string& 
     g_join_mp_game_seq_data = {JoinMpGameData{addr, password}};
 }
 
-void start_levelm_load_sequence(std::string filename)
+void start_levelm_load_sequence(std::string filename, std::optional<rf::NetGameType> game_type)
 {
     g_jump_to_multi_server_list = true;
     g_levelm_filename = filename;
+    g_levelm_game_type = game_type;
 }
 
 bool multi_join_game(const rf::NetAddr& addr, const std::string& password)
@@ -237,8 +244,9 @@ FunHook<void(rf::GameState, rf::GameState)> rf_init_state_hook{
                     g_join_mp_game_seq_data.reset();
                     multi_join_game(addr, password);
                 } else if (g_levelm_filename.has_value()) {
-                    start_level_in_multi(g_levelm_filename.value());
+                    start_level_in_multi(g_levelm_filename.value(), g_levelm_game_type);
                     g_levelm_filename.reset();
+                    g_levelm_game_type.reset();
                 }
             }
         }
@@ -657,6 +665,7 @@ CallHook level_init_pre_console_output_hook{
                         switch (rf::netgame.type) {
                         case rf::NetGameType::NG_TYPE_CTF:
                         case rf::NetGameType::NG_TYPE_SAL:
+                        case rf::NetGameType::NG_TYPE_SCAV:
                             rf::netgame.max_captures = g_local_pending_win_condition.value();
                             break;
                         case rf::NetGameType::NG_TYPE_KOTH:

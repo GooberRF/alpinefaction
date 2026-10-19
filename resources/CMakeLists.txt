@@ -5,6 +5,9 @@ else()
 endif()
 
 function(add_packfile packfile_name)
+    if(NOT ALPINE_BUILD_PACKFILE)
+        return()
+    endif()
 
     list(TRANSFORM ARGN REPLACE "([^:]*):.*" "\\1" OUTPUT_VARIABLE input_deps)
     list(TRANSFORM ARGN REPLACE "[^:]*:(.*)" "\\1" OUTPUT_VARIABLE input_paths)
@@ -93,6 +96,7 @@ add_packfile(alpinefaction.vpp
     sounds/af_spray1.ogg
     sounds/af_award1.ogg
     sounds/af_jeep_horn.ogg
+    sounds/af_fighter_scrape_loop.wav
     sounds/af_killsound1.wav
     sounds/af_radmsg_000.ogg
     sounds/af_radmsg_001.ogg
@@ -248,6 +252,10 @@ add_packfile(alpinefaction.vpp
     images/hud_miniflag_sal.vbm
     images/hud_microflag_sal.vbm
     images/hud_flag_sal.vbm
+    images/hud_miniflag_scav_1.tga
+    images/hud_miniflag_scav.tga
+    images/hud_microflag_scav.tga
+    images/hud_flag_scav.tga
     images/CTFflag-afgr.tga
     images/noclip_ammo_bar_1.tga
     images/Icon_EAX.tga
@@ -280,6 +288,7 @@ add_packfile(alpinefaction.vpp
     images/dec_af_csp09.tga
     images/dec_af_csp10.tga
     images/af-jetpack1skin1.tga
+    images/af_scavpumap1.dds
     images/af_jeeptire1.tga
     images/af_apctread1.atx
     images/af_apctreadbm.tga
@@ -361,6 +370,7 @@ add_packfile(alpinefaction.vpp
     meshes/meatchunk4.v3m
     meshes/meatchunk5.v3m
     meshes/af_pickup-bag.v3m
+    meshes/af-scavpumap1.v3m
     meshes/af-jetpack1.v3m
     meshes/AFSALflag1.vfx
     meshes/af-jg1.v3m
@@ -388,6 +398,9 @@ add_packfile(alpinefaction.vpp
     standard_vs:${CMAKE_BINARY_DIR}/shaders/standard_vs.bin
     character_vs:${CMAKE_BINARY_DIR}/shaders/character_vs.bin
     transformed_vs:${CMAKE_BINARY_DIR}/shaders/transformed_vs.bin
+    particle_vs:${CMAKE_BINARY_DIR}/shaders/particle_vs.bin
+    particle_stretched_vs:${CMAKE_BINARY_DIR}/shaders/particle_stretched_vs.bin
+    weather_vs:${CMAKE_BINARY_DIR}/shaders/weather_vs.bin
     shadow_standard_vs:${CMAKE_BINARY_DIR}/shaders/shadow_standard_vs.bin
     shadow_character_vs:${CMAKE_BINARY_DIR}/shaders/shadow_character_vs.bin
     outline_character_vs:${CMAKE_BINARY_DIR}/shaders/outline_character_vs.bin
@@ -424,4 +437,6 @@ add_custom_command(
 )
 add_custom_target(TermsTxt ALL DEPENDS ${CMAKE_BINARY_DIR}/bin/terms.txt)
 
-add_subdirectory(shaders)
+if(ALPINE_BUILD_PACKFILE)
+    add_subdirectory(shaders)
+endif()

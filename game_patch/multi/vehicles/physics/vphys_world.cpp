@@ -1021,6 +1021,23 @@ void movers_update_all(bool step_will_run, float step_time, float engine_dt)
         if (moved_box) {
             mover_wake_bank(m, moved_lo, moved_hi);
         }
+        // A machine with no body to step never refreshes the broadphase or derives a kinematic velocity, yet
+        // the scrape probe asks this world for what a watched hull touches.
+        if (!step_will_run) {
+            // As saveKinematicState derives it, angular part included: a turntable's surface moves too.
+            btVector3 lin_vel(0.0f, 0.0f, 0.0f);
+            btVector3 ang_vel(0.0f, 0.0f, 0.0f);
+            if (moved && engine_dt > 0.0f) {
+                const btTransform from(to_bt(m.carry_orient), to_bt(m.carry_pos));
+                const btTransform to(to_bt(op->orient), to_bt(op->pos));
+                btTransformUtil::calculateVelocity(from, to, engine_dt, lin_vel, ang_vel);
+            }
+            m.body->setLinearVelocity(lin_vel);
+            m.body->setAngularVelocity(ang_vel);
+            if (moved) {
+                g_vphys.world->updateSingleAabb(m.body);
+            }
+        }
         // Only ahead of a substep: a sleeping hull woken on a skipped frame would just idle awake.
         if (consumed) {
             mover_wake_flush(m);
@@ -1663,8 +1680,18 @@ namespace
                 obstacle.info_index = w.info_index;
                 obstacle.vmesh = w.op->vmesh;
                 obstacle.built_half = obox.half;
-                // A prop keeps the default static group/mask addRigidBody gives it.
-                g_vphys.world->addRigidBody(obstacle.body);
+                g_vphys.world->addRigidBody(obstacle.body, vphys_group_prop, vphys_mask_prop);
+                btVector3 lo;
+                btVector3 hi;
+                obstacle.body->getAabb(lo, hi);
+                for (auto& owned : g_vphys.bodies) {
+                    btVector3 blo;
+                    btVector3 bhi;
+                    if (owned->body) {
+                        owned->body->getAabb(blo, bhi);
+                        owned->impact_prop_built |= TestAabbAgainstAabb2(blo, bhi, lo, hi);
+                    }
+                }
             }
         }
     }

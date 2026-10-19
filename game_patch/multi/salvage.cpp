@@ -13,6 +13,7 @@
 #include <patch_common/MemUtils.h>
 #include <common/utils/string-utils.h>
 #include "salvage.h"
+#include "scavenger.h"
 #include "awards.h"
 #include "gametype.h"
 #include "server_internal.h"
@@ -43,6 +44,9 @@ constexpr const char* kSalFlagItemClass = "flag_red";
 // (stock: CTFflag-red.vfx). Optional - a package without it just keeps the CTF
 // flag, so the gametype still works, it only looks like CTF's.
 constexpr const char* kSalFlagMeshFilename = "AFSALflag1.vfx";
+// Scavenger's objective (the cartridge), a static mesh swapped in the same way. Ships in
+// alpinefaction.vpp, so unlike the Salvage flag it is not probed.
+constexpr const char* kScavCartridgeMeshFilename = "af-scavpumap1.v3m";
 constexpr const char* kSalRedBaseItemClass = "base_red";
 constexpr const char* kSalBlueBaseItemClass = "base_blue";
 // Prop point both the player character meshes and the flag mesh carry; stock CTF
@@ -85,6 +89,7 @@ constexpr SalFlagSpawnEntry kSalFlagSpawnPositions[] = {
     { "ctftesseract.rfl", 8.0f, 3.0f, 48.0f },
     { "ctfdarktess.rfl", 8.0f, 3.0f, 48.0f },
     { "CTF-RFU3-Pyramid.rfl", 4.74f, -2.97f, -0.55f },
+    { "CTF_TERROR.rfl", -0.63f, -3.0f, -22.0f },
 };
 
 // Priority-ordered item classes considered as the map center.
@@ -213,12 +218,33 @@ void announce(std::string_view msg)
     af_broadcast_automated_chat_msg(msg);
 }
 
+// What announcements call the neutral objective.
+const char* objective_noun()
+{
+    return gt_is_scavenger() ? "cartridge" : "flag";
+}
+
 // Listen-server hosts never receive their own state packets, so server-side
 // transitions play the transition sound locally for them.
 void play_local_transition_sound(int sound_id)
 {
     if (rf::is_dedicated_server) return;
     rf::snd_play(sound_id, 0, 0.0f, 1.0f);
+}
+
+struct ObjectiveTimings
+{
+    int capture_respawn_delay_ms;
+    int return_time_ms;
+};
+
+ObjectiveTimings objective_timings()
+{
+    const auto& rules = g_alpine_server_config_active_rules;
+    if (gt_is_scavenger()) {
+        return {rules.scavenger.objective_capture_respawn_delay_ms, rules.scavenger.objective_return_time_ms};
+    }
+    return {rules.salvage.flag_capture_respawn_delay_ms, rules.salvage.flag_return_time_ms};
 }
 
 void set_flag_item_class_spin(bool enable)
@@ -258,6 +284,8 @@ bool g_sal_flag_mesh_checked = false;
 // items.tbl value for the flag class, held while the Salvage mesh is swapped in.
 // Empty means "not currently swapped".
 std::string g_saved_flag_class_mesh;
+// items.tbl mesh type, saved with the filename: the cartridge swap changes it.
+int g_saved_flag_class_mesh_type = rf::MESH_TYPE_UNINITIALIZED;
 
 void ensure_sal_flag_mesh_checked()
 {
@@ -288,6 +316,10 @@ void ensure_sal_flag_mesh_checked()
 // mesh comes in through the correct path. Both sides run their own item_create -
 // the server in spawn_flag_item, clients from the engine's item-create packet
 // handler - so one class swap covers both with no per-item work.
+//
+// The Scavenger cartridge is a static .v3m, so its swap sets .v3d_type to
+// MESH_TYPE_STATIC as well; item_render (0x00458F80) draws any mesh type through
+// vmesh_render (0x00503100), and both types are saved and restored together.
 void revert_flag_class_mesh_if_swapped()
 {
     if (g_saved_flag_class_mesh.empty()) return;
@@ -301,22 +333,26 @@ void revert_flag_class_mesh_if_swapped()
     // String::operator=(const char*) reallocates through the engine's own
     // allocator, so neither half of the swap ever crosses an allocator.
     rf::item_info[type_idx].v3d_filename = g_saved_flag_class_mesh.c_str();
+    rf::item_info[type_idx].v3d_type = g_saved_flag_class_mesh_type;
     g_saved_flag_class_mesh.clear();
 }
 
 void apply_flag_class_mesh_if_available()
 {
-    if (!rf::is_multi || !gt_is_salvage()) return;
+    if (!rf::is_multi || !salvage_framework_active()) return;
     if (!g_saved_flag_class_mesh.empty()) return; // already swapped in
-    ensure_sal_flag_mesh_checked();
-    if (!g_sal_flag_mesh_exists) return;
+    const bool cartridge = gt_is_scavenger();
+    if (!cartridge) {
+        ensure_sal_flag_mesh_checked();
+        if (!g_sal_flag_mesh_exists) return;
+    }
     const int type_idx = rf::item_lookup_type(kSalFlagItemClass);
     if (type_idx < 0) return;
     // Only the anim-fx loader can open a .vfx (see the block comment above). If a mod
     // has retyped flag_red, swapping the filename in would hand a .vfx to the static
     // loader and leave the item with no mesh at all; keeping the mod's own flag is
     // the right degradation.
-    if (rf::item_info[type_idx].v3d_type != rf::MESH_TYPE_ANIM_FX) {
+    if (!cartridge && rf::item_info[type_idx].v3d_type != rf::MESH_TYPE_ANIM_FX) {
         xlog::warn("salvage: flag_red is not an anim-fx item class (v3d_type {}); "
             "keeping its items.tbl mesh", rf::item_info[type_idx].v3d_type);
         return;
@@ -326,7 +362,14 @@ void apply_flag_class_mesh_if_available()
     // swapped", and there would be nothing to put back anyway.
     if (!current || !*current) return;
     g_saved_flag_class_mesh = current;
-    rf::item_info[type_idx].v3d_filename = kSalFlagMeshFilename;
+    g_saved_flag_class_mesh_type = rf::item_info[type_idx].v3d_type;
+    if (cartridge) {
+        rf::item_info[type_idx].v3d_filename = kScavCartridgeMeshFilename;
+        rf::item_info[type_idx].v3d_type = rf::MESH_TYPE_STATIC;
+    }
+    else {
+        rf::item_info[type_idx].v3d_filename = kSalFlagMeshFilename;
+    }
 }
 
 // Arm a brief grace period after the flag is (re)positioned, so the player who
@@ -619,7 +662,7 @@ void drop_flag_at(rf::Player* prev_carrier, const rf::Vector3& drop_pos)
     set_carrier(nullptr);
     g_salvage_info.state = SalFlagState::Dropped;
     g_salvage_info.spawn_delay_timer.invalidate();
-    g_salvage_info.return_timer.set(g_alpine_server_config_active_rules.salvage.flag_return_time_ms);
+    g_salvage_info.return_timer.set(objective_timings().return_time_ms);
     g_salvage_info.refresh_timer.set(kSalStateRefreshIntervalMs);
     set_flag_item_class_spin(true);
 
@@ -635,13 +678,40 @@ void drop_flag_at(rf::Player* prev_carrier, const rf::Vector3& drop_pos)
     }
 
     if (prev_carrier) {
-        announce(std::format("{} dropped the flag!", prev_carrier->name.c_str()));
+        announce(std::format("{} dropped the {}!", prev_carrier->name.c_str(), objective_noun()));
     }
     else {
-        announce("The flag has been dropped!");
+        announce(std::format("The {} has been dropped!", objective_noun()));
     }
 
     salvage_broadcast_state();
+}
+
+// Scores a capture for the carrier's team and leaves the flag Delayed. The caller broadcasts.
+void capture_flag(rf::Player* player, bool red_team, const rf::Vector3& pos)
+{
+    if (red_team) {
+        ++g_salvage_info.red_caps;
+    }
+    else {
+        ++g_salvage_info.blue_caps;
+    }
+
+    afstats::on_flag_event(afstats::FlagEventKind::capture, afstats::team_none, player, pos);
+    awards_on_sal_capture(player);
+
+    rf::player_add_score(player, 4);
+    if (player->stats) {
+        ++player->stats->caps;
+        player->stats->took_part_in_flag_capture = true;
+    }
+
+    kill_current_flag_item();
+    enter_delayed_state(objective_timings().capture_respawn_delay_ms);
+
+    announce(std::format("{} captured the {} for the {} team!", player->name.c_str(), objective_noun(),
+        red_team ? "RED" : "BLUE"));
+    play_local_transition_sound(stock_sound_id::flag_capture);
 }
 
 // Find the neutral flag from a client's point of view. flag_item_handle is
@@ -767,9 +837,9 @@ void salvage_apply_flag_class_overrides()
     // item in the level exists. Both the spin bit and the mesh are class-wide
     // state, so both are reverted unconditionally first: the flag class must
     // never carry Salvage state into the next CTF level.
-    set_flag_item_class_spin(rf::is_multi && gt_is_salvage());
+    set_flag_item_class_spin(rf::is_multi && salvage_framework_active());
     revert_flag_class_mesh_if_swapped();
-    apply_flag_class_mesh_if_available(); // no-ops outside Salvage
+    apply_flag_class_mesh_if_available(); // no-ops outside Salvage and Scavenger
 }
 
 void salvage_on_multi_shutdown()
@@ -802,6 +872,46 @@ void salvage_on_multi_shutdown()
     // is the outgoing level's to reclaim, not ours.
     g_salvage_info = SalvageInfo{};
     reset_salvage_local_state(false);
+}
+
+bool salvage_framework_active()
+{
+    return gt_is_salvage() || gt_is_scavenger();
+}
+
+void salvage_set_spawn(const rf::Vector3& pos, const rf::Matrix3& orient)
+{
+    g_salvage_info.spawn_pos = pos;
+    g_salvage_info.spawn_orient = orient;
+    g_salvage_info.spawn_known = true;
+}
+
+void salvage_enter_delayed(int delay_ms)
+{
+    enter_delayed_state(delay_ms);
+}
+
+void salvage_respawn_at_home()
+{
+    spawn_flag_at_home();
+}
+
+void salvage_capture_flag(rf::Player* player, const rf::Vector3& pos)
+{
+    if (!rf::is_server || !player) return;
+    capture_flag(player, player->team == rf::TEAM_RED, pos);
+}
+
+void salvage_remove_level_ctf_flags()
+{
+    remove_level_ctf_flags();
+}
+
+rf::Entity* salvage_get_alive_carrier_entity()
+{
+    rf::Entity* ep = alive_entity_for(g_salvage_info.carrier);
+    if (!ep || rf::entity_is_dying(ep)) return nullptr;
+    return ep;
 }
 
 int salvage_get_red_team_score()
@@ -838,7 +948,7 @@ rf::Player* salvage_get_carrier()
 
 bool salvage_player_is_carrier(const rf::Player* player)
 {
-    return gt_is_salvage() && player && g_salvage_info.carrier == player;
+    return salvage_framework_active() && player && g_salvage_info.carrier == player;
 }
 
 const rf::Vector3& salvage_get_spawn_pos()
@@ -914,13 +1024,13 @@ bool salvage_get_flag_pos(rf::Vector3* out_pos)
 
 bool salvage_is_flag_item(const rf::Item* item)
 {
-    if (!gt_is_salvage() || !item || g_salvage_info.flag_item_type < 0) return false;
+    if (!salvage_framework_active() || !item || g_salvage_info.flag_item_type < 0) return false;
     return item->info_index == g_salvage_info.flag_item_type;
 }
 
 bool salvage_viewer_is_carrier_first_person()
 {
-    if (!gt_is_salvage() || !g_salvage_info.carrier) return false;
+    if (!salvage_framework_active() || !g_salvage_info.carrier) return false;
     if (rf::local_player == g_salvage_info.carrier) return true;
     if (multi_spectate_is_first_person()
         && multi_spectate_get_target_player() == g_salvage_info.carrier) {
@@ -931,7 +1041,7 @@ bool salvage_viewer_is_carrier_first_person()
 
 bool salvage_query_flag_outline(rf::VMesh** out_vmesh, rf::Vector3* out_pos, rf::Matrix3* out_orient)
 {
-    if (!gt_is_salvage()) return false;
+    if (!salvage_framework_active()) return false;
 
     const SalFlagState state = g_salvage_info.state;
     if (state != SalFlagState::AtSpawn && state != SalFlagState::Dropped
@@ -970,7 +1080,7 @@ bool salvage_flag_was_rendered_this_frame()
 
 void salvage_move_carried_flag()
 {
-    if (!rf::is_multi || !gt_is_salvage()) return;
+    if (!rf::is_multi || !salvage_framework_active()) return;
     if (g_salvage_info.state != SalFlagState::Carried || !g_salvage_info.carrier) return;
 
     rf::Item* item = current_flag_item();
@@ -1015,7 +1125,7 @@ void salvage_update_dynamic_light()
         g_salvage_light_handle = -1;
     }
 
-    if (!gt_is_salvage()) return;
+    if (!salvage_framework_active()) return;
 
     // Where the glow goes. The engine lights CTF carriers from
     // entity_process_post by asking multi_ctf_get_*_flag_player(), which Salvage
@@ -1040,17 +1150,8 @@ void salvage_update_dynamic_light()
         return;
     }
 
-    // Match stock game dynamic light pulse for amps/flags.
-    const float pulse_period   = addr_as_ref<float>(0x005947A0);
-    const float sine_amplitude = addr_as_ref<float>(0x005947A4);
-    const float sine_base      = addr_as_ref<float>(0x00594798);
-    if (pulse_period <= 0.0f) return;
-
-    g_salvage_light_pulse_phase = std::fmod(g_salvage_light_pulse_phase + rf::frametime, pulse_period);
-
-    constexpr float kTwoPi = 6.28318530718f;
-    const float intensity =
-        sine_base + sine_amplitude * std::sin(kTwoPi * g_salvage_light_pulse_phase / pulse_period);
+    const float intensity = salvage_advance_pickup_light_pulse(g_salvage_light_pulse_phase);
+    if (intensity < 0.0f) return;
 
     g_salvage_light_handle = rf::gr::light_create_point(
         &pos,
@@ -1062,21 +1163,45 @@ void salvage_update_dynamic_light()
         0);
 }
 
+float salvage_advance_pickup_light_pulse(float& pulse_phase)
+{
+    // Match stock game dynamic light pulse for amps/flags.
+    const float pulse_period   = addr_as_ref<float>(0x005947A0);
+    const float sine_amplitude = addr_as_ref<float>(0x005947A4);
+    const float sine_base      = addr_as_ref<float>(0x00594798);
+    if (pulse_period <= 0.0f) return -1.0f;
+
+    pulse_phase = std::fmod(pulse_phase + rf::frametime, pulse_period);
+
+    constexpr float kTwoPi = 6.28318530718f;
+    return sine_base + sine_amplitude * std::sin(kTwoPi * pulse_phase / pulse_period);
+}
+
 void salvage_force_state_sync_to(rf::Player* player)
 {
     // Never advertise a spawn we do not have: clients would mark home at (0,0,0).
-    if (!gt_is_salvage() || !g_salvage_info.spawn_known) return;
+    if (!g_salvage_info.spawn_known) return;
 
-    af_send_salvage_state_packet(player);
+    if (gt_is_salvage()) {
+        af_send_salvage_state_packet(player);
+    }
+    else if (gt_is_scavenger()) {
+        af_send_scavenger_state_packet(player);
+    }
 }
 
 void salvage_broadcast_state()
 {
-    if (!gt_is_salvage() || !rf::is_server || !g_salvage_info.spawn_known) return;
-    af_send_salvage_state_packet_to_all();
+    if (!rf::is_server || !g_salvage_info.spawn_known) return;
+    if (gt_is_salvage()) {
+        af_send_salvage_state_packet_to_all();
+    }
+    else if (gt_is_scavenger()) {
+        scavenger_broadcast_state();
+    }
 }
 
-void salvage_apply_state_from_packet(uint8_t state, uint8_t carrier_player_id, uint16_t time_left_ms,
+bool salvage_apply_state_from_packet(uint8_t state, uint8_t carrier_player_id, uint16_t time_left_ms,
                                      uint16_t red_caps, uint16_t blue_caps, const rf::Vector3& spawn_pos,
                                      const rf::Vector3& flag_pos)
 {
@@ -1085,7 +1210,7 @@ void salvage_apply_state_from_packet(uint8_t state, uint8_t carrier_player_id, u
     // no branch below (or in the HUD/bot code) recognises.
     if (state > static_cast<uint8_t>(SalFlagState::Delayed)) {
         xlog::warn("salvage: ignoring state packet with unknown flag state {}", state);
-        return;
+        return false;
     }
 
     const SalFlagState prev_state = g_salvage_info.state;
@@ -1170,6 +1295,7 @@ void salvage_apply_state_from_packet(uint8_t state, uint8_t carrier_player_id, u
             salvage_play_return_sound();
         }
     }
+    return true;
 }
 
 void salvage_level_init()
@@ -1181,7 +1307,7 @@ void salvage_level_init()
     // The flag_red class overrides (spin bit, Salvage mesh) are reverted and
     // (re)applied from salvage_apply_flag_class_overrides, which the engine's CTF
     // level init calls after this for every game type.
-    g_salvage_info.active = gt_is_salvage();
+    g_salvage_info.active = salvage_framework_active();
     if (!g_salvage_info.active) return;
 
     // Resolved on both sides: clients need it to find the replicated flag item.
@@ -1195,7 +1321,7 @@ void salvage_level_init()
 
 void salvage_level_init_post()
 {
-    if (!g_salvage_info.active || !rf::is_server) return;
+    if (!g_salvage_info.active || !rf::is_server || !gt_is_salvage()) return;
 
     resolve_base_positions();
     remove_level_ctf_flags();
@@ -1245,7 +1371,7 @@ void salvage_on_flag_touch(rf::Player* player, rf::Item* item)
     g_salvage_info.refresh_timer.invalidate();
     salvage_move_carried_flag(); // attach on the same frame it is taken
 
-    announce(std::format("{} has the flag!", player->name.c_str()));
+    announce(std::format("{} has the {}!", player->name.c_str(), objective_noun()));
     play_local_transition_sound(stock_sound_id::flag_pickup);
     salvage_broadcast_state();
 }
@@ -1263,34 +1389,13 @@ void salvage_on_base_touch(rf::Player* player, rf::Item* item)
     if (red_base && player->team != rf::TEAM_RED) return;
     if (blue_base && player->team != rf::TEAM_BLUE) return;
 
-    if (red_base) {
-        ++g_salvage_info.red_caps;
-    }
-    else {
-        ++g_salvage_info.blue_caps;
-    }
-
-    afstats::on_flag_event(afstats::FlagEventKind::capture, afstats::team_none, player, item->pos);
-    awards_on_sal_capture(player);
-
-    rf::player_add_score(player, 4);
-    if (player->stats) {
-        ++player->stats->caps;
-        player->stats->took_part_in_flag_capture = true;
-    }
-
-    kill_current_flag_item();
-    enter_delayed_state(g_alpine_server_config_active_rules.salvage.flag_capture_respawn_delay_ms);
-
-    announce(std::format("{} captured the flag for the {} team!", player->name.c_str(),
-        red_base ? "RED" : "BLUE"));
-    play_local_transition_sound(stock_sound_id::flag_capture);
+    capture_flag(player, red_base, item->pos);
     salvage_broadcast_state();
 }
 
 void salvage_on_entity_will_die(rf::Entity* ep)
 {
-    if (!rf::is_server || !gt_is_salvage() || !ep) return;
+    if (!rf::is_server || !salvage_framework_active() || !ep) return;
     rf::Player* player = rf::player_from_entity_handle(ep->handle);
     if (!player || player != g_salvage_info.carrier) return;
     drop_flag_at(player, ep->pos);
@@ -1298,7 +1403,7 @@ void salvage_on_entity_will_die(rf::Entity* ep)
 
 void salvage_on_player_disconnect(rf::Player* player)
 {
-    if (!gt_is_salvage()) return;
+    if (!salvage_framework_active()) return;
     if (g_salvage_info.carrier != player) return;
 
     if (rf::is_server) {
@@ -1314,7 +1419,7 @@ void salvage_on_player_disconnect(rf::Player* player)
 
 void salvage_force_drop_flag(rf::Player* player)
 {
-    if (!rf::is_server || !gt_is_salvage()) return;
+    if (!rf::is_server || !salvage_framework_active()) return;
     if (g_salvage_info.state != SalFlagState::Carried) return;
     if (g_salvage_info.carrier != player) return;
 
@@ -1324,7 +1429,7 @@ void salvage_force_drop_flag(rf::Player* player)
 
 void salvage_handle_drop_flag_request(rf::Player* player)
 {
-    if (!rf::is_server || !gt_is_salvage()) return;
+    if (!rf::is_server || !salvage_framework_active()) return;
     if (g_salvage_info.state != SalFlagState::Carried) return;
     if (g_salvage_info.carrier != player) return;
 
@@ -1336,7 +1441,7 @@ void salvage_handle_drop_flag_request(rf::Player* player)
 void salvage_do_frame()
 {
     if (!rf::is_server) return;
-    if (!gt_is_salvage()) {
+    if (!salvage_framework_active()) {
         if (g_salvage_info.active) {
             g_salvage_info = SalvageInfo{};
             // Mid-level: the light object is still alive, so hand it back rather
@@ -1374,7 +1479,7 @@ void salvage_do_frame()
             spawn_flag_at_home();
             afstats::on_flag_event(afstats::FlagEventKind::reset, afstats::team_none, nullptr,
                                    g_salvage_info.spawn_pos);
-            announce("The flag is now available!");
+            announce(std::format("The {} is now available!", objective_noun()));
             play_local_transition_sound(stock_sound_id::flag_respawn);
             salvage_broadcast_state();
             return;
@@ -1385,7 +1490,7 @@ void salvage_do_frame()
             spawn_flag_at_home();
             afstats::on_flag_event(afstats::FlagEventKind::return_timeout, afstats::team_none,
                                    nullptr, g_salvage_info.spawn_pos);
-            announce("The flag has returned.");
+            announce(std::format("The {} has returned.", objective_noun()));
             play_local_transition_sound(stock_sound_id::flag_respawn);
             salvage_broadcast_state();
             return;
@@ -1432,7 +1537,7 @@ void salvage_do_frame()
 FunHook<void(rf::Player*, rf::Item*)> multi_ctf_apply_flag_hook{
     0x004738D0,
     [](rf::Player* pp, rf::Item* item) {
-        if (!gt_is_salvage()) {
+        if (!salvage_framework_active()) {
             // The engine's own dispatch point for a CTF flag touch, and the only
             // place that sees the pre-touch state a steal is distinguished by.
             const bool red_flag = item && (item->item_flags & rf::IF_RED_FLAG) != 0;
@@ -1476,7 +1581,7 @@ FunHook<void(rf::Player*, rf::Item*)> multi_ctf_apply_flag_hook{
 FunHook<void(rf::Player*, rf::Item*)> multi_ctf_apply_item_hook{
     0x00473BA0,
     [](rf::Player* pp, rf::Item* item) {
-        if (!gt_is_salvage()) {
+        if (!salvage_framework_active()) {
             // A base touch only scores when the toucher was carrying the enemy flag,
             // which the team score moving is the reliable evidence of.
             const int red_before = rf::multi_ctf_get_red_team_score();
@@ -1500,7 +1605,9 @@ FunHook<void(rf::Player*, rf::Item*)> multi_ctf_apply_item_hook{
             }
             return;
         }
-        salvage_on_base_touch(pp, item);
+        if (gt_is_salvage()) {
+            salvage_on_base_touch(pp, item);
+        }
     },
 };
 
@@ -1514,7 +1621,7 @@ FunHook<void(rf::Player*, rf::Item*)> multi_ctf_apply_item_hook{
 CodeInjection item_render_hide_carried_flag_patch{
     0x00458F99,
     [](auto& regs) {
-        if (!gt_is_salvage()) return;
+        if (!salvage_framework_active()) return;
         auto* item = reinterpret_cast<rf::Item*>(regs.esi.value);
         if (!salvage_is_flag_item(item)) return;
         g_flag_rendered_frame = rf::frame_count;

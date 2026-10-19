@@ -219,7 +219,7 @@ static FunHook<int(int)> snd_ds_get_channel_hook{
             return -1;
         }
         int index = static_cast<rf::ubyte>(sig);
-        if (rf::ds_channels[index].sig != sig) {
+        if (index >= static_cast<int>(std::size(rf::ds_channels)) || rf::ds_channels[index].sig != sig) {
             return -1;
         }
         return index;

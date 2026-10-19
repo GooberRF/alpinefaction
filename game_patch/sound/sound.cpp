@@ -6,6 +6,7 @@
 #include <patch_common/StaticBufferResizePatch.h>
 #include <algorithm>
 #include <vector>
+#include <common/utils/string-utils.h>
 #include "sound.h"
 #include "../rf/sound/sound.h"
 #include "../rf/sound/sound_ds.h"
@@ -100,6 +101,41 @@ CallHook<void()> cutscene_play_music_hook{
     []() {
         g_cutscene_bg_sound_sig = -1;
         cutscene_play_music_hook.call_target();
+    },
+};
+
+// snd_pc stream play (0x00543B10 / 0x00543B90) never starts a sound quieter than 0.05, so a track started while
+// music is muted never plays at all, even after the volume is raised. Start it at its real volume instead:
+// snd_ds_play applies the volume before Play, and snd_music_update_volume adjusts it later.
+static int snd_music_play_track(CallHook<int(int, float, float)>& stock_play, int handle, float volume, float pan,
+                                bool looping)
+{
+    const float play_volume = rf::snd_pc_calc_play_volume(handle, volume);
+    // Stock compares at full precision, so a value that merely rounds to the floor must not go back to it.
+    // NaN fails the test and goes to stock, which rejects it as before.
+    if (!(play_volume <= rf::snd_pc_stream_min_play_volume)) {
+        return stock_play.call_target(handle, volume, pan);
+    }
+    if (!rf::sound_pc_inited || handle < 0 || handle >= static_cast<int>(std::size(rf::sounds))) {
+        return -1;
+    }
+    if (rf::snd_pc_load_hint(handle, true, false) == -1 || rf::sound_backend != rf::SOUND_BACKEND_DS) {
+        return -1;
+    }
+    return rf::snd_ds_play(rf::sounds[handle].ds_snd_id, play_volume, pan, looping, 1.0f);
+}
+
+CallHook<int(int, float, float)> snd_music_play_looping_track_hook{
+    0x00505D3D,
+    [](int handle, float volume, float pan) {
+        return snd_music_play_track(snd_music_play_looping_track_hook, handle, volume, pan, true);
+    },
+};
+
+CallHook<int(int, float, float)> snd_music_play_oneshot_track_hook{
+    0x00505D4A,
+    [](int handle, float volume, float pan) {
+        return snd_music_play_track(snd_music_play_oneshot_track_hook, handle, volume, pan, false);
     },
 };
 
@@ -250,67 +286,77 @@ int snd_pc_play_3d_new(int handle, const rf::Vector3& pos, float vol_scale, bool
 }
 
 
+static int snd_play_3d_instance(int handle, const rf::Vector3& pos, float volume, int group, bool looping)
+{
+    xlog::trace("snd_play_3d {} {:.2f} {}", handle, volume, group);
+
+    // Upper-bound guard
+    if (!rf::sound_enabled || handle < 0 || handle >= rf::g_num_sounds) {
+        return -1;
+    }
+    if (rf::snd_load_hint(handle) != 0) {
+        xlog::warn("Failed to load sound {}", handle);
+        return -1;
+    }
+
+    int instance_index = snd_get_free_instance();
+    if (instance_index < 0) {
+        return -1;
+    }
+
+    float base_volume_2d;
+    float pan;
+    rf::snd_calculate_2d_from_3d_info(handle, pos, &pan, &base_volume_2d, volume);
+    // xlog::warn("snd_play_3d vol {:.2f}", vol_scale);
+    auto& instance = rf::sound_instances[instance_index];
+    int sig;
+    if (rf::ds3d_enabled) {
+        // Note that snd_pc_play_3d_new calls snd_calculate_2d_from_3d_info on its own
+        // so use volume here instead of base_volume_2d
+        float vol_scale = volume * rf::snd_group_volume[group];
+        sig = snd_pc_play_3d_new(handle, pos, vol_scale, looping);
+    }
+    else {
+        float vol_scale = base_volume_2d * rf::snd_group_volume[group];
+        if (looping) {
+            sig = rf::snd_pc_play_looping(handle, vol_scale, pan, 0.0f, true);
+        }
+        else {
+            sig = rf::snd_pc_play(handle, vol_scale, pan, 0.0f, true);
+        }
+    }
+    xlog::trace("snd_play_3d handle {} pos <{:.2f} {:.2f} {:.2f}> vol {:.2f} sig {}", handle, pos.x, pos.y, pos.z,
+                volume, sig);
+    if (sig < 0) {
+        return -1;
+    }
+
+    instance.sig = sig;
+    instance.handle = handle;
+    instance.group = group;
+    instance.base_volume = base_volume_2d;
+    instance.pan = pan;
+    instance.is_3d_sound = true;
+    instance.pos = pos;
+    instance.base_volume_3d = volume;
+    instance.use_count++;
+
+    int instance_handle = instance_index | (instance.use_count << 8);
+    return instance_handle;
+}
+
 FunHook<int(int, const rf::Vector3&, float, const rf::Vector3&, int)> snd_play_3d_hook{
     0x005056A0,
     [](int handle, const rf::Vector3& pos, float volume, const rf::Vector3&, int group) {
-        xlog::trace("snd_play_3d {} {:.2f} {}", handle, volume, group);
-
-        // Upper-bound guard
-        if (!rf::sound_enabled || handle < 0 || handle >= rf::g_num_sounds) {
-            return -1;
-        }
-        if (rf::snd_load_hint(handle) != 0) {
-            xlog::warn("Failed to load sound {}", handle);
-            return -1;
-        }
-
-
-        bool looping = rf::sounds[handle].is_looping;
-        int instance_index = snd_get_free_instance();
-        if (instance_index < 0) {
-            return -1;
-        }
-
-        float base_volume_2d;
-        float pan;
-        rf::snd_calculate_2d_from_3d_info(handle, pos, &pan, &base_volume_2d, volume);
-        // xlog::warn("snd_play_3d vol {:.2f}", vol_scale);
-        auto& instance = rf::sound_instances[instance_index];
-        int sig;
-        if (rf::ds3d_enabled) {
-            // Note that snd_pc_play_3d_new calls snd_calculate_2d_from_3d_info on its own
-            // so use volume here instead of base_volume_2d
-            float vol_scale = volume * rf::snd_group_volume[group];
-            sig = snd_pc_play_3d_new(handle, pos, vol_scale, looping);
-        }
-        else {
-            float vol_scale = base_volume_2d * rf::snd_group_volume[group];
-            if (looping) {
-                sig = rf::snd_pc_play_looping(handle, vol_scale, pan, 0.0f, true);
-            }
-            else {
-                sig = rf::snd_pc_play(handle, vol_scale, pan, 0.0f, true);
-            }
-        }
-        xlog::trace("snd_play_3d handle {} pos <{:.2f} {:.2f} {:.2f}> vol {:.2f} sig {}", handle, pos.x, pos.y, pos.z, volume, sig);
-        if (sig < 0) {
-            return -1;
-        }
-
-        instance.sig = sig;
-        instance.handle = handle;
-        instance.group = group;
-        instance.base_volume = base_volume_2d;
-        instance.pan = pan;
-        instance.is_3d_sound = true;
-        instance.pos = pos;
-        instance.base_volume_3d = volume;
-        instance.use_count++;
-
-        int instance_handle = instance_index | (instance.use_count << 8);
-        return instance_handle;
+        const bool looping = handle >= 0 && handle < rf::g_num_sounds && rf::sounds[handle].is_looping;
+        return snd_play_3d_instance(handle, pos, volume, group, looping);
     },
 };
+
+int snd_play_3d_looping(int handle, const rf::Vector3& pos, float volume, int group)
+{
+    return snd_play_3d_instance(handle, pos, volume, group, true);
+}
 
 FunHook<void(int, const rf::Vector3&, const rf::Vector3&, float)> snd_change_3d_hook{
     0x005058C0,
@@ -475,6 +521,84 @@ FunHook<void(void*)> level_read_events_snd_defer_hook{
     },
 };
 
+// Looping is a property of the sound entry, read once from bluebeard.bty when the entry is created, so a custom file
+// never loops. Entries outlive the level, so every flag forced here is put back when the level closes. Flags go by
+// file, so they depend only on the RFL and mapname_info.tbl and match on every client.
+static std::unordered_set<std::string> g_level_looping_sounds; // lowercase
+static std::unordered_set<std::string> g_level_looping_refused;
+static std::vector<int> g_level_forced_looping_handles;
+// Entries below this were registered before the first level: sound tables, foley, Alpine's own sounds, menu music
+static int g_startup_sound_count = -1;
+
+static void snd_level_looping_apply(int handle, const std::string& filename)
+{
+    if (handle < 0 || handle >= rf::g_num_sounds) {
+        return;
+    }
+    // Game, UI and Alpine sounds are played and never stopped: forced to loop, each play would hold a channel for good
+    if (handle < g_startup_sound_count) {
+        if (g_level_looping_refused.insert(filename).second) {
+            xlog::warn("[Sound] Not looping {}: it is a game sound, which is played without ever being stopped",
+                       filename);
+        }
+        return;
+    }
+    // Only an entry that did not loop is recorded, so the revert never touches one that loops on its own
+    auto& sound = rf::sounds[handle];
+    if (!sound.is_looping) {
+        sound.is_looping = true;
+        g_level_forced_looping_handles.push_back(handle);
+    }
+}
+
+void snd_level_looping_add(std::string_view filename)
+{
+    if (filename.find_first_not_of(' ') == std::string_view::npos) {
+        return;
+    }
+    auto [it, inserted] = g_level_looping_sounds.insert(string_to_lower(filename));
+    if (inserted) {
+        snd_level_looping_apply(rf::snd_pc_find_by_name(it->c_str()), *it);
+    }
+}
+
+void snd_level_looping_reset()
+{
+    for (int handle : g_level_forced_looping_handles) {
+        rf::sounds[handle].is_looping = false;
+    }
+    g_level_forced_looping_handles.clear();
+    g_level_looping_sounds.clear();
+    g_level_looping_refused.clear();
+}
+
+void snd_level_looping_init(const std::unordered_set<std::string>& filenames)
+{
+    // Every startup sound table is parsed during game init (0x004B1E70), before any level loads
+    if (g_startup_sound_count < 0) {
+        g_startup_sound_count = rf::g_num_sounds;
+    }
+    snd_level_looping_reset();
+    for (const auto& filename : filenames) {
+        snd_level_looping_add(filename);
+    }
+}
+
+// Catches an entry created after its file was named, and one returned by name from an earlier level.
+FunHook<int(const char*, float, float, float, int)> snd_pc_get_by_name_hook{
+    0x00543580,
+    [](const char* filename, float min_range, float base_volume, float rolloff, int unk) {
+        int handle = snd_pc_get_by_name_hook.call_target(filename, min_range, base_volume, rolloff, unk);
+        if (handle >= 0 && filename && !g_level_looping_sounds.empty()) {
+            std::string name = string_to_lower(filename);
+            if (g_level_looping_sounds.contains(name)) {
+                snd_level_looping_apply(handle, name);
+            }
+        }
+        return handle;
+    },
+};
+
 FunHook<void(const rf::Vector3&, const rf::Vector3&, const rf::Matrix3&)> snd_update_sounds_hook{
      0x00505EC0,
     [](const rf::Vector3& camera_pos, const rf::Vector3& camera_vel, const rf::Matrix3& camera_orient) {
@@ -588,6 +712,26 @@ bool snd_instance_is_playing(int instance_handle)
     const auto& instance = rf::sound_instances[instance_index];
     return instance.handle >= 0 && instance.use_count == (instance_handle >> 8)
         && rf::snd_pc_is_playing(instance.sig);
+}
+
+void snd_instance_set_pitch(int instance_handle, float ratio)
+{
+    if (rf::sound_backend != rf::SOUND_BACKEND_DS || !snd_instance_is_playing(instance_handle)) {
+        return;
+    }
+    const int chnl = rf::snd_ds_get_channel(rf::sound_instances[static_cast<uint8_t>(instance_handle)].sig);
+    if (chnl < 0) {
+        return;
+    }
+    IDirectSoundBuffer* buffer = rf::ds_channels[chnl].pdsb;
+    // Room for a WAVEFORMATEXTENSIBLE: GetFormat fails rather than truncate.
+    alignas(WAVEFORMATEX) BYTE format[64]{};
+    if (!buffer || FAILED(buffer->GetFormat(reinterpret_cast<WAVEFORMATEX*>(format), sizeof(format), nullptr))) {
+        return;
+    }
+    const float freq = reinterpret_cast<const WAVEFORMATEX*>(format)->nSamplesPerSec * ratio;
+    buffer->SetFrequency(static_cast<DWORD>(std::clamp(freq, static_cast<float>(DSBFREQUENCY_MIN),
+                                                       static_cast<float>(DSBFREQUENCY_MAX))));
 }
 
 void gamesound_parse_custom_sounds() 
@@ -918,6 +1062,10 @@ void apply_sound_patches()
     // Sound loop fix in snd_music_play
     write_mem<u8>(0x00505D07 + 1, 0x00505D5B - (0x00505D07 + 2));
 
+    // Start music even when muted, so raising the volume later picks it up mid-track
+    snd_music_play_looping_track_hook.install();
+    snd_music_play_oneshot_track_hook.install();
+
     // Cutscene skip support
     cutscene_play_music_hook.install();
     snd_music_play_cutscene_hook.install();
@@ -953,6 +1101,9 @@ void apply_sound_patches()
     // Defer level-event sound preloads to after level load
     snd_load_hint_defer_hook.install();
     level_read_events_snd_defer_hook.install();
+
+    // Per-level looping sound files
+    snd_pc_get_by_name_hook.install();
 
     // Apply patch for DirectSound specific code
     snd_ds_apply_patch();

@@ -262,8 +262,8 @@ int draw_scoreboard_header(int x, int y, int w, rf::NetGameType game_type, bool 
                 red_score = bagman_get_red_team_score();
                 blue_score = bagman_get_blue_team_score();
             }
-            else if (game_type == rf::NG_TYPE_SAL) {
-                // Placeholder art: Salvage borrows the CTF flag icons.
+            else if (game_type == rf::NG_TYPE_SAL || game_type == rf::NG_TYPE_SCAV) {
+                // Placeholder art: Salvage and Scavenger borrow the CTF flag icons.
                 static int hud_flag_red_bm = rf::bm::load("hud_flag_red.tga", -1, true);
                 static int hud_flag_blue_bm = rf::bm::load("hud_flag_blue.tga", -1, true);
                 int flag_bm_w, flag_bm_h;
@@ -337,7 +337,8 @@ int draw_scoreboard_players(
     // can diverge later.
     bool show_assists = game_type != rf::NG_TYPE_RUN;
     int assists_w = show_assists ? static_cast<int>(35 * scale) : 0;
-    const bool show_caps = game_type == rf::NG_TYPE_CTF || game_type == rf::NG_TYPE_SAL;
+    const bool show_caps = game_type == rf::NG_TYPE_CTF || game_type == rf::NG_TYPE_SAL
+        || game_type == rf::NG_TYPE_SCAV;
     int caps_w = show_caps ? static_cast<int>(45 * scale) : 0;
     const auto& server_info = get_af_server_info();
     bool saving_enabled = server_info.has_value() && server_info->saving_enabled;
@@ -444,6 +445,8 @@ int draw_scoreboard_players(
                 rf::bm::load("hud_microflag_blue.tga", -1, true);
             static const int hud_micro_flag_sal_bm =
                 rf::bm::load("hud_microflag_sal.vbm", -1, true);
+            static const int hud_micro_flag_scav_bm =
+                rf::bm::load("hud_microflag_scav.tga", -1, true);
 
         const bool is_spawned = !rf::player_is_dead(player)
             && !rf::player_is_dying(player);
@@ -458,7 +461,7 @@ int draw_scoreboard_players(
                 || player_is_idle(player)) {
                 return idle_bm;
             } else if (salvage_player_is_carrier(player)) {
-                return hud_micro_flag_sal_bm;
+                return gt_is_scavenger() ? hud_micro_flag_scav_bm : hud_micro_flag_sal_bm;
             } else if (player == red_flag_player) {
                 return hud_micro_flag_red_bm;
             } else if (player == blue_flag_player) {
