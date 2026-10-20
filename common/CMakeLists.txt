@@ -75,3 +75,50 @@ target_link_libraries(Common
     version
     Xlog
 )
+
+# Shared Direct3D 11 renderer core. Each consumer compiles these sources against its own
+# engine shim, <gr_d3d11_engine.h>, which it puts on its include path.
+set(GR_D3D11_CORE_SRCS
+    include/common/gr_d3d11/gr_d3d11_af_lightmap.h
+    include/common/gr_d3d11/gr_d3d11_bindings.h
+    include/common/gr_d3d11/gr_d3d11_buffer.h
+    include/common/gr_d3d11/gr_d3d11_caustics.h
+    include/common/gr_d3d11/gr_d3d11_context.h
+    include/common/gr_d3d11/gr_d3d11_decoration.h
+    include/common/gr_d3d11/gr_d3d11_dynamic_geometry.h
+    include/common/gr_d3d11/gr_d3d11_gamma.h
+    include/common/gr_d3d11/gr_d3d11_liquid.h
+    include/common/gr_d3d11/gr_d3d11_mesh.h
+    include/common/gr_d3d11/gr_d3d11_particle.h
+    include/common/gr_d3d11/gr_d3d11_shader.h
+    include/common/gr_d3d11/gr_d3d11_solid.h
+    include/common/gr_d3d11/gr_d3d11_state.h
+    include/common/gr_d3d11/gr_d3d11_terrain.h
+    include/common/gr_d3d11/gr_d3d11_texture.h
+    include/common/gr_d3d11/gr_d3d11_transform.h
+    include/common/gr_d3d11/gr_d3d11_util.h
+    include/common/gr_d3d11/gr_d3d11_vertex.h
+    include/common/gr_d3d11/gr_d3d11_vfx.h
+    include/common/gr_d3d11/gr_d3d11_weather.h
+    src/gr_d3d11/gr_d3d11_af_lightmap.cpp
+    src/gr_d3d11/gr_d3d11_caustics.cpp
+    src/gr_d3d11/gr_d3d11_context.cpp
+    src/gr_d3d11/gr_d3d11_decoration.cpp
+    src/gr_d3d11/gr_d3d11_dynamic_geometry.cpp
+    src/gr_d3d11/gr_d3d11_error.cpp
+    src/gr_d3d11/gr_d3d11_gamma.cpp
+    src/gr_d3d11/gr_d3d11_liquid.cpp
+    src/gr_d3d11/gr_d3d11_mesh.cpp
+    src/gr_d3d11/gr_d3d11_particle.cpp
+    src/gr_d3d11/gr_d3d11_shader.cpp
+    src/gr_d3d11/gr_d3d11_solid.cpp
+    src/gr_d3d11/gr_d3d11_state.cpp
+    src/gr_d3d11/gr_d3d11_terrain.cpp
+    src/gr_d3d11/gr_d3d11_texture.cpp
+    src/gr_d3d11/gr_d3d11_vfx.cpp
+)
+list(TRANSFORM GR_D3D11_CORE_SRCS PREPEND ${CMAKE_CURRENT_SOURCE_DIR}/)
+
+add_library(GrD3D11Core INTERFACE)
+target_sources(GrD3D11Core INTERFACE ${GR_D3D11_CORE_SRCS})
+target_link_libraries(GrD3D11Core INTERFACE Common)

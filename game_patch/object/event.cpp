@@ -27,7 +27,7 @@
 #include "../rf/vmesh.h"
 #include <common/config/GameConfig.h>
 #include "../main/main.h"
-#include "../graphics/d3d11/gr_d3d11_mesh.h"
+#include <common/gr_d3d11/gr_d3d11_mesh.h>
 #include "../sound/sound.h"
 #include "object.h"
 

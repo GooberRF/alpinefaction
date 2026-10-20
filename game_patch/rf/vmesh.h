@@ -77,6 +77,12 @@ namespace rf
         int start_frame;
         float playback_rate;
         int anim_type;
+
+        // frame is in 15 fps units
+        int get_bitmap(float frame) const
+        {
+            return AddrCaller{0x0054A630}.this_call<int>(this, frame);
+        }
     };
     static_assert(sizeof(TexMap) == 0x34);
 
@@ -99,6 +105,22 @@ namespace rf
         float *self_illumination;
         int num_opacity_frames;
         int *opacity;
+
+        // frame is in 15 fps units
+        float get_opacity(float frame) const
+        {
+            return AddrCaller{0x0054AA80}.this_call<float>(this, frame);
+        }
+
+        float get_self_illumination(float frame) const
+        {
+            return AddrCaller{0x0054A9E0}.this_call<float>(this, frame);
+        }
+
+        float get_crossfade(float t) const
+        {
+            return AddrCaller{0x0054A930}.this_call<float>(this, t);
+        }
     };
     static_assert(sizeof(MeshMaterial) == 0xC8);
 

@@ -367,6 +367,18 @@ namespace rf::gr
     static auto& bitmap_3d_wrap_mode = addr_as_ref<Mode>(0x017756E4);
     static auto& glow_3d_bitmap_mode = addr_as_ref<Mode>(0x01775B30);
     static auto& glow_3d_poly_no_z_mode = addr_as_ref<Mode>(0x01775B14);
+    static auto& solid_mode = addr_as_ref<Mode>(0x01808328);
+    static auto& solid_alpha_mode = addr_as_ref<Mode>(0x0180832C);
+    static auto& decal_mode = addr_as_ref<Mode>(0x01808318);
+    static auto& decal_tiling_u_mode = addr_as_ref<Mode>(0x0180831C);
+    static auto& decal_tiling_v_mode = addr_as_ref<Mode>(0x0181833C);
+    static auto& decals_enabled = addr_as_ref<bool>(0x005A4458);
+    // The stock modes gr_d3d_render_vfx (0x00553EE0) picks between
+    static auto& vfx_untextured_mode = addr_as_ref<Mode>(0x017C7BB8);
+    static auto& vfx_flag8_mode = addr_as_ref<Mode>(0x01775B10);
+    static auto& vfx_additive_mode = addr_as_ref<Mode>(0x017756B8);
+    static auto& vfx_opaque_mode = addr_as_ref<Mode>(0x01775AEC);
+    static auto& vfx_crossfade_alpha_mode = addr_as_ref<Mode>(0x017C7C64);
 
     static auto& view_matrix = addr_as_ref<Matrix3>(0x018186C8);
     static auto& view_pos = addr_as_ref<Vector3>(0x01818690);
@@ -471,6 +483,12 @@ namespace rf::gr
     {
         AddrCaller{0x0050D250}.c_call(bm_handle, x, y, w, h, sx, sy, sw, sh, flip_x, flip_y, mode);
     }
+}
+
+namespace rf::gr::d3d
+{
+    // Power of 2 texture enforcement
+    static auto& p2t = addr_as_ref<int>(0x01CFCC18);
 }
 
 namespace rf

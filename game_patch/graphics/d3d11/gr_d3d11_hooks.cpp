@@ -25,15 +25,17 @@
 #include "../../main/main.h"
 #include "../../misc/misc.h"
 #include "../../misc/level.h"
+#include "../../misc/alpine_options.h"
 #include "../../misc/alpine_settings.h"
 #include "../../os/console.h"
 #include "../gr.h"
 #include "gr_d3d11.h"
 #include "gr_d3d11_hooks.h"
-#include "gr_d3d11_terrain.h"
-#include "gr_d3d11_liquid.h"
-#include "gr_d3d11_mesh.h"
-#include "gr_d3d11_vfx.h"
+#include "../gr_ghost_mesh.h"
+#include <common/gr_d3d11/gr_d3d11_terrain.h>
+#include <common/gr_d3d11/gr_d3d11_liquid.h>
+#include <common/gr_d3d11/gr_d3d11_mesh.h>
+#include <common/gr_d3d11/gr_d3d11_vfx.h>
 
 void gr_light_use_static(bool use_static);
 
@@ -751,6 +753,40 @@ namespace gr::d3d11
         },
     };
 
+    void evaluate_mesh_lighting(const std::string& level_filename)
+    {
+        if (!g_alpine_game_config.ignore_tbl_vertex_lighting
+            && g_alpine_level_info_config.is_option_loaded(level_filename, AlpineLevelInfoID::UseVertexLighting)
+            && get_level_info_value<bool>(AlpineLevelInfoID::UseVertexLighting)) {
+            g_level_vertex_lighting = true;
+        }
+        else {
+            g_level_vertex_lighting = g_alpine_game_config.mesh_lighting_use_vertex();
+        }
+    }
+
+    void evaluate_alpha_test_threshold(const std::string& level_filename)
+    {
+        if (is_stock_alpha_test_level(level_filename)) {
+            g_alpha_test_threshold = 16.0f / 255.0f;
+        }
+        else {
+            g_alpha_test_threshold = 1.0f / 255.0f;
+        }
+    }
+
+    void evaluate_pixel_light_overbright(const std::string& level_filename)
+    {
+        if (!g_alpine_game_config.ignore_tbl_pixel_light_overbright
+            && g_alpine_level_info_config.is_option_loaded(level_filename, AlpineLevelInfoID::PixelLightOverbright)) {
+            g_level_pixel_light_overbright = std::clamp(
+                get_level_info_value<float>(AlpineLevelInfoID::PixelLightOverbright), 0.0f, 3.0f);
+        }
+        else {
+            g_level_pixel_light_overbright = g_alpine_game_config.pixel_light_overbright;
+        }
+    }
+
     ConsoleCommand2 vfx_gpu_cmd{
         "dbg_vfxgpu",
         []() {
@@ -758,6 +794,17 @@ namespace gr::d3d11
             rf::console::print("GPU vfx mesh rendering: {}", g_vfx_gpu ? "on" : "off");
         },
         "Toggles GPU rendering of .vfx meshes (off = stock CPU path)",
+    };
+
+    ConsoleCommand2 dbg_terrain_batches_cmd{
+        "dbg_terrain_batches",
+        [](std::optional<int> value) {
+            g_terrain_tint_batches = value ? value.value() != 0 : !g_terrain_tint_batches;
+            rf::console::print("Terrain batch tint is {} (green: surface, red: underside, blue: crater)",
+                               g_terrain_tint_batches ? "on" : "off");
+        },
+        "Tints terrain faces by the batch that draws them (Direct3D 11 renderer only)",
+        "dbg_terrain_batches [0|1]",
     };
 
     void fog_set()
@@ -1501,6 +1548,42 @@ void gr_d3d11_apply_patch()
 
     r_antialiasing_cmd.register_cmd();
     r_antialiasing_mode_cmd.register_cmd();
-    terrain_register_commands();
+    dbg_terrain_batches_cmd.register_cmd();
     vfx_gpu_cmd.register_cmd();
+}
+
+namespace gr
+{
+    bool render_ghost_mesh(rf::VMesh* mesh, const rf::Vector3& pos, const rf::Matrix3& orient,
+                           float alpha_below, float alpha_above, float fill_y, const rf::Color* tint)
+    {
+        if (!mesh || rf::gr::screen.mode != rf::gr::DIRECT3D || !is_d3d11()) {
+            return false;
+        }
+        if (rf::vmesh_get_type(mesh) == rf::MESH_TYPE_ANIM_FX) {
+            return false;
+        }
+        if (!std::isfinite(alpha_below) || !std::isfinite(alpha_above) || !std::isfinite(fill_y)) {
+            return false;
+        }
+        alpha_below = std::clamp(alpha_below, 0.0f, 1.0f);
+        alpha_above = std::clamp(alpha_above, 0.0f, alpha_below);
+        if (alpha_below <= 0.0f) {
+            return false;
+        }
+
+        // Ratio 0 is the shader's "not a ghost draw" sentinel, so fully transparent clamps just above it.
+        d3d11::begin_ghost_fill(fill_y, std::max(alpha_above / alpha_below, 1.0f / 512.0f), tint);
+
+        rf::MeshRenderParams params{};
+        params.init_defaults();
+        params.alpha = static_cast<int>(alpha_below * 255.0f + 0.5f);
+        params.orient = orient;
+        rf::Vector3 draw_pos = pos;
+        rf::Matrix3 draw_orient = orient;
+        rf::vmesh_render(mesh, &draw_pos, &draw_orient, &params);
+
+        d3d11::end_ghost_fill();
+        return true;
+    }
 }

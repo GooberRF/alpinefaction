@@ -74,48 +74,15 @@ set(SRCS
     graphics/legacy/gr_d3d_internal.h
     graphics/d3d11/gr_d3d11.cpp
     graphics/d3d11/gr_d3d11.h
-    graphics/d3d11/gr_d3d11_state.cpp
-    graphics/d3d11/gr_d3d11_state.h
-    graphics/d3d11/gr_d3d11_texture.cpp
-    graphics/d3d11/gr_d3d11_texture.h
-    graphics/d3d11/gr_d3d11_dynamic_geometry.cpp
-    graphics/d3d11/gr_d3d11_dynamic_geometry.h
-    graphics/d3d11/gr_d3d11_particle.cpp
-    graphics/d3d11/gr_d3d11_particle.h
-    graphics/d3d11/gr_d3d11_context.cpp
-    graphics/d3d11/gr_d3d11_context.h
-    graphics/d3d11/gr_d3d11_shader.cpp
-    graphics/d3d11/gr_d3d11_shader.h
-    graphics/d3d11/gr_d3d11_error.cpp
-    graphics/d3d11/gr_d3d11_transform.h
-    graphics/d3d11/gr_d3d11_solid.cpp
-    graphics/d3d11/gr_d3d11_solid.h
-    graphics/d3d11/gr_d3d11_mesh.cpp
-    graphics/d3d11/gr_d3d11_mesh.h
-    graphics/d3d11/gr_d3d11_vfx.cpp
-    graphics/d3d11/gr_d3d11_vfx.h
     graphics/d3d11/gr_d3d11_entity_shadow.cpp
     graphics/d3d11/gr_d3d11_entity_shadow.h
-    graphics/d3d11/gr_d3d11_caustics.cpp
-    graphics/d3d11/gr_d3d11_caustics.h
-    graphics/d3d11/gr_d3d11_af_lightmap.cpp
-    graphics/d3d11/gr_d3d11_af_lightmap.h
-    graphics/d3d11/gr_d3d11_terrain.cpp
-    graphics/d3d11/gr_d3d11_terrain.h
-    graphics/d3d11/gr_d3d11_decoration.cpp
-    graphics/d3d11/gr_d3d11_decoration.h
-    graphics/d3d11/gr_d3d11_liquid.cpp
-    graphics/d3d11/gr_d3d11_liquid.h
-    graphics/d3d11/gr_d3d11_vertex.h
-    graphics/d3d11/gr_d3d11_buffer.h
     graphics/d3d11/gr_d3d11_hooks.cpp
     graphics/d3d11/gr_d3d11_hooks.h
     graphics/d3d11/gr_d3d11_outline.h
     graphics/d3d11/gr_d3d11_outline.cpp
-    graphics/d3d11/gr_d3d11_gamma.h
-    graphics/d3d11/gr_d3d11_gamma.cpp
     graphics/d3d11/gr_d3d11_scenefx.h
     graphics/d3d11/gr_d3d11_scenefx.cpp
+    graphics/d3d11/engine/gr_d3d11_engine.h
     input/input.h
     input/mouse.h
     input/mouse.cpp
@@ -445,6 +412,7 @@ target_include_directories(AlpineFaction PRIVATE
     ${CMAKE_SOURCE_DIR}/vendor/xxhash
     ${CMAKE_SOURCE_DIR}/vendor/stb
     ${CMAKE_SOURCE_DIR}/vendor/freetype/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/graphics/d3d11/engine
 )
 
 if(NOT MSVC)
@@ -469,6 +437,7 @@ target_link_libraries(AlpineFaction
     PatchCommon
     Xlog
     Common
+    GrD3D11Core
     CrashHandlerStub
     xxhash
     bc7enc_rdo

@@ -849,6 +849,7 @@ namespace rf
     static auto& sky_room_rotation_rate = addr_as_ref<float>(0x00646020);
     static auto& sky_room_rotation_angle = addr_as_ref<float>(0x00646024);
     static auto& sky_room_rotation = addr_as_ref<Matrix3>(0x00646028);
+    static auto& sky_room_pass_active = addr_as_ref<bool>(0x0088FD1C);
 
     static auto& g_solid_load_v3d_embedded = addr_as_ref<GSolid*(const char*)>(0x00586E70);
     static auto& g_solid_load_v3d = addr_as_ref<GSolid*(const char*)>(0x00586F5C);

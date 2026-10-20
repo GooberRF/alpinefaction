@@ -101,6 +101,7 @@ namespace rf::bm
     static auto& get_mipmap_info = addr_as_ref<void(int bm_handle, int *w, int *h, int *num_pixels, int *mip_levels)>(0x00510680);
     static auto& lock = addr_as_ref<Format(int handle, ubyte **data, ubyte **pal)>(0x00510780);
     static auto& unlock = addr_as_ref<void(int)>(0x00511700);
+    static auto& has_alpha = addr_as_ref<bool(int bm_handle)>(0x00510710);
 
     // required for realtime bitmap generation, set in gr_d3d_init_device for DX8/9
     static auto& max_d3d_texture_resolution_h = addr_as_ref<int>(0x017C7C00);
