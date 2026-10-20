@@ -441,7 +441,7 @@ ObjectiveProgressWatchdogAction update_objective_progress_watchdog(
 {
     if (bot_state().active_goal == BotGoalType::none
         || bot_state().active_goal == BotGoalType::eliminate_target
-        || bot_state().active_goal == BotGoalType::sal_stage_at_spawn) {
+        || bot_goal_is_salvage_positioning(bot_state().active_goal)) {
         reset_objective_progress_watchdog(true);
         return ObjectiveProgressWatchdogAction::none;
     }
@@ -616,8 +616,8 @@ void capture_global_failsafe_watchdog_snapshot(const rf::Entity& entity)
     bot_state().global_failsafe_wd.timer.set(kGlobalFailsafeWatchdogMs);
 }
 
-// A carrier camping with the bag (at its spot) or a salvage bot staged at its spawn (anywhere in the arrival area) is
-// meant to stand still.
+// A carrier camping with the bag (at its spot), a salvage bot staged at its spawn (anywhere in the arrival area) or a
+// Scavenger bot holding the zone or escorting its carrier is meant to stay put.
 bool bot_is_holding_position(const rf::Entity& entity)
 {
     float hold_radius = 0.0f;
@@ -628,11 +628,23 @@ bool bot_is_holding_position(const rf::Entity& entity)
         case BotGoalType::sal_stage_at_spawn:
             hold_radius = kWaypointReachRadius * 3.0f;
             break;
+        case BotGoalType::sal_hold_zone:
+        case BotGoalType::sal_escort_carrier:
+            hold_radius = kSalvageHoldRadius;
+            break;
         default:
             return false;
     }
     return bot_state().goal_target_pos.len_sq() > 0.0001f
         && rf::vec_dist_squared(&entity.pos, &bot_state().goal_target_pos) <= hold_radius * hold_radius;
+}
+
+// Scavenger holds side-step around their spot; a blocked step there is no reason to reroute.
+bool bot_is_holding_scavenger_spot(const rf::Entity& entity)
+{
+    return (bot_state().active_goal == BotGoalType::sal_hold_zone
+            || bot_state().active_goal == BotGoalType::sal_escort_carrier)
+        && bot_is_holding_position(entity);
 }
 
 bool has_global_failsafe_context(
@@ -798,7 +810,7 @@ PositionStallWatchdogAction update_position_stall_watchdog(
             pursuing_enemy_goal,
             enemy_has_los
         );
-    if (bot_state().active_goal == BotGoalType::none) {
+    if (bot_state().active_goal == BotGoalType::none || bot_is_holding_scavenger_spot(entity)) {
         reset_position_stall_watchdog();
         return PositionStallWatchdogAction::none;
     }
@@ -959,6 +971,10 @@ GoalStuckWatchdogAction update_goal_stuck_watchdog(rf::Entity& entity)
         reset_no_move_target_watchdog();
         reset_position_stall_watchdog();
         reset_objective_progress_watchdog(true);
+        return GoalStuckWatchdogAction::none;
+    }
+    if (bot_is_holding_scavenger_spot(entity)) {
+        reset_goal_stuck_watchdog(true);
         return GoalStuckWatchdogAction::none;
     }
 
@@ -2913,11 +2929,12 @@ void bot_run_frame(BotContext& ctx)
         ctx.state.control_point_route_fail_timer.invalidate();
         ctx.state.control_point_patrol_waypoint = 0;
         ctx.state.control_point_patrol_timer.invalidate();
-        ctx.state.salvage_stage_hold_pos = {};
-        ctx.state.salvage_stage_orbit_timer.invalidate();
-        ctx.state.salvage_stage_orbit_left = false;
+        ctx.state.salvage_hold_pos = {};
+        ctx.state.salvage_hold_orbit_timer.invalidate();
+        ctx.state.salvage_hold_orbit_left = false;
         ctx.state.salvage_stage_route_fails = 0;
         ctx.state.salvage_stage_given_up = false;
+        ctx.state.scav_role_timer.invalidate();
         ctx.state.last_recorded_health = -1.0f;
         ctx.state.last_recorded_armor = -1.0f;
         clear_semi_auto_click_state();
@@ -2960,11 +2977,12 @@ void bot_run_frame(BotContext& ctx)
         ctx.state.control_point_route_fail_timer.invalidate();
         ctx.state.control_point_patrol_waypoint = 0;
         ctx.state.control_point_patrol_timer.invalidate();
-        ctx.state.salvage_stage_hold_pos = {};
-        ctx.state.salvage_stage_orbit_timer.invalidate();
-        ctx.state.salvage_stage_orbit_left = false;
+        ctx.state.salvage_hold_pos = {};
+        ctx.state.salvage_hold_orbit_timer.invalidate();
+        ctx.state.salvage_hold_orbit_left = false;
         ctx.state.salvage_stage_route_fails = 0;
         ctx.state.salvage_stage_given_up = false;
+        ctx.state.scav_role_timer.invalidate();
         ctx.state.last_recorded_health = -1.0f;
         ctx.state.last_recorded_armor = -1.0f;
         ctx.state.bridge.zone_uid = -1;
@@ -3053,11 +3071,12 @@ void bot_run_frame(BotContext& ctx)
         ctx.state.control_point_route_fail_timer.invalidate();
         ctx.state.control_point_patrol_waypoint = 0;
         ctx.state.control_point_patrol_timer.invalidate();
-        ctx.state.salvage_stage_hold_pos = {};
-        ctx.state.salvage_stage_orbit_timer.invalidate();
-        ctx.state.salvage_stage_orbit_left = false;
+        ctx.state.salvage_hold_pos = {};
+        ctx.state.salvage_hold_orbit_timer.invalidate();
+        ctx.state.salvage_hold_orbit_left = false;
         ctx.state.salvage_stage_route_fails = 0;
         ctx.state.salvage_stage_given_up = false;
+        ctx.state.scav_role_timer.invalidate();
         ctx.state.last_recorded_health = -1.0f;
         ctx.state.last_recorded_armor = -1.0f;
         ctx.state.console_status_timer.invalidate();

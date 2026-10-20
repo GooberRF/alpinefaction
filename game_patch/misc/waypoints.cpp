@@ -9,6 +9,7 @@
 #include "../multi/gametype.h"
 #include "../multi/multi.h"
 #include "../multi/salvage.h"
+#include "../multi/scavenger.h"
 #include "../os/console.h"
 #include <xlog/xlog.h>
 #include "../rf/collide.h"
@@ -102,6 +103,7 @@ bool waypoint_has_link_to(int from, int to);
 rf::Mover* find_mover_by_uid(int mover_uid);
 void update_ctf_dropped_flag_temporary_waypoints();
 void update_salvage_flag_temporary_waypoint();
+void update_scavenger_zone_temporary_waypoint();
 bool are_waypoint_commands_enabled_for_local_client();
 bool is_ctf_mode_for_waypoints();
 int get_ctf_flag_object_uid(bool red_flag);
@@ -3573,33 +3575,35 @@ bool waypoints_find_bag_waypoint(int& out_waypoint, rf::Vector3& out_pos)
     return true;
 }
 
-// Salvage: there is at most one neutral flag waypoint at any time.
-int find_temporary_salvage_flag_waypoint()
+// Salvage: there is at most one temporary node of each subtype at any time, the neutral flag's and, under
+// Scavenger, the zone's.
+int find_temporary_salvage_flag_waypoint(WaypointSalvageFlagSubtype subtype = WaypointSalvageFlagSubtype::flag)
 {
     for (int waypoint_uid = 1; waypoint_uid < static_cast<int>(g_waypoints.size()); ++waypoint_uid) {
         const auto& node = g_waypoints[waypoint_uid];
         if (!node.valid || !node.temporary) continue;
-        if (node.type != WaypointType::salvage_flag) continue;
+        if (node.type != WaypointType::salvage_flag || node.subtype != static_cast<int>(subtype)) continue;
         return waypoint_uid;
     }
     return 0;
 }
 
-void remove_temporary_salvage_flag_waypoints()
+void remove_temporary_salvage_flag_waypoints(WaypointSalvageFlagSubtype subtype = WaypointSalvageFlagSubtype::flag)
 {
     while (true) {
-        const int waypoint_uid = find_temporary_salvage_flag_waypoint();
+        const int waypoint_uid = find_temporary_salvage_flag_waypoint(subtype);
         if (waypoint_uid <= 0) break;
         remove_waypoint_by_uid(waypoint_uid);
     }
 }
 
-int create_temporary_salvage_flag_waypoint(const rf::Vector3& flag_pos)
+int create_temporary_salvage_flag_waypoint(
+    const rf::Vector3& flag_pos, WaypointSalvageFlagSubtype subtype = WaypointSalvageFlagSubtype::flag)
 {
     const int waypoint_uid = add_waypoint(
         flag_pos,
         WaypointType::salvage_flag,
-        0,
+        static_cast<int>(subtype),
         false,
         true,
         kSalvageFlagWaypointLinkRadius,
@@ -3717,7 +3721,7 @@ void update_salvage_flag_temporary_waypoint()
     if (!(rf::level.flags & rf::LEVEL_LOADED)) {
         return;
     }
-    if (!is_waypoint_bot_mode_active() || !gt_is_salvage()) {
+    if (!is_waypoint_bot_mode_active() || !salvage_framework_active()) {
         remove_temporary_salvage_flag_waypoints();
         return;
     }
@@ -3745,6 +3749,29 @@ void update_salvage_flag_temporary_waypoint()
     }
     if (has_flag_pos) {
         waypoints_on_salvage_flag_world_pos(flag_pos);
+    }
+}
+
+// The Scavenger zone gets a node of its own only where the level has none inside it, so routes there end inside the
+// zone rather than beside it.
+void update_scavenger_zone_temporary_waypoint()
+{
+    constexpr auto kZoneSubtype = WaypointSalvageFlagSubtype::scavenger_zone;
+    rf::Vector3 zone_pos{};
+    if (!is_waypoint_bot_mode_active() || !scavenger_get_zone(&zone_pos)) {
+        remove_temporary_salvage_flag_waypoints(kZoneSubtype);
+        return;
+    }
+
+    const int existing = find_temporary_salvage_flag_waypoint(kZoneSubtype);
+    if (existing > 0) {
+        if (distance_sq(g_waypoints[existing].pos, zone_pos) <= 0.0001f) {
+            return;
+        }
+        remove_waypoint_by_uid(existing);
+    }
+    if (closest_waypoint(zone_pos, scavenger_get_zone_radius()) <= 0) {
+        create_temporary_salvage_flag_waypoint(zone_pos, kZoneSubtype);
     }
 }
 
@@ -9399,6 +9426,7 @@ void waypoints_do_frame()
     update_bridge_zone_states();
     update_ctf_dropped_flag_temporary_waypoints();
     update_salvage_flag_temporary_waypoint();
+    update_scavenger_zone_temporary_waypoint();
     waypoints_utils_do_frame();
 
     if (!are_waypoint_commands_enabled_for_local_client()) {

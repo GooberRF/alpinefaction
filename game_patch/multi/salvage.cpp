@@ -989,6 +989,11 @@ bool salvage_get_team_base_pos(int team, rf::Vector3* out_pos)
     return true;
 }
 
+bool salvage_get_delivery_pos(int team, rf::Vector3* out_pos)
+{
+    return gt_is_scavenger() ? scavenger_get_zone(out_pos) : salvage_get_team_base_pos(team, out_pos);
+}
+
 int salvage_get_time_left_ms()
 {
     if (g_salvage_info.state == SalFlagState::Dropped && g_salvage_info.return_timer.valid()) {

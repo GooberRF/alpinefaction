@@ -67,6 +67,7 @@ inline constexpr int kWaypointStuckCheckMs = 1000;
 inline constexpr int kWaypointRecoveryRepathMs = 125;
 inline constexpr int kWaypointRecoveryDetourAttempts = 24;
 inline constexpr int kSalvageStageMaxRouteFails = 3;
+inline constexpr float kSalvageHoldRadius = kWaypointReachRadius * 2.0f;
 inline constexpr int kPursuitRouteFailureLimit = 4;
 inline constexpr int kCollectRouteFailureLimit = 4;
 inline constexpr int kCollectRecoveryRepathMs = 650;
@@ -176,6 +177,8 @@ enum class BotGoalType
     sal_deliver_flag = 20,
     sal_chase_carrier = 21,
     sal_stage_at_spawn = 22,
+    sal_hold_zone = 23,
+    sal_escort_carrier = 24,
 };
 
 inline constexpr bool bot_goal_is_item_collection(const BotGoalType goal)
@@ -224,6 +227,22 @@ inline constexpr bool bot_goal_is_salvage_objective(const BotGoalType goal)
         case BotGoalType::sal_deliver_flag:
         case BotGoalType::sal_chase_carrier:
         case BotGoalType::sal_stage_at_spawn:
+        case BotGoalType::sal_hold_zone:
+        case BotGoalType::sal_escort_carrier:
+            return true;
+        default:
+            return false;
+    }
+}
+
+// Salvage goals that hold a position rather than go for the flag: never urgent, and the bot keeps stepping around
+// the spot it holds.
+inline constexpr bool bot_goal_is_salvage_positioning(const BotGoalType goal)
+{
+    switch (goal) {
+        case BotGoalType::sal_stage_at_spawn:
+        case BotGoalType::sal_hold_zone:
+        case BotGoalType::sal_escort_carrier:
             return true;
         default:
             return false;
@@ -260,6 +279,8 @@ inline constexpr BotGoalTier bot_goal_tier(const BotGoalType goal)
         case BotGoalType::control_point_objective:
             return BotGoalTier::tier1_objective;
         case BotGoalType::sal_stage_at_spawn:
+        case BotGoalType::sal_hold_zone:
+        case BotGoalType::sal_escort_carrier:
         case BotGoalType::collect_weapon:
         case BotGoalType::collect_ammo:
         case BotGoalType::collect_health:
@@ -614,11 +635,17 @@ struct BotState
     rf::Timestamp control_point_route_fail_timer{};
     int control_point_patrol_waypoint = 0;
     rf::Timestamp control_point_patrol_timer{};
-    rf::Vector3 salvage_stage_hold_pos{};
-    rf::Timestamp salvage_stage_orbit_timer{};
-    bool salvage_stage_orbit_left = false;
+    rf::Vector3 salvage_hold_pos{};
+    rf::Timestamp salvage_hold_orbit_timer{};
+    bool salvage_hold_orbit_left = false;
     int salvage_stage_route_fails = 0;
     bool salvage_stage_given_up = false;
+    // Scavenger role split: whether the bot took its team's primary role for the objective state in scav_role_key,
+    // kept until scav_role_timer runs out or that state changes.
+    int scav_role_key = 0;
+    bool scav_role_primary = false;
+    rf::Timestamp scav_role_timer{};
+    uint32_t scav_zone_serial = 0;
     BotCombatFiringState firing{};
 
     rf::Timestamp jump_timer{};

@@ -12,6 +12,7 @@
 #include "../bagman.h"
 #include "../gametype.h"
 #include "../salvage.h"
+#include "../scavenger.h"
 #include "../../main/main.h"
 #include "../../rf/multi.h"
 #include "../../rf/player/player.h"
@@ -244,28 +245,26 @@ rf::Vector3 resolve_control_point_objective_pos(
     return fallback_pos;
 }
 
+// The player's entity while the player takes part and is alive, else null.
+rf::Entity* live_participant_entity(const rf::Player& player)
+{
+    if (player.is_non_participant() || player.is_spectator || player.is_spawn_disabled
+        || rf::player_is_dead(&player) || rf::player_is_dying(&player)) {
+        return nullptr;
+    }
+    rf::Entity* entity = rf::entity_from_handle(player.entity_handle);
+    return entity && !rf::entity_is_dying(entity) ? entity : nullptr;
+}
+
 bool has_alive_enemy_players(const rf::Player& local_player)
 {
     const bool team_mode = multi_is_team_game_type();
     for (const rf::Player& candidate : SinglyLinkedList{rf::player_list}) {
-        if (&candidate == &local_player) {
-            continue;
+        if (&candidate != &local_player
+            && !(team_mode && candidate.team == local_player.team)
+            && live_participant_entity(candidate)) {
+            return true;
         }
-        if (candidate.is_non_participant() || candidate.is_spectator || candidate.is_spawn_disabled) {
-            continue;
-        }
-        if (team_mode && candidate.team == local_player.team) {
-            continue;
-        }
-        if (rf::player_is_dead(&candidate) || rf::player_is_dying(&candidate)) {
-            continue;
-        }
-
-        rf::Entity* candidate_entity = rf::entity_from_handle(candidate.entity_handle);
-        if (!candidate_entity || rf::entity_is_dying(candidate_entity)) {
-            continue;
-        }
-        return true;
     }
     return false;
 }
@@ -557,12 +556,16 @@ struct SalvageRuntimeState
     bool flag_pos_known = false;
     rf::Vector3 flag_pos{};
     int flag_waypoint = 0;
-    bool own_base_known = false;
-    rf::Vector3 own_base_pos{};
-    int own_base_waypoint = 0;
+    bool delivery_known = false;
+    rf::Vector3 delivery_pos{};
+    int delivery_waypoint = 0;
     bool spawn_pos_known = false;
     rf::Vector3 spawn_pos{};
     int spawn_waypoint = 0;
+    bool scavenger = false;
+    bool zone_known = false;
+    rf::Vector3 zone_pos{};
+    int zone_waypoint = 0;
 };
 
 struct SalvageGoalCandidate
@@ -578,11 +581,16 @@ struct SalvageGoalCandidate
 bool build_salvage_runtime_state(SalvageRuntimeState& out_state)
 {
     out_state = {};
-    if (!gt_is_salvage() || !bot_player()) {
+    if (!salvage_framework_active() || !bot_player()) {
         return false;
     }
 
     out_state.valid = true;
+    out_state.scavenger = gt_is_scavenger();
+    if (scavenger_get_zone(&out_state.zone_pos)) {
+        out_state.zone_known = true;
+        out_state.zone_waypoint = bot_find_closest_waypoint_with_fallback(out_state.zone_pos);
+    }
 
     // Leaving the Delayed window gives the staging goal a clean slate: the give-up
     // latch only ever describes one spawn delay on one map layout.
@@ -669,17 +677,95 @@ bool build_salvage_runtime_state(SalvageRuntimeState& out_state)
     }
 
     if (out_state.we_carry) {
-        rf::Vector3 base_pos{};
-        if (salvage_get_team_base_pos(bot_player()->team, &base_pos)) {
-            out_state.own_base_pos = base_pos;
-            out_state.own_base_known = true;
-            // The base item position stays the goal target; the waypoint is only
+        rf::Vector3 delivery_pos{};
+        if (salvage_get_delivery_pos(bot_player()->team, &delivery_pos)) {
+            out_state.delivery_pos = delivery_pos;
+            out_state.delivery_known = true;
+            // The delivery point stays the goal target; the waypoint is only
             // the routing anchor.
-            out_state.own_base_waypoint = bot_find_closest_waypoint_with_fallback(base_pos);
+            out_state.delivery_waypoint = bot_find_closest_waypoint_with_fallback(delivery_pos);
         }
     }
 
     return true;
+}
+
+// Scavenger splits each team without messaging: every bot ranks its living teammates by route distance from the
+// objective's anchor (the cartridge, its spawn or the carrier), which on the mostly two-way graphs stands in for the
+// way there, and takes the primary role while it is among the nearest. A bot already in the role counts itself
+// nearer, so bots at similar distances keep their roles instead of trading them; the ranking is redone on a slow
+// cadence and whenever the objective changes hands or state.
+bool scavenger_takes_primary_role(const rf::Entity& local_entity, const SalvageRuntimeState& state)
+{
+    constexpr int kRoleRefreshMs = 1500;
+    constexpr float kRoleKeepShare = 0.25f;
+    constexpr float kRoleKeepMinDist = 8.0f;
+
+    rf::Vector3 anchor_pos{};
+    if (state.carrier_entity) {
+        anchor_pos = state.carrier_entity->pos;
+    }
+    else if (state.in_world) {
+        anchor_pos = state.flag_pos;
+    }
+    else if (state.staging) {
+        anchor_pos = state.spawn_pos;
+    }
+    else {
+        return true;
+    }
+    const int role_key = state.carrier_entity
+        ? state.carrier_entity->handle
+        : -1 - static_cast<int>(salvage_get_state());
+    BotState& bs = bot_state();
+    if (bs.scav_role_key == role_key && bs.scav_role_timer.valid() && !bs.scav_role_timer.elapsed()) {
+        return bs.scav_role_primary;
+    }
+    const bool was_primary = bs.scav_role_key == role_key && bs.scav_role_primary;
+    bs.scav_role_key = role_key;
+    bs.scav_role_timer.set(kRoleRefreshMs);
+    bs.scav_role_primary = true;
+
+    const int anchor_waypoint = bot_find_closest_waypoint_with_fallback(anchor_pos);
+    if (anchor_waypoint <= 0) {
+        return true;
+    }
+    const BotWaypointDistanceField& field = bot_nav_distance_field(anchor_waypoint);
+    const auto route_dist = [&field](const rf::Vector3& pos) {
+        const int waypoint = bot_find_closest_waypoint_with_fallback(pos);
+        return waypoint > 0 && waypoint < static_cast<int>(field.dist.size())
+            ? field.dist[waypoint]
+            : std::numeric_limits<float>::infinity();
+    };
+    float own_dist = route_dist(local_entity.pos);
+    if (was_primary && std::isfinite(own_dist)) {
+        own_dist -= std::max(kRoleKeepMinDist, own_dist * kRoleKeepShare);
+    }
+
+    const rf::Player& local_player = *bot_player();
+    const auto player_id = [](const rf::Player& player) {
+        return player.net_data ? player.net_data->player_id : 0;
+    };
+    int teammates = 1;
+    int nearer = 0;
+    for (const rf::Player& candidate : SinglyLinkedList{rf::player_list}) {
+        if (&candidate == &local_player || &candidate == state.carrier || candidate.team != local_player.team) {
+            continue;
+        }
+        const rf::Entity* candidate_entity = live_participant_entity(candidate);
+        if (!candidate_entity) {
+            continue;
+        }
+        ++teammates;
+        const float dist = route_dist(candidate_entity->pos);
+        if (dist < own_dist || (dist == own_dist && player_id(candidate) < player_id(local_player))) {
+            ++nearer;
+        }
+    }
+    // One bot escorts a carrying teammate; every other role takes the nearer half of the team.
+    const int primary_count = state.ally_carry ? 1 : (teammates + 1) / 2;
+    bs.scav_role_primary = nearer < primary_count;
+    return bs.scav_role_primary;
 }
 
 bool find_reachable_bridge_zone_waypoint(
@@ -1100,6 +1186,16 @@ void bot_refresh_goal_state(
         reevaluate_goal = true;
     }
 
+    // A moved Scavenger zone drops any route to the old one at once; the goal checks below take up the new spot.
+    if (ScavengerZoneView zone_view{};
+        scavenger_get_zone_view(&zone_view) && zone_view.change_serial != bot_state().scav_zone_serial) {
+        bot_state().scav_zone_serial = zone_view.change_serial;
+        if (bot_state().active_goal == BotGoalType::sal_deliver_flag
+            || bot_state().active_goal == BotGoalType::sal_hold_zone) {
+            bot_state_clear_waypoint_route(true, false, false);
+        }
+    }
+
     // Forced re-evaluation when the current goal's target is no longer valid.
     // This ensures the bot transitions immediately rather than waiting for timer expiry.
     bool goal_target_invalidated = false;
@@ -1498,17 +1594,20 @@ void bot_refresh_goal_state(
                     }
                     break;
                 case BotGoalType::sal_deliver_flag:
-                    goal_valid = salvage_state.we_carry && salvage_state.own_base_known;
+                    goal_valid = salvage_state.we_carry && salvage_state.delivery_known;
                     if (goal_valid) {
                         bot_state().goal_target_handle = -1;
-                        bot_state().goal_target_pos = salvage_state.own_base_pos;
-                        bot_state().goal_target_waypoint = salvage_state.own_base_waypoint > 0
-                            ? salvage_state.own_base_waypoint
-                            : bot_find_closest_waypoint_with_fallback(salvage_state.own_base_pos);
+                        bot_state().goal_target_pos = salvage_state.delivery_pos;
+                        bot_state().goal_target_waypoint = salvage_state.delivery_waypoint > 0
+                            ? salvage_state.delivery_waypoint
+                            : bot_find_closest_waypoint_with_fallback(salvage_state.delivery_pos);
                     }
                     break;
                 case BotGoalType::sal_chase_carrier:
-                    goal_valid = salvage_state.enemy_carry
+                case BotGoalType::sal_escort_carrier:
+                    goal_valid = (bot_state().active_goal == BotGoalType::sal_chase_carrier
+                            ? salvage_state.enemy_carry
+                            : salvage_state.ally_carry)
                         && salvage_state.carrier_entity
                         && !rf::entity_is_dying(salvage_state.carrier_entity);
                     if (goal_valid) {
@@ -1532,6 +1631,15 @@ void bot_refresh_goal_state(
                         bot_state().goal_target_waypoint = salvage_state.spawn_waypoint > 0
                             ? salvage_state.spawn_waypoint
                             : bot_find_closest_waypoint_with_fallback(salvage_state.spawn_pos);
+                    }
+                    break;
+                case BotGoalType::sal_hold_zone:
+                    goal_valid = salvage_state.zone_known && !salvage_state.we_carry;
+                    if (goal_valid) {
+                        bot_state().goal_target_handle = -1;
+                        bot_state().goal_target_identifier = -1;
+                        bot_state().goal_target_pos = salvage_state.zone_pos;
+                        bot_state().goal_target_waypoint = salvage_state.zone_waypoint;
                     }
                     break;
                 default:
@@ -2262,21 +2370,30 @@ void bot_refresh_goal_state(
             salvage_goal = cand;
         };
 
-        if (salvage_state.we_carry && salvage_state.own_base_known) {
-            // Carrying: only scoring the flag at our own base matters.
+        // Scavenger: the bots nearest the objective go for it, the rest of the team holds the zone.
+        const bool primary_role = !salvage_state.scavenger
+            || salvage_state.we_carry
+            || scavenger_takes_primary_role(local_entity, salvage_state);
+        constexpr float kScavengerGrabDist = 12.0f;
+
+        if (salvage_state.we_carry && salvage_state.delivery_known) {
+            // Carrying: only scoring the flag at our own base (Scavenger: the zone) matters.
             const float deliver_dist = std::sqrt(std::max(
-                rf::vec_dist_squared(&local_entity.pos, &salvage_state.own_base_pos), 0.0f));
+                rf::vec_dist_squared(&local_entity.pos, &salvage_state.delivery_pos), 0.0f));
             const float proximity_bonus = std::clamp(190.0f - deliver_dist * 1.40f, -80.0f, 190.0f);
             consider_salvage_candidate(SalvageGoalCandidate{
                 BotGoalType::sal_deliver_flag,
                 -1,
                 -1,
-                salvage_state.own_base_waypoint,
-                salvage_state.own_base_pos,
+                salvage_state.delivery_waypoint,
+                salvage_state.delivery_pos,
                 std::lerp(230.0f, 420.0f, ctf_capture_norm) + proximity_bonus,
             });
         }
-        else if (salvage_state.in_world) {
+        else if (salvage_state.in_world
+            && (primary_role
+                || rf::vec_dist_squared(&local_entity.pos, &salvage_state.flag_pos)
+                    <= kScavengerGrabDist * kScavengerGrabDist)) {
             // The flag is on the ground (home or dropped). This is THE most
             // immediate objective.
             const float dist = std::sqrt(std::max(
@@ -2291,7 +2408,7 @@ void bot_refresh_goal_state(
                 510.0f + proximity_bonus,
             });
         }
-        else if (salvage_state.enemy_carry && salvage_state.carrier_entity) {
+        else if (salvage_state.enemy_carry && salvage_state.carrier_entity && primary_role) {
             // Chase the enemy carrier.
             const bool carrier_has_los =
                 enemy_target
@@ -2312,7 +2429,20 @@ void bot_refresh_goal_state(
                 chase_score,
             });
         }
-        else if (salvage_state.staging && !bot_state().salvage_stage_given_up) {
+        else if (salvage_state.scavenger && salvage_state.ally_carry && salvage_state.carrier_entity && primary_role) {
+            // Cover the teammate carrying the cartridge to the zone.
+            const float escort_dist = std::sqrt(std::max(
+                rf::vec_dist_squared(&local_entity.pos, &salvage_state.carrier_entity->pos), 0.0f));
+            consider_salvage_candidate(SalvageGoalCandidate{
+                BotGoalType::sal_escort_carrier,
+                salvage_state.carrier_entity->handle,
+                -1,
+                0,
+                salvage_state.carrier_entity->pos,
+                260.0f + std::clamp(80.0f - escort_dist, -40.0f, 80.0f),
+            });
+        }
+        else if (salvage_state.staging && !bot_state().salvage_stage_given_up && primary_role) {
             // Spawn delay: nothing to grab yet, but every bot knows where the flag
             // will land. Drift to mid and skirmish over the ground instead of
             // wandering the map.
@@ -2335,6 +2465,24 @@ void bot_refresh_goal_state(
                 salvage_state.spawn_waypoint,
                 salvage_state.spawn_pos,
                 stage_score,
+            });
+        }
+
+        if (salvage_state.scavenger
+            && salvage_state.zone_known
+            && !salvage_state.we_carry
+            && salvage_goal.goal == BotGoalType::none) {
+            // Defend or intercept at the zone every carrier has to reach; while the cartridge is
+            // yet to spawn this gives way to any fight.
+            const float zone_dist = std::sqrt(std::max(
+                rf::vec_dist_squared(&local_entity.pos, &salvage_state.zone_pos), 0.0f));
+            consider_salvage_candidate(SalvageGoalCandidate{
+                BotGoalType::sal_hold_zone,
+                -1,
+                -1,
+                salvage_state.zone_waypoint,
+                salvage_state.zone_pos,
+                (salvage_state.staging ? 60.0f : 150.0f) + std::clamp(45.0f - zone_dist * 0.55f, -25.0f, 45.0f),
             });
         }
     }
@@ -2858,7 +3006,7 @@ void bot_refresh_goal_state(
     else if (bot_goal_is_salvage_objective(bot_state().active_goal)
         && salvage_goal.goal == bot_state().active_goal) {
         current_goal_score = salvage_goal.score
-            + (bot_state().active_goal == BotGoalType::sal_stage_at_spawn ? 12.0f : 30.0f);
+            + (bot_goal_is_salvage_positioning(bot_state().active_goal) ? 12.0f : 30.0f);
     }
     else if (bot_goal_is_control_point_objective(bot_state().active_goal)
         && std::isfinite(active_control_point_goal_score)) {
@@ -2896,7 +3044,7 @@ void bot_refresh_goal_state(
         }
         if (bot_state().active_goal == BotGoalType::eliminate_target
             && bot_goal_is_salvage_objective(selected_goal)
-            && selected_goal != BotGoalType::sal_stage_at_spawn) {
+            && !bot_goal_is_salvage_positioning(selected_goal)) {
             switch_margin *= 0.35f;
         }
         if (deathmatch_mode
@@ -2950,7 +3098,7 @@ void bot_refresh_goal_state(
                 same_goal_switch_margin *= 1.40f;
             }
             if (bot_goal_is_salvage_objective(selected_goal)
-                && selected_goal != BotGoalType::sal_stage_at_spawn) {
+                && !bot_goal_is_salvage_positioning(selected_goal)) {
                 same_goal_switch_margin *= 1.40f;
             }
             if (bot_goal_is_control_point_objective(selected_goal)) {
@@ -2997,7 +3145,7 @@ void bot_refresh_goal_state(
         bot_goal_is_ctf_objective(selected_goal)
         || bot_goal_is_bagman_objective(selected_goal)
         || (bot_goal_is_salvage_objective(selected_goal)
-            && selected_goal != BotGoalType::sal_stage_at_spawn)
+            && !bot_goal_is_salvage_positioning(selected_goal))
         || bot_goal_is_control_point_objective(selected_goal);
     const bool switch_to_immediate_enemy_threat =
         selected_goal == BotGoalType::eliminate_target

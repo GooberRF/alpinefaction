@@ -54,10 +54,10 @@ void bot_goal_runtime_clear_non_active_goal_state(const BotGoalType active_goal)
         bot_state().control_point_patrol_waypoint = 0;
         bot_state().control_point_patrol_timer.invalidate();
     }
-    if (active_goal != BotGoalType::sal_stage_at_spawn) {
-        bot_state().salvage_stage_hold_pos = {};
-        bot_state().salvage_stage_orbit_timer.invalidate();
-        bot_state().salvage_stage_orbit_left = false;
+    if (!bot_goal_is_salvage_positioning(active_goal)) {
+        bot_state().salvage_hold_pos = {};
+        bot_state().salvage_hold_orbit_timer.invalidate();
+        bot_state().salvage_hold_orbit_left = false;
     }
 }
 

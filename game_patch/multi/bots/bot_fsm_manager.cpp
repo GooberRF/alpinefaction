@@ -4,6 +4,7 @@
 #include "bot_fsm.h"
 #include "bot_personality_manager.h"
 #include "bot_state.h"
+#include "../gametype.h"
 #include <algorithm>
 #include <cmath>
 
@@ -98,8 +99,9 @@ BotFsmState bot_fsm_manager_select_state(
     if (bot_goal_is_salvage_objective(bot_state().active_goal)) {
         // The escape hatch is deliberately deliver-exempt: a carrier that breaks off
         // to top up health or grab a weapon loses the flag, so sal_deliver_flag stays
-        // unconditional.
+        // unconditional. Scavenger hides every item, so there is nothing to break off for.
         if (bot_state().active_goal != BotGoalType::sal_deliver_flag
+            && !gt_is_scavenger()
             && !keep_pressure_on_enemy) {
             if (needs_replenish) {
                 return BotFsmState::replenish_health_armor;

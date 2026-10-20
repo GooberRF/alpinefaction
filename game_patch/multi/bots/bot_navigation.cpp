@@ -15,6 +15,7 @@
 #include "../bagman.h"
 #include "../gametype.h"
 #include "../salvage.h"
+#include "../scavenger.h"
 #include "../../rf/multi.h"
 #include "../../rf/player/player.h"
 #include "../../rf/trigger.h"
@@ -2360,13 +2361,27 @@ bool update_bagman_objective_goal(
     return true;
 }
 
+// Holds a spot without standing still: alternating side steps around it, borrowed from the control-point
+// single-anchor orbit.
+rf::Vector3 salvage_hold_step(const rf::Entity& local_entity, const rf::Vector3& spot)
+{
+    if (!bot_state().salvage_hold_orbit_timer.valid() || bot_state().salvage_hold_orbit_timer.elapsed()) {
+        bot_state().salvage_hold_orbit_left = !bot_state().salvage_hold_orbit_left;
+        bot_state().salvage_hold_orbit_timer.set(1100);
+    }
+    const rf::Vector3 lateral = forward_from_non_linear_yaw_pitch(
+        local_entity.control_data.phb.y + (bot_state().salvage_hold_orbit_left ? 1.57079632679f : -1.57079632679f),
+        0.0f);
+    return spot + lateral * (kWaypointReachRadius * 0.75f);
+}
+
 // Drive bot movement for salvage goals.
 bool update_salvage_objective_goal(
     const rf::Entity& local_entity,
     rf::Vector3& move_target,
     bool& has_move_target)
 {
-    if (!gt_is_salvage() || !bot_player()) {
+    if (!salvage_framework_active() || !bot_player()) {
         return bot_goal_runtime_abort_salvage_goal();
     }
 
@@ -2402,19 +2417,21 @@ bool update_salvage_objective_goal(
                 || !salvage_player_is_carrier(bot_player())) {
                 return bot_goal_runtime_abort_salvage_goal();
             }
-            if (!salvage_get_team_base_pos(bot_player()->team, &target_pos)) {
+            if (!salvage_get_delivery_pos(bot_player()->team, &target_pos)) {
                 return bot_goal_runtime_abort_salvage_goal();
             }
             has_target = true;
             break;
         }
-        case BotGoalType::sal_chase_carrier: {
-            // Track the live carrier entity.
+        case BotGoalType::sal_chase_carrier:
+        case BotGoalType::sal_escort_carrier: {
+            // Track the live carrier entity: an enemy one to chase, a teammate to escort.
             rf::Player* carrier = salvage_get_carrier();
             if (salvage_get_state() != SalFlagState::Carried || !carrier) {
                 return bot_goal_runtime_abort_salvage_goal();
             }
-            if (carrier == bot_player() || carrier->team == bot_player()->team) {
+            const bool escorting = bot_state().active_goal == BotGoalType::sal_escort_carrier;
+            if (carrier == bot_player() || (carrier->team == bot_player()->team) != escorting) {
                 return bot_goal_runtime_abort_salvage_goal();
             }
             rf::Entity* carrier_ent = rf::entity_from_handle(carrier->entity_handle);
@@ -2437,6 +2454,13 @@ bool update_salvage_objective_goal(
             rf::Vector3 stage_wp_pos{};
             if (waypoints_find_salvage_flag_waypoint(stage_wp, stage_wp_pos)) {
                 bot_state().goal_target_waypoint = stage_wp;
+            }
+            has_target = true;
+            break;
+        }
+        case BotGoalType::sal_hold_zone: {
+            if (salvage_player_is_carrier(bot_player()) || !scavenger_get_zone(&target_pos)) {
+                return bot_goal_runtime_abort_salvage_goal();
             }
             has_target = true;
             break;
@@ -2467,7 +2491,8 @@ bool update_salvage_objective_goal(
     if (bot_state().active_goal == BotGoalType::sal_seek_flag) {
         const float goal_dist_sq = rf::vec_dist_squared(&local_entity.pos, &target_pos);
         rf::Vector3 los_target = target_pos;
-        los_target.y += 2.5f;
+        // The Scavenger cartridge is a small mesh at item height, often under low cover; the Salvage flag is tall.
+        los_target.y += gt_is_scavenger() ? 0.5f : 2.5f;
         const bool direct_approach_allowed = bot_has_unobstructed_level_los(
             local_entity.eye_pos, los_target, nullptr, nullptr);
 
@@ -2495,41 +2520,46 @@ bool update_salvage_objective_goal(
             }
         }
     }
-    else if (bot_state().active_goal == BotGoalType::sal_stage_at_spawn) {
-        // Generous "near mid" arrival: 3x the waypoint reach radius, i.e. anywhere in
-        // the general area of the spawn counts as arrived.
-        constexpr float kSalvageStageArrivalRadius = kWaypointReachRadius * 3.0f;
+    else if (bot_state().active_goal == BotGoalType::sal_stage_at_spawn
+             || bot_state().active_goal == BotGoalType::sal_hold_zone) {
+        // Generous "near mid" arrival for staging: 3x the waypoint reach radius, i.e. anywhere in
+        // the general area of the spawn counts as arrived. The zone is held from closer by.
+        const float arrival_radius = bot_state().active_goal == BotGoalType::sal_stage_at_spawn
+            ? kWaypointReachRadius * 3.0f
+            : kSalvageHoldRadius;
         const float stage_dist_sq = rf::vec_dist_squared(&local_entity.pos, &target_pos);
-        if (stage_dist_sq <= kSalvageStageArrivalRadius * kSalvageStageArrivalRadius) {
+        if (stage_dist_sq <= arrival_radius * arrival_radius) {
             bot_internal_clear_waypoint_route();
             bot_state().ctf_objective_route_fail_timer.invalidate();
 
             // bag_camp-style hold: latch the arrival spot once and keep it.
-            rf::Vector3& hold_pos = bot_state().salvage_stage_hold_pos;
+            rf::Vector3& hold_pos = bot_state().salvage_hold_pos;
             const bool hold_valid =
                 hold_pos.len_sq() > 0.0001f
-                && rf::vec_dist_squared(&hold_pos, &local_entity.pos)
-                    <= kSalvageStageArrivalRadius * kSalvageStageArrivalRadius;
+                && rf::vec_dist_squared(&hold_pos, &local_entity.pos) <= arrival_radius * arrival_radius
+                && rf::vec_dist_squared(&hold_pos, &target_pos) <= arrival_radius * arrival_radius;
             if (!hold_valid) {
                 hold_pos = local_entity.pos;
             }
-
-            // Alternating lateral step around the latched spot, borrowed from the
-            // control-point single-anchor orbit.
-            if (!bot_state().salvage_stage_orbit_timer.valid()
-                || bot_state().salvage_stage_orbit_timer.elapsed()) {
-                bot_state().salvage_stage_orbit_left =
-                    !bot_state().salvage_stage_orbit_left;
-                bot_state().salvage_stage_orbit_timer.set(1100);
-            }
-            const rf::Vector3 lateral = forward_from_non_linear_yaw_pitch(
-                local_entity.control_data.phb.y
-                    + (bot_state().salvage_stage_orbit_left ? 1.57079632679f
-                                                                   : -1.57079632679f),
-                0.0f);
-            move_target = hold_pos + lateral * (kWaypointReachRadius * 0.75f);
+            move_target = salvage_hold_step(local_entity, hold_pos);
             has_move_target = true;
             return true;
+        }
+    }
+    else if (bot_state().active_goal == BotGoalType::sal_escort_carrier) {
+        // Close to the carrier, keep station a few metres behind it: near enough to trade for it, out of its way.
+        constexpr float kEscortTrailDistance = 3.0f;
+        const rf::Entity* carrier_ent = rf::entity_from_handle(bot_state().goal_target_handle);
+        if (carrier_ent
+            && rf::vec_dist_squared(&local_entity.pos, &target_pos) <= kSalvageHoldRadius * kSalvageHoldRadius) {
+            const rf::Vector3 station = target_pos - carrier_ent->orient.fvec * kEscortTrailDistance;
+            if (can_move_directly_to(local_entity, station, carrier_ent->eye_pos)) {
+                bot_internal_clear_waypoint_route();
+                bot_state().ctf_objective_route_fail_timer.invalidate();
+                move_target = salvage_hold_step(local_entity, station);
+                has_move_target = true;
+                return true;
+            }
         }
     }
     else if (bot_state().active_goal == BotGoalType::sal_deliver_flag) {

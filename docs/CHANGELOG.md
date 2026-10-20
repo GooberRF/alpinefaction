@@ -29,10 +29,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Add server-side bots, which run inside the dedicated or listen server process in addition to (or instead of) bot clients
   - `server_bots` ADS option (0-31) sets how many server bots join; they use the `bot_profiles` profiles and follow `ideal_player_count` like bot clients
   - Server bots count toward `max_players`; when a human player joins a full server, a server bot leaves to make room and rejoins when a slot frees up (never beyond 32 players in total, so on a 32-slot server bots do not make room)
-  - Add `sv_bot_add [profile_index] [red|blue]`, `sv_bot_remove <name|all>` and `sv_bot_list` server console commands, also usable via rcon; changes last until the server restarts, and reloading the config resizes the bot list to its `server_bots` count (bots that still fit keep their profile and team)
-  - A kicked server bot stays removed until `sv_bot_add` or a config reload adds it again
-  - A listen server host can add and remove server bots with the same `sv_bot_*` console commands; they use automatic profiles there (no ADS config)
-  - Server bots load waypoints like bot clients, including the FactionFiles AWP autodownload, and sit out on levels without waypoints
+  - Add `sv_bot_add [profile_index] [red|blue]`, `sv_bot_remove <name|all>` and `sv_bot_list` server console commands
 - Add new multiplayer game type: Scavenger (`SCAV`)
 
 [@GooberRF](https://github.com/GooberRF) & [@nickalreadyinuse](https://github.com/nickalreadyinuse)

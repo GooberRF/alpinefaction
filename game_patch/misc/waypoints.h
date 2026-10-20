@@ -110,6 +110,12 @@ enum class WaypointCtfFlagSubtype : int
     blue = 1,
 };
 
+enum class WaypointSalvageFlagSubtype : int
+{
+    flag = 0,
+    scavenger_zone = 1,
+};
+
 enum class WaypointZoneType : int
 {
     control_point = 0,

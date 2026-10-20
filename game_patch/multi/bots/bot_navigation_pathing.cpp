@@ -1080,9 +1080,9 @@ void reset_client_bot_state()
     bot_state().control_point_route_fail_timer.invalidate();
     bot_state().control_point_patrol_waypoint = 0;
     bot_state().control_point_patrol_timer.invalidate();
-    bot_state().salvage_stage_hold_pos = {};
-    bot_state().salvage_stage_orbit_timer.invalidate();
-    bot_state().salvage_stage_orbit_left = false;
+    bot_state().salvage_hold_pos = {};
+    bot_state().salvage_hold_orbit_timer.invalidate();
+    bot_state().salvage_hold_orbit_left = false;
     bot_state().salvage_stage_route_fails = 0;
     bot_state().salvage_stage_given_up = false;
     bot_state().firing.wants_fire = false;
