@@ -1097,14 +1097,23 @@ bool bot_skill_apply_field_override(BotContext& ctx, uint8_t field_id, float val
         case af_skill_field::reaction_time_ms:
             s.reaction_time_ms = std::clamp(value, 0.0f, 5000.0f);
             return true;
-        case af_skill_field::aim_error_min:                 s.aim_error_min = value; return true;
-        case af_skill_field::aim_error_max:                 s.aim_error_max = value; return true;
+        // Moving one bound past the other drags the other with it, so a valid pair lands in either order.
+        case af_skill_field::aim_error_min:
+            s.aim_error_min = std::clamp(value, 0.001f, 5.0f);
+            s.aim_error_max = std::max(s.aim_error_max, s.aim_error_min);
+            return true;
+        case af_skill_field::aim_error_max:
+            s.aim_error_max = std::clamp(value, 0.001f, 5.0f);
+            s.aim_error_min = std::min(s.aim_error_min, s.aim_error_max);
+            return true;
         case af_skill_field::yaw_speed_cap:                 s.yaw_speed_cap = value; return true;
         case af_skill_field::pitch_speed_cap:               s.pitch_speed_cap = value; return true;
         case af_skill_field::fire_alignment_threshold:
             s.fire_alignment_threshold = std::min(value, 0.999f);
             return true;
-        case af_skill_field::semi_auto_click_interval_scale: s.semi_auto_click_interval_scale = value; return true;
+        case af_skill_field::semi_auto_click_interval_scale:
+            s.semi_auto_click_interval_scale = std::clamp(value, 0.0f, 20.0f);
+            return true;
         default:
             return false;
     }

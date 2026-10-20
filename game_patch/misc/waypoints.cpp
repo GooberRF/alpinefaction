@@ -1186,6 +1186,18 @@ bool waypoint_link_blocked_by_bridge_zone_state(const int from_waypoint_uid, con
         || !waypoint_uid_enabled_by_bridge_zone_state(to_waypoint_uid);
 }
 
+int count_waypoint_inbound_links(int waypoint_uid, bool persistent_sources_only = false)
+{
+    int count = 0;
+    for (int i = 1; i < static_cast<int>(g_waypoints.size()); ++i) {
+        const auto& node = g_waypoints[i];
+        if (node.valid && !(persistent_sources_only && node.temporary) && waypoint_link_exists(node, waypoint_uid)) {
+            ++count;
+        }
+    }
+    return count;
+}
+
 void link_waypoint(int from, int to)
 {
     if (from <= 0 || to <= 0 || from >= static_cast<int>(g_waypoints.size()) ||
@@ -1202,13 +1214,44 @@ void link_waypoint(int from, int to)
     if (waypoint_link_exists(node, to)) {
         return;
     }
-    ++g_waypoint_graph_version;
     if (node.num_links < kMaxWaypointLinks) {
+        ++g_waypoint_graph_version;
         node.links[node.num_links++] = to;
         return;
     }
-    std::uniform_int_distribution<int> dist(0, kMaxWaypointLinks - 1);
-    node.links[dist(g_rng)] = to;
+    int replace_slot = -1;
+    if (g_waypoints[to].temporary) {
+        // A temporary node may only take a slot held by another temporary node, so persistent links survive: a
+        // crater's first, then the node with the most other inbound links. A borrowed slot or a node's only inbound
+        // link is never taken.
+        int best_score = 0;
+        for (int slot = 0; slot < kMaxWaypointLinks; ++slot) {
+            const int link = node.links[slot];
+            if (link <= 0 || link >= static_cast<int>(g_waypoints.size())) {
+                continue;
+            }
+            const auto& linked = g_waypoints[link];
+            if (!linked.temporary || linked.borrowed_link_from == from) {
+                continue;
+            }
+            const int score = linked.type == WaypointType::crater
+                ? std::numeric_limits<int>::max()
+                : count_waypoint_inbound_links(link) - 1;
+            if (score > best_score) {
+                best_score = score;
+                replace_slot = slot;
+            }
+        }
+        if (replace_slot < 0) {
+            return;
+        }
+    }
+    else {
+        std::uniform_int_distribution<int> dist(0, kMaxWaypointLinks - 1);
+        replace_slot = dist(g_rng);
+    }
+    ++g_waypoint_graph_version;
+    node.links[replace_slot] = to;
 }
 
 bool is_player_grounded(const rf::Entity& entity)
@@ -1878,20 +1921,53 @@ int add_waypoint_zone_definition(WaypointZoneDefinition zone)
     return static_cast<int>(g_waypoint_zones.size()) - 1;
 }
 
+// Gives the lender back the link its slot held before the temporary node borrowed it.
+void restore_borrowed_waypoint_link(int waypoint_uid)
+{
+    auto& node = g_waypoints[waypoint_uid];
+    const int from = node.borrowed_link_from;
+    const int target = node.borrowed_link_target;
+    node.borrowed_link_from = 0;
+    node.borrowed_link_target = 0;
+    if (!is_waypoint_uid_valid(from) || !is_waypoint_uid_valid(target)) {
+        return;
+    }
+    auto& from_node = g_waypoints[from];
+    if (waypoint_link_exists(from_node, target)) {
+        return;
+    }
+    for (int slot = 0; slot < from_node.num_links; ++slot) {
+        if (from_node.links[slot] == waypoint_uid) {
+            from_node.links[slot] = target;
+            ++g_waypoint_graph_version;
+            return;
+        }
+    }
+    if (from_node.num_links < kMaxWaypointLinks) {
+        from_node.links[from_node.num_links++] = target;
+        ++g_waypoint_graph_version;
+    }
+}
+
 bool remove_waypoint_by_uid(int waypoint_uid)
 {
     if (!is_waypoint_uid_valid(waypoint_uid)) {
         return false;
     }
 
+    restore_borrowed_waypoint_link(waypoint_uid);
     auto& node = g_waypoints[waypoint_uid];
+    const bool temporary = node.temporary;
     node.valid = false;
     node.num_links = 0;
     node.links.fill(0);
     node.zones.clear();
 
     remap_waypoints();
-    sanitize_waypoint_links_against_geometry();
+    // Removing a temporary node leaves the persistent links as they were, and the remap drops the links to it.
+    if (!temporary) {
+        sanitize_waypoint_links_against_geometry();
+    }
     return true;
 }
 
@@ -3448,6 +3524,7 @@ void link_temporary_waypoint_like_crater(int waypoint_uid)
     const float link_radius_sq =
         sanitize_waypoint_link_radius(temp_waypoint.link_radius)
         * sanitize_waypoint_link_radius(temp_waypoint.link_radius);
+    std::vector<std::pair<float, int>> clear_sources{};
     for (int i = 1; i < static_cast<int>(g_waypoints.size()); ++i) {
         if (i == waypoint_uid) {
             continue;
@@ -3457,16 +3534,58 @@ void link_temporary_waypoint_like_crater(int waypoint_uid)
         if (!node.valid) {
             continue;
         }
-        if (distance_sq(waypoint_pos, node.pos) > link_radius_sq) {
+        const float dist_sq = distance_sq(waypoint_pos, node.pos);
+        if (dist_sq > link_radius_sq) {
             continue;
         }
 
         if (waypoint_upward_link_allowed(waypoint_pos, node.pos, kWaypointGenerateMaxInclineDeg)) {
             link_waypoint_if_clear(waypoint_uid, i);
         }
-        if (waypoint_upward_link_allowed(node.pos, waypoint_pos, kWaypointGenerateMaxInclineDeg)) {
-            link_waypoint_if_clear(i, waypoint_uid);
+        if (waypoint_upward_link_allowed(node.pos, waypoint_pos, kWaypointGenerateMaxInclineDeg)
+            && link_waypoint_if_clear(i, waypoint_uid)) {
+            clear_sources.emplace_back(dist_sq, i);
         }
+    }
+
+    // Craters stay for the level; an objective node every clear persistent neighbour is too full for borrows the
+    // nearest one's persistent slot, preferring a link the node itself continues along, so it stays reachable. A
+    // jump pad lends nothing, and a slot that is its target's only way in (a drop or jump-pad landing) is lent only
+    // when the node continues to that target itself.
+    if (g_waypoints[waypoint_uid].type == WaypointType::crater
+        || count_waypoint_inbound_links(waypoint_uid, true) > 0) {
+        return;
+    }
+    std::sort(clear_sources.begin(), clear_sources.end());
+    for (const auto& [dist_sq, from] : clear_sources) {
+        auto& from_node = g_waypoints[from];
+        if (from_node.temporary || from_node.type == WaypointType::jump_pad) {
+            continue;
+        }
+        int borrow_slot = -1;
+        for (int slot = 0; slot < from_node.num_links; ++slot) {
+            const int link = from_node.links[slot];
+            if (link <= 0 || link >= static_cast<int>(g_waypoints.size()) || g_waypoints[link].temporary) {
+                continue;
+            }
+            const bool continues_to_link = waypoint_link_exists(g_waypoints[waypoint_uid], link);
+            if (!continues_to_link && count_waypoint_inbound_links(link, true) <= 1) {
+                continue;
+            }
+            borrow_slot = slot;
+            if (continues_to_link) {
+                break;
+            }
+        }
+        if (borrow_slot < 0) {
+            continue;
+        }
+        auto& node = g_waypoints[waypoint_uid];
+        node.borrowed_link_from = from;
+        node.borrowed_link_target = from_node.links[borrow_slot];
+        from_node.links[borrow_slot] = waypoint_uid;
+        ++g_waypoint_graph_version;
+        return;
     }
 }
 
@@ -4338,6 +4457,7 @@ void clear_waypoints()
     g_invisible_floor_faces.clear();
     // Indices into the graph being replaced.
     g_last_drop_waypoint_by_entity.clear();
+    waypoints_utils_on_waypoints_cleared();
     invalidate_cache();
 }
 
@@ -7592,7 +7712,14 @@ bool save_waypoints()
         toml::array pos{compressed_pos.x, compressed_pos.y, compressed_pos.z};
         toml::array links;
         for (int link = 0; link < node.num_links; ++link) {
-            if (const int linked_uid = saved_uid(node.links[link]); linked_uid > 0) {
+            int linked = node.links[link];
+            // A borrowed slot saves the link it displaced.
+            if (linked > 0 && linked < static_cast<int>(g_waypoints.size())
+                && g_waypoints[linked].borrowed_link_from == i
+                && !waypoint_link_exists(node, g_waypoints[linked].borrowed_link_target)) {
+                linked = g_waypoints[linked].borrowed_link_target;
+            }
+            if (const int linked_uid = saved_uid(linked); linked_uid > 0) {
                 links.push_back(linked_uid);
             }
         }
@@ -8083,6 +8210,13 @@ void remap_waypoints()
             }
         }
         node.num_links = write_idx;
+        if (node.borrowed_link_from > 0) {
+            const auto remap_uid = [&remap](const int uid) {
+                return (uid > 0 && uid < static_cast<int>(remap.size())) ? remap[uid] : 0;
+            };
+            node.borrowed_link_from = remap_uid(node.borrowed_link_from);
+            node.borrowed_link_target = remap_uid(node.borrowed_link_target);
+        }
     }
     g_waypoints = std::move(new_nodes);
     for (auto& entry : g_last_drop_waypoint_by_entity) {
@@ -8126,6 +8260,7 @@ void remap_waypoints()
         normalize_zone_bridge_waypoint_refs(remapped_bridge_waypoint_uids);
         zone.bridge_waypoint_uids = std::move(remapped_bridge_waypoint_uids);
     }
+    waypoints_utils_on_waypoints_remapped(remap);
     invalidate_cache();
 }
 

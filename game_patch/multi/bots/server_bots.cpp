@@ -317,15 +317,18 @@ void server_bot_apply_fire(ServerBot& bot, rf::Player& pp, rf::Entity& ep, const
     }
 
     // A fired splash shot leaves only on a think's frame, whose view its safety check judged; a throw's release is
-    // judged again every think of its wind-up.
+    // judged again every think of its wind-up, which the bot arms per press.
+    const bool thrown = multi_weapon_fire_is_thrown(weapon_type, alt_fire);
     const bool splash = rf::weapon_types[weapon_type].damage_radius > 0.0f;
-    const bool trigger = rf::weapon_is_semi_automatic(weapon_type) ? just_pressed : down && (thought || !splash);
+    const bool trigger = (rf::weapon_is_semi_automatic(weapon_type) || thrown)
+        ? just_pressed
+        : down && (thought || !splash);
     if (!trigger
         || (ep.ai.next_fire_primary.valid() && !ep.ai.next_fire_primary.elapsed())
         || !server_bot_clip_ready(bot, pp, ep, weapon_type)) {
         return;
     }
-    if (multi_weapon_fire_is_thrown(weapon_type, alt_fire)) {
+    if (thrown) {
         server_bot_throw(bot, ep, weapon_type, alt_fire);
     }
     else {

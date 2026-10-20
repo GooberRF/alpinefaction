@@ -689,7 +689,7 @@ float aim_error_bound(const float distance, const float skill_factor)
 {
     const float distance_scale = std::clamp(distance / kAimErrorDistanceNorm, 0.65f, 2.6f);
     const BotSkillProfile& skill_profile = get_active_bot_skill_profile();
-    const float min_error = std::max(skill_profile.aim_error_min, 0.0f);
+    const float min_error = std::clamp(skill_profile.aim_error_min, 0.0f, 5.0f);
     return std::clamp(
         std::lerp(std::max(skill_profile.aim_error_max, min_error), min_error, skill_factor) * distance_scale,
         min_error,
@@ -786,23 +786,28 @@ rf::Vector3 compute_skill_adjusted_enemy_aim_target(
         || bot_state().firing.aim_error_timer.elapsed()) {
         const float max_error = aim_error_bound(dist, skill_factor);
         const float vertical_max_error = max_error * 0.82f;
+        bot_state().firing.aim_error_right = 0.0f;
+        bot_state().firing.aim_error_up = 0.0f;
 
-        std::normal_distribution<float> lateral_dist(0.0f, max_error * 0.42f);
-        std::normal_distribution<float> vertical_dist(0.0f, vertical_max_error * 0.44f);
-        bot_state().firing.aim_error_right = std::clamp(
-            lateral_dist(g_rng),
-            -max_error,
-            max_error
-        );
-        bot_state().firing.aim_error_up = std::clamp(
-            vertical_dist(g_rng),
-            -vertical_max_error,
-            vertical_max_error
-        );
+        // A normal distribution needs a positive spread.
+        if (max_error > 0.0f) {
+            std::normal_distribution<float> lateral_dist(0.0f, max_error * 0.42f);
+            std::normal_distribution<float> vertical_dist(0.0f, vertical_max_error * 0.44f);
+            bot_state().firing.aim_error_right = std::clamp(
+                lateral_dist(g_rng),
+                -max_error,
+                max_error
+            );
+            bot_state().firing.aim_error_up = std::clamp(
+                vertical_dist(g_rng),
+                -vertical_max_error,
+                vertical_max_error
+            );
+        }
 
         const float low_skill_factor = 1.0f - skill_factor;
         std::uniform_real_distribution<float> roll_dist(0.0f, 1.0f);
-        if (roll_dist(g_rng) < low_skill_factor * 0.20f) {
+        if (max_error > 0.0f && roll_dist(g_rng) < low_skill_factor * 0.20f) {
             std::uniform_real_distribution<float> extra_dist(-max_error, max_error);
             bot_state().firing.aim_error_right = std::clamp(
                 bot_state().firing.aim_error_right + extra_dist(g_rng) * 0.45f,
@@ -871,13 +876,18 @@ bool update_aim_towards(
         || bot_state().fsm_state == BotFsmState::engage_enemy
         || bot_state().fsm_state == BotFsmState::pursue_enemy
         || bot_state().fsm_state == BotFsmState::seek_enemy;
-    const float interp_alpha = std::clamp(
+    const float tuned_alpha = std::clamp(
         combat_tracking
             ? std::lerp(0.14f, 0.32f, skill_factor)
             : std::lerp(0.10f, 0.24f, skill_factor),
         0.05f,
         0.40f
     );
+    // The blend constants are per 30 fps frame; rescaling the exponent keeps convergence time independent of the host
+    // frame rate.
+    constexpr float kAimBlendTunedRate = 30.0f;
+    const float blend_dt = std::clamp(rf::frametime, 0.0f, 0.05f);
+    const float interp_alpha = 1.0f - std::pow(1.0f - tuned_alpha, blend_dt * kAimBlendTunedRate);
     rf::Vector3 smoothed_look_dir =
         current_forward * (1.0f - interp_alpha) + look_dir * interp_alpha;
     if (smoothed_look_dir.len_sq() < 0.0001f) {
@@ -2836,7 +2846,16 @@ void bot_process_combat(
             fire_mode.use_alt_fire,
             wants_attack
         );
-        if (wants_attack) {
+        // A server bot throws only on a press (server_bots.cpp), so a thrown mode is pressed once per ready weapon and
+        // every throw arms its own release hold.
+        const bool server_throw_held_off = bot_ctx().is_server_bot
+            && weapon_uses_projectile_release_hold(weapon_type, fire_mode.use_alt_fire)
+            && ((fire_mode.use_alt_fire
+                    ? bot_state().firing.synthetic_secondary_fire_down
+                    : bot_state().firing.synthetic_primary_fire_down)
+                || explosive_release_hold_active
+                || (local_entity.ai.next_fire_primary.valid() && !local_entity.ai.next_fire_primary.elapsed()));
+        if (wants_attack && !server_throw_held_off) {
             if (!is_semi_auto) {
                 clear_semi_auto_click_state();
                 if (fire_mode.use_alt_fire) {

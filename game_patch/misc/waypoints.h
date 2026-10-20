@@ -167,6 +167,9 @@ struct WaypointNode
     std::vector<int> zones{};
     float link_radius = kWaypointLinkRadius;
     bool temporary = false;
+    // A temporary node with no free inbound slot borrows one from a full neighbour, restored on removal.
+    int borrowed_link_from = 0;
+    int borrowed_link_target = 0;
     bool valid = true;
 };
 
