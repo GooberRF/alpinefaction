@@ -101,6 +101,8 @@ set(SRCS
     brush_preview.h
     bake_progress.cpp
     bake_progress.h
+    build_repair.cpp
+    build_repair.h
     face_list_cache.cpp
     face_list_cache.h
     memory_guard.cpp

@@ -50,6 +50,7 @@
 #include "face_list_cache.h"
 #include "memory_guard.h"
 #include "bake_progress.h"
+#include "build_repair.h"
 #include "alpine_lightmaps.h"
 #include "terrain_build.h"
 #include "terrain_paint.h"
@@ -1777,6 +1778,16 @@ BOOL __fastcall CMainFrame_OnCmdMsg(CWnd* this_, int, UINT nID, int nCode, void*
         cmd_ui->set_check(gizmo_textured_preview() ? 1 : 0);
         return TRUE;
     }
+    if (nCode == CN_UPDATE_COMMAND_UI && nID == ID_REPAIR_BUILD_HOLES && cmd_ui) {
+        cmd_ui->enable(TRUE);
+        cmd_ui->set_check(build_repair_enabled() ? 1 : 0);
+        return TRUE;
+    }
+    if (nCode == CN_UPDATE_COMMAND_UI && nID == ID_REBUILD_OUT_OF_LEVEL && cmd_ui) {
+        cmd_ui->enable(TRUE);
+        cmd_ui->set_check(build_out_of_level_enabled() ? 1 : 0);
+        return TRUE;
+    }
 
     if (nID == IDC_GIZMO_SCALE_STEP && nCode == CBN_SELCHANGE) {
         gizmo_scale_step_changed();
@@ -1888,6 +1899,15 @@ BOOL __fastcall CMainFrame_OnCmdMsg(CWnd* this_, int, UINT nID, int nCode, void*
             case ID_GIZMO_TEXLOCK:
             case ID_GIZMO_TEXPREVIEW:
                 handler = [nID]() { gizmo_button_clicked(nID); };
+                break;
+            case ID_REPAIR_BUILD_HOLES:
+                handler = build_repair_toggle;
+                break;
+            case ID_REBUILD_OUT_OF_LEVEL:
+                handler = build_out_of_level_toggle;
+                break;
+            case ID_FIND_OUT_OF_LEVEL:
+                handler = build_repair_find_out_of_level;
                 break;
             case ID_TERRAIN_TOOLS:
                 handler = [this_]() {
@@ -2392,6 +2412,7 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
     ApplyAlpineLightmapPatches();
     ApplyFaceListCachePatches();
     ApplyBakeProgressPatches();
+    ApplyBuildRepairPatches();
     install_editor_bitmap_loader_hooks();
 
     // Browse for .v3m files instead of .v3d

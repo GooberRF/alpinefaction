@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <climits>
+#include <cstddef>
+#include <cstdint>
 #include <iterator>
 #include <patch_common/MemUtils.h>
 #include "mfc_types.h"
@@ -1362,6 +1364,26 @@ inline void timestamp_set(int* timestamp, int ms)
 struct GFace;
 // The CSG's global face list (the head, then the count, as GSolid::face_list_head)
 static auto& csg_face_list_head = addr_as_ref<GFace*>(0x01131388);
+
+// A line the views draw: added by Check for Holes (0x0043c420) and out-of-level marks, freed by Remove check lines
+// (0x0043c900)
+struct HoleLine
+{
+    std::uint8_t r;       // +0x00
+    std::uint8_t g;       // +0x01
+    std::uint8_t b;       // +0x02
+    std::uint8_t _pad_03; // +0x03
+    Vector3 from;         // +0x04
+    Vector3 to;           // +0x10
+};
+static_assert(sizeof(HoleLine) == 0x1C);
+static_assert(offsetof(HoleLine, from) == 0x04);
+static_assert(offsetof(HoleLine, to) == 0x10);
+static auto& hole_lines = addr_as_ref<VArray<HoleLine*>>(0x0112d2b0);
+// The point lookup's (0x0048c0c0) recasts, logged by Build Geometry as "Rays recast"
+static auto& point_lookup_recasts = addr_as_ref<int>(0x00e13b94);
+// Level > Rebuild with hole lines (toggled at 0x0044a350)
+static auto& build_draws_hole_lines = addr_as_ref<bool>(0x006ca636);
 
 // The Brush Clip dialog while it is open: viewport clicks place clip points, and the brush transform finalize
 // (0x00427390) leaves geometry_needs_rebuild alone.

@@ -608,13 +608,6 @@ UvMap align_uv_map(const UvMap& m, const Vector3& n_from, const Vector3& n_to, c
     return turn_uv_map(m, n_from, n_to, pivot, m.grad_u);
 }
 
-int face_corner_count(const GFace& face)
-{
-    int count = 0;
-    for_each_face_corner(face, [&](GFaceVertex&) { ++count; });
-    return count;
-}
-
 // FUN_00413470: Texture mode's Paste. Stock lays the copied UVs corner by corner onto faces with as many corners,
 // stops at a message box for each other face, and has no undo step. This is one undo step, lays the copied face's
 // mapping onto faces with another number of corners, and with Paste texture checked applies its texture too.
@@ -1094,13 +1087,6 @@ void set_map_axis(int index)
 // The flags Face Properties sets, which the level geometry faces copy
 constexpr int face_properties_flags =
     FACE_SHOW_SKY | FACE_MIRRORED | FACE_SCROLL_TEXTURE | FACE_FULL_BRIGHT | FACE_LIGHTMAP_RESOLUTION;
-
-std::vector<GFaceVertex*> face_corner_list(const GFace& face)
-{
-    std::vector<GFaceVertex*> corners;
-    for_each_face_corner(face, [&](GFaceVertex& fv) { corners.push_back(&fv); });
-    return corners;
-}
 
 struct FacePair
 {

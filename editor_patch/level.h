@@ -98,7 +98,7 @@ struct GVertex
 {
     Vector3 pos;                   // +0x00
     char _pad_0C[0x20 - 0x0C];    // +0x0C
-    VArray<void*> face_refs;       // +0x20 back-references to faces using this vertex
+    VArray<GFace*> face_refs;      // +0x20 back-references to faces using this vertex
 };
 
 // Per-face vertex wrapper (0x1C bytes, pool-allocated at 0x00A12530)
@@ -312,6 +312,13 @@ struct GFace
         return AddrCaller{0x0048abd0}.this_call<GFaceVertex*>(this, vertex, u, v, lm_u, lm_v);
     }
 
+    // FUN_004861d0 (hooked in level.cpp): more corners in front of portal's plane than behind, or all on it with
+    // agreeing normals
+    bool in_front_of(const GFace& portal)
+    {
+        return AddrCaller{0x004861d0}.c_call<bool>(this, &portal);
+    }
+
     // FUN_0048a8b0 (RET 8, so both stack arguments are passed): with a null plane it derives the
     // plane from the edge loop winding by Newell's method and recomputes the face AABB. Returns
     // false for a face with fewer than three vertices or zero area.
@@ -346,6 +353,20 @@ void for_each_face_corner(const GFace& face, Fn&& fn)
             break;
         }
     }
+}
+
+inline int face_corner_count(const GFace& face)
+{
+    int count = 0;
+    for_each_face_corner(face, [&](GFaceVertex&) { ++count; });
+    return count;
+}
+
+inline std::vector<GFaceVertex*> face_corner_list(const GFace& face)
+{
+    std::vector<GFaceVertex*> corners;
+    for_each_face_corner(face, [&](GFaceVertex& fv) { corners.push_back(&fv); });
+    return corners;
 }
 
 // Editor-side GLightmap (matches stock RED.exe / RF.exe GLightmap), one lightmap page
@@ -605,6 +626,31 @@ struct GSolid
     {
         AddrCaller{0x0049a760}.this_call(this, static_cast<char>(outline), static_cast<int>(face_outlines),
                                          static_cast<char>(vertex_marks), pos, orient, r, g, b);
+    }
+
+    // FUN_004a6950 (ends the t-joint pass): splits faces over 16 corners, keeping each piece's room and bbox node
+    void split_large_faces()
+    {
+        AddrCaller{0x004a6950}.c_call(this, &face_list_head);
+    }
+
+    // FUN_00496770: inserts `vertex` between `a` and `b` in every face with both whose detail state matches it
+    void insert_vertex_on_edge(GVertex* a, GVertex* b, GVertex* vertex)
+    {
+        AddrCaller{0x00496770}.this_call(this, a, b, vertex);
+    }
+
+    // FUN_004affa0: links a portal face between `room` and `other`, creating their GPortal if needed; sets the face's
+    // portal_id and clears its texture and surface
+    void link_portal_face(GFace* face, GRoom* room, GRoom* other)
+    {
+        AddrCaller{0x004affa0}.this_call(this, face, room, other);
+    }
+
+    // FUN_0048c0c0 (RF.exe's find_room, 0x004E1630): the room the point is in, or null outside the level
+    GRoom* room_at(const Vector3* pos)
+    {
+        return AddrCaller{0x0048c0c0}.c_call<GRoom*>(this, pos);
     }
 
     // FUN_00485490: the scroll mover of the faces with face_id, or null
@@ -1587,10 +1633,19 @@ inline uintptr_t undo_link_value(const UndoEntry& entry, int index, uint32_t mag
 // Build Geometry's progress dialog, CDedLevel::dialog_panels[build_dialog_panel_index]
 struct BuildProgressDialog
 {
-    char _pad_00[0x5C];     // +0x00
-    std::uint8_t cancelled; // +0x5C set by its Cancel button, read by GeoBuild_Driver
+    char _pad_00[0x5C];                // +0x00
+    std::uint8_t cancelled;            // +0x5C set by its Cancel button, read by GeoBuild_Driver
+    char _pad_5d[0x64 - 0x5D];         // +0x5D
+    VArray<BrushNode*> brushes;        // +0x64 GeoBuild_Driver adds one per tick
+    VArray<BrushNode*> portal_brushes; // +0x70 then chops one per tick
+    int brushes_added;                 // +0x7C
+    int portals_chopped;               // +0x80
 };
 static_assert(offsetof(BuildProgressDialog, cancelled) == 0x5C);
+static_assert(offsetof(BuildProgressDialog, brushes) == 0x64);
+static_assert(offsetof(BuildProgressDialog, portal_brushes) == 0x70);
+static_assert(offsetof(BuildProgressDialog, brushes_added) == 0x7C);
+static_assert(offsetof(BuildProgressDialog, portals_chopped) == 0x80);
 constexpr int build_dialog_panel_index = (0x4A4 - 0x444) / 4;
 
 // A clutter, entity or item class: the add paths (0x004151C0, 0x00414F00, 0x00414C20) find the entry
@@ -1983,8 +2038,13 @@ struct CDedLevel
     // Build Geometry's Cancel button was pressed; no progress dialog means no cancel
     bool build_cancelling() const
     {
-        const auto* dialog = static_cast<const BuildProgressDialog*>(dialog_panels[build_dialog_panel_index]);
+        const BuildProgressDialog* dialog = build_dialog();
         return dialog && dialog->cancelled != 0;
+    }
+
+    const BuildProgressDialog* build_dialog() const
+    {
+        return static_cast<const BuildProgressDialog*>(dialog_panels[build_dialog_panel_index]);
     }
 
     // As the progress dialog's Cancel button: the next GeoBuild_Driver tick takes its "Build Canceled" branch
@@ -2173,6 +2233,9 @@ inline bool editor_transform_key_held()
     }
     return false;
 }
+
+void recompute_room_bbox(GRoom* room);
+void unlink_room_faces(GRoom* room, const std::unordered_set<GFace*>& faces);
 
 // Editor app globals
 void* GetMainFrame();

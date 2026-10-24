@@ -568,6 +568,41 @@ void finish_build(CDedLevel& level)
 // The last Build Geometry to finish was cancelled because RED ran out of memory.
 bool g_build_out_of_memory = false;
 
+// One GeoBuild_Driver tick lists the brushes, then one per brush, one per portal, and one for the finish
+void show_build_tick(CDedLevel& level)
+{
+    const BuildProgressDialog* dialog = level.build_dialog();
+    if (!dialog) return;
+    if (g_build_first_tick_pending) {
+        // the brush count is only known once this tick has listed them
+        build_progress_phase(level.GetAlpineLevelProperties().terrain_objects.empty() ? BuildPhase::brushes
+                                                                                      : BuildPhase::terrain);
+        return;
+    }
+    // each tick reports the steps before its own, so a phase is complete once the next starts
+    if (dialog->brushes_added < dialog->brushes.size) {
+        build_progress_phase(BuildPhase::brushes);
+        build_progress_steps(dialog->brushes_added, dialog->brushes.size);
+        build_progress_expect(BuildPhase::portals, dialog->portal_brushes.size);
+    }
+    else if (dialog->portals_chopped < dialog->portal_brushes.size) {
+        if (dialog->portals_chopped == 0) {
+            build_progress_complete();
+        }
+        build_progress_phase(BuildPhase::portals);
+        build_progress_steps(dialog->portals_chopped, dialog->portal_brushes.size);
+    }
+    else {
+        // the finish can't stop: Cancel goes grey before the window pumps again
+        build_progress_disallow_cancel();
+        build_progress_complete();
+        if (dialog->portal_brushes.size == 0) {
+            build_progress_skip(BuildPhase::portals);
+        }
+        build_progress_phase(BuildPhase::cleanup);
+    }
+}
+
 // GeoBuild_Driver, once per idle tick: chunk brushes go in before its first tick, out once it clears build_running.
 void __fastcall geobuild_driver_hooked(CDedLevel* level);
 FunHook<decltype(geobuild_driver_hooked)> geobuild_driver_hook{0x004399b0, geobuild_driver_hooked};
@@ -576,7 +611,11 @@ void __fastcall geobuild_driver_hooked(CDedLevel* level)
     FaceListCacheWindow face_list_cache;
     // an allocation since the last tick was served from the memory guard's reserve: this tick cancels the build
     const bool out_of_memory = level->build_running && memory_guard_take_tripped();
-    if (out_of_memory) {
+    // the window pumps its messages as it shows the tick, so a Cancel confirmed then still stops this tick
+    if (!out_of_memory && !level->build_cancelling()) {
+        show_build_tick(*level);
+    }
+    if (out_of_memory || build_progress_cancelled()) {
         level->cancel_build();
     }
     const bool cancelling = level->build_cancelling();
@@ -622,6 +661,7 @@ void __fastcall geobuild_driver_hooked(CDedLevel* level)
     }
     g_built_terrains.clear();
     g_build_notes.clear();
+    build_progress_end();
     if (out_of_memory) {
         editor_report_blocking("Build Geometry", "Build Geometry",
                                std::string{"Build Geometry ran out of memory and was cancelled. "} +
