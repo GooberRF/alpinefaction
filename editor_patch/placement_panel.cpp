@@ -1657,12 +1657,12 @@ void placement_panel_render_ghost()
         set_draw_color(0xff, 0xff, 0xff, 0xff);
         EditorRenderParams params = editor_mesh_render_params();
         const bool anim_fx = vmesh_get_type(vm) == VMESH_TYPE_ANIM_FX;
-        if (anim_fx) rf::sky_room_pass_active = true;
+        if (anim_fx) vfx_render_transparent = 1;
         const Vector3 bound_center = pos + orient * m.bound_center;
         room_setup(nullptr, &bound_center, m.bound_radius, 1, 1);
         vmesh_render(vm, &pos, &orient, &params);
         room_cleanup();
-        if (anim_fx) rf::sky_room_pass_active = false;
+        if (anim_fx) vfx_render_transparent = 0;
         lo = m.bbox_min;
         hi = m.bbox_max;
     }

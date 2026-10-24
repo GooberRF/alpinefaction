@@ -2,6 +2,7 @@
 
 // The game's engine shim for the shared Direct3D 11 core in common/gr_d3d11 (see gr_d3d11_bindings.h)
 
+#include <cassert>
 #include <patch_common/MemUtils.h>
 #include "../../../rf/bmpman.h"
 #include "../../../rf/character.h"
@@ -153,7 +154,8 @@ namespace gr::d3d11::engine
 
     inline rf::Vector3 camera_pos()
     {
-        return rf::camera_get_pos(rf::local_player->cam);
+        rf::Camera* cam = rf::local_player ? rf::local_player->cam : nullptr;
+        return cam ? rf::camera_get_pos(cam) : rf::Vector3{};
     }
 
     inline rf::MoverBrush* mover_brush_list()

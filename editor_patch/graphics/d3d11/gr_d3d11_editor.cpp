@@ -4,6 +4,7 @@
 #include <cmath>
 #include <format>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -142,20 +143,43 @@ namespace gr::d3d11
                          renderer_failure_exit_code, use_d3d9_advice);
         }
 
-        [[noreturn]] void close_after_device_loss(HRESULT reason)
+        constexpr const char* level_not_saved =
+            "\n\nThe level could not be saved: changes since it was last saved are lost.";
+
+        // The closing box's last paragraph, after RED's autosave of the level. The autosave is not run inside a level
+        // load or save, whose own file is what the box then has to tell about.
+        std::string autosave_level()
+        {
+            switch (level_file_op()) {
+                case LevelFileOp::none:
+                    break;
+                case LevelFileOp::load:
+                    return "\n\nThe level was being loaded, so nothing was saved. The level file being loaded was not "
+                           "modified.";
+                case LevelFileOp::save:
+                    return "\n\nThe level was being saved, so it could not be saved again: the level file being saved "
+                           "may be incomplete or damaged. Check it before using it. The last good copy, if any, is the "
+                           "level's autosave (\"~\" before its extension), a backup or, after Save As, the file it "
+                           "was saved from.";
+                case LevelFileOp::autosave:
+                    return level_not_saved;
+            }
+            if (const std::optional<std::string> saved_to = level_autosave_now()) {
+                return std::format("\n\nThe level was saved to:\n{}\n\nRestart the level editor and open that file to "
+                                   "continue.",
+                                   *saved_to);
+            }
+            return level_not_saved;
+        }
+
+        // `save` is false when the device was lost during the autosave itself
+        [[noreturn]] void close_after_device_loss(HRESULT reason, bool save)
         {
             std::string msg = std::format("The graphics device stopped working (error 0x{:08x}), so the level editor "
                                           "has to close.",
                                           static_cast<unsigned>(reason));
             if (!headless_bake_active()) {
-                if (const std::optional<std::string> saved_to = level_autosave_now()) {
-                    msg += std::format("\n\nThe level was saved to:\n{}\n\nRestart the level editor and open that file "
-                                       "to continue.",
-                                       *saved_to);
-                }
-                else {
-                    msg += "\n\nThe level could not be saved: changes since it was last saved are lost.";
-                }
+                msg += save ? autosave_level() : level_not_saved;
             }
             close_editor("Graphics Device Lost", msg, device_lost_exit_code);
         }
@@ -197,11 +221,27 @@ namespace gr::d3d11
             }
             return false;
         }
-    }
 
-    [[noreturn]] void close_after_renderer_error(const std::string& msg)
-    {
-        close_editor("Direct3D 11 renderer", msg + '.', renderer_error_exit_code, "The level editor has to close.");
+        rf::ubyte clip_codes(const rf::gr::Vertex& v)
+        {
+            return v.codes;
+        }
+
+        rf::ubyte clip_codes(const rf::gr::Vertex* v)
+        {
+            return v->codes;
+        }
+
+        // Every vertex outside the same frustum plane: nothing of the polygon is in view
+        template<typename T>
+        bool outside_view(std::span<T> verts)
+        {
+            rf::ubyte and_code = 0xFF;
+            for (const auto& v : verts) {
+                and_code &= clip_codes(v);
+            }
+            return and_code != 0;
+        }
     }
 
     [[noreturn]] void close_after_startup_error(const std::string& msg)
@@ -461,20 +501,50 @@ namespace gr::d3d11
         return &it->second;
     }
 
-    void EditorRenderer::handle_device_lost(HRESULT hr)
+    bool EditorRenderer::stop()
     {
-        if (device_lost_ || (hr != DXGI_ERROR_DEVICE_REMOVED && hr != DXGI_ERROR_DEVICE_RESET)) {
-            return;
+        // From here on nothing reaches the GPU, the save that follows included
+        if (std::exchange(stopped_, true)) {
+            return false;
         }
-        // From here on nothing reaches the GPU, the save below included
-        device_lost_ = true;
-        const HRESULT reason = device_->GetDeviceRemovedReason();
-        xlog::error("[D3D11] The device was lost (0x{:08x}, reason 0x{:08x})", static_cast<unsigned>(hr),
-                    static_cast<unsigned>(reason));
         if (hidden_terrain_rooms_) {
             hidden_terrain_rooms_->restore();
         }
-        close_after_device_loss(FAILED(reason) ? reason : hr);
+        return true;
+    }
+
+    void EditorRenderer::handle_device_lost(HRESULT hr)
+    {
+        if (stopped_ || (hr != DXGI_ERROR_DEVICE_REMOVED && hr != DXGI_ERROR_DEVICE_RESET)) {
+            return;
+        }
+        stop();
+        const HRESULT reason = device_->GetDeviceRemovedReason();
+        xlog::error("[D3D11] The device was lost (0x{:08x}, reason 0x{:08x})", static_cast<unsigned>(hr),
+                    static_cast<unsigned>(reason));
+        close_after_device_loss(FAILED(reason) ? reason : hr, true);
+    }
+
+    void EditorRenderer::close_after_error(const std::string& msg)
+    {
+        // A call failing inside the save below finds the renderer already stopped, so the save is not retried
+        const bool first = stop();
+        if (!first && device_removed()) {
+            close_after_device_loss(device_->GetDeviceRemovedReason(), false);
+        }
+        std::string text = msg + ". The level editor has to close.";
+        if (!headless_bake_active()) {
+            text += first ? autosave_level() : level_not_saved;
+        }
+        close_editor("Direct3D 11 renderer", text, renderer_error_exit_code);
+    }
+
+    UINT EditorRenderer::max_texture_size() const
+    {
+        // D3D10_REQ_TEXTURE2D_U_OR_V_DIMENSION, for feature levels 10_0 and 10_1
+        constexpr UINT feature_level_10_max_texture_size = 8192;
+        return device_->GetFeatureLevel() >= D3D_FEATURE_LEVEL_11_0 ? D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION
+                                                                     : feature_level_10_max_texture_size;
     }
 
     bool EditorRenderer::device_removed() const
@@ -485,7 +555,7 @@ namespace gr::d3d11
     void EditorRenderer::present()
     {
         RECT rect{};
-        if (headless_ || device_lost_ || !hwnd_ || !IsWindow(hwnd_) || !GetClientRect(hwnd_, &rect)) {
+        if (headless_ || stopped_ || !hwnd_ || !IsWindow(hwnd_) || !GetClientRect(hwnd_, &rect)) {
             return;
         }
         const LONG client_w = rect.right - rect.left;
@@ -659,14 +729,7 @@ namespace gr::d3d11
     bool EditorRenderer::poly(int nv, rf::gr::Vertex** vertices, int vertex_attributes, rf::gr::Mode mode,
                               bool constant_sw, float sw)
     {
-        if (nv < 3) {
-            return false;
-        }
-        rf::ubyte and_code = 0xFF;
-        for (int i = 0; i < nv; ++i) {
-            and_code &= vertices[i]->codes;
-        }
-        if (and_code) {
+        if (nv < 3 || outside_view(std::span{vertices, static_cast<std::size_t>(nv)})) {
             return false;
         }
         const Projection& proj = render_context_->projection();
@@ -731,25 +794,14 @@ namespace gr::d3d11
             }
             return drawn;
         }
-        static std::vector<rf::gr::Vertex> verts;
-        static std::vector<const rf::GFaceVertex*> face_verts;
-        static std::vector<const rf::gr::Vertex*> vert_ptrs;
-        if (!face || !gather_face_vertices(face, verts, face_verts) || verts.size() < 3) {
+        if (!gather_visible_face(face, rf::max_face_vertices)) {
             return false;
         }
-        rf::ubyte and_code = 0xFF;
-        for (const rf::gr::Vertex& v : verts) {
-            and_code &= v.codes;
+        face_vert_ptrs_.clear();
+        for (const rf::gr::Vertex& v : face_verts_) {
+            face_vert_ptrs_.push_back(&v);
         }
-        if (and_code) {
-            return false;
-        }
-        vert_ptrs.clear();
-        for (rf::gr::Vertex& v : verts) {
-            project_vertex(&v);
-            vert_ptrs.push_back(&v);
-        }
-        dyn_geo_renderer_->add_poly(static_cast<int>(verts.size()), vert_ptrs.data(), 0, {bm_handle, -1},
+        dyn_geo_renderer_->add_poly(static_cast<int>(face_verts_.size()), face_vert_ptrs_.data(), 0, {bm_handle, -1},
                                     prepare_draw(mode, false));
         // Textures only draws every face here, unlit
         if (level_decals_drawn()) {
@@ -824,29 +876,31 @@ namespace gr::d3d11
 
     bool EditorRenderer::queue_face_edges(rf::GFace* face)
     {
-        static std::vector<rf::gr::Vertex> verts;
-        static std::vector<const rf::GFaceVertex*> face_verts;
-        if (!face || !gather_face_vertices(face, verts, face_verts) || verts.size() < 3) {
-            return false;
-        }
-        rf::ubyte and_code = 0xFF;
-        for (const rf::gr::Vertex& v : verts) {
-            and_code &= v.codes;
-        }
-        if (and_code) {
+        if (!gather_visible_face(face, rf::max_face_vertices)) {
             return false;
         }
         const Projection& proj = render_context_->projection();
         const Projection pulled = pulled_toward_eye(proj);
-        for (rf::gr::Vertex& v : verts) {
-            project_vertex(&v);
+        for (rf::gr::Vertex& v : face_verts_) {
             v.sw = pulled.project_z(proj.unproject_z(v.sw));
         }
-        for (std::size_t i = 0; i < verts.size(); ++i) {
-            const rf::gr::Vertex& v0 = verts[i];
-            const rf::gr::Vertex& v1 = verts[(i + 1) % verts.size()];
+        for (std::size_t i = 0; i < face_verts_.size(); ++i) {
+            const rf::gr::Vertex& v0 = face_verts_[i];
+            const rf::gr::Vertex& v1 = face_verts_[(i + 1) % face_verts_.size()];
             face_edges_.push_back({v0.sx, v0.sy, v0.sw});
             face_edges_.push_back({v1.sx, v1.sy, v1.sw});
+        }
+        return true;
+    }
+
+    bool EditorRenderer::gather_visible_face(const rf::GFace* face, std::size_t max_vertices)
+    {
+        if (!face || !gather_face_vertices(face, face_verts_, face_vertex_refs_) || face_verts_.size() < 3
+            || face_verts_.size() > max_vertices || outside_view(std::span{face_verts_})) {
+            return false;
+        }
+        for (rf::gr::Vertex& v : face_verts_) {
+            project_vertex(&v);
         }
         return true;
     }
@@ -893,43 +947,39 @@ namespace gr::d3d11
     // The portal faces the per-face draw (0x004E85A0) left out, from both sides
     void EditorRenderer::queue_portal_planes(rf::GSolid* solid)
     {
-        static std::vector<rf::gr::Vertex> verts;
-        static std::vector<const rf::gr::Vertex*> vert_ptrs;
         const rf::gr::Mode mode = prepare_draw(portal_plane_mode, true);
         const rf::Color color = portal_plane_color();
         for (rf::GFace& face : solid->face_list) {
             if (!face.attributes.is_portal() || face.attributes.is_show_sky()) {
                 continue;
             }
-            verts.clear();
-            rf::ubyte and_code = 0xFF;
+            face_verts_.clear();
             bool closed = false;
             const rf::GFaceVertex* fv = face.edge_loop;
             // A loop gather_face_vertices rejects is left out
-            while (fv && fv->vertex && static_cast<int>(verts.size()) < rf::max_face_vertices) {
-                rf::gr::Vertex& v = verts.emplace_back();
+            while (fv && fv->vertex && static_cast<int>(face_verts_.size()) < rf::max_face_vertices) {
+                rf::gr::Vertex& v = face_verts_.emplace_back();
                 // Rotated into the view of the instance GSolid::draw started, as the per-face draw rotates
                 project_to_screen(&v, &fv->vertex->pos);
-                and_code &= v.codes;
                 fv = fv->next;
                 if (fv == face.edge_loop) {
                     closed = true;
                     break;
                 }
             }
-            if (!closed || verts.size() < 3 || and_code) {
+            if (!closed || face_verts_.size() < 3 || outside_view(std::span{face_verts_})) {
                 continue;
             }
-            vert_ptrs.clear();
-            for (rf::gr::Vertex& v : verts) {
+            face_vert_ptrs_.clear();
+            for (rf::gr::Vertex& v : face_verts_) {
                 project_vertex(&v);
                 v.r = color.red;
                 v.g = color.green;
                 v.b = color.blue;
                 v.a = color.alpha;
-                vert_ptrs.push_back(&v);
+                face_vert_ptrs_.push_back(&v);
             }
-            dyn_geo_renderer_->add_poly(static_cast<int>(verts.size()), vert_ptrs.data(),
+            dyn_geo_renderer_->add_poly(static_cast<int>(face_verts_.size()), face_vert_ptrs_.data(),
                                         rf::gr::TMAP_FLAG_RGB | rf::gr::TMAP_FLAG_ALPHA, {-1, -1}, mode);
         }
     }
@@ -938,32 +988,22 @@ namespace gr::d3d11
     bool EditorRenderer::queue_lightmapped_face(rf::GFace* face, rf::gr::Mode mode, int bm_handle, int lm_handle,
                                                 std::size_t max_vertices, F&& fill)
     {
-        static std::vector<rf::gr::Vertex> verts;
-        static std::vector<const rf::GFaceVertex*> face_verts;
         static std::vector<EditorLightmapVertex> gpu_verts;
-        if (!gather_face_vertices(face, verts, face_verts) || verts.size() < 3 || verts.size() > max_vertices) {
-            return false;
-        }
-        rf::ubyte and_code = 0xFF;
-        for (const rf::gr::Vertex& v : verts) {
-            and_code &= v.codes;
-        }
-        if (and_code) {
+        if (!gather_visible_face(face, max_vertices)) {
             return false;
         }
         const Projection& proj = render_context_->projection();
-        gpu_verts.resize(verts.size());
-        for (std::size_t i = 0; i < verts.size(); ++i) {
-            project_vertex(&verts[i]);
+        gpu_verts.resize(face_verts_.size());
+        for (std::size_t i = 0; i < face_verts_.size(); ++i) {
             EditorLightmapVertex& out = gpu_verts[i];
-            to_clip_space(verts[i], proj, out);
+            to_clip_space(face_verts_[i], proj, out);
             out.diffuse = -1;
-            out.u0 = face_verts[i]->texture_u;
-            out.v0 = face_verts[i]->texture_v;
+            out.u0 = face_vertex_refs_[i]->texture_u;
+            out.v0 = face_vertex_refs_[i]->texture_v;
             out.u1 = 0.0f;
             out.v1 = 0.0f;
             out.lm_chart = -1.0f;
-            fill(*face_verts[i], i, out);
+            fill(*face_vertex_refs_[i], i, out);
         }
         face_renderer_->add_face(static_cast<int>(gpu_verts.size()), gpu_verts.data(), bm_handle, lm_handle,
                                  prepare_draw(mode, false));

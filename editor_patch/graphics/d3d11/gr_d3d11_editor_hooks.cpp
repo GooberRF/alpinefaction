@@ -6,7 +6,6 @@
 #include <source_location>
 #include <string>
 #include <vector>
-#include <float.h>
 #include <patch_common/AsmWriter.h>
 #include <patch_common/CallHook.h>
 #include <patch_common/CodeInjection.h>
@@ -31,13 +30,12 @@ namespace gr::d3d11
         // Null before gr_init, after gr_close, and once the device is lost: nothing more reaches the GPU
         EditorRenderer* live_renderer()
         {
-            return g_renderer && !g_renderer->device_lost() ? &*g_renderer : nullptr;
+            return g_renderer && !g_renderer->stopped() ? &*g_renderer : nullptr;
         }
 
-        // The point lights of a GPU-lit mesh, left in relevant_lights. RED's light search reads the editor flag
-        // (0x010A7810) where the game reads its static-light switch, so one pass finds the static and the dynamic
-        // lights. As in the game: no subtractive light, none out of reach, then the dynamic lights touching the mesh,
-        // then the nearest.
+        // The point lights of a GPU-lit mesh, left in relevant_lights and ordered as in the game. RED's light search
+        // reads the editor flag (0x010A7810) where the game reads its static-light switch, so one pass finds the
+        // static and the dynamic lights.
         bool gather_mesh_lights(const rf::Vector3& pos, float mesh_radius)
         {
             rf::GSolid* const solid = engine::level_solid();
@@ -45,35 +43,8 @@ namespace gr::d3d11
                 return false;
             }
             rf::gr::light_filter_set_solid(solid, true, true);
-            rf::gr::Light** const lights = rf::gr::relevant_lights;
             const int found = std::clamp(rf::gr::num_relevant_lights, 0, max_scene_lights);
-
-            auto reaches = [&pos, mesh_radius](const rf::gr::Light* light) {
-                const float reach = light->rad_2 + mesh_radius;
-                rf::Vector3 closest = light->vec;
-                if (light->type == rf::gr::LT_TUBE) {
-                    const rf::Vector3 seg = light->vec2 - light->vec;
-                    const float seg_len_sq = seg.len_sq();
-                    if (seg_len_sq > 0.0001f) {
-                        const float t = std::clamp((pos - light->vec).dot_prod(seg) / seg_len_sq, 0.0f, 1.0f);
-                        closest = light->vec + seg * t;
-                    }
-                }
-                return (pos - closest).len_sq() <= reach * reach;
-            };
-            rf::gr::Light** const end = std::remove_if(lights, lights + found, [&](const rf::gr::Light* light) {
-                return light->r < 0.0f || light->g < 0.0f || light->b < 0.0f || !reaches(light);
-            });
-            rf::gr::Light** const priority_end = std::stable_partition(lights, end, [&](const rf::gr::Light* light) {
-                return light->dynamic && reaches(light);
-            });
-            constexpr std::ptrdiff_t gpu_max_lights = 32;
-            const std::ptrdiff_t slots_left = std::max<std::ptrdiff_t>(gpu_max_lights - (priority_end - lights), 0);
-            std::partial_sort(priority_end, priority_end + std::min(end - priority_end, slots_left), end,
-                              [&pos](const rf::gr::Light* a, const rf::gr::Light* b) {
-                                  return (a->vec - pos).len_sq() < (b->vec - pos).len_sq();
-                              });
-            rf::gr::num_relevant_lights = static_cast<int>(end - lights);
+            rf::gr::num_relevant_lights = prioritize_mesh_lights(rf::gr::relevant_lights, found, pos, mesh_radius);
             return true;
         }
 
@@ -110,12 +81,12 @@ namespace gr::d3d11
             xlog::info("[D3D11] Initializing");
             g_renderer.emplace(headless_bake_active());
             // What the stock device setup (0x004EC8B0) would have set
-            red::gr_screen.max_tex_width = D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION;
-            red::gr_screen.max_tex_height = D3D11_REQ_TEXTURE2D_U_OR_V_DIMENSION;
+            red::gr_screen.max_tex_width = static_cast<int>(g_renderer->max_texture_size());
+            red::gr_screen.max_tex_height = static_cast<int>(g_renderer->max_texture_size());
             rf::gr::screen.depthbuffer_type = rf::gr::DEPTHBUFFER_Z;
             gr_needs_software_clipping = false;
             // Direct3D 8 set single precision on the creating thread, and the lightmap bake runs on it
-            _controlfp(_PC_24, _MCW_PC);
+            editor_gr_set_bake_precision();
         }
 
         void set_viewport_wnd(HWND hwnd)
@@ -356,24 +327,9 @@ namespace gr::d3d11
         void mark_fullbright_batches(rf::VifLodMesh* lod_mesh, int lod_index, const rf::MeshRenderParams& params)
         {
             const rf::VifMesh* mesh = lod_mesh->meshes[lod_index];
-            if (!params.vertex_colors || !lod_mesh->render_cache || !mesh) {
-                return;
-            }
-            auto* cache = static_cast<BaseMeshRenderCache*>(lod_mesh->render_cache);
-            auto& batches = const_cast<std::vector<BaseMeshRenderCache::Batch>&>(cache->get_batches(lod_index));
-            int vertex_offset = 0;
-            for (int ci = 0; ci < mesh->num_chunks && ci < static_cast<int>(batches.size()); ++ci) {
-                const int num_vecs = mesh->chunks[ci].num_vecs;
-                if (batches[ci].self_illumination == 0.0f && num_vecs > 0) {
-                    const rf::ubyte* vc = params.vertex_colors + vertex_offset * 3;
-                    const bool all_white = std::all_of(vc, vc + num_vecs * 3, [](rf::ubyte c) {
-                        return c == 255;
-                    });
-                    if (all_white) {
-                        batches[ci].self_illumination = 1.0f;
-                    }
-                }
-                vertex_offset += num_vecs;
+            if (params.vertex_colors && lod_mesh->render_cache && mesh) {
+                static_cast<BaseMeshRenderCache*>(lod_mesh->render_cache)
+                    ->mark_fullbright_batches(lod_index, *mesh, params.vertex_colors);
             }
         }
 
@@ -550,7 +506,7 @@ namespace gr::d3d11
 
         // The perspective view's level as View > Show Wireframe, Wireframe Overlay and Draw See-thru Portal Faces ask.
         // The paint reads the portal option (0x0047AE3F) after this.
-        EditorRenderer::LevelViewStyle perspective_level_view_style()
+        EditorLevelStyle perspective_level_view_style()
         {
             const bool wireframe = g_editor_settings.show_wireframe;
             return {
@@ -679,11 +635,7 @@ namespace gr::d3d11
     EditorLevelStyle level_style()
     {
         const EditorRenderer* r = live_renderer();
-        if (!r) {
-            return {};
-        }
-        const EditorRenderer::LevelViewStyle& style = r->level_view_style();
-        return {style.fills, style.edges};
+        return r ? r->level_view_style() : EditorLevelStyle{};
     }
 }
 
@@ -699,7 +651,7 @@ namespace gr::d3d11
     if (!g_renderer) {
         close_after_startup_error(msg);
     }
-    close_after_renderer_error(msg);
+    g_renderer->close_after_error(msg);
 }
 
 void editor_d3d11_apply_patch()

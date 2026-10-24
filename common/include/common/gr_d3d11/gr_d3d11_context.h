@@ -86,6 +86,9 @@ namespace gr::d3d11
         ComPtr<ID3D11Buffer> buffer_;
     };
 
+    // The point lights a draw's lights buffer carries, the stock game's Direct3D 9 maximum
+    constexpr int max_point_lights = 32;
+
     class LightsBuffer
     {
     public:

@@ -22,10 +22,10 @@ namespace gr::d3d11
     // One ceiling cache cell as the GPU reads it: the world column the slot holds and the floor under it
     struct WeatherColumn
     {
-        std::int32_t cx;
-        std::int32_t cz;
+        int32_t cx;
+        int32_t cz;
         float floor_y;
-        std::int32_t pad = 0;
+        int32_t pad = 0;
     };
 
     // One weather region's particles for one frame. The GPU places each one from its seed, so the box
@@ -41,8 +41,8 @@ namespace gr::d3d11
         rf::Vector3 box_min;
         rf::Vector3 box_size;
         rf::Vector3 box_shift;
-        std::uint32_t wrap_base = 0;
-        std::uint32_t salt = 0;
+        uint32_t wrap_base = 0;
+        uint32_t salt = 0;
         float time = 0.0f;
         rf::Vector3 camera_pos;
         rf::Matrix3 camera_orient;
@@ -66,7 +66,7 @@ namespace gr::d3d11
         int cols_x = 0;
         int cols_z = 0;
         // A multiple of the grid size at or below every column the box covers
-        std::int32_t column_origin_x = 0;
-        std::int32_t column_origin_z = 0;
+        int32_t column_origin_x = 0;
+        int32_t column_origin_z = 0;
     };
 }

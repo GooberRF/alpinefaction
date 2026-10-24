@@ -23,6 +23,7 @@
 #include "brush_import.h"
 #include "brush_preview.h"
 #include "face_list_cache.h"
+#include "graphics/editor_gr.h"
 #include "headless_bake.h"
 #include "level.h"
 #include "memory_guard.h"
@@ -886,6 +887,7 @@ bool face_gets_stock_surface(GFace* face, const std::vector<int32_t>& terrain_ui
 
 void lighting_surfaces_stock(void* self)
 {
+    editor_gr_set_bake_precision();
     lightmap_surfaces_shrunk_reset();
     const MemoryGuardQuietScope quiet;
     // an interrupted pass leaves surfaces without lightmaps, which the renderer dereferences

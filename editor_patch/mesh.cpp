@@ -1682,7 +1682,7 @@ void mesh_render(CDedLevel* level)
             auto vmesh_type = vmesh_get_type(vm);
             if (vmesh_type == VMESH_TYPE_ANIM_FX) {
                 vmesh_process(vm, frame_dt, 0, &mesh->pos, &mesh->orient, 1);
-                rf::sky_room_pass_active = true;
+                vfx_render_transparent = 1;
             }
             else if (vmesh_type == VMESH_TYPE_CHARACTER) {
                 if (vm->instance) {
@@ -1733,7 +1733,7 @@ void mesh_render(CDedLevel* level)
             room_cleanup();
 
             // Reset VFX transparency flag
-            rf::sky_room_pass_active = false;
+            vfx_render_transparent = 0;
         }
 
         // Draw 3D cross at mesh position (cyan normal, red if selected)

@@ -46,17 +46,6 @@ DWORD g_start_ticks = 0;
 DWORD g_first_idle_ticks = 0;
 int g_dialogs_suppressed = 0;
 
-std::string narrow(const wchar_t* wide)
-{
-    int len = WideCharToMultiByte(CP_ACP, 0, wide, -1, nullptr, 0, nullptr, nullptr);
-    if (len <= 1) {
-        return {};
-    }
-    std::string result(static_cast<size_t>(len - 1), '\0');
-    WideCharToMultiByte(CP_ACP, 0, wide, -1, result.data(), len, nullptr, nullptr);
-    return result;
-}
-
 // The file first: formatting the xlog line allocates, and memory_guard_fatal's line must reach the file.
 void bake_log(std::string_view line)
 {
@@ -251,12 +240,8 @@ bool path_is_bake_input(const char* path)
 
 void parse_args()
 {
-    if (const auto input = editor_command_line_value(L"-bake")) {
-        g_input_path = narrow(input->c_str());
-    }
-    if (const auto output = editor_command_line_value(L"-bakeout")) {
-        g_output_path = narrow(output->c_str());
-    }
+    g_input_path = editor_command_line_path(L"-bake").value_or("");
+    g_output_path = editor_command_line_path(L"-bakeout").value_or("");
     g_active = !g_input_path.empty();
 }
 

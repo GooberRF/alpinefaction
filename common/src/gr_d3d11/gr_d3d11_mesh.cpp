@@ -31,6 +31,16 @@ namespace gr::d3d11
             rf::Color tint{255, 255, 255, 255};
         };
         GhostFillState g_ghost_fill;
+
+        // Check if a light's sphere overlaps a mesh's bounding sphere.
+        // More accurate than point-to-point distance for large meshes where
+        // the origin may be far from the nearest surface to the light.
+        bool light_overlaps_mesh(const rf::gr::Light* light, const rf::Vector3& mesh_pos, float mesh_radius)
+        {
+            float combined_radius = light->rad_2 + mesh_radius;
+            float dist_sq = (light->vec - mesh_pos).len_sq();
+            return dist_sq <= combined_radius * combined_radius;
+        }
     }
 
     void begin_ghost_fill(float fill_y, float alpha_ratio, const rf::Color* tint)
@@ -1296,5 +1306,139 @@ namespace gr::d3d11
                 context->DrawIndexed(batch.num_indices, batch.start_index, batch.base_vertex);
             }
         }
+    }
+
+    void BaseMeshRenderCache::mark_fullbright_batches(int lod_level, const rf::VifMesh& mesh,
+                                                      const rf::ubyte* vertex_colors)
+    {
+        // The stock CPU code sets vertex colors to exactly (255,255,255) for self-illuminated
+        // materials via max(computed_lighting, self_illumination * 255).
+        // Check ALL vertices in each chunk to avoid false positives from brightly-lit meshes
+        // where a few vertices happen to saturate to white. A truly self-illuminated batch
+        // will have every vertex at (255,255,255).
+        // Only update batches that don't already have self_illumination set (from v3d_page_in
+        // materials path) to avoid overwriting correct values with false positives.
+        auto& batches = meshes_[lod_level].batches;
+        int vertex_offset = 0;
+        for (int ci = 0; ci < mesh.num_chunks && ci < static_cast<int>(batches.size()); ++ci) {
+            if (batches[ci].self_illumination == 0.0f) {
+                int num_vecs = mesh.chunks[ci].num_vecs;
+                if (num_vecs > 0) {
+                    const rf::ubyte* vc = vertex_colors + vertex_offset * 3;
+                    bool all_white = true;
+                    for (int vi = 0; vi < num_vecs; ++vi) {
+                        if (vc[vi * 3] != 255 || vc[vi * 3 + 1] != 255 || vc[vi * 3 + 2] != 255) {
+                            all_white = false;
+                            break;
+                        }
+                    }
+                    if (all_white) {
+                        batches[ci].self_illumination = 1.0f;
+                    }
+                }
+            }
+            vertex_offset += mesh.chunks[ci].num_vecs;
+        }
+    }
+
+    int prioritize_mesh_lights(rf::gr::Light** lights, int count, const rf::Vector3& pos, float mesh_radius)
+    {
+        int total = count;
+
+        // Filter out negative-intensity (subtractive) lights. These are a lightmap
+        // baking trick to darken areas and have no physical meaning for real-time
+        // point lighting. They waste GPU slots and cause color artifacts.
+        {
+            int write = 0;
+            for (int read = 0; read < total; ++read) {
+                const auto* light = lights[read];
+                if (light->r >= 0.0f && light->g >= 0.0f && light->b >= 0.0f) {
+                    lights[write++] = lights[read];
+                }
+            }
+            total = write;
+        }
+
+        // Cull lights that can't reach the mesh (zero attenuation guaranteed).
+        // Without this, the shader evaluates all 32 light slots per pixel even
+        // for lights far beyond their radius, wasting GPU ALU on zero contributions.
+        // Spotlights use a conservative sphere test; the shader handles cone rejection.
+        // Tube lights check distance to nearest point on the segment.
+        {
+            int write = 0;
+            for (int read = 0; read < total; ++read) {
+                const auto* light = lights[read];
+                float combined_radius = light->rad_2 + mesh_radius;
+                float combined_sq = combined_radius * combined_radius;
+                float dist_sq;
+                if (light->type == rf::gr::LT_TUBE) {
+                    rf::Vector3 seg = light->vec2 - light->vec;
+                    rf::Vector3 delta = pos - light->vec;
+                    float seg_len_sq = seg.len_sq();
+                    if (seg_len_sq > 0.0001f) {
+                        float t = delta.dot_prod(seg) / seg_len_sq;
+                        t = std::clamp(t, 0.0f, 1.0f);
+                        rf::Vector3 closest = light->vec + seg * t;
+                        dist_sq = (pos - closest).len_sq();
+                    } else {
+                        dist_sq = delta.len_sq();
+                    }
+                } else {
+                    dist_sq = (light->vec - pos).len_sq();
+                }
+                if (dist_sq <= combined_sq) {
+                    lights[write++] = lights[read];
+                }
+            }
+            total = write;
+        }
+
+        // Priority sorting for the GPU light limit.
+        // Three tiers, each stable-partitioned to the front:
+        //   1. Dynamic lights whose sphere overlaps the mesh (muzzle flashes, explosions, fire)
+        //   2. Large spotlights (radius >= 30m) whose sphere overlaps the mesh
+        //   3. Everything else, sorted by distance to mesh center
+        // All overlap tests use sphere-sphere intersection (light radius + mesh radius)
+        // to correctly handle large meshes where the origin is far from the nearest surface.
+        constexpr float large_spot_radius = 30.0f;
+        if (total > 1) {
+            auto* begin = lights;
+            auto* end = begin + total;
+
+            // Tier 1: dynamic lights overlapping the mesh
+            auto* t1_end = std::stable_partition(begin, end,
+                [&pos, mesh_radius](const rf::gr::Light* light) {
+                    if (!light->dynamic) return false;
+                    return light_overlaps_mesh(light, pos, mesh_radius);
+                }
+            );
+
+            // Tier 2: large spotlights overlapping the mesh (not already in tier 1)
+            auto* t2_end = std::stable_partition(t1_end, end,
+                [&pos, mesh_radius](const rf::gr::Light* light) {
+                    if (light->type != rf::gr::LT_SPOT) return false;
+                    if (light->rad_2 < large_spot_radius) return false;
+                    return light_overlaps_mesh(light, pos, mesh_radius);
+                }
+            );
+            int priority_count = static_cast<int>(t2_end - begin);
+
+            // Sort the remaining (non-priority) lights by distance to mesh center
+            int remaining = total - priority_count;
+            if (remaining > 1) {
+                int slots_left = std::max(max_point_lights - priority_count, 0);
+                std::partial_sort(
+                    t2_end,
+                    t2_end + std::min(remaining, slots_left),
+                    end,
+                    [&pos](const rf::gr::Light* a, const rf::gr::Light* b) {
+                        float da = (a->vec - pos).len_sq();
+                        float db = (b->vec - pos).len_sq();
+                        return da < db;
+                    }
+                );
+            }
+        }
+        return total;
     }
 }

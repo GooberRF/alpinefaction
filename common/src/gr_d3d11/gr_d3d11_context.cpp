@@ -258,8 +258,6 @@ namespace gr::d3d11
 
     struct LightsBufferData
     {
-        static constexpr int max_point_lights = 32; // max dynamic lights in a scene, matches stock game DX9 maximum
-
         struct PointLight
         {
             std::array<float, 3> pos;
@@ -314,7 +312,7 @@ namespace gr::d3d11
 
         LightsBufferData data{};
         if (!force_neutral) {
-            for (int i = 0; i < std::min(rf::gr::num_relevant_lights, LightsBufferData::max_point_lights); ++i) {
+            for (int i = 0; i < std::min(rf::gr::num_relevant_lights, max_point_lights); ++i) {
                 LightsBufferData::PointLight& gpu_light = data.point_lights[i];
                 // Make sure radius is never 0 because we divide by it
                 gpu_light.radius = 0.0001f;
@@ -326,7 +324,7 @@ namespace gr::d3d11
                 rf::gr::light_get_ambient(&data.ambient_light[0], &data.ambient_light[1], &data.ambient_light[2]);
             }
 
-            int num_point_lights = std::min(rf::gr::num_relevant_lights, LightsBufferData::max_point_lights);
+            int num_point_lights = std::min(rf::gr::num_relevant_lights, max_point_lights);
             data.num_point_lights = static_cast<float>(num_point_lights);
 
             int gpu_index = 0;

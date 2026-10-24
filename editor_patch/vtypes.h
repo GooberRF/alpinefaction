@@ -138,6 +138,8 @@ namespace rf
         };
     };
     static_assert(sizeof(File) == 0x114, "File size mismatch");
+    static_assert(offsetof(File, filename) == 0x05);
+    static_assert(offsetof(File, packfile_entry) == 0x108);
 }
 
 // ─── Editor VMesh ────────────────────────────────────────────────────────────
@@ -595,6 +597,8 @@ static auto& geo_cache_pool_end = addr_as_ref<char*>(0x010A84C0);
 // Its start and next free byte (0x0049B470 allocates the pool, geo_cache_flush_all rewinds it)
 static auto& geo_cache_pool_base = addr_as_ref<void*>(0x010E8F60);
 static auto& geo_cache_pool_cursor = addr_as_ref<void*>(0x01128364);
+// Rooms holding a cache from the pool; geo_cache_flush_all clears it with the pool
+static auto& geo_cache_num_rooms = addr_as_ref<int>(0x010AC748);
 // A batch record of a viewport geometry cache, as FUN_0049b550 fills it.
 struct RedCacheBatch
 {
@@ -673,6 +677,8 @@ static auto& set_draw_color = addr_as_ref<void(uint32_t r, uint32_t g, uint32_t 
 static auto& gr_set_bitmap = addr_as_ref<void(int bm_handle, int unk)>(0x004B97E0);
 // View > Show Just Textures: nonzero draws level faces fullbright, without lightmaps.
 static auto& editor_textures_enabled = addr_as_ref<int>(0x006C9AA8);
+// Set around a .vfx draw so the renderer takes its transparency path. Every stock access is byte wide.
+static auto& vfx_render_transparent = addr_as_ref<bool>(0x0059E21C);
 // The game's gr::bitmap_3d_angle (RF 0x00515B40)
 static auto& gr_render_billboard = addr_as_ref<void(void* pos, int unk, float scale, rf::gr::Mode mode)>(0x004CB360);
 static auto& draw_line_2d = addr_as_ref<uint32_t(const void* pt1, const void* pt2, uint32_t mode)>(0x004CB150);
@@ -1332,7 +1338,7 @@ namespace rf
     static auto& zero_vector = addr_as_ref<Vector3>(0x0147BA10);
 
     static auto& g_decal_list = addr_as_ref<GDecal*>(0x010A6BEC);
-    static auto& geo_cache_num_rooms = addr_as_ref<int>(0x010AC748);
+    static auto& geo_cache_num_rooms = ::geo_cache_num_rooms;
     static auto& gr_decal_self_illuminated_mode = addr_as_ref<gr::Mode>(0x01621FA0);
     static auto& gr_use_far_clip = addr_as_ref<bool>(0x0158F3F5);
     static auto& gr_far_clip_dist_scaled = addr_as_ref<float>(0x0158F3FC);
@@ -1343,7 +1349,7 @@ namespace rf
     static auto& sky_room_orient = addr_as_ref<Matrix3*>(0x006C9A6C);
     // Set while sky_room_draw draws; the editor also sets it around a .vfx draw so the renderer takes its
     // transparency path
-    static auto& sky_room_pass_active = addr_as_ref<bool>(0x0059E21C);
+    static auto& sky_room_pass_active = vfx_render_transparent;
 
     static auto& vif_min_lod = addr_as_ref<int>(0x01ABC054);
     static auto& vif_lod_full_detail = addr_as_ref<bool>(0x01ABC058);

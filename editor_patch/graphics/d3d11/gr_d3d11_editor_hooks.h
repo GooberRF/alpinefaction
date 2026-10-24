@@ -16,8 +16,9 @@ struct EditorLevelStyle;
 // patches, before RED's gr_init.
 void editor_d3d11_apply_patch();
 
-// The core's fatal errors (its fatal_error binding). A lost device saves the level and closes RED as a failed Present
-// does; anything else is reported and aborts.
+// The core's fatal errors (its fatal_error binding). A lost device closes RED as a failed Present does, and any other
+// failure the same way, the level saved first; a failure while the renderer starts closes it with the Direct3D 9
+// advice. headless_bake.h lists the exit codes.
 [[noreturn]] void editor_d3d11_fatal_error(const std::string& text, const std::source_location& loc);
 
 namespace gr::d3d11

@@ -20,7 +20,7 @@
 #include "overflow_charts.h"
 #include "alpine_lightmaps.h"
 #include "bake_progress.h"
-#include "editor_settings.h"
+#include "graphics/editor_gr.h"
 #include "level.h"
 #include "mfc_types.h"
 #include "terrain_build.h"
@@ -1848,7 +1848,7 @@ void overflow_preview_clear()
 void overflow_preview_from_bake()
 {
     g_preview.clear();
-    if (editor_session_renderer() != EditorRendererKind::d3d9) {
+    if (editor_gr_is_d3d11()) {
         return;
     }
     for (const Chart& c : g_ov.charts) {
@@ -1893,7 +1893,7 @@ std::unordered_map<const GFace*, std::uint32_t> overflow_face_records(const alm:
 void overflow_preview_from_section(const std::uint8_t* body, std::size_t len, const GSolid* solid)
 {
     g_preview.clear();
-    if (editor_session_renderer() != EditorRendererKind::d3d9) {
+    if (editor_gr_is_d3d11()) {
         return;
     }
     const alm::ReadResult r = read_table(body, len);

@@ -16,6 +16,7 @@
 #include "terrain_preview.h"
 #include "editor_settings.h"
 #include "graphics/d3d11/gr_d3d11_editor_hooks.h"
+#include "graphics/editor_gr.h"
 
 HWND GetMainFrameHandle();
 
@@ -306,7 +307,7 @@ CodeInjection geo_cache_validate_in_render{
         auto original_esp = static_cast<uintptr_t>(regs.esp);
         auto loop_index = *reinterpret_cast<int*>(original_esp + 0x80);
         if (loop_index == 0) {
-            pool_cursor_snapshot = addr_as_ref<char*>(0x01128364);
+            pool_cursor_snapshot = static_cast<char*>(geo_cache_pool_cursor);
         }
 
         // Read geo_cache pointer from room struct
@@ -314,9 +315,8 @@ CodeInjection geo_cache_validate_in_render{
         auto* geo_cache = *reinterpret_cast<char**>(room + 0x4);
 
         if (geo_cache) {
-            auto& pool_base = addr_as_ref<char*>(0x010e8f60);
             auto gc_addr = reinterpret_cast<uintptr_t>(geo_cache);
-            if (gc_addr < reinterpret_cast<uintptr_t>(pool_base) ||
+            if (gc_addr < reinterpret_cast<uintptr_t>(geo_cache_pool_base) ||
                 gc_addr >= reinterpret_cast<uintptr_t>(pool_cursor_snapshot)) {
                 // Cache pointer is outside the valid pool range — it's stale
                 *reinterpret_cast<void**>(room + 0x4) = nullptr;
@@ -346,7 +346,7 @@ CodeInjection geo_build_reset_render_cache{
     0x0043a6cd, // MOV ECX, dword ptr [0x006f9e68] — right after post-build room loop
     [](auto& regs) {
         geo_cache_pool_cursor = geo_cache_pool_base;
-        rf::geo_cache_num_rooms = 0;
+        geo_cache_num_rooms = 0;
     },
 };
 
@@ -615,7 +615,7 @@ void ApplyGraphicsPatches()
     // Draw the sky in Render Everything as the portal modes do
     level_render_everything_hook.install();
 
-    if (editor_session_renderer() == EditorRendererKind::d3d11) {
+    if (editor_gr_is_d3d11()) {
         editor_d3d11_apply_patch();
         return;
     }

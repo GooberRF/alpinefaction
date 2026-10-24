@@ -35,6 +35,10 @@ namespace gr::d3d11
 
     void clear_entity_ambient_cache();
 
+    // Orders the `count` lights gathered for a GPU-lit mesh at `pos` so that the first max_point_lights are the ones
+    // to upload, after dropping subtractive lights and lights that cannot reach it. Returns how many are kept.
+    int prioritize_mesh_lights(rf::gr::Light** lights, int count, const rf::Vector3& pos, float mesh_radius);
+
     // Between these, mesh draws render as a ghost filled up to world Y fill_y
     void begin_ghost_fill(float fill_y, float alpha_ratio, const rf::Color* tint);
     void end_ghost_fill();
@@ -91,6 +95,9 @@ namespace gr::d3d11
         {
             return meshes_[lod_level].batches;
         }
+
+        // Self-illuminated chunks of `mesh`, LOD lod_level of this cache, from the stock CPU lighting's vertex colors
+        void mark_fullbright_batches(int lod_level, const rf::VifMesh& mesh, const rf::ubyte* vertex_colors);
 
         const Mesh& get_mesh(int lod_level) const
         {

@@ -5,7 +5,8 @@
 #include <cstdint>
 
 // Gas region info, loaded from stock RFL chunk 0xB00
-struct GasRegionInfo {
+struct GasRegionInfo
+{
     int32_t uid = -1;
     rf::Vector3 pos{};
     rf::Matrix3 orient{};

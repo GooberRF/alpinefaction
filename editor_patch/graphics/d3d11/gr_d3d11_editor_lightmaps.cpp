@@ -12,7 +12,7 @@
 #include <common/scope_guard.h>
 #include <gr_d3d11_engine.h>
 #include "../../alpine_lightmaps.h"
-#include "../../editor_settings.h"
+#include "../editor_gr.h"
 #include "../../headless_bake.h"
 #include "../../overflow_charts.h"
 #include "gr_d3d11_editor_hooks.h"
@@ -151,7 +151,7 @@ void editor_af_lightmap_show(std::vector<std::uint8_t>& body, bool fresh, const 
 {
     const bool was_shown = g_solid != nullptr;
     editor_af_lightmap_hide(false);
-    if (editor_session_renderer() == EditorRendererKind::d3d11 && !headless_bake_active() && solid
+    if (editor_gr_is_d3d11() && !headless_bake_active() && solid
         && body.size() >= sizeof(alm::SectionHeader)) {
         // The section is sized by the file, so running out of memory only leaves it undrawn
         try {

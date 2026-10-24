@@ -49,3 +49,18 @@ std::optional<std::wstring> editor_command_line_value(const wchar_t* name)
     }
     return std::nullopt;
 }
+
+std::optional<std::string> editor_command_line_path(const wchar_t* name)
+{
+    const std::optional<std::wstring> wide = editor_command_line_value(name);
+    if (!wide) {
+        return std::nullopt;
+    }
+    int len = WideCharToMultiByte(CP_ACP, 0, wide->c_str(), -1, nullptr, 0, nullptr, nullptr);
+    if (len <= 1) {
+        return std::string{};
+    }
+    std::string result(static_cast<size_t>(len - 1), '\0');
+    WideCharToMultiByte(CP_ACP, 0, wide->c_str(), -1, result.data(), len, nullptr, nullptr);
+    return result;
+}

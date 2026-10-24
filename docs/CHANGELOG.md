@@ -140,8 +140,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Add Salvage flag placement for community level `CTF_TERROR.rfl`
 - Store level editor preferences in `alpine_editor.ini` instead of `red\red.cfg`, importing `red.cfg` on first launch
 - Add an `Alpine` page to the level editor `Preferences` window with options for the texture mode face outline and its color, the background frame rate limit, and always drawing meshes at full detail
-- Render the level editor with the game's Direct3D 11 renderer (`-d3d9` or the `Renderer` preference switches back), with `View` options `Preview Level Fog`, `Show Invisible Faces`, `Show Back Faces`, `Fullbright Meshes`, `Show Decals`, `Show Wireframe` and `Wireframe Overlay`, and translucent portal faces for `Draw See-thru Portal Faces`
-- Make smoothing groups follow standard rules in level editor lightmap bakes unless the `Legacy lighting` level property is set: faces smooth only with faces sharing a group, faces without a group bake flat, a brush with all its faces in one group now shades rounded across its sharp edges (split the groups to keep an edge sharp), and smoothed faces are no longer darkened between their vertices; also fix over-bright streaks on smoothed faces and on faces split by CSG
+- Render the level editor with the game's Direct3D 11 renderer, which displays Alpine Lightmaps including `D3D11-only lightmaps` and overflow lightmaps and adds new `View` options; `-d3d9` or the `Renderer` preference selects the previous Direct3D 9 renderer instead
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color
@@ -172,6 +171,7 @@ Version 1.5.0 (Trillium): Not yet released
   - Fix grey speckling on smoothed faces and the dark edges around lightmap fragments
   - Fix several accuracy issues on face edges that resulted in dark bands and splotches along polygon boundaries
   - Blend coplanar surfaces across room boundaries
+  - Smooth faces only with faces sharing a smoothing group (faces without one bake flat, and a brush whose faces share one group now shades rounded across its edges: split the groups to keep an edge sharp), stop darkening smoothed faces between their vertices, and fix over-bright streaks on smoothed faces, unless the new `Legacy lighting` level property is set
 - Fix object collision pairs silently running out on levels with many collidable clutter objects, triggers, and items when many players are connected
 - Fix FactionFiles stats event reporting stalling permanently when a send attempt hangs inside WinINet
 - Fix level editor crashing when a mesh is played with an animation that does not fit its skeleton

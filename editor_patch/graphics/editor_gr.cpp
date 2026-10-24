@@ -1,20 +1,25 @@
+#include <float.h>
 #include "../editor_settings.h"
 #include "../textures.h"
 #include "../vtypes.h"
 #include "d3d11/gr_d3d11_editor_hooks.h"
 #include "editor_gr.h"
 
-namespace
+bool editor_gr_is_d3d11()
 {
-    bool on_d3d11()
-    {
-        return editor_session_renderer() == EditorRendererKind::d3d11;
+    return editor_session_renderer() == EditorRendererKind::d3d11;
+}
+
+void editor_gr_set_bake_precision()
+{
+    if (editor_gr_is_d3d11()) {
+        _controlfp(_PC_24, _MCW_PC);
     }
 }
 
 void editor_gr_flush()
 {
-    if (on_d3d11()) {
+    if (editor_gr_is_d3d11()) {
         gr::d3d11::flush();
     }
     else if (gr_batch_open) {
@@ -24,12 +29,12 @@ void editor_gr_flush()
 
 bool editor_gr_batch_open()
 {
-    return on_d3d11() ? gr::d3d11::batch_pending() : gr_batch_open;
+    return editor_gr_is_d3d11() ? gr::d3d11::batch_pending() : gr_batch_open;
 }
 
 rf::gr::Mode editor_gr_additive_mode(rf::gr::Mode mode)
 {
-    if (!on_d3d11()) {
+    if (!editor_gr_is_d3d11()) {
         return mode;
     }
     mode.set_alpha_blend(rf::gr::ALPHA_BLEND_ALPHA_ADDITIVE);
@@ -49,13 +54,13 @@ rf::gr::Mode editor_gr_additive_mode(rf::gr::Mode mode)
 
 EditorLevelStyle editor_gr_level_style()
 {
-    return on_d3d11() ? gr::d3d11::level_style() : EditorLevelStyle{};
+    return editor_gr_is_d3d11() ? gr::d3d11::level_style() : EditorLevelStyle{};
 }
 
 bool editor_texture_prepare(int bm)
 {
     // Direct3D 11 makes the texture in gr_lock
-    if (on_d3d11()) {
+    if (editor_gr_is_d3d11()) {
         return bm >= 0;
     }
     // gr_lock's texture setup, done first so a failed CreateTexture never reaches gr_lock. A failure frees the slot,
@@ -74,7 +79,7 @@ bool editor_texture_prepare(int bm)
 
 void editor_texture_free(int bm)
 {
-    if (on_d3d11()) {
+    if (editor_gr_is_d3d11()) {
         return;
     }
     if (GrTextureSlot* slot = gr_texture_slot_of(bm); slot && slot->bm_handle == bm) {

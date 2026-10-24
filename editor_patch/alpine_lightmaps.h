@@ -87,9 +87,9 @@ void lightmap_encode_float_texels(const float* r, const float* g, const float* b
                                   std::uint8_t* out);
 // Defined in editor_patch/lightmap.cpp: smoothing with bake fixes, shared by the overflow charts. A face's vertex
 // normal is the normalised sum, over the faces on the vertex sharing a smoothing group with it (itself included), of
-// their plane normals weighted by their interior angle there; the face's plane normal when those cancel. A smooth
-// lumel is lit with lightmap_smooth_shading_normal of its interpolated normal: unit length, lifted continuously to
-// stay a few degrees above `plane`.
+// their plane normals weighted by their interior angle there; the face's plane normal when those nearly cancel. A
+// smooth lumel is lit with lightmap_smooth_shading_normal of its interpolated normal: unit length, lifted continuously
+// to stay a few degrees above `plane`.
 Vector3 lightmap_vertex_normal(const GFace& face, const GVertex& vertex);
 Vector3 lightmap_smooth_shading_normal(const Vector3& n, const Vector3& plane);
 

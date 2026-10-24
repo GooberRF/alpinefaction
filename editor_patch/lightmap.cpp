@@ -2305,6 +2305,8 @@ static void lighting_calc_bake(void* self, bool shadows, bool surface_pass_ran)
     if (bake_progress_active() || lighting_calc_refused(surface_pass_ran)) {
         return;
     }
+    // in case anything on this thread changed it since the renderer started
+    editor_gr_set_bake_precision();
     bool cancelled = false;
     bool out_of_memory = false;
     {
@@ -3246,10 +3248,13 @@ CodeInjection lightmap_border_duplicate_skip_injection{
     false, // no trampoline: the injection fully replaces the 5 byte block
 };
 
+namespace
+{
+
 constexpr float lumel_crossing_tol = 1.0e-4f; // 0x004ad4f7, the pick's first pass
 
 // u where the row v crosses the edge a -> b, as 0x004ad7c9-0x004ad80a computes it
-static double lumel_crossing_u(const GFaceVertex& a, const GFaceVertex& b, float v)
+double lumel_crossing_u(const GFaceVertex& a, const GFaceVertex& b, float v)
 {
     const float t = static_cast<float>((static_cast<double>(v) - a.lm_v) / (static_cast<double>(b.lm_v) - a.lm_v));
     return (static_cast<double>(b.lm_u) - a.lm_u) * t + a.lm_u;
@@ -3258,7 +3263,7 @@ static double lumel_crossing_u(const GFaceVertex& a, const GFaceVertex& b, float
 // The pick's edge test (0x004ad5a9-0x004ad604) at tolerance tol, or an edge the row strictly crosses. The pick's
 // 0.001 floor on |dv| bounds how far tol extrapolates (0.1 of the edge) but also drops real crossings of edges up to
 // 0.001 * lm_h rows tall (several at chart resolution); a crossed edge keeps t in [0,1] at any nonzero dv.
-static bool lumel_edge_crosses_row(const GFaceVertex& a, const GFaceVertex& b, float v, double tol)
+bool lumel_edge_crosses_row(const GFaceVertex& a, const GFaceVertex& b, float v, double tol)
 {
     const double va = a.lm_v;
     const double vb = b.lm_v;
@@ -3267,9 +3272,6 @@ static bool lumel_edge_crosses_row(const GFaceVertex& a, const GFaceVertex& b, f
     }
     return std::min(va, vb) <= v && v < std::max(va, vb);
 }
-
-namespace
-{
 
 // What the containment re-pick needs of one FUN_004ad160 call: its face list, vertex normals and fragment view are
 // fixed for the call (0x004ad299-0x004ad2a7 build them before the row loop, which never writes them) and v changes

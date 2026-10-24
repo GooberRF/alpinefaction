@@ -53,7 +53,7 @@ namespace gr::d3d11::engine
 
     // The room the view camera is in, null with no camera
     rf::GRoom* camera_room();
-    // Only while camera_room() is not null
+    // Zero with no camera
     rf::Vector3 camera_pos();
 
     // Null when the binary has no mover brushes

@@ -2265,11 +2265,22 @@ void editor_address_space_free(std::uint64_t& free_largest, std::uint64_t& free_
 // RED runs large address aware, with 4 GB of address space instead of 2 GB. Allocation-free.
 bool editor_large_address_aware();
 
+enum class LevelFileOp
+{
+    none,
+    load,
+    save,
+    autosave,
+};
+// The CDedDoc::LoadSaveLevel running, if any.
+LevelFileOp level_file_op();
 // Inside RED's autosave (CDedDoc::LoadSaveLevel with is_autosave set).
 bool level_autosave_in_progress();
 // Saves the open level now under RED's autosave name ("~" before the extension; an untitled level as Untitled~.rfl in
-// the working directory), whatever the autosave setting. The full path written, or none when nothing was saved: no
-// level, a build, Calculate Lighting or an autosave running, or the save failed.
+// the working directory), whatever the autosave setting. The full path written: the autosave, or the temporary file
+// beside it ("~.tmp" before the extension) when the save worked but could not replace the previous autosave. None when
+// nothing was saved: no level, a build, Calculate Lighting or a level load or save running, or the save failed (the
+// previous autosave stays).
 std::optional<std::string> level_autosave_now();
 
 void DedLevel_DoBackLink();

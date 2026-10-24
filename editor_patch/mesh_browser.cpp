@@ -997,14 +997,14 @@ void preview_draw_mesh(EditorVMesh* vmesh, const MeshPreviewCamera& camera)
 
     const bool anim_fx = vmesh_get_type(vmesh) == VMESH_TYPE_ANIM_FX;
     if (anim_fx) {
-        rf::sky_room_pass_active = true;
+        vfx_render_transparent = 1;
     }
     // Empties the light list the viewport left behind, so the one dynamic light 0x00505920 would
     // otherwise pick up cannot reach the preview.
     room_cleanup();
     vmesh_render(vmesh, &preview_origin, &identity_orient, &params);
     if (anim_fx) {
-        rf::sky_room_pass_active = false;
+        vfx_render_transparent = 0;
     }
 }
 

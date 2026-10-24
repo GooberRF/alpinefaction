@@ -15,6 +15,7 @@
 #include <common/gr_d3d11/gr_d3d11_shader.h>
 #include <common/gr_d3d11/gr_d3d11_transform.h>
 #include <gr_d3d11_engine.h>
+#include "../editor_gr.h"
 
 namespace alpine_lightmap
 {
@@ -41,16 +42,6 @@ namespace gr::d3d11
     class EditorRenderer
     {
     public:
-        // What the paint of the perspective view in progress draws of the level, and of the solids the per-face draw
-        // fills (View > Show Wireframe, Wireframe Overlay, Draw See-thru Portal Faces). Every other draw has the
-        // defaults.
-        struct LevelViewStyle
-        {
-            bool fills = true;
-            bool edges = false;
-            bool portal_planes = false;
-        };
-
         explicit EditorRenderer(bool headless);
         ~EditorRenderer();
 
@@ -80,11 +71,13 @@ namespace gr::d3d11
         {
             fog_overlay_pass_ = overlay_pass;
         }
-        void set_level_view_style(const LevelViewStyle& style)
+        // What the paint of the perspective view in progress draws of the level, and of the solids the per-face draw
+        // fills. Every other draw has the defaults.
+        void set_level_view_style(const EditorLevelStyle& style)
         {
             level_view_style_ = style;
         }
-        const LevelViewStyle& level_view_style() const
+        const EditorLevelStyle& level_view_style() const
         {
             return level_view_style_;
         }
@@ -134,14 +127,20 @@ namespace gr::d3d11
         void set_mesh_bounds(const rf::Vector3& center, float radius);
         void clear_mesh_lights();
 
-        bool device_lost() const
+        // Once the device is lost or a call failed: nothing more reaches the GPU
+        bool stopped() const
         {
-            return device_lost_;
+            return stopped_;
         }
 
         // A driver reset (TDR) or removed device: the level is saved as RED's autosave saves it, the user is told, and
         // RED closes. Any other result returns.
         void handle_device_lost(HRESULT hr);
+        // A core call failed for a reason other than a lost device: the level is saved, the user told and RED closed
+        // the same way
+        [[noreturn]] void close_after_error(const std::string& msg);
+        // The largest texture side the device's feature level allows
+        UINT max_texture_size() const;
         // The core's fatal errors: whether the device is gone, so the failure is a device loss
         bool device_removed() const;
 
@@ -156,6 +155,8 @@ namespace gr::d3d11
         };
 
         void init_device();
+        // Before RED closes; false when the renderer already was stopped
+        bool stop();
         void init_scene_target();
         void present();
         ViewTarget* view_target(HWND hwnd, UINT w, UINT h);
@@ -172,6 +173,9 @@ namespace gr::d3d11
         template<typename F>
         bool styled_face(rf::GFace* face, F&& fill);
         bool queue_face_edges(rf::GFace* face);
+        // Gathers `face` into face_verts_ and face_vertex_refs_ as the per-face draw rotated it and projects it; false
+        // for a broken edge loop, fewer than 3 or more than max_vertices vertices, or a face out of view
+        bool gather_visible_face(const rf::GFace* face, std::size_t max_vertices);
         void queue_portal_planes(rf::GSolid* solid);
         // Before anything but a particle is queued: the particles queued before it draw first, and while the level
         // fog preview is on, RED's lines and 2D bitmaps (`overlay`) and, in the overlay pass, all but a .vfx mesh's
@@ -208,10 +212,10 @@ namespace gr::d3d11
         std::unique_ptr<ParticleRenderer> particle_renderer_;
         HWND hwnd_ = nullptr;
         bool fog_overlay_pass_ = false;
-        LevelViewStyle level_view_style_;
+        EditorLevelStyle level_view_style_;
         struct FaceDraw
         {
-            LevelViewStyle style;
+            EditorLevelStyle style;
             rf::Color edge_color;
         };
         std::optional<FaceDraw> face_draw_;
@@ -223,13 +227,17 @@ namespace gr::d3d11
             float sw;
         };
         std::vector<EdgeVertex> face_edges_;
+        // Scratch of the face draws, one at a time
+        std::vector<rf::gr::Vertex> face_verts_;
+        std::vector<const rf::GFaceVertex*> face_vertex_refs_;
+        std::vector<const rf::gr::Vertex*> face_vert_ptrs_;
         // outline_standard_vs at no thickness and outline_ps: the level cache overlays in one colour
         VertexShaderAndLayout overlay_vertex_shader_;
         ComPtr<ID3D11PixelShader> overlay_pixel_shader_;
         ComPtr<ID3D11Buffer> overlay_vs_params_;
         ComPtr<ID3D11Buffer> overlay_color_;
         std::unordered_map<HWND, ViewTarget> view_targets_;
-        bool device_lost_ = false;
+        bool stopped_ = false;
         // A frame reached a window: from then on a window whose swap chain cannot be made stays blank
         bool presented_ = false;
         bool swap_chain_failure_logged_ = false;
@@ -240,8 +248,6 @@ namespace gr::d3d11
         TerrainChunkRoomsHidden* hidden_terrain_rooms_ = nullptr;
     };
 
-    // A core call failed for a reason other than a lost device: the user is told and RED closes
-    [[noreturn]] void close_after_renderer_error(const std::string& msg);
     // A core call failed while the renderer was being built: closes as a device that could not be created does
     [[noreturn]] void close_after_startup_error(const std::string& msg);
 }

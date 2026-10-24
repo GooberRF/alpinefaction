@@ -1,10 +1,7 @@
-#include <cstddef>
-#include <vector>
-#include <xlog/xlog.h>
+#include <iterator>
 #include <common/gr_d3d11/gr_d3d11_af_lightmap.h>
 #include <common/gr_d3d11/gr_d3d11_context.h>
 #include <common/gr_d3d11/gr_d3d11_dynamic_geometry.h>
-#include <common/gr_d3d11/gr_d3d11_util.h>
 #include "gr_d3d11_editor_faces.h"
 
 namespace gr::d3d11
@@ -24,24 +21,6 @@ namespace gr::d3d11
             {"TEXCOORD", 1, DXGI_FORMAT_R32G32B32_FLOAT, 0, D3D11_APPEND_ALIGNED_ELEMENT, D3D11_INPUT_PER_VERTEX_DATA,
              0},
         };
-
-        VertexShaderAndLayout load_lightmap_vertex_shader(ID3D11Device* device)
-        {
-            std::vector<std::byte> shader_data;
-            if (!engine::read_file(lightmap_vertex_shader_filename, shader_data)) {
-                xlog::error("Cannot open vertex shader file {}", lightmap_vertex_shader_filename);
-                return {};
-            }
-            VertexShaderAndLayout result;
-            DF_GR_D3D11_CHECK_HR(
-                device->CreateVertexShader(shader_data.data(), shader_data.size(), nullptr, &result.vertex_shader)
-            );
-            DF_GR_D3D11_CHECK_HR(
-                device->CreateInputLayout(lightmap_vertex_layout, static_cast<UINT>(std::size(lightmap_vertex_layout)),
-                                          shader_data.data(), shader_data.size(), &result.input_layout)
-            );
-            return result;
-        }
     }
 
     EditorFaceRenderer::EditorFaceRenderer(ComPtr<ID3D11Device> device, ShaderManager& shader_manager,
@@ -52,7 +31,8 @@ namespace gr::d3d11
         af_lightmap_renderer_{af_lightmap_renderer},
         vertex_ring_buffer_{face_batch_max_vertex, D3D11_BIND_VERTEX_BUFFER, device, render_context.device_context()},
         index_ring_buffer_{face_batch_max_index, D3D11_BIND_INDEX_BUFFER, device, render_context.device_context()},
-        vertex_shader_{load_lightmap_vertex_shader(device)},
+        vertex_shader_{shader_manager.load_vertex_shader(lightmap_vertex_shader_filename, lightmap_vertex_layout,
+                                                         std::size(lightmap_vertex_layout))},
         pixel_shader_{shader_manager.get_pixel_shader(PixelShaderId::standard_no_gas)}
     {
     }

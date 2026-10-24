@@ -173,6 +173,7 @@ namespace gr::d3d11
         }
 
         ComPtr<ID3D11VertexShader> load_vertex_shader_only(const char* filename);
+        VertexShaderAndLayout load_vertex_shader(const char* filename, const D3D11_INPUT_ELEMENT_DESC input_elements[], std::size_t num_input_elements);
 
         const ComPtr<ID3D11PixelShader>& get_pixel_shader(PixelShaderId pixel_shader_id)
         {
@@ -181,7 +182,6 @@ namespace gr::d3d11
 
     private:
         VertexShaderAndLayout load_vertex_shader(const char* filename, VertexLayout vertex_layout);
-        VertexShaderAndLayout load_vertex_shader(const char* filename, const D3D11_INPUT_ELEMENT_DESC input_elements[], std::size_t num_input_elements);
         ComPtr<ID3D11PixelShader> load_pixel_shader(const char* filename);
 
         ComPtr<ID3D11Device> device_;

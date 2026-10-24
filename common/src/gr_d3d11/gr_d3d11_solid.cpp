@@ -24,7 +24,6 @@ namespace gr::d3d11
     class RoomRenderCache;
     class GRenderCache;
 
-
     static rf::gr::Mode sky_room_opaque_mode{
         rf::gr::TEXTURE_SOURCE_WRAP,
         rf::gr::COLOR_SOURCE_TEXTURE,

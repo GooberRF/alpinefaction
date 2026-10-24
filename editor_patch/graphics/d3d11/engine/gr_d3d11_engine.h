@@ -349,7 +349,7 @@ namespace gr::d3d11::engine
     // The game's: the level fog's near clip from RFL 306 on. RED zeroes an older level's when it loads it.
     inline float fog_near_clip()
     {
-        return rfl_version_minimum(306) ? rf::gr::screen.fog_near : 0.0f;
+        return rf::gr::screen.fog_near;
     }
 
     inline float level_default_far_clip()
