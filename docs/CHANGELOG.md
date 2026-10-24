@@ -88,7 +88,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Add `dbg_terrain_decorations` console command to toggle terrain mesh decorations and print their draw statistics
 - Add `Require Direct3D 11` level property
 - Speed up `Calculate Lighting` in the level editor, especially on large levels and levels with very many lightmap surfaces
-- Show `Calculate Lighting` progress in the level editor: each phase with its progress and an estimated time remaining, and a `Cancel` button (pressed twice) that stops the bake and leaves the level without baked lighting
+- Show `Calculate Lighting` and `Build Geometry` progress in the level editor
 - Improve level loading and `Build Geometry` times in the level editor on levels with many faces
 - Draw large rooms in fewer draw calls, and skip rooms without dynamic decals when drawing them (Direct3D 11 renderer only)
 - Make level editor refuse to open levels saved by a newer version of Alpine Faction instead of misreading them
@@ -140,6 +140,9 @@ Version 1.5.0 (Trillium): Not yet released
 - Add Salvage flag placement for community level `CTF_TERROR.rfl`
 - Store level editor preferences in `alpine_editor.ini` instead of `red\red.cfg`, importing `red.cfg` on first launch
 - Add an `Alpine` page to the level editor `Preferences` window with options for the texture mode face outline and its color, the background frame rate limit, and always drawing meshes at full detail
+- Repair holes left by portals and by brushes placed flush against each other during `Build Geometry` in the level editor
+- Add `Level > Find out-of-level areas` to the level editor
+- Turn on `Level > Rebuild with hole lines` by default in the level editor and remember the setting
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color

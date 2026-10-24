@@ -2,6 +2,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <map>
 #include <new>
@@ -25,6 +26,8 @@ namespace
 
 // The boolean places cut points to 1e-4 and BuildFinalRenderSolid welds only below that, so cracks run wider
 constexpr double repair_tolerance = 1e-3;
+// RED's geometry epsilon (0x00554714)
+constexpr double red_epsilon = 1e-4;
 constexpr double parallel_cosine = 0.999;
 // Square units: cut slivers and small missing pieces, never a doorway
 constexpr double max_fill_area = 1.0;
@@ -833,7 +836,7 @@ bool is_line(const GFace& face)
     const Vec dir = (b - a) * (1.0 / longest);
     for (const GFaceVertex* fv : ring) {
         const Vec v = to_vec(fv->vertex->pos) - a;
-        if (length(v - dir * dot(v, dir)) > 1e-4) {
+        if (length(v - dir * dot(v, dir)) > red_epsilon) {
             return false;
         }
     }
@@ -1337,6 +1340,19 @@ void find_out_of_level(GSolid* solid)
     }
 }
 
+bool near_edge(const GFace& face, const Vector3& point)
+{
+    bool close = false;
+    for_each_edge(face, [&](const GVertex* a, const GVertex* b) {
+        const Vec ab = to_vec(b->pos) - to_vec(a->pos);
+        const Vec ap = to_vec(point) - to_vec(a->pos);
+        const double len2 = dot(ab, ab);
+        const double t = len2 > 0.0 ? std::clamp(dot(ap, ab) / len2, 0.0, 1.0) : 0.0;
+        close = close || length(ap - ab * t) <= red_epsilon;
+    });
+    return close;
+}
+
 // ─── Hooks ───
 
 // After the room builder's flood fill and before it turns closed solids into detail rooms (0x00485dd4,
@@ -1425,6 +1441,24 @@ void repair_holes(GSolid* solid)
         report(std::string{name} + ": " + std::to_string(count));
     }
 }
+
+// Point-in-face (0x0048c9e0) has no tolerance, so where coplanar faces meet a float step apart neither may claim the
+// sample point and a buried face is kept. During a build a coplanar candidate also claims points within 1e-4 of its
+// edges. At 0x0048e474, before that call ("LEA EAX,[ESP+0x24]; MOV ECX,EBP", 6 bytes); 0x0048e4b1 records the hit.
+CodeInjection coplanar_seam_injection{
+    0x0048e474,
+    [](auto& regs) {
+        const bool coplanar = *reinterpret_cast<std::uint8_t*>(regs.esp + 0x58) != 0;
+        if (!coplanar || !build_repair_enabled()) return;
+        auto* level = CDedLevel::Get();
+        if (!level || !level->build_running) return;
+        auto& face = *reinterpret_cast<GFace*>(static_cast<std::uintptr_t>(regs.ebp));
+        const auto& hit = *reinterpret_cast<const Vector3*>(regs.esp + 0x24);
+        if (near_edge(face, hit) && !face.contains(hit)) {
+            regs.eip = 0x0048e4b1;
+        }
+    },
+};
 
 // GeoBuild_Driver's call of CheckForHoles_report (thiscall, RET 4). A call-site hook, as Level > Check for holes
 // (0x0043c8f0) must not repair.
@@ -1565,6 +1599,7 @@ void build_repair_find_out_of_level()
 void ApplyBuildRepairPatches()
 {
     after_flood_injection.install();
+    coplanar_seam_injection.install();
     check_for_holes_call_hook.install();
     level_tjoints_call_hook.install();
 }

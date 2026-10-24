@@ -319,6 +319,12 @@ struct GFace
         return AddrCaller{0x004861d0}.c_call<bool>(this, &portal);
     }
 
+    // FUN_0048c9e0: point-in-face, half-open with no tolerance
+    bool contains(const Vector3& point)
+    {
+        return AddrCaller{0x0048c9e0}.this_call<bool>(this, &point);
+    }
+
     // FUN_0048a8b0 (RET 8, so both stack arguments are passed): with a null plane it derives the
     // plane from the edge loop winding by Newell's method and recomputes the face AABB. Returns
     // false for a face with fewer than three vertices or zero area.
