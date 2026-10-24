@@ -1,9 +1,11 @@
 #include "bot_navigation_routes.h"
 
+#include "bot_context.h"
 #include "bot_internal.h"
 #include "bot_waypoint_route.h"
 #include "../../main/main.h"
 #include "../../rf/collide.h"
+#include "../../rf/geometry.h"
 #include "../../rf/item.h"
 #include <algorithm>
 #include <array>
@@ -34,8 +36,48 @@ constexpr float kPowerPositionElevationScale = 8.0f;
 constexpr float kPowerPositionElevationClamp = 2.5f;
 constexpr float kPowerPositionZoneBonus = 1.35f;
 
-std::unordered_map<uint64_t, bool> g_route_gap_support_cache{};
-int g_route_gap_support_cache_waypoint_total = 0;
+// Probes depend on node positions and the level geometry only. Temporary nodes come and go and remapping shifts
+// indices, so entries are checked against their nodes' positions rather than dropped on every node count change;
+// a geomod drops them all.
+struct NodeProbeCache
+{
+    struct Entry
+    {
+        rf::Vector3 pos{};
+        float value = -1.0f;
+    };
+
+    std::vector<Entry> entries;
+    int waypoint_total = 0;
+    int num_geomods = 0;
+
+    void sync()
+    {
+        if (rf::g_num_geomods_this_level != num_geomods) {
+            num_geomods = rf::g_num_geomods_this_level;
+            entries.clear();
+            waypoint_total = 0;
+        }
+        const int total = waypoints_count();
+        if (total != waypoint_total) {
+            entries.resize(static_cast<size_t>(std::max(total, 0)));
+            waypoint_total = total;
+        }
+    }
+};
+
+NodeProbeCache g_corner_hug_penalty_cache{};
+NodeProbeCache g_edge_exposure_penalty_cache{};
+
+struct GapSupportEntry
+{
+    rf::Vector3 low_index_pos{};
+    rf::Vector3 high_index_pos{};
+    bool has_support = false;
+};
+
+std::unordered_map<uint64_t, GapSupportEntry> g_route_gap_support_cache{};
+int g_route_gap_support_cache_num_geomods = 0;
 
 struct LadderBounds
 {
@@ -384,30 +426,30 @@ constexpr int kRouteChoiceLockMsRecover = 1800;
 
 bool route_choice_lock_context_matches(const int goal_waypoint)
 {
-    if (!g_client_bot_state.route_choice_lock_timer.valid()
-        || g_client_bot_state.route_choice_lock_timer.elapsed()) {
+    if (!bot_state().route_choice_lock_timer.valid()
+        || bot_state().route_choice_lock_timer.elapsed()) {
         return false;
     }
-    if (g_client_bot_state.route_choice_lock_next_waypoint <= 0) {
+    if (bot_state().route_choice_lock_next_waypoint <= 0) {
         return false;
     }
-    if (g_client_bot_state.route_choice_lock_goal_type != g_client_bot_state.active_goal) {
+    if (bot_state().route_choice_lock_goal_type != bot_state().active_goal) {
         return false;
     }
-    if (g_client_bot_state.route_choice_lock_target_handle != g_client_bot_state.goal_target_handle
-        || g_client_bot_state.route_choice_lock_target_identifier
-            != g_client_bot_state.goal_target_identifier) {
+    if (bot_state().route_choice_lock_target_handle != bot_state().goal_target_handle
+        || bot_state().route_choice_lock_target_identifier
+            != bot_state().goal_target_identifier) {
         return false;
     }
 
     const bool recover_eliminate =
-        g_client_bot_state.active_goal == BotGoalType::eliminate_target
-        && (g_client_bot_state.fsm_state == BotFsmState::recover_navigation
-            || g_client_bot_state.recovery_pending_reroute);
+        bot_state().active_goal == BotGoalType::eliminate_target
+        && (bot_state().fsm_state == BotFsmState::recover_navigation
+            || bot_state().recovery_pending_reroute);
     if (!recover_eliminate
         && goal_waypoint > 0
-        && g_client_bot_state.route_choice_lock_goal_waypoint > 0
-        && g_client_bot_state.route_choice_lock_goal_waypoint != goal_waypoint) {
+        && bot_state().route_choice_lock_goal_waypoint > 0
+        && bot_state().route_choice_lock_goal_waypoint != goal_waypoint) {
         return false;
     }
     return true;
@@ -416,33 +458,33 @@ bool route_choice_lock_context_matches(const int goal_waypoint)
 int get_locked_route_next_waypoint_if_valid(const int goal_waypoint)
 {
     return route_choice_lock_context_matches(goal_waypoint)
-        ? g_client_bot_state.route_choice_lock_next_waypoint
+        ? bot_state().route_choice_lock_next_waypoint
         : 0;
 }
 
 void set_route_choice_lock_from_path(const std::vector<int>& path, const int goal_waypoint)
 {
     if (path.size() <= 1) {
-        g_client_bot_state.route_choice_lock_timer.invalidate();
-        g_client_bot_state.route_choice_lock_goal_type = BotGoalType::none;
-        g_client_bot_state.route_choice_lock_target_handle = -1;
-        g_client_bot_state.route_choice_lock_target_identifier = -1;
-        g_client_bot_state.route_choice_lock_goal_waypoint = 0;
-        g_client_bot_state.route_choice_lock_next_waypoint = 0;
+        bot_state().route_choice_lock_timer.invalidate();
+        bot_state().route_choice_lock_goal_type = BotGoalType::none;
+        bot_state().route_choice_lock_target_handle = -1;
+        bot_state().route_choice_lock_target_identifier = -1;
+        bot_state().route_choice_lock_goal_waypoint = 0;
+        bot_state().route_choice_lock_next_waypoint = 0;
         return;
     }
 
     const bool recover_eliminate =
-        g_client_bot_state.active_goal == BotGoalType::eliminate_target
-        && (g_client_bot_state.fsm_state == BotFsmState::recover_navigation
-            || g_client_bot_state.recovery_pending_reroute);
-    g_client_bot_state.route_choice_lock_goal_type = g_client_bot_state.active_goal;
-    g_client_bot_state.route_choice_lock_target_handle = g_client_bot_state.goal_target_handle;
-    g_client_bot_state.route_choice_lock_target_identifier =
-        g_client_bot_state.goal_target_identifier;
-    g_client_bot_state.route_choice_lock_goal_waypoint = goal_waypoint;
-    g_client_bot_state.route_choice_lock_next_waypoint = path[1];
-    g_client_bot_state.route_choice_lock_timer.set(
+        bot_state().active_goal == BotGoalType::eliminate_target
+        && (bot_state().fsm_state == BotFsmState::recover_navigation
+            || bot_state().recovery_pending_reroute);
+    bot_state().route_choice_lock_goal_type = bot_state().active_goal;
+    bot_state().route_choice_lock_target_handle = bot_state().goal_target_handle;
+    bot_state().route_choice_lock_target_identifier =
+        bot_state().goal_target_identifier;
+    bot_state().route_choice_lock_goal_waypoint = goal_waypoint;
+    bot_state().route_choice_lock_next_waypoint = path[1];
+    bot_state().route_choice_lock_timer.set(
         recover_eliminate ? kRouteChoiceLockMsRecover : kRouteChoiceLockMsBase
     );
 }
@@ -451,11 +493,11 @@ void commit_route_path(std::vector<int>&& path, const int goal_waypoint, const i
 {
     optimize_noisy_route_path(path);
     set_route_choice_lock_from_path(path, goal_waypoint);
-    g_client_bot_state.waypoint_path = std::move(path);
-    g_client_bot_state.waypoint_next_index =
-        (g_client_bot_state.waypoint_path.size() > 1) ? 1 : 0;
-    g_client_bot_state.waypoint_goal = goal_waypoint;
-    g_client_bot_state.repath_timer.set(repath_ms);
+    bot_state().waypoint_path = std::move(path);
+    bot_state().waypoint_next_index =
+        (bot_state().waypoint_path.size() > 1) ? 1 : 0;
+    bot_state().waypoint_goal = goal_waypoint;
+    bot_state().repath_timer.set(repath_ms);
 }
 
 struct PathGeometryMetrics
@@ -636,14 +678,14 @@ float compute_waypoint_path_special_penalty(const std::vector<int>& path)
 
     const BotPersonality& personality = get_active_bot_personality();
     const float decision_skill = bot_get_decision_skill_factor();
-    const float risk_tolerance = std::clamp(personality.decision_risk_tolerance, 0.25f, 2.5f);
+    const float risk_tolerance = std::clamp(personality.decision_risk_tolerance, 0.0f, 2.5f);
     const float crouch_route_avoidance = std::clamp(
         personality.crouch_route_avoidance_bias,
         0.0f,
         3.0f
     );
-    const bool is_enemy_goal = g_client_bot_state.active_goal == BotGoalType::eliminate_target;
-    const bool is_ctf_goal = bot_goal_is_ctf_objective(g_client_bot_state.active_goal);
+    const bool is_enemy_goal = bot_state().active_goal == BotGoalType::eliminate_target;
+    const bool is_ctf_goal = bot_goal_is_ctf_objective(bot_state().active_goal);
     float penalty = 0.0f;
 
     for (size_t index = 1; index < path.size(); ++index) {
@@ -770,31 +812,16 @@ float compute_waypoint_path_power_position_bonus(const std::vector<int>& path)
 
 float get_waypoint_corner_hug_penalty(const int waypoint)
 {
-    static int cached_waypoint_total = 0;
-    static std::vector<float> cached_penalties{};
-
-    const int waypoint_total = waypoints_count();
-    if (cached_waypoint_total != waypoint_total) {
-        cached_waypoint_total = waypoint_total;
-        cached_penalties.assign(
-            static_cast<size_t>(std::max(waypoint_total, 0)),
-            -1.0f
-        );
-    }
-
-    if (waypoint <= 0 || waypoint >= waypoint_total) {
+    g_corner_hug_penalty_cache.sync();
+    rf::Vector3 waypoint_pos{};
+    if (waypoint <= 0 || waypoint >= g_corner_hug_penalty_cache.waypoint_total
+        || !waypoints_get_pos(waypoint, waypoint_pos)) {
         return 0.0f;
     }
 
-    float& cached = cached_penalties[static_cast<size_t>(waypoint)];
-    if (cached >= 0.0f) {
-        return cached;
-    }
-
-    rf::Vector3 waypoint_pos{};
-    if (!waypoints_get_pos(waypoint, waypoint_pos)) {
-        cached = 0.0f;
-        return cached;
+    NodeProbeCache::Entry& cached = g_corner_hug_penalty_cache.entries[static_cast<size_t>(waypoint)];
+    if (cached.value >= 0.0f && cached.pos == waypoint_pos) {
+        return cached.value;
     }
 
     constexpr float kProbeDistance = 0.90f;
@@ -852,38 +879,21 @@ float get_waypoint_corner_hug_penalty(const int waypoint)
     const bool x_side_blocked = blocked_pos_x || blocked_neg_x;
     const bool z_side_blocked = blocked_pos_z || blocked_neg_z;
     const float corner_boost = (x_side_blocked && z_side_blocked) ? 0.65f : 0.0f;
-    cached = std::clamp(blocked_ratio + corner_boost, 0.0f, 2.0f);
-    return cached;
+    cached = {waypoint_pos, std::clamp(blocked_ratio + corner_boost, 0.0f, 2.0f)};
+    return cached.value;
 }
 
 float get_waypoint_edge_exposure_penalty(const int waypoint)
 {
-    static int cached_waypoint_total = 0;
-    static std::vector<float> cached_penalties{};
-
-    const int waypoint_total = waypoints_count();
-    if (cached_waypoint_total != waypoint_total) {
-        cached_waypoint_total = waypoint_total;
-        cached_penalties.assign(
-            static_cast<size_t>(std::max(waypoint_total, 0)),
-            -1.0f
-        );
-    }
-
-    if (waypoint <= 0 || waypoint >= waypoint_total) {
+    g_edge_exposure_penalty_cache.sync();
+    if (waypoint <= 0 || waypoint >= g_edge_exposure_penalty_cache.waypoint_total) {
         return 0.0f;
-    }
-
-    float& cached = cached_penalties[static_cast<size_t>(waypoint)];
-    if (cached >= 0.0f) {
-        return cached;
     }
 
     int type_raw = 0;
     int subtype = 0;
     if (!waypoints_get_type_subtype(waypoint, type_raw, subtype)) {
-        cached = 0.0f;
-        return cached;
+        return 0.0f;
     }
     (void)subtype;
     const WaypointType type = static_cast<WaypointType>(type_raw);
@@ -895,14 +905,17 @@ float get_waypoint_edge_exposure_penalty(const int waypoint)
         case WaypointType::ctf_flag:
             break;
         default:
-            cached = 0.0f;
-            return cached;
+            return 0.0f;
     }
 
     rf::Vector3 waypoint_pos{};
     if (!waypoints_get_pos(waypoint, waypoint_pos)) {
-        cached = 0.0f;
-        return cached;
+        return 0.0f;
+    }
+
+    NodeProbeCache::Entry& cached = g_edge_exposure_penalty_cache.entries[static_cast<size_t>(waypoint)];
+    if (cached.value >= 0.0f && cached.pos == waypoint_pos) {
+        return cached.value;
     }
 
     constexpr float kProbeRadius = 0.75f;
@@ -922,8 +935,8 @@ float get_waypoint_edge_exposure_penalty(const int waypoint)
             center_p1,
             kBotRouteProbeTraceFlags,
             &center_collision)) {
-        cached = 1.0f;
-        return cached;
+        cached = {waypoint_pos, 1.0f};
+        return cached.value;
     }
     const float center_floor_y = center_collision.hit_point.y;
 
@@ -957,8 +970,8 @@ float get_waypoint_edge_exposure_penalty(const int waypoint)
 
     const float exposed_ratio =
         static_cast<float>(exposed_count) / static_cast<float>(kProbeCount);
-    cached = std::clamp(exposed_ratio, 0.0f, 1.0f);
-    return cached;
+    cached = {waypoint_pos, std::clamp(exposed_ratio, 0.0f, 1.0f)};
+    return cached.value;
 }
 
 float compute_waypoint_path_corner_hug_penalty(const std::vector<int>& path)
@@ -1041,25 +1054,25 @@ float compute_route_score_tie_epsilon(const float best_score)
 
 int get_current_route_next_waypoint_for_goal(const int goal_waypoint)
 {
-    if (goal_waypoint <= 0 || g_client_bot_state.waypoint_goal != goal_waypoint) {
+    if (goal_waypoint <= 0 || bot_state().waypoint_goal != goal_waypoint) {
         return 0;
     }
-    if (g_client_bot_state.waypoint_next_index <= 0
-        || g_client_bot_state.waypoint_next_index
-            >= static_cast<int>(g_client_bot_state.waypoint_path.size())) {
+    if (bot_state().waypoint_next_index <= 0
+        || bot_state().waypoint_next_index
+            >= static_cast<int>(bot_state().waypoint_path.size())) {
         return 0;
     }
-    return g_client_bot_state.waypoint_path[g_client_bot_state.waypoint_next_index];
+    return bot_state().waypoint_path[bot_state().waypoint_next_index];
 }
 
 int get_current_route_next_waypoint_any_goal()
 {
-    if (g_client_bot_state.waypoint_next_index <= 0
-        || g_client_bot_state.waypoint_next_index
-            >= static_cast<int>(g_client_bot_state.waypoint_path.size())) {
+    if (bot_state().waypoint_next_index <= 0
+        || bot_state().waypoint_next_index
+            >= static_cast<int>(bot_state().waypoint_path.size())) {
         return 0;
     }
-    return g_client_bot_state.waypoint_path[g_client_bot_state.waypoint_next_index];
+    return bot_state().waypoint_path[bot_state().waypoint_next_index];
 }
 
 template<typename RouteCandidateT>
@@ -1085,9 +1098,9 @@ int choose_route_candidate_index(
     const float best_score = route_candidates[0].score;
     const float tie_epsilon = compute_route_score_tie_epsilon(best_score);
     const bool recover_eliminate =
-        g_client_bot_state.active_goal == BotGoalType::eliminate_target
-        && (g_client_bot_state.fsm_state == BotFsmState::recover_navigation
-            || g_client_bot_state.recovery_pending_reroute);
+        bot_state().active_goal == BotGoalType::eliminate_target
+        && (bot_state().fsm_state == BotFsmState::recover_navigation
+            || bot_state().recovery_pending_reroute);
     float sticky_margin = tie_epsilon * (recover_eliminate ? 12.0f : 4.5f);
     sticky_margin = std::max(sticky_margin, recover_eliminate ? 4.0f : 1.5f);
 
@@ -1151,6 +1164,194 @@ bool waypoint_type_allows_blacklist(const int waypoint)
     const WaypointType type = static_cast<WaypointType>(type_raw);
     return type == WaypointType::std || type == WaypointType::std_new;
 }
+
+struct RouteScoreWeights
+{
+    float item = 0.0f;
+    float distance = 0.0f;
+    float target_distance = 0.0f;
+    float revisit = 0.0f;
+    float turn = 0.0f;
+    float density = 0.0f;
+    float detour = 0.0f;
+    float special = 0.0f;
+    float gap = 0.0f;
+    float corner = 0.0f;
+    float edge_exposure = 0.0f;
+    float power_position = 0.0f;
+};
+
+RouteScoreWeights compute_route_score_weights()
+{
+    const BotPersonality& personality = get_active_bot_personality();
+    RouteScoreWeights w{};
+    const float decision_skill = bot_get_decision_skill_factor();
+    const float efficiency = std::clamp(personality.decision_efficiency_bias, 0.35f, 2.25f);
+    const float smoothing = std::clamp(personality.path_smoothing_bias, 0.0f, 2.5f);
+    const float opportunism = std::clamp(personality.opportunism_bias, 0.0f, 2.5f);
+    const float roam_intensity = std::clamp(personality.roam_intensity_bias, 0.0f, 2.5f);
+    const float roam_intensity_norm = std::clamp((roam_intensity - 0.25f) / 2.25f, 0.0f, 1.0f);
+    const float camping_bias = std::clamp(personality.camping_bias, 0.0f, 2.5f);
+    w.revisit =
+        kRouteRecentVisitPenaltyWeight
+        * personality.revisit_avoidance_bias
+        * std::lerp(1.25f, 0.55f, std::clamp((camping_bias - 0.25f) / 2.25f, 0.0f, 1.0f))
+        * std::lerp(0.85f, 1.25f, decision_skill);
+    w.item = kRouteItemValueWeight * personality.super_pickup_bias * opportunism;
+    w.distance =
+        kRouteDistanceWeight
+        * std::lerp(0.85f, 1.45f, std::clamp(decision_skill * std::sqrt(efficiency), 0.0f, 1.0f));
+    w.target_distance = kRouteTargetDistanceWeight * std::lerp(0.9f, 1.4f, decision_skill);
+    w.turn = std::lerp(2.0f, 8.5f, decision_skill) * smoothing;
+    w.density = std::lerp(1.0f, 5.5f, decision_skill) * smoothing;
+    w.detour = std::lerp(4.0f, 15.0f, decision_skill) * efficiency;
+    w.special = std::lerp(2.0f, 7.5f, decision_skill) * std::max(0.4f, 2.0f - personality.decision_risk_tolerance);
+    const float risk_tolerance_norm =
+        std::clamp((personality.decision_risk_tolerance - 0.25f) / 2.25f, 0.0f, 1.0f);
+    w.gap = std::lerp(18.0f, 8.0f, risk_tolerance_norm);
+    w.corner =
+        kRouteCornerHugPenaltyWeight
+        * std::clamp(personality.corner_centering_bias, 0.0f, 3.0f)
+        * std::lerp(0.85f, 1.35f, decision_skill)
+        * smoothing;
+    w.edge_exposure =
+        kRouteEdgeExposurePenaltyWeight
+        * std::lerp(1.35f, 0.75f, risk_tolerance_norm)
+        * std::lerp(0.90f, 1.25f, std::clamp(personality.corner_centering_bias / 3.0f, 0.0f, 1.0f));
+
+    switch (bot_state().fsm_state) {
+        case BotFsmState::recover_navigation:
+            w.distance *= 1.45f;
+            w.target_distance *= 1.35f;
+            w.item *= 0.45f;
+            w.detour *= 1.8f;
+            w.corner *= 0.7f;
+            w.edge_exposure *= 0.75f;
+            w.gap *= 0.85f;
+            break;
+        case BotFsmState::retreat:
+            w.distance *= 1.35f;
+            w.target_distance *= 1.45f;
+            w.item *= 0.95f;
+            w.special *= 1.35f;
+            w.corner *= 0.85f;
+            w.edge_exposure *= 0.85f;
+            w.gap *= 0.95f;
+            break;
+        case BotFsmState::seek_weapon:
+            w.item *= 1.65f;
+            w.distance *= 0.92f;
+            w.special *= 0.85f;
+            break;
+        case BotFsmState::replenish_health_armor:
+            w.item *= 1.72f;
+            w.distance *= 0.95f;
+            w.special *= 0.82f;
+            break;
+        case BotFsmState::find_power_position:
+            w.target_distance *= 1.22f;
+            w.turn *= 0.88f;
+            w.detour *= 1.10f;
+            w.power_position = std::lerp(
+                4.0f,
+                10.0f,
+                std::clamp(personality.power_position_bias / 2.5f, 0.0f, 1.0f)
+            );
+            break;
+        case BotFsmState::create_crater:
+        case BotFsmState::shatter_glass:
+            w.target_distance *= 1.28f;
+            w.item *= 0.55f;
+            w.detour *= 0.92f;
+            break;
+        case BotFsmState::ctf_objective:
+            w.target_distance *= 1.36f;
+            w.item *= 0.62f;
+            w.detour *= 0.88f;
+            w.gap *= 1.10f;
+            w.edge_exposure *= 1.25f;
+            break;
+        case BotFsmState::collect_pickup:
+            w.item *= 1.5f;
+            w.distance *= 0.9f;
+            w.edge_exposure *= 1.20f;
+            w.gap *= 1.20f;
+            break;
+        case BotFsmState::engage_enemy:
+        case BotFsmState::pursue_enemy:
+        case BotFsmState::seek_enemy:
+            w.target_distance *= 1.25f;
+            w.special *= 0.8f;
+            break;
+        case BotFsmState::roam:
+            w.item *= 0.9f;
+            break;
+        default:
+            break;
+    }
+
+    if (bot_state().active_goal == BotGoalType::eliminate_target) {
+        w.target_distance *= 1.3f;
+        w.item *= 0.65f;
+    }
+    else if (bot_goal_is_item_collection(bot_state().active_goal)) {
+        w.item *= 1.35f;
+        w.target_distance *= 0.9f;
+    }
+    else if (bot_state().active_goal == BotGoalType::roam) {
+        // Roaming should favor exploration over shortest-path convergence.
+        w.item *= std::lerp(0.75f, 0.35f, roam_intensity_norm);
+        w.distance *= std::lerp(0.85f, 0.55f, roam_intensity_norm);
+        w.target_distance *= std::lerp(0.70f, 0.35f, roam_intensity_norm);
+        w.detour *= std::lerp(0.60f, 0.20f, roam_intensity_norm);
+        w.revisit *= std::lerp(1.45f, 2.35f, roam_intensity_norm);
+    }
+    else if (bot_goal_is_ctf_objective(bot_state().active_goal)) {
+        const bool sneaky_capper = bot_personality_has_quirk(BotPersonalityQuirk::sneaky_capper);
+        w.target_distance *= 1.40f;
+        w.item *= 0.68f;
+        if (bot_state().active_goal == BotGoalType::ctf_return_flag) {
+            w.target_distance *= 1.12f;
+            w.special *= 0.90f;
+        }
+        if (bot_state().active_goal == BotGoalType::ctf_capture_flag) {
+            w.target_distance *= 1.08f;
+            w.special *= 0.92f;
+        }
+
+        if (!sneaky_capper
+            && (bot_state().active_goal == BotGoalType::ctf_steal_flag
+                || bot_state().active_goal == BotGoalType::ctf_capture_flag)) {
+            // Non-sneaky CTF behavior should commit to direct, stable cap routes.
+            w.detour *= 2.25f;
+            w.turn *= 1.35f;
+            w.target_distance *= 1.18f;
+            w.revisit *= 0.35f;
+        }
+    }
+    else if (bot_goal_is_salvage_objective(bot_state().active_goal)
+        && bot_state().active_goal != BotGoalType::sal_stage_at_spawn) {
+        const bool sneaky_capper = bot_personality_has_quirk(BotPersonalityQuirk::sneaky_capper);
+        w.target_distance *= 1.40f;
+        w.item *= 0.68f;
+        if (bot_state().active_goal == BotGoalType::sal_deliver_flag) {
+            w.target_distance *= 1.08f;
+            w.special *= 0.92f;
+        }
+
+        if (!sneaky_capper
+            && (bot_state().active_goal == BotGoalType::sal_seek_flag
+                || bot_state().active_goal == BotGoalType::sal_deliver_flag)) {
+            // Non-sneaky salvage behavior should commit to direct, stable routes.
+            w.detour *= 2.25f;
+            w.turn *= 1.35f;
+            w.target_distance *= 1.18f;
+            w.revisit *= 0.35f;
+        }
+    }
+
+    return w;
+}
 }
 
 bool bot_nav_is_link_traversable_for_route(const int from_waypoint, const int to_waypoint)
@@ -1201,12 +1402,11 @@ bool bot_nav_link_midpoint_has_support(const int from_waypoint, const int to_way
         return true;
     }
 
-    const int waypoint_total = waypoints_count();
-    if (g_route_gap_support_cache_waypoint_total != waypoint_total) {
-        g_route_gap_support_cache_waypoint_total = waypoint_total;
+    if (rf::g_num_geomods_this_level != g_route_gap_support_cache_num_geomods) {
+        g_route_gap_support_cache_num_geomods = rf::g_num_geomods_this_level;
         g_route_gap_support_cache.clear();
     }
-    else if (static_cast<int>(g_route_gap_support_cache.size()) > kRouteGapEdgeCacheMaxEntries) {
+    if (static_cast<int>(g_route_gap_support_cache.size()) > kRouteGapEdgeCacheMaxEntries) {
         bool keep = false;
         for (auto it = g_route_gap_support_cache.begin();
              it != g_route_gap_support_cache.end(); ) {
@@ -1215,13 +1415,20 @@ bool bot_nav_link_midpoint_has_support(const int from_waypoint, const int to_way
         }
     }
 
+    rf::Vector3 low_index_pos{};
+    rf::Vector3 high_index_pos{};
+    if (!waypoints_get_pos(std::min(from_waypoint, to_waypoint), low_index_pos)
+        || !waypoints_get_pos(std::max(from_waypoint, to_waypoint), high_index_pos)) {
+        return true;
+    }
     const uint64_t edge_key = make_link_key(from_waypoint, to_waypoint);
-    if (auto it = g_route_gap_support_cache.find(edge_key); it != g_route_gap_support_cache.end()) {
-        return it->second;
+    if (auto it = g_route_gap_support_cache.find(edge_key); it != g_route_gap_support_cache.end()
+        && it->second.low_index_pos == low_index_pos && it->second.high_index_pos == high_index_pos) {
+        return it->second.has_support;
     }
 
     const bool has_support = compute_link_midpoint_support_uncached(from_waypoint, to_waypoint);
-    g_route_gap_support_cache.emplace(edge_key, has_support);
+    g_route_gap_support_cache[edge_key] = {low_index_pos, high_index_pos, has_support};
     return has_support;
 }
 
@@ -1247,14 +1454,14 @@ float bot_nav_compute_route_score(
         static_cast<int>(kWaypointVisitHistoryCapacity)
     );
     float recent_visit_penalty = 0.0f;
-    if (path.size() >= 2 && !g_client_bot_state.recent_waypoint_visits.empty()) {
+    if (path.size() >= 2 && !bot_state().recent_waypoint_visits.empty()) {
         std::unordered_set<int> path_waypoints;
         path_waypoints.reserve(path.size());
         for (size_t index = 1; index < path.size(); ++index) {
             path_waypoints.insert(path[index]);
         }
 
-        const auto& history = g_client_bot_state.recent_waypoint_visits;
+        const auto& history = bot_state().recent_waypoint_visits;
         const size_t history_size = history.size();
         const size_t lookback =
             std::min<size_t>(history_size, static_cast<size_t>(retrace_lookback));
@@ -1293,204 +1500,103 @@ float bot_nav_compute_route_score(
         }
     }
 
-    const float decision_skill = bot_get_decision_skill_factor();
-    const float efficiency = std::clamp(personality.decision_efficiency_bias, 0.35f, 2.25f);
-    const float smoothing = std::clamp(personality.path_smoothing_bias, 0.25f, 2.5f);
-    const float opportunism = std::clamp(personality.opportunism_bias, 0.25f, 2.5f);
-    const float roam_intensity = std::clamp(personality.roam_intensity_bias, 0.25f, 2.5f);
-    const float roam_intensity_norm = std::clamp((roam_intensity - 0.25f) / 2.25f, 0.0f, 1.0f);
-    const float camping_bias = std::clamp(personality.camping_bias, 0.25f, 2.5f);
-    float revisit_penalty_weight =
-        kRouteRecentVisitPenaltyWeight
-        * personality.revisit_avoidance_bias
-        * std::lerp(1.25f, 0.55f, std::clamp((camping_bias - 0.25f) / 2.25f, 0.0f, 1.0f))
-        * std::lerp(0.85f, 1.25f, decision_skill);
-    float item_weight = kRouteItemValueWeight * personality.super_pickup_bias * opportunism;
-    float distance_weight =
-        kRouteDistanceWeight
-        * std::lerp(0.85f, 1.45f, std::clamp(decision_skill * std::sqrt(efficiency), 0.0f, 1.0f));
-    float target_distance_weight = kRouteTargetDistanceWeight * std::lerp(0.9f, 1.4f, decision_skill);
-    float turn_weight = std::lerp(2.0f, 8.5f, decision_skill) * smoothing;
-    float density_weight = std::lerp(1.0f, 5.5f, decision_skill) * smoothing;
-    float detour_weight = std::lerp(4.0f, 15.0f, decision_skill) * efficiency;
-    float special_weight = std::lerp(2.0f, 7.5f, decision_skill) * std::max(0.4f, 2.0f - personality.decision_risk_tolerance);
-    const float risk_tolerance_norm =
-        std::clamp((personality.decision_risk_tolerance - 0.25f) / 2.25f, 0.0f, 1.0f);
-    float gap_weight = std::lerp(18.0f, 8.0f, risk_tolerance_norm);
-    float corner_weight =
-        kRouteCornerHugPenaltyWeight
-        * std::clamp(personality.corner_centering_bias, 0.0f, 3.0f)
-        * std::lerp(0.85f, 1.35f, decision_skill)
-        * smoothing;
-    float edge_exposure_weight =
-        kRouteEdgeExposurePenaltyWeight
-        * std::lerp(1.35f, 0.75f, risk_tolerance_norm)
-        * std::lerp(0.90f, 1.25f, std::clamp(personality.corner_centering_bias / 3.0f, 0.0f, 1.0f));
-    float power_position_weight = 0.0f;
-
-    switch (g_client_bot_state.fsm_state) {
-        case BotFsmState::recover_navigation:
-            distance_weight *= 1.45f;
-            target_distance_weight *= 1.35f;
-            item_weight *= 0.45f;
-            detour_weight *= 1.8f;
-            corner_weight *= 0.7f;
-            edge_exposure_weight *= 0.75f;
-            gap_weight *= 0.85f;
-            break;
-        case BotFsmState::retreat:
-            distance_weight *= 1.35f;
-            target_distance_weight *= 1.45f;
-            item_weight *= 0.95f;
-            special_weight *= 1.35f;
-            corner_weight *= 0.85f;
-            edge_exposure_weight *= 0.85f;
-            gap_weight *= 0.95f;
-            break;
-        case BotFsmState::seek_weapon:
-            item_weight *= 1.65f;
-            distance_weight *= 0.92f;
-            special_weight *= 0.85f;
-            break;
-        case BotFsmState::replenish_health_armor:
-            item_weight *= 1.72f;
-            distance_weight *= 0.95f;
-            special_weight *= 0.82f;
-            break;
-        case BotFsmState::find_power_position:
-            target_distance_weight *= 1.22f;
-            turn_weight *= 0.88f;
-            detour_weight *= 1.10f;
-            power_position_weight = std::lerp(
-                4.0f,
-                10.0f,
-                std::clamp(personality.power_position_bias / 2.5f, 0.0f, 1.0f)
-            );
-            break;
-        case BotFsmState::create_crater:
-        case BotFsmState::shatter_glass:
-            target_distance_weight *= 1.28f;
-            item_weight *= 0.55f;
-            detour_weight *= 0.92f;
-            break;
-        case BotFsmState::ctf_objective:
-            target_distance_weight *= 1.36f;
-            item_weight *= 0.62f;
-            detour_weight *= 0.88f;
-            gap_weight *= 1.10f;
-            edge_exposure_weight *= 1.25f;
-            break;
-        case BotFsmState::collect_pickup:
-            item_weight *= 1.5f;
-            distance_weight *= 0.9f;
-            edge_exposure_weight *= 1.20f;
-            gap_weight *= 1.20f;
-            break;
-        case BotFsmState::engage_enemy:
-        case BotFsmState::pursue_enemy:
-        case BotFsmState::seek_enemy:
-            target_distance_weight *= 1.25f;
-            special_weight *= 0.8f;
-            break;
-        case BotFsmState::roam:
-            item_weight *= 0.9f;
-            break;
-        default:
-            break;
+    const RouteScoreWeights w = compute_route_score_weights();
+    if (bot_goal_is_ctf_objective(bot_state().active_goal)
+        && bot_personality_has_quirk(BotPersonalityQuirk::sneaky_capper)
+        && (bot_state().active_goal == BotGoalType::ctf_steal_flag
+            || bot_state().active_goal == BotGoalType::ctf_capture_flag)
+        && bot_state().ctf_threat_handle >= 0) {
+        const float threat_penalty = compute_path_enemy_threat_penalty(
+            path,
+            bot_state().ctf_threat_pos
+        );
+        special_penalty += threat_penalty * 2.1f;
     }
 
-    if (g_client_bot_state.active_goal == BotGoalType::eliminate_target) {
-        target_distance_weight *= 1.3f;
-        item_weight *= 0.65f;
-    }
-    else if (bot_goal_is_item_collection(g_client_bot_state.active_goal)) {
-        item_weight *= 1.35f;
-        target_distance_weight *= 0.9f;
-    }
-    else if (g_client_bot_state.active_goal == BotGoalType::roam) {
-        // Roaming should favor exploration over shortest-path convergence.
-        item_weight *= std::lerp(0.75f, 0.35f, roam_intensity_norm);
-        distance_weight *= std::lerp(0.85f, 0.55f, roam_intensity_norm);
-        target_distance_weight *= std::lerp(0.70f, 0.35f, roam_intensity_norm);
-        detour_weight *= std::lerp(0.60f, 0.20f, roam_intensity_norm);
-        revisit_penalty_weight *= std::lerp(1.45f, 2.35f, roam_intensity_norm);
-    }
-    else if (bot_goal_is_ctf_objective(g_client_bot_state.active_goal)) {
-        const bool sneaky_capper = bot_personality_has_quirk(BotPersonalityQuirk::sneaky_capper);
-        target_distance_weight *= 1.40f;
-        item_weight *= 0.68f;
-        if (g_client_bot_state.active_goal == BotGoalType::ctf_return_flag) {
-            target_distance_weight *= 1.12f;
-            special_weight *= 0.90f;
-        }
-        if (g_client_bot_state.active_goal == BotGoalType::ctf_capture_flag) {
-            target_distance_weight *= 1.08f;
-            special_weight *= 0.92f;
-        }
-
-        if (!sneaky_capper
-            && (g_client_bot_state.active_goal == BotGoalType::ctf_steal_flag
-                || g_client_bot_state.active_goal == BotGoalType::ctf_capture_flag)) {
-            // Non-sneaky CTF behavior should commit to direct, stable cap routes.
-            detour_weight *= 2.25f;
-            turn_weight *= 1.35f;
-            target_distance_weight *= 1.18f;
-            revisit_penalty_weight *= 0.35f;
-        }
-
-        if (sneaky_capper
-            && (g_client_bot_state.active_goal == BotGoalType::ctf_steal_flag
-                || g_client_bot_state.active_goal == BotGoalType::ctf_capture_flag)
-            && g_client_bot_state.ctf_threat_handle >= 0) {
-            const float threat_penalty = compute_path_enemy_threat_penalty(
-                path,
-                g_client_bot_state.ctf_threat_pos
-            );
-            special_penalty += threat_penalty * 2.1f;
-        }
-    }
-    else if (bot_goal_is_salvage_objective(g_client_bot_state.active_goal)
-        && g_client_bot_state.active_goal != BotGoalType::sal_stage_at_spawn) {
-        const bool sneaky_capper = bot_personality_has_quirk(BotPersonalityQuirk::sneaky_capper);
-        target_distance_weight *= 1.40f;
-        item_weight *= 0.68f;
-        if (g_client_bot_state.active_goal == BotGoalType::sal_deliver_flag) {
-            target_distance_weight *= 1.08f;
-            special_weight *= 0.92f;
-        }
-
-        if (!sneaky_capper
-            && (g_client_bot_state.active_goal == BotGoalType::sal_seek_flag
-                || g_client_bot_state.active_goal == BotGoalType::sal_deliver_flag)) {
-            // Non-sneaky salvage behavior should commit to direct, stable routes.
-            detour_weight *= 2.25f;
-            turn_weight *= 1.35f;
-            target_distance_weight *= 1.18f;
-            revisit_penalty_weight *= 0.35f;
-        }
-    }
-
-    const float power_position_bonus = (power_position_weight > 0.0f)
+    const float power_position_bonus = (w.power_position > 0.0f)
         ? compute_waypoint_path_power_position_bonus(path)
         : 0.0f;
 
-    return item_score * item_weight
-        - geometry.route_length * distance_weight
-        - target_distance * target_distance_weight
-        - recent_visit_penalty * revisit_penalty_weight
-        - geometry.turn_penalty * turn_weight
-        - geometry.density_penalty * density_weight
-        - geometry.detour_penalty * detour_weight
-        - special_penalty * special_weight
-        - gap_penalty * gap_weight
-        - corner_hug_penalty * corner_weight
-        - edge_exposure_penalty * edge_exposure_weight
-        + power_position_bonus * power_position_weight;
+    return item_score * w.item
+        - geometry.route_length * w.distance
+        - target_distance * w.target_distance
+        - recent_visit_penalty * w.revisit
+        - geometry.turn_penalty * w.turn
+        - geometry.density_penalty * w.density
+        - geometry.detour_penalty * w.detour
+        - special_penalty * w.special
+        - gap_penalty * w.gap
+        - corner_hug_penalty * w.corner
+        - edge_exposure_penalty * w.edge_exposure
+        + power_position_bonus * w.power_position;
+}
+
+float bot_nav_compute_route_score_upper_bound(const std::vector<int>& path)
+{
+    const RouteScoreWeights w = compute_route_score_weights();
+    // Every other term is a penalty with a non-negative weight, except the power position bonus and the
+    // jump pad and crater affinity quirks, which can make the special penalty negative.
+    if (w.revisit < 0.0f
+        || bot_personality_has_quirk(BotPersonalityQuirk::jump_pad_pathing_affinity)
+        || bot_personality_has_quirk(BotPersonalityQuirk::crater_unlock_affinity)) {
+        return std::numeric_limits<float>::infinity();
+    }
+    const float route_length = compute_waypoint_path_length(path);
+    if (!std::isfinite(route_length)) {
+        return -std::numeric_limits<float>::infinity();
+    }
+    float bound = compute_waypoint_path_item_value(path) * w.item - route_length * w.distance;
+    if (w.power_position > 0.0f) {
+        bound += (kPowerPositionElevationClamp * 2.1f + kPowerPositionZoneBonus * 2.6f) * w.power_position;
+    }
+    return bound;
+}
+
+const BotWaypointDistanceField& bot_nav_distance_field(const int source_waypoint, const std::vector<int>& avoidset)
+{
+    // Fields depend only on the graph, so all bots share a few. A miss replaces the least recently used one.
+    struct CachedField
+    {
+        int graph_version = -1;
+        uint64_t last_use = 0;
+        BotWaypointDistanceField field{};
+    };
+    static std::array<CachedField, 8> cache{};
+    static uint64_t use_counter = 0;
+
+    const int graph_version = waypoints_graph_version();
+    CachedField* slot = &cache[0];
+    for (CachedField& entry : cache) {
+        if (entry.graph_version == graph_version
+            && entry.field.source == source_waypoint
+            && entry.field.avoidset == avoidset) {
+            entry.last_use = ++use_counter;
+            return entry.field;
+        }
+        if (entry.last_use < slot->last_use) {
+            slot = &entry;
+        }
+    }
+    bot_waypoint_compute_distance_field(source_waypoint, avoidset, slot->field);
+    slot->graph_version = graph_version;
+    slot->last_use = ++use_counter;
+    return slot->field;
+}
+
+bool bot_nav_is_waypoint_reachable(const int from_waypoint, const int to_waypoint)
+{
+    if (from_waypoint == to_waypoint) {
+        return true;
+    }
+    const BotWaypointDistanceField& field = bot_nav_distance_field(from_waypoint);
+    return to_waypoint > 0
+        && to_waypoint < static_cast<int>(field.dist.size())
+        && std::isfinite(field.dist[to_waypoint]);
 }
 
 void bot_nav_prune_failed_edge_cooldowns()
 {
-    auto& cooldowns = g_client_bot_state.failed_edge_cooldowns;
+    auto& cooldowns = bot_state().failed_edge_cooldowns;
     cooldowns.erase(
         std::remove_if(
             cooldowns.begin(),
@@ -1519,7 +1625,7 @@ void bot_nav_register_failed_edge_cooldown(
     }
 
     bot_nav_prune_failed_edge_cooldowns();
-    for (FailedEdgeCooldown& cooldown : g_client_bot_state.failed_edge_cooldowns) {
+    for (FailedEdgeCooldown& cooldown : bot_state().failed_edge_cooldowns) {
         if (cooldown.from_waypoint == from_waypoint
             && cooldown.to_waypoint == to_waypoint) {
             cooldown.cooldown.set(cooldown_ms);
@@ -1527,9 +1633,9 @@ void bot_nav_register_failed_edge_cooldown(
         }
     }
 
-    if (g_client_bot_state.failed_edge_cooldowns.size() >= kFailedEdgeCooldownCapacity) {
-        g_client_bot_state.failed_edge_cooldowns.erase(
-            g_client_bot_state.failed_edge_cooldowns.begin()
+    if (bot_state().failed_edge_cooldowns.size() >= kFailedEdgeCooldownCapacity) {
+        bot_state().failed_edge_cooldowns.erase(
+            bot_state().failed_edge_cooldowns.begin()
         );
     }
 
@@ -1537,7 +1643,7 @@ void bot_nav_register_failed_edge_cooldown(
     cooldown.from_waypoint = from_waypoint;
     cooldown.to_waypoint = to_waypoint;
     cooldown.cooldown.set(cooldown_ms);
-    g_client_bot_state.failed_edge_cooldowns.push_back(cooldown);
+    bot_state().failed_edge_cooldowns.push_back(cooldown);
 }
 
 void bot_nav_register_failed_edge_cooldown_bidirectional(
@@ -1553,7 +1659,7 @@ bool bot_nav_is_failed_edge_cooldown_active_no_prune(
     const int from_waypoint,
     const int to_waypoint)
 {
-    for (const FailedEdgeCooldown& cooldown : g_client_bot_state.failed_edge_cooldowns) {
+    for (const FailedEdgeCooldown& cooldown : bot_state().failed_edge_cooldowns) {
         if (cooldown.from_waypoint == from_waypoint
             && cooldown.to_waypoint == to_waypoint
             && cooldown.cooldown.valid()
@@ -1583,7 +1689,7 @@ bool bot_nav_path_contains_failed_edge_cooldown(const std::vector<int>& path)
 
 void bot_nav_prune_failed_waypoint_blacklist()
 {
-    auto& cooldowns = g_client_bot_state.failed_waypoint_cooldowns;
+    auto& cooldowns = bot_state().failed_waypoint_cooldowns;
     cooldowns.erase(
         std::remove_if(
             cooldowns.begin(),
@@ -1621,28 +1727,28 @@ void bot_nav_blacklist_waypoint_temporarily(const int waypoint, const int cooldo
     }
 
     bot_nav_prune_failed_waypoint_blacklist();
-    for (FailedWaypointCooldown& cooldown : g_client_bot_state.failed_waypoint_cooldowns) {
+    for (FailedWaypointCooldown& cooldown : bot_state().failed_waypoint_cooldowns) {
         if (cooldown.waypoint == waypoint) {
             cooldown.cooldown.set(cooldown_ms);
             return;
         }
     }
 
-    if (g_client_bot_state.failed_waypoint_cooldowns.size() >= kFailedWaypointBlacklistCapacity) {
-        g_client_bot_state.failed_waypoint_cooldowns.erase(
-            g_client_bot_state.failed_waypoint_cooldowns.begin()
+    if (bot_state().failed_waypoint_cooldowns.size() >= kFailedWaypointBlacklistCapacity) {
+        bot_state().failed_waypoint_cooldowns.erase(
+            bot_state().failed_waypoint_cooldowns.begin()
         );
     }
 
     FailedWaypointCooldown cooldown{};
     cooldown.waypoint = waypoint;
     cooldown.cooldown.set(cooldown_ms);
-    g_client_bot_state.failed_waypoint_cooldowns.push_back(cooldown);
+    bot_state().failed_waypoint_cooldowns.push_back(cooldown);
 }
 
 bool bot_nav_is_waypoint_blacklisted_no_prune(const int waypoint)
 {
-    for (const FailedWaypointCooldown& cooldown : g_client_bot_state.failed_waypoint_cooldowns) {
+    for (const FailedWaypointCooldown& cooldown : bot_state().failed_waypoint_cooldowns) {
         if (cooldown.waypoint == waypoint
             && cooldown.cooldown.valid()
             && !cooldown.cooldown.elapsed()) {
@@ -1659,7 +1765,7 @@ void bot_nav_append_blacklisted_waypoints_to_avoidset(
     const int goal_waypoint)
 {
     bot_nav_prune_failed_waypoint_blacklist();
-    for (const FailedWaypointCooldown& cooldown : g_client_bot_state.failed_waypoint_cooldowns) {
+    for (const FailedWaypointCooldown& cooldown : bot_state().failed_waypoint_cooldowns) {
         const int waypoint = cooldown.waypoint;
         if (waypoint <= 0
             || waypoint == start_waypoint
@@ -1676,7 +1782,7 @@ void bot_nav_record_waypoint_visit(const int waypoint)
         return;
     }
 
-    auto& history = g_client_bot_state.recent_waypoint_visits;
+    auto& history = bot_state().recent_waypoint_visits;
     if (!history.empty() && history.back() == waypoint) {
         return;
     }
@@ -1688,7 +1794,7 @@ bool bot_nav_detect_recent_waypoint_ping_pong_loop(
     int& out_waypoint_a,
     int& out_waypoint_b)
 {
-    const auto& history = g_client_bot_state.recent_waypoint_visits;
+    const auto& history = bot_state().recent_waypoint_visits;
     if (history.size() < 4) {
         return false;
     }
@@ -1734,14 +1840,14 @@ bool bot_nav_pick_waypoint_route_to_goal_randomized_after_stuck(
         )
     );
     const bool performance_sensitive_goal =
-        bot_goal_is_control_point_objective(g_client_bot_state.active_goal)
-        || bot_goal_is_item_collection(g_client_bot_state.active_goal)
-        || bot_goal_is_ctf_objective(g_client_bot_state.active_goal)
-        || bot_goal_is_salvage_objective(g_client_bot_state.active_goal)
-        || g_client_bot_state.active_goal == BotGoalType::activate_bridge
-        || g_client_bot_state.active_goal == BotGoalType::create_crater
-        || g_client_bot_state.active_goal == BotGoalType::shatter_glass;
-    if (performance_sensitive_goal && !g_client_bot_state.recovery_pending_reroute) {
+        bot_goal_is_control_point_objective(bot_state().active_goal)
+        || bot_goal_is_item_collection(bot_state().active_goal)
+        || bot_goal_is_ctf_objective(bot_state().active_goal)
+        || bot_goal_is_salvage_objective(bot_state().active_goal)
+        || bot_state().active_goal == BotGoalType::activate_bridge
+        || bot_state().active_goal == BotGoalType::create_crater
+        || bot_state().active_goal == BotGoalType::shatter_glass;
+    if (performance_sensitive_goal && !bot_state().recovery_pending_reroute) {
         detour_budget = std::min(detour_budget, 4);
     }
     if (waypoint_total >= 1800) {
@@ -1895,21 +2001,21 @@ bool bot_nav_pick_waypoint_route_to_goal_randomized_after_stuck(
 
     const bool force_direct_objective_choice =
         !bot_personality_has_quirk(BotPersonalityQuirk::sneaky_capper)
-        && (g_client_bot_state.active_goal == BotGoalType::ctf_steal_flag
-            || g_client_bot_state.active_goal == BotGoalType::ctf_capture_flag
-            || g_client_bot_state.active_goal == BotGoalType::sal_deliver_flag);
+        && (bot_state().active_goal == BotGoalType::ctf_steal_flag
+            || bot_state().active_goal == BotGoalType::ctf_capture_flag
+            || bot_state().active_goal == BotGoalType::sal_deliver_flag);
     const bool force_stable_route_choice =
-        (bot_goal_is_item_collection(g_client_bot_state.active_goal)
-            || g_client_bot_state.active_goal == BotGoalType::activate_bridge
-            || g_client_bot_state.active_goal == BotGoalType::create_crater
-            || g_client_bot_state.active_goal == BotGoalType::shatter_glass
-            || g_client_bot_state.active_goal == BotGoalType::bag_pickup
-            || g_client_bot_state.active_goal == BotGoalType::sal_seek_flag)
-        && !g_client_bot_state.recovery_pending_reroute;
+        (bot_goal_is_item_collection(bot_state().active_goal)
+            || bot_state().active_goal == BotGoalType::activate_bridge
+            || bot_state().active_goal == BotGoalType::create_crater
+            || bot_state().active_goal == BotGoalType::shatter_glass
+            || bot_state().active_goal == BotGoalType::bag_pickup
+            || bot_state().active_goal == BotGoalType::sal_seek_flag)
+        && !bot_state().recovery_pending_reroute;
     const bool force_stable_recover_eliminate =
-        g_client_bot_state.active_goal == BotGoalType::eliminate_target
-        && (g_client_bot_state.fsm_state == BotFsmState::recover_navigation
-            || g_client_bot_state.recovery_pending_reroute);
+        bot_state().active_goal == BotGoalType::eliminate_target
+        && (bot_state().fsm_state == BotFsmState::recover_navigation
+            || bot_state().recovery_pending_reroute);
     const int pool_size = (force_direct_objective_choice
                            || force_stable_route_choice
                            || force_stable_recover_eliminate)
@@ -1965,13 +2071,13 @@ bool bot_nav_pick_waypoint_route_to_goal_long_detour(
         )
     );
     const bool performance_sensitive_goal =
-        bot_goal_is_control_point_objective(g_client_bot_state.active_goal)
-        || bot_goal_is_item_collection(g_client_bot_state.active_goal)
-        || bot_goal_is_ctf_objective(g_client_bot_state.active_goal)
-        || bot_goal_is_salvage_objective(g_client_bot_state.active_goal)
-        || g_client_bot_state.active_goal == BotGoalType::activate_bridge
-        || g_client_bot_state.active_goal == BotGoalType::create_crater
-        || g_client_bot_state.active_goal == BotGoalType::shatter_glass;
+        bot_goal_is_control_point_objective(bot_state().active_goal)
+        || bot_goal_is_item_collection(bot_state().active_goal)
+        || bot_goal_is_ctf_objective(bot_state().active_goal)
+        || bot_goal_is_salvage_objective(bot_state().active_goal)
+        || bot_state().active_goal == BotGoalType::activate_bridge
+        || bot_state().active_goal == BotGoalType::create_crater
+        || bot_state().active_goal == BotGoalType::shatter_glass;
     if (performance_sensitive_goal) {
         detour_budget = std::min(detour_budget, 4);
     }
@@ -2153,11 +2259,11 @@ bool bot_nav_pick_waypoint_route(const int start_waypoint)
     route_candidates.reserve(max_attempts);
     auto collect_candidates = [&](const std::vector<int>& active_avoidset,
                                    const bool ignore_failed_edges) {
+        const BotWaypointDistanceField& distance_field = bot_nav_distance_field(start_waypoint, active_avoidset);
         std::vector<int> path;
         for (int attempt = 0; attempt < max_attempts; ++attempt) {
             const int candidate = candidates[attempt];
-            path.clear();
-            if (!bot_waypoint_route(start_waypoint, candidate, active_avoidset, path)) {
+            if (!bot_waypoint_distance_field_path(distance_field, candidate, path)) {
                 continue;
             }
             if (path.size() < 2
@@ -2172,10 +2278,10 @@ bool bot_nav_pick_waypoint_route(const int start_waypoint)
             }
 
             float adjusted_route_score = route_score;
-            if (g_client_bot_state.active_goal == BotGoalType::roam) {
+            if (bot_state().active_goal == BotGoalType::roam) {
                 const float roam_intensity = std::clamp(
                     get_active_bot_personality().roam_intensity_bias,
-                    0.25f,
+                    0.0f,
                     2.5f
                 );
                 const float roam_intensity_norm =

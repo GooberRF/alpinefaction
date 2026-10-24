@@ -4,10 +4,12 @@
 #include "alpine_terrain.h"
 #include "level.h"
 #include "../multi/bots/bot_waypoint_route.h"
+#include "../multi/bots/server_bots.h"
 #include "../main/main.h"
 #include "../multi/gametype.h"
 #include "../multi/multi.h"
 #include "../multi/salvage.h"
+#include "../multi/scavenger.h"
 #include "../os/console.h"
 #include <xlog/xlog.h>
 #include "../rf/collide.h"
@@ -71,6 +73,8 @@ int g_awp_load_retries_remaining = 0;
 rf::Timestamp g_awp_load_retry_timer;
 bool g_drop_waypoints = true;
 int g_waypoint_revision = 0;
+// Bumped on every change to the nodes, their links or the bridge-zone state that gates links.
+int g_waypoint_graph_version = 0;
 std::vector<std::string> g_waypoint_authors{};
 
 int g_next_waypoint_target_uid = 1;
@@ -99,7 +103,7 @@ bool waypoint_has_link_to(int from, int to);
 rf::Mover* find_mover_by_uid(int mover_uid);
 void update_ctf_dropped_flag_temporary_waypoints();
 void update_salvage_flag_temporary_waypoint();
-bool is_waypoint_bot_mode_active();
+void update_scavenger_zone_temporary_waypoint();
 bool are_waypoint_commands_enabled_for_local_client();
 bool is_ctf_mode_for_waypoints();
 int get_ctf_flag_object_uid(bool red_flag);
@@ -118,7 +122,7 @@ constexpr int kWaypointWorldTraceFlags = rf::CF_ANY_HIT | rf::CF_PROCESS_INVISIB
 FunHook<void(rf::Vector3*, float)> glass_remove_floating_shards_hook{
     0x00492400,
     [](rf::Vector3* pos, float radius) {
-        // drop crater waypoints locally for bot clients and autolink them to the grid
+        // drop crater waypoints for bots and autolink them to the grid
         if (pos && is_waypoint_bot_mode_active()) {
             on_geomod_crater_created(*pos, radius);
         }
@@ -203,6 +207,7 @@ rf::Vector3 get_entity_feet_pos(const rf::Entity& entity)
 
 void invalidate_cache()
 {
+    ++g_waypoint_graph_version;
     g_cache_root = nullptr;
     g_cache_nodes.clear();
     g_cache_dirty = true;
@@ -233,7 +238,19 @@ void add_waypoint_author_if_missing(std::string_view author_name)
 
 bool is_waypoint_bot_mode_active()
 {
+    return client_bot_launch_enabled()
+        || ((rf::is_dedicated_server || rf::is_server) && server_bots_configured());
+}
+
+bool is_waypoint_local_bot_mode_active()
+{
     return client_bot_launch_enabled();
+}
+
+// Automatic waypoint dropping from player movement: the -bot client's learning, or the editor.
+bool is_waypoint_recording_active()
+{
+    return is_waypoint_local_bot_mode_active() || g_alpine_game_config.waypoints_edit_mode;
 }
 
 bool are_waypoint_commands_enabled_for_local_client()
@@ -263,7 +280,7 @@ void waypoint_log(std::format_string<Args...> fmt, Args&&... args)
 
     // log with xlog
     xlog::info("{}", message);
-    if (is_waypoint_bot_mode_active() || !g_alpine_game_config.waypoints_edit_mode) {
+    if (is_waypoint_local_bot_mode_active() || !g_alpine_game_config.waypoints_edit_mode) {
         return;
     }
 
@@ -277,7 +294,7 @@ void waypoint_log(std::string_view message)
         return;
     }
     rf::console::print("{}", message);
-    if (is_waypoint_bot_mode_active()
+    if (is_waypoint_local_bot_mode_active()
         || !g_alpine_game_config.waypoints_edit_mode) {
         return;
     }
@@ -1024,6 +1041,7 @@ int remove_waypoint_links_from_to(int from, int to)
     for (int i = write_index; i < kMaxWaypointLinks; ++i) {
         node.links[i] = 0;
     }
+    ++g_waypoint_graph_version;
     return removed;
 }
 
@@ -1037,6 +1055,7 @@ int remove_waypoint_links_from_all(int from)
     const int removed = node.num_links;
     node.num_links = 0;
     node.links.fill(0);
+    ++g_waypoint_graph_version;
     return removed;
 }
 
@@ -1167,6 +1186,18 @@ bool waypoint_link_blocked_by_bridge_zone_state(const int from_waypoint_uid, con
         || !waypoint_uid_enabled_by_bridge_zone_state(to_waypoint_uid);
 }
 
+int count_waypoint_inbound_links(int waypoint_uid, bool persistent_sources_only = false)
+{
+    int count = 0;
+    for (int i = 1; i < static_cast<int>(g_waypoints.size()); ++i) {
+        const auto& node = g_waypoints[i];
+        if (node.valid && !(persistent_sources_only && node.temporary) && waypoint_link_exists(node, waypoint_uid)) {
+            ++count;
+        }
+    }
+    return count;
+}
+
 void link_waypoint(int from, int to)
 {
     if (from <= 0 || to <= 0 || from >= static_cast<int>(g_waypoints.size()) ||
@@ -1184,11 +1215,43 @@ void link_waypoint(int from, int to)
         return;
     }
     if (node.num_links < kMaxWaypointLinks) {
+        ++g_waypoint_graph_version;
         node.links[node.num_links++] = to;
         return;
     }
-    std::uniform_int_distribution<int> dist(0, kMaxWaypointLinks - 1);
-    node.links[dist(g_rng)] = to;
+    int replace_slot = -1;
+    if (g_waypoints[to].temporary) {
+        // A temporary node may only take a slot held by another temporary node, so persistent links survive: a
+        // crater's first, then the node with the most other inbound links. A borrowed slot or a node's only inbound
+        // link is never taken.
+        int best_score = 0;
+        for (int slot = 0; slot < kMaxWaypointLinks; ++slot) {
+            const int link = node.links[slot];
+            if (link <= 0 || link >= static_cast<int>(g_waypoints.size())) {
+                continue;
+            }
+            const auto& linked = g_waypoints[link];
+            if (!linked.temporary || linked.borrowed_link_from == from) {
+                continue;
+            }
+            const int score = linked.type == WaypointType::crater
+                ? std::numeric_limits<int>::max()
+                : count_waypoint_inbound_links(link) - 1;
+            if (score > best_score) {
+                best_score = score;
+                replace_slot = slot;
+            }
+        }
+        if (replace_slot < 0) {
+            return;
+        }
+    }
+    else {
+        std::uniform_int_distribution<int> dist(0, kMaxWaypointLinks - 1);
+        replace_slot = dist(g_rng);
+    }
+    ++g_waypoint_graph_version;
+    node.links[replace_slot] = to;
 }
 
 bool is_player_grounded(const rf::Entity& entity)
@@ -1773,6 +1836,7 @@ void update_bridge_zone_states()
         if (!zone.timer.valid() || zone.timer.elapsed()) {
             zone.on = false;
             zone.timer.invalidate();
+            ++g_waypoint_graph_version;
         }
     }
 }
@@ -1793,6 +1857,7 @@ void activate_bridge_zones_for_trigger_uid(int trigger_uid)
         }
 
         zone.on = true;
+        ++g_waypoint_graph_version;
         const int duration_ms = bridge_zone_duration_ms(zone);
         if (duration_ms > 0) {
             zone.timer.set(duration_ms);
@@ -1805,6 +1870,7 @@ void activate_bridge_zones_for_trigger_uid(int trigger_uid)
 
 void refresh_all_waypoint_zone_refs()
 {
+    ++g_waypoint_graph_version;
     for (int i = 1; i < static_cast<int>(g_waypoints.size()); ++i) {
         auto& node = g_waypoints[i];
         if (!node.valid) {
@@ -1855,20 +1921,53 @@ int add_waypoint_zone_definition(WaypointZoneDefinition zone)
     return static_cast<int>(g_waypoint_zones.size()) - 1;
 }
 
+// Gives the lender back the link its slot held before the temporary node borrowed it.
+void restore_borrowed_waypoint_link(int waypoint_uid)
+{
+    auto& node = g_waypoints[waypoint_uid];
+    const int from = node.borrowed_link_from;
+    const int target = node.borrowed_link_target;
+    node.borrowed_link_from = 0;
+    node.borrowed_link_target = 0;
+    if (!is_waypoint_uid_valid(from) || !is_waypoint_uid_valid(target)) {
+        return;
+    }
+    auto& from_node = g_waypoints[from];
+    if (waypoint_link_exists(from_node, target)) {
+        return;
+    }
+    for (int slot = 0; slot < from_node.num_links; ++slot) {
+        if (from_node.links[slot] == waypoint_uid) {
+            from_node.links[slot] = target;
+            ++g_waypoint_graph_version;
+            return;
+        }
+    }
+    if (from_node.num_links < kMaxWaypointLinks) {
+        from_node.links[from_node.num_links++] = target;
+        ++g_waypoint_graph_version;
+    }
+}
+
 bool remove_waypoint_by_uid(int waypoint_uid)
 {
     if (!is_waypoint_uid_valid(waypoint_uid)) {
         return false;
     }
 
+    restore_borrowed_waypoint_link(waypoint_uid);
     auto& node = g_waypoints[waypoint_uid];
+    const bool temporary = node.temporary;
     node.valid = false;
     node.num_links = 0;
     node.links.fill(0);
     node.zones.clear();
 
     remap_waypoints();
-    sanitize_waypoint_links_against_geometry();
+    // Removing a temporary node leaves the persistent links as they were, and the remap drops the links to it.
+    if (!temporary) {
+        sanitize_waypoint_links_against_geometry();
+    }
     return true;
 }
 
@@ -1890,6 +1989,7 @@ int clear_waypoint_zone_definitions()
     for (int i = 1; i < static_cast<int>(g_waypoints.size()); ++i) {
         g_waypoints[i].zones.clear();
     }
+    ++g_waypoint_graph_version;
     return removed;
 }
 
@@ -3310,7 +3410,10 @@ void on_geomod_crater_created(const rf::Vector3& crater_pos, float crater_radius
         return;
     }
 
-    remove_realized_waypoint_targets(crater_pos, crater_radius);
+    // A listen host editing waypoints keeps its targets: the next waypoints_save writes them.
+    if (!(g_alpine_game_config.waypoints_edit_mode && !rf::is_dedicated_server)) {
+        remove_realized_waypoint_targets(crater_pos, crater_radius);
+    }
 
     const int crater_index = add_waypoint(
         crater_pos,
@@ -3405,6 +3508,7 @@ void on_geomod_crater_created(const rf::Vector3& crater_pos, float crater_radius
                 crater_node.links[write++] = crater_node.links[read];
             }
             crater_node.num_links = write;
+            ++g_waypoint_graph_version;
         }
     }
 }
@@ -3420,6 +3524,7 @@ void link_temporary_waypoint_like_crater(int waypoint_uid)
     const float link_radius_sq =
         sanitize_waypoint_link_radius(temp_waypoint.link_radius)
         * sanitize_waypoint_link_radius(temp_waypoint.link_radius);
+    std::vector<std::pair<float, int>> clear_sources{};
     for (int i = 1; i < static_cast<int>(g_waypoints.size()); ++i) {
         if (i == waypoint_uid) {
             continue;
@@ -3429,16 +3534,58 @@ void link_temporary_waypoint_like_crater(int waypoint_uid)
         if (!node.valid) {
             continue;
         }
-        if (distance_sq(waypoint_pos, node.pos) > link_radius_sq) {
+        const float dist_sq = distance_sq(waypoint_pos, node.pos);
+        if (dist_sq > link_radius_sq) {
             continue;
         }
 
         if (waypoint_upward_link_allowed(waypoint_pos, node.pos, kWaypointGenerateMaxInclineDeg)) {
             link_waypoint_if_clear(waypoint_uid, i);
         }
-        if (waypoint_upward_link_allowed(node.pos, waypoint_pos, kWaypointGenerateMaxInclineDeg)) {
-            link_waypoint_if_clear(i, waypoint_uid);
+        if (waypoint_upward_link_allowed(node.pos, waypoint_pos, kWaypointGenerateMaxInclineDeg)
+            && link_waypoint_if_clear(i, waypoint_uid)) {
+            clear_sources.emplace_back(dist_sq, i);
         }
+    }
+
+    // Craters stay for the level; an objective node every clear persistent neighbour is too full for borrows the
+    // nearest one's persistent slot, preferring a link the node itself continues along, so it stays reachable. A
+    // jump pad lends nothing, and a slot that is its target's only way in (a drop or jump-pad landing) is lent only
+    // when the node continues to that target itself.
+    if (g_waypoints[waypoint_uid].type == WaypointType::crater
+        || count_waypoint_inbound_links(waypoint_uid, true) > 0) {
+        return;
+    }
+    std::sort(clear_sources.begin(), clear_sources.end());
+    for (const auto& [dist_sq, from] : clear_sources) {
+        auto& from_node = g_waypoints[from];
+        if (from_node.temporary || from_node.type == WaypointType::jump_pad) {
+            continue;
+        }
+        int borrow_slot = -1;
+        for (int slot = 0; slot < from_node.num_links; ++slot) {
+            const int link = from_node.links[slot];
+            if (link <= 0 || link >= static_cast<int>(g_waypoints.size()) || g_waypoints[link].temporary) {
+                continue;
+            }
+            const bool continues_to_link = waypoint_link_exists(g_waypoints[waypoint_uid], link);
+            if (!continues_to_link && count_waypoint_inbound_links(link, true) <= 1) {
+                continue;
+            }
+            borrow_slot = slot;
+            if (continues_to_link) {
+                break;
+            }
+        }
+        if (borrow_slot < 0) {
+            continue;
+        }
+        auto& node = g_waypoints[waypoint_uid];
+        node.borrowed_link_from = from;
+        node.borrowed_link_target = from_node.links[borrow_slot];
+        from_node.links[borrow_slot] = waypoint_uid;
+        ++g_waypoint_graph_version;
+        return;
     }
 }
 
@@ -3547,33 +3694,35 @@ bool waypoints_find_bag_waypoint(int& out_waypoint, rf::Vector3& out_pos)
     return true;
 }
 
-// Salvage: there is at most one neutral flag waypoint at any time.
-int find_temporary_salvage_flag_waypoint()
+// Salvage: there is at most one temporary node of each subtype at any time, the neutral flag's and, under
+// Scavenger, the zone's.
+int find_temporary_salvage_flag_waypoint(WaypointSalvageFlagSubtype subtype = WaypointSalvageFlagSubtype::flag)
 {
     for (int waypoint_uid = 1; waypoint_uid < static_cast<int>(g_waypoints.size()); ++waypoint_uid) {
         const auto& node = g_waypoints[waypoint_uid];
         if (!node.valid || !node.temporary) continue;
-        if (node.type != WaypointType::salvage_flag) continue;
+        if (node.type != WaypointType::salvage_flag || node.subtype != static_cast<int>(subtype)) continue;
         return waypoint_uid;
     }
     return 0;
 }
 
-void remove_temporary_salvage_flag_waypoints()
+void remove_temporary_salvage_flag_waypoints(WaypointSalvageFlagSubtype subtype = WaypointSalvageFlagSubtype::flag)
 {
     while (true) {
-        const int waypoint_uid = find_temporary_salvage_flag_waypoint();
+        const int waypoint_uid = find_temporary_salvage_flag_waypoint(subtype);
         if (waypoint_uid <= 0) break;
         remove_waypoint_by_uid(waypoint_uid);
     }
 }
 
-int create_temporary_salvage_flag_waypoint(const rf::Vector3& flag_pos)
+int create_temporary_salvage_flag_waypoint(
+    const rf::Vector3& flag_pos, WaypointSalvageFlagSubtype subtype = WaypointSalvageFlagSubtype::flag)
 {
     const int waypoint_uid = add_waypoint(
         flag_pos,
         WaypointType::salvage_flag,
-        0,
+        static_cast<int>(subtype),
         false,
         true,
         kSalvageFlagWaypointLinkRadius,
@@ -3691,7 +3840,7 @@ void update_salvage_flag_temporary_waypoint()
     if (!(rf::level.flags & rf::LEVEL_LOADED)) {
         return;
     }
-    if (!is_waypoint_bot_mode_active() || !gt_is_salvage()) {
+    if (!is_waypoint_bot_mode_active() || !salvage_framework_active()) {
         remove_temporary_salvage_flag_waypoints();
         return;
     }
@@ -3719,6 +3868,29 @@ void update_salvage_flag_temporary_waypoint()
     }
     if (has_flag_pos) {
         waypoints_on_salvage_flag_world_pos(flag_pos);
+    }
+}
+
+// The Scavenger zone gets a node of its own only where the level has none inside it, so routes there end inside the
+// zone rather than beside it.
+void update_scavenger_zone_temporary_waypoint()
+{
+    constexpr auto kZoneSubtype = WaypointSalvageFlagSubtype::scavenger_zone;
+    rf::Vector3 zone_pos{};
+    if (!is_waypoint_bot_mode_active() || !scavenger_get_zone(&zone_pos)) {
+        remove_temporary_salvage_flag_waypoints(kZoneSubtype);
+        return;
+    }
+
+    const int existing = find_temporary_salvage_flag_waypoint(kZoneSubtype);
+    if (existing > 0) {
+        if (distance_sq(g_waypoints[existing].pos, zone_pos) <= 0.0001f) {
+            return;
+        }
+        remove_waypoint_by_uid(existing);
+    }
+    if (closest_waypoint(zone_pos, scavenger_get_zone_radius()) <= 0) {
+        create_temporary_salvage_flag_waypoint(zone_pos, kZoneSubtype);
     }
 }
 
@@ -3769,6 +3941,7 @@ void sanitize_waypoint_links_against_geometry()
         node.num_links = write_index;
     }
 
+    ++g_waypoint_graph_version;
     if (removed_links > 0) {
         xlog::info("Pruned {} blocked or invalid waypoint links", removed_links);
     }
@@ -4282,6 +4455,9 @@ void clear_waypoints()
     g_waypoint_authors.clear();
     g_next_waypoint_target_uid = 1;
     g_invisible_floor_faces.clear();
+    // Indices into the graph being replaced.
+    g_last_drop_waypoint_by_entity.clear();
+    waypoints_utils_on_waypoints_cleared();
     invalidate_cache();
 }
 
@@ -5283,6 +5459,7 @@ bool link_waypoint_if_clear_no_replace(int from, int to)
     }
 
     node.links[node.num_links++] = to;
+    ++g_waypoint_graph_version;
     return true;
 }
 
@@ -5304,6 +5481,7 @@ bool add_waypoint_link_no_replace(int from, int to)
     }
 
     node.links[node.num_links++] = to;
+    ++g_waypoint_graph_version;
     return true;
 }
 
@@ -5421,6 +5599,7 @@ bool remove_waypoint_link_no_replace(int from, int to)
         if (node.num_links >= 0 && node.num_links < kMaxWaypointLinks) {
             node.links[node.num_links] = 0;
         }
+        ++g_waypoint_graph_version;
         return true;
     }
     return false;
@@ -7472,16 +7651,22 @@ bool save_waypoints()
         return false;
     }
 
+    // The file stores only persistent nodes, and the loader numbers them by position: every stored waypoint
+    // reference goes through this map (0 = not saved).
+    std::vector<int> saved_uids(g_waypoints.size(), 0);
     int persistent_waypoint_count = 0;
     for (int i = 1; i < static_cast<int>(g_waypoints.size()); ++i) {
         const auto& node = g_waypoints[i];
         if (node.valid && !node.temporary) {
-            ++persistent_waypoint_count;
+            saved_uids[i] = ++persistent_waypoint_count;
         }
     }
     if (persistent_waypoint_count <= 0) {
         return false;
     }
+    const auto saved_uid = [&saved_uids](const int waypoint_uid) {
+        return (waypoint_uid > 0 && waypoint_uid < static_cast<int>(saved_uids.size())) ? saved_uids[waypoint_uid] : 0;
+    };
 
     refresh_all_waypoint_zone_refs();
     auto filename = get_waypoint_filename();
@@ -7507,7 +7692,8 @@ bool save_waypoints()
     }
 
     const int revision = g_waypoint_revision + 1;
-    const bool preserve_std_new_types = is_waypoint_bot_mode_active();
+    // Edit mode keeps editor semantics: the editor's drops save as std.
+    const bool preserve_std_new_types = is_waypoint_bot_mode_active() && !g_alpine_game_config.waypoints_edit_mode;
     toml::table header{
         {"revision", revision},
         {"awp_ver", kWptVersion},
@@ -7526,7 +7712,16 @@ bool save_waypoints()
         toml::array pos{compressed_pos.x, compressed_pos.y, compressed_pos.z};
         toml::array links;
         for (int link = 0; link < node.num_links; ++link) {
-            links.push_back(node.links[link]);
+            int linked = node.links[link];
+            // A borrowed slot saves the link it displaced.
+            if (linked > 0 && linked < static_cast<int>(g_waypoints.size())
+                && g_waypoints[linked].borrowed_link_from == i
+                && !waypoint_link_exists(node, g_waypoints[linked].borrowed_link_target)) {
+                linked = g_waypoints[linked].borrowed_link_target;
+            }
+            if (const int linked_uid = saved_uid(linked); linked_uid > 0) {
+                links.push_back(linked_uid);
+            }
         }
         int saved_type = waypoint_type_to_save_value(node.type, preserve_std_new_types);
         toml::table entry{
@@ -7599,13 +7794,9 @@ bool save_waypoints()
                 && !zone.bridge_waypoint_uids.empty()) {
                 toml::array bridge_waypoint_uids{};
                 for (const int waypoint_uid : zone.bridge_waypoint_uids) {
-                    if (waypoint_uid <= 0 || waypoint_uid >= static_cast<int>(g_waypoints.size())) {
-                        continue;
+                    if (const int bridge_uid = saved_uid(waypoint_uid); bridge_uid > 0) {
+                        bridge_waypoint_uids.push_back(bridge_uid);
                     }
-                    if (!g_waypoints[waypoint_uid].valid) {
-                        continue;
-                    }
-                    bridge_waypoint_uids.push_back(waypoint_uid);
                 }
                 if (!bridge_waypoint_uids.empty()) {
                     zone_entry.insert("w", bridge_waypoint_uids);
@@ -7624,13 +7815,9 @@ bool save_waypoints()
 
             toml::array waypoint_uids{};
             for (int waypoint_uid : target.waypoint_uids) {
-                if (waypoint_uid <= 0 || waypoint_uid >= static_cast<int>(g_waypoints.size())) {
-                    continue;
+                if (const int target_waypoint_uid = saved_uid(waypoint_uid); target_waypoint_uid > 0) {
+                    waypoint_uids.push_back(target_waypoint_uid);
                 }
-                if (!g_waypoints[waypoint_uid].valid) {
-                    continue;
-                }
-                waypoint_uids.push_back(waypoint_uid);
             }
 
             toml::table target_entry{
@@ -7704,7 +7891,7 @@ bool load_waypoints(bool include_std_new_waypoints = true)
             }
         }
     }
-    if (g_alpine_game_config.waypoints_edit_mode && !is_waypoint_bot_mode_active()
+    if (g_alpine_game_config.waypoints_edit_mode && !is_waypoint_local_bot_mode_active()
         && header_checksum && *header_checksum != rf::level.checksum) {
         waypoint_log("Level checksum mismatch for {}: file {}, level {}",
             bare_filename, *header_checksum, rf::level.checksum);
@@ -8023,8 +8210,21 @@ void remap_waypoints()
             }
         }
         node.num_links = write_idx;
+        if (node.borrowed_link_from > 0) {
+            const auto remap_uid = [&remap](const int uid) {
+                return (uid > 0 && uid < static_cast<int>(remap.size())) ? remap[uid] : 0;
+            };
+            node.borrowed_link_from = remap_uid(node.borrowed_link_from);
+            node.borrowed_link_target = remap_uid(node.borrowed_link_target);
+        }
     }
     g_waypoints = std::move(new_nodes);
+    for (auto& entry : g_last_drop_waypoint_by_entity) {
+        int& last_drop_waypoint = entry.second;
+        last_drop_waypoint = (last_drop_waypoint > 0 && last_drop_waypoint < static_cast<int>(remap.size()))
+            ? remap[last_drop_waypoint]
+            : 0;
+    }
     for (auto& target : g_waypoint_targets) {
         std::vector<int> remapped_waypoint_uids{};
         remapped_waypoint_uids.reserve(target.waypoint_uids.size());
@@ -8060,6 +8260,7 @@ void remap_waypoints()
         normalize_zone_bridge_waypoint_refs(remapped_bridge_waypoint_uids);
         zone.bridge_waypoint_uids = std::move(remapped_bridge_waypoint_uids);
     }
+    waypoints_utils_on_waypoints_remapped(remap);
     invalidate_cache();
 }
 
@@ -8072,7 +8273,7 @@ void clean_waypoints()
 
 bool should_navigate()
 {
-    if (!are_waypoint_commands_enabled_for_local_client()) {
+    if (!is_waypoint_recording_active()) {
         return false;
     }
     return g_drop_waypoints || g_has_loaded_wpt;
@@ -8080,7 +8281,7 @@ bool should_navigate()
 
 bool should_drop()
 {
-    if (!are_waypoint_commands_enabled_for_local_client()) {
+    if (!is_waypoint_recording_active()) {
         return false;
     }
     return g_drop_waypoints || !g_has_loaded_wpt;
@@ -8092,7 +8293,7 @@ bool should_skip_local_bot_waypoint_drop()
         return false;
     }
 
-    return rf::local_player->is_bot || is_waypoint_bot_mode_active();
+    return rf::local_player->is_bot || is_waypoint_local_bot_mode_active();
 }
 
 void prune_drop_trackers(const std::unordered_set<int>& active_entity_handles)
@@ -8357,7 +8558,7 @@ ConsoleCommand2 waypoint_load_all_cmd{
 ConsoleCommand2 waypoint_edit_cmd{
     "waypoints_edit",
     [](std::optional<bool> enabled) {
-        if (is_waypoint_bot_mode_active()) {
+        if (is_waypoint_local_bot_mode_active()) {
             rf::console::print("waypoints_edit is not used in -bot mode.");
             return;
         }
@@ -9223,6 +9424,24 @@ void waypoints_level_init()
     waypoints_utils_level_init();
 }
 
+void waypoints_level_init_with_awp_download()
+{
+    // Cancel any in-flight AWP download from a previous map
+    cancel_awp_download();
+
+    // Bots: start the async AWP download before waypoints_level_init so it sees the pending
+    // flag and defers load_waypoints until the download resolves. Never over a file a host is editing.
+    if (rf::is_multi && is_waypoint_bot_mode_active()
+        && (rf::is_dedicated_server || !g_alpine_game_config.waypoints_edit_mode)) {
+        waypoints_set_awp_download_pending(true);
+        if (!start_awp_download_for_installed_map(std::string{rf::level.filename.c_str()}, 3)) {
+            waypoints_set_awp_download_pending(false);
+        }
+    }
+
+    waypoints_level_init();
+}
+
 void waypoints_level_reset()
 {
     clear_waypoints();
@@ -9307,7 +9526,7 @@ void waypoints_do_frame()
         awpgen_do_frame();
     }
 
-    if (!is_waypoint_bot_mode_active()
+    if (!is_waypoint_local_bot_mode_active()
         && g_alpine_game_config.waypoints_edit_mode
         && is_multiplayer_client()) {
         g_alpine_game_config.waypoints_edit_mode = false;
@@ -9342,6 +9561,7 @@ void waypoints_do_frame()
     update_bridge_zone_states();
     update_ctf_dropped_flag_temporary_waypoints();
     update_salvage_flag_temporary_waypoint();
+    update_scavenger_zone_temporary_waypoint();
     waypoints_utils_do_frame();
 
     if (!are_waypoint_commands_enabled_for_local_client()) {
@@ -9874,6 +10094,11 @@ bool waypoints_link_has_target_type(
 int waypoints_closest(const rf::Vector3& pos, float radius)
 {
     return closest_waypoint(pos, radius);
+}
+
+int waypoints_graph_version()
+{
+    return g_waypoint_graph_version;
 }
 
 int waypoints_count()

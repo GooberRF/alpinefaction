@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <vector>
 
+struct BotContext;
+
 enum class BotAttackStyle
 {
     balanced = 0,
@@ -57,7 +59,7 @@ struct BotPersonality
     float weapon_switch_bias = 1.0f;
     int min_weapon_switch_cooldown_ms = 3000;
     float crouch_combat_bias = 1.0f;
-    float jump_combat_bias = 0.0f;
+    float jump_combat_bias = 0.25f;
     float dodge_combat_bias = 1.0f;
     float raw_aggression_bias = 1.0f;
     float camping_bias = 1.0f;
@@ -95,7 +97,23 @@ struct BotSkillProfile
     float crouch_likelihood = 0.14f;
     float jump_likelihood = 0.14f;
     float dodge_likelihood = 0.14f;
+    float reaction_time_ms = 50.0f;
+    // Aim error bound at a 22 unit target distance, from no skill (max) to full skill (min).
+    float aim_error_min = 0.035f;
+    float aim_error_max = 2.65f;
+    // Turn speed (radians per second) and minimum aim alignment (dot product) to fire, at full skill.
+    float yaw_speed_cap = 10.0f;
+    float pitch_speed_cap = 7.0f;
+    float fire_alignment_threshold = 0.80f;
+    // Semi-automatic trigger presses are this many fire waits apart (before skill scaling).
+    float semi_auto_click_interval_scale = 3.0f;
     std::vector<float> weapon_skill_weights{};
+};
+
+struct BotConfigOverride
+{
+    uint8_t field_id;
+    float value;
 };
 
 // Weapon preference entry for preset definitions.
@@ -109,9 +127,8 @@ struct BotWeaponPreferenceEntry
     float skill_weight;
 };
 
-extern const BotPersonality kDefaultBotPersonality;
-extern const BotSkillProfile kDefaultBotSkillProfile;
-
+const BotPersonality& bot_personality_get(BotContext& ctx);
+const BotSkillProfile& bot_skill_profile_get(BotContext& ctx);
 const BotPersonality& get_active_bot_personality();
 const BotSkillProfile& get_active_bot_skill_profile();
 bool bot_personality_has_quirk(BotPersonalityQuirk quirk);
@@ -124,19 +141,24 @@ float bot_get_weapon_skill_weight(int weapon_type);
 float bot_get_skill_factor();
 float bot_get_decision_skill_factor();
 
-// Configure presets by name and immediately reinitialize.
-// Passing nullptr for either parameter leaves that preset unchanged.
-void bot_personality_set_presets(const char* personality_name, const char* skill_name);
+// Configure presets by name and immediately reinitialize. The field overrides are applied on top of the presets
+// on every reinitialization. Passing nullptr for a parameter leaves that preset or override list unchanged.
+void bot_personality_set_presets(
+    BotContext& ctx,
+    const char* personality_name,
+    const char* skill_name,
+    const std::vector<BotConfigOverride>* personality_overrides = nullptr,
+    const std::vector<BotConfigOverride>* skill_overrides = nullptr);
 
 // Mutable access for applying individual field overrides after preset selection.
 // Intended for server-driven per-field tweaks on top of a base preset.
-BotPersonality& bot_personality_get_mutable();
-BotSkillProfile& bot_skill_profile_get_mutable();
+BotPersonality& bot_personality_get_mutable(BotContext& ctx);
+BotSkillProfile& bot_skill_profile_get_mutable(BotContext& ctx);
 
 // Apply a single field override by numeric field ID.
 // Returns true if the field_id was recognized and applied.
-bool bot_personality_apply_field_override(uint8_t field_id, float value);
-bool bot_skill_apply_field_override(uint8_t field_id, float value);
+bool bot_personality_apply_field_override(BotContext& ctx, uint8_t field_id, float value);
+bool bot_skill_apply_field_override(BotContext& ctx, uint8_t field_id, float value);
 
 // Name-to-field-ID lookup for TOML config parsing.
 // Returns -1 if the name is not recognized.

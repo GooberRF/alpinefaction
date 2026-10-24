@@ -359,7 +359,7 @@ void grant_award(rf::Player* recipient, AwardId id, rf::Player* victim)
         if (!player.net_data || &player == recipient) {
             continue;
         }
-        if (player.spectatee.value_or(nullptr) == recipient) {
+        if (player_is_spectating(player, recipient)) {
             notify(&player);
         }
     }

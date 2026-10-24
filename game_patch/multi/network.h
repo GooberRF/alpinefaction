@@ -294,6 +294,14 @@ enum class JoiningClientKind
 // process_join_req_packet (the globals are reset afterwards).
 JoiningClientKind get_joining_client_kind();
 
+// player_list without the demo recorder: the count the server-full check uses.
+int multi_num_players_occupying_slots();
+// Joiners whose reliable socket has not attached yet, without the demo recorder.
+int multi_num_players_waiting_for_reliable_socket();
+
+// Longest player name on the wire: clients receive names into 32-byte buffers (g_buffer_overflow_patches).
+constexpr int k_max_player_name_len = 31;
+
 // Look up AF extra data for a server by address. Returns nullptr if not found.
 const AFGameInfoExtra* get_server_browser_extra(const rf::NetAddr& addr);
 void clear_server_browser_extra();

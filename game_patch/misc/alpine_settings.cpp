@@ -1469,10 +1469,11 @@ bool alpine_player_settings_load(rf::Player* player)
     resolve_scan_code_conflicts(player->settings.controls);
     resolve_mouse_button_conflicts(player->settings.controls);
 
-    // Waypoint edit mode is session-only. Apply startup default from settings.
+    // Waypoint edit mode is session-only. Apply startup default from settings (never in a -bot/-debugbot client).
     g_alpine_game_config.waypoints_edit_mode =
         g_alpine_game_config.waypoints_edit_default_enabled
-        && !(rf::is_multi && !rf::is_server);
+        && !(rf::is_multi && !rf::is_server)
+        && !client_bot_launch_enabled();
 
     // Store orphaned settings
     for (const auto& [key, value] : settings) {

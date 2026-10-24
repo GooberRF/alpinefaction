@@ -5,9 +5,24 @@
 
 void clear_enemy_aim_error_state();
 void clear_semi_auto_click_state();
+// Turns towards the aim goal of the last think; server bots run it on the frames they do not think.
+void bot_track_aim_goal(rf::Entity& local_entity);
 void ensure_weapon_ready(rf::Player& player, rf::Entity& entity);
 bool bot_has_usable_crater_weapon(rf::Player& player, rf::Entity& entity);
 bool bot_has_usable_shatter_weapon(rf::Player& player, rf::Entity& entity);
+// Expected damage per second of the best usable weapon at the distance, with the active bot's aim.
+float bot_best_combat_weapon_dps(rf::Player& player, rf::Entity& entity, float target_distance);
+// Distance the held weapon works best at (-1 if none) and the distance its own blast needs.
+float bot_combat_engagement_distance(const rf::Entity& entity, float& out_min_safe_distance);
+// Distance from an enemy inside which the held (fired, not thrown) splash weapon would cost the bot more than a little
+// health; 0 for other weapons.
+float bot_combat_splash_keep_distance(const rf::Entity& entity);
+// A fire mode's wind-up before its projectile leaves: the first $Impact Delay, which the player path arms
+// (0x004A579B-0x004A57F8); 0 for none.
+int bot_weapon_create_delay_ms(int weapon_type, bool alt_fire);
+// Distance from a crater target to fire the crater weapon from (0 when it is used up close), and the farthest it
+// reaches.
+float bot_crater_standoff_distance(rf::Player& player, rf::Entity& entity, float& out_max_distance);
 void bot_process_combat(
     rf::Player& local_player,
     rf::Entity& local_entity,

@@ -18,6 +18,7 @@
 #include "../rf/os/console.h"
 #include "../rf/multi.h"
 #include "../rf/weapon.h"
+#include "bots/bot_personality.h"
 
 // Forward declarations
 namespace rf
@@ -1038,11 +1039,6 @@ struct AlpineRconProfile
     std::vector<std::string> allowed_commands;
 };
 
-struct BotConfigOverride {
-    uint8_t field_id;
-    float value;
-};
-
 struct ServerBotConfig {
     std::string personality_preset = "balanced";
     std::string skill_preset = "average";
@@ -1056,12 +1052,19 @@ struct BotProfileSlotTracker {
     std::unordered_map<const rf::Player*, int> assignments;
 
     int assign_slot(const rf::Player* player, int num_profiles);
+    void assign_explicit(const rf::Player* player, int slot);
     void release_slot(const rf::Player* player);
     int get_slot(const rf::Player* player) const;
     void clear();
 };
 
 extern BotProfileSlotTracker g_bot_profile_slots;
+
+constexpr int k_max_server_bots = 31;
+
+void resolve_bot_identity(const ServerBotConfig& config, const rf::Player* self, std::string& out_name,
+                          int32_t& out_character);
+int pick_team_for_new_server_bot();
 
 struct AlpineServerConfig
 {
@@ -1073,6 +1076,7 @@ struct AlpineServerConfig
     uint32_t bot_shared_secret = 0;
     std::string fflink_gsk = "";
     std::vector<ServerBotConfig> bot_configs;
+    int server_bots = 0;
     bool upnp_enabled = false;
     bool demo_auto_record = false;
     bool demo_chat_record = true;
@@ -1138,6 +1142,11 @@ struct AlpineServerConfig
 
     void set_bot_shared_secret(const uint32_t secret) {
         bot_shared_secret = secret;
+    }
+
+    void set_server_bots(int count)
+    {
+        server_bots = std::clamp(count, 0, k_max_server_bots);
     }
 
     void set_fflink_gsk(std::string_view new_gsk) {
@@ -1300,6 +1309,8 @@ void toggle_ready_status(rf::Player* player);
 bool get_ready_status(const rf::Player* player);
 void server_vote_do_frame();
 void init_server_commands();
+// sv_bot_add / sv_bot_remove for an rcon caller: the result line is returned instead of printed.
+std::string run_server_bot_rcon_command(std::string_view command, std::string_view args);
 void rebuild_rotation_from_cfg();
 void on_dedicated_server_launch_post();
 void extend_round_time(int minutes);

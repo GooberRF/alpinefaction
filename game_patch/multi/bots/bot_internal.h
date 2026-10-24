@@ -1,6 +1,7 @@
 #pragma once
 
 #include "bot_personality.h"
+#include "bot_waypoint_route.h"
 #include "../../misc/waypoints.h"
 #include "../../rf/entity.h"
 #include "../../rf/item.h"
@@ -10,6 +11,7 @@
 #include <cassert>
 #include <cstring>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <vector>
 
@@ -65,6 +67,7 @@ inline constexpr int kWaypointStuckCheckMs = 1000;
 inline constexpr int kWaypointRecoveryRepathMs = 125;
 inline constexpr int kWaypointRecoveryDetourAttempts = 24;
 inline constexpr int kSalvageStageMaxRouteFails = 3;
+inline constexpr float kSalvageHoldRadius = kWaypointReachRadius * 2.0f;
 inline constexpr int kPursuitRouteFailureLimit = 4;
 inline constexpr int kCollectRouteFailureLimit = 4;
 inline constexpr int kCollectRecoveryRepathMs = 650;
@@ -103,6 +106,9 @@ inline constexpr int kFailedWaypointBlacklistMs = 20000;
 inline constexpr int kFailedWaypointBlacklistCapacity = 48;
 inline constexpr int kFailedItemGoalCooldownMs = 12000;
 inline constexpr int kFailedItemGoalCooldownCapacity = 48;
+inline constexpr int kRouteFailureBackoffThreshold = 3;
+inline constexpr int kRouteFailureBackoffMs = 1500;
+inline constexpr int kFailedRouteSearchCapacity = 32;
 inline constexpr int kRecentItemGoalSelectionMs = 15000;
 inline constexpr int kRecentItemGoalSelectionCapacity = 64;
 inline constexpr int kSecondaryGoalTypeRepeatMs = 12000;
@@ -129,18 +135,20 @@ inline constexpr int kBotRetaliationNearMissWindowMs = 1400;
 inline constexpr float kNavigationAimVerticalThreshold = 1.6f;
 inline constexpr int kGoalSwitchLockMinMs = 320;
 inline constexpr int kGoalSwitchLockMaxMs = 1400;
+inline constexpr int kGoalMinDwellMs = 600;
+inline constexpr float kGoalSwitchScoreMarginShare = 0.10f;
 inline constexpr int kRoamFallbackGoalLockMs = 900;
 inline constexpr int kRecoveryRoamReevalLimitMs = 4000;
 inline constexpr int kAimErrorUpdateSlowMs = 240;  // low-skill: longer interval between aim error updates
 inline constexpr int kAimErrorUpdateFastMs = 55;   // high-skill: shorter interval between aim error updates
-inline constexpr float kAimErrorMinUnits = 0.035f;
-inline constexpr float kAimErrorMaxUnits = 2.65f;
 inline constexpr float kAimErrorDistanceNorm = 22.0f;
-inline constexpr float kSemiAutoClickIntervalScale = 3.0f;
 inline constexpr int kSemiAutoClickMinMs = 90;
 inline constexpr int kSemiAutoClickMaxMs = 900;
-inline constexpr int kRemoteChargeDetonationWindowMs = 5000;
-inline constexpr int kTargetAcquisitionReactionMs = 50;
+inline constexpr int kRemoteChargeDetonationWindowMs = 3000;
+inline constexpr int kRemoteChargeCraterWindowMs = 6000;
+// Charges not set off this long after their detonation window no longer hold up the next throw.
+inline constexpr int kRemoteChargeGiveUpMs = 10000;
+inline constexpr int kFailedCraterTargetCooldownMs = 15000;
 inline constexpr int kBotServerConfigTimeoutMs = 10000;
 inline constexpr int kBotConnectionWatchdogMs = 30000;
 
@@ -169,6 +177,8 @@ enum class BotGoalType
     sal_deliver_flag = 20,
     sal_chase_carrier = 21,
     sal_stage_at_spawn = 22,
+    sal_hold_zone = 23,
+    sal_escort_carrier = 24,
 };
 
 inline constexpr bool bot_goal_is_item_collection(const BotGoalType goal)
@@ -217,6 +227,22 @@ inline constexpr bool bot_goal_is_salvage_objective(const BotGoalType goal)
         case BotGoalType::sal_deliver_flag:
         case BotGoalType::sal_chase_carrier:
         case BotGoalType::sal_stage_at_spawn:
+        case BotGoalType::sal_hold_zone:
+        case BotGoalType::sal_escort_carrier:
+            return true;
+        default:
+            return false;
+    }
+}
+
+// Salvage goals that hold a position rather than go for the flag: never urgent, and the bot keeps stepping around
+// the spot it holds.
+inline constexpr bool bot_goal_is_salvage_positioning(const BotGoalType goal)
+{
+    switch (goal) {
+        case BotGoalType::sal_stage_at_spawn:
+        case BotGoalType::sal_hold_zone:
+        case BotGoalType::sal_escort_carrier:
             return true;
         default:
             return false;
@@ -253,6 +279,8 @@ inline constexpr BotGoalTier bot_goal_tier(const BotGoalType goal)
         case BotGoalType::control_point_objective:
             return BotGoalTier::tier1_objective;
         case BotGoalType::sal_stage_at_spawn:
+        case BotGoalType::sal_hold_zone:
+        case BotGoalType::sal_escort_carrier:
         case BotGoalType::collect_weapon:
         case BotGoalType::collect_ammo:
         case BotGoalType::collect_health:
@@ -313,9 +341,54 @@ struct FailedWaypointCooldown
     rf::Timestamp cooldown{};
 };
 
+struct FailedCraterTarget
+{
+    int target_uid = -1;
+    rf::Timestamp cooldown{};
+};
+
 struct FailedItemGoalCooldown
 {
     int item_handle = -1;
+    rf::Timestamp cooldown{};
+};
+
+struct BotReachableWaypointQuery
+{
+    int start_waypoint = 0;
+    int graph_version = 0;
+    rf::Vector3 target_pos{};
+    int preferred_waypoint = 0;
+    bool exclude_non_temporary_ctf_flag = false;
+    int excluded_ctf_flag_subtype = -1;
+
+    bool operator==(const BotReachableWaypointQuery& other) const
+    {
+        return start_waypoint == other.start_waypoint
+            && graph_version == other.graph_version
+            && target_pos.x == other.target_pos.x
+            && target_pos.y == other.target_pos.y
+            && target_pos.z == other.target_pos.z
+            && preferred_waypoint == other.preferred_waypoint
+            && exclude_non_temporary_ctf_flag == other.exclude_non_temporary_ctf_flag
+            && excluded_ctf_flag_subtype == other.excluded_ctf_flag_subtype;
+    }
+};
+
+struct BotReachableWaypointMemo
+{
+    BotReachableWaypointQuery query{};
+    rf::Timestamp timer{};
+    int waypoint = 0;
+    rf::Vector3 pos{};
+};
+
+struct FailedRouteSearch
+{
+    int from_waypoint = 0;
+    int to_waypoint = 0;
+    uint64_t avoidset_hash = 0;
+    int consecutive_failures = 0;
     rf::Timestamp cooldown{};
 };
 
@@ -351,6 +424,23 @@ struct BotAlertContact
     rf::Timestamp awareness_timer{};
 };
 
+struct BotWeaponRangeCache
+{
+    bool valid = false;
+    float skill_factor = 0.0f;
+    float peak_dps = 0.0f;
+    float ideal_range = 0.0f;
+    float effective_range = 0.0f;
+};
+
+struct BotWalkDirectCacheEntry
+{
+    rf::Vector3 from{};
+    rf::Vector3 to{};
+    bool walkable = false;
+    rf::Timestamp timer{};
+};
+
 struct BotCombatFiringState
 {
     bool wants_fire = false;
@@ -375,6 +465,31 @@ struct BotCombatFiringState
     bool explosive_release_hold_alt = false;
     bool remote_charge_pending_detonation = false;
     rf::Timestamp remote_charge_pending_detonation_timer{};
+    rf::Timestamp remote_charge_settle_timer{};
+    rf::Timestamp remote_charge_give_up_timer{};
+    // Charges of the bot in the world at this think's scan.
+    int remote_charges_live = 0;
+    // A throw winding up turned unsafe; a server bot does not let it go.
+    bool explosive_release_aborted = false;
+    // Weapon choice: events that force an evaluation, and the challenger that must stay best for a while.
+    bool weapon_pickup_pending = false;
+    int weapon_select_target_handle = -1;
+    int weapon_select_candidate = -1;
+    rf::Timestamp weapon_select_candidate_timer{};
+    rf::Timestamp enemy_los_recent_timer{};
+    // A switch request stays pending until the backend confirms it, so it is not issued again every think.
+    int requested_weapon = -1;
+    rf::Timestamp weapon_request_timer{};
+    // Expected-damage range numbers per weapon type; they depend only on weapons.tbl and the bot's aim skill.
+    std::array<BotWeaponRangeCache, 64> weapon_ranges{};
+    // Splash weapons aim at the floor under a grounded target; the drop below its origin is measured per think.
+    bool aim_at_floor = false;
+    float aim_floor_drop = 0.0f;
+    // What the last think aimed at: a point, or an enemy whose aim point is recomputed every frame.
+    bool aim_goal_active = false;
+    int aim_goal_enemy_handle = -1;
+    rf::Vector3 aim_goal_point{};
+    float aim_goal_skill_factor = 0.0f;
 
     void reset()
     {
@@ -466,7 +581,7 @@ struct BotTopGoalEntry
     int target_identifier = -1;
 };
 
-struct ClientBotState
+struct BotState
 {
     std::vector<int> waypoint_path{};
     int waypoint_next_index = 0;
@@ -520,11 +635,17 @@ struct ClientBotState
     rf::Timestamp control_point_route_fail_timer{};
     int control_point_patrol_waypoint = 0;
     rf::Timestamp control_point_patrol_timer{};
-    rf::Vector3 salvage_stage_hold_pos{};
-    rf::Timestamp salvage_stage_orbit_timer{};
-    bool salvage_stage_orbit_left = false;
+    rf::Vector3 salvage_hold_pos{};
+    rf::Timestamp salvage_hold_orbit_timer{};
+    bool salvage_hold_orbit_left = false;
     int salvage_stage_route_fails = 0;
     bool salvage_stage_given_up = false;
+    // Scavenger role split: whether the bot took its team's primary role for the objective state in scav_role_key,
+    // kept until scav_role_timer runs out or that state changes.
+    int scav_role_key = 0;
+    bool scav_role_primary = false;
+    rf::Timestamp scav_role_timer{};
+    uint32_t scav_zone_serial = 0;
     BotCombatFiringState firing{};
 
     rf::Timestamp jump_timer{};
@@ -543,6 +664,8 @@ struct ClientBotState
     bool recovery_pending_reroute = false;
     bool drop_link_route_locked = false;
     bool freefall_suppress_aim = false;
+    // Set while a splash weapon's holder, inside its blast distance of the enemy, finds no clear way back or aside.
+    rf::Timestamp splash_retreat_blocked_timer{};
     bool drop_freefall_active = false;
     bool jump_pad_landing_steer_active = false;
     bool obstacle_crouch_active = false;
@@ -570,9 +693,16 @@ struct ClientBotState
     rf::Timestamp closest_los_waypoint_cache_timer{};
     rf::Vector3 closest_los_waypoint_cache_pos{};
     int closest_los_waypoint_cache = 0;
+    std::array<BotWalkDirectCacheEntry, 4> walk_direct_cache{};
+    int walk_direct_cache_next = 0;
     std::vector<FailedEdgeCooldown> failed_edge_cooldowns{};
     std::vector<FailedWaypointCooldown> failed_waypoint_cooldowns{};
     std::vector<FailedItemGoalCooldown> failed_item_goal_cooldowns{};
+    std::vector<FailedRouteSearch> failed_route_searches{};
+    int failed_route_searches_graph_version = 0;
+    // Objective navigation can ask two different questions per think (a preferred anchor, then any waypoint).
+    std::array<BotReachableWaypointMemo, 2> reachable_waypoint_memos{};
+    int reachable_waypoint_memo_next = 0;
     std::vector<RecentItemGoalSelection> recent_item_goal_selections{};
     std::vector<BotAlertSourceSample> alert_source_samples{};
     std::vector<BotAlertContact> alert_contacts{};
@@ -595,7 +725,6 @@ struct ClientBotState
     float move_input_x = 0.0f;
     float move_input_y = 0.0f;
     float move_input_z = 0.0f;
-    float nav_look_phase = 0.0f;
     bool movement_override_active = false;
 
     BotGoalType active_goal = BotGoalType::none;
@@ -607,6 +736,7 @@ struct ClientBotState
     rf::Timestamp eliminate_target_reacquire_timer{};
     rf::Timestamp goal_eval_timer{};
     rf::Timestamp goal_switch_lock_timer{};
+    rf::Timestamp goal_min_dwell_timer{};
     std::array<bool, 64> known_weapons{};
     bool known_weapons_initialized = false;
     rf::Timestamp weapon_switch_timer{};
@@ -647,6 +777,12 @@ struct ClientBotState
     BotBridgeGoalState bridge{};
     rf::Timestamp crater_goal_abort_timer{};
     rf::Timestamp crater_goal_timeout_timer{};
+    int crater_standoff_target_uid = -1;
+    float crater_standoff_distance = 0.0f;
+    int crater_standoff_waypoint = 0;
+    rf::Timestamp crater_standoff_timer{};
+    rf::Timestamp crater_standoff_abort_timer{};
+    std::array<FailedCraterTarget, 4> failed_crater_targets{};
     rf::Timestamp shatter_goal_abort_timer{};
     rf::Timestamp shatter_goal_timeout_timer{};
     rf::Timestamp confusion_abort_timer{};
@@ -660,6 +796,7 @@ struct ClientBotState
 
     // Per-frame dedup: prevent multiple expensive goal refreshes in a single frame.
     bool goal_refreshed_this_frame = false;
+    bool forced_goal_refresh_this_frame = false;
 
     // Per-frame cache for weapon readiness score (iterates all weapon types).
     bool weapon_readiness_cached = false;
@@ -676,8 +813,6 @@ struct ItemGoalCandidate
     rf::Vector3 item_pos{};
     float score = -std::numeric_limits<float>::infinity();
 };
-
-extern ClientBotState g_client_bot_state;
 
 void bot_internal_clear_waypoint_route();
 bool bot_internal_start_recovery_anchor_reroute(const rf::Entity& entity, int avoid_waypoint);
@@ -697,7 +832,7 @@ bool bot_internal_try_recover_from_corner_probe(
     const rf::Vector3& move_target);
 bool bot_internal_is_following_waypoint_link(const rf::Entity& entity);
 bool bot_internal_is_collectible_goal_item(const rf::Item& item);
-BotGoalType bot_internal_classify_collect_goal_item(const rf::Item& item);
+BotGoalType bot_internal_classify_collect_goal_item(const rf::Entity& local_entity, const rf::Item& item);
 bool bot_internal_is_item_goal_satisfied(
     const rf::Entity& local_entity,
     BotGoalType goal_type,

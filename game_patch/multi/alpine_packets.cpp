@@ -45,10 +45,9 @@
 #include "rounds.h"
 #include "../sound/sound.h"
 #include "../misc/alpine_settings.h"
-#include "../misc/waypoints.h"
 #include "../object/object.h"
+#include "bots/bot_context_fwd.h"
 #include "bots/bot_personality.h"
-#include "bots/bot_state.h"
 #include "../object/object_private.h"
 #include "../misc/misc.h"
 #include "../purefaction/pf_packets.h"
@@ -445,6 +444,31 @@ static size_t af_build_damage_notify(std::byte* out, uint8_t player_id, int roun
     return len;
 }
 
+// Anchored on world_pos when given, else on the victim player's entity.
+static void af_show_damage_notify(uint8_t player_id, const rf::Vector3* world_pos, int32_t hull_handle,
+                                  uint16_t damage, bool died, bool crit)
+{
+    rf::Vector3 anchor{};
+    if (world_pos) {
+        anchor = *world_pos;
+    }
+    else {
+        rf::Player* player = rf::multi_find_player_by_id(player_id);
+        if (!player) {
+            return;
+        }
+
+        rf::Entity* entity = rf::entity_from_handle(player->entity_handle);
+        if (!entity) {
+            return;
+        }
+        anchor = entity->pos;
+    }
+
+    add_damage_notify_world_hud_string(anchor, player_id, hull_handle, damage, died, crit);
+    play_local_hit_sound(died);
+}
+
 void af_send_damage_notify_packet(uint8_t player_id, float damage, bool died, bool crit, rf::Player* player,
                                   const AfDamageNotifyHull* hull)
 {
@@ -460,6 +484,13 @@ void af_send_damage_notify_packet(uint8_t player_id, float damage, bool died, bo
 
     if (!player) {
         xlog::error("af_damage_notify_packet: Attempted to send to an invalid player");
+        return;
+    }
+
+    if (player == rf::local_player) {
+        // Listen-server host: show it locally; packets to the host are never delivered.
+        af_show_damage_notify(hull ? af_damage_notify_no_player : player_id, hull ? &hull->pos : nullptr,
+                              hull ? hull->handle : -1, static_cast<uint16_t>(rounded_damage), died, crit);
         return;
     }
 
@@ -539,25 +570,10 @@ static void af_process_damage_notify_packet(const void* data, size_t len, const 
         }
     }
 
-    rf::Vector3 anchor = world_pos;
-    if (!has_world_pos) {
-        rf::Player* player = rf::multi_find_player_by_id(damage_notify_packet.player_id);
-        if (!player) {
-            return;
-        }
-
-        rf::Entity* entity = rf::entity_from_handle(player->entity_handle);
-        if (!entity) {
-            return;
-        }
-        anchor = entity->pos;
-    }
-
     const bool died = (damage_notify_packet.flags & AF_DAMAGE_NOTIFY_DIED) != 0;
     const bool crit = (damage_notify_packet.flags & AF_DAMAGE_NOTIFY_CRIT) != 0;
-    add_damage_notify_world_hud_string(anchor, damage_notify_packet.player_id, hull_handle,
-                                       damage_notify_packet.damage, died, crit);
-    play_local_hit_sound(died);
+    af_show_damage_notify(damage_notify_packet.player_id, has_world_pos ? &world_pos : nullptr, hull_handle,
+                          damage_notify_packet.damage, died, crit);
 }
 
 void af_send_crit_shot_packet(uint8_t shooter_player_id, uint8_t weapon_type, rf::Player* player)
@@ -3596,16 +3612,7 @@ void af_process_bagman_state_packet(const void* data, size_t len, const rf::NetA
         g_bagman_info.carrier->stats->score = pkt.carrier_score;
     }
 
-    // Handle bag waypoints for bots.
-    if (g_bagman_info.state == BagState::BS_Carried || g_bagman_info.state == BagState::BS_Delayed) {
-        waypoints_on_bag_carried();
-    } else {
-        // On-ground bag: position comes from the replicated item object.
-        rf::Vector3 bag_world_pos;
-        if (bagman_get_client_pickup_pos(&bag_world_pos)) {
-            waypoints_on_bag_world_pos(bag_world_pos);
-        }
-    }
+    bagman_update_bot_waypoints();
 }
 
 // The flag fields shared by af_salvage_state and af_scavenger_state, from the current flag state.
@@ -4937,12 +4944,30 @@ void af_process_spectate_start_packet(
     }
 }
 
+static void af_apply_spectate_notify(rf::Player* const spectator, const bool does_spectate)
+{
+    if (does_spectate) {
+        g_local_player_spectators.emplace(spectator);
+    }
+    else {
+        g_local_player_spectators.erase(spectator);
+    }
+
+    build_local_player_spectators_strings();
+}
+
 void af_send_spectate_notify_packet(
     rf::Player* const spectatee,
-    const rf::Player* const spectator,
+    rf::Player* const spectator,
     const bool does_spectate
 ) {
     if (!rf::is_server || !spectator || !spectator->net_data) {
+        return;
+    }
+
+    if (spectatee && spectatee == rf::local_player) {
+        // Listen-server host: apply it locally; packets to the host are never delivered.
+        af_apply_spectate_notify(spectator, does_spectate);
         return;
     }
 
@@ -4986,13 +5011,7 @@ void af_process_spectate_notify_packet(
         return;
     }
 
-    if (spectate_notify_packet.does_spectate) {
-        g_local_player_spectators.emplace(spectator);
-    } else {
-        g_local_player_spectators.erase(spectator);
-    }
-
-    build_local_player_spectators_strings();
+    af_apply_spectate_notify(spectator, spectate_notify_packet.does_spectate);
 }
 
 void af_send_server_cfg(rf::Player* player) {
@@ -5717,6 +5736,28 @@ void af_send_bot_config(rf::Player* player, const ServerBotConfig& config,
     af_send_bot_control_simple(player, af_bot_control_type::go_active);
 }
 
+// Both profile updates carry the full override list for their half of the profile.
+static std::vector<BotConfigOverride> read_bot_config_overrides(
+    const uint8_t* bytes,
+    size_t& offset,
+    const size_t payload_end,
+    const uint8_t num_overrides,
+    const char* kind)
+{
+    std::vector<BotConfigOverride> overrides;
+    for (uint8_t i = 0; i < num_overrides; ++i) {
+        if (offset + 1 + sizeof(float) > payload_end) {
+            xlog::warn("af_process_bot_control_packet: {} override {} truncated", kind, i);
+            break;
+        }
+        BotConfigOverride& ovr = overrides.emplace_back();
+        ovr.field_id = bytes[offset++];
+        std::memcpy(&ovr.value, bytes + offset, sizeof(float));
+        offset += sizeof(float);
+    }
+    return overrides;
+}
+
 void af_process_bot_control_packet(const void* data, size_t len, const rf::NetAddr&)
 {
     // Receive: client <- server (bot clients only)
@@ -5764,18 +5805,12 @@ void af_process_bot_control_packet(const void* data, size_t len, const rf::NetAd
             xlog::info("Bot control: go_inactive");
             // Deactivate the bot: stop decision-making but preserve config.
             // The server can reactivate with go_active without resending config.
-            g_client_bot_state.server_deactivated = true;
-            bot_state_clear_goal();
-            bot_state_clear_waypoint_route(true, true, true);
-            bot_state_reset_fsm(BotFsmState::inactive);
+            bot_context_deactivate(client_bot_context());
             break;
 
         case af_bot_control_type::go_active:
             xlog::info("Bot control: go_active");
-            g_client_bot_state.server_config_received = true;
-            g_client_bot_state.server_deactivated = false;
-            g_client_bot_state.server_config_timeout_timer.invalidate();
-            g_client_bot_state.connection_watchdog_timer.set(kBotConnectionWatchdogMs);
+            bot_context_activate(client_bot_context());
             break;
 
         case af_bot_control_type::disconnect_bot:
@@ -5801,26 +5836,10 @@ void af_process_bot_control_packet(const void* data, size_t len, const rf::NetAd
                 return;
             }
             const uint8_t num_overrides = bytes[offset++];
-
-            // Apply preset first
-            bot_personality_set_presets(preset_name.c_str(), nullptr);
             xlog::info("Bot control: update_personality preset='{}' overrides={}", preset_name, num_overrides);
 
-            // Apply field overrides
-            for (uint8_t i = 0; i < num_overrides; ++i) {
-                if (offset + 5 > payload_end) {
-                    xlog::warn("af_process_bot_control_packet: override {} truncated", i);
-                    break;
-                }
-                const uint8_t field_id = bytes[offset++];
-                float value = 0.0f;
-                std::memcpy(&value, bytes + offset, sizeof(float));
-                offset += sizeof(float);
-
-                if (!bot_personality_apply_field_override(field_id, value)) {
-                    xlog::debug("af_process_bot_control_packet: unknown personality field_id 0x{:02x}", field_id);
-                }
-            }
+            const auto overrides = read_bot_config_overrides(bytes, offset, payload_end, num_overrides, "personality");
+            bot_personality_set_presets(client_bot_context(), preset_name.c_str(), nullptr, &overrides, nullptr);
             break;
         }
 
@@ -5842,26 +5861,10 @@ void af_process_bot_control_packet(const void* data, size_t len, const rf::NetAd
                 return;
             }
             const uint8_t num_overrides = bytes[offset++];
-
-            // Apply preset first
-            bot_personality_set_presets(nullptr, preset_name.c_str());
             xlog::info("Bot control: update_skill preset='{}' overrides={}", preset_name, num_overrides);
 
-            // Apply field overrides
-            for (uint8_t i = 0; i < num_overrides; ++i) {
-                if (offset + 5 > payload_end) {
-                    xlog::warn("af_process_bot_control_packet: skill override {} truncated", i);
-                    break;
-                }
-                const uint8_t field_id = bytes[offset++];
-                float value = 0.0f;
-                std::memcpy(&value, bytes + offset, sizeof(float));
-                offset += sizeof(float);
-
-                if (!bot_skill_apply_field_override(field_id, value)) {
-                    xlog::debug("af_process_bot_control_packet: unknown skill field_id 0x{:02x}", field_id);
-                }
-            }
+            const auto overrides = read_bot_config_overrides(bytes, offset, payload_end, num_overrides, "skill");
+            bot_personality_set_presets(client_bot_context(), nullptr, preset_name.c_str(), nullptr, &overrides);
             break;
         }
 
@@ -6035,7 +6038,6 @@ void af_send_player_info_response(const rf::NetAddr& addr)
     players_data[players_data_len++] = std::byte{0};
 
     constexpr int max_players = 32;
-    constexpr int max_name_len = 31; // wire protocol cap
     auto player_list = SinglyLinkedList(rf::player_list);
     for (auto& player : player_list) {
         // The demo recorder is not a real client - keep it out of server-browser
@@ -6043,7 +6045,7 @@ void af_send_player_info_response(const rf::NetAddr& addr)
         if (player.is_observer()) {
             continue;
         }
-        int name_len = std::min<int>(player.name.size(), max_name_len);
+        int name_len = std::min<int>(player.name.size(), k_max_player_name_len);
         int entry_size = 1 + 2 + 2 + 2 + 2 + name_len + 1; // flags + score + kills + deaths + caps + name + null
 
         if (entry_count - 1 >= max_players ||
@@ -6079,7 +6081,7 @@ void af_send_player_info_response(const rf::NetAddr& addr)
         std::memcpy(players_data + players_data_len, &caps, sizeof(caps));
         players_data_len += sizeof(caps);
 
-        // name (null-terminated; clamped to max_name_len)
+        // name (null-terminated; clamped to k_max_player_name_len)
         std::memcpy(players_data + players_data_len, player.name.c_str(), name_len);
         players_data_len += name_len;
         players_data[players_data_len++] = std::byte{0};

@@ -1000,6 +1000,13 @@ enum class af_skill_field : uint8_t
     crouch_likelihood = 0x08,
     jump_likelihood = 0x09,
     dodge_likelihood = 0x0A,
+    reaction_time_ms = 0x0B,
+    aim_error_min = 0x0C,
+    aim_error_max = 0x0D,
+    yaw_speed_cap = 0x0E,
+    pitch_speed_cap = 0x0F,
+    fire_alignment_threshold = 0x10,
+    semi_auto_click_interval_scale = 0x11,
 };
 
 #pragma pack(pop)
@@ -1126,7 +1133,7 @@ void af_reset_session_overrides_snapshot();
 static void af_process_server_info_packet(const void* data, size_t len, const rf::NetAddr&);
 void af_send_spectate_start_packet(const rf::Player* spectatee);
 void af_process_spectate_start_packet(const void* data, size_t len, const rf::NetAddr&);
-void af_send_spectate_notify_packet(rf::Player* player, const rf::Player* spectator, bool does_spectate);
+void af_send_spectate_notify_packet(rf::Player* player, rf::Player* spectator, bool does_spectate);
 void af_process_spectate_notify_packet(const void* data, size_t len, const rf::NetAddr&);
 void af_send_server_cfg(rf::Player* player);
 void af_process_server_msg_packet(const void* data, size_t len, const rf::NetAddr&);

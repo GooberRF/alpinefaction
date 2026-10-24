@@ -110,6 +110,12 @@ enum class WaypointCtfFlagSubtype : int
     blue = 1,
 };
 
+enum class WaypointSalvageFlagSubtype : int
+{
+    flag = 0,
+    scavenger_zone = 1,
+};
+
 enum class WaypointZoneType : int
 {
     control_point = 0,
@@ -161,6 +167,9 @@ struct WaypointNode
     std::vector<int> zones{};
     float link_radius = kWaypointLinkRadius;
     bool temporary = false;
+    // A temporary node with no free inbound slot borrows one from a full neighbour, restored on removal.
+    int borrowed_link_from = 0;
+    int borrowed_link_target = 0;
     bool valid = true;
 };
 
@@ -210,7 +219,13 @@ int get_local_awp_revision(const std::string& rfl_filename);
 std::optional<std::string> get_waypoint_dir();
 void waypoints_do_frame();
 void waypoints_render_debug();
+// Bots in this process (a -bot client, or a server with server bots) need waypoints.
+bool is_waypoint_bot_mode_active();
+// This process is a -bot client: the local player is the bot.
+bool is_waypoint_local_bot_mode_active();
 void waypoints_level_init();
+// waypoints_level_init, starting the bots' AWP auto-download first.
+void waypoints_level_init_with_awp_download();
 void waypoints_level_reset();
 bool waypoints_missing_awp_from_level_init();
 bool waypoints_awp_download_pending();
@@ -248,6 +263,8 @@ bool waypoints_link_has_target_type(int from_waypoint, int to_waypoint, Waypoint
 
 int waypoints_closest(const rf::Vector3& pos, float radius);
 int waypoints_count();
+// Changes whenever the waypoint graph or the link gating changes.
+int waypoints_graph_version();
 bool waypoints_get_pos(int index, rf::Vector3& out_pos);
 bool waypoints_get_type_subtype(int index, int& out_type, int& out_subtype);
 const std::vector<int>& waypoints_get_by_type(WaypointType type);

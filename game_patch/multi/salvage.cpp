@@ -979,14 +979,19 @@ bool salvage_get_base_positions(rf::Vector3* out_red, rf::Vector3* out_blue)
     return true;
 }
 
-bool salvage_get_local_team_base_pos(rf::Vector3* out_pos)
+bool salvage_get_team_base_pos(int team, rf::Vector3* out_pos)
 {
-    if (!out_pos || !rf::local_player) return false;
+    if (!out_pos) return false;
     rf::Vector3 base_red{};
     rf::Vector3 base_blue{};
     if (!salvage_get_base_positions(&base_red, &base_blue)) return false;
-    *out_pos = (rf::local_player->team == rf::TEAM_RED) ? base_red : base_blue;
+    *out_pos = (team == rf::TEAM_RED) ? base_red : base_blue;
     return true;
+}
+
+bool salvage_get_delivery_pos(int team, rf::Vector3* out_pos)
+{
+    return gt_is_scavenger() ? scavenger_get_zone(out_pos) : salvage_get_team_base_pos(team, out_pos);
 }
 
 int salvage_get_time_left_ms()

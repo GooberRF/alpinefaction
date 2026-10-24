@@ -36,36 +36,61 @@
 #include "../rf/gameseq.h"
 #include "../multi/multi.h"
 #include "../multi/server.h"
+#include "../multi/bots/server_bots.h"
 
 rf::Timestamp g_player_jump_timestamp;
+// A listen host simulates its server bots' jumps at its own frame rate.
+static std::unordered_map<int, rf::Timestamp> g_server_bot_jump_timestamps;
+
+static void skip_land_handling_after_jump(rf::Entity* entity)
+{
+    if (entity->local_player) {
+        g_player_jump_timestamp.set(64);
+    }
+    else if (server_bot_from_entity(entity)) {
+        g_server_bot_jump_timestamps[entity->handle].set(64);
+    }
+}
+
+static bool entity_skips_land_handling(rf::Entity* entity)
+{
+    if (entity->local_player) {
+        return g_player_jump_timestamp.valid() && !g_player_jump_timestamp.elapsed();
+    }
+    if (g_server_bot_jump_timestamps.empty()) {
+        return false;
+    }
+    const auto it = g_server_bot_jump_timestamps.find(entity->handle);
+    if (it == g_server_bot_jump_timestamps.end()) {
+        return false;
+    }
+    if (it->second.elapsed()) {
+        g_server_bot_jump_timestamps.erase(it);
+        return false;
+    }
+    return true;
+}
 
 CodeInjection stuck_to_ground_when_jumping_fix{
     0x0042891E,
     [](auto& regs) {
-        rf::Entity* entity = regs.esi;
-        if (entity->local_player) {
-            // Skip land handling code for next 64 ms (like in PF)
-            g_player_jump_timestamp.set(64);
-        }
+        // Skip land handling code for next 64 ms (like in PF)
+        skip_land_handling_after_jump(regs.esi);
     },
 };
 
 CodeInjection stuck_to_ground_when_using_jump_pad_fix{
     0x00486B60,
     [](auto& regs) {
-        rf::Entity* entity = regs.esi;
-        if (entity->local_player) {
-            // Skip land handling code for next 64 ms
-            g_player_jump_timestamp.set(64);
-        }
+        // Skip land handling code for next 64 ms
+        skip_land_handling_after_jump(regs.esi);
     },
 };
 
 CodeInjection stuck_to_ground_fix{
     0x00487F82,
     [](auto& regs) {
-        rf::Entity* entity = regs.esi;
-        if (entity->local_player && g_player_jump_timestamp.valid() && !g_player_jump_timestamp.elapsed()) {
+        if (entity_skips_land_handling(regs.esi)) {
             // Jump to jump handling code that sets entity to falling movement mode
             regs.eip = 0x00487F7B;
         }
@@ -270,12 +295,14 @@ void entity_rate_limit_on_entity_delete(int handle)
 {
     g_entity_collision_push_last_ms.erase(handle);
     g_entity_land_sound_last_ms.erase(handle);
+    g_server_bot_jump_timestamps.erase(handle);
 }
 
 void entity_rate_limit_clear()
 {
     g_entity_collision_push_last_ms.clear();
     g_entity_land_sound_last_ms.clear();
+    g_server_bot_jump_timestamps.clear();
 }
 
 CodeInjection entity_process_post_hidden_injection{

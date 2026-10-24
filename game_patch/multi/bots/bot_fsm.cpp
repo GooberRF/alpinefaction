@@ -131,6 +131,10 @@ const char* bot_goal_type_to_string(const BotGoalType goal)
             return "sal_chase_carrier";
         case BotGoalType::sal_stage_at_spawn:
             return "sal_stage_at_spawn";
+        case BotGoalType::sal_hold_zone:
+            return "sal_hold_zone";
+        case BotGoalType::sal_escort_carrier:
+            return "sal_escort_carrier";
         case BotGoalType::control_point_objective:
             return "control_point_objective";
         case BotGoalType::roam:

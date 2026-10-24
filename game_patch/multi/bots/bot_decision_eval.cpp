@@ -1,14 +1,20 @@
 #include "bot_decision_eval.h"
 
+#include "bot_context.h"
 #include "bot_internal.h"
 #include "bot_utils.h"
 #include "../../rf/player/player.h"
 #include "../../rf/weapon.h"
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <iterator>
 
 namespace
 {
+// The very long band has no far edge in play; it gets one for range sampling.
+constexpr std::array<float, 5> kCombatDistanceBandFarLimits{2.5f, 10.0f, 28.0f, 55.0f, 120.0f};
+
 bool weapon_has_readiness_ammo(const rf::Entity& entity, const int weapon_type)
 {
     if (weapon_type < 0
@@ -23,8 +29,8 @@ bool weapon_has_readiness_ammo(const rf::Entity& entity, const int weapon_type)
     if (entity.ai.clip_ammo[weapon_type] > 0) {
         return true;
     }
-    if (rf::local_player) {
-        return rf::player_get_weapon_total_ammo(rf::local_player, weapon_type) > 0;
+    if (bot_player()) {
+        return rf::player_get_weapon_total_ammo(bot_player(), weapon_type) > 0;
     }
     return false;
 }
@@ -42,6 +48,30 @@ float bot_decision_get_entity_armor_ratio(const rf::Entity& entity)
     return std::clamp(entity.armor / kBotNominalMaxArmor, 0.0f, 1.0f);
 }
 
+float bot_decision_get_weapon_ammo_fill_ratio(const rf::Entity& entity, const int weapon_type)
+{
+    if (weapon_type < 0 || weapon_type >= rf::num_weapon_types) {
+        return 1.0f;
+    }
+
+    const rf::WeaponInfo& weapon_info = rf::weapon_types[weapon_type];
+    const int ammo_type = weapon_info.ammo_type;
+    int reserve_ammo = 0;
+    if (ammo_type >= 0 && ammo_type < static_cast<int>(std::size(entity.ai.ammo))) {
+        reserve_ammo = std::max(entity.ai.ammo[ammo_type], 0);
+    }
+    const int clip_ammo = std::max(entity.ai.clip_ammo[weapon_type], 0);
+    const int current_ammo = reserve_ammo + clip_ammo;
+    int max_ammo = std::max(weapon_info.max_ammo_multi, weapon_info.max_ammo);
+    if (max_ammo <= 0) {
+        max_ammo = weapon_info.max_ammo_single;
+    }
+    if (max_ammo <= 0) {
+        return 1.0f;
+    }
+    return std::clamp(static_cast<float>(current_ammo) / static_cast<float>(max_ammo), 0.0f, 1.0f);
+}
+
 float bot_decision_apply_aggression_to_threshold(
     const float threshold,
     const float aggression_bias)
@@ -52,19 +82,17 @@ float bot_decision_apply_aggression_to_threshold(
 
 BotWeaponRangeBand bot_decision_classify_combat_distance_band(const float distance)
 {
-    if (distance <= 2.5f) {
-        return BotWeaponRangeBand::melee;
-    }
-    if (distance <= 10.0f) {
-        return BotWeaponRangeBand::close;
-    }
-    if (distance <= 28.0f) {
-        return BotWeaponRangeBand::medium;
-    }
-    if (distance <= 55.0f) {
-        return BotWeaponRangeBand::long_range;
+    for (size_t band = 0; band + 1 < kCombatDistanceBandFarLimits.size(); ++band) {
+        if (distance <= kCombatDistanceBandFarLimits[band]) {
+            return static_cast<BotWeaponRangeBand>(band);
+        }
     }
     return BotWeaponRangeBand::very_long;
+}
+
+float bot_decision_combat_distance_band_far_limit(const BotWeaponRangeBand band)
+{
+    return kCombatDistanceBandFarLimits[std::min(static_cast<size_t>(band), kCombatDistanceBandFarLimits.size() - 1)];
 }
 
 float bot_decision_compute_weapon_readiness_score_for_type(
@@ -140,9 +168,9 @@ float bot_decision_compute_weapon_readiness_score(
     const rf::Entity* enemy_target)
 {
     const int enemy_handle = enemy_target ? enemy_target->handle : -1;
-    if (g_client_bot_state.weapon_readiness_cached
-        && g_client_bot_state.weapon_readiness_cache_enemy_handle == enemy_handle) {
-        return g_client_bot_state.weapon_readiness_cache_score;
+    if (bot_state().weapon_readiness_cached
+        && bot_state().weapon_readiness_cache_enemy_handle == enemy_handle) {
+        return bot_state().weapon_readiness_cache_score;
     }
 
     float best_score = 0.0f;
@@ -154,9 +182,9 @@ float bot_decision_compute_weapon_readiness_score(
         best_score = std::max(best_score, score);
     }
     const float result = std::clamp(best_score, 0.0f, 1.0f);
-    g_client_bot_state.weapon_readiness_cached = true;
-    g_client_bot_state.weapon_readiness_cache_score = result;
-    g_client_bot_state.weapon_readiness_cache_enemy_handle = enemy_handle;
+    bot_state().weapon_readiness_cached = true;
+    bot_state().weapon_readiness_cache_score = result;
+    bot_state().weapon_readiness_cache_enemy_handle = enemy_handle;
     return result;
 }
 
@@ -164,9 +192,9 @@ float bot_decision_compute_combat_readiness_threshold()
 {
     const BotPersonality& personality = get_active_bot_personality();
     const float base_threshold = std::clamp(personality.combat_readiness_threshold, 0.20f, 0.95f);
-    const float risk_tolerance = std::clamp(personality.decision_risk_tolerance, 0.25f, 2.5f);
+    const float risk_tolerance = std::clamp(personality.decision_risk_tolerance, 0.0f, 2.5f);
     const float risk_norm = std::clamp((risk_tolerance - 0.25f) / 2.25f, 0.0f, 1.0f);
-    const float raw_aggression = std::clamp(personality.raw_aggression_bias, 0.25f, 2.5f);
+    const float raw_aggression = std::clamp(personality.raw_aggression_bias, 0.0f, 2.5f);
     const float raw_aggression_norm = std::clamp((raw_aggression - 0.25f) / 2.25f, 0.0f, 1.0f);
     float threshold = base_threshold;
     threshold *= std::lerp(1.12f, 0.88f, risk_norm);
@@ -199,9 +227,9 @@ float bot_decision_compute_combat_readiness(
     const float weapon_score = bot_decision_compute_weapon_readiness_score(local_entity, enemy_target);
     float readiness = survivability_score * 0.56f + weapon_score * 0.44f;
 
-    const float risk_tolerance = std::clamp(personality.decision_risk_tolerance, 0.25f, 2.5f);
+    const float risk_tolerance = std::clamp(personality.decision_risk_tolerance, 0.0f, 2.5f);
     const float risk_norm = std::clamp((risk_tolerance - 0.25f) / 2.25f, 0.0f, 1.0f);
-    const float raw_aggression = std::clamp(personality.raw_aggression_bias, 0.25f, 2.5f);
+    const float raw_aggression = std::clamp(personality.raw_aggression_bias, 0.0f, 2.5f);
     const float raw_aggression_norm = std::clamp((raw_aggression - 0.25f) / 2.25f, 0.0f, 1.0f);
     const float decision_skill = bot_get_decision_skill_factor();
     readiness += std::lerp(-0.08f, 0.12f, risk_norm);
@@ -222,9 +250,9 @@ bool bot_decision_is_combat_ready(
     // before re-entering combat. This prevents oscillation at the boundary.
     constexpr float kCombatReadinessHysteresisMargin = 0.06f;
     const bool was_combat_ready =
-        g_client_bot_state.fsm_state == BotFsmState::engage_enemy
-        || g_client_bot_state.fsm_state == BotFsmState::pursue_enemy
-        || g_client_bot_state.fsm_state == BotFsmState::find_power_position;
+        bot_state().fsm_state == BotFsmState::engage_enemy
+        || bot_state().fsm_state == BotFsmState::pursue_enemy
+        || bot_state().fsm_state == BotFsmState::find_power_position;
     if (was_combat_ready) {
         return readiness >= threshold;
     }
@@ -245,7 +273,7 @@ float bot_decision_compute_enemy_goal_score(
         score += kGoalEnemyVisibleBonus;
     }
 
-    const float aggression = std::clamp(personality.decision_aggression_bias, 0.25f, 2.5f);
+    const float aggression = std::clamp(personality.decision_aggression_bias, 0.0f, 2.5f);
     const float aggression_norm = std::clamp((aggression - 0.25f) / 2.25f, 0.0f, 1.0f);
     const float health_ratio = bot_decision_get_entity_health_ratio(local_entity);
     const float armor_ratio = bot_decision_get_entity_armor_ratio(local_entity);
@@ -262,10 +290,10 @@ float bot_decision_compute_enemy_goal_score(
     score += survivability_signal * std::lerp(20.0f, 65.0f, decision_skill);
     score += std::lerp(-14.0f, 18.0f, aggression_norm);
 
-    const float raw_aggression = std::clamp(personality.raw_aggression_bias, 0.25f, 2.5f);
+    const float raw_aggression = std::clamp(personality.raw_aggression_bias, 0.0f, 2.5f);
     score += std::lerp(-20.0f, 42.0f, std::clamp((raw_aggression - 0.25f) / 2.25f, 0.0f, 1.0f));
 
-    const float easy_frag_bias = std::clamp(personality.easy_frag_bias, 0.25f, 2.5f);
+    const float easy_frag_bias = std::clamp(personality.easy_frag_bias, 0.0f, 2.5f);
     const float enemy_health_ratio = bot_decision_get_entity_health_ratio(enemy_target);
     const float enemy_armor_ratio = bot_decision_get_entity_armor_ratio(enemy_target);
     const float enemy_survivability = enemy_health_ratio * 0.70f + enemy_armor_ratio * 0.30f;

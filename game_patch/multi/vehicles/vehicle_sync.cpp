@@ -1,8 +1,10 @@
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <iterator>
 #include <numbers>
 #include <optional>
 #include <vector>
@@ -20,6 +22,7 @@
 #include "vehicle_view.h"
 #include "../alpine_packets.h"
 #include "../multi.h"
+#include "../bots/server_bots.h"
 #include "../demo/demo.h"
 #include "../../hud/multi_spectate.h"
 #include "../../misc/alpine_settings.h"
@@ -425,21 +428,10 @@ namespace
         if (!vehicle || !vehicle->obj_interp) {
             return false;
         }
-        rf::Vector3 pos = vehicle->pos;
-        rf::Vector3 phb = vehicle_matrix_phb(vehicle->orient);
-        rf::Vector3 eye_phb = vehicle->control_data.eye_phb;
-        rf::Vector3 vel = vehicle->p_data.vel;
-        rf::Vector3 move = vehicle->ai.ci.move;
+        const rf::Vector3 phb = vehicle_matrix_phb(vehicle->orient);
         const auto tick = tick_override.value_or(static_cast<uint16_t>(timer::get_i64(1000)));
-        // The server packs one row per recipient; the tick keeps one frame from filling the ring.
-        rf::ObjInterp* interp = vehicle->obj_interp;
-        const bool inserted = interp->num_frames() == 0 || interp->newest_frame_time() != tick;
-        if (inserted) {
-            // call_target, never the raw address: an authored keyframe must not re-enter the hook.
-            obj_interp_set_next_pos_orient_hook.call_target(interp, 0, vehicle, &pos, &phb,
-                                                            &eye_phb, &vel, &move,
-                                                            static_cast<int>(tick), 0.0f);
-        }
+        const bool inserted = obj_interp_push_keyframe(vehicle, vehicle->pos, phb, vehicle->control_data.eye_phb,
+                                                       vehicle->p_data.vel, vehicle->ai.ci.move, tick);
         vehicle_send_orient_supplement(vehicle, phb, tick);
         return inserted;
     }
@@ -452,7 +444,104 @@ namespace
     constexpr float vehicle_server_row_axis_tolerance = 0.005f; // axis chord, ~rad
 
     bool vehicle_server_samples_vehicle(rf::Entity* vehicle);
+
+    // ObjInterp's 16-bit tick difference (0x0048369D): within 5000 of the wrap counts as wrapped.
+    int obj_interp_tick_diff(const int tick, const int base)
+    {
+        if (0xFFFF - tick < 5000 && base < 5000) {
+            return base + tick - 0xFFFF;
+        }
+        if (0xFFFF - base < 5000 && tick < 5000) {
+            return tick - base + 0xFFFF;
+        }
+        return tick - base;
+    }
 } // namespace
+
+// The server packs one row per recipient; deduping on the tick keeps one frame from filling the ring.
+bool obj_interp_push_keyframe(rf::Entity* ep, rf::Vector3 pos, rf::Vector3 phb, rf::Vector3 eye_phb,
+                              rf::Vector3 vel, rf::Vector3 move, uint16_t tick)
+{
+    rf::ObjInterp* interp = ep->obj_interp;
+    if (!interp || (interp->num_frames() > 0 && interp->newest_frame_time() == tick)) {
+        return false;
+    }
+    // call_target, never the raw address: an authored keyframe must not re-enter the hook.
+    obj_interp_set_next_pos_orient_hook.call_target(interp, 0, ep, &pos, &phb, &eye_phb, &vel, &move,
+                                                    static_cast<int>(tick), 0.0f);
+    return true;
+}
+
+// ObjInterp::set_next_pos_orient (0x00483360) minus its physics step: that step simulates the entity from the
+// newest keyframe for one average arrival gap, and its only output is the spline's end point. This extrapolates
+// that point from the keyframe's velocity instead; the spline only bends between the two newest keyframes.
+bool obj_interp_push_simulated_keyframe(rf::Entity* ep, const rf::Vector3& pos, const rf::Vector3& phb,
+                                        const rf::Vector3& eye_phb, const rf::Vector3& vel, const rf::Vector3& move,
+                                        const uint16_t tick)
+{
+    rf::ObjInterp* const interp = ep->obj_interp;
+    if (!interp || (interp->num_frames() > 0 && interp->newest_frame_time() == tick)) {
+        return false;
+    }
+    const auto last_update_time = static_cast<int32_t>(interp->last_update_time);
+    const int arrive_gap = last_update_time >= 0 ? static_cast<int>(timer::get_i64(1000)) - last_update_time : 0;
+    interp->last_update_time = static_cast<uint32_t>(timer::get_i64(1000));
+
+    constexpr int max_keyframes = rf::ObjInterp::max_keyframes;
+    if (interp->num_frames() >= max_keyframes) {
+        const auto drop_oldest = [](auto& keyframes) {
+            std::copy(std::begin(keyframes) + 1, std::end(keyframes), std::begin(keyframes));
+        };
+        drop_oldest(interp->pos_array);
+        drop_oldest(interp->phb_array);
+        drop_oldest(interp->eye_phb_array);
+        drop_oldest(interp->vel_array);
+        drop_oldest(interp->move_array);
+        drop_oldest(interp->always_0_array);
+        drop_oldest(interp->time_array);
+        drop_oldest(interp->arrive_time_diff);
+        interp->num = max_keyframes - 1;
+    }
+    const int index = interp->num_frames();
+    interp->pos_array[index] = pos;
+    interp->phb_array[index] = phb;
+    interp->eye_phb_array[index] = eye_phb;
+    interp->vel_array[index] = vel;
+    interp->move_array[index] = move;
+    interp->always_0_array[index] = 0;
+    interp->time_array[index] = tick;
+    interp->arrive_time_diff[index] = arrive_gap;
+    const int num = index + 1;
+    interp->num = num;
+
+    int arrive_sum = 0;
+    for (int i = 0; i < num; ++i) {
+        arrive_sum += interp->arrive_time_diff[i];
+    }
+    const double avg_gap = static_cast<double>(arrive_sum) / num;
+    interp->arrive_time_avg_diff = static_cast<float>(avg_gap);
+    if (num < 2) {
+        return true;
+    }
+
+    const double reanchor_headroom = avg_gap * static_cast<double>(2.2f);
+    if (obj_interp_tick_diff(tick, interp->interp_time) > reanchor_headroom || (interp->flags & 1u)) {
+        interp->interp_time = static_cast<uint16_t>(tick - static_cast<int>(reanchor_headroom));
+        interp->flags = (interp->flags & ~1u) | 2u;
+        if (rf::Player* const pp = rf::player_from_entity_handle(ep->handle); pp && pp->net_data) {
+            ++pp->net_data->stats.obj_update_too_slow;
+        }
+    }
+    if ((ep->pos - pos).len() >= 2.5f) {
+        interp->flags |= 2u;
+    }
+
+    std::array<rf::Vector3, max_keyframes + 1> spline_points;
+    std::copy_n(interp->pos_array, num, spline_points.begin());
+    spline_points[num] = pos + vel * (interp->arrive_time_avg_diff * 0.001f);
+    interp->pos_curve.build(num + 1, spline_points.data());
+    return true;
+}
 
 // Server: replication only, for a fully-unmanned non-dying hull the server simulates in Bullet. The
 // physics post-step has already written pose, orientation and room into the entity.
@@ -983,13 +1072,17 @@ namespace
 {
     // In MP the physics step runs world collision for the local player entity and non-entity objects
     // only. Injected on the OT_ENTITY half of that filter; EAX is the object. Remote entities must
-    // keep being skipped or they fight ObjInterp.
-    CodeInjection physics_world_collision_vehicle_injection{
+    // keep being skipped or they fight ObjInterp; the server simulates its own bots' entities.
+    CodeInjection physics_world_collision_entity_injection{
         0x0048788E,
         [](auto& regs) {
             rf::Object* obj = regs.eax;
-            if (obj && obj->type == rf::OT_ENTITY && vehicle_level_has_factories()
-                && vehicle_local_driven_vehicle() == static_cast<rf::Entity*>(obj)) {
+            if (!obj || obj->type != rf::OT_ENTITY) {
+                return;
+            }
+            auto* ep = static_cast<rf::Entity*>(obj);
+            if ((vehicle_level_has_factories() && vehicle_local_driven_vehicle() == ep)
+                || server_bot_from_entity(ep)) {
                 regs.eip = 0x00487895; // run the collision
             }
         },
@@ -2008,7 +2101,7 @@ void vehicle_sync_apply_patch()
 {
     send_entity_create_packet_vehicle_injection.install();
     process_entity_create_packet_vehicle_hook.install();
-    physics_world_collision_vehicle_injection.install();
+    physics_world_collision_entity_injection.install();
     obj_should_sim_physics_hook.install();
     entity_update_ground_carry_hook.install();
     driller_interp_no_movement_halt_injection.install();

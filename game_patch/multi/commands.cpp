@@ -10,14 +10,18 @@
 #include "server.h"
 #include "multi.h"
 #include "mutators.h"
+#include "bots/server_bots.h"
 #include <common/utils/string-utils.h>
 #include <patch_common/AsmWriter.h>
 #include <patch_common/CallHook.h>
 #include <algorithm>
+#include <charconv>
 #include <cstdint>
 #include <vector>
 #include <format>
 #include <optional>
+#include <string>
+#include <string_view>
 
 std::vector<int> g_players_to_kick;
 
@@ -171,6 +175,102 @@ ConsoleCommand2 map_prev_cmd{
     "Load previous level",
 };
 
+namespace
+{
+std::string server_bot_add_command(const int profile_index, const std::string_view team_name)
+{
+    const int num_profiles = static_cast<int>(g_alpine_server_config.bot_configs.size());
+    if (profile_index < -1 || profile_index >= num_profiles) {
+        return std::format("Profile index {} is out of range ({} bot profiles configured; -1 = automatic)",
+            profile_index, num_profiles);
+    }
+    int team = -1;
+    if (string_iequals(team_name, "red")) {
+        team = rf::TEAM_RED;
+    }
+    else if (string_iequals(team_name, "blue")) {
+        team = rf::TEAM_BLUE;
+    }
+    else if (!team_name.empty()) {
+        return std::format("Unknown team '{}' (use red or blue)", team_name);
+    }
+    if (!server_bots_add_to_roster(profile_index, team)) {
+        return "Cannot add a server bot: the roster is full";
+    }
+    return "Server bot added to the roster; it joins when a player slot is free";
+}
+
+std::string server_bot_remove_command(const std::string_view target)
+{
+    if (string_iequals(target, "all")) {
+        server_bots_clear_roster();
+        return "All server bots removed";
+    }
+    rf::Player* const player = find_best_matching_player(std::string{target}.c_str());
+    if (!player) {
+        return std::format("No single player matches '{}'", target);
+    }
+    if (!server_bot_from_player(player)) {
+        return std::format("{} is not a server bot", player->name);
+    }
+    std::string result = std::format("Removing server bot {}", player->name);
+    server_bots_remove_from_roster(player);
+    return result;
+}
+
+ConsoleCommand2 sv_bot_add_cmd{
+    "sv_bot_add",
+    [](std::optional<int> profile_index, std::optional<std::string> team_name) {
+        if (validate_is_server()) {
+            rf::console::print("{}", server_bot_add_command(profile_index.value_or(-1), team_name.value_or("")));
+        }
+    },
+    "Add a server bot (profile index -1 = automatic)",
+    "sv_bot_add [profile_index] [red|blue]",
+};
+
+ConsoleCommand2 sv_bot_remove_cmd{
+    "sv_bot_remove",
+    [](std::string target) {
+        if (validate_is_server()) {
+            rf::console::print("{}", server_bot_remove_command(target));
+        }
+    },
+    "Remove a server bot by name, or all server bots",
+    "sv_bot_remove <name|all>",
+};
+
+ConsoleCommand2 sv_bot_list_cmd{
+    "sv_bot_list",
+    []() {
+        if (validate_is_server()) {
+            rf::console::print("{}", server_bots_build_list_output());
+        }
+    },
+    "List server bots",
+};
+}
+
+std::string run_server_bot_rcon_command(const std::string_view command, const std::string_view args)
+{
+    if (command == "sv_bot_remove") {
+        std::string_view target = trim(args);
+        if (target.size() >= 2 && target.front() == '"' && target.back() == '"') {
+            target = target.substr(1, target.size() - 2);
+        }
+        return target.empty() ? std::string{"Usage: sv_bot_remove <name|all>"} : server_bot_remove_command(target);
+    }
+    const auto [profile_arg, team_arg] = split_once_whitespace(args);
+    int profile_index = -1;
+    if (!profile_arg.empty()) {
+        const auto [end, ec] = std::from_chars(profile_arg.data(), profile_arg.data() + profile_arg.size(), profile_index);
+        if (ec != std::errc{} || end != profile_arg.data() + profile_arg.size()) {
+            return "Usage: sv_bot_add [profile_index] [red|blue]";
+        }
+    }
+    return server_bot_add_command(profile_index, team_arg);
+}
+
 void kick_player_delayed(const rf::Player* const player) {
     if (!player || !player->net_data) {
         return;
@@ -213,7 +313,10 @@ void ban_cmd_handler_hook()
             rf::Player* player = find_best_matching_player(rf::console::str_arg);
 
             if (player) {
-                if (player != rf::local_player) {
+                if (server_bot_from_player(player)) {
+                    rf::console::print("{} is a server bot and cannot be banned", player->name);
+                }
+                else if (player != rf::local_player) {
                     rf::console::printf(rf::strings::banning_player, player->name.c_str());
                     afstats::note_leave_reason(player, afstats::LeaveReason::banned);
                     rf::multi_ban_ip(player->net_data->addr);
@@ -239,7 +342,11 @@ void kick_cmd_handler_hook()
             rf::Player* player = find_best_matching_player(rf::console::str_arg);
 
             if (player) {
-                if (player != rf::local_player) {
+                if (server_bot_from_player(player)) {
+                    rf::console::printf(rf::strings::kicking_player, player->name.c_str());
+                    server_bots_remove_from_roster(player);
+                }
+                else if (player != rf::local_player) {
                     rf::console::printf(rf::strings::kicking_player, player->name.c_str());
                     kick_player_delayed(player);
                 }
@@ -275,6 +382,9 @@ void init_server_commands()
     map_next_cmd.register_cmd();
     map_rand_cmd.register_cmd();
     map_prev_cmd.register_cmd();
+    sv_bot_add_cmd.register_cmd();
+    sv_bot_remove_cmd.register_cmd();
+    sv_bot_list_cmd.register_cmd();
 
     AsmWriter(0x0047B6F0).jmp(ban_cmd_handler_hook);
     AsmWriter(0x0047B580).jmp(kick_cmd_handler_hook);

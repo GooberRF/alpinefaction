@@ -1,25 +1,26 @@
 #include "bot_goal_runtime.h"
 
+#include "bot_context.h"
 #include "bot_state.h"
 #include <limits>
 
 void bot_goal_runtime_clear_bridge_goal_state()
 {
-    g_client_bot_state.bridge.zone_uid = -1;
-    g_client_bot_state.bridge.trigger_uid = -1;
-    g_client_bot_state.bridge.trigger_pos = {};
-    g_client_bot_state.bridge.activation_radius = 0.0f;
-    g_client_bot_state.bridge.requires_use = false;
-    g_client_bot_state.bridge.use_press_timer.invalidate();
-    g_client_bot_state.bridge.activation_abort_timer.invalidate();
-    g_client_bot_state.bridge.activation_best_dist_sq = std::numeric_limits<float>::infinity();
+    bot_state().bridge.zone_uid = -1;
+    bot_state().bridge.trigger_uid = -1;
+    bot_state().bridge.trigger_pos = {};
+    bot_state().bridge.activation_radius = 0.0f;
+    bot_state().bridge.requires_use = false;
+    bot_state().bridge.use_press_timer.invalidate();
+    bot_state().bridge.activation_abort_timer.invalidate();
+    bot_state().bridge.activation_best_dist_sq = std::numeric_limits<float>::infinity();
 }
 
 void bot_goal_runtime_clear_bridge_post_open_priority_state()
 {
-    g_client_bot_state.bridge.post_open_zone_uid = -1;
-    g_client_bot_state.bridge.post_open_target_waypoint = 0;
-    g_client_bot_state.bridge.post_open_priority_timer.invalidate();
+    bot_state().bridge.post_open_zone_uid = -1;
+    bot_state().bridge.post_open_target_waypoint = 0;
+    bot_state().bridge.post_open_priority_timer.invalidate();
 }
 
 void bot_goal_runtime_prime_bridge_post_open_priority(
@@ -30,9 +31,9 @@ void bot_goal_runtime_prime_bridge_post_open_priority(
         bot_goal_runtime_clear_bridge_post_open_priority_state();
         return;
     }
-    g_client_bot_state.bridge.post_open_zone_uid = zone_uid;
-    g_client_bot_state.bridge.post_open_target_waypoint = 0;
-    g_client_bot_state.bridge.post_open_priority_timer.set(priority_ms);
+    bot_state().bridge.post_open_zone_uid = zone_uid;
+    bot_state().bridge.post_open_target_waypoint = 0;
+    bot_state().bridge.post_open_priority_timer.set(priority_ms);
 }
 
 void bot_goal_runtime_clear_non_active_goal_state(const BotGoalType active_goal)
@@ -41,22 +42,22 @@ void bot_goal_runtime_clear_non_active_goal_state(const BotGoalType active_goal)
         bot_goal_runtime_clear_bridge_goal_state();
     }
     if (active_goal != BotGoalType::create_crater) {
-        g_client_bot_state.crater_goal_abort_timer.invalidate();
-        g_client_bot_state.crater_goal_timeout_timer.invalidate();
+        bot_state().crater_goal_abort_timer.invalidate();
+        bot_state().crater_goal_timeout_timer.invalidate();
     }
     if (active_goal != BotGoalType::shatter_glass) {
-        g_client_bot_state.shatter_goal_abort_timer.invalidate();
-        g_client_bot_state.shatter_goal_timeout_timer.invalidate();
+        bot_state().shatter_goal_abort_timer.invalidate();
+        bot_state().shatter_goal_timeout_timer.invalidate();
     }
     if (active_goal != BotGoalType::control_point_objective) {
-        g_client_bot_state.control_point_route_fail_timer.invalidate();
-        g_client_bot_state.control_point_patrol_waypoint = 0;
-        g_client_bot_state.control_point_patrol_timer.invalidate();
+        bot_state().control_point_route_fail_timer.invalidate();
+        bot_state().control_point_patrol_waypoint = 0;
+        bot_state().control_point_patrol_timer.invalidate();
     }
-    if (active_goal != BotGoalType::sal_stage_at_spawn) {
-        g_client_bot_state.salvage_stage_hold_pos = {};
-        g_client_bot_state.salvage_stage_orbit_timer.invalidate();
-        g_client_bot_state.salvage_stage_orbit_left = false;
+    if (!bot_goal_is_salvage_positioning(active_goal)) {
+        bot_state().salvage_hold_pos = {};
+        bot_state().salvage_hold_orbit_timer.invalidate();
+        bot_state().salvage_hold_orbit_left = false;
     }
 }
 
@@ -70,8 +71,8 @@ bool bot_goal_runtime_abort_bridge_goal()
 
 bool bot_goal_runtime_abort_crater_goal()
 {
-    g_client_bot_state.crater_goal_abort_timer.invalidate();
-    g_client_bot_state.crater_goal_timeout_timer.invalidate();
+    bot_state().crater_goal_abort_timer.invalidate();
+    bot_state().crater_goal_timeout_timer.invalidate();
     bot_state_set_roam_fallback_goal(250);
     bot_state_clear_waypoint_route(true, true, false);
     return false;
@@ -79,8 +80,8 @@ bool bot_goal_runtime_abort_crater_goal()
 
 bool bot_goal_runtime_abort_shatter_goal()
 {
-    g_client_bot_state.shatter_goal_abort_timer.invalidate();
-    g_client_bot_state.shatter_goal_timeout_timer.invalidate();
+    bot_state().shatter_goal_abort_timer.invalidate();
+    bot_state().shatter_goal_timeout_timer.invalidate();
     bot_state_set_roam_fallback_goal(250);
     bot_state_clear_waypoint_route(true, true, false);
     return false;
@@ -89,7 +90,7 @@ bool bot_goal_runtime_abort_shatter_goal()
 bool bot_goal_runtime_abort_ctf_goal()
 {
     bot_state_set_roam_fallback_goal(250);
-    g_client_bot_state.ctf_objective_route_fail_timer.invalidate();
+    bot_state().ctf_objective_route_fail_timer.invalidate();
     bot_state_clear_waypoint_route(true, true, false);
     return false;
 }
@@ -98,7 +99,7 @@ bool bot_goal_runtime_abort_bagman_goal()
 {
     bot_state_set_roam_fallback_goal(250);
     // Reuse the CTF objective fail timer slot.
-    g_client_bot_state.ctf_objective_route_fail_timer.invalidate();
+    bot_state().ctf_objective_route_fail_timer.invalidate();
     bot_state_clear_waypoint_route(true, true, false);
     return false;
 }
@@ -107,7 +108,7 @@ bool bot_goal_runtime_abort_salvage_goal()
 {
     bot_state_set_roam_fallback_goal(250);
     // Reuse the CTF objective fail timer slot.
-    g_client_bot_state.ctf_objective_route_fail_timer.invalidate();
+    bot_state().ctf_objective_route_fail_timer.invalidate();
     bot_state_clear_waypoint_route(true, true, false);
     return false;
 }
@@ -115,9 +116,9 @@ bool bot_goal_runtime_abort_salvage_goal()
 bool bot_goal_runtime_abort_control_point_goal()
 {
     bot_state_set_roam_fallback_goal(250);
-    g_client_bot_state.control_point_route_fail_timer.invalidate();
-    g_client_bot_state.control_point_patrol_waypoint = 0;
-    g_client_bot_state.control_point_patrol_timer.invalidate();
+    bot_state().control_point_route_fail_timer.invalidate();
+    bot_state().control_point_patrol_waypoint = 0;
+    bot_state().control_point_patrol_timer.invalidate();
     bot_state_clear_waypoint_route(true, true, false);
     return false;
 }

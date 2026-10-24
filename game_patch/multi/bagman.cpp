@@ -37,6 +37,7 @@
 #include "../rf/vmesh.h"
 #include "../rf/v3d.h"
 #include "../hud/multi_spectate.h"
+#include "../misc/waypoints.h"
 #include <patch_common/FunHook.h>
 
 BagmanInfo g_bagman_info;
@@ -327,6 +328,23 @@ void bagman_broadcast_state()
     af_send_bagman_state_packet_to_all();
 }
 
+void bagman_update_bot_waypoints()
+{
+    if (!is_waypoint_bot_mode_active()) {
+        return;
+    }
+    if (g_bagman_info.state == BagState::BS_Carried || g_bagman_info.state == BagState::BS_Delayed) {
+        waypoints_on_bag_carried();
+    }
+    else {
+        // On-ground bag: position comes from the item object.
+        rf::Vector3 bag_world_pos;
+        if (bagman_get_client_pickup_pos(&bag_world_pos)) {
+            waypoints_on_bag_world_pos(bag_world_pos);
+        }
+    }
+}
+
 int bagman_get_score_tick_ms()
 {
     return kScoreTickMs;
@@ -556,6 +574,9 @@ void bagman_do_frame()
         return;
     }
     if (!g_bagman_info.spawn_known) return;
+
+    // Every frame: the waypoints can load after the bag state last changed (AWP download).
+    bagman_update_bot_waypoints();
 
     if (g_bagman_info.carrier) {
         rf::Entity* raw_ep = rf::entity_from_handle(g_bagman_info.carrier->entity_handle);

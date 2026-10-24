@@ -425,9 +425,10 @@ static float convert_pitch_delta_to_non_linear_space(
 }
 
 // Applies raw/modern mouse deltas and linear pitch correction at the entity
-// control injection point. For the player entity, this is where accumulated raw
-// mouse deltas are consumed (freelook camera deltas are consumed earlier in
-// mouse_get_delta_hook since the freelook camera has a separate control path).
+// control injection point. For the entity the local player's controls drive (his own,
+// or the turret or hull he is attached to), this is where accumulated raw mouse deltas
+// are consumed (freelook camera deltas are consumed earlier in mouse_get_delta_hook
+// since the freelook camera has a separate control path).
 CodeInjection linear_pitch_patch{
     0x0049DEC9,
     [](auto& regs) {
@@ -441,7 +442,10 @@ CodeInjection linear_pitch_patch{
 
         // Consume accumulated raw mouse deltas (Raw/Modern mode only).
         // In Classic mode the accumulators are empty and this is a no-op.
-        if (g_alpine_game_config.mouse_scale != 0) {
+        // Server bots and turrets manned by bots or NPCs take this path too and must not eat the local look.
+        rf::Entity* const lpe = rf::local_player_entity;
+        const bool drives_local_look = entity == lpe || (lpe && lpe->host_handle == entity->handle);
+        if (g_alpine_game_config.mouse_scale != 0 && drives_local_look) {
             float mouse_pitch = 0.0f, mouse_yaw = 0.0f;
             consume_raw_mouse_deltas(mouse_pitch, mouse_yaw, true);
             pitch_delta += mouse_pitch;

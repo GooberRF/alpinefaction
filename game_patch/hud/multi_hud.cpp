@@ -21,6 +21,7 @@
 #include "../multi/vehicles/vehicle_seats.h"
 #include "../multi/salvage.h"
 #include "../multi/wipeout.h"
+#include "../multi/server.h"
 #include "../input/input.h"
 #include "../rf/input.h"
 #include "../rf/hud.h"
@@ -554,16 +555,22 @@ std::string_view multi_hud_get_random_taunt_message()
     return *taunt_messages[index_dist(g_rng)];
 }
 
+std::string multi_hud_format_taunt_chat_message(const std::string_view taunt_text)
+{
+    std::string msg{};
+    msg.reserve(kTauntChatPrefix.size() + taunt_text.size());
+    msg.append(kTauntChatPrefix.data(), kTauntChatPrefix.size());
+    msg.append(taunt_text.data(), taunt_text.size());
+    return msg;
+}
+
 bool multi_hud_send_taunt_chat_message(const std::string_view taunt_text)
 {
     if (taunt_text.empty()) {
         return false;
     }
 
-    std::string msg{};
-    msg.reserve(kTauntChatPrefix.size() + taunt_text.size());
-    msg.append(kTauntChatPrefix.data(), kTauntChatPrefix.size());
-    msg.append(taunt_text.data(), taunt_text.size());
+    const std::string msg = multi_hud_format_taunt_chat_message(taunt_text);
     rf::multi_chat_say(msg.c_str(), false);
     rf::snd_play(stock_sound_id::end_voice, 0, 0.0f, 1.0f);
     return true;
@@ -2417,7 +2424,10 @@ void chat_menu_action_handler(rf::Key key) {
             if (!msg.empty()) {
                 // AF 1.4+ servers no longer accept vote calls over chat.
                 const std::optional<AfVoteType> vote_type = chat_menu_simple_vote_type(msg);
-                if (vote_type && is_server_minimum_af_version(1, 4)) {
+                if (rf::is_server) {
+                    check_server_chat_command(msg.c_str(), rf::local_player); // listen host
+                }
+                else if (vote_type && is_server_minimum_af_version(1, 4)) {
                     AfVoteCallParams params{};
                     params.type = *vote_type;
                     if (params.type == AfVoteType::Extend) {

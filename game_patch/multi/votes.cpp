@@ -249,7 +249,8 @@ public:
             const auto current_player_list = get_clients(false, false);
 
             for (rf::Player* player : current_player_list) {
-                if (players_who_voted.find(player) == players_who_voted.end()) {
+                if (players_who_voted.find(player) == players_who_voted.end()
+                    && !is_listen_server_host(player)) {
                     if (player->version_info.software != ClientSoftware::AlpineFaction) { // don't send reminder pings to alpine clients
                         af_send_automated_chat_msg("Send message \"/vote yes\" or \"/vote no\" to vote.", player);
                     }
@@ -2000,7 +2001,8 @@ void server_vote_handle_options_request(rf::Player* sender, bool has_cache, uint
 static bool check_voter_eligibility(rf::Player* sender)
 {
     if (is_listen_server_host(sender)) {
-        return false; // silently: the host has no vote UI to reply to
+        send_vote_reject_msg("The listen server host cannot vote.", sender);
+        return false;
     }
     if (sender->version_info.software == ClientSoftware::Browser || sender->is_bot) {
         send_vote_reject_msg("Browsers and bots are not allowed to vote!", sender, true);

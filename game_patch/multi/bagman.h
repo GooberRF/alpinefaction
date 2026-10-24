@@ -59,6 +59,8 @@ void bagman_set_blue_team_score(int v);
 void bagman_add_team_score(rf::Player* player, int delta);
 void bagman_force_state_sync_to(rf::Player* player);
 void bagman_broadcast_state();
+// Feeds the bag's temporary waypoint node from the current bag state.
+void bagman_update_bot_waypoints();
 bool bagman_local_player_is_carrier();
 bool bagman_viewer_is_carrier_first_person();
 // Swaps the bag mesh onto a freshly created bag item.

@@ -38,8 +38,10 @@
 #include "scavenger.h"
 #include "vehicles/vehicle.h"
 #include "vehicles/vehicle_tracers.h"
+#include "bots/server_bots.h"
 #include "../os/console.h"
 #include "../hud/hud.h"
+#include "../hud/multi_spectate.h"
 #include "../misc/player.h"
 #include "../misc/level.h"
 #include "../misc/alpine_options.h"
@@ -101,6 +103,9 @@ const std::vector<std::string> g_rcon_cmd_masterlist = {
     "sv_afstats_trace",
     "sv_fflink_status",
     "sv_fflink_resync",
+    "sv_bot_add",
+    "sv_bot_remove",
+    "sv_bot_list",
 };
 
 std::vector<rf::AlpineRespawnPoint> g_alpine_respawn_points;
@@ -147,6 +152,11 @@ int BotProfileSlotTracker::assign_slot(const rf::Player* player, int num_profile
 
     assignments[player] = best_slot;
     return best_slot;
+}
+
+void BotProfileSlotTracker::assign_explicit(const rf::Player* player, const int slot)
+{
+    assignments[player] = slot;
 }
 
 void BotProfileSlotTracker::release_slot(const rf::Player* player)
@@ -798,7 +808,8 @@ CodeInjection multi_limbo_leave_pre_patch{
 
             auto plist = SinglyLinkedList{rf::player_list};
             for (auto& p : plist) {
-                if (&p == rf::local_player)
+                // Server bots leave only through the roster.
+                if (&p == rf::local_player || server_bot_from_player(&p))
                     continue;
 
                 // Observers (browsers, demo recorder) are never kicked here: they don't
@@ -1277,6 +1288,18 @@ bool check_server_chat_command(const char* msg, rf::Player* sender)
     return false;
 }
 
+// The listen host's own line never reaches the chat_line receive handler, so its commands run here.
+FunHook<void(const char*, int)> multi_chat_say_hook{
+    0x00444150,
+    [](const char* msg, int is_team_msg) {
+        if (rf::is_multi && rf::is_server && !rf::is_dedicated_server && rf::local_player
+            && check_server_chat_command(msg, rf::local_player)) {
+            return;
+        }
+        multi_chat_say_hook.call_target(msg, is_team_msg);
+    },
+};
+
 CodeInjection spawn_protection_duration_patch{
     0x0048089A,
     [](auto& regs) {
@@ -1738,6 +1761,14 @@ static bool entity_killed_from_behind(rf::Entity* victim, int killer_handle)
     return to_victim.dot_prod(facing) > 0.5f;
 }
 
+bool player_is_spectating(const rf::Player& spectator, const rf::Player* target)
+{
+    if (&spectator == rf::local_player) {
+        return multi_spectate_is_following_player() && multi_spectate_get_target_player() == target;
+    }
+    return spectator.spectatee.value_or(nullptr) == target;
+}
+
 FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
     0x0041A350,
     [](rf::Entity* damaged_ep, float damage, int killer_handle, int damage_type, int killer_uid) {
@@ -2182,8 +2213,9 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
                 && killer_player->net_data && damaged_player->net_data) {
                 if (!(!damaged_ep || rf::entity_is_dying(damaged_ep) || rf::player_is_dead(damaged_player))) {
 
-                    // use new packet for clients that can process it (Alpine 1.1+)
-                    if (is_player_minimum_af_client_version(killer_player, 1, 1, 0)) {
+                    // use new packet for clients that can process it (Alpine 1.1+) and the listen host
+                    if (killer_player == rf::local_player
+                        || is_player_minimum_af_client_version(killer_player, 1, 1, 0)) {
                         //xlog::warn("sending damage notify to {}, is dead? {}", killer_player->name, is_dead);
                         af_send_damage_notify_packet(
                             damaged_player->net_data->player_id,
@@ -2203,15 +2235,15 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
                         if (!player.net_data || &player == killer_player) {
                             continue;
                         }
-                        if (player.spectatee.value_or(nullptr) == killer_player) {
-                            if (is_player_minimum_af_client_version(&player, 1, 1, 0)) {
-                                af_send_damage_notify_packet(
-                                    damaged_player->net_data->player_id,
-                                    effective_damage,
-                                    is_dead,
-                                    crit_applied,
-                                    &player);
-                            }
+                        if (player_is_spectating(player, killer_player)
+                            && (&player == rf::local_player
+                                || is_player_minimum_af_client_version(&player, 1, 1, 0))) {
+                            af_send_damage_notify_packet(
+                                damaged_player->net_data->player_id,
+                                effective_damage,
+                                is_dead,
+                                crit_applied,
+                                &player);
                         }
                     }
 
@@ -2234,7 +2266,8 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
             const AfDamageNotifyHull hull{damaged_ep ? damaged_ep->pos : victim_pos_before_damage,
                                           damaged_ep_handle};
 
-            if (is_player_minimum_af_client_version(killer_player, 1, 1, 0)) {
+            if (killer_player == rf::local_player
+                || is_player_minimum_af_client_version(killer_player, 1, 1, 0)) {
                 af_send_damage_notify_packet(af_damage_notify_no_player, effective_damage, is_dead, false,
                                              killer_player, &hull);
             }
@@ -2246,8 +2279,8 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
                 if (!player.net_data || &player == killer_player) {
                     continue;
                 }
-                if (player.spectatee.value_or(nullptr) == killer_player
-                    && is_player_minimum_af_client_version(&player, 1, 1, 0)) {
+                if (player_is_spectating(player, killer_player)
+                    && (&player == rf::local_player || is_player_minimum_af_client_version(&player, 1, 1, 0))) {
                     af_send_damage_notify_packet(af_damage_notify_no_player, effective_damage, is_dead, false,
                                                  &player, &hull);
                 }
@@ -2475,7 +2508,8 @@ CodeInjection send_ping_time_wrap_fix{
         if (!io_stats.send_ping_packet_timestamp.valid() || io_stats.send_ping_packet_timestamp.elapsed()) {
             xlog::trace("sending ping");
             io_stats.send_ping_packet_timestamp.set(3000);
-            if (!player->is_observer()) { // recorder's phantom socket must not be pinged
+            // The recorder's phantom socket and server bots' fake addresses must not be pinged.
+            if (!player->is_observer() && !server_bot_from_player(player)) {
                 rf::multi_ping_player(player);
             }
             io_stats.last_ping_time = static_cast<int>(timer::get_i64(1000));
@@ -2656,14 +2690,15 @@ void cancel_match()
 // Does this player support packet-based voting?
 static bool player_can_call_votes(rf::Player* player)
 {
-    if (!player) {
-        return false;
-    }
-    return player == rf::local_player || is_player_minimum_af_client_version(player, 1, 4, 0);
+    return player && is_player_minimum_af_client_version(player, 1, 4, 0);
 }
 
+// No hint for the listen host: he can neither ready up nor vote.
 static std::string_view cancel_match_vote_hint(rf::Player* player)
 {
+    if (player == rf::local_player) {
+        return {};
+    }
     return player_can_call_votes(player)
         ? "Ready up, or call a vote to cancel the match."
         : "Ready up. Canceling the match needs a vote, which requires Alpine Faction 1.4+ (alpinefaction.com).";
@@ -2671,6 +2706,9 @@ static std::string_view cancel_match_vote_hint(rf::Player* player)
 
 static std::string_view start_match_vote_hint(rf::Player* player)
 {
+    if (player == rf::local_player) {
+        return {};
+    }
     return player_can_call_votes(player)
         ? "Call a match vote to queue one."
         : "Queueing a match needs a vote, which requires Alpine Faction 1.4+ (alpinefaction.com).";
@@ -2691,13 +2729,16 @@ void start_pre_match()
         for (rf::Player* player : get_clients(false, false)) {
             if (!player) continue;
 
+            const std::string_view hint = cancel_match_vote_hint(player);
             std::string msg = std::format(
                 "\n>>>>>>>>>>>>>>>>> {}v{} MATCH QUEUED <<<<<<<<<<<<<<<<<\n"
-                "Waiting for players. {}",
-                g_match_info.team_size, g_match_info.team_size, cancel_match_vote_hint(player));
+                "Waiting for players.{}{}",
+                g_match_info.team_size, g_match_info.team_size, hint.empty() ? "" : " ", hint);
 
             af_send_automated_chat_msg(msg, player);
-            af_send_ready_prompt(player, 1); // pre-match active — show ready prompt
+            if (player != rf::local_player) {
+                af_send_ready_prompt(player, 1); // pre-match active — show ready prompt
+            }
         }
 
 
@@ -2812,8 +2853,14 @@ void remove_ready_player(rf::Player* player)
 void toggle_ready_status(rf::Player* player)
 {
     if (!g_match_info.pre_match_active) {
+        const std::string_view hint = start_match_vote_hint(player);
         af_send_automated_chat_msg(
-            std::format("No match is queued. {}", start_match_vote_hint(player)), player);
+            std::format("No match is queued.{}{}", hint.empty() ? "" : " ", hint), player);
+        return;
+    }
+
+    if (player == rf::local_player) {
+        af_send_automated_chat_msg("The listen server host cannot ready for matches.", player);
         return;
     }
 
@@ -2908,6 +2955,9 @@ void match_do_frame()
             const auto ready_blue = g_match_info.ready_players_blue.size();
 
             for (rf::Player* player : get_clients(false, false)) {
+                if (player == rf::local_player) {
+                    continue;
+                }
                 if (!is_player_ready(player)) {
                     auto msg = std::format(
                         "You are NOT ready! {}v{} match queued, waiting for players - RED: {}, BLUE: {}.\n{}",
@@ -3136,7 +3186,8 @@ void enforce_alpine_hard_reject_for_all_players_on_current_level()
     auto plist = SinglyLinkedList{rf::player_list};
 
     for (auto& p : plist) {
-        if (&p == rf::local_player) {
+        // Server bots leave only through the roster.
+        if (&p == rf::local_player || server_bot_from_player(&p)) {
             continue;
         }
 
@@ -3458,31 +3509,25 @@ static constexpr DefaultBotIdentity k_default_bot_identities[] = {
     {"Franklin",    "medic1"},
 };
 
-// Pick a random default identity not already used by another bot on the server.
+static bool player_name_in_use(std::string_view name, const rf::Player* self)
+{
+    for (const rf::Player& p : SinglyLinkedList{rf::player_list}) {
+        if (&p != self && string_iequals(p.name.c_str(), name)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Pick a random default identity whose name no other player on the server uses.
 // If all identities are in use, allow duplicates.
-static const DefaultBotIdentity& pick_unused_default_identity()
+static const DefaultBotIdentity& pick_unused_default_identity(const rf::Player* self)
 {
     constexpr int num_identities = static_cast<int>(std::size(k_default_bot_identities));
 
-    // Collect names currently in use by bots
-    std::vector<std::string> used_names;
-    for (rf::Player& p : SinglyLinkedList{rf::player_list}) {
-        if (p.is_bot) {
-            used_names.emplace_back(p.name.c_str());
-        }
-    }
-
-    // Build list of unused identity indices
     std::vector<int> available;
     for (int i = 0; i < num_identities; ++i) {
-        bool in_use = false;
-        for (const auto& name : used_names) {
-            if (name == k_default_bot_identities[i].name) {
-                in_use = true;
-                break;
-            }
-        }
-        if (!in_use) {
+        if (!player_name_in_use(k_default_bot_identities[i].name, self)) {
             available.push_back(i);
         }
     }
@@ -3497,11 +3542,15 @@ static const DefaultBotIdentity& pick_unused_default_identity()
     return k_default_bot_identities[available[dist(g_rng)]];
 }
 
-static void resolve_bot_identity(const ServerBotConfig& config, std::string& out_name, int32_t& out_character)
+void resolve_bot_identity(const ServerBotConfig& config, const rf::Player* self, std::string& out_name,
+                          int32_t& out_character)
 {
+    // A profile name another player already holds would make two players indistinguishable.
+    const std::string profile_name = player_name_in_use(config.player_name, self) ? std::string{} : config.player_name;
+
     // If both name and character are specified in the profile, use them directly
-    if (!config.player_name.empty() && !config.mp_character.empty()) {
-        out_name = config.player_name;
+    if (!profile_name.empty() && !config.mp_character.empty()) {
+        out_name = profile_name;
         int idx = rf::multi_find_character(config.mp_character.c_str());
         if (idx >= 0) {
             out_character = idx;
@@ -3514,8 +3563,8 @@ static void resolve_bot_identity(const ServerBotConfig& config, std::string& out
     }
 
     // If neither is specified, pick a paired default identity
-    if (config.player_name.empty() && config.mp_character.empty()) {
-        const auto& identity = pick_unused_default_identity();
+    if (profile_name.empty() && config.mp_character.empty()) {
+        const auto& identity = pick_unused_default_identity(self);
         out_name = identity.name;
         int idx = rf::multi_find_character(identity.character);
         out_character = (idx >= 0) ? idx : 0;
@@ -3523,11 +3572,11 @@ static void resolve_bot_identity(const ServerBotConfig& config, std::string& out
     }
 
     // One is specified, the other needs resolving
-    if (!config.player_name.empty()) {
-        out_name = config.player_name;
+    if (!profile_name.empty()) {
+        out_name = profile_name;
     }
     else {
-        const auto& identity = pick_unused_default_identity();
+        const auto& identity = pick_unused_default_identity(self);
         out_name = identity.name;
     }
 
@@ -3583,7 +3632,7 @@ static void send_bot_config_with_identity(rf::Player* player, const ServerBotCon
 {
     std::string resolved_name;
     int32_t resolved_character = 0;
-    resolve_bot_identity(config, resolved_name, resolved_character);
+    resolve_bot_identity(config, player, resolved_name, resolved_character);
 
     // Apply on the server's player struct
     player->name = resolved_name.c_str();
@@ -3693,12 +3742,26 @@ CodeInjection multi_level_init_injection{
     },
 };
 
-static int pick_weaker_team()
+// A human counts as playing once spawned, and for a short while after dying.
+static bool human_is_active_player(const rf::Player& player)
+{
+    const bool is_spawned = !rf::player_is_dead(&player) && !rf::player_is_dying(&player);
+    const bool was_just_unspawned = player.death_time
+        && std::chrono::steady_clock::now() - *player.death_time
+            < std::chrono::duration<float>(BOT_OPPONENT_DEATH_WAIT_TIME_SEC);
+    return is_spawned || was_just_unspawned;
+}
+
+static int pick_weaker_team(const bool for_bot)
 {
     int red_count = 0, blue_count = 0;
     int red_bots = 0, blue_bots = 0;
     for (const rf::Player& player : SinglyLinkedList{rf::player_list}) {
         if (player.is_non_participant() || player.is_spectator) {
+            continue;
+        }
+        // A connected human who never plays (an observer) does not balance against bots.
+        if (for_bot && !player.is_bot && !human_is_active_player(player)) {
             continue;
         }
         if (player.team == rf::TEAM_RED) {
@@ -3753,27 +3816,37 @@ static int pick_weaker_team()
     return std::uniform_int_distribution<int>(rf::TEAM_RED, rf::TEAM_BLUE)(g_rng);
 }
 
+static int pick_team_for_joiner(const JoiningClientKind kind)
+{
+    if (!multi_is_team_game_type()) {
+        return rf::TEAM_RED;
+    }
+    if (humans_vs_bots_active()) {
+        switch (kind) {
+            case JoiningClientKind::Bot:
+                return rf::TEAM_BLUE;
+            case JoiningClientKind::Human:
+                return rf::TEAM_RED;
+            case JoiningClientKind::Browser:
+                break; // not a participant; the normal pick applies
+        }
+    }
+    return pick_weaker_team(kind == JoiningClientKind::Bot);
+}
+
 FunHook<int()> pick_team_for_new_player_hook{
     0x004827E0,
     []() {
-        if (!multi_is_team_game_type()) {
-            return static_cast<int>(rf::TEAM_RED);
-        }
         // Only reached from the join flow, after the join-req tail has been
         // parsed, so the joining client's identity is still available.
-        if (humans_vs_bots_active()) {
-            switch (get_joining_client_kind()) {
-                case JoiningClientKind::Bot:
-                    return static_cast<int>(rf::TEAM_BLUE);
-                case JoiningClientKind::Human:
-                    return static_cast<int>(rf::TEAM_RED);
-                case JoiningClientKind::Browser:
-                    break; // not a participant; the normal pick applies
-            }
-        }
-        return pick_weaker_team();
+        return pick_team_for_joiner(get_joining_client_kind());
     },
 };
+
+int pick_team_for_new_server_bot()
+{
+    return pick_team_for_joiner(JoiningClientKind::Bot);
+}
 
 // Humans vs. Bots replacement for balance_teams(): same participant exclusions,
 // but the split is fixed rather than score-based.
@@ -5099,7 +5172,7 @@ CodeInjection entity_maybe_die_patch{
             bool respawn_allowed = true; // nothing currently disables respawns
             bool force_respawn = (rf::multi_server_flags & rf::NetGameFlags::NG_FLAG_FORCE_RESPAWN) != 0;
 
-            if (rf::is_server) {
+            if (player == rf::local_player) {
                 set_local_spawn_delay(respawn_allowed, force_respawn, static_cast<uint16_t>(player->respawn_timer.time_until()));
             }
             af_send_just_died_info_packet(player, respawn_allowed, force_respawn, static_cast<uint16_t>(player->respawn_timer.time_until()));
@@ -5304,6 +5377,9 @@ void server_init()
     // Apply customized spawn protection duration
     spawn_protection_duration_patch.install();
 
+    // Run the listen host's chat commands
+    multi_chat_say_hook.install();
+
     // Critical hits and hit sounds
     entity_damage_hook.install();
 
@@ -5320,6 +5396,7 @@ void server_init()
     player_add_weapon_hook.install();
 
     init_server_commands();
+    server_bots_apply_patches();
 
     // Remove level prefix restriction (dm/ctf) for 'level' command and dedicated_server.txt
     AsmWriter(0x004350FE).nop(2);
@@ -5493,17 +5570,8 @@ static void bot_decommission_check() {
             if (just_entered_spectate) {
                 ++active_persons_per_team[team];
             }
-        } else {
-            const bool is_spawned = !rf::player_is_dead(&player)
-                && !rf::player_is_dying(&player);
-            const auto now = std::chrono::steady_clock::now();
-            const bool was_just_unspawned = player.death_time
-                && now - *player.death_time
-                    < std::chrono::duration<float>(BOT_OPPONENT_DEATH_WAIT_TIME_SEC);
-
-            if (is_spawned || was_just_unspawned) {
-                ++active_persons_per_team[team];
-            }
+        } else if (human_is_active_player(player)) {
+            ++active_persons_per_team[team];
         }
     }
 
@@ -5529,6 +5597,7 @@ static void bot_decommission_check() {
 void server_do_frame()
 {
     bot_decommission_check();
+    server_bots_do_frame();
     server_vote_do_frame();
     fire_ticks_do_frame();
     match_do_frame();
@@ -5555,6 +5624,7 @@ void server_on_limbo_state_enter()
     g_is_overtime = false;
     g_prev_level = rf::level.filename.c_str();
     server_vote_on_limbo_state_enter();
+    server_bots_on_limbo_enter();
 
     auto player_list = SinglyLinkedList{rf::player_list};
 

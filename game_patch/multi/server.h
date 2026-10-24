@@ -56,6 +56,8 @@ void player_idle_check(rf::Player* player);
 void auto_team_balance_on_player_death(rf::Player* killed_player);
 bool auto_team_balance_blocks_team_change(rf::Player* player, int requested_team);
 bool humans_vs_bots_active();
+// Whether spectator follows target; a listen host spectates client-side, without the spectatee bookkeeping.
+bool player_is_spectating(const rf::Player& spectator, const rf::Player* target);
 void send_sound_packet_throwaway(rf::Player* target, int sound_id);
 // World-space sound broadcast to every connected player, via the stock sound packet.
 void broadcast_sound_packet_3d(const rf::Vector3& pos, int sound_id);

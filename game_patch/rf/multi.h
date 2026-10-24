@@ -373,6 +373,15 @@ namespace rf
     static auto& multi_alloc_player_id = addr_as_ref<uint8_t()>(0x0046EF00);
     static auto& multi_player_left_game = addr_as_ref<void(Player* player)>(0x0046E9D0);
     static auto& update_player_rate = addr_as_ref<void(Player* player)>(0x0047E7D0);
+    // Announces p to every other connected player (packet 0x05, carries net_data->flags).
+    static auto& send_new_player_packet = addr_as_ref<void __cdecl(Player* p)>(0x0047A460);
+    static auto& send_left_game_packet = addr_as_ref<void __cdecl(uint8_t player_id, uint8_t reason)>(0x0047BAE0);
+
+    // Server-side handlers of client requests (AF validates both in their FunHooks)
+    static auto& multi_select_weapon_server_side =
+        addr_as_ref<void __cdecl(Player* pp, Entity* ep, int weapon_type)>(0x004858D0);
+    static auto& multi_process_remote_weapon_fire =
+        addr_as_ref<void __cdecl(Entity* ep, int weapon_type, Vector3& pos, Matrix3& orient, bool alt_fire)>(0x0047D220);
     // Client-side: reset by process_obj_update_packet; drives the broken-connection icon,
     // the 20s timeout popup and the sim pause.
     static auto& multi_connection_broken_timestamp = addr_as_ref<Timestamp>(0x0064ECA8);
@@ -428,6 +437,8 @@ namespace rf
     static auto& send_glass_kill_packet = addr_as_ref<void(int room_uid, Vector3* break_pos, Vector3* explosion_pos, bool explosion)>(0x00472250);
 
     constexpr int multi_max_player_id = 256;
+    // Players the engine handles at once: the client scoreboard's player array (0x00470880) overflows beyond it.
+    constexpr int multi_max_player_slots = 32;
 }
 
 template <>

@@ -579,6 +579,8 @@ namespace rf
     static auto& entity_is_playing_action_animation = addr_as_ref<bool(Entity* entity, int action)>(0x00428D10);
     static auto& entity_set_next_state_anim = addr_as_ref<void(Entity* entity, int state, float transition_time)>(0x0042A580);
     static auto& entity_play_action_animation = addr_as_ref<void(Entity* entity, int action, float weight, bool hold_last_frame, bool with_sound)>(0x00428C90);
+    // The current weapon's fire (or alt fire) action anim, unless it is already playing.
+    static auto& entity_play_attack_anim = addr_as_ref<void(Entity* entity, bool alt_fire)>(0x0042C3C0);
     static auto& entity_is_reloading = addr_as_ref<bool(Entity* entity)>(0x00425250);
     static auto& entity_weapon_is_on = addr_as_ref<bool(int entity_handle, int weapon_type)>(0x0041A830);
     static auto& entity_reload_current_primary = addr_as_ref<bool __cdecl(Entity *entity, bool no_sound, bool is_reload_packet)>(0x00425280);
@@ -589,6 +591,10 @@ namespace rf
     // continuous-weapon turn-on; pos/orient override the muzzle; last_fire_time moves only on a shot.
     static auto& entity_fire_weapon = addr_as_ref<void __cdecl(Entity* ep, int force, int alt_fire,
         void** out_weapon, Vector3* pos, Matrix3* orient)>(0x00425830);
+    // The muzzle entity_fire_weapon uses when it is given no pos (0x004264E3); is_primary selects
+    // ai.current_primary_weapon over current_secondary_weapon for the muzzle mesh.
+    static auto& entity_get_weapon_fire_pos_orient = addr_as_ref<void __cdecl(Entity* ep, int weapon_type,
+        Vector3* pos, Matrix3* orient, int muzzle_index, bool is_primary)>(0x0041B040);
     // One shot of ai.current_secondary_weapon. force != 0 skips the fire-wait gate; next_fire_secondary re-arms only on a shot.
     static auto& entity_fire_secondary_weapon = addr_as_ref<void __cdecl(Entity* ep, char force)>(0x00426CA0);
     static auto& entity_restore_mesh = addr_as_ref<void(Entity *ep, const char *mesh_name)>(0x0042C570);

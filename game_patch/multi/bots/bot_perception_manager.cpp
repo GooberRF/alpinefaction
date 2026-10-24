@@ -1,6 +1,7 @@
 #include "bot_perception_manager.h"
 
 #include "bot_alerts.h"
+#include "bot_context.h"
 #include "bot_decision_eval.h"
 #include "bot_internal.h"
 #include "bot_math.h"
@@ -51,11 +52,11 @@ bool has_visibility_to_target_entity(
 
 void bot_perception_manager_reset_tracking()
 {
-    g_client_bot_state.los_check_timer.invalidate();
-    g_client_bot_state.los_target_handle = -1;
-    g_client_bot_state.los_to_enemy = false;
-    g_client_bot_state.preferred_enemy_handle = -1;
-    g_client_bot_state.preferred_enemy_lock_timer.invalidate();
+    bot_state().los_check_timer.invalidate();
+    bot_state().los_target_handle = -1;
+    bot_state().los_to_enemy = false;
+    bot_state().preferred_enemy_handle = -1;
+    bot_state().preferred_enemy_lock_timer.invalidate();
 }
 
 bool bot_perception_manager_get_enemy_los_cached(
@@ -63,20 +64,20 @@ bool bot_perception_manager_get_enemy_los_cached(
     const rf::Entity& enemy_entity)
 {
     const int enemy_handle = enemy_entity.handle;
-    if (g_client_bot_state.los_target_handle != enemy_handle) {
-        g_client_bot_state.los_target_handle = enemy_handle;
-        g_client_bot_state.los_check_timer.invalidate();
+    if (bot_state().los_target_handle != enemy_handle) {
+        bot_state().los_target_handle = enemy_handle;
+        bot_state().los_check_timer.invalidate();
     }
 
-    if (!g_client_bot_state.los_check_timer.valid()
-        || g_client_bot_state.los_check_timer.elapsed()) {
-        g_client_bot_state.los_to_enemy = has_visibility_to_target_entity(
+    if (!bot_state().los_check_timer.valid()
+        || bot_state().los_check_timer.elapsed()) {
+        bot_state().los_to_enemy = has_visibility_to_target_entity(
             local_entity,
             enemy_entity
         );
         const float alertness = std::clamp(
             bot_personality_manager_get_active_skill_profile().alertness,
-            0.25f,
+            0.0f,
             2.5f
         );
         const float alertness_norm = std::clamp((alertness - 0.25f) / 2.25f, 0.0f, 1.0f);
@@ -86,14 +87,14 @@ bool bot_perception_manager_get_enemy_los_cached(
         const int blocked_interval = static_cast<int>(std::lround(
             std::lerp(130.0f, 55.0f, alertness_norm)
         ));
-        g_client_bot_state.los_check_timer.set(
-            g_client_bot_state.los_to_enemy
+        bot_state().los_check_timer.set(
+            bot_state().los_to_enemy
                 ? visible_interval
                 : blocked_interval
         );
     }
 
-    return g_client_bot_state.los_to_enemy;
+    return bot_state().los_to_enemy;
 }
 
 rf::Entity* bot_perception_manager_select_enemy_target(
@@ -103,13 +104,13 @@ rf::Entity* bot_perception_manager_select_enemy_target(
     const bool team_mode = multi_is_team_game_type();
     const BotPersonality& personality = bot_personality_manager_get_active_personality();
     const BotSkillProfile& skill_profile = bot_personality_manager_get_active_skill_profile();
-    const float alertness = std::clamp(skill_profile.alertness, 0.25f, 2.5f);
+    const float alertness = std::clamp(skill_profile.alertness, 0.0f, 2.5f);
     const float alertness_norm = std::clamp((alertness - 0.25f) / 2.25f, 0.0f, 1.0f);
-    const float focus_bias = std::clamp(skill_profile.target_focus_bias, 0.25f, 2.5f);
+    const float focus_bias = std::clamp(skill_profile.target_focus_bias, 0.0f, 2.5f);
     const float focus_norm = std::clamp((focus_bias - 0.25f) / 2.25f, 0.0f, 1.0f);
     const float eliminate_commitment = std::clamp(
         personality.eliminate_target_commitment_bias,
-        0.25f,
+        0.0f,
         2.5f
     );
     const float eliminate_commitment_norm = std::clamp(
@@ -117,7 +118,7 @@ rf::Entity* bot_perception_manager_select_enemy_target(
         0.0f,
         1.0f
     );
-    const float retaliation_bias = std::clamp(personality.retaliation_bias, 0.25f, 2.5f);
+    const float retaliation_bias = std::clamp(personality.retaliation_bias, 0.0f, 2.5f);
     const float retaliation_norm = std::clamp((retaliation_bias - 0.25f) / 2.25f, 0.0f, 1.0f);
     const float adjusted_fov_deg = std::clamp(
         skill_profile.fov_degrees * std::lerp(0.85f, 1.20f, alertness_norm),
@@ -134,21 +135,21 @@ rf::Entity* bot_perception_manager_select_enemy_target(
     );
     view_forward.normalize_safe();
 
-    if (g_client_bot_state.preferred_enemy_lock_timer.valid()
-        && g_client_bot_state.preferred_enemy_lock_timer.elapsed()) {
-        g_client_bot_state.preferred_enemy_lock_timer.invalidate();
+    if (bot_state().preferred_enemy_lock_timer.valid()
+        && bot_state().preferred_enemy_lock_timer.elapsed()) {
+        bot_state().preferred_enemy_lock_timer.invalidate();
     }
     const bool has_locked_target =
-        g_client_bot_state.preferred_enemy_handle >= 0
-        && g_client_bot_state.preferred_enemy_lock_timer.valid();
-    if (g_client_bot_state.retaliation_timer.valid()
-        && g_client_bot_state.retaliation_timer.elapsed()) {
-        g_client_bot_state.retaliation_timer.invalidate();
-        g_client_bot_state.retaliation_target_handle = -1;
+        bot_state().preferred_enemy_handle >= 0
+        && bot_state().preferred_enemy_lock_timer.valid();
+    if (bot_state().retaliation_timer.valid()
+        && bot_state().retaliation_timer.elapsed()) {
+        bot_state().retaliation_timer.invalidate();
+        bot_state().retaliation_target_handle = -1;
     }
     const bool retaliation_active =
-        g_client_bot_state.retaliation_target_handle >= 0
-        && g_client_bot_state.retaliation_timer.valid();
+        bot_state().retaliation_target_handle >= 0
+        && bot_state().retaliation_timer.valid();
 
     rf::Entity* best_target = nullptr;
     float best_score = std::numeric_limits<float>::max();
@@ -235,7 +236,7 @@ rf::Entity* bot_perception_manager_select_enemy_target(
         const float enemy_health_ratio = bot_decision_get_entity_health_ratio(*candidate_entity);
         const float enemy_armor_ratio = bot_decision_get_entity_armor_ratio(*candidate_entity);
         const float enemy_survivability = enemy_health_ratio * 0.70f + enemy_armor_ratio * 0.30f;
-        const float easy_frag_bias = std::clamp(personality.easy_frag_bias, 0.25f, 2.5f);
+        const float easy_frag_bias = std::clamp(personality.easy_frag_bias, 0.0f, 2.5f);
         const float easy_frag_norm = std::clamp((easy_frag_bias - 0.25f) / 2.25f, 0.0f, 1.0f);
         score *= std::lerp(
             1.0f,
@@ -271,7 +272,7 @@ rf::Entity* bot_perception_manager_select_enemy_target(
         }
 
         if (retaliation_active) {
-            if (candidate_entity->handle == g_client_bot_state.retaliation_target_handle) {
+            if (candidate_entity->handle == bot_state().retaliation_target_handle) {
                 score *= std::lerp(1.0f, 0.46f, retaliation_norm);
             }
             else {
@@ -280,7 +281,7 @@ rf::Entity* bot_perception_manager_select_enemy_target(
         }
 
         if (has_locked_target) {
-            if (candidate_entity->handle == g_client_bot_state.preferred_enemy_handle) {
+            if (candidate_entity->handle == bot_state().preferred_enemy_handle) {
                 score *= std::lerp(0.90f, 0.62f, focus_norm);
             }
             else {
@@ -288,12 +289,12 @@ rf::Entity* bot_perception_manager_select_enemy_target(
             }
         }
 
-        if (g_client_bot_state.active_goal == BotGoalType::eliminate_target
-            && candidate_entity->handle == g_client_bot_state.goal_target_handle) {
+        if (bot_state().active_goal == BotGoalType::eliminate_target
+            && candidate_entity->handle == bot_state().goal_target_handle) {
             score *= std::lerp(0.88f, 0.52f, eliminate_commitment_norm);
         }
-        else if (g_client_bot_state.active_goal == BotGoalType::eliminate_target
-            && g_client_bot_state.goal_target_handle >= 0) {
+        else if (bot_state().active_goal == BotGoalType::eliminate_target
+            && bot_state().goal_target_handle >= 0) {
             score *= std::lerp(1.0f, 1.22f, eliminate_commitment_norm);
         }
 
@@ -302,7 +303,7 @@ rf::Entity* bot_perception_manager_select_enemy_target(
             best_target = candidate_entity;
         }
         if (has_locked_target
-            && candidate_entity->handle == g_client_bot_state.preferred_enemy_handle) {
+            && candidate_entity->handle == bot_state().preferred_enemy_handle) {
             locked_target_candidate = candidate_entity;
             locked_target_score = score;
         }
@@ -311,15 +312,15 @@ rf::Entity* bot_perception_manager_select_enemy_target(
     if (has_locked_target
         && locked_target_candidate
         && best_target
-        && best_target->handle != g_client_bot_state.preferred_enemy_handle) {
+        && best_target->handle != bot_state().preferred_enemy_handle) {
         // If alternatives are similarly appealing, keep the locked target to avoid rapid
         // second-guessing between equivalent choices.
         float lock_switch_margin = std::lerp(60.0f, 220.0f, focus_norm);
-        if (g_client_bot_state.active_goal == BotGoalType::eliminate_target) {
+        if (bot_state().active_goal == BotGoalType::eliminate_target) {
             lock_switch_margin *= std::lerp(1.10f, 2.20f, eliminate_commitment_norm);
         }
-        if (g_client_bot_state.fsm_state == BotFsmState::recover_navigation
-            || g_client_bot_state.recovery_pending_reroute) {
+        if (bot_state().fsm_state == BotFsmState::recover_navigation
+            || bot_state().recovery_pending_reroute) {
             lock_switch_margin *= 1.75f;
         }
         if (locked_target_score <= best_score + lock_switch_margin) {
@@ -329,30 +330,30 @@ rf::Entity* bot_perception_manager_select_enemy_target(
     }
 
     if (best_target) {
-        if (best_target->handle != g_client_bot_state.preferred_enemy_handle
-            || !g_client_bot_state.preferred_enemy_lock_timer.valid()) {
-            g_client_bot_state.preferred_enemy_handle = best_target->handle;
+        if (best_target->handle != bot_state().preferred_enemy_handle
+            || !bot_state().preferred_enemy_lock_timer.valid()) {
+            bot_state().preferred_enemy_handle = best_target->handle;
             float lock_duration = std::lerp(
                 350.0f,
                 1700.0f,
                 std::clamp((alertness_norm + focus_norm) * 0.5f, 0.0f, 1.0f)
             );
-            if (g_client_bot_state.active_goal == BotGoalType::eliminate_target) {
+            if (bot_state().active_goal == BotGoalType::eliminate_target) {
                 lock_duration *= std::lerp(1.0f, 1.75f, eliminate_commitment_norm);
             }
-            if (g_client_bot_state.fsm_state == BotFsmState::recover_navigation
-                || g_client_bot_state.recovery_pending_reroute) {
+            if (bot_state().fsm_state == BotFsmState::recover_navigation
+                || bot_state().recovery_pending_reroute) {
                 lock_duration *= std::lerp(1.10f, 1.60f, focus_norm);
             }
             const int lock_ms = static_cast<int>(std::lround(
                 std::clamp(lock_duration, 200.0f, 4500.0f)
             ));
-            g_client_bot_state.preferred_enemy_lock_timer.set(lock_ms);
+            bot_state().preferred_enemy_lock_timer.set(lock_ms);
         }
     }
     else {
-        g_client_bot_state.preferred_enemy_handle = -1;
-        g_client_bot_state.preferred_enemy_lock_timer.invalidate();
+        bot_state().preferred_enemy_handle = -1;
+        bot_state().preferred_enemy_lock_timer.invalidate();
     }
 
     return best_target;

@@ -54,6 +54,7 @@
 #include "../rf/level.h"
 #include "../rf/collide.h"
 #include "bots/bot_personality.h"
+#include "bots/server_bots.h"
 #include <common/utils/os-utils.h>
 
 bool g_dedicated_launched_from_ads = false; // was the server launched from an ads file?
@@ -1189,8 +1190,8 @@ static void add_level_entry_from_table(
 static void parse_bot_config_table(ServerBotConfig& bot_cfg, const toml::table& tbl)
 {
     if (auto v = tbl["player_name"].value<std::string>()) {
-        bot_cfg.player_name = *v;
-        rf::console::print("  Bot player name:                       {}\n", *v);
+        bot_cfg.player_name = v->substr(0, k_max_player_name_len);
+        rf::console::print("  Bot player name:                       {}\n", bot_cfg.player_name);
     }
     if (auto v = tbl["mp_character"].value<std::string>()) {
         bot_cfg.mp_character = *v;
@@ -1306,6 +1307,11 @@ static void apply_known_key_in_order(AlpineServerConfig& cfg, const std::string&
     else if (key == "bot_shared_secret") {
         if (const auto v = node.value<uint32_t>()) {
             cfg.set_bot_shared_secret(*v);
+        }
+    }
+    else if (key == "server_bots") {
+        if (const auto v = node.value<int>()) {
+            cfg.set_server_bots(*v);
         }
     }
     else if (key == "fflink_gsk") {
@@ -1670,6 +1676,7 @@ void load_ads_server_config(std::string ads_config_name, bool allow_missing_leve
     g_base_scope_tables = std::move(g_parsing_base_scope_tables);
     g_level_scope_tables = std::move(g_parsing_level_scope_tables);
     clear_rcon_profile_sessions();
+    server_bots_reset_roster(g_alpine_server_config.server_bots);
 }
 
 static void download_missing_server_levels()
@@ -2299,6 +2306,7 @@ void print_alpine_dedicated_server_config_info(std::string& output, bool verbose
     }
     std::format_to(iter, "  Net FPS:                               {}\n", g_alpine_game_config.server_netfps);
     std::format_to(iter, "  Max players:                           {}\n", netgame.max_players);
+    std::format_to(iter, "  Server bots:                           {}\n", cfg.server_bots);
     std::format_to(iter, "  Levels in rotation:                    {}\n", cfg.levels.size());
     std::format_to(iter, "  Dynamic rotation:                      {}\n", cfg.dynamic_rotation);
     std::format_to(iter, "  Demos:\n");

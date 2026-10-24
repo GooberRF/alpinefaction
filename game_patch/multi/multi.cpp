@@ -27,6 +27,7 @@
 #include "vehicles/vehicle_physics.h"
 #include "mutators.h"
 #include "bots/bot_chat_manager.h"
+#include "bots/bot_context_fwd.h"
 #include "../fflink/afstats_events.h"
 #include "../hud/hud.h"
 #include "../hud/multi_spectate.h"
@@ -351,7 +352,7 @@ FunHook<void()> multi_limbo_init{
         if (!rf::local_player)
             return;
 
-        bot_chat_manager_on_limbo_enter(*rf::local_player);
+        bot_chat_manager_on_limbo_enter(client_bot_context(), *rf::local_player);
 
         rf::camera_enter_random_fixed_pos();
         rf::camera_enter_fixed(rf::local_player->cam);
@@ -543,6 +544,22 @@ bool is_remote_charge_pair(int weapon_a, int weapon_b)
     return is_rc(weapon_a) && is_rc(weapon_b);
 }
 
+bool multi_is_weapon_switch_locked(int from_weapon, int to_weapon)
+{
+    // GunGame allows only Remote Charge <-> Detonator; a lock-to-featured-weapon mutator (Instagib) only its weapon.
+    // Mutator rules exist only on the server.
+    return (gt_is_gungame() && !is_remote_charge_pair(from_weapon, to_weapon))
+        || (rf::is_server && mutators_should_deny_weapon_switch(from_weapon, to_weapon));
+}
+
+bool multi_weapon_fire_is_thrown(int weapon_type, bool alt_fire)
+{
+    return weapon_type == rf::grenade_weapon_type
+        || (weapon_type >= 0 && weapon_type < rf::num_weapon_types
+            && (rf::weapon_types[weapon_type].flags & rf::WTF_REMOTE_CHARGE))
+        || (rf::weapon_is_flamethrower(weapon_type) && alt_fire);
+}
+
 void multi_hide_level_items(const std::vector<int>& allowed_item_type_indices, bool preserve_ctf_objects)
 {
     if (!rf::is_server) return;
@@ -611,13 +628,9 @@ FunHook<void(rf::Player*, rf::Entity*, int)> multi_select_weapon_server_side_hoo
             // Nothing to do
             return;
         }
-        if (gt_is_gungame() && !is_remote_charge_pair(ep->ai.current_primary_weapon, weapon_type)) {
-            // Deny switching in GG except Remote Charge <-> Detonator.
-            return;
-        }
-        if (mutators_should_deny_weapon_switch(ep->ai.current_primary_weapon, weapon_type)) {
-            // Instagib locks the player to the rail.
-            xlog::debug("Player {} denied weapon switch to {} by active mutator", pp->name, weapon_type);
+        if (multi_is_weapon_switch_locked(ep->ai.current_primary_weapon, weapon_type)) {
+            xlog::debug("Player {} denied weapon switch to {} by the game type or an active mutator", pp->name,
+                weapon_type);
             return;
         }
         bool has_weapon;
@@ -948,13 +961,8 @@ FunHook<void(rf::Entity*, int, rf::Vector3&, rf::Matrix3&, bool)> multi_process_
         // Notify spectate system of weapon fire so the fpgun fire animation is triggered.
         // Skip thrown projectile weapons (grenade, C4, flamethrower canister alt-fire) because
         // their animation is driven earlier and at the correct time by entity_play_attack_anim_spectate_hook.
-        if (!rf::is_server) {
-            bool is_thrown = (weapon_type == rf::grenade_weapon_type)
-                || (weapon_type == rf::remote_charge_weapon_type)
-                || (rf::weapon_is_flamethrower(weapon_type) && alt_fire);
-            if (!is_thrown) {
-                multi_spectate_on_obj_update_fire(ep, alt_fire);
-            }
+        if (!rf::is_dedicated_server && !multi_weapon_fire_is_thrown(weapon_type, alt_fire)) {
+            multi_spectate_on_obj_update_fire(ep, alt_fire);
         }
     },
 };

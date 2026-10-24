@@ -26,6 +26,10 @@ Version 1.5.0 (Trillium): Not yet released
   - Mirror `Terrain Tools` brush strokes across the terrain's X and/or Z axis, with movable mirror lines
   - Up to 4 detail overlays (leaves, debris) and 8 mesh decoration layers per terrain (grass, rocks, bushes)
   - `Geoable` terrains are carved by RF2-style geomod craters, with their own underside and crater textures
+- Add server-side bots, which run inside the dedicated or listen server process in addition to (or instead of) bot clients
+  - `server_bots` ADS option (0-31) sets how many server bots join; they use the `bot_profiles` profiles and follow `ideal_player_count` like bot clients
+  - Server bots count toward `max_players`; when a human player joins a full server, a server bot leaves to make room and rejoins when a slot frees up (never beyond 32 players in total, so on a 32-slot server bots do not make room)
+  - Add `sv_bot_add [profile_index] [red|blue]`, `sv_bot_remove <name|all>` and `sv_bot_list` server console commands, which also work through rcon profiles and return their output to the rcon holder
 - Add new multiplayer game type: Scavenger (`SCAV`)
 
 [@GooberRF](https://github.com/GooberRF) & [@nickalreadyinuse](https://github.com/nickalreadyinuse)
@@ -111,6 +115,14 @@ Version 1.5.0 (Trillium): Not yet released
 - Show `Your team has the bag` in Team Bagman
 - Add team-relative bag carrier icons and outline colors
 - Raise the limit on items per level from 200 to 2000 for v306+ levels
+- Reduce the CPU time bots spend choosing goals and planning routes, and stop bots from repeatedly searching for routes to destinations they cannot reach
+- Spread the `hard`, `expert` and `nightmare` bot skill presets apart; expert and nightmare previously aimed and decided identically, and hard almost so
+- Add `reaction_time_ms`, `aim_error_min`, `aim_error_max`, `yaw_speed_cap`, `pitch_speed_cap`, `fire_alignment_threshold` and `semi_auto_click_interval_scale` bot skill fields for `skill_overrides` in bot profiles
+- Allow the bot personality and skill bias fields that were raised to at least 0.25 to be set to 0 to switch off what they scale
+- Make bots choose weapons by their expected damage at the current distance (from the weapons' `weapons.tbl` stats, with personality preferences as a weight), switch on pickups and new targets, fire only within a weapon's effective range, and keep one remote charge out at a time, setting it off when an enemy is in the blast
+- Make bots use explosives safely (no splash fire that would kill the bot or reach a teammate, backing out of their own blast before firing; the only exception is a sure kill when cornered with the only weapon left, such as a GunGame fusion launcher; rockets aimed at the feet, geomod craters fired from a distance), top up their clip once the enemy is out of sight, and stop leaving fights for pickups that are not on the way
+- Make bots walk straight to objectives, items and enemies only when nothing (including glass and fences) is in the way and there is no ledge to drop off, and look ahead round corners or toward where a threat was last noticed instead of crab-walking and sweeping their view while moving; the `navigation_strafe_bias` personality field now only switches this look-ahead on (above 0) or off (0)
+- Ignore connected human players who are not playing (not spawned and not killed in the last 5 seconds) when picking a joining bot's team
 - Add `Fit`, `Fit Aspect`, `Justify`, and `Wrap` buttons to texture mode in the level editor
 - Show the texture, size and texel density of the face under the cursor (or the selected face) in the level editor status bar in texture mode, and outline it in the viewports
 - Add a `Texture lock` toggle (hotkey 6, off by default) to the level editor top bar
@@ -269,6 +281,14 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix crash reports leaving out memory regions and backtrace frames above 2 GB when the game or level editor runs with 4 GB of address space
 - Fix the Rail Driver beam veering away from the shot's path after piercing a surface, toggleable with `cl_railbeamfix`
 - Fix players keeping a phantom copy of an item created while they were loading the level
+- Fix a listen server host's respawn countdown restarting, and their queued spawn being dropped, whenever another player died while spawn delays were enabled
+- Fix a listen server host being respawned while still alive after another player died with spawn delays and forced respawns enabled
+- Fix a listen server host getting no damage numbers or hit sounds when damaging other players
+- Fix a listen server host's "spectating you" list never filling
+- Fix chat commands (such as `/stats`) typed or picked from the Commands chat menu by a listen server host being sent as chat instead of running
+- Fix "You are on team" showing on every spawn of a listen server host in team modes; it now shows when their team is assigned or changes
+- Fix a spectating listen server host not seeing the spectated player's ammo, weapon fire animations, damage numbers, awards or critical hit flashes
+- Fix bot clients losing the `personality_overrides` and `skill_overrides` of their bot profile (such as `taunt_on_kill_chance`) when the server sent their skill preset
 - Fix level editor viewports only showing texture coordinate changes immediately in `Render Everything` mode
 - Fix undo and redo of texture changes in the level editor not updating the level geometry until it is rebuilt
 - Fix level editor viewports not using all of a monitor larger than the primary one
