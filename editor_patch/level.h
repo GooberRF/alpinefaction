@@ -5,6 +5,7 @@
 #include <cstring>
 #include <initializer_list>
 #include <map>
+#include <optional>
 #include <unordered_map>
 #include <type_traits>
 #include <unordered_set>
@@ -97,9 +98,15 @@ struct TextureGroup;
 struct GVertex
 {
     Vector3 pos;                   // +0x00
-    char _pad_0C[0x20 - 0x0C];    // +0x0C
-    VArray<void*> face_refs;       // +0x20 back-references to faces using this vertex
+    Vector3 rotated_pos;           // +0x0C view space, scaled, as the per-face draw (0x004E94B0) last rotated it
+    int last_frame;                // +0x18 GSolid render stamp of that rotation
+    int clip_codes;                // +0x1C clip codes of that rotation
+    VArray<GFace*> face_refs;      // +0x20 back-references to faces using this vertex
 };
+static_assert(offsetof(GVertex, rotated_pos) == 0x0C);
+static_assert(offsetof(GVertex, last_frame) == 0x18);
+static_assert(offsetof(GVertex, clip_codes) == 0x1C);
+static_assert(offsetof(GVertex, face_refs) == 0x20);
 
 // Per-face vertex wrapper (0x1C bytes, pool-allocated at 0x00A12530)
 // Contains texture coords and pointer to shared GVertex; linked in circular doubly-linked list per face.
@@ -405,6 +412,7 @@ struct GSurface
     int u_coefficient;      // +0x60  axis of bbox_mn/bbox_mx the lightmap u follows
     int v_coefficient;      // +0x64
     int room_index;         // +0x68  index into GSolid::all_rooms, -1 for none
+    Plane plane;            // +0x6C  the flat path's lumel normal (0x004adda7)
 };
 static_assert(offsetof(GSurface, index) == 0x00);
 static_assert(offsetof(GSurface, flags) == 0x08);
@@ -425,6 +433,7 @@ static_assert(offsetof(GSurface, dropped_coefficient) == 0x5C);
 static_assert(offsetof(GSurface, u_coefficient) == 0x60);
 static_assert(offsetof(GSurface, v_coefficient) == 0x64);
 static_assert(offsetof(GSurface, room_index) == 0x68);
+static_assert(offsetof(GSurface, plane) == 0x6C);
 
 // FUN_004ac470 (thiscall on the surface, RET 8): does the GSurfaceFlags work the surface carries.
 // `mode` is the shadow mode, 0 for none.
@@ -472,6 +481,62 @@ struct SmoothLumelLocals
 static_assert(offsetof(SmoothLumelLocals, crossing_normal) == 0x0C);
 static_assert(offsetof(SmoothLumelLocals, pos) == 0x18);
 static_assert(offsetof(SmoothLumelLocals, crossing_pos) == 0x24);
+
+// An edge crossing of FUN_004ad160's smooth path pick (written at 0x004ad606): the edge a -> b of a face's edge loop
+// and FUN_004952d0's pointers to the vertex normals of both ends.
+struct LumelCrossing
+{
+    GFaceVertex* a;
+    Vector3* n_a;
+    GFaceVertex* b;
+    Vector3* n_b;
+};
+static_assert(sizeof(LumelCrossing) == 0x10);
+static_assert(offsetof(LumelCrossing, n_a) == 0x04);
+static_assert(offsetof(LumelCrossing, b) == 0x08);
+static_assert(offsetof(LumelCrossing, n_b) == 0x0C);
+
+// FUN_004ad160's smooth path locals as seen from ESP inside its per-lumel loop (0x004ad32e..0x004adbd0).
+struct LumelPassFrame
+{
+    char _pad_00[0x18];
+    float u;                  // +0x18  lumel centre in lightmap UV
+    char _pad_1c[0x24 - 0x1c];
+    float v;                  // +0x24
+    char _pad_28[0x34 - 0x28];
+    int row;                  // +0x34
+    char _pad_38[0x48 - 0x38];
+    VArray<Vector3>* normals; // +0x48  FUN_004aded0's vertex normals, per face of `faces`, in edge-loop order
+    char _pad_4c[0x5c - 0x4c];
+    VArray<GFace*> faces;     // +0x5C
+    char _pad_68[0x74 - 0x68];
+    int col;                  // +0x74
+    char _pad_78[0xa0 - 0x78];
+    LumelCrossing crossings[2]; // +0xA0
+    char _pad_c0[0xe0 - 0xc0];
+    SmoothLumelLocals lumel;  // +0xE0  what the accumulator call at 0x004adb30 passes
+    char _pad_110[0x298 - 0x110];
+    GSurface* surface;        // +0x298
+};
+static_assert(offsetof(LumelPassFrame, u) == 0x18);
+static_assert(offsetof(LumelPassFrame, v) == 0x24);
+static_assert(offsetof(LumelPassFrame, row) == 0x34);
+static_assert(offsetof(LumelPassFrame, normals) == 0x48);
+static_assert(offsetof(LumelPassFrame, faces) == 0x5C);
+static_assert(offsetof(LumelPassFrame, col) == 0x74);
+static_assert(offsetof(LumelPassFrame, crossings) == 0xA0);
+static_assert(offsetof(LumelPassFrame, lumel) == 0xE0);
+static_assert(offsetof(LumelPassFrame, surface) == 0x298);
+
+// FUN_004aded0's locals as seen from ESP inside its per-vertex loop (0x004adf62..0x004ae014).
+struct VertexNormalFrame
+{
+    char _pad_00[0x1c];
+    VArray<Vector3>* normals; // +0x1C  the current face's vertex normals, appended in edge-loop order
+    Vector3 normal;           // +0x20  the vertex normal being built
+};
+static_assert(offsetof(VertexNormalFrame, normals) == 0x1C);
+static_assert(offsetof(VertexNormalFrame, normal) == 0x20);
 
 // One smoothed surface of the blend pass: FUN_004aabf0 builds the array (ctor FUN_004ab980) and
 // hands it to FUN_004aae80.
@@ -2202,5 +2267,9 @@ bool editor_large_address_aware();
 
 // Inside RED's autosave (CDedDoc::LoadSaveLevel with is_autosave set).
 bool level_autosave_in_progress();
+// Saves the open level now under RED's autosave name ("~" before the extension; an untitled level as Untitled~.rfl in
+// the working directory), whatever the autosave setting. The full path written, or none when nothing was saved: no
+// level, a build, Calculate Lighting or an autosave running, or the save failed.
+std::optional<std::string> level_autosave_now();
 
 void DedLevel_DoBackLink();

@@ -398,6 +398,7 @@ add_packfile(alpinefaction.vpp
     standard_vs:${CMAKE_BINARY_DIR}/shaders/standard_vs.bin
     character_vs:${CMAKE_BINARY_DIR}/shaders/character_vs.bin
     transformed_vs:${CMAKE_BINARY_DIR}/shaders/transformed_vs.bin
+    editor_lightmap_vs:${CMAKE_BINARY_DIR}/shaders/editor_lightmap_vs.bin
     particle_vs:${CMAKE_BINARY_DIR}/shaders/particle_vs.bin
     particle_stretched_vs:${CMAKE_BINARY_DIR}/shaders/particle_stretched_vs.bin
     weather_vs:${CMAKE_BINARY_DIR}/shaders/weather_vs.bin

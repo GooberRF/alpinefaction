@@ -16,6 +16,7 @@
 #include "../rf/level.h"
 #include "../rf/file/file.h"
 #include "../os/os.h"
+#include <common/alpine_gas_region.h>
 
 constexpr int alpine_props_chunk_id = 0x0AFBA5ED;
 constexpr int dash_level_props_chunk_id = 0xDA58FA00;
@@ -573,21 +574,6 @@ struct AlpineVehicleFactoryInfo {
 void vehicle_factory_load_chunk(rf::File& file, std::size_t chunk_len);
 void vehicle_factory_clear_state();
 bool vehicle_level_has_factories();
-
-// Gas region info, loaded from stock RFL chunk 0xB00
-struct GasRegionInfo {
-    int32_t uid = -1;
-    rf::Vector3 pos{};
-    rf::Matrix3 orient{};
-    int32_t shape = 1;       // 1=sphere, 2=box
-    float radius = 1.0f;     // sphere only
-    float height = 1.0f;     // box only
-    float width = 1.0f;      // box only
-    float depth = 1.0f;      // box only
-    rf::Color color{255, 255, 255, 255};
-    float density = 1.0f;
-    bool enabled = true;
-};
 
 void gas_region_clear_state();
 const std::vector<GasRegionInfo>& gas_region_get_all();

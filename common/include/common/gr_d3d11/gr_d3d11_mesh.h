@@ -8,14 +8,6 @@
 #include "gr_d3d11_shader.h"
 #include <gr_d3d11_engine.h>
 
-namespace rf
-{
-    struct VifLodMesh;
-    struct MeshMaterial;
-    struct MeshRenderParams;
-    struct CharacterInstance;
-}
-
 namespace gr::d3d11
 {
     class StateManager;

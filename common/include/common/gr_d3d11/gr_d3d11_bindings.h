@@ -87,6 +87,8 @@ namespace gr::d3d11::engine
 
     // Meshes
     bool character_meshes_fullbright();
+    // Static (v3d) meshes drawn unlit, as character meshes are while character_meshes_fullbright is set
+    bool static_meshes_fullbright();
     // The mesh ambient for a custom ambient (a lightmap colour 0..1)
     void mesh_blend_ambient(const float (&lightmap)[3], float (&out)[3]);
     // The sun's scale on a mesh lit by `ambient`, or by the level ambient when null

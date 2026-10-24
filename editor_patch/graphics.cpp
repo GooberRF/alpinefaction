@@ -15,6 +15,7 @@
 #include "alpine_obj.h"
 #include "terrain_preview.h"
 #include "editor_settings.h"
+#include "graphics/d3d11/gr_d3d11_editor_hooks.h"
 
 HWND GetMainFrameHandle();
 
@@ -344,12 +345,8 @@ CodeInjection geo_cache_validate_in_render{
 CodeInjection geo_build_reset_render_cache{
     0x0043a6cd, // MOV ECX, dword ptr [0x006f9e68] — right after post-build room loop
     [](auto& regs) {
-        auto& pool_cursor = addr_as_ref<void*>(0x01128364);
-        auto& pool_base = addr_as_ref<void*>(0x010e8f60);
-        auto& tracked_room_count = addr_as_ref<int>(0x010ac748);
-
-        pool_cursor = pool_base;
-        tracked_room_count = 0;
+        geo_cache_pool_cursor = geo_cache_pool_base;
+        rf::geo_cache_num_rooms = 0;
     },
 };
 
@@ -595,6 +592,35 @@ void editor_apply_force_lod0()
 
 void ApplyGraphicsPatches()
 {
+    // Add Sleep if window is inactive
+    frametime_calculate_hook.install();
+
+    // Improve performance
+    after_gr_init_hook.install();
+
+    // Fix editor not using all space for rendering when used with a big monitor
+    gr_init_hook.install();
+
+    // Fix aspect ratio on wide screens
+    gr_init_widescreen_patch.install();
+
+    // Use Hor+ FOV scaling
+    gr_setup_3d_hook.install();
+
+    // When rendering semi-transparent objects do not group them behind alpha detail rooms, same as the game.
+    // Stock stores up to 128 groups per room without a limit check.
+    AsmWriter{0x00425789}.jmp(0x00425831);
+    AsmWriter{0x00425847}.nop(2);
+
+    // Draw the sky in Render Everything as the portal modes do
+    level_render_everything_hook.install();
+
+    if (editor_session_renderer() == EditorRendererKind::d3d11) {
+        editor_d3d11_apply_patch();
+        return;
+    }
+
+    // Everything below patches the stock Direct3D 8 backend, which the Direct3D 11 renderer replaces
 #if D3D_HW_VERTEX_PROCESSING
     // Use hardware vertex processing instead of software processing
     write_mem<u8>(0x004EC73E + 1, D3DCREATE_HARDWARE_VERTEXPROCESSING);
@@ -604,12 +630,6 @@ void ApplyGraphicsPatches()
 
     // Avoid flushing D3D buffers in GrSetColorRgba
     AsmWriter(0x004B976D).nop(5);
-
-    // Add Sleep if window is inactive
-    frametime_calculate_hook.install();
-
-    // Improve performance
-    after_gr_init_hook.install();
 
     // Reduce number of draw-calls for line rendering
     AsmWriter(0x004E1335).nop(5);
@@ -640,15 +660,6 @@ void ApplyGraphicsPatches()
     gr_texture_mip_create_failure_unlock.install();
     gr_texture_mip_upload_failure_unlock.install();
 
-    // Fix editor not using all space for rendering when used with a big monitor
-    gr_init_hook.install();
-
-    // Fix aspect ratio on wide screens
-    gr_init_widescreen_patch.install();
-
-    // Use Hor+ FOV scaling
-    gr_setup_3d_hook.install();
-
     // Use d3d8to9 instead of d3d8
     gr_d3d_init_load_library_injection.install();
 
@@ -660,11 +671,6 @@ void ApplyGraphicsPatches()
 
     // Reset render cache pool after geometry rebuild so stale geo_cache pointers are detected
     geo_build_reset_render_cache.install();
-
-    // When rendering semi-transparent objects do not group them behind alpha detail rooms, same as the game.
-    // Stock stores up to 128 groups per room without a limit check.
-    AsmWriter{0x00425789}.jmp(0x00425831);
-    AsmWriter{0x00425847}.nop(2);
 
     // Expand detail rooms array from 256 entries (0x010cee5c)
     // Array base references
@@ -810,7 +816,4 @@ void ApplyGraphicsPatches()
 
     // Restore render state after D3D device Reset()
     gr_d3d_device_reset_state_recovery.install();
-
-    // Draw the sky in Render Everything as the portal modes do
-    level_render_everything_hook.install();
 }

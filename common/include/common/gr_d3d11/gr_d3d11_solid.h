@@ -9,13 +9,6 @@
 #include "gr_d3d11_terrain.h"
 #include <gr_d3d11_engine.h>
 
-namespace rf
-{
-    struct GRoom;
-    struct GSolid;
-    struct GDecal;
-}
-
 namespace gr::d3d11
 {
     class StateManager;
@@ -28,8 +21,45 @@ namespace gr::d3d11
 
     enum class FaceRenderType { opaque, alpha, liquid };
 
+    // How the level geometry is drawn: the editor's View menu display modes. The game always draws normal.
+    enum class SolidDisplayMode { normal, textures_only, room_colors, see_through };
+
+    // What the level caches hold: the editor's View options. The game keeps the defaults.
+    struct SolidCacheOptions
+    {
+        SolidDisplayMode display_mode = SolidDisplayMode::normal;
+        bool invisible_faces_drawn = false;
+        bool portal_faces_drawn = false;
+        // Faces it returns true for are left out
+        bool (*hides_face)(const rf::GFace& face) = nullptr;
+        bool level_decals_hidden = false;
+        // Also kept for SolidRenderer::render_overlay: the edges of the faces, and the portal faces left out
+        bool edges_built = false;
+        bool portal_planes_built = false;
+
+        bool operator==(const SolidCacheOptions&) const = default;
+    };
+
+    // What SolidRenderer::render_overlay draws of the caches: lines, or triangles
+    enum class SolidOverlay { edges, portal_planes };
+
     // A terrain batch's crater texture for its top and underside faces, which have none.
     constexpr int no_crater_texture = -2;
+
+    // The mode a level decal draws in
+    inline rf::gr::Mode determine_decal_mode(const rf::GDecal* decal)
+    {
+        if (decal->flags & rf::DF_SELF_ILLUMINATED) {
+            return rf::gr_decal_self_illuminated_mode;
+        }
+        if (decal->flags & rf::DF_TILING_U) {
+            return rf::gr::decal_tiling_u_mode;
+        }
+        if (decal->flags & rf::DF_TILING_V) {
+            return rf::gr::decal_tiling_v_mode;
+        }
+        return rf::gr::decal_mode;
+    }
 
     class SolidRenderer
     {
@@ -47,6 +77,24 @@ namespace gr::d3d11
         // Drops the cache a detail room's geo_cache points at, leaving it to be rebuilt.
         void release_detail_room_cache(rf::GRoom* room);
         void reset_cache_after_boolean();
+        // Shapes the caches built afterwards, so a change is followed by clear_cache()
+        void set_cache_options(const SolidCacheOptions& options)
+        {
+            cache_options_ = options;
+        }
+        const SolidCacheOptions& cache_options() const
+        {
+            return cache_options_;
+        }
+        // The editor's View > Show Back Faces; the game culls them
+        void set_two_sided(bool two_sided)
+        {
+            cull_mode_ = two_sided ? D3D11_CULL_NONE : D3D11_CULL_BACK;
+        }
+        // The editor's extras over what render_solid / render_sky_room draw of these rooms, as the cache options
+        // built them, with the shaders and states the caller bound
+        void render_overlay(SolidOverlay what, rf::GSolid* solid, rf::GRoom** rooms, int num_rooms);
+        void render_sky_room_overlay(SolidOverlay what, rf::GRoom* room);
         void release_terrain_gpu()
         {
             terrain_renderer_.release();
@@ -115,5 +163,7 @@ namespace gr::d3d11
         std::vector<std::unique_ptr<GRenderCache>> detail_render_cache_;
         std::unordered_map<rf::GSolid*, std::unique_ptr<GRenderCache>> mover_render_cache_;
         std::vector<rf::GRoom*> geo_cache_rooms_;
+        SolidCacheOptions cache_options_;
+        D3D11_CULL_MODE cull_mode_ = D3D11_CULL_BACK;
     };
 }

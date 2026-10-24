@@ -562,7 +562,7 @@ void corona_render(CDedLevel* level)
 
     corona_load_icon();
 
-    float cam_param = gr_cam_param;
+    const rf::gr::Mode billboard_mode = rf::gr::bitmap_3d_mode_no_z;
 
     // Selection membership, so a multi-select previews on every corona the dialog will write to.
     const bool preview_all = g_corona_preview.active && !g_selected_coronas.empty();
@@ -595,7 +595,7 @@ void corona_render(CDedLevel* level)
             if (bm_handle >= 0) {
                 set_draw_color(color_r, color_g, color_b, 255);
                 gr_set_bitmap(bm_handle, -1);
-                render_additive_billboard(&corona->pos, radius_scale * 0.5f, cam_param);
+                render_additive_billboard(&corona->pos, radius_scale * 0.5f, billboard_mode);
             }
 
             // Show volumetric bitmap as axial billboard along forward vector
@@ -609,7 +609,7 @@ void corona_render(CDedLevel* level)
                     render_additive_axial_quad(
                         corona->pos, corona->orient,
                         vol_length, vol_height,
-                        cam_param);
+                        billboard_mode);
                 }
             }
         }
@@ -627,7 +627,7 @@ void corona_render(CDedLevel* level)
                 gr_set_bitmap(g_corona_icon_handle, -1);
             }
 
-            gr_render_billboard(&corona->pos, 0, 0.25f, cam_param);
+            gr_render_billboard(&corona->pos, 0, 0.25f, billboard_mode);
         }
 
         // Always draw direction arrow (cyan) along forward vector (min 1m, or volumetric length)

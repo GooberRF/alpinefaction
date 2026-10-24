@@ -20,6 +20,7 @@
 #include "alpine_spinner.h"
 #include "dialog_tooltips.h"
 #include "editor_settings.h"
+#include "graphics/editor_gr.h"
 #include "level.h"
 #include "mfc_types.h"
 #include "resources.h"
@@ -1315,9 +1316,7 @@ void draw_face_outline(const SelectedFace& f, uint8_t alpha, uint32_t mode)
         const Vector3 b = corner_world(f, *fv.next);
         gr_line_3d(&a, &b, mode);
     });
-    if (gr_batch_open) {
-        gr_flush_batch();
-    }
+    editor_gr_flush();
 }
 
 constexpr DialogTooltip texture_panel_tips[] = {
@@ -1842,9 +1841,7 @@ void texture_mode_render_view()
         || !level->solid || face_id < 0) {
         return;
     }
-    if (gr_batch_open) {
-        gr_flush_batch();
-    }
+    editor_gr_flush();
     // In the 3D view the parts behind other geometry show dimmed
     auto draw = [&](const SelectedFace& f) {
         if (view->view_type == editor_view_type_perspective) {

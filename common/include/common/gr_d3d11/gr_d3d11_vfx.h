@@ -10,12 +10,6 @@
 #include "gr_d3d11_shader.h"
 #include "gr_d3d11_vertex.h"
 
-namespace rf
-{
-    struct VfxSfxoChunk;
-    struct VfxSfxoRenderObj;
-}
-
 namespace gr::d3d11
 {
     class RenderContext;

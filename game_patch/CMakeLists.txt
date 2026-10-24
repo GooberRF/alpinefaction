@@ -51,8 +51,6 @@ set(SRCS
     bmpman/dds.cpp
     bmpman/bmpman.cpp
     bmpman/bmpman.h
-    bmpman/fmt_conv.cpp
-    bmpman/fmt_conv_templates.h
     bmpman/stb_image_loader.cpp
     bmpman/stb_image_loader.h
     graphics/bink.cpp

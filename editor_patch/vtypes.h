@@ -5,6 +5,10 @@
 #include <iterator>
 #include <patch_common/MemUtils.h>
 #include "mfc_types.h"
+#include "graphics/d3d11/engine/rf_math.h"
+#include "graphics/d3d11/engine/rf_gr.h"
+#include "graphics/d3d11/engine/rf_geometry.h"
+#include "graphics/d3d11/engine/rf_mesh.h"
 
 namespace rf
 {
@@ -173,8 +177,7 @@ struct EditorMeshMaterial {
     int material_type;
     int flags;
     bool use_additive_blending;
-    char _pad[3];
-    Color diffuse_color;
+    Color diffuse_color; // +0x09, as the stock .vfx renderer (RF 0x00553EE0) reads it
     EditorTextureMap texture_maps[2];
     int framerate;
     int num_mix_frames;
@@ -340,7 +343,7 @@ static_assert(offsetof(EditorVfxPart, height) == 0x14);
 static_assert(offsetof(EditorVfxPart, vertex_positions) == 0x80);
 
 // EditorVifFace::flags bit marking a face the renderer draws from both sides.
-constexpr int VIF_FACE_DOUBLE_SIDED = 0x20;
+using rf::VIF_FACE_DOUBLE_SIDED;
 
 // Level the LOD walkers clamp to the mesh's lowest detail.
 inline constexpr int vmesh_lowest_lod = INT_MAX;
@@ -570,6 +573,10 @@ static auto& gr_setup_3d = addr_as_ref<void __cdecl(const Matrix3* orient, const
 
 static auto& gr_set_far_clip = addr_as_ref<void __cdecl(float dist)>(0x004C5B30);
 static auto& gr_far_clip_dist = addr_as_ref<float>(0x0158F3F8);
+// Fog on or off in gr_screen, then the backend's fog_set. The clip pair is stored only when on and
+// 0 <= near_clip <= far_clip; otherwise the last pair stays. Stock RED calls it only from gr_init.
+static auto& gr_fog_set =
+    addr_as_ref<void __cdecl(bool on, int r, int g, int b, float near_clip, float far_clip)>(0x004BA7A0);
 
 // Gathers the scene lights reaching a sphere into the render light list; paired with room_cleanup.
 static auto& room_setup = addr_as_ref<int __cdecl(void* room, const Vector3* pos, float radius,
@@ -585,6 +592,9 @@ static auto& room_lights_to_local = addr_as_ref<void __cdecl()>(0x00488BE0);
 static auto& geo_cache_flush_all = addr_as_ref<void __cdecl()>(0x0049B4E0);
 // End of the viewport geometry cache pool.
 static auto& geo_cache_pool_end = addr_as_ref<char*>(0x010A84C0);
+// Its start and next free byte (0x0049B470 allocates the pool, geo_cache_flush_all rewinds it)
+static auto& geo_cache_pool_base = addr_as_ref<void*>(0x010E8F60);
+static auto& geo_cache_pool_cursor = addr_as_ref<void*>(0x01128364);
 // A batch record of a viewport geometry cache, as FUN_0049b550 fills it.
 struct RedCacheBatch
 {
@@ -663,9 +673,8 @@ static auto& set_draw_color = addr_as_ref<void(uint32_t r, uint32_t g, uint32_t 
 static auto& gr_set_bitmap = addr_as_ref<void(int bm_handle, int unk)>(0x004B97E0);
 // View > Show Just Textures: nonzero draws level faces fullbright, without lightmaps.
 static auto& editor_textures_enabled = addr_as_ref<int>(0x006C9AA8);
-// Set around a .vfx draw so the renderer takes its transparency path.
-static auto& vfx_render_transparent = addr_as_ref<int>(0x0059E21C);
-static auto& gr_render_billboard = addr_as_ref<void(void* pos, int unk, float scale, float param)>(0x004CB360);
+// The game's gr::bitmap_3d_angle (RF 0x00515B40)
+static auto& gr_render_billboard = addr_as_ref<void(void* pos, int unk, float scale, rf::gr::Mode mode)>(0x004CB360);
 static auto& draw_line_2d = addr_as_ref<uint32_t(const void* pt1, const void* pt2, uint32_t mode)>(0x004CB150);
 static auto& project_to_screen_2d = addr_as_ref<bool(const void* world_pos, float* out_x, float* out_y)>(0x004C6630);
 
@@ -701,6 +710,10 @@ inline EditorRay editor_screen_ray(float x, float y)
     return {{r[0], r[1], r[2]}, {r[3], r[4], r[5]}};
 }
 static auto& gr_perspective = addr_as_ref<uint8_t>(0x0057E0ED);
+// The view-space z gr_rotate_vertex (0x004C66C0) gives every vertex of an orthographic view; gr_setup_3d sets 0.98
+static auto& gr_ortho_rotated_z = addr_as_ref<float>(0x0158F40C);
+// Set by gr_init; the vertex projection and polygon paths clip on the CPU while it is
+static auto& gr_needs_software_clipping = addr_as_ref<bool>(0x0057DAB6);
 // The screen centre of the view last set up, which screen_to_ray measures from
 static auto& gr_half_width = addr_as_ref<float>(0x0158F2EC);
 static auto& gr_half_height = addr_as_ref<float>(0x0158F2B4);
@@ -717,6 +730,21 @@ static auto& level_render_mode = addr_as_ref<int>(0x0057B9B8); // LevelRenderMod
 static auto& view_see_through = addr_as_ref<int>(0x006C9A94);
 static auto& view_room_colors = addr_as_ref<int>(0x006C9A98);
 static auto& view_lightmaps_only = addr_as_ref<int>(0x006C9AA4);
+// Set by each 3D view paint (0x0047AE3F): 1 only for View > Draw Non-see-thru Portal Faces
+static auto& view_portal_faces = addr_as_ref<int>(0x006C9A9C);
+// View > Don't Draw / Draw See-thru / Draw Non-see-thru Portal Faces (handlers 0x00449EE0 / 0x00449F20 / 0x00449F60)
+enum ViewPortalOption : int
+{
+    VIEW_PORTAL_FACES_NONE = 0,
+    VIEW_PORTAL_FACES_SEE_THRU = 1,
+    VIEW_PORTAL_FACES_SOLID = 2,
+};
+static auto& view_portal_option = addr_as_ref<int>(0x006CA630); // ViewPortalOption
+// The View menu display mode (handlers 0x00449FE0..0x0044A120 set 2..7), which each 3D view paint (0x0047ADB3) turns
+// into the flags above: 2 textures only, 5 lightmaps only, 6 room colours, 7 see-through, 4 (and 0, 1, 3) textures
+// with lightmaps
+static auto& view_display_mode = addr_as_ref<int>(0x0057B9B4);
+constexpr int view_display_mode_lightmapped = 4;
 static auto& painting_view_index = addr_as_ref<int>(0x006C9ACC);
 
 // ─── Texture mode panel ──────────────────────────────────────────────────────
@@ -1166,7 +1194,8 @@ static auto& gr_batch_open = addr_as_ref<bool>(0x0183930d);
 static auto& gr_d3d_render_mode_cache = addr_as_ref<int>(0x01838dc0);
 
 // Render mode and polygon submission
-static auto& gr_set_mode = addr_as_ref<void(int)>(0x004BA730);
+// Clamped to 0..16 into gr_screen; RED's Direct3D 8 backend ignores it (0x004E0450 is a RET), as Direct3D 11 does
+static auto& gr_set_zbias = addr_as_ref<void(int zbias)>(0x004BA730);
 // Fanned from vertex 0; mode as FUN_0047e140 packs it (0x004E8400 hands it to FUN_004e0490).
 static auto& gr_poly_render = addr_as_ref<uint8_t __cdecl(int count, GrVertex** verts, uint32_t tmap_flags,
                                                           uint32_t mode, int override_z, float z)>(0x004CB1C0);
@@ -1200,6 +1229,9 @@ constexpr uint32_t mode_vertex = gr_mode(0, 0, 0, 0, 4, 0);
 constexpr uint32_t mode_vertex_alpha = gr_mode(0, 0, 0, 3, 1, 0);
 // as mode_vertex_alpha, ignoring the depth buffer: drawn over everything
 constexpr uint32_t mode_overlay = gr_mode(0, 0, 0, 3, 0, 0);
+// The vertex alpha of the translucent guide planes drawn in mode_vertex_alpha: the Terrain Tools mirror lines and
+// View > Draw See-thru Portal Faces
+constexpr uint8_t guide_plane_alpha = 0x20;
 
 // Depth of the pushed instance transforms (0x004edf50 pushes, 0x004ee0a0 pops): nonzero while a mover's
 // is pushed, when the scene lights are kept in its frame too (GrLight::local_vec).
@@ -1214,9 +1246,6 @@ static auto& gr_compute_clip_flags = addr_as_ref<uint32_t(void*)>(0x004c5df0);
 // Camera position and 3x3 view matrix used by the editor's rendering pipeline
 static auto& ed_cam_pos = addr_as_ref<float[3]>(0x0158ef20);
 static auto& ed_view_mat = addr_as_ref<float[9]>(0x0158ef58); // row-major 3x3
-
-// Billboard camera parameter (used as depth sort / z-bias)
-static auto& gr_cam_param = addr_as_ref<float>(0x014cf7e0);
 
 struct GRoom;
 struct GSolid;
@@ -1285,6 +1314,123 @@ static auto& face_light_count = addr_as_ref<int>(0x007432ec);
 static auto& light_get_ambient = addr_as_ref<void __cdecl(float* r, float* g, float* b)>(0x00487920);
 // RED's shared read-only 0.5f, which FUN_004ac470 halves the ambient seed by.
 static auto& red_const_half = addr_as_ref<const float>(0x00554720);
+
+// Scene light capacity of lightmap.cpp's relocated light pool and per-face light list.
+constexpr int max_scene_lights = 8192;
+// The per-face light list room_setup gathers face_light_count entries into; lightmap.cpp relocates it from the stock
+// 0x006F9FF8 so that it can hold every scene light.
+extern rf::gr::Light* face_light_list[max_scene_lights];
+
+// ─── Shared Direct3D 11 core ─────────────────────────────────────────────────
+// RED's renderer state and functions under the game's rf:: names (game_patch/rf), for the core the D3D11 renderer
+// shares with the game. Where an editor declaration above already names the address, the rf:: name refers to it.
+
+namespace rf
+{
+    static auto& frametime_total_milliseconds = addr_as_ref<int>(0x0171C274);
+    static auto& identity_matrix = addr_as_ref<Matrix3>(0x0147B9B0);
+    static auto& zero_vector = addr_as_ref<Vector3>(0x0147BA10);
+
+    static auto& g_decal_list = addr_as_ref<GDecal*>(0x010A6BEC);
+    static auto& geo_cache_num_rooms = addr_as_ref<int>(0x010AC748);
+    static auto& gr_decal_self_illuminated_mode = addr_as_ref<gr::Mode>(0x01621FA0);
+    static auto& gr_use_far_clip = addr_as_ref<bool>(0x0158F3F5);
+    static auto& gr_far_clip_dist_scaled = addr_as_ref<float>(0x0158F3FC);
+
+    // The sky room's eye, set by sky_room_draw
+    static auto& sky_room_center = addr_as_ref<Vector3>(0x0059E010);
+    static auto& sky_room_offset = addr_as_ref<Vector3>(0x0058A000);
+    static auto& sky_room_orient = addr_as_ref<Matrix3*>(0x006C9A6C);
+    // Set while sky_room_draw draws; the editor also sets it around a .vfx draw so the renderer takes its
+    // transparency path
+    static auto& sky_room_pass_active = addr_as_ref<bool>(0x0059E21C);
+
+    static auto& vif_min_lod = addr_as_ref<int>(0x01ABC054);
+    static auto& vif_lod_full_detail = addr_as_ref<bool>(0x01ABC058);
+
+    static auto& num_particles_rendered_this_frame = addr_as_ref<int>(0x006EEB64);
+    static auto& particle_draw_bbox = addr_as_ref<bool>(0x006EEB51);
+}
+
+namespace rf::gr
+{
+    static auto& screen = reinterpret_cast<Screen&>(red::gr_screen);
+    static auto& view_pos = reinterpret_cast<Vector3&>(ed_cam_pos);
+    static auto& view_matrix = reinterpret_cast<Matrix3&>(ed_view_mat);
+    static auto& eye_pos = addr_as_ref<Vector3>(0x0158EF10);
+    static auto& eye_matrix = addr_as_ref<Matrix3>(0x0158F290);
+    static auto& matrix_scale = addr_as_ref<Vector3>(0x0158F3D8);
+    static auto& perspective_projection = gr_perspective;
+    static auto& show_lightmaps = view_lightmaps_only;
+
+    static auto& solid_mode = addr_as_ref<Mode>(0x01611F88);
+    static auto& solid_alpha_mode = addr_as_ref<Mode>(0x01611F8C);
+    static auto& decal_mode = addr_as_ref<Mode>(0x01611F78);
+    static auto& decal_tiling_u_mode = addr_as_ref<Mode>(0x01611F7C);
+    static auto& decal_tiling_v_mode = addr_as_ref<Mode>(0x01621F9C);
+    // RED's own flag (0x0057DAB4) is read only by the stock draws the renderer replaces (0x00503286 in 0x00502040,
+    // 0x0050502F in 0x005040B0); View > Show Decals sets this one
+    inline bool decals_enabled = true;
+    static auto& bitmap_3d_mode_no_z = addr_as_ref<Mode>(0x014CF7E0);
+    static auto& glow_3d_bitmap_mode = addr_as_ref<Mode>(0x0147D6B8);
+    // The stock modes the .vfx renderer picks between
+    static auto& vfx_untextured_mode = addr_as_ref<Mode>(0x014CF740);
+    static auto& vfx_flag8_mode = addr_as_ref<Mode>(0x0147D698);
+    static auto& vfx_additive_mode = addr_as_ref<Mode>(0x0147D240);
+    static auto& vfx_opaque_mode = addr_as_ref<Mode>(0x0147D674);
+    static auto& vfx_crossfade_alpha_mode = addr_as_ref<Mode>(0x014CF7EC);
+
+    static auto& cull_bounding_box = addr_as_ref<bool(const Vector3& mn, const Vector3& mx)>(0x004C6220);
+    static auto& world_poly = addr_as_ref<bool(int bm_handle, int n_verts, const Vector3* verts, const Vector2* uvs,
+                                               Mode mode, const Color& color)>(0x004CC930);
+    static auto& start_instance = addr_as_ref<void(const Vector3& pos, const Matrix3& orient)>(0x004C59D0);
+    static auto& stop_instance = addr_as_ref<void()>(0x004C59F0);
+    // Distance from the eye scaled by the projection, as LOD selection compares it
+    static auto& get_apparent_distance_from_camera = addr_as_ref<float(const Vector3& pos)>(0x004C5DC0);
+
+    static auto& light_get_ambient = ::light_get_ambient;
+    static auto& light_filter_set_solid =
+        addr_as_ref<int(GSolid* s, bool include_dynamic, bool include_static)>(0x004889E0);
+    static auto& light_filter_reset = room_cleanup;
+    static auto& light_rotate_all = room_lights_to_local;
+    static auto& light_apply = addr_as_ref<void(ubyte* r, ubyte* g, ubyte* b, char use_ambient, const Vector3* pos,
+                                                const Vector3* normal, float scale)>(0x00489C00);
+    static auto& light_apply_specular = addr_as_ref<bool(const Vector3* pos, const Vector3* normal, ubyte* r, ubyte* g,
+                                                         ubyte* b, float level, float power, char allow_restricted)>(
+        0x00489DC0);
+    static auto& apply_chrome_mapping =
+        addr_as_ref<void(float* u, float* v, const Vector3* pos, const Vector3* normal)>(0x0048A370);
+    static auto& num_relevant_lights = face_light_count;
+    static auto& relevant_lights = face_light_list;
+}
+
+namespace rf::gr::d3d
+{
+    // Power of 2 texture enforcement
+    static auto& p2t = addr_as_ref<int>(0x0183B948);
+}
+
+namespace rf::bm
+{
+    // Slot count handle_to_index reduces a non-user handle against; the name hash has one bucket more.
+    static auto& num_cache_slots = addr_as_ref<int>(0x0057DBB0);
+
+    static auto& load = bm_load;
+    static auto& get_filename = bm_get_filename;
+    static auto& get_dimensions = bm_get_dimensions;
+    static auto& get_mipmap_info = bm_get_mipmap_info;
+    static auto& has_alpha = bm_has_alpha;
+    static auto& release = bm_release;
+    static auto& lock = reinterpret_cast<Format (&)(int bm_handle, ubyte** data, ubyte** pal)>(bm_lock);
+    static auto& unlock = bm_unlock;
+    static auto& handle_to_index = addr_as_ref<int(int bm_handle)>(0x004BB430);
+    // The cache slot of a bitmap, for an animation its current frame's
+    static auto& get_cache_slot = addr_as_ref<int(int bm_handle)>(0x004BB990);
+    static auto& get_type = addr_as_ref<Type(int bm_handle)>(0x004BB8A0);
+    static auto& get_format = addr_as_ref<Format(int bm_handle)>(0x004BCC40);
+    // The grey checker bm_load gives a missing file (0x004BC9C0): 32x32 888 pixels, allocated by bmpman init
+    static auto& missing_placeholder_pixels = addr_as_ref<const ubyte*>(0x014EA31C);
+}
 
 // ─── Virtual file system ─────────────────────────────────────────────────────
 

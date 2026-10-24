@@ -6,12 +6,6 @@
 #include "gr_d3d11_shader.h"
 #include <gr_d3d11_engine.h>
 
-namespace rf
-{
-    struct GSolid;
-    struct Vector3;
-}
-
 namespace gr::d3d11
 {
     class RenderContext;

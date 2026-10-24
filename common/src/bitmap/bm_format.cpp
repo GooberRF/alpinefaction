@@ -1,15 +1,69 @@
-
-#include <common/config/BuildConfig.h>
-#include <patch_common/AsmWriter.h>
-#include <patch_common/FunHook.h>
-#include <patch_common/CodeInjection.h>
-#include <patch_common/ShortTypes.h>
-#include <algorithm>
+#include <cassert>
 #include <stdexcept>
-#include "../rf/os/timer.h"
+#include <xlog/xlog.h>
+#include <common/config/BuildConfig.h>
 #include <common/utils/perf-utils.h>
-#include "../bmpman/bmpman.h"
-#include "../bmpman/fmt_conv_templates.h"
+#include <gr_d3d11_engine.h>
+#include <common/bitmap/bm_format.h>
+#include <common/bitmap/fmt_conv_templates.h>
+
+int bm_calculate_pitch(int w, rf::bm::Format format)
+{
+    switch (format) {
+        case rf::bm::FORMAT_8888_ARGB:
+            return w * 4;
+        case rf::bm::FORMAT_888_RGB:
+            return w * 3;
+        case rf::bm::FORMAT_565_RGB:
+        case rf::bm::FORMAT_1555_ARGB:
+        case rf::bm::FORMAT_4444_ARGB:
+            return w * 2;
+        case rf::bm::FORMAT_8_ALPHA:
+        case rf::bm::FORMAT_8_PALETTED:
+            return w;
+        case rf::bm::FORMAT_DXT1:
+            // 4x4 pixels per block, 64 bits per block
+            return (w + 3) / 4 * 64 / 8;
+        case rf::bm::FORMAT_DXT2:
+        case rf::bm::FORMAT_DXT3:
+        case rf::bm::FORMAT_DXT4:
+        case rf::bm::FORMAT_DXT5:
+            // 4x4 pixels per block, 128 bits per block
+            return (w + 3) / 4 * 128 / 8;
+        default:
+            xlog::warn("Unknown format {} in bm_calculate_pitch", static_cast<int>(format));
+            return -1;
+    }
+}
+
+int bm_calculate_rows(int h, rf::bm::Format format)
+{
+    switch (format) {
+        case rf::bm::FORMAT_DXT1:
+        case rf::bm::FORMAT_DXT2:
+        case rf::bm::FORMAT_DXT3:
+        case rf::bm::FORMAT_DXT4:
+        case rf::bm::FORMAT_DXT5:
+            // 4x4 pixels per block
+            return (h + 3) / 4;
+        default:
+            return h;
+    }
+}
+
+bool bm_is_compressed_format(rf::bm::Format format)
+{
+    switch (format) {
+        case rf::bm::FORMAT_DXT1:
+        case rf::bm::FORMAT_DXT2:
+        case rf::bm::FORMAT_DXT3:
+        case rf::bm::FORMAT_DXT4:
+        case rf::bm::FORMAT_DXT5:
+            return true;
+        default:
+            return false;
+    }
+}
 
 bool bm_convert_format(void* dst_bits_ptr, rf::bm::Format dst_fmt, const void* src_bits_ptr,
                            rf::bm::Format src_fmt, int width, int height, int dst_pitch, int src_pitch,

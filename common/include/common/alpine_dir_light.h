@@ -384,3 +384,17 @@ inline float volume_ray_exit_distance(const Volume& v, const Vec3& origin, const
 }
 
 } // namespace alpine_dir_light
+
+// Runtime state of one Directional Light object. Its baked contribution lives in the lightmaps; this drives the
+// per-pixel term on meshes only.
+struct AlpineDirLight
+{
+    int32_t uid = -1;
+    float color[3] = {1.0f, 1.0f, 1.0f}; // 0..1, not premultiplied by intensity
+    float intensity = alpine_dir_light::default_intensity;
+    bool on = true;
+    bool affects_meshes = true;
+    uint8_t mesh_mode = static_cast<uint8_t>(alpine_dir_light::MeshMode::lightmap_scaled);
+    alpine_dir_light::Volume volume{};
+    float bounding_radius = 0.0f; // about volume.center; +infinity when unbounded
+};

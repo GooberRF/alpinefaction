@@ -153,17 +153,6 @@ std::string format_hex_color_string(uint32_t color)
     }
 }
 
-// parse colors to 0-255 ints
-std::tuple<int, int, int, int> extract_color_components(uint32_t color)
-{
-    return std::make_tuple(
-        (color >> 24) & 0xFF, // Red
-        (color >> 16) & 0xFF, // Green
-        (color >> 8) & 0xFF,  // Blue
-        color & 0xFF          // Alpha
-    );
-}
-
 // parse colors to 0.0-1.0 floats
 std::tuple<float, float, float, float> extract_normalized_color_components(uint32_t color)
 {

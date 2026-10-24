@@ -24,7 +24,6 @@
 #include <patch_common/AsmWriter.h>
 #include <patch_common/CodeInjection.h>
 #include <crash_handler_stub.h>
-#include "../game_patch/rf/os/array.h"
 #include "exports.h"
 #include "resources.h"
 #include "level.h"

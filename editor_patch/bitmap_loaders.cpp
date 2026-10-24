@@ -506,7 +506,7 @@ namespace
             xlog::warn("editor ATX: '{}' could not load frame[0] '{}'", atx_filename, *frame0);
             return false;
         }
-        const int idx = BitmapEntry::handle_to_index(child_handle);
+        const int idx = rf::bm::get_cache_slot(child_handle);
         if (idx < 0) return false;
         BitmapEntry& child = BitmapEntry::entries[idx];
 
@@ -616,7 +616,7 @@ namespace
     FunHook<int(int, void**, void**)> editor_bm_lock_hook{
         0x004BCCD0,
         [](int handle, void** pixels_out, void** palette_out) -> int {
-            const int idx = BitmapEntry::handle_to_index(handle);
+            const int idx = rf::bm::get_cache_slot(handle);
             if (idx < 0) {
                 *pixels_out = nullptr;
                 *palette_out = nullptr;
@@ -662,7 +662,7 @@ namespace
             if (child_handle < 0) {
                 *pixels_out = nullptr; *palette_out = nullptr; return 0;
             }
-            const int child_idx = BitmapEntry::handle_to_index(child_handle);
+            const int child_idx = rf::bm::get_cache_slot(child_handle);
             if (child_idx < 0) {
                 *pixels_out = nullptr; *palette_out = nullptr; return 0;
             }

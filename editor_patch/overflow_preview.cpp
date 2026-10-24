@@ -7,6 +7,7 @@
 #include <patch_common/CodeInjection.h>
 #include <common/bitmap/formats.h>
 
+#include "graphics/editor_gr.h"
 #include "overflow_charts.h"
 #include "headless_bake.h"
 #include "level.h"
@@ -33,10 +34,18 @@ bool preview_has(const GFace* face)
     return g_preview_bm >= 0 && !faces.empty() && faces.find(face) != faces.end();
 }
 
+// Whether the preview bitmap still has the texture last written to it: a texture cache flush drops it
+bool preview_texture_live()
+{
+    const GrTextureSlot* slot = gr_texture_slot_of(g_preview_bm);
+    return slot && slot->bm_handle == g_preview_bm && slot->section_count == 1 && slot->sections
+        && slot->sections[0].texture;
+}
+
 bool preview_texture_ready()
 {
     return g_preview_bm >= 0 && !g_preview_rgb.empty()
-        && (editor_bitmap_texture_live(g_preview_bm)
+        && (preview_texture_live()
             || editor_bitmap_upload_rgb(g_preview_bm, g_preview_edge, g_preview_edge, g_preview_rgb.data()));
 }
 
@@ -125,9 +134,7 @@ void preview_apply()
     }
     if (g_preview_bm >= 0 && g_preview_edge != edge) {
         // bm_release leaves the bitmap's texture behind
-        if (GrTextureSlot* slot = gr_texture_slot_of(g_preview_bm); slot && slot->bm_handle == g_preview_bm) {
-            gr_texture_free(slot);
-        }
+        editor_texture_free(g_preview_bm);
         bm_release(g_preview_bm);
         g_preview_bm = -1;
     }

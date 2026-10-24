@@ -272,6 +272,11 @@ namespace gr::d3d11::engine
         return g_character_meshes_are_fullbright;
     }
 
+    inline bool static_meshes_fullbright()
+    {
+        return false;
+    }
+
     inline void mesh_blend_ambient(const float (&lightmap)[3], float (&out)[3])
     {
         gr_mesh_blend_ambient(lightmap, out);

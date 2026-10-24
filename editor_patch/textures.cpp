@@ -1203,7 +1203,7 @@ CodeInjection vpp_extra_files_injection{
 static bool reload_entry_in_place(BitmapEntry* entry, int original_checksum, const char* name)
 {
     const int new_handle = BitmapEntry::load(name, -1);
-    const int new_index = new_handle >= 0 ? BitmapEntry::handle_to_index(new_handle) : -1;
+    const int new_index = new_handle >= 0 ? rf::bm::get_cache_slot(new_handle) : -1;
     BitmapEntry* new_entry = new_index >= 0 ? &BitmapEntry::entries[new_index] : nullptr;
     if (!new_entry || new_entry == entry) {
         entry->name_checksum = original_checksum;
@@ -1243,7 +1243,7 @@ static bool reload_entry_in_place(BitmapEntry* entry, int original_checksum, con
 // handle stays valid (faces referencing it don't break on save/load).
 static void reload_bm_placeholders()
 {
-    int table_size = BitmapEntry::hash_table_size_m1 + 1;
+    int table_size = rf::bm::num_cache_slots + 1;
 
     struct Placeholder {
         BitmapEntry* entry;
@@ -1302,7 +1302,7 @@ bool reload_bitmap_in_place(const char* filename)
         BitmapEntry::load(filename, -1);
         return true;
     }
-    const int index = BitmapEntry::handle_to_index(handle);
+    const int index = rf::bm::get_cache_slot(handle);
     if (index < 0) return false;
     BitmapEntry* entry = &BitmapEntry::entries[index];
     const int checksum = entry->name_checksum;

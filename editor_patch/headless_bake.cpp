@@ -1,5 +1,4 @@
 #include <windows.h>
-#include <shellapi.h>
 #include <cctype>
 #include <cstddef>
 #include <cstdio>
@@ -9,6 +8,7 @@
 #include <format>
 #include <patch_common/MemUtils.h>
 #include <xlog/xlog.h>
+#include "command_line.h"
 #include "headless_bake.h"
 #include "level.h"
 #include "terrain_build.h"
@@ -251,21 +251,12 @@ bool path_is_bake_input(const char* path)
 
 void parse_args()
 {
-    int argc = 0;
-    wchar_t** argv = CommandLineToArgvW(GetCommandLineW(), &argc);
-    if (!argv) {
-        return;
+    if (const auto input = editor_command_line_value(L"-bake")) {
+        g_input_path = narrow(input->c_str());
     }
-    for (int i = 1; i < argc; ++i) {
-        std::wstring_view arg = argv[i];
-        if (arg == L"-bake" && i + 1 < argc) {
-            g_input_path = narrow(argv[++i]);
-        }
-        else if (arg == L"-bakeout" && i + 1 < argc) {
-            g_output_path = narrow(argv[++i]);
-        }
+    if (const auto output = editor_command_line_value(L"-bakeout")) {
+        g_output_path = narrow(output->c_str());
     }
-    LocalFree(argv);
     g_active = !g_input_path.empty();
 }
 

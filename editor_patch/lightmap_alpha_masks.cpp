@@ -43,7 +43,7 @@ LightmapAlphaMask::Level downsample(const LightmapAlphaMask::Level& s)
 
 std::unique_ptr<LightmapAlphaMask> decode(int handle)
 {
-    if (handle < 0 || BitmapEntry::handle_to_index(handle) < 0 || bm_has_alpha(handle) == 0) {
+    if (handle < 0 || rf::bm::get_cache_slot(handle) < 0 || bm_has_alpha(handle) == 0) {
         return nullptr;
     }
     int w = 0, h = 0, num_pixels = 0, num_levels = 0;

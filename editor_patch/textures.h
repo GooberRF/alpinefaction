@@ -259,9 +259,8 @@ struct BitmapEntry {
     inline static auto& load = addr_as_ref<int(const char* filename, int a2)>(0x004BBC30);
     // The handle of the visible entry with this name, or -1; never loads.
     inline static auto& find = addr_as_ref<int(const char* filename)>(0x004BBAD0);
-    inline static auto& handle_to_index = addr_as_ref<int(int bm_handle)>(0x004BB990);
+    // rf::bm::num_cache_slots + 1 buckets
     inline static auto& hash_table = addr_as_ref<BitmapEntry**>(0x014cfc24);
-    inline static auto& hash_table_size_m1 = addr_as_ref<int>(0x0057dbb0);
     inline static auto& entries = addr_as_ref<BitmapEntry*>(0x014cfc4c);
 };
 static_assert(sizeof(BitmapEntry) == 0x6C);
@@ -274,6 +273,12 @@ static_assert(offsetof(BitmapEntry, next) == 0x54);
 static_assert(offsetof(BitmapEntry, prev) == 0x58);
 static_assert(offsetof(BitmapEntry, total_bytes_for_all_levels) == 0x60);
 
+// The game's rf::bm::bitmaps
+namespace rf::bm
+{
+    static auto& bitmaps = reinterpret_cast<rf::bm::BitmapEntry*&>(::BitmapEntry::entries);
+}
+
 // ─── D3D texture cache ──────────────────────────────────────────────────────
 
 static auto& gr_d3d_mark_texture_dirty = addr_as_ref<void(int bm_handle)>(0x004F6000);
@@ -284,7 +289,7 @@ inline GrTextureSlot* gr_texture_slot_of(int bm_handle)
     if (bm_handle < 0 || gr_api != gr_api_d3d || !gr_texture_slots) {
         return nullptr;
     }
-    const int index = BitmapEntry::handle_to_index(bm_handle);
+    const int index = rf::bm::get_cache_slot(bm_handle);
     return index < 0 ? nullptr : &gr_texture_slots[index];
 }
 

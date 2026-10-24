@@ -52,25 +52,54 @@ namespace gr::d3d11
         rf::gr::FOG_ALLOWED,
     };
 
-    static inline bool should_render_face(rf::GFace* face)
+    static inline bool should_render_face(rf::GFace* face, const SolidCacheOptions& options = {})
     {
-        return !face->attributes.is_portal() &&
-            !face->attributes.is_invisible() &&
-            !face->attributes.is_show_sky();
+        return (options.portal_faces_drawn || !face->attributes.is_portal()) &&
+            (options.invisible_faces_drawn || !face->attributes.is_invisible()) &&
+            !face->attributes.is_show_sky() &&
+            !(options.hides_face && options.hides_face(*face));
     }
 
-    static inline rf::gr::Mode determine_decal_mode(rf::GDecal* decal)
+    // The editor's flat display modes: an untextured colour per face (stock FUN_0049b550)
+    static inline bool is_flat_display_mode(SolidDisplayMode display_mode)
     {
-        if (decal->flags & rf::DF_SELF_ILLUMINATED) {
-            return rf::gr_decal_self_illuminated_mode;
+        return display_mode == SolidDisplayMode::room_colors || display_mode == SolidDisplayMode::see_through;
+    }
+
+    static rf::gr::Mode flat_display_face_mode(SolidDisplayMode display_mode)
+    {
+        if (display_mode == SolidDisplayMode::see_through) {
+            return {rf::gr::TEXTURE_SOURCE_NONE, rf::gr::COLOR_SOURCE_VERTEX, rf::gr::ALPHA_SOURCE_VERTEX,
+                    rf::gr::ALPHA_BLEND_ALPHA_ADDITIVE, rf::gr::ZBUFFER_TYPE_NONE, rf::gr::FOG_ALLOWED};
         }
-        if (decal->flags & rf::DF_TILING_U) {
-            return rf::gr::decal_tiling_u_mode;
+        return {rf::gr::TEXTURE_SOURCE_NONE, rf::gr::COLOR_SOURCE_VERTEX, rf::gr::ALPHA_SOURCE_VERTEX,
+                rf::gr::ALPHA_BLEND_NONE, rf::gr::ZBUFFER_TYPE_FULL, rf::gr::FOG_ALLOWED};
+    }
+
+    // A face's vertex colour: white but in the flat display modes, where the room colours spread the bits of the
+    // room index over the channels
+    static int display_face_diffuse(SolidDisplayMode display_mode, const rf::GFace* face)
+    {
+        if (display_mode == SolidDisplayMode::see_through) {
+            return pack_color(rf::Color{0x7F, 0x7F, 0x7F, 0x3F});
         }
-        if (decal->flags & rf::DF_TILING_V) {
-            return rf::gr::decal_tiling_v_mode;
+        if (display_mode != SolidDisplayMode::room_colors) {
+            return 0xFFFFFFFF;
         }
-        return rf::gr::decal_mode;
+        if (!face->which_room) {
+            return pack_color(rf::Color{0x7F, 0x7F, 0x7F, 0xFF});
+        }
+        const unsigned i = static_cast<unsigned>(face->which_room->room_index);
+        const auto channel = [](unsigned bits) {
+            return static_cast<rf::ubyte>(bits * 0x2B);
+        };
+        const rf::ubyte r = channel((i & 0x40) + (i & 0x8) + (i & 0x1));
+        const rf::ubyte g = channel((i & ~0x7Fu) + (i & 0x10) + (i & 0x2));
+        const rf::ubyte b = channel((i & 0x20) + (i & 0x4));
+        if (r + g + b <= 0x10) {
+            return pack_color(rf::Color{0x30, 0x30, 0x30, 0xFF});
+        }
+        return pack_color(rf::Color{r, g, b, 0xFF});
     }
 
     static inline rf::gr::Mode determine_face_mode(FaceRenderType render_type, bool has_lightmap, bool is_sky)
@@ -201,14 +230,23 @@ namespace gr::d3d11
         std::vector<SolidBatch> liquid_batches_;
     };
 
+    // A cache's SolidOverlay geometry over its vertex buffer: the edge lines, then the portal plane triangles
+    struct SolidOverlayIndices
+    {
+        ComPtr<ID3D11Buffer> index_buffer;
+        int num_edge_indices = 0;
+        int num_portal_plane_indices = 0;
+    };
+
     class GRenderCache
     {
     public:
-        GRenderCache(SolidBatches batches, SolidGeometryBuffers geometry_buffers) :
-            batches_{batches}, geometry_buffers_{geometry_buffers}
+        GRenderCache(SolidBatches batches, SolidGeometryBuffers geometry_buffers, SolidOverlayIndices overlay) :
+            batches_{batches}, geometry_buffers_{geometry_buffers}, overlay_{overlay}
         {}
 
         void render(FaceRenderType what, RenderContext& context);
+        void render_overlay(SolidOverlay what, RenderContext& context);
 
         bool has_batches(FaceRenderType what)
         {
@@ -235,6 +273,7 @@ namespace gr::d3d11
     private:
         SolidBatches batches_;
         SolidGeometryBuffers geometry_buffers_;
+        SolidOverlayIndices overlay_;
     };
 
     void GRenderCache::render(FaceRenderType what, RenderContext& render_context)
@@ -266,6 +305,20 @@ namespace gr::d3d11
         render_context.set_suppress_texture_uv_scale(false);
     }
 
+    void GRenderCache::render_overlay(SolidOverlay what, RenderContext& render_context)
+    {
+        const bool edges = what == SolidOverlay::edges;
+        const int num_indices = edges ? overlay_.num_edge_indices : overlay_.num_portal_plane_indices;
+        if (num_indices == 0) {
+            return;
+        }
+        geometry_buffers_.bind_buffers(render_context);
+        render_context.set_index_buffer(overlay_.index_buffer, DXGI_FORMAT_R32_UINT);
+        render_context.set_primitive_topology(edges ? D3D11_PRIMITIVE_TOPOLOGY_LINELIST
+                                                    : D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        render_context.draw_indexed(num_indices, edges ? 0 : overlay_.num_edge_indices, 0);
+    }
+
     class GRenderCacheBuilder
     {
     private:
@@ -280,6 +333,9 @@ namespace gr::d3d11
         std::map<DecalPolyBatchKey, std::vector<rf::DecalPoly*>> batched_decal_polys_;
         // (terrain index, crater texture or no_crater_texture) -> its faces in this room with their kind
         std::map<std::pair<int, int>, std::vector<std::pair<rf::GFace*, alpine_terrain::FaceKind>>> terrain_faces_;
+        // The portal faces left out that SolidCacheOptions::portal_planes_built keeps as planes
+        std::vector<rf::GFace*> portal_plane_faces_;
+        SolidCacheOptions options_;
         // Set only for caches that may draw terrain batches
         TerrainRenderer* terrain_renderer_ = nullptr;
         const AlpineTerrainRoomRef* terrain_room_ = nullptr;
@@ -311,6 +367,10 @@ namespace gr::d3d11
                                        GpuVertex& gpu_vert);
 
     public:
+        explicit GRenderCacheBuilder(const SolidCacheOptions& options) :
+            options_{options}
+        {}
+
         void enable_terrain(TerrainRenderer& terrain_renderer)
         {
             terrain_renderer_ = &terrain_renderer;
@@ -416,13 +476,21 @@ namespace gr::d3d11
         if (is_sky_ && face->attributes.is_show_sky() && is_sky_fix_) {
             face->attributes.flags &= ~rf::FACE_SHOW_SKY;
         }
-        if (!should_render_face(face)) {
+        if (!should_render_face(face, options_)) {
+            if (options_.portal_planes_built && face->attributes.is_portal()) {
+                SolidCacheOptions as_drawn = options_;
+                as_drawn.portal_faces_drawn = true;
+                if (should_render_face(face, as_drawn)) {
+                    portal_plane_faces_.push_back(face);
+                }
+            }
             return;
         }
         FaceRenderType render_type = determine_face_render_type(face);
         int face_tex = face->attributes.bitmap_id;
         int lightmap_tex = -1;
         int af_chart = -1;
+        const bool lightmapped = options_.display_mode == SolidDisplayMode::normal;
         if (!is_sky_ && render_type != FaceRenderType::liquid && face->attributes.surface_index >= 0) {
             if (face->attributes.surface_index >= solid->surfaces.size()) {
                 xlog::warn("add_face: surface_index {} out of bounds (size {}), skipping face",
@@ -435,20 +503,24 @@ namespace gr::d3d11
                     face->attributes.surface_index);
                 return;
             }
-            lightmap_tex = surface->lightmap->bm_handle;
+            lightmap_tex = lightmapped ? surface->lightmap->bm_handle : -1;
             AfLightmapFace af_face;
-            if (engine::af_lightmap_face_setup(solid, face->attributes.surface_index, af_face)) {
+            if (lightmapped && engine::af_lightmap_face_setup(solid, face->attributes.surface_index, af_face)) {
                 af_chart = af_face.chart;
                 af_surfaces_[face] = face->attributes.surface_index;
             }
         }
-        else if (!is_sky_ && render_type != FaceRenderType::liquid && face->attributes.surface_index < 0
+        else if (lightmapped && !is_sky_ && render_type != FaceRenderType::liquid && face->attributes.surface_index < 0
             && !(terrain_room_ && render_type == FaceRenderType::opaque)) {
             AfOverflowFace overflow;
             if (engine::af_lightmap_overflow_face(solid, face, overflow)) {
                 af_chart = overflow.chart;
                 af_overflow_[face] = overflow;
             }
+        }
+        const bool flat = is_flat_display_mode(options_.display_mode);
+        if (flat) {
+            face_tex = -1;
         }
         // Charted faces all sample the same atlas, so the stock page they were derived from does
         // not have to split them into batches. The key stays negative-but-not--1 so the alpha
@@ -495,7 +567,8 @@ namespace gr::d3d11
             remove_face();
             return;
         }
-        rf::DecalPoly* dp = face->decal_list;
+        // A flat display mode colours the face, not what lies on it
+        rf::DecalPoly* dp = flat || options_.level_decals_hidden ? nullptr : face->decal_list;
         int num_dp = 0;
         while (dp) {
             if (dp->my_decal->flags & rf::DF_LEVEL_DECAL) {
@@ -583,6 +656,19 @@ namespace gr::d3d11
         }
     }
 
+    // The edge lines of the face fan just appended at vb_data[first, end), as absolute vertex indices
+    static void append_face_edges(std::vector<uint32_t>& edge_ib, std::size_t first, std::size_t end)
+    {
+        const std::size_t num_verts = end - first;
+        if (num_verts < 3) {
+            return;
+        }
+        for (std::size_t i = 0; i < num_verts; ++i) {
+            edge_ib.push_back(static_cast<uint32_t>(first + i));
+            edge_ib.push_back(static_cast<uint32_t>(first + (i + 1) % num_verts));
+        }
+    }
+
     GRenderCache GRenderCacheBuilder::build(ID3D11Device* device)
     {
         SolidBatches batches;
@@ -590,6 +676,7 @@ namespace gr::d3d11
         std::vector<uint32_t> ib_data;
         vb_data.reserve(num_verts_);
         ib_data.reserve(num_inds_);
+        std::vector<uint32_t> overlay_ib;
 
         for (auto& e : batched_faces_) {
             const GRenderCacheBuilder::FaceBatchKey& key = e.first;
@@ -604,6 +691,8 @@ namespace gr::d3d11
                 float u_pan_speed = texture_mover ? texture_mover->u_pan_speed : 0.0f;
                 float v_pan_speed = texture_mover ? texture_mover->v_pan_speed : 0.0f;
                 const AfFacePlacement placement = af_face_placement(face);
+                const int diffuse = display_face_diffuse(options_.display_mode, face);
+                const std::size_t first_vertex = vb_data.size();
                 emit_face_fan(face, vb_data, ib_data, base_vertex, rf::max_face_vertices, report_long_edge_loop,
                     [&](GpuVertex& gpu_vert, rf::GFaceVertex* fvert, int) {
                         gpu_vert.x = fvert->vertex->pos.x;
@@ -611,18 +700,23 @@ namespace gr::d3d11
                         gpu_vert.z = fvert->vertex->pos.z;
                         rf::Vector3 normal = calculate_face_vertex_normal(fvert, face);
                         gpu_vert.norm = {normal.x, normal.y, normal.z};
-                        gpu_vert.diffuse = 0xFFFFFFFF;
+                        gpu_vert.diffuse = diffuse;
                         gpu_vert.u0 = fvert->texture_u;
                         gpu_vert.v0 = fvert->texture_v;
                         af_vertex_lightmap(placement, fvert, gpu_vert);
                         gpu_vert.u0_pan_speed = u_pan_speed;
                         gpu_vert.v0_pan_speed = v_pan_speed;
                     });
+                if (options_.edges_built) {
+                    append_face_edges(overlay_ib, first_vertex, vb_data.size());
+                }
             }
             std::size_t num_indices = ib_data.size() - start_index;
             if (num_indices > 0) {
                 std::array<int, 2> textures = {texture_1, texture_2};
-                rf::gr::Mode mode = determine_face_mode(render_type, texture_2 != -1, is_sky_);
+                rf::gr::Mode mode = is_flat_display_mode(options_.display_mode)
+                    ? flat_display_face_mode(options_.display_mode)
+                    : determine_face_mode(render_type, texture_2 != -1, is_sky_);
                 batches.get_batches(render_type).emplace_back(
                     start_index, num_indices, base_vertex, textures, mode
                 );
@@ -706,17 +800,46 @@ namespace gr::d3d11
                     static_cast<int>(num_indices), static_cast<int>(base_vertex), terrain, crater_texture});
             }
         }
+        SolidOverlayIndices overlay;
+        overlay.num_edge_indices = static_cast<int>(overlay_ib.size());
+        for (rf::GFace* face : portal_plane_faces_) {
+            if (!face->edge_loop) continue;
+            emit_face_fan(face, vb_data, overlay_ib, 0, rf::max_face_vertices, report_long_edge_loop,
+                [face](GpuVertex& gpu_vert, rf::GFaceVertex* fvert, int) {
+                    gpu_vert.x = fvert->vertex->pos.x;
+                    gpu_vert.y = fvert->vertex->pos.y;
+                    gpu_vert.z = fvert->vertex->pos.z;
+                    gpu_vert.norm = {face->plane.normal.x, face->plane.normal.y, face->plane.normal.z};
+                    gpu_vert.diffuse = 0xFFFFFFFF;
+                });
+        }
+        overlay.num_portal_plane_indices = static_cast<int>(overlay_ib.size()) - overlay.num_edge_indices;
 
         SolidGeometryBuffers geometry_buffers{vb_data, ib_data, device};
-        return GRenderCache{batches, geometry_buffers};
+        // Without solid indices there is no vertex buffer either
+        if (!overlay_ib.empty() && !ib_data.empty()) {
+            CD3D11_BUFFER_DESC desc{
+                static_cast<UINT>(sizeof(overlay_ib[0]) * overlay_ib.size()),
+                D3D11_BIND_INDEX_BUFFER,
+                D3D11_USAGE_IMMUTABLE,
+            };
+            D3D11_SUBRESOURCE_DATA subres_data{overlay_ib.data(), 0, 0};
+            DF_GR_D3D11_CHECK_HR(device->CreateBuffer(&desc, &subres_data, &overlay.index_buffer));
+        }
+        else {
+            overlay = {};
+        }
+        return GRenderCache{batches, geometry_buffers, overlay};
     }
 
     class RoomRenderCache
     {
     public:
-        RoomRenderCache(rf::GSolid* solid, rf::GRoom* room, ID3D11Device* device);
+        RoomRenderCache(rf::GSolid* solid, rf::GRoom* room, const SolidCacheOptions& options, ID3D11Device* device);
         ~RoomRenderCache() {}
         void render(FaceRenderType render_type, ID3D11Device* device, RenderContext& context);
+        // The cache render() would draw, rebuilt first as it would be
+        GRenderCache* current(ID3D11Device* device);
         void mark_after_boolean();
 
         rf::GRoom* room() const
@@ -729,6 +852,7 @@ namespace gr::d3d11
         int state_ = 0; // modified by the game engine during geomod operation
         rf::GRoom* room_;
         rf::GSolid* solid_;
+        SolidCacheOptions options_;
         std::optional<GRenderCache> cache_;
 
         void update(ID3D11Device* device);
@@ -744,8 +868,9 @@ namespace gr::d3d11
         return state_ == 2;
     }
 
-    RoomRenderCache::RoomRenderCache(rf::GSolid* solid, rf::GRoom* room, ID3D11Device* device) :
-        room_(room), solid_(solid)
+    RoomRenderCache::RoomRenderCache(rf::GSolid* solid, rf::GRoom* room, const SolidCacheOptions& options,
+        ID3D11Device* device) :
+        room_(room), solid_(solid), options_(options)
     {
         update(device);
     }
@@ -755,7 +880,7 @@ namespace gr::d3d11
     {
         xlog::debug("RoomRenderCache::update room {} start (faces: {})",
             room_->room_index, room_->face_list.size());
-        GRenderCacheBuilder builder;
+        GRenderCacheBuilder builder{options_};
         builder.add_room(room_, solid_);
 
         if (builder.get_num_batches() == 0) {
@@ -784,6 +909,15 @@ namespace gr::d3d11
         if (cache_) {
             cache_.value().render(render_type, context);
         }
+    }
+
+    GRenderCache* RoomRenderCache::current(ID3D11Device* device)
+    {
+        if (invalid()) {
+            cache_.reset();
+            update(device);
+        }
+        return cache_ ? &cache_.value() : nullptr;
     }
 
     void RoomRenderCache::mark_after_boolean()
@@ -961,7 +1095,8 @@ namespace gr::d3d11
         auto cache = reinterpret_cast<RoomRenderCache*>(room->geo_cache);
         if (!cache) {
             xlog::debug("Creating render cache for room {}", room->room_index);
-            room_cache_.push_back(std::make_unique<RoomRenderCache>(solid, room, device_));
+            room_cache_.push_back(
+                std::make_unique<RoomRenderCache>(solid, room, cache_options_, device_));
             cache = room_cache_.back().get();
             room->geo_cache = reinterpret_cast<rf::GCache*>(cache);
             geo_cache_rooms_.push_back(room);
@@ -1072,7 +1207,7 @@ namespace gr::d3d11
         if (!cache) {
             xlog::debug("Creating render cache for detail room {} (faces: {})",
                 room->room_index, room->face_list.size());
-            GRenderCacheBuilder builder;
+            GRenderCacheBuilder builder{cache_options_};
             if (terrain_pixel_shader_ && terrain_pixel_shader_no_gas_) {
                 builder.enable_terrain(terrain_renderer_);
             }
@@ -1139,6 +1274,21 @@ namespace gr::d3d11
         }
     }
 
+    // Maps the sky room's world coords to camera-relative coords
+    static void sky_room_transform(rf::Vector3& out_pos, rf::Matrix3& out_orient)
+    {
+        if (const rf::Matrix3* skybox_orient = rf::sky_room_orient) {
+            out_orient = *skybox_orient;
+            out_orient.inverse();
+            const rf::Vector3 rotated_center = out_orient.transform_vector(rf::sky_room_center);
+            out_pos = rf::sky_room_offset + rf::sky_room_center - rotated_center;
+        }
+        else {
+            out_pos = rf::sky_room_offset;
+            out_orient = rf::identity_matrix;
+        }
+    }
+
     void SolidRenderer::render_sky_room(rf::GRoom *room, rf::Vector3& out_sky_transform_pos, rf::Matrix3& out_sky_transform_orient)
     {
         // Sky room; picmip applies.
@@ -1148,17 +1298,7 @@ namespace gr::d3d11
         render_context_.set_sky_room(true);
         render_context_.update_lights(true);
 
-        // Compute sky room transform: maps world coords to camera-relative coords
-        if (const rf::Matrix3* skybox_orient = rf::sky_room_orient) {
-            out_sky_transform_orient = *skybox_orient;
-            out_sky_transform_orient.inverse();
-            const rf::Vector3 rotated_center = out_sky_transform_orient.transform_vector(rf::sky_room_center);
-            out_sky_transform_pos = rf::sky_room_offset + rf::sky_room_center - rotated_center;
-        }
-        else {
-            out_sky_transform_pos = rf::sky_room_offset;
-            out_sky_transform_orient = rf::identity_matrix;
-        }
+        sky_room_transform(out_sky_transform_pos, out_sky_transform_orient);
 
         before_render(out_sky_transform_pos, out_sky_transform_orient);
         render_room_faces(engine::level_solid(), room, FaceRenderType::opaque);
@@ -1239,7 +1379,7 @@ namespace gr::d3d11
         auto it = mover_render_cache_.find(solid);
         if (it == mover_render_cache_.end()) {
             xlog::debug("Creating render cache for a mover {}", static_cast<void*>(solid));
-            GRenderCacheBuilder cache_builder;
+            GRenderCacheBuilder cache_builder{cache_options_};
             cache_builder.add_solid(solid);
             GRenderCache cache = cache_builder.build(device_);
             auto p = mover_render_cache_.emplace(std::make_pair(solid, std::make_unique<GRenderCache>(cache)));
@@ -1354,9 +1494,44 @@ namespace gr::d3d11
         render_context_.set_vertex_shader(vertex_shader_);
         render_context_.set_pixel_shader(render_context_.has_gas_regions() ? pixel_shader_ : pixel_shader_no_gas_);
         render_context_.set_model_transform(pos, orient);
-        render_context_.set_cull_mode(D3D11_CULL_BACK);
+        render_context_.set_cull_mode(cull_mode_);
         render_context_.set_primitive_topology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         af_lightmap_renderer_.bind();
+    }
+
+    void SolidRenderer::render_overlay(SolidOverlay what, rf::GSolid* solid, rf::GRoom** rooms, int num_rooms)
+    {
+        render_context_.set_model_transform(rf::zero_vector, rf::identity_matrix);
+        for (int i = 0; i < num_rooms; ++i) {
+            rf::GRoom* room = rooms[i];
+            if (GRenderCache* cache = get_or_create_normal_room_cache(solid, room)->current(device_)) {
+                cache->render_overlay(what, render_context_);
+            }
+            // The detail rooms render_solid draws; a terrain chunk is drawn for every room that lists it
+            for (rf::GRoom* detail_room : room->detail_rooms) {
+                const bool claimed = engine::terrain_is_separate_chunk(room, detail_room)
+                    || detail_room->room_to_render_with == room;
+                const bool draw = claimed && !detail_room->face_list.empty()
+                    && !rf::gr::cull_bounding_box(detail_room->bbox_min, detail_room->bbox_max);
+                if (!draw) {
+                    continue;
+                }
+                if (GRenderCache* cache = get_or_create_detail_room_cache(solid, detail_room)) {
+                    cache->render_overlay(what, render_context_);
+                }
+            }
+        }
+    }
+
+    void SolidRenderer::render_sky_room_overlay(SolidOverlay what, rf::GRoom* room)
+    {
+        rf::Vector3 pos;
+        rf::Matrix3 orient;
+        sky_room_transform(pos, orient);
+        render_context_.set_model_transform(pos, orient);
+        if (GRenderCache* cache = get_or_create_normal_room_cache(engine::level_solid(), room)->current(device_)) {
+            cache->render_overlay(what, render_context_);
+        }
     }
 
     void SolidRenderer::page_in_solid(rf::GSolid* solid)

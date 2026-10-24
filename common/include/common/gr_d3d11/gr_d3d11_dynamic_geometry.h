@@ -27,6 +27,12 @@ namespace gr::d3d11
         void set_cull_mode(D3D11_CULL_MODE cull_mode);
         void flush();
 
+        // Whether vertices wait for the next flush
+        bool has_pending() const
+        {
+            return vertex_ring_buffer_.get_pos() > 0;
+        }
+
     private:
         struct State
         {

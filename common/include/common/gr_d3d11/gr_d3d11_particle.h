@@ -10,12 +10,6 @@
 #include "gr_d3d11_buffer.h"
 #include "gr_d3d11_weather.h"
 
-namespace rf
-{
-    struct Particle;
-    struct ParticleEmitter;
-}
-
 namespace gr::d3d11
 {
     struct GpuParticleInstance;

@@ -24,6 +24,7 @@
 #include <xlog/xlog.h>
 #include "alpine_color_picker.h"
 #include "alpine_obj.h"
+#include "command_line.h"
 #include "editor_settings.h"
 #include "level.h"
 #include "mfc_types.h"
@@ -49,6 +50,7 @@ enum class SettingKind
     color,
     flag,
     colorref,
+    renderer,
 };
 
 struct Setting
@@ -114,10 +116,18 @@ std::vector<Setting> settings_of(PreferencesDialog& dlg)
     add_rect("Dialogs", "Brush Clip Dialog", true, dlg.brush_clip_dialog_rect);
 
     settings.insert(settings.end(), {
+        {"Alpine", "Renderer", "", SettingKind::renderer, &alpine.renderer},
         {"Alpine", "TextureHoverOutline", "", SettingKind::flag, &alpine.texture_hover_outline},
         {"Alpine", "TextureHoverOutlineColor", "", SettingKind::colorref, &alpine.texture_hover_outline_color},
         {"Alpine", "BackgroundThrottle", "", SettingKind::flag, &alpine.background_throttle},
         {"Alpine", "ForceLOD0", "", SettingKind::flag, &alpine.force_lod0},
+        {"Alpine", "PreviewLevelFog", "", SettingKind::flag, &alpine.preview_level_fog},
+        {"Alpine", "ShowInvisibleFaces", "", SettingKind::flag, &alpine.show_invisible_faces},
+        {"Alpine", "ShowBackFaces", "", SettingKind::flag, &alpine.show_back_faces},
+        {"Alpine", "FullbrightMeshes", "", SettingKind::flag, &alpine.fullbright_meshes},
+        {"Alpine", "ShowDecals", "", SettingKind::flag, &alpine.show_decals},
+        {"Alpine", "ShowWireframe", "", SettingKind::flag, &alpine.show_wireframe},
+        {"Alpine", "WireframeOverlay", "", SettingKind::flag, &alpine.wireframe_overlay},
         {"TextureBrowser", "TextureBrowserDisplaySize", "", SettingKind::int_value,
          &alpine.texture_browser_display_size},
         {"TextureBrowser", "TextureBrowserMaximized", "", SettingKind::flag, &alpine.texture_browser_maximized},
@@ -136,6 +146,17 @@ std::optional<T> parse_number(std::string_view text)
         return std::nullopt;
     }
     return value;
+}
+
+std::optional<EditorRendererKind> parse_renderer(std::string_view text)
+{
+    if (string_iequals(text, "D3D11")) {
+        return EditorRendererKind::d3d11;
+    }
+    if (string_iequals(text, "D3D9")) {
+        return EditorRendererKind::d3d9;
+    }
+    return std::nullopt;
 }
 
 std::optional<COLORREF> parse_color(std::string_view text)
@@ -205,6 +226,12 @@ bool load_setting(const Setting& setting, std::string_view text)
         *static_cast<COLORREF*>(setting.target) = *color;
         return true;
     }
+    case SettingKind::renderer: {
+        const auto renderer = parse_renderer(text);
+        if (!renderer) return false;
+        *static_cast<EditorRendererKind*>(setting.target) = *renderer;
+        return true;
+    }
     }
     return false;
 }
@@ -233,6 +260,8 @@ std::string format_setting(const Setting& setting)
     }
     case SettingKind::colorref:
         return alpine_color_format_hex(*static_cast<COLORREF*>(setting.target));
+    case SettingKind::renderer:
+        return *static_cast<EditorRendererKind*>(setting.target) == EditorRendererKind::d3d9 ? "D3D9" : "D3D11";
     }
     return {};
 }
@@ -409,10 +438,19 @@ bool is_checked(HWND hdlg, int id)
 INT_PTR CALLBACK alpine_tab_proc(HWND hdlg, UINT msg, WPARAM wp, LPARAM)
 {
     if (msg == WM_INITDIALOG) {
+        const HWND renderer = GetDlgItem(hdlg, IDC_PREFS_RENDERER);
+        SendMessageA(renderer, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Direct3D 11"));
+        SendMessageA(renderer, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Direct3D 9 (deprecated)"));
+        SendMessageA(renderer, CB_SETCURSEL, g_editor_settings.renderer == EditorRendererKind::d3d9 ? 1 : 0, 0);
         set_check(hdlg, IDC_PREFS_HOVER_OUTLINE, g_editor_settings.texture_hover_outline);
         set_check(hdlg, IDC_PREFS_BACKGROUND_THROTTLE, g_editor_settings.background_throttle);
         set_check(hdlg, IDC_PREFS_FORCE_LOD0, g_editor_settings.force_lod0);
         update_hover_color_controls(hdlg);
+        return TRUE;
+    }
+    if (msg == WM_COMMAND && LOWORD(wp) == IDC_PREFS_RENDERER && HIWORD(wp) == CBN_SELCHANGE) {
+        const LRESULT sel = SendMessageA(GetDlgItem(hdlg, IDC_PREFS_RENDERER), CB_GETCURSEL, 0, 0);
+        g_editor_settings.renderer = sel == 1 ? EditorRendererKind::d3d9 : EditorRendererKind::d3d11;
         return TRUE;
     }
     if (msg != WM_COMMAND || HIWORD(wp) != BN_CLICKED) {
@@ -446,6 +484,27 @@ INT_PTR CALLBACK alpine_tab_proc(HWND hdlg, UINT msg, WPARAM wp, LPARAM)
 }
 
 } // namespace
+
+EditorRendererKind editor_session_renderer()
+{
+    static const EditorRendererKind renderer = [] {
+        EditorRendererKind result = EditorRendererKind::d3d11;
+        if (const auto values = read_ini(settings_path())) {
+            if (const auto it = values->find("Renderer"); it != values->end()) {
+                result = parse_renderer(it->second).value_or(result);
+            }
+        }
+        if (editor_command_line_has(L"-d3d9")) {
+            result = EditorRendererKind::d3d9;
+        }
+        else if (editor_command_line_has(L"-d3d11")) {
+            result = EditorRendererKind::d3d11;
+        }
+        xlog::info("[Settings] Renderer: {}", result == EditorRendererKind::d3d9 ? "Direct3D 9" : "Direct3D 11");
+        return result;
+    }();
+    return renderer;
+}
 
 // Stock loads red.cfg here, or sets the defaults when it is missing.
 void __fastcall preferences_load_new(PreferencesDialog* self, int edx);

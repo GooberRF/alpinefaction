@@ -906,7 +906,7 @@ namespace gr::d3d11
                     gpu_dynamic_lighting = !fullbright_character;
                 } else {
                     color = {255, 255, 255, 255};
-                    gpu_dynamic_lighting = true;
+                    gpu_dynamic_lighting = !engine::static_meshes_fullbright();
                 }
             }
             color.alpha = static_cast<rf::ubyte>(params.alpha);

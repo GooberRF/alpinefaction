@@ -140,6 +140,8 @@ Version 1.5.0 (Trillium): Not yet released
 - Add Salvage flag placement for community level `CTF_TERROR.rfl`
 - Store level editor preferences in `alpine_editor.ini` instead of `red\red.cfg`, importing `red.cfg` on first launch
 - Add an `Alpine` page to the level editor `Preferences` window with options for the texture mode face outline and its color, the background frame rate limit, and always drawing meshes at full detail
+- Render the level editor with the game's Direct3D 11 renderer (`-d3d9` or the `Renderer` preference switches back), with `View` options `Preview Level Fog`, `Show Invisible Faces`, `Show Back Faces`, `Fullbright Meshes`, `Show Decals`, `Show Wireframe` and `Wireframe Overlay`, and translucent portal faces for `Draw See-thru Portal Faces`
+- Make smoothing groups follow standard rules in level editor lightmap bakes unless the `Legacy lighting` level property is set: faces smooth only with faces sharing a group, faces without a group bake flat, a brush with all its faces in one group now shades rounded across its sharp edges (split the groups to keep an edge sharp), and smoothed faces are no longer darkened between their vertices; also fix over-bright streaks on smoothed faces and on faces split by CSG
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color

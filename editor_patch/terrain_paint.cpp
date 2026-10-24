@@ -56,7 +56,6 @@ std::vector<MirrorLines> g_mirror_lines;
 
 constexpr uint8_t mirror_x_rgb[3] = {0x00, 0xff, 0xff};
 constexpr uint8_t mirror_z_rgb[3] = {0xff, 0x00, 0xff};
-constexpr uint8_t mirror_plane_alpha = 0x20;
 
 // The Layer list as the selection last saw it, so edits in Properties keep the selection on its entry.
 struct LayerListState
@@ -1370,7 +1369,7 @@ void draw_mirror_line(const DedTerrain& t, const at::GridView& v, float lift, bo
             gv[c].r = rgb[0];
             gv[c].g = rgb[1];
             gv[c].b = rgb[2];
-            gv[c].a = mirror_plane_alpha;
+            gv[c].a = guide_plane_alpha;
         }
         GrVertex* poly[4] = {&gv[0], &gv[1], &gv[2], &gv[3]};
         gr_poly_render(4, poly, tmap_rgb | tmap_alpha, mode_vertex_alpha, 0, 0.0f);

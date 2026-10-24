@@ -8,6 +8,7 @@
 #include <shellapi.h>
 #include <vector>
 #include <memory>
+#include <optional>
 #include <iomanip>
 #include <sstream>
 #include <string>
@@ -29,7 +30,6 @@
 #include <patch_common/AsmWriter.h>
 #include <patch_common/CodeInjection.h>
 #include <crash_handler_stub.h>
-#include "../game_patch/rf/os/array.h"
 #include "alpine_color_picker.h"
 #include "exports.h"
 #include "editor_settings.h"
@@ -1442,6 +1442,27 @@ bool level_autosave_in_progress()
     return g_autosaving;
 }
 
+std::optional<std::string> level_autosave_now()
+{
+    auto* frame = static_cast<CMainFrame*>(GetMainFrame());
+    CDedDoc* doc = frame ? frame->doc : nullptr;
+    const CDedLevel* level = CDedLevel::Get();
+    // RED's idle tick never autosaves during a build either (0x00483023), nor inside Calculate Lighting's loop
+    if (!doc || !level || level->build_running || bake_progress_active() || g_autosaving) {
+        return std::nullopt;
+    }
+    const char* open_path = doc->_d.m_strPathName.m_pchData;
+    std::string path = open_path && open_path[0] ? open_path : "Untitled.rfl";
+    // RED's autosave name (0x004830F4): the path with "~" before its four-character extension
+    path.insert(path.size() >= 4 ? path.size() - 4 : path.size(), "~");
+    if (!doc->LoadSaveLevel(path.c_str(), 0, 1)) {
+        return std::nullopt;
+    }
+    char full_path[MAX_PATH];
+    const DWORD len = GetFullPathNameA(path.c_str(), MAX_PATH, full_path, nullptr);
+    return len > 0 && len < MAX_PATH ? std::string{full_path} : path;
+}
+
 // Stock RED kept the fog near clip, but nothing drew it before RFL 306; the level saves as 306, where it applies.
 static void reset_legacy_fog_near_clip()
 {
@@ -1757,6 +1778,35 @@ CodeInjection face_panel_subclass_injection{
     true, // needs_trampoline
 };
 
+// The View menu's Direct3D 11 renderer options, each a setting the renderer reads on the next repaint
+static bool* d3d11_view_option(UINT id)
+{
+    switch (id) {
+        case ID_VIEW_PREVIEW_LEVEL_FOG:
+            return &g_editor_settings.preview_level_fog;
+        case ID_VIEW_SHOW_INVISIBLE_FACES:
+            return &g_editor_settings.show_invisible_faces;
+        case ID_VIEW_SHOW_BACK_FACES:
+            return &g_editor_settings.show_back_faces;
+        case ID_VIEW_FULLBRIGHT_MESHES:
+            return &g_editor_settings.fullbright_meshes;
+        case ID_VIEW_WIREFRAME_OVERLAY:
+            return &g_editor_settings.wireframe_overlay;
+        case ID_VIEW_SHOW_DECALS:
+            return &g_editor_settings.show_decals;
+        default:
+            return nullptr;
+    }
+}
+
+// The stock View menu display modes, Show Just Textures to Show Everything See-through (message map 0x005561B0..
+// 0x00556390, handlers 0x00449FE0..0x0044A120), whose radio group Show Wireframe joins
+static bool is_stock_display_mode_command(UINT id)
+{
+    constexpr UINT first_display_mode_id = 32861;
+    constexpr UINT last_display_mode_id = 32866;
+    return id >= first_display_mode_id && id <= last_display_mode_id;
+}
 
 BOOL __fastcall CMainFrame_OnCmdMsg(CWnd* this_, int, UINT nID, int nCode, void* pExtra, void* pHandlerInfo)
 {
@@ -1777,6 +1827,25 @@ BOOL __fastcall CMainFrame_OnCmdMsg(CWnd* this_, int, UINT nID, int nCode, void*
         cmd_ui->set_check(gizmo_textured_preview() ? 1 : 0);
         return TRUE;
     }
+    // Direct3D 9 does not get new renderer features
+    const bool d3d11_options_available = editor_session_renderer() == EditorRendererKind::d3d11;
+    bool* const d3d11_option = d3d11_view_option(nID);
+    if (nCode == CN_UPDATE_COMMAND_UI && d3d11_option && cmd_ui) {
+        cmd_ui->enable(d3d11_options_available);
+        cmd_ui->set_check(d3d11_options_available && *d3d11_option ? 1 : 0);
+        return TRUE;
+    }
+    const bool wireframe_display = d3d11_options_available && g_editor_settings.show_wireframe;
+    if (nCode == CN_UPDATE_COMMAND_UI && nID == ID_VIEW_SHOW_WIREFRAME && cmd_ui) {
+        cmd_ui->enable(d3d11_options_available);
+        cmd_ui->set_check(wireframe_display ? 1 : 0);
+        return TRUE;
+    }
+    if (nCode == CN_UPDATE_COMMAND_UI && wireframe_display && is_stock_display_mode_command(nID) && cmd_ui) {
+        cmd_ui->enable(TRUE);
+        cmd_ui->set_check(0);
+        return TRUE;
+    }
 
     if (nID == IDC_GIZMO_SCALE_STEP && nCode == CBN_SELCHANGE) {
         gizmo_scale_step_changed();
@@ -1792,6 +1861,10 @@ BOOL __fastcall CMainFrame_OnCmdMsg(CWnd* this_, int, UINT nID, int nCode, void*
             if (!gizmo_cancel_drag() || nID == ID_EDIT_UNDO || nID == ID_EDIT_REDO) {
                 return TRUE;
             }
+        }
+        // The stock handler then sets its display mode and repaints
+        if (!pHandlerInfo && wireframe_display && is_stock_display_mode_command(nID)) {
+            g_editor_settings.show_wireframe = false;
         }
         std::function<void()> handler;
         switch (nID) {
@@ -1888,6 +1961,29 @@ BOOL __fastcall CMainFrame_OnCmdMsg(CWnd* this_, int, UINT nID, int nCode, void*
             case ID_GIZMO_TEXLOCK:
             case ID_GIZMO_TEXPREVIEW:
                 handler = [nID]() { gizmo_button_clicked(nID); };
+                break;
+            case ID_VIEW_PREVIEW_LEVEL_FOG:
+            case ID_VIEW_SHOW_INVISIBLE_FACES:
+            case ID_VIEW_SHOW_BACK_FACES:
+            case ID_VIEW_FULLBRIGHT_MESHES:
+            case ID_VIEW_WIREFRAME_OVERLAY:
+            case ID_VIEW_SHOW_DECALS:
+                if (d3d11_options_available) {
+                    handler = [d3d11_option] {
+                        *d3d11_option = !*d3d11_option;
+                        editor_views_mark_repaint_all();
+                    };
+                }
+                break;
+            case ID_VIEW_SHOW_WIREFRAME:
+                if (d3d11_options_available) {
+                    // Everything but the level and brushes keeps the look of the default display mode
+                    handler = [] {
+                        g_editor_settings.show_wireframe = true;
+                        view_display_mode = view_display_mode_lightmapped;
+                        editor_views_mark_repaint_all();
+                    };
+                }
                 break;
             case ID_TERRAIN_TOOLS:
                 handler = [this_]() {

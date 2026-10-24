@@ -39,6 +39,7 @@
 #include "vtypes.h"
 #include "resources.h"
 #include "brush_preview.h"
+#include "graphics/editor_gr.h"
 #include "tbl.h"
 
 // ─── Utilities ──────────────────────────────────────────────────────────────
@@ -1470,9 +1471,9 @@ CodeInjection alpine_create_object_patch{
 // game; the flush keeps none of its polygons queued behind the level's.
 static void render_terrain_before_level(CDedLevel* level)
 {
-    const bool batch_was_open = gr_batch_open;
+    const bool batch_was_open = editor_gr_batch_open();
     terrain_render_surfaces(level);
-    if (gr_batch_open) gr_flush_batch();
+    editor_gr_flush();
     if (batch_was_open) gr_begin_batch(4, 3);
 }
 

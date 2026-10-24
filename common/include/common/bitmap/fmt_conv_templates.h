@@ -1,8 +1,9 @@
 #pragma once
 
+// Include after the binary's rf engine types (rf::bm::Format, rf::gr::Color).
+// Pixel format conversion on rf::bm::Format.
+
 #include <stdexcept>
-#include "../rf/bmpman.h"
-#include "../rf/gr/gr.h"
 
 #define TEXTURE_DITHERING 0
 

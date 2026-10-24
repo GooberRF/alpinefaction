@@ -19,6 +19,8 @@ namespace gr::d3d11
         float tz_ = 1.0f;
         float zn_ = 0.1f;
         float zf_ = 1.0f;
+        // Set only by orthographic(), for the editor's orthographic views
+        bool ortho_ = false;
 
     public:
         Projection() = default;
@@ -29,6 +31,27 @@ namespace gr::d3d11
             zn_{zn},
             zf_{zf}
         {}
+
+        // The matrix maps depth linearly, zn to 1 and zf to 0, with w = 1; zn may be negative, as such a view sees
+        // behind its eye. The per-vertex methods stay the 1/z ones: sz_ 0 and tz_ 1 make unproject_z give w 1 for
+        // depth 1, which the editor gives every vertex it projects in such a view.
+        static Projection orthographic(float sx, float sy, float zn, float zf)
+        {
+            Projection proj;
+            proj.sx_ = sx;
+            proj.sy_ = sy;
+            proj.sz_ = 0.0f;
+            proj.tz_ = 1.0f;
+            proj.zn_ = zn;
+            proj.zf_ = zf;
+            proj.ortho_ = true;
+            return proj;
+        }
+
+        bool is_orthographic() const
+        {
+            return ortho_;
+        }
 
         float project_z(float z) const
         {
@@ -55,6 +78,14 @@ namespace gr::d3d11
 
         GpuMatrix4x4 matrix() const
         {
+            if (ortho_) {
+                return {{
+                    {sx_, 0.0f, 0.0f, 0.0f},
+                    {0.0f, sy_, 0.0f, 0.0f},
+                    {0.0f, 0.0f, 1.0f / (zn_ - zf_), zf_ / (zf_ - zn_)},
+                    {0.0f, 0.0f, 0.0f, 1.0f},
+                }};
+            }
             // RF projection (1/z) uses reversed-Z trick, maps near plane to 1 and infinity to 0
             // It has some benefits, see "reversed-Z trick" in https://developer.nvidia.com/content/depth-precision-visualized
             // To support far plane clipping change it a bit and map far plane to 0 instead of infinity

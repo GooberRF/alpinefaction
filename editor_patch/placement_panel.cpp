@@ -16,6 +16,7 @@
 #include <common/terrain/alpine_terrain.h>
 #include <common/utils/string-utils.h>
 #include "alpine_obj.h"
+#include "graphics/editor_gr.h"
 #include "level.h"
 #include "mesh.h"
 #include "mesh_browser.h"
@@ -342,7 +343,7 @@ void load_preview()
 bool preview_can_draw()
 {
     const HWND frame = GetMainFrameHandle();
-    return !gr_batch_open && frame && IsWindowEnabled(frame) && !IsIconic(frame);
+    return !editor_gr_batch_open() && frame && IsWindowEnabled(frame) && !IsIconic(frame);
 }
 
 // Worth animating: RED (or a window it owns) is in front and the preview is not clipped away inside RED.
@@ -1656,12 +1657,12 @@ void placement_panel_render_ghost()
         set_draw_color(0xff, 0xff, 0xff, 0xff);
         EditorRenderParams params = editor_mesh_render_params();
         const bool anim_fx = vmesh_get_type(vm) == VMESH_TYPE_ANIM_FX;
-        if (anim_fx) vfx_render_transparent = 1;
+        if (anim_fx) rf::sky_room_pass_active = true;
         const Vector3 bound_center = pos + orient * m.bound_center;
         room_setup(nullptr, &bound_center, m.bound_radius, 1, 1);
         vmesh_render(vm, &pos, &orient, &params);
         room_cleanup();
-        if (anim_fx) vfx_render_transparent = 0;
+        if (anim_fx) rf::sky_room_pass_active = false;
         lo = m.bbox_min;
         hi = m.bbox_max;
     }

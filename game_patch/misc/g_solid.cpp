@@ -26,7 +26,7 @@
 #include "../os/console.h"
 #include "../os/os.h"
 #include "../bmpman/bmpman.h"
-#include "../bmpman/fmt_conv_templates.h"
+#include <common/bitmap/fmt_conv_templates.h>
 #include "../rf/gr/gr_light.h"
 #include "destruction.h"
 #include "level.h"

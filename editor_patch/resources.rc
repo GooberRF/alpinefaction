@@ -364,6 +364,8 @@ IDR_MAIN_FRAME MENU
         MENUITEM "Show Just Lightmaps, no Textures", 32864
         MENUITEM "Show Rooms in Different Colors", 32865
         MENUITEM "Show Everything See-through", 32866
+        MENUITEM "Show Wireframe", ID_VIEW_SHOW_WIREFRAME
+        MENUITEM "Wireframe Overlay", ID_VIEW_WIREFRAME_OVERLAY
         MENUITEM SEPARATOR
         MENUITEM "Render Nothing (Except brushes)", 32879
         MENUITEM "Render Everything", 32867
@@ -375,6 +377,11 @@ IDR_MAIN_FRAME MENU
         MENUITEM "Draw Non-see-thru Portal Faces", 32874
         MENUITEM SEPARATOR
         MENUITEM "Draw Sky (Like in-game)", 32877
+        MENUITEM "Preview Level Fog", ID_VIEW_PREVIEW_LEVEL_FOG
+        MENUITEM "Show Invisible Faces", ID_VIEW_SHOW_INVISIBLE_FACES
+        MENUITEM "Show Back Faces", ID_VIEW_SHOW_BACK_FACES
+        MENUITEM "Fullbright Meshes", ID_VIEW_FULLBRIGHT_MESHES
+        MENUITEM "Show Decals", ID_VIEW_SHOW_DECALS
         MENUITEM SEPARATOR
         MENUITEM "Use Multitexturing (If Possible)", 32878
         MENUITEM SEPARATOR
@@ -1941,6 +1948,8 @@ FONT 8, "MS Sans Serif"
     EDITTEXT        IDC_PREFS_HOVER_COLOR_VALUE, 164, 30, 58, 14, ES_AUTOHSCROLL | ES_READONLY
     AUTOCHECKBOX    "Limit the frame rate while RED is in the background", IDC_PREFS_BACKGROUND_THROTTLE, 11, 52, 218, 10
     AUTOCHECKBOX    "Always draw meshes at full detail (LOD 0)", IDC_PREFS_FORCE_LOD0, 11, 64, 218, 10
+    LTEXT           "Renderer (when RED next starts):", -1, 11, 82, 112, 8
+    COMBOBOX        IDC_PREFS_RENDERER, 124, 80, 98, 48, WS_TABSTOP | CBS_DROPDOWNLIST
 }
 
 // VERSIONINFO

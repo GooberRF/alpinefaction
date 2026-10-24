@@ -426,23 +426,6 @@ const DecorationMesh& alpine_terrain_decorations_mesh(int slot)
     return g_meshes[slot];
 }
 
-float DecorationChunk::dist_sq(const rf::Vector3& p) const
-{
-    const float d[3] = {std::max({lo[0] - p.x, 0.0f, p.x - hi[0]}), std::max({lo[1] - p.y, 0.0f, p.y - hi[1]}),
-                        std::max({lo[2] - p.z, 0.0f, p.z - hi[2]})};
-    return d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
-}
-
-rf::Vector3 DecorationChunk::lo_vec() const
-{
-    return {lo[0], lo[1], lo[2]};
-}
-
-rf::Vector3 DecorationChunk::hi_vec() const
-{
-    return {hi[0], hi[1], hi[2]};
-}
-
 DecorationFrameStats& alpine_terrain_decorations_frame_stats()
 {
     if (g_stats.frame != rf::frame_count) {
