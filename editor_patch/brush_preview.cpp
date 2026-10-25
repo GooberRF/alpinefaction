@@ -30,28 +30,56 @@ bool transforming(const CDedLevel& level)
     return gizmo_dragging() || level.transform_in_progress;
 }
 
-// Every brush's node, placement, shape and hiding, so a brush added, moved or hidden without an undo step is
-// noticed; edits inside a shape push an undo step, and a Build ends with brush_preview_build_ended
+// Where the undo and redo stacks stood and whether a transform was under way; the pointers are only compared
+struct EditState
+{
+    const UndoEntry* undo_top = nullptr;
+    int undo_size = 0;
+    const UndoEntry* redo_top = nullptr;
+    int redo_size = 0;
+    bool transforming = false;
+
+    bool operator==(const EditState& other) const = default;
+};
+
+EditState edit_state(const CDedLevel& level)
+{
+    return {undo_stack_top(level.undo_stack), level.undo_stack.size, undo_stack_top(level.redo_stack),
+            level.redo_stack.size, transforming(level)};
+}
+
+constexpr uint32_t fingerprint_basis = 2166136261u;
+
+void mix(uint32_t& hash, const void* data, size_t size)
+{
+    for (size_t i = 0; i < size; ++i) {
+        hash = (hash ^ static_cast<const uint8_t*>(data)[i]) * 16777619u;
+    }
+}
+
+// A brush's node, placement, shape and hiding, mixed into an FNV-1a fingerprint
+void mix_brush(uint32_t& hash, const BrushNode& brush)
+{
+    const BrushNode* node = &brush;
+    const auto* geometry = static_cast<const GSolid*>(brush.geometry);
+    const int faces = geometry ? geometry->face_list_count : -1;
+    const bool hidden = brush.state == BRUSH_STATE_HIDDEN;
+    mix(hash, &node, sizeof(node));
+    mix(hash, &brush.pos, sizeof(brush.pos));
+    mix(hash, &brush.orient, sizeof(brush.orient));
+    mix(hash, &geometry, sizeof(geometry));
+    mix(hash, &faces, sizeof(faces));
+    mix(hash, &brush.is_portal, sizeof(brush.is_portal));
+    mix(hash, &hidden, sizeof(hidden));
+}
+
+// Of every brush, so one added, moved or hidden without an undo step is noticed; edits inside a shape push an undo
+// step, and a Build ends with brush_preview_build_ended
 uint32_t brushes_fingerprint(CDedLevel& level)
 {
-    uint32_t hash = 2166136261u;
-    auto mix = [&](const void* data, size_t size) {
-        for (size_t i = 0; i < size; ++i) {
-            hash = (hash ^ static_cast<const uint8_t*>(data)[i]) * 16777619u;
-        }
-    };
+    uint32_t hash = fingerprint_basis;
     level.for_each_brush([&](BrushNode& brush) {
-        const BrushNode* node = &brush;
-        const auto* geometry = static_cast<const GSolid*>(brush.geometry);
-        const int faces = geometry ? geometry->face_list_count : -1;
-        const bool hidden = brush.state == BRUSH_STATE_HIDDEN;
-        mix(&node, sizeof(node));
-        mix(&brush.pos, sizeof(brush.pos));
-        mix(&brush.orient, sizeof(brush.orient));
-        mix(&geometry, sizeof(geometry));
-        mix(&faces, sizeof(faces));
-        mix(&brush.is_portal, sizeof(brush.is_portal));
-        mix(&hidden, sizeof(hidden));
+        mix_brush(hash, brush);
     });
     return hash;
 }
@@ -60,11 +88,7 @@ uint32_t brushes_fingerprint(CDedLevel& level)
 struct Preview
 {
     bool valid = false;
-    const UndoEntry* undo_top = nullptr;
-    int undo_size = 0;
-    const UndoEntry* redo_top = nullptr;
-    int redo_size = 0;
-    bool transforming = false;
+    EditState edits;
     uint32_t fingerprint = 0;
     std::vector<const BrushNode*> brushes; // drawn textured, sorted
     std::vector<int> hidden_face_ids;      // sorted
@@ -73,6 +97,35 @@ Preview g_preview;
 
 // The level geometry face ids left out, sorted; brought up to date at each 3D view paint
 std::vector<int> g_hidden_face_ids;
+
+// What selected_brush_geometry's face ids were worked out from; the pointers are only compared
+struct SelectionKey
+{
+    const GSolid* level_solid = nullptr;
+    const GFace* level_faces = nullptr;
+    int num_level_faces = 0;
+    EditState edits;
+    uint32_t fingerprint = fingerprint_basis; // the selected brushes', with their vertices
+
+    bool operator==(const SelectionKey& other) const = default;
+};
+struct SelectionBuilt
+{
+    bool valid = false;
+    SelectionKey key;
+    std::vector<int> face_ids; // sorted
+};
+SelectionBuilt g_selection_built;
+
+// The corners of the level geometry faces with the selected brushes' face ids, copied, as the level faces may be freed
+// without the key changing. Kept only through a transform, whose frames move the brushes but not the level geometry.
+struct SelectionGather
+{
+    SelectionKey key;
+    std::vector<int> ids; // sorted
+    std::unordered_map<int, std::vector<Vector3>> corners;
+};
+SelectionGather g_selection_gather;
 
 // Changed since the last Build: a face never built, or one the level geometry built from it no longer lies on
 bool brush_changed_since_build(BrushNode& brush, const std::unordered_map<int, std::vector<GFace*>>& built)
@@ -97,21 +150,15 @@ void refresh_preview(CDedLevel& level)
         return;
     }
     Preview key;
-    key.undo_top = undo_stack_top(level.undo_stack);
-    key.undo_size = level.undo_stack.size;
-    key.redo_top = undo_stack_top(level.redo_stack);
-    key.redo_size = level.redo_stack.size;
-    key.transforming = transforming(level);
+    key.edits = edit_state(level);
     // a transform moves its brushes each frame, and its start and end change the key
-    key.fingerprint = key.transforming ? 0 : brushes_fingerprint(level);
-    if (g_preview.valid && key.undo_top == g_preview.undo_top && key.undo_size == g_preview.undo_size &&
-        key.redo_top == g_preview.redo_top && key.redo_size == g_preview.redo_size &&
-        key.transforming == g_preview.transforming && key.fingerprint == g_preview.fingerprint) {
+    key.fingerprint = key.edits.transforming ? 0 : brushes_fingerprint(level);
+    if (g_preview.valid && key.edits == g_preview.edits && key.fingerprint == g_preview.fingerprint) {
         return;
     }
     const auto built = level.solid->faces_by_id();
     const bool moving_selection =
-        key.transforming && (level.edit_mode == DedEditMode::Brush || level.edit_mode == DedEditMode::Group);
+        key.edits.transforming && (level.edit_mode == DedEditMode::Brush || level.edit_mode == DedEditMode::Group);
     std::vector<GSolid*> others;
     level.for_each_brush([&](BrushNode& brush) {
         auto* geometry = static_cast<GSolid*>(brush.geometry);
@@ -282,18 +329,111 @@ void brush_preview_build_started(CDedLevel& level)
 void brush_preview_level_reset()
 {
     g_preview = {};
+    g_selection_built = {};
+    g_selection_gather = {};
     g_face_ids_unbuilt = false;
 }
 
 void brush_preview_build_ended(bool completed)
 {
     g_preview = {};
+    g_selection_built = {};
+    g_selection_gather = {};
     g_face_ids_unbuilt = !completed;
 }
 
 bool brush_preview_hides(const GFace& face)
 {
     return hides_face(&face);
+}
+
+SelectedBrushGeometry selected_brush_geometry(CDedLevel& level)
+{
+    SelectedBrushGeometry selected;
+    try {
+        SelectionKey key;
+        key.edits = edit_state(level);
+        level.for_each_brush([&](BrushNode& brush) {
+            if (brush.state == BRUSH_STATE_SELECTED && brush.geometry) {
+                selected.brushes.push_back(&brush);
+                // a transform moves its brushes, or their vertices, each frame
+                if (key.edits.transforming) {
+                    return;
+                }
+                mix_brush(key.fingerprint, brush);
+                // a tool dialog's live preview reshapes new copies of the brushes, which can reuse the old addresses
+                const VArray<GVertex*>& vertices = static_cast<const GSolid*>(brush.geometry)->vertices;
+                for (int i = 0; i < vertices.size; ++i) {
+                    if (const GVertex* vertex = vertices.data_ptr[i]) {
+                        mix(key.fingerprint, &vertex->pos, sizeof(vertex->pos));
+                    }
+                }
+            }
+        });
+        if (selected.brushes.empty() || !level.solid || level.build_running || g_face_ids_unbuilt) {
+            return selected;
+        }
+        key.level_solid = level.solid;
+        key.level_faces = level.solid->face_list_head;
+        key.num_level_faces = level.solid->face_list_count;
+        if (!key.edits.transforming && g_selection_built.valid && g_selection_built.key == key) {
+            selected.built_face_ids = g_selection_built.face_ids;
+            return selected;
+        }
+        std::vector<int> ids;
+        for (BrushNode* brush : selected.brushes) {
+            static_cast<GSolid*>(brush->geometry)->for_each_face([&](GFace& face) {
+                if (face.face_id >= 0) {
+                    ids.push_back(face.face_id);
+                }
+                return false;
+            });
+        }
+        std::sort(ids.begin(), ids.end());
+        ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+        // a transform leaves the fingerprint unmixed, so its frames' keys match
+        if (!key.edits.transforming || g_selection_gather.key != key || g_selection_gather.ids != ids) {
+            g_selection_gather = {};
+            std::unordered_map<int, std::vector<Vector3>> corners;
+            level.solid->for_each_face([&](GFace& face) {
+                if (std::binary_search(ids.begin(), ids.end(), face.face_id)) {
+                    std::vector<Vector3>& face_corners = corners[face.face_id];
+                    for_each_face_corner(face, [&](GFaceVertex& fv) {
+                        if (fv.vertex) {
+                            face_corners.push_back(fv.vertex->pos);
+                        }
+                    });
+                }
+                return false;
+            });
+            g_selection_gather = {key, std::move(ids), std::move(corners)};
+        }
+        const auto& built = g_selection_gather.corners;
+        // A brush face's built faces are hidden only while all of them still lie on it, which a move may end
+        for (BrushNode* brush : selected.brushes) {
+            static_cast<GSolid*>(brush->geometry)->for_each_face([&](GFace& face) {
+                const auto it = built.find(face.face_id);
+                if (it != built.end() && level_faces_lie_on_brush_face(*brush, face, it->second)) {
+                    selected.built_face_ids.push_back(face.face_id);
+                }
+                return false;
+            });
+        }
+        if (!key.edits.transforming) {
+            g_selection_gather = {};
+        }
+        std::vector<int>& built_ids = selected.built_face_ids;
+        std::sort(built_ids.begin(), built_ids.end());
+        built_ids.erase(std::unique(built_ids.begin(), built_ids.end()), built_ids.end());
+        g_selection_built = {true, key, built_ids};
+    }
+    catch (const std::exception& e) {
+        xlog::error("[Selection] {}", e.what());
+        g_selection_built = {};
+        g_selection_gather = {};
+        selected.built_face_ids.clear();
+    }
+    return selected;
 }
 
 void ApplyBrushPreviewPatches()

@@ -3,9 +3,11 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 #include <windows.h>
 #include <d3d11.h>
@@ -35,6 +37,14 @@ namespace gr::d3d11
     class ParticleRenderer;
     class EditorFaceRenderer;
     struct EditorLightmapVertex;
+
+    // The selection RED outlines itself in the perspective view: the level faces built from a selected brush that still
+    // lie on it, by face id, and the selected brushes' solids the per-face draw shows no edges of; both sorted
+    struct EditorSelectionEdges
+    {
+        std::vector<int> level_face_ids;
+        std::vector<const rf::GSolid*> solids;
+    };
 
     // RED's Direct3D 11 backend. Like RED's Direct3D 8 one, every window draws into the top left of one scene
     // target as big as the largest monitor, which flip copies into the swap chain of the window
@@ -72,10 +82,11 @@ namespace gr::d3d11
             fog_overlay_pass_ = overlay_pass;
         }
         // What the paint of the perspective view in progress draws of the level, and of the solids the per-face draw
-        // fills. Every other draw has the defaults.
-        void set_level_view_style(const EditorLevelStyle& style)
+        // fills. Every other draw has the defaults. The edges leave out the selection RED outlines itself.
+        void set_level_view_style(const EditorLevelStyle& style, EditorSelectionEdges selection_edges = {})
         {
             level_view_style_ = style;
+            selection_edges_ = std::move(selection_edges);
         }
         const EditorLevelStyle& level_view_style() const
         {
@@ -83,7 +94,7 @@ namespace gr::d3d11
         }
         // Around the per-face draw of a solid (0x004E85A0), whose colour GSolid::draw has set: begin is false when its
         // fills are left out, and end draws the edges and portal planes the style asks for
-        bool begin_face_draw();
+        bool begin_face_draw(const rf::GSolid* solid);
         void end_face_draw(rf::GSolid* solid);
         // Whether the per-face draw in progress draws edges alone (Show Wireframe)
         bool face_draw_edges_only() const
@@ -213,10 +224,13 @@ namespace gr::d3d11
         HWND hwnd_ = nullptr;
         bool fog_overlay_pass_ = false;
         EditorLevelStyle level_view_style_;
+        EditorSelectionEdges selection_edges_;
         struct FaceDraw
         {
             EditorLevelStyle style;
             rf::Color edge_color;
+            // Sorted; into selection_edges_, so valid for this per-face draw only
+            std::span<const int> hidden_edge_face_ids;
         };
         std::optional<FaceDraw> face_draw_;
         // The edges the per-face draw in progress queued, as line end pairs: screen position and projected depth

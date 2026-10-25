@@ -766,11 +766,14 @@ namespace gr::d3d11
         if (!face_draw_) {
             return fill();
         }
+        const std::span<const int> hidden_ids = face_draw_->hidden_edge_face_ids;
+        const bool edges = face_draw_->style.edges
+            && !(face && std::binary_search(hidden_ids.begin(), hidden_ids.end(), face->attributes.face_id));
         if (!face_draw_->style.fills) {
-            return queue_face_edges(face);
+            return edges ? queue_face_edges(face) : gather_visible_face(face, rf::max_face_vertices);
         }
         const bool drawn = fill();
-        if (drawn && face_draw_->style.edges) {
+        if (drawn && edges) {
             queue_face_edges(face);
         }
         return drawn;
@@ -905,11 +908,18 @@ namespace gr::d3d11
         return true;
     }
 
-    bool EditorRenderer::begin_face_draw()
+    bool EditorRenderer::begin_face_draw(const rf::GSolid* solid)
     {
         // GSolid::draw has set the brush's colour, or the level draw's white
         const rf::Color& color = rf::gr::screen.current_color;
-        face_draw_ = FaceDraw{level_view_style_, rf::Color{color.red, color.green, color.blue, 255}};
+        FaceDraw draw{level_view_style_, rf::Color{color.red, color.green, color.blue, 255}};
+        if (solid && solid == engine::level_solid()) {
+            draw.hidden_edge_face_ids = selection_edges_.level_face_ids;
+        }
+        else if (std::binary_search(selection_edges_.solids.begin(), selection_edges_.solids.end(), solid)) {
+            draw.style.edges = false;
+        }
+        face_draw_ = draw;
         return level_view_style_.fills;
     }
 
@@ -1176,7 +1186,7 @@ namespace gr::d3d11
                 solid_renderer_->render_solid(solid, rooms, num_rooms);
             }
             render_solid_overlays([&](SolidOverlay what) {
-                solid_renderer_->render_overlay(what, solid, rooms, num_rooms);
+                solid_renderer_->render_overlay(what, solid, rooms, num_rooms, selection_edges_.level_face_ids);
             });
         }
         for (int i = 0; i < num_rooms; ++i) {

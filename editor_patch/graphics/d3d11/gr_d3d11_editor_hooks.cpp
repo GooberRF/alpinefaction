@@ -14,6 +14,7 @@
 #include <xlog/xlog.h>
 #include <common/gr_d3d11/gr_d3d11_mesh.h>
 #include <common/scope_guard.h>
+#include "../../brush_preview.h"
 #include "../../editor_settings.h"
 #include "../../headless_bake.h"
 #include "../editor_gr.h"
@@ -505,15 +506,37 @@ namespace gr::d3d11
         }
 
         // The perspective view's level as View > Show Wireframe, Wireframe Overlay and Draw See-thru Portal Faces ask.
-        // The paint reads the portal option (0x0047AE3F) after this.
+        // The paint reads the portal option (0x0047AE3F) after this. The overlay is left to Brush and Object modes, as
+        // the other modes draw their brushes' own wireframes.
         EditorLevelStyle perspective_level_view_style()
         {
             const bool wireframe = g_editor_settings.show_wireframe;
+            const CDedLevel* level = CDedLevel::Get();
+            const bool overlay = g_editor_settings.wireframe_overlay && level
+                && (level->edit_mode == DedEditMode::Brush || level->edit_mode == DedEditMode::Object);
             return {
                 .fills = !wireframe,
-                .edges = wireframe || g_editor_settings.wireframe_overlay,
+                .edges = wireframe || overlay,
                 .portal_planes = view_portal_option == VIEW_PORTAL_FACES_SEE_THRU,
             };
+        }
+
+        // RED outlines selected brushes itself; one in a moving group drawn as edges alone keeps its edges as outline
+        EditorSelectionEdges selection_edges(bool fills)
+        {
+            CDedLevel* level = CDedLevel::Get();
+            if (!level) {
+                return {};
+            }
+            SelectedBrushGeometry selected = selected_brush_geometry(*level);
+            EditorSelectionEdges edges{std::move(selected.built_face_ids), {}};
+            for (BrushNode* brush : selected.brushes) {
+                if (fills || !level->brush_in_moving_group(brush)) {
+                    edges.solids.push_back(static_cast<const rf::GSolid*>(brush->geometry));
+                }
+            }
+            std::sort(edges.solids.begin(), edges.solids.end());
+            return edges;
         }
 
         // The 3D view paint. In the perspective view it sets the level's View style, and View > Preview Level Fog
@@ -530,7 +553,8 @@ namespace gr::d3d11
                 view_paint_hook.call_target(view, edx, dc);
                 return;
             }
-            r->set_level_view_style(perspective_level_view_style());
+            const EditorLevelStyle style = perspective_level_view_style();
+            r->set_level_view_style(style, style.edges ? selection_edges(style.fills) : EditorSelectionEdges{});
             const ScopeGuard style_reset{[] {
                 if (EditorRenderer* live = live_renderer()) {
                     live->set_level_view_style({});
@@ -584,7 +608,7 @@ namespace gr::d3d11
             0x004CC9BD,
             [](rf::GSolid* solid, const void* pos, const void* orient, char outline) {
                 EditorRenderer* r = live_renderer();
-                const bool fills = !r || r->begin_face_draw();
+                const bool fills = !r || r->begin_face_draw(solid);
                 geometry_in_editor_hook.call_target(solid, pos, orient, fills ? outline : 0);
                 if (EditorRenderer* live = live_renderer()) {
                     live->end_face_draw(solid);

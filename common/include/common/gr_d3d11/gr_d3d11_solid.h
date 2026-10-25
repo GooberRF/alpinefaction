@@ -3,6 +3,7 @@
 #include <vector>
 #include <optional>
 #include <memory>
+#include <span>
 #include <d3d11.h>
 #include <common/ComPtr.h>
 #include "gr_d3d11_shader.h"
@@ -92,8 +93,10 @@ namespace gr::d3d11
             cull_mode_ = two_sided ? D3D11_CULL_NONE : D3D11_CULL_BACK;
         }
         // The editor's extras over what render_solid / render_sky_room draw of these rooms, as the cache options
-        // built them, with the shaders and states the caller bound
-        void render_overlay(SolidOverlay what, rf::GSolid* solid, rf::GRoom** rooms, int num_rooms);
+        // built them, with the shaders and states the caller bound. The edges of faces with an id in
+        // hidden_edge_face_ids (sorted, unique) are left out.
+        void render_overlay(SolidOverlay what, rf::GSolid* solid, rf::GRoom** rooms, int num_rooms,
+                            std::span<const int> hidden_edge_face_ids);
         void render_sky_room_overlay(SolidOverlay what, rf::GRoom* room);
         void release_terrain_gpu()
         {

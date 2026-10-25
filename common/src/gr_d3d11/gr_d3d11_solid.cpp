@@ -229,23 +229,32 @@ namespace gr::d3d11
         std::vector<SolidBatch> liquid_batches_;
     };
 
-    // A cache's SolidOverlay geometry over its vertex buffer: the edge lines, then the portal plane triangles
+    // The edge lines of the faces with one face id, from first_index up to the next run's
+    struct SolidEdgeRun
+    {
+        int face_id;
+        int first_index;
+    };
+
+    // A cache's SolidOverlay geometry over its vertex buffer: the edge lines, grouped by face id in ascending runs,
+    // then the portal plane triangles
     struct SolidOverlayIndices
     {
         ComPtr<ID3D11Buffer> index_buffer;
         int num_edge_indices = 0;
         int num_portal_plane_indices = 0;
+        std::vector<SolidEdgeRun> edge_runs;
     };
 
     class GRenderCache
     {
     public:
         GRenderCache(SolidBatches batches, SolidGeometryBuffers geometry_buffers, SolidOverlayIndices overlay) :
-            batches_{batches}, geometry_buffers_{geometry_buffers}, overlay_{overlay}
+            batches_{batches}, geometry_buffers_{geometry_buffers}, overlay_{std::move(overlay)}
         {}
 
         void render(FaceRenderType what, RenderContext& context);
-        void render_overlay(SolidOverlay what, RenderContext& context);
+        void render_overlay(SolidOverlay what, RenderContext& context, std::span<const int> hidden_edge_face_ids);
 
         bool has_batches(FaceRenderType what)
         {
@@ -304,7 +313,8 @@ namespace gr::d3d11
         render_context.set_suppress_texture_uv_scale(false);
     }
 
-    void GRenderCache::render_overlay(SolidOverlay what, RenderContext& render_context)
+    void GRenderCache::render_overlay(SolidOverlay what, RenderContext& render_context,
+                                      std::span<const int> hidden_edge_face_ids)
     {
         const bool edges = what == SolidOverlay::edges;
         const int num_indices = edges ? overlay_.num_edge_indices : overlay_.num_portal_plane_indices;
@@ -315,7 +325,42 @@ namespace gr::d3d11
         render_context.set_index_buffer(overlay_.index_buffer, DXGI_FORMAT_R32_UINT);
         render_context.set_primitive_topology(edges ? D3D11_PRIMITIVE_TOPOLOGY_LINELIST
                                                     : D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        render_context.draw_indexed(num_indices, edges ? 0 : overlay_.num_edge_indices, 0);
+        if (!edges) {
+            render_context.draw_indexed(num_indices, overlay_.num_edge_indices, 0);
+            return;
+        }
+        // Both ascend, so the edges left drawn are the gaps between the hidden runs
+        const std::vector<SolidEdgeRun>& runs = overlay_.edge_runs;
+        int start = 0;
+        const auto hide = [&](std::vector<SolidEdgeRun>::const_iterator run) {
+            if (run->first_index > start) {
+                render_context.draw_indexed(run->first_index - start, start, 0);
+            }
+            start = std::next(run) == runs.end() ? num_indices : std::next(run)->first_index;
+        };
+        if (hidden_edge_face_ids.size() < runs.size()) {
+            auto run = runs.begin();
+            for (int face_id : hidden_edge_face_ids) {
+                run = std::lower_bound(run, runs.end(), face_id,
+                    [](const SolidEdgeRun& r, int id) { return r.face_id < id; });
+                if (run == runs.end()) {
+                    break;
+                }
+                if (run->face_id == face_id) {
+                    hide(run);
+                }
+            }
+        }
+        else {
+            for (auto run = runs.begin(); run != runs.end(); ++run) {
+                if (std::binary_search(hidden_edge_face_ids.begin(), hidden_edge_face_ids.end(), run->face_id)) {
+                    hide(run);
+                }
+            }
+        }
+        if (num_indices > start) {
+            render_context.draw_indexed(num_indices - start, start, 0);
+        }
     }
 
     class GRenderCacheBuilder
@@ -676,6 +721,13 @@ namespace gr::d3d11
         vb_data.reserve(num_verts_);
         ib_data.reserve(num_inds_);
         std::vector<uint32_t> overlay_ib;
+        struct EdgeLoop
+        {
+            int face_id;
+            std::size_t first_vertex;
+            std::size_t end_vertex;
+        };
+        std::vector<EdgeLoop> edge_loops;
 
         for (auto& e : batched_faces_) {
             const GRenderCacheBuilder::FaceBatchKey& key = e.first;
@@ -707,7 +759,7 @@ namespace gr::d3d11
                         gpu_vert.v0_pan_speed = v_pan_speed;
                     });
                 if (options_.edges_built) {
-                    append_face_edges(overlay_ib, first_vertex, vb_data.size());
+                    edge_loops.push_back({face->attributes.face_id, first_vertex, vb_data.size()});
                 }
             }
             std::size_t num_indices = ib_data.size() - start_index;
@@ -800,6 +852,14 @@ namespace gr::d3d11
             }
         }
         SolidOverlayIndices overlay;
+        std::stable_sort(edge_loops.begin(), edge_loops.end(),
+            [](const EdgeLoop& a, const EdgeLoop& b) { return a.face_id < b.face_id; });
+        for (const EdgeLoop& loop : edge_loops) {
+            if (overlay.edge_runs.empty() || overlay.edge_runs.back().face_id != loop.face_id) {
+                overlay.edge_runs.push_back({loop.face_id, static_cast<int>(overlay_ib.size())});
+            }
+            append_face_edges(overlay_ib, loop.first_vertex, loop.end_vertex);
+        }
         overlay.num_edge_indices = static_cast<int>(overlay_ib.size());
         for (rf::GFace* face : portal_plane_faces_) {
             if (!face->edge_loop) continue;
@@ -828,7 +888,7 @@ namespace gr::d3d11
         else {
             overlay = {};
         }
-        return GRenderCache{batches, geometry_buffers, overlay};
+        return GRenderCache{batches, geometry_buffers, std::move(overlay)};
     }
 
     class RoomRenderCache
@@ -1381,7 +1441,8 @@ namespace gr::d3d11
             GRenderCacheBuilder cache_builder{cache_options_};
             cache_builder.add_solid(solid);
             GRenderCache cache = cache_builder.build(device_);
-            auto p = mover_render_cache_.emplace(std::make_pair(solid, std::make_unique<GRenderCache>(cache)));
+            auto p =
+                mover_render_cache_.emplace(std::make_pair(solid, std::make_unique<GRenderCache>(std::move(cache))));
             it = p.first;
         }
         return it->second.get();
@@ -1498,13 +1559,14 @@ namespace gr::d3d11
         af_lightmap_renderer_.bind();
     }
 
-    void SolidRenderer::render_overlay(SolidOverlay what, rf::GSolid* solid, rf::GRoom** rooms, int num_rooms)
+    void SolidRenderer::render_overlay(SolidOverlay what, rf::GSolid* solid, rf::GRoom** rooms, int num_rooms,
+                                       std::span<const int> hidden_edge_face_ids)
     {
         render_context_.set_model_transform(rf::zero_vector, rf::identity_matrix);
         for (int i = 0; i < num_rooms; ++i) {
             rf::GRoom* room = rooms[i];
             if (GRenderCache* cache = get_or_create_normal_room_cache(solid, room)->current(device_)) {
-                cache->render_overlay(what, render_context_);
+                cache->render_overlay(what, render_context_, hidden_edge_face_ids);
             }
             // The detail rooms render_solid draws; a terrain chunk is drawn for every room that lists it
             for (rf::GRoom* detail_room : room->detail_rooms) {
@@ -1516,7 +1578,7 @@ namespace gr::d3d11
                     continue;
                 }
                 if (GRenderCache* cache = get_or_create_detail_room_cache(solid, detail_room)) {
-                    cache->render_overlay(what, render_context_);
+                    cache->render_overlay(what, render_context_, hidden_edge_face_ids);
                 }
             }
         }
@@ -1528,8 +1590,9 @@ namespace gr::d3d11
         rf::Matrix3 orient;
         sky_room_transform(pos, orient);
         render_context_.set_model_transform(pos, orient);
+        // Moved with the eye, so nothing of it lies under the selection's outlines
         if (GRenderCache* cache = get_or_create_normal_room_cache(engine::level_solid(), room)->current(device_)) {
-            cache->render_overlay(what, render_context_);
+            cache->render_overlay(what, render_context_, {});
         }
     }
 

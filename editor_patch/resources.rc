@@ -368,7 +368,6 @@ IDR_MAIN_FRAME MENU
         MENUITEM "Show Rooms in Different Colors", 32865
         MENUITEM "Show Everything See-through", 32866
         MENUITEM "Show Wireframe", ID_VIEW_SHOW_WIREFRAME
-        MENUITEM "Wireframe Overlay", ID_VIEW_WIREFRAME_OVERLAY
         MENUITEM SEPARATOR
         MENUITEM "Render Nothing (Except brushes)", 32879
         MENUITEM "Render Everything", 32867
@@ -385,6 +384,7 @@ IDR_MAIN_FRAME MENU
         MENUITEM "Show Back Faces", ID_VIEW_SHOW_BACK_FACES
         MENUITEM "Fullbright Meshes", ID_VIEW_FULLBRIGHT_MESHES
         MENUITEM "Show Decals", ID_VIEW_SHOW_DECALS
+        MENUITEM "Wireframe Overlay", ID_VIEW_WIREFRAME_OVERLAY
         MENUITEM SEPARATOR
         MENUITEM "Use Multitexturing (If Possible)", 32878
         MENUITEM SEPARATOR
