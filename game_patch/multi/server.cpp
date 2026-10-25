@@ -3676,6 +3676,15 @@ void server_reliable_socket_ready(rf::Player* player)
     }
 }
 
+// Sent once the server has loaded the level; clients still loading show it when they get in.
+void server_broadcast_level_message()
+{
+    const LevelMessageConfig& level_message = g_alpine_server_config_active_rules.level_message;
+    if (level_message.enabled && !level_message.text.empty()) {
+        af_broadcast_automated_chat_msg(string_replace(level_message.text, "$LEVEL", rf::level.name.c_str()));
+    }
+}
+
 CodeInjection multi_level_init_injection{
     0x0046E450,
     [](auto& regs) {

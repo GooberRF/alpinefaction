@@ -45,6 +45,22 @@ namespace rf
         float bot;
     };
 
+    struct GPortal
+    {
+        GRoom* room1;
+        GRoom* room2;
+        Vector3 bbox_min;
+        Vector3 bbox_max;
+        int index;
+        // Set by g_solid_collect_visible_rooms_recursive 0x004D4860 the first time it tests the portal in a search
+        bool rect_computed;
+        bool is_invisible;
+        GClipWnd rect;
+    };
+    static_assert(offsetof(GPortal, rect_computed) == 0x24);
+    static_assert(offsetof(GPortal, rect) == 0x28);
+    static_assert(sizeof(GPortal) == 0x38);
+
     enum GFaceListId
     {
         FACE_LIST_SOLID = 0,
@@ -802,6 +818,8 @@ namespace rf
     static auto& gr_static_solid_scroll_clock = addr_as_ref<float>(0x01EA574C);
     // The rooms g_solid_collect_visible_rooms_recursive 0x004D4860 lists for the frame
     static auto& g_num_visible_rooms = addr_as_ref<int>(0x009BB57C);
+    // The room the portal renderer 0x004D45D0 searches from, null when there is none
+    static auto& g_portal_camera_room = addr_as_ref<GRoom*>(0x009BB588);
     static auto& set_currently_rendered_room = addr_as_ref<void(GRoom* room)>(0x004D3350);
     static auto& gr_decal_self_illuminated_mode = addr_as_ref<gr::Mode>(0x01818340);
     static auto& g_get_room_render_list = addr_as_ref<void(GRoom ***rooms, int *num_rooms)>(0x004D3330);

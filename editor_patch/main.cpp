@@ -14,6 +14,8 @@
 #include <string>
 #include <algorithm>
 #include <set>
+#include <unordered_map>
+#include <unordered_set>
 #include <cmath>
 #include <utility>
 #include <common/version/version.h>
@@ -63,6 +65,7 @@
 #include "brush_preview.h"
 #include "mesh_browser.h"
 #include "placement_panel.h"
+#include "selection.h"
 #include "viewport_input.h"
 
 #define LAUNCHER_FILENAME "AlpineFactionLauncher.exe"
@@ -150,6 +153,16 @@ CodeInjection CEditorApp_InitInstance_open_level_injection{
     },
 };
 
+// The brush panel refreshes on every selection change, so its per-brush uid list lookups are hashed
+static std::unordered_map<int32_t, size_t> first_index_by_uid(const std::vector<int32_t>& uids)
+{
+    std::unordered_map<int32_t, size_t> index;
+    for (size_t i = 0; i < uids.size(); ++i) {
+        index.emplace(uids[i], i);
+    }
+    return index;
+}
+
 // ===== Brush "Is Geoable" support =====
 
 static int compute_geoable_state_from_selected()
@@ -160,14 +173,13 @@ static int compute_geoable_state_from_selected()
 
     BrushNode* node = level->brush_list;
     if (!node) return BST_UNCHECKED;
+    const std::unordered_set<int32_t> geoable(props.geoable_brush_uids.begin(), props.geoable_brush_uids.end());
     int num_selected = 0;
     int num_geoable = 0;
     do {
         if (node->state == BRUSH_STATE_SELECTED) {
             num_selected++;
-            if (std::find(props.geoable_brush_uids.begin(),
-                          props.geoable_brush_uids.end(), node->uid)
-                != props.geoable_brush_uids.end()) {
+            if (geoable.count(node->uid) != 0) {
                 num_geoable++;
             }
         }
@@ -237,12 +249,12 @@ static int compute_no_shadow_cast_state_from_selected()
     int num_eligible = 0;
     int num_flagged = 0;
     const std::unordered_set<int32_t> mover_brush_uids = collect_moving_group_brush_uids();
+    const std::unordered_set<int32_t> flagged(props.no_shadow_cast_brush_uids.begin(),
+                                              props.no_shadow_cast_brush_uids.end());
     do {
         if (node->state == BRUSH_STATE_SELECTED && no_shadow_cast_eligible(*node, mover_brush_uids)) {
             num_eligible++;
-            if (std::find(props.no_shadow_cast_brush_uids.begin(),
-                          props.no_shadow_cast_brush_uids.end(), node->uid)
-                != props.no_shadow_cast_brush_uids.end()) {
+            if (flagged.count(node->uid) != 0) {
                 num_flagged++;
             }
         }
@@ -318,15 +330,14 @@ static int compute_material_from_selected()
 
     BrushNode* node = level->brush_list;
     if (!node) return 0;
+    const auto breakable_index = first_index_by_uid(props.breakable_brush_uids);
     int result = -2; // not set yet
     do {
         if (node->state == BRUSH_STATE_SELECTED && node->is_detail && node->life != -1) {
             uint8_t mat = 0; // default = Glass
-            auto it = std::find(props.breakable_brush_uids.begin(),
-                                props.breakable_brush_uids.end(), node->uid);
-            if (it != props.breakable_brush_uids.end()) {
-                auto idx = std::distance(props.breakable_brush_uids.begin(), it);
-                mat = props.breakable_materials[idx] & 0x7F; // mask out flags (bit 7 = no_debris)
+            auto it = breakable_index.find(node->uid);
+            if (it != breakable_index.end()) {
+                mat = props.breakable_materials[it->second] & 0x7F; // mask out flags (bit 7 = no_debris)
             }
             if (result == -2) {
                 result = mat;
@@ -423,14 +434,14 @@ static int compute_no_debris_state_from_selected()
 
     BrushNode* node = level->brush_list;
     if (!node) return BST_UNCHECKED;
+    const auto breakable_index = first_index_by_uid(props.breakable_brush_uids);
     int num_checked = 0;
     int num_applicable = 0;
     do {
         if (node->state == BRUSH_STATE_SELECTED && node->is_detail && node->life != -1) {
-            auto it = std::find(props.breakable_brush_uids.begin(),
-                                props.breakable_brush_uids.end(), node->uid);
-            if (it != props.breakable_brush_uids.end()) {
-                auto idx = std::distance(props.breakable_brush_uids.begin(), it);
+            auto it = breakable_index.find(node->uid);
+            if (it != breakable_index.end()) {
+                const size_t idx = it->second;
                 uint8_t mat = props.breakable_materials[idx] & 0x7F;
                 if (mat > 0) { // non-glass only
                     num_applicable++;
@@ -820,6 +831,18 @@ void __fastcall brush_mode_handle_selection_new(void* self)
     }
 }
 FunHook<brush_mode_handle_selection_type> brush_mode_handle_selection_hook{0x0043F430, brush_mode_handle_selection_new};
+
+// Texture mode's Select Faces button: one log line per brush it adds faces on
+using select_faces_by_texture_type = void __fastcall(void* self);
+extern FunHook<select_faces_by_texture_type> select_faces_by_texture_hook;
+void __fastcall select_faces_by_texture_new(void* self)
+{
+    g_skip_wnd_set_text = true;
+    select_faces_by_texture_hook.call_target(self);
+    g_skip_wnd_set_text = false;
+    LogDlg_Append(GetLogDlg(), "");
+}
+FunHook<select_faces_by_texture_type> select_faces_by_texture_hook{0x0042D970, select_faces_by_texture_new};
 
 void __fastcall DedLight_UpdateLevelLight_new(void *this_);
 FunHook DedLight_UpdateLevelLight_hook{
@@ -2472,6 +2495,7 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
     log_append_wnd_set_text_hook.install();
     brush_mode_handle_selection_hook.install();
     group_mode_handle_selection_hook.install();
+    select_faces_by_texture_hook.install();
 
     // Replace some editor resources
     CWnd_CreateDlg_injection.install();
@@ -2517,6 +2541,7 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
     ApplyFaceListCachePatches();
     ApplyBakeProgressPatches();
     ApplyBuildRepairPatches();
+    ApplySelectionPatches();
     install_editor_bitmap_loader_hooks();
 
     // Browse for .v3m files instead of .v3d

@@ -3,6 +3,7 @@
 // Headless lightmap bake: "-bake <input.rfl> -bakeout <output.rfl>"
 // Steps: load the input, Build Geometry (driven to completion, so terrain chunks are compiled and
 // lightmap fragments repacked), Calculate Lighting with shadows, save the output.
+// "-buildonly" skips Calculate Lighting.
 // Exit codes: 0 saved, 1 bad arguments or input not found, 2 load failed, 3 too many dialogs,
 // 4 save failed, 5 Calculate Lighting refused the level (nothing saved), 6 Build Geometry did not
 // complete (nothing saved), 7 RED ran out of memory part-way through a stock pass and closed (nothing

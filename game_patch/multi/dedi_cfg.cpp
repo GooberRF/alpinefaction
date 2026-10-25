@@ -248,6 +248,19 @@ static WelcomeMessageConfig parse_welcome_message_config(const toml::table& t, W
     return c;
 }
 
+static LevelMessageConfig parse_level_message_config(const toml::table& t, LevelMessageConfig c)
+{
+    if (auto x = t["enabled"].value<bool>())
+        c.enabled = *x;
+
+    if (c.enabled) {
+        if (auto v = t["text"].value<std::string>())
+            c.set_text(*v);
+    }
+
+    return c;
+}
+
 static SpawnProtectionConfig parse_spawn_protection_config(const toml::table& t, SpawnProtectionConfig c)
 {
     if (auto x = t["enabled"].value<bool>())
@@ -717,6 +730,8 @@ static void apply_rules_keys_from_toml(const toml::table& t, AlpineServerConfigR
         o.kill_rewards = parse_kill_reward_config(*sub, o.kill_rewards);
     if (auto sub = t["welcome_message"].as_table())
         o.welcome_message = parse_welcome_message_config(*sub, o.welcome_message);
+    if (auto sub = t["level_message"].as_table())
+        o.level_message = parse_level_message_config(*sub, o.level_message);
 
     //o.weapon_stay_exemptions.exemptions.clear();
     o.weapon_stay_exemptions.add("shoulder_cannon", true); // stock default
@@ -791,6 +806,8 @@ static void apply_rules_keys_from_toml(const toml::table& t, AlpineServerConfigR
     }
     if (auto v = t["gg_final_weapon"].value<std::string>())
         o.gungame_final_weapon = *v;
+    if (auto v = t["gg_end_with_fusion"].value<bool>())
+        o.gungame_end_with_fusion = *v;
 }
 
 // Applies one rules table: mutators (Full mode only) then explicit keys, so manual
@@ -1309,7 +1326,11 @@ static void apply_known_key_in_order(AlpineServerConfig& cfg, const std::string&
         }
     }
     else if (key == "fflink_gsk") {
-        if (auto v = node.value<std::string>()) {
+        // A LAN-only server never registers with FactionFiles
+        if (rf::lan_only_cmd_line_param.found()) {
+            rf::console::print("Ignoring fflink_gsk because -lanonly switch was used.\n");
+        }
+        else if (auto v = node.value<std::string>()) {
             cfg.set_fflink_gsk(*v);
         }
     }
@@ -1906,6 +1927,14 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         }
     }
 
+    if (base || rules.level_message.enabled != b.level_message.enabled ||
+        (rules.level_message.enabled && rules.level_message.text != b.level_message.text)) {
+        std::format_to(iter, "  Level message:                         {}\n", rules.level_message.enabled);
+        if (rules.level_message.enabled) {
+            std::format_to(iter, "    Text:                                {}\n", rules.level_message.text);
+        }
+    }
+
     if (base || rules.gibbing.enabled != b.gibbing.enabled ||
         (rules.gibbing.enabled &&
             (rules.gibbing.damage_threshold != b.gibbing.damage_threshold ||
@@ -2203,6 +2232,8 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
     }
     if (base || rules.gungame_final_weapon != b.gungame_final_weapon)
         std::format_to(iter, "  GunGame final weapon:                  {}\n", rules.gungame_final_weapon);
+    if (base || rules.gungame_end_with_fusion != b.gungame_end_with_fusion)
+        std::format_to(iter, "  GunGame end with fusion:               {}\n", rules.gungame_end_with_fusion);
 }
 
 std::string format_mutator_option_value(const MutatorOptionValue& value)

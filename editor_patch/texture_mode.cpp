@@ -1207,8 +1207,7 @@ FacePick texture_mode_pick(CDedLevel& level, float x, float y)
     float mover_t = 0.0f;
     level.for_each_brush([&](BrushNode& brush) {
         auto* geometry = static_cast<GSolid*>(brush.geometry);
-        if (!geometry || brush.state == BRUSH_STATE_RED || brush.state == BRUSH_STATE_HIDDEN ||
-            !level.brush_in_moving_group(&brush)) {
+        if (!geometry || !brush.pickable() || !level.brush_in_moving_group(&brush)) {
             return;
         }
         query.pos = brush.pos;

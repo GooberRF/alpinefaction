@@ -367,6 +367,19 @@ struct WelcomeMessageConfig
     }
 };
 
+struct LevelMessageConfig
+{
+    bool enabled = false;
+    std::string text = "";
+
+    // =============================================
+
+    void set_text(std::string_view new_text)
+    {
+        text.assign(new_text.substr(0, 240));
+    }
+};
+
 struct WeaponStayExemptionEntry
 {
     bool exemption_enabled = true;
@@ -823,6 +836,7 @@ struct AlpineServerConfigRules
     GibConfig gibbing;
     VehicleConfig vehicles;
     WelcomeMessageConfig welcome_message;
+    LevelMessageConfig level_message;
     bool weapon_items_give_full_ammo = false;
     bool weapon_infinite_magazines = false;
     bool drop_weapons = true;
@@ -839,6 +853,7 @@ struct AlpineServerConfigRules
     bool gungame_rampage_rewards = true;
     std::vector<std::vector<std::string>> gungame_tiers; // uses built-in tiers if not specified
     std::string gungame_final_weapon = "Riot Stick";
+    bool gungame_end_with_fusion = true;
     bool geo_chunk_physics = true;
     bool clear_stale_movement_input = false;
     MutatorConfig mutators;
@@ -1324,6 +1339,7 @@ void handle_log_param();
 void handle_nodl_param();
 const AFGameInfoFlags& server_get_game_info_flags();
 void initialize_game_info_server_flags();
+void server_broadcast_level_message();
 std::optional<rf::NetGameType> resolve_gametype_from_name(std::string_view gametype_name);
 bool multi_set_gametype_alpine(std::string_view gametype_name);
 bool is_gametype_name_valid(std::string_view gametype_name);

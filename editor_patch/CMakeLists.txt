@@ -109,6 +109,8 @@ set(SRCS
     overflow_charts.h
     overflow_preview.cpp
     particles.cpp
+    selection.cpp
+    selection.h
     texture_lock.cpp
     texture_lock.h
     uv_map.h

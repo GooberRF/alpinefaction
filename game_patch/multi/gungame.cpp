@@ -35,8 +35,8 @@ namespace
 // Built-in default progression, used unless specified with `gg_tiers` dedi cfg param.
 // Each tier is shuffled per player at order-build time.
 const std::vector<std::vector<const char*>> g_tier_names = {
-    {"heavy_machine_gun", "Rocket Launcher", "scope_assault_rifle", "Assault Rifle"},
-    {"Jeep Gun", "Machine Pistol Special", "shoulder_cannon", "rail_gun"},
+    {"Rocket Launcher", "scope_assault_rifle", "Assault Rifle"},
+    {"Jeep Gun", "Machine Pistol Special", "heavy_machine_gun", "rail_gun"},
     {"Sniper Rifle", "Remote Charge", "Machine Pistol", "Grenade"},
     {"12mm handgun", "Flamethrower", "Shotgun"},
 };
@@ -49,9 +49,11 @@ const std::vector<std::vector<const char*>> g_tier_names_weird = {
 };
 
 // Resolved tier weapon indices (config-driven when gungame_tiers is set, else
-// the built-in table) and the resolved final-level weapon.
+// the built-in table), the resolved final-level weapon, and the Fusion level
+// after it (-1 when the progression ends with the final-level weapon).
 std::vector<std::vector<int>> g_resolved_tiers;
 int g_final_weapon_index = -1;
+int g_fusion_weapon_index = -1;
 
 // Jeep Gun third person mesh override for Gun Game.
 constexpr const char* kJeepGunWeaponClass = "Jeep Gun";
@@ -355,12 +357,19 @@ void resolve_tier_weapons()
         final_idx = rf::weapon_lookup_type(default_final);
     }
     g_final_weapon_index = (final_idx >= 0) ? final_idx : rf::riot_stick_weapon_type;
+
+    const int fusion_idx = rf::shoulder_cannon_weapon_type;
+    g_fusion_weapon_index = (g_alpine_server_config_active_rules.gungame_end_with_fusion && fusion_idx >= 0
+                             && fusion_idx != g_final_weapon_index)
+                                ? fusion_idx
+                                : -1;
 }
 
 // Build a per-player score-threshold -> weapon map. The tier weapons are spread
 // proportionally across [0, top), but per-player and with each tier shuffled per player.
-// The Riot Stick is the final level at `top` (= limit - 1) so the limit-th kill is
-// made with the Riot Stick and wins.
+// The Riot Stick is the final level at `top`, one kill long. With gg_end_with_fusion the
+// Fusion follows at (limit - 1), otherwise `top` is (limit - 1). Either way the limit-th
+// kill is made with the last level and wins.
 std::map<int, int> build_order_for_player()
 {
     std::map<int, int> map;
@@ -374,13 +383,17 @@ std::map<int, int> build_order_for_player()
     }
 
     const int limit = effective_limit();
+    const bool end_with_fusion = g_fusion_weapon_index >= 0;
 
     if (limit <= 1) {
-        map[0] = g_final_weapon_index;
+        map[0] = end_with_fusion ? g_fusion_weapon_index : g_final_weapon_index;
         return map;
     }
 
-    const int top = std::max(1, limit - 1);
+    if (end_with_fusion) {
+        map[limit - 1] = g_fusion_weapon_index;
+    }
+    const int top = end_with_fusion ? limit - 2 : limit - 1;
 
     int total_weapons = 0;
     for (const auto& tier : g_resolved_tiers) {
@@ -415,7 +428,7 @@ std::map<int, int> build_order_for_player()
         if (accumulated >= top || total_left <= 0) break;
     }
 
-    // Final level (Riot Stick unless configured otherwise), granted at (limit - 1).
+    // Final level (Riot Stick unless configured otherwise).
     map[top] = g_final_weapon_index;
     return map;
 }
@@ -719,17 +732,18 @@ void gungame_on_player_kill(rf::Player* killer, rf::Player* killed)
         grant_and_switch(killer, weapon);
     }
 
-    // First player to reach the final weapon (final level) is one frag from
-    // winning. Skipped for degenerate limits (< 2: the same frag ends the game).
+    // First player to reach the last level is one frag from winning.
+    // Skipped for degenerate limits (< 2: the same frag ends the game).
     if (!g_final_reached_announced && effective_limit() >= 2 && score >= (effective_limit() - 1)) {
         g_final_reached_announced = true;
         af_broadcast_play_custom_sound(custom_sound_id::ann_one_kill_left);
-        // Resolve the configured final weapon's display name (gg_final_weapon),
-        // falling back to a generic literal if it's out of range or unnamed.
+        // Resolve the last level's display name, falling back to a generic
+        // literal if it's out of range or unnamed.
+        const int last_weapon = order.empty() ? -1 : order.rbegin()->second;
         const char* final_name = "final weapon";
-        if (g_final_weapon_index >= 0 && g_final_weapon_index < rf::num_weapon_types
-            && rf::weapon_types[g_final_weapon_index].display_name) {
-            final_name = rf::weapon_types[g_final_weapon_index].display_name;
+        if (last_weapon >= 0 && last_weapon < rf::num_weapon_types
+            && rf::weapon_types[last_weapon].display_name) {
+            final_name = rf::weapon_types[last_weapon].display_name;
         }
         // Everyone EXCEPT the reacher gets the broadcast text — the reacher's
         // own client shows the "Final weapon: <weapon>" notification and the

@@ -207,12 +207,15 @@ CallHook<void(rf::Player*)> player_fpgun_stop_idle_actions_hook{
 
 // Fix weapon bob oscillation: the original code at 0x004AA409 sets the weapon to IDLE before
 // checking if the player is running, causing constant IDLE<->RUN oscillation. This injection
-// skips that premature IDLE transition; the second IDLE check at 0x004AA474 handles all
-// legitimate idle cases.
+// skips that premature IDLE transition only when running or crouching, the gate of the run
+// branch (0x004AA4BD) that then picks the state itself. Otherwise (e.g. climbing) that branch
+// returns without setting one, and skipping would leave WS_LOOP_FIRE playing.
 CodeInjection player_fpgun_skip_premature_idle_injection{
     0x004AA409,
     [](auto& regs) {
-        if (!g_alpine_game_config.legacy_bob) {
+        rf::Entity* entity = regs.edi;
+        if (!g_alpine_game_config.legacy_bob
+            && (rf::entity_is_running(entity) || rf::entity_is_crouching(entity))) {
             regs.eip = 0x004AA423;
         }
     },

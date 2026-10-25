@@ -2185,6 +2185,7 @@ void multi_level_init_post_gametypes()
         af_send_server_info_packet_to_all();
         enforce_alpine_hard_reject_for_all_players_on_current_level();
         afstats::on_game_start();
+        server_broadcast_level_message();
     }
 }
 

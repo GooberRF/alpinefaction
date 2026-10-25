@@ -37,6 +37,7 @@ Version 1.5.0 (Trillium): Not yet released
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)
 - Notify players in a server that is recording demos
+- Add `level_message` dedicated server config section to broadcast a message to all players when a level loads, set globally or per level (`$LEVEL` is replaced with the level name)
 - Restore cut first person weapon aim sway, toggleable with `cl_weaponsway`
 - Add `cl_freelookslide` to scale the acceleration and deceleration slide of the freelook camera
 - Add terms of use and notices document to installer
@@ -56,7 +57,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Add `Mesh_Set_Scale` event to change an Alpine Mesh object's scale at runtime
 - Raise level editor per-room and per-mesh render vertex limit from 8000 to 32768
 - Add `Limit vehicle flight ceiling` and `Ceiling height (Y)` options to level editor `Level Properties` to cap how high flying vehicles can climb
-- Add `-bake in.rfl -bakeout out.rfl` launcher command line switches to build a level's geometry and calculate its lighting without user interaction, writing the result to a new level file and progress to a log beside it
+- Add `-bake in.rfl -bakeout out.rfl` launcher command line switches to build a level's geometry and calculate its lighting without user interaction, writing the result to a new level file and progress to a log beside it (add `-buildonly` to skip the lighting)
 - Add `High-resolution lightmaps` level property, used in lightmap bake in level editor
 - Deprecate and remove `-smoothlights` level editor switch
 - Add `dbg_collision_pairs` console command to print object collision pair pool statistics
@@ -144,6 +145,9 @@ Version 1.5.0 (Trillium): Not yet released
 - Repair holes left by portals and by brushes placed flush against each other during `Build Geometry` in the level editor
 - Add `Level > Find out-of-level areas` to the level editor
 - Turn on `Level > Rebuild with hole lines` by default in the level editor and remember the setting
+- Speed up selecting and deselecting large numbers of brushes, faces, vertices and objects in the level editor, and drawing the viewports while many objects or vertices are selected
+- End the Gun Game progression with a one-kill Fusion level after the one-kill final weapon, toggleable with `gg_end_with_fusion`
+- Ignore `fflink_gsk` on dedicated servers started with `-lanonly`
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color
@@ -286,6 +290,8 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix long key names in spectate control hints running off the left edge of the screen
 - Fix listen server hosts only seeing automated server messages in the console instead of in chat
 - Fix music not starting while the music volume is muted or very low
+- Fix box deselecting vertices in the level editor testing the vertices of moved or rotated brushes at the wrong positions
+- Fix first person firing animation getting stuck for automatic weapons when fired on on a ladder
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize
@@ -297,6 +303,9 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix reload animation playing in third person for other players when client tries to reload with a full clip/magazine
 - Fix lighting for pistol silencer and remote charge detonator
 - Fix third-person crouch animations on remote players flickering and snapping
+
+[@GooberRF](https://github.com/GooberRF) & [@nickalreadyinuse](https://github.com/nickalreadyinuse)
+- Fix severe frame rate drops when looking over heavily geomodded areas
 
 ### Imported libraries
 - [Bullet Physics 3.25](https://github.com/bulletphysics/bullet3) by Erwin Coumans

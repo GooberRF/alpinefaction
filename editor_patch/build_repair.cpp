@@ -286,6 +286,7 @@ struct Stats
     int welds = 0;
     int splits = 0;
     int faces_removed = 0;
+    int portal_strips = 0;
     int portal_fills = 0;
     int wall_fills = 0;
     int portals_deleted = 0;
@@ -812,8 +813,9 @@ void remove_face(GSolid* solid, GFace* face)
     GFace::destroy(face);
 }
 
-// Within BuildFinalRenderSolid's weld distance of the line through the two corners farthest apart
-bool is_line(const GFace& face)
+// Each corner's offset from the line through the two corners farthest apart, and that line's direction. No offsets
+// when the corners coincide.
+std::vector<Vec> line_offsets(const GFace& face, Vec& dir)
 {
     const std::vector<GFaceVertex*> ring = face_corner_list(face);
     Vec a;
@@ -831,16 +833,42 @@ bool is_line(const GFace& face)
         }
     }
     if (!(longest > 0.0)) {
-        return true;
+        return {};
     }
-    const Vec dir = (b - a) * (1.0 / longest);
+    dir = (b - a) * (1.0 / longest);
+    std::vector<Vec> offsets;
     for (const GFaceVertex* fv : ring) {
         const Vec v = to_vec(fv->vertex->pos) - a;
-        if (length(v - dir * dot(v, dir)) > red_epsilon) {
+        offsets.push_back(v - dir * dot(v, dir));
+    }
+    return offsets;
+}
+
+// Within the tolerance of the line through the two corners farthest apart
+bool is_line(const GFace& face, double tolerance)
+{
+    Vec dir;
+    const std::vector<Vec> offsets = line_offsets(face, dir);
+    return std::all_of(offsets.begin(), offsets.end(), [&](const Vec& o) { return length(o) <= tolerance; });
+}
+
+// Within the tolerance of the line through the two corners farthest apart, and spanning no more than the tolerance
+// across that line in the face's plane, from the corner farthest out on one side to the farthest on the other
+bool is_strip(const GFace& face, double tolerance)
+{
+    Vec dir;
+    const std::vector<Vec> offsets = line_offsets(face, dir);
+    const Vec side = cross(to_vec(face.plane.normal), dir);
+    double low = 0.0;
+    double high = 0.0;
+    for (const Vec& o : offsets) {
+        if (!(length(o) <= tolerance)) {
             return false;
         }
+        low = std::min(low, dot(o, side));
+        high = std::max(high, dot(o, side));
     }
-    return true;
+    return high - low <= tolerance;
 }
 
 // The boolean can leave a zero-area face along a seam whose long edge counts as a hole. It goes only when every
@@ -857,8 +885,9 @@ int remove_line_faces(GSolid* solid, std::unordered_set<GRoom*>& touched)
             }
         }
         for (GFace* face : candidates) {
-            // a room's last face stays, so no room is left empty
-            if (!is_regular(*face) || !is_line(*face) || (room->face_list_head == face && !face->next_room)) {
+            // a line within BuildFinalRenderSolid's weld distance; a room's last face stays, so no room is left empty
+            if (!is_regular(*face) || !is_line(*face, red_epsilon)
+                || (room->face_list_head == face && !face->next_room)) {
                 continue;
             }
             bool safe = true;
@@ -890,6 +919,55 @@ int remove_line_faces(GSolid* solid, std::unordered_set<GRoom*>& touched)
         }
     }
     return removed;
+}
+
+// A portal cut along a wall can leave zero-width pieces that run on into solid. Their outer edges never close, and
+// the edges they share with near-duplicate wall corners hide those corners from the weld and the split. Only pieces
+// reached from an open edge go, and only ones no wider than the distance the weld and the split close.
+int remove_portal_strips(GSolid* solid, std::unordered_set<GRoom*>& touched)
+{
+    std::vector<GFace*> strips;
+    std::unordered_set<GFace*> found;
+    auto visit = [&](const GVertex& vertex) {
+        for (int i = 0; i < vertex.face_refs.size; i++) {
+            GFace* face = vertex.face_refs.data_ptr[i];
+            if (is_portal(*face) && !is_detail(*face) && !found.count(face) && is_strip(*face, repair_tolerance)) {
+                found.insert(face);
+                strips.push_back(face);
+            }
+        }
+    };
+    for (const auto& [room, list] : open_edges(solid)) {
+        for (GVertex* v : open_edge_ends(list)) {
+            visit(*v);
+        }
+    }
+    for (std::size_t i = 0; i < strips.size(); i++) {
+        for_each_face_corner(*strips[i], [&](GFaceVertex& fv) { visit(*fv.vertex); });
+    }
+
+    std::vector<GVertex*> corners;
+    std::unordered_set<GVertex*> seen;
+    for (GFace* face : strips) {
+        for_each_face_corner(*face, [&](GFaceVertex& fv) {
+            if (seen.insert(fv.vertex).second) {
+                corners.push_back(fv.vertex);
+            }
+        });
+        if (face->which_room) {
+            touched.insert(face->which_room);
+        }
+    }
+    for (GFace* face : strips) {
+        remove_face(solid, face);
+    }
+    // corners only the strips used
+    for (GVertex* v : corners) {
+        if (v->face_refs.size == 0) {
+            solid->remove_vertex(v);
+        }
+    }
+    return static_cast<int>(strips.size());
 }
 
 // A face that would lose two corners that are not neighbours keeps them. The dropped vertex is not freed.
@@ -1394,6 +1472,7 @@ void repair_holes(GSolid* solid)
         g_stats.holes_after_rooms = count_holes(open_edges(solid));
         g_stats.planes += unify_portal_planes(solid, false);
         g_stats.faces_removed += remove_line_faces(solid, touched);
+        g_stats.portal_strips += remove_portal_strips(solid, touched);
         for (int round = 0; round < max_repair_rounds; round++) {
             const int welds = weld_cracks(solid, touched);
             const int splits = split_tjunctions(solid, touched);
@@ -1433,6 +1512,7 @@ void repair_holes(GSolid* solid)
         {"Vertices welded", g_stats.welds},
         {"Edges split", g_stats.splits},
         {"Collapsed faces removed", g_stats.faces_removed},
+        {"Portal strips removed", g_stats.portal_strips},
         {"Portal gaps filled", g_stats.portal_fills},
         {"Wall gaps filled", g_stats.wall_fills},
         {"Unplaced portal faces removed", g_stats.portals_deleted},

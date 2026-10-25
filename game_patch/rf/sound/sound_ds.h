@@ -52,6 +52,26 @@ namespace rf
         SCHF_UNK8 = 0x8,
     };
 
+    // Streamed (music) playback slot, refilled from its file every 250 ms
+    struct DsStream
+    {
+        int buf_id;
+        int channel;
+        int ring_size;
+        int write_pos;
+        int timer_id;
+        int silence_bytes;
+        int flags;
+    };
+    static_assert(sizeof(DsStream) == 0x1C);
+
+    enum DsStreamFlags
+    {
+        DSSF_ACTIVE = 0x1,
+        DSSF_LOOPING = 0x2,
+        DSSF_END_OF_FILE = 0x4,
+    };
+
 #ifdef ALPINE_FACTION
     // In DF sound channels limit has been raised
     extern DsChannel ds_channels[num_sound_channels];
@@ -60,6 +80,7 @@ namespace rf
 #endif
     static auto& direct_sound = addr_as_ref<IDirectSound*>(0x01AD7A50);
     static auto& ds_buffers = addr_as_ref<DsBuffer[0x1000]>(0x01887388);
+    static auto& ds_streams = addr_as_ref<DsStream[16]>(0x01D4F110);
 
     static auto snd_ds_close_channel = addr_as_ref<bool(int channel)>(0x00521930);
     static auto snd_ds_channel_is_playing = addr_as_ref<bool(int channel)>(0x005224D0);
@@ -69,6 +90,9 @@ namespace rf
     static auto snd_ds_play_3d = addr_as_ref<int(int sid, const Vector3& pos, const Vector3& vel, float min_dist, float max_dist, float volume, bool is_looping, float unused)>(0x005222B0);
     static auto snd_ds_set_volume = addr_as_ref<void(int sig, float volume)>(0x00522D30);
     static auto snd_ds_play = addr_as_ref<int(int buf_id, float volume, float pan, bool is_looping, float unused)>(0x005226B0);
+
+    // Seeks the stream's file back to the start of its data, 0 on success
+    static auto snd_ds_stream_rewind = addr_as_ref<int(int stream)>(0x0054EBF0);
 
     static auto snd_ds3d_update_buffer = addr_as_ref<int(int chnl, float min_dist, float max_dist, const Vector3& pos, const Vector3& vel)>(0x00562DB0);
 }

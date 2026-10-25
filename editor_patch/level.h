@@ -690,6 +690,14 @@ struct GSolid
         AddrCaller{0x00490c10}.this_call(this, brush_face, pos, orient);
     }
 
+    // FUN_00490a40: the size of its vertices' bounding box
+    Vector3 vertex_bbox_size()
+    {
+        Vector3 size;
+        AddrCaller{0x00490A40}.this_call(this, &size);
+        return size;
+    }
+
     // FUN_0049a760: draws the solid at pos/orient as editor views do: in lines of the color given (selected faces red,
     // vertices marked with vertex_marks) when outline, else textured, with each face's edges over it with face_outlines
     void draw(bool outline, bool face_outlines, bool vertex_marks, const Vector3* pos, const Matrix3* orient, int r,
@@ -887,6 +895,19 @@ struct BrushNode
     Vector3 to_world(const Vector3& local) const
     {
         return orient * local + pos;
+    }
+
+    // FUN_004b57b0: to_world with RED's rounding, for tests that must agree with stock ones
+    Vector3 to_world_stock(const Vector3& local) const
+    {
+        Vector3 world = local;
+        AddrCaller{0x004B57B0}.c_call(&world, &pos, &orient);
+        return world;
+    }
+
+    bool pickable() const
+    {
+        return state != BRUSH_STATE_RED && state != BRUSH_STATE_HIDDEN;
     }
 };
 static_assert(sizeof(BrushNode) == 0x54);
@@ -1912,6 +1933,18 @@ struct CDedLevel
     void deselect_all()
     {
         AddrCaller{0x0042C7A0}.this_call(this);
+    }
+
+    // FUN_0042c7b0: empties every brush's and the level solid's face selection
+    void deselect_all_faces()
+    {
+        AddrCaller{0x0042C7B0}.this_call(this);
+    }
+
+    // FUN_0042c7f0: empties every brush's vertex selection
+    void deselect_all_vertices()
+    {
+        AddrCaller{0x0042C7F0}.this_call(this);
     }
 
     void clear_selection()
