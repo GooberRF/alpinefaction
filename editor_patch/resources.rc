@@ -354,8 +354,11 @@ IDR_MAIN_FRAME MENU
         MENUITEM "Calculate Maps and Light\tCtrl+Shift+L", ID_CALCULATE_MAPS_AND_LIGHT
         MENUITEM SEPARATOR
         MENUITEM "Rebuild with hole lines", 32898
+        MENUITEM "Rebuild with out-of-level areas", ID_REBUILD_OUT_OF_LEVEL
+        MENUITEM "Repair holes when building", ID_REPAIR_BUILD_HOLES
         MENUITEM "Check for holes", 32896
-        MENUITEM "Remove hole check lines", 32895
+        MENUITEM "Find out-of-level areas", ID_FIND_OUT_OF_LEVEL
+        MENUITEM "Remove check lines", 32895
     }
     POPUP "&View"
     {

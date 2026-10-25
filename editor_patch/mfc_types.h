@@ -302,6 +302,13 @@ inline constexpr float two_pi = 2.0f * std::numbers::pi_v<float>;
 
 inline const Matrix3 identity_orient{{1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}};
 
+enum class PlaneSide
+{
+    front = 1,
+    on = 2,
+    behind = 3,
+};
+
 struct Plane
 {
     Vector3 normal;
@@ -309,6 +316,12 @@ struct Plane
 
     Plane() = default;
     Plane(const Vector3& n, float d) : normal(n), dist(d) {}
+
+    // FUN_0048a790, within RED's on-plane distance (float 1e-4, on the x87)
+    PlaneSide side_of(const Vector3& point) const
+    {
+        return static_cast<PlaneSide>(AddrCaller{0x0048a790}.c_call<int>(&point, this));
+    }
 };
 static_assert(sizeof(Plane) == 0x10, "Plane size mismatch!");
 

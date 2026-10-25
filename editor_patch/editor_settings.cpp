@@ -128,6 +128,9 @@ std::vector<Setting> settings_of(PreferencesDialog& dlg)
         {"Alpine", "ShowDecals", "", SettingKind::flag, &alpine.show_decals},
         {"Alpine", "ShowWireframe", "", SettingKind::flag, &alpine.show_wireframe},
         {"Alpine", "WireframeOverlay", "", SettingKind::flag, &alpine.wireframe_overlay},
+        {"Alpine", "RepairBuildHoles", "", SettingKind::flag, &alpine.repair_build_holes},
+        {"Alpine", "RebuildWithHoleLines", "", SettingKind::flag, &build_draws_hole_lines},
+        {"Alpine", "RebuildWithOutOfLevelAreas", "", SettingKind::flag, &alpine.rebuild_out_of_level},
         {"TextureBrowser", "TextureBrowserDisplaySize", "", SettingKind::int_value,
          &alpine.texture_browser_display_size},
         {"TextureBrowser", "TextureBrowserMaximized", "", SettingKind::flag, &alpine.texture_browser_maximized},
@@ -326,6 +329,8 @@ void load_settings(PreferencesDialog& dlg)
 {
     // The texture categories always come from the stock list: red.cfg's could only be edited by hand.
     dlg.set_defaults();
+    // stock starts it off, which leaves the holes a build finds unmarked
+    build_draws_hole_lines = true;
     dlg.cutscene_dialog_rect = {-1, -1, -1, -1};
     dlg.brush_clip_dialog_rect = {-1, -1, -1, -1};
 

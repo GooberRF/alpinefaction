@@ -8,7 +8,7 @@ enum class EditorRendererKind
     d3d11,
 };
 
-// The Alpine options in alpine_editor.ini, shown on the Alpine tab of the Preferences dialog.
+// The Alpine options in alpine_editor.ini, shown on the Alpine tab of the Preferences dialog unless noted.
 struct EditorSettings
 {
     // Takes effect when RED next starts
@@ -17,6 +17,10 @@ struct EditorSettings
     COLORREF texture_hover_outline_color = RGB(255, 220, 0);
     bool background_throttle = true;
     bool force_lod0 = true;
+    // Level > Repair holes when building
+    bool repair_build_holes = true;
+    // Level > Rebuild with out-of-level areas
+    bool rebuild_out_of_level = false;
 
     // View menu, Direct3D 11 only
     bool preview_level_fog = false;

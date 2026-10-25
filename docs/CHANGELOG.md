@@ -88,7 +88,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Add `dbg_terrain_decorations` console command to toggle terrain mesh decorations and print their draw statistics
 - Add `Require Direct3D 11` level property
 - Speed up `Calculate Lighting` in the level editor, especially on large levels and levels with very many lightmap surfaces
-- Show `Calculate Lighting` progress in the level editor: each phase with its progress and an estimated time remaining, and a `Cancel` button (pressed twice) that stops the bake and leaves the level without baked lighting
+- Show `Calculate Lighting` and `Build Geometry` progress in the level editor
 - Improve level loading and `Build Geometry` times in the level editor on levels with many faces
 - Draw large rooms in fewer draw calls, and skip rooms without dynamic decals when drawing them (Direct3D 11 renderer only)
 - Make level editor refuse to open levels saved by a newer version of Alpine Faction instead of misreading them
@@ -141,6 +141,9 @@ Version 1.5.0 (Trillium): Not yet released
 - Store level editor preferences in `alpine_editor.ini` instead of `red\red.cfg`, importing `red.cfg` on first launch
 - Add an `Alpine` page to the level editor `Preferences` window with options for the texture mode face outline and its color, the background frame rate limit, and always drawing meshes at full detail
 - Render the level editor with the game's Direct3D 11 renderer, which displays Alpine Lightmaps including `D3D11-only lightmaps` and overflow lightmaps and adds new `View` options; `-d3d9` or the `Renderer` preference selects the previous Direct3D 9 renderer instead
+- Repair holes left by portals and by brushes placed flush against each other during `Build Geometry` in the level editor
+- Add `Level > Find out-of-level areas` to the level editor
+- Turn on `Level > Rebuild with hole lines` by default in the level editor and remember the setting
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color
@@ -188,6 +191,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix level editor packfile creation to include `Mesh` object texture overrides, `Mesh_Set_Texture` and `World_HUD_Sprite` event textures, snow `Weather Region` bitmaps, and `Set_Debris` event meshes and their textures
 - Fix level editor packfile creation reporting textures that ship with the game as missing files
 - Fix crash when a bone, tag, or prop point is queried on a character whose mesh file contains no submeshes, or when such a character's weapon or textures are preloaded for rendering
+- Fix crash after switching spectate targets
 - Fix items not rotating correctly when out of view or when viewed through a Projection Camera
 - Fix Alpine Mesh objects using skeletal meshes receiving no light from the level in the `Ambient` and `Vertex` mesh lighting modes
 - Fix meshes keeping stale vertex lighting after the mesh lighting mode is changed until the level is reloaded
