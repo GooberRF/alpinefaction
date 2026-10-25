@@ -660,10 +660,6 @@ void gr_mesh_blend_ambient(const float (&lightmap)[3], float (&out)[3])
 }
 
 // Power of 2 texture enforcement
-// Access p2t flag directly to avoid pulling in D3D8 types from gr_direct3d.h
-namespace rf::gr::d3d {
-    static auto& p2t = addr_as_ref<int>(0x01CFCC18);
-}
 static bool override_pow2tex = false;
 
 ConsoleCommand2 pow2_tex_cmd{

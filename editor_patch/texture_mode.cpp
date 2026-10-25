@@ -19,6 +19,8 @@
 #include "alpine_obj.h"
 #include "alpine_spinner.h"
 #include "dialog_tooltips.h"
+#include "editor_settings.h"
+#include "graphics/editor_gr.h"
 #include "level.h"
 #include "mfc_types.h"
 #include "resources.h"
@@ -607,13 +609,6 @@ UvMap align_uv_map(const UvMap& m, const Vector3& n_from, const Vector3& n_to, c
     return turn_uv_map(m, n_from, n_to, pivot, m.grad_u);
 }
 
-int face_corner_count(const GFace& face)
-{
-    int count = 0;
-    for_each_face_corner(face, [&](GFaceVertex&) { ++count; });
-    return count;
-}
-
 // FUN_00413470: Texture mode's Paste. Stock lays the copied UVs corner by corner onto faces with as many corners,
 // stops at a message box for each other face, and has no undo step. This is one undo step, lays the copied face's
 // mapping onto faces with another number of corners, and with Paste texture checked applies its texture too.
@@ -1094,13 +1089,6 @@ void set_map_axis(int index)
 constexpr int face_properties_flags =
     FACE_SHOW_SKY | FACE_MIRRORED | FACE_SCROLL_TEXTURE | FACE_FULL_BRIGHT | FACE_LIGHTMAP_RESOLUTION;
 
-std::vector<GFaceVertex*> face_corner_list(const GFace& face)
-{
-    std::vector<GFaceVertex*> corners;
-    for_each_face_corner(face, [&](GFaceVertex& fv) { corners.push_back(&fv); });
-    return corners;
-}
-
 struct FacePair
 {
     GFace* live;
@@ -1142,9 +1130,9 @@ std::optional<std::vector<FacePair>> texture_only_pairs(const BrushNode& live, c
     return pairs;
 }
 
-// The level geometry faces given (those with the brush face's id) lie on the brush face, so none was built from
-// another face since, as a Build numbering faces again could have
-bool built_from(const SelectedFace& f, std::span<GFace* const> built)
+// The points for_each_point visits lie on the brush face: on its plane, within its bounds
+template<typename ForEachPoint>
+bool points_lie_on(const SelectedFace& f, ForEachPoint&& for_each_point)
 {
     const std::vector<Vector3> corners = face_corners_world(f);
     const Vector3 n = normalized(newell_normal(corners));
@@ -1159,15 +1147,26 @@ bool built_from(const SelectedFace& f, std::span<GFace* const> built)
     }
     const float d = dot(n, corners.front());
     bool on_face = true;
-    for (const GFace* face : built) {
-        for_each_face_corner(*face, [&](GFaceVertex& fv) {
-            if (!fv.vertex) return;
-            const Vector3& p = fv.vertex->pos;
-            on_face = on_face && std::abs(dot(n, p) - d) <= eps && p.x >= low.x - eps && p.y >= low.y - eps &&
-                      p.z >= low.z - eps && p.x <= high.x + eps && p.y <= high.y + eps && p.z <= high.z + eps;
-        });
-    }
+    for_each_point([&](const Vector3& p) {
+        on_face = on_face && std::abs(dot(n, p) - d) <= eps && p.x >= low.x - eps && p.y >= low.y - eps &&
+                  p.z >= low.z - eps && p.x <= high.x + eps && p.y <= high.y + eps && p.z <= high.z + eps;
+    });
     return on_face;
+}
+
+// The level geometry faces given (those with the brush face's id) lie on the brush face, so none was built from
+// another face since, as a Build numbering faces again could have
+bool built_from(const SelectedFace& f, std::span<GFace* const> built)
+{
+    return points_lie_on(f, [&](auto&& visit) {
+        for (const GFace* face : built) {
+            for_each_face_corner(*face, [&](GFaceVertex& fv) {
+                if (fv.vertex) {
+                    visit(fv.vertex->pos);
+                }
+            });
+        }
+    });
 }
 
 // ─── Hover readout ──────────────────────────────────────────────────────────
@@ -1208,8 +1207,7 @@ FacePick texture_mode_pick(CDedLevel& level, float x, float y)
     float mover_t = 0.0f;
     level.for_each_brush([&](BrushNode& brush) {
         auto* geometry = static_cast<GSolid*>(brush.geometry);
-        if (!geometry || brush.state == BRUSH_STATE_RED || brush.state == BRUSH_STATE_HIDDEN ||
-            !level.brush_in_moving_group(&brush)) {
+        if (!geometry || !brush.pickable() || !level.brush_in_moving_group(&brush)) {
             return;
         }
         query.pos = brush.pos;
@@ -1307,15 +1305,14 @@ constexpr uint8_t outline_occluded_alpha = 70;
 
 void draw_face_outline(const SelectedFace& f, uint8_t alpha, uint32_t mode)
 {
-    set_draw_color(255, 220, 0, alpha);
+    const COLORREF color = g_editor_settings.texture_hover_outline_color;
+    set_draw_color(GetRValue(color), GetGValue(color), GetBValue(color), alpha);
     for_each_corner(f.face, [&](GFaceVertex& fv) {
         const Vector3 a = corner_world(f, fv);
         const Vector3 b = corner_world(f, *fv.next);
         gr_line_3d(&a, &b, mode);
     });
-    if (gr_batch_open) {
-        gr_flush_batch();
-    }
+    editor_gr_flush();
 }
 
 constexpr DialogTooltip texture_panel_tips[] = {
@@ -1836,10 +1833,11 @@ void texture_mode_render_view()
     CDedLevel* level = CDedLevel::Get();
     const auto* view = static_cast<EditorViewport*>(editor_view_at(painting_view_index));
     const int face_id = g_texture_hover.face_id;
-    if (!level || !view || level->edit_mode != DedEditMode::Texture || !level->solid || face_id < 0) return;
-    if (gr_batch_open) {
-        gr_flush_batch();
+    if (!g_editor_settings.texture_hover_outline || !level || !view || level->edit_mode != DedEditMode::Texture
+        || !level->solid || face_id < 0) {
+        return;
     }
+    editor_gr_flush();
     // In the 3D view the parts behind other geometry show dimmed
     auto draw = [&](const SelectedFace& f) {
         if (view->view_type == editor_view_type_perspective) {
@@ -1898,6 +1896,15 @@ void uv_unwrap_dialog_opening()
 bool level_faces_lie_on_brush_face(BrushNode& brush, GFace& face, std::span<GFace* const> built)
 {
     return built_from({&brush, &face}, built);
+}
+
+bool level_faces_lie_on_brush_face(BrushNode& brush, GFace& face, std::span<const Vector3> built_corners)
+{
+    return points_lie_on({&brush, &face}, [&](auto&& visit) {
+        for (const Vector3& p : built_corners) {
+            visit(p);
+        }
+    });
 }
 
 void texture_mode_level_reset()

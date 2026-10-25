@@ -402,7 +402,7 @@ void note_render(CDedLevel* level)
 
     note_load_icon();
 
-    float cam_param = gr_cam_param;
+    const rf::gr::Mode billboard_mode = rf::gr::bitmap_3d_mode_no_z;
 
     for (auto* note : notes) {
         if (note->hidden_in_editor) continue;
@@ -420,7 +420,7 @@ void note_render(CDedLevel* level)
             gr_set_bitmap(g_note_icon_handle, -1);
         }
 
-        gr_render_billboard(&note->pos, 0, 0.25f, cam_param);
+        gr_render_billboard(&note->pos, 0, 0.25f, billboard_mode);
     }
 }
 

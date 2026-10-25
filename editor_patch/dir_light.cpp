@@ -648,7 +648,7 @@ void directional_light_render(CDedLevel* level)
     directional_light_load_icon();
 
     const uint32_t mode = editor_line_mode();
-    const float cam_param = gr_cam_param;
+    const rf::gr::Mode billboard_mode = rf::gr::bitmap_3d_mode_no_z;
     const auto& previewed = g_selected_directional_lights;
 
     for (auto* light : lights) {
@@ -693,7 +693,7 @@ void directional_light_render(CDedLevel* level)
         if (g_directional_light_icon_handle >= 0) {
             gr_set_bitmap(g_directional_light_icon_handle, -1);
         }
-        gr_render_billboard(&light->pos, 0, directional_light_icon_size, cam_param);
+        gr_render_billboard(&light->pos, 0, directional_light_icon_size, billboard_mode);
     }
 }
 
@@ -859,7 +859,7 @@ void sun_arrow_render(CDedLevel* level)
     if (g_directional_light_icon_handle >= 0) {
         gr_set_bitmap(g_directional_light_icon_handle, -1);
     }
-    gr_render_billboard(&g_sun_arrow->pos, 0, sun_arrow_icon_size, gr_cam_param);
+    gr_render_billboard(&g_sun_arrow->pos, 0, sun_arrow_icon_size, rf::gr::bitmap_3d_mode_no_z);
 }
 
 SunArrowState sun_arrow_state(CDedLevel* level)

@@ -10,6 +10,7 @@
 #include <xxhash.h>
 
 #include <common/utils/list-utils.h>
+#include <common/lightmap/af_lightmap_surface.h>
 #include <common/lightmap/alpine_lightmap.h>
 #include <common/lightmap/alpine_lightmap_decode.h>
 #include <common/lightmap/alpine_lightmap_reader.h>
@@ -268,34 +269,11 @@ namespace
         }
     }
 
-    // Whether surface `s` lies within a page x page lightmap page.
-    bool surface_fits_page(const rf::GSurface* s, std::uint32_t page)
-    {
-        const auto p = static_cast<std::int64_t>(page);
-        return s->xstart >= 0 && s->ystart >= 0 && s->width >= 0 && s->height >= 0
-            && static_cast<std::int64_t>(s->xstart) + s->width <= p
-            && static_cast<std::int64_t>(s->ystart) + s->height <= p;
-    }
-
     // Whether surface `s`, charted by `c`, is the fragment the chart was baked for and fits the bake_page
     // square page its uv_scale/uv_add normalize against.
     bool af_mover_surface_fits(const rf::GSurface* s, const alm::MoverSurfaceChart& c, std::uint32_t bake_page)
     {
-        return s && s->lightmap && s->width == c.w && s->height == c.h && surface_fits_page(s, bake_page);
-    }
-
-    // Whether every stock page the surfaces of `solid` point at is edge x edge.
-    bool af_stock_pages_are(const rf::GSolid* solid, std::uint32_t edge)
-    {
-        for (int i = 0; solid && i < solid->surfaces.size(); i++) {
-            const rf::GSurface* s = solid->surfaces[i];
-            if (s && s->lightmap
-                && (static_cast<std::uint32_t>(s->lightmap->w) != edge
-                    || static_cast<std::uint32_t>(s->lightmap->h) != edge)) {
-                return false;
-            }
-        }
-        return true;
+        return s && s->lightmap && s->width == c.w && s->height == c.h && alm::surface_fits_page(*s, bake_page);
     }
 
     // Matches the mover records to the mover solids the movers section loaded, by uid, surface count and
@@ -465,9 +443,9 @@ namespace
         const std::uint32_t bake_page = alm::stock_page_edge(g_section.head);
         bool stock_pages_differ = false;
         if (g_stock_section_seen && is_d3d11()) {
-            stock_pages_differ = !af_stock_pages_are(solid, bake_page);
+            stock_pages_differ = !alm::stock_pages_are(solid, bake_page);
             for (rf::MoverBrush& mb : DoublyLinkedList{rf::mover_brush_list}) {
-                stock_pages_differ = stock_pages_differ || !af_stock_pages_are(mb.geometry, bake_page);
+                stock_pages_differ = stock_pages_differ || !alm::stock_pages_are(mb.geometry, bake_page);
             }
         }
         if (*g_section.mover_reason) {
@@ -502,7 +480,7 @@ namespace
                 if (!s || g_section.geoms[i].empty()) {
                     continue;
                 }
-                if (!surface_fits_page(s, p)) {
+                if (!alm::surface_fits_page(*s, p)) {
                     xlog::warn("[AlpineLightmaps] surface {} does not fit the {}x{} page the section records", i, p, p);
                     drop_surfaces("a surface does not fit its page");
                     break;
@@ -620,42 +598,15 @@ bool af_lightmap_face_setup(rf::GSolid* solid, int surface_index, AfLightmapFace
         chart = alm::gpu_mover_chart(g_section, it->second, index);
         k = alm::Chart{g_section.mover_charts[flat].k_u, g_section.mover_charts[flat].k_v};
     }
-    rf::GSurface* surface = solid->surfaces[surface_index];
-    if (!surface || !surface->lightmap) {
-        return false;
-    }
-    if (surface->u_coefficient < 0 || surface->u_coefficient > 2 || surface->v_coefficient < 0
-        || surface->v_coefficient > 2 || surface->lightmap->w <= 0 || surface->lightmap->h <= 0
-        || surface->xstart < 0 || surface->ystart < 0) {
-        return false;
-    }
+    const rf::GSurface* surface = solid->surfaces[surface_index];
     // uv_scale/uv_add normalize against the page RED packed the fragment into, which is not
     // the page the surface points at when the level ships no stock lightmaps section.
-    const std::uint32_t lm_w = g_bake_page_size ? g_bake_page_size
-                                                : static_cast<std::uint32_t>(surface->lightmap->w);
-    const std::uint32_t lm_h = g_bake_page_size ? g_bake_page_size
-                                                : static_cast<std::uint32_t>(surface->lightmap->h);
-    out.chart = static_cast<int>(chart);
-    out.axis_u = surface->u_coefficient;
-    out.axis_v = surface->v_coefficient;
-    out.scale_u = surface->uv_scale.x;
-    out.scale_v = surface->uv_scale.y;
-    out.add_u = surface->uv_add.x;
-    out.add_v = surface->uv_add.y;
-    out.lm_w = lm_w;
-    out.lm_h = lm_h;
-    out.surf_x = static_cast<std::uint32_t>(surface->xstart);
-    out.surf_y = static_cast<std::uint32_t>(surface->ystart);
-    out.k_u = k.k_u;
-    out.k_v = k.k_v;
-    return true;
+    return surface && alm::surface_chart_face(*surface, chart, k, g_bake_page_size, out);
 }
 
 void af_lightmap_face_texel(const AfLightmapFace& face, const rf::Vector3& pos, float& out_u, float& out_v)
 {
-    const alm::ChartTexel t =
-        alm::surface_chart_texel(&pos.x, face.axis_u, face.axis_v, face.scale_u, face.scale_v, face.add_u,
-                                 face.add_v, face.lm_w, face.lm_h, face.surf_x, face.surf_y, face.k_u, face.k_v);
+    const alm::ChartTexel t = alm::face_chart_texel(face, &pos.x);
     out_u = t.u;
     out_v = t.v;
 }

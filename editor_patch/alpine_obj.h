@@ -3,7 +3,6 @@
 #include <windows.h>
 #include <commctrl.h>
 #include <algorithm>
-#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -16,6 +15,7 @@
 #include "vtypes.h"
 #include "level.h"
 #include "textures.h"
+#include "graphics/editor_gr.h"
 
 // Shared Alpine object infrastructure — hooks that dispatch to all Alpine object types.
 // Type-specific logic lives in mesh.cpp / note.cpp / corona.cpp; this file wires them together.
@@ -478,7 +478,8 @@ namespace d3d8 {
     }
 }
 
-// Flush the current batch with additive blend states, then restart with normal states
+// Direct3D 9: flush the current batch with additive blend states, then restart with normal states. Direct3D 11 has no
+// D3D8 device: the draw's own mode blends it (editor_gr_additive_mode).
 inline void flush_additive()
 {
     void* device = d3d_device_ptr;
@@ -500,9 +501,9 @@ inline void flush_additive()
 }
 
 // Render a billboard with additive blending
-inline void render_additive_billboard(void* pos, float scale, float cam_param)
+inline void render_additive_billboard(void* pos, float scale, rf::gr::Mode mode)
 {
-    gr_render_billboard(pos, 0, scale, cam_param);
+    gr_render_billboard(pos, 0, scale, editor_gr_additive_mode(mode));
     flush_additive();
 }
 
@@ -521,7 +522,7 @@ inline void world_to_view(GrVertex& v, const Vector3& w)
 // The quad is locked along the given forward axis and rotates around it to face the camera.
 inline void render_additive_axial_quad(
     const Vector3& pos, const Matrix3& orient,
-    float length, float height, float cam_param)
+    float length, float height, rf::gr::Mode mode)
 {
     Vector3 cam_pos = {ed_cam_pos[0], ed_cam_pos[1], ed_cam_pos[2]};
 
@@ -579,8 +580,7 @@ inline void render_additive_axial_quad(
 
     GrVertex* ptrs[4] = {&verts[0], &verts[1], &verts[2], &verts[3]};
 
-    gr_set_mode(0x10);
-    // The mode slot has always received the bits of this global (0x014cf7e0), typed float here.
-    gr_poly_render(4, ptrs, 1, std::bit_cast<uint32_t>(cam_param), 0, 0.0f);
+    gr_set_zbias(16);
+    gr_poly_render(4, ptrs, 1, static_cast<uint32_t>(static_cast<int>(editor_gr_additive_mode(mode))), 0, 0.0f);
     flush_additive();
 }

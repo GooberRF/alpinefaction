@@ -5,6 +5,7 @@
 #include <cstring>
 #include <initializer_list>
 #include <map>
+#include <optional>
 #include <unordered_map>
 #include <type_traits>
 #include <unordered_set>
@@ -97,9 +98,15 @@ struct TextureGroup;
 struct GVertex
 {
     Vector3 pos;                   // +0x00
-    char _pad_0C[0x20 - 0x0C];    // +0x0C
-    VArray<void*> face_refs;       // +0x20 back-references to faces using this vertex
+    Vector3 rotated_pos;           // +0x0C view space, scaled, as the per-face draw (0x004E94B0) last rotated it
+    int last_frame;                // +0x18 GSolid render stamp of that rotation
+    int clip_codes;                // +0x1C clip codes of that rotation
+    VArray<GFace*> face_refs;      // +0x20 back-references to faces using this vertex
 };
+static_assert(offsetof(GVertex, rotated_pos) == 0x0C);
+static_assert(offsetof(GVertex, last_frame) == 0x18);
+static_assert(offsetof(GVertex, clip_codes) == 0x1C);
+static_assert(offsetof(GVertex, face_refs) == 0x20);
 
 // Per-face vertex wrapper (0x1C bytes, pool-allocated at 0x00A12530)
 // Contains texture coords and pointer to shared GVertex; linked in circular doubly-linked list per face.
@@ -312,6 +319,19 @@ struct GFace
         return AddrCaller{0x0048abd0}.this_call<GFaceVertex*>(this, vertex, u, v, lm_u, lm_v);
     }
 
+    // FUN_004861d0 (hooked in level.cpp): more corners in front of portal's plane than behind, or all on it with
+    // agreeing normals
+    bool in_front_of(const GFace& portal)
+    {
+        return AddrCaller{0x004861d0}.c_call<bool>(this, &portal);
+    }
+
+    // FUN_0048c9e0: point-in-face, half-open with no tolerance
+    bool contains(const Vector3& point)
+    {
+        return AddrCaller{0x0048c9e0}.this_call<bool>(this, &point);
+    }
+
     // FUN_0048a8b0 (RET 8, so both stack arguments are passed): with a null plane it derives the
     // plane from the edge loop winding by Newell's method and recomputes the face AABB. Returns
     // false for a face with fewer than three vertices or zero area.
@@ -346,6 +366,20 @@ void for_each_face_corner(const GFace& face, Fn&& fn)
             break;
         }
     }
+}
+
+inline int face_corner_count(const GFace& face)
+{
+    int count = 0;
+    for_each_face_corner(face, [&](GFaceVertex&) { ++count; });
+    return count;
+}
+
+inline std::vector<GFaceVertex*> face_corner_list(const GFace& face)
+{
+    std::vector<GFaceVertex*> corners;
+    for_each_face_corner(face, [&](GFaceVertex& fv) { corners.push_back(&fv); });
+    return corners;
 }
 
 // Editor-side GLightmap (matches stock RED.exe / RF.exe GLightmap), one lightmap page
@@ -405,6 +439,7 @@ struct GSurface
     int u_coefficient;      // +0x60  axis of bbox_mn/bbox_mx the lightmap u follows
     int v_coefficient;      // +0x64
     int room_index;         // +0x68  index into GSolid::all_rooms, -1 for none
+    Plane plane;            // +0x6C  the flat path's lumel normal (0x004adda7)
 };
 static_assert(offsetof(GSurface, index) == 0x00);
 static_assert(offsetof(GSurface, flags) == 0x08);
@@ -425,6 +460,7 @@ static_assert(offsetof(GSurface, dropped_coefficient) == 0x5C);
 static_assert(offsetof(GSurface, u_coefficient) == 0x60);
 static_assert(offsetof(GSurface, v_coefficient) == 0x64);
 static_assert(offsetof(GSurface, room_index) == 0x68);
+static_assert(offsetof(GSurface, plane) == 0x6C);
 
 // FUN_004ac470 (thiscall on the surface, RET 8): does the GSurfaceFlags work the surface carries.
 // `mode` is the shadow mode, 0 for none.
@@ -472,6 +508,62 @@ struct SmoothLumelLocals
 static_assert(offsetof(SmoothLumelLocals, crossing_normal) == 0x0C);
 static_assert(offsetof(SmoothLumelLocals, pos) == 0x18);
 static_assert(offsetof(SmoothLumelLocals, crossing_pos) == 0x24);
+
+// An edge crossing of FUN_004ad160's smooth path pick (written at 0x004ad606): the edge a -> b of a face's edge loop
+// and FUN_004952d0's pointers to the vertex normals of both ends.
+struct LumelCrossing
+{
+    GFaceVertex* a;
+    Vector3* n_a;
+    GFaceVertex* b;
+    Vector3* n_b;
+};
+static_assert(sizeof(LumelCrossing) == 0x10);
+static_assert(offsetof(LumelCrossing, n_a) == 0x04);
+static_assert(offsetof(LumelCrossing, b) == 0x08);
+static_assert(offsetof(LumelCrossing, n_b) == 0x0C);
+
+// FUN_004ad160's smooth path locals as seen from ESP inside its per-lumel loop (0x004ad32e..0x004adbd0).
+struct LumelPassFrame
+{
+    char _pad_00[0x18];
+    float u;                  // +0x18  lumel centre in lightmap UV
+    char _pad_1c[0x24 - 0x1c];
+    float v;                  // +0x24
+    char _pad_28[0x34 - 0x28];
+    int row;                  // +0x34
+    char _pad_38[0x48 - 0x38];
+    VArray<Vector3>* normals; // +0x48  FUN_004aded0's vertex normals, per face of `faces`, in edge-loop order
+    char _pad_4c[0x5c - 0x4c];
+    VArray<GFace*> faces;     // +0x5C
+    char _pad_68[0x74 - 0x68];
+    int col;                  // +0x74
+    char _pad_78[0xa0 - 0x78];
+    LumelCrossing crossings[2]; // +0xA0
+    char _pad_c0[0xe0 - 0xc0];
+    SmoothLumelLocals lumel;  // +0xE0  what the accumulator call at 0x004adb30 passes
+    char _pad_110[0x298 - 0x110];
+    GSurface* surface;        // +0x298
+};
+static_assert(offsetof(LumelPassFrame, u) == 0x18);
+static_assert(offsetof(LumelPassFrame, v) == 0x24);
+static_assert(offsetof(LumelPassFrame, row) == 0x34);
+static_assert(offsetof(LumelPassFrame, normals) == 0x48);
+static_assert(offsetof(LumelPassFrame, faces) == 0x5C);
+static_assert(offsetof(LumelPassFrame, col) == 0x74);
+static_assert(offsetof(LumelPassFrame, crossings) == 0xA0);
+static_assert(offsetof(LumelPassFrame, lumel) == 0xE0);
+static_assert(offsetof(LumelPassFrame, surface) == 0x298);
+
+// FUN_004aded0's locals as seen from ESP inside its per-vertex loop (0x004adf62..0x004ae014).
+struct VertexNormalFrame
+{
+    char _pad_00[0x1c];
+    VArray<Vector3>* normals; // +0x1C  the current face's vertex normals, appended in edge-loop order
+    Vector3 normal;           // +0x20  the vertex normal being built
+};
+static_assert(offsetof(VertexNormalFrame, normals) == 0x1C);
+static_assert(offsetof(VertexNormalFrame, normal) == 0x20);
 
 // One smoothed surface of the blend pass: FUN_004aabf0 builds the array (ctor FUN_004ab980) and
 // hands it to FUN_004aae80.
@@ -598,6 +690,14 @@ struct GSolid
         AddrCaller{0x00490c10}.this_call(this, brush_face, pos, orient);
     }
 
+    // FUN_00490a40: the size of its vertices' bounding box
+    Vector3 vertex_bbox_size()
+    {
+        Vector3 size;
+        AddrCaller{0x00490A40}.this_call(this, &size);
+        return size;
+    }
+
     // FUN_0049a760: draws the solid at pos/orient as editor views do: in lines of the color given (selected faces red,
     // vertices marked with vertex_marks) when outline, else textured, with each face's edges over it with face_outlines
     void draw(bool outline, bool face_outlines, bool vertex_marks, const Vector3* pos, const Matrix3* orient, int r,
@@ -605,6 +705,31 @@ struct GSolid
     {
         AddrCaller{0x0049a760}.this_call(this, static_cast<char>(outline), static_cast<int>(face_outlines),
                                          static_cast<char>(vertex_marks), pos, orient, r, g, b);
+    }
+
+    // FUN_004a6950 (ends the t-joint pass): splits faces over 16 corners, keeping each piece's room and bbox node
+    void split_large_faces()
+    {
+        AddrCaller{0x004a6950}.c_call(this, &face_list_head);
+    }
+
+    // FUN_00496770: inserts `vertex` between `a` and `b` in every face with both whose detail state matches it
+    void insert_vertex_on_edge(GVertex* a, GVertex* b, GVertex* vertex)
+    {
+        AddrCaller{0x00496770}.this_call(this, a, b, vertex);
+    }
+
+    // FUN_004affa0: links a portal face between `room` and `other`, creating their GPortal if needed; sets the face's
+    // portal_id and clears its texture and surface
+    void link_portal_face(GFace* face, GRoom* room, GRoom* other)
+    {
+        AddrCaller{0x004affa0}.this_call(this, face, room, other);
+    }
+
+    // FUN_0048c0c0 (RF.exe's find_room, 0x004E1630): the room the point is in, or null outside the level
+    GRoom* room_at(const Vector3* pos)
+    {
+        return AddrCaller{0x0048c0c0}.c_call<GRoom*>(this, pos);
     }
 
     // FUN_00485490: the scroll mover of the faces with face_id, or null
@@ -770,6 +895,19 @@ struct BrushNode
     Vector3 to_world(const Vector3& local) const
     {
         return orient * local + pos;
+    }
+
+    // FUN_004b57b0: to_world with RED's rounding, for tests that must agree with stock ones
+    Vector3 to_world_stock(const Vector3& local) const
+    {
+        Vector3 world = local;
+        AddrCaller{0x004B57B0}.c_call(&world, &pos, &orient);
+        return world;
+    }
+
+    bool pickable() const
+    {
+        return state != BRUSH_STATE_RED && state != BRUSH_STATE_HIDDEN;
     }
 };
 static_assert(sizeof(BrushNode) == 0x54);
@@ -1587,10 +1725,19 @@ inline uintptr_t undo_link_value(const UndoEntry& entry, int index, uint32_t mag
 // Build Geometry's progress dialog, CDedLevel::dialog_panels[build_dialog_panel_index]
 struct BuildProgressDialog
 {
-    char _pad_00[0x5C];     // +0x00
-    std::uint8_t cancelled; // +0x5C set by its Cancel button, read by GeoBuild_Driver
+    char _pad_00[0x5C];                // +0x00
+    std::uint8_t cancelled;            // +0x5C set by its Cancel button, read by GeoBuild_Driver
+    char _pad_5d[0x64 - 0x5D];         // +0x5D
+    VArray<BrushNode*> brushes;        // +0x64 GeoBuild_Driver adds one per tick
+    VArray<BrushNode*> portal_brushes; // +0x70 then chops one per tick
+    int brushes_added;                 // +0x7C
+    int portals_chopped;               // +0x80
 };
 static_assert(offsetof(BuildProgressDialog, cancelled) == 0x5C);
+static_assert(offsetof(BuildProgressDialog, brushes) == 0x64);
+static_assert(offsetof(BuildProgressDialog, portal_brushes) == 0x70);
+static_assert(offsetof(BuildProgressDialog, brushes_added) == 0x7C);
+static_assert(offsetof(BuildProgressDialog, portals_chopped) == 0x80);
 constexpr int build_dialog_panel_index = (0x4A4 - 0x444) / 4;
 
 // A clutter, entity or item class: the add paths (0x004151C0, 0x00414F00, 0x00414C20) find the entry
@@ -1634,7 +1781,9 @@ struct CDedLevel
     // --- compiled geometry ---
     GSolid* solid;                                // +0x4C (compiled geometry, 0x378-byte object)
     char _pad_50[0x54 - 0x50];                   // +0x50
-    int uid_counters[8];                          // +0x54 (all init -1, 32 bytes)
+    // The Cutscene and Brush Clip dialogs' placement (-1 for none): seeded from the preferences, set on close
+    RECT cutscene_dialog_rect;                    // +0x54
+    RECT brush_clip_dialog_rect;                  // +0x64
     char unk_74;                                  // +0x74 (init 0)
     char _pad_75[0x78 - 0x75];                   // +0x75
     float default_angles[32];                     // +0x78 (all init 89.9f, 128 bytes to +0xF8)
@@ -1784,6 +1933,18 @@ struct CDedLevel
     void deselect_all()
     {
         AddrCaller{0x0042C7A0}.this_call(this);
+    }
+
+    // FUN_0042c7b0: empties every brush's and the level solid's face selection
+    void deselect_all_faces()
+    {
+        AddrCaller{0x0042C7B0}.this_call(this);
+    }
+
+    // FUN_0042c7f0: empties every brush's vertex selection
+    void deselect_all_vertices()
+    {
+        AddrCaller{0x0042C7F0}.this_call(this);
     }
 
     void clear_selection()
@@ -1981,8 +2142,13 @@ struct CDedLevel
     // Build Geometry's Cancel button was pressed; no progress dialog means no cancel
     bool build_cancelling() const
     {
-        const auto* dialog = static_cast<const BuildProgressDialog*>(dialog_panels[build_dialog_panel_index]);
+        const BuildProgressDialog* dialog = build_dialog();
         return dialog && dialog->cancelled != 0;
+    }
+
+    const BuildProgressDialog* build_dialog() const
+    {
+        return static_cast<const BuildProgressDialog*>(dialog_panels[build_dialog_panel_index]);
     }
 
     // As the progress dialog's Cancel button: the next GeoBuild_Driver tick takes its "Build Canceled" branch
@@ -2004,6 +2170,8 @@ static_assert(offsetof(CDedLevel, fog_color) == 0x38);
 static_assert(offsetof(CDedLevel, fog_near_clip) == 0x3C);
 static_assert(offsetof(CDedLevel, fog_far_clip) == 0x40);
 static_assert(offsetof(CDedLevel, build_running) == 0x232);
+static_assert(offsetof(CDedLevel, cutscene_dialog_rect) == 0x54);
+static_assert(offsetof(CDedLevel, brush_clip_dialog_rect) == 0x64);
 static_assert(offsetof(CDedLevel, edit_mode) == 0xF8);
 static_assert(offsetof(CDedLevel, coords_local) == 0x100);
 static_assert(offsetof(CDedLevel, transform_mode) == 0x104);
@@ -2170,6 +2338,9 @@ inline bool editor_transform_key_held()
     return false;
 }
 
+void recompute_room_bbox(GRoom* room);
+void unlink_room_faces(GRoom* room, const std::unordered_set<GFace*>& faces);
+
 // Editor app globals
 void* GetMainFrame();
 void* GetLogDlg();
@@ -2196,7 +2367,22 @@ void editor_address_space_free(std::uint64_t& free_largest, std::uint64_t& free_
 // RED runs large address aware, with 4 GB of address space instead of 2 GB. Allocation-free.
 bool editor_large_address_aware();
 
+enum class LevelFileOp
+{
+    none,
+    load,
+    save,
+    autosave,
+};
+// The CDedDoc::LoadSaveLevel running, if any.
+LevelFileOp level_file_op();
 // Inside RED's autosave (CDedDoc::LoadSaveLevel with is_autosave set).
 bool level_autosave_in_progress();
+// Saves the open level now under RED's autosave name ("~" before the extension; an untitled level as Untitled~.rfl in
+// the working directory), whatever the autosave setting. The full path written: the autosave, or the temporary file
+// beside it ("~.tmp" before the extension) when the save worked but could not replace the previous autosave. None when
+// nothing was saved: no level, a build, Calculate Lighting or a level load or save running, or the save failed (the
+// previous autosave stays).
+std::optional<std::string> level_autosave_now();
 
 void DedLevel_DoBackLink();

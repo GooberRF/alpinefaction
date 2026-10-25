@@ -48,7 +48,7 @@ struct ExportBatch
 static std::string resolve_texture_name(int bitmap_id)
 {
     if (bitmap_id < 0) return "default.tga";
-    int index = BitmapEntry::handle_to_index(bitmap_id);
+    int index = rf::bm::get_cache_slot(bitmap_id);
     if (index < 0) return "default.tga";
     BitmapEntry* entry = &BitmapEntry::entries[index];
     if (entry->name[0] == '\0') return "default.tga";

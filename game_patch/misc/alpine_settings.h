@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <optional>
+#include <common/utils/color-utils.h>
 #include "../rf/os/timestamp.h"
 #include "../hud/hud.h"
 #include "../hud/remote_server_cfg_ui.h"
@@ -647,7 +648,6 @@ struct FpsCounterState
 extern AlpineGameSettings g_alpine_game_config;
 std::optional<uint32_t> parse_hex_color_string(const std::string& value);
 std::string format_hex_color_string(uint32_t color);
-std::tuple<int, int, int, int> extract_color_components(uint32_t color);
 std::tuple<float, float, float, float> extract_normalized_color_components(uint32_t color);
 void initialize_alpine_core_config();
 void alpine_core_config_save();

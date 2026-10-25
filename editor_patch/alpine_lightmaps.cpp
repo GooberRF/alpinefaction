@@ -29,6 +29,8 @@
 
 #include "alpine_lightmaps.h"
 #include "bake_progress.h"
+#include "command_line.h"
+#include "graphics/d3d11/gr_d3d11_editor_lightmaps.h"
 #include "work_pool.h"
 #include "level.h"
 #include "lightmap_pages.h"
@@ -2080,6 +2082,7 @@ bool alpine_lm_take_lighting_refused()
 static std::uint32_t bake_begin_layout()
 {
     // a re-bake supersedes the loaded section even when it ends up emitting nothing
+    editor_af_lightmap_hide(true);
     g_retained.clear();
     g_retained.shrink_to_fit();
     terrain_light_clear();
@@ -2489,6 +2492,7 @@ void alpine_lm_bake_end()
         af_error("out of memory keeping the baked terrain lighting for the editor view, the saved section "
                  "is unaffected");
     }
+    editor_af_lightmap_show(g_af.body, true, g_af.solid, &raw);
     g_af.signature = surfaces_signature(g_af.solid);
     for (AfMover& m : g_af.movers) {
         m.signature = surfaces_signature(m.solid);
@@ -2554,6 +2558,7 @@ void alpine_lm_bake_abort()
 
 void alpine_lm_reset_level_state()
 {
+    editor_af_lightmap_hide(false);
     g_retained.clear();
     g_retained.shrink_to_fit();
     g_retained_suppressed = false;
@@ -2746,12 +2751,12 @@ void alpine_lm_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t c
         terrain_light_clear();
         overflow_preview_clear();
     }
+    editor_af_lightmap_show(g_retained, false, level.solid, nullptr);
 }
 
 void ApplyAlpineLightmapPatches()
 {
-    // GetCommandLineA rather than argv, which the CRT has not populated during DLL init
-    g_raw_codec = std::strstr(GetCommandLineA(), "-rawlightmaps") != nullptr;
+    g_raw_codec = editor_command_line_has(L"-rawlightmaps");
     bc7enc_compress_block_init();
     solid_write_hook.install();
     file_write_hook.install();

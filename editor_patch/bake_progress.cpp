@@ -18,8 +18,6 @@ extern "C" IMAGE_DOS_HEADER __ImageBase;
 namespace
 {
 
-constexpr std::size_t phase_count = static_cast<std::size_t>(BakePhase::count);
-
 struct PhaseInfo
 {
     const char* name;
@@ -28,7 +26,7 @@ struct PhaseInfo
 };
 
 // Rough costs measured on large test levels; the estimate rescales them by how the finished phases compared.
-constexpr std::array<PhaseInfo, phase_count> phase_info{{
+constexpr std::array<PhaseInfo, static_cast<std::size_t>(BakePhase::count)> bake_phases{{
     {"Preparing the lightmap layout", 2.0, 0.0},
     {"Lighting surfaces", 0.0, 1.8e-3},
     {"Blending surface edges", 0.0, 7.0e-4},
@@ -38,6 +36,39 @@ constexpr std::array<PhaseInfo, phase_count> phase_info{{
     {"Lighting overflow faces", 0.0, 1.6e-3},
     {"Encoding lightmaps", 0.0, 1.3e-6},
 }};
+constexpr std::array<PhaseInfo, static_cast<std::size_t>(BuildPhase::count)> build_phases{{
+    {"Preparing terrain", 1.0, 0.0},
+    {"Adding brushes", 0.0, 2.5e-3},
+    {"Chopping portals", 0.0, 1.0e-2},
+    {"Cleaning final geometry", 0.5, 0.0},
+    {"Building rooms", 0.5, 0.0},
+    {"Fixing t-joints", 0.5, 0.0},
+    {"Repairing holes", 0.3, 0.0},
+    {"Checking for holes", 0.2, 0.0},
+    {"Checking for out-of-level areas", 0.0, 2.5e-2},
+    {"Finishing", 0.5, 0.0},
+}};
+constexpr std::size_t max_phases = std::max(bake_phases.size(), build_phases.size());
+
+struct Operation
+{
+    const char* caption;
+    const char* confirm_text;
+    const char* cancelled_log;
+    // null for Build Geometry, whose driver hook takes the memory guard's trips itself
+    const char* out_of_memory_log;
+    const PhaseInfo* phases;
+    std::size_t phase_count;
+};
+constexpr Operation bake_operation{
+    "Calculate Lighting", "Press Confirm Cancel to discard the bake and leave the level unlit",
+    "Lightmap: Calculate Lighting cancelled", "Lightmap: Calculate Lighting ran out of memory, cancelling",
+    bake_phases.data(), bake_phases.size(),
+};
+constexpr Operation build_operation{
+    "Build Geometry", "Press Confirm Cancel to stop the build and keep the geometry the level had before it",
+    "[Progress] Build Geometry cancelled", nullptr, build_phases.data(), build_phases.size(),
+};
 
 enum class Status
 {
@@ -58,10 +89,11 @@ struct Phase
     ULONGLONG end = 0;
 };
 
-// Scoped by BakeProgressScope.
 struct State
 {
     bool active = false;
+    const Operation* op = &bake_operation;
+    bool cancel_allowed = true;
     bool cancelled = false;
     // the memory guard tripped, which cancelled the bake
     bool out_of_memory = false;
@@ -70,10 +102,12 @@ struct State
     DWORD armed_at = 0;
     std::vector<std::pair<std::string, std::string>> deferred;
     HWND dlg = nullptr;
+    // Build Geometry's window only, see build_window_messages
+    HHOOK message_hook = nullptr;
     std::vector<HWND> disabled;
-    std::array<Phase, phase_count> phases{};
+    std::array<Phase, max_phases> phases{};
     // the status and time cells as last set, so unchanged cells are not redrawn
-    std::array<std::array<std::string, 2>, phase_count> cells{};
+    std::array<std::array<std::string, 2>, max_phases> cells{};
     int current = -1;
     ULONGLONG start = 0;
     ULONGLONG last_refresh = 0;
@@ -83,11 +117,25 @@ State g_progress;
 // Posted by the taskbar button's shift-right-click.
 constexpr UINT wm_popup_system_menu = 0x0313;
 constexpr DWORD confirm_window_ms = 4000;
-constexpr const char* confirm_text = "Press Confirm Cancel to discard the bake and leave the level unlit";
 
 std::size_t index_of(BakePhase phase)
 {
     return static_cast<std::size_t>(phase);
+}
+
+std::size_t index_of(BuildPhase phase)
+{
+    return static_cast<std::size_t>(phase);
+}
+
+const PhaseInfo& info(std::size_t i)
+{
+    return g_progress.op->phases[i];
+}
+
+std::size_t phase_count()
+{
+    return g_progress.op->phase_count;
 }
 
 double seconds_between(ULONGLONG from, ULONGLONG to)
@@ -112,7 +160,7 @@ double phase_estimate(std::size_t i)
 {
     const Phase& p = g_progress.phases[i];
     const std::uint64_t steps = p.status == Status::pending ? p.expected : p.total;
-    return phase_info[i].fixed_seconds + phase_info[i].seconds_per_step * static_cast<double>(steps);
+    return info(i).fixed_seconds + info(i).seconds_per_step * static_cast<double>(steps);
 }
 
 double phase_fraction(const Phase& p)
@@ -129,9 +177,9 @@ double remaining_seconds(ULONGLONG now, double& overall)
     double done_actual = 0.0;
     double done_estimate = 0.0;
     // calibrated by the phases measured in steps; the layout's fixed guess says little about the rest
-    for (std::size_t i = 0; i < phase_count; i++) {
+    for (std::size_t i = 0; i < phase_count(); i++) {
         const Phase& p = g_progress.phases[i];
-        if (p.status == Status::done && phase_info[i].seconds_per_step > 0.0) {
+        if (p.status == Status::done && info(i).seconds_per_step > 0.0) {
             done_actual += seconds_between(p.start, p.end);
             done_estimate += phase_estimate(i);
         }
@@ -153,7 +201,7 @@ double remaining_seconds(ULONGLONG now, double& overall)
         left += expected - elapsed;
         total += expected;
     }
-    for (std::size_t i = 0; i < phase_count; i++) {
+    for (std::size_t i = 0; i < phase_count(); i++) {
         if (g_progress.phases[i].status == Status::pending) {
             const double expected = phase_estimate(i) * scale;
             left += expected;
@@ -187,14 +235,14 @@ void insert_row(HWND list, std::size_t i)
     LVITEMA item{};
     item.mask = LVIF_TEXT;
     item.iItem = row_of(i);
-    item.pszText = const_cast<char*>(phase_info[i].name);
+    item.pszText = const_cast<char*>(info(i).name);
     SendMessageA(list, LVM_INSERTITEMA, 0, reinterpret_cast<LPARAM>(&item));
 }
 
 void update_rows(ULONGLONG now)
 {
     HWND list = GetDlgItem(g_progress.dlg, IDC_BAKE_PHASES);
-    for (std::size_t i = 0; i < phase_count; i++) {
+    for (std::size_t i = 0; i < phase_count(); i++) {
         const Phase& p = g_progress.phases[i];
         const char* status = "";
         std::string time;
@@ -240,6 +288,14 @@ bool list_click(const MSG& msg)
     return msg.hwnd == list || IsChild(list, msg.hwnd);
 }
 
+// A held key repeats, and must not confirm the Cancel it armed; the phase list is display only.
+bool dropped(const MSG& msg)
+{
+    const bool repeat =
+        (msg.message == WM_KEYDOWN || msg.message == WM_SYSKEYDOWN) && (HIWORD(msg.lParam) & KF_REPEAT);
+    return repeat || list_click(msg);
+}
+
 void pump_messages()
 {
     MSG msg;
@@ -247,10 +303,7 @@ void pump_messages()
     // modal loop that would dispatch them out of reach, but for holding down its close button
     constexpr UINT flags = PM_REMOVE | PM_QS_INPUT | PM_QS_PAINT | PM_QS_POSTMESSAGE;
     while (g_progress.dlg && PeekMessageA(&msg, g_progress.dlg, 0, 0, flags)) {
-        // a held key repeats, and must not confirm the Cancel it armed
-        const bool repeat =
-            (msg.message == WM_KEYDOWN || msg.message == WM_SYSKEYDOWN) && (HIWORD(msg.lParam) & KF_REPEAT);
-        if (repeat || list_click(msg)) {
+        if (dropped(msg)) {
             continue;
         }
         if (!IsDialogMessageA(g_progress.dlg, &msg)) {
@@ -287,12 +340,12 @@ void refresh_window(bool force)
         phase_text = "Cancelling...";
     }
     else if (g_progress.armed) {
-        phase_text = confirm_text;
+        phase_text = g_progress.op->confirm_text;
     }
     else if (g_progress.current >= 0) {
         const auto i = static_cast<std::size_t>(g_progress.current);
         const Phase& p = g_progress.phases[i];
-        phase_text = phase_info[i].name;
+        phase_text = info(i).name;
         if (p.total) {
             phase_text += "   " + std::to_string(std::min(p.done, p.total)) + " of " + std::to_string(p.total);
         }
@@ -323,20 +376,20 @@ void cancel(HWND hdlg, bool out_of_memory)
     }
     try {
         if (out_of_memory) {
-            xlog::warn("Lightmap: Calculate Lighting ran out of memory, cancelling");
+            xlog::warn("{}", g_progress.op->out_of_memory_log);
         }
         else {
-            xlog::info("Lightmap: Calculate Lighting cancelled");
+            xlog::info("{}", g_progress.op->cancelled_log);
         }
     }
     catch (...) {
     }
 }
 
-// Called from the bake's hooks, so nothing may unwind into the engine's frames.
+// Called from engine hooks, so nothing may unwind into the engine's frames.
 void refresh(bool force)
 {
-    if (!g_progress.cancelled && memory_guard_take_tripped()) {
+    if (!g_progress.cancelled && g_progress.op->out_of_memory_log && memory_guard_take_tripped()) {
         cancel(g_progress.dlg, true);
         force = true;
     }
@@ -351,7 +404,7 @@ void refresh(bool force)
 // that dispatches every window's messages in the middle of the stock passes.
 void press_cancel(HWND hdlg)
 {
-    if (g_progress.cancelled) {
+    if (g_progress.cancelled || !g_progress.cancel_allowed) {
         return;
     }
     const DWORD now = GetTickCount();
@@ -364,7 +417,7 @@ void press_cancel(HWND hdlg)
         g_progress.armed = true;
         g_progress.armed_at = now;
         SetDlgItemTextA(hdlg, IDCANCEL, "Confirm Cancel");
-        SetDlgItemTextA(hdlg, IDC_BAKE_PHASE_TEXT, confirm_text);
+        SetDlgItemTextA(hdlg, IDC_BAKE_PHASE_TEXT, g_progress.op->confirm_text);
         return;
     }
     cancel(hdlg, false);
@@ -422,6 +475,20 @@ BOOL CALLBACK disable_window(HWND wnd, LPARAM)
     return TRUE;
 }
 
+// Between build ticks MFC would hand the window's keys to the main frame's accelerators (it has no CWnd), which could
+// save or undo mid-build. Only keys are taken; the caption buttons' mouse tracking needs the rest.
+LRESULT CALLBACK build_window_messages(int code, WPARAM wparam, LPARAM lparam)
+{
+    auto* msg = reinterpret_cast<MSG*>(lparam);
+    if (code == HC_ACTION && wparam == PM_REMOVE && msg->message >= WM_KEYFIRST && msg->message <= WM_KEYLAST &&
+        g_progress.dlg && msg->hwnd && (msg->hwnd == g_progress.dlg || IsChild(g_progress.dlg, msg->hwnd))) {
+        if (dropped(*msg) || IsDialogMessageA(g_progress.dlg, msg)) {
+            msg->message = WM_NULL;
+        }
+    }
+    return CallNextHookEx(nullptr, code, wparam, lparam);
+}
+
 void open_window()
 {
     // whatever is open beside the main frame, so a message handler can reach no editor command mid-bake
@@ -430,8 +497,14 @@ void open_window()
                                         MAKEINTRESOURCEA(IDD_ALPINE_BAKE_PROGRESS), GetMainFrameHandle(),
                                         progress_proc, 0);
     if (!g_progress.dlg) {
-        xlog::error("Lightmap: the Calculate Lighting progress window could not be created ({})", GetLastError());
+        xlog::error("[Progress] The {} progress window could not be created ({})", g_progress.op->caption,
+                    GetLastError());
         return;
+    }
+    SetWindowTextA(g_progress.dlg, g_progress.op->caption);
+    if (g_progress.op == &build_operation) {
+        g_progress.message_hook =
+            SetWindowsHookExA(WH_GETMESSAGE, build_window_messages, nullptr, GetCurrentThreadId());
     }
     HWND list = GetDlgItem(g_progress.dlg, IDC_BAKE_PHASES);
     SendMessageA(list, LVM_SETEXTENDEDLISTVIEWSTYLE, LVS_EX_FULLROWSELECT, LVS_EX_FULLROWSELECT);
@@ -448,7 +521,7 @@ void open_window()
         col.iSubItem = c;
         SendMessageA(list, LVM_INSERTCOLUMNA, c, reinterpret_cast<LPARAM>(&col));
     }
-    for (std::size_t i = 0; i < phase_count; i++) {
+    for (std::size_t i = 0; i < phase_count(); i++) {
         if (g_progress.phases[i].status != Status::unlisted) {
             insert_row(list, i);
         }
@@ -462,6 +535,10 @@ void open_window()
 
 void close_window()
 {
+    if (g_progress.message_hook) {
+        UnhookWindowsHookEx(g_progress.message_hook);
+        g_progress.message_hook = nullptr;
+    }
     for (HWND wnd : g_progress.disabled) {
         EnableWindow(wnd, TRUE);
     }
@@ -484,7 +561,7 @@ void finish_current()
     g_progress.current = -1;
     if (headless_bake_active()) {
         char buf[160];
-        std::snprintf(buf, sizeof(buf), "phase: %s, %llu steps in %.1fs", phase_info[i].name,
+        std::snprintf(buf, sizeof(buf), "phase: %s, %llu steps in %.1fs", info(i).name,
                       static_cast<unsigned long long>(p.done), seconds_between(p.start, p.end));
         try {
             headless_bake_note(buf);
@@ -503,26 +580,34 @@ BOOL __fastcall stock_wait_dialog_show(void* wnd, int edx, int cmd)
     return stock_wait_dialog_show_hook.call_target(wnd, edx, g_progress.dlg ? SW_HIDE : cmd);
 }
 
+// Build Geometry's start shows the stock build dialog (CWnd::ShowWindow), which the build window replaces
+BOOL __fastcall stock_build_dialog_show(void* wnd, int edx, int cmd);
+CallHook<ShowWindowCall> stock_build_dialog_show_hook{0x0043a73d, stock_build_dialog_show};
+BOOL __fastcall stock_build_dialog_show(void* wnd, int edx, int cmd)
+{
+    const bool replaced = g_progress.dlg && g_progress.op == &build_operation;
+    return stock_build_dialog_show_hook.call_target(wnd, edx, replaced ? SW_HIDE : cmd);
+}
+
+// The stock wait and build dialogs take focus as they open, which would take Esc and Alt+F4 from the window
 using SetFocusCall = void* __fastcall(void* wnd, int edx);
 void* __fastcall stock_wait_dialog_focus(void* wnd, int edx);
-CallHook<SetFocusCall> stock_wait_dialog_focus_hook{{0x00448f8f, 0x0044933f}, stock_wait_dialog_focus};
+CallHook<SetFocusCall> stock_wait_dialog_focus_hook{{0x00448f8f, 0x0044933f, 0x0043a755}, stock_wait_dialog_focus};
 void* __fastcall stock_wait_dialog_focus(void* wnd, int edx)
 {
     return g_progress.dlg ? nullptr : stock_wait_dialog_focus_hook.call_target(wnd, edx);
 }
 
-} // namespace
-
-BakeProgressScope::BakeProgressScope(unsigned phases)
+bool begin(const Operation& op, unsigned phases)
 {
     if (g_progress.active) {
-        return;
+        return false;
     }
-    owner_ = true;
     g_progress = State{};
     g_progress.active = true;
+    g_progress.op = &op;
     g_progress.start = GetTickCount64();
-    for (std::size_t i = 0; i < phase_count; i++) {
+    for (std::size_t i = 0; i < phase_count(); i++) {
         if (phases & (1u << i)) {
             g_progress.phases[i].status = Status::pending;
         }
@@ -535,13 +620,11 @@ BakeProgressScope::BakeProgressScope(unsigned phases)
             close_window();
         }
     }
+    return true;
 }
 
-BakeProgressScope::~BakeProgressScope()
+void end()
 {
-    if (!owner_) {
-        return;
-    }
     auto deferred = std::move(g_progress.deferred);
     try {
         finish_current();
@@ -560,10 +643,14 @@ BakeProgressScope::~BakeProgressScope()
     }
 }
 
-void bake_progress_phase(BakePhase phase, std::uint64_t total)
+bool showing(const Operation& op)
 {
-    const auto i = index_of(phase);
-    if (!g_progress.active || i >= phase_count || g_progress.current == static_cast<int>(i)) {
+    return g_progress.active && g_progress.op == &op;
+}
+
+void start_phase(std::size_t i, std::uint64_t total)
+{
+    if (i >= phase_count() || g_progress.current == static_cast<int>(i)) {
         return;
     }
     finish_current();
@@ -580,26 +667,53 @@ void bake_progress_phase(BakePhase phase, std::uint64_t total)
     refresh(true);
 }
 
+void skip_phase(std::size_t i)
+{
+    if (i < phase_count() && g_progress.phases[i].status == Status::pending) {
+        g_progress.phases[i].status = Status::skipped;
+        refresh(true);
+    }
+}
+
+} // namespace
+
+BakeProgressScope::BakeProgressScope(unsigned phases)
+{
+    owner_ = begin(bake_operation, phases);
+}
+
+BakeProgressScope::~BakeProgressScope()
+{
+    if (owner_) {
+        end();
+    }
+}
+
+void bake_progress_phase(BakePhase phase, std::uint64_t total)
+{
+    if (showing(bake_operation)) {
+        start_phase(index_of(phase), total);
+    }
+}
+
 void bake_progress_expect(BakePhase phase, std::uint64_t total)
 {
     const auto i = index_of(phase);
-    if (g_progress.active && i < phase_count) {
+    if (showing(bake_operation) && i < phase_count()) {
         g_progress.phases[i].expected = total;
     }
 }
 
 void bake_progress_skip(BakePhase phase)
 {
-    const auto i = index_of(phase);
-    if (g_progress.active && i < phase_count && g_progress.phases[i].status == Status::pending) {
-        g_progress.phases[i].status = Status::skipped;
-        refresh(true);
+    if (showing(bake_operation)) {
+        skip_phase(index_of(phase));
     }
 }
 
 void bake_progress_step(std::uint64_t steps)
 {
-    if (!g_progress.active || g_progress.current < 0) {
+    if (!showing(bake_operation) || g_progress.current < 0) {
         return;
     }
     g_progress.phases[static_cast<std::size_t>(g_progress.current)].done += steps;
@@ -608,29 +722,30 @@ void bake_progress_step(std::uint64_t steps)
 
 void bake_progress_poll()
 {
-    if (g_progress.active) {
+    if (showing(bake_operation)) {
         refresh(false);
     }
 }
 
 bool bake_progress_active()
 {
-    return g_progress.active;
+    return showing(bake_operation);
 }
 
 BakePhase bake_progress_current()
 {
-    return g_progress.current < 0 ? BakePhase::count : static_cast<BakePhase>(g_progress.current);
+    return !showing(bake_operation) || g_progress.current < 0 ? BakePhase::count
+                                                                : static_cast<BakePhase>(g_progress.current);
 }
 
 bool bake_progress_cancelled()
 {
-    return g_progress.cancelled;
+    return showing(bake_operation) && g_progress.cancelled;
 }
 
 bool bake_progress_out_of_memory()
 {
-    return g_progress.out_of_memory;
+    return showing(bake_operation) && g_progress.out_of_memory;
 }
 
 void bake_progress_defer_message(const char* caption, const std::string& msg)
@@ -642,8 +757,86 @@ void bake_progress_defer_message(const char* caption, const std::string& msg)
     }
 }
 
+void build_progress_begin(unsigned phases)
+{
+    begin(build_operation, phases);
+}
+
+void build_progress_end()
+{
+    if (showing(build_operation)) {
+        end();
+    }
+}
+
+void build_progress_phase(BuildPhase phase, std::uint64_t total)
+{
+    if (showing(build_operation)) {
+        start_phase(index_of(phase), total);
+    }
+}
+
+void build_progress_steps(std::uint64_t done, std::uint64_t total)
+{
+    if (showing(build_operation) && g_progress.current >= 0) {
+        Phase& p = g_progress.phases[static_cast<std::size_t>(g_progress.current)];
+        p.done = done;
+        p.total = total;
+        refresh(false);
+    }
+}
+
+void build_progress_expect(BuildPhase phase, std::uint64_t total)
+{
+    const auto i = index_of(phase);
+    if (showing(build_operation) && i < phase_count()) {
+        g_progress.phases[i].expected = total;
+    }
+}
+
+void build_progress_complete()
+{
+    if (showing(build_operation) && g_progress.current >= 0) {
+        Phase& p = g_progress.phases[static_cast<std::size_t>(g_progress.current)];
+        p.done = p.total;
+    }
+}
+
+void build_progress_skip(BuildPhase phase)
+{
+    if (showing(build_operation)) {
+        skip_phase(index_of(phase));
+    }
+}
+
+void build_progress_poll()
+{
+    if (showing(build_operation)) {
+        refresh(false);
+    }
+}
+
+void build_progress_disallow_cancel()
+{
+    if (!showing(build_operation) || !g_progress.cancel_allowed) {
+        return;
+    }
+    g_progress.cancel_allowed = false;
+    g_progress.armed = false;
+    if (g_progress.dlg) {
+        SetDlgItemTextA(g_progress.dlg, IDCANCEL, "Cancel");
+        EnableWindow(GetDlgItem(g_progress.dlg, IDCANCEL), FALSE);
+    }
+}
+
+bool build_progress_cancelled()
+{
+    return showing(build_operation) && g_progress.cancelled;
+}
+
 void ApplyBakeProgressPatches()
 {
     stock_wait_dialog_show_hook.install();
     stock_wait_dialog_focus_hook.install();
+    stock_build_dialog_show_hook.install();
 }

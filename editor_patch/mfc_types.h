@@ -302,6 +302,13 @@ inline constexpr float two_pi = 2.0f * std::numbers::pi_v<float>;
 
 inline const Matrix3 identity_orient{{1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}};
 
+enum class PlaneSide
+{
+    front = 1,
+    on = 2,
+    behind = 3,
+};
+
 struct Plane
 {
     Vector3 normal;
@@ -309,6 +316,12 @@ struct Plane
 
     Plane() = default;
     Plane(const Vector3& n, float d) : normal(n), dist(d) {}
+
+    // FUN_0048a790, within RED's on-plane distance (float 1e-4, on the x87)
+    PlaneSide side_of(const Vector3& point) const
+    {
+        return static_cast<PlaneSide>(AddrCaller{0x0048a790}.c_call<int>(&point, this));
+    }
 };
 static_assert(sizeof(Plane) == 0x10, "Plane size mismatch!");
 
@@ -1075,6 +1088,26 @@ static_assert(offsetof(DedFloatSpinner, min_value) == 0xEC);
 static_assert(offsetof(DedFloatSpinner, max_value) == 0xF0);
 static_assert(offsetof(DedFloatSpinner, on_change) == 0xFC);
 static_assert(offsetof(DedFloatSpinner, value) == 0x110);
+
+// The int counterpart of DedFloatSpinner (constructor 0x0044BB30).
+struct DedIntSpinner
+{
+    char _pad_00[0xEC];
+    int min_value; // +0xEC
+    int max_value; // +0xF0
+    char _pad_F4[0x108 - 0xF4];
+    int value;     // +0x108
+
+    // FUN_0044bf40: clamps v to the range, stores it and shows it in the edit when there is one
+    void set(int v)
+    {
+        AddrCaller{0x0044BF40}.this_call(this, v);
+    }
+};
+static_assert(sizeof(DedIntSpinner) == 0x10C);
+static_assert(offsetof(DedIntSpinner, min_value) == 0xEC);
+static_assert(offsetof(DedIntSpinner, max_value) == 0xF0);
+static_assert(offsetof(DedIntSpinner, value) == 0x108);
 
 // Level Properties (FUN_00402300 runs it modally; OnInitDialog 0x00467540 builds the fog spinners)
 struct CLevelDialog : CDialog

@@ -26,8 +26,9 @@
 #include "../os/console.h"
 #include "../os/os.h"
 #include "../bmpman/bmpman.h"
-#include "../bmpman/fmt_conv_templates.h"
+#include <common/bitmap/fmt_conv_templates.h>
 #include "../rf/gr/gr_light.h"
+#include "../rf/math/ix.h"
 #include "destruction.h"
 #include "level.h"
 #include "alpine_terrain.h"
@@ -1297,6 +1298,120 @@ CodeInjection collect_visible_rooms_append_injection{
     false,
 };
 
+// The stock walk enters a room once per on-screen path to it, which heavy geomod makes exponential. Past this
+// many calls in one search, it stops and visible_rooms_flood completes the list.
+static constexpr int visible_rooms_search_budget = 2048;
+
+// Completes the list the full walk would make: every room reachable through visible portals is listed, with its
+// window grown to the union of every window it is reached with.
+static void visible_rooms_flood(const rf::Vector3& eye)
+{
+    static std::vector<rf::GRoom*> queue;
+    static std::vector<bool> queued; // by room_index, all false between floods
+    auto is_queued = [](const rf::GRoom* room) {
+        const auto idx = static_cast<std::size_t>(room->room_index);
+        return idx < queued.size() && queued[idx];
+    };
+    auto set_queued = [](const rf::GRoom* room, bool value) {
+        const auto idx = static_cast<std::size_t>(room->room_index);
+        if (idx >= queued.size()) {
+            queued.resize(idx + 1, false);
+        }
+        queued[idx] = value;
+    };
+    // Out of memory leaves the rooms not reached yet out of the list
+    try {
+        queue.assign(g_visible_rooms, g_visible_rooms + rf::g_num_visible_rooms);
+        for (rf::GRoom* room : queue) {
+            set_queued(room, true);
+        }
+        for (std::size_t head = 0; head < queue.size(); ++head) {
+            rf::GRoom* room = queue[head];
+            set_queued(room, false);
+            if (room->is_blocked && room != rf::g_portal_camera_room) {
+                continue;
+            }
+            for (rf::GPortal* portal : room->portals) {
+                rf::GRoom* other = portal->room1 == room ? portal->room2 : portal->room1;
+                if (other->is_sky || other->is_detail) {
+                    continue;
+                }
+                if (!portal->rect_computed) {
+                    portal->rect_computed = true;
+                    if (rf::ix_point_in_box_expanded(eye, 1.0f, portal->bbox_min, portal->bbox_max)) {
+                        portal->rect = {0.0f, 0.0f, static_cast<float>(rf::gr::screen_width()),
+                            static_cast<float>(rf::gr::screen_height())};
+                        portal->is_invisible = false;
+                    }
+                    else {
+                        portal->is_invisible = rf::gr::cull_bounding_box(portal->bbox_min, portal->bbox_max) ||
+                            !rf::gr::project_bounding_box(portal->bbox_min, portal->bbox_max, &portal->rect.left,
+                                &portal->rect.top, &portal->rect.right, &portal->rect.bot);
+                    }
+                }
+                if (portal->is_invisible) {
+                    continue;
+                }
+                const rf::GClipWnd wnd{
+                    std::max(room->clip_wnd.left, portal->rect.left),
+                    std::max(room->clip_wnd.top, portal->rect.top),
+                    std::min(room->clip_wnd.right, portal->rect.right),
+                    std::min(room->clip_wnd.bot, portal->rect.bot),
+                };
+                if (!(wnd.left < wnd.right && wnd.top < wnd.bot)) {
+                    continue;
+                }
+                if (!other->visited_this_search) {
+                    if (rf::g_num_visible_rooms < static_cast<int>(std::size(g_visible_rooms))) {
+                        g_visible_rooms[rf::g_num_visible_rooms++] = other;
+                    }
+                    other->visited_this_frame = true;
+                    other->visited_this_search = true;
+                    other->clip_wnd = wnd;
+                }
+                else {
+                    rf::GClipWnd& cur = other->clip_wnd;
+                    if (wnd.left >= cur.left && wnd.top >= cur.top && wnd.right <= cur.right && wnd.bot <= cur.bot) {
+                        continue;
+                    }
+                    cur.left = std::min(cur.left, wnd.left);
+                    cur.top = std::min(cur.top, wnd.top);
+                    cur.right = std::max(cur.right, wnd.right);
+                    cur.bot = std::max(cur.bot, wnd.bot);
+                    if (is_queued(other)) {
+                        continue;
+                    }
+                }
+                queue.push_back(other);
+                set_queued(other, true);
+            }
+        }
+    }
+    catch (const std::bad_alloc&) {
+        queued.assign(queued.size(), false);
+        xlog::warn("Out of memory listing visible rooms");
+    }
+}
+
+FunHook<void(rf::GSolid*, rf::GRoom*, rf::GClipWnd*, int, unsigned, const rf::Vector3*)>
+    g_solid_collect_visible_rooms_recursive_hook{
+        0x004D4860,
+        [](rf::GSolid* solid, rf::GRoom* room, rf::GClipWnd* clip, int depth, unsigned flags,
+            const rf::Vector3* eye) {
+            static int num_calls = 0;
+            if (depth == 0) {
+                num_calls = 0;
+            }
+            if (++num_calls > visible_rooms_search_budget) {
+                return;
+            }
+            g_solid_collect_visible_rooms_recursive_hook.call_target(solid, room, clip, depth, flags, eye);
+            if (depth == 0 && num_calls > visible_rooms_search_budget) {
+                visible_rooms_flood(*eye);
+            }
+        },
+    };
+
 void g_solid_do_patch()
 {
     // allow Set_Skybox to set a specific sky room
@@ -1334,6 +1449,7 @@ void g_solid_do_patch()
     // g_solid_collect_visible_rooms_recursive addresses the last room as [count * 4 + base - 4]
     write_mem<uintptr_t>(0x004D499D + 3, reinterpret_cast<uintptr_t>(&g_visible_rooms) - sizeof(rf::GRoom*));
     collect_visible_rooms_append_injection.install();
+    g_solid_collect_visible_rooms_recursive_hook.install();
 
     // 32-bit color format - geomod
     GSurface_calculate_lightmap_color_conv_patch.install();

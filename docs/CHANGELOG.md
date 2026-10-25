@@ -41,6 +41,7 @@ Version 1.5.0 (Trillium): Not yet released
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)
 - Notify players in a server that is recording demos
+- Add `level_message` dedicated server config section to broadcast a message to all players when a level loads, set globally or per level (`$LEVEL` is replaced with the level name)
 - Restore cut first person weapon aim sway, toggleable with `cl_weaponsway`
 - Add `cl_freelookslide` to scale the acceleration and deceleration slide of the freelook camera
 - Add terms of use and notices document to installer
@@ -60,7 +61,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Add `Mesh_Set_Scale` event to change an Alpine Mesh object's scale at runtime
 - Raise level editor per-room and per-mesh render vertex limit from 8000 to 32768
 - Add `Limit vehicle flight ceiling` and `Ceiling height (Y)` options to level editor `Level Properties` to cap how high flying vehicles can climb
-- Add `-bake in.rfl -bakeout out.rfl` launcher command line switches to build a level's geometry and calculate its lighting without user interaction, writing the result to a new level file and progress to a log beside it
+- Add `-bake in.rfl -bakeout out.rfl` launcher command line switches to build a level's geometry and calculate its lighting without user interaction, writing the result to a new level file and progress to a log beside it (add `-buildonly` to skip the lighting)
 - Add `High-resolution lightmaps` level property, used in lightmap bake in level editor
 - Deprecate and remove `-smoothlights` level editor switch
 - Add `dbg_collision_pairs` console command to print object collision pair pool statistics
@@ -92,7 +93,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Add `dbg_terrain_decorations` console command to toggle terrain mesh decorations and print their draw statistics
 - Add `Require Direct3D 11` level property
 - Speed up `Calculate Lighting` in the level editor, especially on large levels and levels with very many lightmap surfaces
-- Show `Calculate Lighting` progress in the level editor: each phase with its progress and an estimated time remaining, and a `Cancel` button (pressed twice) that stops the bake and leaves the level without baked lighting
+- Show `Calculate Lighting` and `Build Geometry` progress in the level editor
 - Improve level loading and `Build Geometry` times in the level editor on levels with many faces
 - Draw large rooms in fewer draw calls, and skip rooms without dynamic decals when drawing them (Direct3D 11 renderer only)
 - Make level editor refuse to open levels saved by a newer version of Alpine Faction instead of misreading them
@@ -131,7 +132,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Make texture paste in the level editor also apply the copied face's texture (toggleable with `Paste texture`), and align the copied texture onto faces with a different number of corners instead of skipping them
 - Add undo for texture paste and `Face Properties` in the level editor
 - Add `Select All`, `Fit UVs` and `Auto Unwrap`, and a `Color each face` option to the level editor `UV Unwrap` window
-- Add 256 x 256 and 512 x 512 thumbnail sizes and a `Format` filter to the level editor texture browser, make it resizable and scroll it with the mouse wheel
+- Add 256 x 256 and 512 x 512 thumbnail sizes and a `Format` filter to the level editor texture browser, make it resizable and scroll it with the mouse wheel, and remember its size, position and thumbnail size
 - Draw the sky in the level editor's `Render Everything` mode when `Draw Sky` is on, as the portal render modes do
 - Improve particle handling and performance:
   - Stop simulating level-placed decorative particle emitters while they are out of view (`cl_particlecull`)
@@ -150,6 +151,15 @@ Version 1.5.0 (Trillium): Not yet released
 - Allow `sv_gametype` (`gt`) to start a local game on a level in a chosen game type
 - Add console tab completion of game types and level names for `sv_gametype` (`gt`)
 - Add Salvage flag placement for community level `CTF_TERROR.rfl`
+- Store level editor preferences in `alpine_editor.ini` instead of `red\red.cfg`, importing `red.cfg` on first launch
+- Add an `Alpine` page to the level editor `Preferences` window with options for the texture mode face outline and its color, the background frame rate limit, and always drawing meshes at full detail
+- Repair holes left by portals and by brushes placed flush against each other during `Build Geometry` in the level editor
+- Add `Level > Find out-of-level areas` to the level editor
+- Turn on `Level > Rebuild with hole lines` by default in the level editor and remember the setting
+- Speed up selecting and deselecting large numbers of brushes, faces, vertices and objects in the level editor, and drawing the viewports while many objects or vertices are selected
+- End the Gun Game progression with a one-kill Fusion level after the one-kill final weapon, toggleable with `gg_end_with_fusion`
+- Ignore `fflink_gsk` on dedicated servers started with `-lanonly`
+- Implement shared Direct3D 11 renderer for game and level editor
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color
@@ -173,12 +183,14 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix scrolling textures jumping forward when the Direct3D 11 renderer rebuilds a room's render cache, most visibly after a brush-based geomod crater
 - Fix deleting an Alpine object in the level editor leaving a stale reference to it in any moving group it belonged to
 - Fix filter box in the level editor texture browser not filtering the texture list by partial filename
+- Fix a level editor crash when texture mode opens on a texture category with no textures
 - Fix level editor crashing without an error message when drawing a room or mesh containing more than 8000 vertices
 - Fix level editor crashing while calculating lighting for a level containing a smoothed face with more than 32 vertices
 - Lightmap baking fixes in the level editor, based on the `Glacier` level editor
   - Fix grey speckling on smoothed faces and the dark edges around lightmap fragments
   - Fix several accuracy issues on face edges that resulted in dark bands and splotches along polygon boundaries
   - Blend coplanar surfaces across room boundaries
+  - Smooth faces only with faces sharing a smoothing group, stop darkening smoothed faces between their vertices, and fix over-bright streaks on smoothed faces
 - Fix object collision pairs silently running out on levels with many collidable clutter objects, triggers, and items when many players are connected
 - Fix FactionFiles stats event reporting stalling permanently when a send attempt hangs inside WinINet
 - Fix level editor crashing when a mesh is played with an animation that does not fit its skeleton
@@ -195,6 +207,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix level editor packfile creation to include `Mesh` object texture overrides, `Mesh_Set_Texture` and `World_HUD_Sprite` event textures, snow `Weather Region` bitmaps, and `Set_Debris` event meshes and their textures
 - Fix level editor packfile creation reporting textures that ship with the game as missing files
 - Fix crash when a bone, tag, or prop point is queried on a character whose mesh file contains no submeshes, or when such a character's weapon or textures are preloaded for rendering
+- Fix crash after switching spectate targets
 - Fix items not rotating correctly when out of view or when viewed through a Projection Camera
 - Fix Alpine Mesh objects using skeletal meshes receiving no light from the level in the `Ambient` and `Vertex` mesh lighting modes
 - Fix meshes keeping stale vertex lighting after the mesh lighting mode is changed until the level is reloaded
@@ -297,6 +310,8 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix long key names in spectate control hints running off the left edge of the screen
 - Fix listen server hosts only seeing automated server messages in the console instead of in chat
 - Fix music not starting while the music volume is muted or very low
+- Fix box deselecting vertices in the level editor testing the vertices of moved or rotated brushes at the wrong positions
+- Fix first person firing animation getting stuck for automatic weapons when fired on on a ladder
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize
@@ -308,6 +323,9 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix reload animation playing in third person for other players when client tries to reload with a full clip/magazine
 - Fix lighting for pistol silencer and remote charge detonator
 - Fix third-person crouch animations on remote players flickering and snapping
+
+[@GooberRF](https://github.com/GooberRF) & [@nickalreadyinuse](https://github.com/nickalreadyinuse)
+- Fix severe frame rate drops when looking over heavily geomodded areas
 
 ### Imported libraries
 - [Bullet Physics 3.25](https://github.com/bulletphysics/bullet3) by Erwin Coumans

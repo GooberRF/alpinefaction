@@ -1626,7 +1626,7 @@ void rope_emitter_render(CDedLevel* level)
 
     rope_emitter_load_icon();
 
-    const float cam_param = gr_cam_param;
+    const rf::gr::Mode billboard_mode = rf::gr::bitmap_3d_mode_no_z;
     static std::vector<rope_curve::Vec3> solved;
 
     // One index per repaint, so the preview still tracks an anchor being dragged without each
@@ -1739,7 +1739,7 @@ void rope_emitter_render(CDedLevel* level)
         if (g_rope_emitter_icon_handle >= 0) {
             gr_set_bitmap(g_rope_emitter_icon_handle, -1);
         }
-        gr_render_billboard(&rope->pos, 0, 0.25f, cam_param);
+        gr_render_billboard(&rope->pos, 0, 0.25f, billboard_mode);
     }
 }
 

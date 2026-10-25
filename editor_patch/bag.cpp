@@ -172,7 +172,7 @@ void bag_render(CDedLevel* level)
 
     bag_load_icon();
 
-    float cam_param = gr_cam_param;
+    const rf::gr::Mode billboard_mode = rf::gr::bitmap_3d_mode_no_z;
 
     for (auto* bag : bags) {
         if (bag->hidden_in_editor) continue;
@@ -190,7 +190,7 @@ void bag_render(CDedLevel* level)
             gr_set_bitmap(g_bag_icon_handle, -1);
         }
 
-        gr_render_billboard(&bag->pos, 0, 0.25f, cam_param);
+        gr_render_billboard(&bag->pos, 0, 0.25f, billboard_mode);
     }
 }
 

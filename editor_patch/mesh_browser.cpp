@@ -1479,8 +1479,8 @@ Color mesh_preview_editor_background()
 {
     // Same source the viewport painter uses.
     if (const EditorColorPrefs* prefs = editor_color_prefs()) {
-        const COLORREF color = prefs->background;
-        return {GetRValue(color), GetGValue(color), GetBValue(color), 0xff};
+        const Color& color = prefs->color(EditorColorPrefIndex::background);
+        return {color.r, color.g, color.b, 0xff};
     }
     return {0x00, 0x00, 0x00, 0xff};
 }

@@ -162,7 +162,7 @@ Texture load_texture(int handle)
     TexLevel base;
     bool decoded = false;
     int w = 0, h = 0, num_pixels = 0, num_levels = 0;
-    if (handle >= 0 && BitmapEntry::handle_to_index(handle) >= 0) {
+    if (handle >= 0 && rf::bm::get_cache_slot(handle) >= 0) {
         bm_get_mipmap_info(handle, &w, &h, &num_pixels, &num_levels);
     }
     if (w > 0 && h > 0 && w <= max_source_texture_dim && h <= max_source_texture_dim) {

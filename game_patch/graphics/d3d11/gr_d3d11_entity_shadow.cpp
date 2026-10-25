@@ -6,9 +6,9 @@
 #include <common/utils/string-utils.h>
 #include "gr_d3d11.h"
 #include "gr_d3d11_entity_shadow.h"
-#include "gr_d3d11_context.h"
-#include "gr_d3d11_shader.h"
-#include "gr_d3d11_mesh.h"
+#include <common/gr_d3d11/gr_d3d11_context.h>
+#include <common/gr_d3d11/gr_d3d11_shader.h>
+#include <common/gr_d3d11/gr_d3d11_mesh.h>
 #include "../../rf/entity.h"
 #include "../../rf/corpse.h"
 #include "../../rf/item.h"

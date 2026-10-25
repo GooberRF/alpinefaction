@@ -124,6 +124,8 @@ In order to fully support current features and enable future expansion, Alpine F
 
 When you first launch Alpine, if you have a legacy player settings file (`players.cfg`) from any other Red Faction client, Alpine Faction will import those settings for you automatically.
 
+The level editor likewise stores its `Preferences` window settings in `alpine_editor.ini`, importing them from the stock `red\red.cfg` the first time it starts.
+
 Usage
 -----
 1. Install with the installer. Note that Alpine Faction does NOT have to be installed to your Red Faction folder.

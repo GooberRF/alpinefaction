@@ -17,6 +17,7 @@
 #include "dialog_tooltips.h"
 #include "dir_light.h"
 #include "gizmo.h"
+#include "graphics/editor_gr.h"
 #include "level.h"
 #include "mfc_types.h"
 #include "resources.h"
@@ -1510,9 +1511,7 @@ void draw_handles(const Layout& l, Handle hot, const Handle* only, uint8_t alpha
 // the next unless the batch is flushed between them.
 void flush_lines()
 {
-    if (gr_batch_open) {
-        gr_flush_batch();
-    }
+    editor_gr_flush();
 }
 
 // Over the 3D view, handles behind level geometry show dimmed: a dim pass ignoring depth, then a full one tested

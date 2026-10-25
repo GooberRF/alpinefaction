@@ -16,6 +16,7 @@
 #include <common/terrain/alpine_terrain.h>
 #include <common/utils/string-utils.h>
 #include "alpine_obj.h"
+#include "graphics/editor_gr.h"
 #include "level.h"
 #include "mesh.h"
 #include "mesh_browser.h"
@@ -342,7 +343,7 @@ void load_preview()
 bool preview_can_draw()
 {
     const HWND frame = GetMainFrameHandle();
-    return !gr_batch_open && frame && IsWindowEnabled(frame) && !IsIconic(frame);
+    return !editor_gr_batch_open() && frame && IsWindowEnabled(frame) && !IsIconic(frame);
 }
 
 // Worth animating: RED (or a window it owns) is in front and the preview is not clipped away inside RED.

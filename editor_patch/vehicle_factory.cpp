@@ -735,7 +735,7 @@ void vehicle_factory_render(CDedLevel* level)
     auto& factories = level->GetAlpineLevelProperties().vehicle_factory_objects;
     if (factories.empty()) return;
 
-    float cam_param = gr_cam_param;
+    const rf::gr::Mode billboard_mode = rf::gr::bitmap_3d_mode_no_z;
     bool did_lazy_load = false;
 
     for (auto* factory : factories) {
@@ -785,7 +785,7 @@ void vehicle_factory_render(CDedLevel* level)
             if (g_vehicle_factory_icon_handle >= 0) {
                 gr_set_bitmap(g_vehicle_factory_icon_handle, -1);
             }
-            gr_render_billboard(&factory->pos, 0, 0.25f, cam_param);
+            gr_render_billboard(&factory->pos, 0, 0.25f, billboard_mode);
         }
 
         // Facing arrow: the direction the spawned vehicle points.

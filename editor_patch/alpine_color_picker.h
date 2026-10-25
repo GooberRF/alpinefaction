@@ -3,6 +3,8 @@
 #include <windows.h>
 #include <algorithm>
 #include <cmath>
+#include <format>
+#include <string>
 
 enum class AlpineColorPickerResult
 {
@@ -120,6 +122,12 @@ inline bool alpine_color_parse_component(const char* text, int& out)
     }
     out = value;
     return true;
+}
+
+// Six hex digits, as alpine_color_parse_hex reads them
+inline std::string alpine_color_format_hex(COLORREF color)
+{
+    return std::format("{:02X}{:02X}{:02X}", GetRValue(color), GetGValue(color), GetBValue(color));
 }
 
 inline bool alpine_color_parse_hex(const char* text, COLORREF& out)

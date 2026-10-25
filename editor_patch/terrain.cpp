@@ -3226,7 +3226,7 @@ void terrain_render(CDedLevel* level)
 {
     auto& terrains = level->GetAlpineLevelProperties().terrain_objects;
     if (!terrains.empty()) terrain_load_icon();
-    const float cam_param = gr_cam_param;
+    const rf::gr::Mode billboard_mode = rf::gr::bitmap_3d_mode_no_z;
 
     for (auto* terrain : terrains) {
         if (terrain->hidden_in_editor) continue;
@@ -3239,7 +3239,7 @@ void terrain_render(CDedLevel* level)
             gr_set_bitmap(g_terrain_icon_handle, -1);
         }
         Vector3 icon = terrain_icon_pos(terrain->pos, data);
-        gr_render_billboard(&icon, 0, terrain_icon_size, cam_param);
+        gr_render_billboard(&icon, 0, terrain_icon_size, billboard_mode);
     }
     terrain_paint_draw_cursor(*level);
 }

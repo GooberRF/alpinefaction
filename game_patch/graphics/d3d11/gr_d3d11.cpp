@@ -16,21 +16,21 @@
 #include "../../os/os.h"
 #include "../gr.h"
 #include "gr_d3d11.h"
-#include "gr_d3d11_af_lightmap.h"
-#include "gr_d3d11_context.h"
-#include "gr_d3d11_shader.h"
-#include "gr_d3d11_texture.h"
-#include "gr_d3d11_state.h"
-#include "gr_d3d11_dynamic_geometry.h"
-#include "gr_d3d11_solid.h"
-#include "gr_d3d11_mesh.h"
-#include "gr_d3d11_decoration.h"
-#include "gr_d3d11_vfx.h"
+#include <common/gr_d3d11/gr_d3d11_af_lightmap.h>
+#include <common/gr_d3d11/gr_d3d11_context.h>
+#include <common/gr_d3d11/gr_d3d11_shader.h>
+#include <common/gr_d3d11/gr_d3d11_texture.h>
+#include <common/gr_d3d11/gr_d3d11_state.h>
+#include <common/gr_d3d11/gr_d3d11_dynamic_geometry.h>
+#include <common/gr_d3d11/gr_d3d11_solid.h>
+#include <common/gr_d3d11/gr_d3d11_mesh.h>
+#include <common/gr_d3d11/gr_d3d11_decoration.h>
+#include <common/gr_d3d11/gr_d3d11_vfx.h>
 #include "gr_d3d11_entity_shadow.h"
 #include "gr_d3d11_outline.h"
-#include "gr_d3d11_gamma.h"
+#include <common/gr_d3d11/gr_d3d11_gamma.h>
 #include "gr_d3d11_scenefx.h"
-#include "gr_d3d11_particle.h"
+#include <common/gr_d3d11/gr_d3d11_particle.h>
 
 extern void monitor_refresh_all();
 

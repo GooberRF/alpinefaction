@@ -29,6 +29,8 @@ void texture_mode_render_view();
 // The level geometry faces given (those with the brush face's id) lie on the brush face: it hasn't moved since it
 // was built.
 bool level_faces_lie_on_brush_face(BrushNode& brush, GFace& face, std::span<GFace* const> built);
+// As above, given those faces' corners.
+bool level_faces_lie_on_brush_face(BrushNode& brush, GFace& face, std::span<const Vector3> built_corners);
 
 // The level is being reset (File > New, File > Open, close).
 void texture_mode_level_reset();

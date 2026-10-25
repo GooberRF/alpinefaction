@@ -4,11 +4,11 @@
 #include <xlog/xlog.h>
 #include "gr_d3d11_outline.h"
 #include "gr_d3d11.h"
-#include "gr_d3d11_state.h"
-#include "gr_d3d11_context.h"
-#include "gr_d3d11_shader.h"
-#include "gr_d3d11_mesh.h"
-#include "gr_d3d11_vertex.h"
+#include <common/gr_d3d11/gr_d3d11_state.h>
+#include <common/gr_d3d11/gr_d3d11_context.h>
+#include <common/gr_d3d11/gr_d3d11_shader.h>
+#include <common/gr_d3d11/gr_d3d11_mesh.h>
+#include <common/gr_d3d11/gr_d3d11_vertex.h>
 #include "../../misc/alpine_settings.h"
 #include "../../multi/multi.h"
 #include "../../multi/gametype.h"

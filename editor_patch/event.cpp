@@ -5,9 +5,11 @@
 #include <string_view>
 #include <windows.h>
 #include <shellapi.h>
+#include <algorithm>
 #include <vector>
 #include <unordered_map>
 #include <memory>
+#include <optional>
 #include <iomanip>
 #include <sstream>
 #include <string>
@@ -24,7 +26,6 @@
 #include <patch_common/AsmWriter.h>
 #include <patch_common/CodeInjection.h>
 #include <crash_handler_stub.h>
-#include "../game_patch/rf/os/array.h"
 #include "exports.h"
 #include "resources.h"
 #include "level.h"
@@ -1393,7 +1394,8 @@ struct LinkColor { int r, g, b; };
 static LinkColor get_link_color()
 {
     if (const EditorColorPrefs* prefs = editor_color_prefs()) {
-        return {prefs->link_r, prefs->link_g, prefs->link_b};
+        const Color& link = prefs->color(EditorColorPrefIndex::link);
+        return {link.r, link.g, link.b};
     }
     return {0, 0, 255};
 }
@@ -1446,10 +1448,48 @@ static void draw_incoming_brush_links(CDedLevel* level)
     }
 }
 
-CodeInjection draw_links_cache_detail_brushes_patch{
+// Each link line's far end is found by uid, which stock (0x00483920) does by scanning master_objects; while
+// draw_links runs it comes from this map instead, which keeps that scan's first match
+namespace
+{
+
+struct DrawLinksObjectsByUid
+{
+    CDedLevel* level;
+    bool failed = false;
+    std::optional<std::unordered_map<int, DedObject*>> objects;
+
+    // False when the map could not be built, leaving the find to stock
+    bool find(int uid, DedObject*& found)
+    {
+        if (!objects && !failed) {
+            try {
+                objects.emplace();
+                for (int i = 0; i < level->master_objects.size; ++i) {
+                    if (DedObject* obj = level->master_objects.data_ptr[i]) {
+                        objects->emplace(obj->uid, obj);
+                    }
+                }
+            }
+            catch (...) {
+                failed = true;
+                objects.reset();
+            }
+        }
+        if (!objects) return false;
+        const auto it = objects->find(uid);
+        found = it != objects->end() ? it->second : nullptr;
+        return true;
+    }
+};
+
+DrawLinksObjectsByUid* g_draw_links_objects = nullptr;
+
+} // namespace
+
+FunHook<void __fastcall(CDedLevel*)> draw_links_hook{
     0x00422910,
-    [](auto& regs) {
-        auto* level = static_cast<CDedLevel*>(static_cast<void*>(regs.ecx));
+    [](CDedLevel* level) FASTCALL_LAMBDA {
         try {
             rebuild_detail_brush_lookup(level);
             if (g_link_draw_mode == 0) {
@@ -1461,39 +1501,98 @@ CodeInjection draw_links_cache_detail_brushes_patch{
             g_detail_brush_lookup.clear();
             g_any_detail_brush_selected = false;
         }
-    }
+        DrawLinksObjectsByUid objects{level};
+        g_draw_links_objects = &objects;
+        draw_links_hook.call_target(level);
+        g_draw_links_objects = nullptr;
+    },
 };
 
-static void draw_detail_brush_link(BaseCodeInjection::Regs& regs)
+// At draw_links' calls of the uid find, its argument pushed; `after_find` is the caller's pop of it
+static void draw_detail_brush_link(BaseCodeInjection::Regs& regs, uintptr_t after_find)
 {
     const int uid = *static_cast<int*>(static_cast<void*>(regs.esp));
 
     auto it = g_detail_brush_lookup.find(uid);
-    if (it == g_detail_brush_lookup.end()) {
-        return;
+    if (it != g_detail_brush_lookup.end()) {
+        auto* source = static_cast<DedObject*>(static_cast<void*>(regs.esi));
+        const BrushNode* brush = it->second;
+        const int blue = *reinterpret_cast<int*>(regs.esp + 0x1C);
+        const int green = *reinterpret_cast<int*>(regs.esp + 0x20);
+        const int red = *reinterpret_cast<int*>(regs.esp + 0x24);
+
+        draw_link_line(source->pos.x, source->pos.y, source->pos.z,
+                       brush->pos.x, brush->pos.y, brush->pos.z,
+                       red, green, blue);
     }
-
-    auto* source = static_cast<DedObject*>(static_cast<void*>(regs.esi));
-    const BrushNode* brush = it->second;
-    const int blue = *reinterpret_cast<int*>(regs.esp + 0x1C);
-    const int green = *reinterpret_cast<int*>(regs.esp + 0x20);
-    const int red = *reinterpret_cast<int*>(regs.esp + 0x24);
-
-    draw_link_line(source->pos.x, source->pos.y, source->pos.z,
-                   brush->pos.x, brush->pos.y, brush->pos.z,
-                   red, green, blue);
+    DedObject* target = nullptr;
+    if (g_draw_links_objects && g_draw_links_objects->find(uid, target)) {
+        regs.eax = reinterpret_cast<uintptr_t>(target);
+        regs.eip = after_find;
+    }
 }
 
 // "Show links for all objects" pass.
 CodeInjection draw_links_all_objects_brush_patch{
     0x004229B6,
-    [](auto& regs) { draw_detail_brush_link(regs); }
+    [](auto& regs) { draw_detail_brush_link(regs, 0x004229BB); }
 };
 
 // "Show links for the selection" pass.
 CodeInjection draw_links_selection_brush_patch{
     0x00422A67,
-    [](auto& regs) { draw_detail_brush_link(regs); }
+    [](auto& regs) { draw_detail_brush_link(regs, 0x00422A6C); }
+};
+
+// The selection pass's lines into the selection: stock tests every object against every selected one (0x004228B0),
+// so this draws each object's lines to the selected objects its links name, in selection order
+CodeInjection draw_links_selection_incoming_patch{
+    0x00422ACE,
+    [](auto& regs) {
+        auto* level = static_cast<CDedLevel*>(static_cast<void*>(regs.esi));
+        const auto& selection = level->selection;
+        if (selection.size <= 0) {
+            regs.eip = 0x00422B79;
+            return;
+        }
+        // Everything that can fail to allocate comes before the first line, so stock's loop can take over
+        try {
+            std::unordered_map<int, std::vector<int>> selected_by_uid;
+            for (int i = 0; i < selection.size; ++i) {
+                const DedObject* target = selection.data_ptr[i];
+                if (target && !target->hidden_in_editor) {
+                    selected_by_uid[target->uid].push_back(i);
+                }
+            }
+            std::vector<std::vector<int>> targets_of(level->master_objects.size);
+            for (int i = 0; !selected_by_uid.empty() && i < level->master_objects.size; ++i) {
+                const DedObject* source = level->master_objects.data_ptr[i];
+                if (!source || source->hidden_in_editor) continue;
+                auto& targets = targets_of[i];
+                for (int k = 0; k < source->links.size; ++k) {
+                    const auto it = selected_by_uid.find(source->links.data_ptr[k]);
+                    if (it != selected_by_uid.end()) {
+                        targets.insert(targets.end(), it->second.begin(), it->second.end());
+                    }
+                }
+                std::sort(targets.begin(), targets.end());
+                targets.erase(std::unique(targets.begin(), targets.end()), targets.end());
+            }
+            const LinkColor color = get_link_color();
+            for (size_t i = 0; i < targets_of.size(); ++i) {
+                const DedObject* source = level->master_objects.data_ptr[i];
+                for (const int index : targets_of[i]) {
+                    const DedObject* target = selection.data_ptr[index];
+                    draw_link_line(source->pos.x, source->pos.y, source->pos.z, target->pos.x, target->pos.y,
+                                   target->pos.z, color.r, color.g, color.b);
+                }
+            }
+        }
+        catch (...) {
+            return;
+        }
+        regs.eip = 0x00422B79;
+    },
 };
 
 void ApplyEventsPatches()
@@ -1502,9 +1601,10 @@ void ApplyEventsPatches()
     DedEvent__exchange_patch.install();
 
     // Draw link lines from objects to the detail brushes they link to
-    draw_links_cache_detail_brushes_patch.install();
+    draw_links_hook.install();
     draw_links_all_objects_brush_patch.install();
     draw_links_selection_brush_patch.install();
+    draw_links_selection_incoming_patch.install();
 
     // Allow linking events to detail brushes by UID (When_Destroyed)
     links_dialog_allow_detail_brush_patch.install();

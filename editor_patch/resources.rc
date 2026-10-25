@@ -354,8 +354,11 @@ IDR_MAIN_FRAME MENU
         MENUITEM "Calculate Maps and Light\tCtrl+Shift+L", ID_CALCULATE_MAPS_AND_LIGHT
         MENUITEM SEPARATOR
         MENUITEM "Rebuild with hole lines", 32898
+        MENUITEM "Rebuild with out-of-level areas", ID_REBUILD_OUT_OF_LEVEL
+        MENUITEM "Repair holes when building", ID_REPAIR_BUILD_HOLES
         MENUITEM "Check for holes", 32896
-        MENUITEM "Remove hole check lines", 32895
+        MENUITEM "Find out-of-level areas", ID_FIND_OUT_OF_LEVEL
+        MENUITEM "Remove check lines", 32895
     }
     POPUP "&View"
     {
@@ -364,6 +367,7 @@ IDR_MAIN_FRAME MENU
         MENUITEM "Show Just Lightmaps, no Textures", 32864
         MENUITEM "Show Rooms in Different Colors", 32865
         MENUITEM "Show Everything See-through", 32866
+        MENUITEM "Show Wireframe", ID_VIEW_SHOW_WIREFRAME
         MENUITEM SEPARATOR
         MENUITEM "Render Nothing (Except brushes)", 32879
         MENUITEM "Render Everything", 32867
@@ -375,6 +379,12 @@ IDR_MAIN_FRAME MENU
         MENUITEM "Draw Non-see-thru Portal Faces", 32874
         MENUITEM SEPARATOR
         MENUITEM "Draw Sky (Like in-game)", 32877
+        MENUITEM "Preview Level Fog", ID_VIEW_PREVIEW_LEVEL_FOG
+        MENUITEM "Show Invisible Faces", ID_VIEW_SHOW_INVISIBLE_FACES
+        MENUITEM "Show Back Faces", ID_VIEW_SHOW_BACK_FACES
+        MENUITEM "Fullbright Meshes", ID_VIEW_FULLBRIGHT_MESHES
+        MENUITEM "Show Decals", ID_VIEW_SHOW_DECALS
+        MENUITEM "Wireframe Overlay", ID_VIEW_WIREFRAME_OVERLAY
         MENUITEM SEPARATOR
         MENUITEM "Use Multitexturing (If Possible)", 32878
         MENUITEM SEPARATOR
@@ -1927,6 +1937,22 @@ FONT 8, "MS Sans Serif"
     LTEXT           "Height (m):", IDC_PLACEMENT_HEIGHT_LABEL, 2, 126, 36, 8
     EDITTEXT        IDC_PLACEMENT_HEIGHT, 39, 124, 36, 12, ES_AUTOHSCROLL
     AUTOCHECKBOX    "Override", IDC_PLACEMENT_HEIGHT_OVERRIDE, 80, 125, 48, 10, WS_TABSTOP
+}
+
+IDD_ALPINE_PREFERENCES_PAGE DIALOGEX 0, 0, 248, 292
+STYLE DS_SETFONT | DS_CONTROL | WS_CHILD
+FONT 8, "MS Sans Serif"
+{
+    GROUPBOX        "Alpine Preferences", -1, 1, 0, 245, 292
+    AUTOCHECKBOX    "Outline the face under the cursor in Texture mode", IDC_PREFS_HOVER_OUTLINE, 11, 16, 218, 10
+    LTEXT           "Outline Color:", -1, 21, 33, 50, 8
+    CONTROL         "List1", IDC_PREFS_HOVER_COLOR_SWATCH, WC_LISTVIEW, WS_BORDER | LVS_NOSCROLL | LVS_ICON, 72, 30, 32, 14, WS_EX_STATICEDGE
+    PUSHBUTTON      "Change Color", IDC_PREFS_HOVER_COLOR_CHANGE, 108, 30, 52, 14
+    EDITTEXT        IDC_PREFS_HOVER_COLOR_VALUE, 164, 30, 58, 14, ES_AUTOHSCROLL | ES_READONLY
+    AUTOCHECKBOX    "Limit the frame rate while RED is in the background", IDC_PREFS_BACKGROUND_THROTTLE, 11, 52, 218, 10
+    AUTOCHECKBOX    "Always draw meshes at full detail (LOD 0)", IDC_PREFS_FORCE_LOD0, 11, 64, 218, 10
+    LTEXT           "Renderer (when RED next starts):", -1, 11, 82, 112, 8
+    COMBOBOX        IDC_PREFS_RENDERER, 124, 80, 98, 48, WS_TABSTOP | CBS_DROPDOWNLIST
 }
 
 // VERSIONINFO

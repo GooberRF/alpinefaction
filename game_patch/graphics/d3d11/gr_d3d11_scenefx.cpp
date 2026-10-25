@@ -2,7 +2,7 @@
 #include <utility>
 #include "gr_d3d11_scenefx.h"
 #include "gr_d3d11.h"
-#include "gr_d3d11_shader.h"
+#include <common/gr_d3d11/gr_d3d11_shader.h>
 
 namespace gr::d3d11
 {

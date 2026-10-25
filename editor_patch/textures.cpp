@@ -20,6 +20,7 @@
 #include "sounds.h"
 #include "event.h"
 #include "bitmap_loaders.h"
+#include "editor_settings.h"
 #include "resources.h"
 #include <common/utils/string-utils.h>
 
@@ -113,19 +114,8 @@ static void register_custom_texture_subdirectories(TextureManager* texture_manag
                subdirs.size(), category_array->size);
 }
 
-// Hook FUN_0046ac30: the master config/init function that either loads categories from
-// red.cfg or falls through to default initialization. By hooking here (instead of
-// init_texture_categories at 0x004778e0), custom subdirectory categories are registered
-// regardless of whether red.cfg exists.
-void __fastcall texture_config_init_new(PreferencesDialog* self, int edx);
-FunHook texture_config_init_hook{0x0046ac30, texture_config_init_new};
-
-void __fastcall texture_config_init_new(PreferencesDialog* self, int edx)
+void texture_categories_loaded(TextureManager* texture_manager)
 {
-    // Call original: loads from red.cfg if present, otherwise initializes defaults
-    texture_config_init_hook.call_target(self, edx);
-
-    TextureManager* texture_manager = self->texture_manager;
     g_texture_manager = texture_manager;
     register_custom_texture_subdirectories(texture_manager);
 }
@@ -260,7 +250,8 @@ CodeInjection texture_browser_min_columns_injection{
 };
 
 // The Texture Browser resizes: its view grows with the window and the grid is laid out again for it, the favorites
-// strip and the buttons keep to the bottom. Its size is kept for the session, and the mouse wheel scrolls it.
+// strip and the buttons keep to the bottom. Its placement and Display Size are kept in the settings, and the mouse
+// wheel scrolls it.
 namespace
 {
 struct TextureBrowserLayout
@@ -273,7 +264,6 @@ struct TextureBrowserLayout
     std::vector<std::pair<int, POINT>> to_bottom;
 };
 TextureBrowserLayout g_texture_browser_layout;
-SIZE g_texture_browser_size{};
 
 // the favorites strip, its Change buttons, OK and Cancel
 constexpr int texture_browser_bottom_ids[] = {1506, 1507, 1508, 1509, 1510, 1511, 1512, 1513, 1514, IDOK, IDCANCEL};
@@ -332,6 +322,40 @@ void texture_browser_layout_apply(HWND hdlg, SIZE size)
     }
     InvalidateRect(hdlg, nullptr, TRUE);
 }
+
+// The restored rect, so a maximized browser comes back to it
+void texture_browser_remember_rect(HWND hdlg)
+{
+    if (!IsIconic(hdlg) && !IsZoomed(hdlg)) {
+        GetWindowRect(hdlg, &g_editor_settings.texture_browser_rect);
+    }
+}
+
+// On the monitor nearest the saved rect, fitted to its work area, which may have changed since
+void texture_browser_restore_placement(HWND hdlg)
+{
+    const RECT saved = g_editor_settings.texture_browser_rect;
+    const long long saved_width = static_cast<long long>(saved.right) - saved.left;
+    const long long saved_height = static_cast<long long>(saved.bottom) - saved.top;
+    MONITORINFO info{};
+    info.cbSize = sizeof(info);
+    if (saved_width > 0 && saved_height > 0
+        && GetMonitorInfoA(MonitorFromRect(&saved, MONITOR_DEFAULTTONEAREST), &info)) {
+        const RECT& work = info.rcWork;
+        const SIZE& min_size = g_texture_browser_layout.min_size;
+        const long long width =
+            std::max<long long>(min_size.cx, std::min<long long>(saved_width, work.right - work.left));
+        const long long height =
+            std::max<long long>(min_size.cy, std::min<long long>(saved_height, work.bottom - work.top));
+        const long long x = std::max<long long>(work.left, std::min<long long>(saved.left, work.right - width));
+        const long long y = std::max<long long>(work.top, std::min<long long>(saved.top, work.bottom - height));
+        SetWindowPos(hdlg, nullptr, static_cast<int>(x), static_cast<int>(y), static_cast<int>(width),
+                     static_cast<int>(height), SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    if (g_editor_settings.texture_browser_maximized) {
+        ShowWindow(hdlg, SW_MAXIMIZE);
+    }
+}
 } // namespace
 
 static LRESULT CALLBACK texture_browser_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam, UINT_PTR subclass_id,
@@ -368,11 +392,14 @@ static LRESULT CALLBACK texture_browser_proc(HWND hwnd, UINT msg, WPARAM wparam,
                 texture_browser_relayout(browser, false, SB_THUMBPOSITION, scrolled);
             }
         }
-        if (wparam == SIZE_RESTORED) {
-            RECT window{};
-            GetWindowRect(hwnd, &window);
-            g_texture_browser_size = {window.right - window.left, window.bottom - window.top};
-        }
+    }
+    if (msg == WM_SIZE || msg == WM_MOVE) {
+        texture_browser_remember_rect(hwnd);
+    }
+    if (msg == WM_DESTROY) {
+        texture_browser_remember_rect(hwnd);
+        g_editor_settings.texture_browser_maximized = IsZoomed(hwnd) != FALSE;
+        g_editor_settings.texture_browser_display_size = reinterpret_cast<TextureBrowserPanel*>(panel)->display_size;
     }
     if (msg == WM_COMMAND && LOWORD(wparam) == IDC_TEXTURE_BROWSER_FORMAT && HIWORD(wparam) == CBN_SELCHANGE) {
         const int sel = static_cast<int>(SendMessageA(reinterpret_cast<HWND>(lparam), CB_GETCURSEL, 0, 0));
@@ -394,6 +421,8 @@ FunHook<decltype(texture_browser_init_dialog_hooked)> texture_browser_init_dialo
 };
 static BOOL __fastcall texture_browser_init_dialog_hooked(TextureBrowserPanel* panel)
 {
+    // Before the stock dialog lays the grid out by it
+    panel->display_size = std::clamp(g_editor_settings.texture_browser_display_size, 0, texture_browser_one_to_one);
     const BOOL result = texture_browser_init_dialog_hook.call_target(panel);
     HWND hdlg = WndToHandle(reinterpret_cast<CWnd*>(panel));
 
@@ -415,37 +444,9 @@ static BOOL __fastcall texture_browser_init_dialog_hooked(TextureBrowserPanel* p
 
     texture_browser_layout_init(hdlg);
     SetWindowSubclass(hdlg, texture_browser_proc, 1, reinterpret_cast<DWORD_PTR>(panel));
-    if (g_texture_browser_size.cx > 0) {
-        // a size kept from a bigger monitor still fits this one
-        SIZE size = g_texture_browser_size;
-        const HWND owner = GetWindow(hdlg, GW_OWNER);
-        MONITORINFO info{};
-        info.cbSize = sizeof(info);
-        if (GetMonitorInfoA(MonitorFromWindow(owner ? owner : hdlg, MONITOR_DEFAULTTONEAREST), &info)) {
-            const SIZE& min_size = g_texture_browser_layout.min_size;
-            size.cx = std::max(min_size.cx, std::min(size.cx, info.rcWork.right - info.rcWork.left));
-            size.cy = std::max(min_size.cy, std::min(size.cy, info.rcWork.bottom - info.rcWork.top));
-        }
-        SetWindowPos(hdlg, nullptr, 0, 0, size.cx, size.cy, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
-        alpine_center_dialog_on_owner(hdlg);
-    }
+    texture_browser_restore_placement(hdlg);
     return result;
 }
-
-// FUN_00477460 saves texture categories to red.cfg. Skip "Custom - " subdirectory
-// categories so they don't pollute red.cfg (they're re-added dynamically at startup).
-// Inject at 0x004774b2 (after ESI = category pointer, before name is written).
-// Jump to 0x0047755d (loop increment) to skip the entry entirely.
-CodeInjection config_save_skip_custom_subdirs{
-    0x004774b2,
-    [](auto& regs) {
-        auto* cat = reinterpret_cast<TextureCategory*>(static_cast<int>(regs.esi));
-        const char* name = cat->name.c_str();
-        if (category_name_starts_with(name, custom_subdir_category_prefix)) {
-            regs.eip = 0x0047755d;
-        }
-    }
-};
 
 // FUN_0041b7c0 (startup default-texture folder group build) indexes
 // TextureManager::folder_names with each category's path_handle. Custom subdirectory
@@ -460,6 +461,21 @@ CodeInjection folder_group_build_skip_custom_subdirs{
             regs.eip = 0x0041bad7;
         }
     }
+};
+
+// The sidebar's OnInitDialog (FUN_00444eb0) shows the selected category's first texture without checking that the
+// list has one, so an empty category (every stock one until startup builds the texture groups) passed the bytes past
+// the list head to bm_load as a filename, a fatal error. With an empty list the preview gets the fallback stock's
+// Reload uses (0x00445dc0) and the rest is skipped; the init flag stays clear, so the next init builds the list again.
+CodeInjection sidebar_init_empty_list_fix{
+    0x004450fb,
+    [](auto& regs) {
+        const TextureModePanel* panel = regs.esi;
+        if (panel->textures.head == reinterpret_cast<const TextureListNode*>(&panel->textures)) {
+            panel->preview->bm_handle = bm_load("Rck_default.tga", -1, 1);
+            regs.eip = 0x0044515d;
+        }
+    },
 };
 
 // FUN_004452f0 (texture mode sidebar) uses a fixed path_handle from [dialog+0x98] for all
@@ -1187,7 +1203,7 @@ CodeInjection vpp_extra_files_injection{
 static bool reload_entry_in_place(BitmapEntry* entry, int original_checksum, const char* name)
 {
     const int new_handle = BitmapEntry::load(name, -1);
-    const int new_index = new_handle >= 0 ? BitmapEntry::handle_to_index(new_handle) : -1;
+    const int new_index = new_handle >= 0 ? rf::bm::get_cache_slot(new_handle) : -1;
     BitmapEntry* new_entry = new_index >= 0 ? &BitmapEntry::entries[new_index] : nullptr;
     if (!new_entry || new_entry == entry) {
         entry->name_checksum = original_checksum;
@@ -1227,7 +1243,7 @@ static bool reload_entry_in_place(BitmapEntry* entry, int original_checksum, con
 // handle stays valid (faces referencing it don't break on save/load).
 static void reload_bm_placeholders()
 {
-    int table_size = BitmapEntry::hash_table_size_m1 + 1;
+    int table_size = rf::bm::num_cache_slots + 1;
 
     struct Placeholder {
         BitmapEntry* entry;
@@ -1286,7 +1302,7 @@ bool reload_bitmap_in_place(const char* filename)
         BitmapEntry::load(filename, -1);
         return true;
     }
-    const int index = BitmapEntry::handle_to_index(handle);
+    const int index = rf::bm::get_cache_slot(handle);
     if (index < 0) return false;
     BitmapEntry* entry = &BitmapEntry::entries[index];
     const int checksum = entry->name_checksum;
@@ -1320,7 +1336,6 @@ void reload_custom_textures()
 }
 
 void ApplyTexturesPatches() {
-    texture_config_init_hook.install();
     texture_browser_validator_hook.install();
     texture_sidebar_validator_hook.install();
     texture_browser_thumbnail_size_injection.install();
@@ -1329,6 +1344,7 @@ void ApplyTexturesPatches() {
     texture_browser_init_dialog_hook.install();
     custom_category_check_hook.install();
     sidebar_custom_texture_path_injection.install();
+    sidebar_init_empty_list_fix.install();
     texture_reverse_lookup_fix.install();
     texture_reverse_lookup_index_fix.install();
     vpp_texture_path_fix.install();
@@ -1336,7 +1352,6 @@ void ApplyTexturesPatches() {
     vpp_skip_missing_file_injection.install();
     vpp_clear_log_injection.install();
     vpp_extra_files_injection.install();
-    config_save_skip_custom_subdirs.install();
     folder_group_build_skip_custom_subdirs.install();
     texture_refresh_all_iterate_custom_injection.install();
     texture_refresh_dedup_master_injection.install();

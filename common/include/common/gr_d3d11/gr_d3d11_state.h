@@ -1,0 +1,110 @@
+#pragma once
+
+#include <unordered_map>
+#include <map>
+#include <d3d11.h>
+#include <common/ComPtr.h>
+#include <gr_d3d11_engine.h>
+
+namespace gr::d3d11
+{
+    class StateManager
+    {
+    public:
+        StateManager(ComPtr<ID3D11Device> device);
+
+        ID3D11RasterizerState* lookup_rasterizer_state(D3D11_CULL_MODE cull_mode, int depth_bias = 0, bool depth_clip_enable = true)
+        {
+            auto key = std::make_tuple(cull_mode, depth_bias, depth_clip_enable);
+            auto it = rasterizer_state_cache_.find(key);
+            if (it != rasterizer_state_cache_.end()) {
+                return it->second;
+            }
+            auto rasterizer_state = create_rasterizer_state(cull_mode, depth_bias, depth_clip_enable);
+            auto p = rasterizer_state_cache_.emplace(key, create_rasterizer_state(cull_mode, depth_bias, depth_clip_enable));
+            return p.first->second;
+        }
+
+        ID3D11SamplerState* lookup_sampler_state(rf::gr::TextureSource ts, int slot, bool picmip_active = false)
+        {
+            if (ts == rf::gr::TEXTURE_SOURCE_NONE) {
+                // we are binding a dummy white textures
+                ts = rf::gr::TEXTURE_SOURCE_CLAMP;
+            }
+
+            if (slot == 1) {
+                ts = rf::gr::TEXTURE_SOURCE_CLAMP;
+            }
+
+            // At r_picmip == 1 the two variants are identical — collapse the key so we
+            // don't allocate duplicate D3D11 samplers and don't cause no-op PSSetSamplers
+            // calls when geometry scopes toggle picmip_active.
+            bool needs_variant = picmip_active && engine::picmip() > 1;
+            int key = static_cast<int>(ts) | (needs_variant ? 0x10000 : 0);
+            auto it = sampler_state_cache_.find(key);
+            if (it != sampler_state_cache_.end()) {
+                return it->second;
+            }
+
+            auto p = sampler_state_cache_.emplace(key, create_sampler_state(ts, needs_variant));
+            return p.first->second;
+        }
+
+        ID3D11BlendState* lookup_blend_state(rf::gr::AlphaBlend ab)
+        {
+            int key = static_cast<int>(ab);
+            auto it = blend_state_cache_.find(key);
+            if (it != blend_state_cache_.end()) {
+                return it->second;
+            }
+
+            auto p = blend_state_cache_.emplace(key, create_blend_state(ab));
+            return p.first->second;
+        }
+
+        ID3D11DepthStencilState* lookup_depth_stencil_state(rf::gr::ZbufferType zbt)
+        {
+            int key = static_cast<int>(zbt) | (static_cast<int>(rf::gr::screen.depthbuffer_type) << 8);
+            auto it = depth_stencil_state_cache_.find(key);
+            if (it != depth_stencil_state_cache_.end()) {
+                return it->second;
+            }
+
+            auto p = depth_stencil_state_cache_.emplace(key, create_depth_stencil_state(zbt));
+            return p.first->second;
+        }
+
+        void clear_sampler_state_cache()
+        {
+            sampler_state_cache_.clear();
+        }
+
+        // Outline rendering states
+        ID3D11DepthStencilState* get_outline_stencil_mark_state();
+        ID3D11DepthStencilState* get_outline_stencil_mark_xray_state();
+        ID3D11DepthStencilState* get_outline_depth_test_state();
+        ID3D11DepthStencilState* get_outline_xray_state();
+        ID3D11BlendState* get_no_color_write_blend_state();
+        ID3D11BlendState* get_alpha_to_coverage_blend_state();
+
+    private:
+        ComPtr<ID3D11RasterizerState> create_rasterizer_state(D3D11_CULL_MODE cull_mode, int depth_bias, bool depth_clip_enable);
+        ComPtr<ID3D11SamplerState> create_sampler_state(rf::gr::TextureSource ts, bool picmip_active);
+        ComPtr<ID3D11BlendState> create_blend_state(rf::gr::AlphaBlend ab);
+        ComPtr<ID3D11DepthStencilState> create_depth_stencil_state(rf::gr::ZbufferType zbt);
+
+        ComPtr<ID3D11Device> device_;
+        std::unordered_map<int, ComPtr<ID3D11SamplerState>> sampler_state_cache_;
+        std::unordered_map<int, ComPtr<ID3D11BlendState>> blend_state_cache_;
+        std::unordered_map<int, ComPtr<ID3D11DepthStencilState>> depth_stencil_state_cache_;
+        std::map<std::tuple<D3D11_CULL_MODE, int, bool>, ComPtr<ID3D11RasterizerState>> rasterizer_state_cache_;
+
+        // Outline rendering states (lazily created)
+        ComPtr<ID3D11DepthStencilState> outline_stencil_mark_state_;
+        ComPtr<ID3D11DepthStencilState> outline_stencil_mark_xray_state_;
+        ComPtr<ID3D11DepthStencilState> outline_depth_test_state_;
+        ComPtr<ID3D11DepthStencilState> outline_xray_state_;
+        ComPtr<ID3D11BlendState> no_color_write_blend_state_;
+        ComPtr<ID3D11BlendState> alpha_to_coverage_blend_state_;
+    };
+}

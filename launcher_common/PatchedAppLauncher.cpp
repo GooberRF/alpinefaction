@@ -322,31 +322,6 @@ std::optional<std::string> read_file(const std::string& path)
     return std::string{std::istreambuf_iterator<char>{file}, std::istreambuf_iterator<char>{}};
 }
 
-// Through a temporary file: the target is replaced whole or not at all, and is written from memory so no alternate
-// data stream (mark of the web) comes along.
-void write_file_replacing(const std::string& path, const std::string& data)
-{
-    std::string temp_path = path + ".tmp";
-    HANDLE handle =
-        CreateFileA(temp_path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (handle == INVALID_HANDLE_VALUE) {
-        THROW_WIN32_ERROR("CreateFileA failed");
-    }
-    bool written = false;
-    {
-        Win32Handle file{handle};
-        DWORD bytes_written = 0;
-        written = WriteFile(file, data.data(), static_cast<DWORD>(data.size()), &bytes_written, nullptr)
-            && bytes_written == data.size()
-            && FlushFileBuffers(file);
-    }
-    if (!written || !MoveFileExA(temp_path.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-        DWORD error = GetLastError();
-        DeleteFileA(temp_path.c_str());
-        throw Win32Error(error, ("writing " + path + " failed").c_str());
-    }
-}
-
 // Stock RED.exe made large address aware the way RED_120_NA_4GB_SHA1 was: false for anything else.
 bool make_large_address_aware(std::string& image)
 {

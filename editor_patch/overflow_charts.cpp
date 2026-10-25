@@ -20,6 +20,7 @@
 #include "overflow_charts.h"
 #include "alpine_lightmaps.h"
 #include "bake_progress.h"
+#include "graphics/editor_gr.h"
 #include "level.h"
 #include "mfc_types.h"
 #include "terrain_build.h"
@@ -173,21 +174,14 @@ V3 vertex_pos(const GVertex* v)
     return {v->pos.x, v->pos.y, v->pos.z};
 }
 
-std::uintptr_t key(const void* p)
+V3 v3(const Vector3& v)
 {
-    return reinterpret_cast<std::uintptr_t>(p);
+    return {v.x, v.y, v.z};
 }
 
 // Candidates in ordinal order: faces RED's surface pass would give a surface but left at -1.
 void collect(const GSolid* solid, const std::vector<std::int32_t>& terrain_uids)
 {
-    struct VertFace
-    {
-        const GVertex* v;
-        std::uint32_t smoothing;
-        V3 n;
-    };
-    std::vector<VertFace> vf;
     std::vector<const GVertex*> ids;
     std::uint32_t ordinal = 0;
     for (GFace* f = solid->face_list_head; f; f = f->next_solid, ordinal++) {
@@ -212,11 +206,6 @@ void collect(const GSolid* solid, const std::vector<std::int32_t>& terrain_uids)
             n = n * -1.0f;
         }
         const auto smoothing = static_cast<std::uint32_t>(f->smoothing_groups);
-        if (smoothing) {
-            for (const GVertex* v : ids) {
-                vf.push_back({v, smoothing, n});
-            }
-        }
         if (f->surface_index != -1 || !face_gets_stock_surface(f, terrain_uids)) {
             continue;
         }
@@ -231,37 +220,11 @@ void collect(const GSolid* solid, const std::vector<std::int32_t>& terrain_uids)
         for (const GVertex* v : ids) {
             g_ov.verts.push_back(vertex_pos(v));
             g_ov.vert_ids.push_back(v);
+            g_ov.corner_normals.push_back(v3(lightmap_vertex_normal(*f, *v)));
         }
         g_ov.faces.push_back(c);
     }
     g_ov.src_num_faces = ordinal;
-
-    // A smoothed corner averages the plane normals of the faces sharing the vertex and a smoothing group,
-    // each weighted by its agreement with the face, as the surface bake weights them.
-    // stable, so each corner sums its faces in face order whatever the vertex addresses
-    std::stable_sort(vf.begin(), vf.end(), [](const VertFace& a, const VertFace& b) { return key(a.v) < key(b.v); });
-    g_ov.corner_normals.resize(g_ov.verts.size());
-    for (const Face& c : g_ov.faces) {
-        for (std::uint32_t k = 0; k < c.num_verts; k++) {
-            V3 out = c.normal;
-            if (c.smoothing) {
-                const GVertex* v = g_ov.vert_ids[c.first_vert + k];
-                auto it = std::lower_bound(vf.begin(), vf.end(), v,
-                                           [](const VertFace& e, const GVertex* x) { return key(e.v) < key(x); });
-                V3 sum{};
-                for (; it != vf.end() && it->v == v; ++it) {
-                    if (it->smoothing & c.smoothing) {
-                        sum = sum + it->n * std::max(dot(c.normal, it->n), 0.0f);
-                    }
-                }
-                const V3 s = normalized(sum);
-                if (dot(s, s) > 0.0f) {
-                    out = s;
-                }
-            }
-            g_ov.corner_normals[c.first_vert + k] = out;
-        }
-    }
 }
 
 // Faces sharing an edge (the same two vertices) in the same room.
@@ -1031,8 +994,9 @@ double closest_on_polygon(const std::vector<D2>& p, D2 q, D2& out)
 // Barycentric blend of a face's corner normals at chart point q, over the fan triangle holding it.
 V3 smoothed_normal(const Face& f, const std::vector<D2>& p, D2 q)
 {
+    const Vector3& plane = f.face->plane.normal;
     if (!f.smoothing) {
-        return f.normal;
+        return v3(plane);
     }
     std::uint32_t best_k = 1;
     double best_w[3] = {1.0, 0.0, 0.0};
@@ -1060,14 +1024,14 @@ V3 smoothed_normal(const Face& f, const std::vector<D2>& p, D2 q)
     }
     const double sum = best_w[0] + best_w[1] + best_w[2];
     if (!(sum > 0.0)) {
-        return f.normal;
+        return v3(plane);
     }
     const V3 n0 = g_ov.corner_normals[f.first_vert];
     const V3 n1 = g_ov.corner_normals[f.first_vert + best_k];
     const V3 n2 = g_ov.corner_normals[f.first_vert + best_k + 1];
-    const V3 n = normalized(n0 * static_cast<float>(best_w[0] / sum) + n1 * static_cast<float>(best_w[1] / sum) +
-                            n2 * static_cast<float>(best_w[2] / sum));
-    return dot(n, f.normal) > 0.0f ? n : f.normal;
+    const V3 n = n0 * static_cast<float>(best_w[0] / sum) + n1 * static_cast<float>(best_w[1] / sum) +
+                 n2 * static_cast<float>(best_w[2] / sum);
+    return v3(lightmap_smooth_shading_normal({n.x, n.y, n.z}, plane));
 }
 
 using Pages = LightmapPages;
@@ -1884,6 +1848,9 @@ void overflow_preview_clear()
 void overflow_preview_from_bake()
 {
     g_preview.clear();
+    if (editor_gr_is_d3d11()) {
+        return;
+    }
     for (const Chart& c : g_ov.charts) {
         if (g_ov.unusable) {
             break;
@@ -1898,32 +1865,45 @@ void overflow_preview_from_bake()
     }
 }
 
-void overflow_preview_from_section(const std::uint8_t* body, std::size_t len, const GSolid* solid)
+std::unordered_map<const GFace*, std::uint32_t> overflow_face_records(const alm::ReadResult& r, const GSolid* solid)
 {
-    g_preview.clear();
+    std::unordered_map<const GFace*, std::uint32_t> out;
     if (!solid) {
-        return;
+        return out;
     }
-    const alm::ReadResult r = read_table(body, len);
     const alm::OverflowTableHeader& head = r.overflow_head;
     const std::vector<GFace*> by_ordinal = faces_by_ordinal(solid);
     std::uint64_t live = 0;
     if (!r.overflow_body_off || by_ordinal.size() != head.src_num_faces
         || !live_fingerprint(by_ordinal, head.src_num_faces, r.overflow_faces, live)
         || live != head.face_fingerprint) {
-        return;
+        return out;
     }
-    for (std::size_t i = 0; i < r.overflow.size(); i++) {
+    for (std::uint32_t i = 0; i < r.overflow.size(); i++) {
         if (!r.overflow_ok[i]) {
             continue;
         }
-        const alm::OverflowChart& c = r.overflow[i];
-        for (std::uint32_t k = 0; k < c.num_faces; k++) {
-            g_preview[by_ordinal[r.overflow_faces[r.overflow_first_face[i] + k]]] = {c.mean_rgb[0], c.mean_rgb[1],
-                                                                                    c.mean_rgb[2]};
+        for (std::uint32_t k = 0; k < r.overflow[i].num_faces; k++) {
+            out[by_ordinal[r.overflow_faces[r.overflow_first_face[i] + k]]] = i;
         }
     }
-    overflow_preview_changed(false);
+    return out;
+}
+
+void overflow_preview_from_section(const std::uint8_t* body, std::size_t len, const GSolid* solid)
+{
+    g_preview.clear();
+    if (editor_gr_is_d3d11()) {
+        return;
+    }
+    const alm::ReadResult r = read_table(body, len);
+    for (const auto& [face, record] : overflow_face_records(r, solid)) {
+        const alm::OverflowChart& c = r.overflow[record];
+        g_preview[face] = {c.mean_rgb[0], c.mean_rgb[1], c.mean_rgb[2]};
+    }
+    if (!g_preview.empty()) {
+        overflow_preview_changed(false);
+    }
 }
 
 const std::unordered_map<const GFace*, std::array<std::uint8_t, 3>>& overflow_preview_faces()

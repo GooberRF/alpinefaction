@@ -8,6 +8,7 @@
 #include <map>
 #include <new>
 #include <set>
+#include <unordered_set>
 #include <vector>
 #include <string>
 #include <xlog/xlog.h>
@@ -39,6 +40,7 @@
 #include "vtypes.h"
 #include "resources.h"
 #include "brush_preview.h"
+#include "graphics/editor_gr.h"
 #include "tbl.h"
 
 // ─── Utilities ──────────────────────────────────────────────────────────────
@@ -1470,9 +1472,9 @@ CodeInjection alpine_create_object_patch{
 // game; the flush keeps none of its polygons queued behind the level's.
 static void render_terrain_before_level(CDedLevel* level)
 {
-    const bool batch_was_open = gr_batch_open;
+    const bool batch_was_open = editor_gr_batch_open();
     terrain_render_surfaces(level);
-    if (gr_batch_open) gr_flush_batch();
+    editor_gr_flush();
     if (batch_was_open) gr_begin_batch(4, 3);
 }
 
@@ -1698,6 +1700,7 @@ struct TypeFilterDialogData {
     HWND to_mesh_btn = nullptr; // "To Mesh Object" button (select mode only)
     HWND to_brush_btn = nullptr; // "To Brush" button (select mode only)
     HFONT bold_font = nullptr;  // bold variant for type-group header rows
+    bool conversion_buttons_queued = false;
 };
 
 // Collect all objects from master_objects + moving_groups
@@ -2075,6 +2078,16 @@ static void update_to_brush_button(HWND hwnd, TypeFilterDialogData* data)
         }
     }
     EnableWindow(data->to_brush_btn, any_selected && all_convertible);
+}
+
+constexpr UINT wm_update_conversion_buttons = WM_APP + 1;
+
+// Selection loops change one row at a time and both buttons scan the whole selection, so they update once after
+static void queue_conversion_button_update(HWND hwnd, TypeFilterDialogData* data)
+{
+    if (!data->conversion_buttons_queued) {
+        data->conversion_buttons_queued = PostMessage(hwnd, wm_update_conversion_buttons, 0, 0) != FALSE;
+    }
 }
 
 static INT_PTR CALLBACK TypeFilterDlgProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
@@ -2761,12 +2774,19 @@ static INT_PTR CALLBACK TypeFilterDlgProc(HWND hwnd, UINT msg, WPARAM wparam, LP
                 (nmlv->uChanged & LVIF_STATE) &&
                 ((nmlv->uNewState ^ nmlv->uOldState) & LVIS_SELECTED))
             {
-                update_to_mesh_button(hwnd, data);
-                update_to_brush_button(hwnd, data);
+                queue_conversion_button_update(hwnd, data);
             }
         }
         break;
     } // WM_NOTIFY
+
+    case wm_update_conversion_buttons:
+        if (data) {
+            data->conversion_buttons_queued = false;
+            update_to_mesh_button(hwnd, data);
+            update_to_brush_button(hwnd, data);
+        }
+        return TRUE;
 
     case WM_DESTROY:
         if (data && data->bold_font) {
@@ -2794,8 +2814,11 @@ void alpine_select_objects(CDedLevel* level)
     if (result != IDOK) return;
 
     level->deselect_all();
+    // select_object (0x00416BF0) finds linearly before it appends
+    std::unordered_set<DedObject*> selected;
     for (auto* obj : data.result_objects)
-        level->select_object(obj);
+        if (selected.insert(obj).second)
+            level->add_to_selection(obj);
     level->update_console_display();
 }
 

@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstring>
 #include <map>
+#include <numbers>
 #include <unordered_map>
 #include <unordered_set>
 #include <limits>
@@ -22,6 +23,7 @@
 #include <common/scope_guard.h>
 #include <common/bitmap/formats.h>
 #include <common/lightmap/alpine_lightmap.h>
+#include <common/lightmap/alpine_lightmap_reader.h>
 #include <common/alpine_dir_light.h>
 #include "dir_light.h"
 #include "level.h"
@@ -29,6 +31,7 @@
 #include "lightmap_alpha_masks.h"
 #include "alpine_lightmaps.h"
 #include "bake_progress.h"
+#include "graphics/editor_gr.h"
 #include "headless_bake.h"
 #include "memory_guard.h"
 #include "overflow_charts.h"
@@ -95,16 +98,13 @@ static bool shadow_mask_reserve(int texels, int lights)
     return true;
 }
 
-// Scene light object pool: replaces the stock 1100-entry pool at 0x006FB248
-// Each entry is sizeof(rf::gr::Light) = 0x10C bytes (see game_patch/rf/gr/gr_light.h)
-// todo: shared header between editor and game for this and other common structs
-static constexpr int max_scene_lights = 8192;
-
 // Per-face light list: replaces the stock ~1100-entry array at 0x006F9FF8
 // Must be at least max_scene_lights since all scene lights could affect a single face
 // 0x00488810 writes to this array with no bounds check
-static void* face_light_list[max_scene_lights];
-static constexpr int light_entry_size = 0x10C;
+rf::gr::Light* face_light_list[max_scene_lights];
+
+// Scene light object pool: replaces the stock 1100-entry pool at 0x006FB248, one rf::gr::Light per entry
+static constexpr int light_entry_size = sizeof(rf::gr::Light);
 alignas(16) static uint8_t light_pool[max_scene_lights * light_entry_size];
 
 // Dummy light entry for out-of-bounds handle access.
@@ -314,10 +314,7 @@ static void __fastcall lightmap_page_free_new(void* page)
     if (page == g_synth_page) {
         g_synth_page = nullptr;
     }
-    const int bm = static_cast<GLightmap*>(page)->bm_handle;
-    if (GrTextureSlot* slot = gr_texture_slot_of(bm); slot && slot->bm_handle == bm) {
-        gr_texture_free(slot);
-    }
+    editor_texture_free(static_cast<GLightmap*>(page)->bm_handle);
     lightmap_page_free_hook.call_target(page);
 }
 
@@ -331,6 +328,11 @@ static bool g_stock_layout_synthesized = false;
 bool lightmap_stock_layout_synthesized()
 {
     return g_stock_layout_synthesized;
+}
+
+int lightmap_synthesized_page_bm()
+{
+    return g_synth_page ? static_cast<GLightmap*>(g_synth_page)->bm_handle : -1;
 }
 
 static void* __fastcall lightmap_synth_page_new(void* self, int edx, int w, int h, char alpha,
@@ -2303,6 +2305,8 @@ static void lighting_calc_bake(void* self, bool shadows, bool surface_pass_ran)
     if (bake_progress_active() || lighting_calc_refused(surface_pass_ran)) {
         return;
     }
+    // in case anything on this thread changed it since the renderer started
+    editor_gr_set_bake_precision();
     bool cancelled = false;
     bool out_of_memory = false;
     {
@@ -2675,25 +2679,129 @@ static void __cdecl light_accum_at_texel_new(float* r, float* g, float* b, const
 // the whole row at the crossing. Loading NaN there instead marks those lumels for light_accum_smooth_lumel.
 static const float lightmap_smooth_degenerate_row_marker = std::numeric_limits<float>::quiet_NaN();
 
+// Interior angle of `face` at its corners on `vertex`, in radians; a corner with a zero-length edge counts 0. A
+// reflex corner is one turning against the loop's own (Newell) normal. A loop the overflow charts would refuse
+// (too long, cyclic or with a missing vertex) counts 0.
+static double lightmap_face_corner_angle(const GFace& face, const GVertex& vertex)
+{
+    const GFaceVertex* head = face.edge_loop;
+    if (!head) {
+        return 0.0;
+    }
+    // FUN_004aded0's walk: `next` until the head or null
+    const auto next_of = [head](const GFaceVertex* node) { return node->next ? node->next : head; };
+    double wx = 0.0, wy = 0.0, wz = 0.0;
+    const GFaceVertex* last = head;
+    std::uint32_t steps = 0;
+    for (const GFaceVertex* node = head;; node = next_of(node)) {
+        if (++steps > alpine_lightmap::max_overflow_face_verts || !node->vertex || !next_of(node)->vertex) {
+            return 0.0;
+        }
+        const Vector3& a = node->vertex->pos;
+        const Vector3& b = next_of(node)->vertex->pos;
+        wx += (double{a.y} - b.y) * (double{a.z} + b.z);
+        wy += (double{a.z} - b.z) * (double{a.x} + b.x);
+        wz += (double{a.x} - b.x) * (double{a.y} + b.y);
+        if (next_of(node) == head) {
+            last = node;
+            break;
+        }
+    }
+    double angle = 0.0;
+    for (const GFaceVertex *prev = last, *node = head;; prev = node, node = next_of(node)) {
+        if (node->vertex == &vertex) {
+            const Vector3& c = vertex.pos;
+            const Vector3& p = prev->vertex->pos;
+            const Vector3& q = next_of(node)->vertex->pos;
+            const double ax = double{p.x} - c.x, ay = double{p.y} - c.y, az = double{p.z} - c.z;
+            const double bx = double{q.x} - c.x, by = double{q.y} - c.y, bz = double{q.z} - c.z;
+            if (ax * ax + ay * ay + az * az > 0.0 && bx * bx + by * by + bz * bz > 0.0) {
+                const double cx = ay * bz - az * by, cy = az * bx - ax * bz, cz = ax * by - ay * bx;
+                const double corner = std::atan2(std::sqrt(cx * cx + cy * cy + cz * cz), ax * bx + ay * by + az * bz);
+                angle += (cx * wx + cy * wy + cz * wz > 0.0) ? 2.0 * std::numbers::pi - corner : corner;
+            }
+        }
+        if (next_of(node) == head) {
+            break;
+        }
+    }
+    return angle;
+}
+
+Vector3 lightmap_vertex_normal(const GFace& face, const GVertex& vertex)
+{
+    // Faces cancelling to below this fraction of their total weight (back to back in one group) leave a direction made
+    // of plane normal rounding; for two faces it is a fold within ~0.1 degree of flat.
+    constexpr double min_mean_length = 1.0e-3;
+    GFace* const* refs = vertex.face_refs.data_ptr;
+    const int num_refs = refs ? vertex.face_refs.size : 0;
+    double x = 0.0, y = 0.0, z = 0.0, weight = 0.0;
+    for (int i = 0; i < num_refs; i++) {
+        const GFace* other = refs[i];
+        if (!other || (other->smoothing_groups & face.smoothing_groups) == 0 ||
+            std::find(refs, refs + i, other) != refs + i) {
+            continue;
+        }
+        const double w = lightmap_face_corner_angle(*other, vertex);
+        x += w * other->plane.normal.x;
+        y += w * other->plane.normal.y;
+        z += w * other->plane.normal.z;
+        weight += w;
+    }
+    const double len = std::sqrt(x * x + y * y + z * z);
+    if (!(len > min_mean_length * weight && len < std::numeric_limits<double>::infinity())) {
+        return face.plane.normal;
+    }
+    return {static_cast<float>(x / len), static_cast<float>(y / len), static_cast<float>(z / len)};
+}
+
+Vector3 lightmap_smooth_shading_normal(const Vector3& n, const Vector3& plane)
+{
+    // Raising n's component along the plane to min_elevation * max(|n|, 1) keeps every result ~2.9 degrees above the
+    // face and is continuous in n (n = 0 gives the plane normal), so no step shows inside a face.
+    constexpr float min_elevation = 0.05f;
+    const float len = std::sqrt(dot(n, n));
+    const float lift = min_elevation * std::max(len, 1.0f) - dot(n, plane);
+    const Vector3 lifted = lift > 0.0f ? n + plane * lift : n;
+    const float lifted_len = lift > 0.0f ? std::sqrt(dot(lifted, lifted)) : len;
+    if (!(lifted_len > 0.0f && lifted_len < std::numeric_limits<float>::infinity())) {
+        return plane;
+    }
+    return lifted * (1.0f / lifted_len);
+}
+
+// A surface with no grouped face is smoothed only because Alpine forces it; bake fixes keep its smooth path stock.
+static bool lumel_pass_smoothed(const LumelPassFrame& f);
+
 // FUN_004ad160's smooth path call, which passes &surface->smooth.
 static void __cdecl light_accum_smooth_lumel(float* r, float* g, float* b, const Vector3* pos, const Vector3* normal,
                                              void* masks, int texel_index, const void* smooth);
 static CallHook<decltype(light_accum_smooth_lumel)> light_accum_smooth_lumel_hook{0x004adb30, light_accum_smooth_lumel};
 
+// Stock lights a smooth lumel with its interpolated normal as is, shorter than unit between diverging vertex
+// normals; with bake fixes a surface with a smoothing group is lit with the unit normal.
 static void __cdecl light_accum_smooth_lumel(float* r, float* g, float* b, const Vector3* pos, const Vector3* normal,
                                              void* masks, int texel_index, const void* smooth)
 {
     const auto* surface = reinterpret_cast<const GSurface*>(static_cast<const std::uint8_t*>(smooth)
                                                             - offsetof(GSurface, smooth));
+    const auto& locals = *reinterpret_cast<const SmoothLumelLocals*>(normal);
+    Vector3 texel;
     if (std::isnan(pos->x)) {
-        const auto& locals = *reinterpret_cast<const SmoothLumelLocals*>(normal);
-        Vector3 texel = locals.crossing_pos;
+        texel = locals.crossing_pos;
         SurfaceUVParams p;
         if (surface->width > 0 && init_surface_uv_params(reinterpret_cast<uintptr_t>(surface), p)) {
             texel_to_world(p, texel_index % surface->width, texel_index / surface->width, texel.x, texel.y, texel.z);
         }
-        light_accum_volume_weighted(r, g, b, &texel, &locals.crossing_normal, masks, texel_index, smooth, surface);
-        return;
+        pos = &texel;
+        normal = &locals.crossing_normal;
+    }
+    Vector3 unit;
+    if (bake_fixes_active() &&
+        lumel_pass_smoothed(*reinterpret_cast<const LumelPassFrame*>(
+            reinterpret_cast<uintptr_t>(&locals) - offsetof(LumelPassFrame, lumel)))) {
+        unit = lightmap_smooth_shading_normal(*normal, surface->plane.normal);
+        normal = &unit;
     }
     light_accum_volume_weighted(r, g, b, pos, normal, masks, texel_index, smooth, surface);
 }
@@ -2875,31 +2983,39 @@ CodeInjection lightmap_smooth_grey_033_injection{
     false, // no trampoline: the injection fully replaces the 12 byte block
 };
 
-// FUN_004aded0 builds each smoothing group vertex normal as the unweighted mean of the plane
-// normals of every face sharing that vertex, filtered by a hard dot > 0 test, so a face meeting
-// the current one near 90 degrees either lands in the average at full weight or drops out of it
-// entirely. Weighting each contribution by max(dot, 0) keeps the same cutoff but drives
-// near-perpendicular neighbours smoothly to zero. Replaces "PUSH EDI; LEA ECX,[ESP+0x24]"
-// (exactly 5 bytes) ahead of the call to Vector3::operator+=; EBX is the current face, EDI the
-// neighbour, and the accumulator lives at ESP+0x20.
+// FUN_004aded0 builds each vertex normal as the unweighted mean of the face's plane normal and those of
+// the other faces on the vertex with any smoothing group and dot > 0, so its smoothed faces neither share
+// one normal per group nor respect which groups they share. With bake fixes a grouped face's vertex normal
+// is lightmap_vertex_normal instead, stored where the stock normalise leaves it for the push_back at
+// 0x004adff2 (stack balanced at both ends, x87 stack empty, EDI the face's normals array).
+CodeInjection lightmap_vertex_normal_injection{
+    0x004adf62,
+    [](auto& regs) {
+        const auto& face = *reinterpret_cast<const GFace*>(static_cast<uintptr_t>(regs.ebx));
+        if (face.smoothing_groups == 0 || !bake_fixes_active()) {
+            return;
+        }
+        auto& frame = *reinterpret_cast<VertexNormalFrame*>(static_cast<uintptr_t>(regs.esp));
+        const auto& corner = *reinterpret_cast<const GFaceVertex*>(static_cast<uintptr_t>(regs.esi));
+        frame.normal = lightmap_vertex_normal(face, *corner.vertex);
+        regs.edi = frame.normals;
+        regs.eip = 0x004adff2;
+    },
+};
+
+// With bake fixes only faces with no group still get here, and their neighbours weigh 0: the plane normal,
+// through stock's divide by the count and normalise (which lightmap_vertex_normal would not round alike). Replaces
+// "PUSH EDI; LEA ECX,[ESP+0x24]" (exactly 5 bytes) ahead of the call to Vector3::operator+=; EDI is the
+// neighbour.
 CodeInjection lightmap_smoothing_normal_weight_injection{
     0x004adfb1,
     [](auto& regs) {
-        auto* accum = reinterpret_cast<float*>(static_cast<uintptr_t>(regs.esp) + 0x20);
-        const auto* other_normal = reinterpret_cast<const float*>(static_cast<uintptr_t>(regs.edi));
-        float weight = 1.0f;
-        if (bake_fixes_active()) {
-            const auto* face_normal =
-                reinterpret_cast<const float*>(static_cast<uintptr_t>(regs.ebx));
-            weight = face_normal[0] * other_normal[0] + face_normal[1] * other_normal[1] +
-                     face_normal[2] * other_normal[2];
-            if (weight < 0.0f) {
-                weight = 0.0f;
-            }
-        }
-        accum[0] += other_normal[0] * weight;
-        accum[1] += other_normal[1] * weight;
-        accum[2] += other_normal[2] * weight;
+        auto& accum = reinterpret_cast<VertexNormalFrame*>(static_cast<uintptr_t>(regs.esp))->normal;
+        const auto& other = *reinterpret_cast<const GFace*>(static_cast<uintptr_t>(regs.edi));
+        const float weight = bake_fixes_active() ? 0.0f : 1.0f;
+        accum.x += other.plane.normal.x * weight;
+        accum.y += other.plane.normal.y * weight;
+        accum.z += other.plane.normal.z * weight;
         regs.eip = 0x004adfbb;
     },
     false, // no trampoline: the injection fully replaces the 5 byte block
@@ -2918,20 +3034,87 @@ struct SurfaceFaceMap {
     std::vector<int> nearest;
 };
 
+namespace
+{
+
+// A face's lightmap UVs in its surface's fragment texel space.
+struct LightmapFacePolygon
+{
+    static constexpr int max_verts = 128;
+    int n = 0;
+    float x[max_verts];
+    float y[max_verts];
+};
+
+void lightmap_face_polygon(const GFace& face, float lm_w, float lm_h, float xstart, float ystart,
+                           LightmapFacePolygon& poly)
+{
+    poly.n = 0;
+    const GFaceVertex* head = face.edge_loop;
+    for (const GFaceVertex* node = head; node && poly.n < LightmapFacePolygon::max_verts;) {
+        poly.x[poly.n] = lm_w * node->lm_u - xstart;
+        poly.y[poly.n] = lm_h * node->lm_v - ystart;
+        poly.n++;
+        node = node->next;
+        if (node == head) {
+            break;
+        }
+    }
+}
+
+float lightmap_texel_centre(int i)
+{
+    return static_cast<float>(i) + 0.5f;
+}
+
+// fn(x) for every edge of the polygon the even-odd test counts on the row through `ty`, in edge order, x being where
+// the edge crosses the row.
+template<typename F>
+void lightmap_polygon_row_crossings(const float* x, const float* y, int n, float ty, F&& fn)
+{
+    for (int i = 0; i < n; i++) {
+        const int j = (i + 1) % n;
+        if ((y[i] > ty) == (y[j] > ty)) {
+            continue;
+        }
+        fn(x[i] + (ty - y[i]) * (x[j] - x[i]) / (y[j] - y[i]));
+    }
+}
+
+// Even-odd crossings, not one half plane per edge: a face left non-convex by CSG has a reflex wedge the half
+// plane test drops out of the fragment entirely.
+bool lightmap_face_contains_texel(const LightmapFacePolygon& poly, int col, int row)
+{
+    if (poly.n < 3) {
+        return false;
+    }
+    const float tx = lightmap_texel_centre(col);
+    bool inside = false;
+    lightmap_polygon_row_crossings(poly.x, poly.y, poly.n, lightmap_texel_centre(row), [&](float x_at) {
+        if (tx < x_at) {
+            inside = !inside;
+        }
+    });
+    return inside;
+}
+
+} // namespace
+
 static bool lightmap_build_face_map(uintptr_t solid, uintptr_t surface, SurfaceFaceMap& m)
 {
-    const int w = *reinterpret_cast<int*>(surface + 0x18);
-    const int h = *reinterpret_cast<int*>(surface + 0x1c);
-    const uintptr_t lm = *reinterpret_cast<uintptr_t*>(surface + 0xc);
+    const auto& s = *reinterpret_cast<const GSurface*>(surface);
+    const int w = s.width;
+    const int h = s.height;
+    const GLightmap* lm = s.lightmap;
     if (!solid || !lm || w <= 0 || h <= 0 || w > lm_highres_page_size ||
         h > lm_highres_page_size) {
         return false;
     }
-    const float lm_w = static_cast<float>(*reinterpret_cast<int*>(lm + 4));
-    const float lm_h = static_cast<float>(*reinterpret_cast<int*>(lm + 8));
-    const float xstart = static_cast<float>(*reinterpret_cast<int*>(surface + 0x10));
-    const float ystart = static_cast<float>(*reinterpret_cast<int*>(surface + 0x14));
-    const int surf_id = *reinterpret_cast<int*>(surface);
+    const float lm_w = static_cast<float>(lm->w);
+    const float lm_h = static_cast<float>(lm->h);
+    const float xstart = static_cast<float>(s.xstart);
+    const float ystart = static_cast<float>(s.ystart);
+    const int surf_id = s.index;
 
     m.w = w;
     m.h = h;
@@ -2946,56 +3129,29 @@ static bool lightmap_build_face_map(uintptr_t solid, uintptr_t surface, SurfaceF
         return false;
     }
 
-    constexpr int max_face_verts = 128;
-    float px[max_face_verts], py[max_face_verts];
+    LightmapFacePolygon poly;
     for (uintptr_t face : faces->second) {
-        int n = 0;
-        const uintptr_t head = *reinterpret_cast<uintptr_t*>(face + 0x40);
-        for (uintptr_t node = head; node && n < max_face_verts;) {
-            px[n] = lm_w * *reinterpret_cast<const float*>(node + 0x0c) - xstart;
-            py[n] = lm_h * *reinterpret_cast<const float*>(node + 0x10) - ystart;
-            n++;
-            node = *reinterpret_cast<uintptr_t*>(node + 0x14);
-            if (node == head) {
-                break;
-            }
-        }
+        lightmap_face_polygon(*reinterpret_cast<const GFace*>(face), lm_w, lm_h, xstart, ystart, poly);
+        const int n = poly.n;
         if (n < 3) {
             continue;
         }
-        float x_lo = px[0], x_hi = px[0], y_lo = py[0], y_hi = py[0];
+        float x_lo = poly.x[0], x_hi = poly.x[0], y_lo = poly.y[0], y_hi = poly.y[0];
         for (int i = 0; i < n; i++) {
-            x_lo = std::min(x_lo, px[i]);
-            x_hi = std::max(x_hi, px[i]);
-            y_lo = std::min(y_lo, py[i]);
-            y_hi = std::max(y_hi, py[i]);
+            x_lo = std::min(x_lo, poly.x[i]);
+            x_hi = std::max(x_hi, poly.x[i]);
+            y_lo = std::min(y_lo, poly.y[i]);
+            y_hi = std::max(y_hi, poly.y[i]);
         }
         const int c0 = std::max(0, static_cast<int>(std::floor(x_lo - 0.5f)));
         const int c1 = std::min(w - 1, static_cast<int>(std::ceil(x_hi)));
         const int r0 = std::max(0, static_cast<int>(std::floor(y_lo - 0.5f)));
         const int r1 = std::min(h - 1, static_cast<int>(std::ceil(y_hi)));
         for (int row = r0; row <= r1; row++) {
-            const float ty = static_cast<float>(row) + 0.5f;
             for (int col = c0; col <= c1; col++) {
-                if (m.inface[static_cast<std::size_t>(row) * w + col]) {
-                    continue;
-                }
-                const float tx = static_cast<float>(col) + 0.5f;
-                // even-odd crossings, not one half plane per edge: a face left non-convex by CSG
-                // has a reflex wedge the half plane test drops out of the fragment entirely
-                bool inside = false;
-                for (int i = 0; i < n; i++) {
-                    const int j = (i + 1) % n;
-                    if ((py[i] > ty) == (py[j] > ty)) {
-                        continue;
-                    }
-                    const float x_at = px[i] + (ty - py[i]) * (px[j] - px[i]) / (py[j] - py[i]);
-                    if (tx < x_at) {
-                        inside = !inside;
-                    }
-                }
-                if (inside) {
-                    m.inface[static_cast<std::size_t>(row) * w + col] = 1;
+                std::uint8_t& inface = m.inface[static_cast<std::size_t>(row) * w + col];
+                if (!inface && lightmap_face_contains_texel(poly, col, row)) {
+                    inface = 1;
                 }
             }
         }
@@ -3090,6 +3246,385 @@ CodeInjection lightmap_border_duplicate_skip_injection{
         }
     },
     false, // no trampoline: the injection fully replaces the 5 byte block
+};
+
+namespace
+{
+
+constexpr float lumel_crossing_tol = 1.0e-4f; // 0x004ad4f7, the pick's first pass
+
+// u where the row v crosses the edge a -> b, as 0x004ad7c9-0x004ad80a computes it
+double lumel_crossing_u(const GFaceVertex& a, const GFaceVertex& b, float v)
+{
+    const float t = static_cast<float>((static_cast<double>(v) - a.lm_v) / (static_cast<double>(b.lm_v) - a.lm_v));
+    return (static_cast<double>(b.lm_u) - a.lm_u) * t + a.lm_u;
+}
+
+// The pick's edge test (0x004ad5a9-0x004ad604) at tolerance tol, or an edge the row strictly crosses. The pick's
+// 0.001 floor on |dv| bounds how far tol extrapolates (0.1 of the edge) but also drops real crossings of edges up to
+// 0.001 * lm_h rows tall (several at chart resolution); a crossed edge keeps t in [0,1] at any nonzero dv.
+bool lumel_edge_crosses_row(const GFaceVertex& a, const GFaceVertex& b, float v, double tol)
+{
+    const double va = a.lm_v;
+    const double vb = b.lm_v;
+    if (std::abs(vb - va) > 0.001 && ((va - tol <= v && vb + tol >= v) || (va + tol >= v && vb - tol <= v))) {
+        return true;
+    }
+    return std::min(va, vb) <= v && v < std::max(va, vb);
+}
+
+// What the containment re-pick needs of one FUN_004ad160 call: its face list, vertex normals and fragment view are
+// fixed for the call (0x004ad299-0x004ad2a7 build them before the row loop, which never writes them) and v changes
+// only with the row, so the polygons, the normals' owners, each row's even-odd crossings and each face's crossing
+// edges are computed once. They come from the same helpers on the same inputs as a per lumel evaluation, so every
+// answer is bit-identical to one; each entry point re-checks its inputs and rebuilds on any change.
+class LumelContainCache
+{
+public:
+    struct Hit
+    {
+        int k;
+        int k1;
+        GFaceVertex* a;
+        GFaceVertex* b;
+        double u;
+    };
+
+    // lumel_pass_smoothed
+    bool smoothed(const LumelPassFrame& f)
+    {
+        GFace* const* faces = f.faces.data_ptr;
+        if (!smoothed_ready_ || faces != smoothed_faces_ || f.faces.size != smoothed_count_) {
+            smoothed_faces_ = faces;
+            smoothed_count_ = f.faces.size;
+            smoothed_ = f.faces.size > 0 && faces &&
+                std::any_of(faces, faces + f.faces.size, [](const GFace* face) { return face->smoothing_groups != 0; });
+            smoothed_ready_ = true;
+        }
+        return smoothed_;
+    }
+
+    // Needs f.normals, f.surface and its lightmap.
+    void prepare(const LumelPassFrame& f)
+    {
+        const GSurface& surface = *f.surface;
+        const View view{f.faces.data_ptr,
+                        f.faces.size,
+                        f.normals,
+                        static_cast<float>(surface.lightmap->w),
+                        static_cast<float>(surface.lightmap->h),
+                        static_cast<float>(surface.xstart),
+                        static_cast<float>(surface.ystart)};
+        if (!view_ready_ || !(view == view_)) {
+            build_view(view);
+        }
+        const auto v_bits = std::bit_cast<std::uint32_t>(f.v);
+        if (!row_ready_ || f.row != row_ || v_bits != v_bits_) {
+            build_row(f.row, v_bits);
+        }
+    }
+
+    // The face whose normals hold `n` (FUN_004952d0 pointers are per face), -1 for none.
+    int owner(const Vector3* n) const
+    {
+        const auto p = reinterpret_cast<uintptr_t>(n);
+        if (!owners_disjoint_) {
+            for (int i = 0; i < view_.count; i++) {
+                const auto [begin, end] = normals_range(i);
+                if (p >= begin && p < end) {
+                    return i;
+                }
+            }
+            return -1;
+        }
+        auto it = std::upper_bound(owners_.begin(), owners_.end(), p,
+                                   [](uintptr_t q, const OwnerRange& r) { return q < r.begin; });
+        if (it == owners_.begin()) {
+            return -1;
+        }
+        --it;
+        return p < it->end ? it->face : -1;
+    }
+
+    // lightmap_face_contains_texel(face's polygon, col, the prepared row)
+    bool contains(int face, int col) const
+    {
+        const int c = slot_[face];
+        return c >= 0 && inside(candidates_[c], col);
+    }
+
+    // The first face in list order containing the lumel, -1 for none.
+    int first_containing(int col) const
+    {
+        for (const Candidate& c : candidates_) {
+            if (inside(c, col)) {
+                return c.face;
+            }
+        }
+        return -1;
+    }
+
+    // The edges of a face containing the lumel that cross the prepared row, in loop order (lumel_edge_crosses_row at
+    // the first pass tol); false when the loop is longer than a polygon holds or does not match its normals.
+    bool hits(int face, float v, const Hit*& out, int& num_hits)
+    {
+        Candidate& c = candidates_[slot_[face]];
+        if (c.hits_state == HitsState::unknown) {
+            c.hits_first = row_hits_.size();
+            c.hits_state = walk_hits(face, v) ? HitsState::ok : HitsState::bail;
+            c.hits_last = row_hits_.size();
+        }
+        out = row_hits_.data() + c.hits_first;
+        num_hits = static_cast<int>(c.hits_last - c.hits_first);
+        return c.hits_state == HitsState::ok;
+    }
+
+private:
+    struct View
+    {
+        GFace* const* faces;
+        int count;
+        VArray<Vector3>* normals;
+        float lm_w;
+        float lm_h;
+        float xstart;
+        float ystart;
+
+        bool operator==(const View&) const = default;
+    };
+    struct OwnerRange
+    {
+        uintptr_t begin;
+        uintptr_t end;
+        int face;
+    };
+    enum class HitsState { unknown, ok, bail };
+    struct Candidate
+    {
+        int face;
+        std::size_t crossings_first;
+        std::size_t crossings_last;
+        HitsState hits_state;
+        std::size_t hits_first;
+        std::size_t hits_last;
+    };
+
+    std::pair<uintptr_t, uintptr_t> normals_range(int face) const
+    {
+        const VArray<Vector3>& normals = view_.normals[face];
+        const auto data = reinterpret_cast<uintptr_t>(normals.data_ptr);
+        return {data, data + static_cast<uintptr_t>(normals.size) * sizeof(Vector3)};
+    }
+
+    bool inside(const Candidate& c, int col) const
+    {
+        const float tx = lightmap_texel_centre(col);
+        bool in = false;
+        for (std::size_t i = c.crossings_first; i < c.crossings_last; i++) {
+            if (tx < crossings_[i]) {
+                in = !in;
+            }
+        }
+        return in;
+    }
+
+    void build_view(const View& view)
+    {
+        view_ready_ = false;
+        row_ready_ = false;
+        view_ = view;
+        poly_x_.clear();
+        poly_y_.clear();
+        polys_.assign(view.count, {});
+        slot_.assign(view.count, -1);
+        LightmapFacePolygon poly;
+        for (int i = 0; i < view.count; i++) {
+            lightmap_face_polygon(*view.faces[i], view.lm_w, view.lm_h, view.xstart, view.ystart, poly);
+            polys_[i] = {poly_x_.size(), poly.n};
+            poly_x_.insert(poly_x_.end(), poly.x, poly.x + poly.n);
+            poly_y_.insert(poly_y_.end(), poly.y, poly.y + poly.n);
+        }
+        // separate allocations never overlap, which makes the owner unique; otherwise the scan decides
+        owners_.clear();
+        for (int i = 0; i < view.count; i++) {
+            const auto [begin, end] = normals_range(i);
+            if (end > begin) {
+                owners_.push_back({begin, end, i});
+            }
+        }
+        std::sort(owners_.begin(), owners_.end(),
+                  [](const OwnerRange& a, const OwnerRange& b) { return a.begin < b.begin; });
+        const auto overlap = [](const OwnerRange& a, const OwnerRange& b) { return a.end > b.begin; };
+        owners_disjoint_ = std::adjacent_find(owners_.begin(), owners_.end(), overlap) == owners_.end();
+        view_ready_ = true;
+    }
+
+    // The faces with an edge the even-odd test counts on the row are the only ones that can contain its lumels.
+    void build_row(int row, std::uint32_t v_bits)
+    {
+        row_ready_ = false;
+        row_ = row;
+        v_bits_ = v_bits;
+        candidates_.clear();
+        crossings_.clear();
+        row_hits_.clear();
+        std::fill(slot_.begin(), slot_.end(), -1);
+        const float ty = lightmap_texel_centre(row);
+        for (int i = 0; i < view_.count; i++) {
+            const auto [first, n] = polys_[i];
+            if (n < 3) {
+                continue;
+            }
+            const std::size_t crossings_first = crossings_.size();
+            lightmap_polygon_row_crossings(&poly_x_[first], &poly_y_[first], n, ty,
+                                           [&](float x_at) { crossings_.push_back(x_at); });
+            if (crossings_.size() != crossings_first) {
+                slot_[i] = static_cast<int>(candidates_.size());
+                candidates_.push_back({i, crossings_first, crossings_.size(), HitsState::unknown, 0, 0});
+            }
+        }
+        row_ready_ = true;
+    }
+
+    bool walk_hits(int face, float v)
+    {
+        int k = 0;
+        GFaceVertex* head = view_.faces[face]->edge_loop;
+        for (GFaceVertex* a = head; a; k++) {
+            if (k >= LightmapFacePolygon::max_verts) {
+                return false;
+            }
+            GFaceVertex* next = a->next && a->next != head ? a->next : nullptr;
+            GFaceVertex* b = next ? next : head;
+            if (lumel_edge_crosses_row(*a, *b, v, lumel_crossing_tol)) {
+                row_hits_.push_back({k, next ? k + 1 : 0, a, b, lumel_crossing_u(*a, *b, v)});
+            }
+            a = next;
+        }
+        return k == view_.normals[face].size;
+    }
+
+    bool smoothed_ready_ = false;
+    bool smoothed_ = false;
+    GFace* const* smoothed_faces_ = nullptr;
+    int smoothed_count_ = 0;
+
+    bool view_ready_ = false;
+    View view_{};
+    std::vector<float> poly_x_;
+    std::vector<float> poly_y_;
+    std::vector<std::pair<std::size_t, int>> polys_; // first vertex in poly_x_/poly_y_, count
+    std::vector<OwnerRange> owners_;
+    bool owners_disjoint_ = false;
+
+    bool row_ready_ = false;
+    int row_ = 0;
+    std::uint32_t v_bits_ = 0;
+    std::vector<int> slot_; // per face, its candidate or -1
+    std::vector<Candidate> candidates_;
+    std::vector<float> crossings_;
+    std::vector<Hit> row_hits_;
+};
+
+// Scoped by lightmap_lumel_pass_new to one FUN_004ad160 call.
+LumelContainCache* g_lumel_contain = nullptr;
+
+} // namespace
+
+static bool lumel_pass_smoothed(const LumelPassFrame& f)
+{
+    // lightmap_lumel_pass_new wraps every FUN_004ad160 call, the only caller
+    return g_lumel_contain && g_lumel_contain->smoothed(f);
+}
+
+// FUN_004ad160's smooth path lerps a lumel along its row between the first two edge crossings in face-list
+// order, whichever faces they belong to, and never clamps t. Where CSG split a smoothed face those can be another
+// piece's edges far from the lumel, and the extrapolated vertex normal shows as streaks and bands. A lumel inside a
+// face gets that face's bracketing crossings unless the stock pair already is two of them; out-of-face lumels and
+// surfaces with no smoothing group keep stock.
+static void lightmap_smooth_lumel_contain(LumelPassFrame& f, LumelContainCache& cache)
+{
+    const GSurface* surface = f.surface;
+    if (!cache.smoothed(f) || !f.normals || !surface || !surface->lightmap) {
+        return;
+    }
+    cache.prepare(f);
+
+    // The slack covers the x87 rounding of the stock pick and lerp, so a pair it found on its first pass and that
+    // brackets the lumel is never re-picked. A pair from a widened pass extrapolates along an edge and is.
+    constexpr double bracket_slack = 1.0e-6;
+    const LumelCrossing& stock_a = f.crossings[0];
+    const LumelCrossing& stock_b = f.crossings[1];
+    const int stock_face = cache.owner(stock_a.n_a);
+    if (stock_face >= 0 && stock_face == cache.owner(stock_b.n_a) &&
+        lumel_edge_crosses_row(*stock_a.a, *stock_a.b, f.v, lumel_crossing_tol + bracket_slack) &&
+        lumel_edge_crosses_row(*stock_b.a, *stock_b.b, f.v, lumel_crossing_tol + bracket_slack)) {
+        const double ua = lumel_crossing_u(*stock_a.a, *stock_a.b, f.v);
+        const double ub = lumel_crossing_u(*stock_b.a, *stock_b.b, f.v);
+        if (ua != ub && f.u >= std::min(ua, ub) - bracket_slack && f.u <= std::max(ua, ub) + bracket_slack &&
+            cache.contains(stock_face, f.col)) {
+            return;
+        }
+    }
+
+    const int face = cache.first_containing(f.col);
+    if (face < 0) {
+        return;
+    }
+    using Hit = LumelContainCache::Hit;
+    const Hit* hits = nullptr;
+    int num_hits = 0;
+    if (!cache.hits(face, f.v, hits, num_hits)) {
+        return;
+    }
+
+    // the nearest crossing on each side, preferring two at different u
+    const auto nearest = [&](const Hit* skip, auto&& accept) {
+        const Hit* best = nullptr;
+        for (int i = 0; i < num_hits; i++) {
+            const Hit& h = hits[i];
+            if (&h != skip && (!skip || h.u != skip->u) && accept(h) &&
+                (!best || std::abs(h.u - f.u) < std::abs(best->u - f.u))) {
+                best = &h;
+            }
+        }
+        return best;
+    };
+    const auto any = [](const Hit&) { return true; };
+    const Hit* lo = nearest(nullptr, [&](const Hit& h) { return h.u <= f.u; });
+    const Hit* hi = nearest(lo, [&](const Hit& h) { return h.u >= f.u; });
+    if (!lo || !hi) {
+        lo = nearest(nullptr, any);
+        hi = nearest(lo, any);
+    }
+    if (!lo || !hi) {
+        return;
+    }
+    if (lo->k > hi->k) {
+        std::swap(lo, hi);
+    }
+    const VArray<Vector3>& normals = f.normals[face];
+    f.crossings[0] = {lo->a, normals.data_ptr + lo->k, lo->b, normals.data_ptr + lo->k1};
+    f.crossings[1] = {hi->a, normals.data_ptr + hi->k, hi->b, normals.data_ptr + hi->k1};
+}
+
+// Replaces "MOV ESI,[ESP+0xa8]" (7 bytes), the first read of the crossings by the lerp, which reaches it only
+// by falling through 0x004ad7a7 with two crossings and no vertex snap.
+CodeInjection lightmap_smooth_lumel_contain_injection{
+    0x004ad7ad,
+    [](auto& regs) {
+        if (!bake_fixes_active() || !g_lumel_contain) {
+            return;
+        }
+        try {
+            lightmap_smooth_lumel_contain(*reinterpret_cast<LumelPassFrame*>(static_cast<uintptr_t>(regs.esp)),
+                                          *g_lumel_contain);
+        }
+        catch (...) {
+            // the lumel would keep a pair the fix replaces: the bake is cancelled rather than kept
+            memory_guard_trip();
+        }
+    },
 };
 
 // The occluder filter inside FUN_004ae360 drops every face whose texture (face+0x30 bitmap handle)
@@ -4386,7 +4921,12 @@ static FunHook<void __cdecl(void*, void*, int, void*)> lightmap_lumel_pass_hook{
 static void __cdecl lightmap_lumel_pass_new(void* solid, void* surface, int flag, void* masks)
 {
     LumelEdgeGrid grid;
-    ScopeGuard restore{[outer = std::exchange(g_lumel_grid, &grid)] { g_lumel_grid = outer; }};
+    LumelContainCache contain;
+    ScopeGuard restore{[outer_grid = std::exchange(g_lumel_grid, &grid),
+                        outer_contain = std::exchange(g_lumel_contain, &contain)] {
+        g_lumel_grid = outer_grid;
+        g_lumel_contain = outer_contain;
+    }};
     lightmap_lumel_pass_hook.call_target(solid, surface, flag, masks);
 }
 
@@ -4490,8 +5030,10 @@ void ApplyLightmapPatches()
     lightmap_texel_convert_injection.install();
     lightmap_smooth_grey_01_injection.install();
     lightmap_smooth_grey_033_injection.install();
+    lightmap_vertex_normal_injection.install();
     lightmap_smoothing_normal_weight_injection.install();
     lightmap_border_duplicate_skip_injection.install();
+    lightmap_smooth_lumel_contain_injection.install();
     lightmap_alpha_texture_occluder_injection.install();
 
     // Stock shadow projector fix, Legacy lighting included

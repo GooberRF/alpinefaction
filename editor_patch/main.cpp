@@ -8,16 +8,20 @@
 #include <shellapi.h>
 #include <vector>
 #include <memory>
+#include <optional>
 #include <iomanip>
 #include <sstream>
 #include <string>
 #include <algorithm>
 #include <set>
+#include <unordered_map>
+#include <unordered_set>
 #include <cmath>
 #include <utility>
 #include <common/version/version.h>
 #include <common/config/BuildConfig.h>
 #include <common/utils/os-utils.h>
+#include <common/scope_guard.h>
 #include <common/bitmap/tga.h>
 #include <xlog/xlog.h>
 #include <xlog/ConsoleAppender.h>
@@ -29,9 +33,11 @@
 #include <patch_common/AsmWriter.h>
 #include <patch_common/CodeInjection.h>
 #include <crash_handler_stub.h>
-#include "../game_patch/rf/os/array.h"
 #include "alpine_color_picker.h"
+#include "command_line.h"
 #include "exports.h"
+#include "editor_settings.h"
+#include "graphics/editor_gr.h"
 #include "file_dialogs.h"
 #include "resources.h"
 #include "mfc_types.h"
@@ -49,6 +55,7 @@
 #include "face_list_cache.h"
 #include "memory_guard.h"
 #include "bake_progress.h"
+#include "build_repair.h"
 #include "alpine_lightmaps.h"
 #include "terrain_build.h"
 #include "terrain_paint.h"
@@ -58,6 +65,7 @@
 #include "brush_preview.h"
 #include "mesh_browser.h"
 #include "placement_panel.h"
+#include "selection.h"
 #include "viewport_input.h"
 
 #define LAUNCHER_FILENAME "AlpineFactionLauncher.exe"
@@ -134,19 +142,8 @@ CodeInjection CEditorApp_InitInstance_additional_file_paths_injection{
 CodeInjection CEditorApp_InitInstance_open_level_injection{
     0x00482BF1,
     []() {
-        static auto& argv = addr_as_ref<char**>(0x01DBF8E4);
-        static auto& argc = addr_as_ref<int>(0x01DBF8E0);
-        const char* level_param = nullptr;
-        for (int i = 1; i < argc; ++i) {
-            xlog::trace("argv[{}] = {}", i, argv[i]);
-            std::string_view arg = argv[i];
-            if (arg == "-level") {
-                ++i;
-                if (i < argc) {
-                    level_param = argv[i];
-                }
-            }
-        }
+        const std::optional<std::string> level_arg = editor_command_line_path(L"-level");
+        const char* level_param = level_arg ? level_arg->c_str() : nullptr;
         if (!level_param && headless_bake_active()) {
             level_param = headless_bake_input_path();
         }
@@ -155,6 +152,16 @@ CodeInjection CEditorApp_InitInstance_open_level_injection{
         }
     },
 };
+
+// The brush panel refreshes on every selection change, so its per-brush uid list lookups are hashed
+static std::unordered_map<int32_t, size_t> first_index_by_uid(const std::vector<int32_t>& uids)
+{
+    std::unordered_map<int32_t, size_t> index;
+    for (size_t i = 0; i < uids.size(); ++i) {
+        index.emplace(uids[i], i);
+    }
+    return index;
+}
 
 // ===== Brush "Is Geoable" support =====
 
@@ -166,14 +173,13 @@ static int compute_geoable_state_from_selected()
 
     BrushNode* node = level->brush_list;
     if (!node) return BST_UNCHECKED;
+    const std::unordered_set<int32_t> geoable(props.geoable_brush_uids.begin(), props.geoable_brush_uids.end());
     int num_selected = 0;
     int num_geoable = 0;
     do {
         if (node->state == BRUSH_STATE_SELECTED) {
             num_selected++;
-            if (std::find(props.geoable_brush_uids.begin(),
-                          props.geoable_brush_uids.end(), node->uid)
-                != props.geoable_brush_uids.end()) {
+            if (geoable.count(node->uid) != 0) {
                 num_geoable++;
             }
         }
@@ -243,12 +249,12 @@ static int compute_no_shadow_cast_state_from_selected()
     int num_eligible = 0;
     int num_flagged = 0;
     const std::unordered_set<int32_t> mover_brush_uids = collect_moving_group_brush_uids();
+    const std::unordered_set<int32_t> flagged(props.no_shadow_cast_brush_uids.begin(),
+                                              props.no_shadow_cast_brush_uids.end());
     do {
         if (node->state == BRUSH_STATE_SELECTED && no_shadow_cast_eligible(*node, mover_brush_uids)) {
             num_eligible++;
-            if (std::find(props.no_shadow_cast_brush_uids.begin(),
-                          props.no_shadow_cast_brush_uids.end(), node->uid)
-                != props.no_shadow_cast_brush_uids.end()) {
+            if (flagged.count(node->uid) != 0) {
                 num_flagged++;
             }
         }
@@ -324,15 +330,14 @@ static int compute_material_from_selected()
 
     BrushNode* node = level->brush_list;
     if (!node) return 0;
+    const auto breakable_index = first_index_by_uid(props.breakable_brush_uids);
     int result = -2; // not set yet
     do {
         if (node->state == BRUSH_STATE_SELECTED && node->is_detail && node->life != -1) {
             uint8_t mat = 0; // default = Glass
-            auto it = std::find(props.breakable_brush_uids.begin(),
-                                props.breakable_brush_uids.end(), node->uid);
-            if (it != props.breakable_brush_uids.end()) {
-                auto idx = std::distance(props.breakable_brush_uids.begin(), it);
-                mat = props.breakable_materials[idx] & 0x7F; // mask out flags (bit 7 = no_debris)
+            auto it = breakable_index.find(node->uid);
+            if (it != breakable_index.end()) {
+                mat = props.breakable_materials[it->second] & 0x7F; // mask out flags (bit 7 = no_debris)
             }
             if (result == -2) {
                 result = mat;
@@ -429,14 +434,14 @@ static int compute_no_debris_state_from_selected()
 
     BrushNode* node = level->brush_list;
     if (!node) return BST_UNCHECKED;
+    const auto breakable_index = first_index_by_uid(props.breakable_brush_uids);
     int num_checked = 0;
     int num_applicable = 0;
     do {
         if (node->state == BRUSH_STATE_SELECTED && node->is_detail && node->life != -1) {
-            auto it = std::find(props.breakable_brush_uids.begin(),
-                                props.breakable_brush_uids.end(), node->uid);
-            if (it != props.breakable_brush_uids.end()) {
-                auto idx = std::distance(props.breakable_brush_uids.begin(), it);
+            auto it = breakable_index.find(node->uid);
+            if (it != breakable_index.end()) {
+                const size_t idx = it->second;
                 uint8_t mat = props.breakable_materials[idx] & 0x7F;
                 if (mat > 0) { // non-glass only
                     num_applicable++;
@@ -826,6 +831,18 @@ void __fastcall brush_mode_handle_selection_new(void* self)
     }
 }
 FunHook<brush_mode_handle_selection_type> brush_mode_handle_selection_hook{0x0043F430, brush_mode_handle_selection_new};
+
+// Texture mode's Select Faces button: one log line per brush it adds faces on
+using select_faces_by_texture_type = void __fastcall(void* self);
+extern FunHook<select_faces_by_texture_type> select_faces_by_texture_hook;
+void __fastcall select_faces_by_texture_new(void* self)
+{
+    g_skip_wnd_set_text = true;
+    select_faces_by_texture_hook.call_target(self);
+    g_skip_wnd_set_text = false;
+    LogDlg_Append(GetLogDlg(), "");
+}
+FunHook<select_faces_by_texture_type> select_faces_by_texture_hook{0x0042D970, select_faces_by_texture_new};
 
 void __fastcall DedLight_UpdateLevelLight_new(void *this_);
 FunHook DedLight_UpdateLevelLight_hook{
@@ -1434,11 +1451,55 @@ static bool is_edit_key_held()
 
 // RED passes is_autosave only as a LoadSaveLevel argument, whose stack slot the save routine
 // (0x00430bf0) reuses for section offsets, so the hook keeps it for the nested chunk writers.
-static bool g_autosaving = false;
+static LevelFileOp g_level_file_op = LevelFileOp::none;
+
+LevelFileOp level_file_op()
+{
+    return g_level_file_op;
+}
 
 bool level_autosave_in_progress()
 {
-    return g_autosaving;
+    return g_level_file_op == LevelFileOp::autosave;
+}
+
+std::optional<std::string> level_autosave_now()
+{
+    auto* frame = static_cast<CMainFrame*>(GetMainFrame());
+    CDedDoc* doc = frame ? frame->doc : nullptr;
+    const CDedLevel* level = CDedLevel::Get();
+    // RED's idle tick never autosaves during a build either (0x00483023), nor inside Calculate Lighting's loop or a
+    // level load or save, which leave the level part-way read or written
+    if (!doc || !level || level->build_running || bake_progress_active() || g_level_file_op != LevelFileOp::none) {
+        return std::nullopt;
+    }
+    const char* open_path = doc->_d.m_strPathName.m_pchData;
+    // Absolute, as RED's file open resolves a relative name to a directory by its extension (0x004cf9a0)
+    char full_path[MAX_PATH];
+    const DWORD len = GetFullPathNameA(open_path && open_path[0] ? open_path : "Untitled.rfl", MAX_PATH, full_path,
+                                       nullptr);
+    // RED copies the name into File::filename unbounded (0x004cf9a0)
+    constexpr std::string_view temp_suffix = "~.tmp";
+    constexpr DWORD red_file_name_max_len = sizeof(rf::File::filename) - 1;
+    if (len == 0 || len + temp_suffix.size() > red_file_name_max_len) {
+        return std::nullopt;
+    }
+    // RED's autosave name (0x004830F4): the path with "~" before its four-character extension. It is saved beside it
+    // first, so a save that fails part-way leaves the last autosave whole.
+    std::string path = full_path;
+    const size_t ext_pos = path.size() >= 4 ? path.size() - 4 : path.size();
+    std::string temp_path = path;
+    path.insert(ext_pos, "~");
+    temp_path.insert(ext_pos, temp_suffix);
+    if (!doc->LoadSaveLevel(temp_path.c_str(), 0, 1)) {
+        DeleteFileA(temp_path.c_str());
+        return std::nullopt;
+    }
+    // A complete save is kept under the temporary name; the previous autosave stays
+    if (!MoveFileExA(temp_path.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        return temp_path;
+    }
+    return path;
 }
 
 // Stock RED kept the fog near clip, but nothing drew it before RFL 306; the level saves as 306, where it applies.
@@ -1465,9 +1526,12 @@ char __fastcall CDedDoc_LoadSaveLevel_new(void* self, int edx, const char* path,
     if (is_load) {
         gizmo_cancel_drag();
     }
-    const bool was_autosaving = std::exchange(g_autosaving, !is_load && is_autosave);
-    char result = CDedDoc_LoadSaveLevel_hook.call_target(self, edx, path, is_load, is_autosave);
-    g_autosaving = was_autosaving;
+    const LevelFileOp op = is_load ? LevelFileOp::load : is_autosave ? LevelFileOp::autosave : LevelFileOp::save;
+    char result;
+    {
+        const ScopeGuard restore_op{[outer_op = std::exchange(g_level_file_op, op)] { g_level_file_op = outer_op; }};
+        result = CDedDoc_LoadSaveLevel_hook.call_target(self, edx, path, is_load, is_autosave);
+    }
     if (is_load && result) {
         gizmo_level_loaded();
         reset_legacy_fog_near_clip();
@@ -1756,6 +1820,35 @@ CodeInjection face_panel_subclass_injection{
     true, // needs_trampoline
 };
 
+// The View menu's Direct3D 11 renderer options, each a setting the renderer reads on the next repaint
+static bool* d3d11_view_option(UINT id)
+{
+    switch (id) {
+        case ID_VIEW_PREVIEW_LEVEL_FOG:
+            return &g_editor_settings.preview_level_fog;
+        case ID_VIEW_SHOW_INVISIBLE_FACES:
+            return &g_editor_settings.show_invisible_faces;
+        case ID_VIEW_SHOW_BACK_FACES:
+            return &g_editor_settings.show_back_faces;
+        case ID_VIEW_FULLBRIGHT_MESHES:
+            return &g_editor_settings.fullbright_meshes;
+        case ID_VIEW_WIREFRAME_OVERLAY:
+            return &g_editor_settings.wireframe_overlay;
+        case ID_VIEW_SHOW_DECALS:
+            return &g_editor_settings.show_decals;
+        default:
+            return nullptr;
+    }
+}
+
+// The stock View menu display modes, Show Just Textures to Show Everything See-through (message map 0x005561B0..
+// 0x00556390, handlers 0x00449FE0..0x0044A120), whose radio group Show Wireframe joins
+static bool is_stock_display_mode_command(UINT id)
+{
+    constexpr UINT first_display_mode_id = 32861;
+    constexpr UINT last_display_mode_id = 32866;
+    return id >= first_display_mode_id && id <= last_display_mode_id;
+}
 
 BOOL __fastcall CMainFrame_OnCmdMsg(CWnd* this_, int, UINT nID, int nCode, void* pExtra, void* pHandlerInfo)
 {
@@ -1776,6 +1869,35 @@ BOOL __fastcall CMainFrame_OnCmdMsg(CWnd* this_, int, UINT nID, int nCode, void*
         cmd_ui->set_check(gizmo_textured_preview() ? 1 : 0);
         return TRUE;
     }
+    // Direct3D 9 does not get new renderer features
+    const bool d3d11_options_available = editor_gr_is_d3d11();
+    bool* const d3d11_option = d3d11_view_option(nID);
+    if (nCode == CN_UPDATE_COMMAND_UI && d3d11_option && cmd_ui) {
+        cmd_ui->enable(d3d11_options_available);
+        cmd_ui->set_check(d3d11_options_available && *d3d11_option ? 1 : 0);
+        return TRUE;
+    }
+    const bool wireframe_display = d3d11_options_available && g_editor_settings.show_wireframe;
+    if (nCode == CN_UPDATE_COMMAND_UI && nID == ID_VIEW_SHOW_WIREFRAME && cmd_ui) {
+        cmd_ui->enable(d3d11_options_available);
+        cmd_ui->set_check(wireframe_display ? 1 : 0);
+        return TRUE;
+    }
+    if (nCode == CN_UPDATE_COMMAND_UI && wireframe_display && is_stock_display_mode_command(nID) && cmd_ui) {
+        cmd_ui->enable(TRUE);
+        cmd_ui->set_check(0);
+        return TRUE;
+    }
+    if (nCode == CN_UPDATE_COMMAND_UI && nID == ID_REPAIR_BUILD_HOLES && cmd_ui) {
+        cmd_ui->enable(TRUE);
+        cmd_ui->set_check(build_repair_enabled() ? 1 : 0);
+        return TRUE;
+    }
+    if (nCode == CN_UPDATE_COMMAND_UI && nID == ID_REBUILD_OUT_OF_LEVEL && cmd_ui) {
+        cmd_ui->enable(TRUE);
+        cmd_ui->set_check(build_out_of_level_enabled() ? 1 : 0);
+        return TRUE;
+    }
 
     if (nID == IDC_GIZMO_SCALE_STEP && nCode == CBN_SELCHANGE) {
         gizmo_scale_step_changed();
@@ -1791,6 +1913,10 @@ BOOL __fastcall CMainFrame_OnCmdMsg(CWnd* this_, int, UINT nID, int nCode, void*
             if (!gizmo_cancel_drag() || nID == ID_EDIT_UNDO || nID == ID_EDIT_REDO) {
                 return TRUE;
             }
+        }
+        // The stock handler then sets its display mode and repaints
+        if (!pHandlerInfo && wireframe_display && is_stock_display_mode_command(nID)) {
+            g_editor_settings.show_wireframe = false;
         }
         std::function<void()> handler;
         switch (nID) {
@@ -1887,6 +2013,38 @@ BOOL __fastcall CMainFrame_OnCmdMsg(CWnd* this_, int, UINT nID, int nCode, void*
             case ID_GIZMO_TEXLOCK:
             case ID_GIZMO_TEXPREVIEW:
                 handler = [nID]() { gizmo_button_clicked(nID); };
+                break;
+            case ID_VIEW_PREVIEW_LEVEL_FOG:
+            case ID_VIEW_SHOW_INVISIBLE_FACES:
+            case ID_VIEW_SHOW_BACK_FACES:
+            case ID_VIEW_FULLBRIGHT_MESHES:
+            case ID_VIEW_WIREFRAME_OVERLAY:
+            case ID_VIEW_SHOW_DECALS:
+                if (d3d11_options_available) {
+                    handler = [d3d11_option] {
+                        *d3d11_option = !*d3d11_option;
+                        editor_views_mark_repaint_all();
+                    };
+                }
+                break;
+            case ID_VIEW_SHOW_WIREFRAME:
+                if (d3d11_options_available) {
+                    // Everything but the level and brushes keeps the look of the default display mode
+                    handler = [] {
+                        g_editor_settings.show_wireframe = true;
+                        view_display_mode = view_display_mode_lightmapped;
+                        editor_views_mark_repaint_all();
+                    };
+                }
+                break;
+            case ID_REPAIR_BUILD_HOLES:
+                handler = build_repair_toggle;
+                break;
+            case ID_REBUILD_OUT_OF_LEVEL:
+                handler = build_out_of_level_toggle;
+                break;
+            case ID_FIND_OUT_OF_LEVEL:
+                handler = build_repair_find_out_of_level;
                 break;
             case ID_TERRAIN_TOOLS:
                 handler = [this_]() {
@@ -2238,30 +2396,20 @@ CodeInjection LoadSaveLevel_patch2{
 CodeInjection disable_splash_screen_on_load_level {
     0x00482672,
     [](auto& regs) {
-        static auto& argv = addr_as_ref<char**>(0x01DBF8E4);
-        static auto& argc = addr_as_ref<int>(0x01DBF8E0);
-
         if (headless_bake_active()) {
             g_skip_legacy_level_warning = true;
             regs.eip = 0x0048268E;
         }
 
-        for (int i = 1; i < argc; ++i) {
-            std::string_view arg = argv[i];
+        // skip legacy level warning dialog
+        if (editor_command_line_has(L"-skiplegacywarning")) {
+            g_skip_legacy_level_warning = true;
+        }
 
-            // skip legacy level warning dialog
-            if (arg == "-skiplegacywarning") {
-                g_skip_legacy_level_warning = true;
-            }
-
-            // skip past the splash screen if loading a level directly
-            // this fixes unintuitive behaviour when the splash screen and legacy level warning both show up at the same time
-            if (arg == "-level") {
-                ++i;
-                if (i < argc) {
-                    regs.eip = 0x0048268E;
-                }
-            }
+        // skip past the splash screen if loading a level directly
+        // this fixes unintuitive behaviour when the splash screen and legacy level warning both show up at the same time
+        if (editor_command_line_value(L"-level")) {
+            regs.eip = 0x0048268E;
         }
     }
 };
@@ -2347,6 +2495,7 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
     log_append_wnd_set_text_hook.install();
     brush_mode_handle_selection_hook.install();
     group_mode_handle_selection_hook.install();
+    select_faces_by_texture_hook.install();
 
     // Replace some editor resources
     CWnd_CreateDlg_injection.install();
@@ -2385,11 +2534,14 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
     ApplyEventsPatches();
     ApplyAlpineObjectPatches();
     ApplyTexturesPatches();
+    ApplyEditorSettingsPatches();
     ApplyLightmapPatches();
     ApplyGeometryPatches();
     ApplyAlpineLightmapPatches();
     ApplyFaceListCachePatches();
     ApplyBakeProgressPatches();
+    ApplyBuildRepairPatches();
+    ApplySelectionPatches();
     install_editor_bitmap_loader_hooks();
 
     // Browse for .v3m files instead of .v3d

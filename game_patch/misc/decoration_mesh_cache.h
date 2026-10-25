@@ -6,18 +6,8 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
-
-namespace rf
-{
-    struct VMesh;
-}
-
-struct DecorationMesh
-{
-    rf::VMesh* mesh;
-    // About the mesh origin, clamped to the cache's max_radius
-    float radius;
-};
+#include "../rf/math/vector.h"
+#include <common/terrain/alpine_terrain_decorations_runtime.h>
 
 // Static decoration meshes of one level by name, each loaded once. The engine owns level meshes and frees them on
 // unload, so clear() drops them without vmesh_free. Level init only: a mesh load at render time corrupts the

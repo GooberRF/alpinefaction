@@ -19,6 +19,7 @@
 #include "alpine_lightmaps.h"
 #include "alpine_obj.h"
 #include "brush_preview.h"
+#include "graphics/editor_gr.h"
 #include "level.h"
 #include "mfc_types.h"
 #include "terrain.h"
@@ -330,22 +331,10 @@ std::vector<int>& spare_bitmaps(uint32_t res)
 bool preview_bitmap_valid(int bm, uint32_t res)
 {
     if (bm < 0) return false;
-    const int index = BitmapEntry::handle_to_index(bm);
+    const int index = rf::bm::get_cache_slot(bm);
     if (index < 0) return false;
     const BitmapEntry& e = BitmapEntry::entries[index];
     return e.handle == bm && e.bm_type == BitmapEntry::TYPE_USER && e.width == res && e.height == res;
-}
-
-// gr_lock's texture setup, done first so a failed CreateTexture never reaches gr_lock. A failure
-// frees the slot, so a pooled bitmap is tried again at the next recomposite.
-bool preview_texture_ready(int bm)
-{
-    GrTextureSlot* slot = gr_texture_slot_of(bm);
-    if (!slot) return false;
-    const bool created = (slot->section_count > 0 && slot->bm_handle == bm) || gr_texture_create(bm, slot);
-    if (created && slot->section_count == 1 && slot->sections && slot->sections[0].texture) return true;
-    gr_texture_free(slot);
-    return false;
 }
 
 void release_chunk_bitmap(PreviewChunk& c, uint32_t res)
@@ -732,7 +721,7 @@ Composite composite_chunk(Preview& p, const at::GridView& v, uint32_t k,
         if (chunk.bm >= 0) release_chunk_bitmap(chunk, res);
         if (const Composite made = create_chunk_bitmap(chunk, res); made != Composite::ok) return made;
     }
-    if (!preview_texture_ready(chunk.bm)) {
+    if (!editor_texture_prepare(chunk.bm)) {
         release_chunk_bitmap(chunk, res);
         return Composite::failed;
     }
@@ -882,10 +871,16 @@ void draw_grid_polyline(const at::GridView& v, uint32_t x0, uint32_t z0, uint32_
     }
 }
 
+// Lines over the drawn surface stay clear of it
+float surface_line_lift(const at::GridView& v)
+{
+    return std::max(0.02f, v.cell_size * 0.01f);
+}
+
 void draw_outline(const at::GridView& v, uint32_t edge, bool chunk_lines)
 {
     const uint32_t cx = at::cells(v.nx), cz = at::cells(v.nz);
-    const float lift = std::max(0.02f, v.cell_size * 0.01f);
+    const float lift = surface_line_lift(v);
     if (chunk_lines) {
         set_color(chunk_line_rgb);
         for (uint32_t x = edge; x < cx; x += edge) draw_grid_polyline(v, x, 0, x, cz, 1, lift);
@@ -898,19 +893,21 @@ void draw_outline(const at::GridView& v, uint32_t edge, bool chunk_lines)
     draw_grid_polyline(v, cx, 0, cx, cz, 1, lift);
 }
 
-// Brush-style wireframe for the ortho views and the brush-only view modes: every k-th grid line,
-// at most 64 per axis.
-void draw_wireframe(const at::GridView& v, bool selected)
+// Brush-style wireframe for the ortho views, the brush-only view modes and View > Show Wireframe / Wireframe
+// Overlay: every k-th grid line, at most 64 per axis. Lines lifted over the drawn surface bend at every vertex so they
+// do not sink under it between their k-th vertices.
+void draw_wireframe(const at::GridView& v, bool selected, float lift = 0.0f)
 {
     const uint32_t cx = at::cells(v.nx), cz = at::cells(v.nz);
     const uint32_t k = std::max<uint32_t>(1, (std::max(cx, cz) + 63) / 64);
+    const uint32_t step = lift > 0.0f ? 1 : k;
     set_color(selected ? terrain_selected_rgb : terrain_unselected_rgb);
     for (uint32_t z = 0;; z = std::min(z + k, cz)) {
-        draw_grid_polyline(v, 0, z, cx, z, k, 0.0f);
+        draw_grid_polyline(v, 0, z, cx, z, step, lift);
         if (z == cz) break;
     }
     for (uint32_t x = 0;; x = std::min(x + k, cx)) {
-        draw_grid_polyline(v, x, 0, x, cz, k, 0.0f);
+        draw_grid_polyline(v, x, 0, x, cz, step, lift);
         if (x == cx) break;
     }
 }
@@ -1226,15 +1223,9 @@ void level_face_draw_hooked(GSolid* solid, GFace* face, char outline)
 
 } // namespace
 
-bool editor_bitmap_texture_live(int bm)
-{
-    const GrTextureSlot* slot = bm >= 0 ? gr_texture_slot_of(bm) : nullptr;
-    return slot && slot->bm_handle == bm && slot->section_count == 1 && slot->sections && slot->sections[0].texture;
-}
-
 bool editor_bitmap_upload_rgb(int bm, std::uint32_t w, std::uint32_t h, const std::uint8_t* rgb)
 {
-    if (!rgb || !preview_texture_ready(bm)) return false;
+    if (!rgb || !editor_texture_prepare(bm)) return false;
     GrLockInfo lock{};
     if (!gr_lock(bm, 0, &lock, 2)) return false;
     const int bpp = texel_bytes(lock.format);
@@ -1265,11 +1256,13 @@ void terrain_preview_draw(CDedLevel& level, const DedTerrain& terrain, const Ded
     try {
         Preview& p = sync_preview(terrain, data);
         const at::GridView v = terrain_grid_view(terrain.pos, data, *data.grid);
-        if (!terrain_view_draws_solid()) {
+        const EditorLevelStyle style = editor_gr_level_style();
+        if (!terrain_view_draws_solid() || !style.fills) {
             draw_wireframe(v, selected);
             return;
         }
         draw_surface(level, p, terrain, data, v);
+        if (style.edges) draw_wireframe(v, selected, surface_line_lift(v));
         if (selected) draw_outline(v, p.edge, true);
     }
     catch (const std::bad_alloc&) {

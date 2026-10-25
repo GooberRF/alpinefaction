@@ -8,8 +8,12 @@ set(SRCS
     alpine_spinner.h
     brush_import.cpp
     brush_import.h
+    command_line.cpp
+    command_line.h
     dialog_tooltips.cpp
     dialog_tooltips.h
+    editor_settings.cpp
+    editor_settings.h
     event.cpp
     file_dialogs.cpp
     file_dialogs.h
@@ -17,6 +21,21 @@ set(SRCS
     gizmo.cpp
     gizmo.h
     graphics.cpp
+    graphics/editor_gr.cpp
+    graphics/editor_gr.h
+    graphics/d3d11/gr_d3d11_editor.cpp
+    graphics/d3d11/gr_d3d11_editor.h
+    graphics/d3d11/gr_d3d11_editor_faces.cpp
+    graphics/d3d11/gr_d3d11_editor_faces.h
+    graphics/d3d11/gr_d3d11_editor_hooks.cpp
+    graphics/d3d11/gr_d3d11_editor_hooks.h
+    graphics/d3d11/gr_d3d11_editor_lightmaps.cpp
+    graphics/d3d11/gr_d3d11_editor_lightmaps.h
+    graphics/d3d11/engine/gr_d3d11_engine.h
+    graphics/d3d11/engine/rf_geometry.h
+    graphics/d3d11/engine/rf_gr.h
+    graphics/d3d11/engine/rf_math.h
+    graphics/d3d11/engine/rf_mesh.h
     headless_bake.cpp
     headless_bake.h
     mesh_export.cpp
@@ -90,6 +109,8 @@ set(SRCS
     overflow_charts.h
     overflow_preview.cpp
     particles.cpp
+    selection.cpp
+    selection.h
     texture_lock.cpp
     texture_lock.h
     uv_map.h
@@ -99,6 +120,8 @@ set(SRCS
     brush_preview.h
     bake_progress.cpp
     bake_progress.h
+    build_repair.cpp
+    build_repair.h
     face_list_cache.cpp
     face_list_cache.h
     memory_guard.cpp
@@ -125,11 +148,13 @@ target_include_directories(AlpineEditor PRIVATE
     ${CMAKE_SOURCE_DIR}/vendor/stb
     ${CMAKE_SOURCE_DIR}/vendor/zlib
     ${CMAKE_SOURCE_DIR}/vendor/xxhash
+    ${CMAKE_CURRENT_SOURCE_DIR}/graphics/d3d11/engine
 )
 
 target_link_libraries(AlpineEditor
     PatchCommon
     Common
+    GrD3D11Core
     Xlog
     CrashHandlerStub
     comctl32

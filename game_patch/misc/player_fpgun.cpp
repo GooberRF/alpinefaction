@@ -3,11 +3,13 @@
 #include <patch_common/CallHook.h>
 #include <patch_common/AsmWriter.h>
 #include <common/config/BuildConfig.h>
+#include <common/utils/list-utils.h>
 #include "alpine_options.h"
 #include "alpine_settings.h"
 #include "../multi/gametype.h"
 #include "../rf/player/player.h"
 #include "../rf/player/camera.h"
+#include "../rf/hud.h"
 #include "../rf/os/frametime.h"
 #include "../rf/sound/sound.h"
 #include "../rf/vmesh.h"
@@ -205,12 +207,15 @@ CallHook<void(rf::Player*)> player_fpgun_stop_idle_actions_hook{
 
 // Fix weapon bob oscillation: the original code at 0x004AA409 sets the weapon to IDLE before
 // checking if the player is running, causing constant IDLE<->RUN oscillation. This injection
-// skips that premature IDLE transition; the second IDLE check at 0x004AA474 handles all
-// legitimate idle cases.
+// skips that premature IDLE transition only when running or crouching, the gate of the run
+// branch (0x004AA4BD) that then picks the state itself. Otherwise (e.g. climbing) that branch
+// returns without setting one, and skipping would leave WS_LOOP_FIRE playing.
 CodeInjection player_fpgun_skip_premature_idle_injection{
     0x004AA409,
     [](auto& regs) {
-        if (!g_alpine_game_config.legacy_bob) {
+        rf::Entity* entity = regs.edi;
+        if (!g_alpine_game_config.legacy_bob
+            && (rf::entity_is_running(entity) || rf::entity_is_crouching(entity))) {
             regs.eip = 0x004AA423;
         }
     },
@@ -465,6 +470,23 @@ CodeInjection player_fpgun_render_ir_cull_patch_2{
     },
 };
 
+// Spectate lets any player borrow the shared fpgun meshes, but this frees them (deleting their
+// characters) and clears only the main player's handle, leaving every other borrower dangling.
+static FunHook<void()> player_fpgun_delete_meshes_hook{
+    0x004AEB40,
+    []() {
+        for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+            for (const rf::WeaponCycle& entry : rf::hud_weapon_cycle) {
+                if (entry.weapon_type >= 0 && player.weapon_mesh_handle
+                    && (player.weapon_mesh_handle == entry.mesh || player.weapon_mesh_handle == entry.fpgun_mesh)) {
+                    player.weapon_mesh_handle = nullptr;
+                }
+            }
+        }
+        player_fpgun_delete_meshes_hook.call_target();
+    },
+};
+
 CodeInjection players_cleanup_injection{
     0x004A259C,
     []() {
@@ -515,6 +537,7 @@ void player_fpgun_do_patch()
     write_mem_ptr(0x004A44F7 + 2, &g_fpgun_main_player); // player_create_entity
 
     players_cleanup_injection.install(); // fixes crash at 0x004AEB8F in player_fpgun_delete_meshes
+    player_fpgun_delete_meshes_hook.install();
 
     player_fpgun_render_main_player_entity_injection.install();
 

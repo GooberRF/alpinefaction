@@ -62,6 +62,8 @@ bool alpine_lm_stock_suppressed();
 // Defined in editor_patch/lightmap.cpp: the surfaces still point at the page RED synthesised for a
 // level loaded without stock lightmaps, so their rects overlap until the next repack.
 bool lightmap_stock_layout_synthesized();
+// That page's bitmap while it lives, else -1. Nothing writes the bitmap, so it draws black.
+int lightmap_synthesized_page_bm();
 // Gives that synthesised page the edge the level's alpine lightmap section records; nothing otherwise.
 void lightmap_synthesized_page_resize(int edge);
 
@@ -83,6 +85,13 @@ bool lightmap_light_terrain_points(const LightmapPoint* points, int count, float
 // float chart to RGB8.
 void lightmap_encode_float_texels(const float* r, const float* g, const float* b, int width, int height,
                                   std::uint8_t* out);
+// Defined in editor_patch/lightmap.cpp: smoothing with bake fixes, shared by the overflow charts. A face's vertex
+// normal is the normalised sum, over the faces on the vertex sharing a smoothing group with it (itself included), of
+// their plane normals weighted by their interior angle there; the face's plane normal when those nearly cancel. A
+// smooth lumel is lit with lightmap_smooth_shading_normal of its interpolated normal: unit length, lifted continuously
+// to stay a few degrees above `plane`.
+Vector3 lightmap_vertex_normal(const GFace& face, const GVertex& vertex);
+Vector3 lightmap_smooth_shading_normal(const Vector3& n, const Vector3& plane);
 
 // Baked terrain lighting for the viewport preview, from the last bake or the level as loaded.
 struct TerrainBakedLight;

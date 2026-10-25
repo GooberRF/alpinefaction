@@ -4,6 +4,7 @@
 #include "../rf/gr/gr.h"
 #include "../rf/os/frametime.h"
 #include "../rf/os/string.h"
+#include <common/lighting/alpine_sun_state.h>
 
 void gr_apply_patch();
 void evaluate_pow2tex(const rf::String& level_filename);
@@ -28,16 +29,6 @@ void explosion_flash_light_create(
 void explosion_flash_lights_level_init();
 void explosion_flash_lights_destroy_all();
 
-// Per-level directional sunlight (AlpineLevelProperties v5)
-struct SunLightState
-{
-    bool enabled = false;
-    bool affects_meshes = true;
-    bool drives_shadowmap_dir = true;
-    int mesh_mode = 0;
-    rf::Vector3 travel_dir{0.0f, -1.0f, 0.0f}; // direction the light travels
-    float color[3] = {0.0f, 0.0f, 0.0f};       // premultiplied by sun intensity
-};
 SunLightState gr_get_sun_state();
 float gr_sun_get_mesh_scale(const float* ambient);
 // The D3D11 mesh ambient for a custom ambient (a lightmap colour 0..1): mostly the level ambient, tinted by it.
