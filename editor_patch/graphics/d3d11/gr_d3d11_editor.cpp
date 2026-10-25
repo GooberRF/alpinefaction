@@ -438,7 +438,9 @@ namespace gr::d3d11
             hr = device_->CreateTexture2D(&depth_desc, nullptr, &depth_stencil);
         }
         if (SUCCEEDED(hr)) {
-            CD3D11_DEPTH_STENCIL_VIEW_DESC view_desc{D3D11_DSV_DIMENSION_TEXTURE2D};
+            D3D11_DEPTH_STENCIL_VIEW_DESC view_desc{};
+            view_desc.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
+            view_desc.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D;
             hr = device_->CreateDepthStencilView(depth_stencil, &view_desc, &depth_stencil_view_);
         }
         if (FAILED(hr)) {
