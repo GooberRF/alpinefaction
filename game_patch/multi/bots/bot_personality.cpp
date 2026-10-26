@@ -801,6 +801,131 @@ void apply_weapon_overrides(BotContext& ctx, const PersonalityPresetDef& preset)
 }
 
 // ---------------------------------------------------------------------------
+// Field override by ID
+// ---------------------------------------------------------------------------
+
+bool bot_personality_apply_field_override(BotContext& ctx, uint8_t field_id, float value)
+{
+    const auto field = static_cast<af_personality_field>(field_id);
+    // The quirk masks carry raw bits; every other field must be a number.
+    if (!std::isfinite(value)
+        && field != af_personality_field::quirk_mask_low
+        && field != af_personality_field::quirk_mask_high) {
+        return false;
+    }
+    auto& p = ctx.personality;
+    switch (field) {
+        case af_personality_field::attack_style:
+            p.attack_style = static_cast<BotAttackStyle>(static_cast<int>(value));
+            return true;
+        case af_personality_field::preferred_engagement_near:  p.preferred_engagement_near = value; return true;
+        case af_personality_field::preferred_engagement_far:   p.preferred_engagement_far = value; return true;
+        case af_personality_field::super_pickup_bias:          p.super_pickup_bias = value; return true;
+        case af_personality_field::revisit_avoidance_bias:     p.revisit_avoidance_bias = value; return true;
+        case af_personality_field::retrace_avoidance_bias:     p.retrace_avoidance_bias = value; return true;
+        case af_personality_field::retrace_lookback_waypoints: p.retrace_lookback_waypoints = static_cast<int>(value); return true;
+        case af_personality_field::decision_aggression_bias:   p.decision_aggression_bias = value; return true;
+        case af_personality_field::decision_efficiency_bias:   p.decision_efficiency_bias = value; return true;
+        case af_personality_field::decision_risk_tolerance:    p.decision_risk_tolerance = value; return true;
+        case af_personality_field::path_smoothing_bias:        p.path_smoothing_bias = value; return true;
+        case af_personality_field::corner_centering_bias:      p.corner_centering_bias = value; return true;
+        case af_personality_field::roam_intensity_bias:        p.roam_intensity_bias = value; return true;
+        case af_personality_field::navigation_strafe_bias:     p.navigation_strafe_bias = value; return true;
+        case af_personality_field::crouch_route_avoidance_bias: p.crouch_route_avoidance_bias = value; return true;
+        case af_personality_field::stuck_goal_retry_limit:     p.stuck_goal_retry_limit = static_cast<int>(value); return true;
+        case af_personality_field::goal_commitment_bias:       p.goal_commitment_bias = value; return true;
+        case af_personality_field::eliminate_target_commitment_bias: p.eliminate_target_commitment_bias = value; return true;
+        case af_personality_field::opportunism_bias:           p.opportunism_bias = value; return true;
+        case af_personality_field::retreat_health_threshold:   p.retreat_health_threshold = value; return true;
+        case af_personality_field::retreat_armor_threshold:    p.retreat_armor_threshold = value; return true;
+        case af_personality_field::replenish_health_threshold: p.replenish_health_threshold = value; return true;
+        case af_personality_field::replenish_armor_threshold:  p.replenish_armor_threshold = value; return true;
+        case af_personality_field::seek_weapon_bias:           p.seek_weapon_bias = value; return true;
+        case af_personality_field::satisfactory_weapon_threshold: p.satisfactory_weapon_threshold = value; return true;
+        case af_personality_field::preferred_weapon_ammo_fill_threshold: p.preferred_weapon_ammo_fill_threshold = value; return true;
+        case af_personality_field::replenish_bias:             p.replenish_bias = value; return true;
+        case af_personality_field::power_position_bias:        p.power_position_bias = value; return true;
+        case af_personality_field::weapon_switch_bias:         p.weapon_switch_bias = value; return true;
+        case af_personality_field::min_weapon_switch_cooldown_ms: p.min_weapon_switch_cooldown_ms = static_cast<int>(value); return true;
+        case af_personality_field::crouch_combat_bias:         p.crouch_combat_bias = value; return true;
+        case af_personality_field::jump_combat_bias:           p.jump_combat_bias = value; return true;
+        case af_personality_field::dodge_combat_bias:          p.dodge_combat_bias = value; return true;
+        case af_personality_field::raw_aggression_bias:        p.raw_aggression_bias = value; return true;
+        case af_personality_field::camping_bias:               p.camping_bias = value; return true;
+        case af_personality_field::easy_frag_bias:             p.easy_frag_bias = value; return true;
+        case af_personality_field::retaliation_bias:           p.retaliation_bias = value; return true;
+        case af_personality_field::combat_readiness_threshold: p.combat_readiness_threshold = value; return true;
+        case af_personality_field::deathmatch_kill_focus_bias: p.deathmatch_kill_focus_bias = value; return true;
+        case af_personality_field::ctf_capture_priority_bias:  p.ctf_capture_priority_bias = value; return true;
+        case af_personality_field::ctf_flag_recovery_bias:     p.ctf_flag_recovery_bias = value; return true;
+        case af_personality_field::ctf_hold_enemy_flag_safety_bias: p.ctf_hold_enemy_flag_safety_bias = value; return true;
+        case af_personality_field::ctf_hold_carrier_hunt_bias: p.ctf_hold_carrier_hunt_bias = value; return true;
+        case af_personality_field::quirk_mask_low: {
+            uint32_t bits = 0;
+            std::memcpy(&bits, &value, sizeof(bits));
+            p.quirk_mask = (p.quirk_mask & 0xFFFFFFFF00000000ull) | bits;
+            return true;
+        }
+        case af_personality_field::quirk_mask_high: {
+            uint32_t bits = 0;
+            std::memcpy(&bits, &value, sizeof(bits));
+            p.quirk_mask = (p.quirk_mask & 0x00000000FFFFFFFFull) | (static_cast<uint64_t>(bits) << 32);
+            return true;
+        }
+        case af_personality_field::pickup_switch_chance_without_preferences: p.pickup_switch_chance_without_preferences = value; return true;
+        case af_personality_field::taunt_on_kill_chance:       p.taunt_on_kill_chance = value; return true;
+        case af_personality_field::gg_on_map_end_chance:       p.gg_on_map_end_chance = value; return true;
+        case af_personality_field::hello_on_join_chance:       p.hello_on_join_chance = value; return true;
+        case af_personality_field::red_faction_response_chance: p.red_faction_response_chance = value; return true;
+        default:
+            return false;
+    }
+}
+
+bool bot_skill_apply_field_override(BotContext& ctx, uint8_t field_id, float value)
+{
+    if (!std::isfinite(value)) {
+        return false;
+    }
+    auto& s = ctx.skill;
+    switch (static_cast<af_skill_field>(field_id)) {
+        case af_skill_field::base_skill:                    s.base_skill = value; return true;
+        case af_skill_field::aim_profile_scale:             s.aim_profile_scale = value; return true;
+        case af_skill_field::decision_profile_scale:        s.decision_profile_scale = value; return true;
+        case af_skill_field::survivability_maintenance_bias: s.survivability_maintenance_bias = value; return true;
+        case af_skill_field::alertness:                     s.alertness = value; return true;
+        case af_skill_field::fov_degrees:                   s.fov_degrees = value; return true;
+        case af_skill_field::target_focus_bias:             s.target_focus_bias = value; return true;
+        case af_skill_field::weapon_switch_likelihood:      s.weapon_switch_likelihood = value; return true;
+        case af_skill_field::crouch_likelihood:             s.crouch_likelihood = value; return true;
+        case af_skill_field::jump_likelihood:               s.jump_likelihood = value; return true;
+        case af_skill_field::dodge_likelihood:              s.dodge_likelihood = value; return true;
+        case af_skill_field::reaction_time_ms:
+            s.reaction_time_ms = std::clamp(value, 0.0f, 5000.0f);
+            return true;
+        // Moving one bound past the other drags the other with it, so a valid pair lands in either order.
+        case af_skill_field::aim_error_min:
+            s.aim_error_min = std::clamp(value, 0.001f, 5.0f);
+            s.aim_error_max = std::max(s.aim_error_max, s.aim_error_min);
+            return true;
+        case af_skill_field::aim_error_max:
+            s.aim_error_max = std::clamp(value, 0.001f, 5.0f);
+            s.aim_error_min = std::min(s.aim_error_min, s.aim_error_max);
+            return true;
+        case af_skill_field::yaw_speed_cap:                 s.yaw_speed_cap = value; return true;
+        case af_skill_field::pitch_speed_cap:               s.pitch_speed_cap = value; return true;
+        case af_skill_field::fire_alignment_threshold:
+            s.fire_alignment_threshold = std::min(value, 0.999f);
+            return true;
+        case af_skill_field::semi_auto_click_interval_scale:
+            s.semi_auto_click_interval_scale = std::clamp(value, 0.0f, 20.0f);
+            return true;
+        default:
+            return false;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Main initialization
 // ---------------------------------------------------------------------------
 
@@ -980,143 +1105,6 @@ void bot_personality_set_presets(
     }
     ctx.profiles_initialized = false;
     ensure_profile_weights_initialized(ctx);
-}
-
-BotPersonality& bot_personality_get_mutable(BotContext& ctx)
-{
-    ensure_profile_weights_initialized(ctx);
-    return ctx.personality;
-}
-
-BotSkillProfile& bot_skill_profile_get_mutable(BotContext& ctx)
-{
-    ensure_profile_weights_initialized(ctx);
-    return ctx.skill;
-}
-
-// ---------------------------------------------------------------------------
-// Field override by ID
-// ---------------------------------------------------------------------------
-
-bool bot_personality_apply_field_override(BotContext& ctx, uint8_t field_id, float value)
-{
-    const auto field = static_cast<af_personality_field>(field_id);
-    // The quirk masks carry raw bits; every other field must be a number.
-    if (!std::isfinite(value)
-        && field != af_personality_field::quirk_mask_low
-        && field != af_personality_field::quirk_mask_high) {
-        return false;
-    }
-    auto& p = bot_personality_get_mutable(ctx);
-    switch (field) {
-        case af_personality_field::attack_style:
-            p.attack_style = static_cast<BotAttackStyle>(static_cast<int>(value));
-            return true;
-        case af_personality_field::preferred_engagement_near:  p.preferred_engagement_near = value; return true;
-        case af_personality_field::preferred_engagement_far:   p.preferred_engagement_far = value; return true;
-        case af_personality_field::super_pickup_bias:          p.super_pickup_bias = value; return true;
-        case af_personality_field::revisit_avoidance_bias:     p.revisit_avoidance_bias = value; return true;
-        case af_personality_field::retrace_avoidance_bias:     p.retrace_avoidance_bias = value; return true;
-        case af_personality_field::retrace_lookback_waypoints: p.retrace_lookback_waypoints = static_cast<int>(value); return true;
-        case af_personality_field::decision_aggression_bias:   p.decision_aggression_bias = value; return true;
-        case af_personality_field::decision_efficiency_bias:   p.decision_efficiency_bias = value; return true;
-        case af_personality_field::decision_risk_tolerance:    p.decision_risk_tolerance = value; return true;
-        case af_personality_field::path_smoothing_bias:        p.path_smoothing_bias = value; return true;
-        case af_personality_field::corner_centering_bias:      p.corner_centering_bias = value; return true;
-        case af_personality_field::roam_intensity_bias:        p.roam_intensity_bias = value; return true;
-        case af_personality_field::navigation_strafe_bias:     p.navigation_strafe_bias = value; return true;
-        case af_personality_field::crouch_route_avoidance_bias: p.crouch_route_avoidance_bias = value; return true;
-        case af_personality_field::stuck_goal_retry_limit:     p.stuck_goal_retry_limit = static_cast<int>(value); return true;
-        case af_personality_field::goal_commitment_bias:       p.goal_commitment_bias = value; return true;
-        case af_personality_field::eliminate_target_commitment_bias: p.eliminate_target_commitment_bias = value; return true;
-        case af_personality_field::opportunism_bias:           p.opportunism_bias = value; return true;
-        case af_personality_field::retreat_health_threshold:   p.retreat_health_threshold = value; return true;
-        case af_personality_field::retreat_armor_threshold:    p.retreat_armor_threshold = value; return true;
-        case af_personality_field::replenish_health_threshold: p.replenish_health_threshold = value; return true;
-        case af_personality_field::replenish_armor_threshold:  p.replenish_armor_threshold = value; return true;
-        case af_personality_field::seek_weapon_bias:           p.seek_weapon_bias = value; return true;
-        case af_personality_field::satisfactory_weapon_threshold: p.satisfactory_weapon_threshold = value; return true;
-        case af_personality_field::preferred_weapon_ammo_fill_threshold: p.preferred_weapon_ammo_fill_threshold = value; return true;
-        case af_personality_field::replenish_bias:             p.replenish_bias = value; return true;
-        case af_personality_field::power_position_bias:        p.power_position_bias = value; return true;
-        case af_personality_field::weapon_switch_bias:         p.weapon_switch_bias = value; return true;
-        case af_personality_field::min_weapon_switch_cooldown_ms: p.min_weapon_switch_cooldown_ms = static_cast<int>(value); return true;
-        case af_personality_field::crouch_combat_bias:         p.crouch_combat_bias = value; return true;
-        case af_personality_field::jump_combat_bias:           p.jump_combat_bias = value; return true;
-        case af_personality_field::dodge_combat_bias:          p.dodge_combat_bias = value; return true;
-        case af_personality_field::raw_aggression_bias:        p.raw_aggression_bias = value; return true;
-        case af_personality_field::camping_bias:               p.camping_bias = value; return true;
-        case af_personality_field::easy_frag_bias:             p.easy_frag_bias = value; return true;
-        case af_personality_field::retaliation_bias:           p.retaliation_bias = value; return true;
-        case af_personality_field::combat_readiness_threshold: p.combat_readiness_threshold = value; return true;
-        case af_personality_field::deathmatch_kill_focus_bias: p.deathmatch_kill_focus_bias = value; return true;
-        case af_personality_field::ctf_capture_priority_bias:  p.ctf_capture_priority_bias = value; return true;
-        case af_personality_field::ctf_flag_recovery_bias:     p.ctf_flag_recovery_bias = value; return true;
-        case af_personality_field::ctf_hold_enemy_flag_safety_bias: p.ctf_hold_enemy_flag_safety_bias = value; return true;
-        case af_personality_field::ctf_hold_carrier_hunt_bias: p.ctf_hold_carrier_hunt_bias = value; return true;
-        case af_personality_field::quirk_mask_low: {
-            uint32_t bits = 0;
-            std::memcpy(&bits, &value, sizeof(bits));
-            p.quirk_mask = (p.quirk_mask & 0xFFFFFFFF00000000ull) | bits;
-            return true;
-        }
-        case af_personality_field::quirk_mask_high: {
-            uint32_t bits = 0;
-            std::memcpy(&bits, &value, sizeof(bits));
-            p.quirk_mask = (p.quirk_mask & 0x00000000FFFFFFFFull) | (static_cast<uint64_t>(bits) << 32);
-            return true;
-        }
-        case af_personality_field::pickup_switch_chance_without_preferences: p.pickup_switch_chance_without_preferences = value; return true;
-        case af_personality_field::taunt_on_kill_chance:       p.taunt_on_kill_chance = value; return true;
-        case af_personality_field::gg_on_map_end_chance:       p.gg_on_map_end_chance = value; return true;
-        case af_personality_field::hello_on_join_chance:       p.hello_on_join_chance = value; return true;
-        case af_personality_field::red_faction_response_chance: p.red_faction_response_chance = value; return true;
-        default:
-            return false;
-    }
-}
-
-bool bot_skill_apply_field_override(BotContext& ctx, uint8_t field_id, float value)
-{
-    if (!std::isfinite(value)) {
-        return false;
-    }
-    auto& s = bot_skill_profile_get_mutable(ctx);
-    switch (static_cast<af_skill_field>(field_id)) {
-        case af_skill_field::base_skill:                    s.base_skill = value; return true;
-        case af_skill_field::aim_profile_scale:             s.aim_profile_scale = value; return true;
-        case af_skill_field::decision_profile_scale:        s.decision_profile_scale = value; return true;
-        case af_skill_field::survivability_maintenance_bias: s.survivability_maintenance_bias = value; return true;
-        case af_skill_field::alertness:                     s.alertness = value; return true;
-        case af_skill_field::fov_degrees:                   s.fov_degrees = value; return true;
-        case af_skill_field::target_focus_bias:             s.target_focus_bias = value; return true;
-        case af_skill_field::weapon_switch_likelihood:      s.weapon_switch_likelihood = value; return true;
-        case af_skill_field::crouch_likelihood:             s.crouch_likelihood = value; return true;
-        case af_skill_field::jump_likelihood:               s.jump_likelihood = value; return true;
-        case af_skill_field::dodge_likelihood:              s.dodge_likelihood = value; return true;
-        case af_skill_field::reaction_time_ms:
-            s.reaction_time_ms = std::clamp(value, 0.0f, 5000.0f);
-            return true;
-        // Moving one bound past the other drags the other with it, so a valid pair lands in either order.
-        case af_skill_field::aim_error_min:
-            s.aim_error_min = std::clamp(value, 0.001f, 5.0f);
-            s.aim_error_max = std::max(s.aim_error_max, s.aim_error_min);
-            return true;
-        case af_skill_field::aim_error_max:
-            s.aim_error_max = std::clamp(value, 0.001f, 5.0f);
-            s.aim_error_min = std::min(s.aim_error_min, s.aim_error_max);
-            return true;
-        case af_skill_field::yaw_speed_cap:                 s.yaw_speed_cap = value; return true;
-        case af_skill_field::pitch_speed_cap:               s.pitch_speed_cap = value; return true;
-        case af_skill_field::fire_alignment_threshold:
-            s.fire_alignment_threshold = std::min(value, 0.999f);
-            return true;
-        case af_skill_field::semi_auto_click_interval_scale:
-            s.semi_auto_click_interval_scale = std::clamp(value, 0.0f, 20.0f);
-            return true;
-        default:
-            return false;
-    }
 }
 
 // ---------------------------------------------------------------------------

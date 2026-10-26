@@ -944,8 +944,7 @@ void bot_process_movement(
                 personality.preferred_engagement_near,
                 skill_factor
             );
-            // Close in to where the held weapon works best; the personality distance caps how far back it stays,
-            // and a splash weapon keeps its own blast clear.
+            // Fight from the held weapon's best range, but never inside a splash weapon's own blast.
             const float weapon_distance =
                 bot_combat_engagement_distance(local_entity, weapon_min_safe_distance);
             float safe_stop_distance = weapon_min_safe_distance * kWeaponSafeStopDistanceScale;
@@ -1033,9 +1032,7 @@ void bot_process_movement(
     const float splash_keep_distance = pursued_enemy ? bot_combat_splash_keep_distance(local_entity) : 0.0f;
     bot_state().splash_retreat_blocked_timer.invalidate();
     if (splash_keep_distance > 0.0f) {
-        // A splash weapon fires from outside its own blast: the bot does not close in near it, even along a route, and
-        // backs out of it at full speed, or steps aside, where the way is clear and the ground holds. With neither it
-        // is cornered (splash_trade_allowed).
+        // Stay outside a splash weapon's own blast; with no clear escape the bot is cornered (splash_trade_allowed).
         rf::Vector3 away = local_entity.pos - pursued_enemy->pos;
         away.y = 0.0f;
         const float enemy_dist = away.len();
@@ -1066,7 +1063,6 @@ void bot_process_movement(
             }
         }
         else if (enemy_dist < splash_keep_distance * kWeaponSafeStopDistanceScale) {
-            // No step towards the enemy.
             const rf::Vector3 view_right{view_forward.z, 0.0f, -view_forward.x};
             const rf::Vector3 move_world = view_forward * desired_move_z + view_right * desired_move_x;
             const float toward = -move_world.dot_prod(away) / std::max(enemy_dist, 0.01f);

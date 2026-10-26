@@ -4150,18 +4150,13 @@ void reset_waypoint_editor_runtime_state(const bool clear_log)
     }
 }
 
-int remap_editor_waypoint_uid(const std::vector<int>& remap, const int waypoint_uid)
-{
-    return (waypoint_uid > 0 && waypoint_uid < static_cast<int>(remap.size())) ? remap[waypoint_uid] : 0;
-}
-
 // Returns false when the selected waypoint was removed.
 bool remap_editor_selection(const std::vector<int>& remap, WaypointEditorSelectionState& selection)
 {
     if (selection.kind != WaypointEditorSelectionKind::waypoint) {
         return true;
     }
-    selection.uid = remap_editor_waypoint_uid(remap, selection.uid);
+    selection.uid = remap_waypoint_uid(remap, selection.uid);
     if (selection.uid > 0) {
         return true;
     }
@@ -4174,8 +4169,9 @@ void remap_editor_waypoint_fields(const std::vector<int>& remap, std::array<std:
 {
     for (auto& field : fields) {
         const auto waypoint_uid = parse_link_field_waypoint_uid(field);
-        if (waypoint_uid && waypoint_uid.value() > 0 && waypoint_uid.value() < static_cast<int>(remap.size())) {
-            const int remapped_uid = remap[waypoint_uid.value()];
+        // -1 leaves an out-of-range uid as typed.
+        const int remapped_uid = waypoint_uid ? remap_waypoint_uid(remap, waypoint_uid.value(), -1) : -1;
+        if (remapped_uid >= 0) {
             field = remapped_uid > 0 ? std::to_string(remapped_uid) : std::string{};
         }
     }
@@ -4207,14 +4203,14 @@ void waypoints_utils_on_waypoints_remapped(const std::vector<int>& remap)
     }
     if (g_waypoint_type_change_dialog.open
         && g_waypoint_type_change_dialog.subject == WaypointTypeChangeDialogSubject::waypoint) {
-        g_waypoint_type_change_dialog.uid = remap_editor_waypoint_uid(remap, g_waypoint_type_change_dialog.uid);
+        g_waypoint_type_change_dialog.uid = remap_waypoint_uid(remap, g_waypoint_type_change_dialog.uid);
         if (g_waypoint_type_change_dialog.uid <= 0) {
             close_waypoint_type_change_dialog();
         }
     }
     if (g_waypoint_link_editor_dialog.open) {
         g_waypoint_link_editor_dialog.waypoint_uid =
-            remap_editor_waypoint_uid(remap, g_waypoint_link_editor_dialog.waypoint_uid);
+            remap_waypoint_uid(remap, g_waypoint_link_editor_dialog.waypoint_uid);
         if (g_waypoint_link_editor_dialog.waypoint_uid <= 0) {
             close_waypoint_link_editor_dialog(false);
         }

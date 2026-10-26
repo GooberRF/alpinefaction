@@ -3751,14 +3751,24 @@ CodeInjection multi_level_init_injection{
     },
 };
 
-// A human counts as playing once spawned, and for a short while after dying.
+static bool human_is_spawned(const rf::Player& player)
+{
+    return !rf::player_is_dead(&player) && !rf::player_is_dying(&player);
+}
+
+// Bot fill counts a dead human only briefly, so one who stays dead frees his slot for a bot.
 static bool human_is_active_player(const rf::Player& player)
 {
-    const bool is_spawned = !rf::player_is_dead(&player) && !rf::player_is_dying(&player);
     const bool was_just_unspawned = player.death_time
         && std::chrono::steady_clock::now() - *player.death_time
             < std::chrono::duration<float>(BOT_OPPONENT_DEATH_WAIT_TIME_SEC);
-    return is_spawned || was_just_unspawned;
+    return human_is_spawned(player) || was_just_unspawned;
+}
+
+// The level-init reset clears death_time, so it marks a death in this level.
+static bool human_has_played_this_level(const rf::Player& player)
+{
+    return human_is_spawned(player) || player.death_time.has_value();
 }
 
 static int pick_weaker_team(const bool for_bot)
@@ -3769,8 +3779,8 @@ static int pick_weaker_team(const bool for_bot)
         if (player.is_non_participant() || player.is_spectator) {
             continue;
         }
-        // A connected human who never plays (an observer) does not balance against bots.
-        if (for_bot && !player.is_bot && !human_is_active_player(player)) {
+        // A human who has not spawned this level (still joining, or idle) does not balance against bots.
+        if (for_bot && !player.is_bot && !human_has_played_this_level(player)) {
             continue;
         }
         if (player.team == rf::TEAM_RED) {
@@ -5386,7 +5396,6 @@ void server_init()
     // Apply customized spawn protection duration
     spawn_protection_duration_patch.install();
 
-    // Run the listen host's chat commands
     multi_chat_say_hook.install();
 
     // Critical hits and hit sounds

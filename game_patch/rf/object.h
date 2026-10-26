@@ -93,6 +93,15 @@ namespace rf
     static_assert(sizeof(CatmullRomCurve) == 0x184);
     static_assert(offsetof(CatmullRomCurve, num_points) == 0x180);
 
+    enum ObjInterpFlags : uint32_t
+    {
+        // The next keyframe insert re-anchors interp_time. Set by Clear(); the frame advance waits while it is set.
+        OIF_REANCHOR = 0x1,
+        // The next position update also sets p_data.pos instead of sweeping to the new position. Set by a
+        // re-anchor or a keyframe >= 2.5 from the object.
+        OIF_SNAP = 0x2,
+    };
+
     // Network interpolation state of a remote object: a 20-keyframe ring of replicated
     // snapshots, evaluated at interp_time by ObjInterp::interp_rotation (0x00484307) and
     // ObjInterp::get_next_pos_and_vel via multi_obj_interp_orient/pos. Keyframes are kept
@@ -110,10 +119,7 @@ namespace rf
         Vector3 move_array[max_keyframes];
         uint32_t always_0_array[max_keyframes];
         uint16_t time_array[max_keyframes]; // 16-bit server ms ticks
-        uint32_t flags;    // bit 0: force re-anchor - the next keyframe insert re-anchors
-                           // interp_time and then clears this bit; Clear() zeroes the whole
-                           // word. bit 1: set by an insert only on a re-anchor or when the
-                           // keyframe is >= 2.5 from the object's position
+        uint32_t flags; // ObjInterpFlags
         uint16_t interp_time; // evaluation time (16-bit server ms ticks)
         uint8_t pad_52e[2];
         uint32_t frame_time_us; // wall-clock stamp of the last frame advance (ms with AF's

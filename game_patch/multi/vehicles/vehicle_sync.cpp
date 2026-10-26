@@ -378,7 +378,7 @@ namespace
         const float typical_gap =
             std::clamp(interp->arrive_time_avg_diff, 0.0f, static_cast<float>(vehicle_interp_rest_gap_ms));
         interp->last_update_time = now_ms - static_cast<uint32_t>(typical_gap);
-        interp->flags |= 1u; // force the re-anchor on this insert
+        interp->flags |= rf::OIF_REANCHOR;
     }
 
     // Reached only from the engine's RECEIVE path: this machine's own keyframes go in through
@@ -472,9 +472,7 @@ bool obj_interp_push_keyframe(rf::Entity* ep, rf::Vector3 pos, rf::Vector3 phb, 
     return true;
 }
 
-// ObjInterp::set_next_pos_orient (0x00483360) minus its physics step: that step simulates the entity from the
-// newest keyframe for one average arrival gap, and its only output is the spline's end point. This extrapolates
-// that point from the keyframe's velocity instead; the spline only bends between the two newest keyframes.
+// ObjInterp::set_next_pos_orient (0x00483360) minus its per-keyframe physics step, too costly at many bots.
 bool obj_interp_push_simulated_keyframe(rf::Entity* ep, const rf::Vector3& pos, const rf::Vector3& phb,
                                         const rf::Vector3& eye_phb, const rf::Vector3& vel, const rf::Vector3& move,
                                         const uint16_t tick)
@@ -525,15 +523,15 @@ bool obj_interp_push_simulated_keyframe(rf::Entity* ep, const rf::Vector3& pos, 
     }
 
     const double reanchor_headroom = avg_gap * static_cast<double>(2.2f);
-    if (obj_interp_tick_diff(tick, interp->interp_time) > reanchor_headroom || (interp->flags & 1u)) {
+    if (obj_interp_tick_diff(tick, interp->interp_time) > reanchor_headroom || (interp->flags & rf::OIF_REANCHOR)) {
         interp->interp_time = static_cast<uint16_t>(tick - static_cast<int>(reanchor_headroom));
-        interp->flags = (interp->flags & ~1u) | 2u;
+        interp->flags = (interp->flags & ~rf::OIF_REANCHOR) | rf::OIF_SNAP;
         if (rf::Player* const pp = rf::player_from_entity_handle(ep->handle); pp && pp->net_data) {
             ++pp->net_data->stats.obj_update_too_slow;
         }
     }
     if ((ep->pos - pos).len() >= 2.5f) {
-        interp->flags |= 2u;
+        interp->flags |= rf::OIF_SNAP;
     }
 
     std::array<rf::Vector3, max_keyframes + 1> spline_points;

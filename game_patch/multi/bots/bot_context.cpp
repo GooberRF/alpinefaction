@@ -6,7 +6,6 @@
 #include "../server.h"
 #include "../../hud/hud.h"
 #include "../../rf/multi.h"
-#include "../../rf/os/frametime.h"
 #include "../../rf/player/control_config.h"
 #include "../../rf/player/player_fpgun.h"
 #include <string>
@@ -21,11 +20,6 @@ BotContext g_client_bot{};
 BotContext& client_bot_context()
 {
     return g_client_bot;
-}
-
-float bot_frame_dt()
-{
-    return bot_ctx().is_server_bot ? bot_ctx().frame_dt : rf::frametime;
 }
 
 void bot_context_activate(BotContext& ctx)

@@ -3029,11 +3029,11 @@ FunHook<void()> multi_stop_hook{
         minimap_level_reset();
         projector_clear_all(); // Display_Projection feeds and their render targets are level-scoped
         riot_shield_on_multi_level_init(); // drop any pending riot shield break suppressions
-        entity_rate_limit_clear(); // drop per-entity collision/landing-sound rate limit and bot jump state
+        entity_rate_limit_clear(); // drop per-entity rate limit and jump state
         afstats::on_shutdown(); // best-effort final flush of the stats event stream
         fflink::afstats_client_reset(); // a stats session key is only ever valid for the join it was minted for
         g_sent_obj_update_ticks.clear(); // drop per-recipient obj_update keyframe-dedup state from the session being left
-        server_bots_on_multi_stop(); // drop the server-bot roster, queued removals and think scheduling
+        server_bots_on_multi_stop();
         if (rf::local_player) {
             PlayerAdditionalData* const player_add_data =
                 static_cast<PlayerAdditionalData*>(rf::local_player);
@@ -3795,8 +3795,7 @@ int multi_num_players_occupying_slots()
     return player_count;
 }
 
-// The join creator (FUN_0047AF30) sets NPF_WAITING_FOR_RELIABLE_SOCKET; the reliable accept (FUN_0046E8B0)
-// clears it, and the join timeout deletes a player that never connects.
+// A joiner holds the flag until his reliable socket attaches or his join times out.
 int multi_num_players_waiting_for_reliable_socket()
 {
     int count = 0;

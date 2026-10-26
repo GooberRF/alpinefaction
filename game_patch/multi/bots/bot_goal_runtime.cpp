@@ -43,6 +43,7 @@ void bot_goal_runtime_clear_non_active_goal_state(const BotGoalType active_goal)
     }
     if (active_goal != BotGoalType::create_crater) {
         bot_state().crater_goal_abort_timer.invalidate();
+        bot_state().crater_standoff_abort_timer.invalidate();
         bot_state().crater_goal_timeout_timer.invalidate();
     }
     if (active_goal != BotGoalType::shatter_glass) {
@@ -72,6 +73,7 @@ bool bot_goal_runtime_abort_bridge_goal()
 bool bot_goal_runtime_abort_crater_goal()
 {
     bot_state().crater_goal_abort_timer.invalidate();
+    bot_state().crater_standoff_abort_timer.invalidate();
     bot_state().crater_goal_timeout_timer.invalidate();
     bot_state_set_roam_fallback_goal(250);
     bot_state_clear_waypoint_route(true, true, false);

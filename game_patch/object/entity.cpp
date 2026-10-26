@@ -39,7 +39,7 @@
 #include "../multi/bots/server_bots.h"
 
 rf::Timestamp g_player_jump_timestamp;
-// A listen host simulates its server bots' jumps at its own frame rate.
+// Server bots are simulated at this machine's frame rate.
 static std::unordered_map<int, rf::Timestamp> g_server_bot_jump_timestamps;
 
 static void skip_land_handling_after_jump(rf::Entity* entity)

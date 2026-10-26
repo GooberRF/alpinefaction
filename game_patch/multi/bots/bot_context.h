@@ -21,8 +21,6 @@ struct BotContext
 {
     rf::Player* player = nullptr;
     bool is_server_bot = false;
-    // Server bots: seconds since this bot's previous think (thinks can be deferred to later frames).
-    float frame_dt = 0.0f;
     BotState state{};
     BotInfo info{};
     BotChatRuntimeState chat{};
@@ -36,7 +34,7 @@ struct BotContext
     std::vector<BotConfigOverride> skill_overrides;
 };
 
-// Set only while a specific bot's AI runs (bot_run_frame and the explicit-context helpers).
+// Set only within a BotActiveScope.
 extern BotContext* g_active_bot;
 
 class BotActiveScope
@@ -82,8 +80,6 @@ inline rf::Entity* bot_entity()
 }
 
 void bot_run_frame(BotContext& ctx);
-// Game time covered by the current think.
-float bot_frame_dt();
 void bot_context_reset_idle(BotContext& ctx);
 
 bool bot_backend_weapon_busy(rf::Player& pp, rf::Entity& ep);

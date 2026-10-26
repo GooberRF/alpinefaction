@@ -1,4 +1,5 @@
 #include "waypoints.h"
+#include "waypoints_internal.h"
 #include "waypoints_utils.h"
 #include "alpine_settings.h"
 #include "alpine_terrain.h"
@@ -205,9 +206,14 @@ rf::Vector3 get_entity_feet_pos(const rf::Entity& entity)
     return entity.pos;
 }
 
-void invalidate_cache()
+static void waypoints_mark_graph_changed()
 {
     ++g_waypoint_graph_version;
+}
+
+void invalidate_cache()
+{
+    waypoints_mark_graph_changed();
     g_cache_root = nullptr;
     g_cache_nodes.clear();
     g_cache_dirty = true;
@@ -1041,7 +1047,7 @@ int remove_waypoint_links_from_to(int from, int to)
     for (int i = write_index; i < kMaxWaypointLinks; ++i) {
         node.links[i] = 0;
     }
-    ++g_waypoint_graph_version;
+    waypoints_mark_graph_changed();
     return removed;
 }
 
@@ -1055,7 +1061,7 @@ int remove_waypoint_links_from_all(int from)
     const int removed = node.num_links;
     node.num_links = 0;
     node.links.fill(0);
-    ++g_waypoint_graph_version;
+    waypoints_mark_graph_changed();
     return removed;
 }
 
@@ -1215,15 +1221,13 @@ void link_waypoint(int from, int to)
         return;
     }
     if (node.num_links < kMaxWaypointLinks) {
-        ++g_waypoint_graph_version;
+        waypoints_mark_graph_changed();
         node.links[node.num_links++] = to;
         return;
     }
     int replace_slot = -1;
     if (g_waypoints[to].temporary) {
-        // A temporary node may only take a slot held by another temporary node, so persistent links survive: a
-        // crater's first, then the node with the most other inbound links. A borrowed slot or a node's only inbound
-        // link is never taken.
+        // A temporary node only displaces another temporary node's link, so persistent links survive temporaries.
         int best_score = 0;
         for (int slot = 0; slot < kMaxWaypointLinks; ++slot) {
             const int link = node.links[slot];
@@ -1250,7 +1254,7 @@ void link_waypoint(int from, int to)
         std::uniform_int_distribution<int> dist(0, kMaxWaypointLinks - 1);
         replace_slot = dist(g_rng);
     }
-    ++g_waypoint_graph_version;
+    waypoints_mark_graph_changed();
     node.links[replace_slot] = to;
 }
 
@@ -1836,7 +1840,7 @@ void update_bridge_zone_states()
         if (!zone.timer.valid() || zone.timer.elapsed()) {
             zone.on = false;
             zone.timer.invalidate();
-            ++g_waypoint_graph_version;
+            waypoints_mark_graph_changed();
         }
     }
 }
@@ -1857,7 +1861,7 @@ void activate_bridge_zones_for_trigger_uid(int trigger_uid)
         }
 
         zone.on = true;
-        ++g_waypoint_graph_version;
+        waypoints_mark_graph_changed();
         const int duration_ms = bridge_zone_duration_ms(zone);
         if (duration_ms > 0) {
             zone.timer.set(duration_ms);
@@ -1870,7 +1874,7 @@ void activate_bridge_zones_for_trigger_uid(int trigger_uid)
 
 void refresh_all_waypoint_zone_refs()
 {
-    ++g_waypoint_graph_version;
+    waypoints_mark_graph_changed();
     for (int i = 1; i < static_cast<int>(g_waypoints.size()); ++i) {
         auto& node = g_waypoints[i];
         if (!node.valid) {
@@ -1939,13 +1943,13 @@ void restore_borrowed_waypoint_link(int waypoint_uid)
     for (int slot = 0; slot < from_node.num_links; ++slot) {
         if (from_node.links[slot] == waypoint_uid) {
             from_node.links[slot] = target;
-            ++g_waypoint_graph_version;
+            waypoints_mark_graph_changed();
             return;
         }
     }
     if (from_node.num_links < kMaxWaypointLinks) {
         from_node.links[from_node.num_links++] = target;
-        ++g_waypoint_graph_version;
+        waypoints_mark_graph_changed();
     }
 }
 
@@ -1989,7 +1993,7 @@ int clear_waypoint_zone_definitions()
     for (int i = 1; i < static_cast<int>(g_waypoints.size()); ++i) {
         g_waypoints[i].zones.clear();
     }
-    ++g_waypoint_graph_version;
+    waypoints_mark_graph_changed();
     return removed;
 }
 
@@ -2299,7 +2303,7 @@ int resolve_waypoint_target_uid(std::optional<int> preferred_uid = std::nullopt)
     return allocate_waypoint_target_uid();
 }
 
-int add_waypoint_target(const rf::Vector3& pos, WaypointTargetType type, std::optional<int> preferred_uid = std::nullopt)
+int add_waypoint_target(const rf::Vector3& pos, WaypointTargetType type, std::optional<int> preferred_uid)
 {
     WaypointTargetDefinition target{};
     target.uid = resolve_waypoint_target_uid(preferred_uid);
@@ -3508,7 +3512,7 @@ void on_geomod_crater_created(const rf::Vector3& crater_pos, float crater_radius
                 crater_node.links[write++] = crater_node.links[read];
             }
             crater_node.num_links = write;
-            ++g_waypoint_graph_version;
+            waypoints_mark_graph_changed();
         }
     }
 }
@@ -3548,10 +3552,7 @@ void link_temporary_waypoint_like_crater(int waypoint_uid)
         }
     }
 
-    // Craters stay for the level; an objective node every clear persistent neighbour is too full for borrows the
-    // nearest one's persistent slot, preferring a link the node itself continues along, so it stays reachable. A
-    // jump pad lends nothing, and a slot that is its target's only way in (a drop or jump-pad landing) is lent only
-    // when the node continues to that target itself.
+    // An objective node no persistent neighbour has room to link to borrows a slot so it stays reachable.
     if (g_waypoints[waypoint_uid].type == WaypointType::crater
         || count_waypoint_inbound_links(waypoint_uid, true) > 0) {
         return;
@@ -3584,7 +3585,7 @@ void link_temporary_waypoint_like_crater(int waypoint_uid)
         node.borrowed_link_from = from;
         node.borrowed_link_target = from_node.links[borrow_slot];
         from_node.links[borrow_slot] = waypoint_uid;
-        ++g_waypoint_graph_version;
+        waypoints_mark_graph_changed();
         return;
     }
 }
@@ -3694,8 +3695,7 @@ bool waypoints_find_bag_waypoint(int& out_waypoint, rf::Vector3& out_pos)
     return true;
 }
 
-// Salvage: there is at most one temporary node of each subtype at any time, the neutral flag's and, under
-// Scavenger, the zone's.
+// Salvage: there is at most one temporary node per subtype at any time.
 int find_temporary_salvage_flag_waypoint(WaypointSalvageFlagSubtype subtype = WaypointSalvageFlagSubtype::flag)
 {
     for (int waypoint_uid = 1; waypoint_uid < static_cast<int>(g_waypoints.size()); ++waypoint_uid) {
@@ -3871,8 +3871,7 @@ void update_salvage_flag_temporary_waypoint()
     }
 }
 
-// The Scavenger zone gets a node of its own only where the level has none inside it, so routes there end inside the
-// zone rather than beside it.
+// Only a zone with no level node inside gets one, so routes end inside the zone rather than beside it.
 void update_scavenger_zone_temporary_waypoint()
 {
     constexpr auto kZoneSubtype = WaypointSalvageFlagSubtype::scavenger_zone;
@@ -3941,7 +3940,7 @@ void sanitize_waypoint_links_against_geometry()
         node.num_links = write_index;
     }
 
-    ++g_waypoint_graph_version;
+    waypoints_mark_graph_changed();
     if (removed_links > 0) {
         xlog::info("Pruned {} blocked or invalid waypoint links", removed_links);
     }
@@ -5459,7 +5458,7 @@ bool link_waypoint_if_clear_no_replace(int from, int to)
     }
 
     node.links[node.num_links++] = to;
-    ++g_waypoint_graph_version;
+    waypoints_mark_graph_changed();
     return true;
 }
 
@@ -5481,7 +5480,7 @@ bool add_waypoint_link_no_replace(int from, int to)
     }
 
     node.links[node.num_links++] = to;
-    ++g_waypoint_graph_version;
+    waypoints_mark_graph_changed();
     return true;
 }
 
@@ -5599,7 +5598,7 @@ bool remove_waypoint_link_no_replace(int from, int to)
         if (node.num_links >= 0 && node.num_links < kMaxWaypointLinks) {
             node.links[node.num_links] = 0;
         }
-        ++g_waypoint_graph_version;
+        waypoints_mark_graph_changed();
         return true;
     }
     return false;
@@ -7651,8 +7650,7 @@ bool save_waypoints()
         return false;
     }
 
-    // The file stores only persistent nodes, and the loader numbers them by position: every stored waypoint
-    // reference goes through this map (0 = not saved).
+    // Temporary nodes aren't saved and the loader numbers nodes by position, so stored references are renumbered.
     std::vector<int> saved_uids(g_waypoints.size(), 0);
     int persistent_waypoint_count = 0;
     for (int i = 1; i < static_cast<int>(g_waypoints.size()); ++i) {
@@ -7664,9 +7662,6 @@ bool save_waypoints()
     if (persistent_waypoint_count <= 0) {
         return false;
     }
-    const auto saved_uid = [&saved_uids](const int waypoint_uid) {
-        return (waypoint_uid > 0 && waypoint_uid < static_cast<int>(saved_uids.size())) ? saved_uids[waypoint_uid] : 0;
-    };
 
     refresh_all_waypoint_zone_refs();
     auto filename = get_waypoint_filename();
@@ -7719,7 +7714,7 @@ bool save_waypoints()
                 && !waypoint_link_exists(node, g_waypoints[linked].borrowed_link_target)) {
                 linked = g_waypoints[linked].borrowed_link_target;
             }
-            if (const int linked_uid = saved_uid(linked); linked_uid > 0) {
+            if (const int linked_uid = remap_waypoint_uid(saved_uids, linked); linked_uid > 0) {
                 links.push_back(linked_uid);
             }
         }
@@ -7794,7 +7789,7 @@ bool save_waypoints()
                 && !zone.bridge_waypoint_uids.empty()) {
                 toml::array bridge_waypoint_uids{};
                 for (const int waypoint_uid : zone.bridge_waypoint_uids) {
-                    if (const int bridge_uid = saved_uid(waypoint_uid); bridge_uid > 0) {
+                    if (const int bridge_uid = remap_waypoint_uid(saved_uids, waypoint_uid); bridge_uid > 0) {
                         bridge_waypoint_uids.push_back(bridge_uid);
                     }
                 }
@@ -7815,8 +7810,8 @@ bool save_waypoints()
 
             toml::array waypoint_uids{};
             for (int waypoint_uid : target.waypoint_uids) {
-                if (const int target_waypoint_uid = saved_uid(waypoint_uid); target_waypoint_uid > 0) {
-                    waypoint_uids.push_back(target_waypoint_uid);
+                if (const int saved_uid = remap_waypoint_uid(saved_uids, waypoint_uid); saved_uid > 0) {
+                    waypoint_uids.push_back(saved_uid);
                 }
             }
 
@@ -8200,39 +8195,26 @@ void remap_waypoints()
         auto& node = new_nodes[i];
         int write_idx = 0;
         for (int j = 0; j < node.num_links; ++j) {
-            int link = node.links[j];
-            if (link <= 0 || link >= static_cast<int>(remap.size())) {
-                continue;
-            }
-            int remapped = remap[link];
+            const int remapped = remap_waypoint_uid(remap, node.links[j]);
             if (remapped > 0) {
                 node.links[write_idx++] = remapped;
             }
         }
         node.num_links = write_idx;
         if (node.borrowed_link_from > 0) {
-            const auto remap_uid = [&remap](const int uid) {
-                return (uid > 0 && uid < static_cast<int>(remap.size())) ? remap[uid] : 0;
-            };
-            node.borrowed_link_from = remap_uid(node.borrowed_link_from);
-            node.borrowed_link_target = remap_uid(node.borrowed_link_target);
+            node.borrowed_link_from = remap_waypoint_uid(remap, node.borrowed_link_from);
+            node.borrowed_link_target = remap_waypoint_uid(remap, node.borrowed_link_target);
         }
     }
     g_waypoints = std::move(new_nodes);
     for (auto& entry : g_last_drop_waypoint_by_entity) {
-        int& last_drop_waypoint = entry.second;
-        last_drop_waypoint = (last_drop_waypoint > 0 && last_drop_waypoint < static_cast<int>(remap.size()))
-            ? remap[last_drop_waypoint]
-            : 0;
+        entry.second = remap_waypoint_uid(remap, entry.second);
     }
     for (auto& target : g_waypoint_targets) {
         std::vector<int> remapped_waypoint_uids{};
         remapped_waypoint_uids.reserve(target.waypoint_uids.size());
         for (int waypoint_uid : target.waypoint_uids) {
-            if (waypoint_uid <= 0 || waypoint_uid >= static_cast<int>(remap.size())) {
-                continue;
-            }
-            const int remapped_waypoint_uid = remap[waypoint_uid];
+            const int remapped_waypoint_uid = remap_waypoint_uid(remap, waypoint_uid);
             if (remapped_waypoint_uid > 0) {
                 remapped_waypoint_uids.push_back(remapped_waypoint_uid);
             }
@@ -8249,10 +8231,7 @@ void remap_waypoints()
         std::vector<int> remapped_bridge_waypoint_uids{};
         remapped_bridge_waypoint_uids.reserve(zone.bridge_waypoint_uids.size());
         for (int waypoint_uid : zone.bridge_waypoint_uids) {
-            if (waypoint_uid <= 0 || waypoint_uid >= static_cast<int>(remap.size())) {
-                continue;
-            }
-            const int remapped_waypoint_uid = remap[waypoint_uid];
+            const int remapped_waypoint_uid = remap_waypoint_uid(remap, waypoint_uid);
             if (remapped_waypoint_uid > 0) {
                 remapped_bridge_waypoint_uids.push_back(remapped_waypoint_uid);
             }

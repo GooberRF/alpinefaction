@@ -313,6 +313,12 @@ static bool level_file_exists(const std::string& filename)
     return file.find(filename.c_str());
 }
 
+// Bots always download; normal clients require the setting; dedis without server bots never auto-download
+static bool level_download_wants_awp()
+{
+    return is_waypoint_bot_mode_active() || (!rf::is_dedicated_server && g_alpine_game_config.autodl_download_awps);
+}
+
 bool download_level_if_missing(std::string filename)
 {
     if (filename.rfind('.') == std::string::npos) {
@@ -363,10 +369,7 @@ bool download_level_if_missing(std::string filename)
         }
 
         // Download AWP file if available (non-fatal)
-        // Bots always download; normal clients require the setting; dedis without server bots never auto-download
-        if (level_info->awp_info.has_value()
-            && (is_waypoint_bot_mode_active()
-                || (!rf::is_dedicated_server && g_alpine_game_config.autodl_download_awps))) {
+        if (level_info->awp_info.has_value() && level_download_wants_awp()) {
             try {
                 if (try_download_and_extract_awp(filename, level_info->awp_info.value())) {
                     rf::console::print("--> AWP waypoint file downloaded for {}\n", filename);
@@ -590,9 +593,7 @@ public:
         listener_(std::move(listener))
     {
         shared_data_ = std::make_shared<LevelDownloadWorker::SharedData>();
-        // Bots always download; normal clients require the setting; dedis without server bots never auto-download
-        shared_data_->download_awp = is_waypoint_bot_mode_active()
-            || (!rf::is_dedicated_server && g_alpine_game_config.autodl_download_awps);
+        shared_data_->download_awp = level_download_wants_awp();
         thread_ = std::thread(LevelDownloadWorker{std::move(level_filename), shared_data_});
     }
 

@@ -17,8 +17,7 @@ namespace
 {
 constexpr int kWalkDirectTraceFlags = rf::CF_ANY_HIT | rf::CF_PROCESS_INVISIBLE_FACES;
 constexpr float kWalkDirectSampleSpacing = 1.5f;
-// Only the stretch ahead is checked. Direct moves re-check every think as the bot advances; the one-off waypoint picks
-// (closest waypoint, recovery anchors) accept this partial answer, so beyond it they rely on line of sight alone.
+// Only the stretch ahead is checked; direct moves re-check it every think as the bot advances.
 constexpr float kWalkDirectMaxDistance = 12.0f;
 constexpr float kWalkDirectStepHeight = 0.6f;
 // Matches the drop the movement edge probe refuses to walk off.
@@ -62,7 +61,7 @@ bool compute_walk_direct(const rf::Vector3& from, const rf::Vector3& to)
         horizontal_dist > kWalkDirectMaxDistance ? kWalkDirectMaxDistance / horizontal_dist : 1.0f;
     const int num_samples =
         std::max(static_cast<int>(std::ceil(horizontal_dist * checked_share / kWalkDirectSampleSpacing)), 1);
-    // A sample may climb or descend a slope of up to 45 degrees; a step over the limit must be two halves within it.
+    // Lets a 45 degree slope pass however far apart the samples are.
     const float max_slope_step = std::max(kWalkDirectMaxStep, horizontal_dist * checked_share / num_samples);
     const rf::Vector3 step_offset{0.0f, kWalkDirectStepHeight, 0.0f};
     for (int sample = 1; sample <= num_samples; ++sample) {
@@ -190,7 +189,7 @@ int bot_find_closest_waypoint_with_los_fallback(const rf::Entity& entity)
         if (bot_can_walk_direct(entity.pos, nearest_pos)) {
             return remember(nearest_waypoint);
         }
-        // In sight but not walkable (glass, a fence, a ledge): a linked waypoint the bot can walk to, else as before.
+        // In sight but not walkable (glass, a fence, a ledge): prefer a linked waypoint the bot can walk to.
         std::array<int, kMaxWaypointLinks> links{};
         const int link_count = waypoints_get_links(nearest_waypoint, links);
         for (int i = 0; i < link_count; ++i) {
@@ -230,7 +229,6 @@ int bot_find_closest_waypoint_with_los_fallback(const rf::Entity& entity)
     std::partial_sort(candidates.begin(), candidates.begin() + check_count, candidates.end(),
         [](const WaypointDist& a, const WaypointDist& b) { return a.dist_sq < b.dist_sq; });
 
-    // The nearest waypoint in sight that can be walked to, else the nearest in sight.
     int best_waypoint = 0;
     int nearest_visible_waypoint = 0;
     int walk_checks = 0;

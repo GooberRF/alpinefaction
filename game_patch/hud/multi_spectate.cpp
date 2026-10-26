@@ -1026,9 +1026,7 @@ static void povcomp_do_frame()
 // shifts the arrays down when full). Returns 0 when biasing is unsafe this frame.
 static uint16_t povcomp_safe_bias(rf::ObjInterp* interp, int desired_ms)
 {
-    // flags bit 0 = ring empty/unanchored: set by Clear(), cleared once a sample
-    // anchors interp_time (frame_start skips processing while it is set)
-    if ((interp->flags & 1) != 0 || interp->num < 2)
+    if ((interp->flags & rf::OIF_REANCHOR) != 0 || interp->num < 2)
         return 0; // ring unusable; the stock path holds the current pos anyway
     const auto avail = static_cast<uint16_t>(interp->interp_time - interp->time_array[0]);
     if (avail > 0x1388)

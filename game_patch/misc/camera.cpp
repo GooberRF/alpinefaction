@@ -442,7 +442,7 @@ CodeInjection linear_pitch_patch{
 
         // Consume accumulated raw mouse deltas (Raw/Modern mode only).
         // In Classic mode the accumulators are empty and this is a no-op.
-        // Server bots and turrets manned by bots or NPCs take this path too and must not eat the local look.
+        // Server bots and turrets manned by bots take this path too and must not eat the local look.
         rf::Entity* const lpe = rf::local_player_entity;
         const bool drives_local_look = entity == lpe || (lpe && lpe->host_handle == entity->handle);
         if (g_alpine_game_config.mouse_scale != 0 && drives_local_look) {

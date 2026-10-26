@@ -149,6 +149,8 @@ inline constexpr int kRemoteChargeCraterWindowMs = 6000;
 // Charges not set off this long after their detonation window no longer hold up the next throw.
 inline constexpr int kRemoteChargeGiveUpMs = 10000;
 inline constexpr int kFailedCraterTargetCooldownMs = 15000;
+// A failed check while choosing a target is a single sample, so it only steers the next few evaluations.
+inline constexpr int kCraterSelectionFailCooldownMs = 3000;
 inline constexpr int kBotServerConfigTimeoutMs = 10000;
 inline constexpr int kBotConnectionWatchdogMs = 30000;
 
@@ -235,8 +237,7 @@ inline constexpr bool bot_goal_is_salvage_objective(const BotGoalType goal)
     }
 }
 
-// Salvage goals that hold a position rather than go for the flag: never urgent, and the bot keeps stepping around
-// the spot it holds.
+// Salvage goals that hold a position rather than go for the flag.
 inline constexpr bool bot_goal_is_salvage_positioning(const BotGoalType goal)
 {
     switch (goal) {
@@ -467,11 +468,10 @@ struct BotCombatFiringState
     rf::Timestamp remote_charge_pending_detonation_timer{};
     rf::Timestamp remote_charge_settle_timer{};
     rf::Timestamp remote_charge_give_up_timer{};
-    // Charges of the bot in the world at this think's scan.
     int remote_charges_live = 0;
     // A throw winding up turned unsafe; a server bot does not let it go.
     bool explosive_release_aborted = false;
-    // Weapon choice: events that force an evaluation, and the challenger that must stay best for a while.
+    // A challenger weapon must stay best for a while before the bot switches to it.
     bool weapon_pickup_pending = false;
     int weapon_select_target_handle = -1;
     int weapon_select_candidate = -1;
@@ -480,12 +480,11 @@ struct BotCombatFiringState
     // A switch request stays pending until the backend confirms it, so it is not issued again every think.
     int requested_weapon = -1;
     rf::Timestamp weapon_request_timer{};
-    // Expected-damage range numbers per weapon type; they depend only on weapons.tbl and the bot's aim skill.
+    // Depends only on weapons.tbl and the bot's aim skill.
     std::array<BotWeaponRangeCache, 64> weapon_ranges{};
-    // Splash weapons aim at the floor under a grounded target; the drop below its origin is measured per think.
     bool aim_at_floor = false;
     float aim_floor_drop = 0.0f;
-    // What the last think aimed at: a point, or an enemy whose aim point is recomputed every frame.
+    // An enemy's aim point is recomputed every frame between thinks.
     bool aim_goal_active = false;
     int aim_goal_enemy_handle = -1;
     rf::Vector3 aim_goal_point{};
@@ -640,8 +639,6 @@ struct BotState
     bool salvage_hold_orbit_left = false;
     int salvage_stage_route_fails = 0;
     bool salvage_stage_given_up = false;
-    // Scavenger role split: whether the bot took its team's primary role for the objective state in scav_role_key,
-    // kept until scav_role_timer runs out or that state changes.
     int scav_role_key = 0;
     bool scav_role_primary = false;
     rf::Timestamp scav_role_timer{};
@@ -780,9 +777,10 @@ struct BotState
     int crater_standoff_target_uid = -1;
     float crater_standoff_distance = 0.0f;
     int crater_standoff_waypoint = 0;
+    int crater_standoff_graph_version = -1;
     rf::Timestamp crater_standoff_timer{};
     rf::Timestamp crater_standoff_abort_timer{};
-    std::array<FailedCraterTarget, 4> failed_crater_targets{};
+    std::array<FailedCraterTarget, 16> failed_crater_targets{};
     rf::Timestamp shatter_goal_abort_timer{};
     rf::Timestamp shatter_goal_timeout_timer{};
     rf::Timestamp confusion_abort_timer{};

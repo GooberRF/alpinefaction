@@ -28,6 +28,7 @@
 #include "../../rf/sound/sound.h"
 #include "../../rf/weapon.h"
 #include "../../sound/sound.h"
+#include <common/rfa_format.h>
 #include <common/rfproto.h>
 #include <common/utils/list-utils.h>
 #include <common/utils/string-utils.h>
@@ -44,32 +45,30 @@
 #include <string>
 #include <vector>
 
-// A throw between the wind-up anim and the projectile leaving the hand.
-struct ServerBotPendingThrow
-{
-    rf::Timestamp release;
-    int entity_handle = -1;
-    int weapon_type = -1;
-    bool alt_fire = false;
-};
-
-// A wait for one entity and weapon that a player's client would still be in.
-struct ServerBotWeaponHold
-{
-    rf::Timestamp done;
-    int entity_handle = -1;
-    int weapon_type = -1;
-};
-
 struct ServerBot
 {
+    struct PendingThrow
+    {
+        rf::Timestamp release;
+        int entity_handle = -1;
+        int weapon_type = -1;
+        bool alt_fire = false;
+    };
+
+    // Bound to one entity and weapon, so a respawn or weapon switch drops it.
+    struct WeaponHold
+    {
+        rf::Timestamp done;
+        int entity_handle = -1;
+        int weapon_type = -1;
+    };
+
     BotContext ctx;
     int roster_id = 0;
-    float pending_dt = 0.0f;
     float think_wait = 0.0f;
-    ServerBotPendingThrow pending_throw;
-    ServerBotWeaponHold fire_anim;
-    ServerBotWeaponHold client_reload;
+    PendingThrow pending_throw;
+    WeaponHold fire_anim;
+    WeaponHold client_reload;
 };
 
 namespace
@@ -107,20 +106,7 @@ void server_bot_apply_config(BotContext& ctx, const ServerBotConfig& config)
         &config.personality_overrides, &config.skill_overrides);
 }
 
-// An .rfa anim starts with this header; its length (0x0051C2E0) is (end - start) / 160 / 30 s.
-struct RfaHeader
-{
-    int32_t signature;
-    int32_t version;
-    float pos_reduction;
-    float rot_reduction;
-    int32_t start_time;
-    int32_t end_time;
-};
-static_assert(sizeof(RfaHeader) == 0x18);
-constexpr int32_t k_rfa_signature = 0x46564D56; // "VMVF"
-constexpr int k_rfa_ticks_per_sec = 4800;
-constexpr int64_t k_rfa_max_ticks = 10 * k_rfa_ticks_per_sec;
+constexpr int64_t k_rfa_max_ticks = 10 * rfa_ticks_per_sec;
 // A player's own reload lasts 2/3 of the clip reload time (0x0042553F: x 666.6 ms).
 constexpr float k_client_reload_ms_per_clip_reload_sec = 666.6f;
 
@@ -147,15 +133,14 @@ int rfa_length_ms(const std::string& filename)
     RfaHeader header{};
     const int bytes_read = file.read(&header, sizeof(header));
     file.close();
-    if (bytes_read != sizeof(header) || header.signature != k_rfa_signature) {
+    if (bytes_read != sizeof(header) || header.signature != rfa_signature) {
         return 0;
     }
     const int64_t ticks = std::clamp<int64_t>(int64_t{header.end_time} - header.start_time, 0, k_rfa_max_ticks);
-    return static_cast<int>(ticks * 1000 / k_rfa_ticks_per_sec);
+    return static_cast<int>(ticks * 1000 / rfa_ticks_per_sec);
 }
 
-// A dedicated server loads no first-person weapon meshes, so the lengths come from the anim files a client plays
-// (weapons.tbl names them .mvf, the packfiles hold .rfa).
+// A dedicated server loads no first-person weapon meshes, so the lengths come from the anim files a client plays.
 int fpgun_action_anim_ms(const int weapon_type, const rf::WeaponAction action)
 {
     int& length = g_fpgun_anim_ms[weapon_type][action];
@@ -167,7 +152,7 @@ int fpgun_action_anim_ms(const int weapon_type, const rf::WeaponAction action)
         for (int i = 0; i < num_actions; ++i) {
             const rf::WeaponStateAction& anim = info.first_person_action_anims[i];
             if (string_iequals(anim.name.c_str(), rf::weapon_action_names[action])) {
-                length = rfa_length_ms(std::string{get_filename_without_ext(anim.anim_name.c_str())} + ".rfa");
+                length = rfa_length_ms(rfa_load_name(anim.anim_name.c_str()));
                 break;
             }
         }
@@ -175,15 +160,14 @@ int fpgun_action_anim_ms(const int weapon_type, const rf::WeaponAction action)
     return length;
 }
 
-void server_bot_set_hold(ServerBotWeaponHold& hold, const rf::Entity& ep, const int weapon_type, const int ms)
+void server_bot_set_hold(ServerBot::WeaponHold& hold, const rf::Entity& ep, const int weapon_type, const int ms)
 {
     hold.done.set(ms);
     hold.entity_handle = ep.handle;
     hold.weapon_type = weapon_type;
 }
 
-// Milliseconds left; a hold for another entity or weapon is dropped.
-int server_bot_hold_left(ServerBotWeaponHold& hold, const rf::Entity& ep)
+int server_bot_hold_left(ServerBot::WeaponHold& hold, const rf::Entity& ep)
 {
     if (!hold.done.valid()) {
         return 0;
@@ -221,8 +205,7 @@ void server_bot_reload(ServerBot& bot, rf::Player& pp, const int weapon_type)
     server_bot_set_hold(bot.client_reload, *ep, weapon_type, server_bot_hold_left(bot.fire_anim, *ep) + reload_ms);
 }
 
-// The fire validator refuses an empty clip but does not check a reload in progress, so a server bot waits out its
-// reload and starts one for a spent clip itself.
+// The fire validator refuses an empty clip but not a reload in progress.
 bool server_bot_clip_ready(ServerBot& bot, rf::Player& pp, rf::Entity& ep, const int weapon_type)
 {
     if (server_bot_weapon_reloading(bot, ep)) {
@@ -243,9 +226,7 @@ void server_bot_fire(rf::Entity& ep, const int weapon_type, const bool alt_fire)
     rf::multi_process_remote_weapon_fire(&ep, weapon_type, pos, orient, alt_fire);
 }
 
-// A player's client plays a throw's wind-up anim at the press and creates the projectile, sending its fire packet,
-// once the weapon's first create delay ($Impact Delay) is over (0x004A5727-0x004A5800); the server's copy of that anim
-// is what obj_update sends as the state byte's fire bits (0x00475930). The remote-fire handler plays no anim.
+// As on a player's client: the anim at the press, the projectile once the weapon's create delay is over.
 void server_bot_throw(ServerBot& bot, rf::Entity& ep, const int weapon_type, const bool alt_fire)
 {
     rf::entity_play_attack_anim(&ep, alt_fire);
@@ -255,18 +236,17 @@ void server_bot_throw(ServerBot& bot, rf::Entity& ep, const int weapon_type, con
         server_bot_fire(ep, weapon_type, alt_fire);
         return;
     }
-    ServerBotPendingThrow& pending = bot.pending_throw;
+    ServerBot::PendingThrow& pending = bot.pending_throw;
     pending.release.set(delay_ms);
     pending.entity_handle = ep.handle;
     pending.weapon_type = weapon_type;
     pending.alt_fire = alt_fire;
 }
 
-// True while a throw is winding up; the projectile leaves at its end unless the bot died, respawned, switched or found
-// the throw unsafe meanwhile.
+// True while a throw is winding up.
 bool server_bot_update_pending_throw(ServerBot& bot, rf::Entity& ep)
 {
-    ServerBotPendingThrow& pending = bot.pending_throw;
+    ServerBot::PendingThrow& pending = bot.pending_throw;
     if (!pending.release.valid()) {
         return false;
     }
@@ -283,7 +263,7 @@ bool server_bot_update_pending_throw(ServerBot& bot, rf::Entity& ep)
     if (!pending.release.elapsed()) {
         return true;
     }
-    const ServerBotPendingThrow released = pending;
+    const ServerBot::PendingThrow released = pending;
     pending = {};
     server_bot_fire(ep, released.weapon_type, released.alt_fire);
     return false;
@@ -316,8 +296,7 @@ void server_bot_apply_fire(ServerBot& bot, rf::Player& pp, rf::Entity& ep, const
         multi_turn_weapon_off(&ep);
     }
 
-    // A fired splash shot leaves only on a think's frame, whose view its safety check judged; a throw's release is
-    // judged again every think of its wind-up, which the bot arms per press.
+    // A splash shot fires only on a think's frame, the view its self-damage check judged.
     const bool thrown = multi_weapon_fire_is_thrown(weapon_type, alt_fire);
     const bool splash = rf::weapon_types[weapon_type].damage_radius > 0.0f;
     const bool trigger = (rf::weapon_is_semi_automatic(weapon_type) || thrown)
@@ -335,8 +314,7 @@ void server_bot_apply_fire(ServerBot& bot, rf::Player& pp, rf::Entity& ep, const
         server_bot_fire(ep, weapon_type, alt_fire);
         server_bot_note_fire_anim(bot, ep, weapon_type, alt_fire);
     }
-    // Thrown weapons are created inline by the remote-fire handler, which never re-arms the fire wait; a player's
-    // wait starts at the press.
+    // Thrown weapons leave through the remote-fire handler, which never re-arms the fire wait.
     if (!ep.ai.next_fire_primary.valid() || ep.ai.next_fire_primary.elapsed()) {
         ep.ai.next_fire_primary.set(rf::weapon_get_fire_wait_ms(weapon_type, alt_fire));
     }
@@ -347,8 +325,7 @@ int server_bot_keyframe_interval_ms()
     return 1000 / static_cast<int>(g_alpine_game_config.server_netfps);
 }
 
-// The obj_update row of a non-local entity is its newest keyframe, and a row whose tick the recipient already
-// has is dropped.
+// obj_update sends a remote entity's newest keyframe, and a recipient drops a tick it already has.
 void server_bot_refresh_keyframe(rf::Entity& ep, const int min_age_ms)
 {
     const rf::ObjInterp* const interp = ep.obj_interp;
@@ -364,8 +341,7 @@ void server_bot_refresh_keyframe(rf::Entity& ep, const int min_age_ms)
                                        ep.ai.ci.move, tick);
 }
 
-// The server obj_update loop's row packing (0x0047E630). A recipient's rows are about one send interval apart,
-// so pushing at half-interval age gives its rows fresh keyframes at no more than two pushes per interval.
+// A recipient's rows are about one send interval apart, so a push at half-interval age keeps them fresh.
 CallHook<int(rf::Player*, rf::Entity*, void*)> server_bot_pack_obj_update_hook{
     0x0047E70B,
     [](rf::Player* recipient, rf::Entity* ep, void* data) {
@@ -376,8 +352,7 @@ CallHook<int(rf::Player*, rf::Entity*, void*)> server_bot_pack_obj_update_hook{
     },
 };
 
-// multi_chat_say's listen-server branch (0x00444150) shows the host's own line; it never reaches the chat_line
-// receive handler, so this is where server bots hear the host.
+// The listen host's own line never reaches the chat_line receive handler, so server bots hear it here.
 CallHook<void(rf::Player*, const char*, int)> listen_host_chat_add_msg_hook{
     0x00444285,
     [](rf::Player* player, const char* msg, int is_team_msg) {
@@ -413,7 +388,7 @@ void server_bot_apply_outputs(ServerBot& bot, const bool thought)
         }
         server_bot_apply_fire(bot, *pp, *ep, thought);
     }
-    // Keeps the ring non-empty (obj_update skips an entity without keyframes) and recent without recipients.
+    // obj_update skips an entity without keyframes.
     server_bot_refresh_keyframe(*ep, server_bot_keyframe_interval_ms());
 }
 
@@ -580,7 +555,7 @@ void server_bot_create(const ServerBotRosterEntry& entry)
     bot->ctx.player = pp;
     bot->ctx.is_server_bot = true;
     bot->roster_id = entry.id;
-    // Golden-ratio phases keep bots created together from thinking on the same frames.
+    // Bots created together think on different frames.
     bot->think_wait = k_server_bot_think_interval * std::fmod(static_cast<float>(entry.id) * 0.618034f, 1.0f);
     server_bot_apply_config(bot->ctx, config);
     g_server_bots.push_back(std::move(bot));
@@ -599,8 +574,7 @@ void server_bot_create(const ServerBotRosterEntry& entry)
         config.personality_preset, g_bot_profile_slots.get_slot(pp), config.skill_preset, character);
 }
 
-// Runs after the removal queue is drained: player ids are reused, so no bot is created while one with a
-// queued id is still in the player list.
+// Called after the removal queue drains, as a new bot could reuse a queued bot's player id.
 void server_bots_reconcile(const bool in_gameplay)
 {
     for (const auto& bot : g_server_bots) {
@@ -609,8 +583,7 @@ void server_bots_reconcile(const bool in_gameplay)
         }
     }
 
-    // server_full_num_players_hook admits a human into a full server on the strength of the server bots. The bot
-    // leaves once the joiner's reliable socket attaches; a join request that never connects times out instead.
+    // A human admitted on the strength of a bot takes its slot once his reliable socket attaches.
     const int num_players = multi_num_players_occupying_slots();
     const int num_connected = num_players - multi_num_players_waiting_for_reliable_socket();
     int excess = num_connected - rf::netgame.max_players - static_cast<int>(g_server_bot_removals.size());
@@ -780,7 +753,6 @@ void server_bot_say(rf::Player& sender, const std::string_view message, const bo
         }
     }
 
-    // The stock chat_line relay, sent as the bot.
     const auto packet = build_chat_line_packet(sender.net_data->player_id, is_team_msg, msg);
     for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
         if (&player != rf::local_player && &player != &sender && (!is_team_msg || player.team == sender.team)) {
@@ -831,7 +803,7 @@ void server_bots_on_level_init()
 
 void server_bots_on_multi_stop()
 {
-    // A dedicated server seeds its roster from the config; a listen host's next game starts without bots.
+    // A listen host's next game starts without bots.
     g_server_bot_roster.clear();
     g_server_bot_removals.clear();
     g_server_bot_think_cursor = 0;
@@ -845,8 +817,7 @@ void server_bots_do_frame()
         return;
     }
     server_bots_process_removals();
-    // A listen host's menus are pushed over gameplay and the MP world keeps simulating under them (0x00436160);
-    // limbo and level loads replace the whole state stack.
+    // The MP world keeps simulating under a listen host's menus.
     const bool in_gameplay = (rf::level.flags & rf::LEVEL_LOADED) && gameseq_is_stacked(rf::GS_GAMEPLAY);
     server_bots_reconcile(in_gameplay);
 
@@ -859,17 +830,13 @@ void server_bots_do_frame()
         if (!in_gameplay) {
             server_bot_stop_idle_entity(bot);
             bot_context_reset_idle(bot.ctx);
-            bot.pending_dt = 0.0f;
             continue;
         }
-        bot.pending_dt += rf::frametime;
         bot.think_wait -= rf::frametime;
         const bool thinks = bot.think_wait <= 0.0f && think_us < k_server_bot_think_budget_us;
         if (thinks) {
             // A late think keeps the cadence but never earns more than one catch-up think.
             bot.think_wait = std::max(bot.think_wait, -k_server_bot_think_interval) + k_server_bot_think_interval;
-            bot.ctx.frame_dt = bot.pending_dt;
-            bot.pending_dt = 0.0f;
             bot.ctx.state.firing.aim_goal_active = false;
             const int64_t think_start_us = timer::get_i64(1000000);
             bot_run_frame(bot.ctx);

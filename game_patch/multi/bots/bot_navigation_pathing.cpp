@@ -162,8 +162,7 @@ int find_recovery_anchor_alternative_waypoint(
         signed char viable;
         signed char visible;
     };
-    // Visited best (lowest score, then lowest index) first, so the probes stop at the first acceptable waypoint.
-    // The order is produced lazily from a heap: the first few candidates usually pass.
+    // Ordered lazily from a heap: the probes usually stop at one of the first few candidates.
     std::vector<Candidate> candidates;
     for (int waypoint = 1; waypoint < waypoint_total; ++waypoint) {
         rf::Vector3 waypoint_pos{};
@@ -185,7 +184,6 @@ int find_recovery_anchor_alternative_waypoint(
     };
     std::make_heap(candidates.begin(), candidates.end(), worse);
     size_t num_ordered = 0;
-    // The ordered candidates collect at the back of the vector, best last.
     const auto nth_best = [&](const size_t rank) -> Candidate& {
         while (num_ordered <= rank) {
             std::pop_heap(candidates.begin(), candidates.end() - num_ordered, worse);
@@ -1145,6 +1143,7 @@ void reset_client_bot_state()
     bot_state().failed_waypoint_cooldowns.clear();
     bot_state().failed_item_goal_cooldowns.clear();
     bot_state().failed_route_searches.clear();
+    bot_state().failed_crater_targets.fill({});
     for (BotReachableWaypointMemo& memo : bot_state().reachable_waypoint_memos) {
         memo.timer.invalidate();
     }
@@ -1203,6 +1202,7 @@ void reset_client_bot_state()
     bot_state().bridge.post_open_target_waypoint = 0;
     bot_state().bridge.post_open_priority_timer.invalidate();
     bot_state().crater_goal_abort_timer.invalidate();
+    bot_state().crater_standoff_abort_timer.invalidate();
     bot_state().crater_goal_timeout_timer.invalidate();
     bot_state().crater_standoff_timer.invalidate();
     bot_state().shatter_goal_abort_timer.invalidate();
@@ -1584,7 +1584,6 @@ bool pick_waypoint_route_to_los_goal(
         max_candidates = std::min(max_candidates, 8);
     }
 
-    // Only the nearest max_candidates visible waypoints are routed to.
     std::vector<Candidate> candidates;
     candidates.reserve(max_candidates);
     for (int probe_index = 0;

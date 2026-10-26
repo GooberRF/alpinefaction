@@ -36,9 +36,7 @@ constexpr float kPowerPositionElevationScale = 8.0f;
 constexpr float kPowerPositionElevationClamp = 2.5f;
 constexpr float kPowerPositionZoneBonus = 1.35f;
 
-// Probes depend on node positions and the level geometry only. Temporary nodes come and go and remapping shifts
-// indices, so entries are checked against their nodes' positions rather than dropped on every node count change;
-// a geomod drops them all.
+// Entries are checked against node positions because temporary nodes and remapping shift indices.
 struct NodeProbeCache
 {
     struct Entry
@@ -1534,8 +1532,7 @@ float bot_nav_compute_route_score(
 float bot_nav_compute_route_score_upper_bound(const std::vector<int>& path)
 {
     const RouteScoreWeights w = compute_route_score_weights();
-    // Every other term is a penalty with a non-negative weight, except the power position bonus and the
-    // jump pad and crater affinity quirks, which can make the special penalty negative.
+    // A negative revisit weight or these quirks can lift a score above any bound.
     if (w.revisit < 0.0f
         || bot_personality_has_quirk(BotPersonalityQuirk::jump_pad_pathing_affinity)
         || bot_personality_has_quirk(BotPersonalityQuirk::crater_unlock_affinity)) {
@@ -1554,7 +1551,7 @@ float bot_nav_compute_route_score_upper_bound(const std::vector<int>& path)
 
 const BotWaypointDistanceField& bot_nav_distance_field(const int source_waypoint, const std::vector<int>& avoidset)
 {
-    // Fields depend only on the graph, so all bots share a few. A miss replaces the least recently used one.
+    // Fields depend only on the graph, so all bots share them.
     struct CachedField
     {
         int graph_version = -1;

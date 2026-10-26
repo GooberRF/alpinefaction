@@ -35,9 +35,7 @@ void bot_goal_manager_ensure_active(
     }
 
     bot_state_set_roam_fallback_goal(fallback_eval_delay_ms);
-    // Allow a fresh evaluation even if the per-frame dedup already ran this frame.
-    // Recovery paths (watchdogs, invariant checks) clear the goal and need a real
-    // reevaluation to pick a new objective.
+    // Recovery paths clear the goal and need a real reevaluation; only the first forced call per frame gets one.
     allow_forced_goal_refresh();
     bot_refresh_goal_state(local_entity, enemy_target, enemy_has_los);
     if (bot_state().active_goal == BotGoalType::none) {
@@ -66,8 +64,6 @@ void bot_goal_manager_force_refresh_and_ensure(
     const bool enemy_has_los,
     const int fallback_eval_delay_ms)
 {
-    // Bypass per-frame dedup so watchdog recovery paths get a real reevaluation
-    // even if the initial frame refresh already ran.
     allow_forced_goal_refresh();
     bot_goal_manager_refresh(local_entity, enemy_target, enemy_has_los);
     bot_goal_manager_ensure_active(

@@ -8,6 +8,7 @@ set(SRCS
     include/common/alpine_gas_region.h
     include/common/ComPtr.h
     include/common/afd_format.h
+    include/common/rfa_format.h
     include/common/rfl_chunk_reader.h
     include/common/tlv.h
     include/common/scope_guard.h

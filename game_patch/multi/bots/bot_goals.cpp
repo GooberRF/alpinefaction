@@ -62,7 +62,6 @@ bool has_committed_pickup_route()
     return bot_state().has_waypoint_target;
 }
 
-// A pickup is on the way when it is within reach or costs only a short detour on the way to the enemy.
 bool item_pickup_is_on_the_way(const rf::Vector3& from, const rf::Vector3& enemy_pos, const rf::Vector3& item_pos)
 {
     constexpr float kOnTheWayReach = 3.0f;
@@ -245,7 +244,6 @@ rf::Vector3 resolve_control_point_objective_pos(
     return fallback_pos;
 }
 
-// The player's entity while the player takes part and is alive, else null.
 rf::Entity* live_participant_entity(const rf::Player& player)
 {
     if (player.is_non_participant() || player.is_spectator || player.is_spawn_disabled
@@ -690,11 +688,7 @@ bool build_salvage_runtime_state(SalvageRuntimeState& out_state)
     return true;
 }
 
-// Scavenger splits each team without messaging: every bot ranks its living teammates by route distance from the
-// objective's anchor (the cartridge, its spawn or the carrier), which on the mostly two-way graphs stands in for the
-// way there, and takes the primary role while it is among the nearest. A bot already in the role counts itself
-// nearer, so bots at similar distances keep their roles instead of trading them; the ranking is redone on a slow
-// cadence and whenever the objective changes hands or state.
+// A bot already in the primary role counts itself nearer, so bots at similar distances keep their roles.
 bool scavenger_takes_primary_role(const rf::Entity& local_entity, const SalvageRuntimeState& state)
 {
     constexpr int kRoleRefreshMs = 1500;
@@ -762,7 +756,6 @@ bool scavenger_takes_primary_role(const rf::Entity& local_entity, const SalvageR
             ++nearer;
         }
     }
-    // One bot escorts a carrying teammate; every other role takes the nearer half of the team.
     const int primary_count = state.ally_carry ? 1 : (teammates + 1) / 2;
     bs.scav_role_primary = nearer < primary_count;
     return bs.scav_role_primary;
@@ -1430,6 +1423,7 @@ void bot_refresh_goal_state(
                     standoff)) {
                 bot_state().goal_target_waypoint = target_waypoint;
                 bot_state().crater_goal_abort_timer.invalidate();
+                bot_state().crater_standoff_abort_timer.invalidate();
                 reevaluate_goal = false;
             }
             else {
@@ -1441,7 +1435,7 @@ void bot_refresh_goal_state(
                     reevaluate_goal = false;
                 }
                 else {
-                    bot_nav_note_failed_crater_target(current_target.uid);
+                    bot_nav_note_failed_crater_target(current_target.uid, kFailedCraterTargetCooldownMs);
                     reevaluate_goal = true;
                 }
 
@@ -1654,7 +1648,6 @@ void bot_refresh_goal_state(
         }
     }
     else if (bot_goal_is_bagman_objective(bot_state().active_goal)) {
-        // Like the other objectives, re-evaluated once invalid or when the evaluation timer is due.
         BagmanRuntimeState bagman_state{};
         bool goal_valid = false;
         if (build_bagman_runtime_state(bagman_state) && !bagman_state.unavailable) {
@@ -1892,6 +1885,12 @@ void bot_refresh_goal_state(
                 && enemy_target
                 && !enemy_has_los));
     if (crater_context) {
+        struct CraterCandidate
+        {
+            int target_index = 0;
+            float score = 0.0f;
+        };
+        std::vector<CraterCandidate> crater_candidates{};
         const int target_count = waypoints_target_count();
         for (int target_index = 0; target_index < target_count; ++target_index) {
             WaypointTargetDefinition target{};
@@ -1931,14 +1930,36 @@ void bot_refresh_goal_state(
             if (target.uid == bot_state().goal_target_identifier) {
                 score += 18.0f;
             }
+            crater_candidates.push_back({target_index, score});
+        }
 
-            if (goal_score_wins_with_tie_break(score, crater_goal_score)) {
-                crater_goal_score = score;
-                crater_goal_target_uid = target.uid;
-                crater_goal_target_pos = target.pos;
-                crater_goal_waypoint = target_waypoint;
-                has_crater_goal = true;
+        // Only the best few are checked for a fire position: a standoff search scans every waypoint and probes LOS.
+        constexpr int kCraterFireWaypointChecks = 3;
+        for (int check = 0; check < kCraterFireWaypointChecks && !crater_candidates.empty(); ++check) {
+            auto best = crater_candidates.begin();
+            for (auto it = best + 1; it != crater_candidates.end(); ++it) {
+                if (goal_score_wins_with_tie_break(it->score, best->score)) {
+                    best = it;
+                }
             }
+            WaypointTargetDefinition target{};
+            int fire_waypoint = 0;
+            rf::Vector3 fire_waypoint_pos{};
+            bool standoff = false;
+            if (waypoints_get_target_by_index(best->target_index, target)) {
+                if (bot_nav_find_crater_fire_waypoint(
+                        local_entity, target, fire_waypoint, fire_waypoint_pos, standoff)) {
+                    crater_goal_score = best->score;
+                    crater_goal_target_uid = target.uid;
+                    crater_goal_target_pos = target.pos;
+                    crater_goal_waypoint = fire_waypoint;
+                    has_crater_goal = true;
+                    break;
+                }
+                // Lets the next evaluations reach the candidates below the cap.
+                bot_nav_note_failed_crater_target(target.uid, kCraterSelectionFailCooldownMs);
+            }
+            crater_candidates.erase(best);
         }
     }
     if (shatter_context) {
@@ -2370,14 +2391,12 @@ void bot_refresh_goal_state(
             salvage_goal = cand;
         };
 
-        // Scavenger: the bots nearest the objective go for it, the rest of the team holds the zone.
         const bool primary_role = !salvage_state.scavenger
             || salvage_state.we_carry
             || scavenger_takes_primary_role(local_entity, salvage_state);
         constexpr float kScavengerGrabDist = 12.0f;
 
         if (salvage_state.we_carry && salvage_state.delivery_known) {
-            // Carrying: only scoring the flag at our own base (Scavenger: the zone) matters.
             const float deliver_dist = std::sqrt(std::max(
                 rf::vec_dist_squared(&local_entity.pos, &salvage_state.delivery_pos), 0.0f));
             const float proximity_bonus = std::clamp(190.0f - deliver_dist * 1.40f, -80.0f, 190.0f);
@@ -2430,7 +2449,6 @@ void bot_refresh_goal_state(
             });
         }
         else if (salvage_state.scavenger && salvage_state.ally_carry && salvage_state.carrier_entity && primary_role) {
-            // Cover the teammate carrying the cartridge to the zone.
             const float escort_dist = std::sqrt(std::max(
                 rf::vec_dist_squared(&local_entity.pos, &salvage_state.carrier_entity->pos), 0.0f));
             consider_salvage_candidate(SalvageGoalCandidate{
@@ -2472,8 +2490,7 @@ void bot_refresh_goal_state(
             && salvage_state.zone_known
             && !salvage_state.we_carry
             && salvage_goal.goal == BotGoalType::none) {
-            // Defend or intercept at the zone every carrier has to reach; while the cartridge is
-            // yet to spawn this gives way to any fight.
+            // Every carrier has to reach the zone, so holding it both defends and intercepts.
             const float zone_dist = std::sqrt(std::max(
                 rf::vec_dist_squared(&local_entity.pos, &salvage_state.zone_pos), 0.0f));
             consider_salvage_candidate(SalvageGoalCandidate{
@@ -3173,7 +3190,7 @@ void bot_refresh_goal_state(
         }
     }
 
-    // A new goal is held for a minimum time unless it became invalid, an objective calls or an enemy shows up.
+    // A minimum dwell keeps the bot from flapping between goals.
     if (std::isfinite(current_goal_score)
         && bot_state().active_goal != BotGoalType::none
         && selected_goal != bot_state().active_goal
@@ -3188,9 +3205,7 @@ void bot_refresh_goal_state(
         selected_pos = bot_state().goal_target_pos;
     }
 
-    // With an enemy in sight and a weapon that can win the fight, pickups wait unless they are on the way or the bot is
-    // about to die. A weapon that needs longer than this to take a full-health enemy down (the spawn handgun) does not
-    // count.
+    // Pickups wait while the bot can win the fight in front of it; the spawn handgun alone cannot.
     constexpr float kArmedMaxTimeToKillSeconds = 2.5f;
     if (enemy_target
         && enemy_has_los
@@ -3236,6 +3251,7 @@ void bot_refresh_goal_state(
         bot_state().pursuit_route_failures = 0;
         bot_state().eliminate_target_reacquire_timer.invalidate();
         bot_state().crater_goal_abort_timer.invalidate();
+        bot_state().crater_standoff_abort_timer.invalidate();
         bot_state().shatter_goal_abort_timer.invalidate();
         bot_state().ctf_objective_route_fail_timer.invalidate();
         if (selected_goal != BotGoalType::create_crater) {

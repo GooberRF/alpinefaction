@@ -119,11 +119,13 @@ Version 1.5.0 (Trillium): Not yet released
 - Reduce the CPU time bots spend choosing goals and planning routes, and stop bots from repeatedly searching for routes to destinations they cannot reach
 - Spread the `hard`, `expert` and `nightmare` bot skill presets apart; expert and nightmare previously aimed and decided identically, and hard almost so
 - Add `reaction_time_ms`, `aim_error_min`, `aim_error_max`, `yaw_speed_cap`, `pitch_speed_cap`, `fire_alignment_threshold` and `semi_auto_click_interval_scale` bot skill fields for `skill_overrides` in bot profiles
-- Allow the bot personality and skill bias fields that were raised to at least 0.25 to be set to 0 to switch off what they scale
+- Allow the `opportunism_bias`, `seek_weapon_bias`, `replenish_bias`, `weapon_switch_bias`, `path_smoothing_bias`, `dodge_combat_bias`, `crouch_combat_bias`, `jump_combat_bias` and `ctf_hold_enemy_flag_safety_bias` bot personality fields, which were raised to at least 0.25, to be set to 0 to switch off what they scale, and `decision_aggression_bias` and `decision_risk_tolerance` to go below 0.25 for bots that retreat and restock earlier and avoid hazardous routes
 - Make bots choose weapons by their expected damage at the current distance (from the weapons' `weapons.tbl` stats, with personality preferences as a weight), switch on pickups and new targets, fire only within a weapon's effective range, and keep one remote charge out at a time, setting it off when an enemy is in the blast
 - Make bots use explosives safely (no splash fire that would kill the bot or reach a teammate, backing out of their own blast before firing; the only exception is a sure kill when cornered with the only weapon left, such as a GunGame fusion launcher; rockets aimed at the feet, geomod craters fired from a distance), top up their clip once the enemy is out of sight, and stop leaving fights for pickups that are not on the way
+- Make bots break off to top up armor at a lower armor level, and switch goals less often
 - Make bots walk straight to objectives, items and enemies only when nothing (including glass and fences) is in the way and there is no ledge to drop off, and look ahead round corners or toward where a threat was last noticed instead of crab-walking and sweeping their view while moving; the `navigation_strafe_bias` personality field now only switches this look-ahead on (above 0) or off (0)
-- Ignore connected human players who are not playing (not spawned and not killed in the last 5 seconds) when picking a joining bot's team
+- Ignore connected human players who have not spawned yet this level when picking a joining bot's team
+- Give a bot a default name when its profile's `player_name` is already used by a connected player, and cut profile names to the 31-character player name limit
 - Add `Fit`, `Fit Aspect`, `Justify`, and `Wrap` buttons to texture mode in the level editor
 - Show the texture, size and texel density of the face under the cursor (or the selected face) in the level editor status bar in texture mode, and outline it in the viewports
 - Add a `Texture lock` toggle (hotkey 6, off by default) to the level editor top bar

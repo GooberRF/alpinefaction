@@ -150,16 +150,6 @@ void bot_personality_set_presets(
     const std::vector<BotConfigOverride>* personality_overrides = nullptr,
     const std::vector<BotConfigOverride>* skill_overrides = nullptr);
 
-// Mutable access for applying individual field overrides after preset selection.
-// Intended for server-driven per-field tweaks on top of a base preset.
-BotPersonality& bot_personality_get_mutable(BotContext& ctx);
-BotSkillProfile& bot_skill_profile_get_mutable(BotContext& ctx);
-
-// Apply a single field override by numeric field ID.
-// Returns true if the field_id was recognized and applied.
-bool bot_personality_apply_field_override(BotContext& ctx, uint8_t field_id, float value);
-bool bot_skill_apply_field_override(BotContext& ctx, uint8_t field_id, float value);
-
 // Name-to-field-ID lookup for TOML config parsing.
 // Returns -1 if the name is not recognized.
 int bot_personality_field_id_from_name(const char* name);

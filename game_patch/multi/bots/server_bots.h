@@ -11,8 +11,7 @@ namespace rf
 
 struct ServerBot;
 
-// The roster lists the server bots that should exist; it lives in memory only.
-// Loading the server config (incl. sv_loadconfig) resizes it to the config's server_bots count.
+// The roster: the server bots that should exist. Loading the server config resizes it.
 bool server_bots_configured();
 void server_bots_reset_roster(int count);
 // profile_index / team -1 = automatic. False when the roster is full.

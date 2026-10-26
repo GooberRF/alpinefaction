@@ -267,6 +267,7 @@ void abort_goal_and_fsm_for_confusion(rf::Entity& entity)
     bot_state().eliminate_target_reacquire_timer.invalidate();
     bot_state().bridge.reset();
     bot_state().crater_goal_abort_timer.invalidate();
+    bot_state().crater_standoff_abort_timer.invalidate();
     bot_state().crater_goal_timeout_timer.invalidate();
     bot_state().shatter_goal_abort_timer.invalidate();
     bot_state().shatter_goal_timeout_timer.invalidate();
@@ -616,8 +617,7 @@ void capture_global_failsafe_watchdog_snapshot(const rf::Entity& entity)
     bot_state().global_failsafe_wd.timer.set(kGlobalFailsafeWatchdogMs);
 }
 
-// A carrier camping with the bag (at its spot), a salvage bot staged at its spawn (anywhere in the arrival area) or a
-// Scavenger bot holding the zone or escorting its carrier is meant to stay put.
+// A bot holding a spot is meant to stay put, so standing still there is not a stall.
 bool bot_is_holding_position(const rf::Entity& entity)
 {
     float hold_radius = 0.0f;
@@ -639,7 +639,7 @@ bool bot_is_holding_position(const rf::Entity& entity)
         && rf::vec_dist_squared(&entity.pos, &bot_state().goal_target_pos) <= hold_radius * hold_radius;
 }
 
-// Scavenger holds side-step around their spot; a blocked step there is no reason to reroute.
+// A blocked side step at a held spot is no reason to reroute.
 bool bot_is_holding_scavenger_spot(const rf::Entity& entity)
 {
     return (bot_state().active_goal == BotGoalType::sal_hold_zone
@@ -1646,8 +1646,7 @@ float get_weapon_ammo_fill_ratio(const rf::Entity& local_entity, const int weapo
     return bot_decision_get_weapon_ammo_fill_ratio(local_entity, weapon_type);
 }
 
-// Weapon stay leaves exempt weapons to be picked up as usual. Client bots cannot see the server's rules and assume
-// the default exemption (the fusion launcher).
+// Client bots cannot see the server's rules and assume the default exemption (the fusion launcher).
 bool weapon_stay_exempts(const int weapon_type)
 {
     if (!bot_ctx().is_server_bot) {
@@ -1659,7 +1658,6 @@ bool weapon_stay_exempts(const int weapon_type)
     });
 }
 
-// Picking up a weapon the bot already owns gives its ammo, unless weapon stay keeps the bot from taking it.
 bool item_gives_owned_weapon_ammo(const rf::Entity& local_entity, const rf::ItemInfo& item_info)
 {
     const int weapon_type = item_info.gives_weapon_id;
@@ -1669,7 +1667,6 @@ bool item_gives_owned_weapon_ammo(const rf::Entity& local_entity, const rf::Item
         && (!(rf::netgame.flags & rf::NG_FLAG_WEAPON_STAY) || weapon_stay_exempts(weapon_type));
 }
 
-// The weapon whose ammo a pickup refills: its ammo type, or the weapon a weapon pickup gives.
 int item_ammo_weapon_type(const rf::ItemInfo& item_info)
 {
     return item_info.ammo_for_weapon_id >= 0 ? item_info.ammo_for_weapon_id : item_info.gives_weapon_id;
@@ -1891,7 +1888,6 @@ float compute_collectible_item_goal_value(
 
     if (is_weapon_pickup) {
         const int weapon_type = item_info->gives_weapon_id;
-        // With weapon stay an owned weapon cannot be picked up again.
         if (weapon_type >= 0 && weapon_type < rf::num_weapon_types && local_entity.ai.has_weapon[weapon_type]) {
             return 0.0f;
         }
@@ -2026,7 +2022,6 @@ bool find_best_item_goal(
         return route_score;
     };
 
-    // Exact route scores are only computed while an item's upper bound can still beat the best score so far.
     std::vector<ScoredItem> scored_items;
     const BotWaypointDistanceField& distance_field = bot_nav_distance_field(start_waypoint);
     std::vector<int> route;
@@ -2810,7 +2805,7 @@ void bot_context_reset_idle(BotContext& ctx)
     bot_state_reset_fsm(BotFsmState::inactive);
     ctx.state.hud_status_timer.invalidate();
     ctx.state.console_status_timer.invalidate();
-    // server_config_received survives non-gameplay states (limbo, loading); nothing resets it.
+    // server_config_received is kept: the server sends the bot config once per join, not per level.
     bot_perception_manager_reset_tracking();
 }
 
@@ -2997,6 +2992,7 @@ void bot_run_frame(BotContext& ctx)
         ctx.state.bridge.post_open_target_waypoint = 0;
         ctx.state.bridge.post_open_priority_timer.invalidate();
         ctx.state.crater_goal_abort_timer.invalidate();
+        ctx.state.crater_standoff_abort_timer.invalidate();
         ctx.state.crater_goal_timeout_timer.invalidate();
         ctx.state.shatter_goal_abort_timer.invalidate();
         ctx.state.shatter_goal_timeout_timer.invalidate();

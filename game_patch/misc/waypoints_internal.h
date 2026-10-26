@@ -11,6 +11,11 @@ extern std::vector<WaypointTargetDefinition> g_waypoint_targets;
 extern int g_debug_waypoints_mode;
 extern bool g_drop_waypoints;
 
+inline int remap_waypoint_uid(const std::vector<int>& remap, const int waypoint_uid, const int fallback = 0)
+{
+    return (waypoint_uid > 0 && waypoint_uid < static_cast<int>(remap.size())) ? remap[waypoint_uid] : fallback;
+}
+
 bool is_multiplayer_client();
 bool are_waypoint_commands_enabled_for_local_client();
 float sanitize_waypoint_link_radius(float link_radius);

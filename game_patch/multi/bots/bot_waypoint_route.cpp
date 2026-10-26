@@ -176,7 +176,6 @@ bool search_waypoint_route(
 
 uint64_t hash_avoidset(const std::vector<int>& avoidset)
 {
-    // FNV-1a over the size and the sorted members.
     uint64_t hash = 14695981039346656037ull;
     const auto mix = [&hash](const uint32_t value) {
         for (int shift = 0; shift < 32; shift += 8) {
@@ -191,8 +190,7 @@ uint64_t hash_avoidset(const std::vector<int>& avoidset)
     return hash;
 }
 
-// A search a bot keeps repeating without finding a route is not run again for a while. Each avoid set is tracked
-// apart, so a stricter search cannot hold back its relaxed fallbacks.
+// Each avoid set is tracked apart, so a stricter search cannot hold back its relaxed fallbacks.
 std::vector<FailedRouteSearch>& failed_route_searches()
 {
     BotState& state = bot_state();
@@ -231,7 +229,6 @@ void note_route_search_result(const int from, const int to, const uint64_t avoid
     }
     if (!entry) {
         if (entries.size() >= kFailedRouteSearchCapacity) {
-            // Drop an entry that is not backing off; failing that, the one whose backoff ends first.
             auto victim = std::find_if(entries.begin(), entries.end(), [](const FailedRouteSearch& e) {
                 return !e.cooldown.valid() || e.cooldown.elapsed();
             });

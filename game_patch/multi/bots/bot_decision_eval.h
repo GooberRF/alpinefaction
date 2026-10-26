@@ -5,7 +5,6 @@
 
 float bot_decision_get_entity_health_ratio(const rf::Entity& entity);
 float bot_decision_get_entity_armor_ratio(const rf::Entity& entity);
-// Clip plus reserve ammo over the multiplayer maximum.
 float bot_decision_get_weapon_ammo_fill_ratio(const rf::Entity& entity, int weapon_type);
 float bot_decision_apply_aggression_to_threshold(float threshold, float aggression_bias);
 

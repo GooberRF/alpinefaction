@@ -3,6 +3,7 @@
 #include <commctrl.h>
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -14,6 +15,7 @@
 #include <xlog/xlog.h>
 #include <patch_common/CallHook.h>
 #include <patch_common/MemUtils.h>
+#include <common/rfa_format.h>
 #include <common/utils/string-utils.h>
 #include "mesh_browser.h"
 #include "mesh.h"
@@ -48,7 +50,6 @@ constexpr std::size_t anim_name_max = 59;
 // An .rfa stores no bone names, only a per bone table indexed by the character's own bone index.
 // 0x005002DB reads that table without a bounds check, so an animation with fewer bones than the
 // character walks off it into keyframe data and dereferences the result.
-constexpr std::uint32_t rfa_signature = 0x46564D56; // "VMVF"
 constexpr int rfa_max_bones = 50;
 constexpr std::size_t rfa_header_size = 0x50;
 // Ceiling guard on how much of an animation is read for validation. This is larger than any
@@ -195,17 +196,9 @@ bool is_v3c(const std::string& name)
     return !name.empty() && string_iequals(get_ext_from_filename(name), "v3c");
 }
 
-// The animation loader (0x00500D30) cuts the name at its FIRST dot (strchr) and appends ".rfa", so
-// the name validated here has to be built the same way or a multi dot name validates one file and
-// loads another.
-std::string anim_load_name(const std::string& name)
-{
-    return name.substr(0, name.find('.')) + ".rfa";
-}
-
 bool anim_name_fits(const std::string& name)
 {
-    return name.size() <= anim_name_max && anim_load_name(name).size() <= anim_name_max;
+    return name.size() <= anim_name_max && rfa_load_name(name).size() <= anim_name_max;
 }
 
 template<typename T>
@@ -250,17 +243,17 @@ int rfa_header_bone_count(const std::string& file)
     if (read_le<std::uint32_t>(buf.data(), 0) != rfa_signature) {
         return 0;
     }
-    const int version = read_le<std::int32_t>(buf.data(), 4);
+    const int version = read_le<std::int32_t>(buf.data(), offsetof(RfaHeader, version));
     if (version != 7 && version != 8) {
         return 0;
     }
-    const int num_bones = read_le<std::int32_t>(buf.data(), 0x18);
+    const int num_bones = read_le<std::int32_t>(buf.data(), offsetof(RfaHeader, num_bones));
     return (num_bones >= 1 && num_bones <= rfa_max_bones) ? num_bones : 0;
 }
 
 int anim_bone_count(const std::string& anim_name)
 {
-    const std::string file = anim_load_name(anim_name);
+    const std::string file = rfa_load_name(anim_name);
     const std::string key = string_to_lower(file);
     const auto it = g_anim_bone_cache.find(key);
     if (it != g_anim_bone_cache.end()) {
@@ -349,13 +342,13 @@ bool rfa_is_playable(const std::string& file, const CharacterLimits& limits)
     if (read_le<std::uint32_t>(data, 0) != rfa_signature) {
         return false;
     }
-    const int version = read_le<std::int32_t>(data, 4);
+    const int version = read_le<std::int32_t>(data, offsetof(RfaHeader, version));
     if (version != 7 && version != 8) {
         return false;
     }
-    const int num_bones = read_le<std::int32_t>(data, 0x18);
-    const int num_morph_verts = read_le<std::int32_t>(data, 0x1C);
-    const int num_morph_keys = read_le<std::int32_t>(data, 0x20);
+    const int num_bones = read_le<std::int32_t>(data, offsetof(RfaHeader, num_bones));
+    const int num_morph_verts = read_le<std::int32_t>(data, offsetof(RfaHeader, num_morph_vertices));
+    const int num_morph_keys = read_le<std::int32_t>(data, offsetof(RfaHeader, num_morph_keyframes));
     if (num_bones < 1 || num_bones > rfa_max_bones) {
         return false;
     }
@@ -844,7 +837,7 @@ ActionLoadResult preview_load_action(BrowserState& st, const std::string& anim_n
     if (!anim_name_fits(anim_name)) {
         return action_incompatible;
     }
-    const std::string file = anim_load_name(anim_name);
+    const std::string file = rfa_load_name(anim_name);
     auto& validated = g_validated_actions[string_to_lower(st.selected)];
     const std::string file_key = string_to_lower(file);
     if (validated.find(file_key) == validated.end()) {
@@ -1129,7 +1122,7 @@ void accept_selection(HWND hdlg, BrowserState& st)
     }
     st.result = st.selected;
     if (st.anims_enabled && st.anim_chosen && is_v3c(st.selected)) {
-        st.anim_result = anim_load_name(st.selected_anim);
+        st.anim_result = rfa_load_name(st.selected_anim);
     }
     EndDialog(hdlg, IDOK);
 }
@@ -1375,7 +1368,7 @@ bool alpine_anim_playable_on(EditorVMesh* vmesh, const char* anim_name)
     // Called from hooks that RED frames sit below, so the validator's own allocation stops here.
     try {
         return anim_name_fits(anim_name) &&
-               rfa_is_playable(anim_load_name(anim_name), character_limits(vmesh));
+               rfa_is_playable(rfa_load_name(anim_name), character_limits(vmesh));
     }
     catch (...) {
         xlog::error("Mesh browser: out of memory validating animation '{}'", anim_name);
