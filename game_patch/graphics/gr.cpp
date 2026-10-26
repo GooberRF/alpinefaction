@@ -39,6 +39,7 @@
 #include "gr_internal.h"
 #include "weather.h"
 #include "scene_capture.h"
+#include "detail_texture.h"
 #include "../misc/alpine_options.h"
 #include "../hud/multi_spectate.h"
 #include "../multi/demo/demo.h"
@@ -992,6 +993,7 @@ void gr_apply_patch()
     nearest_texture_filtering_cmd.register_cmd();
     lod_distance_scale_cmd.register_cmd();
     picmip_cmd.register_cmd();
+    detail_texture_register_commands();
     colorblind_cmd.register_cmd();
     precache_rooms_cmd.register_cmd();
     disable_rendering_cmd.register_cmd();

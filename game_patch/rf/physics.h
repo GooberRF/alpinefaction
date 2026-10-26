@@ -103,6 +103,8 @@ namespace rf
         PF_SIMULATED_THIS_FRAME = 0x40000000, // set before the physics tick in obj_move_all, cleared at the end of obj_process_physics
     };
 
+    // Cached material, else from the name prefix (and caches it)
+    static auto& bm_get_surface_material = addr_as_ref<int(int bm_handle)>(0x00468700);
     static auto& physics_frame_init = addr_as_ref<void(PhysicsData* pd)>(0x0049F1E0);
     // Full per-entity physics step: movemode input conversion (ai.ci), mouselook
     // rotation, acceleration and velocity integration

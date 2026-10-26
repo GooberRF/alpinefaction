@@ -44,6 +44,12 @@ set(SRCS
     mesh.h
     mesh_browser.cpp
     mesh_browser.h
+    sound_browser.cpp
+    sound_browser.h
+    sound_preview.cpp
+    sound_preview.h
+    vfs_browser.cpp
+    vfs_browser.h
     placement_panel.cpp
     placement_panel.h
     viewport_input.cpp
@@ -162,7 +168,10 @@ target_link_libraries(AlpineEditor
     ole32
     shell32
     uuid
+    winmm
+    msacm32
     stb_image
+    stb_vorbis
     zlib
     bc7enc_rdo
     xxhash

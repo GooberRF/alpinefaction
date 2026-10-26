@@ -279,6 +279,15 @@ int __fastcall level_read(void* self, int edx, void* level, const char* path)
     return level_read_hook.call_target(self, edx, level, path);
 }
 
+// The group panel's Load and Duplicate read brushes as a level load does.
+void __fastcall group_read(void* level, int edx, void* file);
+FunHook<void __fastcall(void*, int, void*)> group_read_hook{0x00438340, group_read};
+void __fastcall group_read(void* level, int edx, void* file)
+{
+    FaceListCacheWindow window;
+    group_read_hook.call_target(level, edx, file);
+}
+
 // Message handlers and message boxes can reach any editor command, so the cache is off inside them.
 struct CachePause
 {
@@ -348,6 +357,7 @@ void ApplyFaceListCachePatches()
     list_clear_hook.install();
     csg_take_faces_hook.install();
     level_read_hook.install();
+    group_read_hook.install();
     mfc_call_wnd_proc_hook.install();
     g_message_box = addr_as_ref<decltype(&MessageBoxA)>(red_message_box_iat_slot);
     write_mem_ptr(red_message_box_iat_slot, &message_box_paused);

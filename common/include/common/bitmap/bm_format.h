@@ -6,6 +6,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <vector>
 #include <xlog/xlog.h>
 
 namespace rf::gr
@@ -20,6 +21,8 @@ bool bm_convert_format(void* dst_bits_ptr, rf::bm::Format dst_fmt, const void* s
 rf::gr::Color bm_get_pixel(uint8_t* data, rf::bm::Format format, int stride_in_bytes, int x, int y);
 int bm_calculate_pitch(int w, rf::bm::Format format);
 int bm_calculate_rows(int h, rf::bm::Format format);
+// Top mip (w x h from get_mipmap_info) as B8G8R8A8; false for DXT2/4
+bool bm_read_8888(int bm_handle, int w, int h, std::vector<uint8_t>& out);
 
 inline int bm_bytes_per_pixel(rf::bm::Format format)
 {

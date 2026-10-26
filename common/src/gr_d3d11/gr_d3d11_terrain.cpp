@@ -7,7 +7,6 @@
 #include <vector>
 #include <d3d11.h>
 #include <common/ComPtr.h>
-#include <common/scope_guard.h>
 #include <xlog/xlog.h>
 #include <gr_d3d11_engine.h>
 #include <common/gr_d3d11/gr_d3d11_util.h>
@@ -18,6 +17,9 @@ namespace at = alpine_terrain;
 
 namespace
 {
+    // One detail texture per layer, then the underside
+    constexpr UINT num_detail_textures = at::max_layers + 1;
+
     // Mirror of TerrainBuffer (b7) in standard_ps.hlsl
     struct alignas(16) TerrainBufferData
     {
@@ -47,6 +49,8 @@ namespace
         std::array<float, at::max_overlays> overlay_premultiplied;
         float fullbright;
         std::array<float, 3> pad;
+        // texels per repeat (0: none), strength, 1 / mean
+        std::array<std::array<float, 4>, num_detail_textures> detail;
     };
     static_assert(offsetof(TerrainBufferData, extent) == 16);
     static_assert(offsetof(TerrainBufferData, grid_size) == 32);
@@ -64,7 +68,8 @@ namespace
     static_assert(offsetof(TerrainBufferData, overlay_enabled) == 208);
     static_assert(offsetof(TerrainBufferData, overlay_premultiplied) == 224);
     static_assert(offsetof(TerrainBufferData, fullbright) == 240);
-    static_assert(sizeof(TerrainBufferData) == 256);
+    static_assert(offsetof(TerrainBufferData, detail) == 256);
+    static_assert(sizeof(TerrainBufferData) == 256 + 16 * num_detail_textures);
     static_assert(at::max_overlays == 4, "the shader holds the overlays in float4s");
 
     constexpr UINT first_srv_slot = 7;
@@ -75,8 +80,9 @@ namespace
     constexpr UINT crater_srv_slot = first_srv_slot + num_base_srvs - 1;
     constexpr UINT overlay_srv_slot = first_srv_slot + num_base_srvs;
     constexpr UINT num_overlay_srvs = at::max_overlays + 1;
-    constexpr UINT num_srvs = num_base_srvs + num_overlay_srvs;
-    static_assert(overlay_srv_slot == 20 && first_srv_slot + num_srvs - 1 == 24);
+    constexpr UINT detail_srv_slot = overlay_srv_slot + num_overlay_srvs;
+    constexpr UINT num_srvs = num_base_srvs + num_overlay_srvs + num_detail_textures;
+    static_assert(overlay_srv_slot == 20 && detail_srv_slot == 25 && first_srv_slot + num_srvs - 1 == 33);
 
     ComPtr<ID3D11ShaderResourceView> create_map(ID3D11Device* device, DXGI_FORMAT format, UINT w, UINT h,
                                                 const void* data, UINT row_pitch)
@@ -117,36 +123,12 @@ namespace
         return e.bm_type == rf::bm::TYPE_ATX || e.num_frames > 1 || e.dynamic;
     }
 
-    // Top level of bitmap `bm` as B8G8R8A8 with colour premultiplied by alpha. DXT1/3/5 go through the
-    // bitmap manager's block decoder; DXT2/4, user and changing bitmaps are refused.
+    // Top level of bitmap `bm` as B8G8R8A8 with colour premultiplied by alpha (bm_read_8888); user and
+    // changing bitmaps are refused.
     bool read_premultiplied(int bm, int w, int h, std::vector<std::uint8_t>& out)
     {
         if (rf::bm::get_type(bm) == rf::bm::TYPE_USER || bitmap_can_change(bm)) return false;
-        rf::ubyte* bits = nullptr;
-        rf::ubyte* pal = nullptr;
-        const rf::bm::Format fmt = rf::bm::lock(bm, &bits, &pal);
-        if (fmt == rf::bm::FORMAT_NONE || !bits) return false;
-        ScopeGuard unlock{[bm] { rf::bm::unlock(bm); }};
-
-        out.resize(static_cast<std::size_t>(w) * h * 4);
-        const int pitch = bm_calculate_pitch(w, fmt);
-        if (pitch <= 0) return false;
-        if (fmt == rf::bm::FORMAT_DXT1 || fmt == rf::bm::FORMAT_DXT3 || fmt == rf::bm::FORMAT_DXT5) {
-            for (int y = 0; y < h; y++) {
-                for (int x = 0; x < w; x++) {
-                    const rf::gr::Color c = bm_get_pixel(bits, fmt, pitch, x, y);
-                    std::uint8_t* p = &out[(static_cast<std::size_t>(y) * w + x) * 4];
-                    p[0] = c.blue;
-                    p[1] = c.green;
-                    p[2] = c.red;
-                    p[3] = c.alpha;
-                }
-            }
-        }
-        else if (bm_is_compressed_format(fmt) ||
-                 !bm_convert_format(out.data(), rf::bm::FORMAT_8888_ARGB, bits, fmt, w, h, w * 4, pitch, pal)) {
-            return false;
-        }
+        if (!bm_read_8888(bm, w, h, out)) return false;
         for (std::size_t i = 0; i < out.size(); i += 4) {
             const unsigned a = out[i + 3];
             for (int c = 0; c < 3; c++) out[i + c] = static_cast<std::uint8_t>((out[i + c] * a + 127) / 255);
@@ -371,6 +353,16 @@ namespace gr::d3d11
             data.layer_triplanar[l] = has && t.layers[l].triplanar ? 1.0f : 0.0f;
         }
         data.underside_uv_scale = data.layer_uv_scale[0];
+        ID3D11ShaderResourceView* detail_srvs[num_detail_textures] = {};
+        for (std::size_t d = 0; d < num_detail_textures; d++) {
+            const int bm = d < at::max_layers ? gpu.layer_bm[d] : gpu.underside_bm;
+            const std::optional<engine::DetailTexture> detail = engine::detail_texture(
+                bm, engine::detail_material(engine::DetailDraw::terrain, rf::gr::ALPHA_BLEND_NONE, bm));
+            detail_srvs[d] = detail ? render_context.detail_texture_view(detail->bm) : nullptr;
+            if (detail_srvs[d]) {
+                data.detail[d] = {detail->texels_per_repeat, detail->strength, detail->inv_mean, 0.0f};
+            }
+        }
         ID3D11ShaderResourceView* overlay_srvs[num_overlay_srvs] = {};
         if (gpu.overlay_coverage) {
             data.overlay_count = static_cast<float>(std::min<std::size_t>(t.overlays.size(), at::max_overlays));
@@ -417,6 +409,7 @@ namespace gr::d3d11
         srvs[3 + at::max_layers] = view(gpu.underside_bm);
         context->PSSetShaderResources(first_srv_slot, num_base_srvs - 1, srvs);
         context->PSSetShaderResources(overlay_srv_slot, num_overlay_srvs, overlay_srvs);
+        context->PSSetShaderResources(detail_srv_slot, num_detail_textures, detail_srvs);
 
         ID3D11SamplerState* samplers[] = {render_context.wrap_sampler_state(), map_sampler_};
         context->PSSetSamplers(first_sampler_slot, 2, samplers);

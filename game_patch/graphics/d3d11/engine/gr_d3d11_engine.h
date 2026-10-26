@@ -39,6 +39,7 @@
 #include "../../../object/object.h"
 #include "../../../os/os.h"
 #include "../../af_lightmap.h"
+#include "../../detail_texture.h"
 #include "../../gr.h"
 
 #include <common/gr_d3d11/gr_d3d11_bindings.h>
@@ -318,6 +319,38 @@ namespace gr::d3d11::engine
     inline bool bitmap_user_mipmap(int bm_handle)
     {
         return bm_is_user_mipmap(bm_handle);
+    }
+
+    inline bool detail_textures_enabled()
+    {
+        return g_alpine_game_config.detail_textures != AlpineGameSettings::detail_textures_off;
+    }
+
+    inline int detail_material(DetailDraw draw, rf::gr::AlphaBlend blend, int bm_handle)
+    {
+        switch (draw) {
+            case DetailDraw::liquid_surface:
+                return detail_no_auto;
+            case DetailDraw::mesh:
+                return detail_texture_draw_material(blend, ScopedMeshObjectMaterial::current());
+            case DetailDraw::first_person_mesh:
+                return detail_texture_draw_material(blend, detail_texture_first_person_material(bm_handle));
+            case DetailDraw::decoration:
+                return detail_texture_draw_material(blend, rf::MATERIAL_ROCK);
+            case DetailDraw::level_face:
+            case DetailDraw::terrain:
+                break;
+        }
+        return detail_texture_draw_material(blend, rf::MATERIAL_DEFAULT);
+    }
+
+    inline std::optional<DetailTexture> detail_texture(int bm_handle, int detail_material)
+    {
+        const std::optional<::DetailTexture> detail = detail_texture_find(bm_handle, detail_material);
+        if (!detail) {
+            return std::nullopt;
+        }
+        return DetailTexture{detail->bm, detail->texels_per_repeat, detail->strength, detail->inv_mean};
     }
 
     inline bool read_file(const char* filename, std::vector<std::byte>& out)

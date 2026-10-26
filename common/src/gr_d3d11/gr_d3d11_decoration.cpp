@@ -263,7 +263,9 @@ namespace gr::d3d11
                             if (alpha_pass == AlphaPass::hard_coverage) {
                                 render_context_.set_alpha_to_coverage();
                             }
-                            render_context_.set_textures(texture, -1);
+                            const int detail_material = engine::detail_material(
+                                engine::DetailDraw::decoration, b.mode.get_alpha_blend(), texture);
+                            render_context_.set_textures(texture, -1, true, detail_material);
                             render_context_.draw_indexed_instanced(b.num_indices, static_cast<int>(chunk.count[d]),
                                                                    b.start_index, b.base_vertex,
                                                                    static_cast<int>(chunk.first[d]));

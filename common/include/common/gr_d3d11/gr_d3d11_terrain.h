@@ -8,7 +8,8 @@ namespace gr::d3d11
 {
     class RenderContext;
 
-    // Terrain shader slots: cbuffer b7, SRVs t7-t24, samplers s6-s7 (standard_ps.hlsl, -DTERRAIN).
+    // Terrain shader slots: cbuffer b7, SRVs t7-t33, samplers s6-s7 (standard_ps.hlsl, -DTERRAIN); crater detail
+    // uses RenderContext's t34/s8/b2.
     class TerrainRenderer
     {
     public:

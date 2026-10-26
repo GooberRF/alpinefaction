@@ -520,6 +520,15 @@ struct AlpineGameSettings
         picmip = std::clamp(value, 1, 256);
     }
 
+    static constexpr int detail_textures_off = 0;
+    static constexpr int detail_textures_atx = 1;
+    static constexpr int detail_textures_auto = 2;
+    int detail_textures = detail_textures_atx; // d3d11 only
+    void set_detail_textures(int value)
+    {
+        detail_textures = std::clamp(value, detail_textures_off, detail_textures_auto);
+    }
+
     int colorblind_mode = 0;    // 0=off,1=protanopia,2=deuteranopia,3=tritanopia (d3d11 only)
     void set_colorblind_mode(int value)
     {

@@ -103,6 +103,28 @@ namespace gr::d3d11::engine
     int live_feed_bitmap(int bm_handle);
     bool bitmap_user_mipmap(int bm_handle);
 
+    // Detail textures. A draw's detail material is what automatic detail falls back to for a texture without a
+    // material of its own.
+    struct DetailTexture
+    {
+        int bm;
+        float texels_per_repeat; // base texels one repeat of the detail texture spans
+        float strength;
+        float inv_mean;
+    };
+    enum class DetailDraw
+    {
+        level_face,
+        liquid_surface,
+        terrain,
+        mesh,
+        first_person_mesh,
+        decoration,
+    };
+    bool detail_textures_enabled();
+    int detail_material(DetailDraw draw, rf::gr::AlphaBlend blend, int bm_handle);
+    std::optional<DetailTexture> detail_texture(int bm_handle, int detail_material);
+
     // Reads a whole packfile or loose file; false when it cannot be opened
     bool read_file(const char* filename, std::vector<std::byte>& out);
     [[noreturn]] void fatal_error(const std::string& text, const std::source_location& loc);

@@ -554,7 +554,6 @@ void console_commands_init()
     register_builtin_command("dbg_frameratetest", "Start frame rate test", 0x004CC360);
     register_builtin_command("dbg_systeminfo", "Show system information", 0x00525A60);
     register_builtin_command("r_trilinearfiltering", "Toggle trilinear filtering", 0x0054F050);
-    register_builtin_command("r_detailtextures", "Toggle detail textures", 0x0054F0B0);
     register_builtin_command("cl_togglecrouch", "Toggle crouch mode", 0x00430C50);
 
     // risky commands, restricted in MP unless debug build

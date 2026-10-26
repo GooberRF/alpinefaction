@@ -1,7 +1,9 @@
 #include <cassert>
 #include <stdexcept>
+#include <vector>
 #include <xlog/xlog.h>
 #include <common/config/BuildConfig.h>
+#include <common/scope_guard.h>
 #include <common/utils/perf-utils.h>
 #include <gr_d3d11_engine.h>
 #include <common/bitmap/bm_format.h>
@@ -119,4 +121,36 @@ rf::gr::Color bm_get_pixel(uint8_t* data, rf::bm::Format format, int stride_in_b
         );
     });
     return result;
+}
+
+bool bm_read_8888(int bm_handle, int w, int h, std::vector<uint8_t>& out)
+{
+    rf::ubyte* bits = nullptr;
+    rf::ubyte* pal = nullptr;
+    const rf::bm::Format fmt = rf::bm::lock(bm_handle, &bits, &pal);
+    if (fmt == rf::bm::FORMAT_NONE || !bits) {
+        return false;
+    }
+    ScopeGuard unlock{[bm_handle] { rf::bm::unlock(bm_handle); }};
+
+    out.resize(static_cast<size_t>(w) * h * 4);
+    const int pitch = bm_calculate_pitch(w, fmt);
+    if (pitch <= 0) {
+        return false;
+    }
+    if (fmt == rf::bm::FORMAT_DXT1 || fmt == rf::bm::FORMAT_DXT3 || fmt == rf::bm::FORMAT_DXT5) {
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                const rf::gr::Color c = bm_get_pixel(bits, fmt, pitch, x, y);
+                uint8_t* p = &out[(static_cast<size_t>(y) * w + x) * 4];
+                p[0] = c.blue;
+                p[1] = c.green;
+                p[2] = c.red;
+                p[3] = c.alpha;
+            }
+        }
+        return true;
+    }
+    return !bm_is_compressed_format(fmt)
+        && bm_convert_format(out.data(), rf::bm::FORMAT_8888_ARGB, bits, fmt, w, h, w * 4, pitch, pal);
 }

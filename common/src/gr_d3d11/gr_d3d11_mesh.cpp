@@ -1082,7 +1082,10 @@ namespace gr::d3d11
             // Static-mesh light scale is skipped for first person meshes too: fpguns are character meshes, and
             // static fpgun attachments (silencer) must match them
             render_context_.set_mode(batch_mode, color, false, gpu_dynamic_lighting, self_illum, !is_character_mesh && !is_fp_weapon, emissive);
-            render_context_.set_textures(texture, -1);
+            const int detail_material = engine::detail_material(
+                is_fp_weapon ? engine::DetailDraw::first_person_mesh : engine::DetailDraw::mesh,
+                b.mode.get_alpha_blend(), texture);
+            render_context_.set_textures(texture, -1, !emissive, detail_material);
             // Per batch, not per mesh: the rest of the hull draws from the atlas and must not scroll.
             if (uv_scroll.active) {
                 const bool is_tread = engine::vehicle_is_tread_bitmap(texture, uv_scroll.config);

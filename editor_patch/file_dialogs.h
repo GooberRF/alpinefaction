@@ -6,7 +6,8 @@
 #include <string>
 #include <vector>
 
-// Redirects RED's COMDLG32 file dialogs to the modern IFileOpenDialog/IFileSaveDialog.
+// Redirects RED's COMDLG32 file dialogs to the modern IFileOpenDialog/IFileSaveDialog, and its sound file requests to
+// the sound browser.
 void ApplyFileDialogPatches();
 
 // The shim entry point itself, for callers whose import of GetSaveFileNameA is not RED's.

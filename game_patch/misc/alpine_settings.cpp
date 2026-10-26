@@ -643,6 +643,10 @@ bool alpine_player_settings_load(rf::Player* player)
         gr_update_texture_filtering();
         processed_keys.insert("Picmip");
     }
+    if (settings.count("DetailTextures")) {
+        g_alpine_game_config.set_detail_textures(std::stoi(settings["DetailTextures"]));
+        processed_keys.insert("DetailTextures");
+    }
     if (settings.count("PrecacheRooms")) {
         g_alpine_game_config.precache_rooms = std::stoi(settings["PrecacheRooms"]);
         processed_keys.insert("PrecacheRooms");
@@ -1669,6 +1673,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "DynamicLightNdotL=" << g_alpine_game_config.dynamic_light_ndotl << "\n";
     file << "PixelLightOverbright=" << g_alpine_game_config.pixel_light_overbright << "\n";
     file << "Picmip=" << g_alpine_game_config.picmip << "\n";
+    file << "DetailTextures=" << g_alpine_game_config.detail_textures << "\n";
     file << "PrecacheRooms=" << g_alpine_game_config.precache_rooms << "\n";
     file << "ShadowCorpses=" << g_alpine_game_config.shadow_corpses << "\n";
     file << "ShadowItems=" << g_alpine_game_config.shadow_items << "\n";

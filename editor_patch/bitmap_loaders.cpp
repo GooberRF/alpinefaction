@@ -724,5 +724,9 @@ std::vector<std::string> parse_atx_dependencies(const char* atx_filename)
     for (auto& f : spec->frames) {
         deps.push_back(std::move(f.filename));
     }
+    // [detail].texture; the parser keeps it only when enabled and valid
+    if (spec->detail && spec->detail->enabled) {
+        deps.push_back(std::move(spec->detail->texture));
+    }
     return deps;
 }

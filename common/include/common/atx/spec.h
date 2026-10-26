@@ -27,9 +27,16 @@ inline constexpr std::string_view ATX_KEY_FRAME_FILE     = "file";
 inline constexpr std::string_view ATX_KEY_FRAME_TIME_OVR = "frame_time"; // per-frame override
 inline constexpr std::string_view ATX_KEY_FRAME_MATERIAL = "material";   // per-frame override
 
+// [detail] keys
+inline constexpr std::string_view ATX_KEY_DETAIL_TEXTURE  = "texture";
+inline constexpr std::string_view ATX_KEY_DETAIL_SCALE    = "scale";
+inline constexpr std::string_view ATX_KEY_DETAIL_STRENGTH = "strength";
+inline constexpr std::string_view ATX_KEY_DETAIL_ENABLED  = "enabled";
+
 // TOML structure
 inline constexpr std::string_view ATX_TABLE_HEADER       = "header";
 inline constexpr std::string_view ATX_ARRAY_FRAME        = "frame";
+inline constexpr std::string_view ATX_TABLE_DETAIL       = "detail";
 
 // ─── Default values & limits ──────────────────────────────────────────────────
 
@@ -37,6 +44,11 @@ inline constexpr int    ATX_MIN_FRAME_TIME_MS     = 1;   // floor enforced by pa
 inline constexpr size_t ATX_MAX_FILENAME_LEN      = 31;  // bm entry name is char[32]
 inline constexpr int    ATX_DEFAULT_FRAME_TIME_MS = 100;
 inline constexpr bool   ATX_DEFAULT_INITIALLY_ON  = true;
+inline constexpr float  ATX_DEFAULT_DETAIL_SCALE    = 8.0f;
+inline constexpr float  ATX_DEFAULT_DETAIL_STRENGTH = 1.0f;
+inline constexpr float  ATX_MIN_DETAIL_SCALE        = 0.01f;
+inline constexpr float  ATX_MAX_DETAIL_SCALE        = 1024.0f;
+inline constexpr float  ATX_MAX_DETAIL_STRENGTH     = 8.0f;
 
 // ─── Parsed structures ────────────────────────────────────────────────────────
 
@@ -69,8 +81,17 @@ struct AtxSpec
         std::optional<std::string> material;   // ATX-wide material override token
     };
 
+    struct Detail
+    {
+        bool enabled = true;                    // false: no detail, not even automatic
+        std::string texture;                    // never empty when enabled, never .atx; empty when not
+        float scale = ATX_DEFAULT_DETAIL_SCALE; // detail repeats across the frame's width
+        float strength = ATX_DEFAULT_DETAIL_STRENGTH;
+    };
+
     Header header;
     std::vector<Frame> frames; // always non-empty after a successful parse
+    std::optional<Detail> detail;
 };
 
 // ─── ATX schema vocabulary parsers ────────────────────────────────────────────

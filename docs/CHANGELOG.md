@@ -71,6 +71,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Make a mesh exported from a brush in the level editor immediately usable as a `Mesh` object
 - Add `To Brush` to the `Select Objects` window in the level editor, converting `Mesh` objects into detail brushes
 - Add a mesh browser to the level editor for picking meshes and animations for `Mesh` objects
+- Add a sound browser to the level editor for picking sounds
 - Add a new and modern color picker to the level editor
 - Add click and drag spinner arrows to the numeric fields on the `Corona` and `Weather Region` object dialogs in the level editor
 - Show a live viewport preview while editing `Corona` and `Rope Emitter` properties in the level editor, so the fields being typed are what the viewport draws
@@ -149,6 +150,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Add `Level > Find out-of-level areas` to the level editor
 - Turn on `Level > Rebuild with hole lines` by default in the level editor and remember the setting
 - Speed up selecting and deselecting large numbers of brushes, faces, vertices and objects in the level editor, and drawing the viewports while many objects or vertices are selected
+- Speed up loading and duplicating groups with complex brushes in the level editor
 - End the Gun Game progression with a one-kill Fusion level after the one-kill final weapon, toggleable with `gg_end_with_fusion`
 - Ignore `fflink_gsk` on dedicated servers started with `-lanonly`
 - Implement shared Direct3D 11 renderer for game and level editor
@@ -161,6 +163,8 @@ Version 1.5.0 (Trillium): Not yet released
 - Make bots break off to top up armor at a lower armor level, and switch goals less often
 - Make bots walk straight to objectives, items and enemies only when nothing  is in the way and there is no ledge to drop off, and look ahead round corners or toward where a threat was last noticed
 - Ignore connected human players who have not spawned yet this level when picking a joining bot's team
+- Add `[detail]` section to ATX textures to tile a greyscale detail texture finely over the texture when seen up close, on level geometry, meshes and terrain (Direct3D 11 renderer only)
+- Add `r_detailtextures` to turn detail textures off (0), show only ATX ones (1, default), or also give other textures a stock one by their material (2), replacing the stock toggle (Direct3D 11 renderer only)
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color

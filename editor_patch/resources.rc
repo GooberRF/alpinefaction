@@ -1920,6 +1920,38 @@ FONT 8, "MS Sans Serif"
     PUSHBUTTON      "Cancel", IDCANCEL, 394, 264, 50, 14
 }
 
+// Alpine Sound Browser dialog
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+IDD_ALPINE_SOUND_BROWSER DIALOGEX 0, 0, 460, 288
+STYLE DS_MODALFRAME | DS_SETFONT | WS_POPUP | WS_VISIBLE | WS_CAPTION | WS_SYSMENU
+CAPTION "Select Sound"
+FONT 8, "MS Sans Serif"
+{
+    LTEXT           "Filter:", -1, 7, 9, 22, 8
+    EDITTEXT        IDC_SOUND_BROWSER_FILTER, 31, 7, 221, 12, ES_AUTOHSCROLL
+
+    CONTROL         "", IDC_SOUND_BROWSER_TREE, WC_TREEVIEW, WS_GROUP | WS_BORDER | WS_TABSTOP | WS_VSCROLL | TVS_HASBUTTONS | TVS_HASLINES | TVS_LINESATROOT | TVS_SHOWSELALWAYS, 7, 24, 245, 236
+
+    // SS_NOTIFY, or clicks to seek never reach it.
+    CONTROL         "", IDC_SOUND_BROWSER_WAVE, "Static", SS_OWNERDRAW | SS_NOTIFY | WS_BORDER, 258, 24, 195, 72
+    PUSHBUTTON      "&Play", IDC_SOUND_BROWSER_PLAY, 258, 101, 50, 14, WS_GROUP
+    AUTOCHECKBOX    "&Loop", IDC_SOUND_BROWSER_LOOP, 316, 103, 40, 10
+    AUTOCHECKBOX    "&Autoplay", IDC_SOUND_BROWSER_AUTOPLAY, 360, 103, 50, 10
+    RTEXT           "", IDC_SOUND_BROWSER_TIME, 393, 120, 60, 8
+    LTEXT           "Volume:", -1, 258, 120, 30, 8
+    CONTROL         "", IDC_SOUND_BROWSER_VOLUME, TRACKBAR_CLASS, TBS_HORZ | TBS_NOTICKS | WS_TABSTOP, 288, 118, 100, 14
+
+    LTEXT           "", IDC_SOUND_BROWSER_NAME, 258, 142, 195, 8
+    LTEXT           "", IDC_SOUND_BROWSER_FORMAT, 258, 152, 195, 8
+    LTEXT           "", IDC_SOUND_BROWSER_LENGTH, 258, 162, 195, 8
+    LTEXT           "", IDC_SOUND_BROWSER_SOURCE, 258, 172, 195, 8
+    LTEXT           "", IDC_SOUND_BROWSER_STATUS, 258, 186, 195, 26
+
+    LTEXT           "", IDC_SOUND_BROWSER_COUNT, 7, 268, 250, 8, WS_GROUP
+    DEFPUSHBUTTON   "OK", IDOK, 339, 264, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 394, 264, 50, 14
+}
+
 // Object mode placement panel, a child of the object panel (stock template 173) above its tree.
 // Laid out for the narrowest pane; the panel stretches the controls to the pane's width.
 LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT

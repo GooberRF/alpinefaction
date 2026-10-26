@@ -134,6 +134,9 @@ std::vector<Setting> settings_of(PreferencesDialog& dlg)
         {"TextureBrowser", "TextureBrowserDisplaySize", "", SettingKind::int_value,
          &alpine.texture_browser_display_size},
         {"TextureBrowser", "TextureBrowserMaximized", "", SettingKind::flag, &alpine.texture_browser_maximized},
+        {"SoundBrowser", "SoundBrowserAutoplay", "", SettingKind::flag, &alpine.sound_browser_autoplay},
+        {"SoundBrowser", "SoundBrowserLoop", "", SettingKind::flag, &alpine.sound_browser_loop},
+        {"SoundBrowser", "SoundBrowserVolume", "", SettingKind::int_value, &alpine.sound_browser_volume},
     });
     add_rect("TextureBrowser", "Texture Browser", false, alpine.texture_browser_rect);
     return settings;

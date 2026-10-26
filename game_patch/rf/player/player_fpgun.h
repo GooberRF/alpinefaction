@@ -1,9 +1,11 @@
 #pragma once
 
+#include <cstddef>
 #include "../os/timestamp.h"
 #include "../math/vector.h"
 #include "../math/matrix.h"
 #include "../gr/gr.h"
+#include "../os/string.h"
 
 namespace rf
 {
@@ -97,4 +99,19 @@ namespace rf
     static auto& player_fpgun_add_shield_decal = addr_as_ref<void(Player* player, Clutter* shield, PCollisionOut* collide_out)>(0x004A7110);
     static auto& player_fpgun_delete_shield_decals = addr_as_ref<void(Player* player)>(0x004A70E0);
     static auto& fpgun_riot_shield_breaking = addr_as_ref<bool>(0x007CAB58);
+
+    // fpgun.tbl entry
+    struct FpgunArms
+    {
+        String name;        // +0x00
+        String model;       // +0x08
+        int arm_bitmaps[9]; // +0x10: hand, forearm, bicep, then the _blue and the _red variant of each
+    };
+    static_assert(sizeof(FpgunArms) == 0x34);
+    static_assert(offsetof(FpgunArms, model) == 0x8);
+    static_assert(offsetof(FpgunArms, arm_bitmaps) == 0x10);
+
+    // The fpgun.tbl loader (0x004A9560) stops at 256 entries
+    static auto& fpgun_arms = addr_as_ref<FpgunArms[256]>(0x007C76E0);
+    static auto& num_fpgun_arms = addr_as_ref<int>(0x007CAB4C);
 }

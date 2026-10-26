@@ -28,6 +28,7 @@
 #include "../../misc/alpine_options.h"
 #include "../../misc/alpine_settings.h"
 #include "../../os/console.h"
+#include "../detail_texture.h"
 #include "../gr.h"
 #include "gr_d3d11.h"
 #include "gr_d3d11_hooks.h"
@@ -1157,6 +1158,15 @@ namespace gr::d3d11
         },
     };
 
+    // Mesh draws are handed no object
+    FunHook<void(rf::Object*)> obj_render_hook{
+        0x00488B20,
+        [](rf::Object* const obj) {
+            ScopedMeshObjectMaterial material{obj->material};
+            obj_render_hook.call_target(obj);
+        },
+    };
+
     FunHook<void(rf::Item*)> item_render_hook{
         0x00458F80,
         [] (rf::Item* const item) {
@@ -1172,6 +1182,8 @@ namespace gr::d3d11
     FunHook<void(rf::Entity*)> entity_render_weapon_in_hands_hook{
         0x00421C40,
         [] (rf::Entity* const entity) {
+            // Held weapons are metal, not their holder's material
+            ScopedMeshObjectMaterial material{rf::MATERIAL_METAL};
             if (g_alpine_game_config.picmip > 1) {
                 ScopedPicmipSkipObject guard{};
                 entity_render_weapon_in_hands_hook.call_target(entity);
@@ -1409,6 +1421,7 @@ void gr_d3d11_apply_patch()
     obj_shadow_render_all_hook.install();
     
     item_render_hook.install();
+    obj_render_hook.install();
     entity_render_weapon_in_hands_hook.install();
 
     // Change size of standard structures

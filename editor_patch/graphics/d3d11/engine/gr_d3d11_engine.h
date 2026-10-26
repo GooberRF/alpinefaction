@@ -562,6 +562,23 @@ namespace gr::d3d11::engine
         return false;
     }
 
+    inline bool detail_textures_enabled()
+    {
+        return false;
+    }
+
+    inline int detail_material([[maybe_unused]] DetailDraw draw, [[maybe_unused]] rf::gr::AlphaBlend blend,
+                               [[maybe_unused]] int bm_handle)
+    {
+        return 0;
+    }
+
+    inline std::optional<DetailTexture> detail_texture([[maybe_unused]] int bm_handle,
+                                                       [[maybe_unused]] int detail_material)
+    {
+        return std::nullopt;
+    }
+
     inline bool read_file(const char* filename, std::vector<std::byte>& out)
     {
         // RED's File::open only looks a file up; open_mode opens the stream

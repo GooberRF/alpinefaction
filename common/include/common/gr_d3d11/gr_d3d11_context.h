@@ -261,6 +261,18 @@ namespace gr::d3d11
             }
         }
 
+        // texels_per_repeat 0 = no detail texture
+        void update_detail(float texels_per_repeat, float strength, float inv_mean, ID3D11DeviceContext* device_context)
+        {
+            if (current_detail_texels_ != texels_per_repeat || current_detail_strength_ != strength
+                || current_detail_inv_mean_ != inv_mean) {
+                current_detail_texels_ = texels_per_repeat;
+                current_detail_strength_ = strength;
+                current_detail_inv_mean_ = inv_mean;
+                update_buffer(device_context);
+            }
+        }
+
         operator ID3D11Buffer*() const
         {
             return buffer_;
@@ -274,6 +286,9 @@ namespace gr::d3d11
         float current_v_scale_ = 1.0f;
         float current_ghost_fill_y_ = 0.0f;
         float current_ghost_alpha_ratio_ = 0.0f;
+        float current_detail_texels_ = 0.0f;
+        float current_detail_strength_ = 0.0f;
+        float current_detail_inv_mean_ = 0.0f;
     };
 
     class GasRegionBuffer
@@ -320,7 +335,8 @@ namespace gr::d3d11
             return device_context_;
         }
 
-        void set_textures(int tex_handle0, int tex_handle1 = -1)
+        // detail: also bind tex_handle0's detail texture; detail_material: engine::detail_material for this draw
+        void set_textures(int tex_handle0, int tex_handle1 = -1, bool detail = false, int detail_material = 0)
         {
             if (current_tex_handles_[0] != tex_handle0 || current_tex_handles_[1] != tex_handle1) {
                 current_tex_handles_[0] = tex_handle0;
@@ -350,6 +366,22 @@ namespace gr::d3d11
                     device_context_->PSSetShaderResources(0, std::size(shader_resources), shader_resources);
                 }
             }
+            bind_detail_texture(detail ? tex_handle0 : -1, detail ? detail_material : 0);
+        }
+
+        // -1 unbinds
+        void bind_detail_texture(int tex_handle, int detail_material)
+        {
+            if (current_detail_tex_handle_ != tex_handle || current_detail_material_ != detail_material) {
+                update_detail_texture(tex_handle, detail_material);
+            }
+        }
+
+        // Null when p2t padded it: wrapping would repeat the padding
+        ID3D11ShaderResourceView* detail_texture_view(int bm)
+        {
+            auto [srv, u_scale, v_scale] = texture_manager_.lookup_texture_with_scale(bm);
+            return u_scale == 1.0f && v_scale == 1.0f ? srv : nullptr;
         }
 
         // A bm handle's SRV depends on which render target is bound — an ATX whose live feed is
@@ -358,6 +390,8 @@ namespace gr::d3d11
         void invalidate_texture_cache()
         {
             current_tex_handles_ = {-2, -2};
+            current_detail_tex_handle_ = -2;
+            current_detail_srv_.reset();
         }
 
         // Ghost-mesh fill constants, ratio 0 = inactive. Never outlives a single mesh draw.
@@ -613,8 +647,8 @@ namespace gr::d3d11
         // so the first differing call after these become live uploads correctly.
         void set_sky_room(bool sky_room)
         {
-            // Also read by the liquid block's sky-ray branch, which runs without caustics
-            if (engine::underwater_fx() < 2 && !caustics_renderer_.active()) {
+            // Also read by the liquid block's sky-ray branch, which runs without caustics, and by detail textures
+            if (engine::underwater_fx() < 2 && !caustics_renderer_.active() && !engine::detail_textures_enabled()) {
                 return;
             }
             render_mode_cbuffer_.set_sky_room(sky_room, device_context_);
@@ -790,6 +824,8 @@ namespace gr::d3d11
             current_pixel_shader_ = nullptr;
             current_primitive_topology_ = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
             current_tex_handles_ = {-2, -2};
+            current_detail_tex_handle_ = -2;
+            current_detail_srv_.reset();
             current_cull_mode_ = D3D11_CULL_NONE;
             current_mode_.reset();
             current_picmip_active_ = false;
@@ -815,6 +851,7 @@ namespace gr::d3d11
 
     private:
         void bind_cbuffers();
+        void update_detail_texture(int tex_handle, int detail_material);
 
         ID3D11ShaderResourceView* get_diffuse_texture_view(int tex_handle)
         {
@@ -863,6 +900,9 @@ namespace gr::d3d11
         ID3D11PixelShader* current_pixel_shader_ = nullptr;
         D3D11_PRIMITIVE_TOPOLOGY current_primitive_topology_ = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
         std::array<int, 2> current_tex_handles_ = {-2, -2};
+        int current_detail_tex_handle_ = -2;
+        int current_detail_material_ = 0;
+        std::optional<ID3D11ShaderResourceView*> current_detail_srv_;
         D3D11_CULL_MODE current_cull_mode_ = D3D11_CULL_NONE;
         std::optional<rf::gr::Mode> current_mode_;
         bool picmip_active_ = false;

@@ -16,6 +16,9 @@ namespace gr::d3d11
     namespace
     {
         constexpr UINT dir_lights_cbuffer_slot = 8;
+        // detail_tex and detail_samp in standard_ps.hlsl
+        constexpr UINT detail_srv_slot = 34;
+        constexpr UINT detail_sampler_slot = 8;
 
         // Must stay byte for byte with DirLightsBuffer (b8) in standard_ps.hlsl
         struct DirLightsBufferData
@@ -114,6 +117,29 @@ namespace gr::d3d11
         // Directional lights buffer (b7 is the terrain buffer)
         ID3D11Buffer* dir_lights_cbuffer = dir_lights_buffer_;
         device_context_->PSSetConstantBuffers(dir_lights_cbuffer_slot, 1, &dir_lights_cbuffer);
+    }
+
+    void RenderContext::update_detail_texture(int tex_handle, int detail_material)
+    {
+        current_detail_tex_handle_ = tex_handle;
+        current_detail_material_ = detail_material;
+        std::optional<engine::DetailTexture> detail = engine::detail_texture(tex_handle, detail_material);
+        ID3D11ShaderResourceView* srv = detail ? detail_texture_view(detail->bm) : nullptr;
+        if (!srv) {
+            detail.reset();
+        }
+        texture_scale_cbuffer_.update_detail(detail ? detail->texels_per_repeat : 0.0f,
+                                             detail ? detail->strength : 0.0f,
+                                             detail ? detail->inv_mean : 0.0f, device_context_);
+        if (current_detail_srv_ != srv) {
+            current_detail_srv_ = srv;
+            device_context_->PSSetShaderResources(detail_srv_slot, 1, &srv);
+        }
+        if (srv) {
+            // Minified wherever it shows, so it needs mips; the sprite sampler pins mip 0 under r_picmip
+            ID3D11SamplerState* sampler = state_manager_.lookup_sampler_state(rf::gr::TEXTURE_SOURCE_WRAP, 0, true);
+            device_context_->PSSetSamplers(detail_sampler_slot, 1, &sampler);
+        }
     }
 
     void RenderContext::clear()
@@ -546,10 +572,17 @@ namespace gr::d3d11
         std::array<float, 2> tex0_uv_scale;
         float ghost_fill_y;
         float ghost_alpha_ratio;
+        float detail_texels;
+        float detail_strength;
+        float detail_inv_mean;
+        float pad;
     };
-    static_assert(sizeof(TextureScaleBufferData) == 16);
+    static_assert(sizeof(TextureScaleBufferData) == 32);
     static_assert(offsetof(TextureScaleBufferData, ghost_fill_y) == 8);
     static_assert(offsetof(TextureScaleBufferData, ghost_alpha_ratio) == 12);
+    static_assert(offsetof(TextureScaleBufferData, detail_texels) == 16);
+    static_assert(offsetof(TextureScaleBufferData, detail_strength) == 20);
+    static_assert(offsetof(TextureScaleBufferData, detail_inv_mean) == 24);
     static_assert(sizeof(TextureScaleBufferData) % 16 == 0);
 
     TextureScaleBuffer::TextureScaleBuffer(ID3D11Device* device)
@@ -574,6 +607,9 @@ namespace gr::d3d11
         data.tex0_uv_scale = {current_u_scale_, current_v_scale_};
         data.ghost_fill_y = current_ghost_fill_y_;
         data.ghost_alpha_ratio = current_ghost_alpha_ratio_;
+        data.detail_texels = current_detail_texels_;
+        data.detail_strength = current_detail_strength_;
+        data.detail_inv_mean = current_detail_inv_mean_;
 
         D3D11_MAPPED_SUBRESOURCE mapped_subres;
         DF_GR_D3D11_CHECK_HR(

@@ -7,6 +7,7 @@
 #include <patch_common/MemUtils.h>
 #include <xlog/xlog.h>
 #include "file_dialogs.h"
+#include "sound_browser.h"
 
 namespace
 {
@@ -237,9 +238,14 @@ DialogOutcome collect_result(IFileDialog* dialog, OPENFILENAMEA* ofn)
     return write_back(dialog, ofn, path);
 }
 
+bool usable_request(const OPENFILENAMEA* ofn)
+{
+    return ofn && ofn->lStructSize >= min_struct_size && ofn->lpstrFile && ofn->nMaxFile;
+}
+
 DialogOutcome show_dialog(OPENFILENAMEA* ofn, bool save)
 {
-    if (!ofn || ofn->lStructSize < min_struct_size || !ofn->lpstrFile || !ofn->nMaxFile) {
+    if (!usable_request(ofn)) {
         return DialogOutcome::unsupported;
     }
     if ((ofn->Flags & unsupported_flags) || ofn->lpstrCustomFilter) {
@@ -334,8 +340,28 @@ BOOL run_dialog(LPOPENFILENAMEA ofn, bool save, GetFileNameFn fallback)
     return fallback ? fallback(ofn) : FALSE;
 }
 
+// Every stock sound Browse button asks for this filter.
+bool is_sound_request(const OPENFILENAMEA* ofn)
+{
+    if (!usable_request(ofn)) {
+        return false;
+    }
+    const std::vector<AlpineFileFilter> filters = alpine_file_dialog_split_filter(ofn->lpstrFilter);
+    return !filters.empty() && filters[0].label == "Sound Files (*.wav)" && filters[0].spec == "*.wav";
+}
+
 BOOL WINAPI GetOpenFileNameA_alpine(LPOPENFILENAMEA ofn)
 {
+    bool sound_request = false;
+    try {
+        sound_request = is_sound_request(ofn);
+    }
+    catch (...) {
+        xlog::error("file dialog: out of memory reading the request's filter");
+    }
+    if (sound_request) {
+        return alpine_sound_browser_answer(ofn);
+    }
     return run_dialog(ofn, false, g_orig_get_open_file_name);
 }
 

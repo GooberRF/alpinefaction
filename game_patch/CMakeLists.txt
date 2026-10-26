@@ -54,6 +54,8 @@ set(SRCS
     bmpman/stb_image_loader.cpp
     bmpman/stb_image_loader.h
     graphics/bink.cpp
+    graphics/detail_texture.cpp
+    graphics/detail_texture.h
     graphics/gr_font.cpp
     graphics/gr.cpp
     graphics/gr.h

@@ -439,7 +439,8 @@ namespace gr::d3d11
             auto draw_pass = [&](int bm, rf::gr::Mode mode, float weight) {
                 const rf::ubyte w = to_byte(weight);
                 const rf::Color color{w, w, w, to_byte(weight * sl.opacity)};
-                render_context_.set_textures(bm, -1);
+                render_context_.set_textures(bm, -1, true,
+                    engine::detail_material(engine::DetailDraw::mesh, mode.get_alpha_blend(), bm));
                 render_context_.set_mode(mode, color, false, gpu_lit, gpu_lit ? sl.self_illum : 0.0f, gpu_lit, false,
                     vfx_light_scale);
                 render_context_.draw_indexed(sl.count, ib_start + sl.offset, vb_start);

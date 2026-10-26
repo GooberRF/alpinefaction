@@ -38,6 +38,11 @@ struct EditorSettings
     // the restored window rect in screen coordinates, empty until the browser is first shown
     RECT texture_browser_rect{};
     bool texture_browser_maximized = false;
+
+    // Remembered from the Sound Browser
+    bool sound_browser_autoplay = false;
+    bool sound_browser_loop = false;
+    int sound_browser_volume = 80; // percent
 };
 
 extern EditorSettings g_editor_settings;

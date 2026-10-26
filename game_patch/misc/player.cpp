@@ -13,6 +13,7 @@
 #include "../rf/collide.h"
 #include "../rf/gr/gr_light.h"
 #include "../graphics/d3d11/gr_d3d11_hooks.h"
+#include "../graphics/detail_texture.h"
 #include "../rf/os/os.h"
 #include "../rf/os/frametime.h"
 #include "../rf/gameseq.h"
@@ -936,6 +937,8 @@ CallHook<void(rf::VMesh*, rf::Vector3*, rf::Matrix3*, void*)> player_cockpit_vme
             new_orient.rvec *= m;
         }
 
+        // Drawn outside obj_render
+        ScopedMeshObjectMaterial material{rf::MATERIAL_METAL};
         player_cockpit_vmesh_render_hook.call_target(vmesh, pos, &new_orient, params);
     }
 };

@@ -21,6 +21,7 @@
 #include "mesh.h"
 #include "mfc_types.h"
 #include "resources.h"
+#include "vfs_browser.h"
 #include "vtypes.h"
 
 extern "C" IMAGE_DOS_HEADER __ImageBase;
@@ -36,8 +37,6 @@ constexpr float preview_zoom_min = 0.15f;
 constexpr float preview_zoom_max = 24.0f;
 constexpr float preview_pitch_limit = 89.0f;
 constexpr float pi = 3.14159265f;
-// Packfile directory records store the name in a fixed 60 byte field.
-constexpr std::size_t packfile_name_max = 60;
 constexpr int preview_max_actions = 96;
 constexpr int preview_owned_max_actions = 160;
 static_assert(preview_max_actions < editor_character_max_actions);
@@ -55,20 +54,6 @@ constexpr std::size_t rfa_header_size = 0x50;
 // Ceiling guard on how much of an animation is read for validation. This is larger than any
 // animation is realistically going to ever be.
 constexpr std::size_t rfa_read_max = 16u * 1024 * 1024;
-
-struct BrowserSource
-{
-    std::string label;   // "red\meshes" for a search path, "meshes.vpp" for a packfile
-    std::string path;    // search path as registered; empty for packfiles and the game root
-    int parent;          // enclosing search path, -1 for a root or a packfile
-    bool packfile;
-};
-
-struct BrowserFile
-{
-    std::string name;    // bare filename, exactly what the property field stores
-    int source;
-};
 
 enum PreviewBackground
 {
@@ -91,9 +76,9 @@ std::map<std::string, int> g_anim_bone_cache;
 
 struct BrowserState
 {
-    std::vector<BrowserSource> sources;
-    std::vector<BrowserFile> files;
-    std::vector<BrowserFile> anims;
+    std::vector<VfsBrowserSource> sources;
+    std::vector<VfsBrowserFile> files;
+    std::vector<VfsBrowserFile> anims;
     unsigned kinds;
     bool anims_enabled;
     std::string initial;
@@ -151,20 +136,6 @@ BrowserState* get_state(HWND hdlg)
     return reinterpret_cast<BrowserState*>(GetWindowLongPtrA(hdlg, GWLP_USERDATA));
 }
 
-// Packfile directory names come from a fixed 60 byte record and search path strings are engine
-// owned, so every read out of the file system tables is length bounded.
-std::string bounded_string(const char* str, std::size_t max_len)
-{
-    if (!str) {
-        return {};
-    }
-    std::size_t len = 0;
-    while (len < max_len && str[len]) {
-        ++len;
-    }
-    return std::string{str, len};
-}
-
 enum EntryKind
 {
     entry_none,
@@ -201,53 +172,20 @@ bool anim_name_fits(const std::string& name)
     return name.size() <= anim_name_max && rfa_load_name(name).size() <= anim_name_max;
 }
 
-template<typename T>
-T read_le(const std::uint8_t* data, std::size_t offset)
-{
-    T value;
-    std::memcpy(&value, data + offset, sizeof(value));
-    return value;
-}
-
-bool read_anim_file(const std::string& file, std::size_t max_bytes, std::vector<std::uint8_t>& out)
-{
-    rf::File handle;
-    if (handle.open_mode(file.c_str()) != 0) {
-        return false;
-    }
-    const int size = handle.get_size();
-    if (size <= 0) {
-        handle.close();
-        return false;
-    }
-    const std::size_t want = std::min(static_cast<std::size_t>(size), max_bytes);
-    // rf::File has no destructor, so a throw here would strand an engine file slot
-    try {
-        out.resize(want);
-    }
-    catch (...) {
-        handle.close();
-        throw;
-    }
-    const int got = handle.read(out.data(), out.size());
-    handle.close();
-    return got == static_cast<int>(want);
-}
-
 int rfa_header_bone_count(const std::string& file)
 {
     std::vector<std::uint8_t> buf;
-    if (!read_anim_file(file, rfa_header_size, buf) || buf.size() < rfa_header_size) {
+    if (!vfs_browser_read_file(file, rfa_header_size, buf) || buf.size() < rfa_header_size) {
         return 0;
     }
-    if (read_le<std::uint32_t>(buf.data(), 0) != rfa_signature) {
+    if (vfs_browser_read_le<std::uint32_t>(buf.data(), 0) != rfa_signature) {
         return 0;
     }
-    const int version = read_le<std::int32_t>(buf.data(), offsetof(RfaHeader, version));
+    const int version = vfs_browser_read_le<std::int32_t>(buf.data(), offsetof(RfaHeader, version));
     if (version != 7 && version != 8) {
         return 0;
     }
-    const int num_bones = read_le<std::int32_t>(buf.data(), offsetof(RfaHeader, num_bones));
+    const int num_bones = vfs_browser_read_le<std::int32_t>(buf.data(), offsetof(RfaHeader, num_bones));
     return (num_bones >= 1 && num_bones <= rfa_max_bones) ? num_bones : 0;
 }
 
@@ -329,7 +267,7 @@ bool rfa_is_playable(const std::string& file, const CharacterLimits& limits)
         return false;
     }
     std::vector<std::uint8_t> buf;
-    if (!read_anim_file(file, rfa_read_max, buf) || buf.size() < rfa_header_size) {
+    if (!vfs_browser_read_file(file, rfa_read_max, buf) || buf.size() < rfa_header_size) {
         return false;
     }
     const std::uint8_t* data = buf.data();
@@ -339,16 +277,16 @@ bool rfa_is_playable(const std::string& file, const CharacterLimits& limits)
                len <= size - static_cast<std::uint64_t>(offset);
     };
 
-    if (read_le<std::uint32_t>(data, 0) != rfa_signature) {
+    if (vfs_browser_read_le<std::uint32_t>(data, 0) != rfa_signature) {
         return false;
     }
-    const int version = read_le<std::int32_t>(data, offsetof(RfaHeader, version));
+    const int version = vfs_browser_read_le<std::int32_t>(data, offsetof(RfaHeader, version));
     if (version != 7 && version != 8) {
         return false;
     }
-    const int num_bones = read_le<std::int32_t>(data, offsetof(RfaHeader, num_bones));
-    const int num_morph_verts = read_le<std::int32_t>(data, offsetof(RfaHeader, num_morph_vertices));
-    const int num_morph_keys = read_le<std::int32_t>(data, offsetof(RfaHeader, num_morph_keyframes));
+    const int num_bones = vfs_browser_read_le<std::int32_t>(data, offsetof(RfaHeader, num_bones));
+    const int num_morph_verts = vfs_browser_read_le<std::int32_t>(data, offsetof(RfaHeader, num_morph_vertices));
+    const int num_morph_keys = vfs_browser_read_le<std::int32_t>(data, offsetof(RfaHeader, num_morph_keyframes));
     if (num_bones < 1 || num_bones > rfa_max_bones) {
         return false;
     }
@@ -359,12 +297,12 @@ bool rfa_is_playable(const std::string& file, const CharacterLimits& limits)
         return false;
     }
     for (int i = 0; i < num_bones; ++i) {
-        const auto offset = read_le<std::int32_t>(data, rfa_header_size + 4 * i);
+        const auto offset = vfs_browser_read_le<std::int32_t>(data, rfa_header_size + 4 * i);
         if (!fits(offset, 8)) {
             return false;
         }
-        const int rot_keys = read_le<std::int16_t>(data, static_cast<std::size_t>(offset) + 4);
-        const int pos_keys = read_le<std::int16_t>(data, static_cast<std::size_t>(offset) + 6);
+        const int rot_keys = vfs_browser_read_le<std::int16_t>(data, static_cast<std::size_t>(offset) + 4);
+        const int pos_keys = vfs_browser_read_le<std::int16_t>(data, static_cast<std::size_t>(offset) + 6);
         if (rot_keys < 0 || pos_keys < 0) {
             return false;
         }
@@ -377,8 +315,8 @@ bool rfa_is_playable(const std::string& file, const CharacterLimits& limits)
         if (num_morph_verts > 0xffff || num_morph_keys < 1 || num_morph_keys > 0xffff) {
             return false;
         }
-        const auto map_offset = read_le<std::int32_t>(data, 0x48);
-        const auto data_offset = read_le<std::int32_t>(data, 0x4C);
+        const auto map_offset = vfs_browser_read_le<std::int32_t>(data, 0x48);
+        const auto data_offset = vfs_browser_read_le<std::int32_t>(data, 0x4C);
         const std::uint64_t frames =
             (version >= 8) ? 4ull * num_morph_keys + 0x18 + 3ull * num_morph_keys * num_morph_verts
                            : 12ull * num_morph_keys * num_morph_verts;
@@ -389,7 +327,7 @@ bool rfa_is_playable(const std::string& file, const CharacterLimits& limits)
         int highest = -1;
         for (int i = 0; i < num_morph_verts; ++i) {
             const int index =
-                read_le<std::uint16_t>(data, static_cast<std::size_t>(map_offset) + 2 * i);
+                vfs_browser_read_le<std::uint16_t>(data, static_cast<std::size_t>(map_offset) + 2 * i);
             highest = std::max(highest, index);
         }
         if (highest >= limits.morph_capacity) {
@@ -399,158 +337,9 @@ bool rfa_is_playable(const std::string& file, const CharacterLimits& limits)
     return true;
 }
 
-bool path_contains(const std::string& parent, const std::string& child)
-{
-    return child.size() > parent.size() + 1 && child[parent.size()] == '\\' &&
-           string_istarts_with(child, parent);
-}
-
-void sort_entries(std::vector<BrowserFile>& entries)
-{
-    std::sort(entries.begin(), entries.end(), [](const BrowserFile& a, const BrowserFile& b) {
-        const int order = _stricmp(a.name.c_str(), b.name.c_str());
-        return order != 0 ? order < 0 : a.source < b.source;
-    });
-}
-
-void collect_entries(BrowserState& st)
-{
-    std::vector<int> path_source(editor_vfs_path_count, -1);
-
-    for (EditorVfsFile* node : vfs_file_buckets) {
-        for (; node; node = node->next) {
-            const int slot = node->path_index;
-            if (slot < 0 || slot >= editor_vfs_path_count) {
-                continue;
-            }
-            std::string name = bounded_string(node->name, MAX_PATH);
-            const EntryKind kind = classify_name(name, st.kinds, st.anims_enabled);
-            if (kind == entry_none) {
-                continue;
-            }
-            int& source = path_source[slot];
-            if (source < 0) {
-                std::string path = bounded_string(vfs_paths[slot].path, MAX_PATH);
-                source = static_cast<int>(st.sources.size());
-                st.sources.push_back({path.empty() ? "(game folder)" : path, path, -1, false});
-            }
-            auto& into = (kind == entry_mesh) ? st.files : st.anims;
-            into.push_back({std::move(name), source});
-        }
-    }
-
-    const int packfile_count = std::clamp(num_packfiles, 0, editor_packfile_max);
-    for (int i = 0; i < packfile_count; ++i) {
-        const EditorPackfile& pack = packfiles[i];
-        if (!pack.entries) {
-            continue;
-        }
-        const int entry_count = std::clamp(pack.num_entries, 0, editor_packfile_entry_max);
-        int source = -1;
-        for (int e = 0; e < entry_count; ++e) {
-            std::string name = bounded_string(pack.entries[e].name, packfile_name_max);
-            const EntryKind kind = classify_name(name, st.kinds, st.anims_enabled);
-            if (kind == entry_none) {
-                continue;
-            }
-            if (source < 0) {
-                source = static_cast<int>(st.sources.size());
-                st.sources.push_back({bounded_string(pack.name, sizeof(pack.name)), {}, -1, true});
-            }
-            auto& into = (kind == entry_mesh) ? st.files : st.anims;
-            into.push_back({std::move(name), source});
-        }
-    }
-
-    // Search paths nest ("red\meshes" and "red\meshes\props" are separate slots), so the tree
-    // parents each one under the longest other path it sits inside.
-    for (std::size_t i = 0; i < st.sources.size(); ++i) {
-        if (st.sources[i].packfile || st.sources[i].path.empty()) {
-            continue;
-        }
-        std::size_t best_len = 0;
-        for (std::size_t j = 0; j < st.sources.size(); ++j) {
-            if (i == j || st.sources[j].packfile || st.sources[j].path.empty()) {
-                continue;
-            }
-            if (path_contains(st.sources[j].path, st.sources[i].path) &&
-                st.sources[j].path.size() > best_len) {
-                best_len = st.sources[j].path.size();
-                st.sources[i].parent = static_cast<int>(j);
-            }
-        }
-        if (st.sources[i].parent >= 0) {
-            st.sources[i].label = st.sources[i].path.substr(best_len + 1);
-        }
-    }
-
-    sort_entries(st.files);
-    sort_entries(st.anims);
-}
-
 // ─── Tree ────────────────────────────────────────────────────────────────────
 
-HTREEITEM insert_node(HWND tree, HTREEITEM parent, const char* label, LPARAM data)
-{
-    TVINSERTSTRUCT ins = {};
-    ins.hParent = parent;
-    ins.hInsertAfter = TVI_LAST;
-    ins.item.mask = TVIF_TEXT | TVIF_PARAM;
-    ins.item.pszText = const_cast<char*>(label);
-    ins.item.lParam = data;
-    return TreeView_InsertItem(tree, &ins);
-}
-
-// Item data is the file index plus one so that zero marks a folder.
-int item_file_index(HWND tree, HTREEITEM item)
-{
-    if (!item) {
-        return -1;
-    }
-    TVITEM tvi = {};
-    tvi.mask = TVIF_PARAM;
-    tvi.hItem = item;
-    if (!TreeView_GetItem(tree, &tvi)) {
-        return -1;
-    }
-    return static_cast<int>(tvi.lParam) - 1;
-}
-
-void insert_source(HWND tree, HTREEITEM parent, const BrowserState& st,
-                   const std::vector<BrowserFile>& entries,
-                   const std::vector<std::vector<int>>& by_source,
-                   const std::vector<std::vector<int>>& children,
-                   const std::vector<bool>& visible_source, int source, bool expand,
-                   const std::string& select_name, bool select_first, HTREEITEM& select_item,
-                   int& select_index)
-{
-    if (!visible_source[source]) {
-        return;
-    }
-    HTREEITEM node = insert_node(tree, parent, st.sources[source].label.c_str(), 0);
-    if (!node) {
-        return;
-    }
-    for (int child : children[source]) {
-        insert_source(tree, node, st, entries, by_source, children, visible_source, child, expand,
-                      select_name, select_first, select_item, select_index);
-    }
-    for (int file : by_source[source]) {
-        HTREEITEM leaf = insert_node(tree, node, entries[file].name.c_str(), file + 1);
-        const bool wanted = select_name.empty()
-                                ? select_first
-                                : string_iequals(entries[file].name, select_name);
-        if (leaf && !select_item && wanted) {
-            select_item = leaf;
-            select_index = file;
-        }
-    }
-    if (expand) {
-        TreeView_Expand(tree, node, TVE_EXPAND);
-    }
-}
-
-int rebuild_tree(HWND hdlg, BrowserState& st, int tree_id, const std::vector<BrowserFile>& entries,
+int rebuild_tree(HWND hdlg, BrowserState& st, int tree_id, const std::vector<VfsBrowserFile>& entries,
                  const std::vector<char>* allow, const std::string& filter,
                  const std::string& select_name, bool select_first = false,
                  int* select_index_out = nullptr)
@@ -559,88 +348,8 @@ int rebuild_tree(HWND hdlg, BrowserState& st, int tree_id, const std::vector<Bro
     if (!tree) {
         return 0;
     }
-
-    int visible_count = 0;
-    std::vector<std::vector<int>> by_source(st.sources.size());
-    for (std::size_t i = 0; i < entries.size(); ++i) {
-        if (allow && !(*allow)[i]) {
-            continue;
-        }
-        if (!filter.empty() && string_to_lower(entries[i].name).find(filter) == std::string::npos) {
-            continue;
-        }
-        ++visible_count;
-        by_source[entries[i].source].push_back(static_cast<int>(i));
-    }
-
-    std::vector<std::vector<int>> children(st.sources.size());
-    std::vector<bool> visible_source(st.sources.size(), false);
-    for (std::size_t i = 0; i < st.sources.size(); ++i) {
-        visible_source[i] = !by_source[i].empty();
-        if (st.sources[i].parent >= 0) {
-            children[st.sources[i].parent].push_back(static_cast<int>(i));
-        }
-    }
-    // A folder stays in the tree when anything below it survived the filter. Parents are
-    // always earlier in path order than their children only by accident, so iterate until
-    // the flag stops spreading.
-    for (bool changed = true; changed;) {
-        changed = false;
-        for (std::size_t i = 0; i < st.sources.size(); ++i) {
-            const int parent = st.sources[i].parent;
-            if (visible_source[i] && parent >= 0 && !visible_source[parent]) {
-                visible_source[parent] = true;
-                changed = true;
-            }
-        }
-    }
-
-    auto by_label = [&st](int a, int b) {
-        return _stricmp(st.sources[a].label.c_str(), st.sources[b].label.c_str()) < 0;
-    };
-    std::vector<int> roots;
-    for (std::size_t i = 0; i < st.sources.size(); ++i) {
-        std::sort(children[i].begin(), children[i].end(), by_label);
-        if (st.sources[i].parent < 0) {
-            roots.push_back(static_cast<int>(i));
-        }
-    }
-    std::sort(roots.begin(), roots.end(), [&](int a, int b) {
-        if (st.sources[a].packfile != st.sources[b].packfile) {
-            return !st.sources[a].packfile;
-        }
-        return by_label(a, b);
-    });
-
-    // Deleting and reselecting items notifies the dialog; the selection handler must not act
-    // on those intermediate states.
-    st.rebuilding = true;
-    SendMessageA(tree, WM_SETREDRAW, FALSE, 0);
-    TreeView_DeleteAllItems(tree);
-    HTREEITEM select_item = nullptr;
-    int select_index = -1;
-    for (int root : roots) {
-        insert_source(tree, nullptr, st, entries, by_source, children, visible_source, root,
-                      !filter.empty(), select_name, select_first, select_item, select_index);
-    }
-    SendMessageA(tree, WM_SETREDRAW, TRUE, 0);
-
-    if (select_item) {
-        TreeView_SelectItem(tree, select_item);
-        TreeView_EnsureVisible(tree, select_item);
-    }
-    st.rebuilding = false;
-    if (select_index_out) {
-        *select_index_out = select_index;
-    }
-    return visible_count;
-}
-
-std::string current_filter(HWND hdlg)
-{
-    char filter_buf[128] = {};
-    GetDlgItemTextA(hdlg, IDC_MESH_BROWSER_FILTER, filter_buf, sizeof(filter_buf));
-    return string_to_lower(filter_buf);
+    return vfs_browser_rebuild_tree(tree, st.sources, entries, allow, filter, select_name, select_first,
+                                    select_index_out, st.rebuilding);
 }
 
 // The filter box spans the mesh tree only, so the animation count is a plain total.
@@ -708,7 +417,7 @@ void rebuild_anim_tree(HWND hdlg, BrowserState& st, const std::string& select_an
 void rebuild_mesh_tree(HWND hdlg, BrowserState& st, const std::string& select_mesh)
 {
     st.shown_meshes = rebuild_tree(hdlg, st, IDC_MESH_BROWSER_TREE, st.files, nullptr,
-                                   current_filter(hdlg), select_mesh);
+                                   vfs_browser_filter_text(GetDlgItem(hdlg, IDC_MESH_BROWSER_FILTER)), select_mesh);
     update_counts(hdlg, st);
 }
 
@@ -1130,7 +839,7 @@ void accept_selection(HWND hdlg, BrowserState& st)
 void on_selection_changed(HWND hdlg, BrowserState& st)
 {
     HWND tree = GetDlgItem(hdlg, IDC_MESH_BROWSER_TREE);
-    const int index = item_file_index(tree, TreeView_GetSelection(tree));
+    const int index = vfs_browser_item_file_index(tree, TreeView_GetSelection(tree));
     const bool have_file = index >= 0 && index < static_cast<int>(st.files.size());
     const std::string name = have_file ? st.files[index].name : std::string{};
     EnableWindow(GetDlgItem(hdlg, IDOK), !name.empty());
@@ -1140,8 +849,7 @@ void on_selection_changed(HWND hdlg, BrowserState& st)
     st.selected = name;
     std::string source;
     if (have_file) {
-        const BrowserSource& src = st.sources[st.files[index].source];
-        source = src.path.empty() ? src.label : src.path;
+        source = vfs_browser_source_text(st.sources[st.files[index].source]);
     }
     SetDlgItemTextA(hdlg, IDC_MESH_BROWSER_SOURCE, source.c_str());
     update_anim_pane(hdlg, st);
@@ -1151,7 +859,7 @@ void on_selection_changed(HWND hdlg, BrowserState& st)
 void on_anim_selection_changed(HWND hdlg, BrowserState& st)
 {
     HWND tree = GetDlgItem(hdlg, IDC_MESH_BROWSER_ANIM_TREE);
-    const int index = item_file_index(tree, TreeView_GetSelection(tree));
+    const int index = vfs_browser_item_file_index(tree, TreeView_GetSelection(tree));
     const std::string name = (index >= 0 && index < static_cast<int>(st.anims.size()))
                                  ? st.anims[index].name
                                  : std::string{};
@@ -1194,7 +902,9 @@ INT_PTR mesh_browser_message(HWND hdlg, UINT msg, WPARAM wparam, LPARAM lparam)
                          IDC_MESH_BROWSER_BG_EDITOR + g_preview_background);
         bool listing_failed = false;
         try {
-            collect_entries(state);
+            vfs_browser_collect(state.sources, {&state.files, &state.anims}, [&state](const std::string& name) {
+                return static_cast<int>(classify_name(name, state.kinds, state.anims_enabled)) - 1;
+            });
             build_anim_mask(state);
         }
         catch (...) {

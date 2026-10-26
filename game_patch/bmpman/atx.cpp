@@ -84,6 +84,8 @@ namespace
         // in the material-getter hook so non-override ATXes pay zero overhead.
         bool has_material_override = false;
 
+        std::optional<AtxSpec::Detail> detail;
+
         AtxController() = default;
         AtxController(const AtxController&) = delete;
         AtxController& operator=(const AtxController&) = delete;
@@ -197,8 +199,8 @@ namespace
     void dirty_atx(AtxController& c)
     {
         // Dirtying only drops the texture; the render context still holds the handle pair
-        // that selected it, so it has to be told the answer moved. Two int writes, and doing
-        // it here covers every caller rather than each remembering to.
+        // that selected it, so it has to be told the answer moved. Doing it here covers every
+        // caller rather than each remembering to.
         gr_invalidate_texture_cache();
         // Mark every bm_handle that maps to this controller. Without this, only the
         // most-recently-locked handle would re-upload to the GPU, freezing animation on any
@@ -282,6 +284,7 @@ namespace
         c->base_frame_time_ms = spec->header.frame_time_ms;
         c->initially_on = spec->header.initially_on;
         c->animation_mode = spec->header.animation_mode;
+        c->detail = std::move(spec->detail);
 
         std::optional<rf::bm::Format> target_format;
         std::optional<std::string> alpha_mask_filename = spec->header.alpha_mask;
@@ -475,6 +478,16 @@ namespace
         c->time_in_frame_s = 0.0f;
         return c;
     }
+
+    // g_by_handle fills on first lock; until then only the name map has the controller
+    const AtxController* find_controller(const rf::bm::BitmapEntry& bm_entry)
+    {
+        if (auto it = g_by_handle.find(bm_entry.handle); it != g_by_handle.end()) {
+            return it->second;
+        }
+        auto it = g_controllers.find(key_from_bm_name(bm_entry.name));
+        return it == g_controllers.end() ? nullptr : it->second.get();
+    }
 } // namespace
 
 int atx_detail::g_live_feed_count = 0;
@@ -590,17 +603,9 @@ void unlock_atx_bitmap(rf::bm::BitmapEntry& /*bm_entry*/)
 std::optional<uint8_t> atx_material_override(const rf::bm::BitmapEntry& bm_entry)
 {
     // Hot path — called from bm_get_material_idx_hook for every footstep/bullet impact/decal.
-    // Try the handle-keyed map first (no string allocation). Fall back to the name-keyed map
-    // for the rare case where a material query happens before lock_atx_bitmap has populated
-    // g_by_handle (e.g. very first query at level start).
-    const AtxController* c = nullptr;
-    if (auto it = g_by_handle.find(bm_entry.handle); it != g_by_handle.end()) {
-        c = it->second;
-    }
-    else {
-        auto it2 = g_controllers.find(key_from_bm_name(bm_entry.name));
-        if (it2 == g_controllers.end()) return std::nullopt;
-        c = it2->second.get();
+    const AtxController* c = find_controller(bm_entry);
+    if (!c) {
+        return std::nullopt;
     }
     if (!c->has_material_override) {
         return std::nullopt;
@@ -612,6 +617,12 @@ std::optional<uint8_t> atx_material_override(const rf::bm::BitmapEntry& bm_entry
         }
     }
     return c->header_material; // may be nullopt if only some frames override and this isn't one
+}
+
+const AtxSpec::Detail* atx_detail_texture(const rf::bm::BitmapEntry& bm_entry)
+{
+    const AtxController* c = find_controller(bm_entry);
+    return c && c->detail ? &*c->detail : nullptr;
 }
 
 void atx_free(rf::bm::BitmapEntry& bm_entry)
