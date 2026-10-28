@@ -12,6 +12,7 @@
 #include "bot_navigation_routes.h"
 #include "bot_state.h"
 #include "bot_utils.h"
+#include "bot_vehicle.h"
 #include "../bagman.h"
 #include "../gametype.h"
 #include "../salvage.h"
@@ -2263,7 +2264,7 @@ bool update_bagman_objective_goal(
                 return bot_goal_runtime_abort_bagman_goal();
             }
             rf::Entity* carrier_ent =
-                rf::entity_from_handle(g_bagman_info.carrier->entity_handle);
+                bot_vehicle_effective_target(rf::entity_from_handle(g_bagman_info.carrier->entity_handle));
             if (!carrier_ent || rf::entity_is_dying(carrier_ent)) {
                 return bot_goal_runtime_abort_bagman_goal();
             }
@@ -2433,7 +2434,7 @@ bool update_salvage_objective_goal(
             if (carrier == bot_player() || (carrier->team == bot_player()->team) != escorting) {
                 return bot_goal_runtime_abort_salvage_goal();
             }
-            rf::Entity* carrier_ent = rf::entity_from_handle(carrier->entity_handle);
+            rf::Entity* carrier_ent = bot_vehicle_effective_target(rf::entity_from_handle(carrier->entity_handle));
             if (!carrier_ent || rf::entity_is_dying(carrier_ent)) {
                 return bot_goal_runtime_abort_salvage_goal();
             }
@@ -2687,6 +2688,11 @@ bool update_control_point_objective_goal(
             move_target = bot_state().goal_target_pos;
             has_move_target = true;
         }
+        // Roam can carry the bot out of a component the zone is unreachable from; nothing here reroutes against it.
+        else if (bot_internal_update_waypoint_target(local_entity)) {
+            move_target = bot_state().waypoint_target_pos;
+            has_move_target = true;
+        }
         return true;
     }
 
@@ -2796,6 +2802,104 @@ bool update_control_point_objective_goal(
     has_move_target = true;
     return true;
 }
+
+bool update_vehicle_acquire_goal(
+    const rf::Entity& local_entity,
+    rf::Vector3& move_target,
+    bool& has_move_target)
+{
+    // The FSM holds vehicle_acquire briefly after the goal moves on; the roam fallback covers that.
+    if (!bot_goal_is_vehicle(bot_state().active_goal)) {
+        return false;
+    }
+    BotVehicleApproach approach{};
+    switch (bot_vehicle_update_acquire(local_entity, approach)) {
+        case BotVehicleAcquireStatus::abort:
+            return bot_vehicle_abort_acquire(approach.abort_reason);
+        case BotVehicleAcquireStatus::boarding:
+            bot_internal_clear_waypoint_route();
+            move_target = local_entity.pos;
+            has_move_target = true;
+            return true;
+        default:
+            break;
+    }
+    bot_state().goal_target_waypoint = approach.board_waypoint;
+    bot_state().goal_target_pos = approach.board_pos;
+    BotVehicleState& vehicle = bot_state().vehicle;
+    const rf::Vector3 hull_target{approach.hull_pos.x, local_entity.pos.y, approach.hull_pos.z};
+
+    // Inside the reach radius on the spot's level a route to the spot is already used up, so it is walked from here:
+    // straight at the spot, else at the hull for the last steps or when that is walkable. Anything else routes.
+    constexpr float kVehicleFinalApproachDistance = 2.5f;
+    constexpr float kVehicleApproachMaxHeightDiff = 1.6f;
+    const float board_dist_sq = rf::vec_dist_squared(&local_entity.pos, &approach.board_pos);
+    const bool spot_level = std::abs(approach.board_pos.y - local_entity.pos.y) <= kVehicleApproachMaxHeightDiff;
+    if (spot_level && board_dist_sq <= kWaypointReachRadius * kWaypointReachRadius) {
+        const bool last_steps = board_dist_sq <= kVehicleFinalApproachDistance * kVehicleFinalApproachDistance;
+        bool direct = true;
+        if (!last_steps && can_move_directly_to(local_entity, approach.board_pos, approach.board_pos, approach.hull)) {
+            move_target = approach.board_pos;
+        }
+        else if (last_steps || bot_can_walk_direct(local_entity.pos, hull_target)) {
+            move_target = hull_target;
+        }
+        else {
+            direct = false;
+        }
+        if (direct) {
+            bot_internal_clear_waypoint_route();
+            bot_state().waypoint_target_pos = move_target;
+            bot_state().has_waypoint_target = false;
+            vehicle.route_fail_timer.invalidate();
+            has_move_target = true;
+            return true;
+        }
+    }
+
+    // 0: the recovery reroute must not avoid the boarding node itself.
+    if (!bot_goal_runtime_route_to_waypoint_target_with_recovery(
+            local_entity,
+            approach.board_pos,
+            0,
+            scale_repath_ms(kWaypointRepathMs),
+            scale_repath_ms(kWaypointRecoveryRepathMs, true))) {
+        if (!vehicle.route_fail_timer.valid()) {
+            vehicle.route_fail_timer.set(5000);
+        }
+        else if (vehicle.route_fail_timer.elapsed()) {
+            return bot_vehicle_abort_acquire("no route");
+        }
+
+        if (can_move_directly_to(local_entity, approach.board_pos, approach.board_pos, approach.hull)) {
+            move_target = approach.board_pos;
+            has_move_target = true;
+        }
+        else if (spot_level
+                 && rf::vec_dist_squared(&local_entity.pos, &approach.hull_pos)
+                     <= kWaypointLinkRadius * kWaypointLinkRadius
+                 && bot_can_walk_direct(local_entity.pos, hull_target)) {
+            move_target = hull_target;
+            has_move_target = true;
+        }
+        return true;
+    }
+
+    vehicle.route_fail_timer.invalidate();
+    move_target = bot_state().waypoint_target_pos;
+    has_move_target = true;
+    return true;
+}
+}
+
+bool bot_nav_find_reachable_waypoint_near(
+    const rf::Entity& local_entity,
+    const rf::Vector3& pos,
+    const int preferred_waypoint,
+    int& out_waypoint,
+    rf::Vector3& out_pos)
+{
+    return find_reachable_waypoint_near_position(local_entity, pos, preferred_waypoint, out_waypoint, out_pos);
 }
 
 bool bot_nav_find_crater_fire_waypoint(
@@ -3059,6 +3163,9 @@ void bot_update_move_target(
             break;
         case BotFsmState::control_point_objective:
             update_control_point_objective_goal(local_entity, move_target, has_move_target);
+            break;
+        case BotFsmState::vehicle_acquire:
+            update_vehicle_acquire_goal(local_entity, move_target, has_move_target);
             break;
         case BotFsmState::retreat:
             if (!update_retreat_goal(local_entity, enemy_target, move_target, has_move_target)) {
@@ -3402,7 +3509,14 @@ void bot_update_move_target(
         }
     }
 
-    if (!has_move_target) {
+    // The objective's reroute would drop a roam route next frame, alternating with it. The no-move watchdog or
+    // the route-failure window ends the goal instead. A drop lock blocks that reroute, so roam is safe then.
+    const bool objective_owns_route =
+        (bot_state().fsm_state == BotFsmState::ctf_objective
+            || bot_state().fsm_state == BotFsmState::control_point_objective)
+        && bot_goal_routes_to_fixed_objective(bot_state().active_goal, bot_state().goal_target_handle)
+        && !bot_state().drop_link_route_locked;
+    if (!has_move_target && !objective_owns_route) {
         has_move_target = bot_internal_update_waypoint_target(local_entity);
         if (has_move_target) {
             move_target = bot_state().waypoint_target_pos;
@@ -3448,6 +3562,7 @@ void bot_update_move_target(
     if (!has_move_target
         && (bot_state().active_goal == BotGoalType::roam
             || bot_state().active_goal == BotGoalType::none
+            || objective_owns_route
             || (bot_state().goal_target_waypoint <= 0
                 && bot_state().waypoint_goal <= 0))) {
         if (bot_nav_try_emergency_direct_move_target(local_entity, move_target)) {

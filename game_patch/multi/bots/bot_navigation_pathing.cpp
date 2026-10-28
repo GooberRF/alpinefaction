@@ -1046,6 +1046,12 @@ void clear_synthetic_movement_controls()
     bot_state().move_input_y = 0.0f;
     bot_state().move_input_z = 0.0f;
     bot_state().movement_override_active = false;
+    bot_state().rot_override_active = false;
+    bot_state().rot_input_x = 0.0f;
+    bot_state().rot_input_y = 0.0f;
+    bot_state().mouse_delta_override_active = false;
+    bot_state().mouse_dh_input = 0.0f;
+    bot_state().mouse_dp_input = 0.0f;
 }
 
 void reset_client_bot_state()
@@ -2147,14 +2153,19 @@ bool update_waypoint_target_towards(
         return false;
     }
 
-    const bool path_invalid =
+    const bool path_exhausted =
         bot_state().waypoint_path.empty()
         || bot_state().waypoint_next_index < 0
         || bot_state().waypoint_next_index
-            >= static_cast<int>(bot_state().waypoint_path.size())
-        || !bot_state().repath_timer.valid();
+            >= static_cast<int>(bot_state().waypoint_path.size());
+    const bool path_invalid = path_exhausted || !bot_state().repath_timer.valid();
+    // A valid path is otherwise walked to its end, so a route left by retreat or roam would detour the objective.
+    const bool routing_to_fixed_objective =
+        !los_target_eye_pos
+        && goal_waypoint == bot_state().goal_target_waypoint
+        && bot_goal_routes_to_fixed_objective(bot_state().active_goal, bot_state().goal_target_handle);
     const bool allow_opportunistic_repath =
-        bot_state().recovery_pending_reroute
+        (bot_state().recovery_pending_reroute || routing_to_fixed_objective)
         && !stabilize_eliminate_recovery_route_goal;
 
     bool need_route = path_invalid;
@@ -2199,7 +2210,8 @@ bool update_waypoint_target_towards(
 
     const bool prefer_long_route =
         los_target_eye_pos && is_long_route_escape_active();
-    if (need_route && bot_state().drop_link_route_locked) {
+    // With no route left there is no drop link to protect.
+    if (need_route && !path_exhausted && bot_state().drop_link_route_locked) {
         need_route = false;
     }
     if (need_route) {

@@ -3648,6 +3648,24 @@ static void send_bot_config_with_identity(rf::Player* player, const ServerBotCon
         config.personality_preset, slot, config.skill_preset, player->name, resolved_character);
 }
 
+void server_resend_client_bot_personalities()
+{
+    const auto& configs = g_alpine_server_config.bot_configs;
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if (!player.is_bot || server_bot_from_player(&player)
+            || !is_player_minimum_af_client_version(&player, 1, 3, 0)) {
+            continue;
+        }
+        const int slot = g_bot_profile_slots.get_slot(&player);
+        if (slot >= 0 && slot < static_cast<int>(configs.size())) {
+            af_send_bot_control_update_personality(&player, configs[slot]);
+        }
+        else if (configs.empty()) {
+            af_send_bot_control_update_personality(&player, ServerBotConfig{});
+        }
+    }
+}
+
 void server_reliable_socket_ready(rf::Player* player)
 {
     // Send bot config once the reliable connection is ready.

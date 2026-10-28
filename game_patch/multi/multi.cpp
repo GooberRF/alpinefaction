@@ -28,6 +28,7 @@
 #include "mutators.h"
 #include "bots/bot_chat_manager.h"
 #include "bots/bot_context_fwd.h"
+#include "bots/bot_vehicle_nav.h"
 #include "../fflink/afstats_events.h"
 #include "../hud/hud.h"
 #include "../hud/multi_spectate.h"
@@ -96,6 +97,13 @@ static rf::CmdLineParam& get_awpgen_cmd_line_param()
 {
     static rf::CmdLineParam awpgen_param{"-awpgen", "", true};
     return awpgen_param;
+}
+
+// With -awpgen: probe Alpine terrain like other geometry instead of laying a lattice over it.
+static rf::CmdLineParam& get_awpgen_fine_cmd_line_param()
+{
+    static rf::CmdLineParam awpgen_fine_param{"-awpgen_fine", "", false};
+    return awpgen_fine_param;
 }
 
 static bool g_client_bot_launch_enabled = false;
@@ -291,7 +299,7 @@ bool handle_awpgen_param()
         return true;
     }
 
-    waypoints_start_awpgen(level_filename);
+    waypoints_start_awpgen(level_filename, !get_awpgen_fine_cmd_line_param().found());
     start_levelm_load_sequence(level_filename);
     return true;
 }
@@ -1573,6 +1581,7 @@ void multi_do_patch()
     get_debugbot_cmd_line_param();
     get_noquit_cmd_line_param();
     get_awpgen_cmd_line_param();
+    get_awpgen_fine_cmd_line_param();
     g_client_bot_launch_enabled = is_client_bot_requested_from_cmdline() || is_client_debugbot_requested_from_cmdline();
     g_client_bot_debug_render_enabled = is_client_debugbot_requested_from_cmdline();
     if (is_headless_mode()) {
@@ -1589,6 +1598,7 @@ void multi_do_patch()
     mapm_cmd.register_cmd();
     set_handicap_cmd.register_cmd();
     dbg_bot_cmd.register_cmd();
+    bot_vehicle_nav_apply_patches();
 }
 
 void multi_after_full_game_init()

@@ -5,9 +5,11 @@
 #include "bot_internal.h"
 #include "bot_math.h"
 #include "bot_utils.h"
+#include "bot_vehicle.h"
 #include "bot_weapon_profiles.h"
 #include "../gametype.h"
 #include "../multi.h"
+#include "../vehicles/vehicle.h"
 #include "../../main/main.h"
 #include "../../misc/waypoints.h"
 #include "../../rf/collide.h"
@@ -412,7 +414,7 @@ struct BotWeaponStats
 };
 
 BotWeaponStats weapon_stats_for_mode(int weapon_type, bool use_alt_fire);
-float bot_weapon_expected_dps(const BotWeaponStats& stats, float distance);
+float bot_weapon_expected_dps(const BotWeaponStats& stats, float distance, float target_hit_radius = kTargetHitRadius);
 
 float splash_self_safe_distance(const float radius, const float damage)
 {
@@ -739,11 +741,12 @@ ProjectileTraits projectile_traits(const int weapon_type)
 }
 
 rf::Vector3 compute_skill_adjusted_enemy_aim_target(
-    const rf::Entity& local_entity,
+    const rf::Vector3& origin,
+    const int weapon_type,
     const rf::Entity& enemy_target,
     const float skill_factor)
 {
-    const ProjectileTraits projectile = projectile_traits(local_entity.ai.current_primary_weapon);
+    const ProjectileTraits projectile = projectile_traits(weapon_type);
     rf::Vector3 aim_target = enemy_target.eye_pos;
     aim_target.y = std::lerp(
         enemy_target.pos.y,
@@ -758,7 +761,7 @@ rf::Vector3 compute_skill_adjusted_enemy_aim_target(
         aim_target.y -= bot_state().firing.aim_floor_drop;
     }
 
-    rf::Vector3 to_target = aim_target - local_entity.eye_pos;
+    rf::Vector3 to_target = aim_target - origin;
     const float dist = to_target.len();
     if (dist <= 0.0001f) {
         return aim_target;
@@ -767,7 +770,7 @@ rf::Vector3 compute_skill_adjusted_enemy_aim_target(
     if (!projectile.melee && projectile.speed > 1.0f && projectile.speed < kLeadProjectileMaxSpeed) {
         const float flight_time = dist / projectile.speed * (projectile.thrown ? kThrownFlightTimeScale : 1.0f);
         const float lead_time = std::min(flight_time, 1.5f) * std::clamp(skill_factor, 0.15f, 1.0f);
-        aim_target += enemy_target.p_data.vel * lead_time;
+        aim_target += bot_vehicle_target_velocity(enemy_target) * lead_time;
     }
 
     if (bot_state().firing.aim_error_target_handle != enemy_target.handle) {
@@ -838,9 +841,84 @@ rf::Vector3 compute_skill_adjusted_enemy_aim_target(
     aim_target += right * bot_state().firing.aim_error_right;
     aim_target += up * bot_state().firing.aim_error_up;
     if (projectile.thrown) {
-        aim_target = ballistic_aim_point(local_entity.eye_pos, aim_target, projectile.speed);
+        aim_target = ballistic_aim_point(origin, aim_target, projectile.speed);
     }
     return aim_target;
+}
+
+rf::Vector3 compute_skill_adjusted_enemy_aim_target(
+    const rf::Entity& local_entity,
+    const rf::Entity& enemy_target,
+    const float skill_factor)
+{
+    return compute_skill_adjusted_enemy_aim_target(
+        local_entity.eye_pos, local_entity.ai.current_primary_weapon, enemy_target, skill_factor);
+}
+
+bool aim_step(float& yaw, float& pitch, const rf::Vector3& look_dir, const float dt, const float skill_factor,
+    float& out_alignment)
+{
+    const rf::Vector3 current_forward = forward_from_non_linear_yaw_pitch(yaw, pitch);
+
+    const bool combat_tracking =
+        bot_state().active_goal == BotGoalType::eliminate_target
+        || bot_state().fsm_state == BotFsmState::engage_enemy
+        || bot_state().fsm_state == BotFsmState::pursue_enemy
+        || bot_state().fsm_state == BotFsmState::seek_enemy;
+    const float tuned_alpha = std::clamp(
+        combat_tracking
+            ? std::lerp(0.14f, 0.32f, skill_factor)
+            : std::lerp(0.10f, 0.24f, skill_factor),
+        0.05f,
+        0.40f
+    );
+    // The blend constants are per 30 fps frame; rescaling the exponent keeps convergence time independent of the host
+    // frame rate.
+    constexpr float kAimBlendTunedRate = 30.0f;
+    const float blend_dt = std::clamp(dt, 0.0f, 0.05f);
+    const float interp_alpha = 1.0f - std::pow(1.0f - tuned_alpha, blend_dt * kAimBlendTunedRate);
+    rf::Vector3 smoothed_look_dir =
+        current_forward * (1.0f - interp_alpha) + look_dir * interp_alpha;
+    if (smoothed_look_dir.len_sq() < 0.0001f) {
+        smoothed_look_dir = look_dir;
+    }
+    smoothed_look_dir.normalize_safe();
+
+    const float desired_yaw = std::atan2(smoothed_look_dir.x, smoothed_look_dir.z);
+    const float desired_pitch = std::clamp(
+        non_linear_pitch_from_forward_vector(smoothed_look_dir),
+        -1.45f,
+        1.45f
+    );
+
+    // One step per frame: server bots also step on the frames between their thinks (bot_track_aim_goal).
+    const float frame_dt = std::clamp(dt, 0.001f, 0.05f);
+    const BotSkillProfile& skill_profile = get_active_bot_skill_profile();
+    const float yaw_speed = std::lerp(1.8f, std::max(skill_profile.yaw_speed_cap, 1.8f), skill_factor);
+    const float pitch_speed = std::lerp(1.3f, std::max(skill_profile.pitch_speed_cap, 1.3f), skill_factor);
+
+    yaw = approach_angle(
+        yaw,
+        desired_yaw,
+        yaw_speed * frame_dt
+    );
+    pitch = std::clamp(
+        approach_angle(
+            pitch,
+            desired_pitch,
+            pitch_speed * frame_dt
+        ),
+        -1.45f,
+        1.45f
+    );
+
+    const rf::Vector3 forward = forward_from_non_linear_yaw_pitch(
+        yaw,
+        pitch
+    );
+
+    out_alignment = forward.dot_prod(look_dir);
+    return out_alignment >= bot_aim_fire_alignment(skill_factor);
 }
 
 bool update_aim_towards(
@@ -858,73 +936,9 @@ bool update_aim_towards(
         return true;
     }
     look_dir.normalize_safe();
-
-    const rf::Vector3 current_forward = forward_from_non_linear_yaw_pitch(
-        entity.control_data.phb.y,
-        entity.control_data.eye_phb.x
-    );
-
-    const bool combat_tracking =
-        bot_state().active_goal == BotGoalType::eliminate_target
-        || bot_state().fsm_state == BotFsmState::engage_enemy
-        || bot_state().fsm_state == BotFsmState::pursue_enemy
-        || bot_state().fsm_state == BotFsmState::seek_enemy;
-    const float tuned_alpha = std::clamp(
-        combat_tracking
-            ? std::lerp(0.14f, 0.32f, skill_factor)
-            : std::lerp(0.10f, 0.24f, skill_factor),
-        0.05f,
-        0.40f
-    );
-    // The blend constants are per 30 fps frame; rescaling the exponent keeps convergence time independent of the host
-    // frame rate.
-    constexpr float kAimBlendTunedRate = 30.0f;
-    const float blend_dt = std::clamp(rf::frametime, 0.0f, 0.05f);
-    const float interp_alpha = 1.0f - std::pow(1.0f - tuned_alpha, blend_dt * kAimBlendTunedRate);
-    rf::Vector3 smoothed_look_dir =
-        current_forward * (1.0f - interp_alpha) + look_dir * interp_alpha;
-    if (smoothed_look_dir.len_sq() < 0.0001f) {
-        smoothed_look_dir = look_dir;
-    }
-    smoothed_look_dir.normalize_safe();
-
-    const float desired_yaw = std::atan2(smoothed_look_dir.x, smoothed_look_dir.z);
-    const float desired_pitch = std::clamp(
-        non_linear_pitch_from_forward_vector(smoothed_look_dir),
-        -1.45f,
-        1.45f
-    );
-
-    // One step per frame: server bots also step on the frames between their thinks (bot_track_aim_goal).
-    const float frame_dt = std::clamp(rf::frametime, 0.001f, 0.05f);
-    const BotSkillProfile& skill_profile = get_active_bot_skill_profile();
-    const float yaw_speed = std::lerp(1.8f, std::max(skill_profile.yaw_speed_cap, 1.8f), skill_factor);
-    const float pitch_speed = std::lerp(1.3f, std::max(skill_profile.pitch_speed_cap, 1.3f), skill_factor);
-
-    entity.control_data.phb.y = approach_angle(
-        entity.control_data.phb.y,
-        desired_yaw,
-        yaw_speed * frame_dt
-    );
-    entity.control_data.eye_phb.x = std::clamp(
-        approach_angle(
-            entity.control_data.eye_phb.x,
-            desired_pitch,
-            pitch_speed * frame_dt
-        ),
-        -1.45f,
-        1.45f
-    );
-
-    const rf::Vector3 forward = forward_from_non_linear_yaw_pitch(
-        entity.control_data.phb.y,
-        entity.control_data.eye_phb.x
-    );
-
-    out_alignment = forward.dot_prod(look_dir);
-    const float required_alignment =
-        std::lerp(0.985f, std::clamp(skill_profile.fire_alignment_threshold, -1.0f, 0.999f), skill_factor);
-    return out_alignment >= required_alignment;
+    return aim_step(
+        entity.control_data.phb.y, entity.control_data.eye_phb.x, look_dir, rf::frametime, skill_factor,
+        out_alignment);
 }
 
 // Holding the charges is enough: GunGame grants no detonator.
@@ -1145,7 +1159,7 @@ BotWeaponStats bot_weapon_stats(const int weapon_type, const float distance)
     return weapon_stats_for_mode(weapon_type, select_combat_fire_mode(weapon_type, distance).use_alt_fire);
 }
 
-float bot_weapon_expected_dps(const BotWeaponStats& stats, const float distance)
+float bot_weapon_expected_dps(const BotWeaponStats& stats, const float distance, const float target_hit_radius)
 {
     if (stats.weapon_type < 0
         || stats.shot_interval <= 0.0f
@@ -1164,7 +1178,7 @@ float bot_weapon_expected_dps(const BotWeaponStats& stats, const float distance)
             : 0.0f;
         const float evade_miss = flight_time * kTargetEvadeSpeed;
         const float miss_sq = spread_miss * spread_miss + aim_miss * aim_miss + evade_miss * evade_miss;
-        const float hit_radius = kTargetHitRadius + stats.splash_radius * kSplashHitRadiusScale;
+        const float hit_radius = target_hit_radius + stats.splash_radius * kSplashHitRadiusScale;
         if (miss_sq > hit_radius * hit_radius) {
             hit_chance = hit_radius * hit_radius / miss_sq;
         }
@@ -1178,12 +1192,12 @@ float bot_weapon_expected_dps(const BotWeaponStats& stats, const float distance)
 
 float get_entity_health_ratio(const rf::Entity& entity)
 {
-    return std::clamp(entity.life / kBotNominalMaxHealth, 0.0f, 1.0f);
+    return bot_decision_get_entity_health_ratio(entity);
 }
 
 float get_entity_armor_ratio(const rf::Entity& entity)
 {
-    return std::clamp(entity.armor / kBotNominalMaxArmor, 0.0f, 1.0f);
+    return bot_decision_get_entity_armor_ratio(entity);
 }
 
 // resolve_weapon_type_cached is defined in bot_utils.cpp
@@ -1487,7 +1501,7 @@ float nearest_player_entity_distance(
         if ((team_mode && player.team == local_player->team) != teammates) {
             continue;
         }
-        rf::Entity* const entity = rf::entity_from_handle(player.entity_handle);
+        rf::Entity* const entity = bot_vehicle_effective_target(rf::entity_from_handle(player.entity_handle));
         if (!entity || entity == &local_entity || rf::entity_is_dying(entity)) {
             continue;
         }
@@ -1773,7 +1787,7 @@ bool enemy_takes_splash(
         if (&player == local_player || player.is_spectator || (team_mode && player.team == local_player->team)) {
             continue;
         }
-        rf::Entity* const entity = rf::entity_from_handle(player.entity_handle);
+        rf::Entity* const entity = bot_vehicle_effective_target(rf::entity_from_handle(player.entity_handle));
         if (entity
             && entity != &local_entity
             && !rf::entity_is_dying(entity)
@@ -1823,7 +1837,7 @@ bool enemies_leaving_charges(const rf::Entity& local_entity, const LiveRemoteCha
         if (&player == local_player || player.is_spectator || teammate) {
             continue;
         }
-        rf::Entity* const entity = rf::entity_from_handle(player.entity_handle);
+        rf::Entity* const entity = bot_vehicle_effective_target(rf::entity_from_handle(player.entity_handle));
         if (!entity || rf::entity_is_dying(entity)) {
             continue;
         }
@@ -1843,7 +1857,7 @@ bool enemies_leaving_charges(const rf::Entity& local_entity, const LiveRemoteCha
         for (int i = 0; i < live.count; ++i) {
             const rf::Vector3 away = entity->pos - live.charges[i]->pos;
             const float radius = live.charges[i]->info->damage_radius;
-            if (away.len_sq() <= radius * radius || away.dot_prod(entity->p_data.vel) <= 0.0f) {
+            if (away.len_sq() <= radius * radius || away.dot_prod(bot_vehicle_target_velocity(*entity)) <= 0.0f) {
                 return false;
             }
         }
@@ -2051,7 +2065,16 @@ float weapon_combat_utility(
     if (stats.melee && !current && distance > stats.max_range * kMeleeCandidateReachShare) {
         return 0.0f;
     }
-    float utility = bot_weapon_expected_dps(stats, distance);
+    float utility = 0.0f;
+    if (enemy_target && vehicle_is_synced_entity_type(enemy_target)) {
+        const float hit_radius = std::max(kTargetHitRadius, bot_vehicle_hull_hit_radius(*enemy_target));
+        const float damage_scale =
+            vehicle_hull_damage_multiplier(enemy_target, rf::weapon_types[weapon_type].damage_type);
+        utility = bot_weapon_expected_dps(stats, distance, hit_radius) * std::max(0.0f, damage_scale);
+    }
+    else {
+        utility = bot_weapon_expected_dps(stats, distance);
+    }
     if (utility <= 0.0f) {
         return 0.0f;
     }
@@ -2895,4 +2918,44 @@ void bot_process_combat(
         bot_state().firing.synthetic_primary_fire_just_pressed = false;
         bot_state().firing.synthetic_secondary_fire_just_pressed = false;
     }
+}
+
+bool bot_aim_step(float& yaw, float& pitch, const rf::Vector3& dir, const float dt, const float skill_factor,
+    float& out_alignment)
+{
+    return aim_step(yaw, pitch, dir, dt, skill_factor, out_alignment);
+}
+
+rf::Vector3 bot_combat_enemy_aim_point(
+    const rf::Vector3& origin,
+    const int weapon_type,
+    const rf::Entity& enemy,
+    const float skill_factor)
+{
+    return compute_skill_adjusted_enemy_aim_target(origin, weapon_type, enemy, skill_factor);
+}
+
+float bot_combat_weapon_effective_range(const int weapon_type)
+{
+    return weapon_ranges(weapon_type).effective_range;
+}
+
+bool bot_combat_mounted_splash_is_safe(const rf::Entity& rider, const int weapon_type, const rf::Vector3& impact_pos)
+{
+    const BotWeaponStats stats = weapon_stats_for_mode(weapon_type, false);
+    if (stats.splash_radius <= 0.0f) {
+        return true;
+    }
+    if (player_entity_within_radius(rider, impact_pos, stats.splash_radius, true)) {
+        return false;
+    }
+    const float self_damage = splash_damage_to_entity(
+        rider, stats.shot_damage * splash_self_damage_scale(rider), stats.splash_radius, impact_pos, false);
+    return splash_self_damage_acceptable(rider, self_damage, true);
+}
+
+float bot_aim_fire_alignment(const float skill_factor)
+{
+    const BotSkillProfile& skill_profile = get_active_bot_skill_profile();
+    return std::lerp(0.985f, std::clamp(skill_profile.fire_alignment_threshold, -1.0f, 0.999f), skill_factor);
 }

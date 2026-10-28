@@ -71,8 +71,7 @@ void vehicle_feed_automobile_eye_input(rf::Entity* ep)
 
 rf::Entity* vehicle_local_driven_vehicle()
 {
-    // Deliberately the non-live resolver, and no rider-dying test: this gate must keep answering
-    // through the hull's death animation.
+    // No rider-dying test: a dying driver still holds the seat.
     rf::Entity* rider = rf::local_player_entity;
     rf::Entity* vehicle = vehicle_ridden_hull(rider);
     return vehicle && vehicle_driver_entity(vehicle) == rider ? vehicle : nullptr;

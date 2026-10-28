@@ -1,6 +1,7 @@
 #pragma once
 
 #include "bot_personality.h"
+#include "bot_vehicle_nav.h"
 #include "bot_waypoint_route.h"
 #include "../../misc/waypoints.h"
 #include "../../rf/entity.h"
@@ -181,6 +182,10 @@ enum class BotGoalType
     sal_stage_at_spawn = 22,
     sal_hold_zone = 23,
     sal_escort_carrier = 24,
+    vehicle_acquire = 25,
+    vehicle_turret = 26,
+    vehicle_gun = 27,
+    vehicle_hunt = 28,
 };
 
 inline constexpr bool bot_goal_is_item_collection(const BotGoalType goal)
@@ -255,6 +260,40 @@ inline constexpr bool bot_goal_is_control_point_objective(const BotGoalType goal
     return goal == BotGoalType::control_point_objective;
 }
 
+// Objective goals whose route goal node changes only when the objective moves. Chase and escort goals track a
+// moving target and ctf_hold_enemy_flag swaps anchors, so a goal-node reroute would run every think.
+inline constexpr bool bot_goal_routes_to_fixed_objective(const BotGoalType goal, const int goal_target_handle)
+{
+    switch (goal) {
+        case BotGoalType::ctf_steal_flag:
+        case BotGoalType::ctf_capture_flag:
+        case BotGoalType::bag_pickup:
+        case BotGoalType::sal_seek_flag:
+        case BotGoalType::sal_deliver_flag:
+        case BotGoalType::sal_stage_at_spawn:
+        case BotGoalType::sal_hold_zone:
+        case BotGoalType::control_point_objective:
+            return true;
+        case BotGoalType::ctf_return_flag:
+            return goal_target_handle < 0;
+        default:
+            return false;
+    }
+}
+
+inline constexpr bool bot_goal_is_vehicle(const BotGoalType goal)
+{
+    switch (goal) {
+        case BotGoalType::vehicle_acquire:
+        case BotGoalType::vehicle_turret:
+        case BotGoalType::vehicle_gun:
+        case BotGoalType::vehicle_hunt:
+            return true;
+        default:
+            return false;
+    }
+}
+
 enum class BotGoalTier
 {
     tier1_objective = 1,
@@ -282,6 +321,10 @@ inline constexpr BotGoalTier bot_goal_tier(const BotGoalType goal)
         case BotGoalType::sal_stage_at_spawn:
         case BotGoalType::sal_hold_zone:
         case BotGoalType::sal_escort_carrier:
+        case BotGoalType::vehicle_acquire:
+        case BotGoalType::vehicle_turret:
+        case BotGoalType::vehicle_gun:
+        case BotGoalType::vehicle_hunt:
         case BotGoalType::collect_weapon:
         case BotGoalType::collect_ammo:
         case BotGoalType::collect_health:
@@ -327,6 +370,10 @@ enum class BotFsmState
     shatter_glass = 15,
     ctf_objective = 16,
     control_point_objective = 17,
+    vehicle_acquire = 18,
+    vehicle_drive = 19,
+    vehicle_gun = 20,
+    vehicle_ride = 21,
 };
 
 struct FailedEdgeCooldown
@@ -406,6 +453,7 @@ enum class BotAlertType
     damaged_by_enemy = 1,
     nearby_weapon_fire = 2,
     nearby_weapon_reload = 3,
+    nearby_hull = 4,
 };
 
 struct BotAlertSourceSample
@@ -513,6 +561,258 @@ struct BotBridgeGoalState
     void reset()
     {
         *this = BotBridgeGoalState{};
+    }
+};
+
+inline bool timer_running(const rf::Timestamp& timer)
+{
+    return timer.valid() && !timer.elapsed();
+}
+
+enum class BotVehicleRole
+{
+    none,
+    driver,
+    gunner,
+    turret,
+    passenger,
+};
+
+struct BotVehicleHullCooldown
+{
+    int hull_handle = -1;
+    int seat = -1;
+    rf::Timestamp timer{};
+};
+
+enum class BotVehicleDriveMode
+{
+    none,
+    transport,
+    hunt,
+    patrol,
+};
+
+enum class BotVehicleExitReason
+{
+    none,
+    hazard,
+    hull_low,
+    rider_hurt,
+    turret_idle,
+    driver_gone,
+    hull_stopped,
+    arrived,
+    objective_close,
+    hunt_idle,
+    no_route,
+    stuck,
+};
+
+struct BotVehicleFailedLink
+{
+    BotVehicleNavLink link{};
+    // A layer link's nodes number the graph of this bot_vehicle_nav_version only.
+    int nav_version = 0;
+    rf::Timestamp timer{};
+};
+
+enum class BotVehicleFlightAttack
+{
+    none,
+    hover,
+    run_in,
+    run_out,
+};
+
+// A pilot's plan (fighter or sub) on top of the drive state's destination and route, and what the flight law flies.
+struct BotVehicleFlightState
+{
+    // The law follows the drive route, or flies to point (stopping there unless point_pass).
+    bool follow_route = false;
+    bool point_valid = false;
+    bool point_pass = false;
+    rf::Vector3 point{};
+    rf::Timestamp probe_timer{};
+    bool floor_valid = false;
+    float floor_y = 0.0f;
+    // A fighter's floor is the liquid surface over the ground there; it cannot set down on it.
+    bool floor_wet = false;
+    bool surface_valid = false;
+    float surface_y = 0.0f;
+    float min_alt = -std::numeric_limits<float>::infinity();
+    float max_alt = std::numeric_limits<float>::infinity();
+    // Standing on the floor: it climbs clear before it moves off.
+    bool takeoff = false;
+    rf::Timestamp avoid_timer{};
+    rf::Vector3 avoid_shift{};
+    float avoid_climb = 0.0f;
+    float speed_cap = std::numeric_limits<float>::infinity();
+    rf::Timestamp unstick_timer{};
+    BotVehicleFlightAttack attack = BotVehicleFlightAttack::none;
+    rf::Timestamp attack_timer{};
+    rf::Timestamp spot_timer{};
+    // A hover lasts while its shots land: the target's health as last seen, and a move to another bearing first.
+    rf::Timestamp no_hit_timer{};
+    int hit_target_handle = -1;
+    float hit_target_health = 0.0f;
+    int no_hit_moves = 0;
+    int spot_turn = 0;
+    // A target the hover gave up on is not hunted again for a while.
+    int given_up_target = -1;
+    rf::Timestamp given_up_target_timer{};
+    bool face_aim = false;
+    // Written every frame by the seated aim (skill-adjusted); the law turns the hull to it.
+    rf::Vector3 aim_dir{};
+    bool aim_valid = false;
+    rf::Timestamp aim_log_timer{};
+    bool landing = false;
+    bool landing_descent = false;
+    float land_alt = 0.0f;
+    float descent_cap = 0.0f;
+    bool exit_ready = false;
+    // Runs out when the landing stops gaining on its spot; a given-up landing waits for the retry timer.
+    rf::Timestamp landing_timer{};
+    float landing_best = 0.0f;
+    rf::Timestamp landing_retry_timer{};
+    // Since when the hull has been down on its spot, and down and still on it.
+    rf::Timestamp down_timer{};
+    rf::Timestamp still_timer{};
+    // A landing at a layer node that was given up sends the retry to the next kind of spot.
+    bool landing_to_node = false;
+    bool landing_skip_node = false;
+    // A transport whose landing at the objective's landing node was given up flies air support instead.
+    bool transport_given_up = false;
+    // The last spot a landing was given up at: the next landing picks another.
+    rf::Vector3 failed_spot{};
+    bool failed_spot_valid = false;
+    // A hull that cannot plan from where it stands (under cover) first climbs or slides out, this many times at most.
+    int escape_tries = 0;
+};
+
+// A driver's plan (think time) and the car law's own state (every frame).
+struct BotVehicleDriveState
+{
+    BotVehicleDriveMode mode = BotVehicleDriveMode::none;
+    rf::Vector3 dest{};
+    bool dest_valid = false;
+    // Stop at dest; for transport, then get out.
+    bool stop_at_dest = false;
+    BotVehicleRoute route{};
+    int route_index = 0;
+    rf::Vector3 route_dest{};
+    int route_failures = 0;
+    rf::Timestamp plan_timer{};
+    rf::Timestamp repath_timer{};
+    rf::Timestamp probe_timer{};
+    rf::Timestamp skip_ahead_timer{};
+    // Think-time corrections: a sideways shift of the steering target (avoidance, roadkill) and a speed cap.
+    rf::Vector3 target_shift{};
+    float speed_cap = std::numeric_limits<float>::infinity();
+    // Handbrake held: arrived, no destination or route, waiting for a gunner, slowing to get out, or a server bot
+    // holding off the enemy it hunts with the hull's gun.
+    bool hold = false;
+    bool gunner_wait_done = false;
+    rf::Timestamp gunner_wait_timer{};
+    bool reversing = false;
+    rf::Timestamp reverse_timer{};
+    rf::Timestamp blocked_timer{};
+    int realign_attempts = 0;
+    // Dead astern the heading error's sign flips frame to frame, so the side to turn (and to back up on) is latched.
+    float turn_side = 0.0f;
+    float reverse_side = 0.0f;
+    rf::Timestamp progress_timer{};
+    // Where a progress window opened: the hull, the route left from it, and the way the route led on from there.
+    rf::Vector3 progress_anchor{};
+    float progress_start = std::numeric_limits<float>::infinity();
+    rf::Vector3 progress_dir{};
+    int progress_realigns = 0;
+    // realign_attempts when the window opened: the law's own reverses in it count as realigns.
+    int progress_realign_mark = 0;
+    bool progress_repathed = false;
+    std::array<BotVehicleFailedLink, 8> failed_links{};
+    // Runs out once no enemy was seen for a while; a hunt that was given up patrols until the other runs out.
+    rf::Timestamp contact_timer{};
+    rf::Timestamp hunt_blocked_timer{};
+    // The reason to get out, kept while the hull slows down (or sets down) for it.
+    BotVehicleExitReason exit_reason = BotVehicleExitReason::none;
+    BotVehicleFlightState flight{};
+};
+
+struct BotVehicleState
+{
+    int hull_handle = -1;
+    int seat = -1;
+    BotVehicleRole role = BotVehicleRole::none;
+    // On foot: the seat being walked to and asked for.
+    int target_hull_handle = -1;
+    int target_seat = -1;
+    rf::Timestamp use_retry_timer{};
+    rf::Timestamp in_range_timer{};
+    rf::Timestamp acquire_timeout_timer{};
+    rf::Timestamp route_fail_timer{};
+    // The active vehicle goal's last candidate score; it scores a turret's or a parked hull's goal while no candidate
+    // matches it.
+    float goal_score = -std::numeric_limits<float>::infinity();
+    rf::Timestamp enemy_contact_timer{};
+    std::array<BotVehicleHullCooldown, 8> cooldowns{};
+    // Client bots: the bot driver count the server last refused the wheel at, while the timer runs.
+    int driver_cap = 0;
+    rf::Timestamp driver_cap_timer{};
+    // The tier-1 objective the bot had when it chose the vehicle goal; a passenger gets out near it.
+    rf::Vector3 objective_pos{};
+    bool objective_valid = false;
+    // Seated: an enemy seen recently, and how long the driver seat has been empty / the hull has stood still.
+    rf::Timestamp enemy_seen_timer{};
+    rf::Timestamp turret_no_shot_timer{};
+    rf::Timestamp driver_gone_timer{};
+    rf::Timestamp hull_still_timer{};
+    rf::Timestamp gunner_still_timer{};
+    // Per-frame intent, written by the seated frame and read by the backends.
+    int aim_enemy_handle = -1;
+    rf::Vector3 aim_point{};
+    bool aim_valid = false;
+    bool aim_aligned = false;
+    bool fire_primary = false;
+    rf::Timestamp fire_release_guard_timer{};
+    // Driver intent: move as the driver's keys write it, pitch/yaw as rates, and a world aim (APC).
+    rf::Vector3 move_cmd{};
+    float pitch_cmd = 0.0f;
+    float yaw_cmd = 0.0f;
+    rf::Vector3 driver_aim_dir{};
+    bool driver_aim_valid = false;
+    // Server bots: the hull trigger edges last reported to the vehicle module.
+    int reported_fire_hull = -1;
+    bool reported_primary = false;
+    // Seated: getting out was asked for, and is given up on when this runs out.
+    bool exit_requested = false;
+    rf::Timestamp exit_retry_timer{};
+    rf::Timestamp exit_timeout_timer{};
+    // A gunner whose driver left asks for the wheel at this pace.
+    rf::Timestamp seat_swap_timer{};
+    BotVehicleDriveState drive{};
+    // A class whose wheel found no way on keeps the bot off the wheel of every hull of that class a while, not just
+    // that hull.
+    int failed_class = -1;
+    rf::Timestamp failed_class_timer{};
+
+    void reset()
+    {
+        // Refused or lost seats (and a failed class) stay on cooldown, and recent enemy contact and the driver cap are
+        // remembered, across an exit or a respawn.
+        const std::array<BotVehicleHullCooldown, 8> kept_cooldowns = cooldowns;
+        const rf::Timestamp kept_enemy_contact = enemy_contact_timer;
+        const int kept_driver_cap = driver_cap;
+        const rf::Timestamp kept_driver_cap_timer = driver_cap_timer;
+        const int kept_failed_class = failed_class;
+        const rf::Timestamp kept_failed_class_timer = failed_class_timer;
+        *this = BotVehicleState{};
+        failed_class = kept_failed_class;
+        failed_class_timer = kept_failed_class_timer;
+        cooldowns = kept_cooldowns;
+        enemy_contact_timer = kept_enemy_contact;
+        driver_cap = kept_driver_cap;
+        driver_cap_timer = kept_driver_cap_timer;
     }
 };
 
@@ -703,6 +1003,12 @@ struct BotState
     std::vector<RecentItemGoalSelection> recent_item_goal_selections{};
     std::vector<BotAlertSourceSample> alert_source_samples{};
     std::vector<BotAlertContact> alert_contacts{};
+    // On foot, an enemy hull bearing down: the sidestep out of its path (its side checked once), and how long foot
+    // routes keep off vehicle roads.
+    rf::Timestamp hull_dodge_timer{};
+    rf::Vector3 hull_dodge_dir{};
+    bool hull_dodge_checked = false;
+    rf::Timestamp vehicle_road_avoid_timer{};
     FixedRingBuffer<int, kWaypointVisitHistoryCapacity> recent_waypoint_visits{};
     int validated_link_from_waypoint = 0;
     int validated_link_to_waypoint = 0;
@@ -723,6 +1029,12 @@ struct BotState
     float move_input_y = 0.0f;
     float move_input_z = 0.0f;
     bool movement_override_active = false;
+    bool rot_override_active = false;
+    float rot_input_x = 0.0f;
+    float rot_input_y = 0.0f;
+    bool mouse_delta_override_active = false;
+    float mouse_dh_input = 0.0f;
+    float mouse_dp_input = 0.0f;
 
     BotGoalType active_goal = BotGoalType::none;
     int goal_target_handle = -1;
@@ -772,6 +1084,7 @@ struct BotState
     BotGlobalFailsafeWatchdog global_failsafe_wd{};
 
     BotBridgeGoalState bridge{};
+    BotVehicleState vehicle{};
     rf::Timestamp crater_goal_abort_timer{};
     rf::Timestamp crater_goal_timeout_timer{};
     int crater_standoff_target_uid = -1;

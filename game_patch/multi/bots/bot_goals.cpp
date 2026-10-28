@@ -7,6 +7,7 @@
 #include "bot_navigation_routes.h"
 #include "bot_state.h"
 #include "bot_utils.h"
+#include "bot_vehicle.h"
 #include "bot_weapon_profiles.h"
 #include "bot_waypoint_route.h"
 #include "../bagman.h"
@@ -507,7 +508,7 @@ bool build_bagman_runtime_state(BagmanRuntimeState& out_state)
             out_state.carrier = g_bagman_info.carrier;
             if (out_state.carrier) {
                 out_state.carrier_entity =
-                    rf::entity_from_handle(out_state.carrier->entity_handle);
+                    bot_vehicle_effective_target(rf::entity_from_handle(out_state.carrier->entity_handle));
                 if (out_state.carrier == bot_player()) {
                     out_state.we_carry = true;
                 } else if (out_state.is_team_mode
@@ -611,7 +612,7 @@ bool build_salvage_runtime_state(SalvageRuntimeState& out_state)
             out_state.carrier = salvage_get_carrier();
             if (out_state.carrier) {
                 out_state.carrier_entity =
-                    rf::entity_from_handle(out_state.carrier->entity_handle);
+                    bot_vehicle_effective_target(rf::entity_from_handle(out_state.carrier->entity_handle));
                 if (out_state.carrier == bot_player()) {
                     out_state.we_carry = true;
                 }
@@ -724,7 +725,7 @@ bool scavenger_takes_primary_role(const rf::Entity& local_entity, const SalvageR
     if (anchor_waypoint <= 0) {
         return true;
     }
-    const BotWaypointDistanceField& field = bot_nav_distance_field(anchor_waypoint);
+    const BotWaypointDistanceField& field = bot_waypoint_distance_field(anchor_waypoint);
     const auto route_dist = [&field](const rf::Vector3& pos) {
         const int waypoint = bot_find_closest_waypoint_with_fallback(pos);
         return waypoint > 0 && waypoint < static_cast<int>(field.dist.size())
@@ -1054,6 +1055,76 @@ bool find_best_crater_enabler_item_goal(
 }
 }
 
+int bot_goals_objective_anchors(const rf::Entity& local_entity, BotObjectiveAnchor* out, const int max_count)
+{
+    int count = 0;
+    CtfRuntimeState ctf_state{};
+    if (build_ctf_runtime_state(local_entity, ctf_state) && count < max_count
+        && ctf_state.own_base_pos.len_sq() > 0.0001f) {
+        out[count++] = BotObjectiveAnchor{ctf_state.own_base_pos, !ctf_state.own_flag_in_base};
+    }
+    if (is_control_point_mode()) {
+        const HillOwner local_team = local_hill_team_owner();
+        for (const HillInfo& hill : g_koth_info.hills) {
+            if (count >= max_count) {
+                break;
+            }
+            if (hill.lock_status != HillLockStatus::HLS_Available) {
+                continue;
+            }
+            const rf::Vector3 pos = resolve_control_point_objective_pos(hill, rf::Vector3{});
+            if (pos.len_sq() <= 0.0001f) {
+                continue;
+            }
+            out[count++] = BotObjectiveAnchor{pos, control_point_hill_needs_defense(hill, local_team)};
+        }
+    }
+    return count;
+}
+
+bool bot_goals_transport_objective(const rf::Entity& local_entity, rf::Vector3& out_pos, const rf::Vector3* from)
+{
+    CtfRuntimeState ctf_state{};
+    if (build_ctf_runtime_state(local_entity, ctf_state)) {
+        if (ctf_state.local_has_enemy_flag) {
+            out_pos = ctf_state.own_base_pos;
+        }
+        else if (!ctf_state.own_flag_in_base) {
+            out_pos = ctf_state.own_flag_carrier_entity ? ctf_state.own_flag_carrier_entity->pos
+                                                        : ctf_state.own_flag_pos;
+        }
+        else if (!ctf_state.enemy_flag_carrier) {
+            out_pos = ctf_state.enemy_flag_pos;
+        }
+        else {
+            return false;
+        }
+        return out_pos.len_sq() > 0.0001f;
+    }
+    if (!is_control_point_mode()) {
+        return false;
+    }
+    const HillOwner local_team = local_hill_team_owner();
+    // The nearest point, one under attack counted at half its distance.
+    float best_score = std::numeric_limits<float>::infinity();
+    for (const HillInfo& hill : g_koth_info.hills) {
+        const bool defend = control_point_hill_needs_defense(hill, local_team);
+        if (!defend && !control_point_team_can_capture_hill(hill, local_team)) {
+            continue;
+        }
+        const rf::Vector3 pos = resolve_control_point_objective_pos(hill, rf::Vector3{});
+        if (pos.len_sq() <= 0.0001f) {
+            continue;
+        }
+        const float score = rf::vec_dist_squared(from ? from : &local_entity.pos, &pos) * (defend ? 0.25f : 1.0f);
+        if (score < best_score) {
+            best_score = score;
+            out_pos = pos;
+        }
+    }
+    return std::isfinite(best_score);
+}
+
 void bot_refresh_goal_state(
     const rf::Entity& local_entity,
     rf::Entity* enemy_target,
@@ -1195,7 +1266,8 @@ void bot_refresh_goal_state(
     if (bot_state().active_goal == BotGoalType::eliminate_target
         && bot_state().goal_target_handle >= 0) {
         rf::Entity* tracked = rf::entity_from_handle(bot_state().goal_target_handle);
-        const bool entity_gone = !tracked || tracked->life <= 0.0f;
+        const bool entity_gone = !tracked || tracked->life <= 0.0f
+            || (bot_player() && bot_vehicle_hull_without_enemy(*tracked, *bot_player()));
         // Also check player-level death state, since entity life may lag behind
         bool player_dead_or_dying = false;
         if (tracked) {
@@ -1674,6 +1746,11 @@ void bot_refresh_goal_state(
             && !(bot_state().active_goal == BotGoalType::bag_chase_carrier
                 && enemy_target->handle == bot_state().goal_target_handle);
         reevaluate_goal = reevaluate_goal || !goal_valid || new_enemy_pressure;
+    }
+    else if (bot_goal_is_vehicle(bot_state().active_goal)) {
+        reevaluate_goal = reevaluate_goal
+            || !bot_player()
+            || !bot_vehicle_goal_still_valid(*bot_player());
     }
     else if (bot_goal_is_control_point_objective(bot_state().active_goal)) {
         if (!is_control_point_mode() || !bot_player()) {
@@ -2681,6 +2758,30 @@ void bot_refresh_goal_state(
         }
     }
 
+    BotVehicleGoalContext vehicle_context{};
+    vehicle_context.enemy_contact = bot_vehicle_enemy_contact(enemy_target != nullptr || retaliation_active);
+    vehicle_context.carrying_ctf_flag = ctf_mode && ctf_state.local_has_enemy_flag;
+    vehicle_context.carrying_objective =
+        vehicle_context.carrying_ctf_flag || (salvage_mode && salvage_state.we_carry);
+    vehicle_context.carrying_bag = bagman_mode && bagman_state.we_carry;
+    {
+        const auto note_objective = [&](const BotGoalType goal, const rf::Vector3& pos, const float score) {
+            if (goal != BotGoalType::none && bot_goal_is_tier1_objective(goal)
+                && score > vehicle_context.objective_score && pos.len_sq() > 0.0001f) {
+                vehicle_context.objective_score = score;
+                vehicle_context.objective_pos = pos;
+                vehicle_context.objective_valid = true;
+            }
+        };
+        note_objective(ctf_goal.goal, ctf_goal.pos, ctf_goal.score);
+        note_objective(bagman_goal.goal, bagman_goal.pos, bagman_goal.score);
+        note_objective(salvage_goal.goal, salvage_goal.pos, salvage_goal.score);
+        note_objective(control_point_goal.goal, control_point_goal.pos, control_point_goal.score);
+    }
+    BotVehicleGoalCandidate vehicle_goal{};
+    const bool has_vehicle_goal =
+        bot_player() && bot_vehicle_find_goal_candidate(*bot_player(), local_entity, vehicle_context, vehicle_goal);
+
     // Capture the top-3 highest-scoring candidates for HUD debug display.
     // Snapshot taken before commitment/hysteresis so the display shows raw evaluation
     // results, making it clear why the final goal was (or wasn't) changed.
@@ -2691,7 +2792,7 @@ void bot_refresh_goal_state(
             float score = -std::numeric_limits<float>::infinity();
             int identifier = -1;
         };
-        RankedEntry entries[10]{};
+        RankedEntry entries[11]{};
         int n = 0;
         const auto push_entry = [&](const BotGoalType g, const float s, const int id) {
             if (std::isfinite(s) && n < static_cast<int>(std::size(entries))) {
@@ -2708,6 +2809,7 @@ void bot_refresh_goal_state(
         if (bagman_goal.goal != BotGoalType::none) push_entry(bagman_goal.goal, bagman_goal.score, bagman_goal.identifier);
         if (salvage_goal.goal != BotGoalType::none) push_entry(salvage_goal.goal, salvage_goal.score, salvage_goal.identifier);
         if (control_point_goal.goal != BotGoalType::none) push_entry(control_point_goal.goal, control_point_goal.score, control_point_goal.identifier);
+        if (has_vehicle_goal) push_entry(vehicle_goal.goal, vehicle_goal.score, vehicle_goal.seat);
         std::sort(entries, entries + n, [](const RankedEntry& a, const RankedEntry& b) {
             return a.score > b.score;
         });
@@ -2825,6 +2927,14 @@ void bot_refresh_goal_state(
         selected_waypoint = control_point_goal.waypoint;
         selected_pos = control_point_goal.pos;
         selected_score = control_point_goal.score;
+    }
+    if (has_vehicle_goal && goal_score_wins_with_tie_break(vehicle_goal.score, selected_score)) {
+        selected_goal = vehicle_goal.goal;
+        selected_handle = vehicle_goal.hull_handle;
+        selected_identifier = vehicle_goal.seat;
+        selected_waypoint = vehicle_goal.waypoint;
+        selected_pos = vehicle_goal.pos;
+        selected_score = vehicle_goal.score;
     }
     if (control_point_mode
         && control_point_goal.goal != BotGoalType::none
@@ -3034,6 +3144,28 @@ void bot_refresh_goal_state(
         && bot_state().goal_target_handle == crater_enabler_item_goal.item_handle) {
         current_goal_score = crater_enabler_item_goal_score + 10.0f;
     }
+    else if (bot_goal_is_vehicle(bot_state().active_goal)
+        && (!vehicle_context.carrying_objective
+            || (vehicle_context.carrying_ctf_flag && bot_vehicle_active_goal_carries_flag()))
+        && bot_player()
+        && bot_vehicle_goal_still_valid(*bot_player())) {
+        // A seat that stays put (a turret, a parked hull) keeps its last score while this evaluation does not reproduce
+        // it: a transport's saving shifts as the bot walks to the hull, which must not drop the hull half way.
+        const bool same_candidate =
+            has_vehicle_goal
+            && vehicle_goal.goal == bot_state().active_goal
+            && vehicle_goal.hull_handle == bot_state().goal_target_handle;
+        float kept_score = -std::numeric_limits<float>::infinity();
+        if (same_candidate) {
+            kept_score = vehicle_goal.score;
+        }
+        else if (bot_state().active_goal == BotGoalType::vehicle_turret || bot_vehicle_goal_hull_parked()) {
+            kept_score = bot_state().vehicle.goal_score;
+        }
+        if (std::isfinite(kept_score)) {
+            current_goal_score = kept_score + 30.0f;
+        }
+    }
 
     const bool committed_pickup_route = has_committed_pickup_route();
     if (committed_pickup_route && std::isfinite(current_goal_score)) {
@@ -3223,6 +3355,7 @@ void bot_refresh_goal_state(
         selected_identifier = enemy_target->uid;
         selected_waypoint = 0;
         selected_pos = enemy_target->pos;
+        selected_score = enemy_goal_score;
     }
 
     const bool goal_identity_changed =
@@ -3290,6 +3423,9 @@ void bot_refresh_goal_state(
     if (item_goal_selection_changed) {
         bot_internal_note_item_goal_selection(selected_handle, selected_goal);
     }
+    if (goal_identity_changed) {
+        bot_vehicle_dbg_goal_change(selected_goal, selected_handle, selected_identifier, selected_score);
+    }
 
     bot_state_set_goal(
         selected_goal,
@@ -3298,6 +3434,16 @@ void bot_refresh_goal_state(
         selected_waypoint,
         selected_pos
     );
+    if (bot_goal_is_vehicle(selected_goal) && goal_identity_changed) {
+        bot_state().vehicle.objective_valid = vehicle_context.objective_valid;
+        bot_state().vehicle.objective_pos = vehicle_context.objective_pos;
+    }
+    if (bot_goal_is_vehicle(selected_goal)
+        && has_vehicle_goal
+        && vehicle_goal.hull_handle == selected_handle
+        && vehicle_goal.seat == selected_identifier) {
+        bot_state().vehicle.goal_score = vehicle_goal.score;
+    }
     int next_goal_eval_ms = goal_eval_ms;
     if (hard_goal_change) {
         // After committing to a new objective, hold it briefly to prevent

@@ -22,11 +22,14 @@
 #include "bot_state.h"
 #include "bot_weapon_profiles.h"
 #include "bot_utils.h"
+#include "bot_vehicle.h"
 #include "bot_waypoint_route.h"
 #include "../gametype.h"
 #include "../multi.h"
 #include "../network.h"
 #include "../server_internal.h"
+#include "../vehicles/vehicle.h"
+#include "../vehicles/vehicle_sync.h"
 #include <patch_common/FunHook.h>
 #include "../../main/main.h"
 #include "../../graphics/gr.h"
@@ -181,7 +184,7 @@ bool has_confusion_abort_context()
 
 bool should_abort_for_confusion(const rf::Entity& entity, const rf::Vector3& aim_dir)
 {
-    if (!has_confusion_abort_context()) {
+    if (!has_confusion_abort_context() || bot_vehicle_is_boarding(entity)) {
         reset_confusion_abort_tracking();
         return false;
     }
@@ -230,7 +233,7 @@ bool should_abort_for_confusion(const rf::Entity& entity, const rf::Vector3& aim
     return true;
 }
 
-void abort_goal_and_fsm_for_confusion(rf::Entity& entity)
+void abort_goal_and_fsm_for_confusion(rf::Entity& entity, const char* reason)
 {
     const BotGoalType aborted_goal = bot_state().active_goal;
     const int aborted_goal_handle = bot_state().goal_target_handle;
@@ -245,6 +248,7 @@ void abort_goal_and_fsm_for_confusion(rf::Entity& entity)
         );
     }
 
+    bot_vehicle_note_goal_abandoned(reason);
     bot_memory_manager_note_failed_goal_target(
         aborted_goal,
         aborted_goal_handle,
@@ -266,6 +270,7 @@ void abort_goal_and_fsm_for_confusion(rf::Entity& entity)
     bot_state_set_roam_fallback_goal(180);
     bot_state().eliminate_target_reacquire_timer.invalidate();
     bot_state().bridge.reset();
+    bot_state().vehicle.reset();
     bot_state().crater_goal_abort_timer.invalidate();
     bot_state().crater_standoff_abort_timer.invalidate();
     bot_state().crater_goal_timeout_timer.invalidate();
@@ -565,6 +570,7 @@ ObjectiveProgressWatchdogAction update_objective_progress_watchdog(
 
         const BotGoalType stalled_goal = bot_state().active_goal;
         const int stalled_handle = bot_state().goal_target_handle;
+        bot_vehicle_note_goal_abandoned("objective-progress watchdog");
         bot_memory_manager_note_failed_goal_target(
             stalled_goal,
             stalled_handle,
@@ -620,6 +626,9 @@ void capture_global_failsafe_watchdog_snapshot(const rf::Entity& entity)
 // A bot holding a spot is meant to stay put, so standing still there is not a stall.
 bool bot_is_holding_position(const rf::Entity& entity)
 {
+    if (bot_goal_is_vehicle(bot_state().active_goal)) {
+        return bot_vehicle_is_boarding(entity);
+    }
     float hold_radius = 0.0f;
     switch (bot_state().active_goal) {
         case BotGoalType::bag_camp:
@@ -771,7 +780,7 @@ GlobalFailsafeWatchdogAction update_global_failsafe_watchdog(
                 avoid_waypoint
             );
         }
-        abort_goal_and_fsm_for_confusion(entity);
+        abort_goal_and_fsm_for_confusion(entity, "global failsafe");
         bot_internal_set_last_heading_change_reason("global_failsafe_goal_reset");
         bot_state().global_failsafe_wd.retry_window_timer.invalidate();
         bot_state().global_failsafe_wd.retry_count = 0;
@@ -929,6 +938,7 @@ PositionStallWatchdogAction update_position_stall_watchdog(
 
         const BotGoalType stalled_goal = bot_state().active_goal;
         const int stalled_handle = bot_state().goal_target_handle;
+        bot_vehicle_note_goal_abandoned("position-stall watchdog");
         bot_memory_manager_note_failed_goal_target(
             stalled_goal,
             stalled_handle,
@@ -973,7 +983,7 @@ GoalStuckWatchdogAction update_goal_stuck_watchdog(rf::Entity& entity)
         reset_objective_progress_watchdog(true);
         return GoalStuckWatchdogAction::none;
     }
-    if (bot_is_holding_scavenger_spot(entity)) {
+    if (bot_is_holding_scavenger_spot(entity) || bot_vehicle_is_boarding(entity)) {
         reset_goal_stuck_watchdog(true);
         return GoalStuckWatchdogAction::none;
     }
@@ -1090,6 +1100,7 @@ GoalStuckWatchdogAction update_goal_stuck_watchdog(rf::Entity& entity)
             );
         }
 
+        bot_vehicle_note_goal_abandoned("stuck-goal watchdog");
         bot_memory_manager_note_failed_goal_target(
             goal,
             handle,
@@ -2023,7 +2034,8 @@ bool find_best_item_goal(
     };
 
     std::vector<ScoredItem> scored_items;
-    const BotWaypointDistanceField& distance_field = bot_nav_distance_field(start_waypoint);
+    // Built at the first candidate that needs a route, so an evaluation without one costs no search.
+    const BotWaypointDistanceField* distance_field = nullptr;
     std::vector<int> route;
     rf::Object* obj = rf::object_list.next_obj;
     while (obj != &rf::object_list) {
@@ -2073,9 +2085,14 @@ bool find_best_item_goal(
                     if (start_waypoint == goal_waypoint) {
                         route.assign({start_waypoint, goal_waypoint});
                     }
-                    else if (!bot_waypoint_distance_field_path(distance_field, goal_waypoint, route)) {
-                        obj = obj->next_obj;
-                        continue;
+                    else {
+                        if (!distance_field) {
+                            distance_field = &bot_waypoint_distance_field(start_waypoint);
+                        }
+                        if (!bot_waypoint_distance_field_path(*distance_field, goal_waypoint, route)) {
+                            obj = obj->next_obj;
+                            continue;
+                        }
                     }
 
                     if (route.size() < 2) {
@@ -2225,6 +2242,8 @@ const char* waypoint_type_to_string(const WaypointType type)
             return "water";
         case WaypointType::salvage_flag:
             return "salvage_flag";
+        case WaypointType::vehicle_factory:
+            return "vehicle_factory";
         default:
             return "unknown";
     }
@@ -2263,6 +2282,8 @@ rf::Color waypoint_debug_color(const WaypointType type)
             return {60, 140, 255, 150};
         case WaypointType::salvage_flag:
             return {255, 235, 120, 150};
+        case WaypointType::vehicle_factory:
+            return {120, 255, 220, 150};
         default:
             return {200, 200, 200, 150};
     }
@@ -2415,7 +2436,7 @@ void update_bot_status_console(
     const int enemy_handle = enemy_target ? enemy_target->handle : -1;
 
     xlog::warn(
-        "BotBehavior FSM={} Goal={} GoalID={} GoalWP={} GoalHandle={} EnemyHandle={} EnemyLOS={} Pursuit={} MoveTarget={} RouteLen={} NextIdx={}",
+        "BotBehavior FSM={} Goal={} GoalID={} GoalWP={} GoalHandle={} EnemyHandle={} EnemyLOS={} Pursuit={} MoveTarget={} RouteLen={} NextIdx={} Bot={}",
         bot_fsm_state_to_string(ctx.state.fsm_state),
         bot_goal_type_to_string(ctx.state.active_goal),
         ctx.state.goal_target_identifier,
@@ -2426,7 +2447,8 @@ void update_bot_status_console(
         pursuing_enemy_goal,
         has_move_target,
         route_len,
-        next_idx
+        next_idx,
+        ctx.player ? ctx.player->name.c_str() : ""
     );
 
     xlog::warn(
@@ -2447,7 +2469,7 @@ void update_bot_status_console(
     );
 
     xlog::warn(
-        "BotEval CurrentWP={} NextWP={} EndWP={} WaypointGoal={} HasWaypointTarget={} RecoveryPending={} AvoidWP={} AnchorWP={} RepathTimer={} MoveTargetPos=({:.2f},{:.2f},{:.2f})",
+        "BotEval CurrentWP={} NextWP={} EndWP={} WaypointGoal={} HasWaypointTarget={} RecoveryPending={} AvoidWP={} AnchorWP={} RepathTimer={} MoveTargetPos=({:.2f},{:.2f},{:.2f}) DropLock={} Bot={}",
         current_wp,
         next_wp,
         end_wp,
@@ -2459,7 +2481,9 @@ void update_bot_status_console(
         ctx.state.repath_timer.valid(),
         move_target.x,
         move_target.y,
-        move_target.z
+        move_target.z,
+        ctx.state.drop_link_route_locked,
+        ctx.player ? ctx.player->name.c_str() : ""
     );
 
     ctx.state.console_status_timer.set(5000);
@@ -2587,14 +2611,29 @@ FunHook<void(rf::Player*, rf::ControlConfig*, rf::ControlInfo*, int, int)> contr
         if (!pp
             || !cip
             || pp != rf::local_player
-            || !is_client_bot_active()
-            || !state.movement_override_active) {
+            || !is_client_bot_active()) {
             return;
         }
 
-        cip->move.x = state.move_input_x;
-        cip->move.y = state.move_input_y;
-        cip->move.z = state.move_input_z;
+        if (state.movement_override_active) {
+            cip->move.x = state.move_input_x;
+            cip->move.y = state.move_input_y;
+            cip->move.z = state.move_input_z;
+        }
+        // A non-headless bot's own mouse must not add to either look channel.
+        if (state.rot_override_active || state.mouse_delta_override_active) {
+            cip->rot = {};
+            cip->mouse_dh = 0.0f;
+            cip->mouse_dp = 0.0f;
+        }
+        if (state.rot_override_active) {
+            cip->rot.x = state.rot_input_x;
+            cip->rot.y = state.rot_input_y;
+        }
+        if (state.mouse_delta_override_active) {
+            cip->mouse_dh = state.mouse_dh_input;
+            cip->mouse_dp = state.mouse_dp_input;
+        }
     },
 };
 
@@ -2625,6 +2664,27 @@ ControlInputInjection bot_synthetic_fire_injection(rf::ControlConfig* ccp, rf::C
     return {};
 }
 
+// Vehicle triggers are polled as held controls, which the press injection above never reaches.
+bool bot_vehicle_fire_down(rf::ControlConfig* ccp, rf::ControlConfigAction action)
+{
+    if (!is_client_bot_active()
+        || !rf::gameseq_in_gameplay()
+        || !rf::local_player
+        || ccp != &rf::local_player->settings.controls
+        || !vehicle_local_firing_vehicle()) {
+        return false;
+    }
+
+    const BotCombatFiringState& firing = client_bot_context().state.firing;
+    if (action == rf::CC_ACTION_PRIMARY_ATTACK) {
+        return firing.synthetic_primary_fire_down;
+    }
+    if (action == rf::CC_ACTION_SECONDARY_ATTACK) {
+        return firing.synthetic_secondary_fire_down;
+    }
+    return false;
+}
+
 void ensure_bot_input_hook_installed()
 {
     if (!client_bot_launch_enabled()) {
@@ -2634,6 +2694,7 @@ void ensure_bot_input_hook_installed()
     if (!g_bot_input_hook_installed) {
         controls_read_internal2_hook.install();
         control_input_filter_add_press_injection(&bot_synthetic_fire_injection);
+        control_input_filter_add_down_injection(&bot_vehicle_fire_down);
         g_bot_input_hook_installed = true;
     }
 }
@@ -2647,6 +2708,17 @@ void reset_bot_frame_scratch(BotContext& ctx)
     ctx.state.forced_goal_refresh_this_frame = false;
     ctx.state.weapon_readiness_cached = false;
 }
+}
+
+void bot_reset_foot_watchdogs()
+{
+    reset_goal_stuck_watchdog(true);
+    reset_no_move_target_watchdog();
+    reset_position_stall_watchdog();
+    reset_objective_progress_watchdog(true);
+    reset_global_failsafe_watchdog(true);
+    reset_confusion_abort_tracking();
+    bot_state_clear_waypoint_route(true, true, false);
 }
 
 void bot_internal_clear_waypoint_route()
@@ -2796,6 +2868,8 @@ void bot_context_reset_idle(BotContext& ctx)
 {
     BotActiveScope scope{ctx};
     reset_client_bot_state();
+    // Unlike reset(): cooldown handles and enemy contact belong to the level being left.
+    ctx.state.vehicle = BotVehicleState{};
     bot_chat_manager_reset(ctx);
     reset_goal_stuck_watchdog(true);
     reset_no_move_target_watchdog();
@@ -2881,6 +2955,14 @@ void client_bot_do_frame()
     // The timeout is handled above (before the is_client_bot_active check).
     // Server deactivated the bot (go_inactive) - idle until reactivated.
     if (!state.server_config_received || state.server_deactivated) {
+        // The input hooks keep applying a seat's trigger every frame, and only the trigger outlives the per-frame
+        // scratch reset: it must not stick.
+        if (state.vehicle.hull_handle != -1) {
+            state.firing.synthetic_primary_fire_down = false;
+            state.firing.synthetic_secondary_fire_down = false;
+            state.firing.synthetic_primary_fire_just_pressed = false;
+            state.firing.synthetic_secondary_fire_just_pressed = false;
+        }
         return;
     }
 
@@ -2991,6 +3073,9 @@ void bot_run_frame(BotContext& ctx)
         ctx.state.bridge.post_open_zone_uid = -1;
         ctx.state.bridge.post_open_target_waypoint = 0;
         ctx.state.bridge.post_open_priority_timer.invalidate();
+        ctx.state.vehicle.reset();
+        ctx.state.drop_link_route_locked = false;
+        ctx.state.drop_freefall_active = false;
         ctx.state.crater_goal_abort_timer.invalidate();
         ctx.state.crater_standoff_abort_timer.invalidate();
         ctx.state.crater_goal_timeout_timer.invalidate();
@@ -3076,6 +3161,7 @@ void bot_run_frame(BotContext& ctx)
         ctx.state.last_recorded_health = -1.0f;
         ctx.state.last_recorded_armor = -1.0f;
         ctx.state.console_status_timer.invalidate();
+        ctx.state.vehicle.reset();
         bot_memory_manager_reset();
         reset_goal_stuck_watchdog(true);
         reset_no_move_target_watchdog();
@@ -3085,6 +3171,13 @@ void bot_run_frame(BotContext& ctx)
         reset_confusion_abort_tracking();
         return;
     }
+
+    // Not the live hull: a rider of a dying one gets no foot frame.
+    if (rf::Entity* const hull = vehicle_ridden_hull(local_entity)) {
+        bot_vehicle_run_seated_frame(ctx, *local_player, *local_entity, *hull);
+        return;
+    }
+    bot_vehicle_note_on_foot(ctx);
 
     if (!ctx.state.respawn_gearup_timer.valid()) {
         ctx.state.respawn_gearup_timer.set(kBotRespawnGearupDurationMs);
@@ -3107,7 +3200,8 @@ void bot_run_frame(BotContext& ctx)
             rf::Entity* goal_enemy = rf::entity_from_handle(ctx.state.goal_target_handle);
             if (goal_enemy
                 && goal_enemy != local_entity
-                && !rf::entity_is_dying(goal_enemy)) {
+                && !rf::entity_is_dying(goal_enemy)
+                && !bot_vehicle_hull_without_enemy(*goal_enemy, *local_player)) {
                 enemy_target = goal_enemy;
                 enemy_has_los = bot_perception_manager_get_enemy_los_cached(*local_entity, *enemy_target);
             }
@@ -3169,7 +3263,7 @@ void bot_run_frame(BotContext& ctx)
     bot_aim_dir.normalize_safe();
 
     if (should_abort_for_confusion(*local_entity, bot_aim_dir)) {
-        abort_goal_and_fsm_for_confusion(*local_entity);
+        abort_goal_and_fsm_for_confusion(*local_entity, "confusion failsafe");
     }
 
     bot_goal_manager_refresh_and_ensure(*local_entity, enemy_target, enemy_has_los, 180);
@@ -3357,6 +3451,7 @@ void bot_run_frame(BotContext& ctx)
 
                 const BotGoalType stalled_goal = ctx.state.active_goal;
                 const int stalled_handle = ctx.state.goal_target_handle;
+                bot_vehicle_note_goal_abandoned("no-move watchdog");
                 bot_memory_manager_note_failed_goal_target(
                     stalled_goal,
                     stalled_handle,

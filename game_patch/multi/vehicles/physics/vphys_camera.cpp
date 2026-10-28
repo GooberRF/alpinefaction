@@ -92,6 +92,28 @@ namespace
         return std::asin(std::clamp(m.fvec.y, -1.0f, 1.0f));
     }
 
+    // A direction's yaw (toward rvec) and pitch (toward uvec) in a hull's frame, and back.
+    void hull_angles(const rf::Matrix3& hull, const rf::Vector3& v, float& yaw, float& pitch)
+    {
+        yaw = std::atan2(v.dot_prod(hull.rvec), v.dot_prod(hull.fvec));
+        pitch = std::asin(std::clamp(v.dot_prod(hull.uvec), -1.0f, 1.0f));
+    }
+
+    rf::Vector3 hull_dir(const rf::Matrix3& hull, float yaw, float pitch)
+    {
+        const rf::Vector3 local = dir_from_yaw_pitch(yaw, pitch);
+        return hull.rvec * local.x + hull.uvec * local.y + hull.fvec * local.z;
+    }
+
+    // The hull-relative pitch range the hull's eye limits allow its driver's aim.
+    void driver_aim_pitch_limits(const rf::Entity* vehicle, float& min_pitch, float& max_pitch)
+    {
+        const float a = eye_pitch_to_local(vehicle->min_rel_eye_phb.x);
+        const float b = eye_pitch_to_local(vehicle->max_rel_eye_phb.x);
+        min_pitch = std::min(a, b);
+        max_pitch = std::max(a, b);
+    }
+
     // The aim's weight on P: 1 up to an aim limit, falling to 0 `band` past it.
     float vcam_fade_weight(float excess, float band)
     {
@@ -560,31 +582,25 @@ namespace
             return false;
         }
         const rf::Matrix3& hull = vehicle->orient;
-        const auto hull_angles = [&hull](const rf::Vector3& v, float& yaw, float& pitch) {
-            yaw = std::atan2(v.dot_prod(hull.rvec), v.dot_prod(hull.fvec));
-            pitch = std::asin(std::clamp(v.dot_prod(hull.uvec), -1.0f, 1.0f));
-        };
         rf::Vector3 d = g_vcam.aim_point - driver->eye_pos;
         const float len = d.len();
         d = len > 0.01f ? d * (1.0f / len) : hull.fvec;
         float yaw = 0.0f;
         float pitch = 0.0f;
-        hull_angles(d, yaw, pitch);
+        hull_angles(hull, d, yaw, pitch);
         float look_yaw = 0.0f;
         float look_pitch = 0.0f;
-        hull_angles(g_vcam.look, look_yaw, look_pitch);
-        const float a = eye_pitch_to_local(vehicle->min_rel_eye_phb.x);
-        const float b = eye_pitch_to_local(vehicle->max_rel_eye_phb.x);
-        const float min_pitch = std::min(a, b);
-        const float max_pitch = std::max(a, b);
+        hull_angles(hull, g_vcam.look, look_yaw, look_pitch);
+        float min_pitch = 0.0f;
+        float max_pitch = 0.0f;
+        driver_aim_pitch_limits(vehicle, min_pitch, max_pitch);
         const float excess = std::max({std::abs(look_yaw) - apc_aim_yaw_cap, min_pitch - look_pitch,
                                        look_pitch - max_pitch, 0.0f});
         out_weight = vcam_fade_weight(excess, vcam_aim_fade_band);
         vcam_fade_convergence(out_weight, look_yaw, look_pitch, yaw, pitch);
         const float capped_yaw = std::clamp(yaw, -apc_aim_yaw_cap, apc_aim_yaw_cap);
         const float capped_pitch = std::clamp(pitch, min_pitch, max_pitch);
-        const rf::Vector3 local = dir_from_yaw_pitch(capped_yaw, capped_pitch);
-        out_dir = hull.rvec * local.x + hull.uvec * local.y + hull.fvec * local.z;
+        out_dir = hull_dir(hull, capped_yaw, capped_pitch);
         out_capped = excess > 0.0f || capped_yaw != yaw || capped_pitch != pitch;
         return true;
     }
@@ -616,8 +632,7 @@ namespace
         rf::Matrix3 eye = hull;
         eye.rotate_about_local_x(cd.automobile_eye_phb.x + cd.eye_phb.x);
         const float pitch = std::asin(std::clamp(eye.fvec.dot_prod(hull.uvec), -1.0f, 1.0f));
-        const rf::Vector3 local = dir_from_yaw_pitch(g_apc_fp_aim.yaw, pitch);
-        out_dir = hull.rvec * local.x + hull.uvec * local.y + hull.fvec * local.z;
+        out_dir = hull_dir(hull, g_apc_fp_aim.yaw, pitch);
         return std::isfinite(out_dir.x + out_dir.y + out_dir.z);
     }
 
@@ -1017,6 +1032,23 @@ bool vehicle_physics_camera_driver_aim(const rf::Entity* vehicle, const rf::Enti
     if (out_capped) {
         *out_capped = capped;
     }
+    return true;
+}
+
+bool vehicle_physics_clamp_driver_aim(const rf::Entity* vehicle, rf::Vector3& dir)
+{
+    const float len = dir.len();
+    if (!vehicle || vphys_class_for(vehicle) != VPHYS_CLASS_APC || !std::isfinite(len) || len < 0.0001f) {
+        return false;
+    }
+    float yaw = 0.0f;
+    float pitch = 0.0f;
+    hull_angles(vehicle->orient, dir * (1.0f / len), yaw, pitch);
+    float min_pitch = 0.0f;
+    float max_pitch = 0.0f;
+    driver_aim_pitch_limits(vehicle, min_pitch, max_pitch);
+    dir = hull_dir(vehicle->orient, std::clamp(yaw, -apc_aim_yaw_cap, apc_aim_yaw_cap),
+                   std::clamp(pitch, min_pitch, max_pitch));
     return true;
 }
 

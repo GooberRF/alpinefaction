@@ -651,6 +651,14 @@ struct VehicleConfig
     // Hulls take damage from hitting the level, a mover or a prop hard, from hard landings, and (the fighter)
     // from scraping along the level.
     bool crash_damage = true;
+    // Bots may board vehicles, and at most this many hulls may have a bot driving them.
+    bool bots_use_vehicles = true;
+    int bot_max_drivers = 4;
+
+    void set_bot_max_drivers(int count)
+    {
+        bot_max_drivers = std::clamp(count, 0, 32);
+    }
 };
 
 // Controls which level pickups survive under a mutator. Enforced server-side in

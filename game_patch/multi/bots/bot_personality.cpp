@@ -102,6 +102,7 @@ PersonalityPresetDef make_aggressive_preset()
     PersonalityPresetDef def{};
     auto& p = def.personality;
     p.name = "aggressive";
+    p.vehicle_affinity_bias = 1.4f;
     p.attack_style = BotAttackStyle::aggressive;
     p.preferred_engagement_near = 4.5f;
     p.preferred_engagement_far = 10.0f;
@@ -148,6 +149,8 @@ PersonalityPresetDef make_defensive_preset()
     PersonalityPresetDef def{};
     auto& p = def.personality;
     p.name = "defensive";
+    p.vehicle_gunner_bias = 1.3f;
+    p.quirk_mask = static_cast<uint64_t>(BotPersonalityQuirk::turret_camper);
     p.attack_style = BotAttackStyle::evasive;
     p.preferred_engagement_near = 9.0f;
     p.preferred_engagement_far = 18.0f;
@@ -194,6 +197,7 @@ PersonalityPresetDef make_tactician_preset()
     PersonalityPresetDef def{};
     auto& p = def.personality;
     p.name = "tactician";
+    p.vehicle_affinity_bias = 1.1f;
     p.preferred_engagement_near = 7.0f;
     p.preferred_engagement_far = 15.0f;
     p.decision_aggression_bias = 0.90f;
@@ -240,6 +244,7 @@ PersonalityPresetDef make_berserker_preset()
     PersonalityPresetDef def{};
     auto& p = def.personality;
     p.name = "berserker";
+    p.vehicle_affinity_bias = 1.4f;
     p.attack_style = BotAttackStyle::aggressive;
     p.preferred_engagement_near = 2.5f;
     p.preferred_engagement_far = 7.0f;
@@ -292,6 +297,7 @@ PersonalityPresetDef make_objective_preset()
     PersonalityPresetDef def{};
     auto& p = def.personality;
     p.name = "objective";
+    p.vehicle_affinity_bias = 1.1f;
     p.attack_style = BotAttackStyle::evasive;
     p.preferred_engagement_near = 6.0f;
     p.preferred_engagement_far = 12.0f;
@@ -332,6 +338,8 @@ PersonalityPresetDef make_sniper_preset()
     PersonalityPresetDef def{};
     auto& p = def.personality;
     p.name = "sniper";
+    p.vehicle_affinity_bias = 0.6f;
+    p.vehicle_gunner_bias = 1.3f;
     p.attack_style = BotAttackStyle::evasive;
     p.preferred_engagement_near = 12.0f;
     p.preferred_engagement_far = 25.0f;
@@ -426,6 +434,7 @@ PersonalityPresetDef make_collector_preset()
     PersonalityPresetDef def{};
     auto& p = def.personality;
     p.name = "collector";
+    p.vehicle_affinity_bias = 0.6f;
     p.attack_style = BotAttackStyle::evasive;
     p.preferred_engagement_near = 7.0f;
     p.preferred_engagement_far = 14.0f;
@@ -517,6 +526,7 @@ PersonalityPresetDef make_destroyer_preset()
     PersonalityPresetDef def{};
     auto& p = def.personality;
     p.name = "destroyer";
+    p.vehicle_affinity_bias = 1.4f;
     p.attack_style = BotAttackStyle::aggressive;
     p.preferred_engagement_near = 5.0f;
     p.preferred_engagement_far = 11.0f;
@@ -877,6 +887,8 @@ bool bot_personality_apply_field_override(BotContext& ctx, uint8_t field_id, flo
         case af_personality_field::gg_on_map_end_chance:       p.gg_on_map_end_chance = value; return true;
         case af_personality_field::hello_on_join_chance:       p.hello_on_join_chance = value; return true;
         case af_personality_field::red_faction_response_chance: p.red_faction_response_chance = value; return true;
+        case af_personality_field::vehicle_affinity_bias:      p.vehicle_affinity_bias = value; return true;
+        case af_personality_field::vehicle_gunner_bias:        p.vehicle_gunner_bias = value; return true;
         default:
             return false;
     }
@@ -1167,6 +1179,8 @@ static const FieldNameMapping g_personality_field_map[] = {
     {"gg_on_map_end_chance",                  static_cast<uint8_t>(af_personality_field::gg_on_map_end_chance)},
     {"hello_on_join_chance",                  static_cast<uint8_t>(af_personality_field::hello_on_join_chance)},
     {"red_faction_response_chance",           static_cast<uint8_t>(af_personality_field::red_faction_response_chance)},
+    {"vehicle_affinity_bias",                 static_cast<uint8_t>(af_personality_field::vehicle_affinity_bias)},
+    {"vehicle_gunner_bias",                   static_cast<uint8_t>(af_personality_field::vehicle_gunner_bias)},
 };
 
 static const FieldNameMapping g_skill_field_map[] = {
@@ -1224,6 +1238,8 @@ static const QuirkNameMapping g_quirk_name_map[] = {
     {"crater_unlock_affinity",      5},
     {"super_item_hoarder",          6},
     {"sneaky_capper",               7},
+    {"never_drives",                8},
+    {"turret_camper",               9},
 };
 
 int bot_quirk_bit_from_name(const char* name)

@@ -80,6 +80,7 @@
 #endif
 
 #include "../multi/bots/bot_main.h"
+#include "../multi/bots/bot_vehicle_nav.h"
 
 GameConfig g_game_config;
 AlpineCoreConfig g_alpine_system_config;
@@ -219,6 +220,7 @@ CodeInjection after_level_render_hook{
         waypoints_render_debug();
         client_bot_render_debug();
         vehicle_physics_render_debug();
+        bot_vehicle_nav_render_debug();
         vehicle_markers_render();   // 3D phase: leftovers only; the room pass below draws the rest
         hud_world_do_frame();
     },
@@ -349,6 +351,9 @@ FunHook<void(bool)> level_init_post_hook{
 
         // Flow 2A: bots start their AWP download before the waypoints load
         waypoints_level_init_with_awp_download();
+        if (is_waypoint_bot_mode_active()) {
+            bot_vehicle_nav_level_init();
+        }
 
         // Flow 2B: Normal clients with autodl_download_awps — fire-and-forget AWP download
         if (rf::is_multi && !is_waypoint_bot_mode_active() && !rf::is_dedicated_server

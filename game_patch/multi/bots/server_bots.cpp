@@ -2,12 +2,14 @@
 #include "bot_chat_manager.h"
 #include "bot_combat.h"
 #include "bot_context.h"
+#include "bot_vehicle.h"
 #include "../gametype.h"
 #include "../multi.h"
 #include "../network.h"
 #include "../server.h"
 #include "../server_internal.h"
 #include "../demo/demo.h"
+#include "../vehicles/vehicle.h"
 #include "../vehicles/vehicle_sync.h"
 #include "../../fflink/afstats_events.h"
 #include "../../misc/alpine_settings.h"
@@ -377,11 +379,17 @@ void server_bot_apply_outputs(ServerBot& bot, const bool thought)
     ep->ai.ci.rot = {};
     ep->ai.ci.mouse_dh = 0.0f;
     ep->ai.ci.mouse_dp = 0.0f;
-    ep->ai.ci.move = state.movement_override_active
+    // Not the live hull: a rider of a dying one gets no foot input.
+    rf::Entity* const hull = vehicle_ridden_hull(ep);
+    ep->ai.ci.move = state.movement_override_active && !hull
         ? rf::Vector3{state.move_input_x, state.move_input_y, state.move_input_z}
         : rf::Vector3{};
 
-    if (!rf::entity_is_dying(ep)) {
+    if (hull) {
+        bot.pending_throw = {};
+        bot_vehicle_server_apply_outputs(ctx, *pp, *ep, *hull);
+    }
+    else if (!rf::entity_is_dying(ep)) {
         if (!thought) {
             BotActiveScope scope{ctx};
             bot_track_aim_goal(*ep);
@@ -396,6 +404,9 @@ void server_bot_stop_idle_entity(ServerBot& bot)
 {
     bot.pending_throw = {};
     rf::Player* const pp = bot.ctx.player;
+    if (pp) {
+        bot_vehicle_server_stop_outputs(bot.ctx, *pp);
+    }
     if (rf::Entity* const ep = pp ? rf::entity_from_handle(pp->entity_handle) : nullptr) {
         ep->ai.ci.move = {};
         multi_turn_weapon_off(ep);

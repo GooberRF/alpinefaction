@@ -28,6 +28,12 @@ inline float approach_angle(const float current, const float target, const float
     return normalize_angle(current + delta);
 }
 
+inline rf::Vector3 flat_vector(rf::Vector3 v)
+{
+    v.y = 0.0f;
+    return v;
+}
+
 inline rf::Vector3 forward_from_non_linear_yaw_pitch(const float yaw, const float pitch)
 {
     rf::Vector3 fvec;

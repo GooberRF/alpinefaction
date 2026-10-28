@@ -1,4 +1,5 @@
 #include <patch_common/FunHook.h>
+#include "debug.h"
 #include "debug_internal.h"
 #include "../os/console.h"
 #include "../os/os.h"

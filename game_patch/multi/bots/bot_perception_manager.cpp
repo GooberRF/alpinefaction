@@ -8,6 +8,7 @@
 #include "bot_personality.h"
 #include "bot_personality_manager.h"
 #include "bot_utils.h"
+#include "bot_vehicle.h"
 #include "../gametype.h"
 #include "../../rf/collide.h"
 #include "../../rf/multi.h"
@@ -173,7 +174,7 @@ rf::Entity* bot_perception_manager_select_enemy_target(
             continue;
         }
 
-        rf::Entity* candidate_entity = rf::entity_from_handle(candidate.entity_handle);
+        rf::Entity* candidate_entity = bot_vehicle_effective_target(rf::entity_from_handle(candidate.entity_handle));
         if (!candidate_entity) {
             continue;
         }

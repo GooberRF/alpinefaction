@@ -63,6 +63,9 @@ BotFsmState bot_fsm_manager_select_state(
         return BotFsmState::retreat;
     }
 
+    if (bot_goal_is_vehicle(bot_state().active_goal)) {
+        return BotFsmState::vehicle_acquire;
+    }
     if (bot_state().active_goal == BotGoalType::activate_bridge) {
         return BotFsmState::activate_bridge;
     }
