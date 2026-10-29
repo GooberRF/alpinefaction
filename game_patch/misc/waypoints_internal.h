@@ -7,6 +7,7 @@
 
 namespace rf
 {
+    struct Object;
     struct Trigger;
 }
 
@@ -39,6 +40,8 @@ WaypointZoneSource resolve_waypoint_zone_source(const WaypointZoneDefinition& zo
 bool waypoint_zone_type_is_bridge(WaypointZoneType type);
 // How far a trigger reaches from its position whatever its rotation (a box's half diagonal); 0 for a non-finite size.
 float trigger_bounding_radius(const rf::Trigger& trigger);
+// A No Player Collide mover's brush: entities pass through it and only weapons hit it.
+bool mover_brush_passes_through(const rf::Object& brush);
 rf::Vector3 point_min(const rf::Vector3& a, const rf::Vector3& b);
 rf::Vector3 point_max(const rf::Vector3& a, const rf::Vector3& b);
 float distance_sq(const rf::Vector3& a, const rf::Vector3& b);

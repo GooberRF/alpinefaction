@@ -168,6 +168,8 @@ WaypointEditorSelectionState g_waypoint_editor_selection{};
 bool g_waypoint_editor_vehicle_mode = false;
 // The vehicle node a link (or the next new node) starts from, or -1.
 int g_waypoint_editor_vehicle_anchor = -1;
+// The mode the panel's Generate uses once cycled; until then the loaded graph's.
+std::optional<WaypointGenerationMode> g_waypoint_editor_generation_mode;
 std::deque<std::string> g_waypoint_editor_log{};
 constexpr size_t kWaypointEditorLogMaxLines = 128;
 bool g_waypoint_editor_mouse_ui_mode = false;
@@ -4157,12 +4159,39 @@ void render_waypoint_editor_overlay_panel()
     }
     button_y += button_h + 6;
 
+    static constexpr std::array<const char*, kWaypointGenerationModeCount> kGenerationModeLabels{
+        "Gen mode: Default",
+        "Gen mode: Coarse",
+        "Gen mode: Fine",
+    };
+    const WaypointGenerationMode generation_mode =
+        g_waypoint_editor_generation_mode.value_or(waypoints_generation_mode());
+    int mode_w = 0;
+    for (const char* label : kGenerationModeLabels) {
+        mode_w = std::max(mode_w, rf::gr::get_string_size(label, font_id).first + 16);
+    }
+    const int generate_w = button_w - mode_w - 6;
+    const char* generate_label = "Generate waypoints (INTENSE)";
+    if (rf::gr::get_string_size(generate_label, font_id).first + 8 > generate_w) {
+        generate_label = "Generate (INTENSE)";
+    }
     if (draw_waypoint_editor_button(
-            {panel_x + 10, button_y, button_w, button_h},
-            "Generate waypoints (INTENSE)",
+            {panel_x + 10, button_y, generate_w, button_h},
+            generate_label,
             font_id,
             main_controls_enabled)) {
-        execute_waypoint_editor_console_command("waypoints_generate", "Triggered waypoint generation");
+        const auto mode_name = waypoint_generation_mode_name(generation_mode);
+        execute_waypoint_editor_console_command(
+            std::format("waypoints_generate {}", mode_name).c_str(),
+            std::format("Triggered waypoint generation ({})", mode_name));
+    }
+    if (draw_waypoint_editor_button(
+            {panel_x + 10 + generate_w + 6, button_y, mode_w, button_h},
+            kGenerationModeLabels[static_cast<int>(generation_mode)],
+            font_id,
+            main_controls_enabled)) {
+        g_waypoint_editor_generation_mode = static_cast<WaypointGenerationMode>(
+            (static_cast<int>(generation_mode) + 1) % kWaypointGenerationModeCount);
     }
     button_y += button_h + 6;
 
@@ -4573,6 +4602,7 @@ void reset_waypoint_editor_runtime_state(const bool clear_log)
     if (clear_log) {
         g_waypoint_editor_vehicle_mode = false;
         g_waypoint_editor_vehicle_anchor = -1;
+        g_waypoint_editor_generation_mode.reset();
     }
     g_waypoint_editor_mouse_ui_mode = false;
     apply_waypoint_editor_mouse_look_override(false);

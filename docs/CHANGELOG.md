@@ -168,6 +168,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Ignore connected human players who have not spawned yet this level when picking a joining bot's team
 - Speed up waypoint autogeneration on large levels, and stop it (saving nothing) after 60 minutes
 - Seed waypoint autogeneration from the floor under every control point and from every spawn point, so DC levels that generated nothing now generate
+- Add a coarse waypoint autogeneration mode (`-awpgen_coarse`, `waypoints_generate coarse`, or the waypoint editor's `Gen mode` button) that spaces waypoints wider on open ground, while items, spawns, flags, control points and other points of interest stay finely covered
 - Add `[detail]` section to ATX textures to tile a greyscale detail texture finely over the texture when seen up close, on level geometry, meshes and terrain (Direct3D 11 renderer only)
 - Add `r_detailtextures` to turn detail textures off (0), show only ATX ones (1, default), or also give other textures a stock one by their material (2), replacing the stock toggle (Direct3D 11 renderer only)
 
@@ -323,6 +324,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix a spectating listen server host not seeing the spectated player's ammo, weapon fire animations, damage numbers, awards or critical hit flashes
 - Fix bot clients losing the `personality_overrides` and `skill_overrides` of their bot profile (such as `taunt_on_kill_chance`) when the server sent their skill preset
 - Fix bots in objective game types sometimes walking an unrelated route to its end before heading for the flag, bag or control point
+- Fix waypoint autogeneration placing waypoints on mover brushes set to `No Player Collide`, which players pass through
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize

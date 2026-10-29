@@ -1,7 +1,9 @@
 #include "waypoints_terrain.h"
 #include "waypoints_internal.h"
 #include "alpine_terrain.h"
+#include "../multi/gametype.h"
 #include "../rf/collide.h"
+#include "../rf/event.h"
 #include "../rf/geometry.h"
 #include "../rf/level.h"
 #include "../rf/mover.h"
@@ -78,8 +80,9 @@ bool cell_climbable(const at::GridView& g, const std::uint32_t x, const std::uin
 }
 
 // A world box around what a waypoint zone covers.
-bool zone_bounds(const WaypointZoneDefinition& zone, rf::Vector3& out_min, rf::Vector3& out_max)
+bool zone_bounds(const WaypointZoneDefinition& zone, rf::Vector3& out_min, rf::Vector3& out_max, bool& out_liquid_top)
 {
+    out_liquid_top = false;
     switch (resolve_waypoint_zone_source(zone)) {
     case WaypointZoneSource::trigger_uid: {
         const rf::Object* obj = rf::obj_lookup_from_uid(zone.trigger_uid);
@@ -99,6 +102,11 @@ bool zone_bounds(const WaypointZoneDefinition& zone, rf::Vector3& out_min, rf::V
         }
         out_min = room->bbox_min;
         out_max = room->bbox_max;
+        // The hazard is the liquid; the room above its surface is often a map's open ground.
+        if (zone.type == WaypointZoneType::damaging_liquid_room && room->contains_liquid) {
+            out_max.y = std::min(out_max.y, room->bbox_min.y + room->liquid_depth);
+            out_liquid_top = true;
+        }
         return true;
     }
     case WaypointZoneSource::box_extents:
@@ -115,6 +123,84 @@ bool waypoints_level_has_terrain()
 {
     const auto& terrains = alpine_terrain_get_all();
     return std::any_of(terrains.begin(), terrains.end(), [](const AlpineTerrain& t) { return t.resolved; });
+}
+
+void for_each_waypoint_generation_obstacle(
+    const std::function<void(const rf::Vector3& box_min, const rf::Vector3& box_max, bool liquid_top)>& visit)
+{
+    auto visit_sphere = [&visit](const rf::Vector3& center, const float radius) {
+        const rf::Vector3 reach{radius, radius, radius};
+        visit(center - reach, center + reach, false);
+    };
+    for (rf::Object* obj = rf::object_list.next_obj; obj != &rf::object_list; obj = obj->next_obj) {
+        if (obj->type == rf::OT_CLUTTER) {
+            visit_sphere(obj->pos, obj->radius);
+        }
+        else if (obj->type == rf::OT_MOVER) {
+            const auto& mover = *static_cast<const rf::Mover*>(obj);
+            for (int b = 0; b < mover.brush_handles.size(); ++b) {
+                const rf::Object* brush = rf::obj_from_handle(mover.brush_handles[b]);
+                if (!brush || mover_brush_passes_through(*brush)) {
+                    continue;
+                }
+                const auto* solid = static_cast<const rf::MoverBrush*>(brush)->geometry;
+                const float radius = std::max(
+                    brush->radius, solid ? (solid->bbox_max - solid->bbox_min).len() * 0.5f : 0.0f);
+                const rf::Vector3 offset = brush->pos - mover.pos;
+                for (int k = 0; k < mover.keyframes.size(); ++k) {
+                    if (mover.keyframes[k]) {
+                        visit_sphere(mover.keyframes[k]->pos + offset, radius);
+                    }
+                    // The brush sweeps between keyframes, so the box between consecutive ones is in the way too.
+                    if (k > 0 && mover.keyframes[k] && mover.keyframes[k - 1]) {
+                        const rf::Vector3 reach{radius, radius, radius};
+                        const rf::Vector3 p0 = mover.keyframes[k - 1]->pos + offset;
+                        const rf::Vector3 p1 = mover.keyframes[k]->pos + offset;
+                        visit(point_min(p0, p1) - reach, point_max(p0, p1) + reach, false);
+                    }
+                }
+            }
+        }
+    }
+    for (rf::MoverBrush& brush : DoublyLinkedList{rf::mover_brush_list}) {
+        if (mover_brush_passes_through(brush)) {
+            continue;
+        }
+        const float radius = std::max(
+            brush.radius, brush.geometry ? (brush.geometry->bbox_max - brush.geometry->bbox_min).len() * 0.5f : 0.0f);
+        visit_sphere(brush.pos, radius);
+    }
+    for (int i = 0; i < rf::level.pushers.size(); ++i) {
+        if (const rf::PushRegion* push = rf::level.pushers[i]) {
+            visit(push->aabb_min, push->aabb_max, false);
+        }
+    }
+    for (int i = 0; i < rf::level.ladders.size(); ++i) {
+        if (const rf::ClimbRegion* climb = rf::level.ladders[i]) {
+            const rf::Matrix3& o = climb->orient;
+            const rf::Vector3& e = climb->extents;
+            const rf::Vector3 reach{
+                std::fabs(o.rvec.x) * e.x + std::fabs(o.uvec.x) * e.y + std::fabs(o.fvec.x) * e.z,
+                std::fabs(o.rvec.y) * e.x + std::fabs(o.uvec.y) * e.y + std::fabs(o.fvec.y) * e.z,
+                std::fabs(o.rvec.z) * e.x + std::fabs(o.uvec.z) * e.y + std::fabs(o.fvec.z) * e.z,
+            };
+            visit(climb->pos - reach, climb->pos + reach, false);
+        }
+    }
+    for (const auto& zone : g_waypoint_zones) {
+        rf::Vector3 zone_min{};
+        rf::Vector3 zone_max{};
+        bool liquid_top = false;
+        if (zone_bounds(zone, zone_min, zone_max, liquid_top)) {
+            visit(zone_min, zone_max, liquid_top);
+        }
+    }
+    // Control-point zones exist only in hill game types, but one AWP serves every game type.
+    for (rf::Event* handler : rf::find_all_events_by_type(rf::EventType::Capture_Point_Handler)) {
+        if (const rf::Trigger* trigger = koth_capture_point_handler_trigger(*handler)) {
+            visit_sphere(trigger->pos, trigger_bounding_radius(*trigger));
+        }
+    }
 }
 
 std::uint64_t WaypointTerrainLattice::lattice_key(const int field, const int i, const int j)
@@ -413,10 +499,6 @@ bool WaypointTerrainLattice::mark_occupied(const bool mark_all_nodes, const OutO
             }
         }
     };
-    auto mark_sphere = [&mark](const rf::Vector3& center, const float radius) {
-        const rf::Vector3 reach{radius, radius, radius};
-        mark(center - reach, center + reach, nullptr, -1, true);
-    };
 
     if (rf::level.geometry) {
         const int room_count = rf::level.geometry->all_rooms.size();
@@ -451,65 +533,9 @@ bool WaypointTerrainLattice::mark_occupied(const bool mark_all_nodes, const OutO
             }
         }
     }
-    for (rf::Object* obj = rf::object_list.next_obj; obj != &rf::object_list; obj = obj->next_obj) {
-        if (obj->type == rf::OT_CLUTTER) {
-            mark_sphere(obj->pos, obj->radius);
-        }
-        else if (obj->type == rf::OT_MOVER) {
-            const auto& mover = *static_cast<const rf::Mover*>(obj);
-            for (int b = 0; b < mover.brush_handles.size(); ++b) {
-                const rf::Object* brush = rf::obj_from_handle(mover.brush_handles[b]);
-                if (!brush) {
-                    continue;
-                }
-                const auto* solid = static_cast<const rf::MoverBrush*>(brush)->geometry;
-                const float radius = std::max(
-                    brush->radius, solid ? (solid->bbox_max - solid->bbox_min).len() * 0.5f : 0.0f);
-                const rf::Vector3 offset = brush->pos - mover.pos;
-                for (int k = 0; k < mover.keyframes.size(); ++k) {
-                    if (mover.keyframes[k]) {
-                        mark_sphere(mover.keyframes[k]->pos + offset, radius);
-                    }
-                    // The brush sweeps between keyframes, so the box between consecutive ones is in the way too.
-                    if (k > 0 && mover.keyframes[k] && mover.keyframes[k - 1]) {
-                        const rf::Vector3 reach{radius, radius, radius};
-                        const rf::Vector3 p0 = mover.keyframes[k - 1]->pos + offset;
-                        const rf::Vector3 p1 = mover.keyframes[k]->pos + offset;
-                        mark(point_min(p0, p1) - reach, point_max(p0, p1) + reach, nullptr, -1, true);
-                    }
-                }
-            }
-        }
-    }
-    for (rf::MoverBrush& brush : DoublyLinkedList{rf::mover_brush_list}) {
-        const float radius = std::max(
-            brush.radius, brush.geometry ? (brush.geometry->bbox_max - brush.geometry->bbox_min).len() * 0.5f : 0.0f);
-        mark_sphere(brush.pos, radius);
-    }
-    for (int i = 0; i < rf::level.pushers.size(); ++i) {
-        if (const rf::PushRegion* push = rf::level.pushers[i]) {
-            mark(push->aabb_min, push->aabb_max, nullptr, -1, true);
-        }
-    }
-    for (int i = 0; i < rf::level.ladders.size(); ++i) {
-        if (const rf::ClimbRegion* climb = rf::level.ladders[i]) {
-            const rf::Matrix3& o = climb->orient;
-            const rf::Vector3& e = climb->extents;
-            const rf::Vector3 reach{
-                std::fabs(o.rvec.x) * e.x + std::fabs(o.uvec.x) * e.y + std::fabs(o.fvec.x) * e.z,
-                std::fabs(o.rvec.y) * e.x + std::fabs(o.uvec.y) * e.y + std::fabs(o.fvec.y) * e.z,
-                std::fabs(o.rvec.z) * e.x + std::fabs(o.uvec.z) * e.y + std::fabs(o.fvec.z) * e.z,
-            };
-            mark(climb->pos - reach, climb->pos + reach, nullptr, -1, true);
-        }
-    }
-    for (const auto& zone : g_waypoint_zones) {
-        rf::Vector3 zone_min{};
-        rf::Vector3 zone_max{};
-        if (zone_bounds(zone, zone_min, zone_max)) {
-            mark(zone_min, zone_max, nullptr, -1, true);
-        }
-    }
+    for_each_waypoint_generation_obstacle([&mark](const rf::Vector3& box_min, const rf::Vector3& box_max, bool) {
+        mark(box_min, box_max, nullptr, -1, true);
+    });
     // A seeded node gets a patch of fine nodes within link reach, whatever height above the terrain it stands at.
     auto mark_seed = [&mark](const rf::Vector3& pos) {
         const rf::Vector3 reach{kWaypointLinkRadius, kWaypointLinkRadius, kWaypointLinkRadius};

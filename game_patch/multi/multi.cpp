@@ -106,6 +106,13 @@ static rf::CmdLineParam& get_awpgen_fine_cmd_line_param()
     return awpgen_fine_param;
 }
 
+// With -awpgen: also probe open ground away from Alpine terrain at a wider spacing.
+static rf::CmdLineParam& get_awpgen_coarse_cmd_line_param()
+{
+    static rf::CmdLineParam awpgen_coarse_param{"-awpgen_coarse", "", false};
+    return awpgen_coarse_param;
+}
+
 static bool g_client_bot_launch_enabled = false;
 static bool g_client_bot_debug_render_enabled = false;
 static bool g_awpgen_mode = false;
@@ -299,7 +306,17 @@ bool handle_awpgen_param()
         return true;
     }
 
-    waypoints_start_awpgen(level_filename, !get_awpgen_fine_cmd_line_param().found());
+    WaypointGenerationMode gen_mode = WaypointGenerationMode::standard;
+    if (get_awpgen_fine_cmd_line_param().found()) {
+        if (get_awpgen_coarse_cmd_line_param().found()) {
+            xlog::warn("-awpgen: both -awpgen_fine and -awpgen_coarse given, generating fine");
+        }
+        gen_mode = WaypointGenerationMode::fine;
+    }
+    else if (get_awpgen_coarse_cmd_line_param().found()) {
+        gen_mode = WaypointGenerationMode::coarse;
+    }
+    waypoints_start_awpgen(level_filename, gen_mode);
     start_levelm_load_sequence(level_filename);
     return true;
 }
@@ -1582,6 +1599,7 @@ void multi_do_patch()
     get_noquit_cmd_line_param();
     get_awpgen_cmd_line_param();
     get_awpgen_fine_cmd_line_param();
+    get_awpgen_coarse_cmd_line_param();
     g_client_bot_launch_enabled = is_client_bot_requested_from_cmdline() || is_client_debugbot_requested_from_cmdline();
     g_client_bot_debug_render_enabled = is_client_debugbot_requested_from_cmdline();
     if (is_headless_mode()) {

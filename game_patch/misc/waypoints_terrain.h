@@ -11,11 +11,17 @@
 // Whether the level has Alpine terrain a generation run can lay a lattice over.
 bool waypoints_level_has_terrain();
 
+// Calls visit(box_min, box_max, liquid_top) with a world box around each level volume a generated graph builds around:
+// clutter, mover brushes players collide with and their keyframe sweeps, push regions, climb regions, waypoint zones
+// and capture-point triggers. liquid_top: the box ends at the surface of a damaging liquid.
+void for_each_waypoint_generation_obstacle(
+    const std::function<void(const rf::Vector3& box_min, const rf::Vector3& box_max, bool liquid_top)>& visit);
+
 // The coarse hex lattice one waypoint generation run lays over open Alpine terrain, placed and linked from the
 // heightfield and the occupancy masks below, without traces, with a spacing that keeps it within a node budget. Bare
-// terrain is solid terrain nothing else occupies: no other level geometry, mover, clutter, push or climb region,
-// waypoint zone or seeded node near its surface. Open terrain is bare, climbable, not under water and a couple of
-// units from anything that is not.
+// terrain is solid terrain nothing else occupies: no other level geometry, mover players collide with, clutter, push
+// or climb region, waypoint zone, capture-point trigger or seeded node near its surface. Open terrain is bare,
+// climbable, not under water and a couple of units from anything that is not.
 class WaypointTerrainLattice
 {
 public:

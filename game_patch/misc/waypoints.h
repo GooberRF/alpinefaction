@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include "../rf/math/vector.h"
 #include "../rf/os/timestamp.h"
 
@@ -320,5 +321,22 @@ bool link_waypoint_if_clear(int from, int to);
 bool can_link_waypoints(const rf::Vector3& a, const rf::Vector3& b);
 int closest_waypoint(const rf::Vector3& pos, float radius);
 void on_geomod_crater_created(const rf::Vector3& crater_pos, float crater_radius = 0.0f);
-// terrain_lattice: lay a coarse lattice over open Alpine terrain instead of probing it like other geometry.
-void waypoints_start_awpgen(const std::string& rfl_filename, bool terrain_lattice);
+
+// How a waypoint generation run spaces the nodes it places.
+enum class WaypointGenerationMode
+{
+    // A coarse lattice over open Alpine terrain, fine probing everywhere else.
+    standard,
+    // As standard, and open ground elsewhere is probed at a wider spacing. Points of interest stay fine.
+    coarse,
+    // Fine probing everywhere, Alpine terrain included.
+    fine,
+};
+constexpr int kWaypointGenerationModeCount = 3;
+static_assert(static_cast<int>(WaypointGenerationMode::fine) + 1 == kWaypointGenerationModeCount);
+// "default", "coarse" or "fine".
+std::string_view waypoint_generation_mode_name(WaypointGenerationMode mode);
+std::optional<WaypointGenerationMode> parse_waypoint_generation_mode(std::string_view name);
+// The mode the loaded graph was generated in; standard when it does not say.
+WaypointGenerationMode waypoints_generation_mode();
+void waypoints_start_awpgen(const std::string& rfl_filename, WaypointGenerationMode mode);
