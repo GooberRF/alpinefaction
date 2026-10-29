@@ -14,6 +14,7 @@
 #include <vector>
 #include <common/terrain/alpine_terrain.h>
 #include <common/alpine_dir_light.h>
+#include <common/alpine_waypoint_helper.h>
 
 extern "C" IMAGE_DOS_HEADER __ImageBase;
 
@@ -191,6 +192,7 @@ enum class DedObjectType : int
     DED_TERRAIN = 0x1F, // Alpine 1.5
     DED_DIRECTIONAL_LIGHT = 0x20, // Alpine 1.5
     DED_SUN_ARROW = 0x21, // editor-only viewport handle for the level sun, never serialized
+    DED_WAYPOINT_HELPER = 0x22, // Alpine 1.5
 };
 
 struct Vector3
@@ -796,6 +798,16 @@ struct DedVehicleFactory : DedObject
 struct DedProjectionCamera : DedObject
 {
     // All projection settings live on the linked Display_Projection event.
+};
+
+// Navigation hint for vehicle bots. Its links to other helpers (DedObject::links, made in link mode) are the routes
+// between them; the game follows each one both ways.
+struct DedWaypointHelper : DedObject
+{
+    uint8_t helper_type = static_cast<uint8_t>(alpine_waypoint_helper::Type::air);
+    uint8_t flags = 0;
+    uint8_t size_class = static_cast<uint8_t>(alpine_waypoint_helper::SizeClass::driller);
+    float radius = alpine_waypoint_helper::default_radius;
 };
 
 // flags bits, shared with the game runtime's rope_flag_* constants

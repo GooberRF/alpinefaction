@@ -1001,6 +1001,8 @@ enum class af_personality_field : uint8_t
     gg_on_map_end_chance = 0x2F,
     hello_on_join_chance = 0x30,
     red_faction_response_chance = 0x31,
+    vehicle_affinity_bias = 0x32,
+    vehicle_gunner_bias = 0x33,
 };
 
 enum class af_skill_field : uint8_t

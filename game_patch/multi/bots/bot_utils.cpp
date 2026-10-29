@@ -2,6 +2,7 @@
 
 #include "bot_context.h"
 #include "bot_internal.h"
+#include "../vehicles/vehicle.h"
 #include "../../misc/waypoints.h"
 #include "../../rf/collide.h"
 #include "../../rf/entity.h"
@@ -27,6 +28,50 @@ constexpr float kWalkDirectProbeMargin = 0.1f;
 constexpr int kWalkDirectCacheMs = 250;
 constexpr float kWalkDirectCacheTolerance = 0.25f;
 constexpr int kLosWaypointWalkCheckLimit = 6;
+constexpr int kLosMaxTraces = 3;
+// At least the humanoid box 0x0049C690 tests every entity with, whatever the entity is.
+constexpr float kLosRiderBoxHalfWidth = 0.3f;
+constexpr float kLosRiderBoxHalfHeight = 0.9f;
+constexpr float kLosRiderBoxExitMargin = 0.05f;
+
+bool level_los_blocked(
+    rf::Vector3 p0,
+    rf::Vector3 p1,
+    const rf::Object* ignore1,
+    const rf::Object* ignore2,
+    rf::LevelCollisionOut& collision)
+{
+    collision.obj_handle = -1;
+    collision.face = nullptr;
+    return rf::collide_linesegment_level_for_multi(
+        p0,
+        p1,
+        const_cast<rf::Object*>(ignore1),
+        const_cast<rf::Object*>(ignore2),
+        &collision,
+        0.05f,
+        false,
+        1.0f
+    );
+}
+
+float rider_box_exit_distance(const rf::Vector3& origin, const rf::Vector3& dir, const rf::Vector3& center)
+{
+    const float origin_axes[3] = {origin.x, origin.y, origin.z};
+    const float dir_axes[3] = {dir.x, dir.y, dir.z};
+    const float center_axes[3] = {center.x, center.y, center.z};
+    const float half_axes[3] = {kLosRiderBoxHalfWidth, kLosRiderBoxHalfHeight, kLosRiderBoxHalfWidth};
+    float exit = std::numeric_limits<float>::infinity();
+    for (int axis = 0; axis < 3; ++axis) {
+        if (std::fabs(dir_axes[axis]) < 1e-6f) {
+            continue;
+        }
+        const float t0 = (center_axes[axis] - half_axes[axis] - origin_axes[axis]) / dir_axes[axis];
+        const float t1 = (center_axes[axis] + half_axes[axis] - origin_axes[axis]) / dir_axes[axis];
+        exit = std::min(exit, std::max(t0, t1));
+    }
+    return std::max(exit, 0.0f);
+}
 
 bool trace_walk_floor(const rf::Vector3& pos, const float top_y, const float bottom_y, rf::Vector3& out_floor)
 {
@@ -124,22 +169,54 @@ bool bot_has_unobstructed_level_los(
     const rf::Object* ignore1,
     const rf::Object* ignore2)
 {
-    rf::Vector3 p0 = from;
-    rf::Vector3 p1 = to;
     rf::LevelCollisionOut collision{};
-    collision.obj_handle = -1;
-    collision.face = nullptr;
-    const bool hit = rf::collide_linesegment_level_for_multi(
-        p0,
-        p1,
-        const_cast<rf::Object*>(ignore1),
-        const_cast<rf::Object*>(ignore2),
-        &collision,
-        0.05f,
-        false,
-        1.0f
-    );
-    return !hit;
+    const rf::Entity* const self = ignore1 ? rf::entity_from_handle(ignore1->handle) : nullptr;
+    const rf::Entity* const target = ignore2 ? rf::entity_from_handle(ignore2->handle) : nullptr;
+    const rf::Entity* const own_hull = vehicle_ridden_hull(self);
+    const rf::Entity* const target_hull =
+        target && vehicle_is_synced_entity_type(target) ? target : vehicle_ridden_hull(target);
+    if (!own_hull && !target_hull) {
+        return !level_los_blocked(from, to, ignore1, ignore2, collision);
+    }
+
+    // An entity hit clears the primitive's face, so the level is tested on its own, with 0x0049C690's own flags.
+    rf::Vector3 level_p0 = from;
+    rf::Vector3 level_p1 = to;
+    rf::PCollisionOut level_collision{};
+    level_collision.obj_handle = -1;
+    if (rf::collide_linesegment_world(
+            level_p0, level_p1, rf::CF_SKIP_SHOOT_THRU | rf::CF_SKIP_DESTRUCTIBLE_GLASS, &level_collision)) {
+        return false;
+    }
+
+    // A seated viewer's own hull stands round his eye, so it takes the second ignore slot.
+    const rf::Object* const second_ignore = own_hull ? own_hull : ignore2;
+    rf::Vector3 p0 = from;
+    for (int trace = 0; trace < kLosMaxTraces; ++trace) {
+        if (!level_los_blocked(p0, to, ignore1, second_ignore, collision)) {
+            return true;
+        }
+        const rf::Entity* const hit = rf::entity_from_handle(collision.obj_handle);
+        if (!hit) {
+            return false;
+        }
+        if (target
+            && (hit == target || hit == target_hull || (target_hull && hit->host_handle == target_hull->handle))) {
+            return true;
+        }
+        if (!own_hull || hit->host_handle != own_hull->handle) {
+            return false;
+        }
+        rf::Vector3 dir = to - p0;
+        const float remaining = dir.len();
+        dir.normalize_safe();
+        const float skip = rider_box_exit_distance(p0, dir, hit->pos) + kLosRiderBoxExitMargin;
+        if (skip >= remaining) {
+            return true;
+        }
+        p0 += dir * skip;
+    }
+    return false;
 }
 
 int bot_find_closest_waypoint_with_fallback(const rf::Vector3& pos)

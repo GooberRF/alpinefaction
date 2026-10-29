@@ -2,11 +2,14 @@
 
 #include "bot_context.h"
 #include "bot_math.h"
+#include "bot_vehicle.h"
 #include "../gametype.h"
+#include "../../misc/alpine_settings.h"
 #include <common/utils/list-utils.h>
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <xlog/xlog.h>
 
 namespace
 {
@@ -25,6 +28,9 @@ constexpr float kAlertDamageSourceNearRange = 12.0f;
 constexpr float kAwarenessWeightDamage = 1.0f;
 constexpr float kAwarenessWeightNearbyFire = 0.62f;
 constexpr float kAwarenessWeightNearbyReload = 0.56f;
+constexpr float kAwarenessWeightNearbyHull = 0.8f;
+constexpr int kHullDodgeMs = 600;
+constexpr int kVehicleRoadAvoidMs = 3000;
 constexpr std::size_t kAlertSourceSampleCapacity = 96;
 constexpr std::size_t kAlertContactCapacity = 48;
 
@@ -35,6 +41,7 @@ bool alert_type_has_priority(const BotAlertType lhs, const BotAlertType rhs)
             case BotAlertType::damaged_by_enemy:
                 return 3;
             case BotAlertType::nearby_weapon_fire:
+            case BotAlertType::nearby_hull:
                 return 2;
             case BotAlertType::nearby_weapon_reload:
                 return 1;
@@ -284,7 +291,7 @@ void bot_alerts_update_context(const rf::Player& local_player, const rf::Entity&
             continue;
         }
 
-        rf::Entity* candidate_entity = rf::entity_from_handle(candidate.entity_handle);
+        rf::Entity* candidate_entity = bot_vehicle_effective_target(rf::entity_from_handle(candidate.entity_handle));
         if (!candidate_entity || candidate_entity == &local_entity || rf::entity_is_dying(candidate_entity)) {
             continue;
         }
@@ -368,6 +375,25 @@ void bot_alerts_update_context(const rf::Player& local_player, const rf::Entity&
             if (score > best_damage_source_score) {
                 best_damage_source_score = score;
                 best_damage_source_handle = candidate_entity->handle;
+            }
+        }
+    }
+
+    BotVehicleHullThreat hull_threat{};
+    if (bot_vehicle_find_hull_threat(local_player, local_entity, hull_threat)) {
+        register_alert_contact(
+            *hull_threat.target,
+            BotAlertType::nearby_hull,
+            kAwarenessWeightNearbyHull,
+            kAlertMediumAwarenessMs);
+        bot_state().vehicle_road_avoid_timer.set(kVehicleRoadAvoidMs);
+        if (hull_threat.in_path
+            && (!bot_state().hull_dodge_timer.valid() || bot_state().hull_dodge_timer.elapsed())) {
+            bot_state().hull_dodge_timer.set(kHullDodgeMs);
+            bot_state().hull_dodge_dir = hull_threat.dodge_dir;
+            bot_state().hull_dodge_checked = false;
+            if (g_alpine_game_config.dbg_bot) {
+                xlog::info("[BotVeh] {} sidesteps hull {}", local_player.name, hull_threat.target->handle);
             }
         }
     }

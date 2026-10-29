@@ -26,6 +26,7 @@ Version 1.5.0 (Trillium): Not yet released
   - Mirror `Terrain Tools` brush strokes across the terrain's X and/or Z axis, with movable mirror lines
   - Up to 4 detail overlays (leaves, debris) and 8 mesh decoration layers per terrain (grass, rocks, bushes)
   - `Geoable` terrains are carved by RF2-style geomod craters, with their own underside and crater textures
+  - Waypoint autogeneration lays a coarse waypoint grid over open terrain; `-awpgen_fine` and `waypoints_generate fine` probe it like other geometry instead
 - Add server-side bots, which run inside the dedicated or listen server process in addition to (or instead of) bot clients
   - `server_bots` ADS option (0-31) sets how many server bots join; they use the `bot_profiles` profiles and follow `ideal_player_count` like bot clients
   - Add `sv_bot_add [profile_index] [red|blue]`, `sv_bot_remove <name|all>` and `sv_bot_list` server console commands, which also work through rcon
@@ -36,6 +37,8 @@ Version 1.5.0 (Trillium): Not yet released
   - Jeeps, APCs, drillers, fighters, submarines, and stationary turrets, spawned by the new `Vehicle Factory` object
   - Simulate vehicle physics with the Bullet physics engine
   - Multi-seat vehicles with driver, gunner, and passenger seats; `Use` boards the lowest free seat and number keys `1`-`6` switch seats
+  - Bots man turrets, ride as gunners and passengers, drive jeeps, APCs, and drillers, and fly fighters and submarines; `bots_use_vehicles` and `bot_max_drivers` ADS options (`[vehicles]`) control it, and bot profiles tune it with `vehicle_affinity_bias` and `vehicle_gunner_bias` personality fields and `never_drives` and `turret_camper` quirks
+  - `Waypoint Helper` level editor object: air, water, and ground navigation points for bots in vehicles, joined by object links; waypoint generation turns them into a vehicle layer in the AWP (ground links follow the ground, with one-way slopes and per-link vehicle size limits) that bots navigate on and the in-game waypoint editor can edit; `dbg_vehnav` draws and lists it in game
 
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)
@@ -163,6 +166,9 @@ Version 1.5.0 (Trillium): Not yet released
 - Make bots break off to top up armor at a lower armor level, and switch goals less often
 - Make bots walk straight to objectives, items and enemies only when nothing  is in the way and there is no ledge to drop off, and look ahead round corners or toward where a threat was last noticed
 - Ignore connected human players who have not spawned yet this level when picking a joining bot's team
+- Speed up waypoint autogeneration on large levels, and stop it (saving nothing) after 60 minutes
+- Seed waypoint autogeneration from the floor under every control point and from every spawn point, so DC levels that generated nothing now generate
+- Add a coarse waypoint autogeneration mode (`-awpgen_coarse`, `waypoints_generate coarse`, or the waypoint editor's `Gen mode` button) that spaces waypoints wider on open ground, while items, spawns, flags, control points and other points of interest stay finely covered
 - Add `[detail]` section to ATX textures to tile a greyscale detail texture finely over the texture when seen up close, on level geometry, meshes and terrain (Direct3D 11 renderer only)
 - Add `r_detailtextures` to turn detail textures off (0), show only ATX ones (1, default), or also give other textures a stock one by their material (2), replacing the stock toggle (Direct3D 11 renderer only)
 - Speed up per-pixel mesh lighting and entity shadows (Direct3D 11 renderer only)
@@ -326,6 +332,8 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix "You are on team" showing on every spawn of a listen server host in team modes
 - Fix a spectating listen server host not seeing the spectated player's ammo, weapon fire animations, damage numbers, awards or critical hit flashes
 - Fix bot clients losing the `personality_overrides` and `skill_overrides` of their bot profile (such as `taunt_on_kill_chance`) when the server sent their skill preset
+- Fix bots in objective game types sometimes walking an unrelated route to its end before heading for the flag, bag or control point
+- Fix waypoint autogeneration placing waypoints on mover brushes set to `No Player Collide`, which players pass through
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize

@@ -25,6 +25,7 @@ constexpr float kJumpPadFinalApproachStopDistance = 0.05f;
 constexpr float kWeaponStopDistanceCapScale = 1.5f;
 constexpr float kWeaponSafeStopDistanceScale = 1.25f;
 constexpr float kSplashRetreatProbeDistance = 1.5f;
+constexpr float kHullDodgeProbeDistance = 2.5f;
 // A cornered verdict outlives the think that found it until the next movement update.
 constexpr int kSplashRetreatBlockedHoldMs = 100;
 constexpr float kLadderClimbVerticalThreshold = 0.12f;
@@ -864,6 +865,8 @@ void bot_process_movement(
     else {
         // On the ground and not on a drop link — clear the drop freefall flag.
         bot_state().drop_freefall_active = false;
+        // Walking a downhill link never falls, so a lock left from it would keep vetoing reroutes until the next fall.
+        bot_state().drop_link_route_locked = false;
     }
     rf::Vector3 climb_region_probe = local_entity.pos;
     const bool in_climb_region = rf::level_point_in_climb_region(&climb_region_probe) != nullptr;
@@ -1154,6 +1157,33 @@ void bot_process_movement(
         bot_state().combat_maneuver_strafe = 0.0f;
         bot_state().combat_maneuver_timer.invalidate();
         bot_state().combat_crouch_timer.invalidate();
+    }
+
+    if (bot_state().hull_dodge_timer.valid() && !bot_state().hull_dodge_timer.elapsed()
+        && !bot_state().hull_dodge_checked) {
+        // An enemy hull bearing down: out of its path whatever the route wants, to the other side if this one is shut,
+        // and not at all when both are (a ledge or a bridge): a step off is worse than the hit.
+        bot_state().hull_dodge_checked = true;
+        rf::Vector3& dodge = bot_state().hull_dodge_dir;
+        const auto shut = [&](const rf::Vector3& dir) {
+            return is_forward_probe_blocked(local_entity, dir, kHullDodgeProbeDistance)
+                || is_forward_probe_over_edge(local_entity, dir, kHullDodgeProbeDistance);
+        };
+        if (shut(dodge)) {
+            if (shut(-dodge)) {
+                bot_state().hull_dodge_timer.invalidate();
+            }
+            else {
+                dodge = -dodge;
+            }
+        }
+    }
+    if (bot_state().hull_dodge_timer.valid() && !bot_state().hull_dodge_timer.elapsed()) {
+        const rf::Vector3& dodge = bot_state().hull_dodge_dir;
+        const rf::Vector3 view_forward = forward_from_non_linear_yaw_pitch(local_entity.control_data.phb.y, 0.0f);
+        const rf::Vector3 view_right{view_forward.z, 0.0f, -view_forward.x};
+        desired_move_z = std::clamp(dodge.dot_prod(view_forward), -1.0f, 1.0f);
+        desired_move_x = std::clamp(dodge.dot_prod(view_right), -1.0f, 1.0f);
     }
 
     apply_corner_centering_steer(

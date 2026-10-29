@@ -701,6 +701,20 @@ rf::Trigger* koth_resolve_trigger_from_uid(int uid)
     return nullptr;
 }
 
+rf::Trigger* koth_capture_point_handler_trigger(const rf::Event& handler)
+{
+    const auto& cp = static_cast<const EventCapturePointHandler&>(handler);
+    if (cp.trigger_uid >= 0) {
+        return koth_resolve_trigger_from_uid(cp.trigger_uid);
+    }
+    for (const int handle : handler.links) {
+        if (auto* o = rf::obj_from_handle(handle); o && o->type == rf::ObjectType::OT_TRIGGER) {
+            return static_cast<rf::Trigger*>(o);
+        }
+    }
+    return nullptr;
+}
+
 inline bool local_player_on_owner_team(HillOwner owner)
 {
     if (!rf::local_player)
@@ -2047,24 +2061,12 @@ static int build_hills_from_capture_point_events()
 
         auto* cp = static_cast<EventCapturePointHandler*>(e);
 
-        // find trigger_uid from event links
-        if (cp->trigger_uid < 0 && !e->links.empty()) {
-            for (int handle : e->links) {
-                if (auto* o = rf::obj_from_handle(handle)) {
-                    if (o->type == rf::ObjectType::OT_TRIGGER) {
-                        cp->trigger_uid = o->uid;
-                        break;
-                    }
-                }
-            }
-        }
-
-        // resolve trigger pointer
-        rf::Trigger* trig = koth_resolve_trigger_from_uid(cp->trigger_uid);
+        rf::Trigger* trig = koth_capture_point_handler_trigger(*e);
         if (!trig) {
             xlog::warn("KOTH: Capture point '{}' has invalid trigger UID {}, skipping", cp->name.c_str(), cp->trigger_uid);
             continue;
         }
+        cp->trigger_uid = trig->uid;
 
         // fix a case where a mapper specified the same trigger for multiple capture point handlers
         if (!seen_uids.insert(cp->trigger_uid).second) {

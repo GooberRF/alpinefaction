@@ -23,6 +23,8 @@ enum class BotPersonalityQuirk : uint64_t
     crater_unlock_affinity = 1ull << 5,
     super_item_hoarder = 1ull << 6,
     sneaky_capper = 1ull << 7,
+    never_drives = 1ull << 8,
+    turret_camper = 1ull << 9,
 };
 
 struct BotPersonality
@@ -78,6 +80,9 @@ struct BotPersonality
     float gg_on_map_end_chance = 0.50f;
     float hello_on_join_chance = 0.50f;
     float red_faction_response_chance = 0.50f;
+    // 0 or less: never boards a vehicle.
+    float vehicle_affinity_bias = 1.0f;
+    float vehicle_gunner_bias = 1.0f;
     std::vector<float> item_weights{};
     std::vector<float> weapon_pickup_weights{};
     std::vector<float> weapon_preference_weights{};

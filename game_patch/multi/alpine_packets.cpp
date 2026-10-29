@@ -5686,12 +5686,27 @@ void af_send_bot_control_update_personality(rf::Player* player, const ServerBotC
         return;
     }
 
+    // Courtesy only: the server refuses a bot's boarding itself while vehicles are off for bots.
+    std::vector<BotConfigOverride> overrides = config.personality_overrides;
+    if (!g_alpine_server_config_active_rules.vehicles.bots_use_vehicles) {
+        const auto field = static_cast<uint8_t>(af_personality_field::vehicle_affinity_bias);
+        const auto it = std::find_if(overrides.begin(), overrides.end(), [field](const BotConfigOverride& ovr) {
+            return ovr.field_id == field;
+        });
+        if (it != overrides.end()) {
+            it->value = 0.0f;
+        }
+        else {
+            overrides.push_back({field, 0.0f});
+        }
+    }
+
     std::byte buf[rf::max_packet_size];
     const size_t len = write_profile_update_payload(
         buf, sizeof(buf),
         af_bot_control_type::update_personality,
         config.personality_preset,
-        config.personality_overrides);
+        overrides);
     if (len == 0) {
         return;
     }

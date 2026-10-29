@@ -5,6 +5,12 @@
 #include <string_view>
 #include <vector>
 
+namespace rf
+{
+    struct Object;
+    struct Trigger;
+}
+
 extern std::vector<WaypointNode> g_waypoints;
 extern std::vector<WaypointZoneDefinition> g_waypoint_zones;
 extern std::vector<WaypointTargetDefinition> g_waypoint_targets;
@@ -23,10 +29,19 @@ int cycle_waypoint_dropped_subtype(int raw_subtype, int direction);
 std::string_view waypoint_dropped_subtype_name(int raw_subtype);
 std::string_view waypoint_type_name(WaypointType type);
 bool waypoint_type_is_standard(WaypointType type);
+// Types seeded from level objects, which generation links and builds around.
+bool waypoint_type_is_special(WaypointType type);
+// Where generation seeds the flood under each control point: on the floor under its trigger, where the flood could
+// put a node too.
+std::vector<rf::Vector3> generation_control_point_seed_positions();
 std::string_view waypoint_zone_type_name(WaypointZoneType type);
 std::string_view waypoint_target_type_name(WaypointTargetType type);
 WaypointZoneSource resolve_waypoint_zone_source(const WaypointZoneDefinition& zone);
 bool waypoint_zone_type_is_bridge(WaypointZoneType type);
+// How far a trigger reaches from its position whatever its rotation (a box's half diagonal); 0 for a non-finite size.
+float trigger_bounding_radius(const rf::Trigger& trigger);
+// A No Player Collide mover's brush: entities pass through it and only weapons hit it.
+bool mover_brush_passes_through(const rf::Object& brush);
 rf::Vector3 point_min(const rf::Vector3& a, const rf::Vector3& b);
 rf::Vector3 point_max(const rf::Vector3& a, const rf::Vector3& b);
 float distance_sq(const rf::Vector3& a, const rf::Vector3& b);

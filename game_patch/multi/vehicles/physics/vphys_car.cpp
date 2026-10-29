@@ -685,7 +685,7 @@ void body_apply_mass(VehicleSimBody& b, const VehiclePhysicsParams& p, const rf:
 void body_apply_shape(VehicleSimBody& b, const VehiclePhysicsParams& p, rf::Entity* ep)
 {
     const float radius = hull_standoff(p, ep);
-    const bool parked = b.server_owned && p.parked_cylinder != 0.0f;
+    const bool parked = b.server_owned && !b.server_driven && p.parked_cylinder != 0.0f;
     if (std::fabs(radius - b.body_radius) < 0.001f && parked == (b.parked_shape != nullptr)) {
         return;
     }
@@ -894,7 +894,7 @@ bool apply_car_controls(VehicleSimBody& b, rf::Entity* ep, const VehiclePhysicsP
 
     // ep->ai.ci still holds the departed driver's input; blind a COPY - the camera/aim path reads it.
     rf::ControlInfo ci = ep->ai.ci;
-    if (b.server_owned || vphys_hull_submerged(ep)) {
+    if ((b.server_owned && !b.server_driven) || vphys_hull_submerged(ep)) {
         ci.rot = rf::Vector3{};
         ci.move = rf::Vector3{};
     }

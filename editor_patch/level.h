@@ -32,6 +32,7 @@ void DestroyDedProjectionCamera(DedProjectionCamera* camera);
 void DestroyDedRopeEmitter(DedRopeEmitter* rope);
 void DestroyDedTerrain(DedTerrain* terrain);
 void DestroyDedDirectionalLight(DedDirectionalLight* light);
+void DestroyDedWaypointHelper(DedWaypointHelper* helper);
 
 constexpr int alpine_props_chunk_id = 0x0AFBA5ED;
 constexpr int alpine_mesh_chunk_id = 0x0AFBAE01;
@@ -46,6 +47,7 @@ constexpr int alpine_rope_emitter_chunk_id = 0x0AFBAE0A;
 constexpr int alpine_terrain_chunk_id = static_cast<int>(alpine_terrain::chunk_id); // 0x0AFBAE0B
 constexpr int alpine_lightmaps_chunk_id = static_cast<int>(alpine_lightmap::chunk_id); // 0x0AFBAE09
 constexpr int alpine_directional_light_chunk_id = static_cast<int>(alpine_dir_light::chunk_id); // 0x0AFBAE0C
+constexpr int alpine_waypoint_helper_chunk_id = static_cast<int>(alpine_waypoint_helper::chunk_id); // 0x0AFBAE0D
 
 // Other editors save RFL chunks of their own that Alpine Faction can neither read nor parse.
 // AlpineEditor retains them verbatim on load and re-emits them on save, so the originating
@@ -1041,6 +1043,8 @@ struct AlpineLevelProperties
     // Alpine directional light objects
     std::vector<DedDirectionalLight*> directional_light_objects;
 
+    std::vector<DedWaypointHelper*> waypoint_helper_objects;
+
     // Retained foreign-editor RFL sections
     std::vector<RetainedRflChunk> retained_chunks;
 
@@ -1217,6 +1221,11 @@ struct AlpineLevelProperties
             DestroyDedDirectionalLight(d);
         }
         directional_light_objects.clear();
+
+        for (auto* h : waypoint_helper_objects) {
+            DestroyDedWaypointHelper(h);
+        }
+        waypoint_helper_objects.clear();
 
         retained_chunks.clear();
     }

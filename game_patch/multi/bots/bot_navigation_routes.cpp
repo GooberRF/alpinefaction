@@ -24,7 +24,6 @@ constexpr int kBotRouteProbeTraceFlags = rf::CF_ANY_HIT | rf::CF_PROCESS_INVISIB
 constexpr int kMaxGoalDetourAttempts = 8;
 constexpr int kMaxLongDetourAttempts = 10;
 constexpr int kMaxRoamRouteAttempts = 16;
-constexpr float kRouteMaxUpwardStepHeight = 1.5f;
 constexpr float kLadderEndpointTolerance = 0.75f;
 constexpr float kRouteGapProbeStartYOffset = 0.10f;
 constexpr float kRouteGapProbeDownDistance = 2.5f;
@@ -85,7 +84,8 @@ struct LadderBounds
 };
 
 std::unordered_map<int, LadderBounds> g_ladder_bounds_cache{};
-int g_ladder_bounds_cache_waypoint_total = 0;
+// Ladder nodes are persistent, so temporary node churn keeps the cache.
+int g_ladder_bounds_cache_persistent_version = -1;
 
 uint64_t make_link_key(const int waypoint_a, const int waypoint_b)
 {
@@ -152,13 +152,14 @@ bool waypoint_is_ladder_with_identifier(
 
 void refresh_ladder_bounds_cache_if_needed()
 {
-    const int waypoint_total = waypoints_count();
-    if (g_ladder_bounds_cache_waypoint_total == waypoint_total) {
+    const int persistent_version = waypoints_persistent_graph_version();
+    if (g_ladder_bounds_cache_persistent_version == persistent_version) {
         return;
     }
 
-    g_ladder_bounds_cache_waypoint_total = waypoint_total;
+    g_ladder_bounds_cache_persistent_version = persistent_version;
     g_ladder_bounds_cache.clear();
+    const int waypoint_total = waypoints_count();
 
     for (int waypoint = 1; waypoint < waypoint_total; ++waypoint) {
         int ladder_identifier = -1;
@@ -278,7 +279,14 @@ bool is_link_unclimbable_upward_for_route(const int from_waypoint, const int to_
     }
 
     const float upward_delta = to_pos.y - from_pos.y;
-    return upward_delta > (kRouteMaxUpwardStepHeight + 0.01f);
+    float max_rise = kRouteMaxUpwardStepHeight;
+    // The generator links two terrain nodes both ways over more than a step only where the ground between them stays
+    // within its incline.
+    if (waypoints_is_terrain_node(from_waypoint) && waypoints_is_terrain_node(to_waypoint)) {
+        const float horizontal = std::hypot(to_pos.x - from_pos.x, to_pos.z - from_pos.z);
+        max_rise = std::max(max_rise, horizontal * kWaypointGenerateMaxInclineRise);
+    }
+    return upward_delta > (max_rise + 0.01f);
 }
 
 float compute_waypoint_path_gap_penalty(const std::vector<int>& path)
@@ -1354,9 +1362,12 @@ RouteScoreWeights compute_route_score_weights()
 
 bool bot_nav_is_link_traversable_for_route(const int from_waypoint, const int to_waypoint)
 {
-    if (!waypoints_has_direct_link(from_waypoint, to_waypoint)) {
-        return false;
-    }
+    return waypoints_has_direct_link(from_waypoint, to_waypoint)
+        && bot_nav_link_allows_route(from_waypoint, to_waypoint);
+}
+
+bool bot_nav_link_allows_route(const int from_waypoint, const int to_waypoint)
+{
     if (!is_ladder_boundary_transition_valid(from_waypoint, to_waypoint)) {
         return false;
     }
@@ -1549,46 +1560,9 @@ float bot_nav_compute_route_score_upper_bound(const std::vector<int>& path)
     return bound;
 }
 
-const BotWaypointDistanceField& bot_nav_distance_field(const int source_waypoint, const std::vector<int>& avoidset)
-{
-    // Fields depend only on the graph, so all bots share them.
-    struct CachedField
-    {
-        int graph_version = -1;
-        uint64_t last_use = 0;
-        BotWaypointDistanceField field{};
-    };
-    static std::array<CachedField, 8> cache{};
-    static uint64_t use_counter = 0;
-
-    const int graph_version = waypoints_graph_version();
-    CachedField* slot = &cache[0];
-    for (CachedField& entry : cache) {
-        if (entry.graph_version == graph_version
-            && entry.field.source == source_waypoint
-            && entry.field.avoidset == avoidset) {
-            entry.last_use = ++use_counter;
-            return entry.field;
-        }
-        if (entry.last_use < slot->last_use) {
-            slot = &entry;
-        }
-    }
-    bot_waypoint_compute_distance_field(source_waypoint, avoidset, slot->field);
-    slot->graph_version = graph_version;
-    slot->last_use = ++use_counter;
-    return slot->field;
-}
-
 bool bot_nav_is_waypoint_reachable(const int from_waypoint, const int to_waypoint)
 {
-    if (from_waypoint == to_waypoint) {
-        return true;
-    }
-    const BotWaypointDistanceField& field = bot_nav_distance_field(from_waypoint);
-    return to_waypoint > 0
-        && to_waypoint < static_cast<int>(field.dist.size())
-        && std::isfinite(field.dist[to_waypoint]);
+    return bot_waypoint_reachable(from_waypoint, to_waypoint);
 }
 
 void bot_nav_prune_failed_edge_cooldowns()
@@ -2256,7 +2230,7 @@ bool bot_nav_pick_waypoint_route(const int start_waypoint)
     route_candidates.reserve(max_attempts);
     auto collect_candidates = [&](const std::vector<int>& active_avoidset,
                                    const bool ignore_failed_edges) {
-        const BotWaypointDistanceField& distance_field = bot_nav_distance_field(start_waypoint, active_avoidset);
+        const BotWaypointDistanceField& distance_field = bot_waypoint_distance_field(start_waypoint, active_avoidset);
         std::vector<int> path;
         for (int attempt = 0; attempt < max_attempts; ++attempt) {
             const int candidate = candidates[attempt];

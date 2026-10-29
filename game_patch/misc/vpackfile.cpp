@@ -486,10 +486,6 @@ bool vpackfile_supercede_allowed(const char* requested_filename, const char* sib
 static void vpackfile_add_to_lookup_table(rf::VPackfileEntry* entry)
 {
     std::string filename_str = string_to_lower(entry->name);
-    // dedicated servers don't need .awp files.
-    if (rf::is_dedicated_server && filename_str.ends_with(".awp")) {
-        return;
-    }
     auto [it, inserted] = g_loopup_table.insert({filename_str, entry});
     if (!inserted) {
         ++g_num_name_collisions;

@@ -4,6 +4,12 @@
 
 namespace rf
 {
+    enum TriggerShape
+    {
+        TRIGGER_SHAPE_SPHERE = 0,
+        TRIGGER_SHAPE_BOX = 1,
+    };
+
     struct Trigger : Object
     {
         Trigger *next;
