@@ -756,7 +756,7 @@ int play_local_sound_2d(uint16_t sound_id, int group, float volume) {
     return rf::snd_play(sound_id, group, 0.0f, volume);
 }
 
-void play_local_hit_sound(bool died) {
+void play_local_hit_sound(uint8_t victim_player_id, int victim_hull_handle, bool died) {
     if (!g_alpine_game_config.play_hit_sounds) {
         return; // turned off
     }
@@ -775,14 +775,21 @@ void play_local_hit_sound(bool died) {
         hit_sound_timestamp.invalidate();
     }
 
-    // Each hit within the damage number merge window of the last climbs a step in pitch; a kill ends the streak and
-    // always plays at its own pitch.
+    // Each hit on the same victim within the damage number merge window of the last climbs a step in pitch; a new
+    // victim restarts the streak, and a kill ends it and always plays at its own pitch.
     constexpr float streak_pitch_step = 0.06f;
     constexpr int streak_max_steps = 6;
     static rf::TimestampRealtime streak_timestamp;
     static int streak = 0;
-    streak = streak_timestamp.valid() && !streak_timestamp.elapsed() ? std::min(streak + 1, streak_max_steps) : 0;
+    static uint8_t streak_player_id = 0;
+    static int streak_hull_handle = -1;
+    const bool same_victim = streak_player_id == victim_player_id && streak_hull_handle == victim_hull_handle;
+    streak = same_victim && streak_timestamp.valid() && !streak_timestamp.elapsed()
+        ? std::min(streak + 1, streak_max_steps)
+        : 0;
     streak_timestamp.set(damage_number_merge_ms);
+    streak_player_id = victim_player_id;
+    streak_hull_handle = victim_hull_handle;
     if (died) {
         streak_timestamp.invalidate();
     }
@@ -1063,6 +1070,12 @@ bool player_is_idle(const rf::Player* const player) {
         // The demo recorder never spawns and never sends activity; its idle timer
         // is never armed either, but keep the exemption explicit.
         if (player->is_observer()) {
+            return false;
+        }
+        // Nobody is idle in a live match (players outside it are spawn-blocked anyway, below), nor once readied
+        // up for one; the roster fills before match_active is set
+        rf::Player* const p = const_cast<rf::Player*>(player);
+        if (g_match_info.match_active || g_match_info.active_match_players.contains(p) || is_player_ready(p)) {
             return false;
         }
         // Check if the player's idle timer has elapsed

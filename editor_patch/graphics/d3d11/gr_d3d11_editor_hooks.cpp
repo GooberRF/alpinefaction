@@ -51,7 +51,8 @@ namespace gr::d3d11
 
         // The lights of the mesh about to draw, true when they have to be released after it. View > Fullbright Meshes
         // leaves none, and the core then draws it unlit (static_meshes_fullbright, character_meshes_fullbright).
-        bool begin_mesh_lights(EditorRenderer& r, const rf::Vector3& pos, const rf::Vector3& center, float radius)
+        // `pos` is already the mesh centre: the stock caller adds orient * lod_mesh->center.
+        bool begin_mesh_lights(EditorRenderer& r, const rf::Vector3& pos, float radius)
         {
             if (g_editor_settings.fullbright_meshes) {
                 rf::gr::light_filter_reset();
@@ -60,7 +61,7 @@ namespace gr::d3d11
             if (!gather_mesh_lights(pos, radius)) {
                 return false;
             }
-            r.set_mesh_bounds(center, radius);
+            r.set_mesh_bounds(pos, radius);
             return true;
         }
 
@@ -343,8 +344,7 @@ namespace gr::d3d11
             }
             // A scaled orient scales the mesh's extent too
             const float radius = lod_mesh->radius * orient.rvec.len();
-            const bool lights_gathered =
-                begin_mesh_lights(*r, pos, pos + orient.transform_vector(lod_mesh->center), radius);
+            const bool lights_gathered = begin_mesh_lights(*r, pos, radius);
             r->page_in_v3d_mesh(lod_mesh, nullptr, 0);
             mark_fullbright_batches(lod_mesh, lod_index, params);
             // The pixel shader lights the mesh instead of RED's vertex colours
@@ -367,8 +367,7 @@ namespace gr::d3d11
                 return;
             }
             const float radius = lod_mesh->radius * orient.rvec.len();
-            const bool lights_gathered =
-                begin_mesh_lights(*r, pos, pos + orient.transform_vector(lod_mesh->center), radius);
+            const bool lights_gathered = begin_mesh_lights(*r, pos, radius);
             // White vertex colours: the pixel shader does all the lighting, as in the game
             const rf::VifMesh* lod = lod_mesh->meshes[lod_index];
             std::size_t total_vertices = 0;

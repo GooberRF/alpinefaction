@@ -32,15 +32,8 @@ namespace gr::d3d11
         };
         GhostFillState g_ghost_fill;
 
-        // Check if a light's sphere overlaps a mesh's bounding sphere.
-        // More accurate than point-to-point distance for large meshes where
-        // the origin may be far from the nearest surface to the light.
-        bool light_overlaps_mesh(const rf::gr::Light* light, const rf::Vector3& mesh_pos, float mesh_radius)
-        {
-            float combined_radius = light->rad_2 + mesh_radius;
-            float dist_sq = (light->vec - mesh_pos).len_sq();
-            return dist_sq <= combined_radius * combined_radius;
-        }
+        // Bone matrices the character vertex shaders index; vertex bone indices are clamped below this
+        constexpr int num_bone_matrices = 50;
     }
 
     void begin_ghost_fill(float fill_y, float alpha_ratio, const rf::Color* tint)
@@ -179,6 +172,12 @@ namespace gr::d3d11
             BufferWrapper& vertex_buffer,
             RenderContext& render_context);
 
+        // Model-space box of the LOD 0 vertices, the geometry the shadow pass draws
+        const BoundingBox& lod0_box() const
+        {
+            return lod0_box_;
+        }
+
     private:
         struct VertexColorVariant
         {
@@ -186,6 +185,7 @@ namespace gr::d3d11
         };
 
         std::vector<GpuVertex> vertices_;
+        BoundingBox lod0_box_;
 
         // Per-LOD map of vertex-color variants
         std::vector<std::unordered_map<VertexColorKey, VertexColorVariant, VertexColorKeyHasher>> vertex_color_batches_;
@@ -290,6 +290,15 @@ namespace gr::d3d11
         xlog::debug("Creating mesh geometry buffers: verts {} inds {}", gpu_verts.size(), gpu_inds.size());
 
         vertices_ = std::move(gpu_verts);
+        if (!meshes_.empty()) {
+            for (std::size_t i = 0; i < meshes_[0].vertex_count; ++i) {
+                const GpuVertex& v = vertices_[meshes_[0].vertex_offset + i];
+                // The GPU never rasterizes a non-finite vertex
+                if (std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z)) {
+                    lod0_box_.add({v.x, v.y, v.z});
+                }
+            }
+        }
         vertex_buffer.write(vertices_.data(), static_cast<unsigned>(vertices_.size()), render_context);
         index_buffer.write(gpu_inds.data(), static_cast<unsigned>(gpu_inds.size()), render_context);
     }
@@ -354,7 +363,7 @@ namespace gr::d3d11
 
     struct alignas(16) BoneTransformsBufferData
     {
-        GpuMatrix4x3 matrices[50];
+        GpuMatrix4x3 matrices[num_bone_matrices];
     };
 
     class BoneTransformsBuffer
@@ -464,6 +473,9 @@ namespace gr::d3d11
             return vertex_buffer_1_;
         }
 
+        void add_shadow_bounds(const rf::CharacterInstance* ci, const rf::Vector3& pos, const rf::Matrix3& orient,
+                               ShadowCasterBounds& bounds) const;
+
     private:
         ComPtr<ID3D11Buffer> vertex_buffer_0_;
         ComPtr<ID3D11Buffer> vertex_buffer_1_;
@@ -471,6 +483,10 @@ namespace gr::d3d11
         ComPtr<ID3D11Buffer> index_buffer_;
         BoneTransformsBuffer bone_transforms_buffer_;
         std::vector<GpuCharacterVertex1> vertices_;
+        // Model-space box of the LOD 0 vertices each bone has nonzero weight on, the geometry the shadow pass draws
+        std::array<BoundingBox, num_bone_matrices> bone_boxes_;
+        // Largest weight sum of those vertices, scaled as character_vs scales a skinned position
+        float max_weight_scale_ = 0.0f;
         mutable std::vector<bool> missing_vertex_colors_logged_;
         std::vector<std::unordered_map<VertexColorKey, ComPtr<ID3D11Buffer>, VertexColorKeyHasher>> vertex_color_buffers_;
         mutable std::vector<uint64_t> last_vertex_color_generations_;
@@ -538,8 +554,8 @@ namespace gr::d3d11
                         for (int i = 0; i < 4; ++i) {
                             gpu_vert_1.weights[i] = chunk.wi[pos_vert_index].weights[i];
                             gpu_vert_1.indices[i] = chunk.wi[pos_vert_index].indices[i];
-                            if (gpu_vert_1.indices[i] >= 50) {
-                                gpu_vert_1.indices[i] = 49;
+                            if (gpu_vert_1.indices[i] >= num_bone_matrices) {
+                                gpu_vert_1.indices[i] = num_bone_matrices - 1;
                             }
                         }
                     }
@@ -564,6 +580,24 @@ namespace gr::d3d11
             meshes_[lod_index].vertex_count = gpu_verts_1.size() - meshes_[lod_index].vertex_offset;
         }
         xlog::debug("Creating mesh render buffer - verts {} inds {}", gpu_verts_0.size(), gpu_inds.size());
+
+        if (!meshes_.empty()) {
+            for (std::size_t i = 0; i < meshes_[0].vertex_count; ++i) {
+                const std::size_t vi = meshes_[0].vertex_offset + i;
+                const rf::Vector3 p{gpu_verts_0[vi].x, gpu_verts_0[vi].y, gpu_verts_0[vi].z};
+                if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z)) {
+                    continue;
+                }
+                int weight_sum = 0;
+                for (int k = 0; k < 4; ++k) {
+                    if (gpu_verts_1[vi].weights[k] != 0) {
+                        weight_sum += gpu_verts_1[vi].weights[k];
+                        bone_boxes_[gpu_verts_1[vi].indices[k]].add(p);
+                    }
+                }
+                max_weight_scale_ = std::max(max_weight_scale_, weight_sum / 256.0f);
+            }
+        }
 
         vertices_ = std::move(gpu_verts_1);
 
@@ -1247,8 +1281,71 @@ namespace gr::d3d11
         render_context.device_context()->CopySubresourceRegion(buffer_, 0, 0, 0, 0, old_buffer, 0, &box);
     }
 
+    void ShadowCasterBounds::add(const rf::Vector3& world_pos)
+    {
+        std::array<float, 4> clip;
+        for (int c = 0; c < 4; ++c) {
+            clip[c] = world_pos.x * view_proj_[c][0] + world_pos.y * view_proj_[c][1]
+                + world_pos.z * view_proj_[c][2] + view_proj_[c][3];
+        }
+        const rf::Vector3 ndc{clip[0] / clip[3], clip[1] / clip[3], clip[2] / clip[3]};
+        // A non-finite vertex is never rasterized
+        if (std::isfinite(ndc.x) && std::isfinite(ndc.y) && std::isfinite(ndc.z)) {
+            ndc_.add(ndc);
+        }
+    }
+
+    void ShadowCasterBounds::add_box(const BoundingBox& box, const rf::Vector3& pos, const rf::Matrix3& orient)
+    {
+        if (box.empty) {
+            return;
+        }
+        for (int corner = 0; corner < 8; ++corner) {
+            const rf::Vector3 c{
+                (corner & 1) ? box.max.x : box.min.x,
+                (corner & 2) ? box.max.y : box.min.y,
+                (corner & 4) ? box.max.z : box.min.z,
+            };
+            add(orient.transform_vector(c) + pos);
+        }
+    }
+
+    void CharacterMeshRenderCache::add_shadow_bounds(const rf::CharacterInstance* ci, const rf::Vector3& pos,
+                                                     const rf::Matrix3& orient, ShadowCasterBounds& bounds) const
+    {
+        // Conservative: a skinned position is weight_sum/256 times a convex blend of its bones' transforms; bones past
+        // num_bones are zero matrices
+        BoundingBox skinned;
+        skinned.add({0.0f, 0.0f, 0.0f});
+        const int num_bones = std::min(ci->base_character->num_bones, num_bone_matrices);
+        for (int b = 0; b < num_bones; ++b) {
+            const BoundingBox& box = bone_boxes_[b];
+            if (box.empty) {
+                continue;
+            }
+            const rf::Matrix43& bone = ci->bone_transforms_final[b];
+            const rf::Vector3 center = (box.min + box.max) * 0.5f;
+            const rf::Vector3 half = (box.max - box.min) * 0.5f;
+            const rf::Vector3 c = bone.orient.transform_vector(center) + bone.origin;
+            const rf::Matrix3& m = bone.orient;
+            const rf::Vector3 e{
+                std::abs(m.rvec.x) * half.x + std::abs(m.uvec.x) * half.y + std::abs(m.fvec.x) * half.z,
+                std::abs(m.rvec.y) * half.x + std::abs(m.uvec.y) * half.y + std::abs(m.fvec.y) * half.z,
+                std::abs(m.rvec.z) * half.x + std::abs(m.uvec.z) * half.y + std::abs(m.fvec.z) * half.z,
+            };
+            // A vertex skinned through a non-finite bone is never rasterized
+            if (!std::isfinite(c.x + c.y + c.z + e.x + e.y + e.z)) {
+                continue;
+            }
+            skinned.add((c - e) * max_weight_scale_);
+            skinned.add((c + e) * max_weight_scale_);
+        }
+        bounds.add_box(skinned, pos, orient);
+    }
+
     void MeshRenderer::draw_shadow_v3d_mesh(rf::VifLodMesh* lod_mesh, const rf::Vector3& pos, const rf::Matrix3& orient,
-                                             const VertexShaderAndLayout& shadow_vs, ID3D11DeviceContext* context)
+                                             const VertexShaderAndLayout& shadow_vs, ID3D11DeviceContext* context,
+                                             ShadowCasterBounds& bounds)
     {
         page_in_v3d_mesh(lod_mesh);
         if (!lod_mesh->render_cache) return;
@@ -1276,12 +1373,13 @@ namespace gr::d3d11
             for (const auto& batch : batches) {
                 context->DrawIndexed(batch.num_indices, batch.start_index, batch.base_vertex);
             }
+            bounds.add_box(cache->lod0_box(), pos, orient);
         }
     }
 
     void MeshRenderer::draw_shadow_character_mesh(rf::VifLodMesh* lod_mesh, const rf::Vector3& pos, const rf::Matrix3& orient,
                                                    const rf::CharacterInstance* ci, const VertexShaderAndLayout& shadow_vs,
-                                                   ID3D11DeviceContext* context)
+                                                   ID3D11DeviceContext* context, ShadowCasterBounds& bounds)
     {
         page_in_character_mesh(lod_mesh);
         if (!lod_mesh->render_cache) return;
@@ -1308,6 +1406,7 @@ namespace gr::d3d11
             for (const auto& batch : batches) {
                 context->DrawIndexed(batch.num_indices, batch.start_index, batch.base_vertex);
             }
+            cache->add_shadow_bounds(ci, pos, orient, bounds);
         }
     }
 
@@ -1371,25 +1470,8 @@ namespace gr::d3d11
             int write = 0;
             for (int read = 0; read < total; ++read) {
                 const auto* light = lights[read];
-                float combined_radius = light->rad_2 + mesh_radius;
-                float combined_sq = combined_radius * combined_radius;
-                float dist_sq;
-                if (light->type == rf::gr::LT_TUBE) {
-                    rf::Vector3 seg = light->vec2 - light->vec;
-                    rf::Vector3 delta = pos - light->vec;
-                    float seg_len_sq = seg.len_sq();
-                    if (seg_len_sq > 0.0001f) {
-                        float t = delta.dot_prod(seg) / seg_len_sq;
-                        t = std::clamp(t, 0.0f, 1.0f);
-                        rf::Vector3 closest = light->vec + seg * t;
-                        dist_sq = (pos - closest).len_sq();
-                    } else {
-                        dist_sq = delta.len_sq();
-                    }
-                } else {
-                    dist_sq = (light->vec - pos).len_sq();
-                }
-                if (dist_sq <= combined_sq) {
+                if (light_reaches_mesh(light->type == rf::gr::LT_TUBE, light->vec, light->vec2, light->rad_2, pos,
+                                       mesh_radius)) {
                     lights[write++] = lights[read];
                 }
             }
@@ -1412,7 +1494,7 @@ namespace gr::d3d11
             auto* t1_end = std::stable_partition(begin, end,
                 [&pos, mesh_radius](const rf::gr::Light* light) {
                     if (!light->dynamic) return false;
-                    return light_overlaps_mesh(light, pos, mesh_radius);
+                    return light_reaches_mesh(false, light->vec, light->vec, light->rad_2, pos, mesh_radius);
                 }
             );
 
@@ -1421,7 +1503,7 @@ namespace gr::d3d11
                 [&pos, mesh_radius](const rf::gr::Light* light) {
                     if (light->type != rf::gr::LT_SPOT) return false;
                     if (light->rad_2 < large_spot_radius) return false;
-                    return light_overlaps_mesh(light, pos, mesh_radius);
+                    return light_reaches_mesh(false, light->vec, light->vec, light->rad_2, pos, mesh_radius);
                 }
             );
             int priority_count = static_cast<int>(t2_end - begin);

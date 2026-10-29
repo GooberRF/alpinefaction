@@ -129,11 +129,12 @@ namespace gr::d3d11
 
     private:
         void queue_unrendered_xray_outlines();
+        float distance_fade(const rf::Vector3& pos) const;
         void refresh_vfx_transforms();
         void render_outline(const QueuedOutline& outline, MeshRenderer& mesh_renderer);
         // Two passes: parts of a multi-part hull share a stencil ref, so all must mark before any draws.
         void render_v3d_outline_mark(const QueuedV3dOutline& outline, MeshRenderer& mesh_renderer);
-        void render_v3d_outline_draw(const QueuedV3dOutline& outline, MeshRenderer& mesh_renderer);
+        void render_v3d_outline_draw(const QueuedV3dOutline& outline, float fade, MeshRenderer& mesh_renderer);
         void render_v3d_queue(MeshRenderer& mesh_renderer);
         void render_vfx_outline(const QueuedVfxOutline& outline);
 

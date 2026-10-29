@@ -53,6 +53,7 @@
 #include "../fflink/fflink.h"
 #include "../misc/misc.h"
 #include "../misc/achievements.h"
+#include "../misc/discord_presence.h"
 #include "../misc/spray_picker.h"
 #include "../multi/demo/demo_browser.h"
 #include "../misc/alpine_options.h"
@@ -131,6 +132,7 @@ CodeInjection after_full_game_init_hook{
         experimental_init_after_game();
 #endif
         console_init();
+        discord_presence_init();
         multi_after_full_game_init();
         debug_init();
         if (!is_headless_mode()) {
@@ -148,6 +150,7 @@ CodeInjection cleanup_game_hook{
     []() {
         // Set abort flag so AWP download future exits quickly and doesn't block static destruction
         cancel_awp_download();
+        discord_presence_shutdown();
         debug_cleanup();
     },
 };
@@ -198,6 +201,7 @@ FunHook<int()> rf_do_frame_hook{
         multi_level_download_update();
         poll_awp_download();
         waypoints_do_frame();
+        discord_presence_do_frame();
         return result;
     },
 };

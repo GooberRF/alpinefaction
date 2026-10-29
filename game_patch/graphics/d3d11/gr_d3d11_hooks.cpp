@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <vector>
 #include <patch_common/AsmWriter.h>
 #include <patch_common/CallHook.h>
 #include <patch_common/CodeInjection.h>
@@ -11,6 +12,7 @@
 #include "../../rf/gr/gr.h"
 #include "../../rf/gr/gr_light.h"
 #include "../../rf/os/os.h"
+#include "../../rf/os/frametime.h"
 #include "../../rf/v3d.h"
 #include "../../rf/character.h"
 #include "../../rf/level.h"
@@ -46,9 +48,58 @@ namespace gr::d3d11
     // while running the static-light pass, then overwrites the globals for GPU upload.
     static rf::gr::Light* gathered_lights[rf::gr::max_relevant_lights];
 
+    namespace
+    {
+        struct StaticMeshLight
+        {
+            rf::gr::Light* light;
+            rf::Vector3 vec;
+            rf::Vector3 vec2;
+            float rad_2;
+            bool tube;
+            bool subtractive;
+        };
+
+        // The static pass doesn't depend on the mesh; rebuilt each frame, since Anchor_Marker moves lights without
+        // bumping light_cache_key, and whenever the key changes
+        struct StaticMeshLights
+        {
+            int frame = -1;
+            int key = 0;
+            rf::GSolid* solid = nullptr;
+            std::vector<StaticMeshLight> lights;
+        };
+    }
+    static StaticMeshLights g_static_mesh_lights;
+    static rf::gr::Light* g_reaching_static_lights[rf::gr::max_relevant_lights];
+
     // When true, render_v3d_vif/render_character_vif skip automatic light gathering.
     // Used by sky room mesh rendering which pre-gathers lights at the untransformed position.
     static bool skip_mesh_light_gather = false;
+
+    static void update_static_mesh_lights()
+    {
+        StaticMeshLights& cache = g_static_mesh_lights;
+        if (cache.frame == rf::frame_count && cache.key == rf::gr::light_cache_key
+            && cache.solid == rf::level.geometry) {
+            return;
+        }
+        rf::gr::light_filter_reset();
+        gr_light_use_static(true);
+        rf::gr::light_filter_set_solid(rf::level.geometry, true, true);
+        gr_light_use_static(false);
+        const int count = std::min(rf::gr::num_relevant_lights, rf::gr::max_relevant_lights);
+        cache.lights.clear();
+        for (int i = 0; i < count; ++i) {
+            rf::gr::Light* light = rf::gr::relevant_lights[i];
+            cache.lights.push_back({light, light->vec, light->vec2, light->rad_2, light->type == rf::gr::LT_TUBE,
+                                    light->r < 0.0f || light->g < 0.0f || light->b < 0.0f});
+        }
+        cache.frame = rf::frame_count;
+        // gr_light_use_static bumped it
+        cache.key = rf::gr::light_cache_key;
+        cache.solid = rf::level.geometry;
+    }
 
     // Gather both dynamic and static lights for GPU-lit meshes.
     // is_find_static_lights controls which linked list the internal light search
@@ -67,25 +118,27 @@ namespace gr::d3d11
 
         // Pass 2: static lights (requires is_find_static_lights=true)
         if (g_alpine_game_config.mesh_lighting_use_static()) {
-            rf::gr::light_filter_reset();
-            gr_light_use_static(true);
-            rf::gr::light_filter_set_solid(rf::level.geometry, true, true);
-            gr_light_use_static(false);
+            update_static_mesh_lights();
+            // prioritize_mesh_lights drops the others too; dropping them here spares it a walk of every static light
+            int static_count = 0;
+            for (const StaticMeshLight& sl : g_static_mesh_lights.lights) {
+                if (!sl.subtractive && light_reaches_mesh(sl.tube, sl.vec, sl.vec2, sl.rad_2, pos, mesh_radius)) {
+                    g_reaching_static_lights[static_count++] = sl.light;
+                }
+            }
 
-            // Append static lights
-            int static_count = std::min(rf::gr::num_relevant_lights, rf::gr::max_relevant_lights);
             // Insert static lights before dynamic so static don't push out dynamic
             // Shift dynamic lights right, insert static at front
             if (static_count > 0 && total > 0) {
                 int space = std::min(static_count, rf::gr::max_relevant_lights - total);
                 std::memmove(gathered_lights + space, gathered_lights, total * sizeof(rf::gr::Light*));
                 for (int i = 0; i < space; ++i) {
-                    gathered_lights[i] = rf::gr::relevant_lights[i];
+                    gathered_lights[i] = g_reaching_static_lights[i];
                 }
                 total += space;
             } else {
                 for (int i = 0; i < static_count && total < rf::gr::max_relevant_lights; ++i) {
-                    gathered_lights[total++] = rf::gr::relevant_lights[i];
+                    gathered_lights[total++] = g_reaching_static_lights[i];
                 }
             }
         }
@@ -98,12 +151,6 @@ namespace gr::d3d11
     }
 
     static std::optional<Renderer> renderer;
-
-    static void set_mesh_bounds(const rf::VifLodMesh& lod_mesh, const rf::Vector3& pos, const rf::Matrix3& orient,
-                                float radius)
-    {
-        renderer->set_mesh_bounds(pos + orient.transform_vector(lod_mesh.center), radius);
-    }
 
     void update_window_mode();
 
@@ -462,10 +509,11 @@ namespace gr::d3d11
         if (lod_mesh && lod_index >= 0 && lod_index < lod_mesh->num_levels && !level_uses_vertex_lighting()) {
             bool lights_gathered = false;
             if (rf::level.geometry && !skip_mesh_light_gather) {
-                // A scaled orient scales the mesh's extent too
+                // A scaled orient scales the mesh's extent too. `pos` is already the mesh centre: the stock
+                // caller adds orient * lod_mesh->center.
                 const float radius = lod_mesh->radius * orient.rvec.len();
                 gather_mesh_lights(pos, radius);
-                set_mesh_bounds(*lod_mesh, pos, orient, radius);
+                renderer->set_mesh_bounds(pos, radius);
                 lights_gathered = true;
             }
 
@@ -510,7 +558,7 @@ namespace gr::d3d11
             if (!use_vertex_lighting && rf::level.geometry && !skip_mesh_light_gather) {
                 const float radius = lod_mesh->radius * orient.rvec.len();
                 gather_mesh_lights(pos, radius);
-                set_mesh_bounds(*lod_mesh, pos, orient, radius);
+                renderer->set_mesh_bounds(pos, radius);
                 lights_gathered = true;
             }
 

@@ -86,6 +86,8 @@ struct ServerBotRosterEntry
     int profile_index = -1;
     int team = -1;
     int id = 0;
+    bool join_bot = false;
+    std::string skill; // Join Bots only: the preset that replaces the profile's skill
 };
 
 std::vector<std::unique_ptr<ServerBot>> g_server_bots;
@@ -102,10 +104,14 @@ const ServerBotConfig& server_bot_config_for(const rf::Player* player, const Ser
     return (slot >= 0 && slot < static_cast<int>(configs.size())) ? configs[slot] : fallback;
 }
 
-void server_bot_apply_config(BotContext& ctx, const ServerBotConfig& config)
+void server_bot_apply_config(BotContext& ctx, const ServerBotConfig& config, const std::string& skill)
 {
-    bot_personality_set_presets(ctx, config.personality_preset.c_str(), config.skill_preset.c_str(),
-        &config.personality_overrides, &config.skill_overrides);
+    // A Join Bots skill replaces the profile's skill tuning too, so every such bot plays at the voted level
+    static const std::vector<BotConfigOverride> no_overrides;
+    const bool override_skill = !skill.empty();
+    bot_personality_set_presets(ctx, config.personality_preset.c_str(),
+        override_skill ? skill.c_str() : config.skill_preset.c_str(), &config.personality_overrides,
+        override_skill ? &no_overrides : &config.skill_overrides);
 }
 
 constexpr int64_t k_rfa_max_ticks = 10 * rfa_ticks_per_sec;
@@ -462,9 +468,35 @@ bool server_bot_roster_has_entry(const int roster_id)
     });
 }
 
-void server_bot_roster_add(const int profile_index, const int team)
+void server_bot_roster_add(const int profile_index, const int team, const bool join_bot = false,
+                           const std::string& skill = {})
 {
-    g_server_bot_roster.push_back({profile_index, team, g_next_server_bot_roster_id++});
+    g_server_bot_roster.push_back({profile_index, team, g_next_server_bot_roster_id++, join_bot, skill});
+}
+
+const ServerBotRosterEntry* server_bot_roster_entry(const int roster_id)
+{
+    const auto it = std::find_if(g_server_bot_roster.begin(), g_server_bot_roster.end(), [roster_id](const auto& e) {
+        return e.id == roster_id;
+    });
+    return it != g_server_bot_roster.end() ? &*it : nullptr;
+}
+
+bool server_bot_is_join_bot(const ServerBot& bot)
+{
+    const ServerBotRosterEntry* const entry = server_bot_roster_entry(bot.roster_id);
+    return entry && entry->join_bot;
+}
+
+bool join_bots_held_for_match()
+{
+    return g_match_info.pre_match_queued || g_match_info.pre_match_active || g_match_info.match_active;
+}
+
+// A match's Join Bots never give up their slot to a joining human
+bool server_bot_evictable(const ServerBot& bot)
+{
+    return !server_bot_removal_queued(bot) && !(join_bots_held_for_match() && server_bot_is_join_bot(bot));
 }
 
 // Waypoints load at level init only while server bots are configured. A host editing waypoints keeps its
@@ -483,11 +515,12 @@ int server_bot_score(const rf::Player& player)
     return player.stats ? player.stats->score : 0;
 }
 
-ServerBot* pick_server_bot_to_evict()
+ServerBot* pick_server_bot_to_evict(const bool configured_only = false)
 {
     ServerBot* best = nullptr;
     for (const auto& bot : g_server_bots) {
-        if (server_bot_removal_queued(*bot)) {
+        const bool join_bot = server_bot_is_join_bot(*bot);
+        if (!server_bot_evictable(*bot) || (configured_only && join_bot)) {
             continue;
         }
         if (!best) {
@@ -496,7 +529,13 @@ ServerBot* pick_server_bot_to_evict()
         }
         const rf::Player& candidate = *bot->ctx.player;
         const rf::Player& current = *best->ctx.player;
-        if (candidate.is_spawn_disabled != current.is_spawn_disabled) {
+        // Configured bots give up their slot first, as the mutator would only bring its own bot straight back
+        if (join_bot != server_bot_is_join_bot(*best)) {
+            if (!join_bot) {
+                best = bot.get();
+            }
+        }
+        else if (candidate.is_spawn_disabled != current.is_spawn_disabled) {
             if (candidate.is_spawn_disabled) {
                 best = bot.get();
             }
@@ -531,7 +570,7 @@ void server_bot_create(const ServerBotRosterEntry& entry)
 
     pp->is_bot = true;
     pp->bot_skill = 100;
-    pp->is_spawn_disabled = false;
+    pp->is_spawn_disabled = entry.join_bot && !server_bots_join_bot_may_spawn(pp);
     pp->is_browser = false;
     pp->is_human_player = false;
     pp->version_info = ClientVersionInfoProfile{
@@ -568,7 +607,7 @@ void server_bot_create(const ServerBotRosterEntry& entry)
     bot->roster_id = entry.id;
     // Bots created together think on different frames.
     bot->think_wait = k_server_bot_think_interval * std::fmod(static_cast<float>(entry.id) * 0.618034f, 1.0f);
-    server_bot_apply_config(bot->ctx, config);
+    server_bot_apply_config(bot->ctx, config, entry.skill);
     g_server_bots.push_back(std::move(bot));
 
     rf::send_new_player_packet(pp);
@@ -582,7 +621,8 @@ void server_bot_create(const ServerBotRosterEntry& entry)
     afstats::on_player_join(pp);
 
     rf::console::print("  Server bot {} uses profile '{}' (slot {}, skill '{}', character={})\n", pp->name,
-        config.personality_preset, g_bot_profile_slots.get_slot(pp), config.skill_preset, character);
+        config.personality_preset, g_bot_profile_slots.get_slot(pp),
+        entry.skill.empty() ? config.skill_preset : entry.skill, character);
 }
 
 // Called after the removal queue drains, as a new bot could reuse a queued bot's player id.
@@ -606,13 +646,32 @@ void server_bots_reconcile(const bool in_gameplay)
         server_bot_remove(*bot);
     }
 
-    if (!in_gameplay || num_players >= rf::netgame.max_players
-        || (g_server_bot_create_timer.valid() && !g_server_bot_create_timer.elapsed())) {
+    if (!in_gameplay || (g_server_bot_create_timer.valid() && !g_server_bot_create_timer.elapsed())) {
         return;
     }
-    const auto entry = std::find_if(g_server_bot_roster.begin(), g_server_bot_roster.end(), [](const auto& e) {
-        return !server_bot_for_roster_entry(e.id);
+    // Join Bots first: the mutator asked for them, so on a full server they take configured bots' slots
+    auto entry = std::find_if(g_server_bot_roster.begin(), g_server_bot_roster.end(), [](const auto& e) {
+        return e.join_bot && !server_bot_for_roster_entry(e.id);
     });
+    if (entry == g_server_bot_roster.end()) {
+        entry = std::find_if(g_server_bot_roster.begin(), g_server_bot_roster.end(), [](const auto& e) {
+            return !server_bot_for_roster_entry(e.id);
+        });
+    }
+    if (entry != g_server_bot_roster.end() && entry->join_bot && num_players >= rf::netgame.max_players
+        && g_server_bot_removals.empty()) {
+        if (const ServerBot* const configured = pick_server_bot_to_evict(true)) {
+            server_bot_remove(*configured);
+        }
+        else if (join_bots_held_for_match()) {
+            // Players filled the server first; the match gives this bot's slot to a human instead
+            g_server_bot_roster.erase(entry);
+        }
+        return;
+    }
+    if (num_players >= rf::netgame.max_players) {
+        return;
+    }
     if (entry != g_server_bot_roster.end()) {
         g_server_bot_create_timer.set(k_server_bot_create_interval_ms);
         server_bot_create(*entry);
@@ -652,11 +711,18 @@ bool server_bots_configured()
 void server_bots_reset_roster(const int count)
 {
     const bool was_configured = server_bots_configured();
-    const auto size = static_cast<size_t>(std::clamp(count, 0, k_max_server_bots));
-    if (g_server_bot_roster.size() > size) {
-        g_server_bot_roster.resize(size);
+    const int size = std::clamp(count, 0, k_max_server_bots);
+    int configured = static_cast<int>(std::ranges::count_if(g_server_bot_roster, [](const auto& e) {
+        return !e.join_bot;
+    }));
+    for (auto it = g_server_bot_roster.end(); configured > size && it != g_server_bot_roster.begin();) {
+        --it;
+        if (!it->join_bot) {
+            it = g_server_bot_roster.erase(it);
+            --configured;
+        }
     }
-    while (g_server_bot_roster.size() < size) {
+    for (; configured < size; ++configured) {
         server_bot_roster_add(-1, -1);
     }
     server_bot_roster_on_changed(was_configured);
@@ -690,6 +756,89 @@ void server_bots_clear_roster()
     }
 }
 
+void server_bots_sync_join_bots()
+{
+    if (!rf::is_server) {
+        return;
+    }
+    const MutatorConfig& mutators = g_alpine_server_config_active_rules.mutators;
+    const bool match_rules = g_manual_rules_override && g_manual_rules_override->match;
+    int wanted = (match_rules && !join_bots_held_for_match()) ? 0 : mutators.join_bots;
+    const std::string& skill = mutators.join_bots_skill;
+    const bool was_configured = server_bots_configured();
+
+    // A forming or live match only loses bots: one that left gave its slot to the humans
+    const bool match_forming = g_match_info.pre_match_active || g_match_info.match_active;
+    if (!match_forming) {
+        // Bots from another skill leave and are replaced
+        std::erase_if(g_server_bot_roster, [&](const auto& e) { return e.join_bot && e.skill != skill; });
+    }
+    int have = server_bots_num_join_bots();
+    if (match_forming) {
+        wanted = std::min(wanted, have);
+    }
+    for (auto it = g_server_bot_roster.end(); have > wanted && it != g_server_bot_roster.begin();) {
+        --it;
+        if (it->join_bot) {
+            it = g_server_bot_roster.erase(it);
+            --have;
+        }
+    }
+    for (; have < wanted && static_cast<int>(g_server_bot_roster.size()) < k_max_server_bots; ++have) {
+        server_bot_roster_add(-1, -1, true, skill);
+    }
+    server_bot_roster_on_changed(was_configured);
+}
+
+// A match's bots leave with it; the rules it leaves behind keep them out (see server_bots_sync_join_bots)
+void server_bots_end_join_bots()
+{
+    const bool was_configured = server_bots_configured();
+    std::erase_if(g_server_bot_roster, [](const auto& e) { return e.join_bot; });
+    server_bot_roster_on_changed(was_configured);
+}
+
+int server_bots_num_reserved_slots()
+{
+    if (!join_bots_held_for_match()) {
+        return 0;
+    }
+    return static_cast<int>(std::ranges::count_if(g_server_bot_roster, [](const auto& e) {
+        return e.join_bot && !server_bot_for_roster_entry(e.id);
+    }));
+}
+
+int server_bots_num_join_bots()
+{
+    return static_cast<int>(std::ranges::count_if(g_server_bot_roster, [](const auto& e) { return e.join_bot; }));
+}
+
+bool server_bot_is_join_bot(const rf::Player* const player)
+{
+    const ServerBot* const bot = server_bot_from_player(player);
+    return bot && server_bot_is_join_bot(*bot);
+}
+
+bool server_bots_join_bot_may_spawn(rf::Player* const player)
+{
+    if (g_match_info.match_active) {
+        return is_player_in_match(player);
+    }
+    // A match's bots wait out the ready-up phase
+    return !g_match_info.pre_match_queued && !g_match_info.pre_match_active;
+}
+
+std::vector<rf::Player*> server_bots_join_bot_players()
+{
+    std::vector<rf::Player*> players;
+    for (const auto& bot : g_server_bots) {
+        if (!server_bot_removal_queued(*bot) && server_bot_is_join_bot(*bot)) {
+            players.push_back(bot->ctx.player);
+        }
+    }
+    return players;
+}
+
 std::string server_bots_build_list_output()
 {
     std::string output = std::format("Server bots: {} in roster, {} in game\n", g_server_bot_roster.size(),
@@ -698,15 +847,17 @@ std::string server_bots_build_list_output()
     for (const ServerBotRosterEntry& entry : g_server_bot_roster) {
         const ServerBot* const bot = server_bot_for_roster_entry(entry.id);
         if (!bot) {
-            std::format_to(std::back_inserter(output), "- (waiting for a free slot) | Profile: {} | Team: {}\n",
-                server_bot_profile_label(entry.profile_index), server_bot_team_name(entry.team));
+            std::format_to(std::back_inserter(output), "- (waiting for a free slot) | Profile: {} | Team: {}{}\n",
+                server_bot_profile_label(entry.profile_index), server_bot_team_name(entry.team),
+                entry.join_bot ? " | Join Bots" : "");
             continue;
         }
         rf::Player& player = *bot->ctx.player;
-        std::format_to(std::back_inserter(output), "- {} | Profile: {} | Team: {} | State: {} | Score: {} | Ping: 0\n",
-            player.name, server_bot_profile_label(g_bot_profile_slots.get_slot(&player)),
+        std::format_to(std::back_inserter(output),
+            "- {} | Profile: {} | Team: {} | State: {} | Score: {} | Ping: 0{}\n", player.name,
+            server_bot_profile_label(g_bot_profile_slots.get_slot(&player)),
             team_mode ? server_bot_team_name(player.team) : std::string_view{"-"}, server_bot_state_name(player),
-            server_bot_score(player));
+            server_bot_score(player), entry.join_bot ? " | Join Bots" : "");
     }
     return output;
 }
@@ -749,7 +900,7 @@ void server_bot_reload(rf::Player& pp, const int weapon_type)
 int server_bots_num_evictable()
 {
     return static_cast<int>(std::count_if(g_server_bots.begin(), g_server_bots.end(), [](const auto& bot) {
-        return !server_bot_removal_queued(*bot);
+        return server_bot_evictable(*bot);
     }));
 }
 

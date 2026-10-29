@@ -355,6 +355,8 @@ set(SRCS
     object/clock.cpp
     misc/achievements.h
     misc/achievements.cpp
+    misc/discord_presence.cpp
+    misc/discord_presence.h
     misc/character.cpp
     misc/high_fps.cpp
     misc/high_fps.h

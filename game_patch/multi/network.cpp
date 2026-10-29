@@ -50,6 +50,7 @@
 #include "bots/bot_context_fwd.h"
 #include "bots/server_bots.h"
 #include "../main/main.h"
+#include "../misc/discord_presence.h"
 #include "../os/os.h"
 #include "../hud/hud.h"
 #include "../hud/multi_spectate.h"
@@ -1839,6 +1840,8 @@ enum JoinReqTlv : uint8_t {
     JR_TLV_BOT_SHARED_SECRET = 0x1,
 };
 
+static_assert(sizeof(RF_JoinRequestPacket) == 4);
+
 CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_join_req_packet_hook{
     0x0047ABFB,
     [] (const rf::NetAddr* const addr, std::byte* const data, const size_t len) {
@@ -1852,6 +1855,15 @@ CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_join_req_packet_hook{
                 return 0;
             }
             fflink::afstats_client_on_join_req(*addr, extra && (extra->af_flags & AF_GI_FLAG_STATS_ENABLED));
+
+            // name\0, then a u32 entity type, then password\0 follow RF_JoinRequestPacket's fixed part.
+            const auto* const name = reinterpret_cast<const char*>(data) + sizeof(RF_JoinRequestPacket);
+            const size_t name_space = len > sizeof(RF_JoinRequestPacket) ? len - sizeof(RF_JoinRequestPacket) : 0;
+            const auto* const name_end = static_cast<const char*>(std::memchr(name, '\0', name_space));
+            const size_t password_offset = name_end
+                ? static_cast<size_t>(name_end - reinterpret_cast<const char*>(data)) + 1 + sizeof(uint32_t)
+                : len;
+            discord_presence_on_join_request(*addr, password_offset >= len || data[password_offset] != std::byte{0});
         }
 
         const bool session_client_bot_mode = client_bot_launch_enabled();
@@ -3811,10 +3823,11 @@ int multi_num_players_waiting_for_reliable_socket()
 CallHook<int()> server_full_num_players_hook{
     0x0047AE47,
     []() {
-        const int player_count = multi_num_players_occupying_slots();
+        const int num_occupying = multi_num_players_occupying_slots();
+        const int player_count = num_occupying + server_bots_num_reserved_slots();
         // A human may take a server bot's slot while the player list is below the engine's limit.
         if (get_joining_client_kind() == JoiningClientKind::Human && player_count >= rf::netgame.max_players
-            && player_count < rf::multi_max_player_slots) {
+            && num_occupying < rf::multi_max_player_slots) {
             return player_count - server_bots_num_evictable();
         }
         return player_count;

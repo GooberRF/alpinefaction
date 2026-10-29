@@ -67,14 +67,9 @@ namespace gr::d3d11
         allow_tearing_ = g_alpine_system_config.allow_tearing;
         init_swap_chain(hwnd);
         // TODO.  `sample_count` is always 1 here, until we load settings earlier.
-        if (supports_sample_count(g_alpine_game_config.sample_count)) {
-            init_back_buffer(g_alpine_game_config.sample_count);
-            init_depth_stencil_buffer(g_alpine_game_config.sample_count);
-        } else {
-            xlog::error("MSAAx{} is not supported", g_alpine_game_config.sample_count);
-            init_back_buffer(1);
-            init_depth_stencil_buffer(1);
-        }
+        frame_buffer_sample_count_ = usable_sample_count();
+        init_back_buffer(frame_buffer_sample_count_);
+        init_depth_stencil_buffer(frame_buffer_sample_count_);
 
         state_manager_ = std::make_unique<StateManager>(device_);
         shader_manager_ = std::make_unique<ShaderManager>(device_);
@@ -157,6 +152,11 @@ namespace gr::d3d11
         DF_GR_D3D11_CHECK_HR(
             swap_chain_->SetFullscreenState(fullscreen, nullptr)
         );
+        resize_swap_chain_buffers();
+    }
+
+    void Renderer::resize_swap_chain_buffers()
+    {
         // unref swapchain resources before calling ResizeBuffers
         context_->OMSetRenderTargets(0, nullptr, nullptr);
         back_buffer_.release();
@@ -169,7 +169,7 @@ namespace gr::d3d11
             swap_chain_->ResizeBuffers(0, rf::gr::screen.max_w, rf::gr::screen.max_h, DXGI_FORMAT_UNKNOWN, swap_chain_flags_)
         );
         // get back buffer from the swap chain after it has been resized
-        init_back_buffer(g_alpine_game_config.sample_count);
+        init_back_buffer(frame_buffer_sample_count_);
         render_context_->set_render_target(default_render_target_view_, depth_stencil_view_);
     }
 
@@ -589,6 +589,15 @@ namespace gr::d3d11
         }
     }
 
+    uint32_t Renderer::usable_sample_count()
+    {
+        if (supports_sample_count(g_alpine_game_config.sample_count)) {
+            return g_alpine_game_config.sample_count;
+        }
+        xlog::error("MSAAx{} is not supported", g_alpine_game_config.sample_count);
+        return 1;
+    }
+
     uint32_t Renderer::get_sample_count() const {
         ComPtr<ID3D11Resource> resource{};
         default_render_target_view_->GetResource(&resource);
@@ -604,14 +613,9 @@ namespace gr::d3d11
     }
 
     void Renderer::flush_frame_buffers() {
-        if (supports_sample_count(g_alpine_game_config.sample_count)) {
-            init_back_buffer(g_alpine_game_config.sample_count);
-            init_depth_stencil_buffer(g_alpine_game_config.sample_count);
-        } else {
-            xlog::error("MSAAx{} is not supported", g_alpine_game_config.sample_count);
-            init_back_buffer(1);
-            init_depth_stencil_buffer(1);
-        }
+        frame_buffer_sample_count_ = usable_sample_count();
+        init_back_buffer(frame_buffer_sample_count_);
+        init_depth_stencil_buffer(frame_buffer_sample_count_);
         texture_manager_->flush_render_targets();
         // Their targets are gone, but MF_BM_RENDERED is still latched from the last render.
         monitor_refresh_all();
@@ -745,7 +749,7 @@ namespace gr::d3d11
         // so outlines must be rendered while scene depth data is still available.
         // Outlines are flushed first so that subsequently flushed dyn_geo draws
         // (player labels, crosshair, world HUD) always render on top of outlines.
-        // The outline silhouette pass writes depth (DepthWriteMask = ALL) to prevent
+        // An outline that isn't fading writes depth (DepthWriteMask = ALL) to prevent
         // liquid surfaces from alpha-blending over outline pixels. This is safe here
         // because the zbuffer is about to be cleared for the fpgun pass, and the
         // written depth values are geometrically correct (at the character's depth).
@@ -839,9 +843,22 @@ namespace gr::d3d11
         if (allow_tearing_ && sync_interval == 0) {
             present_flags |= DXGI_PRESENT_ALLOW_TEARING;
         }
-        DF_GR_D3D11_CHECK_HR(
-            swap_chain_->Present(sync_interval, present_flags)
-        );
+        const HRESULT present_hr = swap_chain_->Present(sync_interval, present_flags);
+        // DXGI can leave exclusive fullscreen while the window keeps focus, so window_inactive never runs, and a
+        // flip-model swap chain then rejects every Present until its buffers are resized. This frame is lost.
+        if (present_hr == DXGI_ERROR_INVALID_CALL && rf::gr::screen.window_mode == rf::gr::FULLSCREEN
+            && !present_recovered_) {
+            BOOL swap_chain_fullscreen = FALSE;
+            swap_chain_->GetFullscreenState(&swap_chain_fullscreen, nullptr);
+            xlog::warn("[D3D11] Present was rejected in fullscreen (swap chain fullscreen: {}); resizing its buffers",
+                       swap_chain_fullscreen != FALSE);
+            present_recovered_ = true;
+            resize_swap_chain_buffers();
+        }
+        else {
+            DF_GR_D3D11_CHECK_HR(present_hr);
+            present_recovered_ = false;
+        }
         // Flip swap effect clears render target after Present call
         render_context_->set_render_target(default_render_target_view_, depth_stencil_view_);
         // Note: it would be better to call update_per_frame_constants after frametime_calculate
@@ -1220,7 +1237,7 @@ namespace gr::d3d11
     {
         // The room's sorted particles drawn ahead of the surface are still batched
         particle_renderer_->flush_batch();
-        // Flush outlines before liquid renders. The outline silhouette pass writes
+        // Flush outlines before liquid renders. An outline that isn't fading writes
         // depth (DepthWriteMask=ALL), so outline pixels claim depth ownership.
         // When the liquid subsequently depth-tests at those pixels, it fails
         // (outline is closer than liquid), preventing liquid alpha-blend from

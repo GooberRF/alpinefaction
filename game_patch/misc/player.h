@@ -31,7 +31,7 @@ std::string build_local_spawn_string(bool can_respawn);
 void set_local_spawn_delay(bool can_respawn, bool force_respawn, int spawn_delay);
 void reset_local_delayed_spawn();
 void find_player(const StringMatcher& query, std::function<void(rf::Player*)> consumer);
-void play_local_hit_sound(bool died);
+void play_local_hit_sound(uint8_t victim_player_id, int victim_hull_handle, bool died);
 bool is_player_minimum_af_client_version(
     const rf::Player* player,
     const int version_major,

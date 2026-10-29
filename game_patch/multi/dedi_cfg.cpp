@@ -1767,7 +1767,9 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         rules.mutators.featured_weapon_index != b.mutators.featured_weapon_index ||
         rules.mutators.redirect_exclude_thrown != b.mutators.redirect_exclude_thrown ||
         rules.mutators.crits_enabled != b.mutators.crits_enabled ||
-        rules.mutators.jetpack_explode != b.mutators.jetpack_explode;
+        rules.mutators.jetpack_explode != b.mutators.jetpack_explode ||
+        rules.mutators.join_bots != b.mutators.join_bots ||
+        rules.mutators.join_bots_skill != b.mutators.join_bots_skill;
 
     if (base || mutators_changed) {
         std::string joined;
@@ -1798,6 +1800,11 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         if (rules.mutators.jetpacks_enabled) {
             std::format_to(iter, "    Jetpacks explode:                    {}\n",
                            rules.mutators.jetpack_explode);
+        }
+        // Join Bots options
+        if (rules.mutators.join_bots > 0) {
+            std::format_to(iter, "    Join bots:                           {} ({})\n", rules.mutators.join_bots,
+                           rules.mutators.join_bots_skill);
         }
     }
 
@@ -2791,6 +2798,7 @@ void apply_rules_for_current_level()
     if (g_alpine_server_config_active_rules.vehicles.bots_use_vehicles != prev_bots_use_vehicles) {
         server_resend_client_bot_personalities();
     }
+    server_bots_sync_join_bots();
 
     // Must precede the blob rebuild below: the mutator registry caches its live-value
     // defaults against this generation.

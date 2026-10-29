@@ -365,6 +365,8 @@ struct AlpineGameSettings
     int seasonal_effect = 1; // 0=none, 1=auto, 2=always_snow
     bool player_join_beep = false;
     bool player_join_flash = true;
+    bool discord_rich_presence = true;
+    bool discord_join_button = true;
     bool full_range_lighting = true;
     bool always_clamp_official_lightmaps = false;
     bool ignore_tbl_vertex_lighting = false;

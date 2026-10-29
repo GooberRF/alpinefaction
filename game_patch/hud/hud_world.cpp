@@ -711,7 +711,7 @@ static void build_koth_hill_icons()
 // offset_y is the plate's bottom edge; the plate extends upward so it never covers
 // the player model. Both bars share one scale so the 50-unit notches line up; the
 // scale grows in 50-unit steps when a value exceeds 100 (super health/armor amps).
-static void render_player_info_bars(const rf::Vector3& pos, int offset_y, float life, float armor)
+static void render_player_info_bars(const rf::Vector3& pos, int offset_y, float life, float armor, float fade)
 {
     rf::gr::Vertex dest;
     if (rf::gr::rotate_vertex(&dest, &pos))
@@ -736,7 +736,9 @@ static void render_player_info_bars(const rf::Vector3& pos, int offset_y, float 
     const int x = static_cast<int>(dest.sx) - plate_w / 2;
     const int y = static_cast<int>(dest.sy) + offset_y - plate_h;
 
-    rf::gr::set_color(0, 0, 0, 140);
+    auto faded = [fade](int alpha) { return static_cast<int>(std::lround(alpha * fade)); };
+
+    rf::gr::set_color(0, 0, 0, faded(140));
     rf::gr::rect(x, y, plate_w, plate_h);
 
     const int health_y = y + pad;
@@ -746,15 +748,15 @@ static void render_player_info_bars(const rf::Vector3& pos, int offset_y, float 
         return static_cast<int>(std::lround(static_cast<float>(std::min(value, bar_max)) / bar_max * bar_w));
     };
 
-    rf::gr::set_color(90, 200, 90, 220); // health - green
+    rf::gr::set_color(90, 200, 90, faded(220)); // health - green
     if (int w = fill_w(health); w > 0)
         rf::gr::rect(x + pad, health_y, w, bar_h);
-    rf::gr::set_color(210, 175, 60, 220); // armor - amber
+    rf::gr::set_color(210, 175, 60, faded(220)); // armor - amber
     if (int w = fill_w(armor_points); w > 0)
         rf::gr::rect(x + pad, armor_y, w, bar_h);
 
     // notches every 50 units, spanning both bars
-    rf::gr::set_color(0, 0, 0, 200);
+    rf::gr::set_color(0, 0, 0, faded(200));
     for (int notch = 50; notch < bar_max; notch += 50) {
         int notch_x = x + pad + static_cast<int>(std::lround(static_cast<float>(notch) / bar_max * bar_w));
         rf::gr::rect(notch_x, health_y, 1, 2 * bar_h + gap);
@@ -768,6 +770,7 @@ void build_player_labels() {
     bool is_team_mode = multi_is_team_game_type();
     bool show_teammates = g_alpine_game_config.world_hud_team_player_labels && is_team_mode && !is_spectating;
     auto spectate_target = multi_spectate_get_target_player();
+    rf::Camera* const camera = rf::local_player ? rf::local_player->cam : nullptr;
 
     const int font = get_world_hud_font(g_alpine_game_config.get_world_hud_label_text_scale());
     const int base_font = get_world_hud_font(1.0f);
@@ -814,6 +817,10 @@ void build_player_labels() {
 
         rf::Vector3 string_pos = player_entity->pos;
         string_pos.y += 0.85f;
+        const float fade = camera ? fog_far_clip_fade(string_pos.distance_to(rf::camera_get_pos(camera))) : 1.0f;
+        if (!(fade > 0.0f)) {
+            continue;
+        }
         std::string label = player.name;
 
         // determine label width
@@ -848,11 +855,12 @@ void build_player_labels() {
             label_a = teammate_override_a;
         }
 
+        label_a = static_cast<uint8_t>(std::lround(label_a * fade));
         render_string_3d(string_pos, label.c_str(), -half_text_width, centered_offset_y, font, {label_r, label_g, label_b, label_a});
 
         if (demo_player_info) {
             render_player_info_bars(string_pos, centered_offset_y - 2, player_entity->life,
-                                    player_entity->armor);
+                                    player_entity->armor, fade);
         }
     }
 }

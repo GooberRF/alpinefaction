@@ -4,6 +4,7 @@
 #include <patch_common/AsmWriter.h>
 #include <patch_common/MemUtils.h>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -16,6 +17,7 @@
 #include <xlog/xlog.h>
 #include "../misc/achievements.h"
 #include "../misc/alpine_settings.h"
+#include "../misc/player.h"
 #include "../os/console.h"
 #include "../os/os.h"
 #include "../rf/gr/gr_light.h"
@@ -1035,6 +1037,76 @@ CodeInjection clear_stale_movement_input_injection{
     },
 };
 
+// Stock's eye height comes from "stand", but other players see an armed idle in "attack_stand". Kept out of
+// EntityInfo, which single player shares.
+static std::array<float, rf::MAX_ENTITY_TYPES> g_attack_stand_eye_delta_y{};
+
+FunHook<void(rf::Entity*)> entity_info_setup_bone_damage_modifiers2_hook{
+    0x00423BD0,
+    [](rf::Entity* ep) {
+        entity_info_setup_bone_damage_modifiers2_hook.call_target(ep);
+        rf::EntityInfo* info = ep->info2;
+        const int stand_anim = ep->default_state_anims[rf::ENTITY_STATE_STAND].vmesh_anim_index;
+        const int attack_stand_anim = ep->default_state_anims[rf::ENTITY_STATE_ATTACK_STAND].vmesh_anim_index;
+        // Stock init ends in a processed stand pose only for types that can crouch, so only those are restored.
+        // A zero frametime keeps the anim phase stock left, so single player is unchanged.
+        if (!ep->vmesh || info->eye_tag < 0 || !rf::entity_can_crouch(ep) || stand_anim < 0 || attack_stand_anim < 0
+            || attack_stand_anim == stand_anim) {
+            return;
+        }
+        rf::vmesh_reset_actions(ep->vmesh);
+        rf::vmesh_set_action_weight(ep->vmesh, attack_stand_anim, 1.0f);
+        rf::vmesh_process(ep->vmesh, 0.0f, 0, nullptr, nullptr, 1);
+        rf::Matrix3 eye_orient;
+        rf::Vector3 eye_pos;
+        rf::vmesh_get_prop_point_transform(ep->vmesh, info->eye_tag, &rf::identity_matrix, &rf::zero_vector,
+                                           &eye_orient, &eye_pos);
+        rf::vmesh_reset_actions(ep->vmesh);
+        rf::vmesh_set_action_weight(ep->vmesh, stand_anim, 1.0f);
+        rf::vmesh_process(ep->vmesh, 0.0f, 0, nullptr, nullptr, 1);
+        g_attack_stand_eye_delta_y[info - rf::entity_types] = eye_pos.y - info->local_eye_offset.y;
+    },
+};
+
+static bool entity_uses_attack_stand_eye(rf::Entity* ep)
+{
+    if (!rf::is_multi || ep->host_handle != -1 || g_attack_stand_eye_delta_y[ep->info2 - rf::entity_types] == 0.0f) {
+        return false;
+    }
+    // The measurement may come from a single player anim set; a character whose multiplayer set idles armed
+    // in its stand anim needs no correction.
+    const int stand_anim = ep->default_state_anims[rf::ENTITY_STATE_STAND].vmesh_anim_index;
+    const int attack_stand_anim = ep->default_state_anims[rf::ENTITY_STATE_ATTACK_STAND].vmesh_anim_index;
+    if (attack_stand_anim < 0 || attack_stand_anim == stand_anim) {
+        return false;
+    }
+    rf::Player* player = rf::player_from_entity_handle(ep->handle);
+    if (!player) {
+        return false;
+    }
+    // Both ends must agree on the height, or rounds the server fires for a shooter leave from the wrong eye
+    if (rf::is_server) {
+        return player == rf::local_player || is_player_minimum_af_client_version(player, 1, 5, 0);
+    }
+    return is_server_minimum_af_version(1, 5);
+}
+
+// Applied where the eye is built, not at the camera, so the server's lag-comp rewind uses the same height
+FunHook<void(rf::Entity*)> entity_calc_eye_pos_attack_stand_hook{
+    0x004194E0,
+    [](rf::Entity* ep) {
+        if (!entity_uses_attack_stand_eye(ep)) {
+            entity_calc_eye_pos_attack_stand_hook.call_target(ep);
+            return;
+        }
+        float& eye_y = ep->info2->local_eye_offset.y;
+        const float stock_eye_y = eye_y;
+        eye_y += g_attack_stand_eye_delta_y[ep->info2 - rf::entity_types];
+        entity_calc_eye_pos_attack_stand_hook.call_target(ep);
+        eye_y = stock_eye_y;
+    },
+};
+
 CodeInjection entity_set_next_state_anim_guard{
     0x0042A5BC,
     [](auto& regs) {
@@ -1156,6 +1228,10 @@ void entity_do_patch()
 
     // Cancel movement input when escape menu is open in multiplayer
     clear_stale_movement_input_injection.install();
+
+    // Put the MP camera at the eye height of the armed idle pose other players see
+    entity_info_setup_bone_damage_modifiers2_hook.install();
+    entity_calc_eye_pos_attack_stand_hook.install();
 
     // Commands
     sp_exposuredamage_cmd.register_cmd();

@@ -388,6 +388,37 @@ static void apply_ideal_player_count_override(AlpineServerConfigRules& r, const 
         r.set_ideal_player_count(static_cast<int>(std::clamp<int64_t>(*v, 1, INT32_MAX)));
 }
 
+// Bot skill presets offered by Join Bots, as {UI label, preset name}.
+static const MutatorOptionChoice JOIN_BOTS_SKILLS[] = {
+    {"Beginner", "beginner"},
+    {"Easy", "easy"},
+    {"Average", "average"},
+    {"Hard", "hard"},
+    {"Expert", "expert"},
+    {"Nightmare", "nightmare"},
+};
+static constexpr uint8_t JOIN_BOTS_DEFAULT_SKILL = 2;
+static constexpr int JOIN_BOTS_DEFAULT_COUNT = 2;
+static constexpr int JOIN_BOTS_MAX_COUNT = 8;
+
+// Join Bots: server bots that join for the level, or fill a match (see server_bots_sync_join_bots).
+static void apply_join_bots(AlpineServerConfigRules& r, const toml::table& opts)
+{
+    r.mutators.join_bots = static_cast<int>(
+        std::clamp<int64_t>(opts["bots"].value_or(int64_t{JOIN_BOTS_DEFAULT_COUNT}), 1, JOIN_BOTS_MAX_COUNT));
+    r.mutators.join_bots_skill = JOIN_BOTS_SKILLS[JOIN_BOTS_DEFAULT_SKILL].value;
+    if (auto v = opts["skill"].value<std::string>()) {
+        const auto it = std::ranges::find_if(JOIN_BOTS_SKILLS, [&](const MutatorOptionChoice& c) {
+            return string_iequals(*v, c.value);
+        });
+        if (it != std::end(JOIN_BOTS_SKILLS))
+            r.mutators.join_bots_skill = it->value;
+        else if (!g_rules_parse_quiet)
+            rf::console::print("  [WARN] Join Bots: unknown skill '{}', using {}\n", clamp_for_console(*v),
+                               r.mutators.join_bots_skill);
+    }
+}
+
 // ============================================================================
 // Registry + application order
 // ============================================================================
@@ -424,6 +455,11 @@ static const MutatorOptionDef SCORE_LIMIT_OPTIONS[] = {
 
 static const MutatorOptionDef IDEAL_PLAYERS_OPTIONS[] = {
     {0, "ideal_players", "Ideal players", MutatorOptionType::Int},
+};
+
+static const MutatorOptionDef JOIN_BOTS_OPTIONS[] = {
+    {0, "bots", "Bots (1-8)", MutatorOptionType::Int},
+    {1, "skill", "Skill", MutatorOptionType::Choice},
 };
 
 struct MutatorDef
@@ -475,11 +511,13 @@ static const MutatorDef MUTATORS[] = {
     {MutatorId::Pogo, "pogo", "Pogo", 4, &apply_pogo, nullptr, 0},
     {MutatorId::ScoreLimitOverride, "scorelimit", "Score Limit Override", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_score_limit_override, SCORE_LIMIT_OPTIONS, std::size(SCORE_LIMIT_OPTIONS), MutatorGametypeReq::HasScoreLimit, "Score Limit", "score_limit"},
     {MutatorId::IdealPlayerCountOverride, "idealplayers", "Ideal Player Count Override", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_ideal_player_count_override, IDEAL_PLAYERS_OPTIONS, std::size(IDEAL_PLAYERS_OPTIONS), MutatorGametypeReq::BotsSupported, "Ideal Players", "ideal_players"},
+    {MutatorId::JoinBots, "joinbots", "Join Bots", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_join_bots, JOIN_BOTS_OPTIONS, std::size(JOIN_BOTS_OPTIONS), MutatorGametypeReq::BotsSupported, nullptr, "bots"},
 };
 
 // Hardcoded order in which simultaneously-active mutators are applied. Later
 // entries win where they overlap.
 static const MutatorId MUTATOR_APPLY_ORDER[] = {
+    MutatorId::JoinBots,
     MutatorId::Pogo,
     MutatorId::Dodging,
     MutatorId::Skiing,
@@ -713,6 +751,13 @@ const std::vector<MutatorInfo>& mutators_get_registry()
             }
             else if (def.id == MutatorId::IdealPlayerCountOverride && opt.name == "ideal_players") {
                 opt.default_int = g_alpine_server_config_active_rules.ideal_player_count;
+            }
+            else if (def.id == MutatorId::JoinBots && opt.name == "bots") {
+                opt.default_int = JOIN_BOTS_DEFAULT_COUNT;
+            }
+            else if (def.id == MutatorId::JoinBots && opt.name == "skill") {
+                opt.choices.assign(std::begin(JOIN_BOTS_SKILLS), std::end(JOIN_BOTS_SKILLS));
+                opt.default_choice = JOIN_BOTS_DEFAULT_SKILL;
             }
 
             info.options.push_back(std::move(opt));

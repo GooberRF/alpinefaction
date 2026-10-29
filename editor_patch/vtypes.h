@@ -480,8 +480,8 @@ static auto& vmesh_load_v3c = addr_as_ref<EditorVMesh*(const char* filename, int
 static auto& vmesh_load_vfx = addr_as_ref<EditorVMesh*(const char* filename, int param2)>(0x004BFE10);
 static auto& vmesh_free = addr_as_ref<void(EditorVMesh* vmesh)>(0x004BFEC0);
 static auto& vmesh_render = addr_as_ref<void(EditorVMesh* vmesh, const void* pos, const void* orient, const EditorRenderParams* params)>(0x004C04B0);
-// vmesh_render of one submesh of a static mesh (-1 = all). The engine takes the camera into mesh space
-// with orient's transpose (FUN_004edf50), so an orient scaled by s draws the submesh as if the camera
+// vmesh_render of one submesh of a static mesh (-1 = all). The Direct3D 8 renderer takes the camera into mesh
+// space with orient's transpose (FUN_004edf50), so an orient scaled by s draws the submesh as if the camera
 // sat s * s times as far from its centre.
 static auto& vmesh_render_submesh = addr_as_ref<void(EditorVMesh* vmesh, int submesh, const void* pos,
                                                      const void* orient, const EditorRenderParams* params)>(0x004BFED0);

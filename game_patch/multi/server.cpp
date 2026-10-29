@@ -2664,12 +2664,11 @@ void start_match()
     rf::multi_time_limit = g_match_info.time_limit_on_pre_match_start.value_or(10.0f);
 }
 
-void cancel_match()
+// Callers report the match end: the reset below clears match_active before the limbo that load_next_level
+// queues runs, so the limbo never reports this match itself.
+static void end_match_early()
 {
-    rf::console::print("Canceling match");
-    // Before load_next_level: the limbo it drives reaches the match-completed path
-    // with match_active still set, and the stream must report this as a cancel.
-    afstats::on_match_end(afstats::MatchResult::canceled, afstats::team_none, nullptr);
+    server_bots_end_join_bots();
     if (g_match_info.match_active) {
         load_next_level(); // end the round if active match is canceled
     }
@@ -2684,6 +2683,49 @@ void cancel_match()
     for (rf::Player* player : get_clients(false, false)) {
         update_pre_match_powerups(player);
         af_send_ready_prompt(player, 0); // match canceled — pre-match no longer active
+    }
+}
+
+void cancel_match()
+{
+    rf::console::print("Canceling match");
+    afstats::on_match_end(afstats::MatchResult::canceled, afstats::team_none, nullptr);
+    end_match_early();
+}
+
+static const char* team_name(rf::ubyte team);
+
+void surrender_match(int losing_team)
+{
+    const bool red_lost = losing_team == rf::TEAM_RED;
+    const rf::ubyte winning_team = red_lost ? rf::TEAM_BLUE : rf::TEAM_RED;
+    af_broadcast_automated_chat_msg(std::format("{} team surrendered. {} team wins the match!",
+                                                team_name(static_cast<rf::ubyte>(losing_team)),
+                                                team_name(winning_team)));
+    afstats::on_match_end(afstats::MatchResult::completed, red_lost ? afstats::team_blue : afstats::team_red,
+                          nullptr);
+    end_match_early();
+}
+
+// The vote panel offers only what a live match allows, and only to its players
+static void sync_match_state_to_clients()
+{
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        // A reliable packet sent before the joiner's reliable socket connects is dropped
+        if (!player.net_data || static_cast<int>(player.net_data->reliable_socket) < 0) {
+            continue;
+        }
+        uint8_t flags = 0;
+        if (g_match_info.match_active) {
+            flags |= AF_MATCH_STATE_LIVE;
+            if (is_player_in_match(&player)) {
+                flags |= AF_MATCH_STATE_PARTICIPANT;
+            }
+        }
+        if (player.match_state_sent != flags) {
+            player.match_state_sent = flags;
+            af_send_match_state(&player, flags);
+        }
     }
 }
 
@@ -2765,6 +2807,81 @@ uint8_t af_match_state_for_stats()
     return static_cast<uint8_t>(afstats::MatchState::none);
 }
 
+static void assign_player_to_team(rf::Player* player, rf::ubyte new_team);
+
+// The Join Bots that fill a match's open slots; at least one slot is always left to a human. A bot that was
+// kicked or never fit in the roster gives its slot back to the humans.
+static int match_join_bots()
+{
+    if (g_match_info.team_size < 1) {
+        return 0;
+    }
+    const int bots = std::min(g_alpine_server_config_active_rules.mutators.join_bots, server_bots_num_join_bots());
+    return std::clamp(bots, 0, 2 * g_match_info.team_size - 1);
+}
+
+// What a forming match still needs, to end a chat line with
+static std::string match_waiting_text()
+{
+    const int team_size = g_match_info.team_size;
+    const int ready_red = static_cast<int>(g_match_info.ready_players_red.size());
+    const int ready_blue = static_cast<int>(g_match_info.ready_players_blue.size());
+    const int bots = match_join_bots();
+    if (bots <= 0) {
+        return std::format("waiting for players - RED: {}, BLUE: {}", team_size - ready_red, team_size - ready_blue);
+    }
+    const int open = 2 * team_size - bots - ready_red - ready_blue;
+    return open > 0 ? std::format("waiting for {} more player(s); bots fill the other {} slot(s)", open, bots)
+                    : std::string{"waiting for the bots to join"};
+}
+
+// Every human slot the Join Bots leave is taken by a ready player
+static bool match_human_slots_full()
+{
+    const int bots = match_join_bots();
+    return bots > 0
+        && static_cast<int>(g_match_info.ready_players_red.size() + g_match_info.ready_players_blue.size())
+            >= 2 * g_match_info.team_size - bots;
+}
+
+static void start_match_with_everyone_ready()
+{
+    af_broadcast_automated_chat_msg("All players are ready. Match starting!");
+    g_match_info.everyone_ready = true;
+    start_match();
+}
+
+// Once the humans the Join Bots leave room for are ready, the bots take the open slots and the match starts
+static bool fill_match_with_join_bots()
+{
+    const int bots = match_join_bots();
+    if (bots <= 0 || !g_match_info.pre_match_active || g_match_info.everyone_ready) {
+        return false;
+    }
+    const int team_size = g_match_info.team_size;
+    auto& ready_red = g_match_info.ready_players_red;
+    auto& ready_blue = g_match_info.ready_players_blue;
+    if (static_cast<int>(ready_red.size() + ready_blue.size()) != 2 * team_size - bots) {
+        return false;
+    }
+    const std::vector<rf::Player*> join_bots = server_bots_join_bot_players();
+    if (static_cast<int>(join_bots.size()) < bots) {
+        return false; // still joining
+    }
+    int red_open = team_size - static_cast<int>(ready_red.size());
+    for (int i = 0; i < bots; ++i) {
+        rf::Player* const bot = join_bots[i];
+        const rf::ubyte team = red_open > 0 ? rf::TEAM_RED : rf::TEAM_BLUE;
+        if (team == rf::TEAM_RED) {
+            --red_open;
+        }
+        assign_player_to_team(bot, team);
+        (team == rf::TEAM_RED ? ready_red : ready_blue).insert(bot);
+    }
+    start_match_with_everyone_ready();
+    return true;
+}
+
 void add_ready_player(rf::Player* player)
 {
     auto& team_ready_list = (player->team == 0) ? g_match_info.ready_players_red : g_match_info.ready_players_blue;
@@ -2782,24 +2899,33 @@ void add_ready_player(rf::Player* player)
         return;
     }
 
+    const int join_bots = match_join_bots();
+    if (match_human_slots_full()) {
+        af_send_automated_chat_msg("The match is full.", player);
+        return;
+    }
+
     team_ready_list.insert(player);
+    // Ready players are never idle, so a warning given before readying up must not kick
+    player->idle.kick_timer.invalidate();
     update_pre_match_powerups(player);
     af_send_ready_prompt(player, 2); // readied — hide prompt but keep pre-match flag set
 
     auto ready_msg = std::format("{} ({}) is ready!", player->name.c_str(), team_name);
     af_broadcast_automated_chat_msg(ready_msg);
 
+    if (fill_match_with_join_bots()) {
+        return;
+    }
+
     const auto ready_red = g_match_info.ready_players_red.size();
     const auto ready_blue = g_match_info.ready_players_blue.size();
 
-    if (ready_red >= match_team_size && ready_blue >= match_team_size) {
-        af_broadcast_automated_chat_msg("All players are ready. Match starting!");
-        g_match_info.everyone_ready = true;
-        start_match(); // Start the match
+    if (join_bots <= 0 && ready_red >= match_team_size && ready_blue >= match_team_size) {
+        start_match_with_everyone_ready();
     }
     else {
-        auto waiting_msg = std::format("Still waiting for players - RED: {}, BLUE: {}.", match_team_size - ready_red, match_team_size - ready_blue);
-        af_broadcast_automated_chat_msg(waiting_msg);
+        af_broadcast_automated_chat_msg(std::format("Still {}.", match_waiting_text()));
     }
 }
 
@@ -2829,14 +2955,9 @@ void remove_ready_player(rf::Player* player)
         af_send_ready_prompt(player, 1); // no longer ready — re-show their prompt
     }
 
-    auto msg_source = std::format("You are no longer ready! Still waiting for players - RED: {}, BLUE: {}.",
-        g_match_info.team_size - g_match_info.ready_players_red.size(),
-        g_match_info.team_size - g_match_info.ready_players_blue.size());
+    auto msg_source = std::format("You are no longer ready! Still {}.", match_waiting_text());
 
-    auto msg_others = std::format("{} is no longer ready! Still waiting for players - RED: {}, BLUE: {}.",
-        player->name.c_str(),
-        g_match_info.team_size - g_match_info.ready_players_red.size(),
-        g_match_info.team_size - g_match_info.ready_players_blue.size());
+    auto msg_others = std::format("{} is no longer ready! Still {}.", player->name.c_str(), match_waiting_text());
 
     // send the message to the player who unreadied
     af_send_automated_chat_msg(msg_source, player);
@@ -2912,6 +3033,21 @@ bool get_ready_status(const rf::Player* player)
 }
 
 
+// Join Bots alone can't hold a match: a live one needs a human playing in it, a forming one a human on the server
+static bool match_has_humans()
+{
+    if (g_match_info.match_active) {
+        return std::ranges::any_of(g_match_info.active_match_players,
+                                   [](rf::Player* player) { return !server_bot_from_player(player); });
+    }
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if (!server_bot_from_player(&player) && !player.is_non_participant()) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void match_do_frame()
 {
     if (!g_alpine_server_config.vote_match.enabled) {
@@ -2923,6 +3059,16 @@ void match_do_frame()
             cancel_match();
         }
         return; // no reminders to an empty server
+    }
+
+    if ((g_match_info.match_active || g_match_info.pre_match_active) && server_bots_num_join_bots() > 0
+        && !match_has_humans()) {
+        cancel_match();
+        return;
+    }
+
+    if (fill_match_with_join_bots()) {
+        return;
     }
 
     std::time_t current_time = std::time(nullptr);
@@ -2951,18 +3097,17 @@ void match_do_frame()
         if (current_time >= g_match_info.last_ready_reminder_time + reminder_interval) {
             g_match_info.last_ready_reminder_time = current_time;
 
-            const auto ready_red = g_match_info.ready_players_red.size();
-            const auto ready_blue = g_match_info.ready_players_blue.size();
+            // No nagging once the humans the Join Bots leave room for are all ready
+            const bool humans_full = match_human_slots_full();
 
             for (rf::Player* player : get_clients(false, false)) {
-                if (player == rf::local_player) {
+                if (player == rf::local_player || humans_full) {
                     continue;
                 }
                 if (!is_player_ready(player)) {
                     auto msg = std::format(
-                        "You are NOT ready! {}v{} match queued, waiting for players - RED: {}, BLUE: {}.\n{}",
-                        g_match_info.team_size, g_match_info.team_size,
-                        g_match_info.team_size - ready_red, g_match_info.team_size - ready_blue,
+                        "You are NOT ready! {}v{} match queued, {}.\n{}",
+                        g_match_info.team_size, g_match_info.team_size, match_waiting_text(),
                         cancel_match_vote_hint(player));
                     af_send_automated_chat_msg(msg, player);
                     af_send_ready_prompt(player, 1); // belt-and-braces resync (show prompt)
@@ -3212,6 +3357,10 @@ void enforce_alpine_hard_reject_for_all_players_on_current_level()
 }
 
 AlpineRestrictVerdict check_player_alpine_restrict_status(const rf::Player* const player) {
+    // Server bots run the server's own build, which a release-only rule (e.g. match mode) would refuse on a dev build.
+    if (server_bot_from_player(player)) {
+        return AlpineRestrictVerdict::ok;
+    }
     const auto [verdict, verdict_string, hard_reject] =
         evaluate_alpine_restrict_status(player->version_info, false);
     return verdict;
@@ -5552,9 +5701,19 @@ static void bot_decommission(
 
 static void bot_decommission_check() {
     const AlpineServerConfigRules& cfg_rules = g_alpine_server_config_active_rules;
-    if (!rf::is_server
-        || rf::gameseq_get_state() == rf::GS_MULTI_LIMBO
-        || rf::level.time < BOT_LEVEL_START_WAIT_TIME_SEC) {
+    if (!rf::is_server || rf::gameseq_get_state() == rf::GS_MULTI_LIMBO) {
+        return;
+    }
+
+    // Join Bots follow the mutator, not the ideal player count; set before the level-start wait so a match's bots
+    // spawn with its players
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if (player.is_bot && server_bot_is_join_bot(&player)) {
+            player.is_spawn_disabled = !server_bots_join_bot_may_spawn(&player);
+        }
+    }
+
+    if (rf::level.time < BOT_LEVEL_START_WAIT_TIME_SEC) {
         return;
     }
 
@@ -5562,7 +5721,7 @@ static void bot_decommission_check() {
     // This is needed because multi_level_init sets is_spawn_disabled = true for all bots on map change.
     if (cfg_rules.ideal_player_count >= 32) {
         for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
-            if (player.is_bot && player.is_spawn_disabled) {
+            if (player.is_bot && player.is_spawn_disabled && !server_bot_is_join_bot(&player)) {
                 player.is_spawn_disabled = false;
             }
         }
@@ -5591,7 +5750,12 @@ static void bot_decommission_check() {
             continue;
         }
 
-        if (player.is_bot) {
+        if (player.is_bot && server_bot_is_join_bot(&player)) {
+            // Fills a slot like a human, so configured bots make room for it
+            if (!player.is_spawn_disabled) {
+                ++active_persons_per_team[team];
+            }
+        } else if (player.is_bot) {
             if (player.is_spawn_disabled) {
                 disabled_candidates[team].push_back(&player);
             } else {
@@ -5637,6 +5801,7 @@ void server_do_frame()
     server_vote_do_frame();
     fire_ticks_do_frame();
     match_do_frame();
+    sync_match_state_to_clients();
     process_delayed_kicks();
     pit_do_frame();
     wipeout_do_frame();

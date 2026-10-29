@@ -1554,7 +1554,8 @@ void ShowMeshPropertiesForSelection(CDedLevel* level)
 // ─── Scaled Rendering ───────────────────────────────────────────────────────
 
 // The position that draws a part centred on mesh-local `center` in its true place under an orient scaled by
-// `scale`: the engine draws such a part as if the camera sat scale * scale times as far from its centre.
+// `scale`: RED's Direct3D 8 mesh renderer draws such a part as if the camera sat scale * scale times as far from
+// its centre. The Direct3D 11 renderer draws a scaled orient correctly.
 static Vector3 scaled_draw_pos(const Vector3& pos, const Matrix3& orient, float scale, const Vector3& center)
 {
     const float distance_factor = 1.0f / (scale * scale);
@@ -1572,13 +1573,14 @@ static Vector3 scaled_draw_pos(const Vector3& pos, const Matrix3& orient, float 
 void vmesh_render_scaled(EditorVMesh* vm, const Vector3& pos, const Matrix3& orient, float scale,
                          const EditorRenderParams& params)
 {
+    const bool compensate = scale != 1.0f && !editor_gr_is_d3d11();
     if (vm->type == VMESH_TYPE_STATIC) {
         // Each submesh is drawn about its own centre.
         const auto* v3d = static_cast<const EditorV3d*>(vm->instance);
         if (!v3d || v3d->num_meshes <= 0 || !v3d->meshes) return;
         for (int i = 0; i < v3d->num_meshes; i++) {
             Vector3 p = pos;
-            if (scale != 1.0f) {
+            if (compensate) {
                 const EditorVifLodMesh* lod = v3d->meshes[i].lod_mesh;
                 p = scaled_draw_pos(pos, orient, scale, lod ? lod->center : Vector3{});
             }
@@ -1587,7 +1589,7 @@ void vmesh_render_scaled(EditorVMesh* vm, const Vector3& pos, const Matrix3& ori
         return;
     }
     Vector3 p = pos;
-    if (vm->type == VMESH_TYPE_CHARACTER && scale != 1.0f) {
+    if (vm->type == VMESH_TYPE_CHARACTER && compensate) {
         // The first character mesh is the one drawn, about its lod mesh centre.
         const auto* character = static_cast<const EditorCharacter*>(vm->mesh);
         const EditorV3dMesh* m =

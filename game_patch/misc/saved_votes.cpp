@@ -632,7 +632,14 @@ SavedVoteAvailability saved_vote_check(const SavedVote& vote, const VoteOptionsD
     }
 
     if (!vote_options_is_type_enabled(vote.type)) {
-        out.reasons.emplace_back("This vote type is disabled on this server");
+        const char* reason = "This vote type is disabled on this server";
+        if (vote_client_spectating_match()) {
+            reason = "Only players in the current match can call votes";
+        }
+        else if (vote_client_match_live() && vote.type != AfVoteType::Extend) {
+            reason = "This vote type can't be called during a match";
+        }
+        out.reasons.emplace_back(reason);
     }
 
     // The game type the server will resolve this vote to, and the byte

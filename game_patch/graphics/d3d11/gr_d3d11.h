@@ -178,6 +178,9 @@ namespace gr::d3d11
         void init_device();
         void init_swap_chain(HWND hwnd);
         void init_back_buffer(const uint32_t sample_count);
+        void resize_swap_chain_buffers();
+        // The MSAA setting, or 1 when the device can't do it
+        uint32_t usable_sample_count();
         void init_scene_texture();
         void init_depth_stencil_buffer(const uint32_t sample_count);
         void flush_outlines_before_2d();
@@ -230,6 +233,10 @@ namespace gr::d3d11
         bool low_frame_latency_ = false;
         bool allow_tearing_ = false;
         bool frame_latency_stall_logged_ = false;
+        // Set after a rejected Present was recovered, so a second rejection in a row stays fatal
+        bool present_recovered_ = false;
+        // What the depth buffer was built with; a resized back buffer has to match it
+        uint32_t frame_buffer_sample_count_ = 1;
         HANDLE frame_latency_wait_handle_ = nullptr;
         UINT swap_chain_flags_ = 0;
     };

@@ -791,6 +791,10 @@ struct MutatorConfig
     // Pogo: hold jump to auto-jump on every landing. Client-side physics.
     bool pogo_enabled = false;
 
+    // Join Bots: this many server bots join for the level, or fill a match's empty slots, all at one skill preset.
+    int join_bots = 0;
+    std::string join_bots_skill;
+
     // Display only: human-readable names of the mutators applied to these rules.
     std::vector<std::string> active_labels;
 
@@ -1185,6 +1189,8 @@ struct ManualRulesOverride
     // set. A plain vote installs derived rules too, but arms no session set, so a
     // rotation preserve vote after one carries nothing.
     bool explicit_session = false;
+    // Installed by a match vote: its Join Bots exist only while the match is queued, forming or live.
+    bool match = false;
 };
 
 struct MatchInfo
@@ -1322,6 +1328,8 @@ bool player_spawn_blocked_by_game(const rf::Player* player);
 void update_pre_match_powerups(rf::Player* player);
 void start_match();
 void cancel_match();
+// Ends the live match as a win for the other team
+void surrender_match(int losing_team);
 void start_pre_match();
 // The afstats::MatchState value describing the ready-up match system right now,
 // as a raw uint8 so this header stays free of the stats API. Read at round_start.

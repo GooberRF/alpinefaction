@@ -1,11 +1,13 @@
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <unordered_map>
 #include <vector>
 #include <d3d11.h>
 #include <common/ComPtr.h>
 #include "gr_d3d11_shader.h"
+#include "gr_d3d11_transform.h"
 #include <gr_d3d11_engine.h>
 
 namespace gr::d3d11
@@ -35,6 +37,31 @@ namespace gr::d3d11
 
     void clear_entity_ambient_cache();
 
+    // Whether a light of radius rad_2 at vec, or along a tube from vec to vec2, can reach a mesh's bounding sphere
+    inline bool light_reaches_mesh(bool tube, const rf::Vector3& vec, const rf::Vector3& vec2, float rad_2,
+                                   const rf::Vector3& pos, float mesh_radius)
+    {
+        float combined_radius = rad_2 + mesh_radius;
+        float combined_sq = combined_radius * combined_radius;
+        float dist_sq;
+        if (tube) {
+            rf::Vector3 seg = vec2 - vec;
+            rf::Vector3 delta = pos - vec;
+            float seg_len_sq = seg.len_sq();
+            if (seg_len_sq > 0.0001f) {
+                float t = delta.dot_prod(seg) / seg_len_sq;
+                t = std::clamp(t, 0.0f, 1.0f);
+                rf::Vector3 closest = vec + seg * t;
+                dist_sq = (pos - closest).len_sq();
+            } else {
+                dist_sq = delta.len_sq();
+            }
+        } else {
+            dist_sq = (vec - pos).len_sq();
+        }
+        return dist_sq <= combined_sq;
+    }
+
     // Orders the `count` lights gathered for a GPU-lit mesh at `pos` so that the first max_point_lights are the ones
     // to upload, after dropping subtractive lights and lights that cannot reach it. Returns how many are kept.
     int prioritize_mesh_lights(rf::gr::Light** lights, int count, const rf::Vector3& pos, float mesh_radius);
@@ -57,6 +84,46 @@ namespace gr::d3d11
 
     private:
         static inline int depth_ = 0;
+    };
+
+    struct BoundingBox
+    {
+        rf::Vector3 min{};
+        rf::Vector3 max{};
+        bool empty = true;
+
+        void add(const rf::Vector3& p)
+        {
+            if (empty) {
+                min = p;
+                max = p;
+                empty = false;
+                return;
+            }
+            min = {std::min(min.x, p.x), std::min(min.y, p.y), std::min(min.z, p.z)};
+            max = {std::max(max.x, p.x), std::max(max.y, p.y), std::max(max.z, p.z)};
+        }
+    };
+
+    // Extent in a shadow map's normalized device space of the points that bound a caster's drawn geometry
+    class ShadowCasterBounds
+    {
+    public:
+        explicit ShadowCasterBounds(const GpuMatrix4x4& view_proj) : view_proj_{view_proj}
+        {}
+
+        void add(const rf::Vector3& world_pos);
+        // The corners of a model-space box placed at pos/orient
+        void add_box(const BoundingBox& box, const rf::Vector3& pos, const rf::Matrix3& orient);
+
+        const BoundingBox& ndc() const
+        {
+            return ndc_;
+        }
+
+    private:
+        GpuMatrix4x4 view_proj_;
+        BoundingBox ndc_;
     };
 
     class BaseMeshRenderCache
@@ -164,12 +231,14 @@ namespace gr::d3d11
         bool has_cache(const rf::VifLodMesh* lod_mesh) const;
         void handle_static_vertex_color_state_change(rf::VifLodMesh* changed_lod_mesh, uint64_t generation);
 
-        // Shadow rendering: draws mesh geometry with externally-set shaders (depth-only pass)
+        // Shadow rendering: draws mesh geometry with externally-set shaders (depth-only pass), and adds what it
+        // drew to bounds
         void draw_shadow_v3d_mesh(rf::VifLodMesh* lod_mesh, const rf::Vector3& pos, const rf::Matrix3& orient,
-                                  const VertexShaderAndLayout& shadow_vs, ID3D11DeviceContext* context);
+                                  const VertexShaderAndLayout& shadow_vs, ID3D11DeviceContext* context,
+                                  ShadowCasterBounds& bounds);
         void draw_shadow_character_mesh(rf::VifLodMesh* lod_mesh, const rf::Vector3& pos, const rf::Matrix3& orient,
                                         const rf::CharacterInstance* ci, const VertexShaderAndLayout& shadow_vs,
-                                        ID3D11DeviceContext* context);
+                                        ID3D11DeviceContext* context, ShadowCasterBounds& bounds);
 
         // Outline support: prepare character mesh for drawing without actually rendering.
         // Sets up model transform, bone transforms, binds vertex/index buffers, and returns batches.

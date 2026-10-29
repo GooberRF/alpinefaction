@@ -28,6 +28,7 @@
 #include "../../rf/vmesh.h"
 #include "../../rf/vfx.h"
 #include "../../rf/gr/gr.h"
+#include "../gr.h"
 #include "../../rf/os/frametime.h"
 
 namespace gr::d3d11
@@ -918,9 +919,18 @@ namespace gr::d3d11
         xray_forced_.clear();
     }
 
+    float OutlineRenderer::distance_fade(const rf::Vector3& pos) const
+    {
+        return fog_far_clip_fade(pos.distance_to(saved_eye_pos_));
+    }
+
     void OutlineRenderer::render_outline(const QueuedOutline& outline, MeshRenderer& mesh_renderer)
     {
         auto* ctx = render_context_.device_context();
+        const float fade = distance_fade(outline.pos);
+        if (!(fade > 0.0f)) {
+            return;
+        }
 
         // Prepare mesh: set model transform, bone transforms, bind vertex/index buffers
         const auto* batches = mesh_renderer.prepare_character_for_draw(
@@ -956,7 +966,7 @@ namespace gr::d3d11
         // Draw inflated mesh with stencil NOT_EQUAL test
         auto depth_stencil = depth_disabled
             ? state_manager_.get_outline_xray_state()
-            : state_manager_.get_outline_depth_test_state();
+            : state_manager_.get_outline_depth_test_state(fade >= 1.0f);
         render_context_.set_depth_stencil_state(depth_stencil, outline.info.stencil_ref);
 
         // Alpha blending for semi-transparent outlines
@@ -987,7 +997,7 @@ namespace gr::d3d11
         ps_color.r = outline.info.r;
         ps_color.g = outline.info.g;
         ps_color.b = outline.info.b;
-        ps_color.a = outline.info.a;
+        ps_color.a = outline.info.a * fade;
         update_cbuffer(ctx, outline_ps_color_buffer_, ps_color);
 
         ID3D11Buffer* ps_b2[] = { outline_ps_color_buffer_ };
@@ -1013,6 +1023,11 @@ namespace gr::d3d11
                 continue;
             }
             done_refs.push_back(ref);
+            // One opacity for the whole group, so the parts of a hull fade as one
+            const float fade = distance_fade(first.pos);
+            if (!(fade > 0.0f)) {
+                continue;
+            }
             for (const auto& outline : v3d_queue_) {
                 if (outline.info.stencil_ref == ref) {
                     render_v3d_outline_mark(outline, mesh_renderer);
@@ -1020,7 +1035,7 @@ namespace gr::d3d11
             }
             for (const auto& outline : v3d_queue_) {
                 if (outline.info.stencil_ref == ref) {
-                    render_v3d_outline_draw(outline, mesh_renderer);
+                    render_v3d_outline_draw(outline, fade, mesh_renderer);
                 }
             }
         }
@@ -1056,7 +1071,8 @@ namespace gr::d3d11
         }
     }
 
-    void OutlineRenderer::render_v3d_outline_draw(const QueuedV3dOutline& outline, MeshRenderer& mesh_renderer)
+    void OutlineRenderer::render_v3d_outline_draw(const QueuedV3dOutline& outline, float fade,
+                                                  MeshRenderer& mesh_renderer)
     {
         auto* ctx = render_context_.device_context();
 
@@ -1074,7 +1090,7 @@ namespace gr::d3d11
         // ---- Pass 2: Outline ----
         auto depth_stencil = depth_disabled
             ? state_manager_.get_outline_xray_state()
-            : state_manager_.get_outline_depth_test_state();
+            : state_manager_.get_outline_depth_test_state(fade >= 1.0f);
         render_context_.set_depth_stencil_state(depth_stencil, outline.info.stencil_ref);
 
         render_context_.set_blend_state(
@@ -1103,7 +1119,7 @@ namespace gr::d3d11
         ps_color.r = outline.info.r;
         ps_color.g = outline.info.g;
         ps_color.b = outline.info.b;
-        ps_color.a = outline.info.a;
+        ps_color.a = outline.info.a * fade;
         update_cbuffer(ctx, outline_ps_color_buffer_, ps_color);
 
         ID3D11Buffer* ps_b2[] = { outline_ps_color_buffer_ };
@@ -1120,6 +1136,10 @@ namespace gr::d3d11
     void OutlineRenderer::render_vfx_outline(const QueuedVfxOutline& outline)
     {
         auto* ctx = render_context_.device_context();
+        const float fade = distance_fade(outline.pos);
+        if (!(fade > 0.0f)) {
+            return;
+        }
 
         rf::VMesh* vmesh = outline.vmesh;
         if (!vmesh || vmesh->type != rf::MESH_TYPE_ANIM_FX) {
@@ -1385,7 +1405,7 @@ namespace gr::d3d11
         // ---- Pass 2: Outline ----
         auto depth_stencil = depth_disabled
             ? state_manager_.get_outline_xray_state()
-            : state_manager_.get_outline_depth_test_state();
+            : state_manager_.get_outline_depth_test_state(fade >= 1.0f);
         render_context_.set_depth_stencil_state(depth_stencil, outline.info.stencil_ref);
 
         render_context_.set_blend_state(
@@ -1413,7 +1433,7 @@ namespace gr::d3d11
         ps_color.r = outline.info.r;
         ps_color.g = outline.info.g;
         ps_color.b = outline.info.b;
-        ps_color.a = outline.info.a;
+        ps_color.a = outline.info.a * fade;
         update_cbuffer(ctx, outline_ps_color_buffer_, ps_color);
 
         ID3D11Buffer* ps_b2[] = { outline_ps_color_buffer_ };

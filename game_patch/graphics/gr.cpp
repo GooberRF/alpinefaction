@@ -794,6 +794,15 @@ float level_projection_far()
     return rf::level.distance_fog_far_clip > 0.0f ? rf::level.distance_fog_far_clip : d3d11_default_projection_far;
 }
 
+float fog_far_clip_fade(float distance)
+{
+    const float far_clip = rf::level.distance_fog_far_clip;
+    if (!(far_clip > 0.0f)) {
+        return 1.0f;
+    }
+    return std::clamp(4.0f * (1.0f - distance / far_clip), 0.0f, 1.0f);
+}
+
 // gameplay_render_frame starts each frame at gr::default_wfar
 CallHook<void(float)> gameplay_render_frame_default_far_clip_hook{
     0x00431AF4,

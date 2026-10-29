@@ -466,7 +466,7 @@ static void af_show_damage_notify(uint8_t player_id, const rf::Vector3* world_po
     }
 
     add_damage_notify_world_hud_string(anchor, player_id, hull_handle, damage, died, crit);
-    play_local_hit_sound(died);
+    play_local_hit_sound(player_id, hull_handle, died);
 }
 
 void af_send_damage_notify_packet(uint8_t player_id, float damage, bool died, bool crit, rf::Player* player,
@@ -920,6 +920,12 @@ void serialize_payload(const StatsPsskPayload& payload, std::byte* buf, size_t& 
 void serialize_payload(const ReadyPromptPayload& payload, std::byte* buf, size_t& offset)
 {
     buf[offset++] = static_cast<std::byte>(payload.state);
+}
+
+// af_sreq_match_state
+void serialize_payload(const MatchStatePayload& payload, std::byte* buf, size_t& offset)
+{
+    buf[offset++] = static_cast<std::byte>(payload.flags);
 }
 
 // af_sreq_pit_queue_state
@@ -2554,6 +2560,25 @@ void af_send_ready_prompt(rf::Player* player, uint8_t state)
     af_send_server_req_packet(packet, player);
 }
 
+void af_send_match_state(rf::Player* player, uint8_t flags)
+{
+    // The listen-server host has no vote UI to tailor
+    if (!rf::is_server || !player || player == rf::local_player || !player->net_data) {
+        return;
+    }
+    if (!is_player_minimum_af_client_version(player, 1, 5, 0)) {
+        return;
+    }
+
+    af_server_req_packet packet{};
+    packet.header.type = static_cast<uint8_t>(af_packet_type::af_server_req);
+    packet.header.size = sizeof(uint8_t) + sizeof(uint8_t); // req_type + flags
+    packet.req_type = af_server_req_type::af_sreq_match_state;
+    packet.payload = MatchStatePayload{flags};
+
+    af_send_server_req_packet(packet, player);
+}
+
 // Apply a Pit queue-state update on the local client.
 static void apply_local_pit_queue_state(uint8_t flags, uint8_t pos, uint8_t total)
 {
@@ -2945,6 +2970,14 @@ static void af_process_server_req_packet(const void* data, size_t len, const rf:
             }
             const uint8_t state = bytes[offset];
             apply_ready_prompt_state(state);
+            break;
+        }
+        case af_server_req_type::af_sreq_match_state: {
+            if (remaining < sizeof(uint8_t)) {
+                xlog::warn("af_process_server_req_packet: MatchState payload too short");
+                return;
+            }
+            vote_client_on_match_state(static_cast<uint8_t>(bytes[offset]));
             break;
         }
         case af_server_req_type::af_sreq_pit_queue_state: {
@@ -5212,7 +5245,8 @@ void af_broadcast_automated_chat_msg(const std::string_view msg) {
     }
 }
 
-void af_broadcast_vote_legacy_chat_msg(const std::string_view msg) {
+void af_broadcast_vote_legacy_chat_msg(const std::string_view msg,
+                                       const std::function<bool(rf::Player*)>& audience) {
     if (!rf::is_server) {
         return;
     }
@@ -5231,6 +5265,9 @@ void af_broadcast_vote_legacy_chat_msg(const std::string_view msg) {
         }
         if (is_player_minimum_af_client_version(&player, 1, 4, 0)) {
             continue; // receives the structured af_sreq_vote_state events instead
+        }
+        if (!audience(&player)) {
+            continue;
         }
 
         if (is_player_minimum_af_client_version(&player, 1, 2, 0)) {

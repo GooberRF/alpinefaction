@@ -1976,6 +1976,10 @@ void hud_render_vote_notification() {
         rf::gr::set_color(150, 150, 150, 190);
         draw_line("You have voted");
     }
+    else if (vote_client_spectating_match()) {
+        rf::gr::set_color(150, 150, 150, 190);
+        draw_line("Only players in the current match can vote");
+    }
     else {
         draw_line(cache.prompt_yes.c_str());
         draw_line(cache.prompt_no.c_str());

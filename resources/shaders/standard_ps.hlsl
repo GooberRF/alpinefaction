@@ -80,6 +80,8 @@ cbuffer TextureScaleBuffer : register(b2)
     float detail_inv_mean;
 };
 
+#define MAX_SHADOW_CASTERS 16
+
 cbuffer ShadowBuffer : register(b3)
 {
     float4x4 shadow_vp_mat;
@@ -96,7 +98,11 @@ cbuffer ShadowBuffer : register(b3)
     float shadow_pcf_taps;
     float shadow_debug;
     float shadow_soft_edges;
-    float shadow_pad;
+    float shadow_num_casters;
+    // Light-space boxes of the casters in the map: uv min in xy and max in zw, each widened by the PCF reach
+    float4 shadow_caster_rects[MAX_SHADOW_CASTERS];
+    // x: nearest depth of the box's casters, less a precision margin
+    float4 shadow_caster_depths[MAX_SHADOW_CASTERS];
 };
 
 #ifndef MAX_GAS_REGIONS
@@ -223,6 +229,23 @@ SamplerState     detail_samp : register(s8);
 Texture2DArray            af_lm_pages : register(t4);
 Buffer<uint4>             af_lm_index : register(t5);
 SamplerState              af_lm_samp  : register(s5);
+
+// False only where every tap would read cleared texels or casters behind the receiver. Past the far plane a cleared
+// texel compares as shadowed.
+bool shadow_near_caster(float2 uv, float depth)
+{
+    if (depth > 1.0f) {
+        return true;
+    }
+    int count = min((int)shadow_num_casters, MAX_SHADOW_CASTERS);
+    for (int i = 0; i < count; ++i) {
+        float4 rect = shadow_caster_rects[i];
+        if (all(uv >= rect.xy) && all(uv <= rect.zw) && depth > shadow_caster_depths[i].x) {
+            return true;
+        }
+    }
+    return false;
+}
 
 // Poisson disk offsets for multi-tap PCF (up to 15 extra taps beyond center = 16 max)
 static const float2 pcf_offsets[15] = {
@@ -472,6 +495,7 @@ float3 add_scene_lights(float3 light_color, float3 pixel_pos, float3 norm, float
         float dist;
         float3 light_dir;
         float ndotl_factor;
+        float3 light_vec = float3(0.0f, 0.0f, 0.0f);
 
         if (ltype > 1.5f) {
             // Tube light: closest point on line segment, no N·L
@@ -498,19 +522,36 @@ float3 add_scene_lights(float3 light_color, float3 pixel_pos, float3 norm, float
                 // Degenerate tube (zero length) — treat as point light at pos
                 dist = length(pixel_pos - seg_start);
             }
+        } else {
+            // Omni or Spot: direction from pixel to light position
+            light_vec = point_lights[i].pos - pixel_pos;
+            dist = length(light_vec);
+        }
+
+        bool is_spot = ltype > 0.5f && ltype < 1.5f;
+        if (is_spot) {
+            dist = (1.0f - point_lights[i].spot_atten) * dist;
+        }
+        // Distance attenuation (same 4 algorithms for all light types,
+        // verified against RED.exe disassembly at 0x00488CC0)
+        float t = saturate(dist / point_lights[i].radius);
+        float algo = point_lights[i].atten_algo;
+        // At t = 1 every curve but the cosine one is exactly 0; cos(1.5707963f) is not
+        [branch] if (t >= 1.0f && !(algo >= 1.5f && algo < 2.5f)) {
+            continue;
+        }
+
+        if (ltype > 1.5f) {
             light_dir = float3(0.0f, 0.0f, 0.0f); // unused for tube
             ndotl_factor = 1.0f; // tube lights have no N·L in editor baking
         } else {
-            // Omni or Spot: direction from pixel to light position
-            float3 light_vec = point_lights[i].pos - pixel_pos;
             light_dir = normalize(light_vec);
-            dist = length(light_vec);
             ndotl_factor = saturate(dot(norm, light_dir));
         }
 
         // Spotlight cone falloff (only for type 1, matches RED.exe baking)
         float spot_factor = 1.0f;
-        if (ltype > 0.5f && ltype < 1.5f) {
+        if (is_spot) {
             float cos_angle = dot(light_dir, point_lights[i].spot_dir);
             if (cos_angle >= point_lights[i].spot_fov2_dot) {
                 spot_factor = 0.0f;
@@ -522,15 +563,10 @@ float3 add_scene_lights(float3 light_color, float3 pixel_pos, float3 norm, float
                     spot_factor = spot_factor * spot_factor;
                 }
             }
-            dist = (1.0f - point_lights[i].spot_atten) * dist;
         }
 
-        // Distance attenuation (same 4 algorithms for all light types,
-        // verified against RED.exe disassembly at 0x00488CC0)
-        float t = saturate(dist / point_lights[i].radius);
         float r = 1.0f - t;
         float atten;
-        float algo = point_lights[i].atten_algo;
         if (algo < 0.5f) {
             atten = r;                      // 0: linear
         } else if (algo < 1.5f) {
@@ -672,13 +708,15 @@ float4 finish_fragment(VsOutput input, float4 target, float3 tex0_rgb, float3 li
 
                 float shadow_value = 1.0f;
                 float debug_proj_fade = 1.0f;
-                if (shadow_uv.x >= 0.0f && shadow_uv.x <= 1.0f && shadow_uv.y >= 0.0f && shadow_uv.y <= 1.0f) {
+
+                // Receiver-side comparison bias
+                float z_compensation = shadow_normal_offset * (1.0f + bias_scale) * NdotL / shadow_depth_range;
+                float compare_depth = shadow_ndc.z + z_compensation;
+
+                if (shadow_uv.x >= 0.0f && shadow_uv.x <= 1.0f && shadow_uv.y >= 0.0f && shadow_uv.y <= 1.0f
+                    && (shadow_debug > 0.5f || shadow_near_caster(shadow_uv, compare_depth))) {
                     float spread = shadow_texel_size * 2.5f;
                     int extra_taps = (int)shadow_pcf_taps - 1;
-
-                    // Receiver-side comparison bias
-                    float z_compensation = shadow_normal_offset * (1.0f + bias_scale) * NdotL / shadow_depth_range;
-                    float compare_depth = shadow_ndc.z + z_compensation;
 
                     // Per-pixel rotation angle to break up PCF banding on small shadows
                     float pcf_angle = frac(sin(dot(input.pos.xy * 0.5f, float2(12.9898f, 78.233f))) * 43758.5453f) * 6.28318530718f;

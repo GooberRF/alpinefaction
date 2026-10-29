@@ -44,6 +44,9 @@ float level_default_far_clip();
 float level_dry_far_clip();
 // Far plane of the Direct3D 11 projection, where drawn geometry ends
 float level_projection_far();
+// Opacity of an outline or player label `distance` from the camera: full up to 3/4 of the way to the level's fog
+// far clip, none at it, and always full without fog
+float fog_far_clip_fade(float distance);
 
 bool gr_is_antialiasing_err();
 bool gr_supports_sample_count(uint32_t sample_count);

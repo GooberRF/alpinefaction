@@ -190,6 +190,9 @@ struct PlayerAdditionalData {
     // Rate limit for vote rejection replies.
     rf::TimestampRealtime vote_reject_msg_timer{};
 
+    // af_match_state_flags last sent to this player; a new client starts with none set.
+    uint8_t match_state_sent = 0;
+
     // Server side rail gun reload cooldown, used for force_rail_reload
     // needed because entity_is_reloading is unreliable on server
     rf::Timestamp rail_gun_reload_timer{};

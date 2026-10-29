@@ -238,7 +238,7 @@ FunHook<bool(rf::Weapon*)> weapon_possibly_richochet {
 };
 
 // Stock flies the beam's tip on along the beam until the round dies, so past a pierced surface it leaves
-// the round's path. Fly it along that path instead and end it where the round stops. Runs after
+// the round's path. Fly it along that path instead, never behind the round. Runs after
 // obj_move_all, which deletes rounds flagged dead only on the next frame.
 // No trampoline: eip is always redirected, so the overwritten FLD and FMUL never run.
 CodeInjection rail_gun_beam_tip_on_round_path{
@@ -257,18 +257,14 @@ CodeInjection rail_gun_beam_tip_on_round_path{
         else {
             const rf::Vector3& path_dir = round->orient.fvec;
             const float round_dist = (round->pos - round->firing_pos).dot_prod(path_dir);
+            // Like stock, the tip still takes this frame's step once the round stops and is never pulled back
+            // to it: a multiplayer client's round stops at the first entity (weapon_hit_obj skips the pierce test
+            // there) while the server's goes on through
+            const float tip_dist = (beam->tip - round->firing_pos).dot_prod(path_dir) + beam->speed * beam->age;
             if (round->obj_flags & rf::OF_DELAYED_DELETE) {
-                // A round stopping short of the beam's start would turn the beam back toward the shooter
-                const rf::Vector3 start = beam->tail + beam->orient.fvec * 0.5f;
-                if (round_dist > (start - round->firing_pos).dot_prod(path_dir)) {
-                    beam->tip = round->pos;
-                }
                 beam->weapon_handle = -1;
             }
-            else {
-                const float tip_dist = (beam->tip - round->firing_pos).dot_prod(path_dir) + beam->speed * beam->age;
-                beam->tip = round->firing_pos + path_dir * std::max(tip_dist, round_dist);
-            }
+            beam->tip = round->firing_pos + path_dir * std::max(tip_dist, round_dist);
         }
         regs.eip = 0x004C2481;
     },

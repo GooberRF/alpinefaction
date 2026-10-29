@@ -35,14 +35,11 @@
 
 #include "../misc/player.h"
 #include "../multi/alpine_packets.h"
-#include "../multi/bagman.h"
 #include "../multi/gametype.h"
 #include "../multi/multi.h"
-#include "../multi/salvage.h"
 #include "../multi/server_config_snapshot.h"
 #include "../multi/server_internal.h"
 #include "../multi/vehicles/vehicle.h"
-#include "../multi/wipeout.h"
 #include "../os/console.h"
 #include "../rf/clutter.h"
 #include "../rf/level.h"
@@ -2217,45 +2214,6 @@ bool ensure_session()
 // game_start / game_end content
 // -------------------------------------------------------------------------
 
-void team_scores(rf::NetGameType type, int& red, int& blue)
-{
-    red = 0;
-    blue = 0;
-    switch (type) {
-        case rf::NG_TYPE_CTF:
-            red = rf::multi_ctf_get_red_team_score();
-            blue = rf::multi_ctf_get_blue_team_score();
-            break;
-        case rf::NG_TYPE_TEAMDM:
-            red = rf::multi_tdm_get_red_team_score();
-            blue = rf::multi_tdm_get_blue_team_score();
-            break;
-        case rf::NG_TYPE_KOTH:
-        case rf::NG_TYPE_DC:
-        case rf::NG_TYPE_REV:
-        case rf::NG_TYPE_ESC:
-            red = multi_koth_get_red_team_score();
-            blue = multi_koth_get_blue_team_score();
-            break;
-        case rf::NG_TYPE_SAL:
-        case rf::NG_TYPE_SCAV:
-            red = salvage_get_red_team_score();
-            blue = salvage_get_blue_team_score();
-            break;
-        case rf::NG_TYPE_BAG:
-        case rf::NG_TYPE_TBAG:
-            red = bagman_get_red_team_score();
-            blue = bagman_get_blue_team_score();
-            break;
-        case rf::NG_TYPE_WO:
-            red = wipeout_get_red_team_score();
-            blue = wipeout_get_blue_team_score();
-            break;
-        default:
-            break;
-    }
-}
-
 // The team half of the score-change detection: one diff per frame against the last
 // reported pair, for the same reason the per-player one exists -- captures, frags, the
 // KOTH/DC hold tick, bagman carrier ticks and salvage captures all move these numbers,
@@ -2265,7 +2223,7 @@ void team_scores(rf::NetGameType type, int& red, int& blue)
 //
 // REV and ESC are team types with no running team score: their contest is decided by
 // hill state, and gametype.cpp's hold tick explicitly skips them, so their entry in
-// team_scores() reads a KOTH counter that stays 0 all game. They emit nothing.
+// multi_get_team_scores() reads a KOTH counter that stays 0 all game. They emit nothing.
 void sample_team_scores()
 {
     if (!g_game_open || !multi_is_team_game_type()) {
@@ -2278,7 +2236,7 @@ void sample_team_scores()
 
     int red = 0;
     int blue = 0;
-    team_scores(game_type, red, blue);
+    multi_get_team_scores(game_type, red, blue);
     if (red != g_last_red_score) {
         g_last_red_score = red;
         emit_team_score_change(team_red, red);
@@ -2300,7 +2258,7 @@ void derive_winner(uint8_t& winner_team, rf::Player*& winner_player)
     if (multi_is_team_game_type()) {
         int red = 0;
         int blue = 0;
-        team_scores(game_type, red, blue);
+        multi_get_team_scores(game_type, red, blue);
         if (red > blue) {
             winner_team = team_red;
         }
@@ -2364,7 +2322,7 @@ void emit_game_end(GameEndType end_type)
     ev.end_type = static_cast<uint8_t>(end_type);
     ev.duration_ms = static_cast<uint64_t>(std::max(rf::level.time, 0.0f) * 1000.0f);
     ev.overtime = g_is_overtime;
-    team_scores(game_type, ev.red_score, ev.blue_score);
+    multi_get_team_scores(game_type, ev.red_score, ev.blue_score);
     ev.players = build_roster(true);
 
     if constexpr (AFSTATS_VERIFICATION_LOGGING) {

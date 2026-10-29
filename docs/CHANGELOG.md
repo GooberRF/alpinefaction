@@ -171,11 +171,18 @@ Version 1.5.0 (Trillium): Not yet released
 - Add a coarse waypoint autogeneration mode (`-awpgen_coarse`, `waypoints_generate coarse`, or the waypoint editor's `Gen mode` button) that spaces waypoints wider on open ground, while items, spawns, flags, control points and other points of interest stay finely covered
 - Add `[detail]` section to ATX textures to tile a greyscale detail texture finely over the texture when seen up close, on level geometry, meshes and terrain (Direct3D 11 renderer only)
 - Add `r_detailtextures` to turn detail textures off (0), show only ATX ones (1, default), or also give other textures a stock one by their material (2), replacing the stock toggle (Direct3D 11 renderer only)
+- Speed up per-pixel mesh lighting and entity shadows (Direct3D 11 renderer only)
+- Fade outlines, teammate and spectator player labels, and demo player health/armor bars out over the last quarter of the distance to the fog far clip
+- Add `Surrender` vote, which a team can call during a match to concede it if all of its players agree
+- During a match, only `Surrender`, `Cancel Match` and `Extend` votes can be called, only players in the match can call or vote in them, and players who don't vote count as no
+- Never treat players as idle during a match, or during the ready-up phase once they have readied up
+- Add `Join Bots` mutator, which adds 1-8 server bots at a chosen skill for the level, or fills a match's open slots once the other players are ready
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color
 - Render animated (`.vfx`) meshes on the GPU with per-pixel lighting, and apply their materials' reflection maps (Direct3D 11 renderer only)
 - Load levels with very large face counts or many level sounds much faster
+- Add Discord rich presence (`cl_discord_presence`) showing the server, gametype, map, team scores, match status, player count and time left in multiplayer, and the level, difficulty and mod in single player, with a `Join server` button for public, password-free servers (`cl_discord_join_button`)
 
 [@is-this-c](https://github.com/is-this-c)
 - Add `bighud_health` and `bighud_ammo` console variables to disable `bighud` for health and ammo, which is useful for mods incompatible with `bighud`
@@ -191,6 +198,8 @@ Version 1.5.0 (Trillium): Not yet released
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
 - Fix phantom visual flag mesh being visible after Salvage flag is picked up on rare occasions
+- Fix a fatal error in fullscreen when Windows takes the game out of exclusive fullscreen while it keeps focus (Direct3D 11 renderer only)
+- Fix a fatal error or broken rendering when switching away from or back to the game in fullscreen if the anti-aliasing level in the settings file isn't supported (Direct3D 11 renderer only)
 - Fix scrolling textures jumping forward when the Direct3D 11 renderer rebuilds a room's render cache, most visibly after a brush-based geomod crater
 - Fix deleting an Alpine object in the level editor leaving a stale reference to it in any moving group it belonged to
 - Fix filter box in the level editor texture browser not filtering the texture list by partial filename
@@ -336,6 +345,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix reload animation playing in third person for other players when client tries to reload with a full clip/magazine
 - Fix lighting for pistol silencer and remote charge detonator
 - Fix third-person crouch animations on remote players flickering and snapping
+- Fix the multiplayer camera sitting above the eyes other players see on Parker and Ultor guard characters, which made other players look shorter than you
 
 [@GooberRF](https://github.com/GooberRF) & [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Fix severe frame rate drops when looking over heavily geomodded areas

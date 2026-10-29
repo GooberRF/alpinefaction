@@ -42,8 +42,8 @@ void apply_mesh_parser_hardening();
 void mesh_render(CDedLevel* level);
 
 // vmesh_render with an orient already multiplied by `scale`, for static and character meshes (a .vfx draws as
-// given; its part hook handles the scaled orient). Placement is exact, but with a scale other than 1 the engine
-// picks LOD and lights from a moved position, so those are approximate.
+// given; its part hook handles the scaled orient). Placement is exact, but with a scale other than 1 the Direct3D 8
+// renderer picks LOD and lights from a moved position, so those are approximate there.
 struct EditorRenderParams;
 void vmesh_render_scaled(EditorVMesh* vm, const Vector3& pos, const Matrix3& orient, float scale,
                          const EditorRenderParams& params);

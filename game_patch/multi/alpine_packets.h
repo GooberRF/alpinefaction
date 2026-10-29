@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <string_view>
 #include <variant>
@@ -150,12 +151,13 @@ enum class AfVoteType : uint8_t
     Random = 6,
     Previous = 7,
     CancelMatch = 8,
+    Surrender = 9, // Alpine 1.5
 };
 // Number of vote types this build knows about.
 // NOT a wire limit: a newer server may run a type with a higher value,
 // and a client tolerates that. Only the server uses it as a rejection bound,
 // on incoming vote calls.
-constexpr uint8_t af_vote_type_count = 9;
+constexpr uint8_t af_vote_type_count = 10;
 static_assert(af_vote_type_count <= 32, "enabled_vote_mask is a u32");
 
 // "no gametype override" sentinel in vote-call payloads.
@@ -389,6 +391,7 @@ enum class af_server_req_type : uint8_t
     af_sreq_riot_shield_state = 0xA,   // Alpine 1.4 (20 bytes: obj_handle, life, impact_pos)
     af_sreq_award = 0xB,               // Alpine 1.4 (2 bytes: award_id, victim_player_id; 0xFF = no victim)
     af_sreq_active_mutators = 0xC,     // Alpine 1.4 (variable: one declaration set, see blob_declaration_set)
+    af_sreq_match_state = 0xD,         // Alpine 1.5 (1 byte: af_match_state_flags)
 };
 
 struct ShouldGibPayload
@@ -418,6 +421,18 @@ struct SprayPayload
     uint8_t flags = 0; // af_spray_flags
 };
 static_assert(sizeof(SprayPayload) == 28);
+
+enum af_match_state_flags : uint8_t
+{
+    AF_MATCH_STATE_LIVE = 1 << 0,
+    // The recipient is playing in the live match
+    AF_MATCH_STATE_PARTICIPANT = 1 << 1,
+};
+
+struct MatchStatePayload
+{
+    uint8_t flags = 0; // af_match_state_flags
+};
 
 struct ReadyPromptPayload
 {
@@ -508,7 +523,8 @@ static_assert(sizeof(AwardPayload) == 2);
 
 using af_server_req_payload = std::variant<ShouldGibPayload, TeleportEntityPayload, SprayPayload,
                                            ReadyPromptPayload, PitQueueStatePayload, EntityOnFirePayload,
-                                           EntityJetpackPayload, RiotShieldStatePayload, AwardPayload>;
+                                           EntityJetpackPayload, RiotShieldStatePayload, AwardPayload,
+                                           MatchStatePayload>;
 
 struct af_server_req_packet
 {
@@ -1141,7 +1157,8 @@ void af_send_server_cfg(rf::Player* player);
 void af_process_server_msg_packet(const void* data, size_t len, const rf::NetAddr&);
 void af_broadcast_automated_chat_msg(std::string_view msg);
 void af_send_automated_chat_msg(std::string_view msg, rf::Player* player, bool tell_server = false);
-void af_broadcast_vote_legacy_chat_msg(std::string_view msg);
+// Sent only to the legacy-chat clients `audience` accepts
+void af_broadcast_vote_legacy_chat_msg(std::string_view msg, const std::function<bool(rf::Player*)>& audience);
 void af_broadcast_hud_notification(
     std::string_view text, int duration_seconds, int notification_type, bool fade_on_expire = true);
 void af_send_hud_notification(
@@ -1193,6 +1210,7 @@ void af_send_active_mutators_to_all();
 // server -> client state (Pit + match ready system)
 void af_send_ready_prompt(rf::Player* player, uint8_t state); // 0/1/2 (see ReadyPromptPayload)
 void af_send_pit_queue_state(rf::Player* player, uint8_t flags, uint8_t pos, uint8_t total);
+void af_send_match_state(rf::Player* player, uint8_t flags); // af_match_state_flags
 
 // server bot control
 void af_send_bot_control_simple(rf::Player* player, af_bot_control_type subtype);

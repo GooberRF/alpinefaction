@@ -199,6 +199,45 @@ int multi_koth_get_blue_team_score() // KOTH and DC
     return g_koth_info.blue_team_score;
 }
 
+void multi_get_team_scores(rf::NetGameType type, int& red, int& blue)
+{
+    red = 0;
+    blue = 0;
+    switch (type) {
+        case rf::NG_TYPE_CTF:
+            red = rf::multi_ctf_get_red_team_score();
+            blue = rf::multi_ctf_get_blue_team_score();
+            break;
+        case rf::NG_TYPE_TEAMDM:
+            red = rf::multi_tdm_get_red_team_score();
+            blue = rf::multi_tdm_get_blue_team_score();
+            break;
+        case rf::NG_TYPE_KOTH:
+        case rf::NG_TYPE_DC:
+        case rf::NG_TYPE_REV:
+        case rf::NG_TYPE_ESC:
+            red = multi_koth_get_red_team_score();
+            blue = multi_koth_get_blue_team_score();
+            break;
+        case rf::NG_TYPE_SAL:
+        case rf::NG_TYPE_SCAV:
+            red = salvage_get_red_team_score();
+            blue = salvage_get_blue_team_score();
+            break;
+        case rf::NG_TYPE_BAG:
+        case rf::NG_TYPE_TBAG:
+            red = bagman_get_red_team_score();
+            blue = bagman_get_blue_team_score();
+            break;
+        case rf::NG_TYPE_WO:
+            red = wipeout_get_red_team_score();
+            blue = wipeout_get_blue_team_score();
+            break;
+        default:
+            break;
+    }
+}
+
 void multi_koth_set_red_team_score(int score) // KOTH and DC
 {
     if (rf::is_server)

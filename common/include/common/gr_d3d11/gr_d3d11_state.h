@@ -82,7 +82,8 @@ namespace gr::d3d11
         // Outline rendering states
         ID3D11DepthStencilState* get_outline_stencil_mark_state();
         ID3D11DepthStencilState* get_outline_stencil_mark_xray_state();
-        ID3D11DepthStencilState* get_outline_depth_test_state();
+        // Without depth writes for a faded outline, which must not hide the liquid drawn after it
+        ID3D11DepthStencilState* get_outline_depth_test_state(bool write_depth);
         ID3D11DepthStencilState* get_outline_xray_state();
         ID3D11BlendState* get_no_color_write_blend_state();
         ID3D11BlendState* get_alpha_to_coverage_blend_state();
@@ -103,6 +104,7 @@ namespace gr::d3d11
         ComPtr<ID3D11DepthStencilState> outline_stencil_mark_state_;
         ComPtr<ID3D11DepthStencilState> outline_stencil_mark_xray_state_;
         ComPtr<ID3D11DepthStencilState> outline_depth_test_state_;
+        ComPtr<ID3D11DepthStencilState> outline_depth_test_no_write_state_;
         ComPtr<ID3D11DepthStencilState> outline_xray_state_;
         ComPtr<ID3D11BlendState> no_color_write_blend_state_;
         ComPtr<ID3D11BlendState> alpha_to_coverage_blend_state_;
