@@ -1234,6 +1234,70 @@ FunHook<void(rf::Object*)> obj_unhide_hook{
     },
 };
 
+// Perf: script-heavy maps carry thousands of trigger/event objects that do nothing in
+// obj_move_all's per-object passes (their move-pre dispatch cases are empty), yet each
+// still pays position backup, physics_frame_init and the sim-eligibility checks every
+// frame. Skip them in those two passes. Objects flagged OF_DELAYED_DELETE fall through -
+// the delete branch lives inside the sim pass. The parent-update and water/damage passes
+// are left untouched (events can be anchored to movers; the water pass is flag-gated).
+// Pass "backup": position backup + moved-flag clear (body 0x00487B11, continue 0x00487B3A)
+CodeInjection obj_move_all_backup_pass_skip{
+    0x00487B11,
+    [](auto& regs) {
+        auto* obj = reinterpret_cast<rf::Object*>(regs.esi.value);
+        if (obj->type == rf::OT_TRIGGER || obj->type == rf::OT_EVENT) {
+            regs.eip = 0x00487B3A;
+        }
+    },
+};
+
+// Pass "sim": obj_move_pre + physics init + sim checks (body 0x00487B5F, continue 0x00487BE3)
+CodeInjection obj_move_all_sim_pass_skip{
+    0x00487B5F,
+    [](auto& regs) {
+        auto* obj = reinterpret_cast<rf::Object*>(regs.esi.value);
+        if ((obj->type == rf::OT_TRIGGER || obj->type == rf::OT_EVENT)
+            && !(obj->obj_flags & rf::OF_DELAYED_DELETE)) {
+            regs.eip = 0x00487BE3;
+        }
+    },
+};
+
+// Perf: collide_spheres_world only sets up the pruned-collision face set (BSP bbox query
+// at 0x004DF7E0) when the query has MORE than one collision sphere - but
+// physics_stick_to_ground always sweeps a synthetic single-sphere query, so every ground
+// trace runs against the world unpruned (~28us each on dense custom maps). Enable the
+// pruned set for single-sphere queries too; the stop call at function end already runs
+// unconditionally, so the setup is symmetric.
+CodeInjection collide_spheres_world_prune_single_injection{
+    0x0049A293, // CMP EAX,1 / JLE +0x1B (skip prune setup)
+    [](auto& regs) {
+        // The overwritten CMP/JLE pair contains a short jump subhook cannot relocate, so
+        // the trampoline is null and this handler MUST always set regs.eip - it emulates
+        // the stock branch (prune only when count > 1) and adds the count == 1 case.
+        // The flags set by the CMP are not consumed past the JLE.
+        const bool prune = regs.eax.value >= 1;
+        regs.eip = prune ? 0x0049A298 : 0x0049A2B3;
+    },
+};
+
+// obj_move_all pass 4 re-resolves the room and water status of every object with
+// OF_WAS_TELEPORTED set. Movers flag all their brushes every frame (graveyard: ~240 mover
+// brushes + ~80 movers + ~40 clutter per frame, of which ~12 actually moved), so most of the
+// pass is update_room's early-out plus obj_update_water_status on objects that did not move.
+// Skip non-entities whose pos is unchanged since the frame start (last_pos is the pass 1
+// backup); entities keep the full path because entity_update_water_status also drives
+// breathing/drowning state.
+CodeInjection water_pass_skip_unmoved_injection{
+    0x00487C80,
+    [](auto& regs) {
+        rf::Object* obj = regs.esi;
+        if (obj->type != rf::OT_ENTITY && obj->room && obj->pos == obj->last_pos) {
+            obj->obj_flags = static_cast<rf::ObjectFlags>(obj->obj_flags & ~rf::OF_WAS_TELEPORTED); // what update_room would have done
+            regs.eip = 0x00487CA4; // next object
+        }
+    },
+};
 void object_do_patch()
 {
     // Server authoritative riot shield durability, replicated to clients
@@ -1336,6 +1400,14 @@ void object_do_patch()
 
     // Optimize Object::find_room function
     object_find_room_optimization.install();
+
+    // Skip trigger/event objects in obj_move_all per-object passes
+    obj_move_all_backup_pass_skip.install();
+    obj_move_all_sim_pass_skip.install();
+    water_pass_skip_unmoved_injection.install();
+
+    // Pruned collision setup for single-sphere world sweeps (ground traces)
+    collide_spheres_world_prune_single_injection.install();
 
     // Allow creating entity objects out of level bounds
     // Fixes loading a save game when player entity is out of bounds
