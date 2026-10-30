@@ -11,7 +11,7 @@ class OptionsGraphicsDlg;
 class OptionsDisplayDlg : public CDialog
 {
 public:
-	OptionsDisplayDlg(GameConfig& conf);
+	OptionsDisplayDlg(GameConfig& conf, CDialog& advanced_dlg);
     void OnSave();
 
 protected:
@@ -30,6 +30,8 @@ private:
     void UpdateAnisotropyCheckbox();
 
     GameConfig& m_conf;
+    // Hosts the renderer and color depth combos
+    CDialog& m_advanced_dlg;
     std::unique_ptr<VideoDeviceInfoProvider> m_video_info;
     CToolTip m_tool_tip;
     CComboBox m_renderer_combo;

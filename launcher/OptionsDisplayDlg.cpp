@@ -6,8 +6,8 @@
 #include <wxx_dialog.h>
 #include <wxx_commondlg.h>
 
-OptionsDisplayDlg::OptionsDisplayDlg(GameConfig& conf) :
-    CDialog(IDD_OPTIONS_DISPLAY), m_conf(conf)
+OptionsDisplayDlg::OptionsDisplayDlg(GameConfig& conf, CDialog& advanced_dlg) :
+    CDialog(IDD_OPTIONS_DISPLAY), m_conf(conf), m_advanced_dlg(advanced_dlg)
 {
 }
 
@@ -21,10 +21,10 @@ BOOL OptionsDisplayDlg::OnInitDialog()
     }
 
     // Attach controls
-    AttachItem(IDC_RENDERER_COMBO, m_renderer_combo);
+    m_renderer_combo.AttachDlgItem(IDC_RENDERER_COMBO, m_advanced_dlg);
     AttachItem(IDC_ADAPTER_COMBO, m_adapter_combo);
     AttachItem(IDC_RESOLUTIONS_COMBO, m_res_combo);
-    AttachItem(IDC_COLOR_DEPTH_COMBO, m_color_depth_combo);
+    m_color_depth_combo.AttachDlgItem(IDC_COLOR_DEPTH_COMBO, m_advanced_dlg);
     AttachItem(IDC_WND_MODE_COMBO, m_wnd_mode_combo);
 
     // Populate combo boxes with static content
@@ -42,7 +42,6 @@ BOOL OptionsDisplayDlg::OnInitDialog()
     UpdateColorDepthCombo(); // should be before resolution
     UpdateResolutionCombo();
     m_wnd_mode_combo.SetCurSel(static_cast<int>(m_conf.wnd_mode));
-    SetDlgItemInt(IDC_RENDERING_CACHE_EDIT, m_conf.geometry_cache_size, false);
     UpdateAnisotropyCheckbox();
     CheckDlgButton(IDC_HIGH_SCANNER_RES_CHECK, m_conf.high_scanner_res ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(IDC_TRUE_COLOR_TEXTURES_CHECK, m_conf.true_color_textures ? BST_CHECKED : BST_UNCHECKED);
@@ -75,9 +74,7 @@ void OptionsDisplayDlg::InitToolTip()
 {
     m_tool_tip.Create(*this);
     m_tool_tip.SetMaxTipWidth(512);
-    m_tool_tip.AddTool(GetDlgItem(IDC_RENDERER_COMBO), "Graphics API used for rendering.\nWarning: Direct3D 8 and 9 do not support certain features used by Alpine Faction");
     m_tool_tip.AddTool(GetDlgItem(IDC_ADAPTER_COMBO), "Graphics adapter used for rendering");
-    m_tool_tip.AddTool(GetDlgItem(IDC_RENDERING_CACHE_EDIT), "RAM allocated for level geometry rendering, which must be 32 MB or less");
     m_tool_tip.AddTool(GetDlgItem(IDC_RESOLUTIONS_COMBO), "Select resolution from provided drop-down list, or type a resolution manually");
     m_tool_tip.AddTool(GetDlgItem(IDC_ANISOTROPIC_CHECK), "Improve render quality of textures at far distances");
     m_tool_tip.AddTool(GetDlgItem(IDC_HIGH_SCANNER_RES_CHECK), "Increase scanner resolution (used by Rail Driver, Rocket Launcher, and Fusion Launcher)");
@@ -208,7 +205,6 @@ void OptionsDisplayDlg::OnSave()
         m_conf.res_backbuffer_format = m_video_info->get_format_from_bpp(m_conf.res_bpp);
     }
     m_conf.wnd_mode = static_cast<GameConfig::WndMode>(m_wnd_mode_combo.GetCurSel());
-    m_conf.geometry_cache_size = GetDlgItemInt(IDC_RENDERING_CACHE_EDIT, false);
     m_conf.anisotropic_filtering = (IsDlgButtonChecked(IDC_ANISOTROPIC_CHECK) == BST_CHECKED);
     m_conf.high_scanner_res = (IsDlgButtonChecked(IDC_HIGH_SCANNER_RES_CHECK) == BST_CHECKED);
     m_conf.true_color_textures = (IsDlgButtonChecked(IDC_TRUE_COLOR_TEXTURES_CHECK) == BST_CHECKED);

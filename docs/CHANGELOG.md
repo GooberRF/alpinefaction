@@ -112,6 +112,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Load sounds from `user_maps\sounds` and its subdirectories in the level editor
 - Add launcher option to let the level editor use up to 4 GB of memory instead of 2 GB (large address aware copy of `RED.exe` as `RED_laa.exe`)
 - Accept `RED.exe` patched to be large address aware in the launcher
+- Move advanced launcher options into an `Advanced` section behind a `Show advanced options` toggle
 - Award a point per frag in Bagman and Team Bagman, and a team point in Team Bagman
 - Show `Your team has the bag` in Team Bagman
 - Add team-relative bag carrier icons and outline colors
