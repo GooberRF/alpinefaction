@@ -2,6 +2,7 @@
 
 #include "bot_context.h"
 #include "bot_decision_eval.h"
+#include "bot_fsm.h"
 #include "bot_internal.h"
 #include "bot_math.h"
 #include "bot_navigation_routes.h"
@@ -626,6 +627,7 @@ void clear_waypoint_route()
     bot_state().waypoint_path.clear();
     bot_state().waypoint_next_index = 0;
     bot_state().waypoint_goal = 0;
+    bot_state().route_request_goal = 0;
     bot_state().has_waypoint_target = false;
     bot_state().waypoint_progress_timer.invalidate();
     bot_state().waypoint_progress_waypoint = 0;
@@ -956,12 +958,23 @@ bool enforce_current_link_corridor(const rf::Entity& entity)
     if (from_waypoint <= 0 || to_waypoint <= 0) {
         return true;
     }
+    // A drop, jump pad or knockback carries the bot off the link's line; it is judged again once it lands.
+    if (rf::entity_is_falling(const_cast<rf::Entity*>(&entity))) {
+        return true;
+    }
 
     if (bot_state().validated_link_from_waypoint != from_waypoint
         || bot_state().validated_link_to_waypoint != to_waypoint) {
         bot_state().validated_link_from_waypoint = from_waypoint;
         bot_state().validated_link_to_waypoint = to_waypoint;
-        bot_state().validated_link_clear = waypoints_link_is_clear(from_waypoint, to_waypoint);
+        // A drop or jump link's straight line clips the ledge it spans.
+        rf::Vector3 from_pos{};
+        rf::Vector3 to_pos{};
+        const bool spans_ledge = waypoints_get_pos(from_waypoint, from_pos) && waypoints_get_pos(to_waypoint, to_pos)
+            && std::abs(to_pos.y - from_pos.y) >= kRouteMaxUpwardStepHeight;
+        bot_state().validated_link_clear = spans_ledge
+            ? waypoints_has_direct_link(from_waypoint, to_waypoint)
+            : waypoints_link_is_clear(from_waypoint, to_waypoint);
         bot_state().corridor_violation_from_waypoint = 0;
         bot_state().corridor_violation_to_waypoint = 0;
         bot_state().corridor_violation_count = 0;
@@ -1103,6 +1116,7 @@ void reset_client_bot_state()
     bot_state().los_route_solve_timer.invalidate();
     bot_state().los_target_handle = -1;
     bot_state().los_to_enemy = false;
+    bot_state().candidate_los = {};
     bot_state().preferred_enemy_handle = -1;
     bot_state().preferred_enemy_lock_timer.invalidate();
     bot_state().recovery_anchor_waypoint = 0;
@@ -1171,6 +1185,7 @@ void reset_client_bot_state()
     bot_state().weapon_switch_timer.invalidate();
     bot_state().combat_weapon_eval_timer.invalidate();
     bot_state().combat_maneuver_timer.invalidate();
+    bot_state().combat_strafe_timer.invalidate();
     bot_state().combat_crouch_timer.invalidate();
     bot_state().traversal_crouch_active = false;
     bot_state().traversal_crouch_toggled_on = false;
@@ -1193,6 +1208,7 @@ void reset_client_bot_state()
     bot_state().goal_stuck_wd.retry_window_timer.invalidate();
     bot_state().goal_stuck_wd.retry_count = 0;
     bot_state().eliminate_target_reacquire_timer.invalidate();
+    bot_state().visible_enemy_reevaluate_timer.invalidate();
     bot_state().goal_eval_timer.invalidate();
     bot_state().goal_switch_lock_timer.invalidate();
     bot_state().goal_min_dwell_timer.invalidate();
@@ -1863,18 +1879,19 @@ bool update_waypoint_target_from_current_path(const rf::Entity& entity)
         }
         else if (bot_state().waypoint_progress_timer.valid()
                  && bot_state().waypoint_progress_timer.elapsed()) {
-            // Skip progress failure when approaching or on a significant downward link —
-            // the bot may have minimal horizontal movement while walking off a ledge.
-            if (is_on_significant_downward_link() || is_next_link_significant_downward()) {
+            rf::Vector3 moved = entity.pos - bot_state().waypoint_progress_origin;
+            moved.y = 0.0f;
+            const bool has_world_progress = moved.len_sq()
+                >= kNavigationBlockedProgressDistance * kNavigationBlockedProgressDistance;
+            // On or before a drop the next waypoint barely gets closer while the bot walks to the edge or falls; a bot
+            // that has neither moved nor started falling is held there by something the waypoint graph cannot see.
+            if ((is_on_significant_downward_link() || is_next_link_significant_downward())
+                && (has_world_progress || rf::entity_is_falling(const_cast<rf::Entity*>(&entity)))) {
                 bot_state().waypoint_progress_no_improvement_windows = 0;
                 bot_state().waypoint_progress_timer.set(current_waypoint_progress_timeout_ms());
                 bot_state().waypoint_progress_origin = entity.pos;
             }
             else {
-            rf::Vector3 moved = entity.pos - bot_state().waypoint_progress_origin;
-            moved.y = 0.0f;
-            const bool has_world_progress = moved.len_sq()
-                >= kNavigationBlockedProgressDistance * kNavigationBlockedProgressDistance;
             bool should_fail_progress = !has_world_progress;
             if (has_world_progress) {
                 ++bot_state().waypoint_progress_no_improvement_windows;
@@ -1909,6 +1926,8 @@ bool update_waypoint_target_from_current_path(const rf::Entity& entity)
                         kFailedWaypointBlacklistMs
                     );
                 }
+                // A drop lock would veto the reroute away from a ledge the bot is held at.
+                bot_state().drop_link_route_locked = false;
                 start_recovery_anchor_reroute(
                     entity,
                     blacklist_waypoint > 0 ? blacklist_waypoint : current_waypoint
@@ -2168,29 +2187,35 @@ bool update_waypoint_target_towards(
         (bot_state().recovery_pending_reroute || routing_to_fixed_objective)
         && !stabilize_eliminate_recovery_route_goal;
 
+    const auto goal_anchor_shifted = [&](const int from_goal_waypoint) {
+        rf::Vector3 current_goal_pos{};
+        rf::Vector3 new_goal_pos{};
+        if (from_goal_waypoint <= 0
+            || !waypoints_get_pos(from_goal_waypoint, current_goal_pos)
+            || !waypoints_get_pos(goal_waypoint, new_goal_pos)) {
+            return true;
+        }
+        const float anchor_shift_sq = rf::vec_dist_squared(
+            &current_goal_pos,
+            &new_goal_pos
+        );
+        return anchor_shift_sq > kGoalWaypointSwitchMinDist * kGoalWaypointSwitchMinDist;
+    };
+
     bool need_route = path_invalid;
     if (!need_route && allow_opportunistic_repath && !los_target_eye_pos
         && bot_state().waypoint_goal != goal_waypoint) {
-        bool should_switch_anchor = bot_state().recovery_pending_reroute;
-        if (!should_switch_anchor) {
-            rf::Vector3 current_goal_pos{};
-            rf::Vector3 new_goal_pos{};
-            if (bot_state().waypoint_goal <= 0
-                || !waypoints_get_pos(bot_state().waypoint_goal, current_goal_pos)
-                || !waypoints_get_pos(goal_waypoint, new_goal_pos)) {
-                should_switch_anchor = true;
-            }
-            else {
-                const float anchor_shift_sq = rf::vec_dist_squared(
-                    &current_goal_pos,
-                    &new_goal_pos
-                );
-                should_switch_anchor =
-                    anchor_shift_sq
-                    > kGoalWaypointSwitchMinDist * kGoalWaypointSwitchMinDist;
-            }
-        }
-        need_route = should_switch_anchor;
+        need_route = bot_state().recovery_pending_reroute || goal_anchor_shifted(bot_state().waypoint_goal);
+    }
+    // Without this, a route to a moving target is walked to where the target was. A retreat or item detour routes
+    // elsewhere, so it keeps its route.
+    if (!need_route && bot_goal_chases_moving_target(bot_state().active_goal, bot_state().goal_target_handle)
+        && !stabilize_eliminate_recovery_route_goal
+        && !bot_state().recovery_pending_reroute && bot_state().fsm_state != BotFsmState::retreat
+        && !bot_fsm_is_contextual_item_state(bot_state().fsm_state)
+        && bot_state().repath_timer.elapsed() && bot_state().route_request_goal > 0
+        && bot_state().route_request_goal != goal_waypoint && goal_anchor_shifted(bot_state().route_request_goal)) {
+        need_route = true;
     }
 
     if (!need_route && allow_opportunistic_repath && los_target_eye_pos) {
@@ -2216,6 +2241,7 @@ bool update_waypoint_target_towards(
     }
     if (need_route) {
         set_last_heading_change_reason("repath_needed");
+        bot_state().route_request_goal = goal_waypoint;
         int closest_waypoint = 0;
         if (bot_state().recovery_pending_reroute
             && bot_state().recovery_anchor_waypoint > 0) {

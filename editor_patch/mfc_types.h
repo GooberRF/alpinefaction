@@ -804,7 +804,7 @@ struct DedProjectionCamera : DedObject
 // between them; the game follows each one both ways.
 struct DedWaypointHelper : DedObject
 {
-    uint8_t helper_type = static_cast<uint8_t>(alpine_waypoint_helper::Type::air);
+    uint8_t helper_type = static_cast<uint8_t>(alpine_waypoint_helper::Type::ground);
     uint8_t flags = 0;
     uint8_t size_class = static_cast<uint8_t>(alpine_waypoint_helper::SizeClass::driller);
     float radius = alpine_waypoint_helper::default_radius;

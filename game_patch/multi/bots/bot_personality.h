@@ -112,6 +112,8 @@ struct BotSkillProfile
     float fire_alignment_threshold = 0.80f;
     // Semi-automatic trigger presses are this many fire waits apart (before skill scaling).
     float semi_auto_click_interval_scale = 3.0f;
+    // Share (0-1) of the aim's lag behind a moving target that it leads by.
+    float aim_prediction = 0.0f;
     std::vector<float> weapon_skill_weights{};
 };
 

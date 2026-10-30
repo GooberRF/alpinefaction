@@ -341,6 +341,10 @@ bool is_ctf_mode_for_waypoints()
 
 rf::Vector3 get_ctf_flag_pos_world(bool red_flag)
 {
+    // The engine's flag position getters return the flag's base, wherever the flag is.
+    if (const rf::Object* flag_obj = red_flag ? rf::ctf_red_flag_item : rf::ctf_blue_flag_item) {
+        return flag_obj->pos;
+    }
     rf::Vector3 pos{};
     if (red_flag) {
         rf::multi_ctf_get_red_flag_pos(&pos);

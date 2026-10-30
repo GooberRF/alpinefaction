@@ -1984,20 +1984,17 @@ bool update_ctf_objective_goal(
     }
     else if (dropped_flag_goal) {
         int preferred_waypoint = bot_state().goal_target_waypoint;
-        const bool dropped_flag_red =
-            (bot_state().active_goal == BotGoalType::ctf_return_flag)
-            ? own_flag_red
-            : enemy_flag_red;
+        const bool returning_own_flag = bot_state().active_goal == BotGoalType::ctf_return_flag;
+        const bool dropped_flag_red = returning_own_flag ? own_flag_red : enemy_flag_red;
         dropped_flag_goal_red = dropped_flag_red;
         const int dropped_flag_subtype = dropped_flag_red
             ? static_cast<int>(WaypointCtfFlagSubtype::red)
             : static_cast<int>(WaypointCtfFlagSubtype::blue);
         int dropped_flag_anchor_waypoint = 0;
         rf::Vector3 dropped_flag_anchor_pos{};
-        if ((dropped_flag_red && own_has_dropped_waypoint)
-            || (!dropped_flag_red && enemy_has_dropped_waypoint)) {
-            dropped_flag_anchor_waypoint = dropped_flag_red ? own_dropped_waypoint : enemy_dropped_waypoint;
-            dropped_flag_anchor_pos = dropped_flag_red ? own_dropped_pos : enemy_dropped_pos;
+        if (returning_own_flag ? own_has_dropped_waypoint : enemy_has_dropped_waypoint) {
+            dropped_flag_anchor_waypoint = returning_own_flag ? own_dropped_waypoint : enemy_dropped_waypoint;
+            dropped_flag_anchor_pos = returning_own_flag ? own_dropped_pos : enemy_dropped_pos;
             bot_state().goal_target_waypoint = dropped_flag_anchor_waypoint;
             waypoint_pos = dropped_flag_anchor_pos;
             waypoint_valid = true;
@@ -2077,9 +2074,35 @@ bool update_ctf_objective_goal(
         &local_entity.pos,
         &bot_state().goal_target_pos
     );
+    // A route to the objective little longer than the straight run is kept to its last link: the straight run can cut
+    // off a ramp's edge, and a bot that drops off has to go round to climb back.
+    const auto route_nearly_direct = [&]() {
+        constexpr float kKeepRouteLengthScale = 1.5f;
+        constexpr float kKeepRouteLengthSlack = 2.0f;
+        const auto& path = bot_state().waypoint_path;
+        const int next_index = bot_state().waypoint_next_index;
+        if (bot_state().waypoint_goal != bot_state().goal_target_waypoint
+            || next_index < 0
+            || next_index + 1 >= static_cast<int>(path.size())) {
+            return false;
+        }
+        float route_length = 0.0f;
+        rf::Vector3 prev_pos = local_entity.pos;
+        for (int i = next_index; i < static_cast<int>(path.size()); ++i) {
+            rf::Vector3 node_pos{};
+            if (!waypoints_get_pos(path[i], node_pos)) {
+                return false;
+            }
+            route_length += (node_pos - prev_pos).len();
+            prev_pos = node_pos;
+        }
+        route_length += (bot_state().goal_target_pos - prev_pos).len();
+        return route_length <= std::sqrt(goal_dist_sq) * kKeepRouteLengthScale + kKeepRouteLengthSlack;
+    };
     const auto direct_approach_allowed = [&]() {
-        return can_move_directly_to(
-            local_entity, bot_state().goal_target_pos, bot_state().goal_target_pos, goal_target_entity());
+        return !route_nearly_direct()
+            && can_move_directly_to(
+                local_entity, bot_state().goal_target_pos, bot_state().goal_target_pos, goal_target_entity());
     };
     if (goal_dist_sq <= kWaypointLinkRadius * kWaypointLinkRadius && direct_approach_allowed()) {
         bot_internal_clear_waypoint_route();

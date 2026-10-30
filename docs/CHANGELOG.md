@@ -26,7 +26,6 @@ Version 1.5.0 (Trillium): Not yet released
   - Mirror `Terrain Tools` brush strokes across the terrain's X and/or Z axis, with movable mirror lines
   - Up to 4 detail overlays (leaves, debris) and 8 mesh decoration layers per terrain (grass, rocks, bushes)
   - `Geoable` terrains are carved by RF2-style geomod craters, with their own underside and crater textures
-  - Waypoint autogeneration lays a coarse waypoint grid over open terrain; `-awpgen_fine` and `waypoints_generate fine` probe it like other geometry instead
 - Add server-side bots, which run inside the dedicated or listen server process in addition to (or instead of) bot clients
   - `server_bots` ADS option (0-31) sets how many server bots join; they use the `bot_profiles` profiles and follow `ideal_player_count` like bot clients
   - Add `sv_bot_add [profile_index] [red|blue]`, `sv_bot_remove <name|all>` and `sv_bot_list` server console commands, which also work through rcon
@@ -37,8 +36,6 @@ Version 1.5.0 (Trillium): Not yet released
   - Jeeps, APCs, drillers, fighters, submarines, and stationary turrets, spawned by the new `Vehicle Factory` object
   - Simulate vehicle physics with the Bullet physics engine
   - Multi-seat vehicles with driver, gunner, and passenger seats; `Use` boards the lowest free seat and number keys `1`-`6` switch seats
-  - Bots man turrets, ride as gunners and passengers, drive jeeps, APCs, and drillers, and fly fighters and submarines; `bots_use_vehicles` and `bot_max_drivers` ADS options (`[vehicles]`) control it, and bot profiles tune it with `vehicle_affinity_bias` and `vehicle_gunner_bias` personality fields and `never_drives` and `turret_camper` quirks
-  - `Waypoint Helper` level editor object: air, water, and ground navigation points for bots in vehicles, joined by object links; waypoint generation turns them into a vehicle layer in the AWP (ground links follow the ground, with one-way slopes and per-link vehicle size limits) that bots navigate on and the in-game waypoint editor can edit; `dbg_vehnav` draws and lists it in game
 
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)
@@ -158,16 +155,20 @@ Version 1.5.0 (Trillium): Not yet released
 - Ignore `fflink_gsk` on dedicated servers started with `-lanonly`
 - Implement shared Direct3D 11 renderer for game and level editor
 - Reduce the CPU time bots spend choosing goals and planning routes, and stop bots from repeatedly searching for routes to destinations they cannot reach
-- Tweak `hard`, `expert` and `nightmare` bot skill presets
-- Add `reaction_time_ms`, `aim_error_min`, `aim_error_max`, `yaw_speed_cap`, `pitch_speed_cap`, `fire_alignment_threshold` and `semi_auto_click_interval_scale` bot skill fields for `skill_overrides` in bot profiles
+- Tweak `hard`, `expert` and `nightmare` bot skill presets, which now lead moving targets, fire semi-automatic weapons faster, and strafe more often in fights
+- Add `reaction_time_ms`, `aim_error_min`, `aim_error_max`, `yaw_speed_cap`, `pitch_speed_cap`, `fire_alignment_threshold`, `semi_auto_click_interval_scale` and `aim_prediction` bot skill fields for `skill_overrides` in bot profiles
 - Allow the `opportunism_bias`, `seek_weapon_bias`, `replenish_bias`, `weapon_switch_bias`, `path_smoothing_bias`, `dodge_combat_bias`, `crouch_combat_bias`, `jump_combat_bias` and `ctf_hold_enemy_flag_safety_bias` bot personality fields, which were raised to at least 0.25, to be set to 0 to switch off what they scale, and `decision_aggression_bias` and `decision_risk_tolerance` to go below 0.25 for bots that retreat and restock earlier and avoid hazardous routes
 - Make bots choose weapons by their expected damage at the current distance (from the weapons' `weapons.tbl` stats, with personality preferences as a weight), switch on pickups and new targets, fire only within a weapon's effective range, and keep one remote charge out at a time, setting it off when an enemy is in the blast
 - Make bots use explosives safely, top up their clip once the enemy is out of sight, and stop leaving fights for pickups that are not on the way
 - Make bots break off to top up armor at a lower armor level, and switch goals less often
+- Make bots fight an enemy they can see instead of a closer one behind cover
+- Make bots strafe in fights straight after respawning, and for longer at a time, turning back from walls and ledges
 - Make bots walk straight to objectives, items and enemies only when nothing  is in the way and there is no ledge to drop off, and look ahead round corners or toward where a threat was last noticed
+- Make bots go to a dropped CTF flag rather than its base, chase whoever carries their stolen flag instead of taking it for dropped, re-plan routes to enemies and flag or bag carriers as they move, and keep to their route over ledge drops, jumps and jump pads
+- Make bots on a CTF raid turn back once their own flag is taken, keep to their route up onto a flag stand instead of circling it, give up on a ledge drop they are held back from, and leave dropped flags no route reaches
 - Ignore connected human players who have not spawned yet this level when picking a joining bot's team
-- Speed up waypoint autogeneration on large levels, and stop it (saving nothing) after 60 minutes
-- Seed waypoint autogeneration from the floor under every control point and from every spawn point, so DC levels that generated nothing now generate
+- Speed up waypoint autogeneration on large levels
+- Seed waypoint autogeneration from the floor under every control point and from every spawn point
 - Add a coarse waypoint autogeneration mode (`-awpgen_coarse`, `waypoints_generate coarse`, or the waypoint editor's `Gen mode` button) that spaces waypoints wider on open ground, while items, spawns, flags, control points and other points of interest stay finely covered
 - Add `[detail]` section to ATX textures to tile a greyscale detail texture finely over the texture when seen up close, on level geometry, meshes and terrain (Direct3D 11 renderer only)
 - Add `r_detailtextures` to turn detail textures off (0), show only ATX ones (1, default), or also give other textures a stock one by their material (2), replacing the stock toggle (Direct3D 11 renderer only)
@@ -177,6 +178,7 @@ Version 1.5.0 (Trillium): Not yet released
 - During a match, only `Surrender`, `Cancel Match` and `Extend` votes can be called, only players in the match can call or vote in them, and players who don't vote count as no
 - Never treat players as idle during a match, or during the ready-up phase once they have readied up
 - Add `Join Bots` mutator, which adds 1-8 server bots at a chosen skill for the level, or fills a match's open slots once the other players are ready
+- Add `Waypoint Helper` object type
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color

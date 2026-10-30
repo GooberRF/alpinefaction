@@ -125,6 +125,8 @@ inline constexpr float kRouteEdgeExposurePenaltyWeight = 9.0f;
 inline constexpr int kLoopEscapeMinMs = 3200;
 inline constexpr int kLoopEscapeMaxMs = 5600;
 inline constexpr int kGoalReevaluateMs = 800;
+inline constexpr int kVisibleEnemyReevaluateMs = 250;
+inline constexpr int kSelectorLosCandidates = 3;
 inline constexpr float kGoalEnemyBaseScore = 205.0f;
 inline constexpr float kGoalEnemyDistancePenalty = 0.85f;
 inline constexpr float kGoalEnemyVisibleBonus = 75.0f;
@@ -258,6 +260,22 @@ inline constexpr bool bot_goal_is_salvage_positioning(const BotGoalType goal)
 inline constexpr bool bot_goal_is_control_point_objective(const BotGoalType goal)
 {
     return goal == BotGoalType::control_point_objective;
+}
+
+// Goals whose route goal node follows a moving entity.
+inline constexpr bool bot_goal_chases_moving_target(const BotGoalType goal, const int goal_target_handle)
+{
+    switch (goal) {
+        case BotGoalType::eliminate_target:
+        case BotGoalType::bag_chase_carrier:
+        case BotGoalType::sal_chase_carrier:
+        case BotGoalType::sal_escort_carrier:
+            return true;
+        case BotGoalType::ctf_return_flag:
+            return goal_target_handle >= 0;
+        default:
+            return false;
+    }
 }
 
 // Objective goals whose route goal node changes only when the objective moves. Chase and escort goals track a
@@ -880,11 +898,21 @@ struct BotTopGoalEntry
     int target_identifier = -1;
 };
 
+struct BotCandidateLos
+{
+    int handle = -1;
+    bool visible = false;
+    rf::Timestamp timer{};
+};
+
 struct BotState
 {
     std::vector<int> waypoint_path{};
     int waypoint_next_index = 0;
     int waypoint_goal = 0;
+    // The goal waypoint update_waypoint_target_towards last planned a route for; a line-of-sight or fallback route may
+    // end elsewhere.
+    int route_request_goal = 0;
     rf::Timestamp route_choice_lock_timer{};
     BotGoalType route_choice_lock_goal_type = BotGoalType::none;
     int route_choice_lock_target_handle = -1;
@@ -954,6 +982,8 @@ struct BotState
     rf::Timestamp los_route_solve_timer{};
     int los_target_handle = -1;
     bool los_to_enemy = false;
+    // The selector's top candidates plus its locked target.
+    std::array<BotCandidateLos, kSelectorLosCandidates + 1> candidate_los{};
     int preferred_enemy_handle = -1;
     rf::Timestamp preferred_enemy_lock_timer{};
     int recovery_anchor_waypoint = 0;
@@ -1043,6 +1073,7 @@ struct BotState
     rf::Vector3 goal_target_pos{};
     BotGoalStuckWatchdog goal_stuck_wd{};
     rf::Timestamp eliminate_target_reacquire_timer{};
+    rf::Timestamp visible_enemy_reevaluate_timer{};
     rf::Timestamp goal_eval_timer{};
     rf::Timestamp goal_switch_lock_timer{};
     rf::Timestamp goal_min_dwell_timer{};
@@ -1051,6 +1082,7 @@ struct BotState
     rf::Timestamp weapon_switch_timer{};
     rf::Timestamp combat_weapon_eval_timer{};
     rf::Timestamp combat_maneuver_timer{};
+    rf::Timestamp combat_strafe_timer{};
     rf::Timestamp combat_crouch_timer{};
     bool traversal_crouch_active = false;
     bool traversal_crouch_toggled_on = false;

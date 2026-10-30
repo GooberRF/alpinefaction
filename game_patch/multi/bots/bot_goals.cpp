@@ -40,6 +40,25 @@ bool has_any_route_to_waypoint(const rf::Entity& local_entity, const int goal_wa
     return bot_waypoint_same_component(start_waypoint, goal_waypoint);
 }
 
+// A dropped flag no route reaches (left in mid-air, or on a ledge no waypoint links to), and that is not a short walk
+// away, is not worth heading for.
+bool ctf_dropped_flag_reachable(const rf::Entity& local_entity, const int dropped_waypoint, const rf::Vector3& flag_pos)
+{
+    constexpr float kDirectReachHorizontal = 6.0f;
+    if (dropped_waypoint <= 0) {
+        return true;
+    }
+    const int start_waypoint = bot_find_closest_waypoint_with_los_fallback(local_entity);
+    if (start_waypoint <= 0 || bot_waypoint_reachable(start_waypoint, dropped_waypoint)) {
+        return true;
+    }
+    rf::Vector3 offset = flag_pos - local_entity.pos;
+    const float rise = std::abs(offset.y);
+    offset.y = 0.0f;
+    return offset.len() <= kDirectReachHorizontal && rise <= kRouteMaxUpwardStepHeight
+        && bot_can_walk_direct(local_entity.pos, flag_pos);
+}
+
 bool has_committed_pickup_route()
 {
     if (!bot_goal_is_item_collection(bot_state().active_goal)) {
@@ -1400,20 +1419,32 @@ void bot_refresh_goal_state(
                 bot_state().goal_target_pos = tracked_entity->pos;
             }
 
+            const int reacquire_ms = static_cast<int>(std::lround(std::lerp(
+                650.0f,
+                5200.0f,
+                eliminate_commitment_norm
+            )));
             if (enemy_target
                 && enemy_target->handle == bot_state().goal_target_handle) {
                 bot_state().eliminate_target_reacquire_timer.invalidate();
+            }
+            else if (enemy_target && enemy_has_los) {
+                // The selector turned to an enemy in sight: re-evaluate now rather than after the reacquire wait, which
+                // still runs for when it drops out of sight.
+                if (!bot_state().eliminate_target_reacquire_timer.valid()) {
+                    bot_state().eliminate_target_reacquire_timer.set(reacquire_ms);
+                }
+                if (!bot_state().visible_enemy_reevaluate_timer.valid()
+                    || bot_state().visible_enemy_reevaluate_timer.elapsed()) {
+                    bot_state().visible_enemy_reevaluate_timer.set(kVisibleEnemyReevaluateMs);
+                    reevaluate_goal = true;
+                }
             }
             else if (alive_enemy_present) {
                 // Only delay re-evaluation for reacquire if there are still live enemies
                 // to potentially reacquire. When no enemies are alive, let the bot
                 // immediately transition to a new goal.
                 if (!bot_state().eliminate_target_reacquire_timer.valid()) {
-                    const int reacquire_ms = static_cast<int>(std::lround(std::lerp(
-                        650.0f,
-                        5200.0f,
-                        eliminate_commitment_norm
-                    )));
                     bot_state().eliminate_target_reacquire_timer.set(reacquire_ms);
                 }
                 if (!bot_state().eliminate_target_reacquire_timer.elapsed()) {
@@ -1577,7 +1608,9 @@ void bot_refresh_goal_state(
                     }
                     break;
                 case BotGoalType::ctf_return_flag:
-                    goal_valid = ctf_state.own_flag_dropped
+                    goal_valid = (ctf_state.own_flag_dropped
+                            && ctf_dropped_flag_reachable(
+                                local_entity, ctf_state.own_dropped_waypoint, ctf_state.own_flag_pos))
                         || (ctf_state.own_flag_stolen && ctf_state.own_flag_carrier_entity);
                     if (goal_valid) {
                         if (ctf_state.own_flag_dropped) {
@@ -1604,7 +1637,10 @@ void bot_refresh_goal_state(
                     break;
                 case BotGoalType::ctf_steal_flag:
                     goal_valid = !ctf_state.local_has_enemy_flag
-                        && (ctf_state.enemy_flag_in_base || ctf_state.enemy_flag_dropped);
+                        && (ctf_state.enemy_flag_in_base
+                            || (ctf_state.enemy_flag_dropped
+                                && ctf_dropped_flag_reachable(
+                                    local_entity, ctf_state.enemy_dropped_waypoint, ctf_state.enemy_flag_pos)));
                     if (goal_valid) {
                         bot_state().goal_target_identifier = ctf_state.enemy_flag_uid;
                         bot_state().goal_target_pos = ctf_state.enemy_flag_in_base
@@ -1638,7 +1674,14 @@ void bot_refresh_goal_state(
                     break;
             }
 
-            reevaluate_goal = !goal_valid;
+            // A raid is weighed again, at the usual pace, once the bot's own flag has left its base, unless the enemy
+            // flag is nearly in hand.
+            constexpr float kRaidFinishDistance = kWaypointLinkRadius * 2.0f;
+            const bool own_flag_away_while_stealing =
+                bot_state().active_goal == BotGoalType::ctf_steal_flag && !ctf_state.own_flag_in_base
+                && rf::vec_dist_squared(&local_entity.pos, &bot_state().goal_target_pos)
+                    > kRaidFinishDistance * kRaidFinishDistance;
+            reevaluate_goal = !goal_valid || (reevaluate_goal && own_flag_away_while_stealing);
         }
     }
     else if (bot_goal_is_salvage_objective(bot_state().active_goal)) {
@@ -1735,6 +1778,11 @@ void bot_refresh_goal_state(
                         && bagman_state.carrier_entity
                         && bagman_state.carrier_entity->handle == bot_state().goal_target_handle
                         && !rf::entity_is_dying(bagman_state.carrier_entity);
+                    if (goal_valid) {
+                        bot_state().goal_target_pos = bagman_state.carrier_entity->pos;
+                        bot_state().goal_target_waypoint =
+                            bot_find_closest_waypoint_with_fallback(bagman_state.carrier_entity->pos);
+                    }
                     break;
                 default:
                     break;
@@ -2318,7 +2366,8 @@ void bot_refresh_goal_state(
                 ctf_force_flag_carrier_elimination = true;
                 ctf_priority_flag_carrier_handle = ctf_state.own_flag_carrier_entity->handle;
             }
-            else if (ctf_state.own_flag_dropped) {
+            else if (ctf_state.own_flag_dropped
+                && ctf_dropped_flag_reachable(local_entity, ctf_state.own_dropped_waypoint, ctf_state.own_flag_pos)) {
                 const int return_waypoint = ctf_state.own_dropped_waypoint > 0
                     ? ctf_state.own_dropped_waypoint
                     : bot_find_closest_waypoint_with_fallback(ctf_state.own_flag_pos);
@@ -2338,7 +2387,10 @@ void bot_refresh_goal_state(
             }
 
             if (!ctf_force_flag_carrier_elimination
-                && (ctf_state.enemy_flag_in_base || ctf_state.enemy_flag_dropped)) {
+                && (ctf_state.enemy_flag_in_base
+                    || (ctf_state.enemy_flag_dropped
+                        && ctf_dropped_flag_reachable(
+                            local_entity, ctf_state.enemy_dropped_waypoint, ctf_state.enemy_flag_pos)))) {
                 const rf::Vector3 steal_target_pos = ctf_state.enemy_flag_in_base
                     ? ctf_state.enemy_base_pos
                     : ctf_state.enemy_flag_pos;

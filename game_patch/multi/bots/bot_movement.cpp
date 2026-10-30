@@ -26,6 +26,10 @@ constexpr float kWeaponStopDistanceCapScale = 1.5f;
 constexpr float kWeaponSafeStopDistanceScale = 1.25f;
 constexpr float kSplashRetreatProbeDistance = 1.5f;
 constexpr float kHullDodgeProbeDistance = 2.5f;
+constexpr int kCombatStrafeMinMs = 350;
+constexpr int kCombatStrafeMaxMs = 850;
+constexpr float kCombatStrafeReverseChance = 0.65f;
+constexpr float kCombatStrafeProbeDistance = 1.5f;
 // A cornered verdict outlives the think that found it until the next movement update.
 constexpr int kSplashRetreatBlockedHoldMs = 100;
 constexpr float kLadderClimbVerticalThreshold = 0.12f;
@@ -406,6 +410,12 @@ bool is_forward_probe_over_edge(
 
     const float drop_height = p0.y - collision.hit_point.y;
     return drop_height > kForwardEdgeUnsafeDropHeight;
+}
+
+bool is_move_probe_shut(const rf::Entity& entity, const rf::Vector3& direction, const float distance)
+{
+    return is_forward_probe_blocked(entity, direction, distance)
+        || is_forward_probe_over_edge(entity, direction, distance);
 }
 
 bool is_eye_level_probe_blocked(
@@ -1046,8 +1056,7 @@ void bot_process_movement(
             const std::array<rf::Vector3, 5> escapes{away, away + side, away - side, side, -side};
             const rf::Vector3* escape = nullptr;
             for (const rf::Vector3& dir : escapes) {
-                if (!is_forward_probe_blocked(local_entity, dir, kSplashRetreatProbeDistance)
-                    && !is_forward_probe_over_edge(local_entity, dir, kSplashRetreatProbeDistance)) {
+                if (!is_move_probe_shut(local_entity, dir, kSplashRetreatProbeDistance)) {
                     escape = &dir;
                     break;
                 }
@@ -1086,17 +1095,50 @@ void bot_process_movement(
 
     bool maneuver_jump = false;
     bool combat_crouch_hold = false;
-    if (pursuing_enemy_goal && enemy_has_los && !respawn_gearup_active) {
+    if (pursuing_enemy_goal && enemy_has_los) {
         const BotSkillProfile& skill_profile = get_active_bot_skill_profile();
+        std::uniform_real_distribution<float> roll_dist(0.0f, 1.0f);
 
-        if (!bot_state().combat_maneuver_timer.valid()
-            || bot_state().combat_maneuver_timer.elapsed()) {
+        if (!bot_state().combat_strafe_timer.valid()
+            || bot_state().combat_strafe_timer.elapsed()) {
             const float dodge_chance = std::clamp(
                 skill_profile.dodge_likelihood
                     * std::clamp(personality.dodge_combat_bias, 0.0f, 2.5f),
                 0.0f,
                 1.0f
             );
+            if (roll_dist(g_rng) <= dodge_chance) {
+                const float strafe_strength = std::lerp(0.35f, 0.9f, skill_factor);
+                const float previous = bot_state().combat_maneuver_strafe;
+                const bool left = previous != 0.0f
+                    ? (roll_dist(g_rng) < kCombatStrafeReverseChance) == (previous > 0.0f)
+                    : roll_dist(g_rng) < 0.5f;
+                bot_state().combat_maneuver_strafe = left ? -strafe_strength : strafe_strength;
+            }
+            else {
+                bot_state().combat_maneuver_strafe = 0.0f;
+            }
+            std::uniform_int_distribution<int> period_dist(kCombatStrafeMinMs, kCombatStrafeMaxMs);
+            bot_state().combat_strafe_timer.set(period_dist(g_rng));
+        }
+
+        if (bot_state().combat_maneuver_strafe != 0.0f) {
+            const rf::Vector3 view_forward =
+                forward_from_non_linear_yaw_pitch(local_entity.control_data.phb.y, 0.0f);
+            const float side_sign = bot_state().combat_maneuver_strafe > 0.0f ? 1.0f : -1.0f;
+            const rf::Vector3 side = rf::Vector3{view_forward.z, 0.0f, -view_forward.x} * side_sign;
+            if (is_move_probe_shut(local_entity, side, kCombatStrafeProbeDistance)) {
+                bot_state().combat_maneuver_strafe =
+                    is_move_probe_shut(local_entity, -side, kCombatStrafeProbeDistance)
+                        ? 0.0f
+                        : -bot_state().combat_maneuver_strafe;
+            }
+        }
+
+        // Gear-up keeps the bot standing, so crouch and jump wait for it to end.
+        if (!respawn_gearup_active
+            && (!bot_state().combat_maneuver_timer.valid()
+                || bot_state().combat_maneuver_timer.elapsed())) {
             const float crouch_chance = std::clamp(
                 skill_profile.crouch_likelihood
                     * std::clamp(personality.crouch_combat_bias, 0.0f, 2.5f),
@@ -1109,17 +1151,6 @@ void bot_process_movement(
                 0.0f,
                 1.0f
             );
-            std::uniform_real_distribution<float> roll_dist(0.0f, 1.0f);
-
-            if (roll_dist(g_rng) <= dodge_chance) {
-                std::uniform_int_distribution<int> strafe_sign(0, 1);
-                const float strafe_strength = std::lerp(0.35f, 0.9f, skill_factor);
-                bot_state().combat_maneuver_strafe =
-                    strafe_sign(g_rng) == 0 ? -strafe_strength : strafe_strength;
-            }
-            else {
-                bot_state().combat_maneuver_strafe = 0.0f;
-            }
 
             if (roll_dist(g_rng) <= crouch_chance) {
                 const int crouch_ms = static_cast<int>(std::lround(
@@ -1156,6 +1187,7 @@ void bot_process_movement(
     else {
         bot_state().combat_maneuver_strafe = 0.0f;
         bot_state().combat_maneuver_timer.invalidate();
+        bot_state().combat_strafe_timer.invalidate();
         bot_state().combat_crouch_timer.invalidate();
     }
 
@@ -1165,12 +1197,8 @@ void bot_process_movement(
         // and not at all when both are (a ledge or a bridge): a step off is worse than the hit.
         bot_state().hull_dodge_checked = true;
         rf::Vector3& dodge = bot_state().hull_dodge_dir;
-        const auto shut = [&](const rf::Vector3& dir) {
-            return is_forward_probe_blocked(local_entity, dir, kHullDodgeProbeDistance)
-                || is_forward_probe_over_edge(local_entity, dir, kHullDodgeProbeDistance);
-        };
-        if (shut(dodge)) {
-            if (shut(-dodge)) {
+        if (is_move_probe_shut(local_entity, dodge, kHullDodgeProbeDistance)) {
+            if (is_move_probe_shut(local_entity, -dodge, kHullDodgeProbeDistance)) {
                 bot_state().hull_dodge_timer.invalidate();
             }
             else {

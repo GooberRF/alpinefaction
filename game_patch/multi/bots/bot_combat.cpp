@@ -371,6 +371,7 @@ constexpr float kEffectiveRangeDpsShare = 0.15f;
 constexpr float kIdealRangeDpsShare = 0.8f;
 constexpr float kRangeBandDpsShare = 0.35f;
 constexpr float kCraterStandoffScale = 1.5f;
+// From this speed up multiplayer fires a weapon as lag-compensated hitscan.
 constexpr float kLeadProjectileMaxSpeed = 100.0f;
 constexpr float kFloorAimProbeDepth = 3.0f;
 constexpr float kFloorAimHeight = 0.1f;
@@ -396,6 +397,11 @@ constexpr float kDetonatorReturnDistanceScale = 1.25f;
 constexpr float kThreatLookMinTravelDot = -0.17f;
 constexpr float kCornerLookAheadDistance = 4.0f;
 constexpr float kCornerLookMaxTurnDot = 0.82f;
+// The aim blend constants are per 30 fps frame; rescaling the exponent keeps convergence time independent of the host
+// frame rate.
+constexpr float kAimBlendTunedRate = 30.0f;
+// A semi-automatic press inside the fire wait is dropped, so the next press would come a whole interval later.
+constexpr int kSemiAutoFireWaitSlackMs = 10;
 
 struct BotWeaponStats
 {
@@ -667,9 +673,12 @@ bool should_press_semi_auto_trigger(const int weapon_type, const float skill_fac
     const float variance = std::lerp(0.24f, 0.10f, skill_factor);
     std::uniform_real_distribution<float> jitter_dist(-variance, variance);
     const float jittered_interval = base_interval * (1.0f + jitter_dist(g_rng));
+    const int min_interval_ms = std::min(
+        std::max(kSemiAutoClickMinMs, rf::weapon_get_fire_wait_ms(weapon_type, false) + kSemiAutoFireWaitSlackMs),
+        kSemiAutoClickMaxMs);
     const int click_interval_ms = std::clamp(
         static_cast<int>(std::lround(jittered_interval)),
-        kSemiAutoClickMinMs,
+        min_interval_ms,
         kSemiAutoClickMaxMs
     );
     bot_state().firing.semi_auto_click_timer.set(click_interval_ms);
@@ -744,7 +753,8 @@ rf::Vector3 compute_skill_adjusted_enemy_aim_target(
     const rf::Vector3& origin,
     const int weapon_type,
     const rf::Entity& enemy_target,
-    const float skill_factor)
+    const float skill_factor,
+    const rf::Vector3& tracking_lead)
 {
     const ProjectileTraits projectile = projectile_traits(weapon_type);
     rf::Vector3 aim_target = enemy_target.eye_pos;
@@ -772,6 +782,7 @@ rf::Vector3 compute_skill_adjusted_enemy_aim_target(
         const float lead_time = std::min(flight_time, 1.5f) * std::clamp(skill_factor, 0.15f, 1.0f);
         aim_target += bot_vehicle_target_velocity(enemy_target) * lead_time;
     }
+    aim_target += tracking_lead;
 
     if (bot_state().firing.aim_error_target_handle != enemy_target.handle) {
         bot_state().firing.aim_error_target_handle = enemy_target.handle;
@@ -846,13 +857,34 @@ rf::Vector3 compute_skill_adjusted_enemy_aim_target(
     return aim_target;
 }
 
+float aim_blend_alpha(const float skill_factor)
+{
+    const bool combat_tracking =
+        bot_state().active_goal == BotGoalType::eliminate_target
+        || bot_state().fsm_state == BotFsmState::engage_enemy
+        || bot_state().fsm_state == BotFsmState::pursue_enemy
+        || bot_state().fsm_state == BotFsmState::seek_enemy;
+    return std::clamp(
+        combat_tracking
+            ? std::lerp(0.14f, 0.32f, skill_factor)
+            : std::lerp(0.10f, 0.24f, skill_factor),
+        0.05f,
+        0.40f
+    );
+}
+
 rf::Vector3 compute_skill_adjusted_enemy_aim_target(
     const rf::Entity& local_entity,
     const rf::Entity& enemy_target,
     const float skill_factor)
 {
+    // The blend trails a target crossing the view by its time constant; leading the target by that cancels the lag.
+    const float tracking_lag = -1.0f / (kAimBlendTunedRate * std::log(1.0f - aim_blend_alpha(skill_factor)));
+    const float prediction = std::clamp(get_active_bot_skill_profile().aim_prediction, 0.0f, 1.0f);
+    const rf::Vector3 tracking_lead =
+        (bot_vehicle_target_velocity(enemy_target) - local_entity.p_data.vel) * (tracking_lag * prediction);
     return compute_skill_adjusted_enemy_aim_target(
-        local_entity.eye_pos, local_entity.ai.current_primary_weapon, enemy_target, skill_factor);
+        local_entity.eye_pos, local_entity.ai.current_primary_weapon, enemy_target, skill_factor, tracking_lead);
 }
 
 bool aim_step(float& yaw, float& pitch, const rf::Vector3& look_dir, const float dt, const float skill_factor,
@@ -860,21 +892,7 @@ bool aim_step(float& yaw, float& pitch, const rf::Vector3& look_dir, const float
 {
     const rf::Vector3 current_forward = forward_from_non_linear_yaw_pitch(yaw, pitch);
 
-    const bool combat_tracking =
-        bot_state().active_goal == BotGoalType::eliminate_target
-        || bot_state().fsm_state == BotFsmState::engage_enemy
-        || bot_state().fsm_state == BotFsmState::pursue_enemy
-        || bot_state().fsm_state == BotFsmState::seek_enemy;
-    const float tuned_alpha = std::clamp(
-        combat_tracking
-            ? std::lerp(0.14f, 0.32f, skill_factor)
-            : std::lerp(0.10f, 0.24f, skill_factor),
-        0.05f,
-        0.40f
-    );
-    // The blend constants are per 30 fps frame; rescaling the exponent keeps convergence time independent of the host
-    // frame rate.
-    constexpr float kAimBlendTunedRate = 30.0f;
+    const float tuned_alpha = aim_blend_alpha(skill_factor);
     const float blend_dt = std::clamp(dt, 0.0f, 0.05f);
     const float interp_alpha = 1.0f - std::pow(1.0f - tuned_alpha, blend_dt * kAimBlendTunedRate);
     rf::Vector3 smoothed_look_dir =
@@ -2932,7 +2950,7 @@ rf::Vector3 bot_combat_enemy_aim_point(
     const rf::Entity& enemy,
     const float skill_factor)
 {
-    return compute_skill_adjusted_enemy_aim_target(origin, weapon_type, enemy, skill_factor);
+    return compute_skill_adjusted_enemy_aim_target(origin, weapon_type, enemy, skill_factor, {});
 }
 
 float bot_combat_weapon_effective_range(const int weapon_type)

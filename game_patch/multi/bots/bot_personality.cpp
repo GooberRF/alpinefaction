@@ -633,7 +633,9 @@ SkillPresetDef make_hard_skill()
     s.weapon_switch_likelihood = 0.60f;
     s.crouch_likelihood = 0.18f;
     s.jump_likelihood = 0.18f;
-    s.dodge_likelihood = 0.20f;
+    s.dodge_likelihood = 0.45f;
+    s.semi_auto_click_interval_scale = 1.6f;
+    s.aim_prediction = 0.5f;
     return def;
 }
 
@@ -650,7 +652,9 @@ SkillPresetDef make_expert_skill()
     s.weapon_switch_likelihood = 0.72f;
     s.crouch_likelihood = 0.22f;
     s.jump_likelihood = 0.22f;
-    s.dodge_likelihood = 0.26f;
+    s.dodge_likelihood = 0.65f;
+    s.semi_auto_click_interval_scale = 1.3f;
+    s.aim_prediction = 0.75f;
     return def;
 }
 
@@ -667,7 +671,9 @@ SkillPresetDef make_nightmare_skill()
     s.weapon_switch_likelihood = 0.85f;
     s.crouch_likelihood = 0.25f;
     s.jump_likelihood = 0.25f;
-    s.dodge_likelihood = 0.30f;
+    s.dodge_likelihood = 0.85f;
+    s.semi_auto_click_interval_scale = 1.1f;
+    s.aim_prediction = 1.0f;
     return def;
 }
 
@@ -931,6 +937,9 @@ bool bot_skill_apply_field_override(BotContext& ctx, uint8_t field_id, float val
             return true;
         case af_skill_field::semi_auto_click_interval_scale:
             s.semi_auto_click_interval_scale = std::clamp(value, 0.0f, 20.0f);
+            return true;
+        case af_skill_field::aim_prediction:
+            s.aim_prediction = std::clamp(value, 0.0f, 1.0f);
             return true;
         default:
             return false;
@@ -1202,6 +1211,7 @@ static const FieldNameMapping g_skill_field_map[] = {
     {"pitch_speed_cap",               static_cast<uint8_t>(af_skill_field::pitch_speed_cap)},
     {"fire_alignment_threshold",      static_cast<uint8_t>(af_skill_field::fire_alignment_threshold)},
     {"semi_auto_click_interval_scale", static_cast<uint8_t>(af_skill_field::semi_auto_click_interval_scale)},
+    {"aim_prediction",                static_cast<uint8_t>(af_skill_field::aim_prediction)},
 };
 
 int bot_personality_field_id_from_name(const char* name)

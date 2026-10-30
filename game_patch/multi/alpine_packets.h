@@ -1025,6 +1025,7 @@ enum class af_skill_field : uint8_t
     pitch_speed_cap = 0x0F,
     fire_alignment_threshold = 0x10,
     semi_auto_click_interval_scale = 0x11,
+    aim_prediction = 0x12,
 };
 
 #pragma pack(pop)
