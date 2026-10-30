@@ -371,7 +371,7 @@ constexpr float kEffectiveRangeDpsShare = 0.15f;
 constexpr float kIdealRangeDpsShare = 0.8f;
 constexpr float kRangeBandDpsShare = 0.35f;
 constexpr float kCraterStandoffScale = 1.5f;
-// From this speed up multiplayer fires a weapon as lag-compensated hitscan.
+// A weapons.tbl speed from this up makes a weapon lag-compensated hitscan in multiplayer.
 constexpr float kLeadProjectileMaxSpeed = 100.0f;
 constexpr float kFloorAimProbeDepth = 3.0f;
 constexpr float kFloorAimHeight = 0.1f;

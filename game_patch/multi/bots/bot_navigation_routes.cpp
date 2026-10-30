@@ -22,6 +22,7 @@ namespace
 {
 constexpr int kBotRouteProbeTraceFlags = rf::CF_ANY_HIT | rf::CF_PROCESS_INVISIBLE_FACES;
 constexpr int kMaxGoalDetourAttempts = 8;
+constexpr int kMaxFailedEdgeDetours = 3;
 constexpr int kMaxLongDetourAttempts = 10;
 constexpr int kMaxRoamRouteAttempts = 16;
 constexpr float kLadderEndpointTolerance = 0.75f;
@@ -1358,6 +1359,38 @@ RouteScoreWeights compute_route_score_weights()
 
     return w;
 }
+
+// The route search ignores failed edges, so a path through one is searched again avoiding the edge's far node (its near
+// node when that is the goal). With no such detour the path found is kept for the caller to reject.
+bool find_route_around_failed_edges(
+    const int start_waypoint,
+    const int goal_waypoint,
+    std::vector<int> avoidset,
+    std::vector<int>& out_path)
+{
+    if (!bot_waypoint_route(start_waypoint, goal_waypoint, avoidset, out_path) || out_path.size() < 2) {
+        return false;
+    }
+    std::vector<int> detour;
+    for (int attempt = 0; attempt < kMaxFailedEdgeDetours; ++attempt) {
+        int avoid = 0;
+        for (size_t i = 1; i < out_path.size(); ++i) {
+            if (bot_nav_is_failed_edge_cooldown_active_no_prune(out_path[i - 1], out_path[i])) {
+                avoid = out_path[i] != goal_waypoint ? out_path[i] : out_path[i - 1];
+                break;
+            }
+        }
+        if (avoid <= 0 || avoid == start_waypoint) {
+            return true;
+        }
+        avoidset.insert(std::lower_bound(avoidset.begin(), avoidset.end(), avoid), avoid);
+        if (!bot_waypoint_route(start_waypoint, goal_waypoint, avoidset, detour) || detour.size() < 2) {
+            return true;
+        }
+        out_path = std::move(detour);
+    }
+    return true;
+}
 }
 
 bool bot_nav_is_link_traversable_for_route(const int from_waypoint, const int to_waypoint)
@@ -1850,7 +1883,7 @@ bool bot_nav_pick_waypoint_route_to_goal_randomized_after_stuck(
     const float corridor_radius_sq = corridor_radius * corridor_radius;
 
     std::vector<int> path_direct;
-    if (bot_waypoint_route(start_waypoint, goal_waypoint, avoidset, path_direct)
+    if (find_route_around_failed_edges(start_waypoint, goal_waypoint, avoidset, path_direct)
         && path_direct.size() >= 2) {
         const float route_score = bot_nav_compute_route_score(path_direct);
         if (std::isfinite(route_score)
@@ -1873,7 +1906,7 @@ bool bot_nav_pick_waypoint_route_to_goal_randomized_after_stuck(
             : std::vector<int>{};
         std::vector<int> relaxed_path{};
         const bool relaxed_found =
-            bot_waypoint_route(start_waypoint, goal_waypoint, relaxed_avoidset, relaxed_path);
+            find_route_around_failed_edges(start_waypoint, goal_waypoint, relaxed_avoidset, relaxed_path);
         if (relaxed_found
             && relaxed_path.size() >= 2
             && !bot_nav_path_contains_failed_edge_cooldown(relaxed_path)
@@ -1948,9 +1981,9 @@ bool bot_nav_pick_waypoint_route_to_goal_randomized_after_stuck(
         const std::vector<int> no_avoidset{};
         std::vector<int> path;
         const bool relaxed_found = has_strict_blacklist_avoidance
-            && bot_waypoint_route(start_waypoint, goal_waypoint, relaxed_avoidset, path);
+            && find_route_around_failed_edges(start_waypoint, goal_waypoint, relaxed_avoidset, path);
         const bool fallback_found = relaxed_found
-            || bot_waypoint_route(start_waypoint, goal_waypoint, no_avoidset, path);
+            || find_route_around_failed_edges(start_waypoint, goal_waypoint, no_avoidset, path);
         if (!fallback_found
             || path.size() < 2
             || bot_nav_path_contains_failed_edge_cooldown(path)

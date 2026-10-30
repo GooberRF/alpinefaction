@@ -350,8 +350,7 @@ void reset_objective_progress_watchdog(bool full_reset)
     bot_state().objective_progress_watchdog_handle = -1;
     bot_state().objective_progress_watchdog_identifier = -1;
     bot_state().objective_progress_watchdog_waypoint = 0;
-    bot_state().objective_progress_watchdog_route_waypoint = 0;
-    bot_state().objective_progress_watchdog_route_next_index = 0;
+    bot_state().objective_progress_watchdog_reached_waypoint = 0;
     bot_state().objective_progress_watchdog_best_dist_sq = std::numeric_limits<float>::infinity();
     bot_state().objective_progress_watchdog_retry_count = 0;
 }
@@ -379,6 +378,12 @@ int get_route_current_waypoint()
         return bot_state().waypoint_path[next_index];
     }
     return 0;
+}
+
+int last_reached_waypoint()
+{
+    const auto& visits = bot_state().recent_waypoint_visits;
+    return visits.empty() ? 0 : visits.back();
 }
 
 int get_route_next_waypoint()
@@ -431,9 +436,7 @@ void capture_objective_progress_watchdog_snapshot(
     bot_state().objective_progress_watchdog_handle = bot_state().goal_target_handle;
     bot_state().objective_progress_watchdog_identifier = bot_state().goal_target_identifier;
     bot_state().objective_progress_watchdog_waypoint = focus_waypoint;
-    bot_state().objective_progress_watchdog_route_waypoint = get_route_next_waypoint();
-    bot_state().objective_progress_watchdog_route_next_index =
-        bot_state().waypoint_next_index;
+    bot_state().objective_progress_watchdog_reached_waypoint = last_reached_waypoint();
     bot_state().objective_progress_watchdog_best_dist_sq = dist_sq;
     bot_state().objective_progress_watchdog_timer.set(kObjectiveProgressWatchdogMs);
 }
@@ -494,12 +497,11 @@ ObjectiveProgressWatchdogAction update_objective_progress_watchdog(
     }
 
     const int route_waypoint = get_route_next_waypoint();
-    const int route_next_index = bot_state().waypoint_next_index;
+    // Only reaching a waypoint counts: a reroute swaps the route without bringing the bot any closer.
+    const int reached_waypoint = last_reached_waypoint();
     const bool route_progressed =
-        route_waypoint != bot_state().objective_progress_watchdog_route_waypoint
-        || route_next_index != bot_state().objective_progress_watchdog_route_next_index;
-    bot_state().objective_progress_watchdog_route_waypoint = route_waypoint;
-    bot_state().objective_progress_watchdog_route_next_index = route_next_index;
+        reached_waypoint > 0 && reached_waypoint != bot_state().objective_progress_watchdog_reached_waypoint;
+    bot_state().objective_progress_watchdog_reached_waypoint = reached_waypoint;
 
     if (!std::isfinite(bot_state().objective_progress_watchdog_best_dist_sq)) {
         bot_state().objective_progress_watchdog_best_dist_sq = dist_sq;

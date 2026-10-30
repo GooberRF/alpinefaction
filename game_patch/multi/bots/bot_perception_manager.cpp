@@ -65,9 +65,11 @@ int los_recheck_interval_ms(const bool visible)
 bool candidate_has_los(const rf::Entity& local_entity, const rf::Entity& candidate)
 {
     BotState& state = bot_state();
-    if (candidate.handle == state.los_target_handle
-        && state.los_check_timer.valid()
-        && !state.los_check_timer.elapsed()) {
+    if (candidate.handle == state.los_target_handle) {
+        if (!state.los_check_timer.valid() || state.los_check_timer.elapsed()) {
+            state.los_to_enemy = has_visibility_to_target_entity(local_entity, candidate);
+            state.los_check_timer.set(los_recheck_interval_ms(state.los_to_enemy));
+        }
         return state.los_to_enemy;
     }
     BotCandidateLos* slot = nullptr;

@@ -1135,7 +1135,6 @@ void bot_process_movement(
             }
         }
 
-        // Gear-up keeps the bot standing, so crouch and jump wait for it to end.
         if (!respawn_gearup_active
             && (!bot_state().combat_maneuver_timer.valid()
                 || bot_state().combat_maneuver_timer.elapsed())) {

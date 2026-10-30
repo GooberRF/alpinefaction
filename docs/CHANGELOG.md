@@ -166,6 +166,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Make bots walk straight to objectives, items and enemies only when nothing  is in the way and there is no ledge to drop off, and look ahead round corners or toward where a threat was last noticed
 - Make bots go to a dropped CTF flag rather than its base, chase whoever carries their stolen flag instead of taking it for dropped, re-plan routes to enemies and flag or bag carriers as they move, and keep to their route over ledge drops, jumps and jump pads
 - Make bots on a CTF raid turn back once their own flag is taken, keep to their route up onto a flag stand instead of circling it, give up on a ledge drop they are held back from, and leave dropped flags no route reaches
+- Make bots keep to their route when closing in on an enemy in sight instead of re-planning it every moment, route around a link they just failed to cross instead of heading straight for their goal, and re-plan or give up on an objective once they stop reaching waypoints on the way
 - Ignore connected human players who have not spawned yet this level when picking a joining bot's team
 - Speed up waypoint autogeneration on large levels
 - Seed waypoint autogeneration from the floor under every control point and from every spawn point

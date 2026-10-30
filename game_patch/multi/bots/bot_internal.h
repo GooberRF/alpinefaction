@@ -87,7 +87,6 @@ inline constexpr float kEnemyAimHeightBlend = 0.42f;
 inline constexpr int kPursuitRepathIntervalMs = 2000;
 inline constexpr int kCombatLosRepositionDecisionMs = 325;
 inline constexpr int kCombatLosRepositionRepathMs = 450;
-inline constexpr int kCombatLosSampleIntervalMs = 150;
 inline constexpr int kCombatLosNeighborEvalIntervalMs = 750;
 inline constexpr int kLosRouteSolveIntervalMs = 150;
 inline constexpr int kObstacleProbeIntervalMs = 500;
@@ -1050,10 +1049,6 @@ struct BotState
     int combat_los_anchor_waypoint = 0;
     int combat_los_target_waypoint = 0;
     rf::Timestamp combat_los_reposition_eval_timer{};
-    rf::Timestamp combat_los_waypoint_guard_timer{};
-    int combat_los_waypoint_guard_waypoint = 0;
-    int combat_los_waypoint_guard_target_handle = -1;
-    bool combat_los_waypoint_guard_visible = false;
 
     float move_input_x = 0.0f;
     float move_input_y = 0.0f;
@@ -1109,8 +1104,7 @@ struct BotState
     int objective_progress_watchdog_handle = -1;
     int objective_progress_watchdog_identifier = -1;
     int objective_progress_watchdog_waypoint = 0;
-    int objective_progress_watchdog_route_waypoint = 0;
-    int objective_progress_watchdog_route_next_index = 0;
+    int objective_progress_watchdog_reached_waypoint = 0;
     float objective_progress_watchdog_best_dist_sq = std::numeric_limits<float>::infinity();
     int objective_progress_watchdog_retry_count = 0;
     BotGlobalFailsafeWatchdog global_failsafe_wd{};

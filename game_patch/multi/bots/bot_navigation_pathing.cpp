@@ -645,10 +645,6 @@ void clear_waypoint_route()
     bot_state().combat_los_target_waypoint = 0;
     bot_state().combat_los_reposition_timer.invalidate();
     bot_state().combat_los_reposition_eval_timer.invalidate();
-    bot_state().combat_los_waypoint_guard_timer.invalidate();
-    bot_state().combat_los_waypoint_guard_waypoint = 0;
-    bot_state().combat_los_waypoint_guard_target_handle = -1;
-    bot_state().combat_los_waypoint_guard_visible = false;
     bot_state().forward_obstacle_progress_timer.invalidate();
     bot_state().forward_obstacle_progress_origin = {};
     bot_state().corner_probe_progress_timer.invalidate();
@@ -1175,10 +1171,6 @@ void reset_client_bot_state()
     bot_state().combat_los_anchor_waypoint = 0;
     bot_state().combat_los_target_waypoint = 0;
     bot_state().combat_los_reposition_eval_timer.invalidate();
-    bot_state().combat_los_waypoint_guard_timer.invalidate();
-    bot_state().combat_los_waypoint_guard_waypoint = 0;
-    bot_state().combat_los_waypoint_guard_target_handle = -1;
-    bot_state().combat_los_waypoint_guard_visible = false;
     bot_state().firing.reset();
     bot_state().known_weapons.fill(false);
     bot_state().known_weapons_initialized = false;
@@ -1257,8 +1249,7 @@ void reset_client_bot_state()
     bot_state().objective_progress_watchdog_handle = -1;
     bot_state().objective_progress_watchdog_identifier = -1;
     bot_state().objective_progress_watchdog_waypoint = 0;
-    bot_state().objective_progress_watchdog_route_waypoint = 0;
-    bot_state().objective_progress_watchdog_route_next_index = 0;
+    bot_state().objective_progress_watchdog_reached_waypoint = 0;
     bot_state().objective_progress_watchdog_best_dist_sq = std::numeric_limits<float>::infinity();
     bot_state().objective_progress_watchdog_retry_count = 0;
     bot_state().global_failsafe_wd.timer.invalidate();
@@ -1806,53 +1797,6 @@ bool update_waypoint_target_from_current_path(const rf::Entity& entity)
     (void)try_fast_forward_path_on_downward_fall(entity, current_waypoint, target_pos);
     if (handle_fall_fast_forward_stuck_guard(entity, current_waypoint)) {
         return false;
-    }
-
-    if (bot_state().pursuit_target_handle >= 0 && bot_state().los_to_enemy) {
-        rf::Entity* pursuit_target =
-            rf::entity_from_handle(bot_state().pursuit_target_handle);
-        if (pursuit_target) {
-            const bool should_refresh_waypoint_los =
-                !bot_state().combat_los_waypoint_guard_timer.valid()
-                || bot_state().combat_los_waypoint_guard_timer.elapsed()
-                || bot_state().combat_los_waypoint_guard_waypoint != current_waypoint
-                || bot_state().combat_los_waypoint_guard_target_handle
-                    != pursuit_target->handle;
-            if (should_refresh_waypoint_los) {
-                const rf::Vector3 eye_offset = entity.eye_pos - entity.pos;
-                bot_state().combat_los_waypoint_guard_visible =
-                    waypoint_has_visibility_to_target(
-                        target_pos,
-                        eye_offset,
-                        pursuit_target->pos,
-                        pursuit_target->eye_pos,
-                        pursuit_target
-                    );
-                bot_state().combat_los_waypoint_guard_waypoint = current_waypoint;
-                bot_state().combat_los_waypoint_guard_target_handle =
-                    pursuit_target->handle;
-                bot_state().combat_los_waypoint_guard_timer.set(
-                    kCombatLosSampleIntervalMs
-                );
-            }
-
-            if (!bot_state().combat_los_waypoint_guard_visible) {
-                start_recovery_anchor_reroute(entity, current_waypoint);
-                // LOS can flicker near corners; keep advancing this frame while recovery replans.
-            }
-        }
-        else {
-            bot_state().combat_los_waypoint_guard_timer.invalidate();
-            bot_state().combat_los_waypoint_guard_waypoint = 0;
-            bot_state().combat_los_waypoint_guard_target_handle = -1;
-            bot_state().combat_los_waypoint_guard_visible = false;
-        }
-    }
-    else {
-        bot_state().combat_los_waypoint_guard_timer.invalidate();
-        bot_state().combat_los_waypoint_guard_waypoint = 0;
-        bot_state().combat_los_waypoint_guard_target_handle = -1;
-        bot_state().combat_los_waypoint_guard_visible = false;
     }
 
     if (!enforce_current_link_corridor(entity) && !bot_state().drop_link_route_locked) {
