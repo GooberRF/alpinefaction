@@ -178,6 +178,25 @@ void multi_spectate_reset_action_anim_edge_state()
     g_prev_weapon_type = -1;
 }
 
+// Demo seek landed mid-reload of the spectated player: start the fpgun reload anim and
+// advance it by the time already elapsed, then mark the edge as seen so the per-frame
+// detector does not restart it from frame 0.
+void multi_spectate_resume_reload_anim(rf::Entity* entity, float elapsed_secs)
+{
+    rf::Player* target = g_spectate_mode_target;
+    if (!g_spectate_mode_enabled || !target || target == rf::local_player || !entity
+        || entity->handle != target->entity_handle || !target->weapon_mesh_handle) {
+        return;
+    }
+    const int weapon_type = entity->ai.current_primary_weapon;
+    if (weapon_type >= 0 && weapon_type < rf::num_weapon_types
+        && rf::player_fpgun_action_anim_exists(weapon_type, rf::WA_RELOAD)) {
+        rf::player_fpgun_play_anim(target, rf::WA_RELOAD);
+        rf::vmesh_process(target->weapon_mesh_handle, elapsed_secs, 0, nullptr, nullptr, 1);
+    }
+    g_prev_is_reloading = true;
+}
+
 void player_fpgun_set_player(rf::Player* pp);
 
 static void spectate_apply_player_view_mode();
@@ -831,6 +850,7 @@ SpectateCameraState multi_spectate_get_camera_state()
     SpectateCameraState state;
     state.attached = g_spectate_mode_enabled && spectate_is_player_view(g_spectate_view_mode);
     state.third_person = g_spectate_view_mode == SpectateViewMode::third_person;
+    state.static_index = g_spectate_static_active ? g_spectate_static_index : -1;
     return state;
 }
 
@@ -838,6 +858,12 @@ void multi_spectate_apply_camera_state(const SpectateCameraState& state, rf::Pla
 {
     if (!state.attached || !target || target == rf::local_player || target->is_non_participant()) {
         multi_spectate_enter_freelook();
+        if (state.static_index >= 0 && state.static_index < spectate_static_camera_count()) {
+            g_spectate_detached_submode = SpectateViewMode::static_cam;
+            spectate_set_view_mode(SpectateViewMode::static_cam);
+            g_spectate_static_index = state.static_index;
+            spectate_apply_static_index();
+        }
         return;
     }
     // set_target_player handles entering attached spectate from a free view (defaults
@@ -1427,7 +1453,7 @@ void multi_spectate_on_destroy_player(rf::Player* player)
 FunHook<void(rf::Player*)> render_reticle_hook{
     0x0043A2C0,
     [](rf::Player* player) {
-        if (rf::gameseq_get_state() == rf::GS_MULTI_LIMBO)
+        if (rf::gameseq_get_state() == rf::GS_MULTI_LIMBO || !hud_element_visible(HudElement::reticle))
             return;
         if (spectate_first_person_render_active())
             render_reticle_hook.call_target(g_spectate_mode_target);
@@ -2346,6 +2372,8 @@ struct DemoPlaybackHintBinds
     std::string rewind;
     std::string forward;
     std::string pause;
+    std::string mark;
+    std::string jump;
 };
 
 // Appends the demo playback control hints (demo controls popup + its keyboard
@@ -2361,10 +2389,22 @@ static int append_demo_playback_hints(std::pair<const char*, const char*>* hints
     binds.forward = get_action_bind_name(
         get_af_control(rf::AlpineControlConfigAction::AF_ACTION_VOTE_NO)).c_str();
     binds.pause = get_action_bind_name(rf::ControlConfigAction::CC_ACTION_RELOAD).c_str();
-    hints[nh++] = {binds.popup.c_str(), "Demo Controls"};
-    hints[nh++] = {binds.rewind.c_str(), "Rewind 10s"};
-    hints[nh++] = {binds.forward.c_str(), "Forward 10s"};
-    hints[nh++] = {binds.pause.c_str(), "Pause / Resume"};
+    binds.mark = get_action_bind_name(rf::ControlConfigAction::CC_ACTION_QUICK_SAVE).c_str();
+    binds.jump = get_action_bind_name(rf::ControlConfigAction::CC_ACTION_QUICK_LOAD).c_str();
+    if (demo_controls_ui_is_open()) {
+        // The expanded panel's buttons show the other shortcuts, but jumping to the
+        // custom marker has no button
+        hints[nh++] = {binds.popup.c_str(), "Compact Demo Controls"};
+    }
+    else {
+        hints[nh++] = {binds.popup.c_str(), "Expand Demo Controls"};
+        hints[nh++] = {binds.rewind.c_str(), "Rewind 10s"};
+        hints[nh++] = {binds.forward.c_str(), "Forward 10s"};
+        hints[nh++] = {binds.pause.c_str(), "Pause / Resume"};
+        hints[nh++] = {binds.mark.c_str(), "Set Marker"};
+    }
+    if (demo_controls_ui_has_custom_marker())
+        hints[nh++] = {binds.jump.c_str(), "Jump to Marker"};
     return nh;
 }
 
@@ -2381,6 +2421,10 @@ static void draw_spectate_hints(const std::pair<const char*, const char*>* hints
     }
 }
 
+// Right edge of the last drawn hint column and the frame it was drawn in
+static int g_control_hints_right_x = 0;
+static int g_control_hints_frame = -1;
+
 void hud_draw_control_hints(const std::pair<const char*, const char*>* hints, int count)
 {
     const int font = hud_get_default_font();
@@ -2388,14 +2432,24 @@ void hud_draw_control_hints(const std::pair<const char*, const char*>* hints, in
     const bool big = g_alpine_game_config.big_hud;
     // The binds are right-aligned on left_x: pushed right as far as a long one (e.g. "Caps Lock") needs.
     int widest = 0;
+    int widest_label = 0;
     for (int i = 0; i < count; ++i) {
         widest = std::max(widest, rf::gr::get_string_size(hints[i].first, font).first);
+        widest_label = std::max(widest_label, rf::gr::get_string_size(hints[i].second, font).first);
     }
     const int left_x = std::max(big ? 120 : 70, widest + (big ? 16 : 8));
     const int right_x = left_x + (big ? 20 : 10);
     int y = rf::gr::screen_height() - (big ? 200 : 120) + font_h * 2;
     y = spectate_raise_hints_above_hud(y, count, font_h);
     draw_spectate_hints(hints, count, left_x, right_x, y, font, font_h);
+    g_control_hints_right_x = right_x + widest_label;
+    g_control_hints_frame = rf::frame_count;
+}
+
+int hud_control_hints_right_x()
+{
+    // Drawn this frame or the last: the HUD renders after the input pass that also asks
+    return rf::frame_count - g_control_hints_frame <= 1 ? g_control_hints_right_x : 0;
 }
 
 // Top y of the "Spectating: <name>" plaque at the bottom of the screen (same
@@ -2403,14 +2457,230 @@ void hud_draw_control_hints(const std::pair<const char*, const char*>* hints, in
 // The mode-label block anchors here: at this position in non-follow modes
 // (where the plaque isn't drawn), just above it in follow modes — keeping the
 // label away from the HUD notification slot under the chat box.
-static int spectate_name_plaque_top_y()
+static int spectate_plaque_padding_y()
+{
+    return g_alpine_game_config.big_hud ? 4 : 2;
+}
+
+static int spectate_plaque_padding_x()
+{
+    return g_alpine_game_config.big_hud ? 24 : 16;
+}
+
+static int spectate_plaque_line_gap()
+{
+    return g_alpine_game_config.big_hud ? 2 : 1;
+}
+
+static int spectate_name_plaque_height()
 {
     const int small_font_h = rf::gr::get_font_height(hud_get_small_font());
     const int large_font_h = rf::gr::get_font_height(hud_get_large_font());
-    const int padding_y = g_alpine_game_config.big_hud ? 4 : 2;
-    const int line_gap = g_alpine_game_config.big_hud ? 2 : 1;
-    const int bar_h = small_font_h + large_font_h + padding_y * 2 + line_gap;
-    return rf::gr::screen_height() - (g_alpine_game_config.big_hud ? 15 : 10) - bar_h;
+    return small_font_h + large_font_h + spectate_plaque_padding_y() * 2 + spectate_plaque_line_gap();
+}
+
+static int spectate_name_plaque_top_y()
+{
+    return rf::gr::screen_height() - (g_alpine_game_config.big_hud ? 15 : 10) - spectate_name_plaque_height();
+}
+
+// The plaque's text: a small label line over a large title line, plus a " BOT" tag.
+struct SpectatePlaqueText
+{
+    std::string label;
+    std::string title;
+    rf::Color title_color{255, 255, 255, 255};
+    bool bot = false;
+};
+
+// with_binds appends the player's numpad quick-bind slots to the name, e.g. " (1, 3)"
+static SpectatePlaqueText spectate_target_plaque_text(std::string label, bool with_binds = true)
+{
+    SpectatePlaqueText text;
+    text.label = std::move(label);
+    text.title = g_spectate_mode_target->name.c_str();
+    if (with_binds) {
+        text.title += spectate_player_bind_suffix(g_spectate_mode_target);
+    }
+    if (multi_is_team_game_type()) {
+        text.title_color = g_spectate_mode_target->team ? rf::Color{0x34, 0x4E, 0xA7, 0xFF}
+                                                        : rf::Color{0xA7, 0x00, 0x00, 0xFF};
+    }
+    else {
+        text.title_color = {0xFF, 0x88, 0x22, 0xFF};
+    }
+    text.bot = g_spectate_mode_target->is_bot;
+    return text;
+}
+
+static int spectate_plaque_text_width(const SpectatePlaqueText& text)
+{
+    int title_w = rf::gr::get_string_size(text.title, hud_get_large_font()).first;
+    if (text.bot) {
+        title_w += rf::gr::get_string_size(" BOT", hud_get_small_font()).first;
+    }
+    return std::max(title_w, rf::gr::get_string_size(text.label, hud_get_small_font()).first);
+}
+
+// Draws the text centered on center_x inside a plaque whose top edge is top_y.
+static void draw_spectate_plaque_text(const SpectatePlaqueText& text, int center_x, int top_y)
+{
+    const int small_font = hud_get_small_font();
+    const int large_font = hud_get_large_font();
+    const int label_y = top_y + spectate_plaque_padding_y();
+    int name_y = label_y + rf::gr::get_font_height(small_font) + spectate_plaque_line_gap();
+
+    if (text.label.empty()) {
+        // Title alone: centered in the plaque
+        name_y = top_y + (spectate_name_plaque_height() - rf::gr::get_font_height(large_font)) / 2;
+    }
+    else {
+        rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xFF);
+        rf::gr::string_aligned(rf::gr::ALIGN_CENTER, center_x, label_y, text.label.c_str(), small_font);
+    }
+    int title_w = rf::gr::get_string_size(text.title, large_font).first;
+    if (text.bot) {
+        title_w += rf::gr::get_string_size(" BOT", small_font).first;
+    }
+    rf::gr::set_color(text.title_color);
+    rf::gr::string_aligned(rf::gr::ALIGN_LEFT, center_x - title_w / 2, name_y, text.title.c_str(), large_font);
+    if (text.bot) {
+        rf::gr::set_color(255, 250, 205, 255);
+        int bot_y = name_y + (rf::gr::get_font_height(large_font) - rf::gr::get_font_height(small_font)) / 2;
+        rf::gr::string(rf::gr::current_string_x, bot_y, " BOT", small_font);
+    }
+}
+
+static std::string spectate_view_label()
+{
+    std::string label = g_spectate_view_mode == SpectateViewMode::first_person
+        ? "First Person"
+        : (g_spectate_third_person_orbit ? "Third Person (Orbit)" : "Third Person");
+    if (g_povcomp_applied_ms >= 1.0f) {
+        label += "  [povcomp ~" + std::to_string(static_cast<int>(g_povcomp_applied_ms)) + "ms]";
+    }
+    return label;
+}
+
+static std::string spectate_static_camera_label()
+{
+    std::string label = "Camera " + std::to_string(g_spectate_static_index + 1)
+        + " of " + std::to_string(spectate_static_camera_count());
+    if (g_spectate_static_index >= rf::fixed_camera_count)
+        label += " (dropped)";
+    return label;
+}
+
+int multi_spectate_nameplate_top_y()
+{
+    return spectate_name_plaque_top_y();
+}
+
+int multi_spectate_nameplate_height()
+{
+    return spectate_name_plaque_height();
+}
+
+// The nameplate row's text for the current camera, or nullopt when there is nothing to name.
+// bare drops the "Spectating" lead from the label line, keeping only the view or camera, and
+// the player's quick-bind numbers from the name.
+static std::optional<SpectatePlaqueText> nameplate_row_text(bool bare)
+{
+    const bool minimal = g_alpine_game_config.spectate_mode_minimal_ui;
+    const auto label = [&](const char* bare, const std::string& detail) {
+        if (minimal) {
+            return bare ? std::string{} : std::string{bare};
+        }
+        return bare ? detail : "Spectating - " + detail;
+    };
+    SpectatePlaqueText text;
+    if (multi_spectate_is_static()) {
+        text.label = label("Spectating", spectate_static_camera_label());
+        text.title = "Static Camera";
+    }
+    else if (multi_spectate_is_freelook()) {
+        text.label = bare ? "" : "Spectating";
+        text.title = "Free Look";
+    }
+    else if (g_spectate_mode_enabled && g_spectate_mode_target) {
+        text = spectate_target_plaque_text(label("Spectating:", spectate_view_label()), !bare);
+    }
+    else {
+        return std::nullopt;
+    }
+    return text;
+}
+
+int multi_spectate_nameplate_row_width(bool bare)
+{
+    const auto text = nameplate_row_text(bare);
+    if (!text) {
+        return 0;
+    }
+    return std::min(spectate_plaque_text_width(*text) + spectate_plaque_padding_x() * 2, rf::gr::screen_width() - 20);
+}
+
+void multi_spectate_render_nameplate_row(int center_x, int top_y, bool bare)
+{
+    const auto row_text = nameplate_row_text(bare);
+    if (!row_text) {
+        return;
+    }
+    const SpectatePlaqueText& text = *row_text;
+    rf::Entity* entity = nullptr;
+    if (!multi_spectate_is_static() && !multi_spectate_is_freelook()) {
+        entity = rf::entity_from_handle(g_spectate_mode_target->entity_handle);
+    }
+    draw_spectate_plaque_text(text, center_x, top_y);
+    const int text_left = center_x - spectate_plaque_text_width(text) / 2 - spectate_plaque_padding_x();
+    render_spectate_powerup_icons(entity, text_left, top_y, spectate_name_plaque_height());
+}
+
+// The live "Spectating: <name>" plaque with powerup icons and next/prev hints beside it.
+static void render_spectate_name_plaque(rf::Entity* entity)
+{
+    const int scr_w = rf::gr::screen_width();
+    int small_font = hud_get_small_font();
+    int small_font_h = rf::gr::get_font_height(small_font);
+    const int line_gap = spectate_plaque_line_gap();
+
+    const SpectatePlaqueText plaque = spectate_target_plaque_text("Spectating:");
+    const int bar_h = spectate_name_plaque_height();
+    int bar_w = std::min(spectate_plaque_text_width(plaque) + spectate_plaque_padding_x() * 2, scr_w - 20);
+    int bar_x = (scr_w - bar_w) / 2;
+    int bar_y = spectate_name_plaque_top_y();
+    rf::gr::set_color(0, 0, 0x00, 150);
+    rf::gr::rect(bar_x, bar_y, bar_w, bar_h);
+    draw_spectate_plaque_text(plaque, bar_x + bar_w / 2, bar_y);
+
+    render_spectate_powerup_icons(entity, bar_x, bar_y, bar_h);
+
+    // Draw next/prev player hints flanking the nameplate bar
+    if (!g_alpine_game_config.spectate_mode_minimal_ui && !g_remote_server_cfg_popup.is_active() && !vote_panel_is_gameplay_overlay_active()) {
+        std::string prev_player_text =
+            get_action_bind_name(rf::ControlConfigAction::CC_ACTION_SECONDARY_ATTACK);
+        std::string next_player_text =
+            get_action_bind_name(rf::ControlConfigAction::CC_ACTION_PRIMARY_ATTACK);
+
+        int nav_gap = g_alpine_game_config.big_hud ? 16 : 10;
+
+        int nav_content_h = small_font_h * 2 + line_gap;
+        int nav_y = bar_y + (bar_h - nav_content_h) / 2;
+
+        // Left side: previous player
+        int prev_x = bar_x - nav_gap;
+        rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xC0);
+        rf::gr::string_aligned(rf::gr::ALIGN_RIGHT, prev_x, nav_y, prev_player_text.c_str(), small_font);
+        rf::gr::set_color(0xFF, 0xFF, 0xFF, 0x80);
+        rf::gr::string_aligned(rf::gr::ALIGN_RIGHT, prev_x, nav_y + small_font_h + line_gap, "Previous Player", small_font);
+
+        // Right side: next player
+        int next_x = bar_x + bar_w + nav_gap;
+        rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xC0);
+        rf::gr::string_aligned(rf::gr::ALIGN_LEFT, next_x, nav_y, next_player_text.c_str(), small_font);
+        rf::gr::set_color(0xFF, 0xFF, 0xFF, 0x80);
+        rf::gr::string_aligned(rf::gr::ALIGN_LEFT, next_x, nav_y + small_font_h + line_gap, "Next Player", small_font);
+    }
 }
 
 void multi_spectate_render() {
@@ -2425,7 +2695,7 @@ void multi_spectate_render() {
     spectate_render_bind_dialog();
 
     if (multi_spectate_is_static()) {
-        if (!g_alpine_game_config.spectate_mode_minimal_ui && !g_remote_server_cfg_popup.is_active() && !vote_panel_is_gameplay_overlay_active() && !demo_controls_ui_is_open()) {
+        if (!g_alpine_game_config.spectate_mode_minimal_ui && !g_remote_server_cfg_popup.is_active() && !vote_panel_is_gameplay_overlay_active()) {
             int medium_font = hud_get_default_font();
             int large_font = hud_get_large_font();
             int scr_w = rf::gr::screen_width();
@@ -2434,25 +2704,24 @@ void multi_spectate_render() {
             rf::Color shadow_clr{0, 0, 0, 128};
 
             // No name plaque in static-camera view — the mode label block takes
-            // the plaque's spot at the bottom of the screen.
-            int title_x = scr_w / 2;
-            int title_y = spectate_name_plaque_top_y();
-            draw_with_shadow(
-                title_x, title_y, 2, 2, white_clr, shadow_clr,
-                [=](int x, int y) {
-                    rf::gr::string_aligned(rf::gr::ALIGN_CENTER, x, y, "STATIC CAMERA", large_font);
-                }
-            );
+            // the plaque's spot at the bottom of the screen (the demo panel's
+            // nameplate row shows it instead during playback).
+            if (!demo_controls_ui_draws_nameplate()) {
+                int title_x = scr_w / 2;
+                int title_y = spectate_name_plaque_top_y();
+                draw_with_shadow(
+                    title_x, title_y, 2, 2, white_clr, shadow_clr,
+                    [=](int x, int y) {
+                        rf::gr::string_aligned(rf::gr::ALIGN_CENTER, x, y, "STATIC CAMERA", large_font);
+                    }
+                );
 
-            // Current-camera subtitle just below the title.
-            int large_font_h = rf::gr::get_font_height(large_font);
-            std::string cam_subtitle = "Camera " + std::to_string(g_spectate_static_index + 1)
-                + " of " + std::to_string(spectate_static_camera_count());
-            if (g_spectate_static_index >= rf::fixed_camera_count)
-                cam_subtitle += " (dropped)";
-            rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xB0);
-            rf::gr::string_aligned(rf::gr::ALIGN_CENTER, title_x, title_y + large_font_h,
-                cam_subtitle.c_str(), medium_font);
+                // Current-camera subtitle just below the title.
+                int large_font_h = rf::gr::get_font_height(large_font);
+                rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xB0);
+                rf::gr::string_aligned(rf::gr::ALIGN_CENTER, title_x, title_y + large_font_h,
+                    spectate_static_camera_label().c_str(), medium_font);
+            }
 
             std::string attach_text = get_action_bind_name(
                 get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_ATTACH));
@@ -2488,7 +2757,7 @@ void multi_spectate_render() {
     }
 
     if (multi_spectate_is_freelook()) {
-        if (!g_alpine_game_config.spectate_mode_minimal_ui && !g_remote_server_cfg_popup.is_active() && !vote_panel_is_gameplay_overlay_active() && !demo_controls_ui_is_open()) {
+        if (!g_alpine_game_config.spectate_mode_minimal_ui && !g_remote_server_cfg_popup.is_active() && !vote_panel_is_gameplay_overlay_active()) {
             int large_font = hud_get_large_font();
             int scr_w = rf::gr::screen_width();
 
@@ -2496,15 +2765,18 @@ void multi_spectate_render() {
             rf::Color shadow_clr{0, 0, 0, 128};
 
             // No name plaque in free look — the mode label takes the plaque's
-            // spot at the bottom of the screen.
-            int title_x = scr_w / 2;
-            int title_y = spectate_name_plaque_top_y();
-            draw_with_shadow(
-                title_x, title_y, 2, 2, white_clr, shadow_clr,
-                [=](int x, int y) {
-                    rf::gr::string_aligned(rf::gr::ALIGN_CENTER, x, y, "FREELOOK SPECTATE", large_font);
-                }
-            );
+            // spot at the bottom of the screen (the demo panel's nameplate row
+            // shows it instead during playback).
+            if (!demo_controls_ui_draws_nameplate()) {
+                int title_x = scr_w / 2;
+                int title_y = spectate_name_plaque_top_y();
+                draw_with_shadow(
+                    title_x, title_y, 2, 2, white_clr, shadow_clr,
+                    [=](int x, int y) {
+                        rf::gr::string_aligned(rf::gr::ALIGN_CENTER, x, y, "FREELOOK SPECTATE", large_font);
+                    }
+                );
+            }
 
             std::string attach_text = get_action_bind_name(
                 get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_ATTACH)
@@ -2611,41 +2883,38 @@ void multi_spectate_render() {
 
     if (!g_alpine_game_config.spectate_mode_minimal_ui) {
         // Title + view subtitle sit as a block just above the name plaque at
-        // the bottom of the screen (out of the HUD notification's way).
+        // the bottom of the screen (out of the HUD notification's way). The demo
+        // panel's nameplate row carries the view label instead.
         int title_x = scr_w / 2;
         int title_y = spectate_name_plaque_top_y()
             - (large_font_h + medium_font_h)
             - (g_alpine_game_config.big_hud ? 10 : 6);
-        draw_with_shadow(
-            title_x,
-            title_y,
-            2,
-            2,
-            white_clr,
-            shadow_clr,
-            [=] (int x, int y) {
-                rf::gr::string_aligned(
-                    rf::gr::ALIGN_CENTER,
-                    x,
-                    y,
-                    "SPECTATE MODE",
-                    large_font
-                );
-            }
-        );
+        if (!demo_controls_ui_draws_nameplate()) {
+            draw_with_shadow(
+                title_x,
+                title_y,
+                2,
+                2,
+                white_clr,
+                shadow_clr,
+                [=] (int x, int y) {
+                    rf::gr::string_aligned(
+                        rf::gr::ALIGN_CENTER,
+                        x,
+                        y,
+                        "SPECTATE MODE",
+                        large_font
+                    );
+                }
+            );
 
-        // Current-view subtitle just below the title.
-        std::string view_subtitle = g_spectate_view_mode == SpectateViewMode::first_person
-            ? "First Person"
-            : (g_spectate_third_person_orbit ? "Third Person (Orbit)" : "Third Person");
-        if (g_povcomp_applied_ms >= 1.0f) {
-            view_subtitle += "  [povcomp ~" + std::to_string(static_cast<int>(g_povcomp_applied_ms)) + "ms]";
+            // Current-view subtitle just below the title.
+            rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xB0);
+            rf::gr::string_aligned(rf::gr::ALIGN_CENTER, title_x, title_y + large_font_h,
+                spectate_view_label().c_str(), medium_font);
         }
-        rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xB0);
-        rf::gr::string_aligned(rf::gr::ALIGN_CENTER, title_x, title_y + large_font_h,
-            view_subtitle.c_str(), medium_font);
 
-        if (!g_remote_server_cfg_popup.is_active() && !vote_panel_is_gameplay_overlay_active() && !demo_controls_ui_is_open()) {
+        if (!g_remote_server_cfg_popup.is_active() && !vote_panel_is_gameplay_overlay_active()) {
             std::string attach_text = get_action_bind_name(
                 get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_ATTACH)
             );
@@ -2679,107 +2948,11 @@ void multi_spectate_render() {
         }
     }
 
-    int small_font = hud_get_small_font();
-    int small_font_h = rf::gr::get_font_height(small_font);
-
-    const std::string target_name_str = std::string(g_spectate_mode_target->name.c_str())
-        + spectate_player_bind_suffix(g_spectate_mode_target);
-    const char* target_name = target_name_str.c_str();
-    const char* spectating_label = "Spectating:";
-    const auto [spectating_label_w, spectating_label_h] =
-        rf::gr::get_string_size(spectating_label, small_font);
-    auto [target_name_w, target_name_h] =
-        rf::gr::get_string_size(target_name, large_font);
-    const auto [bot_w, bot_h] = rf::gr::get_string_size(" BOT", small_font);
-    const bool is_bot = g_spectate_mode_target->is_bot;
-    if (is_bot) {
-        target_name_w += bot_w;
-    }
-
-    const int padding_y = g_alpine_game_config.big_hud ? 4 : 2;
-    const int padding_x = g_alpine_game_config.big_hud ? 24 : 16;
-    const int line_gap = g_alpine_game_config.big_hud ? 2 : 1;
-    const int bar_h = spectating_label_h + target_name_h + (padding_y * 2) + line_gap;
-
-    int max_bar_w = scr_w - 20;
-    int content_w = std::max(target_name_w, spectating_label_w);
-    int bar_w = std::min(content_w + padding_x * 2, max_bar_w);
-
-    int bar_x = (scr_w - bar_w) / 2;
-    // Shared with the mode-label anchor so the two can't drift apart. Numerically
-    // identical to the old `scr_h - (big?15:10) - bar_h` here, since single-line
-    // get_string_size heights equal the font heights the helper uses.
-    int bar_y = spectate_name_plaque_top_y();
-    rf::gr::set_color(0, 0, 0x00, 150);
-    rf::gr::rect(bar_x, bar_y, bar_w, bar_h);
-
-    const int label_y = bar_y + padding_y;
-    const int name_y = label_y + spectating_label_h + line_gap;
-
-    rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xFF);
-    rf::gr::string_aligned(
-        rf::gr::ALIGN_CENTER,
-        bar_x + bar_w / 2,
-        label_y,
-        spectating_label,
-        small_font
-    );
-    if (multi_is_team_game_type()) {
-        if (g_spectate_mode_target->team) {
-            rf::gr::set_color(0x34, 0x4E, 0xA7, 0xFF);
-        }
-        else {
-            rf::gr::set_color(0xA7, 0x00, 0x00, 0xFF);
-        }
-    }
-    else {
-        rf::gr::set_color(0xFF, 0x88, 0x22, 0xFF);
-    }
-    const int x = target_name_w / -2 + (bar_x + bar_w / 2);
-    rf::gr::string_aligned(
-        rf::gr::ALIGN_LEFT,
-        x,
-        name_y,
-        target_name,
-        large_font
-    );
-    if (is_bot) {
-        const rf::gr::Color saved_color = rf::gr::screen.current_color;
-        rf::gr::set_color(255, 250, 205, 255);
-        int bot_y = name_y + (rf::gr::get_font_height(large_font) - rf::gr::get_font_height(small_font)) / 2;
-        rf::gr::string(rf::gr::current_string_x, bot_y, " BOT", small_font);
-        rf::gr::set_color(saved_color);
-    }
-
     rf::Entity* entity = rf::entity_from_handle(g_spectate_mode_target->entity_handle);
 
-    render_spectate_powerup_icons(entity, bar_x, bar_y, bar_h);
-
-    // Draw next/prev player hints flanking the nameplate bar
-    if (!g_alpine_game_config.spectate_mode_minimal_ui && !g_remote_server_cfg_popup.is_active() && !vote_panel_is_gameplay_overlay_active() && !demo_controls_ui_is_open()) {
-        std::string prev_player_text =
-            get_action_bind_name(rf::ControlConfigAction::CC_ACTION_SECONDARY_ATTACK);
-        std::string next_player_text =
-            get_action_bind_name(rf::ControlConfigAction::CC_ACTION_PRIMARY_ATTACK);
-
-        int nav_gap = g_alpine_game_config.big_hud ? 16 : 10;
-
-        int nav_content_h = small_font_h * 2 + line_gap;
-        int nav_y = bar_y + (bar_h - nav_content_h) / 2;
-
-        // Left side: previous player
-        int prev_x = bar_x - nav_gap;
-        rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xC0);
-        rf::gr::string_aligned(rf::gr::ALIGN_RIGHT, prev_x, nav_y, prev_player_text.c_str(), small_font);
-        rf::gr::set_color(0xFF, 0xFF, 0xFF, 0x80);
-        rf::gr::string_aligned(rf::gr::ALIGN_RIGHT, prev_x, nav_y + small_font_h + line_gap, "Previous Player", small_font);
-
-        // Right side: next player
-        int next_x = bar_x + bar_w + nav_gap;
-        rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xC0);
-        rf::gr::string_aligned(rf::gr::ALIGN_LEFT, next_x, nav_y, next_player_text.c_str(), small_font);
-        rf::gr::set_color(0xFF, 0xFF, 0xFF, 0x80);
-        rf::gr::string_aligned(rf::gr::ALIGN_LEFT, next_x, nav_y + small_font_h + line_gap, "Next Player", small_font);
+    // During demo playback the controls panel draws the nameplate in its bottom row
+    if (!demo_controls_ui_draws_nameplate()) {
+        render_spectate_name_plaque(entity);
     }
 
     if (!entity) {

@@ -862,6 +862,8 @@ void clear_nemesis_pairs_for(uint8_t player_id)
 
 struct AwardDisplay
 {
+    // Title for listings, e.g. the demo seek bar's award markers
+    const char* name;
     const char* text;
     // std::format pattern naming the opposing player, for the awards whose callout does. Null for
     // the rest, and unused when the id did not resolve to a connected player.
@@ -869,34 +871,34 @@ struct AwardDisplay
 };
 
 constexpr std::array<AwardDisplay, award_id_count> award_display{{
-    {"TOASTY!", nullptr},
-    {"MASSACRE!", nullptr},
-    {"RIOT CONTROL!", nullptr},
-    {"2FER!", nullptr},
-    {"IMPRESSIVE!", nullptr},
-    {"EXCELLENT!", nullptr},
-    {"OVERKILL!", nullptr},
-    {"UNSTOPPABLE!", nullptr},
-    {"LAST STAND!", nullptr},
-    {"FLAG RUNNER!", nullptr},
-    {"CAPTURE DENIED!", nullptr},
-    {"AREA DENIED!", nullptr},
-    {"BAG CHECK!", nullptr},
-    {"REVENGE!", "REVENGE ON {}!"},
-    {"DOMINATING!", "DOMINATING {}!"},
-    {"YOU'RE ON A RAMPAGE!", nullptr},
-    {"FIRST BLOOD!", nullptr},
-    {"HAT TRICK!", nullptr},
-    {"AIRSHOT!", nullptr},
-    {"CLEAN SWEEP!", nullptr},
-    {"QUICKDRAW!", nullptr},
-    {"STONEWALL!", nullptr},
-    {"LOCKDOWN!", nullptr},
-    {"HAZARD PAY!", nullptr},
-    {"LAST LAUGH!", nullptr},
-    {"X-RAY!", nullptr},
-    {"DEPTH CHARGE!", nullptr},
-    {"CENSORED!", nullptr},
+    {"Toasty", "TOASTY!", nullptr},
+    {"Massacre", "MASSACRE!", nullptr},
+    {"Riot Control", "RIOT CONTROL!", nullptr},
+    {"2fer", "2FER!", nullptr},
+    {"Impressive", "IMPRESSIVE!", nullptr},
+    {"Excellent", "EXCELLENT!", nullptr},
+    {"Overkill", "OVERKILL!", nullptr},
+    {"Unstoppable", "UNSTOPPABLE!", nullptr},
+    {"Last Stand", "LAST STAND!", nullptr},
+    {"Flag Runner", "FLAG RUNNER!", nullptr},
+    {"Capture Denied", "CAPTURE DENIED!", nullptr},
+    {"Area Denied", "AREA DENIED!", nullptr},
+    {"Bag Check", "BAG CHECK!", nullptr},
+    {"Revenge", "REVENGE!", "REVENGE ON {}!"},
+    {"Dominating", "DOMINATING!", "DOMINATING {}!"},
+    {"Rampage", "YOU'RE ON A RAMPAGE!", nullptr},
+    {"First Blood", "FIRST BLOOD!", nullptr},
+    {"Hat Trick", "HAT TRICK!", nullptr},
+    {"Airshot", "AIRSHOT!", nullptr},
+    {"Clean Sweep", "CLEAN SWEEP!", nullptr},
+    {"Quickdraw", "QUICKDRAW!", nullptr},
+    {"Stonewall", "STONEWALL!", nullptr},
+    {"Lockdown", "LOCKDOWN!", nullptr},
+    {"Hazard Pay", "HAZARD PAY!", nullptr},
+    {"Last Laugh", "LAST LAUGH!", nullptr},
+    {"X-Ray", "X-RAY!", nullptr},
+    {"Depth Charge", "DEPTH CHARGE!", nullptr},
+    {"Censored", "CENSORED!", nullptr},
 }};
 static_assert(award_display[award_id_count - 1].text != nullptr);
 
@@ -961,6 +963,11 @@ ConsoleCommand2 domination_msgs_display_cmd{
 };
 
 } // namespace
+
+const char* award_name(uint8_t award_id)
+{
+    return award_id < award_id_count ? award_display[award_id].name : nullptr;
+}
 
 // -------------------------------------------------------------------------
 // Server entry points

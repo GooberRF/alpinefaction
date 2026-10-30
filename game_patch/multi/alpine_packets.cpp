@@ -2292,6 +2292,25 @@ void af_send_award_for_demo(rf::Player* recorder, uint8_t award_id, uint8_t vict
     af_send_packet(recorder, buf, static_cast<int>(offset), true);
 }
 
+// Only ever sent to the demo recorder: playback's pre-scan reads it for the seek bar markers.
+void af_send_item_pickup_for_demo(rf::Player* recorder, uint8_t player_id, uint8_t kind)
+{
+    if (!rf::is_server || !recorder) {
+        return;
+    }
+
+    std::byte buf[sizeof(RF_GamePacketHeader) + 3];
+    RF_GamePacketHeader header{};
+    header.type = static_cast<uint8_t>(af_packet_type::af_server_req);
+    header.size = 3; // req_type + player_id + kind
+    std::memcpy(buf, &header, sizeof(header));
+    buf[sizeof(header)] = static_cast<std::byte>(af_server_req_type::af_sreq_demo_item_pickup);
+    buf[sizeof(header) + 1] = static_cast<std::byte>(player_id);
+    buf[sizeof(header) + 2] = static_cast<std::byte>(kind);
+
+    af_send_packet(recorder, buf, static_cast<int>(sizeof(buf)), true);
+}
+
 // Jetpacks mutator: relay a player's thrust state to everyone else.
 // The owner is skipped because it applies its own effects locally.
 void af_send_jetpack_state(uint32_t obj_handle, bool on, uint8_t fuel_pct)
@@ -3248,6 +3267,8 @@ static void af_process_server_req_packet(const void* data, size_t len, const rf:
             }
             break;
         }
+        case af_server_req_type::af_sreq_demo_item_pickup:
+            break; // consumed by the demo pre-scan; nothing to apply
         default:
             xlog::debug("af_process_server_req_packet: unknown req_type {}", static_cast<int>(req_type));
             break;
@@ -5065,7 +5086,19 @@ void af_send_server_cfg(rf::Player* player) {
         g_alpine_server_config.printed_cfg_generation = rules_generation;
     }
 
-    const auto send_msg = [player] (const std::string_view msg) {
+    // The demo recorder gets the config written into its demo (playback shows it in this
+    // popup). Its sends are captured synchronously by the demo taps, and its fake reliable
+    // socket must stay out of the deferred queue (see demo_record_reliable_socket).
+    const bool to_demo = player->is_observer();
+    const auto send_packet = [player, to_demo] (const uint8_t* const data, const size_t len) {
+        if (to_demo) {
+            rf::multi_io_send_reliable(player, data, static_cast<int>(len), false);
+        } else {
+            send_queues_rel_add_packet(player->net_data->reliable_socket, data, len);
+        }
+    };
+
+    const auto send_msg = [&send_packet] (const std::string_view msg) {
         constexpr size_t max_chunk_len = rf::max_packet_size - sizeof(af_server_msg_packet);
         const size_t len = std::clamp(msg.size(), 0uz, max_chunk_len);
 
@@ -5083,11 +5116,7 @@ void af_send_server_cfg(rf::Player* player) {
         uint8_t* ptr = buf.data() + sizeof(server_msg_packet);
         std::memcpy(ptr, msg.data(), len);
 
-        send_queues_rel_add_packet(
-            player->net_data->reliable_socket,
-            buf.data(),
-            server_msg_packet.header.size + sizeof(server_msg_packet.header)
-        );
+        send_packet(buf.data(), server_msg_packet.header.size + sizeof(server_msg_packet.header));
 
         return len;
     };
@@ -5101,7 +5130,9 @@ void af_send_server_cfg(rf::Player* player) {
     // never finished receiving). Too rare to be worth solving here.
     // A future streamed feature should tag its queued packets and clear by
     // tag rather than widening this clear.
-    send_queues_rel_clear_packets(player->net_data->reliable_socket);
+    if (!to_demo) {
+        send_queues_rel_clear_packets(player->net_data->reliable_socket);
+    }
 
     constexpr int chunk_size = rf::max_packet_size - sizeof(af_server_msg_packet);
     for (const auto chunk : g_alpine_server_config.printed_cfg
@@ -5123,8 +5154,7 @@ void af_send_server_cfg(rf::Player* player) {
     // queue is FIFO per socket, so queuing puts the sentinel behind the chunks.
     // No payload follows the sentinel, so the packet struct is the whole wire
     // buffer and the chunk lambda's separate buffer is unnecessary here.
-    send_queues_rel_add_packet(
-        player->net_data->reliable_socket,
+    send_packet(
         reinterpret_cast<const uint8_t*>(&server_msg_packet),
         server_msg_packet.header.size + sizeof(server_msg_packet.header)
     );
@@ -5532,11 +5562,21 @@ void af_process_server_msg_packet(
 
     if (msg_packet.type == static_cast<uint8_t>(AF_SERVER_MSG_TYPE_REMOTE_SERVER_CFG)) {
         const char* ptr = static_cast<const char*>(data) + sizeof(msg_packet);
-        g_remote_server_cfg_popup.add_content(
-            std::string_view{ptr, len - sizeof(msg_packet)}
-        );
+        const std::string_view content{ptr, len - sizeof(msg_packet)};
+        // A demo's config arrives unrequested at segment start and on every change, so
+        // playback keeps it for the popup to fill from when opened
+        if (demo_playback_active()) {
+            demo_playback_on_server_cfg_chunk(content);
+        } else {
+            g_remote_server_cfg_popup.add_content(content);
+        }
     } else if (msg_packet.type == static_cast<uint8_t>(AF_SERVER_MSG_TYPE_REMOTE_SERVER_CFG_EOF)) {
-        g_remote_server_cfg_popup.finalize();
+        if (demo_playback_active()) {
+            demo_playback_on_server_cfg_eof();
+            g_remote_server_cfg_popup.set_cfg_changed();
+        } else {
+            g_remote_server_cfg_popup.finalize();
+        }
     } else if (msg_packet.type == static_cast<uint8_t>(AF_SERVER_MSG_TYPE_AUTOMATED_CHAT)) {
         const char* ptr = static_cast<const char*>(data) + sizeof(msg_packet);
         const std::string_view msg_sv{ptr, len - sizeof(msg_packet)};

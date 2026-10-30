@@ -475,8 +475,8 @@ CodeInjection player_execute_action_patch3{
                 toggle_chat_menu(ChatMenuType::Spectate);
             } else if (alpine_action_index
                 == static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_REMOTE_SERVER_CFG)
-                && is_server_minimum_af_version(1, 2)
-                && !demo_playback_active()) {
+                && (demo_playback_active() ? demo_playback_server_cfg() != nullptr
+                                           : is_server_minimum_af_version(1, 2))) {
                 if (vote_panel_is_gameplay_overlay_active()) {
                     vote_panel_close();
                 }

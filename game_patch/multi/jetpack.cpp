@@ -965,7 +965,7 @@ void jetpack_render_attachment(rf::Entity* ep)
 
 void jetpack_render_hud()
 {
-    if (!jetpacks_are_active() || is_hud_effectively_hidden()) {
+    if (!jetpacks_are_active() || is_hud_effectively_hidden() || !hud_element_visible(HudElement::gauges)) {
         // Nothing is drawn this frame, so drop the hint ramp: it eases back in
         // from nothing once the HUD returns.
         g_jetpack_hint_fade = 0.0f;

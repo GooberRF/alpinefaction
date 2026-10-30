@@ -679,6 +679,10 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.outlines_spectator = std::stoi(settings["OutlinesSpectator"]);
         processed_keys.insert("OutlinesSpectator");
     }
+    if (settings.count("OutlinesSpectatorXray")) {
+        g_alpine_game_config.outlines_spectator_xray = std::stoi(settings["OutlinesSpectatorXray"]);
+        processed_keys.insert("OutlinesSpectatorXray");
+    }
     if (settings.count("OutlinesTeamXray")) {
         g_alpine_game_config.try_outlines_team_xray = std::stoi(settings["OutlinesTeamXray"]);
         processed_keys.insert("OutlinesTeamXray");
@@ -1143,6 +1147,10 @@ bool alpine_player_settings_load(rf::Player* player)
     if (settings.count("DemoPowerupTimers")) {
         g_alpine_game_config.demo_powerup_timers = std::stoi(settings["DemoPowerupTimers"]);
         processed_keys.insert("DemoPowerupTimers");
+    }
+    if (settings.count("DemoMinimalCompactBar")) {
+        g_alpine_game_config.demo_minimal_compact_bar = std::stoi(settings["DemoMinimalCompactBar"]);
+        processed_keys.insert("DemoMinimalCompactBar");
     }
     if (settings.count("WorldHUDTeamLabels")) {
         g_alpine_game_config.world_hud_team_player_labels = std::stoi(settings["WorldHUDTeamLabels"]);
@@ -1690,6 +1698,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "ShadowFrameLag=" << g_alpine_game_config.shadow_frame_lag << "\n";
     file << "Outlines=" << g_alpine_game_config.try_outlines << "\n";
     file << "OutlinesSpectator=" << g_alpine_game_config.outlines_spectator << "\n";
+    file << "OutlinesSpectatorXray=" << g_alpine_game_config.outlines_spectator_xray << "\n";
     file << "OutlinesTeamXray=" << g_alpine_game_config.try_outlines_team_xray << "\n";
     file << "OutlinesColor=" << format_hex_color_string(g_alpine_game_config.outlines_color) << "\n";
     file << "OutlinesColorTeamR=" << format_hex_color_string(g_alpine_game_config.outlines_color_team_r) << "\n";
@@ -1822,6 +1831,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "WorldHUDDemoPlayerInfo=" << g_alpine_game_config.world_hud_demo_player_info << "\n";
     file << "WorldHUDDemoSpawns=" << g_alpine_game_config.world_hud_demo_spawns << "\n";
     file << "DemoPowerupTimers=" << g_alpine_game_config.demo_powerup_timers << "\n";
+    file << "DemoMinimalCompactBar=" << g_alpine_game_config.demo_minimal_compact_bar << "\n";
     file << "WorldHUDTeamLabels=" << g_alpine_game_config.world_hud_team_player_labels << "\n";
     file << "ShowLocationPings=" << g_alpine_game_config.show_location_pings << "\n";
     file << "PlayHitsounds=" << g_alpine_game_config.play_hit_sounds << "\n";

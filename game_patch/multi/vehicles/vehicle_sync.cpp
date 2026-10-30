@@ -371,7 +371,7 @@ namespace
         if (interp->num_frames() == 0 || interp->last_update_time == static_cast<uint32_t>(-1)) {
             return;
         }
-        const auto now_ms = static_cast<uint32_t>(timer::get_i64(1000));
+        const auto now_ms = static_cast<uint32_t>(demo_playback_interp_clock_ms());
         if (now_ms - interp->last_update_time <= vehicle_interp_rest_gap_ms) {
             return;
         }
@@ -482,8 +482,9 @@ bool obj_interp_push_simulated_keyframe(rf::Entity* ep, const rf::Vector3& pos, 
         return false;
     }
     const auto last_update_time = static_cast<int32_t>(interp->last_update_time);
-    const int arrive_gap = last_update_time >= 0 ? static_cast<int>(timer::get_i64(1000)) - last_update_time : 0;
-    interp->last_update_time = static_cast<uint32_t>(timer::get_i64(1000));
+    const auto now_ms = static_cast<int>(demo_playback_interp_clock_ms());
+    const int arrive_gap = last_update_time >= 0 ? now_ms - last_update_time : 0;
+    interp->last_update_time = static_cast<uint32_t>(now_ms);
 
     constexpr int max_keyframes = rf::ObjInterp::max_keyframes;
     if (interp->num_frames() >= max_keyframes) {

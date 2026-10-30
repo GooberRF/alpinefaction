@@ -102,6 +102,7 @@ struct AlpineGameSettings
     bool world_hud_demo_player_info = false;
     bool world_hud_demo_spawns = false;
     bool demo_powerup_timers = true;
+    bool demo_minimal_compact_bar = false;
     bool world_hud_team_player_labels = false;
     bool show_location_pings = true;
     bool play_hit_sounds = true;
@@ -542,6 +543,7 @@ struct AlpineGameSettings
     // outline rendering (d3d11 multiplayer)
     bool try_outlines = false;
     bool outlines_spectator = false;
+    bool outlines_spectator_xray = true;
     bool try_outlines_team_xray = true;
 
     uint32_t outlines_color = 0xFF3232FF;         // red, opaque (RRGGBBAA)

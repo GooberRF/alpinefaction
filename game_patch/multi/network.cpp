@@ -3283,10 +3283,19 @@ CodeInjection obj_interp_too_fast_fix{
     0x00483C3B,
     [] (auto& regs) {
         // Make all calculations on milliseconds instead of using microseconds and rounding them up
-        const int now = static_cast<int>(timer::get_i64(1000));
+        const int now = static_cast<int>(demo_playback_interp_clock_ms());
         const int frame_time_us = regs.ebp;
         regs.eax = now - frame_time_us;
         regs.edi = now;
+    },
+};
+
+// set_next_pos_orient stamps each sample's arrival (last_update_time) and logs the gap into
+// arrive_time_diff on the clock frame_advance runs on
+CallHook<int(int)> obj_interp_arrival_timer_get_hook{
+    {0x0048339C, 0x004833B5},
+    [](int) {
+        return static_cast<int>(demo_playback_interp_clock_ms());
     },
 };
 
@@ -4184,6 +4193,7 @@ void network_init()
 
     // Fix object interpolation playing too fast causing a possible jitter
     obj_interp_too_fast_fix.install();
+    obj_interp_arrival_timer_get_hook.install();
 
     // Send trigger_activate packets for late joiners
     send_state_info_injection.install();

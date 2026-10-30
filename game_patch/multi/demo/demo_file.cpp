@@ -227,6 +227,8 @@ DemoFileReader::OpenResult DemoFileReader::open(const std::string& path)
         return OpenResult::cant_open;
     m_file = file;
     m_path = path;
+    // The default 8KB input buffer means a read syscall every few hundred records
+    gzbuffer(file, 64 * 1024);
     // Don't leak state from a previously opened file. rewind_to_records() re-opens the
     // same file to restart iteration, so it stashes and restores the footer around this.
     m_header = {};
@@ -339,13 +341,20 @@ bool DemoFileReader::next_record(DemoRecord& out)
     if (!file)
         return false;
     while (true) {
-        uint32_t t_ms = 0;
-        uint8_t type = 0;
-        uint16_t payload_len = 0;
-        if (!gz_read_le(file, t_ms) || !gz_read_le(file, type) || !gz_read_le(file, payload_len)) {
+        // {t_ms u32, type u8, payload_len u16} in one read - this runs for every record of a seek
+        uint8_t prefix[7];
+        if (!gz_read_all(file, prefix, sizeof(prefix))) {
             return false; // clean EOF after footer or truncated file - both end iteration
         }
-        std::vector<uint8_t> payload(payload_len);
+        uint32_t t_ms = 0;
+        uint16_t payload_len = 0;
+        std::memcpy(&t_ms, prefix, 4);
+        const uint8_t type = prefix[4];
+        std::memcpy(&payload_len, prefix + 5, 2);
+        // Read into the caller's buffer so its capacity is reused instead of allocating per record;
+        // out is only meaningful when this returns true
+        std::vector<uint8_t>& payload = out.payload;
+        payload.resize(payload_len);
         if (!gz_read_all(file, payload.data(), payload.size())) {
             return false; // truncated record
         }
@@ -370,7 +379,6 @@ bool DemoFileReader::next_record(DemoRecord& out)
         }
         out.t_ms = t_ms;
         out.type = type;
-        out.payload = std::move(payload);
         return true;
     }
 }

@@ -4,6 +4,7 @@
 #include "../misc/misc.h"
 #include "../misc/alpine_settings.h"
 #include "../multi/multi.h"
+#include "../multi/demo/demo_ui.h"
 #include "../rf/player/player.h"
 #include "../rf/gameseq.h"
 #include "../rf/input.h"
@@ -116,7 +117,9 @@ FunHook<int()> gameseq_process_hook{
     0x00434230,
     []() {
         int menu_id = gameseq_process_hook.call_target();
-        if (menu_id == rf::GS_MULTI_LIMBO) // hide cursor when changing level - hackfixed in RF by changing rendering logic
+        // hide cursor when changing level - hackfixed in RF by changing rendering logic. The demo
+        // controls panel stays usable on the limbo scoreboard and keeps its cursor.
+        if (menu_id == rf::GS_MULTI_LIMBO && !demo_controls_ui_is_open())
             rf::mouse_set_visible(false);
         else if (menu_id == rf::GS_MAIN_MENU)
             rf::mouse_set_visible(true);

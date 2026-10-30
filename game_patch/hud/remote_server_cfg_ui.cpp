@@ -3,6 +3,7 @@
 #include "../input/input.h"
 #include "../misc/alpine_settings.h"
 #include "../multi/alpine_packets.h"
+#include "../multi/demo/demo.h"
 #include "../rf/gr/gr_font.h"
 #include "../rf/level.h"
 #include "../rf/os/console.h"
@@ -180,7 +181,15 @@ void RemoteServerCfgPopup::toggle(this Self& self) {
     self.active = !self.active;
 
     if (self.active && self.lines.empty()) {
-        af_send_server_cfg_request();
+        if (demo_playback_active()) {
+            // No server to ask: the demo recorded the config
+            if (const std::string* cfg = demo_playback_server_cfg()) {
+                self.add_content(*cfg);
+            }
+            self.finalize();
+        } else {
+            af_send_server_cfg_request();
+        }
     }
 }
 

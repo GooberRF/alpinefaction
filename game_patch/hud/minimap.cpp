@@ -886,7 +886,7 @@ void minimap_render()
     if (big_map_held()) {
         render_big_map();
     }
-    else if (!corner_panel_suppressed()) {
+    else if (!corner_panel_suppressed() && hud_element_visible(HudElement::minimap)) {
         if (const auto rect = minimap_panel_rect()) {
             render_panel(rect->x, rect->y, rect->size,
                          {150, 230, 1.0f, true, g_alpine_game_config.minimap_labels, false, false});

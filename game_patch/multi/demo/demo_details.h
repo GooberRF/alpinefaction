@@ -33,5 +33,5 @@ struct DemoDetails
 
 // Fully scans one demo (relative demo name, may contain subfolders) and reconstructs the
 // final scoreboard from the recorded packet stream. Synchronous; per-round demo files
-// are small so this is cheap enough to run on click.
+// are small so this is cheap enough to run when the browser previews a demo.
 DemoDetails demo_scan_details(const std::string& name);

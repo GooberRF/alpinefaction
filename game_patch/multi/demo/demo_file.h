@@ -181,6 +181,13 @@ public:
     bool next_record(DemoRecord& out);
     // Restarts record iteration from the first record (re-opens the gz stream).
     bool rewind_to_records();
+    // Adopts the footer an earlier full scan of the same file found, so a re-open can skip
+    // re-scanning it (it is otherwise only known once iteration reaches it).
+    void assume_footer(const DemoFooterInfo& footer)
+    {
+        m_footer = footer;
+        m_has_footer = true;
+    }
 
     [[nodiscard]] bool is_open() const
     {
