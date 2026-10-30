@@ -16,6 +16,7 @@
 #include <common/terrain/alpine_terrain.h>
 #include <common/utils/string-utils.h>
 #include "alpine_obj.h"
+#include "editor_settings.h"
 #include "graphics/editor_gr.h"
 #include "level.h"
 #include "mesh.h"
@@ -85,6 +86,9 @@ bool g_collapsed = false;
 
 constexpr UINT_PTR tick_timer_id = 1;
 constexpr UINT tick_ms = 33;
+// The tree selection is followed once it settles: the class's mesh loads synchronously.
+constexpr UINT_PTR follow_timer_id = 2;
+constexpr UINT follow_delay_ms = 50;
 constexpr float spin_deg_per_s = 30.0f;
 constexpr float preview_pitch_deg = 20.0f;
 constexpr float preview_zoom = 2.4f;
@@ -1137,12 +1141,45 @@ void select_tab(int tab)
     load_preview();
 }
 
+// Selecting a class of a stock tab in the object tree makes it the panel's class.
+void follow_tree_selection(HWND tree)
+{
+    if (g_collapsed || !g_editor_settings.placement_follows_tree) return;
+    const HTREEITEM item = TreeView_GetSelection(tree);
+    if (!item || TreeView_GetChild(tree, item)) return;
+    HTREEITEM root = item;
+    while (HTREEITEM parent = TreeView_GetParent(tree, root)) root = parent;
+    if (root == item) return;
+    const std::string type = tree_item_text(tree, root);
+    for (int tab : {tab_clutter, tab_entity, tab_item}) {
+        if (type != tab_info[tab].label) continue;
+        const std::string leaf = tree_item_text(tree, item);
+        const std::vector<std::string> classes = tab_classes(tab);
+        const auto it = std::find_if(classes.begin(), classes.end(),
+                                     [&](const std::string& name) { return string_iequals(name, leaf); });
+        if (it == classes.end() || (tab == g_tab && g_tab_settings[tab].cls == *it)) return;
+        if (tab == g_tab) {
+            set_class(*it);
+            return;
+        }
+        g_tab_settings[tab].cls = *it;
+        SendMessageA(GetDlgItem(g_panel.hwnd, IDC_PLACEMENT_TABS), TCM_SETCURSEL, tab, 0);
+        select_tab(tab);
+        return;
+    }
+}
+
 void browse_mesh()
 {
     std::string name = g_tab_settings[tab_mesh].cls;
     if (alpine_browse_mesh(g_panel.hwnd, name, ALPINE_MESH_ANY) && mesh_name_fits(name)) {
         set_class(name);
     }
+}
+
+bool mouse_button_held()
+{
+    return ((GetAsyncKeyState(VK_LBUTTON) | GetAsyncKeyState(VK_RBUTTON) | GetAsyncKeyState(VK_MBUTTON)) & 0x8000) != 0;
 }
 
 void tick()
@@ -1157,8 +1194,7 @@ void tick()
         g_drag.others_pending = false;
     }
     // No gr work in the middle of a click or drag anywhere: the views and the tree are busy with it.
-    const bool button_held = ((GetAsyncKeyState(VK_LBUTTON) | GetAsyncKeyState(VK_RBUTTON) |
-                               GetAsyncKeyState(VK_MBUTTON)) & 0x8000) != 0;
+    const bool button_held = mouse_button_held();
     EditorVMesh* vmesh = p.preview.vmesh;
     const HWND preview = preview_hwnd();
     if (g_collapsed || button_held || !vmesh || !preview || !preview_shown(preview) || !preview_can_draw()) return;
@@ -1217,6 +1253,7 @@ void destroy_panel(HWND hdlg)
     PanelState& p = g_panel;
     drag_cancel();
     KillTimer(hdlg, tick_timer_id);
+    KillTimer(hdlg, follow_timer_id);
     free_mesh(p.preview);
     if (p.msg_hook) {
         UnhookWindowsHookEx(p.msg_hook);
@@ -1291,6 +1328,17 @@ INT_PTR panel_message(HWND hdlg, UINT msg, WPARAM wparam, LPARAM lparam)
     case WM_TIMER:
         if (wparam == tick_timer_id) {
             tick();
+            return TRUE;
+        }
+        if (wparam == follow_timer_id) {
+            // Not in the middle of a click or drag; retried until the buttons are up.
+            if (mouse_button_held()) return TRUE;
+            KillTimer(hdlg, follow_timer_id);
+            // Dropped while a modal window is up: what the user opened after selecting wins.
+            if (!IsWindowEnabled(GetMainFrameHandle())) return TRUE;
+            if (HWND tree = g_panel.form ? GetDlgItem(g_panel.form, editor_object_tree_id) : nullptr) {
+                follow_tree_selection(tree);
+            }
             return TRUE;
         }
         break;
@@ -1437,6 +1485,14 @@ LRESULT form_message(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
     if (form_drag_message(hwnd, msg, lparam)) return 0;
     const LRESULT result = CallWindowProcA(orig, hwnd, msg, wparam, lparam);
     if (msg == WM_SIZE) form_layout();
+    if (msg == WM_NOTIFY) {
+        const auto* nm = reinterpret_cast<const NMTREEVIEWA*>(lparam);
+        // Only the user's clicks and keys, not e.g. the tree selecting its first item when it gains focus.
+        if (nm && nm->hdr.idFrom == editor_object_tree_id && nm->hdr.code == TVN_SELCHANGEDA &&
+            (nm->action == TVC_BYMOUSE || nm->action == TVC_BYKEYBOARD) && g_panel.hwnd) {
+            SetTimer(g_panel.hwnd, follow_timer_id, follow_delay_ms, nullptr);
+        }
+    }
     return result;
 }
 

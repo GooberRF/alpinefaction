@@ -1985,6 +1985,7 @@ FONT 8, "MS Sans Serif"
     AUTOCHECKBOX    "Always draw meshes at full detail (LOD 0)", IDC_PREFS_FORCE_LOD0, 11, 64, 218, 10
     LTEXT           "Renderer (when RED next starts):", -1, 11, 82, 112, 8
     COMBOBOX        IDC_PREFS_RENDERER, 124, 80, 98, 48, WS_TABSTOP | CBS_DROPDOWNLIST
+    AUTOCHECKBOX    "Placement panel follows the object tree selection", IDC_PREFS_PLACEMENT_FOLLOWS_TREE, 11, 98, 218, 10
 }
 
 // VERSIONINFO

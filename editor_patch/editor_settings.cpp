@@ -121,6 +121,7 @@ std::vector<Setting> settings_of(PreferencesDialog& dlg)
         {"Alpine", "TextureHoverOutlineColor", "", SettingKind::colorref, &alpine.texture_hover_outline_color},
         {"Alpine", "BackgroundThrottle", "", SettingKind::flag, &alpine.background_throttle},
         {"Alpine", "ForceLOD0", "", SettingKind::flag, &alpine.force_lod0},
+        {"Alpine", "PlacementFollowsTree", "", SettingKind::flag, &alpine.placement_follows_tree},
         {"Alpine", "PreviewLevelFog", "", SettingKind::flag, &alpine.preview_level_fog},
         {"Alpine", "ShowInvisibleFaces", "", SettingKind::flag, &alpine.show_invisible_faces},
         {"Alpine", "ShowBackFaces", "", SettingKind::flag, &alpine.show_back_faces},
@@ -453,6 +454,7 @@ INT_PTR CALLBACK alpine_tab_proc(HWND hdlg, UINT msg, WPARAM wp, LPARAM)
         set_check(hdlg, IDC_PREFS_HOVER_OUTLINE, g_editor_settings.texture_hover_outline);
         set_check(hdlg, IDC_PREFS_BACKGROUND_THROTTLE, g_editor_settings.background_throttle);
         set_check(hdlg, IDC_PREFS_FORCE_LOD0, g_editor_settings.force_lod0);
+        set_check(hdlg, IDC_PREFS_PLACEMENT_FOLLOWS_TREE, g_editor_settings.placement_follows_tree);
         update_hover_color_controls(hdlg);
         return TRUE;
     }
@@ -483,6 +485,9 @@ INT_PTR CALLBACK alpine_tab_proc(HWND hdlg, UINT msg, WPARAM wp, LPARAM)
         break;
     case IDC_PREFS_FORCE_LOD0:
         g_editor_settings.force_lod0 = is_checked(hdlg, IDC_PREFS_FORCE_LOD0);
+        break;
+    case IDC_PREFS_PLACEMENT_FOLLOWS_TREE:
+        g_editor_settings.placement_follows_tree = is_checked(hdlg, IDC_PREFS_PLACEMENT_FOLLOWS_TREE);
         break;
     default:
         return FALSE;

@@ -17,6 +17,7 @@ struct EditorSettings
     COLORREF texture_hover_outline_color = RGB(255, 220, 0);
     bool background_throttle = true;
     bool force_lod0 = true;
+    bool placement_follows_tree = true;
     // Level > Repair holes when building
     bool repair_build_holes = true;
     // Level > Rebuild with out-of-level areas
