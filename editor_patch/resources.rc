@@ -393,6 +393,8 @@ IDR_MAIN_FRAME MENU
         MENUITEM "Show Path Node Connections", 32900
         MENUITEM SEPARATOR
         MENUITEM "Textured Brush Preview\t7", ID_GIZMO_TEXPREVIEW
+        MENUITEM SEPARATOR
+        MENUITEM "Mover Preview...", ID_VIEW_MOVER_PREVIEW
     }
     POPUP "&Tools"
     {
@@ -1362,9 +1364,35 @@ FONT 8, "MS Sans Serif"
     LTEXT           "Degrees about Axis:", -1, 215, 188, 64, 8
     LTEXT           "", IDC_KF_DEGREES_ABOUT_AXIS, 287, 185, 40, 14
 
+    GROUPBOX        "Path", -1, 211, 210, 122, 88
+    LTEXT           "Segment:", -1, 215, 224, 36, 8
+    COMBOBOX        IDC_KF_PATH_SEGMENT, 256, 222, 72, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "Handles:", -1, 215, 242, 36, 8
+    COMBOBOX        IDC_KF_PATH_TANGENT, 256, 240, 72, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "Easing:", -1, 215, 260, 36, 8
+    COMBOBOX        IDC_KF_PATH_EASE, 256, 258, 72, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "Mover Facing:", -1, 215, 278, 40, 16
+    COMBOBOX        IDC_KF_PATH_ORIENT, 256, 276, 72, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+
     // OK / Cancel
     DEFPUSHBUTTON   "OK", IDOK, 348, 290, 50, 14
     PUSHBUTTON      "Cancel", IDCANCEL, 348, 307, 50, 14
+}
+
+// Mover Preview panel
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+IDD_ALPINE_MOVER_PREVIEW DIALOGEX 0, 0, 240, 72
+STYLE DS_SETFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Mover Preview"
+FONT 8, "MS Sans Serif"
+{
+    PUSHBUTTON      "Play", IDC_MOVER_PREVIEW_PLAY, 7, 7, 40, 14
+    PUSHBUTTON      "Stop", IDC_MOVER_PREVIEW_STOP, 51, 7, 40, 14
+    LTEXT           "Speed:", -1, 150, 10, 24, 8
+    COMBOBOX        IDC_MOVER_PREVIEW_SPEED, 178, 7, 55, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    CONTROL         "", IDC_MOVER_PREVIEW_SLIDER, "msctls_trackbar32", TBS_NOTICKS | WS_TABSTOP, 7, 25, 226, 14
+    LTEXT           "", IDC_MOVER_PREVIEW_STATUS, 7, 43, 226, 8
+    LTEXT           "Legacy mover levels play differently in game.", IDC_MOVER_PREVIEW_LEGACY, 7, 55, 226, 8, NOT WS_VISIBLE
 }
 
 // Face split dialog

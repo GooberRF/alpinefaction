@@ -9,6 +9,7 @@
 #include "gizmo.h"
 #include "level.h"
 #include "mfc_types.h"
+#include "mover_path.h"
 #include "texture_mode.h"
 #include "vtypes.h"
 
@@ -233,6 +234,9 @@ CallHook<void __fastcall(GSolid*, int, char, int, char, const Vector3*, const Ma
         // pos and orient are the brush's own
         const auto* brush =
             reinterpret_cast<const BrushNode*>(reinterpret_cast<const char*>(pos) - offsetof(BrushNode, pos));
+        if (mover_path_preview_hides(*brush)) {
+            return;
+        }
         const CDedLevel* level = CDedLevel::Get();
         if (level && previewed(*level, *brush)) {
             selected_brush_draw_hook.call_target(solid, edx, 0, 0, 0, pos, orient, 255, 255, 255);
@@ -248,7 +252,7 @@ CodeInjection unselected_brush_draw_injection{
     [](auto& regs) {
         auto* brush = reinterpret_cast<BrushNode*>(static_cast<uintptr_t>(regs.esi));
         const auto* level = reinterpret_cast<const CDedLevel*>(static_cast<uintptr_t>(regs.ebp));
-        if (previewed(*level, *brush)) {
+        if (previewed(*level, *brush) && !mover_path_preview_hides(*brush)) {
             auto* geometry = static_cast<GSolid*>(brush->geometry);
             geometry->draw(false, false, false, &brush->pos, &brush->orient, 255, 255, 255);
         }

@@ -11,6 +11,7 @@
 #include "gizmo.h"
 #include "level.h"
 #include "mfc_types.h"
+#include "mover_path.h"
 #include "resources.h"
 #include "texture_mode.h"
 
@@ -159,6 +160,10 @@ static void mirror_object(DedObject* obj, int axis)
     if (obj->type == DedObjectType::DED_DIRECTIONAL_LIGHT && axis != 1) {
         auto* light = static_cast<DedDirectionalLight*>(obj);
         light->box_yaw = alpine_dir_light::normalize_degrees(-light->box_yaw);
+    }
+
+    if (obj->type == DedObjectType::DED_KEYFRAME) {
+        mover_path_keyframe_mirrored(*obj, axis);
     }
 
     // For lights, sync the updated position/orient to the level_light object

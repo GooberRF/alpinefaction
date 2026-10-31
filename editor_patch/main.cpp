@@ -65,6 +65,7 @@
 #include "brush_preview.h"
 #include "mesh_browser.h"
 #include "placement_panel.h"
+#include "mover_path.h"
 #include "selection.h"
 #include "viewport_input.h"
 
@@ -1173,6 +1174,10 @@ void __fastcall CMainFrame_OnEditUndo_new(CWnd* this_, void* edx_unused)
         gizmo_cancel_drag();
         return;
     }
+    if (mover_path_dragging()) {
+        mover_path_cancel_drag();
+        return;
+    }
     // While Terrain Tools is open, Ctrl+Z / Edit > Undo undo paint strokes instead
     if (terrain_paint_active()) {
         terrain_paint_undo();
@@ -1190,6 +1195,10 @@ void __fastcall CMainFrame_OnEditRedo_new(CWnd* this_, void* edx_unused)
 {
     if (gizmo_dragging()) {
         gizmo_cancel_drag();
+        return;
+    }
+    if (mover_path_dragging()) {
+        mover_path_cancel_drag();
         return;
     }
     if (terrain_paint_active()) {
@@ -1566,6 +1575,7 @@ int __fastcall CEditorApp_OnIdle_new(void* self, int edx, int count)
         if (!headless_bake_idle()) {
             terrain_paint_idle();
             gizmo_idle();
+            mover_path_idle();
             texture_mode_idle();
         }
         return CEditorApp_OnIdle_hook.call_target(self, edx, count);
@@ -1580,7 +1590,7 @@ CodeInjection autosave_defer_during_edit_injection{
     [](auto& regs) {
         auto* level = CDedLevel::Get();
         if (headless_bake_active() || is_edit_key_held() || (level && level->transform_in_progress) ||
-            terrain_paint_stroke_active() || gizmo_dragging()) {
+            terrain_paint_stroke_active() || gizmo_dragging() || mover_path_dragging()) {
             regs.eip = 0x004831B4; // defer autosave until the text tick we are not in an edit operation
         }
         else {
@@ -1683,45 +1693,6 @@ static LRESULT CALLBACK GroupPanelSubclassProc(HWND hwnd, UINT msg, WPARAM wPara
 // g_kf_props_msg_hook is forward-declared before CDialog_DoModal_injection.
 static WNDPROC g_kf_props_orig_wndproc = nullptr;
 
-// Find the moving group being edited by matching CDedLevel::selection against group members.
-// When the keyframe properties dialog opens, the group's objects/keyframes are in the selection.
-static GroupEntry* find_moving_group_from_selection()
-{
-    auto* level = CDedLevel::Get();
-    if (!level)
-        return nullptr;
-
-    auto& sel = level->selection; // VArray<DedObject*> at +0x298
-    if (sel.size <= 0)
-        return nullptr;
-
-    DedObject* selected = sel[0];
-    if (!selected)
-        return nullptr;
-
-    // Match against moving groups: check if any group's objects or keyframes contain this DedObject
-    auto& mg = level->moving_groups;
-    for (int i = 0; i < mg.size; i++) {
-        auto* group = mg[i];
-        if (!group || !group->is_moving_group())
-            continue;
-
-        for (int j = 0; j < group->objects.size; j++) {
-            if (group->objects[j] == selected)
-                return group;
-        }
-
-        if (group->keyframes) {
-            for (int j = 0; j < group->keyframes->objects.size; j++) {
-                if (group->keyframes->objects[j] == selected)
-                    return group;
-            }
-        }
-    }
-
-    return nullptr;
-}
-
 // Get the UID of the first keyframe in the moving group being edited.
 // Keyframe UIDs are stable between editor (DedObject::uid) and game (MoverKeyframe::uid).
 static int get_editing_group_first_keyframe_uid([[maybe_unused]] HWND hdlg)
@@ -1736,7 +1707,12 @@ static int get_editing_group_first_keyframe_uid([[maybe_unused]] HWND hdlg)
 
 static LRESULT CALLBACK KfPropsSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
+    if (msg == WM_COMMAND) {
+        mover_path_dialog_command(hwnd, LOWORD(wParam));
+    }
     if (msg == WM_COMMAND && LOWORD(wParam) == IDOK) {
+        mover_path_dialog_ok(hwnd);
+
         // Read Hold Open checkbox state and update Alpine level properties
         bool hold_open = (IsDlgButtonChecked(hwnd, IDC_KF_HOLD_OPEN) == BST_CHECKED);
         int kf_uid = get_editing_group_first_keyframe_uid(hwnd);
@@ -1787,6 +1763,7 @@ static LRESULT CALLBACK KfPropsMsgHookProc(int nCode, WPARAM wParam, LPARAM lPar
 
             CheckDlgButton(msg->hwnd, IDC_KF_HOLD_OPEN,
                            hold_open ? BST_CHECKED : BST_UNCHECKED);
+            mover_path_dialog_init(msg->hwnd);
 
             // Subclass to intercept OK
             g_kf_props_orig_wndproc = reinterpret_cast<WNDPROC>(
@@ -1890,6 +1867,12 @@ BOOL __fastcall CMainFrame_OnCmdMsg(CWnd* this_, int, UINT nID, int nCode, void*
             nID != ID_GIZMO_TEXPREVIEW && gizmo_dragging()) {
             // Undo / Redo during the drag only cancel it.
             if (!gizmo_cancel_drag() || nID == ID_EDIT_UNDO || nID == ID_EDIT_REDO) {
+                return TRUE;
+            }
+        }
+        if (!pHandlerInfo && mover_path_dragging()) {
+            mover_path_cancel_drag();
+            if (nID == ID_EDIT_UNDO || nID == ID_EDIT_REDO) {
                 return TRUE;
             }
         }
@@ -2024,6 +2007,9 @@ BOOL __fastcall CMainFrame_OnCmdMsg(CWnd* this_, int, UINT nID, int nCode, void*
                 break;
             case ID_FIND_OUT_OF_LEVEL:
                 handler = build_repair_find_out_of_level;
+                break;
+            case ID_VIEW_MOVER_PREVIEW:
+                handler = mover_path_preview_open;
                 break;
             case ID_TERRAIN_TOOLS:
                 handler = [this_]() {
@@ -2505,6 +2491,7 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
     ApplyTerrainPreviewPatches();
     ApplyViewportInputPatches();
     ApplyGizmoPatches();
+    ApplyMoverPathPatches();
     ApplyTextureModePatches();
     ApplyBrushPreviewPatches();
     ApplyTextureLockPatches();

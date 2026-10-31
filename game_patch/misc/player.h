@@ -57,6 +57,16 @@ struct FpgunArmsOverride
     std::array<std::optional<std::string>, 3> textures; // hand, forearm, bicep
 };
 void player_fpgun_add_arms_override(FpgunArmsOverride arms_override);
+
+struct CustomWeaponProps
+{
+    std::string weapon;
+    std::optional<float> first_person_fov;
+    std::optional<rf::Vector3> first_person_offset;
+    std::optional<std::string> first_person_muzzle_flash_bitmap;
+    std::optional<float> first_person_muzzle_flash_radius;
+};
+void player_fpgun_add_custom_weapon_props(CustomWeaponProps props);
 void player_fpgun_collect_override_arm_bitmaps(std::unordered_set<int>& bitmaps);
 
 void set_headlamp_toggle_enabled(bool enabled);

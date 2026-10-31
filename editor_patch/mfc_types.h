@@ -510,6 +510,25 @@ static_assert(offsetof(DedObject, type) == 0x5C);
 static_assert(offsetof(DedObject, listed_in_tree) == 0x78);
 
 
+// Constructor FUN_00452770
+struct DedKeyframe : DedObject
+{
+    bool active;              // +0x94 set by the constructor; a clear one is neither drawn nor saved
+    char padding_95[3];
+    float pause_time;         // +0x98
+    float depart_travel_time; // +0x9C
+    float return_travel_time; // +0xA0
+    float accel_time;         // +0xA4
+    float decel_time;         // +0xA8
+    int event_uid;            // +0xAC
+    int item_uids[2];         // +0xB0
+    float rotation_degrees;   // +0xB8
+};
+static_assert(sizeof(DedKeyframe) == 0xBC, "DedKeyframe size mismatch");
+static_assert(offsetof(DedKeyframe, active) == 0x94);
+static_assert(offsetof(DedKeyframe, depart_travel_time) == 0x9C);
+static_assert(offsetof(DedKeyframe, rotation_degrees) == 0xB8);
+
 struct DedEvent : DedObject
 {
     //DedObject baseclass_0;

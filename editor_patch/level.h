@@ -18,6 +18,7 @@
 #include <common/alpine_camera_far_clip.h>
 #include <common/lighting/alpine_lighting.h>
 #include <common/lightmap/alpine_lightmap.h>
+#include <common/mover_path.h>
 #include "vtypes.h"
 #include "mfc_types.h"
 #include "resources.h"
@@ -46,6 +47,7 @@ constexpr int alpine_rope_emitter_chunk_id = 0x0AFBAE0A;
 constexpr int alpine_terrain_chunk_id = static_cast<int>(alpine_terrain::chunk_id); // 0x0AFBAE0B
 constexpr int alpine_lightmaps_chunk_id = static_cast<int>(alpine_lightmap::chunk_id); // 0x0AFBAE09
 constexpr int alpine_directional_light_chunk_id = static_cast<int>(alpine_dir_light::chunk_id); // 0x0AFBAE0C
+constexpr int alpine_mover_path_chunk_id = static_cast<int>(mover_path::chunk_id); // 0x0AFBAE0D
 
 // Other editors save RFL chunks of their own that Alpine Faction can neither read nor parse.
 // AlpineEditor retains them verbatim on load and re-emits them on save, so the originating
@@ -969,6 +971,9 @@ struct AlpineLevelProperties
     std::vector<int32_t> breakable_room_uids; // computed at save time, parallel to breakable_brush_uids
     std::vector<uint8_t> breakable_materials;  // material type per entry
     std::vector<int32_t> hold_open_keyframe_uids; // first keyframe UIDs of moving groups with "Hold Open"
+    // Own chunk. Entries outlive their keyframes; a save writes the live ones.
+    std::unordered_map<int32_t, mover_path::KeyframeData> mover_path_keyframes; // by keyframe UID
+    std::unordered_map<int32_t, uint8_t> mover_path_orient_modes;               // by first keyframe UID
     // v5
     bool enable_sun = false;
     float sun_yaw = 0.0f;   // degrees
@@ -1132,6 +1137,8 @@ struct AlpineLevelProperties
         breakable_room_uids.clear();
         breakable_materials.clear();
         hold_open_keyframe_uids.clear();
+        mover_path_keyframes.clear();
+        mover_path_orient_modes.clear();
         enable_sun = false;
         sun_yaw = 0.0f;
         sun_pitch = 90.0f;
@@ -1621,7 +1628,15 @@ struct MovingGroupKeyframes
 {
     VArray<DedObject*> objects;           // +0x00  keyframe objects
     VArray<MovingGroupMember*> members;   // +0x0C  looked up first match by uid (FUN_0042a690)
-    char _pad_18[0x10];                   // +0x18
+    bool is_door;                         // +0x18
+    bool use_travel_time_as_velocity;     // +0x19
+    bool force_orient;                    // +0x1A
+    bool no_player_collide;               // +0x1B
+    bool rotate_in_place;                 // +0x1C
+    bool starts_backwards;                // +0x1D
+    char _pad_1e[2];                      // +0x1E
+    int movement_type;                    // +0x20  rf::MoverKeyframeMoveType
+    int starting_keyframe;                // +0x24  one-based
     // +0x28  start, loop, stop and close; the level check FUN_0041d4c0 reads start, stop and close as
     // sound names
     MovingGroupSound sounds[4];
@@ -1629,6 +1644,9 @@ struct MovingGroupKeyframes
 static_assert(sizeof(MovingGroupKeyframes) == 0x58);
 static_assert(offsetof(MovingGroupKeyframes, objects) == 0x00);
 static_assert(offsetof(MovingGroupKeyframes, members) == 0x0C);
+static_assert(offsetof(MovingGroupKeyframes, use_travel_time_as_velocity) == 0x19);
+static_assert(offsetof(MovingGroupKeyframes, rotate_in_place) == 0x1C);
+static_assert(offsetof(MovingGroupKeyframes, movement_type) == 0x20);
 static_assert(offsetof(MovingGroupKeyframes, sounds) == 0x28);
 
 // Group entry struct (0x34 bytes) — element of CDedLevel::moving_groups

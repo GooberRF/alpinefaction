@@ -70,6 +70,8 @@ set(SRCS
     dir_light.h
     rope_emitter.cpp
     rope_emitter.h
+    mover_path.cpp
+    mover_path.h
     terrain.cpp
     terrain.h
     terrain_build.cpp

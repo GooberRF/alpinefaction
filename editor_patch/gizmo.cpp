@@ -23,6 +23,7 @@
 #include "resources.h"
 #include "terrain_paint.h"
 #include "texture_lock.h"
+#include "mover_path.h"
 #include "texture_mode.h"
 #include "vtypes.h"
 
@@ -783,18 +784,20 @@ struct Extras
     std::array<float, 3> size{};
     float draw_scale = 1.0f;
     float box_yaw = 0.0f;
+    mover_path::KeyframeData keyframe_path;
 
     bool operator==(const Extras& o) const
     {
-        return radius == o.radius && size == o.size && draw_scale == o.draw_scale && box_yaw == o.box_yaw;
+        return radius == o.radius && size == o.size && draw_scale == o.draw_scale && box_yaw == o.box_yaw
+            && keyframe_path == o.keyframe_path;
     }
 };
 
 bool has_extras(DedObject& obj)
 {
     const Volume v = volume_of(obj);
-    return obj.type == DedObjectType::DED_MESH || obj.type == DedObjectType::DED_DIRECTIONAL_LIGHT || v.radius ||
-           v.size[0];
+    return obj.type == DedObjectType::DED_MESH || obj.type == DedObjectType::DED_DIRECTIONAL_LIGHT ||
+           obj.type == DedObjectType::DED_KEYFRAME || v.radius || v.size[0];
 }
 
 Extras read_extras(DedObject& obj)
@@ -815,6 +818,9 @@ Extras read_extras(DedObject& obj)
     else if (obj.type == DedObjectType::DED_DIRECTIONAL_LIGHT) {
         e.box_yaw = static_cast<DedDirectionalLight&>(obj).box_yaw;
     }
+    else if (obj.type == DedObjectType::DED_KEYFRAME) {
+        e.keyframe_path = mover_path_keyframe_data(obj);
+    }
     return e;
 }
 
@@ -834,6 +840,9 @@ void write_extras(DedObject& obj, const Extras& e)
     }
     else if (obj.type == DedObjectType::DED_DIRECTIONAL_LIGHT) {
         static_cast<DedDirectionalLight&>(obj).box_yaw = e.box_yaw;
+    }
+    else if (obj.type == DedObjectType::DED_KEYFRAME) {
+        mover_path_set_keyframe_data(obj, e.keyframe_path);
     }
     else if (obj.type == DedObjectType::DED_GAS_REGION) {
         auto& gas = static_cast<DedGasRegion&>(obj);
@@ -1848,6 +1857,15 @@ bool uniform_scale(const Drag& d)
 Extras scaled_extras(const Drag& d, DedObject& obj, const Extras& start)
 {
     Extras e = start;
+    if (obj.type == DedObjectType::DED_KEYFRAME) {
+        auto scaled = [&](const mover_path::Vec3& v) {
+            const Vector3 p = scale_vector(d, Vector3{v.x, v.y, v.z});
+            return mover_path::Vec3{p.x, p.y, p.z};
+        };
+        e.keyframe_path.in_handle = scaled(start.keyframe_path.in_handle);
+        e.keyframe_path.out_handle = scaled(start.keyframe_path.out_handle);
+        return e;
+    }
     const bool uniform = uniform_scale(d);
     if (obj.type == DedObjectType::DED_MESH) {
         if (uniform) {
@@ -1877,6 +1895,16 @@ Extras scaled_extras(const Drag& d, DedObject& obj, const Extras& start)
 Extras turned_extras(const Drag& d, DedObject& obj, const Extras& start)
 {
     Extras e = start;
+    if (obj.type == DedObjectType::DED_KEYFRAME) {
+        const Rotation rot{d.turn_axis, d.turn};
+        auto turned = [&](const mover_path::Vec3& v) {
+            const Vector3 p = rot.apply(Vector3{v.x, v.y, v.z});
+            return mover_path::Vec3{p.x, p.y, p.z};
+        };
+        e.keyframe_path.in_handle = turned(start.keyframe_path.in_handle);
+        e.keyframe_path.out_handle = turned(start.keyframe_path.out_handle);
+        return e;
+    }
     if (obj.type != DedObjectType::DED_DIRECTIONAL_LIGHT) return e;
     const float up = dot(d.turn_axis, world_axis(1));
     if (std::abs(up) > 0.9999f) {
@@ -2857,9 +2885,10 @@ bool take_drag_cancel_key(const MSG& msg)
         if (down && (msg.lParam & (1 << 30))) return true;
         g_cancel_key = 0;
     }
-    if (!down || !g_drag.active || !undo_redo_accelerator(msg)) return false;
+    if (!down || !(g_drag.active || mover_path_dragging()) || !undo_redo_accelerator(msg)) return false;
     g_cancel_key = msg.wParam;
     gizmo_cancel_drag();
+    mover_path_cancel_drag();
     return true;
 }
 
@@ -2961,7 +2990,7 @@ CallHook<int()> view_input_key_hook{
     0x0047BD5C,
     []() {
         const int key = view_input_key_hook.call_target();
-        return g_drag.active ? 0 : key;
+        return g_drag.active || mover_path_dragging() ? 0 : key;
     },
 };
 
@@ -3051,6 +3080,35 @@ bool gizmo_view_rbutton_down(EditorViewport* /*view*/)
 bool gizmo_view_mbutton_down(EditorViewport* /*view*/)
 {
     return g_drag.active;
+}
+
+bool gizmo_snapping()
+{
+    return snapping();
+}
+
+void gizmo_commit_keyframe_path(CDedLevel& level, DedObject& keyframe, const mover_path::KeyframeData& before,
+                                const mover_path::KeyframeData& after)
+{
+    level.commit_pending_transform();
+    const UndoEntry* top_before = undo_stack_top(level.undo_stack);
+    level.begin_transform();
+    UndoEntry* entry = undo_stack_top(level.undo_stack);
+    if (level.transform_in_progress && entry != top_before) {
+        level.finish_transform();
+        Extras start = read_extras(keyframe);
+        Extras end = start;
+        start.keyframe_path = before;
+        end.keyframe_path = after;
+        SideRecord record;
+        record.objects.push_back({&keyframe, start, end});
+        attach_side_record(level, entry, std::move(record));
+    }
+    else {
+        level.transform_in_progress = false;
+        xlog::warn("[Gizmo] the keyframe handle was moved without an undo step");
+    }
+    mark_level_modified();
 }
 
 bool gizmo_texture_lock()

@@ -141,6 +141,7 @@ CodeInjection level_load_init_patch{
         af_lightmap_level_reset();
         projector_clear_all();
         alpine_mover_clear_hold_open();
+        alpine_mover_path_clear_state();
         hud_world_level_unload();
         set_headlamp_toggle_enabled(AlpineLevelProperties::instance().starts_with_headlamp);
     },
@@ -261,6 +262,17 @@ CodeInjection level_load_chunk_patch{
         if (chunk_id == alpine_directional_light_chunk_id) {
             xlog::debug("[Level] Loading alpine directional light chunk: len={}", chunk_len);
             alpine_dir_light_load_chunk(file, chunk_len, file.get_version());
+            regs.eip = 0x004608EF;
+        }
+
+        if (chunk_id == alpine_mover_path_chunk_id) {
+            xlog::debug("[Level] Loading alpine mover path chunk: len={}", chunk_len);
+            if (file.check_version(306)) {
+                alpine_mover_path_load_chunk(file, chunk_len);
+            }
+            else {
+                file.seek(chunk_len, rf::File::seek_cur);
+            }
             regs.eip = 0x004608EF;
         }
 
