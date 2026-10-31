@@ -122,8 +122,7 @@ namespace rf
         uint32_t flags; // ObjInterpFlags
         uint16_t interp_time; // evaluation time (16-bit server ms ticks)
         uint8_t pad_52e[2];
-        uint32_t frame_time_us; // wall-clock stamp of the last frame advance (ms with AF's
-                                // obj_interp_too_fast_fix; stock stored µs)
+        uint32_t frame_time_us; // wall-clock timer_get(1000000) stamp of the last frame advance
         uint32_t num; // stored keyframes (0-20)
         uint32_t last_update_time; // wall-clock timer_get(1000) stamp of the newest sample's
                                    // arrival; -1 = no sample yet (set by Clear)
@@ -234,6 +233,8 @@ namespace rf
     };
 #pragma pack(pop)
     static_assert(sizeof(Object) == 0x28C);
+    static_assert(offsetof(Object, pos) == 0x3C);
+    static_assert(offsetof(Object, p_data) == 0x88);
     static_assert(offsetof(Object, server_handle) == 0x274);
 
     struct ObjectCreateInfo

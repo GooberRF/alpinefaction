@@ -5,6 +5,7 @@
 #include <patch_common/ShortTypes.h>
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <xlog/xlog.h>
 #include "../multi/server.h"
 #include "../rf/player/player.h"
@@ -17,6 +18,7 @@
 #include "../multi/multi.h"
 #include "../multi/kill_attribution.h"
 #include "../multi/mutators.h"
+#include "../multi/projectile_lag_comp.h"
 #include "../misc/misc.h"
 #include "../misc/alpine_settings.h"
 #include "alpine_rope.h"
@@ -203,17 +205,69 @@ ConsoleCommand2 show_enemy_bullets_cmd{
     "Toggles visibility of enemy bullet impacts",
 };
 
-// 0x004C53A8 is also the Critical Hits mutator's weapon_hit_level detonation site, so it calls
-// crits_on_explosion from here rather than putting a second CallHook on the same address
-// (see crits_explosion_hook in multi/mutators.cpp).
-CallHook<void(rf::Vector3&, float, float, int, int)> weapon_hit_wall_obj_apply_radius_damage_hook{
+// The three player-attributed apply_radius_damage (0x00488DC0) call sites. The function opens on
+// an x87 instruction and cannot be FunHooked, so each call site has exactly one CallHook here,
+// shared by the Critical Hits mutator (blast scale) and projectile lag compensation (victim
+// rewind). game_do_explosion (0x0043660D) passes killer -1 and needs neither.
+using RadiusDamageHook = CallHook<void(rf::Vector3&, float, float, int, int)>;
+
+// follow_handle: the entity the epicenter is on (direct hit, stuck charge); it moves with that entity's rewind
+static void weapon_apply_radius_damage(RadiusDamageHook& hook, rf::Vector3& epicenter, float damage, float radius,
+                                       int killer_handle, int damage_type, bool full_ping = false,
+                                       int follow_handle = -1)
+{
+    const float crit_scale = crits_on_explosion(&epicenter, radius);
+    alpine_rope_apply_explosion(epicenter, radius * crit_scale, damage);
+    // Bullet impacts come through here too, with no blast to rewind for
+    const bool rewound = damage > 0.0f && radius > 0.0f
+        && projectile_lag_comp_rewind_for_killer(killer_handle, full_ping);
+    rf::Vector3 center = epicenter;
+    if (rewound && follow_handle != -1) {
+        center += projectile_lag_comp_rewound_offset(follow_handle);
+    }
+    hook.call_target(center, damage, radius * crit_scale, killer_handle, damage_type);
+    if (rewound) {
+        restore_entities_after_projectile();
+    }
+}
+
+// weapon_hit_level: projectile detonates on world geometry
+RadiusDamageHook weapon_hit_wall_obj_apply_radius_damage_hook{
     0x004C53A8,
     [](rf::Vector3& epicenter, float damage, float radius, int killer_handle, int damage_type) {
         auto& collide_out = *reinterpret_cast<rf::PCollisionOut*>(&epicenter);
         auto new_epicenter = epicenter + collide_out.hit_normal * 0.0001f;
-        const float crit_scale = crits_on_explosion(&new_epicenter, radius);
-        alpine_rope_apply_explosion(new_epicenter, radius * crit_scale, damage);
-        weapon_hit_wall_obj_apply_radius_damage_hook.call_target(new_epicenter, damage, radius * crit_scale, killer_handle, damage_type);
+        weapon_apply_radius_damage(weapon_hit_wall_obj_apply_radius_damage_hook, new_epicenter, damage, radius,
+                                   killer_handle, damage_type);
+    },
+};
+
+// weapon_hit_obj impact splash: epicenter is wp->p_data.collide_out.hit_point, a point on the directly hit
+// object. Its direct hit was tested where the shooter saw it (projectile_lag_comp.cpp), so the splash rewinds it
+// with everyone else and the epicenter moves with it.
+RadiusDamageHook weapon_hit_obj_apply_radius_damage_hook{
+    0x004C62F5,
+    [](rf::Vector3& epicenter, float damage, float radius, int killer_handle, int damage_type) {
+        const auto& collide_out = *reinterpret_cast<rf::PCollisionOut*>(&epicenter);
+        weapon_apply_radius_damage(weapon_hit_obj_apply_radius_damage_hook, epicenter, damage, radius,
+                                   killer_handle, damage_type, /*full_ping*/ false,
+                                   /*follow_handle*/ collide_out.obj_handle);
+    },
+};
+
+// weapon_move_one fuse / detonator / lifetime expiry: epicenter is wp->pos. A remote charge detonates
+// on an un-advanced detonator packet, so its shooter is a full round trip behind.
+RadiusDamageHook weapon_expire_apply_radius_damage_hook{
+    0x004C6C94,
+    [](rf::Vector3& epicenter, float damage, float radius, int killer_handle, int damage_type) {
+        const auto* wp = reinterpret_cast<const rf::Weapon*>(
+            reinterpret_cast<const std::byte*>(&epicenter) - offsetof(rf::Object, pos));
+        // A charge stuck to someone moves with them (weapon_move_sticky_weapons 0x004C83C0), so the epicenter
+        // follows their rewind like a direct hit's
+        weapon_apply_radius_damage(weapon_expire_apply_radius_damage_hook, epicenter, damage, radius,
+                                   killer_handle, damage_type,
+                                   /*full_ping*/ wp->info_index == rf::remote_charge_weapon_type,
+                                   /*follow_handle*/ wp->sticky_host_handle);
     },
 };
 
@@ -479,6 +533,9 @@ void apply_weapon_patches()
 
     // Fix rockets not making damage after hitting a detail brush
     weapon_hit_wall_obj_apply_radius_damage_hook.install();
+    // Crits blast scale and projectile lag comp rewind at the other two blast sites
+    weapon_hit_obj_apply_radius_damage_hook.install();
+    weapon_expire_apply_radius_damage_hook.install();
 
     // Fix rail driver beam veering off the round's path after the round pierces a surface
     rail_gun_beam_tip_on_round_path.install();

@@ -37,6 +37,16 @@ Version 1.5.0 (Trillium): Not yet released
   - Simulate vehicle physics with the Bullet physics engine
   - Multi-seat vehicles with driver, gunner, and passenger seats; `Use` boards the lowest free seat and number keys `1`-`6` switch seats
 
+[@nickalreadyinuse](https://github.com/nickalreadyinuse)
+- Overhaul multiplayer netcode
+  - Delta-compress server object updates against client-acknowledged snapshots, sharply reducing server bandwidth, configurable with `delta_obj_update` in the dedicated server config
+  - Replace the remote player interpolation clock with a jitter-adaptive one, and interpolate along replicated velocities
+  - Keep a deeper remote player history (128 keyframes) so spectate and demo POV compensation reach further back
+  - Send client object updates at an exact 40 per second at any frame rate
+  - Add projectile lag compensation: server fast-forwards projectiles by the shooter's latency and tests direct hits and splash damage against victims where the shooter saw them, configurable with `projectile_lag_comp` and `projectile_lag_comp_max_ms` in the dedicated server config
+  - Add `sv_bandwidth [low|high]` server bandwidth tiers (low: 20 updates/s at 40 fps, high: 40 updates/s at 80 fps, matching 1.4)
+  - Deprecate `sv_netfps` and `rate`; dedicated server `maxfps` now follows `sv_bandwidth`
+
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)
 - Notify players in a server that is recording demos
@@ -179,6 +189,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Add `ui_color_console` console command to set the console background color
 - Render animated (`.vfx`) meshes on the GPU with per-pixel lighting, and apply their materials' reflection maps (Direct3D 11 renderer only)
 - Load levels with very large face counts or many level sounds much faster
+- Add `ui_show_netmeter` console command to show network rate, jitter, missed updates, interpolation delay and bandwidth
 - Add Discord rich presence (`cl_discord_presence`) showing the server, gametype, map, team scores, match status, player count and time left in multiplayer, and the level, difficulty and mod in single player, with a `Join server` button for public, password-free servers (`cl_discord_join_button`)
 
 [@is-this-c](https://github.com/is-this-c)
@@ -338,6 +349,7 @@ Version 1.5.0 (Trillium): Not yet released
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Cap FPS-dependent launch velocity when head jumping
+- Fix riot stick alt fire zap rate depending on the server frame rate and client send rate in multiplayer
 - Fix landing sound spam on ramps and jump pads at high FPS
 - Fix reload animation playing in third person for other players when client tries to reload with a full clip/magazine
 - Fix lighting for pistol silencer and remote charge detonator

@@ -292,6 +292,8 @@ bool alpine_player_settings_load(rf::Player* player)
         processed_keys.insert("WorldHUDOverdraw");
         xlog::info("Successfully parsed legacy setting 'WorldHUDOverdraw' from loaded pre-v9 AFS file.");
     }
+    // ServerMaxFPS (dedicated server fps now follows the ServerNetFPS tier)
+    processed_keys.insert("ServerMaxFPS");
 
     // Load player settings
     if (settings.count("PlayerName")) {
@@ -409,6 +411,10 @@ bool alpine_player_settings_load(rf::Player* player)
     if (settings.count("ShowSpeed")) {
         g_alpine_game_config.speed_display = std::stoi(settings["ShowSpeed"]);
         processed_keys.insert("ShowSpeed");
+    }
+    if (settings.count("ShowNetMeter")) {
+        g_alpine_game_config.netmeter_display = std::stoi(settings["ShowNetMeter"]);
+        processed_keys.insert("ShowNetMeter");
     }
     if (settings.count("ShowMinimap")) {
         g_alpine_game_config.minimap = std::stoi(settings["ShowMinimap"]);
@@ -1246,13 +1252,9 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.set_multiplayer_tracker(settings["MultiplayerTracker"]);
         processed_keys.insert("MultiplayerTracker");
     }
-    if (settings.count("ServerMaxFPS")) {
-        g_alpine_game_config.set_server_max_fps(std::stoi(settings["ServerMaxFPS"]));
-        apply_maximum_fps();
-        processed_keys.insert("ServerMaxFPS");
-    }
     if (settings.count("ServerNetFPS")) {
         g_alpine_game_config.set_server_netfps(std::stoi(settings["ServerNetFPS"]));
+        apply_maximum_fps(); // dedicated server fps follows the net rate tier
         processed_keys.insert("ServerNetFPS");
     }
     if (settings.count("DisableMultiCharacterLOD")) {
@@ -1610,6 +1612,7 @@ void alpine_player_settings_save(rf::Player* player)
     file << "SpectatePovComp=" << g_alpine_game_config.spectate_povcomp << "\n";
     file << "ShowFPS=" << g_alpine_game_config.fps_counter << "\n";
     file << "ShowSpeed=" << g_alpine_game_config.speed_display << "\n";
+    file << "ShowNetMeter=" << g_alpine_game_config.netmeter_display << "\n";
     file << "ShowMinimap=" << g_alpine_game_config.minimap << "\n";
     file << "MinimapRotate=" << g_alpine_game_config.minimap_rotate << "\n";
     file << "MinimapLabels=" << g_alpine_game_config.minimap_labels << "\n";
@@ -1847,7 +1850,6 @@ void alpine_player_settings_save(rf::Player* player)
     file << "VerboseTimer=" << g_alpine_game_config.verbose_time_left_display << "\n";
     file << "ScoreboardAnimations=" << g_alpine_game_config.scoreboard_anim << "\n";
     file << "MultiplayerTracker=" << g_alpine_game_config.multiplayer_tracker << "\n";
-    file << "ServerMaxFPS=" << g_alpine_game_config.server_max_fps << "\n";
     file << "ServerNetFPS=" << g_alpine_game_config.server_netfps << "\n";
     file << "DisableMultiCharacterLOD=" << g_alpine_game_config.multi_no_character_lod << "\n";
     file << "PlayerJoinBeep=" << g_alpine_game_config.player_join_beep << "\n";
