@@ -398,25 +398,57 @@ static const MutatorOptionChoice JOIN_BOTS_SKILLS[] = {
     {"Nightmare", "nightmare"},
 };
 static constexpr uint8_t JOIN_BOTS_DEFAULT_SKILL = 2;
+// Bot personality presets offered by Join Bots, as {UI label, preset name}. Random rolls once per bot.
+static const MutatorOptionChoice JOIN_BOTS_PERSONALITIES[] = {
+    {"Balanced", "balanced"},
+    {"Aggressive", "aggressive"},
+    {"Defensive", "defensive"},
+    {"Tactician", "tactician"},
+    {"Berserker", "berserker"},
+    {"Objective", "objective"},
+    {"Sniper", "sniper"},
+    {"Guerrilla", "guerrilla"},
+    {"Collector", "collector"},
+    {"Brawler", "brawler"},
+    {"Destroyer", "destroyer"},
+    {"Random", "random"},
+};
+static constexpr uint8_t JOIN_BOTS_DEFAULT_PERSONALITY = 0;
 static constexpr int JOIN_BOTS_DEFAULT_COUNT = 2;
 static constexpr int JOIN_BOTS_MAX_COUNT = 8;
+
+template<std::size_t N>
+static std::string join_bots_choice(
+    const toml::table& opts,
+    const char* key,
+    const MutatorOptionChoice (&choices)[N],
+    const uint8_t default_choice)
+{
+    const std::string& fallback = choices[default_choice].value;
+    const auto v = opts[key].value<std::string>();
+    if (!v) {
+        return fallback;
+    }
+    const auto it = std::ranges::find_if(choices, [&](const MutatorOptionChoice& c) {
+        return string_iequals(*v, c.value);
+    });
+    if (it != std::end(choices)) {
+        return it->value;
+    }
+    if (!g_rules_parse_quiet) {
+        rf::console::print("  [WARN] Join Bots: unknown {} '{}', using {}\n", key, clamp_for_console(*v), fallback);
+    }
+    return fallback;
+}
 
 // Join Bots: server bots that join for the level, or fill a match (see server_bots_sync_join_bots).
 static void apply_join_bots(AlpineServerConfigRules& r, const toml::table& opts)
 {
     r.mutators.join_bots = static_cast<int>(
         std::clamp<int64_t>(opts["bots"].value_or(int64_t{JOIN_BOTS_DEFAULT_COUNT}), 1, JOIN_BOTS_MAX_COUNT));
-    r.mutators.join_bots_skill = JOIN_BOTS_SKILLS[JOIN_BOTS_DEFAULT_SKILL].value;
-    if (auto v = opts["skill"].value<std::string>()) {
-        const auto it = std::ranges::find_if(JOIN_BOTS_SKILLS, [&](const MutatorOptionChoice& c) {
-            return string_iequals(*v, c.value);
-        });
-        if (it != std::end(JOIN_BOTS_SKILLS))
-            r.mutators.join_bots_skill = it->value;
-        else if (!g_rules_parse_quiet)
-            rf::console::print("  [WARN] Join Bots: unknown skill '{}', using {}\n", clamp_for_console(*v),
-                               r.mutators.join_bots_skill);
-    }
+    r.mutators.join_bots_skill = join_bots_choice(opts, "skill", JOIN_BOTS_SKILLS, JOIN_BOTS_DEFAULT_SKILL);
+    r.mutators.join_bots_personality =
+        join_bots_choice(opts, "personality", JOIN_BOTS_PERSONALITIES, JOIN_BOTS_DEFAULT_PERSONALITY);
 }
 
 // ============================================================================
@@ -460,6 +492,7 @@ static const MutatorOptionDef IDEAL_PLAYERS_OPTIONS[] = {
 static const MutatorOptionDef JOIN_BOTS_OPTIONS[] = {
     {0, "bots", "Bots (1-8)", MutatorOptionType::Int},
     {1, "skill", "Skill", MutatorOptionType::Choice},
+    {2, "personality", "Personality", MutatorOptionType::Choice},
 };
 
 struct MutatorDef
@@ -758,6 +791,10 @@ const std::vector<MutatorInfo>& mutators_get_registry()
             else if (def.id == MutatorId::JoinBots && opt.name == "skill") {
                 opt.choices.assign(std::begin(JOIN_BOTS_SKILLS), std::end(JOIN_BOTS_SKILLS));
                 opt.default_choice = JOIN_BOTS_DEFAULT_SKILL;
+            }
+            else if (def.id == MutatorId::JoinBots && opt.name == "personality") {
+                opt.choices.assign(std::begin(JOIN_BOTS_PERSONALITIES), std::end(JOIN_BOTS_PERSONALITIES));
+                opt.default_choice = JOIN_BOTS_DEFAULT_PERSONALITY;
             }
 
             info.options.push_back(std::move(opt));

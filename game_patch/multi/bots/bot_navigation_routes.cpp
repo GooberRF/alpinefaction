@@ -2,11 +2,16 @@
 
 #include "bot_context.h"
 #include "bot_internal.h"
+#include "bot_personality.h"
+#include "bot_utils.h"
+#include "bot_vehicle.h"
 #include "bot_waypoint_route.h"
+#include "../gametype.h"
 #include "../../main/main.h"
 #include "../../rf/collide.h"
 #include "../../rf/geometry.h"
 #include "../../rf/item.h"
+#include <common/utils/list-utils.h>
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -23,6 +28,11 @@ namespace
 constexpr int kBotRouteProbeTraceFlags = rf::CF_ANY_HIT | rf::CF_PROCESS_INVISIBLE_FACES;
 constexpr int kMaxGoalDetourAttempts = 8;
 constexpr int kMaxFailedEdgeDetours = 3;
+constexpr int kRouteRepairWindowMs = 5000;
+constexpr int kRouteRepairRetryMs = 10000;
+constexpr float kRouteRepairLengthScale = 2.0f;
+constexpr float kRouteRepairLengthSlack = 12.0f;
+constexpr float kLedgeLinkMinRise = 0.25f;
 constexpr int kMaxLongDetourAttempts = 10;
 constexpr int kMaxRoamRouteAttempts = 16;
 constexpr float kLadderEndpointTolerance = 0.75f;
@@ -76,6 +86,16 @@ struct GapSupportEntry
 
 std::unordered_map<uint64_t, GapSupportEntry> g_route_gap_support_cache{};
 int g_route_gap_support_cache_num_geomods = 0;
+
+struct LedgeLinkEntry
+{
+    rf::Vector3 from_pos{};
+    rf::Vector3 to_pos{};
+    bool climbs_ledge = false;
+};
+
+// Outlives geomods: the persistent route graph is not rebuilt for a crater, and its links must keep their cost.
+std::unordered_map<uint64_t, LedgeLinkEntry> g_ledge_link_cache{};
 
 struct LadderBounds
 {
@@ -397,7 +417,8 @@ void optimize_noisy_route_path(std::vector<int>& path)
                 }
                 continue;
             }
-            if (is_link_unclimbable_upward_for_route(from, to)) {
+            // The route went round this ledge on purpose.
+            if (is_link_unclimbable_upward_for_route(from, to) || bot_nav_link_climbs_ledge(from, to)) {
                 if (j == i + 2) {
                     break;
                 }
@@ -1391,6 +1412,85 @@ bool find_route_around_failed_edges(
     }
     return true;
 }
+
+// A failed link rarely condemns the route: the bot clipped something a neighbouring waypoint leads around. Rejoining
+// the route at the failed waypoint or just past it keeps its heading, where a fresh search can pick a different way
+// across the level. The waypoint rejoined at is exempt from its blacklisting, and with no way around, the link is tried
+// once more before the route is given up.
+bool repair_interrupted_route(const int start_waypoint, const int goal_waypoint, const int repath_ms)
+{
+    constexpr std::array<std::size_t, 4> kRejoinIndices{0, 1, 3, 7};
+
+    BotState& state = bot_state();
+    const std::vector<int> old_route = std::move(state.route_repair_path);
+    state.route_repair_path.clear();
+    if (old_route.empty()
+        || state.route_repair_goal != goal_waypoint
+        || !state.route_repair_path_timer.valid()
+        || state.route_repair_path_timer.elapsed()) {
+        return false;
+    }
+    const int failed_waypoint = old_route.front();
+    if (state.route_repair_last_waypoint == failed_waypoint
+        && state.route_repair_last_timer.valid()
+        && !state.route_repair_last_timer.elapsed()) {
+        return false;
+    }
+
+    const auto commit_rejoined = [&](std::vector<int>&& path) {
+        commit_route_path(std::move(path), goal_waypoint, repath_ms);
+        state.route_repair_last_waypoint = failed_waypoint;
+        state.route_repair_last_timer.set(kRouteRepairRetryMs);
+    };
+
+    std::vector<int> avoidset{};
+    bot_nav_append_blacklisted_waypoints_to_avoidset(avoidset, start_waypoint, goal_waypoint);
+    std::sort(avoidset.begin(), avoidset.end());
+
+    rf::Vector3 start_pos{};
+    rf::Vector3 failed_pos{};
+    if (!waypoints_get_pos(start_waypoint, start_pos) || !waypoints_get_pos(failed_waypoint, failed_pos)) {
+        return false;
+    }
+    const float skipped_base_length = (failed_pos - start_pos).len();
+
+    std::vector<int> detour;
+    for (const std::size_t rejoin_index : kRejoinIndices) {
+        if (rejoin_index >= old_route.size()) {
+            break;
+        }
+        const int rejoin_waypoint = old_route[rejoin_index];
+        if (rejoin_waypoint == start_waypoint) {
+            continue;
+        }
+        std::vector<int> rejoin_avoidset = avoidset;
+        std::erase(rejoin_avoidset, rejoin_waypoint);
+        if (!find_route_around_failed_edges(start_waypoint, rejoin_waypoint, std::move(rejoin_avoidset), detour)
+            || bot_nav_path_has_unclimbable_upward_links(detour)) {
+            continue;
+        }
+        const std::vector<int> skipped(old_route.begin(), old_route.begin() + rejoin_index + 1);
+        const float skipped_length = skipped_base_length + compute_waypoint_path_length(skipped);
+        if (compute_waypoint_path_length(detour) > skipped_length * kRouteRepairLengthScale + kRouteRepairLengthSlack) {
+            continue;
+        }
+        detour.insert(detour.end(), old_route.begin() + rejoin_index + 1, old_route.end());
+        if (!bot_nav_path_contains_failed_edge_cooldown(detour)) {
+            commit_rejoined(std::move(detour));
+            return true;
+        }
+    }
+
+    if (failed_waypoint != start_waypoint
+        && bot_waypoint_route(start_waypoint, failed_waypoint, {}, detour)
+        && detour.size() >= 2
+        && !bot_nav_path_has_unclimbable_upward_links(detour)) {
+        detour.insert(detour.end(), old_route.begin() + 1, old_route.end());
+        commit_rejoined(std::move(detour));
+        return true;
+    }
+    return false;
+}
 }
 
 bool bot_nav_is_link_traversable_for_route(const int from_waypoint, const int to_waypoint)
@@ -1423,6 +1523,39 @@ bool bot_nav_link_allows_route(const int from_waypoint, const int to_waypoint)
     return !is_link_unclimbable_upward_for_route(from_waypoint, to_waypoint);
 }
 
+bool bot_nav_link_climbs_ledge(const int from_waypoint, const int to_waypoint)
+{
+    rf::Vector3 from_pos{};
+    rf::Vector3 to_pos{};
+    if (!waypoints_get_pos(from_waypoint, from_pos) || !waypoints_get_pos(to_waypoint, to_pos)) {
+        return false;
+    }
+    const float rise = to_pos.y - from_pos.y;
+    // The generator already walked the ground between two terrain nodes.
+    if (rise <= kLedgeLinkMinRise || rise > kRouteMaxUpwardStepHeight
+        || (waypoints_is_terrain_node(from_waypoint) && waypoints_is_terrain_node(to_waypoint))) {
+        return false;
+    }
+    int from_type_raw = 0;
+    int to_type_raw = 0;
+    int subtype = 0;
+    if (!waypoints_get_type_subtype(from_waypoint, from_type_raw, subtype)
+        || !waypoints_get_type_subtype(to_waypoint, to_type_raw, subtype)
+        || waypoint_type_allows_special_vertical_route(static_cast<WaypointType>(from_type_raw))
+        || waypoint_type_allows_special_vertical_route(static_cast<WaypointType>(to_type_raw))
+        || waypoints_link_has_target_type(from_waypoint, to_waypoint, WaypointTargetType::jump)) {
+        return false;
+    }
+    const uint64_t edge_key = (static_cast<uint64_t>(from_waypoint) << 32) | static_cast<uint32_t>(to_waypoint);
+    if (auto it = g_ledge_link_cache.find(edge_key); it != g_ledge_link_cache.end()
+        && it->second.from_pos == from_pos && it->second.to_pos == to_pos) {
+        return it->second.climbs_ledge;
+    }
+    const bool climbs_ledge = bot_link_floor_step(from_pos, to_pos) >= kBotLedgeMinStep;
+    g_ledge_link_cache[edge_key] = {from_pos, to_pos, climbs_ledge};
+    return climbs_ledge;
+}
+
 bool bot_nav_path_has_unclimbable_upward_links(const std::vector<int>& path)
 {
     if (path.size() < 2) {
@@ -1436,6 +1569,18 @@ bool bot_nav_path_has_unclimbable_upward_links(const std::vector<int>& path)
     }
 
     return false;
+}
+
+void bot_nav_save_route_for_repair()
+{
+    BotState& state = bot_state();
+    const int next_index = state.waypoint_next_index;
+    if (next_index < 0 || next_index >= static_cast<int>(state.waypoint_path.size())) {
+        return;
+    }
+    state.route_repair_path.assign(state.waypoint_path.begin() + next_index, state.waypoint_path.end());
+    state.route_repair_goal = state.waypoint_goal;
+    state.route_repair_path_timer.set(kRouteRepairWindowMs);
 }
 
 bool bot_nav_link_midpoint_has_support(const int from_waypoint, const int to_waypoint)
@@ -1818,6 +1963,358 @@ bool bot_nav_detect_recent_waypoint_ping_pong_loop(
     return false;
 }
 
+namespace
+{
+constexpr int kRouteDangerScanMs = 400;
+constexpr int kRouteDangerSeenMs = 8000;
+constexpr int kRouteDangerHitMs = 15000;
+constexpr int kRouteDangerRerouteMs = 4000;
+constexpr int kRouteBiasHoldMs = 15000;
+constexpr float kRouteDangerRadius = 16.0f;
+constexpr float kRouteDangerSightDist = 60.0f;
+constexpr float kRouteDangerAvoidRadius = 10.0f;
+constexpr float kRouteDangerMinExposure = 3.0f;
+// Route length worth spending to leave one unit of route that passes right by a known enemy.
+constexpr float kRouteDangerWorth = 3.0f;
+// A bot that cannot capture yet has nowhere to be in a hurry.
+constexpr float kRouteDangerNoCaptureWorthScale = 2.0f;
+// Waypoints this close to either end stay open, or the search could not leave the start or reach the goal.
+constexpr float kRouteBiasOpenRadius = 4.0f;
+constexpr float kRouteVarietyChance = 0.25f;
+constexpr float kRouteVarietySneakyChance = 0.50f;
+constexpr float kRouteVarietyPivotRadius = 7.0f;
+constexpr float kRouteVarietyMinLength = 30.0f;
+constexpr float kRouteVarietyMinLengthScale = 1.05f;
+constexpr float kRouteVarietyMaxLengthScale = 1.35f;
+constexpr int kRouteVarietyPivotAttempts = 3;
+
+bool goal_weighs_route_danger()
+{
+    const BotGoalType goal = bot_state().active_goal;
+    return goal == BotGoalType::ctf_steal_flag
+        || goal == BotGoalType::ctf_capture_flag
+        || goal == BotGoalType::ctf_hold_enemy_flag;
+}
+
+bool route_danger_active(const BotRouteDanger& danger)
+{
+    return danger.expiry.valid() && !danger.expiry.elapsed();
+}
+
+void note_route_danger(const int handle, const rf::Vector3& pos, const int duration_ms)
+{
+    BotRouteDanger* slot = nullptr;
+    for (BotRouteDanger& danger : bot_state().route_dangers) {
+        if (danger.handle == handle) {
+            slot = &danger;
+            break;
+        }
+        if (!slot || !route_danger_active(danger)
+            || (route_danger_active(*slot) && danger.expiry.time_until() < slot->expiry.time_until())) {
+            slot = &danger;
+        }
+    }
+    // A sighting does not cut short the longer memory of a hit from the same enemy.
+    if (slot->handle != handle || !route_danger_active(*slot) || slot->expiry.time_until() < duration_ms) {
+        slot->expiry.set(duration_ms);
+    }
+    slot->handle = handle;
+    slot->pos = pos;
+}
+
+float path_danger_exposure(const std::vector<int>& path)
+{
+    float exposure = 0.0f;
+    rf::Vector3 prev_pos{};
+    bool has_prev = false;
+    for (const int waypoint : path) {
+        rf::Vector3 pos{};
+        if (!waypoints_get_pos(waypoint, pos)) {
+            continue;
+        }
+        if (has_prev) {
+            const float link_length = (pos - prev_pos).len();
+            for (const BotRouteDanger& danger : bot_state().route_dangers) {
+                if (route_danger_active(danger)) {
+                    const float near_factor =
+                        std::clamp(1.0f - (pos - danger.pos).len() / kRouteDangerRadius, 0.0f, 1.0f);
+                    exposure += near_factor * near_factor * link_length;
+                }
+            }
+        }
+        prev_pos = pos;
+        has_prev = true;
+    }
+    return exposure;
+}
+
+float route_danger_worth()
+{
+    const BotPersonality& personality = get_active_bot_personality();
+    const float risk_tolerance_norm =
+        std::clamp((personality.decision_risk_tolerance - 0.25f) / 2.25f, 0.0f, 1.0f);
+    float worth = kRouteDangerWorth
+        * std::lerp(1.4f, 0.6f, risk_tolerance_norm)
+        * std::lerp(0.5f, 1.0f, bot_get_decision_skill_factor());
+    if (bot_personality_has_quirk(BotPersonalityQuirk::sneaky_capper)) {
+        worth *= 1.5f;
+    }
+    if (bot_state().active_goal == BotGoalType::ctf_hold_enemy_flag) {
+        worth *= kRouteDangerNoCaptureWorthScale;
+    }
+    return worth;
+}
+
+// The waypoints within radius of a centre, sorted, leaving the two ends of the route open.
+std::vector<int> collect_route_bias_waypoints(
+    const std::vector<rf::Vector3>& centres,
+    const float radius,
+    const int start_waypoint,
+    const int goal_waypoint)
+{
+    rf::Vector3 start_pos{};
+    rf::Vector3 goal_pos{};
+    if (!waypoints_get_pos(start_waypoint, start_pos) || !waypoints_get_pos(goal_waypoint, goal_pos)) {
+        return {};
+    }
+    std::vector<int> waypoints;
+    const float radius_sq = radius * radius;
+    const float open_sq = kRouteBiasOpenRadius * kRouteBiasOpenRadius;
+    const int waypoint_total = waypoints_count();
+    for (int waypoint = 1; waypoint < waypoint_total; ++waypoint) {
+        rf::Vector3 pos{};
+        if (!waypoints_get_pos(waypoint, pos)
+            || rf::vec_dist_squared(&pos, &start_pos) <= open_sq
+            || rf::vec_dist_squared(&pos, &goal_pos) <= open_sq) {
+            continue;
+        }
+        for (const rf::Vector3& centre : centres) {
+            if (rf::vec_dist_squared(&pos, &centre) <= radius_sq) {
+                waypoints.push_back(waypoint);
+                break;
+            }
+        }
+    }
+    return waypoints;
+}
+
+bool find_route_around(
+    const int start_waypoint,
+    const int goal_waypoint,
+    const std::vector<int>& avoidset,
+    const std::vector<int>& bias_waypoints,
+    std::vector<int>& out_path)
+{
+    std::vector<int> merged = avoidset;
+    merged.insert(merged.end(), bias_waypoints.begin(), bias_waypoints.end());
+    std::sort(merged.begin(), merged.end());
+    merged.erase(std::unique(merged.begin(), merged.end()), merged.end());
+    return find_route_around_failed_edges(start_waypoint, goal_waypoint, std::move(merged), out_path)
+        && !bot_nav_path_contains_failed_edge_cooldown(out_path)
+        && !bot_nav_path_has_unclimbable_upward_links(out_path);
+}
+
+void keep_route_bias(std::vector<int>&& bias_waypoints, const int goal_waypoint)
+{
+    bot_state().route_bias_avoid = std::move(bias_waypoints);
+    bot_state().route_bias_goal = goal_waypoint;
+    bot_state().route_bias_timer.set(kRouteBiasHoldMs);
+}
+
+// Trades route length for distance from known enemies. Length alone sets no limit: a bot that sees the way is held
+// goes as far round as the danger is worth.
+bool prefer_safer_route(
+    const int start_waypoint,
+    const int goal_waypoint,
+    const std::vector<int>& avoidset,
+    std::vector<int>& path)
+{
+    const float exposure = path_danger_exposure(path);
+    if (exposure < kRouteDangerMinExposure) {
+        return false;
+    }
+    std::vector<rf::Vector3> centres;
+    for (const BotRouteDanger& danger : bot_state().route_dangers) {
+        if (route_danger_active(danger)) {
+            centres.push_back(danger.pos);
+        }
+    }
+    std::vector<int> bias_waypoints =
+        collect_route_bias_waypoints(centres, kRouteDangerAvoidRadius, start_waypoint, goal_waypoint);
+    std::vector<int> alternative;
+    if (bias_waypoints.empty()
+        || !find_route_around(start_waypoint, goal_waypoint, avoidset, bias_waypoints, alternative)) {
+        return false;
+    }
+    const float worth = route_danger_worth();
+    const float cost = compute_waypoint_path_length(path) + exposure * worth;
+    const float alternative_cost =
+        compute_waypoint_path_length(alternative) + path_danger_exposure(alternative) * worth;
+    if (alternative_cost >= cost) {
+        return false;
+    }
+    path = std::move(alternative);
+    keep_route_bias(std::move(bias_waypoints), goal_waypoint);
+    return true;
+}
+
+// Now and then a trip takes another way, once per objective so that repaths cannot make the bot wander. Blocks an area
+// on the route: the waypoint grid is too fine for avoiding only the route's own waypoints to change anything.
+void maybe_vary_route(
+    const int start_waypoint,
+    const int goal_waypoint,
+    const std::vector<int>& avoidset,
+    std::vector<int>& path)
+{
+    const BotGoalType goal = bot_state().active_goal;
+    if ((goal != BotGoalType::ctf_steal_flag && goal != BotGoalType::ctf_capture_flag)
+        || bot_state().route_bias_goal == goal_waypoint) {
+        return;
+    }
+    bot_state().route_bias_goal = goal_waypoint;
+    bot_state().route_bias_avoid.clear();
+    const float length = compute_waypoint_path_length(path);
+    const float chance = bot_personality_has_quirk(BotPersonalityQuirk::sneaky_capper)
+        ? kRouteVarietySneakyChance
+        : kRouteVarietyChance;
+    std::uniform_real_distribution<float> unit(0.0f, 1.0f);
+    if (length < kRouteVarietyMinLength || unit(g_rng) >= chance) {
+        return;
+    }
+    std::uniform_real_distribution<float> pivot_share(0.3f, 0.7f);
+    for (int attempt = 0; attempt < kRouteVarietyPivotAttempts; ++attempt) {
+        rf::Vector3 pivot_pos{};
+        const int pivot = path[static_cast<std::size_t>(static_cast<float>(path.size()) * pivot_share(g_rng))];
+        if (!waypoints_get_pos(pivot, pivot_pos)) {
+            continue;
+        }
+        std::vector<int> bias_waypoints =
+            collect_route_bias_waypoints({pivot_pos}, kRouteVarietyPivotRadius, start_waypoint, goal_waypoint);
+        std::vector<int> alternative;
+        if (bias_waypoints.empty()
+            || !find_route_around(start_waypoint, goal_waypoint, avoidset, bias_waypoints, alternative)) {
+            continue;
+        }
+        const float alternative_length = compute_waypoint_path_length(alternative);
+        if (alternative_length >= length * kRouteVarietyMinLengthScale
+            && alternative_length <= length * kRouteVarietyMaxLengthScale) {
+            path = std::move(alternative);
+            keep_route_bias(std::move(bias_waypoints), goal_waypoint);
+            return;
+        }
+    }
+}
+
+void choose_situational_route(
+    const int start_waypoint,
+    const int goal_waypoint,
+    const std::vector<int>& avoidset,
+    std::vector<int>& path)
+{
+    if (!goal_weighs_route_danger()) {
+        return;
+    }
+    BotState& state = bot_state();
+    const bool bias_held = state.route_bias_goal == goal_waypoint
+        && !state.route_bias_avoid.empty()
+        && state.route_bias_timer.valid()
+        && !state.route_bias_timer.elapsed();
+    if (bias_held) {
+        std::vector<int> held_path;
+        if (find_route_around(start_waypoint, goal_waypoint, avoidset, state.route_bias_avoid, held_path)) {
+            path = std::move(held_path);
+        }
+    }
+    if (!prefer_safer_route(start_waypoint, goal_waypoint, avoidset, path) && !bias_held) {
+        maybe_vary_route(start_waypoint, goal_waypoint, avoidset, path);
+    }
+}
+
+void reroute_past_new_danger()
+{
+    BotState& state = bot_state();
+    const int next_index = state.waypoint_next_index;
+    if (!goal_weighs_route_danger()
+        || state.drop_link_route_locked
+        || state.waypoint_goal <= 0
+        || next_index < 1
+        || next_index + 1 >= static_cast<int>(state.waypoint_path.size())
+        || (state.route_danger_reroute_timer.valid() && !state.route_danger_reroute_timer.elapsed())) {
+        return;
+    }
+    std::vector<int> remaining(state.waypoint_path.begin() + next_index, state.waypoint_path.end());
+    if (path_danger_exposure(remaining) < kRouteDangerMinExposure) {
+        return;
+    }
+    state.route_danger_reroute_timer.set(kRouteDangerRerouteMs);
+    const int goal_waypoint = state.waypoint_goal;
+    std::vector<int> avoidset;
+    bot_nav_append_blacklisted_waypoints_to_avoidset(avoidset, remaining.front(), goal_waypoint);
+    std::sort(avoidset.begin(), avoidset.end());
+    if (prefer_safer_route(remaining.front(), goal_waypoint, avoidset, remaining)) {
+        // The link under way stays the first of the new route, so the bot does not turn back for its start.
+        remaining.insert(remaining.begin(), state.waypoint_path[next_index - 1]);
+        commit_route_path(std::move(remaining), goal_waypoint, kRouteDangerRerouteMs);
+    }
+}
+}
+
+void bot_nav_note_route_attacker(const rf::Entity& attacker)
+{
+    note_route_danger(attacker.handle, attacker.pos, kRouteDangerHitMs);
+}
+
+void bot_nav_update_route_dangers(const rf::Player& local_player, const rf::Entity& local_entity)
+{
+    BotState& state = bot_state();
+    if (state.route_danger_scan_timer.valid() && !state.route_danger_scan_timer.elapsed()) {
+        return;
+    }
+    state.route_danger_scan_timer.set(kRouteDangerScanMs);
+
+    const bool team_mode = multi_is_team_game_type();
+    for (const rf::Player& candidate : SinglyLinkedList{rf::player_list}) {
+        if (&candidate == &local_player
+            || candidate.is_non_participant()
+            || candidate.is_spectator
+            || candidate.is_spawn_disabled
+            || (team_mode && candidate.team == local_player.team)
+            || rf::player_is_dead(&candidate)
+            || rf::player_is_dying(&candidate)) {
+            continue;
+        }
+        const rf::Entity* const enemy = bot_vehicle_effective_target(rf::entity_from_handle(candidate.entity_handle));
+        // Not the perception LOS cache: it holds one target, the one combat is using.
+        if (enemy
+            && rf::vec_dist_squared(&local_entity.pos, &enemy->pos) <= kRouteDangerSightDist * kRouteDangerSightDist
+            && bot_has_unobstructed_level_los(local_entity.eye_pos, enemy->eye_pos, &local_entity, enemy)) {
+            note_route_danger(enemy->handle, enemy->pos, kRouteDangerSeenMs);
+        }
+    }
+    reroute_past_new_danger();
+}
+
+bool bot_nav_route_danger_sees(const rf::Vector3& pos, const rf::Entity& local_entity)
+{
+    for (const BotRouteDanger& danger : bot_state().route_dangers) {
+        if (route_danger_active(danger) && bot_has_unobstructed_level_los(pos, danger.pos, &local_entity, nullptr)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+float bot_nav_route_danger_distance(const rf::Vector3& pos, const float max_dist)
+{
+    float nearest = max_dist;
+    for (const BotRouteDanger& danger : bot_state().route_dangers) {
+        if (route_danger_active(danger)) {
+            nearest = std::min(nearest, (pos - danger.pos).len());
+        }
+    }
+    return nearest;
+}
+
 bool bot_nav_pick_waypoint_route_to_goal_randomized_after_stuck(
     const int start_waypoint,
     const int goal_waypoint,
@@ -1826,6 +2323,9 @@ bool bot_nav_pick_waypoint_route_to_goal_randomized_after_stuck(
 {
     if (start_waypoint <= 0 || goal_waypoint <= 0 || start_waypoint == goal_waypoint) {
         return false;
+    }
+    if (bot_state().recovery_pending_reroute && repair_interrupted_route(start_waypoint, goal_waypoint, repath_ms)) {
+        return true;
     }
 
     struct RouteCandidate
@@ -1891,6 +2391,7 @@ bool bot_nav_pick_waypoint_route_to_goal_randomized_after_stuck(
             && !bot_nav_path_has_unclimbable_upward_links(path_direct)) {
             if (avoid_waypoint <= 0) {
                 // Common-case route solve: keep it cheap and avoid detour expansion.
+                choose_situational_route(start_waypoint, goal_waypoint, avoidset, path_direct);
                 commit_route_path(std::move(path_direct), goal_waypoint, repath_ms);
                 return true;
             }

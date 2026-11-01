@@ -106,11 +106,18 @@ struct BotSkillProfile
     // Aim error bound at a 22 unit target distance, from no skill (max) to full skill (min).
     float aim_error_min = 0.035f;
     float aim_error_max = 2.65f;
+    // Milliseconds an aim error is held at full skill. Much shorter than the aim blend, the blend averages it away.
+    float aim_error_hold_ms = 55.0f;
+    // Share of the remaining angle turned per 1/30 s against a target in sight, at full skill.
+    float aim_blend_alpha_max = 0.32f;
+    // A newly seen target is first aimed short of by this much (bound at a 22 unit distance), closing over this long.
+    float aim_settle_error = 0.0f;
+    float aim_settle_ms = 0.0f;
     // Turn speed (radians per second) and minimum aim alignment (dot product) to fire, at full skill.
     float yaw_speed_cap = 10.0f;
     float pitch_speed_cap = 7.0f;
     float fire_alignment_threshold = 0.80f;
-    // Semi-automatic trigger presses are this many fire waits apart (before skill scaling).
+    // Scales the gap between semi-automatic trigger presses, which is the fastest allowed click plus up to 100 ms.
     float semi_auto_click_interval_scale = 3.0f;
     // Share (0-1) of the aim's lag behind a moving target that it leads by.
     float aim_prediction = 0.0f;

@@ -1769,7 +1769,8 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         rules.mutators.crits_enabled != b.mutators.crits_enabled ||
         rules.mutators.jetpack_explode != b.mutators.jetpack_explode ||
         rules.mutators.join_bots != b.mutators.join_bots ||
-        rules.mutators.join_bots_skill != b.mutators.join_bots_skill;
+        rules.mutators.join_bots_skill != b.mutators.join_bots_skill ||
+        rules.mutators.join_bots_personality != b.mutators.join_bots_personality;
 
     if (base || mutators_changed) {
         std::string joined;
@@ -1803,8 +1804,8 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         }
         // Join Bots options
         if (rules.mutators.join_bots > 0) {
-            std::format_to(iter, "    Join bots:                           {} ({})\n", rules.mutators.join_bots,
-                           rules.mutators.join_bots_skill);
+            std::format_to(iter, "    Join bots:                           {} ({}, {})\n", rules.mutators.join_bots,
+                           rules.mutators.join_bots_skill, rules.mutators.join_bots_personality);
         }
     }
 

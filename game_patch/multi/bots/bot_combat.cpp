@@ -335,6 +335,10 @@ constexpr float kDegreesToRadians = 0.017453292519943295769f;
 constexpr float kTargetHitRadius = 0.7f;
 constexpr float kSplashHitRadiusScale = 0.5f;
 constexpr float kAimErrorMissRadiusScale = 0.63f;
+// Hitscan weapons doing this much damage a shot (sniper rifle, rail driver) decide a fight in a shot or two, so their
+// best aim is held further from perfect.
+constexpr float kHeavyHitscanShotDamage = 150.0f;
+constexpr float kHeavyHitscanMinAimError = 1.2f;
 constexpr float kTargetEvadeSpeed = 2.5f;
 constexpr float kThrownFlightTimeScale = 1.3f;
 constexpr float kRangeFalloffStart = 0.85f;
@@ -400,8 +404,7 @@ constexpr float kCornerLookMaxTurnDot = 0.82f;
 // The aim blend constants are per 30 fps frame; rescaling the exponent keeps convergence time independent of the host
 // frame rate.
 constexpr float kAimBlendTunedRate = 30.0f;
-// A semi-automatic press inside the fire wait is dropped, so the next press would come a whole interval later.
-constexpr int kSemiAutoFireWaitSlackMs = 10;
+constexpr float kSemiAutoClickRangeMs = 100.0f;
 
 struct BotWeaponStats
 {
@@ -641,19 +644,14 @@ bool switch_to_weapon(
     return true;
 }
 
-float semi_auto_click_base_interval_ms(const int weapon_type, const float skill_factor)
+float semi_auto_click_interval_ms(const int weapon_type, const float slack_ms)
 {
-    int fire_wait_ms = rf::weapon_get_fire_wait_ms(weapon_type, false);
-    if (fire_wait_ms <= 0) {
-        fire_wait_ms = 120;
-    }
-    const float skill_scale = std::lerp(1.18f, 0.92f, skill_factor);
-    return static_cast<float>(fire_wait_ms)
-        * std::max(get_active_bot_skill_profile().semi_auto_click_interval_scale, 0.0f)
-        * skill_scale;
+    const float min_ms = static_cast<float>(bot_semi_auto_min_interval_ms(weapon_type));
+    const float scale = std::max(get_active_bot_skill_profile().semi_auto_click_interval_scale, 0.0f);
+    return std::clamp((min_ms + slack_ms) * scale, min_ms, std::max(min_ms, static_cast<float>(kSemiAutoClickMaxMs)));
 }
 
-bool should_press_semi_auto_trigger(const int weapon_type, const float skill_factor)
+bool should_press_semi_auto_trigger(const int weapon_type)
 {
     if (!rf::weapon_is_semi_automatic(weapon_type)) {
         return true;
@@ -669,19 +667,9 @@ bool should_press_semi_auto_trigger(const int weapon_type, const float skill_fac
         return false;
     }
 
-    const float base_interval = semi_auto_click_base_interval_ms(weapon_type, skill_factor);
-    const float variance = std::lerp(0.24f, 0.10f, skill_factor);
-    std::uniform_real_distribution<float> jitter_dist(-variance, variance);
-    const float jittered_interval = base_interval * (1.0f + jitter_dist(g_rng));
-    const int min_interval_ms = std::min(
-        std::max(kSemiAutoClickMinMs, rf::weapon_get_fire_wait_ms(weapon_type, false) + kSemiAutoFireWaitSlackMs),
-        kSemiAutoClickMaxMs);
-    const int click_interval_ms = std::clamp(
-        static_cast<int>(std::lround(jittered_interval)),
-        min_interval_ms,
-        kSemiAutoClickMaxMs
-    );
-    bot_state().firing.semi_auto_click_timer.set(click_interval_ms);
+    std::uniform_real_distribution<float> slack_dist(0.0f, kSemiAutoClickRangeMs);
+    bot_state().firing.semi_auto_click_timer.set(
+        static_cast<int>(std::lround(semi_auto_click_interval_ms(weapon_type, slack_dist(g_rng)))));
     return true;
 }
 
@@ -691,13 +679,33 @@ float compute_weapon_skill_adjusted_factor(const float base_skill, const int wea
     return std::clamp(base_skill * weapon_weight, 0.0f, 1.0f);
 }
 
-float aim_error_bound(const float distance, const float skill_factor)
+float aim_error_distance_scale(const float distance)
 {
-    const float distance_scale = std::clamp(distance / kAimErrorDistanceNorm, 0.65f, 2.6f);
+    return std::clamp(distance / kAimErrorDistanceNorm, 0.65f, 2.6f);
+}
+
+bool weapon_is_heavy_hitscan(const int weapon_type)
+{
+    if (weapon_type < 0 || weapon_type >= rf::num_weapon_types) {
+        return false;
+    }
+    const rf::WeaponInfo& info = rf::weapon_types[weapon_type];
+    return info.max_speed >= kLeadProjectileMaxSpeed
+        && info.damage_multi >= kHeavyHitscanShotDamage
+        && info.damage_radius <= 0.0f;
+}
+
+float aim_error_bound(const float distance, const float skill_factor, const int weapon_type)
+{
     const BotSkillProfile& skill_profile = get_active_bot_skill_profile();
-    const float min_error = std::clamp(skill_profile.aim_error_min, 0.0f, 5.0f);
+    const float min_error = std::clamp(
+        std::max(skill_profile.aim_error_min, weapon_is_heavy_hitscan(weapon_type) ? kHeavyHitscanMinAimError : 0.0f),
+        0.0f,
+        5.0f
+    );
     return std::clamp(
-        std::lerp(std::max(skill_profile.aim_error_max, min_error), min_error, skill_factor) * distance_scale,
+        std::lerp(std::max(skill_profile.aim_error_max, min_error), min_error, skill_factor)
+            * aim_error_distance_scale(distance),
         min_error,
         5.0f
     );
@@ -791,7 +799,7 @@ rf::Vector3 compute_skill_adjusted_enemy_aim_target(
 
     if (!bot_state().firing.aim_error_timer.valid()
         || bot_state().firing.aim_error_timer.elapsed()) {
-        const float max_error = aim_error_bound(dist, skill_factor);
+        const float max_error = aim_error_bound(dist, skill_factor, weapon_type);
         const float vertical_max_error = max_error * 0.82f;
         bot_state().firing.aim_error_right = 0.0f;
         bot_state().firing.aim_error_up = 0.0f;
@@ -831,7 +839,7 @@ rf::Vector3 compute_skill_adjusted_enemy_aim_target(
         const int update_ms = static_cast<int>(
             std::lerp(
                 static_cast<float>(kAimErrorUpdateSlowMs),
-                static_cast<float>(kAimErrorUpdateFastMs),
+                get_active_bot_skill_profile().aim_error_hold_ms,
                 skill_factor
             )
         );
@@ -851,6 +859,13 @@ rf::Vector3 compute_skill_adjusted_enemy_aim_target(
 
     aim_target += right * bot_state().firing.aim_error_right;
     aim_target += up * bot_state().firing.aim_error_up;
+    const BotCombatFiringState& firing = bot_state().firing;
+    if (firing.aim_settle_timer.valid() && !firing.aim_settle_timer.elapsed()) {
+        const float settle_left = static_cast<float>(firing.aim_settle_timer.time_until())
+            / std::max(get_active_bot_skill_profile().aim_settle_ms, 1.0f);
+        aim_target += right * (firing.aim_settle_right * settle_left);
+        aim_target += up * (firing.aim_settle_up * settle_left);
+    }
     if (projectile.thrown) {
         aim_target = ballistic_aim_point(origin, aim_target, projectile.speed);
     }
@@ -859,18 +874,63 @@ rf::Vector3 compute_skill_adjusted_enemy_aim_target(
 
 float aim_blend_alpha(const float skill_factor)
 {
+    // An enemy in sight is turned on as fast whatever the goal, or a bot on an objective answers it a beat late.
     const bool combat_tracking =
         bot_state().active_goal == BotGoalType::eliminate_target
+        || bot_state().firing.target_acquisition_handle >= 0
         || bot_state().fsm_state == BotFsmState::engage_enemy
         || bot_state().fsm_state == BotFsmState::pursue_enemy
         || bot_state().fsm_state == BotFsmState::seek_enemy;
     return std::clamp(
         combat_tracking
-            ? std::lerp(0.14f, 0.32f, skill_factor)
+            ? std::lerp(0.14f, get_active_bot_skill_profile().aim_blend_alpha_max, skill_factor)
             : std::lerp(0.10f, 0.24f, skill_factor),
         0.05f,
-        0.40f
+        0.60f
     );
+}
+
+// The aim starts short of a new target on the side it is coming from: the bot opens fire sooner and its first shots can
+// miss, instead of waiting out the end of the turn and then never missing.
+void begin_aim_settle(const rf::Entity& local_entity, const rf::Entity& enemy_target)
+{
+    BotCombatFiringState& firing = bot_state().firing;
+    const BotSkillProfile& skill_profile = get_active_bot_skill_profile();
+    firing.aim_settle_timer.invalidate();
+    rf::Vector3 forward = enemy_target.eye_pos - local_entity.eye_pos;
+    const float dist = forward.len();
+    if (skill_profile.aim_settle_ms <= 0.0f || skill_profile.aim_settle_error <= 0.0f || dist <= 0.0001f) {
+        return;
+    }
+    forward /= dist;
+    const rf::Vector3 world_up{0.0f, 1.0f, 0.0f};
+    rf::Vector3 right = world_up.cross_prod(forward);
+    if (right.len_sq() < 0.0001f) {
+        right = rf::Vector3{1.0f, 0.0f, 0.0f};
+    }
+    right.normalize_safe();
+    rf::Vector3 up = forward.cross_prod(right);
+    up.normalize_safe();
+
+    const rf::Vector3 view_offset = (forward_from_non_linear_yaw_pitch(
+        local_entity.control_data.phb.y, local_entity.control_data.eye_phb.x) - forward) * dist;
+    float side = view_offset.dot_prod(right);
+    float rise = view_offset.dot_prod(up);
+    float offset_len = std::hypot(side, rise);
+    std::uniform_real_distribution<float> share_dist(0.5f, 1.0f);
+    const float settle_error =
+        skill_profile.aim_settle_error * aim_error_distance_scale(dist) * share_dist(g_rng);
+    // No side to come from with the target dead ahead or dead behind.
+    if (offset_len < settle_error * 0.25f) {
+        std::uniform_real_distribution<float> angle_dist(0.0f, 6.2831853f);
+        const float angle = angle_dist(g_rng);
+        side = std::cos(angle);
+        rise = std::sin(angle);
+        offset_len = 1.0f;
+    }
+    firing.aim_settle_right = side / offset_len * settle_error;
+    firing.aim_settle_up = rise / offset_len * settle_error;
+    firing.aim_settle_timer.set(static_cast<int>(skill_profile.aim_settle_ms));
 }
 
 rf::Vector3 compute_skill_adjusted_enemy_aim_target(
@@ -1126,11 +1186,9 @@ BotWeaponStats weapon_stats_for_mode(const int weapon_type, const bool use_alt_f
         static_cast<float>(rf::weapon_get_fire_wait_ms(weapon_type, use_alt_fire)),
         kMinShotIntervalMs);
     if (rf::weapon_is_semi_automatic(weapon_type)) {
-        const float skill = compute_weapon_skill_adjusted_factor(bot_get_skill_factor(), weapon_type);
-        interval_ms = std::max(interval_ms, std::clamp(
-            semi_auto_click_base_interval_ms(weapon_type, skill),
-            static_cast<float>(kSemiAutoClickMinMs),
-            static_cast<float>(kSemiAutoClickMaxMs)));
+        interval_ms = std::max(
+            semi_auto_click_interval_ms(weapon_type, kSemiAutoClickRangeMs * 0.5f),
+            kMinShotIntervalMs);
     }
     stats.shot_interval = interval_ms / 1000.0f;
     if (projectile.flame) {
@@ -1190,7 +1248,7 @@ float bot_weapon_expected_dps(const BotWeaponStats& stats, const float distance,
     if (!stats.melee) {
         const float skill = compute_weapon_skill_adjusted_factor(bot_get_skill_factor(), stats.weapon_type);
         const float spread_miss = distance * std::tan(stats.spread * 0.5f);
-        const float aim_miss = aim_error_bound(distance, skill) * kAimErrorMissRadiusScale;
+        const float aim_miss = aim_error_bound(distance, skill, stats.weapon_type) * kAimErrorMissRadiusScale;
         const float flight_time = stats.speed > 1.0f
             ? distance / stats.speed * (stats.thrown ? kThrownFlightTimeScale : 1.0f)
             : 0.0f;
@@ -2642,6 +2700,28 @@ void bot_process_combat(
         );
     }
 
+    // Track target acquisition for reaction delay — the bot should not fire
+    // the instant a new enemy becomes visible; a brief delay lets the aim
+    // system turn towards the target first. An enemy out of sight for a while is new again.
+    bool within_acquisition_reaction = false;
+    if (enemy_target && enemy_has_los) {
+        if (bot_state().firing.target_acquisition_handle != enemy_target->handle) {
+            bot_state().firing.target_acquisition_handle = enemy_target->handle;
+            bot_state().firing.target_acquisition_timer.set(
+                std::max(static_cast<int>(get_active_bot_skill_profile().reaction_time_ms), 0));
+            begin_aim_settle(local_entity, *enemy_target);
+        }
+        within_acquisition_reaction =
+            bot_state().firing.target_acquisition_timer.valid()
+            && !bot_state().firing.target_acquisition_timer.elapsed();
+    }
+    else if (!enemy_target
+        || !bot_state().firing.enemy_los_recent_timer.valid()
+        || bot_state().firing.enemy_los_recent_timer.elapsed()) {
+        bot_state().firing.target_acquisition_handle = -1;
+        bot_state().firing.target_acquisition_timer.invalidate();
+    }
+
     const auto set_aim_goal = [&](const rf::Vector3& point, const int enemy_handle) {
         BotCombatFiringState& firing = bot_state().firing;
         firing.aim_goal_active = true;
@@ -2741,25 +2821,6 @@ void bot_process_combat(
 
     bool next_primary_fire_down = false;
     bool next_secondary_fire_down = false;
-
-    // Track target acquisition for reaction delay — the bot should not fire
-    // the instant a new enemy becomes visible; a brief delay lets the aim
-    // system turn towards the target first.
-    bool within_acquisition_reaction = false;
-    if (enemy_target && enemy_has_los) {
-        if (bot_state().firing.target_acquisition_handle != enemy_target->handle) {
-            bot_state().firing.target_acquisition_handle = enemy_target->handle;
-            bot_state().firing.target_acquisition_timer.set(
-                std::max(static_cast<int>(get_active_bot_skill_profile().reaction_time_ms), 0));
-        }
-        within_acquisition_reaction =
-            bot_state().firing.target_acquisition_timer.valid()
-            && !bot_state().firing.target_acquisition_timer.elapsed();
-    }
-    else if (!enemy_target) {
-        bot_state().firing.target_acquisition_handle = -1;
-        bot_state().firing.target_acquisition_timer.invalidate();
-    }
 
     const bool bot_is_underwater = rf::entity_is_swimming(&local_entity);
     if ((enemy_target || crater_goal_active || shatter_goal_active || remote_charge_live)
@@ -2866,7 +2927,7 @@ void bot_process_combat(
                     next_primary_fire_down = true;
                 }
             }
-            else if (should_press_semi_auto_trigger(weapon_type, active_skill_factor)) {
+            else if (should_press_semi_auto_trigger(weapon_type)) {
                 // Semi-auto should behave as discrete trigger pulls.
                 if (fire_mode.use_alt_fire) {
                     next_secondary_fire_down = true;
@@ -2876,9 +2937,6 @@ void bot_process_combat(
                 }
             }
         }
-        else {
-            clear_semi_auto_click_state();
-        }
     }
     else {
         bot_state().firing.wants_fire = false;
@@ -2886,7 +2944,6 @@ void bot_process_combat(
         bot_state().firing.explosive_fire_delay_timer.invalidate();
         bot_state().firing.explosive_fire_delay_weapon = -1;
         bot_state().firing.explosive_fire_delay_alt = false;
-        clear_semi_auto_click_state();
     }
 
     const bool previous_primary_fire_down = bot_state().firing.synthetic_primary_fire_down;

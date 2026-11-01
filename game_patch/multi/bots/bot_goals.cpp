@@ -287,6 +287,16 @@ bool has_alive_enemy_players(const rf::Player& local_player)
     return false;
 }
 
+bool has_live_teammate(const rf::Player& local_player)
+{
+    for (const rf::Player& candidate : SinglyLinkedList{rf::player_list}) {
+        if (&candidate != &local_player && candidate.team == local_player.team && live_participant_entity(candidate)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool is_ctf_flag_in_base(const bool red_flag)
 {
     return red_flag
@@ -331,6 +341,9 @@ struct CtfRuntimeState
     bool own_flag_dropped = false;
     bool enemy_flag_dropped = false;
     bool local_has_enemy_flag = false;
+    bool local_can_capture = false;
+    // A carrier that cannot capture goes after its own flag if it lies reachable, or if no teammate can chase it.
+    bool local_recovers_own_flag = false;
     int own_flag_uid = -1;
     int enemy_flag_uid = -1;
     rf::Vector3 own_flag_pos{};
@@ -425,6 +438,12 @@ bool build_ctf_runtime_state(
 
     if (out_state.own_flag_carrier) {
         out_state.own_flag_carrier_entity = rf::entity_from_handle(out_state.own_flag_carrier->entity_handle);
+    }
+    out_state.local_can_capture = out_state.local_has_enemy_flag && bot_ctf_can_capture(out_state.own_flag_in_base);
+    if (out_state.local_has_enemy_flag && !out_state.local_can_capture) {
+        out_state.local_recovers_own_flag = out_state.own_flag_dropped
+            ? ctf_dropped_flag_reachable(local_entity, out_state.own_dropped_waypoint, out_state.own_flag_pos)
+            : out_state.own_flag_carrier_entity && !has_live_teammate(*bot_player());
     }
 
     find_nearest_waypoint_of_type(
@@ -1105,7 +1124,7 @@ bool bot_goals_transport_objective(const rf::Entity& local_entity, rf::Vector3& 
 {
     CtfRuntimeState ctf_state{};
     if (build_ctf_runtime_state(local_entity, ctf_state)) {
-        if (ctf_state.local_has_enemy_flag) {
+        if (ctf_state.local_has_enemy_flag && !ctf_state.local_recovers_own_flag) {
             out_pos = ctf_state.own_base_pos;
         }
         else if (!ctf_state.own_flag_in_base) {
@@ -1600,7 +1619,7 @@ void bot_refresh_goal_state(
             bool goal_valid = false;
             switch (bot_state().active_goal) {
                 case BotGoalType::ctf_capture_flag:
-                    goal_valid = ctf_state.local_has_enemy_flag && ctf_state.own_flag_in_base;
+                    goal_valid = ctf_state.local_can_capture;
                     if (goal_valid) {
                         bot_state().goal_target_identifier = ctf_state.own_flag_uid;
                         bot_state().goal_target_pos = ctf_state.own_base_pos;
@@ -1612,6 +1631,7 @@ void bot_refresh_goal_state(
                             && ctf_dropped_flag_reachable(
                                 local_entity, ctf_state.own_dropped_waypoint, ctf_state.own_flag_pos))
                         || (ctf_state.own_flag_stolen && ctf_state.own_flag_carrier_entity);
+                    goal_valid = goal_valid && (!ctf_state.local_has_enemy_flag || ctf_state.local_recovers_own_flag);
                     if (goal_valid) {
                         if (ctf_state.own_flag_dropped) {
                             bot_state().goal_target_handle = -1;
@@ -1654,7 +1674,9 @@ void bot_refresh_goal_state(
                     }
                     break;
                 case BotGoalType::ctf_hold_enemy_flag:
-                    goal_valid = ctf_state.local_has_enemy_flag && !ctf_state.own_flag_in_base;
+                    goal_valid = ctf_state.local_has_enemy_flag
+                        && !ctf_state.local_can_capture
+                        && !ctf_state.local_recovers_own_flag;
                     if (goal_valid) {
                         bot_state().goal_target_identifier = ctf_state.own_flag_uid;
                         if (bot_state().goal_target_pos.len_sq() <= 0.0001f) {
@@ -2230,13 +2252,13 @@ void bot_refresh_goal_state(
     const bool hold_enemy_flag_state =
         ctf_mode
         && ctf_state.local_has_enemy_flag
-        && !ctf_state.own_flag_in_base;
+        && !ctf_state.local_can_capture;
     // No escalation timer — bot stays defensive while holding the flag.
     bot_state().ctf_hold_goal_timer.invalidate();
 
     // When holding the enemy flag and unable to capture, the bot should focus on
     // survival rather than seeking fights. Penalize enemy pursuit and boost all
-    // item collection (health, armor, weapons, ammo) to stay alive near own base.
+    // item collection (health, armor, weapons, ammo) to stay alive.
     if (hold_enemy_flag_state) {
         if (enemy_target && !enemy_has_los) {
             // Don't seek out enemies — only engage if they come to us.
@@ -2265,6 +2287,22 @@ void bot_refresh_goal_state(
         }
     }
 
+    // A carrier that can capture has one job left: pickups that keep it alive are all that is worth a detour, and an
+    // enemy out of sight is left alone.
+    if (ctf_mode && ctf_state.local_can_capture) {
+        constexpr float kCaptureRunUnseenEnemyPenalty = 200.0f;
+        constexpr float kCaptureRunPickupPenalty = 120.0f;
+        if (enemy_target && !enemy_has_los) {
+            enemy_goal_score -= kCaptureRunUnseenEnemyPenalty;
+        }
+        if (has_item_goal
+            && item_goal.goal_type != BotGoalType::collect_health
+            && item_goal.goal_type != BotGoalType::collect_armor
+            && item_goal.goal_type != BotGoalType::collect_super_item) {
+            item_goal_score -= kCaptureRunPickupPenalty;
+        }
+    }
+
     CtfGoalCandidate ctf_goal{};
     bool ctf_force_flag_carrier_elimination = false;
     int ctf_priority_flag_carrier_handle = -1;
@@ -2275,8 +2313,50 @@ void bot_refresh_goal_state(
             }
             ctf_goal = candidate;
         };
+        const auto consider_own_flag_carrier = [&](const float bonus) {
+            const bool carrier_has_los =
+                enemy_target
+                && enemy_target->handle == ctf_state.own_flag_carrier_entity->handle
+                && enemy_has_los;
+            float carrier_score = bot_internal_compute_enemy_goal_score(
+                local_entity,
+                *ctf_state.own_flag_carrier_entity,
+                carrier_has_los
+            ) + std::lerp(420.0f, 760.0f, ctf_recovery_norm) + bonus;
+            if (carrier_has_los) {
+                carrier_score += 45.0f;
+            }
+            consider_ctf_candidate(CtfGoalCandidate{
+                BotGoalType::ctf_return_flag,
+                ctf_state.own_flag_carrier_entity->handle,
+                ctf_state.own_flag_uid,
+                0,
+                ctf_state.own_flag_carrier_entity->pos,
+                carrier_score,
+            });
+            ctf_force_flag_carrier_elimination = true;
+            ctf_priority_flag_carrier_handle = ctf_state.own_flag_carrier_entity->handle;
+        };
+        const auto consider_own_dropped_flag = [&](const float bonus) {
+            const int return_waypoint = ctf_state.own_dropped_waypoint > 0
+                ? ctf_state.own_dropped_waypoint
+                : bot_find_closest_waypoint_with_fallback(ctf_state.own_flag_pos);
+            const float return_dist = std::sqrt(std::max(
+                rf::vec_dist_squared(&local_entity.pos, &ctf_state.own_flag_pos),
+                0.0f
+            ));
+            const float return_proximity_bonus = std::clamp(180.0f - return_dist * 1.30f, -70.0f, 180.0f);
+            consider_ctf_candidate(CtfGoalCandidate{
+                BotGoalType::ctf_return_flag,
+                -1,
+                ctf_state.own_flag_uid,
+                return_waypoint,
+                ctf_state.own_flag_pos,
+                std::lerp(205.0f, 390.0f, ctf_recovery_norm) + return_proximity_bonus + bonus,
+            });
+        };
 
-        if (ctf_state.local_has_enemy_flag && ctf_state.own_flag_in_base) {
+        if (ctf_state.local_can_capture) {
             const float capture_dist = std::sqrt(std::max(
                 rf::vec_dist_squared(&local_entity.pos, &ctf_state.own_base_pos),
                 0.0f
@@ -2291,7 +2371,16 @@ void bot_refresh_goal_state(
                 std::lerp(230.0f, 420.0f, ctf_capture_norm) + proximity_bonus,
             });
         }
-        else if (ctf_state.local_has_enemy_flag && !ctf_state.own_flag_in_base) {
+        else if (ctf_state.local_recovers_own_flag) {
+            constexpr float kCarrierFlagRecoveryBonus = 140.0f;
+            if (ctf_state.own_flag_dropped) {
+                consider_own_dropped_flag(kCarrierFlagRecoveryBonus);
+            }
+            else {
+                consider_own_flag_carrier(kCarrierFlagRecoveryBonus);
+            }
+        }
+        else if (ctf_state.local_has_enemy_flag) {
             const bool has_spawn_anchor = ctf_state.own_spawn_waypoint > 0;
             const bool has_base_anchor = ctf_state.own_base_waypoint > 0;
             const bool prefer_spawn_anchor = has_spawn_anchor
@@ -2339,51 +2428,11 @@ void bot_refresh_goal_state(
         }
         else {
             if (ctf_state.own_flag_stolen && ctf_state.own_flag_carrier_entity) {
-                const bool carrier_has_los =
-                    enemy_target
-                    && enemy_target->handle == ctf_state.own_flag_carrier_entity->handle
-                    && enemy_has_los;
-                float carrier_score = bot_internal_compute_enemy_goal_score(
-                    local_entity,
-                    *ctf_state.own_flag_carrier_entity,
-                    carrier_has_los
-                ) + std::lerp(420.0f, 760.0f, ctf_recovery_norm);
-                if (ctf_state.local_has_enemy_flag) {
-                    // If we are holding enemy flag while ours is stolen, carrier kill is critical.
-                    carrier_score += 140.0f;
-                }
-                if (carrier_has_los) {
-                    carrier_score += 45.0f;
-                }
-                consider_ctf_candidate(CtfGoalCandidate{
-                    BotGoalType::ctf_return_flag,
-                    ctf_state.own_flag_carrier_entity->handle,
-                    ctf_state.own_flag_uid,
-                    0,
-                    ctf_state.own_flag_carrier_entity->pos,
-                    carrier_score,
-                });
-                ctf_force_flag_carrier_elimination = true;
-                ctf_priority_flag_carrier_handle = ctf_state.own_flag_carrier_entity->handle;
+                consider_own_flag_carrier(0.0f);
             }
             else if (ctf_state.own_flag_dropped
                 && ctf_dropped_flag_reachable(local_entity, ctf_state.own_dropped_waypoint, ctf_state.own_flag_pos)) {
-                const int return_waypoint = ctf_state.own_dropped_waypoint > 0
-                    ? ctf_state.own_dropped_waypoint
-                    : bot_find_closest_waypoint_with_fallback(ctf_state.own_flag_pos);
-                const float return_dist = std::sqrt(std::max(
-                    rf::vec_dist_squared(&local_entity.pos, &ctf_state.own_flag_pos),
-                    0.0f
-                ));
-                const float return_proximity_bonus = std::clamp(180.0f - return_dist * 1.30f, -70.0f, 180.0f);
-                consider_ctf_candidate(CtfGoalCandidate{
-                    BotGoalType::ctf_return_flag,
-                    -1,
-                    ctf_state.own_flag_uid,
-                    return_waypoint,
-                    ctf_state.own_flag_pos,
-                    std::lerp(205.0f, 390.0f, ctf_recovery_norm) + return_proximity_bonus,
-                });
+                consider_own_dropped_flag(0.0f);
             }
 
             if (!ctf_force_flag_carrier_elimination
@@ -3021,10 +3070,7 @@ void bot_refresh_goal_state(
         selected_score = enemy_goal_score;
     }
 
-    if (ctf_mode
-        && ctf_state.local_has_enemy_flag
-        && !ctf_state.own_flag_in_base
-        && enemy_target) {
+    if (hold_enemy_flag_state && enemy_target) {
         const bool retaliating_recently =
             bot_state().retaliation_target_handle >= 0
             && bot_state().retaliation_timer.valid()

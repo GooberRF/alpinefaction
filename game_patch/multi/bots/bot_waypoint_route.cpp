@@ -29,6 +29,8 @@ constexpr int kMaxDestinationFields = 64;
 constexpr std::size_t kMaxOverlayChanges = 4096;
 // Extra route length for entering a foot node beside a vehicle road while an enemy hull is near.
 constexpr float kVehicleRoadNodeRouteCost = 4.0f;
+// Extra route length for a link up a ledge: worth a wider line around it, and still open where it is the way up.
+constexpr float kLedgeLinkRouteCost = 12.0f;
 
 struct RouteEdge
 {
@@ -262,7 +264,8 @@ void collect_route_edges(
         if (to <= 0 || to >= graph.waypoint_total || !graph.has_pos[to] || !bot_nav_link_allows_route(from, to)) {
             continue;
         }
-        out.push_back({to, (graph.pos[to] - graph.pos[from]).len()});
+        const float ledge_cost = bot_nav_link_climbs_ledge(from, to) ? kLedgeLinkRouteCost : 0.0f;
+        out.push_back({to, (graph.pos[to] - graph.pos[from]).len() + ledge_cost});
     }
 }
 

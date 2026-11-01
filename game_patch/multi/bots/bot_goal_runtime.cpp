@@ -146,7 +146,7 @@ bool bot_goal_runtime_route_to_waypoint_target_with_recovery(
         nullptr,
         primary_repath_ms);
     if (!routed) {
-        bot_internal_start_recovery_anchor_reroute(local_entity, goal_waypoint);
+        bot_internal_retry_route_recovery(local_entity, goal_waypoint);
         routed = bot_internal_update_waypoint_target_towards(
             local_entity,
             waypoint_target_pos,

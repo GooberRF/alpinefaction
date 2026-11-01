@@ -50,7 +50,10 @@ constexpr float kLinkFloorProbeDownDistance = 2.0f;
 constexpr float kLinkFloorLinkTraceYOffset = 0.05f;
 constexpr int kUpwardLinkObstacleCacheMaxEntries = 4096;
 
-std::unordered_map<uint64_t, bool> g_upward_link_obstacle_cache{};
+// How far along an upward link its jump belongs: a share of the way, or one of the two values below.
+std::unordered_map<uint64_t, float> g_upward_link_obstacle_cache{};
+constexpr float kUpwardLinkNoJump = -1.0f;
+constexpr float kUpwardLinkJumpAnywhere = 2.0f;
 int g_upward_link_obstacle_cache_waypoint_total = 0;
 
 uint64_t make_directed_link_key(const int from_waypoint, const int to_waypoint)
@@ -90,7 +93,7 @@ bool trace_floor_below_waypoint_pos(
     return true;
 }
 
-bool compute_upward_link_requires_jump_uncached(
+float compute_upward_link_jump_share_uncached(
     const int from_waypoint,
     const int to_waypoint)
 {
@@ -99,7 +102,12 @@ bool compute_upward_link_requires_jump_uncached(
     if (!waypoints_get_pos(from_waypoint, from_pos)
         || !waypoints_get_pos(to_waypoint, to_pos)
         || to_pos.y <= from_pos.y + kWaypointLinkRadiusEpsilon) {
-        return false;
+        return kUpwardLinkNoJump;
+    }
+    if (bot_nav_link_climbs_ledge(from_waypoint, to_waypoint)) {
+        float ledge_share = kUpwardLinkJumpAnywhere;
+        bot_link_floor_step(from_pos, to_pos, &ledge_share);
+        return ledge_share;
     }
 
     rf::Vector3 from_floor{};
@@ -107,7 +115,7 @@ bool compute_upward_link_requires_jump_uncached(
     if (!trace_floor_below_waypoint_pos(from_pos, from_floor)
         || !trace_floor_below_waypoint_pos(to_pos, to_floor)
         || to_floor.y <= from_floor.y + kWaypointLinkRadiusEpsilon) {
-        return false;
+        return kUpwardLinkNoJump;
     }
 
     rf::Vector3 p0 = from_floor;
@@ -119,17 +127,17 @@ bool compute_upward_link_requires_jump_uncached(
         p0,
         p1,
         kBotMovementTraceFlags,
-        &collision);
+        &collision) ? kUpwardLinkJumpAnywhere : kUpwardLinkNoJump;
 }
 
-bool upward_link_requires_jump_for_obstruction(
+float upward_link_jump_share(
     const int from_waypoint,
     const int to_waypoint)
 {
     if (from_waypoint <= 0
         || to_waypoint <= 0
         || !bot_nav_is_link_traversable_for_route(from_waypoint, to_waypoint)) {
-        return false;
+        return kUpwardLinkNoJump;
     }
 
     const int waypoint_total = waypoints_count();
@@ -153,10 +161,9 @@ bool upward_link_requires_jump_for_obstruction(
         return it->second;
     }
 
-    const bool requires_jump =
-        compute_upward_link_requires_jump_uncached(from_waypoint, to_waypoint);
-    g_upward_link_obstacle_cache.emplace(edge_key, requires_jump);
-    return requires_jump;
+    const float jump_share = compute_upward_link_jump_share_uncached(from_waypoint, to_waypoint);
+    g_upward_link_obstacle_cache.emplace(edge_key, jump_share);
+    return jump_share;
 }
 
 bool get_next_waypoint_link(int& out_from_waypoint, int& out_to_waypoint)
@@ -195,6 +202,7 @@ bool get_active_waypoint_link(int& out_from_waypoint, int& out_to_waypoint)
 
 void request_soft_repath_around_waypoint(const int avoid_waypoint)
 {
+    bot_state().route_repair_path.clear();
     if (bot_state().drop_link_route_locked) {
         return;
     }
@@ -570,7 +578,8 @@ bool should_jump_to_clear_obstructed_upward_link(
     const int from_waypoint,
     const int to_waypoint)
 {
-    if (!upward_link_requires_jump_for_obstruction(from_waypoint, to_waypoint)) {
+    const float jump_share = upward_link_jump_share(from_waypoint, to_waypoint);
+    if (jump_share == kUpwardLinkNoJump) {
         return false;
     }
 
@@ -596,7 +605,14 @@ bool should_jump_to_clear_obstructed_upward_link(
         1.0f
     );
 
-    return progress_t >= 0.10f && progress_t <= 0.72f;
+    if (jump_share == kUpwardLinkJumpAnywhere) {
+        return progress_t >= 0.10f && progress_t <= 0.72f;
+    }
+    // Off the ground too early and the bot lands short of the ledge.
+    constexpr float kLedgeJumpLeadDist = 1.2f;
+    constexpr float kLedgeJumpLateDist = 0.3f;
+    const float dist_to_ledge = (jump_share - progress_t) * std::sqrt(segment_len_sq);
+    return dist_to_ledge <= kLedgeJumpLeadDist && dist_to_ledge >= -kLedgeJumpLateDist;
 }
 
 void update_traversal_crouch_state_for_waypoint_path(

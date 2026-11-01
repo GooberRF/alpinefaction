@@ -2,6 +2,7 @@
 
 #include "bot_context.h"
 #include "bot_math.h"
+#include "bot_navigation_routes.h"
 #include "bot_vehicle.h"
 #include "../gametype.h"
 #include "../../misc/alpine_settings.h"
@@ -410,6 +411,9 @@ void bot_alerts_update_context(const rf::Player& local_player, const rf::Entity&
 
         bot_state().retaliation_target_handle = best_damage_source_handle;
         bot_state().retaliation_timer.set(kAlertRetaliationDamageMs);
+        if (const rf::Entity* const attacker = rf::entity_from_handle(best_damage_source_handle)) {
+            bot_nav_note_route_attacker(*attacker);
+        }
     }
     else if (best_medium_handle >= 0) {
         if (!bot_state().retaliation_timer.valid()

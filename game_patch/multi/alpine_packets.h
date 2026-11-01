@@ -1026,6 +1026,10 @@ enum class af_skill_field : uint8_t
     fire_alignment_threshold = 0x10,
     semi_auto_click_interval_scale = 0x11,
     aim_prediction = 0x12,
+    aim_blend_alpha_max = 0x13,
+    aim_settle_error = 0x14,
+    aim_settle_ms = 0x15,
+    aim_error_hold_ms = 0x16,
 };
 
 #pragma pack(pop)

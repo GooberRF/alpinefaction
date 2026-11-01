@@ -2735,6 +2735,14 @@ bool bot_internal_start_recovery_anchor_reroute(
     return start_recovery_anchor_reroute(entity, avoid_waypoint);
 }
 
+// For a goal retrying a failed route update: a link failure there has already started recovery and kept the route for
+// repair, which starting over would discard.
+bool bot_internal_retry_route_recovery(const rf::Entity& entity, const int avoid_waypoint)
+{
+    const bool repair_pending = bot_state().recovery_pending_reroute && !bot_state().route_repair_path.empty();
+    return !repair_pending && start_recovery_anchor_reroute(entity, avoid_waypoint);
+}
+
 bool bot_internal_update_waypoint_target(const rf::Entity& entity)
 {
     return update_waypoint_target(entity);
@@ -3093,6 +3101,10 @@ void bot_run_frame(BotContext& ctx)
         ctx.state.firing.remote_charge_pending_detonation = false;
         ctx.state.firing.remote_charge_pending_detonation_timer.invalidate();
         ctx.state.firing.remote_charge_give_up_timer.invalidate();
+        ctx.state.route_repair_path.clear();
+        ctx.state.route_bias_avoid.clear();
+        ctx.state.route_bias_goal = 0;
+        ctx.state.firing.target_acquisition_handle = -1;
         clear_enemy_aim_error_state();
         clear_semi_auto_click_state();
 
@@ -3345,6 +3357,8 @@ void bot_run_frame(BotContext& ctx)
             has_move_target
         );
     }
+
+    bot_nav_update_route_dangers(*local_player, *local_entity);
 
     const GoalStuckWatchdogAction stuck_watchdog_action =
         update_goal_stuck_watchdog(*local_entity);

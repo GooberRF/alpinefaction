@@ -693,8 +693,9 @@ bool is_following_waypoint_link(const rf::Entity& entity)
     return corridor_dist_sq <= corridor_radius * corridor_radius;
 }
 
-bool start_recovery_anchor_reroute(const rf::Entity& entity, const int avoid_waypoint)
+bool start_recovery_anchor_reroute(const rf::Entity& entity, const int avoid_waypoint, const bool rejoin_route)
 {
+    bot_state().route_repair_path.clear();
     // Block all rerouting while the bot is traversing a drop link.
     if (bot_state().drop_link_route_locked) {
         return false;
@@ -713,6 +714,9 @@ bool start_recovery_anchor_reroute(const rf::Entity& entity, const int avoid_way
 
     int anchor_waypoint = bot_find_closest_waypoint_with_los_fallback(entity);
     anchor_waypoint = choose_recovery_anchor_waypoint(entity, anchor_waypoint);
+    if (rejoin_route) {
+        bot_nav_save_route_for_repair();
+    }
     clear_waypoint_route();
     if (anchor_waypoint <= 0) {
         bot_state().recovery_anchor_waypoint = 0;
@@ -850,9 +854,14 @@ bool try_fast_forward_path_on_downward_fall(
         if (waypoint_pos.y > entity.pos.y + kPathFallFastForwardVerticalSlack) {
             continue;
         }
+        if (waypoint_pos.y < entity.pos.y - kRouteMaxUpwardStepHeight) {
+            continue;
+        }
 
         const float dist_sq = rf::vec_dist_squared(&entity.pos, &waypoint_pos);
-        if (dist_sq > max_dist_sq) {
+        // The bot has landed, so a node it cannot walk to is over a ledge, or past a wall, and skipping to it would
+        // lose the link that gets it there.
+        if (dist_sq > max_dist_sq || !bot_can_walk_direct(entity.pos, waypoint_pos)) {
             continue;
         }
 
@@ -1003,7 +1012,7 @@ bool enforce_current_link_corridor(const rf::Entity& entity)
             return true;
         }
         bot_nav_register_failed_edge_cooldown(from_waypoint, to_waypoint, kFailedEdgeCooldownMs);
-        start_recovery_anchor_reroute(entity, to_waypoint);
+        start_recovery_anchor_reroute(entity, to_waypoint, true);
         return false;
     }
 
@@ -1045,8 +1054,26 @@ bool enforce_current_link_corridor(const rf::Entity& entity)
         return true;
     }
     bot_nav_register_failed_edge_cooldown(from_waypoint, to_waypoint, kFailedEdgeCooldownMs);
-    start_recovery_anchor_reroute(entity, to_waypoint);
+    start_recovery_anchor_reroute(entity, to_waypoint, true);
     return false;
+}
+
+// A turn taken early cuts the corner, and the corner can be a ramp's side or edge: the early turn is only for a bot
+// that can walk straight on to the next waypoint from where it is.
+bool early_turn_blocked(const rf::Entity& entity, const rf::Vector3& waypoint_pos)
+{
+    constexpr float kTurnAtWaypointRadius = 0.7f;
+    const int next_index = bot_state().waypoint_next_index + 1;
+    // Across the floor: a node set off the height the bot walks at must still clear.
+    if (bot_horizontal_dist_sq(entity.pos, waypoint_pos) <= kTurnAtWaypointRadius * kTurnAtWaypointRadius
+        || next_index >= static_cast<int>(bot_state().waypoint_path.size())
+        || rf::entity_is_falling(const_cast<rf::Entity*>(&entity))) {
+        return false;
+    }
+    rf::Vector3 next_pos{};
+    return waypoints_get_pos(bot_state().waypoint_path[next_index], next_pos)
+        && std::abs(next_pos.y - entity.pos.y) < kRouteMaxUpwardStepHeight
+        && !bot_can_walk_direct(entity.pos, next_pos);
 }
 
 void clear_synthetic_movement_controls()
@@ -1090,6 +1117,14 @@ void reset_client_bot_state()
     bot_state().ctf_threat_visible = false;
     bot_state().ctf_objective_route_fail_timer.invalidate();
     bot_state().ctf_hold_goal_timer.invalidate();
+    bot_state().ctf_hold_spot_waypoint = 0;
+    bot_state().ctf_hold_spot_reached = false;
+    for (BotRouteDanger& danger : bot_state().route_dangers) {
+        danger.handle = -1;
+        danger.expiry.invalidate();
+    }
+    bot_state().route_bias_avoid.clear();
+    bot_state().route_bias_goal = 0;
     bot_state().control_point_route_fail_timer.invalidate();
     bot_state().control_point_patrol_waypoint = 0;
     bot_state().control_point_patrol_timer.invalidate();
@@ -1118,6 +1153,8 @@ void reset_client_bot_state()
     bot_state().recovery_anchor_waypoint = 0;
     bot_state().recovery_avoid_waypoint = 0;
     bot_state().recovery_pending_reroute = false;
+    bot_state().route_repair_path.clear();
+    bot_state().route_repair_last_waypoint = 0;
     bot_state().waypoint_progress_timer.invalidate();
     bot_state().waypoint_progress_waypoint = 0;
     bot_state().waypoint_progress_best_dist_sq = 0.0f;
@@ -1410,7 +1447,8 @@ bool try_recover_from_stuck_on_geometry(const rf::Entity& entity)
         bot_nav_choose_blacklist_waypoint_for_failed_link(previous_waypoint, blocked_waypoint);
     start_recovery_anchor_reroute(
         entity,
-        recovery_avoid_waypoint > 0 ? recovery_avoid_waypoint : blocked_waypoint
+        recovery_avoid_waypoint > 0 ? recovery_avoid_waypoint : blocked_waypoint,
+        true
     );
     return false;
 }
@@ -1874,7 +1912,8 @@ bool update_waypoint_target_from_current_path(const rf::Entity& entity)
                 bot_state().drop_link_route_locked = false;
                 start_recovery_anchor_reroute(
                     entity,
-                    blacklist_waypoint > 0 ? blacklist_waypoint : current_waypoint
+                    blacklist_waypoint > 0 ? blacklist_waypoint : current_waypoint,
+                    true
                 );
                 return false;
             }
@@ -1898,7 +1937,7 @@ bool update_waypoint_target_from_current_path(const rf::Entity& entity)
             waypoint_reach_radius = std::min(waypoint_reach_radius, kJumpPadWaypointReachRadius);
         }
     }
-    if (distance_sq <= waypoint_reach_radius * waypoint_reach_radius) {
+    if (distance_sq <= waypoint_reach_radius * waypoint_reach_radius && !early_turn_blocked(entity, target_pos)) {
         bot_nav_record_waypoint_visit(current_waypoint);
         bot_state().waypoint_progress_timer.invalidate();
         bot_state().waypoint_progress_waypoint = 0;

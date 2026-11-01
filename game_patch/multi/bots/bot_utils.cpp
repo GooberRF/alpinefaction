@@ -2,6 +2,9 @@
 
 #include "bot_context.h"
 #include "bot_internal.h"
+#include "../multi.h"
+#include "../server.h"
+#include "../server_internal.h"
 #include "../vehicles/vehicle.h"
 #include "../../misc/waypoints.h"
 #include "../../rf/collide.h"
@@ -25,6 +28,11 @@ constexpr float kWalkDirectStepHeight = 0.6f;
 constexpr float kWalkDirectMaxStep = 1.0f;
 constexpr float kWalkDirectFloorProbeDepth = 3.0f;
 constexpr float kWalkDirectProbeMargin = 0.1f;
+constexpr float kWalkDirectLedgeMinRise = 0.25f;
+constexpr float kFloorStepSampleSpacing = 0.4f;
+constexpr int kStockSemiAutoFireWaitMs = 500;
+constexpr int kSemiAutoNoLimiterMinMs = 100;
+constexpr int kFloorStepMaxSamples = 64;
 constexpr int kWalkDirectCacheMs = 250;
 constexpr float kWalkDirectCacheTolerance = 0.25f;
 constexpr int kLosWaypointWalkCheckLimit = 6;
@@ -73,12 +81,17 @@ float rider_box_exit_distance(const rf::Vector3& origin, const rf::Vector3& dir,
     return std::max(exit, 0.0f);
 }
 
-bool trace_walk_floor(const rf::Vector3& pos, const float top_y, const float bottom_y, rf::Vector3& out_floor)
+bool trace_walk_floor(
+    const rf::Vector3& pos,
+    const float top_y,
+    const float bottom_y,
+    rf::Vector3& out_floor,
+    const int flags = kWalkDirectTraceFlags)
 {
     rf::Vector3 p0{pos.x, top_y, pos.z};
     rf::Vector3 p1{pos.x, bottom_y, pos.z};
     rf::GCollisionOutput collision{};
-    if (!rf::collide_linesegment_level_solid(p0, p1, kWalkDirectTraceFlags, &collision)) {
+    if (!rf::collide_linesegment_level_solid(p0, p1, flags, &collision)) {
         return false;
     }
     out_floor = collision.hit_point;
@@ -100,6 +113,7 @@ bool compute_walk_direct(const rf::Vector3& from, const rf::Vector3& to)
         // Swimming, airborne or on a mover: floor support cannot be judged, so only require a clear line.
         return walk_direct_trace_clear(from, to);
     }
+    const float start_floor_y = floor.y;
 
     const float horizontal_dist = std::sqrt(bot_horizontal_dist_sq(from, to));
     const float checked_share =
@@ -135,8 +149,87 @@ bool compute_walk_direct(const rf::Vector3& from, const rf::Vector3& to)
         }
         floor = next_floor;
     }
-    return true;
+    // The samples above are too far apart to tell a ledge from a steep ramp.
+    const rf::Vector3 checked_end = from + (to - from) * checked_share;
+    return floor.y - start_floor_y <= kWalkDirectLedgeMinRise
+        || bot_link_floor_step(from, checked_end) < kBotLedgeMinStep;
 }
+}
+
+// A client process is not told the server's rules, so its bot goes by the stock one.
+bool bot_ctf_can_capture(const bool own_flag_in_base)
+{
+    return own_flag_in_base || (rf::is_server && g_alpine_server_config_active_rules.flag_captures_while_stolen);
+}
+
+// The click limiter's limit as multi_is_player_firing_too_fast works it out, or a floor of the bots' own without one.
+// A server bot reads the server's own config, since a server is not sent the server info a client gets.
+int bot_semi_auto_min_interval_ms(const int weapon_type)
+{
+    const auto& server_info = get_af_server_info();
+    const bool limiter_on =
+        rf::is_server ? server_apply_click_limiter() : server_info.has_value() && server_info->click_limit;
+    if (!limiter_on) {
+        return kSemiAutoNoLimiterMinMs;
+    }
+    const int primary_wait = rf::weapon_get_fire_wait_ms(weapon_type, false);
+    if (primary_wait == kStockSemiAutoFireWaitMs) {
+        return rf::is_server ? g_alpine_server_config.click_limiter_config.cooldown
+                             : get_semi_auto_fire_wait_override();
+    }
+    return std::min(primary_wait, rf::weapon_get_fire_wait_ms(weapon_type, true));
+}
+
+float bot_link_floor_step(const rf::Vector3& from, const rf::Vector3& to, float* const out_share)
+{
+    const int num_samples = std::clamp(
+        static_cast<int>(std::ceil(std::sqrt(bot_horizontal_dist_sq(from, to)) / kFloorStepSampleSpacing)),
+        1,
+        kFloorStepMaxSamples);
+    const float link_top_y = std::max(from.y, to.y) + kWalkDirectProbeMargin;
+    const float bottom_y = std::min(from.y, to.y) - kWalkDirectFloorProbeDepth;
+    bool has_floor = false;
+    rf::Vector3 floor{};
+    rf::Vector3 prev_point = from;
+    float step = 0.0f;
+    float step_share = 0.0f;
+    for (int sample = 0; sample <= num_samples; ++sample) {
+        const float share = static_cast<float>(sample) / num_samples;
+        const rf::Vector3 point = from + (to - from) * share;
+        // Only a step's reach above the last floor, or a beam over the low end of a link would read as floor.
+        const float top_y =
+            has_floor ? std::min(link_top_y, floor.y + kRouteMaxUpwardStepHeight + kWalkDirectProbeMargin) : link_top_y;
+        rf::Vector3 next_floor{};
+        // The nearest face: an any-hit trace can answer with a floor further down.
+        if (!trace_walk_floor(point, top_y, bottom_y, next_floor, rf::CF_PROCESS_INVISIBLE_FACES)) {
+            continue;
+        }
+        if (has_floor) {
+            float rise = next_floor.y - floor.y;
+            rf::Vector3 mid_floor{};
+            // Two stair risers can fall between samples and add up to a ledge.
+            if (rise >= kBotLedgeMinStep
+                && trace_walk_floor(
+                    (prev_point + point) * 0.5f,
+                    next_floor.y + kWalkDirectProbeMargin,
+                    floor.y - kWalkDirectProbeMargin,
+                    mid_floor,
+                    rf::CF_PROCESS_INVISIBLE_FACES)) {
+                rise = std::max(mid_floor.y - floor.y, next_floor.y - mid_floor.y);
+            }
+            if (rise > step) {
+                step = rise;
+                step_share = share;
+            }
+        }
+        floor = next_floor;
+        prev_point = point;
+        has_floor = true;
+    }
+    if (out_share) {
+        *out_share = step_share;
+    }
+    return step;
 }
 
 bool bot_can_walk_direct(const rf::Vector3& from, const rf::Vector3& to)

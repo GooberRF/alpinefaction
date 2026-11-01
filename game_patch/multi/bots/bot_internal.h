@@ -142,9 +142,7 @@ inline constexpr float kGoalSwitchScoreMarginShare = 0.10f;
 inline constexpr int kRoamFallbackGoalLockMs = 900;
 inline constexpr int kRecoveryRoamReevalLimitMs = 4000;
 inline constexpr int kAimErrorUpdateSlowMs = 240;  // low-skill: longer interval between aim error updates
-inline constexpr int kAimErrorUpdateFastMs = 55;   // high-skill: shorter interval between aim error updates
 inline constexpr float kAimErrorDistanceNorm = 22.0f;
-inline constexpr int kSemiAutoClickMinMs = 90;
 inline constexpr int kSemiAutoClickMaxMs = 900;
 inline constexpr int kRemoteChargeDetonationWindowMs = 3000;
 inline constexpr int kRemoteChargeCraterWindowMs = 6000;
@@ -520,6 +518,9 @@ struct BotCombatFiringState
     int aim_error_target_handle = -1;
     float aim_error_right = 0.0f;
     float aim_error_up = 0.0f;
+    rf::Timestamp aim_settle_timer{};
+    float aim_settle_right = 0.0f;
+    float aim_settle_up = 0.0f;
     rf::Timestamp semi_auto_click_timer{};
     int semi_auto_click_weapon = -1;
     rf::Timestamp explosive_fire_delay_timer{};
@@ -904,6 +905,15 @@ struct BotCandidateLos
     rf::Timestamp timer{};
 };
 
+inline constexpr int kBotRouteDangerSlots = 6;
+
+struct BotRouteDanger
+{
+    int handle = -1;
+    rf::Vector3 pos{};
+    rf::Timestamp expiry{};
+};
+
 struct BotState
 {
     std::vector<int> waypoint_path{};
@@ -988,6 +998,24 @@ struct BotState
     int recovery_anchor_waypoint = 0;
     int recovery_avoid_waypoint = 0;
     bool recovery_pending_reroute = false;
+    // What was left of a route when one of its links failed, for the reroute to get back onto.
+    std::vector<int> route_repair_path{};
+    int route_repair_goal = 0;
+    rf::Timestamp route_repair_path_timer{};
+    int route_repair_last_waypoint = 0;
+    rf::Timestamp route_repair_last_timer{};
+    // Where enemies were last seen or hit this bot from. Outlives a death, so a respawned bot avoids what killed it.
+    std::array<BotRouteDanger, kBotRouteDangerSlots> route_dangers{};
+    rf::Timestamp route_danger_scan_timer{};
+    rf::Timestamp route_danger_reroute_timer{};
+    // Waypoints a chosen route goes around, kept so a repath does not fall back to the direct route.
+    std::vector<int> route_bias_avoid{};
+    int route_bias_goal = 0;
+    rf::Timestamp route_bias_timer{};
+    int ctf_hold_spot_waypoint = 0;
+    rf::Timestamp ctf_hold_spot_timer{};
+    rf::Timestamp ctf_hold_spot_check_timer{};
+    bool ctf_hold_spot_reached = false;
     bool drop_link_route_locked = false;
     bool freefall_suppress_aim = false;
     // Set while a splash weapon's holder, inside its blast distance of the enemy, finds no clear way back or aside.
@@ -1153,6 +1181,7 @@ struct ItemGoalCandidate
 
 void bot_internal_clear_waypoint_route();
 bool bot_internal_start_recovery_anchor_reroute(const rf::Entity& entity, int avoid_waypoint);
+bool bot_internal_retry_route_recovery(const rf::Entity& entity, int avoid_waypoint);
 bool bot_internal_update_waypoint_target(const rf::Entity& entity);
 bool bot_internal_update_waypoint_target_towards(
     const rf::Entity& entity,

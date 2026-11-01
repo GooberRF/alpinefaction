@@ -2668,11 +2668,11 @@ void start_match()
 // queues runs, so the limbo never reports this match itself.
 static void end_match_early()
 {
-    server_bots_end_join_bots();
     if (g_match_info.match_active) {
         load_next_level(); // end the round if active match is canceled
     }
     else {
+        server_bots_end_join_bots();
         // restore the level timer and limit if pre-match is canceled        
         rf::level.time = 0.0f;
         rf::multi_time_limit = g_match_info.time_limit_on_pre_match_start.value_or(10.0f);        

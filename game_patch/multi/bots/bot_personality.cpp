@@ -636,6 +636,10 @@ SkillPresetDef make_hard_skill()
     s.dodge_likelihood = 0.45f;
     s.semi_auto_click_interval_scale = 1.6f;
     s.aim_prediction = 0.5f;
+    s.aim_error_min = 0.30f;
+    s.aim_error_hold_ms = 200.0f;
+    s.aim_settle_error = 2.2f;
+    s.aim_settle_ms = 550.0f;
     return def;
 }
 
@@ -655,6 +659,11 @@ SkillPresetDef make_expert_skill()
     s.dodge_likelihood = 0.65f;
     s.semi_auto_click_interval_scale = 1.3f;
     s.aim_prediction = 0.75f;
+    s.aim_error_min = 0.30f;
+    s.aim_error_hold_ms = 200.0f;
+    s.aim_blend_alpha_max = 0.38f;
+    s.aim_settle_error = 1.9f;
+    s.aim_settle_ms = 500.0f;
     return def;
 }
 
@@ -672,8 +681,13 @@ SkillPresetDef make_nightmare_skill()
     s.crouch_likelihood = 0.25f;
     s.jump_likelihood = 0.25f;
     s.dodge_likelihood = 0.85f;
-    s.semi_auto_click_interval_scale = 1.1f;
+    s.semi_auto_click_interval_scale = 1.0f;
     s.aim_prediction = 1.0f;
+    s.aim_error_min = 0.30f;
+    s.aim_error_hold_ms = 220.0f;
+    s.aim_blend_alpha_max = 0.45f;
+    s.aim_settle_error = 1.6f;
+    s.aim_settle_ms = 450.0f;
     return def;
 }
 
@@ -941,6 +955,18 @@ bool bot_skill_apply_field_override(BotContext& ctx, uint8_t field_id, float val
         case af_skill_field::aim_prediction:
             s.aim_prediction = std::clamp(value, 0.0f, 1.0f);
             return true;
+        case af_skill_field::aim_blend_alpha_max:
+            s.aim_blend_alpha_max = std::clamp(value, 0.05f, 0.60f);
+            return true;
+        case af_skill_field::aim_settle_error:
+            s.aim_settle_error = std::clamp(value, 0.0f, 5.0f);
+            return true;
+        case af_skill_field::aim_settle_ms:
+            s.aim_settle_ms = std::clamp(value, 0.0f, 5000.0f);
+            return true;
+        case af_skill_field::aim_error_hold_ms:
+            s.aim_error_hold_ms = std::clamp(value, 1.0f, 5000.0f);
+            return true;
         default:
             return false;
     }
@@ -1207,6 +1233,10 @@ static const FieldNameMapping g_skill_field_map[] = {
     {"reaction_time_ms",              static_cast<uint8_t>(af_skill_field::reaction_time_ms)},
     {"aim_error_min",                 static_cast<uint8_t>(af_skill_field::aim_error_min)},
     {"aim_error_max",                 static_cast<uint8_t>(af_skill_field::aim_error_max)},
+    {"aim_error_hold_ms",             static_cast<uint8_t>(af_skill_field::aim_error_hold_ms)},
+    {"aim_blend_alpha_max",           static_cast<uint8_t>(af_skill_field::aim_blend_alpha_max)},
+    {"aim_settle_error",              static_cast<uint8_t>(af_skill_field::aim_settle_error)},
+    {"aim_settle_ms",                 static_cast<uint8_t>(af_skill_field::aim_settle_ms)},
     {"yaw_speed_cap",                 static_cast<uint8_t>(af_skill_field::yaw_speed_cap)},
     {"pitch_speed_cap",               static_cast<uint8_t>(af_skill_field::pitch_speed_cap)},
     {"fire_alignment_threshold",      static_cast<uint8_t>(af_skill_field::fire_alignment_threshold)},

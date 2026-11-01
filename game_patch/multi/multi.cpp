@@ -339,7 +339,6 @@ FunHook<void()> multi_limbo_init{
                 // winner is derived from are still the finished match's.
                 afstats::on_match_end_derived(afstats::MatchResult::completed);
                 g_match_info.reset();
-                server_bots_end_join_bots();
             }
             else if (g_match_info.pre_match_active && g_match_info.everyone_ready) {
                 limbo_time = 5000; // reduce limbo time to 5 sec on match start (will always be a restart of the current map)
