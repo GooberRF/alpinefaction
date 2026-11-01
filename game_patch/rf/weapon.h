@@ -258,6 +258,10 @@ namespace rf
         WTF2_DAMAGE_SELF = 0x100,
         WTF2_HAS_PILOT_FLAME = 0x200,
         WTF2_MULTI_MESH_COLLIDE = 0x400,
+        // Set by weapon_info_init (0x004C9A90) for $Velocity >= 100; gates the stock hitscan lag
+        // compensation in entity_fire_weapon (0x00425830) - weapons with this flag fire a second ghost
+        // projectile per shot for the rewind raycast (multi_lag_comp_weapon_fire, 0x0046F7E0).
+        WTF2_STOCK_LAG_COMP = 0x800,
     };
     struct Weapon : Object
     {

@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <variant>
@@ -51,6 +52,15 @@ enum class af_packet_type : uint8_t
     af_vehicle_orient = 0x68,           // Alpine 1.5
     af_vehicle_factory_state = 0x69,    // Alpine 1.5
     af_scavenger_state = 0x6A,          // Alpine 1.5
+    af_obj_update_delta = 0x6B,         // Alpine 1.5, server -> client, see multi/obj_update_delta.h
+    af_obj_update_ack = 0x6C,           // Alpine 1.5, client -> server
+};
+
+struct af_obj_update_ack_packet
+{
+    RF_GamePacketHeader header;
+    uint16_t newest_seq;
+    uint32_t bits; // bit i: seq newest_seq - 1 - i was received
 };
 
 struct af_ping_location_req_packet
@@ -1049,6 +1059,19 @@ struct AfVoteCallParams
 bool af_process_packet(const void* data, int len, const rf::NetAddr& addr, rf::Player* player);
 void af_send_packet(rf::Player* player, const void* data, int len, bool is_reliable);
 
+bool af_build_obj_update_ack_packet(af_obj_update_ack_packet& packet);
+static void af_process_obj_update_delta_packet(const void* data, size_t len, const rf::NetAddr& addr);
+static void af_process_obj_update_ack_packet(const void* data, size_t len, const rf::NetAddr& addr);
+// Current weapon's ammo of a player entity, as replicated to other clients (af_obj_update / delta stream)
+struct AfRemoteAmmo
+{
+    uint8_t weapon;
+    uint8_t ammo_type;
+    uint16_t clip;
+    uint16_t reserve;
+};
+std::optional<AfRemoteAmmo> af_gather_remote_ammo(rf::Entity* entity);
+void af_apply_remote_ammo(rf::Entity* entity, uint8_t weapon, uint8_t ammo_type, uint16_t clip, uint16_t reserve);
 void af_send_ping_location_req_packet(rf::Vector3* pos);
 static void af_process_ping_location_req_packet(const void* data, size_t len, const rf::NetAddr& addr);
 void af_send_ping_location_packet_to_team(rf::Vector3* pos, uint8_t player_id, rf::ubyte team);
