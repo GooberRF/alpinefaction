@@ -3593,7 +3593,7 @@ CallHook<void(rf::Player*, const void*, int)> obj_update_final_send_hook{
     },
 };
 
-static void server_set_net_rate(unsigned netfps)
+void server_set_net_rate(unsigned netfps)
 {
     const unsigned old_v = g_alpine_game_config.server_netfps;
     g_alpine_game_config.set_server_netfps(netfps);
@@ -3602,8 +3602,8 @@ static void server_set_net_rate(unsigned netfps)
         g_alpine_server_config.signal_cfg_changed = true;
     }
     apply_maximum_fps(); // dedicated fps follows the tier
-    // The tier lives in alpine_settings.ini (ServerNetFPS) and a dedicated server never
-    // reaches the quit-time settings save, so persist it here like saved votes do
+    // Listen host: the tier lives in alpine_settings.ini (ServerNetFPS). A dedicated server's comes from
+    // the `bandwidth` key in its config; a runtime change there lasts until the next load of that config.
     alpine_core_config_save();
     // Connected clients follow the new tier now rather than at the next 3.5 s stock refresh
     if (rf::is_server) {

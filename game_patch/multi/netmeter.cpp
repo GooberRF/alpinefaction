@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <array>
+#include <cstdlib>
 #include <common/utils/int-utils.h>
 #include <common/utils/list-utils.h>
 #include <patch_common/FunHook.h>
@@ -19,6 +20,18 @@
 
 namespace
 {
+
+int nearest_tier_interval_ms(int gap_ms)
+{
+    int nearest = 0;
+    for (const auto& tier : AlpineGameSettings::net_rate_tiers) {
+        const int interval_ms = static_cast<int>(1000 / tier.netfps);
+        if (nearest == 0 || std::abs(gap_ms - interval_ms) < std::abs(gap_ms - nearest)) {
+            nearest = interval_ms;
+        }
+    }
+    return nearest;
+}
 
 struct NetMeterChannel
 {
@@ -45,8 +58,9 @@ struct NetMeterChannel
     };
 
     // Stats over the recent window; zeros while the flow is absent or too sparse to measure.
-    // nominal_ms is the expected packet interval for the missed estimate (0 = median gap).
-    Result measure(int now, int nominal_ms) const
+    // nominal_ms is the expected packet interval for the missed estimate (0 = median gap, which
+    // snap_to_tier moves to the nearest sv_bandwidth interval).
+    Result measure(int now, int nominal_ms, bool snap_to_tier = false) const
     {
         Result r;
         if (count > 0) {
@@ -88,6 +102,9 @@ struct NetMeterChannel
             // Stock or pre-1.5 server: take the median gap as the nominal tick
             std::nth_element(gaps.begin(), gaps.begin() + num_gaps / 2, gaps.begin() + num_gaps);
             nominal_ms = gaps[num_gaps / 2];
+            if (snap_to_tier) {
+                nominal_ms = nearest_tier_interval_ms(nominal_ms);
+            }
         }
         if (nominal_ms > 0) {
             const float expected = static_cast<float>(span) / static_cast<float>(nominal_ms);
@@ -135,11 +152,12 @@ NetMeterStats netmeter_get_stats()
     static int interp_samples = 0;
 
     const int now = static_cast<int>(timer::get_i64(1000));
-    // Nominal tick: inbound is the server's tier (join_accept extension), outbound the fixed client
-    // send rate; 0 lets the meter estimate it (stock/pre-1.5 server)
+    // Nominal tick: inbound is estimated from the flow, snapped to a tier on a 1.5 server (the tier in
+    // the join_accept extension goes stale if sv_bandwidth changes mid-session), outbound is the fixed
+    // client send rate; 0 lets the meter estimate it (stock/pre-1.5 server)
     const auto& info = get_af_server_info();
     const bool known = info && info->server_netfps;
-    const auto in = g_netmeter_in.measure(now, known ? 1000 / info->server_netfps : 0);
+    const auto in = g_netmeter_in.measure(now, 0, known);
     constexpr int client_interval_ms = 1000 / static_cast<int>(AlpineGameSettings::client_net_rate);
     const auto out = g_netmeter_out.measure(now, known ? client_interval_ms : 0);
 

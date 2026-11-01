@@ -320,3 +320,4 @@ bool try_to_auto_forward_port(int port);
 void clear_rcon_profile_sessions();
 void clear_rcon_state_for_addr(const rf::NetAddr& addr);
 void multi_disconnect_from_server();
+void server_set_net_rate(unsigned netfps);

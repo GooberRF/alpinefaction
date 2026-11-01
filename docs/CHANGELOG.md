@@ -44,7 +44,7 @@ Version 1.5.0 (Trillium): Not yet released
   - Keep a deeper remote player history (128 keyframes) so spectate and demo POV compensation reach further back
   - Send client object updates at an exact 40 per second at any frame rate
   - Add projectile lag compensation: server fast-forwards projectiles by the shooter's latency and tests direct hits and splash damage against victims where the shooter saw them, configurable with `projectile_lag_comp` and `projectile_lag_comp_max_ms` in the dedicated server config
-  - Add `sv_bandwidth [low|high]` server bandwidth tiers (low: 20 updates/s at 40 fps, high: 40 updates/s at 80 fps, matching 1.4)
+  - Add `sv_bandwidth [low|high]` server bandwidth tiers (low: 20 updates/s at 40 fps, high: 40 updates/s at 80 fps, matching 1.4), configurable with `bandwidth` in the dedicated server config
   - Deprecate `sv_netfps` and `rate`; dedicated server `maxfps` now follows `sv_bandwidth`
 
 ### Minor features, changes, and enhancements

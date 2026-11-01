@@ -1432,6 +1432,17 @@ static void apply_known_key_in_order(AlpineServerConfig& cfg, const std::string&
         if (auto v = node.value<bool>())
             cfg.delta_obj_update = *v;
     }
+    else if (key == "bandwidth") {
+        if (auto v = node.value<std::string>()) {
+            const auto& tiers = AlpineGameSettings::net_rate_tiers;
+            const auto it = std::find_if(std::begin(tiers), std::end(tiers),
+                                         [&](const auto& tier) { return string_iequals(*v, tier.name); });
+            if (it != std::end(tiers))
+                cfg.server_netfps = it->netfps;
+            else
+                rf::console::print("  [WARN] bandwidth '{}' is not low or high; ignoring it.\n", *v);
+        }
+    }
 }
 
 // apply base config toml tables
@@ -2529,6 +2540,8 @@ void initialize_core_alpine_dedicated_server_settings(rf::NetGameInfo& netgame, 
     rf::rcon_password[sizeof(rf::rcon_password) - 1] = '\0'; // null terminator
     
     netgame.max_players = cfg.max_players;
+
+    server_set_net_rate(cfg.server_netfps);
 
     // other core settings are referenced directly in the structure and do not need to be initialized here
 }
