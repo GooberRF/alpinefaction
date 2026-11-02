@@ -112,6 +112,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Load sounds from `user_maps\sounds` and its subdirectories in the level editor
 - Add launcher option to let the level editor use up to 4 GB of memory instead of 2 GB (large address aware copy of `RED.exe` as `RED_laa.exe`)
 - Accept `RED.exe` patched to be large address aware in the launcher
+- Move advanced launcher options into an `Advanced` section behind a `Show advanced options` toggle
 - Award a point per frag in Bagman and Team Bagman, and a team point in Team Bagman
 - Show `Your team has the bag` in Team Bagman
 - Add team-relative bag carrier icons and outline colors
@@ -152,7 +153,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Speed up selecting and deselecting large numbers of brushes, faces, vertices and objects in the level editor, and drawing the viewports while many objects or vertices are selected
 - Speed up loading and duplicating groups with complex brushes in the level editor
 - End the Gun Game progression with a one-kill Fusion level after the one-kill final weapon, toggleable with `gg_end_with_fusion`
-- Ignore `fflink_gsk` on dedicated servers started with `-lanonly`
+- Add `-nogsk` command line argument to make dedicated servers ignore `fflink_gsk` and skip FactionFiles registration
 - Implement shared Direct3D 11 renderer for game and level editor
 - Reduce the CPU time bots spend choosing goals and planning routes, and stop bots from repeatedly searching for routes to destinations they cannot reach
 - Tweak `hard`, `expert` and `nightmare` bot skill presets, which now lead moving targets, fire semi-automatic weapons faster, and strafe more often in fights
@@ -187,6 +188,8 @@ Version 1.5.0 (Trillium): Not yet released
 - Never treat players as idle during a match, or during the ready-up phase once they have readied up
 - Add `Join Bots` mutator, which adds 1-8 server bots at a chosen skill and personality for the level, or fills a match's open slots once the other players are ready
 - Add `Waypoint Helper` object type
+- Add `$Fpgun Override` to `af_client.tbl` to replace the first person weapon model and arm textures per multiplayer character and weapon
+- Don't load Alpine Faction `af_*.tbl` option files from packfiles in `user_maps`
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color
@@ -344,6 +347,8 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix bot clients losing the `personality_overrides` and `skill_overrides` of their bot profile (such as `taunt_on_kill_chance`) when the server sent their skill preset
 - Fix bots in objective game types sometimes walking an unrelated route to its end before heading for the flag, bag or control point
 - Fix waypoint autogeneration placing waypoints on mover brushes set to `No Player Collide`, which players pass through
+- Fix level editor sometimes crashing when moving vertices after using `Weld` in vertex mode
+- Fix some level editor buttons in Face and Vertex modes not working when the mode was entered with a keyboard shortcut
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize

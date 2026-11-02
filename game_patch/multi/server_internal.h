@@ -1362,6 +1362,7 @@ rf::CmdLineParam& get_ads_cmd_line_param();
 rf::CmdLineParam& get_min_cmd_line_param();
 rf::CmdLineParam& get_log_cmd_line_param();
 rf::CmdLineParam& get_nodl_cmd_line_param();
+rf::CmdLineParam& get_nogsk_cmd_line_param();
 void handle_min_param();
 void handle_log_param();
 void handle_nodl_param();

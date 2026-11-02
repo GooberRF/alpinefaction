@@ -9,6 +9,7 @@
 #include "../bmpman/atx.h"
 #include "../bmpman/bmpman.h"
 #include "../misc/alpine_settings.h"
+#include "../misc/player.h"
 #include "../os/console.h"
 #include "../rf/bmpman.h"
 #include "../rf/physics.h"
@@ -171,6 +172,7 @@ int detail_texture_first_person_material(int bm_handle)
         for (int i = 0; i < count; i++) {
             g_fpgun_arm_bms.insert(std::begin(rf::fpgun_arms[i].arm_bitmaps), std::end(rf::fpgun_arms[i].arm_bitmaps));
         }
+        player_fpgun_collect_override_arm_bitmaps(g_fpgun_arm_bms);
     }
     return g_fpgun_arm_bms.contains(bm_handle) ? rf::MATERIAL_FLESH : rf::MATERIAL_METAL;
 }

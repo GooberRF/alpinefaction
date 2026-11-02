@@ -5648,6 +5648,7 @@ void server_init()
     get_min_cmd_line_param();
     get_log_cmd_line_param();
     get_nodl_cmd_line_param();
+    get_nogsk_cmd_line_param();
 
     // console commands
     sv_game_type_cmd.register_cmd();

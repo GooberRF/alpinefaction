@@ -4,9 +4,24 @@
 #include <patch_common/AsmWriter.h>
 #include <common/config/BuildConfig.h>
 #include <common/utils/list-utils.h>
+#include <common/utils/string-utils.h>
+#include <algorithm>
+#include <array>
+#include <optional>
+#include <string>
+#include <type_traits>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+#include <xlog/xlog.h>
 #include "alpine_options.h"
 #include "alpine_settings.h"
+#include "player.h"
+#include "../bmpman/bmpman.h"
 #include "../multi/gametype.h"
+#include "../rf/bmpman.h"
+#include "../rf/file/file.h"
+#include "../rf/parse.h"
 #include "../rf/player/player.h"
 #include "../rf/player/camera.h"
 #include "../rf/hud.h"
@@ -508,6 +523,224 @@ CodeInjection player_fpgun_get_muzzle_tag_pos_null_guard{
     },
 };
 
+namespace
+{
+    constexpr int max_custom_fpguns = static_cast<int>(std::extent_v<decltype(rf::MpCharacterInfo::custom_fpgun)>);
+
+    struct ResolvedFpgunArmsOverride
+    {
+        int character;   // -1 matches every character
+        int weapon_type; // -1 matches every weapon
+        const std::string* model;
+        std::array<std::optional<std::array<int, 3>>, 3> textures; // base, blue and red bitmap per arm part
+    };
+
+    std::vector<FpgunArmsOverride> g_fpgun_arms_override_specs;
+    // Never freed, so no engine String destructor runs after the engine heap is gone
+    std::unordered_map<int, rf::FpgunArms*> g_fpgun_arms_overrides;
+
+    int fpgun_arms_override_key(int character, int weapon_type)
+    {
+        return character * max_custom_fpguns + weapon_type;
+    }
+
+    constexpr std::size_t max_arm_texture_name_len = sizeof(rf::bm::BitmapEntry::name) - 1;
+    constexpr std::size_t max_fpgun_model_name_len = sizeof(rf::VMesh::filename) - 1;
+
+    int load_override_arm_team_texture(const std::string& filename, int base)
+    {
+        if (filename.size() > max_arm_texture_name_len) {
+            return base;
+        }
+        const int handle = bm_load_if_exists(filename.c_str(), -1, true);
+        return handle >= 0 ? handle : base;
+    }
+
+    std::optional<std::array<int, 3>> load_override_arm_texture(const std::string& filename)
+    {
+        if (filename.size() > max_arm_texture_name_len) {
+            xlog::warn("[Fpgun] Arm texture name {} is longer than {} characters", filename, max_arm_texture_name_len);
+            return std::nullopt;
+        }
+        const int base = bm_load_if_exists(filename.c_str(), -1, true);
+        if (base < 0) {
+            xlog::warn("[Fpgun] Arm texture {} not found", filename);
+            return std::nullopt;
+        }
+        const std::string stem{get_filename_without_ext(filename)};
+        return std::array{
+            base,
+            load_override_arm_team_texture(stem + "_blue.tga", base),
+            load_override_arm_team_texture(stem + "_red.tga", base),
+        };
+    }
+
+    void resolve_fpgun_arms_overrides()
+    {
+        if (g_fpgun_arms_override_specs.empty()) {
+            return;
+        }
+        const int num_characters = std::clamp(rf::num_multi_characters, 0, rf::MAX_MP_CHARACTERS);
+
+        std::vector<ResolvedFpgunArmsOverride> resolved;
+        for (const FpgunArmsOverride& spec : g_fpgun_arms_override_specs) {
+            int character = -1;
+            if (spec.character != "*") {
+                for (int i = 0; i < num_characters; ++i) {
+                    if (string_iequals(rf::mp_characters[i].name, spec.character)) {
+                        character = i;
+                        break;
+                    }
+                }
+                if (character < 0) {
+                    xlog::warn("[Fpgun] $Fpgun Override: unknown character {}", spec.character);
+                    continue;
+                }
+            }
+            int weapon_type = -1;
+            if (spec.weapon != "*") {
+                weapon_type = rf::weapon_lookup_type(spec.weapon.c_str());
+                if (weapon_type < 0 || weapon_type >= max_custom_fpguns) {
+                    xlog::warn("[Fpgun] $Fpgun Override: unknown weapon {}", spec.weapon);
+                    continue;
+                }
+            }
+            if (character >= 0 && weapon_type >= 0 && rf::mp_characters[character].custom_fpgun[weapon_type] < 0) {
+                xlog::warn("[Fpgun] $Fpgun Override: {} has no +Custom Fpgun for {}", spec.character, spec.weapon);
+                continue;
+            }
+
+            ResolvedFpgunArmsOverride entry{character, weapon_type, nullptr, {}};
+            if (spec.model) {
+                // The fpgun loader cuts the name at its last '.' twice, then opens <stem>.v3c and exits if that fails
+                if (!string_iends_with(*spec.model, ".v3c")
+                    || string_contains(get_filename_without_ext(*spec.model), '.')) {
+                    xlog::warn("[Fpgun] Fpgun model {} must be a .v3c file with no other '.'", *spec.model);
+                }
+                else if (spec.model->size() > max_fpgun_model_name_len) {
+                    xlog::warn("[Fpgun] Fpgun model name {} is longer than {} characters", *spec.model,
+                               max_fpgun_model_name_len);
+                }
+                else if (rf::File{}.find(spec.model->c_str())) {
+                    entry.model = &*spec.model;
+                }
+                else {
+                    xlog::warn("[Fpgun] Fpgun model {} not found", *spec.model);
+                }
+            }
+            for (std::size_t part = 0; part < spec.textures.size(); ++part) {
+                if (spec.textures[part]) {
+                    entry.textures[part] = load_override_arm_texture(*spec.textures[part]);
+                }
+            }
+            resolved.push_back(entry);
+        }
+
+        // Least specific first, so every field comes from the most specific block that sets it
+        std::ranges::stable_sort(resolved, {}, [](const ResolvedFpgunArmsOverride& entry) {
+            return (entry.character >= 0 ? 2 : 0) + (entry.weapon_type >= 0 ? 1 : 0);
+        });
+
+        for (int character = 0; character < num_characters; ++character) {
+            for (int weapon_type = 0; weapon_type < max_custom_fpguns; ++weapon_type) {
+                const int stock_index = rf::mp_characters[character].custom_fpgun[weapon_type];
+                if (stock_index < 0 || stock_index >= rf::num_fpgun_arms) {
+                    continue;
+                }
+                const std::string* model = nullptr;
+                std::array<std::optional<std::array<int, 3>>, 3> textures;
+                for (const ResolvedFpgunArmsOverride& entry : resolved) {
+                    if ((entry.character >= 0 && entry.character != character)
+                        || (entry.weapon_type >= 0 && entry.weapon_type != weapon_type)) {
+                        continue;
+                    }
+                    if (entry.model) {
+                        model = entry.model;
+                    }
+                    for (std::size_t part = 0; part < textures.size(); ++part) {
+                        if (entry.textures[part]) {
+                            textures[part] = entry.textures[part];
+                        }
+                    }
+                }
+                if (!model && std::ranges::none_of(textures, [](const auto& t) { return t.has_value(); })) {
+                    continue;
+                }
+
+                auto* arms = new rf::FpgunArms(rf::fpgun_arms[stock_index]);
+                if (model) {
+                    arms->model = model->c_str();
+                }
+                for (std::size_t part = 0; part < textures.size(); ++part) {
+                    if (textures[part]) {
+                        arms->arm_bitmaps[part] = (*textures[part])[0];
+                        arms->arm_bitmaps[part + 3] = (*textures[part])[1];
+                        arms->arm_bitmaps[part + 6] = (*textures[part])[2];
+                    }
+                }
+                g_fpgun_arms_overrides[fpgun_arms_override_key(character, weapon_type)] = arms;
+            }
+        }
+        xlog::info("[Fpgun] Applied {} fpgun arms overrides", g_fpgun_arms_overrides.size());
+        g_fpgun_arms_override_specs = {};
+    }
+
+    rf::FpgunArms* fpgun_arms_for(const rf::MpCharacterInfo* character, int weapon_type, int stock_index)
+    {
+        const int character_index = static_cast<int>(character - rf::mp_characters);
+        const auto it = g_fpgun_arms_overrides.find(fpgun_arms_override_key(character_index, weapon_type));
+        return it != g_fpgun_arms_overrides.end() ? it->second : &rf::fpgun_arms[stock_index];
+    }
+
+    // pc_multi.tbl parse, which runs after fpgun.tbl and weapons.tbl are loaded
+    FunHook<void(rf::Parser*)> multi_load_characters_tbl_hook{
+        0x00475B00,
+        [](rf::Parser* parser) {
+            multi_load_characters_tbl_hook.call_target(parser);
+            resolve_fpgun_arms_overrides();
+        },
+    };
+
+    CodeInjection player_fpgun_load_meshes_arms_injection{
+        0x004AE5C6,
+        [](auto& regs) {
+            const rf::MpCharacterInfo* character = regs.ebx;
+            const rf::WeaponCycle* entry = regs.esi;
+            const int stock_index = regs.eax;
+            regs.ebp = fpgun_arms_for(character, entry->weapon_type, stock_index);
+            regs.eip = 0x004AE5CD;
+        },
+        false, // no trampoline: the injection fully replaces the 7 byte LEA
+    };
+
+    CodeInjection player_fpgun_load_meshes_detonator_arms_injection{
+        0x004AE634,
+        [](auto& regs) {
+            const rf::MpCharacterInfo* character = regs.ebx;
+            const int stock_index = regs.eax;
+            regs.eax = fpgun_arms_for(character, rf::remote_charge_det_weapon_type, stock_index);
+            regs.eip = 0x004AE63B;
+        },
+        false, // no trampoline: the injection fully replaces the 7 byte LEA
+    };
+}
+
+void player_fpgun_add_arms_override(FpgunArmsOverride arms_override)
+{
+    if (!arms_override.model && std::ranges::none_of(arms_override.textures, [](const auto& t) { return t.has_value(); })) {
+        xlog::warn("[Fpgun] $Fpgun Override for {} {} sets no fields", arms_override.character, arms_override.weapon);
+        return;
+    }
+    g_fpgun_arms_override_specs.push_back(std::move(arms_override));
+}
+
+void player_fpgun_collect_override_arm_bitmaps(std::unordered_set<int>& bitmaps)
+{
+    for (const auto& [key, arms] : g_fpgun_arms_overrides) {
+        bitmaps.insert(std::begin(arms->arm_bitmaps), std::end(arms->arm_bitmaps));
+    }
+}
+
 void player_fpgun_do_patch()
 {
 #if SPECTATE_MODE_SHOW_WEAPON
@@ -614,6 +847,11 @@ void player_fpgun_do_patch()
     player_fpgun_process_hook.install();
     player_fpgun_sway_enabled_hook.install();
     weapon_sway_cmd.register_cmd();
+
+    // af_client*.tbl $Fpgun Override
+    multi_load_characters_tbl_hook.install();
+    player_fpgun_load_meshes_arms_injection.install();
+    player_fpgun_load_meshes_detonator_arms_injection.install();
 
     // Do not cull entities too early.
     player_fpgun_render_ir_cull_patch_1.install();

@@ -1247,6 +1247,24 @@ void handle_vertex_bridge()
 }
 
 // ============================================================================
+// Vertex mode: Weld
+// ============================================================================
+
+// Stock weld frees all but the last selected vertex yet leaves them selected, so the next move dereferences them
+void __fastcall solid_weld_vertices_hooked(GSolid* solid, void* edx_unused);
+FunHook<decltype(solid_weld_vertices_hooked)> solid_weld_vertices_hook{0x0048FA60, solid_weld_vertices_hooked};
+void __fastcall solid_weld_vertices_hooked(GSolid* solid, void* edx_unused)
+{
+    auto& sel = solid->vertex_selection;
+    const bool welds = sel.size >= 2;
+    solid_weld_vertices_hook.call_target(solid, edx_unused);
+    if (welds) {
+        sel.data_ptr[0] = sel.data_ptr[sel.size - 1];
+        sel.size = 1;
+    }
+}
+
+// ============================================================================
 // Brush mode: Fuse / Carve
 // ============================================================================
 
@@ -1345,4 +1363,5 @@ void ApplyGeometryPatches()
     brush_carve_hook.install();
     level_undo_hook.install();
     level_redo_hook.install();
+    solid_weld_vertices_hook.install();
 }

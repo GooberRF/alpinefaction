@@ -112,6 +112,12 @@ rf::CmdLineParam& get_nodl_cmd_line_param()
     return nodl_param;
 }
 
+rf::CmdLineParam& get_nogsk_cmd_line_param()
+{
+    static rf::CmdLineParam nogsk_param{"-nogsk", "", false};
+    return nogsk_param;
+}
+
 void handle_min_param()
 {
     g_ads_minimal_server_info = get_min_cmd_line_param().found();
@@ -1336,9 +1342,8 @@ static void apply_known_key_in_order(AlpineServerConfig& cfg, const std::string&
         }
     }
     else if (key == "fflink_gsk") {
-        // A LAN-only server never registers with FactionFiles
-        if (rf::lan_only_cmd_line_param.found()) {
-            rf::console::print("Ignoring fflink_gsk because -lanonly switch was used.\n");
+        if (get_nogsk_cmd_line_param().found()) {
+            rf::console::print("Ignoring fflink_gsk because -nogsk switch was used.\n");
         }
         else if (auto v = node.value<std::string>()) {
             cfg.set_fflink_gsk(*v);

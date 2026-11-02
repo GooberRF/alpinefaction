@@ -682,10 +682,12 @@ CodeInjection CFormView_Create_injection{
 
 // Post-creation hook for CFormView panels. At 0x0052F0A9 (after CreateDlgIndirect),
 // EDI = CWnd*, EBX = template name. CWnd::m_hWnd is at CWnd+0x1C.
-// Subclasses the group and texture panels immediately after creation, and builds the placement panel into the object
-// panel.
+// Subclasses the face, vertex, group and texture panels immediately after creation, and builds the placement panel
+// into the object panel. Every edit mode switch creates its panel anew, whether from the mode combo or a key.
 static LRESULT CALLBACK GroupPanelSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 static void subclass_group_panel_post_create(HWND hwnd);
+static void subclass_face_panel(HWND hdlg);
+static void subclass_vertex_panel(HWND hdlg);
 
 CodeInjection CFormView_PostCreate_injection{
     0x0052F0A9,
@@ -696,6 +698,16 @@ CodeInjection CFormView_PostCreate_injection{
                 reinterpret_cast<uint8_t*>(static_cast<uintptr_t>(regs.edi)) + 0x1C);
             if (hwnd) {
                 subclass_group_panel_post_create(hwnd);
+            }
+        }
+        else if (lpszTemplateName == MAKEINTRESOURCE(IDD_FACE_MODE_PANEL)) {
+            if (HWND hwnd = WndToHandle(reinterpret_cast<CWnd*>(static_cast<uintptr_t>(regs.edi)))) {
+                subclass_face_panel(hwnd);
+            }
+        }
+        else if (lpszTemplateName == MAKEINTRESOURCE(IDD_VERTEX_MODE_PANEL)) {
+            if (HWND hwnd = WndToHandle(reinterpret_cast<CWnd*>(static_cast<uintptr_t>(regs.edi)))) {
+                subclass_vertex_panel(hwnd);
             }
         }
         else if (lpszTemplateName == MAKEINTRESOURCE(editor_object_panel_template)) {
@@ -1593,8 +1605,6 @@ static LRESULT CALLBACK FacePanelSubclassProc(HWND hwnd, UINT msg, WPARAM wParam
     return CallWindowProcA(g_face_panel_orig_wndproc, hwnd, msg, wParam, lParam);
 }
 
-// Subclass the face mode panel when it becomes active.
-// Called from CWnd_CreateDlg_injection when dialog 178 is created.
 static void subclass_face_panel(HWND hdlg)
 {
     if (hdlg == g_face_panel_hwnd) return; // already subclassed
@@ -1788,37 +1798,6 @@ static LRESULT CALLBACK KfPropsMsgHookProc(int nCode, WPARAM wParam, LPARAM lPar
     }
     return CallNextHookEx(g_kf_props_msg_hook, nCode, wParam, lParam);
 }
-
-// Inject after the CALL to CDedLevel::SetEditMode in the mode combobox handler
-// (FUN_004496d0 at 0x004496f9). When face/vertex/group mode is entered, find and subclass
-// the panel CFormView to handle our custom button clicks.
-
-struct FindPanelsCtx { HWND face_panel; HWND vertex_panel; HWND group_panel; };
-
-static BOOL CALLBACK EnumChildFindPanelsProc(HWND hwnd, LPARAM lParam)
-{
-    auto* c = reinterpret_cast<FindPanelsCtx*>(lParam);
-    int id = GetDlgCtrlID(hwnd);
-    if (id == IDC_FACE_DELETE) c->face_panel = GetParent(hwnd);
-    if (id == IDC_VERTEX_DELETE) c->vertex_panel = GetParent(hwnd);
-    if (id == IDC_GROUP_MIRROR) c->group_panel = GetParent(hwnd);
-    return (c->face_panel && c->vertex_panel && c->group_panel) ? FALSE : TRUE;
-}
-
-CodeInjection face_panel_subclass_injection{
-    0x004496f9,
-    [](BaseCodeInjection::Regs& regs) {
-        HWND main_hwnd = *reinterpret_cast<HWND*>(
-            reinterpret_cast<uint8_t*>(static_cast<uintptr_t>(regs.esi)) + 0x1C);
-        if (!main_hwnd) return;
-        FindPanelsCtx ctx{nullptr, nullptr, nullptr};
-        EnumChildWindows(main_hwnd, EnumChildFindPanelsProc, reinterpret_cast<LPARAM>(&ctx));
-        if (ctx.face_panel) subclass_face_panel(ctx.face_panel);
-        if (ctx.vertex_panel) subclass_vertex_panel(ctx.vertex_panel);
-        if (ctx.group_panel) subclass_group_panel(ctx.group_panel);
-    },
-    true, // needs_trampoline
-};
 
 // The View menu's Direct3D 11 renderer options, each a setting the renderer reads on the next repaint
 static bool* d3d11_view_option(UINT id)
@@ -2687,9 +2666,6 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
     // Idle tick (memory guard, headless bake, Terrain Tools) and level load/save bracketing
     CEditorApp_OnIdle_hook.install();
     CDedDoc_LoadSaveLevel_hook.install();
-
-    // Subclass face mode panel for Delete/Delete Ext./Split button handling
-    face_panel_subclass_injection.install();
 
     // Open the color picker on the current color instead of black
     CColorDialog_ct_seed_current_color.install();
