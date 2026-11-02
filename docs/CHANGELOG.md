@@ -156,7 +156,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Implement shared Direct3D 11 renderer for game and level editor
 - Reduce the CPU time bots spend choosing goals and planning routes, and stop bots from repeatedly searching for routes to destinations they cannot reach
 - Tweak `hard`, `expert` and `nightmare` bot skill presets, which now lead moving targets, fire semi-automatic weapons faster, and strafe more often in fights
-- Make `expert` and `nightmare` bots turn onto a target faster and open fire sooner, with their first shots at a new target able to miss, make all bots turn onto an enemy in sight as fast on an objective as in a fight, and make bots less exact at range with heavy hitscan weapons
+- Make `expert` and `nightmare` bots turn onto a target faster and open fire sooner, with their first shots at a new target able to miss, make all bots turn onto an enemy in sight as fast on an objective as in a fight, and make bots less exact with heavy hitscan weapons
 - Add `reaction_time_ms`, `aim_error_min`, `aim_error_max`, `yaw_speed_cap`, `pitch_speed_cap`, `fire_alignment_threshold`, `semi_auto_click_interval_scale`, `aim_prediction`, `aim_error_hold_ms`, `aim_blend_alpha_max`, `aim_settle_error` and `aim_settle_ms` bot skill fields for `skill_overrides` in bot profiles
 - Allow the `opportunism_bias`, `seek_weapon_bias`, `replenish_bias`, `weapon_switch_bias`, `path_smoothing_bias`, `dodge_combat_bias`, `crouch_combat_bias`, `jump_combat_bias` and `ctf_hold_enemy_flag_safety_bias` bot personality fields, which were raised to at least 0.25, to be set to 0 to switch off what they scale, and `decision_aggression_bias` and `decision_risk_tolerance` to go below 0.25 for bots that retreat and restock earlier and avoid hazardous routes
 - Make bots choose weapons by their expected damage at the current distance (from the weapons' `weapons.tbl` stats, with personality preferences as a weight), switch on pickups and new targets, fire only within a weapon's effective range, and keep one remote charge out at a time, setting it off when an enemy is in the blast
@@ -170,6 +170,8 @@ Version 1.5.0 (Trillium): Not yet released
 - Make bots keep to their route when closing in on an enemy in sight instead of re-planning it every moment, route around a link they just failed to cross instead of heading straight for their goal, and re-plan or give up on an objective once they stop reaching waypoints on the way
 - Make bots click semi-automatic weapons at the speed the server allows, with lower skill levels clicking slower
 - Make bots weigh known enemies when routing to a flag or their base, going as far round as the danger is worth, and sometimes take a less direct route
+- Make server bots use climbing regions
+- Make bots close to the enemy flag take it instead of going after their own flag
 - Make bots take corners wide enough to clear ramp sides and edges, route around ledges too high to walk up, jump the ones they have to climb, stop stalling at ledges after landing, and get back onto their route around a link they failed to cross instead of giving the whole route up
 - Make bots carrying the flag go straight for the capture, keep moving between spots with cover inside their base while they cannot capture, return their own dropped flag, hunt the enemy carrier when no teammate is alive to, and honour `flag_captures_while_stolen`
 - Ignore connected human players who have not spawned yet this level when picking a joining bot's team

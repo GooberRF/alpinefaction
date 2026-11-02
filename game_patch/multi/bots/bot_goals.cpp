@@ -496,6 +496,23 @@ bool build_ctf_runtime_state(
     return true;
 }
 
+constexpr float kCtfNearFlagRouteDist = 20.0f;
+// A detour round an enemy must not end a pickup already under way.
+constexpr float kCtfNearFlagKeepRouteDist = 30.0f;
+
+// Whether the walking route to the free enemy flag is short enough to finish taking it first.
+bool ctf_enemy_flag_near(const rf::Entity& local_entity, const CtfRuntimeState& state, float& out_route_dist)
+{
+    const int flag_waypoint = state.enemy_flag_in_base ? state.enemy_base_waypoint : state.enemy_dropped_waypoint;
+    if (flag_waypoint <= 0 || !(state.enemy_flag_in_base || state.enemy_flag_dropped)) {
+        return false;
+    }
+    out_route_dist = bot_waypoint_destination_distance(
+        bot_find_closest_waypoint_with_los_fallback(local_entity), flag_waypoint);
+    return out_route_dist
+        <= (bot_state().active_goal == BotGoalType::ctf_steal_flag ? kCtfNearFlagKeepRouteDist : kCtfNearFlagRouteDist);
+}
+
 // Bagman runtime state for bot decision-making.
 // Bot perspective tags:
 //   we_carry  - local bot has the bag (best play: hold a safe spot, score)
@@ -1703,7 +1720,13 @@ void bot_refresh_goal_state(
                 bot_state().active_goal == BotGoalType::ctf_steal_flag && !ctf_state.own_flag_in_base
                 && rf::vec_dist_squared(&local_entity.pos, &bot_state().goal_target_pos)
                     > kRaidFinishDistance * kRaidFinishDistance;
-            reevaluate_goal = !goal_valid || (reevaluate_goal && own_flag_away_while_stealing);
+            float route_dist = 0.0f;
+            reevaluate_goal = !goal_valid
+                || (reevaluate_goal
+                    && (own_flag_away_while_stealing
+                        || (bot_state().active_goal == BotGoalType::ctf_return_flag
+                            && !ctf_state.local_has_enemy_flag
+                            && ctf_enemy_flag_near(local_entity, ctf_state, route_dist))));
         }
     }
     else if (bot_goal_is_salvage_objective(bot_state().active_goal)) {
@@ -2435,11 +2458,10 @@ void bot_refresh_goal_state(
                 consider_own_dropped_flag(0.0f);
             }
 
-            if (!ctf_force_flag_carrier_elimination
-                && (ctf_state.enemy_flag_in_base
-                    || (ctf_state.enemy_flag_dropped
-                        && ctf_dropped_flag_reachable(
-                            local_entity, ctf_state.enemy_dropped_waypoint, ctf_state.enemy_flag_pos)))) {
+            if (ctf_state.enemy_flag_in_base
+                || (ctf_state.enemy_flag_dropped
+                    && ctf_dropped_flag_reachable(
+                        local_entity, ctf_state.enemy_dropped_waypoint, ctf_state.enemy_flag_pos))) {
                 const rf::Vector3 steal_target_pos = ctf_state.enemy_flag_in_base
                     ? ctf_state.enemy_base_pos
                     : ctf_state.enemy_flag_pos;
@@ -2456,6 +2478,15 @@ void bot_refresh_goal_state(
                     + std::clamp(175.0f - steal_dist * 1.18f, -65.0f, 175.0f);
                 if (ctf_state.own_flag_stolen || ctf_state.own_flag_dropped) {
                     steal_score -= std::lerp(95.0f, 22.0f, ctf_recovery_norm);
+                    // Usually the enemy carrier also cannot capture while their flag is off its stand.
+                    constexpr float kNearFlagScoreLead = 160.0f;
+                    float route_dist = 0.0f;
+                    if (ctf_enemy_flag_near(local_entity, ctf_state, route_dist)
+                        && !(ctf_state.own_flag_dropped
+                            && (ctf_state.own_flag_pos - local_entity.pos).len() <= route_dist)) {
+                        steal_score = std::max(
+                            steal_score, ctf_goal.score + kNearFlagScoreLead + kCtfNearFlagRouteDist - route_dist);
+                    }
                 }
                 consider_ctf_candidate(CtfGoalCandidate{
                     BotGoalType::ctf_steal_flag,

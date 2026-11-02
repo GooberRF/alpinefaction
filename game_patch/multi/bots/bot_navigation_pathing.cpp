@@ -1071,9 +1071,25 @@ bool early_turn_blocked(const rf::Entity& entity, const rf::Vector3& waypoint_po
         return false;
     }
     rf::Vector3 next_pos{};
-    return waypoints_get_pos(bot_state().waypoint_path[next_index], next_pos)
-        && std::abs(next_pos.y - entity.pos.y) < kRouteMaxUpwardStepHeight
-        && !bot_can_walk_direct(entity.pos, next_pos);
+    if (!waypoints_get_pos(bot_state().waypoint_path[next_index], next_pos)
+        || std::abs(next_pos.y - entity.pos.y) >= kRouteMaxUpwardStepHeight
+        || bot_can_walk_direct(entity.pos, next_pos)) {
+        return false;
+    }
+    // Something may stand on the node, so the wait ends before the progress watchdog can fail a good link.
+    constexpr int kTurnAtWaypointWaitMs = 400;
+    static_assert(kTurnAtWaypointWaitMs < kWaypointObjectiveProgressTimeoutMs);
+    BotState& state = bot_state();
+    const int waypoint = state.waypoint_path[state.waypoint_next_index];
+    if (state.early_turn_waypoint != waypoint) {
+        state.early_turn_waypoint = waypoint;
+        state.early_turn_timer.set(kTurnAtWaypointWaitMs);
+    }
+    if (state.early_turn_timer.elapsed()) {
+        state.early_turn_waypoint = 0;
+        return false;
+    }
+    return true;
 }
 
 void clear_synthetic_movement_controls()
@@ -1938,6 +1954,7 @@ bool update_waypoint_target_from_current_path(const rf::Entity& entity)
         }
     }
     if (distance_sq <= waypoint_reach_radius * waypoint_reach_radius && !early_turn_blocked(entity, target_pos)) {
+        bot_state().early_turn_waypoint = 0;
         bot_nav_record_waypoint_visit(current_waypoint);
         bot_state().waypoint_progress_timer.invalidate();
         bot_state().waypoint_progress_waypoint = 0;

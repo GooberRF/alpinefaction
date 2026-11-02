@@ -2406,7 +2406,7 @@ bool update_ctf_objective_goal(
         );
     }
     if (!routed) {
-        bot_internal_start_recovery_anchor_reroute(local_entity, bot_state().goal_target_waypoint);
+        bot_internal_retry_route_recovery(local_entity, bot_state().goal_target_waypoint);
         routed = bot_internal_update_waypoint_target_towards(
             local_entity,
             routing_destination,
@@ -2562,8 +2562,7 @@ bool update_bagman_objective_goal(
             scale_repath_ms(kItemRouteRepathMs));
     }
     if (!routed) {
-        bot_internal_start_recovery_anchor_reroute(
-            local_entity, bot_state().goal_target_waypoint);
+        bot_internal_retry_route_recovery(local_entity, bot_state().goal_target_waypoint);
         routed = bot_internal_update_waypoint_target_towards(
             local_entity,
             routing_destination,
@@ -2826,8 +2825,7 @@ bool update_salvage_objective_goal(
             scale_repath_ms(kItemRouteRepathMs));
     }
     if (!routed) {
-        bot_internal_start_recovery_anchor_reroute(
-            local_entity, bot_state().goal_target_waypoint);
+        bot_internal_retry_route_recovery(local_entity, bot_state().goal_target_waypoint);
         routed = bot_internal_update_waypoint_target_towards(
             local_entity,
             routing_destination,

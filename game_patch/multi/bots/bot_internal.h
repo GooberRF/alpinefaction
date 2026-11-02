@@ -1012,6 +1012,8 @@ struct BotState
     std::vector<int> route_bias_avoid{};
     int route_bias_goal = 0;
     rf::Timestamp route_bias_timer{};
+    int early_turn_waypoint = 0;
+    rf::Timestamp early_turn_timer{};
     int ctf_hold_spot_waypoint = 0;
     rf::Timestamp ctf_hold_spot_timer{};
     rf::Timestamp ctf_hold_spot_check_timer{};
