@@ -401,12 +401,12 @@ namespace rf
     
     struct MpCharacterInfo
     {
-        int screen_name_id;
+        int image_handle;
         int entity_type;
         int anim_entity_type;
         char name[30];
         char padding[2];
-        int image_handle;
+        const char* screen_name;
         char skin_name[16];
         int custom_fpgun[64];
     };

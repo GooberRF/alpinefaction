@@ -17,6 +17,7 @@
 #include "player.h"
 #include "saved_votes.h"
 #include "../hud/hud_internal.h"
+#include "../hud/multi_scoreboard.h"
 #include "../hud/remote_server_cfg_ui.h"
 #include "../input/control_input_filter.h"
 #include "../multi/alpine_packets.h"
@@ -1482,7 +1483,7 @@ int gametype_index_in(const std::vector<const VoteGametypeInfo*>& gametypes, uin
     return -1;
 }
 
-// Cycler index of `game_type`; when this vote does not offer it, TeamDM for DM, else
+// Cycler index of `game_type`; when this vote does not offer it, TeamDM, else
 // `current_index` held rather than moved under a player who did not ask.
 int gametype_cycler_index(const std::vector<const VoteGametypeInfo*>& gametypes, uint8_t game_type,
                           int current_index)
@@ -1490,11 +1491,9 @@ int gametype_cycler_index(const std::vector<const VoteGametypeInfo*>& gametypes,
     if (const int index = gametype_index_in(gametypes, game_type); index >= 0) {
         return index;
     }
-    if (game_type == static_cast<uint8_t>(rf::NG_TYPE_DM)) {
-        const int team_dm = gametype_index_in(gametypes, static_cast<uint8_t>(rf::NG_TYPE_TEAMDM));
-        if (team_dm >= 0) {
-            return team_dm;
-        }
+    const int team_dm = gametype_index_in(gametypes, static_cast<uint8_t>(rf::NG_TYPE_TEAMDM));
+    if (team_dm >= 0) {
+        return team_dm;
     }
     const int count = static_cast<int>(gametypes.size());
     return count > 0 ? std::clamp(current_index, 0, count - 1) : 0;
@@ -3629,7 +3628,13 @@ CallHook<rf::GameState()> gameseq_process_hook{
         vote_panel_decay_attack_swallow();
         vote_panel_gameplay_input();
         demo_controls_ui_input();
-        return gameseq_process_hook.call_target();
+        multi_scoreboard_input();
+        const rf::GameState state = gameseq_process_hook.call_target();
+        // gameseq_process re-hides the cursor in gameplay and limbo.
+        if (multi_scoreboard_cursor_active()) {
+            rf::mouse_set_visible(true);
+        }
+        return state;
     },
 };
 
@@ -3757,8 +3762,8 @@ FunHook<void(int, int)> gameseq_state_do_frame_hook{
 } // namespace
 
 // Shared by every gameplay overlay that needs a free cursor (vote panel, demo
-// controls popup); the overlays are mutually exclusive, so sharing the save/restore
-// state below is safe.
+// controls popup, scoreboard cursor); only one owns it at a time, so sharing the
+// save/restore state below is safe.
 void gameplay_overlay_apply_mouse(bool active)
 {
     rf::Player* const player = rf::local_player;
@@ -3795,6 +3800,11 @@ void gameplay_overlay_apply_mouse(bool active)
         rf::mouse_keep_centered_enable();
         rf::mouse_set_visible(false);
     }
+}
+
+bool gameplay_overlay_mouse_is_overridden()
+{
+    return g_gameplay_mouse_overridden;
 }
 
 void vote_panel_close()

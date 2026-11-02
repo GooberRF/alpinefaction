@@ -486,7 +486,7 @@ void hud_render_00437BC0()
     bool show_scoreboard = scoreboard_control_pressed || (!multi_spectate_is_spectating() && is_player_dead) || limbo;
 
     scoreboard_maybe_render(show_scoreboard && !g_remote_server_cfg_popup.is_active()
-        && !vote_panel_is_gameplay_overlay_active());
+        && !vote_panel_is_gameplay_overlay_active(), scoreboard_control_pressed);
 
     minimap_render();
 }

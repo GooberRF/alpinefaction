@@ -1,6 +1,7 @@
 #include "../os/console.h"
 #include "../fflink/afstats_events.h"
 #include "server_internal.h"
+#include "alpine_packets.h"
 #include "../rf/multi.h"
 #include "../rf/gameseq.h"
 #include "../rf/level.h"
@@ -305,6 +306,135 @@ void process_delayed_kicks()
     }
 }
 
+bool server_ban_player(rf::Player* player)
+{
+    if (server_bot_from_player(player)) {
+        rf::console::print("{} is a server bot and cannot be banned", player->name);
+        return false;
+    }
+    if (player == rf::local_player) {
+        rf::console::print("You cannot ban yourself!");
+        return false;
+    }
+    rf::console::printf(rf::strings::banning_player, player->name.c_str());
+    afstats::note_leave_reason(player, afstats::LeaveReason::banned);
+    rf::multi_ban_ip(player->net_data->addr);
+    kick_player_delayed(player);
+    return true;
+}
+
+bool server_kick_player(rf::Player* player)
+{
+    if (player == rf::local_player) {
+        rf::console::print("You cannot kick yourself!");
+        return false;
+    }
+    rf::console::printf(rf::strings::kicking_player, player->name.c_str());
+    if (server_bot_from_player(player)) {
+        server_bots_remove_from_roster(player);
+    }
+    else {
+        kick_player_delayed(player);
+    }
+    return true;
+}
+
+std::optional<std::string> server_run_player_action(rf::Player* player, uint8_t action)
+{
+    switch (action) {
+        case AF_RCON_PLAYER_KICK:
+            if (server_kick_player(player)) {
+                return std::nullopt;
+            }
+            return "that player cannot be kicked";
+        case AF_RCON_PLAYER_BAN:
+            if (server_ban_player(player)) {
+                return std::nullopt;
+            }
+            return "that player cannot be banned";
+        case AF_RCON_PLAYER_SWAP_TEAM:
+            return server_swap_player_team(player);
+        case AF_RCON_PLAYER_FORCE_SPECTATE:
+            return server_force_player_spectate(player);
+        case AF_RCON_PLAYER_TOGGLE_READY:
+            return server_toggle_player_ready(player);
+        case AF_RCON_PLAYER_FORCE_UNSPECTATE:
+            return server_force_player_unspectate(player);
+        default:
+            return "unknown action";
+    }
+}
+
+std::string run_player_admin_rcon_command(const std::string_view command, const std::string_view target)
+{
+    if (target.empty()) {
+        return std::format("Usage: {} <player>", command);
+    }
+    rf::Player* const player = find_best_matching_player(std::string{target}.c_str());
+    if (!player) {
+        return std::format("No single player matches '{}'", target);
+    }
+
+    uint8_t action = AF_RCON_PLAYER_SWAP_TEAM;
+    if (command == "sv_force_spectate") {
+        action = AF_RCON_PLAYER_FORCE_SPECTATE;
+    }
+    else if (command == "sv_toggle_ready") {
+        action = AF_RCON_PLAYER_TOGGLE_READY;
+    }
+    else if (command == "sv_force_unspectate") {
+        action = AF_RCON_PLAYER_FORCE_UNSPECTATE;
+    }
+
+    const auto failure = server_run_player_action(player, action);
+    return failure ? std::format("{} {} failed: {}", command, player->name, *failure)
+                   : std::format("{} {} done", command, player->name);
+}
+
+ConsoleCommand2 sv_swap_team_cmd{
+    "sv_swap_team",
+    [](std::string target) {
+        if (validate_is_server()) {
+            rf::console::print("{}", run_player_admin_rcon_command("sv_swap_team", target));
+        }
+    },
+    "Move a player to the other team",
+    "sv_swap_team <player>",
+};
+
+ConsoleCommand2 sv_force_spectate_cmd{
+    "sv_force_spectate",
+    [](std::string target) {
+        if (validate_is_server()) {
+            rf::console::print("{}", run_player_admin_rcon_command("sv_force_spectate", target));
+        }
+    },
+    "Kill a player and put them in spectate mode",
+    "sv_force_spectate <player>",
+};
+
+ConsoleCommand2 sv_force_unspectate_cmd{
+    "sv_force_unspectate",
+    [](std::string target) {
+        if (validate_is_server()) {
+            rf::console::print("{}", run_player_admin_rcon_command("sv_force_unspectate", target));
+        }
+    },
+    "Take a player out of spectate mode",
+    "sv_force_unspectate <player>",
+};
+
+ConsoleCommand2 sv_toggle_ready_cmd{
+    "sv_toggle_ready",
+    [](std::string target) {
+        if (validate_is_server()) {
+            rf::console::print("{}", run_player_admin_rcon_command("sv_toggle_ready", target));
+        }
+    },
+    "Toggle a player's ready status during match ready-up",
+    "sv_toggle_ready <player>",
+};
+
 void ban_cmd_handler_hook()
 {
     if (rf::is_multi && rf::is_server) {
@@ -313,17 +443,7 @@ void ban_cmd_handler_hook()
             rf::Player* player = find_best_matching_player(rf::console::str_arg);
 
             if (player) {
-                if (server_bot_from_player(player)) {
-                    rf::console::print("{} is a server bot and cannot be banned", player->name);
-                }
-                else if (player != rf::local_player) {
-                    rf::console::printf(rf::strings::banning_player, player->name.c_str());
-                    afstats::note_leave_reason(player, afstats::LeaveReason::banned);
-                    rf::multi_ban_ip(player->net_data->addr);
-                    kick_player_delayed(player);
-                }
-                else
-                    rf::console::print("You cannot ban yourself!");
+                server_ban_player(player);
             }
         }
 
@@ -342,16 +462,7 @@ void kick_cmd_handler_hook()
             rf::Player* player = find_best_matching_player(rf::console::str_arg);
 
             if (player) {
-                if (server_bot_from_player(player)) {
-                    rf::console::printf(rf::strings::kicking_player, player->name.c_str());
-                    server_bots_remove_from_roster(player);
-                }
-                else if (player != rf::local_player) {
-                    rf::console::printf(rf::strings::kicking_player, player->name.c_str());
-                    kick_player_delayed(player);
-                }
-                else
-                    rf::console::print("You cannot kick yourself!");
+                server_kick_player(player);
             }
         }
 
@@ -385,6 +496,10 @@ void init_server_commands()
     sv_bot_add_cmd.register_cmd();
     sv_bot_remove_cmd.register_cmd();
     sv_bot_list_cmd.register_cmd();
+    sv_swap_team_cmd.register_cmd();
+    sv_force_spectate_cmd.register_cmd();
+    sv_force_unspectate_cmd.register_cmd();
+    sv_toggle_ready_cmd.register_cmd();
 
     AsmWriter(0x0047B6F0).jmp(ban_cmd_handler_hook);
     AsmWriter(0x0047B580).jmp(kick_cmd_handler_hook);

@@ -401,7 +401,8 @@ void apply_waypoint_editor_mouse_mode(const bool runtime_mode_active)
     if (!runtime_mode_active) {
         g_waypoint_editor_mouse_ui_mode = false;
         apply_waypoint_editor_mouse_look_override(false);
-        if (rf::gameseq_get_state() == rf::GS_GAMEPLAY && !rf::keep_mouse_centered) {
+        if (rf::gameseq_get_state() == rf::GS_GAMEPLAY && !rf::keep_mouse_centered
+            && !gameplay_overlay_mouse_is_overridden()) {
             rf::mouse_keep_centered_enable();
             rf::mouse_set_visible(false);
         }
@@ -4364,6 +4365,11 @@ int waypoints_utils_consume_numeric_key(const int key_code)
     const int count = g_waypoint_editor_pending_numeric_key_counts[index];
     g_waypoint_editor_pending_numeric_key_counts[index] = 0;
     return count;
+}
+
+bool waypoints_utils_editor_active()
+{
+    return waypoint_editor_runtime_mode_active();
 }
 
 bool waypoints_utils_should_block_mouse_look()

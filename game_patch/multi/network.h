@@ -1,6 +1,8 @@
 #pragma once
 
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 #include <common/version/version.h>
 #include "server_internal.h"
@@ -315,4 +317,11 @@ void network_debug_apply_patches();
 bool try_to_auto_forward_port(int port);
 void clear_rcon_profile_sessions();
 void clear_rcon_state_for_addr(const rf::NetAddr& addr);
+void handle_rcon_player_action(const rf::NetAddr& addr, uint8_t target_player_id, uint8_t action);
+void set_local_rcon_commands(std::vector<std::string> commands);
+bool local_rcon_command_available(std::string_view command);
+uint8_t player_role_flags(const rf::Player* player);
+void set_local_player_roles(std::vector<std::pair<uint8_t, uint8_t>> roles);
+void send_player_roles_to(rf::Player* player);
+void server_player_roles_do_frame();
 void multi_disconnect_from_server();

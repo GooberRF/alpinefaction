@@ -174,6 +174,14 @@ Version 1.5.0 (Trillium): Not yet released
 - Add `Join Bots` mutator, which adds 1-8 server bots at a chosen skill for the level, or fills a match's open slots once the other players are ready
 - Add `$Fpgun Override` to `af_client.tbl` to replace the first person weapon model and arm textures per multiplayer character and weapon
 - Don't load Alpine Faction `af_*.tbl` option files from packfiles in `user_maps`
+- Add a scoreboard cursor: press `Secondary Attack` while holding the scoreboard key to free the cursor, and the endgame scoreboard frees it automatically
+  - Hover a player for a popout with their character image and extra stats, and scroll the player list with the mouse wheel when it is too long to fit on screen
+  - Click a player to pin the popout, with a mute button and, for rcon holders whose profile allows them, buttons to kick, ban, swap team, force into or out of spectator, and toggle ready
+  - Label players in the popout as `Server Host`, `Rcon Holder`, `Spectator`, `Browser` or `Bot`
+  - Add `sv_swap_team`, `sv_force_spectate`, `sv_force_unspectate` and `sv_toggle_ready` commands, usable through rcon profiles that allow them
+  - Add `ui_scoreboard_cursor` console command to toggle the cursor, and `ui_scoreboard_cursor_hint` to toggle its hint text
+- Balance scoreboard columns evenly when more than 32 players are listed in non-team game types
+- Allow match votes on servers whose base game type is not a team type, as long as the match itself is on a team game type
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color

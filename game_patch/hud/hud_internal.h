@@ -124,7 +124,7 @@ std::string hud_fit_string(std::string_view str, int max_w, int* str_w_out, int 
 rf::HudPoint hud_scale_coords(rf::HudPoint pt, float scale);
 const char* hud_get_default_font_name(bool big);
 const char* hud_get_bold_font_name(bool big);
-void scoreboard_maybe_render(bool show_scoreboard);
+void scoreboard_maybe_render(bool show_scoreboard, bool key_held);
 int hud_transform_value(int val, int old_max, int new_max);
 int hud_scale_value(int val, int max, float scale);
 void message_log_apply_patch();

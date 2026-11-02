@@ -4,6 +4,7 @@
 #include <functional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <variant>
 #include <vector>
 #include <common/rfproto.h>
@@ -137,6 +138,7 @@ enum class af_client_req_type : uint8_t
     af_req_stats_pssk = 0xB,    // Alpine 1.4 (32 bytes: player stats session key, no NUL)
     af_req_vehicle_use = 0xC,   // Alpine 1.5 (5 bytes: vehicle server handle + seat index)
     af_req_vehicle_crush = 0xD, // Alpine 1.5 (13 bytes: VehicleCrushReqPayload)
+    af_req_rcon_player_action = 0xE, // Alpine 1.5 (2 bytes: RconPlayerActionReqPayload)
 };
 
 // Frozen wire constants, values can NEVER be reordered or changed.
@@ -363,11 +365,37 @@ struct VehicleCrushReqPayload
 };
 static_assert(sizeof(VehicleCrushReqPayload) == 13);
 
+// RconPlayerActionReqPayload::action. FROZEN wire constants.
+enum af_rcon_player_action : uint8_t
+{
+    AF_RCON_PLAYER_KICK = 0,
+    AF_RCON_PLAYER_BAN = 1,
+    AF_RCON_PLAYER_SWAP_TEAM = 2,
+    AF_RCON_PLAYER_FORCE_SPECTATE = 3,
+    AF_RCON_PLAYER_TOGGLE_READY = 4,
+    AF_RCON_PLAYER_FORCE_UNSPECTATE = 5,
+};
+
+// af_sreq_player_roles per-player flags. FROZEN wire constants.
+enum af_player_role_flags : uint8_t
+{
+    AF_PLAYER_ROLE_RCON_HOLDER = 1 << 0,
+    AF_PLAYER_ROLE_SERVER_HOST = 1 << 1,
+    AF_PLAYER_ROLE_READY = 1 << 2,
+};
+
+struct RconPlayerActionReqPayload
+{
+    uint8_t target_player_id = 0;
+    uint8_t action = AF_RCON_PLAYER_KICK;
+};
+static_assert(sizeof(RconPlayerActionReqPayload) == 2);
+
 using af_client_payload = std::variant<HandicapPayload, SprayReqPayload, CharacterPayload,
                                        ReadyReqPayload, PitQueueReqPayload, VoteCastReqPayload,
                                        VoteOptionsReqPayload, JetpackStateReqPayload,
                                        StatsPsskPayload, VehicleUseReqPayload,
-                                       VehicleCrushReqPayload, std::monostate>;
+                                       VehicleCrushReqPayload, RconPlayerActionReqPayload, std::monostate>;
 
 struct af_client_req_packet
 {
@@ -392,6 +420,9 @@ enum class af_server_req_type : uint8_t
     af_sreq_award = 0xB,               // Alpine 1.4 (2 bytes: award_id, victim_player_id; 0xFF = no victim)
     af_sreq_active_mutators = 0xC,     // Alpine 1.4 (variable: one declaration set, see blob_declaration_set)
     af_sreq_match_state = 0xD,         // Alpine 1.5 (1 byte: af_match_state_flags)
+    af_sreq_rcon_state = 0xE,          // Alpine 1.5 (variable: is_holder, command count, commands)
+    af_sreq_force_spectate = 0xF,      // Alpine 1.5 (1 byte: 1 = enter spectate, 0 = leave)
+    af_sreq_player_roles = 0x10,       // Alpine 1.5 (variable: count, {player_id, af_player_role_flags})
 };
 
 struct ShouldGibPayload
@@ -1175,6 +1206,7 @@ void af_send_server_cfg_request();
 void af_send_spray_request(uint16_t texture_id, const rf::Vector3& pos, const rf::Vector3& normal);
 void af_send_ready_request(uint8_t action);      // 0 = unready, 1 = ready, 2 = toggle
 void af_send_pit_queue_request(uint8_t action);  // 0 = leave, 1 = join, 2 = toggle
+void af_send_rcon_player_action(uint8_t target_player_id, af_rcon_player_action action);
 void af_send_stats_pssk(const std::string& pssk);
 // vehicle_handle -1 = exit request
 void af_send_vehicle_use_request(int vehicle_handle, uint8_t seat_index);
@@ -1209,6 +1241,10 @@ void af_send_active_mutators_to_all();
 void af_send_ready_prompt(rf::Player* player, uint8_t state); // 0/1/2 (see ReadyPromptPayload)
 void af_send_pit_queue_state(rf::Player* player, uint8_t flags, uint8_t pos, uint8_t total);
 void af_send_match_state(rf::Player* player, uint8_t flags); // af_match_state_flags
+void af_send_rcon_state(rf::Player* player, bool is_holder, const std::vector<std::string>& commands);
+void af_send_force_spectate(rf::Player* player, bool enter);
+void af_set_player_spectatee(rf::Player* spectator, rf::Player* new_target, bool in_spectate);
+void af_send_player_roles(rf::Player* player, const std::vector<std::pair<uint8_t, uint8_t>>& roles);
 
 // server bot control
 void af_send_bot_control_simple(rf::Player* player, af_bot_control_type subtype);

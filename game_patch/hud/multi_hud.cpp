@@ -1854,6 +1854,33 @@ static void hud_bag_carrier_ensure() {
     hud_notification_show(text, -1, HudNotificationType::BagCarrier, false);
 }
 
+static bool g_forced_spectate_pending = false;
+
+void hud_request_forced_spectate(bool enter)
+{
+    g_forced_spectate_pending = enter;
+    if (!enter && multi_spectate_is_spectating()) {
+        multi_spectate_leave();
+    }
+}
+
+// The entity outlives the kill until its death sequence ends, and freelook needs it gone.
+void hud_forced_spectate_do_frame()
+{
+    if (!g_forced_spectate_pending) {
+        return;
+    }
+    rf::Entity* const entity = rf::local_player ? rf::entity_from_handle(rf::local_player->entity_handle) : nullptr;
+    const bool respawned = entity && !rf::entity_is_dying(entity) && entity->life > 0.0f;
+    if (!rf::is_multi || multi_spectate_is_spectating() || respawned) {
+        g_forced_spectate_pending = false;
+    }
+    else if (rf::gameseq_get_state() == rf::GS_GAMEPLAY && rf::local_player && rf::player_is_dead(rf::local_player)) {
+        g_forced_spectate_pending = false;
+        multi_spectate_enter_freelook();
+    }
+}
+
 // Drop a queued player into freelook spectate when the server has flagged it.
 void hud_pit_queue_auto_spectate() {
     if (rf::is_server) return;
@@ -2103,8 +2130,9 @@ CallHook<void(int *dx, int *dy, int *dz)> control_config_get_mouse_delta_hook{
             }
         }
 
-        // The vote panel / demo controls popup owns aiming while it is up.
-        if (vote_panel_is_gameplay_overlay_active() || demo_controls_ui_is_open()) {
+        // A gameplay overlay with a free cursor owns aiming while it is up.
+        if (vote_panel_is_gameplay_overlay_active() || demo_controls_ui_is_open()
+            || multi_scoreboard_cursor_active()) {
             if (dx) {
                 *dx = 0;
             }
@@ -2115,7 +2143,7 @@ CallHook<void(int *dx, int *dy, int *dz)> control_config_get_mouse_delta_hook{
 
         // If active, do not use mouse wheel scroll delta.
         if ((g_remote_server_cfg_popup.is_active() || vote_panel_is_gameplay_overlay_active()
-             || demo_controls_ui_is_open())
+             || demo_controls_ui_is_open() || multi_scoreboard_cursor_active())
             && dz) {
             *dz = 0;
         }

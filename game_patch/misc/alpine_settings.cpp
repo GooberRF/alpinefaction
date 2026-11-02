@@ -1242,6 +1242,14 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.scoreboard_anim = std::stoi(settings["ScoreboardAnimations"]);
         processed_keys.insert("ScoreboardAnimations");
     }
+    if (settings.count("ScoreboardCursor")) {
+        g_alpine_game_config.scoreboard_cursor = std::stoi(settings["ScoreboardCursor"]);
+        processed_keys.insert("ScoreboardCursor");
+    }
+    if (settings.count("ScoreboardCursorHint")) {
+        g_alpine_game_config.scoreboard_cursor_hint = std::stoi(settings["ScoreboardCursorHint"]);
+        processed_keys.insert("ScoreboardCursorHint");
+    }
     if (settings.count("MultiplayerTracker")) {
         g_alpine_game_config.set_multiplayer_tracker(settings["MultiplayerTracker"]);
         processed_keys.insert("MultiplayerTracker");
@@ -1846,6 +1854,8 @@ void alpine_player_settings_save(rf::Player* player)
     file << "ShowPlayerNames=" << g_alpine_game_config.display_target_player_names << "\n";
     file << "VerboseTimer=" << g_alpine_game_config.verbose_time_left_display << "\n";
     file << "ScoreboardAnimations=" << g_alpine_game_config.scoreboard_anim << "\n";
+    file << "ScoreboardCursor=" << g_alpine_game_config.scoreboard_cursor << "\n";
+    file << "ScoreboardCursorHint=" << g_alpine_game_config.scoreboard_cursor_hint << "\n";
     file << "MultiplayerTracker=" << g_alpine_game_config.multiplayer_tracker << "\n";
     file << "ServerMaxFPS=" << g_alpine_game_config.server_max_fps << "\n";
     file << "ServerNetFPS=" << g_alpine_game_config.server_netfps << "\n";
