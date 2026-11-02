@@ -11,6 +11,12 @@ bool editor_gr_is_d3d11();
 // and 9 set it on the thread that created their device. Direct3D 11 never sets it, so it is set here.
 void editor_gr_set_bake_precision();
 
+// Before the main frame first shows: its four views skip their window class's white background erase, which the
+// renderer paints over in full, and each paint is followed by one from RED's idle loop. Under Wine the erase shows on
+// its own until the present lands, a white flash on every resize, and the paint's own present misses what the resize
+// exposed.
+void editor_gr_init_views();
+
 // Draws whatever the renderer holds queued, so that what follows is drawn after it.
 void editor_gr_flush();
 
