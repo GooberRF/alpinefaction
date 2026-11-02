@@ -562,6 +562,8 @@ namespace rf
     static auto& entity_can_crouch = addr_as_ref<bool(Entity* ep)>(0x00428010);
     static auto& entity_is_falling = addr_as_ref<bool(Entity* ep)>(0x0042A020);
     static auto& entity_is_climbing = addr_as_ref<bool(Entity* ep)>(0x0042D8B0);
+    static auto& entity_make_climb = addr_as_ref<void(Entity* ep, ClimbRegion* region)>(0x004281E0);
+    static auto& entity_is_grounded_move_mode = addr_as_ref<bool(Entity* ep)>(0x0042A100);
     static auto& entity_is_running = addr_as_ref<bool(Entity* ep)>(0x00429FF0);
     static auto& entity_make_freefall = addr_as_ref<void(Entity* ep)>(0x004281A0);
     static auto& entity_is_flying = addr_as_ref<bool(Entity* ep)>(0x0042A060);

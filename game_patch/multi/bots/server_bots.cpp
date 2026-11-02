@@ -381,6 +381,22 @@ CallHook<void(rf::Player*, const char*, int)> listen_host_chat_add_msg_hook{
     },
 };
 
+// Stock enters and leaves climbing regions only for a local player, in its control handling (0x00430C70).
+void server_bot_update_climbing(rf::Entity& ep)
+{
+    rf::ClimbRegion* const region = rf::level_point_in_climb_region(&ep.pos);
+    const bool climbing = rf::entity_is_climbing(&ep);
+    if (!region) {
+        if (climbing) {
+            rf::entity_make_run(&ep);
+            ep.p_data.vel.y = 0.0f;
+        }
+    }
+    else if (!climbing && (rf::entity_is_grounded_move_mode(&ep) || region != ep.ignored_climb_region)) {
+        rf::entity_make_climb(&ep, region);
+    }
+}
+
 void server_bot_apply_outputs(ServerBot& bot, const bool thought)
 {
     BotContext& ctx = bot.ctx;
@@ -405,6 +421,7 @@ void server_bot_apply_outputs(ServerBot& bot, const bool thought)
         bot_vehicle_server_apply_outputs(ctx, *pp, *ep, *hull);
     }
     else if (!rf::entity_is_dying(ep)) {
+        server_bot_update_climbing(*ep);
         if (!thought) {
             BotActiveScope scope{ctx};
             bot_track_aim_goal(*ep);
