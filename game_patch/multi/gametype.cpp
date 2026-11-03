@@ -10,6 +10,7 @@
 #include "awards.h"
 #include "bagman.h"
 #include "jetpack.h"
+#include "powerups.h"
 #include "rounds.h"
 #include "pit.h"
 #include "wipeout.h"
@@ -2240,6 +2241,7 @@ CodeInjection multi_level_init_gametypes_injection{
         hill_mode_level_init();
         bagman_level_init();
         jetpack_level_init();
+        powerups_level_init();
         salvage_level_init();
         scavenger_level_init();
         pit_level_init();
@@ -2537,6 +2539,7 @@ void gametype_do_patch()
 
     // jetpack specific (registers the single player `jetpack` console command)
     jetpack_apply_patch();
+    powerups_do_patch();
 
     // salvage specific
     salvage_do_patch();

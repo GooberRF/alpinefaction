@@ -133,6 +133,8 @@ set(SRCS
     multi/bagman.cpp
     multi/jetpack.h
     multi/jetpack.cpp
+    multi/powerups.h
+    multi/powerups.cpp
     multi/rounds.h
     multi/rounds.cpp
     multi/pit.h

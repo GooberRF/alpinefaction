@@ -40,6 +40,7 @@
 #include "../multi/mutators.h"
 #include "../multi/bagman.h"
 #include "../multi/jetpack.h"
+#include "../multi/powerups.h"
 #include "../multi/salvage.h"
 #include "../multi/vehicles/vehicle.h"
 #include "../multi/vehicles/vehicle_markers.h"
@@ -184,6 +185,7 @@ FunHook<int()> rf_do_frame_hook{
         client_bot_do_frame();
         koth_do_frame();
         bagman_do_frame();
+        powerups_do_frame();
         jetpack_do_frame();
         salvage_client_do_frame();      // client-side Salvage carried-flag attachment
         vehicle_client_do_frame();      // vehicle trigger state of the local firing seat owner

@@ -868,7 +868,7 @@ std::optional<MinimapRect> minimap_panel_rect()
 
     // Stay in the column right of the centred chat box, and above the jetpack gauge's label.
     const int max_from_chat = right - (multi_hud_chat_box_right_x() + gap);
-    const int max_from_jet = jetpacks_are_active() ? jetpack_fuel_gauge_label_top_y() - gap - top : max_from_chat;
+    const int max_from_jet = jetpack_gauge_may_show() ? jetpack_fuel_gauge_label_top_y() - gap - top : max_from_chat;
 
     const int wanted = static_cast<int>(std::lround(g_alpine_game_config.minimap_size * s));
     const int size = std::min({wanted, max_from_chat, max_from_jet});

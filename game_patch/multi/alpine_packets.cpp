@@ -34,6 +34,7 @@
 #include "kill_attribution.h"
 #include "bagman.h"
 #include "jetpack.h"
+#include "powerups.h"
 #include "pit.h"
 #include "salvage.h"
 #include "scavenger.h"
@@ -964,6 +965,15 @@ void serialize_payload(const EntityJetpackPayload& payload, std::byte* buf, size
     offset += sizeof(payload.obj_handle);
     buf[offset++] = static_cast<std::byte>(payload.on);
     buf[offset++] = static_cast<std::byte>(payload.fuel_pct);
+}
+
+// af_sreq_powerup_state
+void serialize_payload(const PowerupStatePayload& payload, std::byte* buf, size_t& offset)
+{
+    buf[offset++] = static_cast<std::byte>(payload.player_id);
+    buf[offset++] = static_cast<std::byte>(payload.powerup_id);
+    std::memcpy(buf + offset, &payload.time_left_ms, sizeof(payload.time_left_ms));
+    offset += sizeof(payload.time_left_ms);
 }
 
 // af_sreq_riot_shield_state
@@ -1946,10 +1956,11 @@ static void af_process_client_req_packet(const void* data, size_t len, const rf:
                 xlog::warn("af_process_client_req_packet: JetpackState payload too short");
                 return;
             }
-            if (!g_alpine_server_config_active_rules.mutators.jetpacks_enabled) {
+            const bool on = bytes[offset] != 0;
+            // Switching off is never refused, so a pack whose powerup just ran out still stops thrusting.
+            if (on && !jetpack_is_active_for(rf::entity_from_handle(player->entity_handle))) {
                 return;
             }
-            const bool on = bytes[offset] != 0;
             const uint8_t fuel_pct = std::min<uint8_t>(bytes[offset + 1], 100);
             jetpack_server_on_state_request(player, on, fuel_pct);
             break;
@@ -2322,6 +2333,38 @@ void af_send_jetpack_state(uint32_t obj_handle, bool on, uint8_t fuel_pct)
             continue;
         }
         if (is_player_minimum_af_client_version(&player, 1, 4, 0)) {
+            af_send_server_req_packet(packet, &player);
+        }
+    }
+}
+
+void af_send_powerup_state(rf::Player* target, uint8_t player_id, uint8_t powerup_id, uint32_t time_left_ms)
+{
+    if (!rf::is_server) {
+        return;
+    }
+
+    af_server_req_packet packet{};
+    packet.header.type = static_cast<uint8_t>(af_packet_type::af_server_req);
+    packet.header.size = sizeof(uint8_t) + sizeof(PowerupStatePayload);
+    packet.req_type = af_server_req_type::af_sreq_powerup_state;
+    packet.payload = PowerupStatePayload{player_id, powerup_id, time_left_ms};
+
+    if (target) {
+        if (is_player_minimum_af_client_version(target, 1, 5, 0)) {
+            af_send_server_req_packet(packet, target);
+        }
+        return;
+    }
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if (&player == rf::local_player || !player.net_data || player.is_bot || player.is_browser) {
+            continue;
+        }
+        // Joining clients get the state from powerups_send_state_to in their state info.
+        if (player.net_data->state != rf::NETPLAYER_STATE_IN_GAME) {
+            continue;
+        }
+        if (is_player_minimum_af_client_version(&player, 1, 5, 0)) {
             af_send_server_req_packet(packet, &player);
         }
     }
@@ -3086,6 +3129,16 @@ static void af_process_server_req_packet(const void* data, size_t len, const rf:
             }
 
             jetpack_on_remote_state(entity, payload.on != 0, payload.fuel_pct);
+            break;
+        }
+        case af_server_req_type::af_sreq_powerup_state: {
+            if (remaining < sizeof(PowerupStatePayload)) {
+                xlog::warn("af_process_server_req_packet: PowerupState payload too short");
+                return;
+            }
+            PowerupStatePayload payload{};
+            std::memcpy(&payload, bytes + offset, sizeof(payload));
+            powerups_apply_remote_state(payload.player_id, payload.powerup_id, payload.time_left_ms);
             break;
         }
         case af_server_req_type::af_sreq_riot_shield_state: {

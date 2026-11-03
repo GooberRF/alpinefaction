@@ -1755,6 +1755,14 @@ struct DedObjectClass
 {
     VString name;
     DedObject* tmpl;
+
+    // Constructs `name` only; the caller sets `tmpl`.
+    static DedObjectClass* create()
+    {
+        auto* cls = static_cast<DedObjectClass*>(rf_alloc(sizeof(DedObjectClass)));
+        if (!cls) return nullptr;
+        return AddrCaller{0x00478740}.this_call<DedObjectClass*>(cls);
+    }
 };
 static_assert(sizeof(DedObjectClass) == 0xC);
 static_assert(offsetof(DedObjectClass, tmpl) == 0x8);

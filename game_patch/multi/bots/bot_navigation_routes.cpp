@@ -7,6 +7,7 @@
 #include "bot_vehicle.h"
 #include "bot_waypoint_route.h"
 #include "../gametype.h"
+#include "../powerups.h"
 #include "../../main/main.h"
 #include "../../rf/collide.h"
 #include "../../rf/geometry.h"
@@ -623,7 +624,8 @@ float get_waypoint_item_value(const int waypoint_index)
     }
 
     const rf::ItemInfo& item = rf::item_info[subtype];
-    if (item.flags & rf::IIF_NO_PICKUP) {
+    // Bots make no use of Alpine powerups, so their pickups are not worth a detour.
+    if ((item.flags & rf::IIF_NO_PICKUP) || item_type_is_alpine_powerup(subtype)) {
         return 0.0f;
     }
 

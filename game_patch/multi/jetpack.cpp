@@ -1,10 +1,13 @@
 #include <algorithm>
+#include <cmath>
 #include <cstring>
+#include <format>
 #include <string>
 #include <unordered_map>
 #include <xlog/xlog.h>
 #include "jetpack.h"
 #include "bagman.h"
+#include "powerups.h"
 #include "gametype.h"
 #include "multi.h"
 #include "server_internal.h"
@@ -289,7 +292,7 @@ void jetpack_update_effects()
 {
     for (auto it = g_jetpack_effects.begin(); it != g_jetpack_effects.end();) {
         rf::Entity* ep = rf::entity_from_handle(it->first);
-        if (!ep || rf::entity_is_dying(ep)) {
+        if (!ep || rf::entity_is_dying(ep) || !jetpack_is_active_for(ep)) {
             jetpack_effect_destroy(it->second);
             it = g_jetpack_effects.erase(it);
             continue;
@@ -331,7 +334,7 @@ void jetpack_update_remote_fuel()
     const float dt = rf::frametime * demo_playback_sim_time_scale();
     for (auto it = g_jetpack_remote_fuel.begin(); it != g_jetpack_remote_fuel.end();) {
         rf::Entity* ep = rf::entity_from_handle(it->first);
-        if (!ep || rf::entity_is_dying(ep)) {
+        if (!ep || rf::entity_is_dying(ep) || !jetpack_is_active_for(ep)) {
             it = g_jetpack_remote_fuel.erase(it);
             continue;
         }
@@ -569,7 +572,7 @@ void jetpack_update_local_player()
         g_jetpack_gauge_reveal.set(JETPACK_REVEAL_MS);
     }
 
-    if (!ep || rf::entity_is_dying(ep)) {
+    if (!ep || rf::entity_is_dying(ep) || !jetpack_is_active_for(ep)) {
         jetpack_set_local_thrust(false);
         jetpack_reset_local_state();
         if (!ep) {
@@ -782,9 +785,17 @@ int jetpack_remote_gauge_alpha(JetpackRemoteFuel& state)
     return 255 - (255 * elapsed) / JETPACK_GAUGE_FADE_MS;
 }
 
-void jetpack_draw_fuel_gauge(float fuel, int alpha_scale)
+// A Jetpack powerup keeps the gauge up for its whole duration, with the seconds left under it.
+void jetpack_draw_fuel_gauge(float fuel, int alpha_scale, float powerup_seconds_left)
 {
-    hud_draw_side_gauge(false, fuel, {255, 165, 0}, JETPACK_GAUGE_LABEL, nullptr, alpha_scale / 255.0f);
+    if (powerup_seconds_left > 0.0f) {
+        const std::string seconds = std::format("{}", static_cast<int>(std::ceil(powerup_seconds_left)));
+        hud_draw_side_gauge(false, fuel, {255, 165, 0}, JETPACK_GAUGE_LABEL, seconds.c_str(), 1.0f);
+        return;
+    }
+    if (alpha_scale >= 0) {
+        hud_draw_side_gauge(false, fuel, {255, 165, 0}, JETPACK_GAUGE_LABEL, nullptr, alpha_scale / 255.0f);
+    }
 }
 
 void jetpack_draw_thrust_hint(int alpha_scale)
@@ -828,6 +839,43 @@ bool jetpacks_are_active()
     return info.has_value() && info->jetpacks;
 }
 
+bool jetpack_is_active_for(const rf::Entity* ep)
+{
+    return jetpacks_are_active() || powerup_is_active(ep, AlpinePowerup::jetpack);
+}
+
+bool jetpacks_in_play()
+{
+    return jetpacks_are_active() || powerup_any_active(AlpinePowerup::jetpack);
+}
+
+bool jetpack_gauge_may_show()
+{
+    if (jetpacks_are_active()) {
+        return true;
+    }
+    const rf::Player* viewed = !multi_spectate_is_spectating() ? rf::local_player
+        : multi_spectate_is_following_player() ? multi_spectate_get_target_player() : nullptr;
+    return viewed && powerup_is_active(rf::entity_from_handle(viewed->entity_handle), AlpinePowerup::jetpack);
+}
+
+void jetpack_on_powerup_changed(int entity_handle, bool granted)
+{
+    if (rf::is_dedicated_server) {
+        return;
+    }
+    g_jetpack_remote_fuel.erase(entity_handle);
+    if (granted) {
+        if (rf::local_player && entity_handle == rf::local_player->entity_handle) {
+            g_jetpack_fuel = 1.0f;
+            g_jetpack_tank_empty = false;
+        }
+    }
+    else if (rf::Entity* ep = rf::entity_from_handle(entity_handle); ep && !jetpack_is_active_for(ep)) {
+        jetpack_apply_entity_thrust(ep, false);
+    }
+}
+
 void jetpack_apply_entity_thrust(rf::Entity* ep, bool on)
 {
     if (rf::is_dedicated_server || !ep) {
@@ -836,10 +884,11 @@ void jetpack_apply_entity_thrust(rf::Entity* ep, bool on)
     if (on) {
         // Gates for the packet path: a server the client does not trust must not
         // be able to make it allocate emitters and sound instances where nothing
-        // reaps them — with the mutator off, outside gameplay, or on an entity no
-        // player owns. The local player's own engage path already satisfies all
-        // three, so ordinary play is unchanged. Switching OFF is never gated.
-        if (!jetpacks_are_active()
+        // reaps them — on an entity without a jetpack, outside gameplay, or on an
+        // entity no player owns. The local player's own engage path already
+        // satisfies all three, so ordinary play is unchanged. Switching OFF is never
+        // gated.
+        if (!jetpack_is_active_for(ep)
             || rf::gameseq_get_state() != rf::GameState::GS_GAMEPLAY
             || !rf::player_from_entity_handle(ep->handle)) {
             return;
@@ -859,7 +908,7 @@ void jetpack_on_remote_state(rf::Entity* ep, bool on, uint8_t fuel_pct)
     }
     // Same gates the effects use: no tracked entries for a server talking about
     // entities or states that cannot be on screen.
-    if (!jetpacks_are_active() || rf::gameseq_get_state() != rf::GameState::GS_GAMEPLAY
+    if (!jetpack_is_active_for(ep) || rf::gameseq_get_state() != rf::GameState::GS_GAMEPLAY
         || !rf::player_from_entity_handle(ep->handle)) {
         return;
     }
@@ -897,7 +946,7 @@ void jetpack_do_frame()
 {
     // Ahead of the dedicated-server early-out: the rebroadcast throttle has to
     // settle on every host, and a dedicated server does nothing else here.
-    if (rf::is_server && rf::is_multi && jetpacks_are_active()) {
+    if (rf::is_server && rf::is_multi) {
         jetpack_server_do_frame();
     }
 
@@ -906,9 +955,9 @@ void jetpack_do_frame()
     }
 
     const bool in_gameplay = rf::gameseq_get_state() == rf::GameState::GS_GAMEPLAY;
-    // No is_multi term: jetpacks_are_active already answers for both modes, and in
+    // No is_multi term: jetpacks_in_play already answers for both modes, and in
     // single player it is the console command that decides.
-    const bool active = in_gameplay && jetpacks_are_active();
+    const bool active = in_gameplay && jetpacks_in_play();
 
     if (!active) {
         jetpack_set_local_thrust(false);
@@ -933,7 +982,7 @@ void jetpack_do_frame()
 
 void jetpack_render_attachment(rf::Entity* ep)
 {
-    if (!jetpacks_are_active()) {
+    if (!jetpack_is_active_for(ep)) {
         return;
     }
     if (!ep || !ep->vmesh || !g_jetpack_mesh || g_jetpack_mesh_prop_idx < 0
@@ -965,7 +1014,7 @@ void jetpack_render_attachment(rf::Entity* ep)
 
 void jetpack_render_hud()
 {
-    if (!jetpacks_are_active() || is_hud_effectively_hidden()) {
+    if (!jetpacks_in_play() || is_hud_effectively_hidden()) {
         // Nothing is drawn this frame, so drop the hint ramp: it eases back in
         // from nothing once the HUD returns.
         g_jetpack_hint_fade = 0.0f;
@@ -985,28 +1034,25 @@ void jetpack_render_hud()
         if (!ep || rf::entity_is_dying(ep)) {
             return;
         }
+        const float time_left = powerup_time_left(ep, AlpinePowerup::jetpack);
         auto it = g_jetpack_remote_fuel.find(ep->handle);
         if (it == g_jetpack_remote_fuel.end()) {
-            return; // no anchor yet; a full tank draws nothing anyway
+            // No anchor yet; a full tank draws nothing anyway, unless a powerup keeps the gauge up.
+            jetpack_draw_fuel_gauge(1.0f, -1, time_left);
+            return;
         }
-        const int alpha = jetpack_remote_gauge_alpha(it->second);
-        if (alpha >= 0) {
-            jetpack_draw_fuel_gauge(it->second.fuel, alpha);
-        }
+        jetpack_draw_fuel_gauge(it->second.fuel, jetpack_remote_gauge_alpha(it->second), time_left);
         return;
     }
 
     rf::Entity* ep = rf::local_player
         ? rf::entity_from_handle(rf::local_player->entity_handle) : nullptr;
-    if (!ep || rf::entity_is_dying(ep)) {
+    if (!ep || rf::entity_is_dying(ep) || !jetpack_is_active_for(ep)) {
         g_jetpack_hint_fade = 0.0f;
         return;
     }
 
-    const int gauge_alpha = jetpack_gauge_alpha();
-    if (gauge_alpha >= 0) {
-        jetpack_draw_fuel_gauge(g_jetpack_fuel, gauge_alpha);
-    }
+    jetpack_draw_fuel_gauge(g_jetpack_fuel, jetpack_gauge_alpha(), powerup_time_left(ep, AlpinePowerup::jetpack));
 
     // Ease the hint in and out rather than popping it on the frame the pack
     // becomes usable — the condition can flicker while a fall starts.

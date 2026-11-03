@@ -392,6 +392,7 @@ enum class af_server_req_type : uint8_t
     af_sreq_award = 0xB,               // Alpine 1.4 (2 bytes: award_id, victim_player_id; 0xFF = no victim)
     af_sreq_active_mutators = 0xC,     // Alpine 1.4 (variable: one declaration set, see blob_declaration_set)
     af_sreq_match_state = 0xD,         // Alpine 1.5 (1 byte: af_match_state_flags)
+    af_sreq_powerup_state = 0xE,       // Alpine 1.5 (6 bytes: player_id, powerup_id, time_left_ms)
 };
 
 struct ShouldGibPayload
@@ -492,7 +493,7 @@ struct EntityOnFirePayload
 };
 static_assert(sizeof(EntityOnFirePayload) == 5);
 
-// Used by the Jetpacks mutator. Purely visual: the thrusting client already
+// Used by jetpacks (mutator or powerup). Purely visual: the thrusting client already
 // applied its own physics, this only drives the effects on every other client.
 struct EntityJetpackPayload
 {
@@ -501,6 +502,15 @@ struct EntityJetpackPayload
     uint8_t fuel_pct = 0; // 0-100, display only
 };
 static_assert(sizeof(EntityJetpackPayload) == 6);
+
+// Timed powerups are server authoritative. time_left_ms 0 means the powerup ended.
+struct PowerupStatePayload
+{
+    uint8_t player_id = 0;
+    uint8_t powerup_id = 0; // AlpinePowerup
+    uint32_t time_left_ms = 0;
+};
+static_assert(sizeof(PowerupStatePayload) == 6);
 
 // Riot shield durability is server authoritative.
 struct RiotShieldStatePayload
@@ -524,7 +534,7 @@ static_assert(sizeof(AwardPayload) == 2);
 using af_server_req_payload = std::variant<ShouldGibPayload, TeleportEntityPayload, SprayPayload,
                                            ReadyPromptPayload, PitQueueStatePayload, EntityOnFirePayload,
                                            EntityJetpackPayload, RiotShieldStatePayload, AwardPayload,
-                                           MatchStatePayload>;
+                                           MatchStatePayload, PowerupStatePayload>;
 
 struct af_server_req_packet
 {
@@ -1085,6 +1095,8 @@ void af_send_entity_on_fire(uint32_t obj_handle, bool on, bool reliable = true);
 void af_send_jetpack_state_request(bool on, uint8_t fuel_pct);
 void af_send_jetpack_state(uint32_t obj_handle, bool on, uint8_t fuel_pct);
 void af_send_riot_shield_state(uint32_t obj_handle, float life, const rf::Vector3& impact_pos);
+// target nullptr: every client.
+void af_send_powerup_state(rf::Player* target, uint8_t player_id, uint8_t powerup_id, uint32_t time_left_ms);
 void af_send_award(rf::Player* player, uint8_t award_id, uint8_t victim_player_id);
 void af_send_award_for_demo(rf::Player* recorder, uint8_t award_id, uint8_t victim_player_id, uint8_t earner_id);
 void af_send_teleport_entity_req(uint32_t obj_handle, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::Vector3& vel);

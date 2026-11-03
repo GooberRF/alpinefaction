@@ -29,6 +29,7 @@
 #include "network.h"
 #include "gametype.h"
 #include "mutators.h"
+#include "powerups.h"
 #include "bagman.h"
 #include "rounds.h"
 #include "pit.h"
@@ -2316,7 +2317,7 @@ CallHook<int(const char*)> item_lookup_type_hook{
             // Mutator pickup redirection.
             type_index = mutators_redirect_item_index(type_index);
         }
-        return type_index;
+        return powerups_filter_level_item(type_index);
     },
 };
 
@@ -6049,6 +6050,12 @@ std::tuple<bool, int, bool, bool> server_features_require_alpine_client()
 
     // Only v306+ levels carry vehicle factories, so a legacy client is already excluded by version.
     if (vehicle_level_has_factories()) {
+        requires_alpine = true;
+        hard_reject = true;
+        min_minor_version = std::max(min_minor_version, 5);
+    }
+
+    if (level_has_alpine_powerups()) {
         requires_alpine = true;
         hard_reject = true;
         min_minor_version = std::max(min_minor_version, 5);

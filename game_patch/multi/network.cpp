@@ -45,6 +45,7 @@
 #include "gungame.h"
 #include "gametype.h"
 #include "sprays.h"
+#include "powerups.h"
 #include "vote_client.h"
 #include "bots/bot_chat_manager.h"
 #include "bots/bot_context_fwd.h"
@@ -3296,6 +3297,7 @@ CodeInjection send_state_info_injection{
         rf::Player* player = regs.edi;
         trigger_send_state_info(player);
         sprays_force_state_sync_to(player);
+        powerups_send_state_to(player);
     },
 };
 
