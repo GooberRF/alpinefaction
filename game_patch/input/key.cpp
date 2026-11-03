@@ -218,7 +218,7 @@ FunHook<rf::Key()> key_get_hook{
         if ((key & rf::KEY_MASK) == rf::KEY_ESC
             && key & rf::KEY_SHIFTED
             && g_alpine_game_config.quick_exit) {
-            rf::gameseq_set_state(rf::GameState::GS_QUITING, false);
+            rf::gameseq_set_state(rf::GameState::GS_QUIT_GAME, false);
         MAYBE_CANCEL_BINK:
             // If we are playing a video, cancel it.
             const int bink_handle = addr_as_ref<int>(0x018871E4);
@@ -404,6 +404,9 @@ static void execute_alive_alpine_control(int action_index)
 // until they send the end event; older servers only understand the chat command.
 static void cast_local_vote(bool is_yes_vote)
 {
+    if (vote_client_spectating_match()) {
+        return;
+    }
     if (is_server_minimum_af_version(1, 4)) {
         af_send_vote_cast(is_yes_vote);
         vote_state_mark_local_voted();

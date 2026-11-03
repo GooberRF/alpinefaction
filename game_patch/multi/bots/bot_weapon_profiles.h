@@ -59,7 +59,6 @@ struct BotWeaponProfile
     BotWeaponFireMode primary_fire = BotWeaponFireMode::shoot;
     BotWeaponFireMode alt_fire = BotWeaponFireMode::none;
     int value_tier = 0;
-    uint8_t range_band_mask = 0;
     uint32_t special_property_mask = 0;
     int weapon_type = -1;
     std::vector<int> weapon_item_ids{};
@@ -72,5 +71,4 @@ const std::vector<BotWeaponProfile>& bot_weapon_profiles();
 const BotWeaponProfile* bot_weapon_profile_for_weapon_type(int weapon_type);
 bool bot_weapon_profile_supports_range(const BotWeaponProfile& profile, BotWeaponRangeBand range);
 bool bot_weapon_profile_has_special(const BotWeaponProfile& profile, BotWeaponSpecialProperty property);
-int bot_weapon_profile_range_band_count(const BotWeaponProfile& profile);
 

@@ -1,13 +1,17 @@
 #include "bot_movement.h"
 
+#include "bot_combat.h"
+#include "bot_context.h"
 #include "bot_internal.h"
 #include "bot_math.h"
 #include "bot_navigation_routes.h"
+#include "bot_utils.h"
 #include "../../main/main.h"
 #include "../../rf/collide.h"
 #include "../../rf/entity.h"
 #include "../../rf/level.h"
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cmath>
 #include <random>
@@ -18,6 +22,16 @@ namespace
 constexpr int kBotMovementTraceFlags = rf::CF_ANY_HIT | rf::CF_PROCESS_INVISIBLE_FACES;
 constexpr float kMaxWaypointStepJumpHeight = 1.5f;
 constexpr float kJumpPadFinalApproachStopDistance = 0.05f;
+constexpr float kWeaponStopDistanceCapScale = 1.5f;
+constexpr float kWeaponSafeStopDistanceScale = 1.25f;
+constexpr float kSplashRetreatProbeDistance = 1.5f;
+constexpr float kHullDodgeProbeDistance = 2.5f;
+constexpr int kCombatStrafeMinMs = 350;
+constexpr int kCombatStrafeMaxMs = 850;
+constexpr float kCombatStrafeReverseChance = 0.65f;
+constexpr float kCombatStrafeProbeDistance = 1.5f;
+// A cornered verdict outlives the think that found it until the next movement update.
+constexpr int kSplashRetreatBlockedHoldMs = 100;
 constexpr float kLadderClimbVerticalThreshold = 0.12f;
 constexpr int kJumpBlockedEdgeCooldownMs = 9000;
 constexpr int kWallAvoidSoftRepathMs = 100;
@@ -36,7 +50,10 @@ constexpr float kLinkFloorProbeDownDistance = 2.0f;
 constexpr float kLinkFloorLinkTraceYOffset = 0.05f;
 constexpr int kUpwardLinkObstacleCacheMaxEntries = 4096;
 
-std::unordered_map<uint64_t, bool> g_upward_link_obstacle_cache{};
+// How far along an upward link its jump belongs: a share of the way, or one of the two values below.
+std::unordered_map<uint64_t, float> g_upward_link_obstacle_cache{};
+constexpr float kUpwardLinkNoJump = -1.0f;
+constexpr float kUpwardLinkJumpAnywhere = 2.0f;
 int g_upward_link_obstacle_cache_waypoint_total = 0;
 
 uint64_t make_directed_link_key(const int from_waypoint, const int to_waypoint)
@@ -76,7 +93,7 @@ bool trace_floor_below_waypoint_pos(
     return true;
 }
 
-bool compute_upward_link_requires_jump_uncached(
+float compute_upward_link_jump_share_uncached(
     const int from_waypoint,
     const int to_waypoint)
 {
@@ -85,7 +102,12 @@ bool compute_upward_link_requires_jump_uncached(
     if (!waypoints_get_pos(from_waypoint, from_pos)
         || !waypoints_get_pos(to_waypoint, to_pos)
         || to_pos.y <= from_pos.y + kWaypointLinkRadiusEpsilon) {
-        return false;
+        return kUpwardLinkNoJump;
+    }
+    if (bot_nav_link_climbs_ledge(from_waypoint, to_waypoint)) {
+        float ledge_share = kUpwardLinkJumpAnywhere;
+        bot_link_floor_step(from_pos, to_pos, &ledge_share);
+        return ledge_share;
     }
 
     rf::Vector3 from_floor{};
@@ -93,7 +115,7 @@ bool compute_upward_link_requires_jump_uncached(
     if (!trace_floor_below_waypoint_pos(from_pos, from_floor)
         || !trace_floor_below_waypoint_pos(to_pos, to_floor)
         || to_floor.y <= from_floor.y + kWaypointLinkRadiusEpsilon) {
-        return false;
+        return kUpwardLinkNoJump;
     }
 
     rf::Vector3 p0 = from_floor;
@@ -105,17 +127,17 @@ bool compute_upward_link_requires_jump_uncached(
         p0,
         p1,
         kBotMovementTraceFlags,
-        &collision);
+        &collision) ? kUpwardLinkJumpAnywhere : kUpwardLinkNoJump;
 }
 
-bool upward_link_requires_jump_for_obstruction(
+float upward_link_jump_share(
     const int from_waypoint,
     const int to_waypoint)
 {
     if (from_waypoint <= 0
         || to_waypoint <= 0
         || !bot_nav_is_link_traversable_for_route(from_waypoint, to_waypoint)) {
-        return false;
+        return kUpwardLinkNoJump;
     }
 
     const int waypoint_total = waypoints_count();
@@ -139,25 +161,24 @@ bool upward_link_requires_jump_for_obstruction(
         return it->second;
     }
 
-    const bool requires_jump =
-        compute_upward_link_requires_jump_uncached(from_waypoint, to_waypoint);
-    g_upward_link_obstacle_cache.emplace(edge_key, requires_jump);
-    return requires_jump;
+    const float jump_share = compute_upward_link_jump_share_uncached(from_waypoint, to_waypoint);
+    g_upward_link_obstacle_cache.emplace(edge_key, jump_share);
+    return jump_share;
 }
 
 bool get_next_waypoint_link(int& out_from_waypoint, int& out_to_waypoint)
 {
     out_from_waypoint = 0;
     out_to_waypoint = 0;
-    const int next_idx = g_client_bot_state.waypoint_next_index;
-    if (g_client_bot_state.waypoint_path.empty()
+    const int next_idx = bot_state().waypoint_next_index;
+    if (bot_state().waypoint_path.empty()
         || next_idx < 0
-        || next_idx + 1 >= static_cast<int>(g_client_bot_state.waypoint_path.size())) {
+        || next_idx + 1 >= static_cast<int>(bot_state().waypoint_path.size())) {
         return false;
     }
 
-    out_from_waypoint = g_client_bot_state.waypoint_path[next_idx];
-    out_to_waypoint = g_client_bot_state.waypoint_path[next_idx + 1];
+    out_from_waypoint = bot_state().waypoint_path[next_idx];
+    out_to_waypoint = bot_state().waypoint_path[next_idx + 1];
     return out_from_waypoint > 0 && out_to_waypoint > 0;
 }
 
@@ -165,39 +186,40 @@ bool get_active_waypoint_link(int& out_from_waypoint, int& out_to_waypoint)
 {
     out_from_waypoint = 0;
     out_to_waypoint = 0;
-    if (g_client_bot_state.waypoint_path.empty()
-        || g_client_bot_state.waypoint_next_index <= 0
-        || g_client_bot_state.waypoint_next_index
-            >= static_cast<int>(g_client_bot_state.waypoint_path.size())) {
+    if (bot_state().waypoint_path.empty()
+        || bot_state().waypoint_next_index <= 0
+        || bot_state().waypoint_next_index
+            >= static_cast<int>(bot_state().waypoint_path.size())) {
         return false;
     }
 
     out_from_waypoint =
-        g_client_bot_state.waypoint_path[g_client_bot_state.waypoint_next_index - 1];
+        bot_state().waypoint_path[bot_state().waypoint_next_index - 1];
     out_to_waypoint =
-        g_client_bot_state.waypoint_path[g_client_bot_state.waypoint_next_index];
+        bot_state().waypoint_path[bot_state().waypoint_next_index];
     return out_from_waypoint > 0 && out_to_waypoint > 0;
 }
 
 void request_soft_repath_around_waypoint(const int avoid_waypoint)
 {
-    if (g_client_bot_state.drop_link_route_locked) {
+    bot_state().route_repair_path.clear();
+    if (bot_state().drop_link_route_locked) {
         return;
     }
     // Skip recovery for roam/none goals — just clear the route and let normal
     // navigation pick a new path without the recovery anchor system.
-    if (g_client_bot_state.active_goal == BotGoalType::roam
-        || g_client_bot_state.active_goal == BotGoalType::none) {
-        g_client_bot_state.recovery_pending_reroute = false;
-        g_client_bot_state.recovery_avoid_waypoint = 0;
-        g_client_bot_state.recovery_anchor_waypoint = 0;
-        g_client_bot_state.repath_timer.set(kWallAvoidSoftRepathMs);
+    if (bot_state().active_goal == BotGoalType::roam
+        || bot_state().active_goal == BotGoalType::none) {
+        bot_state().recovery_pending_reroute = false;
+        bot_state().recovery_avoid_waypoint = 0;
+        bot_state().recovery_anchor_waypoint = 0;
+        bot_state().repath_timer.set(kWallAvoidSoftRepathMs);
         return;
     }
-    g_client_bot_state.recovery_pending_reroute = true;
-    g_client_bot_state.recovery_avoid_waypoint = avoid_waypoint;
-    g_client_bot_state.recovery_anchor_waypoint = 0;
-    g_client_bot_state.repath_timer.set(kWallAvoidSoftRepathMs);
+    bot_state().recovery_pending_reroute = true;
+    bot_state().recovery_avoid_waypoint = avoid_waypoint;
+    bot_state().recovery_anchor_waypoint = 0;
+    bot_state().repath_timer.set(kWallAvoidSoftRepathMs);
 }
 
 void reroute_around_forward_obstacle()
@@ -227,7 +249,7 @@ void reroute_around_forward_obstacle()
         return;
     }
 
-    request_soft_repath_around_waypoint(g_client_bot_state.waypoint_goal);
+    request_soft_repath_around_waypoint(bot_state().waypoint_goal);
 }
 
 bool compute_link_guidance_direction(
@@ -398,6 +420,12 @@ bool is_forward_probe_over_edge(
     return drop_height > kForwardEdgeUnsafeDropHeight;
 }
 
+bool is_move_probe_shut(const rf::Entity& entity, const rf::Vector3& direction, const float distance)
+{
+    return is_forward_probe_blocked(entity, direction, distance)
+        || is_forward_probe_over_edge(entity, direction, distance);
+}
+
 bool is_eye_level_probe_blocked(
     const rf::Entity& entity,
     const rf::Vector3& direction,
@@ -426,30 +454,30 @@ bool is_eye_level_probe_blocked(
 
 void reset_forward_obstacle_progress_tracking()
 {
-    g_client_bot_state.forward_obstacle_progress_timer.invalidate();
-    g_client_bot_state.forward_obstacle_progress_origin = {};
+    bot_state().forward_obstacle_progress_timer.invalidate();
+    bot_state().forward_obstacle_progress_origin = {};
 }
 
 bool is_forward_obstacle_stuck(const rf::Entity& entity)
 {
-    if (!g_client_bot_state.forward_obstacle_progress_timer.valid()) {
-        g_client_bot_state.forward_obstacle_progress_timer.set(
+    if (!bot_state().forward_obstacle_progress_timer.valid()) {
+        bot_state().forward_obstacle_progress_timer.set(
             kNavigationBlockedProgressWindowMs
         );
-        g_client_bot_state.forward_obstacle_progress_origin = entity.pos;
+        bot_state().forward_obstacle_progress_origin = entity.pos;
         return false;
     }
 
-    if (!g_client_bot_state.forward_obstacle_progress_timer.elapsed()) {
+    if (!bot_state().forward_obstacle_progress_timer.elapsed()) {
         return false;
     }
 
-    rf::Vector3 moved = entity.pos - g_client_bot_state.forward_obstacle_progress_origin;
+    rf::Vector3 moved = entity.pos - bot_state().forward_obstacle_progress_origin;
     moved.y = 0.0f;
-    g_client_bot_state.forward_obstacle_progress_timer.set(
+    bot_state().forward_obstacle_progress_timer.set(
         kNavigationBlockedProgressWindowMs
     );
-    g_client_bot_state.forward_obstacle_progress_origin = entity.pos;
+    bot_state().forward_obstacle_progress_origin = entity.pos;
     return moved.len_sq()
         < kNavigationBlockedProgressDistance * kNavigationBlockedProgressDistance;
 }
@@ -550,7 +578,8 @@ bool should_jump_to_clear_obstructed_upward_link(
     const int from_waypoint,
     const int to_waypoint)
 {
-    if (!upward_link_requires_jump_for_obstruction(from_waypoint, to_waypoint)) {
+    const float jump_share = upward_link_jump_share(from_waypoint, to_waypoint);
+    if (jump_share == kUpwardLinkNoJump) {
         return false;
     }
 
@@ -576,7 +605,14 @@ bool should_jump_to_clear_obstructed_upward_link(
         1.0f
     );
 
-    return progress_t >= 0.10f && progress_t <= 0.72f;
+    if (jump_share == kUpwardLinkJumpAnywhere) {
+        return progress_t >= 0.10f && progress_t <= 0.72f;
+    }
+    // Off the ground too early and the bot lands short of the ledge.
+    constexpr float kLedgeJumpLeadDist = 1.2f;
+    constexpr float kLedgeJumpLateDist = 0.3f;
+    const float dist_to_ledge = (jump_share - progress_t) * std::sqrt(segment_len_sq);
+    return dist_to_ledge <= kLedgeJumpLeadDist && dist_to_ledge >= -kLedgeJumpLateDist;
 }
 
 void update_traversal_crouch_state_for_waypoint_path(
@@ -584,21 +620,21 @@ void update_traversal_crouch_state_for_waypoint_path(
     const rf::Vector3& move_target)
 {
     const bool has_valid_path_target =
-        !g_client_bot_state.waypoint_path.empty()
-        && g_client_bot_state.waypoint_next_index >= 0
-        && g_client_bot_state.waypoint_next_index
-            < static_cast<int>(g_client_bot_state.waypoint_path.size());
+        !bot_state().waypoint_path.empty()
+        && bot_state().waypoint_next_index >= 0
+        && bot_state().waypoint_next_index
+            < static_cast<int>(bot_state().waypoint_path.size());
     if (!has_valid_path_target) {
-        g_client_bot_state.traversal_crouch_active = false;
+        bot_state().traversal_crouch_active = false;
         return;
     }
 
     // waypoint_next_index is the destination of the currently traversed link.
     // If that destination requires crouching, start crouching while traversing in.
     const int target_waypoint =
-        g_client_bot_state.waypoint_path[g_client_bot_state.waypoint_next_index];
+        bot_state().waypoint_path[bot_state().waypoint_next_index];
     if (waypoint_requires_crouch(target_waypoint)) {
-        g_client_bot_state.traversal_crouch_active = true;
+        bot_state().traversal_crouch_active = true;
         return;
     }
 
@@ -609,7 +645,7 @@ void update_traversal_crouch_state_for_waypoint_path(
     const float reach_dist_sq = kWaypointReachRadius * kWaypointReachRadius;
     const float dist_sq_to_target = rf::vec_dist_squared(&local_entity.pos, &move_target);
     if (dist_sq_to_target <= reach_dist_sq) {
-        g_client_bot_state.traversal_crouch_active = false;
+        bot_state().traversal_crouch_active = false;
     }
 }
 
@@ -626,17 +662,17 @@ void apply_corner_centering_steer(
         3.0f
     );
     if (corner_centering_bias <= 0.01f || desired_move_z <= 0.25f) {
-        g_client_bot_state.corner_steer_probe_timer.invalidate();
+        bot_state().corner_steer_probe_timer.invalidate();
         return;
     }
 
-    if (!g_client_bot_state.corner_steer_probe_timer.valid()) {
-        g_client_bot_state.corner_steer_probe_timer.set(kCornerSteerProbeIntervalMs);
+    if (!bot_state().corner_steer_probe_timer.valid()) {
+        bot_state().corner_steer_probe_timer.set(kCornerSteerProbeIntervalMs);
     }
-    if (!g_client_bot_state.corner_steer_probe_timer.elapsed()) {
+    if (!bot_state().corner_steer_probe_timer.elapsed()) {
         return;
     }
-    g_client_bot_state.corner_steer_probe_timer.set(kCornerSteerProbeIntervalMs);
+    bot_state().corner_steer_probe_timer.set(kCornerSteerProbeIntervalMs);
 
     rf::Vector3 probe_forward = forward_from_non_linear_yaw_pitch(
         local_entity.control_data.phb.y,
@@ -754,17 +790,17 @@ void issue_movement_actions(
     const float local_move_z,
     const bool jump)
 {
-    g_client_bot_state.movement_override_active = true;
+    bot_state().movement_override_active = true;
     const float target_x = std::clamp(local_move_x, -1.0f, 1.0f);
     const float target_y = std::clamp(local_move_y, -1.0f, 1.0f);
     const float target_z = std::clamp(local_move_z, -1.0f, 1.0f);
     constexpr float deadzone = 0.05f;
-    g_client_bot_state.move_input_x = (std::fabs(target_x) > deadzone) ? target_x : 0.0f;
-    g_client_bot_state.move_input_y = (std::fabs(target_y) > deadzone) ? target_y : 0.0f;
-    g_client_bot_state.move_input_z = (std::fabs(target_z) > deadzone) ? target_z : 0.0f;
+    bot_state().move_input_x = (std::fabs(target_x) > deadzone) ? target_x : 0.0f;
+    bot_state().move_input_y = (std::fabs(target_y) > deadzone) ? target_y : 0.0f;
+    bot_state().move_input_z = (std::fabs(target_z) > deadzone) ? target_z : 0.0f;
 
     if (jump) {
-        rf::player_execute_action(&player, rf::CC_ACTION_JUMP, true);
+        bot_backend_jump(player);
     }
 }
 }
@@ -799,15 +835,15 @@ void bot_process_movement(
             active_to_subtype);
     const bool active_link_changed =
         has_active_link
-        && (active_from_waypoint != g_client_bot_state.jump_target_link_from_waypoint
-            || active_to_waypoint != g_client_bot_state.jump_target_link_to_waypoint);
+        && (active_from_waypoint != bot_state().jump_target_link_from_waypoint
+            || active_to_waypoint != bot_state().jump_target_link_to_waypoint);
     if (has_active_link && active_link_changed) {
-        g_client_bot_state.jump_target_link_from_waypoint = active_from_waypoint;
-        g_client_bot_state.jump_target_link_to_waypoint = active_to_waypoint;
+        bot_state().jump_target_link_from_waypoint = active_from_waypoint;
+        bot_state().jump_target_link_to_waypoint = active_to_waypoint;
     }
     else if (!has_active_link) {
-        g_client_bot_state.jump_target_link_from_waypoint = 0;
-        g_client_bot_state.jump_target_link_to_waypoint = 0;
+        bot_state().jump_target_link_from_waypoint = 0;
+        bot_state().jump_target_link_to_waypoint = 0;
     }
     const bool active_to_is_jump_pad =
         has_active_to_type
@@ -845,22 +881,24 @@ void bot_process_movement(
     // Lock route when on drop links to prevent rerouting during traversal.
     // Unlock once the bot is in freefall — they've committed to the drop.
     if (active_link_is_drop && !rf::entity_is_falling(const_cast<rf::Entity*>(&local_entity))) {
-        g_client_bot_state.drop_link_route_locked = true;
-        g_client_bot_state.drop_freefall_active = true;
+        bot_state().drop_link_route_locked = true;
+        bot_state().drop_freefall_active = true;
     }
     else if (rf::entity_is_falling(const_cast<rf::Entity*>(&local_entity))) {
-        g_client_bot_state.drop_link_route_locked = false;
+        bot_state().drop_link_route_locked = false;
         // drop_freefall_active stays true — cleared on landing below.
     }
     else {
         // On the ground and not on a drop link — clear the drop freefall flag.
-        g_client_bot_state.drop_freefall_active = false;
+        bot_state().drop_freefall_active = false;
+        // Walking a downhill link never falls, so a lock left from it would keep vetoing reroutes until the next fall.
+        bot_state().drop_link_route_locked = false;
     }
     rf::Vector3 climb_region_probe = local_entity.pos;
     const bool in_climb_region = rf::level_point_in_climb_region(&climb_region_probe) != nullptr;
     const bool in_water = rf::entity_is_swimming(const_cast<rf::Entity*>(&local_entity));
     const bool ladder_traversal_active =
-        g_client_bot_state.has_waypoint_target
+        bot_state().has_waypoint_target
         && has_active_link
         && active_link_involves_ladder
         && (in_climb_region || in_water);
@@ -876,7 +914,7 @@ void bot_process_movement(
     rf::Vector3 desired_world_dir = to_target;
     desired_world_dir.y = 0.0f;
     const float horizontal_dist = desired_world_dir.len();
-    if (g_client_bot_state.has_waypoint_target
+    if (bot_state().has_waypoint_target
         && bot_internal_is_following_waypoint_link(local_entity)) {
         rf::Vector3 link_guidance_dir{};
         if (compute_link_guidance_direction(local_entity, link_guidance_dir)) {
@@ -901,31 +939,32 @@ void bot_process_movement(
     }
     update_traversal_crouch_state_for_waypoint_path(local_entity, move_target);
     const bool collecting_item =
-        bot_goal_is_item_collection(g_client_bot_state.active_goal)
-        || g_client_bot_state.fsm_state == BotFsmState::collect_pickup
-        || g_client_bot_state.fsm_state == BotFsmState::seek_weapon
-        || g_client_bot_state.fsm_state == BotFsmState::replenish_health_armor;
+        bot_goal_is_item_collection(bot_state().active_goal)
+        || bot_state().fsm_state == BotFsmState::collect_pickup
+        || bot_state().fsm_state == BotFsmState::seek_weapon
+        || bot_state().fsm_state == BotFsmState::replenish_health_armor;
     const bool activating_bridge =
-        g_client_bot_state.active_goal == BotGoalType::activate_bridge
-        || g_client_bot_state.fsm_state == BotFsmState::activate_bridge;
+        bot_state().active_goal == BotGoalType::activate_bridge
+        || bot_state().fsm_state == BotFsmState::activate_bridge;
     const bool creating_crater =
-        g_client_bot_state.active_goal == BotGoalType::create_crater
-        || g_client_bot_state.fsm_state == BotFsmState::create_crater;
+        bot_state().active_goal == BotGoalType::create_crater
+        || bot_state().fsm_state == BotFsmState::create_crater;
     const bool shattering_glass =
-        g_client_bot_state.active_goal == BotGoalType::shatter_glass
-        || g_client_bot_state.fsm_state == BotFsmState::shatter_glass;
+        bot_state().active_goal == BotGoalType::shatter_glass
+        || bot_state().fsm_state == BotFsmState::shatter_glass;
     const bool ctf_objective =
-        bot_goal_is_ctf_objective(g_client_bot_state.active_goal)
-        || g_client_bot_state.fsm_state == BotFsmState::ctf_objective;
+        bot_goal_is_ctf_objective(bot_state().active_goal)
+        || bot_state().fsm_state == BotFsmState::ctf_objective;
     const bool control_point_objective =
-        bot_goal_is_control_point_objective(g_client_bot_state.active_goal)
-        || g_client_bot_state.fsm_state == BotFsmState::control_point_objective;
+        bot_goal_is_control_point_objective(bot_state().active_goal)
+        || bot_state().fsm_state == BotFsmState::control_point_objective;
 
     float stop_distance = 2.5f;
+    float weapon_min_safe_distance = 0.0f;
     if (pursuing_enemy_goal && enemy_has_los) {
         const BotPersonality& personality = get_active_bot_personality();
         // LOS maintenance has priority over holding preferred engagement distance.
-        if (g_client_bot_state.has_waypoint_target) {
+        if (bot_state().has_waypoint_target) {
             stop_distance = 1.0f;
         }
         else {
@@ -934,6 +973,15 @@ void bot_process_movement(
                 personality.preferred_engagement_near,
                 skill_factor
             );
+            // Fight from the held weapon's best range, but never inside a splash weapon's own blast.
+            const float weapon_distance =
+                bot_combat_engagement_distance(local_entity, weapon_min_safe_distance);
+            float safe_stop_distance = weapon_min_safe_distance * kWeaponSafeStopDistanceScale;
+            if (weapon_distance > 0.0f) {
+                stop_distance = std::min(weapon_distance, stop_distance * kWeaponStopDistanceCapScale);
+                safe_stop_distance = std::min(safe_stop_distance, weapon_distance);
+            }
+            stop_distance = std::max(stop_distance, safe_stop_distance);
         }
     }
     else if (pursuing_enemy_goal) {
@@ -943,7 +991,7 @@ void bot_process_movement(
         // While following waypoint links, keep normal traversal tolerance to
         // avoid oscillating around exact waypoint centers. Only force near-zero
         // stop distance on the final direct approach to the pickup itself.
-        stop_distance = g_client_bot_state.has_waypoint_target ? 0.85f : 0.05f;
+        stop_distance = bot_state().has_waypoint_target ? 0.85f : 0.05f;
     }
     else if (activating_bridge) {
         // Bridge activation requires the entity origin to enter trigger volume.
@@ -954,17 +1002,17 @@ void bot_process_movement(
         stop_distance = 0.35f;
     }
     else if (ctf_objective) {
-        stop_distance = g_client_bot_state.has_waypoint_target ? 0.85f : 0.05f;
+        stop_distance = bot_state().has_waypoint_target ? 0.85f : 0.05f;
     }
     else if (control_point_objective) {
         // CP objective traversal should keep momentum across waypoint links and
         // run through the direct objective center once close.
-        stop_distance = g_client_bot_state.has_waypoint_target ? 0.85f : 0.10f;
+        stop_distance = bot_state().has_waypoint_target ? 0.85f : 0.10f;
     }
-    else if (g_client_bot_state.active_goal == BotGoalType::roam
-        || g_client_bot_state.active_goal == BotGoalType::none) {
+    else if (bot_state().active_goal == BotGoalType::roam
+        || bot_state().active_goal == BotGoalType::none) {
         // Roam should always keep moving through waypoints, never stop near them.
-        stop_distance = g_client_bot_state.has_waypoint_target ? 0.65f : 0.10f;
+        stop_distance = bot_state().has_waypoint_target ? 0.65f : 0.10f;
     }
     if (active_to_is_jump_pad) {
         stop_distance = kJumpPadFinalApproachStopDistance;
@@ -1002,146 +1050,183 @@ void bot_process_movement(
         desired_move_z = std::clamp(desired_world_dir.dot_prod(view_forward), -1.0f, 1.0f);
         desired_move_x = std::clamp(desired_world_dir.dot_prod(view_right), -1.0f, 1.0f);
     }
-    else if (pursuing_enemy_goal && enemy_has_los && horizontal_dist < stop_distance * 0.45f) {
+    else if (pursuing_enemy_goal
+        && enemy_has_los
+        && (horizontal_dist < stop_distance * 0.45f || horizontal_dist < weapon_min_safe_distance)) {
         desired_move_z = -0.45f;
     }
-
-    const BotPersonality& personality = get_active_bot_personality();
-    const bool allow_navigation_strafe =
-        !pursuing_enemy_goal
-        && !activating_bridge
-        && !creating_crater
-        && !shattering_glass
-        && !ladder_traversal_active
-        && horizontal_dist > stop_distance
-        && desired_move_z > 0.15f;
-    if (allow_navigation_strafe) {
-        // 1.0 means neutral split between direct forward and strafe-oriented navigation.
-        const float nav_strafe_ratio = std::clamp(
-            std::clamp(personality.navigation_strafe_bias, 0.0f, 2.0f) * 0.5f,
-            0.0f,
-            1.0f
-        );
-        if (nav_strafe_ratio > 0.001f) {
-            float strafe_sign = 0.0f;
-            if (std::fabs(desired_move_x) > 0.08f) {
-                strafe_sign = desired_move_x > 0.0f ? 1.0f : -1.0f;
+    const rf::Entity* const pursued_enemy = pursuing_enemy_goal && enemy_has_los
+        ? rf::entity_from_handle(bot_state().pursuit_target_handle)
+        : nullptr;
+    const float splash_keep_distance = pursued_enemy ? bot_combat_splash_keep_distance(local_entity) : 0.0f;
+    bot_state().splash_retreat_blocked_timer.invalidate();
+    if (splash_keep_distance > 0.0f) {
+        // Stay outside a splash weapon's own blast; with no clear escape the bot is cornered (splash_trade_allowed).
+        rf::Vector3 away = local_entity.pos - pursued_enemy->pos;
+        away.y = 0.0f;
+        const float enemy_dist = away.len();
+        const rf::Vector3 view_forward = forward_from_non_linear_yaw_pitch(local_entity.control_data.phb.y, 0.0f);
+        if (enemy_dist < splash_keep_distance) {
+            away.normalize_safe();
+            const rf::Vector3 side{away.z, 0.0f, -away.x};
+            const std::array<rf::Vector3, 5> escapes{away, away + side, away - side, side, -side};
+            const rf::Vector3* escape = nullptr;
+            for (const rf::Vector3& dir : escapes) {
+                if (!is_move_probe_shut(local_entity, dir, kSplashRetreatProbeDistance)) {
+                    escape = &dir;
+                    break;
+                }
+            }
+            desired_move_x = 0.0f;
+            desired_move_z = 0.0f;
+            if (escape) {
+                rf::Vector3 dir = *escape;
+                dir.normalize_safe();
+                const rf::Vector3 view_right{view_forward.z, 0.0f, -view_forward.x};
+                desired_move_z = std::clamp(dir.dot_prod(view_forward), -1.0f, 1.0f);
+                desired_move_x = std::clamp(dir.dot_prod(view_right), -1.0f, 1.0f);
             }
             else {
-                const int sign_basis = (has_active_link && active_to_waypoint > 0)
-                    ? active_to_waypoint
-                    : std::max(g_client_bot_state.waypoint_goal, 1);
-                strafe_sign = (sign_basis & 1) == 0 ? 1.0f : -1.0f;
+                bot_state().splash_retreat_blocked_timer.set(kSplashRetreatBlockedHoldMs);
             }
-
-            const float proximity_scale = std::clamp(
-                (horizontal_dist - std::max(stop_distance, 0.2f)) / 3.0f,
-                0.0f,
-                1.0f
-            );
-            const float forward_mag = std::clamp(desired_move_z, 0.0f, 1.0f);
-            const float target_strafe_mag = std::clamp(
-                forward_mag
-                    * std::lerp(0.10f, 0.80f, nav_strafe_ratio)
-                    * proximity_scale,
-                0.0f,
-                0.95f
-            );
-            const float blend = std::clamp(0.25f + nav_strafe_ratio * 0.45f, 0.0f, 0.90f);
-            desired_move_x = std::clamp(
-                std::lerp(desired_move_x, strafe_sign * target_strafe_mag, blend),
-                -1.0f,
-                1.0f
-            );
-            desired_move_z = std::clamp(
-                std::lerp(
-                    desired_move_z,
-                    std::max(0.22f, forward_mag * std::lerp(1.0f, 0.60f, nav_strafe_ratio)),
-                    blend * 0.65f
-                ),
-                -1.0f,
-                1.0f
-            );
+        }
+        else if (enemy_dist < splash_keep_distance * kWeaponSafeStopDistanceScale) {
+            const rf::Vector3 view_right{view_forward.z, 0.0f, -view_forward.x};
+            const rf::Vector3 move_world = view_forward * desired_move_z + view_right * desired_move_x;
+            const float toward = -move_world.dot_prod(away) / std::max(enemy_dist, 0.01f);
+            if (toward > 0.0f) {
+                away.normalize_safe();
+                const rf::Vector3 kept = move_world + away * toward;
+                desired_move_z = std::clamp(kept.dot_prod(view_forward), -1.0f, 1.0f);
+                desired_move_x = std::clamp(kept.dot_prod(view_right), -1.0f, 1.0f);
+            }
         }
     }
 
+    const BotPersonality& personality = get_active_bot_personality();
+
     const bool respawn_gearup_active =
-        g_client_bot_state.respawn_gearup_timer.valid()
-        && !g_client_bot_state.respawn_gearup_timer.elapsed();
+        bot_state().respawn_gearup_timer.valid()
+        && !bot_state().respawn_gearup_timer.elapsed();
 
     bool maneuver_jump = false;
     bool combat_crouch_hold = false;
-    if (pursuing_enemy_goal && enemy_has_los && !respawn_gearup_active) {
+    if (pursuing_enemy_goal && enemy_has_los) {
         const BotSkillProfile& skill_profile = get_active_bot_skill_profile();
+        std::uniform_real_distribution<float> roll_dist(0.0f, 1.0f);
 
-        if (!g_client_bot_state.combat_maneuver_timer.valid()
-            || g_client_bot_state.combat_maneuver_timer.elapsed()) {
+        if (!bot_state().combat_strafe_timer.valid()
+            || bot_state().combat_strafe_timer.elapsed()) {
             const float dodge_chance = std::clamp(
                 skill_profile.dodge_likelihood
-                    * std::clamp(personality.dodge_combat_bias, 0.25f, 2.5f),
+                    * std::clamp(personality.dodge_combat_bias, 0.0f, 2.5f),
                 0.0f,
                 1.0f
             );
+            if (roll_dist(g_rng) <= dodge_chance) {
+                const float strafe_strength = std::lerp(0.35f, 0.9f, skill_factor);
+                const float previous = bot_state().combat_maneuver_strafe;
+                const bool left = previous != 0.0f
+                    ? (roll_dist(g_rng) < kCombatStrafeReverseChance) == (previous > 0.0f)
+                    : roll_dist(g_rng) < 0.5f;
+                bot_state().combat_maneuver_strafe = left ? -strafe_strength : strafe_strength;
+            }
+            else {
+                bot_state().combat_maneuver_strafe = 0.0f;
+            }
+            std::uniform_int_distribution<int> period_dist(kCombatStrafeMinMs, kCombatStrafeMaxMs);
+            bot_state().combat_strafe_timer.set(period_dist(g_rng));
+        }
+
+        if (bot_state().combat_maneuver_strafe != 0.0f) {
+            const rf::Vector3 view_forward =
+                forward_from_non_linear_yaw_pitch(local_entity.control_data.phb.y, 0.0f);
+            const float side_sign = bot_state().combat_maneuver_strafe > 0.0f ? 1.0f : -1.0f;
+            const rf::Vector3 side = rf::Vector3{view_forward.z, 0.0f, -view_forward.x} * side_sign;
+            if (is_move_probe_shut(local_entity, side, kCombatStrafeProbeDistance)) {
+                bot_state().combat_maneuver_strafe =
+                    is_move_probe_shut(local_entity, -side, kCombatStrafeProbeDistance)
+                        ? 0.0f
+                        : -bot_state().combat_maneuver_strafe;
+            }
+        }
+
+        if (!respawn_gearup_active
+            && (!bot_state().combat_maneuver_timer.valid()
+                || bot_state().combat_maneuver_timer.elapsed())) {
             const float crouch_chance = std::clamp(
                 skill_profile.crouch_likelihood
-                    * std::clamp(personality.crouch_combat_bias, 0.25f, 2.5f),
+                    * std::clamp(personality.crouch_combat_bias, 0.0f, 2.5f),
                 0.0f,
                 1.0f
             );
             const float jump_chance = std::clamp(
                 skill_profile.jump_likelihood
-                    * std::clamp(personality.jump_combat_bias, 0.25f, 2.5f),
+                    * std::clamp(personality.jump_combat_bias, 0.0f, 2.5f),
                 0.0f,
                 1.0f
             );
-            std::uniform_real_distribution<float> roll_dist(0.0f, 1.0f);
-
-            if (roll_dist(g_rng) <= dodge_chance) {
-                std::uniform_int_distribution<int> strafe_sign(0, 1);
-                const float strafe_strength = std::lerp(0.35f, 0.9f, skill_factor);
-                g_client_bot_state.combat_maneuver_strafe =
-                    strafe_sign(g_rng) == 0 ? -strafe_strength : strafe_strength;
-            }
-            else {
-                g_client_bot_state.combat_maneuver_strafe = 0.0f;
-            }
 
             if (roll_dist(g_rng) <= crouch_chance) {
                 const int crouch_ms = static_cast<int>(std::lround(
                     std::lerp(220.0f, 520.0f, std::clamp(crouch_chance, 0.0f, 1.0f))
                 ));
-                g_client_bot_state.combat_crouch_timer.set(crouch_ms);
+                bot_state().combat_crouch_timer.set(crouch_ms);
             }
 
             if (roll_dist(g_rng) <= jump_chance
-                && (!g_client_bot_state.jump_variation_timer.valid()
-                    || g_client_bot_state.jump_variation_timer.elapsed())
-                && (!g_client_bot_state.jump_timer.valid()
-                    || g_client_bot_state.jump_timer.elapsed())) {
+                && (!bot_state().jump_variation_timer.valid()
+                    || bot_state().jump_variation_timer.elapsed())
+                && (!bot_state().jump_timer.valid()
+                    || bot_state().jump_timer.elapsed())) {
                 maneuver_jump = true;
-                g_client_bot_state.jump_variation_timer.set(650);
-                g_client_bot_state.jump_timer.set(550);
+                bot_state().jump_variation_timer.set(650);
+                bot_state().jump_timer.set(550);
             }
 
             const int maneuver_ms = static_cast<int>(std::lround(
                 std::lerp(460.0f, 180.0f, std::clamp(skill_factor, 0.0f, 1.0f))
             ));
-            g_client_bot_state.combat_maneuver_timer.set(maneuver_ms);
+            bot_state().combat_maneuver_timer.set(maneuver_ms);
         }
 
         desired_move_x = std::clamp(
-            desired_move_x + g_client_bot_state.combat_maneuver_strafe,
+            desired_move_x + bot_state().combat_maneuver_strafe,
             -1.0f,
             1.0f
         );
         combat_crouch_hold =
-            g_client_bot_state.combat_crouch_timer.valid()
-            && !g_client_bot_state.combat_crouch_timer.elapsed();
+            bot_state().combat_crouch_timer.valid()
+            && !bot_state().combat_crouch_timer.elapsed();
     }
     else {
-        g_client_bot_state.combat_maneuver_strafe = 0.0f;
-        g_client_bot_state.combat_maneuver_timer.invalidate();
-        g_client_bot_state.combat_crouch_timer.invalidate();
+        bot_state().combat_maneuver_strafe = 0.0f;
+        bot_state().combat_maneuver_timer.invalidate();
+        bot_state().combat_strafe_timer.invalidate();
+        bot_state().combat_crouch_timer.invalidate();
+    }
+
+    if (bot_state().hull_dodge_timer.valid() && !bot_state().hull_dodge_timer.elapsed()
+        && !bot_state().hull_dodge_checked) {
+        // An enemy hull bearing down: out of its path whatever the route wants, to the other side if this one is shut,
+        // and not at all when both are (a ledge or a bridge): a step off is worse than the hit.
+        bot_state().hull_dodge_checked = true;
+        rf::Vector3& dodge = bot_state().hull_dodge_dir;
+        if (is_move_probe_shut(local_entity, dodge, kHullDodgeProbeDistance)) {
+            if (is_move_probe_shut(local_entity, -dodge, kHullDodgeProbeDistance)) {
+                bot_state().hull_dodge_timer.invalidate();
+            }
+            else {
+                dodge = -dodge;
+            }
+        }
+    }
+    if (bot_state().hull_dodge_timer.valid() && !bot_state().hull_dodge_timer.elapsed()) {
+        const rf::Vector3& dodge = bot_state().hull_dodge_dir;
+        const rf::Vector3 view_forward = forward_from_non_linear_yaw_pitch(local_entity.control_data.phb.y, 0.0f);
+        const rf::Vector3 view_right{view_forward.z, 0.0f, -view_forward.x};
+        desired_move_z = std::clamp(dodge.dot_prod(view_forward), -1.0f, 1.0f);
+        desired_move_x = std::clamp(dodge.dot_prod(view_right), -1.0f, 1.0f);
     }
 
     apply_corner_centering_steer(
@@ -1154,7 +1239,7 @@ void bot_process_movement(
 
     const bool suppress_forward_obstacle_checks_for_upward_link =
         active_link_route_traversable
-        && g_client_bot_state.has_waypoint_target
+        && bot_state().has_waypoint_target
         && to_target.y > 0.25f
         && horizontal_dist > stop_distance;
     const bool suppress_forward_obstacle_checks =
@@ -1164,14 +1249,14 @@ void bot_process_movement(
         active_link_is_gap || active_link_is_drop || active_link_from_unsafe_terrain;
 
     if (desired_move_z > 0.25f && !suppress_forward_obstacle_checks) {
-        if (!g_client_bot_state.forward_obstacle_guard_timer.valid()) {
-            g_client_bot_state.forward_obstacle_guard_timer.set(
+        if (!bot_state().forward_obstacle_guard_timer.valid()) {
+            bot_state().forward_obstacle_guard_timer.set(
                 kForwardObstacleGuardIntervalMs
             );
         }
 
-        if (g_client_bot_state.forward_obstacle_guard_timer.elapsed()) {
-            g_client_bot_state.forward_obstacle_guard_timer.set(
+        if (bot_state().forward_obstacle_guard_timer.elapsed()) {
+            bot_state().forward_obstacle_guard_timer.set(
                 kForwardObstacleGuardIntervalMs
             );
             rf::Vector3 probe_forward = desired_world_dir;
@@ -1196,7 +1281,7 @@ void bot_process_movement(
                     local_entity,
                     probe_forward,
                     kForwardObstacleProbeDistance);
-            g_client_bot_state.obstacle_crouch_active = eye_blocked;
+            bot_state().obstacle_crouch_active = eye_blocked;
             const bool can_sample_edge_drop = !suppress_forward_edge_checks;
             const bool forward_over_edge =
                 !forward_blocked
@@ -1248,23 +1333,23 @@ void bot_process_movement(
                             desired_move_x = std::clamp(desired_move_x - steer_strength, -1.0f, 1.0f);
                         }
                         desired_move_z = std::max(desired_move_z, 0.35f);
-                        g_client_bot_state.forward_obstacle_blocked_samples = 0;
+                        bot_state().forward_obstacle_blocked_samples = 0;
                         reset_forward_obstacle_progress_tracking();
                     }
                     else {
-                        ++g_client_bot_state.forward_obstacle_blocked_samples;
+                        ++bot_state().forward_obstacle_blocked_samples;
                         const bool stuck_for_reroute = is_forward_obstacle_stuck(local_entity);
                         const bool reroute_ready =
-                            !g_client_bot_state.forward_obstacle_reroute_timer.valid()
-                            || g_client_bot_state.forward_obstacle_reroute_timer.elapsed();
+                            !bot_state().forward_obstacle_reroute_timer.valid()
+                            || bot_state().forward_obstacle_reroute_timer.elapsed();
                         if (stuck_for_reroute
-                            && g_client_bot_state.forward_obstacle_blocked_samples >= kForwardObstacleRerouteSamples
+                            && bot_state().forward_obstacle_blocked_samples >= kForwardObstacleRerouteSamples
                             && reroute_ready) {
                             reroute_around_forward_obstacle();
-                            g_client_bot_state.forward_obstacle_reroute_timer.set(
+                            bot_state().forward_obstacle_reroute_timer.set(
                                 kForwardObstacleRerouteCooldownMs
                             );
-                            g_client_bot_state.forward_obstacle_blocked_samples = 0;
+                            bot_state().forward_obstacle_blocked_samples = 0;
                             reset_forward_obstacle_progress_tracking();
                         }
 
@@ -1278,7 +1363,7 @@ void bot_process_movement(
                         }
                         else {
                             side_sign =
-                                (g_client_bot_state.forward_obstacle_blocked_samples % 2 == 0)
+                                (bot_state().forward_obstacle_blocked_samples % 2 == 0)
                                     ? 1.0f
                                     : -1.0f;
                         }
@@ -1299,24 +1384,24 @@ void bot_process_movement(
                     }
                 }
                 else {
-                    ++g_client_bot_state.forward_obstacle_blocked_samples;
+                    ++bot_state().forward_obstacle_blocked_samples;
                     const bool stuck_for_reroute = is_forward_obstacle_stuck(local_entity);
                     const bool reroute_ready =
-                        !g_client_bot_state.forward_obstacle_reroute_timer.valid()
-                        || g_client_bot_state.forward_obstacle_reroute_timer.elapsed();
+                        !bot_state().forward_obstacle_reroute_timer.valid()
+                        || bot_state().forward_obstacle_reroute_timer.elapsed();
                     if (stuck_for_reroute
-                        && g_client_bot_state.forward_obstacle_blocked_samples >= kForwardObstacleRerouteSamples
+                        && bot_state().forward_obstacle_blocked_samples >= kForwardObstacleRerouteSamples
                         && reroute_ready) {
                         reroute_around_forward_obstacle();
-                        g_client_bot_state.forward_obstacle_reroute_timer.set(
+                        bot_state().forward_obstacle_reroute_timer.set(
                             kForwardObstacleRerouteCooldownMs
                         );
-                        g_client_bot_state.forward_obstacle_blocked_samples = 0;
+                        bot_state().forward_obstacle_blocked_samples = 0;
                         reset_forward_obstacle_progress_tracking();
                     }
 
                     const float side_sign =
-                        (g_client_bot_state.forward_obstacle_blocked_samples % 2 == 0)
+                        (bot_state().forward_obstacle_blocked_samples % 2 == 0)
                             ? 1.0f
                             : -1.0f;
                     desired_move_x = std::clamp(
@@ -1377,23 +1462,23 @@ void bot_process_movement(
                                 desired_move_x = std::clamp(desired_move_x + steer_strength, -1.0f, 1.0f);
                             }
                             desired_move_z = std::max(desired_move_z, 0.35f);
-                            g_client_bot_state.forward_obstacle_blocked_samples = 0;
+                            bot_state().forward_obstacle_blocked_samples = 0;
                             reset_forward_obstacle_progress_tracking();
                         }
                         else {
-                            ++g_client_bot_state.forward_obstacle_blocked_samples;
+                            ++bot_state().forward_obstacle_blocked_samples;
                             const bool stuck_for_reroute = is_forward_obstacle_stuck(local_entity);
                             const bool reroute_ready =
-                                !g_client_bot_state.forward_obstacle_reroute_timer.valid()
-                                || g_client_bot_state.forward_obstacle_reroute_timer.elapsed();
+                                !bot_state().forward_obstacle_reroute_timer.valid()
+                                || bot_state().forward_obstacle_reroute_timer.elapsed();
                             if (stuck_for_reroute
-                                && g_client_bot_state.forward_obstacle_blocked_samples >= kForwardObstacleRerouteSamples
+                                && bot_state().forward_obstacle_blocked_samples >= kForwardObstacleRerouteSamples
                                 && reroute_ready) {
                                 reroute_around_forward_obstacle();
-                                g_client_bot_state.forward_obstacle_reroute_timer.set(
+                                bot_state().forward_obstacle_reroute_timer.set(
                                     kForwardObstacleRerouteCooldownMs
                                 );
-                                g_client_bot_state.forward_obstacle_blocked_samples = 0;
+                                bot_state().forward_obstacle_blocked_samples = 0;
                                 reset_forward_obstacle_progress_tracking();
                             }
                         }
@@ -1401,28 +1486,28 @@ void bot_process_movement(
                 }
             }
             else {
-                g_client_bot_state.forward_obstacle_blocked_samples = 0;
+                bot_state().forward_obstacle_blocked_samples = 0;
                 reset_forward_obstacle_progress_tracking();
             }
         }
     }
     else {
-        g_client_bot_state.forward_obstacle_guard_timer.invalidate();
-        g_client_bot_state.forward_obstacle_blocked_samples = 0;
-        g_client_bot_state.obstacle_crouch_active = false;
+        bot_state().forward_obstacle_guard_timer.invalidate();
+        bot_state().forward_obstacle_blocked_samples = 0;
+        bot_state().obstacle_crouch_active = false;
         reset_forward_obstacle_progress_tracking();
     }
 
     const bool should_hold_crouch =
         !respawn_gearup_active
         && (combat_crouch_hold
-            || g_client_bot_state.traversal_crouch_active
-            || g_client_bot_state.obstacle_crouch_active);
+            || bot_state().traversal_crouch_active
+            || bot_state().obstacle_crouch_active);
     const bool currently_crouched = rf::entity_is_crouching(const_cast<rf::Entity*>(&local_entity));
-    g_client_bot_state.traversal_crouch_toggled_on = currently_crouched;
+    bot_state().traversal_crouch_toggled_on = currently_crouched;
     if (currently_crouched != should_hold_crouch) {
-        rf::player_execute_action(&local_player, rf::CC_ACTION_CROUCH, true);
-        g_client_bot_state.traversal_crouch_toggled_on = should_hold_crouch;
+        bot_backend_crouch(local_player);
+        bot_state().traversal_crouch_toggled_on = should_hold_crouch;
     }
 
     bool should_jump = maneuver_jump;
@@ -1434,20 +1519,20 @@ void bot_process_movement(
             active_to_waypoint,
             WaypointTargetType::jump)) {
         should_jump = true;
-        g_client_bot_state.jump_timer.set(650);
+        bot_state().jump_timer.set(650);
     }
 
     const bool target_jump_height_allowed =
-        !g_client_bot_state.has_waypoint_target
+        !bot_state().has_waypoint_target
         || to_target.y <= kMaxWaypointStepJumpHeight;
     const bool near_vertical_waypoint_target =
-        g_client_bot_state.has_waypoint_target
+        bot_state().has_waypoint_target
         && horizontal_dist <= std::max(stop_distance, 0.35f)
         && to_target.y > 0.0f;
     const bool jump_blocked_by_height =
         (desired_move_z > 0.25f || near_vertical_waypoint_target)
         && to_target.y > kMaxWaypointStepJumpHeight
-        && g_client_bot_state.has_waypoint_target;
+        && bot_state().has_waypoint_target;
     if (jump_blocked_by_height && !active_link_route_traversable) {
         int from_waypoint = 0;
         int to_waypoint = 0;
@@ -1475,7 +1560,7 @@ void bot_process_movement(
             );
         }
         else if (!jump_check_has_active_link) {
-            bot_internal_start_recovery_anchor_reroute(local_entity, g_client_bot_state.waypoint_goal);
+            bot_internal_start_recovery_anchor_reroute(local_entity, bot_state().waypoint_goal);
         }
 
         desired_move_z = std::min(desired_move_z, 0.0f);
@@ -1485,10 +1570,10 @@ void bot_process_movement(
     if ((desired_move_z > 0.25f || near_vertical_waypoint_target)
         && to_target.y > 1.25f
         && target_jump_height_allowed
-        && (!g_client_bot_state.jump_timer.valid()
-            || g_client_bot_state.jump_timer.elapsed())) {
+        && (!bot_state().jump_timer.valid()
+            || bot_state().jump_timer.elapsed())) {
         should_jump = true;
-        g_client_bot_state.jump_timer.set(650);
+        bot_state().jump_timer.set(650);
     }
 
     if (!should_jump
@@ -1497,10 +1582,10 @@ void bot_process_movement(
             local_entity,
             active_from_waypoint,
             active_to_waypoint)
-        && (!g_client_bot_state.jump_timer.valid()
-            || g_client_bot_state.jump_timer.elapsed())) {
+        && (!bot_state().jump_timer.valid()
+            || bot_state().jump_timer.elapsed())) {
         should_jump = true;
-        g_client_bot_state.jump_timer.set(650);
+        bot_state().jump_timer.set(650);
     }
 
     if (!should_jump
@@ -1509,10 +1594,10 @@ void bot_process_movement(
             local_entity,
             active_from_waypoint,
             active_to_waypoint)
-        && (!g_client_bot_state.jump_timer.valid()
-            || g_client_bot_state.jump_timer.elapsed())) {
+        && (!bot_state().jump_timer.valid()
+            || bot_state().jump_timer.elapsed())) {
         should_jump = true;
-        g_client_bot_state.jump_timer.set(650);
+        bot_state().jump_timer.set(650);
     }
 
     const bool is_falling = rf::entity_is_falling(const_cast<rf::Entity*>(&local_entity));
@@ -1532,8 +1617,8 @@ void bot_process_movement(
     if (active_from_is_jump_pad && has_active_link) {
         rf::Vector3 to_pos{};
         if (waypoints_get_pos(active_to_waypoint, to_pos)) {
-            g_client_bot_state.jump_pad_landing_pos = to_pos;
-            g_client_bot_state.jump_pad_landing_pos_valid = true;
+            bot_state().jump_pad_landing_pos = to_pos;
+            bot_state().jump_pad_landing_pos_valid = true;
         }
     }
     else if (active_to_is_jump_pad && has_next_link) {
@@ -1541,22 +1626,22 @@ void bot_process_movement(
         // landing spot from the next link (jump_pad -> landing).
         rf::Vector3 to_pos{};
         if (waypoints_get_pos(next_to_waypoint, to_pos)) {
-            g_client_bot_state.jump_pad_landing_pos = to_pos;
-            g_client_bot_state.jump_pad_landing_pos_valid = true;
+            bot_state().jump_pad_landing_pos = to_pos;
+            bot_state().jump_pad_landing_pos_valid = true;
         }
     }
 
     // Activate landing steer once the bot is airborne and we have a stored landing pos.
     constexpr int kJumpPadSteerDelayMs = 100;
     if (is_falling
-        && g_client_bot_state.jump_pad_landing_pos_valid
-        && !g_client_bot_state.jump_pad_landing_steer_active
-        && !g_client_bot_state.jump_pad_steer_delay_timer.valid()) {
+        && bot_state().jump_pad_landing_pos_valid
+        && !bot_state().jump_pad_landing_steer_active
+        && !bot_state().jump_pad_steer_delay_timer.valid()) {
         // Check if the landing waypoint is behind the bot's current movement
         // direction. If so, skip the delay and steer immediately — the bot needs
         // to reverse its momentum as early as possible.
         bool needs_immediate_steer = false;
-        rf::Vector3 to_landing = g_client_bot_state.jump_pad_landing_pos - local_entity.pos;
+        rf::Vector3 to_landing = bot_state().jump_pad_landing_pos - local_entity.pos;
         to_landing.y = 0.0f;
         rf::Vector3 horiz_vel = local_entity.p_data.vel;
         horiz_vel.y = 0.0f;
@@ -1566,35 +1651,35 @@ void bot_process_movement(
             needs_immediate_steer = to_landing.dot_prod(horiz_vel) < 0.0f;
         }
         if (needs_immediate_steer) {
-            g_client_bot_state.jump_pad_landing_steer_active = true;
+            bot_state().jump_pad_landing_steer_active = true;
         }
         else {
-            g_client_bot_state.jump_pad_steer_delay_timer.set(kJumpPadSteerDelayMs);
+            bot_state().jump_pad_steer_delay_timer.set(kJumpPadSteerDelayMs);
         }
     }
-    if (g_client_bot_state.jump_pad_steer_delay_timer.valid()
-        && g_client_bot_state.jump_pad_steer_delay_timer.elapsed()) {
-        g_client_bot_state.jump_pad_landing_steer_active = true;
-        g_client_bot_state.jump_pad_steer_delay_timer.invalidate();
+    if (bot_state().jump_pad_steer_delay_timer.valid()
+        && bot_state().jump_pad_steer_delay_timer.elapsed()) {
+        bot_state().jump_pad_landing_steer_active = true;
+        bot_state().jump_pad_steer_delay_timer.invalidate();
     }
     // Clear on landing.
     if (!is_falling) {
-        g_client_bot_state.jump_pad_landing_steer_active = false;
-        g_client_bot_state.jump_pad_steer_delay_timer.invalidate();
-        g_client_bot_state.jump_pad_landing_pos_valid = false;
+        bot_state().jump_pad_landing_steer_active = false;
+        bot_state().jump_pad_steer_delay_timer.invalidate();
+        bot_state().jump_pad_landing_pos_valid = false;
     }
 
     // Suppress aim-at-waypoint only during freefall from drop links,
     // not during jump pad flights, ladder climbs, normal jumps, etc.
-    g_client_bot_state.freefall_suppress_aim = is_falling && g_client_bot_state.drop_freefall_active;
+    bot_state().freefall_suppress_aim = is_falling && bot_state().drop_freefall_active;
 
     if (is_falling) {
         float air_move_x = desired_move_x;
         float air_move_z = desired_move_z;
 
-        if (g_client_bot_state.jump_pad_landing_steer_active) {
+        if (bot_state().jump_pad_landing_steer_active) {
             // Aggressively steer toward the stored landing waypoint position.
-            rf::Vector3 steer_dir = g_client_bot_state.jump_pad_landing_pos - local_entity.pos;
+            rf::Vector3 steer_dir = bot_state().jump_pad_landing_pos - local_entity.pos;
             steer_dir.y = 0.0f;
             if (steer_dir.len_sq() > 0.001f) {
                 steer_dir.normalize_safe();
@@ -1605,16 +1690,16 @@ void bot_process_movement(
                 air_move_x = std::clamp(steer_dir.dot_prod(view_right), -1.0f, 1.0f);
             }
         }
-        else if (g_client_bot_state.drop_freefall_active) {
+        else if (bot_state().drop_freefall_active) {
             // During drop freefall, steer toward the furthest visible waypoint
             // along the current route. This lets the bot cover as much horizontal
             // distance as possible while falling so it lands ahead on its path.
             rf::Vector3 best_steer_target{};
             bool has_air_steer = false;
-            const auto& path = g_client_bot_state.waypoint_path;
+            const auto& path = bot_state().waypoint_path;
             const int path_size = static_cast<int>(path.size());
             // Scan forward from the current target along the route.
-            for (int idx = g_client_bot_state.waypoint_next_index; idx < path_size; ++idx) {
+            for (int idx = bot_state().waypoint_next_index; idx < path_size; ++idx) {
                 rf::Vector3 wp_pos{};
                 if (!waypoints_get_pos(path[idx], wp_pos)) {
                     break;

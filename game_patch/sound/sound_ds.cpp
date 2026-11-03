@@ -168,6 +168,22 @@ static CodeInjection snd_ds_play_get_free_channel_injection{
     },
 };
 
+// Music streams through a 2 s looping buffer refilled every 250 ms (0x0054EE30). When a looping stream reaches the end
+// of its file mid-refill, stock rewinds but pads the rest of that refill with silence and counts it toward the 2 s of
+// silence that ends a stream, so a looping track gaps at every wrap and stops after a few loops. Leave the rest
+// unwritten instead: the next refill continues from the start of the file.
+static CodeInjection snd_ds_stream_loop_injection{
+    0x0054EEA4,
+    [](auto& regs) {
+        const int index = static_cast<int>(regs.ebx);
+        auto& stream = rf::ds_streams[index];
+        if ((stream.flags & rf::DSSF_LOOPING) && rf::snd_ds_stream_rewind(index) == 0) {
+            stream.flags &= ~rf::DSSF_END_OF_FILE;
+            regs.eip = 0x0054EEEC;
+        }
+    },
+};
+
 CodeInjection snd_ds_init_device_leave_injection{
     0x005215E0,
     []() {
@@ -219,7 +235,7 @@ static FunHook<int(int)> snd_ds_get_channel_hook{
             return -1;
         }
         int index = static_cast<rf::ubyte>(sig);
-        if (rf::ds_channels[index].sig != sig) {
+        if (index >= static_cast<int>(std::size(rf::ds_channels)) || rf::ds_channels[index].sig != sig) {
             return -1;
         }
         return index;
@@ -427,6 +443,9 @@ void snd_ds_apply_patch()
 
     // Do not use DSPROPSETID_VoiceManager because it is not implemented by dsoal
     write_mem<i8>(0x00521597 + 4, 0);
+
+    // Loop streamed music without gaps or stopping
+    snd_ds_stream_loop_injection.install();
 
     // Log information about used sound API
     snd_ds_init_device_leave_injection.install();

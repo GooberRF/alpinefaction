@@ -6,6 +6,7 @@
 #include <xlog/xlog.h>
 #include <wxx_dialog.h>
 #include <wxx_commondlg.h>
+#include <algorithm>
 #include <chrono>
 
 #define WM_FFLINK_COMPLETE_OPTIONS (WM_USER + 51)
@@ -13,9 +14,10 @@
 
 OptionsDlg::OptionsDlg() :
     CDialog(IDD_OPTIONS),
-    m_display_dlg(m_conf),
+    m_display_dlg(m_conf, m_advanced_dlg),
     m_misc_dlg(m_conf),
-    m_multiplayer_dlg(m_conf)
+    m_multiplayer_dlg(m_conf),
+    m_advanced_dlg(m_conf, m_display_dlg)
 {
 }
 
@@ -30,10 +32,13 @@ BOOL OptionsDlg::OnInitDialog()
 
     SetDlgItemTextA(IDC_EXE_PATH_EDIT, m_conf.game_executable_path->c_str());
 
-    // Init nested dialogs
+    // Init nested dialogs (advanced first, it hosts combos used by the display dialog)
+    InitNestedDialog(m_advanced_dlg, IDC_ADVANCED_OPTIONS_BOX);
     InitNestedDialog(m_display_dlg, IDC_DISPLAY_OPTIONS_BOX);
     InitNestedDialog(m_misc_dlg, IDC_MISC_OPTIONS_BOX);
     InitNestedDialog(m_multiplayer_dlg, IDC_MULTIPLAYER_OPTIONS_BOX);
+    ShowAdvancedOptions(false);
+    CenterWindow();
 
     // Update FactionFiles link status
     UpdateFFLinkStatus();
@@ -48,6 +53,7 @@ void OptionsDlg::InitToolTip()
     m_tool_tip.Create(*this);
     m_tool_tip.AddTool(GetDlgItem(IDC_EXE_PATH_EDIT), "Path to RF.exe file in Red Faction directory");
     m_tool_tip.AddTool(GetDlgItem(IDC_FFLINK_ACTION_BTN), "Link or unlink your FactionFiles account for achievements and map ranking");
+    m_tool_tip.AddTool(GetDlgItem(IDC_ADVANCED_TOGGLE_BTN), "Show or hide options that most players do not need to change");
 }
 
 void OptionsDlg::OnOK()
@@ -68,6 +74,9 @@ BOOL OptionsDlg::OnCommand(WPARAM wparam, LPARAM lparam)
     case IDC_FFLINK_ACTION_BTN:
         OnBnClickedFFLinkAction();
         return TRUE;
+    case IDC_ADVANCED_TOGGLE_BTN:
+        ShowAdvancedOptions(!GetDlgItem(IDC_ADVANCED_OPTIONS_BOX).IsWindowVisible());
+        return TRUE;
     }
 
     return FALSE;
@@ -84,6 +93,7 @@ void OptionsDlg::OnBnClickedOk()
     m_display_dlg.OnSave();
     m_multiplayer_dlg.OnSave();
     m_misc_dlg.OnSave();
+    m_advanced_dlg.OnSave();
 
     try {
         m_conf.save();
@@ -115,6 +125,41 @@ void OptionsDlg::InitNestedDialog(CDialog& dlg, int placeholder_id)
     rc.top += border.top;
     placeholder.MapWindowPoints(GetHwnd(), rc);
     dlg.SetWindowPos(placeholder, rc.left, rc.top, -1, -1, SWP_NOSIZE | SWP_NOACTIVATE);
+}
+
+void OptionsDlg::ShowAdvancedOptions(bool show)
+{
+    // The template is laid out expanded; collapsing moves the bottom row up over the advanced section
+    CWnd box = GetDlgItem(IDC_ADVANCED_OPTIONS_BOX);
+    RECT box_rc = box.GetWindowRect();
+    RECT ok_rc = GetDlgItem(IDOK).GetWindowRect();
+    RECT gap = { 0, 0, 0, 6 };
+    MapDialogRect(gap);
+    int dy = (show ? box_rc.bottom + gap.bottom : box_rc.top) - ok_rc.top;
+
+    for (int id : {IDOK, IDCANCEL, IDC_ADVANCED_TOGGLE_BTN}) {
+        CWnd item = GetDlgItem(id);
+        RECT rc = item.GetWindowRect();
+        ScreenToClient(rc);
+        item.SetWindowPos(nullptr, rc.left, rc.top + dy, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    RECT wnd_rc = GetWindowRect();
+    wnd_rc.bottom += dy;
+    // Keep the expanded window inside the work area
+    MONITORINFO mi{};
+    mi.cbSize = sizeof(mi);
+    if (::GetMonitorInfo(::MonitorFromWindow(*this, MONITOR_DEFAULTTONEAREST), &mi)) {
+        LONG shift = std::min(std::max(0L, wnd_rc.bottom - mi.rcWork.bottom), std::max(0L, wnd_rc.top - mi.rcWork.top));
+        wnd_rc.top -= shift;
+        wnd_rc.bottom -= shift;
+    }
+    SetWindowPos(nullptr, wnd_rc.left, wnd_rc.top, wnd_rc.right - wnd_rc.left, wnd_rc.bottom - wnd_rc.top,
+        SWP_NOZORDER | SWP_NOACTIVATE);
+
+    int cmd = show ? SW_SHOW : SW_HIDE;
+    box.ShowWindow(cmd);
+    m_advanced_dlg.ShowWindow(cmd);
+    SetDlgItemTextA(IDC_ADVANCED_TOGGLE_BTN, show ? "Hide advanced options" : "Show advanced options");
 }
 
 void OptionsDlg::UpdateFFLinkStatus()

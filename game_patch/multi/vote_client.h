@@ -169,6 +169,12 @@ const VoteOptionsData* vote_options_get();
 // picked up without re-deriving every frame.
 uint32_t vote_options_loaded_generation();
 bool vote_options_is_type_enabled(AfVoteType type);
+
+// From af_sreq_match_state; always false on a server older than 1.5
+bool vote_client_match_live();
+// A match is live and the local player is not in it, so it can neither call nor cast votes
+bool vote_client_spectating_match();
+void vote_client_on_match_state(uint8_t flags);
 // Ask the server for the blob if it isn't loaded (or went stale). Rate limited.
 void vote_options_request_if_needed();
 void vote_options_mark_stale();

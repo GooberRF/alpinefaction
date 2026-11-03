@@ -35,10 +35,13 @@
 #include "wipeout.h"
 #include "gungame.h"
 #include "salvage.h"
+#include "scavenger.h"
 #include "vehicles/vehicle.h"
 #include "vehicles/vehicle_tracers.h"
+#include "bots/server_bots.h"
 #include "../os/console.h"
 #include "../hud/hud.h"
+#include "../hud/multi_spectate.h"
 #include "../misc/player.h"
 #include "../misc/level.h"
 #include "../misc/alpine_options.h"
@@ -101,6 +104,9 @@ const std::vector<std::string> g_rcon_cmd_masterlist = {
     "sv_afstats_trace",
     "sv_fflink_status",
     "sv_fflink_resync",
+    "sv_bot_add",
+    "sv_bot_remove",
+    "sv_bot_list",
 };
 
 std::vector<rf::AlpineRespawnPoint> g_alpine_respawn_points;
@@ -147,6 +153,11 @@ int BotProfileSlotTracker::assign_slot(const rf::Player* player, int num_profile
 
     assignments[player] = best_slot;
     return best_slot;
+}
+
+void BotProfileSlotTracker::assign_explicit(const rf::Player* player, const int slot)
+{
+    assignments[player] = slot;
 }
 
 void BotProfileSlotTracker::release_slot(const rf::Player* player)
@@ -672,9 +683,9 @@ static bool g_ctf_drop_is_manual = false;
 
 static void handle_drop_flag_request(rf::Player* player)
 {
-    const bool is_salvage = gt_is_salvage();
+    const bool is_salvage = salvage_framework_active();
     if (rf::multi_get_game_type() != rf::NG_TYPE_CTF && !is_salvage) {
-        return; // can't drop flags unless in CTF or SAL
+        return; // can't drop flags unless in CTF, SAL or SCAV
     }
 
     if (!g_alpine_server_config_active_rules.flag_dropping) {
@@ -700,7 +711,7 @@ void multi_force_drop_carried_flag(rf::Player* player)
     if (!rf::is_server || !player) {
         return;
     }
-    if (gt_is_salvage()) {
+    if (salvage_framework_active()) {
         salvage_force_drop_flag(player);
         return;
     }
@@ -798,7 +809,8 @@ CodeInjection multi_limbo_leave_pre_patch{
 
             auto plist = SinglyLinkedList{rf::player_list};
             for (auto& p : plist) {
-                if (&p == rf::local_player)
+                // Server bots leave only through the roster.
+                if (&p == rf::local_player || server_bot_from_player(&p))
                     continue;
 
                 // Observers (browsers, demo recorder) are never kicked here: they don't
@@ -924,6 +936,10 @@ std::optional<rf::NetGameType> resolve_gametype_from_name(std::string_view gamet
         string_iequals(gametype_name, "salvage")) {
         return rf::NetGameType::NG_TYPE_SAL;
     }
+    if (string_iequals(gametype_name, "scav") ||
+        string_iequals(gametype_name, "scavenger")) {
+        return rf::NetGameType::NG_TYPE_SCAV;
+    }
 
     return std::nullopt;
 }
@@ -947,7 +963,24 @@ bool multi_set_gametype_alpine(std::string_view gametype_name)
 ConsoleCommand2 sv_game_type_cmd{
     "sv_gametype",
     [](std::optional<std::string> new_game_type, std::optional<std::string> level_name) {
-        if (g_dedicated_launched_from_ads && rf::is_dedicated_server) {
+        if (!rf::is_dedicated_server) {
+            if (rf::is_multi && !rf::is_server && !demo_playback_active()) {
+                rf::console::print("Connected to a server: use rcon sv_gametype to change its game type.\n");
+                return;
+            }
+            if (!new_game_type || !level_name) {
+                rf::console::print("Usage: sv_gametype (gt) <game type> <level>\n");
+                return;
+            }
+            auto resolved_type = resolve_gametype_from_name(new_game_type.value());
+            if (!resolved_type) {
+                rf::console::print("Unknown game type '{}'.\n", new_game_type.value());
+                return;
+            }
+            start_local_multi_game(level_name.value(), resolved_type);
+            return;
+        }
+        if (g_dedicated_launched_from_ads) {
             if (rf::gameseq_get_state() != rf::GameState::GS_GAMEPLAY) {
                 rf::console::print("You cannot change the game type while between levels.\n");
                 return;
@@ -1005,8 +1038,9 @@ ConsoleCommand2 sv_game_type_cmd{
             rf::console::print("This command is only available for Alpine Faction dedicated servers launched with the -ads switch.\n");
         }
     },
-    "Load a specific gametype. Loads level if specificed, otherwise restarts current level. Only available for ADS dedicated servers.",
-    "sv_gametype <dm|tdm|ctf|koth|dc|rev|run|esc|bag|tbag|pit|wo|gg> [level]",
+    "Load a specific gametype. On an ADS dedicated server, loads the level if specified, otherwise restarts the "
+    "current level. Elsewhere, starts a local game on the level, like levelm.",
+    "sv_gametype <dm|tdm|ctf|koth|dc|rev|run|esc|bag|tbag|pit|wo|gg|sal|scav> [level]",
 };
 
 DcCommandAlias gt_cmd{
@@ -1254,6 +1288,18 @@ bool check_server_chat_command(const char* msg, rf::Player* sender)
         return handle_server_chat_command(msg, sender);
     return false;
 }
+
+// The listen host's own line never reaches the chat_line receive handler, so its commands run here.
+FunHook<void(const char*, int)> multi_chat_say_hook{
+    0x00444150,
+    [](const char* msg, int is_team_msg) {
+        if (rf::is_multi && rf::is_server && !rf::is_dedicated_server && rf::local_player
+            && check_server_chat_command(msg, rf::local_player)) {
+            return;
+        }
+        multi_chat_say_hook.call_target(msg, is_team_msg);
+    },
+};
 
 CodeInjection spawn_protection_duration_patch{
     0x0048089A,
@@ -1716,6 +1762,14 @@ static bool entity_killed_from_behind(rf::Entity* victim, int killer_handle)
     return to_victim.dot_prod(facing) > 0.5f;
 }
 
+bool player_is_spectating(const rf::Player& spectator, const rf::Player* target)
+{
+    if (&spectator == rf::local_player) {
+        return multi_spectate_is_following_player() && multi_spectate_get_target_player() == target;
+    }
+    return spectator.spectatee.value_or(nullptr) == target;
+}
+
 FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
     0x0041A350,
     [](rf::Entity* damaged_ep, float damage, int killer_handle, int damage_type, int killer_uid) {
@@ -2160,8 +2214,9 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
                 && killer_player->net_data && damaged_player->net_data) {
                 if (!(!damaged_ep || rf::entity_is_dying(damaged_ep) || rf::player_is_dead(damaged_player))) {
 
-                    // use new packet for clients that can process it (Alpine 1.1+)
-                    if (is_player_minimum_af_client_version(killer_player, 1, 1, 0)) {
+                    // use new packet for clients that can process it (Alpine 1.1+) and the listen host
+                    if (killer_player == rf::local_player
+                        || is_player_minimum_af_client_version(killer_player, 1, 1, 0)) {
                         //xlog::warn("sending damage notify to {}, is dead? {}", killer_player->name, is_dead);
                         af_send_damage_notify_packet(
                             damaged_player->net_data->player_id,
@@ -2181,15 +2236,15 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
                         if (!player.net_data || &player == killer_player) {
                             continue;
                         }
-                        if (player.spectatee.value_or(nullptr) == killer_player) {
-                            if (is_player_minimum_af_client_version(&player, 1, 1, 0)) {
-                                af_send_damage_notify_packet(
-                                    damaged_player->net_data->player_id,
-                                    effective_damage,
-                                    is_dead,
-                                    crit_applied,
-                                    &player);
-                            }
+                        if (player_is_spectating(player, killer_player)
+                            && (&player == rf::local_player
+                                || is_player_minimum_af_client_version(&player, 1, 1, 0))) {
+                            af_send_damage_notify_packet(
+                                damaged_player->net_data->player_id,
+                                effective_damage,
+                                is_dead,
+                                crit_applied,
+                                &player);
                         }
                     }
 
@@ -2212,7 +2267,8 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
             const AfDamageNotifyHull hull{damaged_ep ? damaged_ep->pos : victim_pos_before_damage,
                                           damaged_ep_handle};
 
-            if (is_player_minimum_af_client_version(killer_player, 1, 1, 0)) {
+            if (killer_player == rf::local_player
+                || is_player_minimum_af_client_version(killer_player, 1, 1, 0)) {
                 af_send_damage_notify_packet(af_damage_notify_no_player, effective_damage, is_dead, false,
                                              killer_player, &hull);
             }
@@ -2224,8 +2280,8 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
                 if (!player.net_data || &player == killer_player) {
                     continue;
                 }
-                if (player.spectatee.value_or(nullptr) == killer_player
-                    && is_player_minimum_af_client_version(&player, 1, 1, 0)) {
+                if (player_is_spectating(player, killer_player)
+                    && (&player == rf::local_player || is_player_minimum_af_client_version(&player, 1, 1, 0))) {
                     af_send_damage_notify_packet(af_damage_notify_no_player, effective_damage, is_dead, false,
                                                  &player, &hull);
                 }
@@ -2458,7 +2514,8 @@ CodeInjection send_ping_time_wrap_fix{
         if (!io_stats.send_ping_packet_timestamp.valid() || io_stats.send_ping_packet_timestamp.elapsed()) {
             xlog::trace("sending ping");
             io_stats.send_ping_packet_timestamp.set(3000);
-            if (!player->is_observer()) { // recorder's phantom socket must not be pinged
+            // The recorder's phantom socket and server bots' fake addresses must not be pinged.
+            if (!player->is_observer() && !server_bot_from_player(player)) {
                 rf::multi_ping_player(player);
             }
             io_stats.last_ping_time = static_cast<int>(timer::get_i64(1000));
@@ -2613,16 +2670,15 @@ void start_match()
     rf::multi_time_limit = g_match_info.time_limit_on_pre_match_start.value_or(10.0f);
 }
 
-void cancel_match()
+// Callers report the match end: the reset below clears match_active before the limbo that load_next_level
+// queues runs, so the limbo never reports this match itself.
+static void end_match_early()
 {
-    rf::console::print("Canceling match");
-    // Before load_next_level: the limbo it drives reaches the match-completed path
-    // with match_active still set, and the stream must report this as a cancel.
-    afstats::on_match_end(afstats::MatchResult::canceled, afstats::team_none, nullptr);
     if (g_match_info.match_active) {
         load_next_level(); // end the round if active match is canceled
     }
     else {
+        server_bots_end_join_bots();
         // restore the level timer and limit if pre-match is canceled        
         rf::level.time = 0.0f;
         rf::multi_time_limit = g_match_info.time_limit_on_pre_match_start.value_or(10.0f);        
@@ -2636,17 +2692,61 @@ void cancel_match()
     }
 }
 
+void cancel_match()
+{
+    rf::console::print("Canceling match");
+    afstats::on_match_end(afstats::MatchResult::canceled, afstats::team_none, nullptr);
+    end_match_early();
+}
+
+static const char* team_name(rf::ubyte team);
+
+void surrender_match(int losing_team)
+{
+    const bool red_lost = losing_team == rf::TEAM_RED;
+    const rf::ubyte winning_team = red_lost ? rf::TEAM_BLUE : rf::TEAM_RED;
+    af_broadcast_automated_chat_msg(std::format("{} team surrendered. {} team wins the match!",
+                                                team_name(static_cast<rf::ubyte>(losing_team)),
+                                                team_name(winning_team)));
+    afstats::on_match_end(afstats::MatchResult::completed, red_lost ? afstats::team_blue : afstats::team_red,
+                          nullptr);
+    end_match_early();
+}
+
+// The vote panel offers only what a live match allows, and only to its players
+static void sync_match_state_to_clients()
+{
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        // A reliable packet sent before the joiner's reliable socket connects is dropped
+        if (!player.net_data || static_cast<int>(player.net_data->reliable_socket) < 0) {
+            continue;
+        }
+        uint8_t flags = 0;
+        if (g_match_info.match_active) {
+            flags |= AF_MATCH_STATE_LIVE;
+            if (is_player_in_match(&player)) {
+                flags |= AF_MATCH_STATE_PARTICIPANT;
+            }
+        }
+        if (player.match_state_sent != flags) {
+            player.match_state_sent = flags;
+            af_send_match_state(&player, flags);
+        }
+    }
+}
+
 // Does this player support packet-based voting?
 static bool player_can_call_votes(rf::Player* player)
 {
-    if (!player) {
-        return false;
-    }
-    return player == rf::local_player || is_player_minimum_af_client_version(player, 1, 4, 0);
+    return player && is_player_minimum_af_client_version(player, 1, 4, 0);
 }
 
+// No hint for the listen host: he can neither ready up nor vote.
 static std::string_view cancel_match_vote_hint(rf::Player* player)
 {
+    if (player == rf::local_player) {
+        return {};
+    }
     return player_can_call_votes(player)
         ? "Ready up, or call a vote to cancel the match."
         : "Ready up. Canceling the match needs a vote, which requires Alpine Faction 1.4+ (alpinefaction.com).";
@@ -2654,6 +2754,9 @@ static std::string_view cancel_match_vote_hint(rf::Player* player)
 
 static std::string_view start_match_vote_hint(rf::Player* player)
 {
+    if (player == rf::local_player) {
+        return {};
+    }
     return player_can_call_votes(player)
         ? "Call a match vote to queue one."
         : "Queueing a match needs a vote, which requires Alpine Faction 1.4+ (alpinefaction.com).";
@@ -2674,13 +2777,16 @@ void start_pre_match()
         for (rf::Player* player : get_clients(false, false)) {
             if (!player) continue;
 
+            const std::string_view hint = cancel_match_vote_hint(player);
             std::string msg = std::format(
                 "\n>>>>>>>>>>>>>>>>> {}v{} MATCH QUEUED <<<<<<<<<<<<<<<<<\n"
-                "Waiting for players. {}",
-                g_match_info.team_size, g_match_info.team_size, cancel_match_vote_hint(player));
+                "Waiting for players.{}{}",
+                g_match_info.team_size, g_match_info.team_size, hint.empty() ? "" : " ", hint);
 
             af_send_automated_chat_msg(msg, player);
-            af_send_ready_prompt(player, 1); // pre-match active — show ready prompt
+            if (player != rf::local_player) {
+                af_send_ready_prompt(player, 1); // pre-match active — show ready prompt
+            }
         }
 
 
@@ -2707,6 +2813,81 @@ uint8_t af_match_state_for_stats()
     return static_cast<uint8_t>(afstats::MatchState::none);
 }
 
+static void assign_player_to_team(rf::Player* player, rf::ubyte new_team);
+
+// The Join Bots that fill a match's open slots; at least one slot is always left to a human. A bot that was
+// kicked or never fit in the roster gives its slot back to the humans.
+static int match_join_bots()
+{
+    if (g_match_info.team_size < 1) {
+        return 0;
+    }
+    const int bots = std::min(g_alpine_server_config_active_rules.mutators.join_bots, server_bots_num_join_bots());
+    return std::clamp(bots, 0, 2 * g_match_info.team_size - 1);
+}
+
+// What a forming match still needs, to end a chat line with
+static std::string match_waiting_text()
+{
+    const int team_size = g_match_info.team_size;
+    const int ready_red = static_cast<int>(g_match_info.ready_players_red.size());
+    const int ready_blue = static_cast<int>(g_match_info.ready_players_blue.size());
+    const int bots = match_join_bots();
+    if (bots <= 0) {
+        return std::format("waiting for players - RED: {}, BLUE: {}", team_size - ready_red, team_size - ready_blue);
+    }
+    const int open = 2 * team_size - bots - ready_red - ready_blue;
+    return open > 0 ? std::format("waiting for {} more player(s); bots fill the other {} slot(s)", open, bots)
+                    : std::string{"waiting for the bots to join"};
+}
+
+// Every human slot the Join Bots leave is taken by a ready player
+static bool match_human_slots_full()
+{
+    const int bots = match_join_bots();
+    return bots > 0
+        && static_cast<int>(g_match_info.ready_players_red.size() + g_match_info.ready_players_blue.size())
+            >= 2 * g_match_info.team_size - bots;
+}
+
+static void start_match_with_everyone_ready()
+{
+    af_broadcast_automated_chat_msg("All players are ready. Match starting!");
+    g_match_info.everyone_ready = true;
+    start_match();
+}
+
+// Once the humans the Join Bots leave room for are ready, the bots take the open slots and the match starts
+static bool fill_match_with_join_bots()
+{
+    const int bots = match_join_bots();
+    if (bots <= 0 || !g_match_info.pre_match_active || g_match_info.everyone_ready) {
+        return false;
+    }
+    const int team_size = g_match_info.team_size;
+    auto& ready_red = g_match_info.ready_players_red;
+    auto& ready_blue = g_match_info.ready_players_blue;
+    if (static_cast<int>(ready_red.size() + ready_blue.size()) != 2 * team_size - bots) {
+        return false;
+    }
+    const std::vector<rf::Player*> join_bots = server_bots_join_bot_players();
+    if (static_cast<int>(join_bots.size()) < bots) {
+        return false; // still joining
+    }
+    int red_open = team_size - static_cast<int>(ready_red.size());
+    for (int i = 0; i < bots; ++i) {
+        rf::Player* const bot = join_bots[i];
+        const rf::ubyte team = red_open > 0 ? rf::TEAM_RED : rf::TEAM_BLUE;
+        if (team == rf::TEAM_RED) {
+            --red_open;
+        }
+        assign_player_to_team(bot, team);
+        (team == rf::TEAM_RED ? ready_red : ready_blue).insert(bot);
+    }
+    start_match_with_everyone_ready();
+    return true;
+}
+
 void add_ready_player(rf::Player* player)
 {
     auto& team_ready_list = (player->team == 0) ? g_match_info.ready_players_red : g_match_info.ready_players_blue;
@@ -2724,24 +2905,33 @@ void add_ready_player(rf::Player* player)
         return;
     }
 
+    const int join_bots = match_join_bots();
+    if (match_human_slots_full()) {
+        af_send_automated_chat_msg("The match is full.", player);
+        return;
+    }
+
     team_ready_list.insert(player);
+    // Ready players are never idle, so a warning given before readying up must not kick
+    player->idle.kick_timer.invalidate();
     update_pre_match_powerups(player);
     af_send_ready_prompt(player, 2); // readied — hide prompt but keep pre-match flag set
 
     auto ready_msg = std::format("{} ({}) is ready!", player->name.c_str(), team_name);
     af_broadcast_automated_chat_msg(ready_msg);
 
+    if (fill_match_with_join_bots()) {
+        return;
+    }
+
     const auto ready_red = g_match_info.ready_players_red.size();
     const auto ready_blue = g_match_info.ready_players_blue.size();
 
-    if (ready_red >= match_team_size && ready_blue >= match_team_size) {
-        af_broadcast_automated_chat_msg("All players are ready. Match starting!");
-        g_match_info.everyone_ready = true;
-        start_match(); // Start the match
+    if (join_bots <= 0 && ready_red >= match_team_size && ready_blue >= match_team_size) {
+        start_match_with_everyone_ready();
     }
     else {
-        auto waiting_msg = std::format("Still waiting for players - RED: {}, BLUE: {}.", match_team_size - ready_red, match_team_size - ready_blue);
-        af_broadcast_automated_chat_msg(waiting_msg);
+        af_broadcast_automated_chat_msg(std::format("Still {}.", match_waiting_text()));
     }
 }
 
@@ -2771,14 +2961,9 @@ void remove_ready_player(rf::Player* player)
         af_send_ready_prompt(player, 1); // no longer ready — re-show their prompt
     }
 
-    auto msg_source = std::format("You are no longer ready! Still waiting for players - RED: {}, BLUE: {}.",
-        g_match_info.team_size - g_match_info.ready_players_red.size(),
-        g_match_info.team_size - g_match_info.ready_players_blue.size());
+    auto msg_source = std::format("You are no longer ready! Still {}.", match_waiting_text());
 
-    auto msg_others = std::format("{} is no longer ready! Still waiting for players - RED: {}, BLUE: {}.",
-        player->name.c_str(),
-        g_match_info.team_size - g_match_info.ready_players_red.size(),
-        g_match_info.team_size - g_match_info.ready_players_blue.size());
+    auto msg_others = std::format("{} is no longer ready! Still {}.", player->name.c_str(), match_waiting_text());
 
     // send the message to the player who unreadied
     af_send_automated_chat_msg(msg_source, player);
@@ -2795,8 +2980,14 @@ void remove_ready_player(rf::Player* player)
 void toggle_ready_status(rf::Player* player)
 {
     if (!g_match_info.pre_match_active) {
+        const std::string_view hint = start_match_vote_hint(player);
         af_send_automated_chat_msg(
-            std::format("No match is queued. {}", start_match_vote_hint(player)), player);
+            std::format("No match is queued.{}{}", hint.empty() ? "" : " ", hint), player);
+        return;
+    }
+
+    if (player == rf::local_player) {
+        af_send_automated_chat_msg("The listen server host cannot ready for matches.", player);
         return;
     }
 
@@ -2848,6 +3039,21 @@ bool get_ready_status(const rf::Player* player)
 }
 
 
+// Join Bots alone can't hold a match: a live one needs a human playing in it, a forming one a human on the server
+static bool match_has_humans()
+{
+    if (g_match_info.match_active) {
+        return std::ranges::any_of(g_match_info.active_match_players,
+                                   [](rf::Player* player) { return !server_bot_from_player(player); });
+    }
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if (!server_bot_from_player(&player) && !player.is_non_participant()) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void match_do_frame()
 {
     if (!g_alpine_server_config.vote_match.enabled) {
@@ -2859,6 +3065,16 @@ void match_do_frame()
             cancel_match();
         }
         return; // no reminders to an empty server
+    }
+
+    if ((g_match_info.match_active || g_match_info.pre_match_active) && server_bots_num_join_bots() > 0
+        && !match_has_humans()) {
+        cancel_match();
+        return;
+    }
+
+    if (fill_match_with_join_bots()) {
+        return;
     }
 
     std::time_t current_time = std::time(nullptr);
@@ -2887,15 +3103,17 @@ void match_do_frame()
         if (current_time >= g_match_info.last_ready_reminder_time + reminder_interval) {
             g_match_info.last_ready_reminder_time = current_time;
 
-            const auto ready_red = g_match_info.ready_players_red.size();
-            const auto ready_blue = g_match_info.ready_players_blue.size();
+            // No nagging once the humans the Join Bots leave room for are all ready
+            const bool humans_full = match_human_slots_full();
 
             for (rf::Player* player : get_clients(false, false)) {
+                if (player == rf::local_player || humans_full) {
+                    continue;
+                }
                 if (!is_player_ready(player)) {
                     auto msg = std::format(
-                        "You are NOT ready! {}v{} match queued, waiting for players - RED: {}, BLUE: {}.\n{}",
-                        g_match_info.team_size, g_match_info.team_size,
-                        g_match_info.team_size - ready_red, g_match_info.team_size - ready_blue,
+                        "You are NOT ready! {}v{} match queued, {}.\n{}",
+                        g_match_info.team_size, g_match_info.team_size, match_waiting_text(),
                         cancel_match_vote_hint(player));
                     af_send_automated_chat_msg(msg, player);
                     af_send_ready_prompt(player, 1); // belt-and-braces resync (show prompt)
@@ -3119,7 +3337,8 @@ void enforce_alpine_hard_reject_for_all_players_on_current_level()
     auto plist = SinglyLinkedList{rf::player_list};
 
     for (auto& p : plist) {
-        if (&p == rf::local_player) {
+        // Server bots leave only through the roster.
+        if (&p == rf::local_player || server_bot_from_player(&p)) {
             continue;
         }
 
@@ -3144,6 +3363,10 @@ void enforce_alpine_hard_reject_for_all_players_on_current_level()
 }
 
 AlpineRestrictVerdict check_player_alpine_restrict_status(const rf::Player* const player) {
+    // Server bots run the server's own build, which a release-only rule (e.g. match mode) would refuse on a dev build.
+    if (server_bot_from_player(player)) {
+        return AlpineRestrictVerdict::ok;
+    }
     const auto [verdict, verdict_string, hard_reject] =
         evaluate_alpine_restrict_status(player->version_info, false);
     return verdict;
@@ -3441,31 +3664,25 @@ static constexpr DefaultBotIdentity k_default_bot_identities[] = {
     {"Franklin",    "medic1"},
 };
 
-// Pick a random default identity not already used by another bot on the server.
+static bool player_name_in_use(std::string_view name, const rf::Player* self)
+{
+    for (const rf::Player& p : SinglyLinkedList{rf::player_list}) {
+        if (&p != self && string_iequals(p.name.c_str(), name)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Pick a random default identity whose name no other player on the server uses.
 // If all identities are in use, allow duplicates.
-static const DefaultBotIdentity& pick_unused_default_identity()
+static const DefaultBotIdentity& pick_unused_default_identity(const rf::Player* self)
 {
     constexpr int num_identities = static_cast<int>(std::size(k_default_bot_identities));
 
-    // Collect names currently in use by bots
-    std::vector<std::string> used_names;
-    for (rf::Player& p : SinglyLinkedList{rf::player_list}) {
-        if (p.is_bot) {
-            used_names.emplace_back(p.name.c_str());
-        }
-    }
-
-    // Build list of unused identity indices
     std::vector<int> available;
     for (int i = 0; i < num_identities; ++i) {
-        bool in_use = false;
-        for (const auto& name : used_names) {
-            if (name == k_default_bot_identities[i].name) {
-                in_use = true;
-                break;
-            }
-        }
-        if (!in_use) {
+        if (!player_name_in_use(k_default_bot_identities[i].name, self)) {
             available.push_back(i);
         }
     }
@@ -3480,11 +3697,15 @@ static const DefaultBotIdentity& pick_unused_default_identity()
     return k_default_bot_identities[available[dist(g_rng)]];
 }
 
-static void resolve_bot_identity(const ServerBotConfig& config, std::string& out_name, int32_t& out_character)
+void resolve_bot_identity(const ServerBotConfig& config, const rf::Player* self, std::string& out_name,
+                          int32_t& out_character)
 {
+    // A profile name another player already holds would make two players indistinguishable.
+    const std::string profile_name = player_name_in_use(config.player_name, self) ? std::string{} : config.player_name;
+
     // If both name and character are specified in the profile, use them directly
-    if (!config.player_name.empty() && !config.mp_character.empty()) {
-        out_name = config.player_name;
+    if (!profile_name.empty() && !config.mp_character.empty()) {
+        out_name = profile_name;
         int idx = rf::multi_find_character(config.mp_character.c_str());
         if (idx >= 0) {
             out_character = idx;
@@ -3497,8 +3718,8 @@ static void resolve_bot_identity(const ServerBotConfig& config, std::string& out
     }
 
     // If neither is specified, pick a paired default identity
-    if (config.player_name.empty() && config.mp_character.empty()) {
-        const auto& identity = pick_unused_default_identity();
+    if (profile_name.empty() && config.mp_character.empty()) {
+        const auto& identity = pick_unused_default_identity(self);
         out_name = identity.name;
         int idx = rf::multi_find_character(identity.character);
         out_character = (idx >= 0) ? idx : 0;
@@ -3506,11 +3727,11 @@ static void resolve_bot_identity(const ServerBotConfig& config, std::string& out
     }
 
     // One is specified, the other needs resolving
-    if (!config.player_name.empty()) {
-        out_name = config.player_name;
+    if (!profile_name.empty()) {
+        out_name = profile_name;
     }
     else {
-        const auto& identity = pick_unused_default_identity();
+        const auto& identity = pick_unused_default_identity(self);
         out_name = identity.name;
     }
 
@@ -3566,7 +3787,7 @@ static void send_bot_config_with_identity(rf::Player* player, const ServerBotCon
 {
     std::string resolved_name;
     int32_t resolved_character = 0;
-    resolve_bot_identity(config, resolved_name, resolved_character);
+    resolve_bot_identity(config, player, resolved_name, resolved_character);
 
     // Apply on the server's player struct
     player->name = resolved_name.c_str();
@@ -3580,6 +3801,24 @@ static void send_bot_config_with_identity(rf::Player* player, const ServerBotCon
 
     rf::console::print("  Sent bot profile '{}' (slot {}, skill '{}') to {} (character={})\n",
         config.personality_preset, slot, config.skill_preset, player->name, resolved_character);
+}
+
+void server_resend_client_bot_personalities()
+{
+    const auto& configs = g_alpine_server_config.bot_configs;
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if (!player.is_bot || server_bot_from_player(&player)
+            || !is_player_minimum_af_client_version(&player, 1, 3, 0)) {
+            continue;
+        }
+        const int slot = g_bot_profile_slots.get_slot(&player);
+        if (slot >= 0 && slot < static_cast<int>(configs.size())) {
+            af_send_bot_control_update_personality(&player, configs[slot]);
+        }
+        else if (configs.empty()) {
+            af_send_bot_control_update_personality(&player, ServerBotConfig{});
+        }
+    }
 }
 
 void server_reliable_socket_ready(rf::Player* player)
@@ -3659,6 +3898,15 @@ void server_reliable_socket_ready(rf::Player* player)
     }
 }
 
+// Sent once the server has loaded the level; clients still loading show it when they get in.
+void server_broadcast_level_message()
+{
+    const LevelMessageConfig& level_message = g_alpine_server_config_active_rules.level_message;
+    if (level_message.enabled && !level_message.text.empty()) {
+        af_broadcast_automated_chat_msg(string_replace(level_message.text, "$LEVEL", rf::level.name.c_str()));
+    }
+}
+
 CodeInjection multi_level_init_injection{
     0x0046E450,
     [](auto& regs) {
@@ -3676,12 +3924,36 @@ CodeInjection multi_level_init_injection{
     },
 };
 
-static int pick_weaker_team()
+static bool human_is_spawned(const rf::Player& player)
+{
+    return !rf::player_is_dead(&player) && !rf::player_is_dying(&player);
+}
+
+// Bot fill counts a dead human only briefly, so one who stays dead frees his slot for a bot.
+static bool human_is_active_player(const rf::Player& player)
+{
+    const bool was_just_unspawned = player.death_time
+        && std::chrono::steady_clock::now() - *player.death_time
+            < std::chrono::duration<float>(BOT_OPPONENT_DEATH_WAIT_TIME_SEC);
+    return human_is_spawned(player) || was_just_unspawned;
+}
+
+// The level-init reset clears death_time, so it marks a death in this level.
+static bool human_has_played_this_level(const rf::Player& player)
+{
+    return human_is_spawned(player) || player.death_time.has_value();
+}
+
+static int pick_weaker_team(const bool for_bot)
 {
     int red_count = 0, blue_count = 0;
     int red_bots = 0, blue_bots = 0;
     for (const rf::Player& player : SinglyLinkedList{rf::player_list}) {
         if (player.is_non_participant() || player.is_spectator) {
+            continue;
+        }
+        // A human who has not spawned this level (still joining, or idle) does not balance against bots.
+        if (for_bot && !player.is_bot && !human_has_played_this_level(player)) {
             continue;
         }
         if (player.team == rf::TEAM_RED) {
@@ -3716,6 +3988,7 @@ static int pick_weaker_team()
         blue_score = multi_koth_get_blue_team_score();
         break;
     case rf::NG_TYPE_SAL:
+    case rf::NG_TYPE_SCAV:
         red_score = salvage_get_red_team_score();
         blue_score = salvage_get_blue_team_score();
         break;
@@ -3735,27 +4008,37 @@ static int pick_weaker_team()
     return std::uniform_int_distribution<int>(rf::TEAM_RED, rf::TEAM_BLUE)(g_rng);
 }
 
+static int pick_team_for_joiner(const JoiningClientKind kind)
+{
+    if (!multi_is_team_game_type()) {
+        return rf::TEAM_RED;
+    }
+    if (humans_vs_bots_active()) {
+        switch (kind) {
+            case JoiningClientKind::Bot:
+                return rf::TEAM_BLUE;
+            case JoiningClientKind::Human:
+                return rf::TEAM_RED;
+            case JoiningClientKind::Browser:
+                break; // not a participant; the normal pick applies
+        }
+    }
+    return pick_weaker_team(kind == JoiningClientKind::Bot);
+}
+
 FunHook<int()> pick_team_for_new_player_hook{
     0x004827E0,
     []() {
-        if (!multi_is_team_game_type()) {
-            return static_cast<int>(rf::TEAM_RED);
-        }
         // Only reached from the join flow, after the join-req tail has been
         // parsed, so the joining client's identity is still available.
-        if (humans_vs_bots_active()) {
-            switch (get_joining_client_kind()) {
-                case JoiningClientKind::Bot:
-                    return static_cast<int>(rf::TEAM_BLUE);
-                case JoiningClientKind::Human:
-                    return static_cast<int>(rf::TEAM_RED);
-                case JoiningClientKind::Browser:
-                    break; // not a participant; the normal pick applies
-            }
-        }
-        return pick_weaker_team();
+        return pick_team_for_joiner(get_joining_client_kind());
     },
 };
+
+int pick_team_for_new_server_bot()
+{
+    return pick_team_for_joiner(JoiningClientKind::Bot);
+}
 
 // Humans vs. Bots replacement for balance_teams(): same participant exclusions,
 // but the split is fixed rather than score-based.
@@ -4295,7 +4578,8 @@ bool round_is_tied(rf::NetGameType game_type)
     case rf::NG_TYPE_TBAG: {
         return bagman_get_red_team_score() == bagman_get_blue_team_score();
     }
-    case rf::NG_TYPE_SAL: {
+    case rf::NG_TYPE_SAL:
+    case rf::NG_TYPE_SCAV: {
         const int red_score = salvage_get_red_team_score();
         const int blue_score = salvage_get_blue_team_score();
 
@@ -4437,7 +4721,8 @@ FunHook<void()> multi_check_for_round_end_hook{
                 }
                 break;
             }
-            case rf::NG_TYPE_SAL: {
+            case rf::NG_TYPE_SAL:
+            case rf::NG_TYPE_SCAV: {
                 if (salvage_get_red_team_score() >= rf::multi_cap_limit ||
                     salvage_get_blue_team_score() >= rf::multi_cap_limit) {
                     round_over = true;
@@ -4691,6 +4976,39 @@ FunHook<void(rf::Vector3*, rf::Matrix3*, rf::Player*)> multi_respawn_get_next_po
         // player as spawned this round so the NEXT respawn uses teammate logic.
         if (gt_is_wipeout()) {
             player->wipeout_spawned_this_round = true;
+        }
+
+        // Scavenger: ignore spawn-point team flags and roulette-select, weighting each point
+        // down near the objective, the capture zone and the nearest enemy.
+        if (rf::is_server && scavenger_spawn_weighting_active()) {
+            const auto scav_clients = get_clients(false, true);
+
+            std::vector<rf::AlpineRespawnPoint*> scav_eligible;
+            std::vector<double> scav_weights;
+            scav_eligible.reserve(g_alpine_respawn_points.size());
+            scav_weights.reserve(g_alpine_respawn_points.size());
+            for (auto& point : g_alpine_respawn_points) {
+                if (!point.enabled) {
+                    continue; // team flags intentionally ignored
+                }
+                if (config.always_avoid_last && last_index == (&point - &g_alpine_respawn_points[0])) {
+                    continue;
+                }
+                const float enemy_dist_sq = get_nearest_other_player(scav_clients, player, &point.position, true);
+                scav_eligible.push_back(&point);
+                scav_weights.push_back(scavenger_spawn_point_weight(point.position, enemy_dist_sq));
+            }
+
+            if (!scav_eligible.empty()) {
+                std::discrete_distribution<size_t> dist(scav_weights.begin(), scav_weights.end());
+                const size_t sel = dist(g_rng);
+                const int global_index = std::distance(g_alpine_respawn_points.data(), scav_eligible[sel]);
+                *pos = scav_eligible[sel]->position;
+                *orient = scav_eligible[sel]->orientation;
+                player->last_spawn_point_index = global_index;
+                return;
+            }
+            // No eligible points - fall through to the standard path below.
         }
 
         //xlog::debug("Spawn point requested! Player: {}, Team: {}, Last Spawn Index: {}", player->name, team, last_index);
@@ -5046,7 +5364,7 @@ CodeInjection entity_maybe_die_patch{
             bool respawn_allowed = true; // nothing currently disables respawns
             bool force_respawn = (rf::multi_server_flags & rf::NetGameFlags::NG_FLAG_FORCE_RESPAWN) != 0;
 
-            if (rf::is_server) {
+            if (player == rf::local_player) {
                 set_local_spawn_delay(respawn_allowed, force_respawn, static_cast<uint16_t>(player->respawn_timer.time_until()));
             }
             af_send_just_died_info_packet(player, respawn_allowed, force_respawn, static_cast<uint16_t>(player->respawn_timer.time_until()));
@@ -5251,6 +5569,8 @@ void server_init()
     // Apply customized spawn protection duration
     spawn_protection_duration_patch.install();
 
+    multi_chat_say_hook.install();
+
     // Critical hits and hit sounds
     entity_damage_hook.install();
 
@@ -5267,6 +5587,7 @@ void server_init()
     player_add_weapon_hook.install();
 
     init_server_commands();
+    server_bots_apply_patches();
 
     // Remove level prefix restriction (dm/ctf) for 'level' command and dedicated_server.txt
     AsmWriter(0x004350FE).nop(2);
@@ -5333,6 +5654,7 @@ void server_init()
     get_min_cmd_line_param();
     get_log_cmd_line_param();
     get_nodl_cmd_line_param();
+    get_nogsk_cmd_line_param();
 
     // console commands
     sv_game_type_cmd.register_cmd();
@@ -5386,9 +5708,19 @@ static void bot_decommission(
 
 static void bot_decommission_check() {
     const AlpineServerConfigRules& cfg_rules = g_alpine_server_config_active_rules;
-    if (!rf::is_server
-        || rf::gameseq_get_state() == rf::GS_MULTI_LIMBO
-        || rf::level.time < BOT_LEVEL_START_WAIT_TIME_SEC) {
+    if (!rf::is_server || rf::gameseq_get_state() == rf::GS_MULTI_LIMBO) {
+        return;
+    }
+
+    // Join Bots follow the mutator, not the ideal player count; set before the level-start wait so a match's bots
+    // spawn with its players
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if (player.is_bot && server_bot_is_join_bot(&player)) {
+            player.is_spawn_disabled = !server_bots_join_bot_may_spawn(&player);
+        }
+    }
+
+    if (rf::level.time < BOT_LEVEL_START_WAIT_TIME_SEC) {
         return;
     }
 
@@ -5396,7 +5728,7 @@ static void bot_decommission_check() {
     // This is needed because multi_level_init sets is_spawn_disabled = true for all bots on map change.
     if (cfg_rules.ideal_player_count >= 32) {
         for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
-            if (player.is_bot && player.is_spawn_disabled) {
+            if (player.is_bot && player.is_spawn_disabled && !server_bot_is_join_bot(&player)) {
                 player.is_spawn_disabled = false;
             }
         }
@@ -5425,7 +5757,12 @@ static void bot_decommission_check() {
             continue;
         }
 
-        if (player.is_bot) {
+        if (player.is_bot && server_bot_is_join_bot(&player)) {
+            // Fills a slot like a human, so configured bots make room for it
+            if (!player.is_spawn_disabled) {
+                ++active_persons_per_team[team];
+            }
+        } else if (player.is_bot) {
             if (player.is_spawn_disabled) {
                 disabled_candidates[team].push_back(&player);
             } else {
@@ -5440,17 +5777,8 @@ static void bot_decommission_check() {
             if (just_entered_spectate) {
                 ++active_persons_per_team[team];
             }
-        } else {
-            const bool is_spawned = !rf::player_is_dead(&player)
-                && !rf::player_is_dying(&player);
-            const auto now = std::chrono::steady_clock::now();
-            const bool was_just_unspawned = player.death_time
-                && now - *player.death_time
-                    < std::chrono::duration<float>(BOT_OPPONENT_DEATH_WAIT_TIME_SEC);
-
-            if (is_spawned || was_just_unspawned) {
-                ++active_persons_per_team[team];
-            }
+        } else if (human_is_active_player(player)) {
+            ++active_persons_per_team[team];
         }
     }
 
@@ -5476,15 +5804,18 @@ static void bot_decommission_check() {
 void server_do_frame()
 {
     bot_decommission_check();
+    server_bots_do_frame();
     server_vote_do_frame();
     fire_ticks_do_frame();
     match_do_frame();
+    sync_match_state_to_clients();
     process_delayed_kicks();
     pit_do_frame();
     wipeout_do_frame();
     gungame_do_frame();
     server_topup_nonclip_ammo(); // after gungame's per-frame weapon grants
     salvage_do_frame();
+    scavenger_do_frame(); // after salvage_do_frame has validated the carrier
     vehicle_do_frame();
     rounds_do_frame();
     auto_team_balance_do_frame();
@@ -5501,6 +5832,7 @@ void server_on_limbo_state_enter()
     g_is_overtime = false;
     g_prev_level = rf::level.filename.c_str();
     server_vote_on_limbo_state_enter();
+    server_bots_on_limbo_enter();
 
     auto player_list = SinglyLinkedList{rf::player_list};
 
@@ -5713,6 +6045,12 @@ std::tuple<bool, int, bool, bool> server_features_require_alpine_client()
         requires_alpine = true;
         hard_reject = true;
         min_minor_version = std::max(min_minor_version, 4);
+    }
+
+    if (g_alpine_server_config_active_rules.game_type == rf::NG_TYPE_SCAV) {
+        requires_alpine = true;
+        hard_reject = true;
+        min_minor_version = std::max(min_minor_version, 5);
     }
 
     // Only v306+ levels carry vehicle factories, so a legacy client is already excluded by version.

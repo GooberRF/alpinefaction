@@ -1,5 +1,6 @@
 #pragma once
 
+#include <utility>
 #include "../rf/player/control_config.h"
 
 namespace rf
@@ -27,6 +28,8 @@ void multi_spectate_appy_patch();
 void multi_spectate_after_full_game_init();
 void multi_spectate_level_init();
 void multi_spectate_render();
+// A column of bind / label rows at the spectate hints' place, raised clear of the bottom-left HUD.
+void hud_draw_control_hints(const std::pair<const char*, const char*>* hints, int count);
 void multi_spectate_on_player_kill(rf::Player* player, rf::Player* killer);
 void multi_spectate_on_destroy_player(rf::Player* player);
 void multi_spectate_player_create_entity_post(rf::Player* player, rf::Entity* entity);

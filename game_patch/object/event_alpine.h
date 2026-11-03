@@ -36,6 +36,7 @@
 #include "../graphics/gr.h"
 #include "../graphics/weather.h"
 #include "alpine_rope.h"
+#include "alpine_dir_light.h"
 #include "../misc/level.h"
 #include "../misc/destruction.h"
 #include "../misc/alpine_settings.h"
@@ -1286,6 +1287,7 @@ struct EventSetFogFarClip : rf::Event
     void turn_on() override
     {
         rf::level.distance_fog_far_clip = far_clip;
+        level_sanitize_fog_near_clip();
     }
 };
 
@@ -2069,19 +2071,22 @@ struct EventLightState : rf::Event
 {
     void turn_on() override
     {
-        for (const auto& linked_uid : this->links) {
-            if (auto* light = static_cast<rf::gr::Light*>(rf::gr::light_get_from_handle(rf::gr::level_get_light_handle_from_uid(linked_uid)))) {
-                light->on = true;
-            }
-        }
+        set_linked_lights_on(true);
     }
 
     void turn_off() override
     {
+        set_linked_lights_on(false);
+    }
+
+    void set_linked_lights_on(bool on)
+    {
         for (const auto& linked_uid : this->links) {
-            if (auto* light = static_cast<rf::gr::Light*>(rf::gr::light_get_from_handle(rf::gr::level_get_light_handle_from_uid(linked_uid)))) {
-                light->on = false;
+            const int handle = rf::gr::level_get_light_handle_from_uid(linked_uid);
+            if (handle >= 0) {
+                rf::gr::light_get_from_handle(handle)->on = on;
             }
+            alpine_dir_light_set_on(linked_uid, on);
         }
     }
 };
@@ -2166,6 +2171,7 @@ struct EventSetLightColor : rf::Event
             for (const auto& linked_uid : this->links) {
                 auto* level_light = rf::gr::level_light_lookup_from_uid(linked_uid);
                 if (!level_light) {
+                    alpine_dir_light_set_color(linked_uid, hue_r, hue_g, hue_b);
                     continue;
                 }
                 // light_get_from_handle is pure arithmetic, so a bad handle must be rejected here
@@ -2702,6 +2708,41 @@ struct EventMeshSetCollision : rf::Event
                 alpine_mesh_set_collision(obj, collision_type);
             } else {
                 xlog::warn("[EventMeshSetCollision] link[{}]: handle={} -> NULL", i, link_handle);
+            }
+        }
+    }
+};
+
+// id 163
+struct EventMeshSetScale : rf::Event
+{
+    char padding_align[3];
+    float scale = 1.0f;
+
+    void register_variable_handlers() override
+    {
+        rf::Event::register_variable_handlers();
+        auto& handlers = variable_handler_storage[this];
+        handlers[SetVarOpts::float1] = [](rf::Event* event, const std::string& value) {
+            auto* e = static_cast<EventMeshSetScale*>(event);
+            e->scale = std::stof(value);
+        };
+    }
+
+    void turn_on() override
+    {
+        xlog::debug("[EventMeshSetScale] turn_on: uid={} scale={} links={}", this->uid, scale, this->links.size());
+        if (!std::isfinite(scale) || scale <= 0.0f) {
+            xlog::warn("[EventMeshSetScale] uid {} has no positive scale ({}); linked meshes reset to 1", this->uid,
+                       scale);
+        }
+        for (int i = 0; i < static_cast<int>(this->links.size()); i++) {
+            int link_handle = this->links[i];
+            Object* obj = rf::obj_from_handle(link_handle);
+            if (obj) {
+                alpine_mesh_set_scale(obj, scale);
+            } else {
+                xlog::warn("[EventMeshSetScale] link[{}]: handle={} -> NULL", i, link_handle);
             }
         }
     }

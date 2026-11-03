@@ -44,6 +44,9 @@ struct VoteOptionsCache
 VoteOptionsCache g_vote_options;
 std::optional<ActiveVoteState> g_active_vote;
 
+// af_sreq_match_state
+uint8_t g_match_state = 0;
+
 // Session mutator set pushed by the server (af_sreq_active_mutators).
 std::optional<std::vector<VoteMutatorDecl>> g_active_mutators;
 uint32_t g_active_mutators_revision = 0;
@@ -687,7 +690,39 @@ bool vote_options_is_type_enabled(AfVoteType type)
     if (bit >= 32) {
         return false;
     }
-    return (g_vote_options.data.enabled_vote_mask & (1u << bit)) != 0;
+    const bool advertised = (g_vote_options.data.enabled_vote_mask & (1u << bit)) != 0;
+
+    // Mirrors VoteMgr::StartVote's live-match rules
+    if (g_match_state & AF_MATCH_STATE_LIVE) {
+        if (!(g_match_state & AF_MATCH_STATE_PARTICIPANT)) {
+            return false;
+        }
+        switch (type) {
+            case AfVoteType::Surrender:
+            case AfVoteType::CancelMatch:
+                return true;
+            case AfVoteType::Extend:
+                return advertised;
+            default:
+                return false;
+        }
+    }
+    return advertised;
+}
+
+bool vote_client_spectating_match()
+{
+    return (g_match_state & AF_MATCH_STATE_LIVE) && !(g_match_state & AF_MATCH_STATE_PARTICIPANT);
+}
+
+bool vote_client_match_live()
+{
+    return (g_match_state & AF_MATCH_STATE_LIVE) != 0;
+}
+
+void vote_client_on_match_state(uint8_t flags)
+{
+    g_match_state = flags;
 }
 
 void vote_options_request_if_needed()
@@ -935,6 +970,7 @@ void vote_client_reset()
     g_vote_options = VoteOptionsCache{};
     g_active_mutators.reset();
     g_active_mutators_revision = 0;
+    g_match_state = 0;
     // Also drop the HUD prompt: without this a vote left running on the server we
     // just left would keep its notification up across a reconnect elsewhere.
     remove_hud_vote_notification();

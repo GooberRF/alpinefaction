@@ -5,11 +5,16 @@
 #include <patch_common/MemUtils.h>
 #include <mbstring.h>
 #include <algorithm>
+#include <cmath>
 #include <memory>
+#include <numbers>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <vector>
 #include <common/terrain/alpine_terrain.h>
+#include <common/alpine_dir_light.h>
+#include <common/alpine_waypoint_helper.h>
 
 extern "C" IMAGE_DOS_HEADER __ImageBase;
 
@@ -184,7 +189,10 @@ enum class DedObjectType : int
     DED_VEHICLE_FACTORY = 0x1C, // Alpine 1.5
     DED_PROJECTION_CAMERA = 0x1D, // Alpine 1.5
     DED_ROPE_EMITTER = 0x1E, // Alpine 1.5
-    DED_TERRAIN = 0x1F // Alpine 1.5
+    DED_TERRAIN = 0x1F, // Alpine 1.5
+    DED_DIRECTIONAL_LIGHT = 0x20, // Alpine 1.5
+    DED_SUN_ARROW = 0x21, // editor-only viewport handle for the level sun, never serialized
+    DED_WAYPOINT_HELPER = 0x22, // Alpine 1.5
 };
 
 struct Vector3
@@ -197,8 +205,37 @@ struct Vector3
     Vector3(float x_, float y_, float z_) : x(x_), y(y_), z(z_) {}
 
     Vector3 operator+(const Vector3& b) const { return {x + b.x, y + b.y, z + b.z}; }
+    Vector3 operator-(const Vector3& b) const { return {x - b.x, y - b.y, z - b.z}; }
+    Vector3 operator*(float s) const { return {x * s, y * s, z * s}; }
 };
 static_assert(sizeof(Vector3) == 0xC, "Vector3 size mismatch!");
+
+inline bool operator==(const Vector3& a, const Vector3& b)
+{
+    return a.x == b.x && a.y == b.y && a.z == b.z;
+}
+
+inline float dot(const Vector3& a, const Vector3& b)
+{
+    return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+inline Vector3 cross(const Vector3& a, const Vector3& b)
+{
+    return {a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x};
+}
+
+inline float length(const Vector3& a)
+{
+    return std::sqrt(dot(a, a));
+}
+
+// Zero for a vector too short to have a direction.
+inline Vector3 normalized(const Vector3& a)
+{
+    const float len = length(a);
+    return len > 1e-12f && std::isfinite(len) ? a * (1.0f / len) : Vector3{};
+}
 
 struct Matrix3
 {
@@ -225,7 +262,54 @@ struct Matrix3
 };
 static_assert(sizeof(Matrix3) == 0x24, "Matrix3 size mismatch!");
 
+// Newell's method: along the polygon's normal, twice its area long
+inline Vector3 newell_normal(std::span<const Vector3> points)
+{
+    Vector3 n{0.0f, 0.0f, 0.0f};
+    for (size_t i = 0; i < points.size(); ++i) {
+        const Vector3& a = points[i];
+        const Vector3& b = points[(i + 1) % points.size()];
+        n.x += (a.y - b.y) * (a.z + b.z);
+        n.y += (a.z - b.z) * (a.x + b.x);
+        n.z += (a.x - b.x) * (a.y + b.y);
+    }
+    return n;
+}
+
+inline Vector3 centroid(std::span<const Vector3> points)
+{
+    Vector3 sum{0.0f, 0.0f, 0.0f};
+    for (const Vector3& p : points) {
+        sum = sum + p;
+    }
+    return points.empty() ? sum : sum * (1.0f / static_cast<float>(points.size()));
+}
+
+// A unit vector square to a
+inline Vector3 any_perpendicular(const Vector3& a)
+{
+    return normalized(cross(a, std::abs(a.x) < 0.9f ? Vector3{1.0f, 0.0f, 0.0f} : Vector3{0.0f, 1.0f, 0.0f}));
+}
+
+// v turned the shortest way that takes unit `from` onto unit `to` (Rodrigues); not for opposite ones
+inline Vector3 rotate_between(const Vector3& from, const Vector3& to, const Vector3& v)
+{
+    const float c = dot(from, to);
+    if (c > 1.0f - 1e-6f) return v;
+    const Vector3 axis = cross(from, to);
+    return v * c + cross(axis, v) + axis * (dot(axis, v) / (1.0f + c));
+}
+
+inline constexpr float two_pi = 2.0f * std::numbers::pi_v<float>;
+
 inline const Matrix3 identity_orient{{1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}};
+
+enum class PlaneSide
+{
+    front = 1,
+    on = 2,
+    behind = 3,
+};
 
 struct Plane
 {
@@ -234,6 +318,12 @@ struct Plane
 
     Plane() = default;
     Plane(const Vector3& n, float d) : normal(n), dist(d) {}
+
+    // FUN_0048a790, within RED's on-plane distance (float 1e-4, on the x87)
+    PlaneSide side_of(const Vector3& point) const
+    {
+        return static_cast<PlaneSide>(AddrCaller{0x0048a790}.c_call<int>(&point, this));
+    }
 };
 static_assert(sizeof(Plane) == 0x10, "Plane size mismatch!");
 
@@ -397,7 +487,7 @@ static constexpr uintptr_t ded_object_vtbl_addr = 0x55712C;
 struct DedObject
 {
     void* vtbl;
-    VString field_4; // unsure what this is
+    VString class_mesh_filename; // clutter, entity and item: the class template's mesh file (copied by 0x00452680)
     void* vmesh;
     int field_10;
     Vector3 pos;
@@ -410,12 +500,16 @@ struct DedObject
     DedObjectType type;
     Vector3 field_60;
     Vector3 field_6C;
-    char field_78;
+    char listed_in_tree; // class templates: the object tree (0x00443610) lists the class
     char padding2[3];
     VArray<int> links;
     VArray<std::string> field_88;
 };
 static_assert(sizeof(DedObject) == 0x94, "DedObject size mismatch!");
+static_assert(offsetof(DedObject, class_mesh_filename) == 0x04);
+static_assert(offsetof(DedObject, pos) == 0x14);
+static_assert(offsetof(DedObject, type) == 0x5C);
+static_assert(offsetof(DedObject, listed_in_tree) == 0x78);
 
 
 struct DedEvent : DedObject
@@ -435,6 +529,13 @@ struct DedEvent : DedObject
     VString str2;
 };
 static_assert(sizeof(DedEvent) == 0xC4, "DedEvent size mismatch");
+
+// Partial; the viewport emitter (0x00455030) plays `sound_filename` by name.
+struct DedAmbientSound : DedObject
+{
+    VString sound_filename; // 0x94
+};
+static_assert(offsetof(DedAmbientSound, sound_filename) == 0x94);
 
 struct DedClutter : DedObject
 {
@@ -475,6 +576,94 @@ static_assert(offsetof(DedGeoRegion, height) == 0x9C);
 static_assert(offsetof(DedGeoRegion, width) == 0xA0);
 static_assert(offsetof(DedGeoRegion, depth) == 0xA4);
 
+// Partial. The ctor (0x0044EC20) takes `emitter` from the 128-slot pool (0x00481E10), NULL when it is full.
+struct DedParticleEmitter : DedObject
+{
+    void* emitter; // 0x94
+};
+static_assert(offsetof(DedParticleEmitter, emitter) == 0x94);
+
+enum class GasRegionShape : int
+{
+    sphere = 1,
+    box = 2,
+};
+
+// Partial. The ctor (0x00451AC0) leaves `region` NULL; add_object's 0x004154B0 creates it for a sphere or box
+// shape (0x004C6970 / 0x004C6A10). Box sizes are full size along the object's own axes, as the viewport draws them
+// (0x00421120): width x, height y, depth z.
+struct DedGasRegion : DedObject
+{
+    void* region;         // 0x94
+    GasRegionShape shape; // 0x98
+    float radius;         // 0x9C
+    float height;         // 0xA0
+    float width;          // 0xA4
+    float depth;          // 0xA8
+
+    // FUN_00451d00: copies the sizes into `region`, which must exist
+    void sync_region_sizes()
+    {
+        AddrCaller{0x00451D00}.this_call(this, radius, height, width, depth);
+    }
+};
+static_assert(offsetof(DedGasRegion, region) == 0x94);
+static_assert(offsetof(DedGasRegion, shape) == 0x98);
+static_assert(offsetof(DedGasRegion, radius) == 0x9C);
+static_assert(offsetof(DedGasRegion, height) == 0xA0);
+static_assert(offsetof(DedGasRegion, width) == 0xA4);
+static_assert(offsetof(DedGasRegion, depth) == 0xA8);
+
+// Partial; sizes as the viewport draws them (0x004208C0).
+struct DedTrigger : DedObject
+{
+    int is_box;   // 0x94  0 sphere, 1 box
+    float radius; // 0x98
+    float height; // 0x9C
+    float width;  // 0xA0
+    float depth;  // 0xA4
+};
+static_assert(offsetof(DedTrigger, is_box) == 0x94);
+static_assert(offsetof(DedTrigger, radius) == 0x98);
+static_assert(offsetof(DedTrigger, height) == 0x9C);
+static_assert(offsetof(DedTrigger, width) == 0xA0);
+static_assert(offsetof(DedTrigger, depth) == 0xA4);
+
+// Partial; always a box, sizes as the viewport draws them (0x00421450).
+struct DedClimbingRegion : DedObject
+{
+    int climb_type; // 0x94  1 ladder, 2 chain fence
+    float height;   // 0x98
+    float width;    // 0x9C
+    float depth;    // 0xA0
+};
+static_assert(offsetof(DedClimbingRegion, climb_type) == 0x94);
+static_assert(offsetof(DedClimbingRegion, height) == 0x98);
+static_assert(offsetof(DedClimbingRegion, width) == 0x9C);
+static_assert(offsetof(DedClimbingRegion, depth) == 0xA0);
+
+enum class PushRegionShape : int
+{
+    sphere = 1,
+    axis_aligned_box = 2, // drawn and applied with world axes whatever the orient
+    oriented_box = 3,
+};
+
+// Partial; sizes as the viewport draws them (0x004216B0).
+struct DedPushRegion : DedObject
+{
+    PushRegionShape shape; // 0x94
+    float radius;          // 0x98
+    float height;          // 0x9C
+    float width;           // 0xA0
+    float depth;           // 0xA4
+};
+static_assert(offsetof(DedPushRegion, shape) == 0x94);
+static_assert(offsetof(DedPushRegion, radius) == 0x98);
+static_assert(offsetof(DedPushRegion, height) == 0x9C);
+static_assert(offsetof(DedPushRegion, width) == 0xA0);
+static_assert(offsetof(DedPushRegion, depth) == 0xA4);
+
 // Per-slot texture override for editor mesh objects
 struct EditorTextureOverride {
     uint8_t slot;
@@ -510,6 +699,7 @@ struct DedMesh : DedObject
     bool no_shadow_cast = false;       // excluded from the lightmap bake's mesh occluders
     uint8_t brush_geo_source = 0;      // collision_mode 3 only: 0=Highest LOD, 1=Lowest LOD, 2=Collision Mesh
     std::string collision_mesh_filename; // brush_geo_source 2 only: static .v3m collided instead of the render mesh
+    float draw_scale = 1.0f;           // uniform scale, sanitized by alpine_mesh_scale::sanitize
 };
 
 struct DedNote : DedObject
@@ -585,13 +775,17 @@ enum class VehicleFactoryTeam : int
     blue = 1,
 };
 
+inline constexpr const char* vehicle_factory_default_class = "Jeep01";
+
 struct DedVehicleFactory : DedObject
 {
-    std::string vehicle_class = "Jeep01";
+    std::string vehicle_class = vehicle_factory_default_class;
     float respawn_delay_s = 30.0f;
     VehicleFactoryTeam team = VehicleFactoryTeam::none;
     bool lock_to_team = false;
     bool active_by_default = true;
+    // Turret classes only: degrees the turret may yaw either side of its spawn facing; 0 = unrestricted.
+    uint8_t turret_yaw_limit_deg = 0;
 
     // Kept out of DedObject::vmesh so stock cleanup paths never free it; vehicle_factory.cpp owns it.
     void* preview_vmesh = nullptr;
@@ -604,6 +798,16 @@ struct DedVehicleFactory : DedObject
 struct DedProjectionCamera : DedObject
 {
     // All projection settings live on the linked Display_Projection event.
+};
+
+// Navigation hint for vehicle bots. Its links to other helpers (DedObject::links, made in link mode) are the routes
+// between them; the game follows each one both ways.
+struct DedWaypointHelper : DedObject
+{
+    uint8_t helper_type = static_cast<uint8_t>(alpine_waypoint_helper::Type::ground);
+    uint8_t flags = 0;
+    uint8_t size_class = static_cast<uint8_t>(alpine_waypoint_helper::SizeClass::driller);
+    float radius = alpine_waypoint_helper::default_radius;
 };
 
 // flags bits, shared with the game runtime's rope_flag_* constants
@@ -727,6 +931,7 @@ struct DedTerrainDecoration
     bool random_yaw = true;
     bool casts_shadows = false;
     bool dither_fade = false;
+    alpine_terrain::DecorationEdges edges = alpine_terrain::DecorationEdges::hard;
 
     bool operator==(const DedTerrainDecoration&) const = default;
 };
@@ -769,6 +974,33 @@ struct DedTerrain : DedObject
     DedTerrainData data;
     // Not serialized: a save already showed the "no compiled geometry" message box for it
     bool unbuilt_save_warned = false;
+};
+
+// orient.fvec is the direction the light travels. Fields mirror alpine_dir_light::Record.
+struct DedDirectionalLight : DedObject
+{
+    uint8_t color_r = 255, color_g = 255, color_b = 255;
+    float intensity = alpine_dir_light::default_intensity;
+    bool initially_on = true;
+    alpine_dir_light::Shape shape = alpine_dir_light::Shape::none;
+    float extent_x = alpine_dir_light::default_extent; // box width, sphere/cylinder radius
+    float extent_y = alpine_dir_light::default_extent; // box height, cylinder length
+    float extent_z = alpine_dir_light::default_extent; // box depth
+    float box_yaw = 0.0f;                              // degrees about world Y, box only
+    float feather = 0.0f;
+    float spread = 0.0f;                               // degrees, baked penumbra
+    bool cast_baked_shadows = true;
+    bool liquid_occludes = true;
+    bool sky_passes = true;
+    bool outside_casts = true;
+    bool affects_meshes = true;
+    alpine_dir_light::MeshMode mesh_mode = alpine_dir_light::MeshMode::lightmap_scaled;
+    bool always_show_range = false;
+};
+
+// The level sun's viewport handle: pos and orient are derived from the level properties every frame.
+struct DedSunArrow : DedObject
+{
 };
 
 struct DedBoltEmitter : DedObject
@@ -824,6 +1056,80 @@ struct CColorDialog : CDialog
     CHOOSECOLORA m_cc;
 };
 static_assert(offsetof(CColorDialog, m_cc) == 0x5C, "CColorDialog m_cc offset mismatch!");
+
+// MFC's CCmdUI, which CN_UPDATE_COMMAND_UI passes as pExtra: Enable(BOOL) and SetCheck(int) are its first virtuals
+struct CCmdUI
+{
+    void enable(BOOL on)
+    {
+        AddrCaller{(*reinterpret_cast<uintptr_t**>(this))[0]}.this_call(this, on);
+    }
+
+    void set_check(int check)
+    {
+        AddrCaller{(*reinterpret_cast<uintptr_t**>(this))[1]}.this_call(this, check);
+    }
+};
+
+// RED's float spinner: a runtime child dialog (id 0) holding edit 1234 and up-down 1228. It parses the edit's text
+// into `value` only on EN_KILLFOCUS (0x0044B060, message map 0x005569A8), clearing `valid` when it does not parse.
+struct DedFloatSpinner
+{
+    char _pad_00[0xAC];
+    CWnd edit;          // +0xAC
+    bool modified;      // +0xE8
+    bool valid;         // +0xE9 (FUN_0044AE00)
+    char _pad_EA[2];
+    float min_value;    // +0xEC
+    float max_value;    // +0xF0
+    float step;         // +0xF4
+    int decimals;       // +0xF8
+    void (*on_change)(); // +0xFC
+    char _pad_100[0x110 - 0x100];
+    float value;        // +0x110
+
+    // FUN_0044b180: clamps v to the range, stores it and shows it in the edit when there is one
+    void set(float v)
+    {
+        AddrCaller{0x0044B180}.this_call(this, v);
+    }
+};
+static_assert(offsetof(DedFloatSpinner, edit) == 0xAC);
+static_assert(offsetof(DedFloatSpinner, valid) == 0xE9);
+static_assert(offsetof(DedFloatSpinner, min_value) == 0xEC);
+static_assert(offsetof(DedFloatSpinner, max_value) == 0xF0);
+static_assert(offsetof(DedFloatSpinner, on_change) == 0xFC);
+static_assert(offsetof(DedFloatSpinner, value) == 0x110);
+
+// The int counterpart of DedFloatSpinner (constructor 0x0044BB30).
+struct DedIntSpinner
+{
+    char _pad_00[0xEC];
+    int min_value; // +0xEC
+    int max_value; // +0xF0
+    char _pad_F4[0x108 - 0xF4];
+    int value;     // +0x108
+
+    // FUN_0044bf40: clamps v to the range, stores it and shows it in the edit when there is one
+    void set(int v)
+    {
+        AddrCaller{0x0044BF40}.this_call(this, v);
+    }
+};
+static_assert(sizeof(DedIntSpinner) == 0x10C);
+static_assert(offsetof(DedIntSpinner, min_value) == 0xEC);
+static_assert(offsetof(DedIntSpinner, max_value) == 0xF0);
+static_assert(offsetof(DedIntSpinner, value) == 0x108);
+
+// Level Properties (FUN_00402300 runs it modally; OnInitDialog 0x00467540 builds the fog spinners)
+struct CLevelDialog : CDialog
+{
+    char _pad_5C[0x264 - 0x5C];
+    DedFloatSpinner* fog_near_spinner; // +0x264
+    DedFloatSpinner* fog_far_spinner;  // +0x268
+};
+static_assert(offsetof(CLevelDialog, fog_near_spinner) == 0x264);
+static_assert(offsetof(CLevelDialog, fog_far_spinner) == 0x268);
 
 struct CEdit : CWnd
 {
@@ -1120,9 +1426,32 @@ struct CMainFrame : CFrameWnd
     {
         AddrCaller{0x00449680}.this_call(this);
     }
+
+    // The top bar (IDD_MAIN_FRAME_TOP_BAR), created by CMainFrame::OnCreate at 0x00447197
+    HWND top_bar_hwnd()
+    {
+        return WndToHandle(reinterpret_cast<CWnd*>(dialog_bar));
+    }
+
+    // AFX_IDW_STATUS_BAR (0x00447277); WM_SETTEXT / WM_GETTEXT address its message pane
+    HWND status_bar_hwnd()
+    {
+        return WndToHandle(reinterpret_cast<CWnd*>(status_bar));
+    }
 };
 static_assert(sizeof(CMainFrame) == 0x550);
+static_assert(offsetof(CMainFrame, doc) == 0xD0);
+static_assert(offsetof(CMainFrame, dialog_bar) == 0xDC);
+static_assert(offsetof(CMainFrame, status_bar) == 0x164);
 static_assert(offsetof(CMainFrame, custom_colors) == 0x4E8, "custom_colors offset mismatch!");
 
 static auto& g_main_frame = addr_as_ref<CMainFrame*>(0x006F9E68);
+
+// Its pane 0 takes SetWindowText
+inline HWND editor_status_bar()
+{
+    const HWND bar = g_main_frame ? g_main_frame->status_bar_hwnd() : nullptr;
+    return bar && IsWindow(bar) ? bar : nullptr;
+}
+
 static auto& g_maximized_viewport = addr_as_ref<int>(0x0057B9C0);

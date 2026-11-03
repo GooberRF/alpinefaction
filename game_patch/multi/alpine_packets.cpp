@@ -4,10 +4,12 @@
 #include <cmath>
 #include <algorithm>
 #include <array>
+#include <initializer_list>
 #include <limits>
 #include <optional>
 #include <ranges>
 #include <span>
+#include <string_view>
 #include <unordered_map>
 #include <common/utils/bool-utils.h>
 #include <common/utils/list-utils.h>
@@ -34,6 +36,7 @@
 #include "jetpack.h"
 #include "pit.h"
 #include "salvage.h"
+#include "scavenger.h"
 #include "vehicles/vehicle.h"
 #include "vote_client.h"
 #include "../misc/player.h"
@@ -42,10 +45,9 @@
 #include "rounds.h"
 #include "../sound/sound.h"
 #include "../misc/alpine_settings.h"
-#include "../misc/waypoints.h"
 #include "../object/object.h"
+#include "bots/bot_context_fwd.h"
 #include "bots/bot_personality.h"
-#include "bots/bot_state.h"
 #include "../object/object_private.h"
 #include "../misc/misc.h"
 #include "../purefaction/pf_packets.h"
@@ -170,6 +172,10 @@ bool af_process_packet(
         }
         case af_packet_type::af_salvage_state: {
             af_process_salvage_state_packet(data, static_cast<size_t>(len), addr);
+            return true;
+        }
+        case af_packet_type::af_scavenger_state: {
+            af_process_scavenger_state_packet(data, static_cast<size_t>(len), addr);
             return true;
         }
         case af_packet_type::af_crit_shot: {
@@ -438,6 +444,31 @@ static size_t af_build_damage_notify(std::byte* out, uint8_t player_id, int roun
     return len;
 }
 
+// Anchored on world_pos when given, else on the victim player's entity.
+static void af_show_damage_notify(uint8_t player_id, const rf::Vector3* world_pos, int32_t hull_handle,
+                                  uint16_t damage, bool died, bool crit)
+{
+    rf::Vector3 anchor{};
+    if (world_pos) {
+        anchor = *world_pos;
+    }
+    else {
+        rf::Player* player = rf::multi_find_player_by_id(player_id);
+        if (!player) {
+            return;
+        }
+
+        rf::Entity* entity = rf::entity_from_handle(player->entity_handle);
+        if (!entity) {
+            return;
+        }
+        anchor = entity->pos;
+    }
+
+    add_damage_notify_world_hud_string(anchor, player_id, hull_handle, damage, died, crit);
+    play_local_hit_sound(player_id, hull_handle, died);
+}
+
 void af_send_damage_notify_packet(uint8_t player_id, float damage, bool died, bool crit, rf::Player* player,
                                   const AfDamageNotifyHull* hull)
 {
@@ -453,6 +484,13 @@ void af_send_damage_notify_packet(uint8_t player_id, float damage, bool died, bo
 
     if (!player) {
         xlog::error("af_damage_notify_packet: Attempted to send to an invalid player");
+        return;
+    }
+
+    if (player == rf::local_player) {
+        // Listen-server host: show it locally; packets to the host are never delivered.
+        af_show_damage_notify(hull ? af_damage_notify_no_player : player_id, hull ? &hull->pos : nullptr,
+                              hull ? hull->handle : -1, static_cast<uint16_t>(rounded_damage), died, crit);
         return;
     }
 
@@ -532,25 +570,10 @@ static void af_process_damage_notify_packet(const void* data, size_t len, const 
         }
     }
 
-    rf::Vector3 anchor = world_pos;
-    if (!has_world_pos) {
-        rf::Player* player = rf::multi_find_player_by_id(damage_notify_packet.player_id);
-        if (!player) {
-            return;
-        }
-
-        rf::Entity* entity = rf::entity_from_handle(player->entity_handle);
-        if (!entity) {
-            return;
-        }
-        anchor = entity->pos;
-    }
-
     const bool died = (damage_notify_packet.flags & AF_DAMAGE_NOTIFY_DIED) != 0;
     const bool crit = (damage_notify_packet.flags & AF_DAMAGE_NOTIFY_CRIT) != 0;
-    add_damage_notify_world_hud_string(anchor, damage_notify_packet.player_id, hull_handle,
-                                       damage_notify_packet.damage, died, crit);
-    play_local_hit_sound(died);
+    af_show_damage_notify(damage_notify_packet.player_id, has_world_pos ? &world_pos : nullptr, hull_handle,
+                          damage_notify_packet.damage, died, crit);
 }
 
 void af_send_crit_shot_packet(uint8_t shooter_player_id, uint8_t weapon_type, rf::Player* player)
@@ -897,6 +920,12 @@ void serialize_payload(const StatsPsskPayload& payload, std::byte* buf, size_t& 
 void serialize_payload(const ReadyPromptPayload& payload, std::byte* buf, size_t& offset)
 {
     buf[offset++] = static_cast<std::byte>(payload.state);
+}
+
+// af_sreq_match_state
+void serialize_payload(const MatchStatePayload& payload, std::byte* buf, size_t& offset)
+{
+    buf[offset++] = static_cast<std::byte>(payload.flags);
 }
 
 // af_sreq_pit_queue_state
@@ -1981,6 +2010,9 @@ static void af_process_client_req_packet(const void* data, size_t len, const rf:
                 vehicle_server_handle_crash_report(player, req.vehicle_handle,
                                                    req.kind == AF_VEHICLE_CRUSH_GROUND, req.impact_dv);
             }
+            else if (req.kind == AF_VEHICLE_CRUSH_SCRAPE) {
+                vehicle_server_handle_scrape_report(player, req.vehicle_handle, req.impact_dv);
+            }
             break;
         }
         case af_client_req_type::af_req_stats_pssk: {
@@ -2528,6 +2560,25 @@ void af_send_ready_prompt(rf::Player* player, uint8_t state)
     af_send_server_req_packet(packet, player);
 }
 
+void af_send_match_state(rf::Player* player, uint8_t flags)
+{
+    // The listen-server host has no vote UI to tailor
+    if (!rf::is_server || !player || player == rf::local_player || !player->net_data) {
+        return;
+    }
+    if (!is_player_minimum_af_client_version(player, 1, 5, 0)) {
+        return;
+    }
+
+    af_server_req_packet packet{};
+    packet.header.type = static_cast<uint8_t>(af_packet_type::af_server_req);
+    packet.header.size = sizeof(uint8_t) + sizeof(uint8_t); // req_type + flags
+    packet.req_type = af_server_req_type::af_sreq_match_state;
+    packet.payload = MatchStatePayload{flags};
+
+    af_send_server_req_packet(packet, player);
+}
+
 // Apply a Pit queue-state update on the local client.
 static void apply_local_pit_queue_state(uint8_t flags, uint8_t pos, uint8_t total)
 {
@@ -2919,6 +2970,14 @@ static void af_process_server_req_packet(const void* data, size_t len, const rf:
             }
             const uint8_t state = bytes[offset];
             apply_ready_prompt_state(state);
+            break;
+        }
+        case af_server_req_type::af_sreq_match_state: {
+            if (remaining < sizeof(uint8_t)) {
+                xlog::warn("af_process_server_req_packet: MatchState payload too short");
+                return;
+            }
+            vote_client_on_match_state(static_cast<uint8_t>(bytes[offset]));
             break;
         }
         case af_server_req_type::af_sreq_pit_queue_state: {
@@ -3586,24 +3645,12 @@ void af_process_bagman_state_packet(const void* data, size_t len, const rf::NetA
         g_bagman_info.carrier->stats->score = pkt.carrier_score;
     }
 
-    // Handle bag waypoints for bots.
-    if (g_bagman_info.state == BagState::BS_Carried || g_bagman_info.state == BagState::BS_Delayed) {
-        waypoints_on_bag_carried();
-    } else {
-        // On-ground bag: position comes from the replicated item object.
-        rf::Vector3 bag_world_pos;
-        if (bagman_get_client_pickup_pos(&bag_world_pos)) {
-            waypoints_on_bag_world_pos(bag_world_pos);
-        }
-    }
+    bagman_update_bot_waypoints();
 }
 
-// Build the wire packet once from the current salvage state.
-static void build_af_salvage_state_packet(af_salvage_state_packet& pkt)
+// The flag fields shared by af_salvage_state and af_scavenger_state, from the current flag state.
+static void fill_salvage_state_fields(af_salvage_state_packet& pkt)
 {
-    pkt.header.type = static_cast<uint8_t>(af_packet_type::af_salvage_state);
-    pkt.header.size = static_cast<uint16_t>(sizeof(af_salvage_state_packet) - sizeof(RF_GamePacketHeader));
-
     pkt.state = static_cast<uint8_t>(salvage_get_state());
     rf::Player* carrier = salvage_get_carrier();
     pkt.carrier_player_id = (carrier && carrier->net_data) ? carrier->net_data->player_id : 0xFF;
@@ -3623,6 +3670,65 @@ static void build_af_salvage_state_packet(af_salvage_state_packet& pkt)
     pkt.flag_x = flag_pos.x;
     pkt.flag_y = flag_pos.y;
     pkt.flag_z = flag_pos.z;
+}
+
+// Build the wire packet once from the current salvage state.
+static void build_af_salvage_state_packet(af_salvage_state_packet& pkt)
+{
+    pkt.header.type = static_cast<uint8_t>(af_packet_type::af_salvage_state);
+    pkt.header.size = static_cast<uint16_t>(sizeof(af_salvage_state_packet) - sizeof(RF_GamePacketHeader));
+    fill_salvage_state_fields(pkt);
+}
+
+// Receive-side size checks shared by the flag state packets: declared payload against the
+// buffer, the buffer against the struct, and the declared payload against the struct.
+static bool flag_state_packet_size_ok(const void* data, size_t len, size_t packet_size, std::string_view tag)
+{
+    RF_GamePacketHeader hdr{};
+    std::memcpy(&hdr, data, sizeof(hdr));
+    if (sizeof(RF_GamePacketHeader) + hdr.size > len) {
+        xlog::warn("{}: truncated (declared={}, len={})", tag, hdr.size, len);
+        return false;
+    }
+    if (len < packet_size) {
+        xlog::warn("{}: short packet ({}<{})", tag, len, packet_size);
+        return false;
+    }
+    const size_t expected_payload = packet_size - sizeof(RF_GamePacketHeader);
+    if (hdr.size != expected_payload) {
+        xlog::warn("{}: bad payload size {} (expected {})", tag, hdr.size, expected_payload);
+        return false;
+    }
+    return true;
+}
+
+// One warning per 5 s for rejected flag state packets, whatever the reason.
+static bool flag_state_reject_warn_due()
+{
+    static rf::Timestamp reject_warn_throttle;
+    if (reject_warn_throttle.valid() && !reject_warn_throttle.elapsed()) {
+        return false;
+    }
+    reject_warn_throttle.set(5000);
+    return true;
+}
+
+// A NaN, infinity or absurd magnitude here would reach the flag item's position,
+// the world HUD projection and the bot navigation, and poison them for the rest
+// of the level. The bound is far outside any legitimate RF level, so it only ever
+// catches garbage.
+// This guard will probably never actually trigger, but costs virtually nothing
+// and is best practice.
+static bool flag_state_coords_ok(std::initializer_list<float> coords, std::string_view tag)
+{
+    constexpr float kFlagStateMaxCoordMagnitude = 100000.0f;
+    const bool sane = std::all_of(coords.begin(), coords.end(), [](float v) {
+        return std::isfinite(v) && std::fabs(v) <= kFlagStateMaxCoordMagnitude;
+    });
+    if (!sane && flag_state_reject_warn_due()) {
+        xlog::warn("{}: rejecting packet with out-of-range coordinates", tag);
+    }
+    return sane;
 }
 
 void af_send_salvage_state_packet(rf::Player* player)
@@ -3676,49 +3782,119 @@ void af_process_salvage_state_packet(const void* data, size_t len, const rf::Net
         return;
     }
 
-    RF_GamePacketHeader hdr{};
-    std::memcpy(&hdr, data, sizeof(hdr));
-    if (sizeof(RF_GamePacketHeader) + hdr.size > len) {
-        xlog::warn("salvage_state: truncated (declared={}, len={})", hdr.size, len);
-        return;
-    }
-    if (len < sizeof(af_salvage_state_packet)) {
-        xlog::warn("salvage_state: short packet ({}<{})", len, sizeof(af_salvage_state_packet));
+    if (!flag_state_packet_size_ok(data, len, sizeof(af_salvage_state_packet), "salvage_state")) {
         return;
     }
 
     af_salvage_state_packet pkt{};
     std::memcpy(&pkt, data, sizeof(pkt));
 
-    const size_t expected_payload = sizeof(af_salvage_state_packet) - sizeof(RF_GamePacketHeader);
-    if (pkt.header.size != expected_payload) {
-        xlog::warn("salvage_state: bad payload size {} (expected {})", pkt.header.size, expected_payload);
-        return;
-    }
-
-    // A NaN, infinity or absurd magnitude here would reach the flag item's position,
-    // the world HUD projection and the bot navigation, and poison them for the rest
-    // of the level. The bound is far outside any legitimate RF level, so it only ever
-    // catches garbage.
-    // This guard will probably never actually trigger, but costs virtually nothing
-    // and is best practice.
-    constexpr float kSalvageMaxCoordMagnitude = 100000.0f;
-    const auto coord_is_sane = [](float v) {
-        return std::isfinite(v) && std::fabs(v) <= kSalvageMaxCoordMagnitude;
-    };
-    if (!coord_is_sane(pkt.spawn_x) || !coord_is_sane(pkt.spawn_y) || !coord_is_sane(pkt.spawn_z)
-        || !coord_is_sane(pkt.flag_x) || !coord_is_sane(pkt.flag_y) || !coord_is_sane(pkt.flag_z)) {
-        static rf::Timestamp non_finite_warn_throttle;
-        if (!non_finite_warn_throttle.valid() || non_finite_warn_throttle.elapsed()) {
-            non_finite_warn_throttle.set(5000);
-            xlog::warn("salvage_state: rejecting packet with out-of-range coordinates");
-        }
+    if (!flag_state_coords_ok({pkt.spawn_x, pkt.spawn_y, pkt.spawn_z, pkt.flag_x, pkt.flag_y, pkt.flag_z},
+                              "salvage_state")) {
         return;
     }
 
     salvage_apply_state_from_packet(pkt.state, pkt.carrier_player_id, pkt.time_left_ms,
         pkt.red_caps, pkt.blue_caps, rf::Vector3{pkt.spawn_x, pkt.spawn_y, pkt.spawn_z},
         rf::Vector3{pkt.flag_x, pkt.flag_y, pkt.flag_z});
+}
+
+static void build_af_scavenger_state_packet(af_scavenger_state_packet& pkt)
+{
+    pkt.flag.header.type = static_cast<uint8_t>(af_packet_type::af_scavenger_state);
+    pkt.flag.header.size = static_cast<uint16_t>(sizeof(af_scavenger_state_packet) - sizeof(RF_GamePacketHeader));
+    fill_salvage_state_fields(pkt.flag);
+
+    const rf::Vector3& zone_pos = scavenger_get_zone_pos();
+    pkt.zone_x = zone_pos.x;
+    pkt.zone_y = zone_pos.y;
+    pkt.zone_z = zone_pos.z;
+    pkt.zone_radius = scavenger_get_zone_radius();
+    pkt.zone_floor_y = scavenger_get_zone_floor_y();
+    pkt.zone_time_left_ms = static_cast<uint32_t>(std::max(0, scavenger_get_zone_time_left_ms()));
+}
+
+void af_send_scavenger_state_packet(rf::Player* player)
+{
+    // server -> single client
+    if (!rf::is_server) {
+        return;
+    }
+    if (!player) {
+        xlog::error("af_scavenger_state_packet: Attempted to send to an invalid player");
+        return;
+    }
+
+    af_scavenger_state_packet pkt{};
+    build_af_scavenger_state_packet(pkt);
+
+    std::byte buf[sizeof(pkt)];
+    std::memcpy(buf, &pkt, sizeof(pkt));
+    af_send_packet(player, buf, static_cast<int>(sizeof(pkt)), true);
+}
+
+void af_send_scavenger_state_packet_to_all()
+{
+    // server -> all clients
+    if (!rf::is_server)
+        return;
+
+    af_scavenger_state_packet pkt{};
+    build_af_scavenger_state_packet(pkt);
+
+    std::byte buf[sizeof(pkt)];
+    std::memcpy(buf, &pkt, sizeof(pkt));
+
+    SinglyLinkedList<rf::Player> players{rf::player_list};
+    for (auto& p : players) {
+        if (!p.net_data)
+            continue;
+        af_send_packet(&p, buf, static_cast<int>(sizeof(pkt)), true);
+    }
+}
+
+void af_process_scavenger_state_packet(const void* data, size_t len, const rf::NetAddr&)
+{
+    // Receive: client <- server
+    if (!rf::is_multi || rf::is_server)
+        return;
+    if (len < sizeof(RF_GamePacketHeader))
+        return;
+
+    if (!gt_is_scavenger()) {
+        return;
+    }
+
+    if (!flag_state_packet_size_ok(data, len, sizeof(af_scavenger_state_packet), "scavenger_state")) {
+        return;
+    }
+
+    af_scavenger_state_packet pkt{};
+    std::memcpy(&pkt, data, sizeof(pkt));
+
+    const af_salvage_state_packet& flag = pkt.flag;
+    if (!flag_state_coords_ok({flag.spawn_x, flag.spawn_y, flag.spawn_z, flag.flag_x, flag.flag_y, flag.flag_z,
+                               pkt.zone_x, pkt.zone_y, pkt.zone_z, pkt.zone_floor_y},
+                              "scavenger_state")) {
+        return;
+    }
+    if (!std::isfinite(pkt.zone_radius) || pkt.zone_radius <= 0.0f || pkt.zone_radius > 10.0f) {
+        if (flag_state_reject_warn_due()) {
+            xlog::warn("scavenger_state: rejecting packet with zone radius {}", pkt.zone_radius);
+        }
+        return;
+    }
+
+    const SalFlagState prev_state = salvage_get_state();
+    if (!salvage_apply_state_from_packet(flag.state, flag.carrier_player_id, flag.time_left_ms,
+            flag.red_caps, flag.blue_caps, rf::Vector3{flag.spawn_x, flag.spawn_y, flag.spawn_z},
+            rf::Vector3{flag.flag_x, flag.flag_y, flag.flag_z})) {
+        return;
+    }
+    // Carried -> Delayed only ever happens on a capture, which also retires the zone.
+    const bool captured = prev_state == SalFlagState::Carried && salvage_get_state() == SalFlagState::Delayed;
+    scavenger_apply_zone_from_packet(rf::Vector3{pkt.zone_x, pkt.zone_y, pkt.zone_z}, pkt.zone_radius,
+        pkt.zone_floor_y, pkt.zone_time_left_ms, captured);
 }
 
 // server -> every AF 1.5+ client, optionally skipping one
@@ -3776,6 +3952,8 @@ static void build_af_vehicle_state_packet(af_vehicle_state_packet& pkt, int vehi
     pkt.flags = attrs.flags;
     pkt.unoccupied_s = attrs.unoccupied_s;
     std::memcpy(pkt.vel, attrs.vel, sizeof(pkt.vel));
+    pkt.yaw_base = attrs.yaw_base;
+    pkt.yaw_limit_deg = attrs.yaw_limit_deg;
 }
 
 void af_send_vehicle_state_packet(rf::Player* player, int vehicle_handle, const int32_t* seat_rider,
@@ -3836,7 +4014,7 @@ void af_process_vehicle_state_packet(const void* data, size_t len, const rf::Net
     vehicle_apply_seat_occupancy_from_packet(pkt.vehicle_handle, pkt.seat_rider, pkt.seat_count,
                                              pkt.changed_seat, pkt.vel);
     vehicle_apply_hull_attrs_from_packet(pkt.vehicle_handle, pkt.team, pkt.flags, pkt.unoccupied_s,
-                                         pkt.seat_rider, pkt.seat_count);
+                                         pkt.seat_rider, pkt.seat_count, pkt.yaw_base, pkt.yaw_limit_deg);
 }
 
 static void build_af_vehicle_fire_packet(af_vehicle_fire_packet& pkt, int vehicle_handle,
@@ -3986,10 +4164,12 @@ void af_process_vehicle_orient_packet(const void* data, size_t len, const rf::Ne
 
 static void build_af_vehicle_health_packet(af_vehicle_health_packet& pkt, int vehicle_handle, float life,
                                            float max_life, int primary_ammo, int secondary_ammo,
-                                           const uint16_t refill_ms[2], const rf::Vector3* hit_dir = nullptr)
+                                           const uint16_t refill_ms[2], const rf::Vector3* hit_dir = nullptr,
+                                           uint8_t flags = 0)
 {
     pkt.header.type = static_cast<uint8_t>(af_packet_type::af_vehicle_health);
     pkt.header.size = static_cast<uint16_t>(sizeof(pkt) - sizeof(RF_GamePacketHeader));
+    pkt.flags = flags;
     pkt.vehicle_handle = vehicle_handle;
     pkt.life = life;
     pkt.max_life = max_life;
@@ -4025,7 +4205,7 @@ void af_send_vehicle_health_packet(rf::Player* player, int vehicle_handle, float
 // server -> everyone, not just occupants: spectator HUDs and the demo recorder need it too
 void af_send_vehicle_health_packet_to_all(int vehicle_handle, float life, float max_life,
                                           int primary_ammo, int secondary_ammo, const uint16_t refill_ms[2],
-                                          bool is_reliable, const rf::Vector3* hit_dir)
+                                          bool is_reliable, const rf::Vector3* hit_dir, uint8_t flags)
 {
     if (!rf::is_server) {
         return;
@@ -4033,7 +4213,7 @@ void af_send_vehicle_health_packet_to_all(int vehicle_handle, float life, float 
 
     af_vehicle_health_packet pkt{};
     build_af_vehicle_health_packet(pkt, vehicle_handle, life, max_life, primary_ammo, secondary_ammo, refill_ms,
-                                   hit_dir);
+                                   hit_dir, flags);
 
     af_broadcast_to_af_clients(&pkt, sizeof(pkt), is_reliable);
 }
@@ -4054,7 +4234,8 @@ void af_process_vehicle_health_packet(const void* data, size_t len, const rf::Ne
     const bool has_hit_dir = pkt.hit_dir[0] != 0 || pkt.hit_dir[1] != 0 || pkt.hit_dir[2] != 0;
     vehicle_store_health_from_packet(pkt.vehicle_handle, pkt.life, pkt.max_life, pkt.primary_ammo,
                                     pkt.secondary_ammo, pkt.refill_ms[0], pkt.refill_ms[1],
-                                    has_hit_dir ? &hit_dir : nullptr);
+                                    has_hit_dir ? &hit_dir : nullptr,
+                                    (pkt.flags & AF_VEHICLE_HEALTH_SCRAPE_ONLY) != 0);
 }
 
 static void build_af_vehicle_factory_state_packet(af_vehicle_factory_state_packet& pkt,
@@ -4136,7 +4317,7 @@ void af_send_vehicle_use_request(int vehicle_handle, uint8_t seat_index)
     af_send_client_req_packet(packet, true); // reliable
 }
 
-void af_send_vehicle_crush_report(int vehicle_handle, int victim_handle)
+static void af_send_vehicle_crush_req(const VehicleCrushReqPayload& payload)
 {
     if (!rf::is_multi || rf::is_server) {
         return;
@@ -4146,25 +4327,25 @@ void af_send_vehicle_crush_report(int vehicle_handle, int victim_handle)
     packet.header.type = static_cast<uint8_t>(af_packet_type::af_client_req);
     packet.header.size = sizeof(uint8_t) + sizeof(VehicleCrushReqPayload);
     packet.req_type = af_client_req_type::af_req_vehicle_crush;
-    packet.payload = VehicleCrushReqPayload{vehicle_handle, victim_handle, AF_VEHICLE_CRUSH_RUNOVER, 0.0f};
+    packet.payload = payload;
 
     af_send_client_req_packet(packet, true); // reliable
 }
 
+void af_send_vehicle_crush_report(int vehicle_handle, int victim_handle)
+{
+    af_send_vehicle_crush_req({vehicle_handle, victim_handle, AF_VEHICLE_CRUSH_RUNOVER, 0.0f});
+}
+
 void af_send_vehicle_crash_report(int vehicle_handle, bool ground, float impact_dv)
 {
-    if (!rf::is_multi || rf::is_server) {
-        return;
-    }
+    af_send_vehicle_crush_req(
+        {vehicle_handle, -1, ground ? AF_VEHICLE_CRUSH_GROUND : AF_VEHICLE_CRUSH_WALL, impact_dv});
+}
 
-    af_client_req_packet packet{};
-    packet.header.type = static_cast<uint8_t>(af_packet_type::af_client_req);
-    packet.header.size = sizeof(uint8_t) + sizeof(VehicleCrushReqPayload);
-    packet.req_type = af_client_req_type::af_req_vehicle_crush;
-    packet.payload = VehicleCrushReqPayload{
-        vehicle_handle, -1, ground ? AF_VEHICLE_CRUSH_GROUND : AF_VEHICLE_CRUSH_WALL, impact_dv};
-
-    af_send_client_req_packet(packet, true); // reliable
+void af_send_vehicle_scrape_report(int vehicle_handle, float slide_excess)
+{
+    af_send_vehicle_crush_req({vehicle_handle, -1, AF_VEHICLE_CRUSH_SCRAPE, slide_excess});
 }
 
 void af_send_koth_hill_captured_packet(rf::Player* player, uint8_t hill_uid, HillOwner owner, const std::vector<uint8_t>& new_owner_player_ids)
@@ -4423,6 +4604,8 @@ uint32_t af_compute_server_info_flags()
         af |= af_server_info_flags::SIF_DODGING;
     if (g_alpine_server_config_active_rules.mutators.pogo_enabled)
         af |= af_server_info_flags::SIF_POGO;
+    if (g_alpine_server_config_active_rules.gibbing.scrapyard)
+        af |= af_server_info_flags::SIF_SCRAPYARD_GIBS;
     return af;
 }
 
@@ -4476,6 +4659,7 @@ static void build_af_server_info_packet(af_server_info_packet& pkt)
     switch (get_upcoming_game_type()) {
         case rf::NetGameType::NG_TYPE_CTF:
         case rf::NetGameType::NG_TYPE_SAL:
+        case rf::NetGameType::NG_TYPE_SCAV:
             pkt.win_condition = static_cast<uint32_t>(rf::netgame.max_captures);
             break;
         case rf::NetGameType::NG_TYPE_KOTH:
@@ -4558,6 +4742,7 @@ static void decode_af_server_info_flags(const af_server_info_packet& pkt, Alpine
     server_info.skiing = (pkt.af_flags & af_server_info_flags::SIF_SKIING) != 0;
     server_info.dodging = (pkt.af_flags & af_server_info_flags::SIF_DODGING) != 0;
     server_info.pogo = (pkt.af_flags & af_server_info_flags::SIF_POGO) != 0;
+    server_info.scrapyard_gibs = (pkt.af_flags & af_server_info_flags::SIF_SCRAPYARD_GIBS) != 0;
 }
 
 // Apply af_server_info_packet flags to the local server info (for listen server host)
@@ -4638,6 +4823,7 @@ static void af_process_server_info_packet(const void* data, size_t len, const rf
         switch (game_type) {
             case rf::NetGameType::NG_TYPE_CTF:
             case rf::NetGameType::NG_TYPE_SAL:
+            case rf::NetGameType::NG_TYPE_SCAV:
                 rf::netgame.max_captures = static_cast<int>(pkt.win_condition);
                 break;
             case rf::NetGameType::NG_TYPE_KOTH:
@@ -4794,12 +4980,30 @@ void af_process_spectate_start_packet(
     }
 }
 
+static void af_apply_spectate_notify(rf::Player* const spectator, const bool does_spectate)
+{
+    if (does_spectate) {
+        g_local_player_spectators.emplace(spectator);
+    }
+    else {
+        g_local_player_spectators.erase(spectator);
+    }
+
+    build_local_player_spectators_strings();
+}
+
 void af_send_spectate_notify_packet(
     rf::Player* const spectatee,
-    const rf::Player* const spectator,
+    rf::Player* const spectator,
     const bool does_spectate
 ) {
     if (!rf::is_server || !spectator || !spectator->net_data) {
+        return;
+    }
+
+    if (spectatee && spectatee == rf::local_player) {
+        // Listen-server host: apply it locally; packets to the host are never delivered.
+        af_apply_spectate_notify(spectator, does_spectate);
         return;
     }
 
@@ -4843,13 +5047,7 @@ void af_process_spectate_notify_packet(
         return;
     }
 
-    if (spectate_notify_packet.does_spectate) {
-        g_local_player_spectators.emplace(spectator);
-    } else {
-        g_local_player_spectators.erase(spectator);
-    }
-
-    build_local_player_spectators_strings();
+    af_apply_spectate_notify(spectator, spectate_notify_packet.does_spectate);
 }
 
 void af_send_server_cfg(rf::Player* player) {
@@ -5007,12 +5205,28 @@ af_server_msg_packet_buf build_server_console_msg_packet(
     return buf;
 }
 
+// Shows an automated server message in chat, as clients and the listen-server host both do.
+// False when the local player filters it out. multi_chat_print also echoes the line to the console.
+static bool print_automated_chat_msg(const std::string_view msg)
+{
+    if (!g_alpine_game_config.show_domination_msgs && awards_is_domination_chat_msg(msg)) {
+        return false;
+    }
+    rf::multi_chat_print(rf::String{msg}, rf::ChatMsgColor::gold_white, rf::String{"Server: "});
+    if (!g_alpine_game_config.simple_server_chat_msgs) {
+        rf::snd_play(stock_sound_id::end_voice, 0, 0.f, 1.f);
+    }
+    return true;
+}
+
 void af_broadcast_automated_chat_msg(const std::string_view msg) {
     if (!rf::is_server) {
         return;
     }
 
-    rf::console::print("Server: {}", msg);
+    if (rf::is_dedicated_server || !print_automated_chat_msg(msg)) {
+        rf::console::print("Server: {}", msg);
+    }
 
     const af_server_msg_packet_buf buf = build_automated_chat_msg_packet(msg);
 
@@ -5034,7 +5248,8 @@ void af_broadcast_automated_chat_msg(const std::string_view msg) {
     }
 }
 
-void af_broadcast_vote_legacy_chat_msg(const std::string_view msg) {
+void af_broadcast_vote_legacy_chat_msg(const std::string_view msg,
+                                       const std::function<bool(rf::Player*)>& audience) {
     if (!rf::is_server) {
         return;
     }
@@ -5053,6 +5268,9 @@ void af_broadcast_vote_legacy_chat_msg(const std::string_view msg) {
         }
         if (is_player_minimum_af_client_version(&player, 1, 4, 0)) {
             continue; // receives the structured af_sreq_vote_state events instead
+        }
+        if (!audience(&player)) {
+            continue;
         }
 
         if (is_player_minimum_af_client_version(&player, 1, 2, 0)) {
@@ -5118,6 +5336,11 @@ void af_send_automated_chat_msg(const std::string_view msg, rf::Player* player, 
 
     if (tell_server && rf::is_dedicated_server) {
         rf::console::print("Server (to {}): {}", player->name, msg);
+    }
+
+    if (player == rf::local_player) {
+        print_automated_chat_msg(msg);
+        return;
     }
 
     if (is_player_minimum_af_client_version(player, 1, 2, 0)) {
@@ -5320,15 +5543,8 @@ void af_process_server_msg_packet(
     } else if (msg_packet.type == static_cast<uint8_t>(AF_SERVER_MSG_TYPE_AUTOMATED_CHAT)) {
         const char* ptr = static_cast<const char*>(data) + sizeof(msg_packet);
         const std::string_view msg_sv{ptr, len - sizeof(msg_packet)};
-        const rf::String msg{msg_sv};
-        handle_vote_or_ready_up_msg(msg);
-        if (!g_alpine_game_config.show_domination_msgs && awards_is_domination_chat_msg(msg_sv)) {
-            return;
-        }
-        rf::multi_chat_print(msg, rf::ChatMsgColor::gold_white, rf::String{"Server: "});
-        if (!g_alpine_game_config.simple_server_chat_msgs) {
-            rf::snd_play(stock_sound_id::end_voice, 0, 0.f, 1.f);
-        }
+        handle_vote_or_ready_up_msg(msg_sv);
+        print_automated_chat_msg(msg_sv);
     } else if (msg_packet.type == static_cast<uint8_t>(AF_SERVER_MSG_TYPE_CONSOLE)) {
         const char* ptr = static_cast<const char*>(data) + sizeof(msg_packet);
         const std::string msg{ptr, len - sizeof(msg_packet)};
@@ -5473,12 +5689,27 @@ void af_send_bot_control_update_personality(rf::Player* player, const ServerBotC
         return;
     }
 
+    // Courtesy only: the server refuses a bot's boarding itself while vehicles are off for bots.
+    std::vector<BotConfigOverride> overrides = config.personality_overrides;
+    if (!g_alpine_server_config_active_rules.vehicles.bots_use_vehicles) {
+        const auto field = static_cast<uint8_t>(af_personality_field::vehicle_affinity_bias);
+        const auto it = std::find_if(overrides.begin(), overrides.end(), [field](const BotConfigOverride& ovr) {
+            return ovr.field_id == field;
+        });
+        if (it != overrides.end()) {
+            it->value = 0.0f;
+        }
+        else {
+            overrides.push_back({field, 0.0f});
+        }
+    }
+
     std::byte buf[rf::max_packet_size];
     const size_t len = write_profile_update_payload(
         buf, sizeof(buf),
         af_bot_control_type::update_personality,
         config.personality_preset,
-        config.personality_overrides);
+        overrides);
     if (len == 0) {
         return;
     }
@@ -5560,6 +5791,28 @@ void af_send_bot_config(rf::Player* player, const ServerBotConfig& config,
     af_send_bot_control_simple(player, af_bot_control_type::go_active);
 }
 
+// Both profile updates carry the full override list for their half of the profile.
+static std::vector<BotConfigOverride> read_bot_config_overrides(
+    const uint8_t* bytes,
+    size_t& offset,
+    const size_t payload_end,
+    const uint8_t num_overrides,
+    const char* kind)
+{
+    std::vector<BotConfigOverride> overrides;
+    for (uint8_t i = 0; i < num_overrides; ++i) {
+        if (offset + 1 + sizeof(float) > payload_end) {
+            xlog::warn("af_process_bot_control_packet: {} override {} truncated", kind, i);
+            break;
+        }
+        BotConfigOverride& ovr = overrides.emplace_back();
+        ovr.field_id = bytes[offset++];
+        std::memcpy(&ovr.value, bytes + offset, sizeof(float));
+        offset += sizeof(float);
+    }
+    return overrides;
+}
+
 void af_process_bot_control_packet(const void* data, size_t len, const rf::NetAddr&)
 {
     // Receive: client <- server (bot clients only)
@@ -5607,18 +5860,12 @@ void af_process_bot_control_packet(const void* data, size_t len, const rf::NetAd
             xlog::info("Bot control: go_inactive");
             // Deactivate the bot: stop decision-making but preserve config.
             // The server can reactivate with go_active without resending config.
-            g_client_bot_state.server_deactivated = true;
-            bot_state_clear_goal();
-            bot_state_clear_waypoint_route(true, true, true);
-            bot_state_reset_fsm(BotFsmState::inactive);
+            bot_context_deactivate(client_bot_context());
             break;
 
         case af_bot_control_type::go_active:
             xlog::info("Bot control: go_active");
-            g_client_bot_state.server_config_received = true;
-            g_client_bot_state.server_deactivated = false;
-            g_client_bot_state.server_config_timeout_timer.invalidate();
-            g_client_bot_state.connection_watchdog_timer.set(kBotConnectionWatchdogMs);
+            bot_context_activate(client_bot_context());
             break;
 
         case af_bot_control_type::disconnect_bot:
@@ -5644,26 +5891,10 @@ void af_process_bot_control_packet(const void* data, size_t len, const rf::NetAd
                 return;
             }
             const uint8_t num_overrides = bytes[offset++];
-
-            // Apply preset first
-            bot_personality_set_presets(preset_name.c_str(), nullptr);
             xlog::info("Bot control: update_personality preset='{}' overrides={}", preset_name, num_overrides);
 
-            // Apply field overrides
-            for (uint8_t i = 0; i < num_overrides; ++i) {
-                if (offset + 5 > payload_end) {
-                    xlog::warn("af_process_bot_control_packet: override {} truncated", i);
-                    break;
-                }
-                const uint8_t field_id = bytes[offset++];
-                float value = 0.0f;
-                std::memcpy(&value, bytes + offset, sizeof(float));
-                offset += sizeof(float);
-
-                if (!bot_personality_apply_field_override(field_id, value)) {
-                    xlog::debug("af_process_bot_control_packet: unknown personality field_id 0x{:02x}", field_id);
-                }
-            }
+            const auto overrides = read_bot_config_overrides(bytes, offset, payload_end, num_overrides, "personality");
+            bot_personality_set_presets(client_bot_context(), preset_name.c_str(), nullptr, &overrides, nullptr);
             break;
         }
 
@@ -5685,26 +5916,10 @@ void af_process_bot_control_packet(const void* data, size_t len, const rf::NetAd
                 return;
             }
             const uint8_t num_overrides = bytes[offset++];
-
-            // Apply preset first
-            bot_personality_set_presets(nullptr, preset_name.c_str());
             xlog::info("Bot control: update_skill preset='{}' overrides={}", preset_name, num_overrides);
 
-            // Apply field overrides
-            for (uint8_t i = 0; i < num_overrides; ++i) {
-                if (offset + 5 > payload_end) {
-                    xlog::warn("af_process_bot_control_packet: skill override {} truncated", i);
-                    break;
-                }
-                const uint8_t field_id = bytes[offset++];
-                float value = 0.0f;
-                std::memcpy(&value, bytes + offset, sizeof(float));
-                offset += sizeof(float);
-
-                if (!bot_skill_apply_field_override(field_id, value)) {
-                    xlog::debug("af_process_bot_control_packet: unknown skill field_id 0x{:02x}", field_id);
-                }
-            }
+            const auto overrides = read_bot_config_overrides(bytes, offset, payload_end, num_overrides, "skill");
+            bot_personality_set_presets(client_bot_context(), nullptr, preset_name.c_str(), nullptr, &overrides);
             break;
         }
 
@@ -5878,7 +6093,6 @@ void af_send_player_info_response(const rf::NetAddr& addr)
     players_data[players_data_len++] = std::byte{0};
 
     constexpr int max_players = 32;
-    constexpr int max_name_len = 31; // wire protocol cap
     auto player_list = SinglyLinkedList(rf::player_list);
     for (auto& player : player_list) {
         // The demo recorder is not a real client - keep it out of server-browser
@@ -5886,7 +6100,7 @@ void af_send_player_info_response(const rf::NetAddr& addr)
         if (player.is_observer()) {
             continue;
         }
-        int name_len = std::min<int>(player.name.size(), max_name_len);
+        int name_len = std::min<int>(player.name.size(), k_max_player_name_len);
         int entry_size = 1 + 2 + 2 + 2 + 2 + name_len + 1; // flags + score + kills + deaths + caps + name + null
 
         if (entry_count - 1 >= max_players ||
@@ -5922,7 +6136,7 @@ void af_send_player_info_response(const rf::NetAddr& addr)
         std::memcpy(players_data + players_data_len, &caps, sizeof(caps));
         players_data_len += sizeof(caps);
 
-        // name (null-terminated; clamped to max_name_len)
+        // name (null-terminated; clamped to k_max_player_name_len)
         std::memcpy(players_data + players_data_len, player.name.c_str(), name_len);
         players_data_len += name_len;
         players_data[players_data_len++] = std::byte{0};

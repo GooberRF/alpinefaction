@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cmath>
 #include <string_view>
 #include <string>
 #include <set>
@@ -17,6 +18,7 @@
 #include "../rf/os/console.h"
 #include "../rf/multi.h"
 #include "../rf/weapon.h"
+#include "bots/bot_personality.h"
 
 // Forward declarations
 namespace rf
@@ -179,6 +181,58 @@ struct SalvageConfig
     }
 };
 
+struct ScavengerConfig
+{
+    int cap_limit = 15;
+    int objective_spawn_delay_ms = 10000;
+    int objective_capture_respawn_delay_ms = 5000;
+    int objective_return_time_ms = 30000;
+    int zone_timeout_ms = 120000;
+    float zone_radius = 1.5f;
+
+    void set_cap_limit(int count)
+    {
+        cap_limit = std::clamp(count, 1, 65535);
+    }
+
+    // Clamped in float so an out-of-range value never reaches the int cast; non-finite input
+    // keeps the current value.
+    static void set_clamped_ms(int& out_ms, float in_seconds, float min_ms, float max_ms)
+    {
+        if (std::isfinite(in_seconds)) {
+            out_ms = static_cast<int>(std::clamp(in_seconds * 1000.0f, min_ms, max_ms));
+        }
+    }
+
+    void set_objective_spawn_delay(float in_seconds)
+    {
+        // 2 bytes (uint16_t) on the wire
+        set_clamped_ms(objective_spawn_delay_ms, in_seconds, 0.0f, 60000.0f);
+    }
+
+    void set_objective_capture_respawn_delay(float in_seconds)
+    {
+        set_clamped_ms(objective_capture_respawn_delay_ms, in_seconds, 0.0f, 60000.0f);
+    }
+
+    void set_objective_return_time(float in_seconds)
+    {
+        set_clamped_ms(objective_return_time_ms, in_seconds, 1000.0f, 60000.0f);
+    }
+
+    void set_zone_timeout(float in_seconds)
+    {
+        set_clamped_ms(zone_timeout_ms, in_seconds, 10000.0f, 600000.0f);
+    }
+
+    void set_zone_radius(float in_meters)
+    {
+        if (std::isfinite(in_meters)) {
+            zone_radius = std::clamp(in_meters, 1.0f, 10.0f);
+        }
+    }
+};
+
 struct DamageNotificationConfig
 {
     bool enabled = true;
@@ -311,6 +365,19 @@ struct WelcomeMessageConfig
         bool was_trimmed = new_welcome_message.size() > 240;
         std::string_view to_use = was_trimmed ? new_welcome_message.substr(0, 240) : new_welcome_message;
         welcome_message.assign(to_use);
+    }
+};
+
+struct LevelMessageConfig
+{
+    bool enabled = false;
+    std::string text = "";
+
+    // =============================================
+
+    void set_text(std::string_view new_text)
+    {
+        text.assign(new_text.substr(0, 240));
     }
 };
 
@@ -571,6 +638,9 @@ struct GibConfig
     bool all_damage = false;
     float damage_threshold = 100.0f;
 
+    // Gibs are random debris instead of meat chunks. Set by the Gibbing mutator.
+    bool scrapyard = false;
+
     // =============================================
 
     void set_damage_threshold(float threshold)
@@ -581,8 +651,17 @@ struct GibConfig
 
 struct VehicleConfig
 {
-    // Hulls take damage from hitting the level or a mover hard, and from hard landings.
+    // Hulls take damage from hitting the level, a mover or a prop hard, from hard landings, and (the fighter)
+    // from scraping along the level.
     bool crash_damage = true;
+    // Bots may board vehicles, and at most this many hulls may have a bot driving them.
+    bool bots_use_vehicles = true;
+    int bot_max_drivers = 4;
+
+    void set_bot_max_drivers(int count)
+    {
+        bot_max_drivers = std::clamp(count, 0, 32);
+    }
 };
 
 // Controls which level pickups survive under a mutator. Enforced server-side in
@@ -715,6 +794,11 @@ struct MutatorConfig
     // Pogo: hold jump to auto-jump on every landing. Client-side physics.
     bool pogo_enabled = false;
 
+    // Join Bots: this many server bots join for the level, or fill a match's empty slots, all at one skill preset.
+    int join_bots = 0;
+    std::string join_bots_skill;
+    std::string join_bots_personality;
+
     // Display only: human-readable names of the mutators applied to these rules.
     std::vector<std::string> active_labels;
 
@@ -769,6 +853,7 @@ struct AlpineServerConfigRules
     GibConfig gibbing;
     VehicleConfig vehicles;
     WelcomeMessageConfig welcome_message;
+    LevelMessageConfig level_message;
     bool weapon_items_give_full_ammo = false;
     bool weapon_infinite_magazines = false;
     bool drop_weapons = true;
@@ -777,6 +862,7 @@ struct AlpineServerConfigRules
     WeaponStayExemptionConfig weapon_stay_exemptions;
     BagmanConfig bagman;
     SalvageConfig salvage;
+    ScavengerConfig scavenger;
     std::map<std::string, std::string> item_replacements;
     std::map<std::string, int> item_respawn_time_overrides;
     DelayedItemsConfig delayed_items;
@@ -784,6 +870,7 @@ struct AlpineServerConfigRules
     bool gungame_rampage_rewards = true;
     std::vector<std::vector<std::string>> gungame_tiers; // uses built-in tiers if not specified
     std::string gungame_final_weapon = "Riot Stick";
+    bool gungame_end_with_fusion = true;
     bool geo_chunk_physics = true;
     bool clear_stale_movement_input = false;
     MutatorConfig mutators;
@@ -898,6 +985,7 @@ struct AlpineServerConfigRules
         switch (game_type) {
             case rf::NetGameType::NG_TYPE_CTF:     return cap_limit;
             case rf::NetGameType::NG_TYPE_SAL:     return salvage.cap_limit;
+            case rf::NetGameType::NG_TYPE_SCAV:    return scavenger.cap_limit;
             case rf::NetGameType::NG_TYPE_TEAMDM:  return team_kill_limit;
             case rf::NetGameType::NG_TYPE_KOTH:    return koth_score_limit;
             case rf::NetGameType::NG_TYPE_DC:      return dc_score_limit;
@@ -921,6 +1009,7 @@ struct AlpineServerConfigRules
         switch (game_type) {
             case rf::NetGameType::NG_TYPE_CTF:     set_cap_limit(count); return true;
             case rf::NetGameType::NG_TYPE_SAL:     salvage.set_cap_limit(count); return true;
+            case rf::NetGameType::NG_TYPE_SCAV:    scavenger.set_cap_limit(count); return true;
             case rf::NetGameType::NG_TYPE_TEAMDM:  set_team_kill_limit(count); return true;
             case rf::NetGameType::NG_TYPE_KOTH:    set_koth_score_limit(count); return true;
             case rf::NetGameType::NG_TYPE_DC:      set_dc_score_limit(count); return true;
@@ -981,11 +1070,6 @@ struct AlpineRconProfile
     std::vector<std::string> allowed_commands;
 };
 
-struct BotConfigOverride {
-    uint8_t field_id;
-    float value;
-};
-
 struct ServerBotConfig {
     std::string personality_preset = "balanced";
     std::string skill_preset = "average";
@@ -999,12 +1083,19 @@ struct BotProfileSlotTracker {
     std::unordered_map<const rf::Player*, int> assignments;
 
     int assign_slot(const rf::Player* player, int num_profiles);
+    void assign_explicit(const rf::Player* player, int slot);
     void release_slot(const rf::Player* player);
     int get_slot(const rf::Player* player) const;
     void clear();
 };
 
 extern BotProfileSlotTracker g_bot_profile_slots;
+
+constexpr int k_max_server_bots = 31;
+
+void resolve_bot_identity(const ServerBotConfig& config, const rf::Player* self, std::string& out_name,
+                          int32_t& out_character);
+int pick_team_for_new_server_bot();
 
 struct AlpineServerConfig
 {
@@ -1016,6 +1107,7 @@ struct AlpineServerConfig
     uint32_t bot_shared_secret = 0;
     std::string fflink_gsk = "";
     std::vector<ServerBotConfig> bot_configs;
+    int server_bots = 0;
     bool upnp_enabled = false;
     bool demo_auto_record = false;
     bool demo_chat_record = true;
@@ -1083,6 +1175,11 @@ struct AlpineServerConfig
         bot_shared_secret = secret;
     }
 
+    void set_server_bots(int count)
+    {
+        server_bots = std::clamp(count, 0, k_max_server_bots);
+    }
+
     void set_fflink_gsk(std::string_view new_gsk) {
         fflink_gsk.assign(new_gsk);
     }
@@ -1096,6 +1193,8 @@ struct ManualRulesOverride
     // set. A plain vote installs derived rules too, but arms no session set, so a
     // rotation preserve vote after one carries nothing.
     bool explicit_session = false;
+    // Installed by a match vote: its Join Bots last from when the match is queued until the level after it.
+    bool match = false;
 };
 
 struct MatchInfo
@@ -1233,6 +1332,8 @@ bool player_spawn_blocked_by_game(const rf::Player* player);
 void update_pre_match_powerups(rf::Player* player);
 void start_match();
 void cancel_match();
+// Ends the live match as a win for the other team
+void surrender_match(int losing_team);
 void start_pre_match();
 // The afstats::MatchState value describing the ready-up match system right now,
 // as a raw uint8 so this header stays free of the stats API. Read at round_start.
@@ -1243,6 +1344,8 @@ void toggle_ready_status(rf::Player* player);
 bool get_ready_status(const rf::Player* player);
 void server_vote_do_frame();
 void init_server_commands();
+// sv_bot_add / sv_bot_remove for an rcon caller: the result line is returned instead of printed.
+std::string run_server_bot_rcon_command(std::string_view command, std::string_view args);
 void rebuild_rotation_from_cfg();
 void on_dedicated_server_launch_post();
 void extend_round_time(int minutes);
@@ -1262,11 +1365,13 @@ rf::CmdLineParam& get_ads_cmd_line_param();
 rf::CmdLineParam& get_min_cmd_line_param();
 rf::CmdLineParam& get_log_cmd_line_param();
 rf::CmdLineParam& get_nodl_cmd_line_param();
+rf::CmdLineParam& get_nogsk_cmd_line_param();
 void handle_min_param();
 void handle_log_param();
 void handle_nodl_param();
 const AFGameInfoFlags& server_get_game_info_flags();
 void initialize_game_info_server_flags();
+void server_broadcast_level_message();
 std::optional<rf::NetGameType> resolve_gametype_from_name(std::string_view gametype_name);
 bool multi_set_gametype_alpine(std::string_view gametype_name);
 bool is_gametype_name_valid(std::string_view gametype_name);

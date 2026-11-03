@@ -1,5 +1,6 @@
 #include "bot_personality_manager.h"
 
+#include "bot_context.h"
 #include "bot_internal.h"
 #include "bot_decision_eval.h"
 #include "bot_weapon_profiles.h"
@@ -17,7 +18,7 @@ float get_survivability_maintenance_factor()
     const float skill = bot_get_decision_skill_factor();
     const float maintenance_bias = std::clamp(
         skill_profile.survivability_maintenance_bias,
-        0.25f,
+        0.0f,
         2.5f
     );
     return std::clamp(
@@ -122,7 +123,7 @@ bool bot_personality_manager_should_seek_weapon_state(
     const float weighted_weapon_value = best_ranged_weapon_value(local_entity);
     const float seek_bias = std::clamp(
         get_active_bot_personality().seek_weapon_bias,
-        0.25f,
+        0.0f,
         2.5f
     );
     return weighted_weapon_value < std::lerp(
@@ -137,7 +138,7 @@ bool bot_personality_manager_should_replenish_state(const rf::Entity& local_enti
     const BotPersonality& personality = get_active_bot_personality();
     const float health_ratio = bot_decision_get_entity_health_ratio(local_entity);
     const float armor_ratio = bot_decision_get_entity_armor_ratio(local_entity);
-    const float aggression = std::clamp(personality.decision_aggression_bias, 0.25f, 2.5f);
+    const float aggression = std::clamp(personality.decision_aggression_bias, 0.0f, 2.5f);
     const float health_threshold = bot_decision_apply_aggression_to_threshold(
         personality.replenish_health_threshold,
         aggression
@@ -158,7 +159,8 @@ bool bot_personality_manager_should_replenish_state(const rf::Entity& local_enti
         0.98f
     );
     const float maintenance_norm = std::clamp((maintenance_factor - 0.35f) / 2.40f, 0.0f, 1.0f);
-    const float armor_topup_threshold = std::lerp(0.40f, 0.72f, maintenance_norm);
+    // A top-up is an errand, not a need; it only pulls a healthy bot away when armor is low.
+    const float armor_topup_threshold = std::lerp(0.25f, 0.45f, maintenance_norm);
     const bool wants_armor_topup = health_ratio > 0.70f && armor_ratio < armor_topup_threshold;
     return health_ratio < adjusted_health_threshold
         || armor_ratio < adjusted_armor_threshold
@@ -176,7 +178,7 @@ bool bot_personality_manager_should_retreat_state(
     const BotPersonality& personality = get_active_bot_personality();
     const float health_ratio = bot_decision_get_entity_health_ratio(local_entity);
     const float armor_ratio = bot_decision_get_entity_armor_ratio(local_entity);
-    const float aggression = std::clamp(personality.decision_aggression_bias, 0.25f, 2.5f);
+    const float aggression = std::clamp(personality.decision_aggression_bias, 0.0f, 2.5f);
     const float health_threshold = bot_decision_apply_aggression_to_threshold(
         personality.retreat_health_threshold,
         aggression
@@ -188,7 +190,7 @@ bool bot_personality_manager_should_retreat_state(
 
     const float weighted_survivability = health_ratio * 0.7f + armor_ratio * 0.3f;
     float weighted_threshold = health_threshold * 0.7f + armor_threshold * 0.3f;
-    const float raw_aggression = std::clamp(personality.raw_aggression_bias, 0.25f, 2.5f);
+    const float raw_aggression = std::clamp(personality.raw_aggression_bias, 0.0f, 2.5f);
     weighted_threshold *= std::lerp(
         1.10f,
         0.65f,
@@ -205,7 +207,7 @@ bool bot_personality_manager_should_retreat_state(
     // Hysteresis: once retreating, require survivability to exceed threshold by a margin
     // before exiting retreat. This prevents oscillation at the boundary.
     constexpr float kRetreatHysteresisMargin = 0.06f;
-    const bool currently_retreating = g_client_bot_state.fsm_state == BotFsmState::retreat;
+    const bool currently_retreating = bot_state().fsm_state == BotFsmState::retreat;
     if (currently_retreating) {
         return weighted_survivability < (weighted_threshold + kRetreatHysteresisMargin);
     }

@@ -21,9 +21,21 @@ void alpine_lm_bake_allocate();
 void alpine_lm_bake_end();
 // Drops a bake that did not run to completion without encoding it.
 void alpine_lm_bake_abort();
+// What bake_begin laid out, for the progress window.
+struct AlpineBakePlan
+{
+    bool active = false;
+    std::uint32_t terrains = 0;
+    std::uint64_t encode_steps = 0;
+};
+AlpineBakePlan alpine_lm_bake_plan();
+// The surfaces the stock bake lights on movers, each moving group's brushes counted as the bake visits them.
+std::uint64_t mover_bake_surfaces();
 void alpine_lm_shade_surface(GSolid* solid, GSurface* surface, int mode);
 // Calculate Lighting's address-space check before anything is freed; reports and returns false on a refusal.
 bool lighting_calc_memory_admits();
+// A full surface pass is starting: surfaces an out-of-memory pass left at the minimum size are about to be redone.
+void lightmap_surfaces_shrunk_reset();
 // Reports why Calculate Lighting was not run, and marks a headless bake refused.
 void lighting_calc_report_refusal(const char* msg);
 void alpine_lm_blend_edge(const GSurface* surf_a, const GSurface* surf_b, const float* p0, const float* p1);
@@ -50,6 +62,8 @@ bool alpine_lm_stock_suppressed();
 // Defined in editor_patch/lightmap.cpp: the surfaces still point at the page RED synthesised for a
 // level loaded without stock lightmaps, so their rects overlap until the next repack.
 bool lightmap_stock_layout_synthesized();
+// That page's bitmap while it lives, else -1. Nothing writes the bitmap, so it draws black.
+int lightmap_synthesized_page_bm();
 // Gives that synthesised page the edge the level's alpine lightmap section records; nothing otherwise.
 void lightmap_synthesized_page_resize(int edge);
 
@@ -62,14 +76,22 @@ struct LightmapPoint
 // Refreshes the per-room ambient table for the level solid; run once before the terrain texels.
 void lightmap_prepare_terrain_bake();
 // Lights `count` world points exactly as that bake lights a texel of the level solid's surfaces,
-// shadow rays leaving `lift` off each point along its normal; writes the float accumulators (the
-// values FUN_004ac470 converts at x255) to out_r/g/b[count]. False outside a bake.
-bool lightmap_light_terrain_points(const LightmapPoint* points, int count, float lift, float* out_r,
-                                   float* out_g, float* out_b);
+// shadow rays leaving `lift` off each point along its normal, each point standing for a texel
+// `texel_size` wide; writes the float accumulators (the values FUN_004ac470 converts at x255) to
+// out_r/g/b[count]. False outside a bake.
+bool lightmap_light_terrain_points(const LightmapPoint* points, int count, float lift, float texel_size,
+                                   float* out_r, float* out_g, float* out_b);
 // The fixed pipeline's texel conversion (3x3 box, renormalised at the edges) of a width x height
 // float chart to RGB8.
 void lightmap_encode_float_texels(const float* r, const float* g, const float* b, int width, int height,
                                   std::uint8_t* out);
+// Defined in editor_patch/lightmap.cpp: smoothing with bake fixes, shared by the overflow charts. A face's vertex
+// normal is the normalised sum, over the faces on the vertex sharing a smoothing group with it (itself included), of
+// their plane normals weighted by their interior angle there; the face's plane normal when those nearly cancel. A
+// smooth lumel is lit with lightmap_smooth_shading_normal of its interpolated normal: unit length, lifted continuously
+// to stay a few degrees above `plane`.
+Vector3 lightmap_vertex_normal(const GFace& face, const GVertex& vertex);
+Vector3 lightmap_smooth_shading_normal(const Vector3& n, const Vector3& plane);
 
 // Baked terrain lighting for the viewport preview, from the last bake or the level as loaded.
 struct TerrainBakedLight;

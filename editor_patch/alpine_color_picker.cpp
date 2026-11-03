@@ -309,10 +309,7 @@ void refresh_fields(HWND hdlg, const ColorPickerState& state)
     SetDlgItemInt(hdlg, IDC_COLORPICK_RED, GetRValue(state.current), FALSE);
     SetDlgItemInt(hdlg, IDC_COLORPICK_GREEN, GetGValue(state.current), FALSE);
     SetDlgItemInt(hdlg, IDC_COLORPICK_BLUE, GetBValue(state.current), FALSE);
-    char buffer[16];
-    std::snprintf(buffer, sizeof(buffer), "#%02X%02X%02X", GetRValue(state.current),
-                  GetGValue(state.current), GetBValue(state.current));
-    SetDlgItemTextA(hdlg, IDC_COLORPICK_HEX, buffer);
+    SetDlgItemTextA(hdlg, IDC_COLORPICK_HEX, ("#" + alpine_color_format_hex(state.current)).c_str());
 }
 
 void invalidate_surface(HWND hdlg, int id)

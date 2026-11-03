@@ -45,7 +45,7 @@ struct Crater
 bool g_draw_enabled = true;
 std::uint32_t g_placed = 0;
 std::vector<TerrainDecorations> g_decorations;
-DecorationMeshCache g_meshes{max_mesh_radius};
+DecorationMeshCache g_meshes{max_mesh_radius, at::max_level_decoration_meshes};
 // Every crater of the level so far, for those a savegame replays before the instances exist
 std::vector<Crater> g_craters;
 DecorationFrameStats g_stats;
@@ -160,6 +160,7 @@ void build_terrain(int index, const AlpineTerrain& t, TerrainDecorations& td, at
         td.draw_distance[d] = t.decorations[d].draw_distance;
         td.vertical_offset[d] = t.decorations[d].vertical_offset;
         td.dither_fade[d] = t.decorations[d].dither_fade;
+        td.edges[d] = t.decorations[d].edges;
         if (at::decoration_active(views[d])) {
             const std::string& mesh = t.decorations[d].mesh;
             if (at::decoration_mesh_is_vfx(mesh.c_str(), mesh.size())) {
@@ -423,23 +424,6 @@ const DecorationChunk* alpine_terrain_decorations_chunk(const AlpineTerrainRoomR
 const DecorationMesh& alpine_terrain_decorations_mesh(int slot)
 {
     return g_meshes[slot];
-}
-
-float DecorationChunk::dist_sq(const rf::Vector3& p) const
-{
-    const float d[3] = {std::max({lo[0] - p.x, 0.0f, p.x - hi[0]}), std::max({lo[1] - p.y, 0.0f, p.y - hi[1]}),
-                        std::max({lo[2] - p.z, 0.0f, p.z - hi[2]})};
-    return d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
-}
-
-rf::Vector3 DecorationChunk::lo_vec() const
-{
-    return {lo[0], lo[1], lo[2]};
-}
-
-rf::Vector3 DecorationChunk::hi_vec() const
-{
-    return {hi[0], hi[1], hi[2]};
 }
 
 DecorationFrameStats& alpine_terrain_decorations_frame_stats()

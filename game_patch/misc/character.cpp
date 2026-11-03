@@ -314,27 +314,37 @@ static int character_slot_index(const rf::Character* cp)
     return static_cast<int>(offset / sizeof(rf::Character));
 }
 
-static bool character_lod0_mesh_missing(const rf::Character* cp)
+static const rf::VifLodMesh* character_lod_mesh(const rf::Character* cp)
 {
     if (cp->num_character_meshes < 1) {
-        return true;
+        return nullptr;
     }
     const rf::V3dMesh* mesh = cp->character_meshes[0].mesh;
-    if (!mesh) {
-        return true;
-    }
-    const rf::VifLodMesh* lod_mesh = mesh->vu;
+    return mesh ? mesh->vu : nullptr;
+}
+
+static bool character_lod0_mesh_missing(const rf::Character* cp)
+{
+    const rf::VifLodMesh* lod_mesh = character_lod_mesh(cp);
     return !lod_mesh || lod_mesh->num_levels < 1 || !lod_mesh->meshes[0];
 }
 
-static void warn_lod0_mesh_missing(const rf::Character* cp, int& warn_count, const char* outcome)
+static bool character_last_lod_mesh_missing(const rf::Character* cp)
+{
+    const rf::VifLodMesh* lod_mesh = character_lod_mesh(cp);
+    return !lod_mesh || lod_mesh->num_levels < 1
+        || lod_mesh->num_levels > static_cast<int>(std::size(lod_mesh->meshes))
+        || !lod_mesh->meshes[lod_mesh->num_levels - 1];
+}
+
+static void warn_lod_mesh_missing(const rf::Character* cp, const char* lod, int& warn_count, const char* outcome)
 {
     if (warn_count >= 5) {
         return;
     }
     ++warn_count;
-    xlog::warn("Character slot {} '{}' has no LOD0 mesh (bones {}, tags {}, flags {:#x}) - {}",
-        character_slot_index(cp), character_name(cp), cp->num_bones, cp->num_tags, cp->flags, outcome);
+    xlog::warn("Character slot {} '{}' has no {} mesh (bones {}, tags {}, flags {:#x}) - {}",
+        character_slot_index(cp), character_name(cp), lod, cp->num_bones, cp->num_tags, cp->flags, outcome);
 }
 
 static CodeInjection character_prop_transform_null_mesh_injection{
@@ -343,7 +353,7 @@ static CodeInjection character_prop_transform_null_mesh_injection{
         rf::Character* cp = regs.edx;
         if (character_lod0_mesh_missing(cp)) {
             static int warn_count = 0;
-            warn_lod0_mesh_missing(cp, warn_count, "returning identity transform");
+            warn_lod_mesh_missing(cp, "LOD0", warn_count, "returning identity transform");
             regs.eip = 0x0051B371;
         }
     },
@@ -355,8 +365,24 @@ static CodeInjection character_prop_lookup_null_mesh_injection{
         rf::Character* cp = regs.esi;
         if (character_lod0_mesh_missing(cp)) {
             static int warn_count = 0;
-            warn_lod0_mesh_missing(cp, warn_count, "prop point lookup failed");
+            warn_lod_mesh_missing(cp, "LOD0", warn_count, "prop point lookup failed");
             regs.eip = 0x0051D686;
+        }
+    },
+};
+
+// vmesh_collide's character branch tests against the last LOD level unchecked. Exit through the
+// function's own epilogue, dropping the one argument already pushed for the skipped call.
+static CodeInjection character_collide_null_mesh_injection{
+    0x0050314E,
+    [](auto& regs) {
+        rf::Character* cp = regs.esi;
+        if (character_last_lod_mesh_missing(cp)) {
+            static int warn_count = 0;
+            warn_lod_mesh_missing(cp, "collision LOD", warn_count, "skipping collision");
+            regs.eax = 0;
+            regs.esp += 4;
+            regs.eip = 0x0050316E;
         }
     },
 };
@@ -401,5 +427,6 @@ void character_apply_patch()
     skeleton_has_morph_vertices_hook.install();
     character_prop_transform_null_mesh_injection.install();
     character_prop_lookup_null_mesh_injection.install();
+    character_collide_null_mesh_injection.install();
     character_mesh_page_in_null_mesh_injection.install();
 }

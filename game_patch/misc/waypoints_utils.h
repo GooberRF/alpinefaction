@@ -1,10 +1,13 @@
 #pragma once
 
 #include <string_view>
+#include <vector>
 
 void waypoints_utils_level_init();
 void waypoints_utils_level_reset();
 void waypoints_utils_on_level_unloaded();
+void waypoints_utils_on_waypoints_remapped(const std::vector<int>& remap);
+void waypoints_utils_on_waypoints_cleared();
 void waypoints_utils_do_frame();
 void waypoints_utils_render_overlay();
 void waypoints_utils_render_debug();

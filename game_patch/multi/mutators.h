@@ -51,6 +51,7 @@ enum class MutatorId : uint8_t
     Pogo = 18,
     Dodging = 19,
     Crits = 20,
+    JoinBots = 21,
 };
 
 struct MutatorOptionChoice
@@ -149,6 +150,7 @@ void mutators_on_player_destroy(rf::Player* player);
 bool mutators_skiing_active();
 bool mutators_dodging_active();
 bool mutators_pogo_active();
+bool mutators_scrapyard_gibs_active();
 
 // ---------------------------------------------------------------------------
 // Critical Hits mutator

@@ -5,6 +5,7 @@
 
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -152,6 +153,12 @@ struct VehiclePhysicsParams
     float chassis_trim_front = 0.0f; // taken off +Z
     float chassis_trim_rear = 0.0f;  // taken off -Z
     float chassis_trim_top = 0.0f;   // taken off +Y
+    // Hull-local coordinates, not trims. A stepped chassis when cab_z_max > cab_z_min: full height
+    // only over the cab's z span, the rest topped at y = chassis_body_top, so a low hood or deck
+    // does not carry the cab's height.
+    float chassis_cab_z_min = 0.0f;
+    float chassis_cab_z_max = 0.0f;
+    float chassis_body_top = 0.0f;
     // How far the contact box's BOTTOM sits ABOVE the wheel contact line; <= 0 derives it as the
     // wheel radius.
     float chassis_bottom_raise = 0.0f;
@@ -235,6 +242,9 @@ struct HullBox
     btVector3 center{0.0f, 0.0f, 0.0f};
 };
 
+// A stepped chassis is a low body plus a cab (hull_contact_parts).
+constexpr int car_max_shape_parts = 2;
+
 struct RfVehicleRaycaster;
 
 // The solver's fixed substep; btRaycastVehicle consumes setBrake as an IMPULSE per substep.
@@ -252,6 +262,26 @@ public:
     {
         return m_localTime;
     }
+    // A predictive manifold is outside the pair cache, so it outlives removeRigidBody until the next substep.
+    void release_predictive_manifolds()
+    {
+        releasePredictiveContacts();
+    }
+};
+
+// One wheel's last real cast, replayed while the ray and the level mesh are unchanged.
+struct WheelCastCache
+{
+    bool valid = false;
+    btVector3 from{0.0f, 0.0f, 0.0f};
+    btVector3 to{0.0f, 0.0f, 0.0f};
+    rf::Vector3 fwd{};
+    float rest_len = 0.0f;
+    uint32_t mesh_serial = 0;
+    bool hit = false;
+    btVector3 hit_point{0.0f, 0.0f, 0.0f};
+    btVector3 hit_normal{0.0f, 1.0f, 0.0f};
+    float dist_fraction = 0.0f;
 };
 
 // Heap-owned so its address is stable: RfVehicleRaycaster holds a back-pointer to it.
@@ -259,8 +289,10 @@ struct VehicleSimBody
 {
     int vehicle_handle = -1;
     int vehicle_class = 0;        // VehiclePhysicsClass
-    // Server-owned (driverless): inputs read released, lift scaled by deadstick_lift, may SLEEP.
+    // A server body. Driverless unless server_driven: inputs read released, lift scaled by deadstick_lift, may SLEEP.
     bool server_owned = false;
+    // A server-local driver (an in-process bot) feeds ai.ci: read like a driver's own body, never slept.
+    bool server_driven = false;
     // Registered with the world? Detached while a server body sleeps - updateActions ignores sleep.
     bool car_action_in_world = false;
 
@@ -269,14 +301,16 @@ struct VehicleSimBody
     btDefaultMotionState* motion_state = nullptr;
     // The dynamic body, sphere hull OR car chassis; its user pointer points back at this struct.
     btRigidBody* body = nullptr;
-    btBoxShape* car_shape = nullptr;         // car only: the chassis box
-    btCompoundShape* car_compound = nullptr; // holds car_shape at the hull box's local centre
+    btBoxShape* car_shapes[car_max_shape_parts]{}; // car only: the chassis parts (hull_contact_parts)
+    int car_shape_count = 0;
+    btCompoundShape* car_compound = nullptr;       // holds car_shapes at their parts' local centres
     RfVehicleRaycaster* raycaster = nullptr;
     btRaycastVehicle* raycast_vehicle = nullptr;
 
-    HullBox car_box{};       // the TRIMMED contact box the probes seat against, rebuilt each step
-    HullBox car_box_base{};  // the raw csphere box the trims are taken off, fixed at boarding
-    HullBox car_shape_box{}; // what car_shape/car_compound were last built with
+    HullBox car_box{};      // the TRIMMED contact box the probes seat against, rebuilt each step
+    HullBox car_box_base{}; // the raw csphere box the trims are taken off, fixed at boarding
+    // What car_shapes/car_compound were last built with.
+    HullBox car_shape_parts[car_max_shape_parts]{};
     float body_mass = 0.0f;   // what setMassProps was last given, so mass_scale can be live
     float body_radius = 0.0f; // the sphere the shape was last built with (hull_standoff)
     int num_wheels = 0;
@@ -296,6 +330,8 @@ struct VehicleSimBody
     int wheel_arc_samples = 6;
     float wheel_rest_len = 0.25f;            // this frame's suspension rest length, to recover radius
     float wheel_edge_min_normal_y = 0.6f;    // cap on an edge normal's backward lean
+    // By wheel index; cleared on teardown, reseed, waking and any wake box (mover, remesh, obstacle) over it.
+    std::vector<WheelCastCache> wheel_casts;
 
     float steer_current = 0.0f; // the applied steer angle, smoothed across frames
     float steer_input = 0.0f;   // the HELD steering position in [-1,1]
@@ -304,6 +340,7 @@ struct VehicleSimBody
     float brake_accel = 0.0f;
     float engine_cmd = 0.0f;
     bool handbrake = false; // this frame's handbrake: input, or a never-entered server hull's hold
+    bool auto_handbrake = false; // that hold, which alone may put the hull to sleep once pinned
     // Parked on the handbrake: the world's pre-tick zeroes velocity and forces every substep.
     bool handbrake_pin = false;
     float handbrake_settle = 0.0f; // how long the handbrake has continuously held it grounded and still
@@ -312,6 +349,8 @@ struct VehicleSimBody
     bool chassis_ground_contact = false;
     // What the frame's single manifold pass found; only a recomputing frame copies it across.
     bool chassis_ground_contact_pass = false;
+    // Same pass: a manifold pairs it with an awake kinematic, which Bullet lets keep it awake every substep.
+    bool paired_with_kinematic = false;
     // The upright servo's up reference, kept for the dbg_vphys overlay later in the same frame.
     rf::Vector3 upright_ref{0.0f, 1.0f, 0.0f};
     // How long the stranded test has continuously held, and whether the auto-right is engaged.
@@ -331,14 +370,19 @@ struct VehicleSimBody
     btVector3 impact_pre_vel{0.0f, 0.0f, 0.0f};
     bool impact_armed = false;
     bool impact_skip = false;
+    bool impact_prop_built = false; // a prop box was just built overlapping the hull: its pop is no crash
     bool impact_drilling = false; // the drill face's contacts are not crashes
-    // This frame's best level/mover chassis contact: the largest velocity change along its normal,
+    // This frame's best level/mover/prop chassis contact: the largest velocity change along its normal,
     // and the pre-step speed into the surface along that normal.
     bool impact_contact = false;
     float impact_contact_dvn = 0.0f;
     float impact_contact_ny = 0.0f;
     float impact_contact_approach = 0.0f;
     btVector3 impact_contact_n{0.0f, 1.0f, 0.0f};
+    // This frame's fastest post-step slide along a touched level/mover/prop wall or ceiling, and along touched
+    // ground; 0 with none.
+    float scrape_speed = 0.0f;
+    float scrape_ground_speed = 0.0f;
     // Simulated time the hull has been touching anything, capped; 0 on a frame with no contact.
     float impact_grounded_s = 1.0f;
     // The open window: simulated time left (0 = closed), the signed running sum and its peak, and
@@ -398,6 +442,11 @@ struct VehiclePhysicsWorld
 // Bullet requires the filter to match BOTH ways: (maskA & groupB) && (maskB & groupA).
 constexpr short vphys_group_hull = 0x80;
 constexpr short vphys_group_level = 0x40;
+constexpr short vphys_group_ragdoll = 0x100;
+constexpr short vphys_mask_level = vphys_group_hull | vphys_group_ragdoll;
+// The clutter props: Bullet's own static group and mask, which nothing else in the world is given.
+constexpr short vphys_group_prop = btBroadphaseProxy::StaticFilter;
+constexpr short vphys_mask_prop = btBroadphaseProxy::AllFilter ^ btBroadphaseProxy::StaticFilter;
 // A hull pairs with everything EXCEPT another hull: vehicle-vs-vehicle is vphys_apply_pair_response.
 constexpr short vphys_mask_no_hull = static_cast<short>(~vphys_group_hull);
 
@@ -460,8 +509,16 @@ struct VehicleChaseCamera
 
 // Shared globals, defined once in the TU named beside each.
 extern VehiclePhysicsWorld g_vphys;         // vphys_world.cpp
-extern bool g_level_has_bullet_vehicles;    // vphys_world.cpp
+extern bool g_level_wants_bullet_mesh;      // vphys_world.cpp
 extern VehicleChaseCamera g_vcam;           // vphys_camera.cpp
+
+// ---- ragdoll.cpp ----
+void ragdoll_pre_step(float dt);
+bool ragdoll_needs_step();
+void ragdoll_post_step(float dt);
+void ragdoll_destroy_all();
+void ragdoll_wake_near(const rf::Vector3& pos, float radius);
+void ragdoll_wake_in_box(const btVector3& lo, const btVector3& hi);
 
 // ---- vphys_world.cpp ----
 bool vphys_class_is_automobile(int cls);
@@ -470,14 +527,21 @@ void sim_body_destroy(VehicleSimBody* b);
 void driven_body_destroy();
 const VehiclePhysicsParams& params_for_class(int cls);
 HullBox hull_local_box(const rf::Object* op);
+// The measured box of an entity.tbl class with a row of its own, for a hull not spawned yet.
+bool vphys_type_hull_box(int entity_type, HullBox* out);
 VehicleSimBody* body_create(rf::Entity* ep, int cls);
 void world_create();
 void world_destroy();
 void level_mesh_build();
+void vphys_world_ensure_level_mesh();
 void level_mesh_rebuild_pending();
 void level_mesh_poll_remesh();
 bool level_mesh_geomod_settled();
 bool level_mesh_active();
+// Changes whenever a remesh pass rebuilds any of the level mesh.
+uint32_t level_mesh_rebuild_serial();
+// A crater or a destroyed room is queued and the level mesh does not reflect it yet.
+bool level_mesh_remesh_pending();
 // One chunk as the overlay sees it: its real triangle bounds, and whether the last remesh built it.
 struct LevelMeshDebugChunk
 {
@@ -499,10 +563,10 @@ void vehicle_physics_notify_geomod(const rf::Vector3& pos, float radius);
 bool mover_brush_is_solid(const rf::Object& mb);
 
 // ---- vphys_car.cpp ----
-// collide_linesegment_world plus the mover-brush solidity rule above. `flags` are rf::CollideFlags.
-bool vphys_collide_solid_segment(const rf::Vector3& a, const rf::Vector3& b, int flags, rf::PCollisionOut& out);
 void car_teardown(VehicleSimBody& b);
 HullBox hull_contact_box(const HullBox& base, const VehiclePhysicsParams& p, float bottom_raise);
+// Splits the trimmed contact box into the chassis's collision parts; returns how many (1 or 2).
+int hull_contact_parts(const HullBox& outer, const VehiclePhysicsParams& p, HullBox out[car_max_shape_parts]);
 // The chassis bottom raise: the class's authored value, else the hull's wheel radius. `b` supplies
 // the radius measured at body creation; null re-measures it, for an entity that holds no body.
 float hull_bottom_raise(const VehiclePhysicsParams& p, const rf::Object* op, const VehicleSimBody* b);

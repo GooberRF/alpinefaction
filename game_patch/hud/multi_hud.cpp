@@ -21,6 +21,7 @@
 #include "../multi/vehicles/vehicle_seats.h"
 #include "../multi/salvage.h"
 #include "../multi/wipeout.h"
+#include "../multi/server.h"
 #include "../input/input.h"
 #include "../rf/input.h"
 #include "../rf/hud.h"
@@ -81,6 +82,7 @@ static ActiveHudNotification g_hud_notification;
 static ActiveHudNotification g_hud_big_notification;
 constexpr int kHudNotificationFadeMs = 500;
 constexpr const char* kSalvageCarrierNotificationText = "You have the flag! Take it to your base!";
+constexpr const char* kScavengerCarrierNotificationText = "You have the cartridge! Take it to the target!";
 
 static void hud_notification_clear_slot(ActiveHudNotification& slot)
 {
@@ -553,16 +555,22 @@ std::string_view multi_hud_get_random_taunt_message()
     return *taunt_messages[index_dist(g_rng)];
 }
 
+std::string multi_hud_format_taunt_chat_message(const std::string_view taunt_text)
+{
+    std::string msg{};
+    msg.reserve(kTauntChatPrefix.size() + taunt_text.size());
+    msg.append(kTauntChatPrefix.data(), kTauntChatPrefix.size());
+    msg.append(taunt_text.data(), taunt_text.size());
+    return msg;
+}
+
 bool multi_hud_send_taunt_chat_message(const std::string_view taunt_text)
 {
     if (taunt_text.empty()) {
         return false;
     }
 
-    std::string msg{};
-    msg.reserve(kTauntChatPrefix.size() + taunt_text.size());
-    msg.append(kTauntChatPrefix.data(), kTauntChatPrefix.size());
-    msg.append(taunt_text.data(), taunt_text.size());
+    const std::string msg = multi_hud_format_taunt_chat_message(taunt_text);
     rf::multi_chat_say(msg.c_str(), false);
     rf::snd_play(stock_sound_id::end_voice, 0, 0.0f, 1.0f);
     return true;
@@ -950,15 +958,17 @@ static bool hud_view_player_is_salvage_carrier()
 // drawn at different sizes in different places and must not be merged.
 static int hud_salvage_flag_bmh()
 {
-    static const int bmh = rf::bm::load("hud_flag_sal.vbm", -1, true);
-    return bmh;
+    static const int sal_bmh = rf::bm::load("hud_flag_sal.vbm", -1, true);
+    static const int scav_bmh = rf::bm::load("hud_flag_scav.tga", -1, true);
+    return gt_is_scavenger() ? scav_bmh : sal_bmh;
 }
 
 // Score-row indicator only, drawn inside the score box, next to a team's score.
 static int hud_salvage_miniflag_bmh()
 {
-    static const int bmh = rf::bm::load("hud_miniflag_sal.vbm", -1, true);
-    return bmh;
+    static const int sal_bmh = rf::bm::load("hud_miniflag_sal.vbm", -1, true);
+    static const int scav_bmh = rf::bm::load("hud_miniflag_scav.tga", -1, true);
+    return gt_is_scavenger() ? scav_bmh : sal_bmh;
 }
 
 void multi_hud_render_team_scores()
@@ -976,6 +986,7 @@ void multi_hud_render_team_scores()
         || game_type == rf::NG_TYPE_PIT
         || game_type == rf::NG_TYPE_GG;
     const bool is_hill_score = is_koth_dc || is_rev || is_esc;
+    const bool is_neutral_flag = salvage_framework_active();
     const bool show_run_timer = g_alpine_game_config.show_run_timer;
 
     if (is_run && !show_run_timer) {
@@ -991,7 +1002,7 @@ void multi_hud_render_team_scores()
     } else if (is_ffa_with_list) {
         box_w = g_big_team_scores_hud ? 280 : 240;
         box_h = g_big_team_scores_hud ? 90 : 65;
-    } else if (game_type == rf::NG_TYPE_SAL) {
+    } else if (is_neutral_flag) {
         box_w = g_big_team_scores_hud ? 240 : 185;
         box_h = g_big_team_scores_hud ? 80 : 55;
     } else {
@@ -1062,7 +1073,7 @@ void multi_hud_render_team_scores()
     // Salvage: the neutral flag has no per-team row, but the carrier gets the
     // same big pulsing flag icon CTF gives its carriers.
     float sal_flag_alpha = 255.0f;
-    if (game_type == rf::NG_TYPE_SAL) {
+    if (is_neutral_flag) {
         sal_flag_alpha = hud_carrier_flag_pulse_alpha();
         if (hud_view_player_is_salvage_carrier()) {
             rf::gr::set_color(255, 255, 255, static_cast<int>(sal_flag_alpha));
@@ -1132,7 +1143,7 @@ void multi_hud_render_team_scores()
             red_score = wipeout_get_red_team_score();
             blue_score = wipeout_get_blue_team_score();
         }
-        else if (game_type == rf::NG_TYPE_SAL) {
+        else if (is_neutral_flag) {
             rf::gr::set_color(53, 207, 22, 255);
             red_score = salvage_get_red_team_score();
             blue_score = salvage_get_blue_team_score();
@@ -1223,7 +1234,7 @@ void multi_hud_render_team_scores()
 
         // Salvage: park the neutral flag just left of the score of whichever team
         // is holding it.
-        if (game_type == rf::NG_TYPE_SAL && salvage_get_state() == SalFlagState::Carried) {
+        if (is_neutral_flag && salvage_get_state() == SalFlagState::Carried) {
             const int sal_miniflag_bmh = hud_salvage_miniflag_bmh();
             const rf::Player* carrier = salvage_get_carrier();
             if (carrier) {
@@ -1262,7 +1273,7 @@ CodeInjection multi_hud_render_team_scores_new_gamemodes_patch {
             gt_is_esc() ||
             gt_is_tbag() ||
             gt_is_wipeout() ||
-            gt_is_salvage() ||
+            salvage_framework_active() ||
             is_ffa_with_list) {
             regs.eip = 0x00476E06; // multi_hud_render_team_scores
         }
@@ -1809,8 +1820,38 @@ static void hud_salvage_carrier_ensure() {
         && g_hud_notification.type != HudNotificationType::SalvageCarrier) {
         return;
     }
-    hud_notification_show(kSalvageCarrierNotificationText, -1,
-        HudNotificationType::SalvageCarrier, false);
+    hud_notification_show(gt_is_scavenger() ? kScavengerCarrierNotificationText : kSalvageCarrierNotificationText,
+        -1, HudNotificationType::SalvageCarrier, false);
+}
+
+// Keep the bag carrier overlay alive: the carrier's own, or his teammates' in Team Bagman.
+static void hud_bag_carrier_ensure() {
+    if (rf::is_dedicated_server) return;
+
+    const char* text = nullptr;
+    if (bagman_local_player_is_carrier()) {
+        text = "You have the bag";
+    } else if (gt_is_tbag() && g_bagman_info.carrier && rf::local_player && !multi_spectate_is_spectating()
+        && g_bagman_info.carrier->team == rf::local_player->team) {
+        text = "Your team has the bag";
+    }
+
+    if (!text) {
+        if (g_hud_notification.type == HudNotificationType::BagCarrier) {
+            hud_notification_remove(HudNotificationType::BagCarrier, false);
+        }
+        return;
+    }
+
+    if (g_hud_notification.type == HudNotificationType::BagCarrier
+        && !g_hud_notification.fade_start.valid() && g_hud_notification.text == text) {
+        return;
+    }
+    if (g_hud_notification.type != HudNotificationType::None
+        && g_hud_notification.type != HudNotificationType::BagCarrier) {
+        return;
+    }
+    hud_notification_show(text, -1, HudNotificationType::BagCarrier, false);
 }
 
 // Drop a queued player into freelook spectate when the server has flagged it.
@@ -1934,6 +1975,10 @@ void hud_render_vote_notification() {
     if (state->has_voted) {
         rf::gr::set_color(150, 150, 150, 190);
         draw_line("You have voted");
+    }
+    else if (vote_client_spectating_match()) {
+        rf::gr::set_color(150, 150, 150, 190);
+        draw_line("Only players in the current match can vote");
     }
     else {
         draw_line(cache.prompt_yes.c_str());
@@ -2103,18 +2148,10 @@ CodeInjection multi_hud_render_patch{
             hud_render_vote_notification();
         }
 
-        static bool s_was_bag_carrier = false;
-        const bool is_bag_carrier = bagman_local_player_is_carrier();
-        if (is_bag_carrier && !s_was_bag_carrier) {
-            hud_notification_show("You have the bag", -1, HudNotificationType::BagCarrier, false);
-        } else if (!is_bag_carrier && s_was_bag_carrier) {
-            hud_notification_remove(HudNotificationType::BagCarrier, false);
-        }
-        s_was_bag_carrier = is_bag_carrier;
-
         hud_ready_prompt_ensure();
         hud_pit_queue_ensure();
         hud_salvage_carrier_ensure();
+        hud_bag_carrier_ensure();
         hud_vehicle_prompt_ensure();
         hud_render_notification();
         hud_render_big_notification();
@@ -2391,7 +2428,10 @@ void chat_menu_action_handler(rf::Key key) {
             if (!msg.empty()) {
                 // AF 1.4+ servers no longer accept vote calls over chat.
                 const std::optional<AfVoteType> vote_type = chat_menu_simple_vote_type(msg);
-                if (vote_type && is_server_minimum_af_version(1, 4)) {
+                if (rf::is_server) {
+                    check_server_chat_command(msg.c_str(), rf::local_player); // listen host
+                }
+                else if (vote_type && is_server_minimum_af_version(1, 4)) {
                     AfVoteCallParams params{};
                     params.type = *vote_type;
                     if (params.type == AfVoteType::Extend) {
@@ -2613,6 +2653,17 @@ ConsoleCommand2 cl_vehiclehealthbars_cmd{
     "cl_vehiclehealthbars [bool]",
 };
 
+ConsoleCommand2 cl_vehiclehints_cmd{
+    "cl_vehiclehints",
+    [](std::optional<bool> enabled) {
+        g_alpine_game_config.vehicle_control_hints = enabled.value_or(!g_alpine_game_config.vehicle_control_hints);
+        rf::console::print("Vehicle control hints are {}",
+            g_alpine_game_config.vehicle_control_hints ? "enabled" : "disabled");
+    },
+    "Toggle the list of vehicle controls shown while riding a vehicle or turret",
+    "cl_vehiclehints [bool]",
+};
+
 ConsoleCommand2 ui_gametype_help_cmd{
     "ui_gametype_help",
     [] {
@@ -2705,6 +2756,7 @@ void multi_hud_apply_patches()
     ui_gametype_help_cmd.register_cmd();
     cl_vehiclemarkers_cmd.register_cmd();
     cl_vehiclehealthbars_cmd.register_cmd();
+    cl_vehiclehints_cmd.register_cmd();
     ui_miniscoreboard_cmd.register_cmd();
     ui_always_show_specators_cmd.register_cmd();
     ui_simple_server_chat_messages_cmd.register_cmd();

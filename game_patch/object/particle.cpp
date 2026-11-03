@@ -15,6 +15,7 @@
 #include "../rf/level.h"
 #include "../rf/player/player.h"
 #include "../rf/player/camera.h"
+#include "particle_sim.h"
 
 FunHook<rf::ParticleEmitter*(int, rf::ParticleEmitterType&, rf::GRoom*, rf::Vector3&, bool)> particle_emitter_create_hook{
     0x00497CA0,
@@ -61,6 +62,10 @@ CodeInjection particle_update_accel_patch{
 CallHook<void(int, rf::ParticleCreateInfo&, rf::GRoom*, rf::Vector3*, int, rf::Particle**, rf::ParticleEmitter*)> particle_create_level_emitter_hook{
     0x00496DBC,
     [](int pool_id, rf::ParticleCreateInfo& pci, rf::GRoom* room, rf::Vector3 *a4, int parent_obj, rf::Particle** result, rf::ParticleEmitter* emitter) {
+        // A frozen emitter must not grow its particle list while it is unseen
+        if (particle_sim_emitter_culled(emitter)) {
+            return;
+        }
         // On AF levels, create particles only within the active distance
         // Applies to particle emitters placed in level file
         if (!rf::is_dedicated_server && af_rfl_version(rf::level.version) && parent_obj == 0 && emitter->uid > 0) {
@@ -86,6 +91,7 @@ FunHook<void(int, rf::ParticleCreateInfo&, rf::GRoom*, rf::Vector3*, int, rf::Pa
         }
         // Do not create not damaging particles on a dedicated server
         if (damages_flag || !rf::is_dedicated_server) {
+            particle_sim_note_create(pool_id);
             particle_create_hook.call_target(pool_id, pci, room, a4, parent_obj, result, emitter);
         }
     },

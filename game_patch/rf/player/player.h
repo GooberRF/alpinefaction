@@ -174,6 +174,10 @@ struct PlayerAdditionalData {
     std::optional<rf::Player*> spectatee{};
     bool remote_server_cfg_sent = false;
 
+    // First level item index not yet replicated after send_state_info, or -1. Everything
+    // from here on is pending except CTF items, which are never deferred.
+    int next_pending_level_item = -1;
+
     // Floor rate limit for af_req_vote_options: the blob is streamed over the
     // deferred reliable queue, so a client must not be able to spam it.
     rf::TimestampRealtime vote_options_req_timer{};
@@ -185,6 +189,9 @@ struct PlayerAdditionalData {
 
     // Rate limit for vote rejection replies.
     rf::TimestampRealtime vote_reject_msg_timer{};
+
+    // af_match_state_flags last sent to this player; a new client starts with none set.
+    uint8_t match_state_sent = 0;
 
     // Server side rail gun reload cooldown, used for force_rail_reload
     // needed because entity_is_reloading is unreliable on server

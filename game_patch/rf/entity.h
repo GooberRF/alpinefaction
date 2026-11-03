@@ -470,6 +470,7 @@ namespace rf
     };
     static_assert(sizeof(Entity) == 0x1494);
     static_assert(offsetof(Entity, interface_points) == 0x8CC);
+    static_assert(offsetof(Entity, default_state_anims) == 0xD24);
     static_assert(offsetof(Entity, entity_flags2) == 0x814);
     static_assert(offsetof(Entity, move_mode) == 0x858);
     static_assert(offsetof(Entity, control_data) == 0x860);
@@ -520,6 +521,8 @@ namespace rf
     };
 
     static auto& entity_from_handle = addr_as_ref<Entity*(int handle)>(0x00426FC0);
+    // Stops voice_handle, the sound a speaker plays through 0x004299B0 (Play_Sound with a speaker uid)
+    static auto& entity_stop_voice = addr_as_ref<void(Entity* ep)>(0x00429AB0);
     static auto& entity_lookup_type = addr_as_ref<int(const char* name)>(0x004251C0);
     // use_function == ENTITY_USE_VEHICLE; the MP level entity filter (0x00464657) drops these, turrets excluded
     static auto& entity_type_has_vehicle_use = addr_as_ref<bool __cdecl(int type_index)>(0x0042CDD0);
@@ -527,6 +530,10 @@ namespace rf
         addr_as_ref<Entity*(int entity_type, const char* name, int parent_handle, const Vector3& pos,
         const Matrix3& orient, int create_flags, int mp_character)>(0x00422360);
     static auto& entity_maybe_die = addr_as_ref<void(Entity* ep)>(0x0041FDC0);
+    static auto& blood_splat_decal =
+        addr_as_ref<void(float damage, const Vector3* pos, const Vector3* dir)>(0x0042E1C0);
+    static auto& blood_spray =
+        addr_as_ref<void(const Vector3* pos, GRoom* room, const Vector3* src_pos, float damage)>(0x0042E3D0);
     static auto& entity_calc_eye_pos = addr_as_ref<void(Entity* ep)>(0x004194E0);
     static auto& entity_get_first_leech = addr_as_ref<int(Entity* ep)>(0x00427DA0);
     static auto& entity_is_dying = addr_as_ref<bool(Entity *ep)>(0x00427020);
@@ -556,8 +563,11 @@ namespace rf
     static auto& entity_fire_list = addr_as_ref<EntityFireInfo*>(0x0062F770);
     static auto& entity_is_swimming = addr_as_ref<bool(Entity* ep)>(0x0042A0A0);
     static auto& entity_is_crouching = addr_as_ref<bool(Entity* ep)>(0x0040A130);
+    static auto& entity_can_crouch = addr_as_ref<bool(Entity* ep)>(0x00428010);
     static auto& entity_is_falling = addr_as_ref<bool(Entity* ep)>(0x0042A020);
     static auto& entity_is_climbing = addr_as_ref<bool(Entity* ep)>(0x0042D8B0);
+    static auto& entity_make_climb = addr_as_ref<void(Entity* ep, ClimbRegion* region)>(0x004281E0);
+    static auto& entity_is_grounded_move_mode = addr_as_ref<bool(Entity* ep)>(0x0042A100);
     static auto& entity_is_running = addr_as_ref<bool(Entity* ep)>(0x00429FF0);
     static auto& entity_make_freefall = addr_as_ref<void(Entity* ep)>(0x004281A0);
     static auto& entity_is_flying = addr_as_ref<bool(Entity* ep)>(0x0042A060);
@@ -577,6 +587,8 @@ namespace rf
     static auto& entity_is_playing_action_animation = addr_as_ref<bool(Entity* entity, int action)>(0x00428D10);
     static auto& entity_set_next_state_anim = addr_as_ref<void(Entity* entity, int state, float transition_time)>(0x0042A580);
     static auto& entity_play_action_animation = addr_as_ref<void(Entity* entity, int action, float weight, bool hold_last_frame, bool with_sound)>(0x00428C90);
+    // The current weapon's fire (or alt fire) action anim, unless it is already playing.
+    static auto& entity_play_attack_anim = addr_as_ref<void(Entity* entity, bool alt_fire)>(0x0042C3C0);
     static auto& entity_is_reloading = addr_as_ref<bool(Entity* entity)>(0x00425250);
     static auto& entity_weapon_is_on = addr_as_ref<bool(int entity_handle, int weapon_type)>(0x0041A830);
     static auto& entity_reload_current_primary = addr_as_ref<bool __cdecl(Entity *entity, bool no_sound, bool is_reload_packet)>(0x00425280);
@@ -587,6 +599,10 @@ namespace rf
     // continuous-weapon turn-on; pos/orient override the muzzle; last_fire_time moves only on a shot.
     static auto& entity_fire_weapon = addr_as_ref<void __cdecl(Entity* ep, int force, int alt_fire,
         void** out_weapon, Vector3* pos, Matrix3* orient)>(0x00425830);
+    // The muzzle entity_fire_weapon uses when it is given no pos (0x004264E3); is_primary selects
+    // ai.current_primary_weapon over current_secondary_weapon for the muzzle mesh.
+    static auto& entity_get_weapon_fire_pos_orient = addr_as_ref<void __cdecl(Entity* ep, int weapon_type,
+        Vector3* pos, Matrix3* orient, int muzzle_index, bool is_primary)>(0x0041B040);
     // One shot of ai.current_secondary_weapon. force != 0 skips the fire-wait gate; next_fire_secondary re-arms only on a shot.
     static auto& entity_fire_secondary_weapon = addr_as_ref<void __cdecl(Entity* ep, char force)>(0x00426CA0);
     static auto& entity_restore_mesh = addr_as_ref<void(Entity *ep, const char *mesh_name)>(0x0042C570);

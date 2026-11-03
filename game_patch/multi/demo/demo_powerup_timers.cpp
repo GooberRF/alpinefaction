@@ -1,7 +1,6 @@
 #include <algorithm>
 #include <cmath>
 #include <format>
-#include <patch_common/FunHook.h>
 #include "demo.h"
 #include "demo_internal.h"
 #include "../gametype.h"
@@ -126,22 +125,6 @@ namespace
         }
     }
 
-    using MultiIoPacketHandler = void(char* data, const rf::NetAddr& addr);
-
-    // The item_update bitmap is the only channel through which a spectator learns about
-    // level-item pickups/respawns, so its handler is the natural edge-detection point.
-    // Correct through seek fast-forward bursts too: the pump advances the demo clock
-    // per-record before feeding. Pure passthrough outside demo playback.
-    FunHook<MultiIoPacketHandler> process_item_update_packet_hook{
-        0x0047A220,
-        [](char* data, const rf::NetAddr& addr) {
-            process_item_update_packet_hook.call_target(data, addr);
-            if (demo_playback_active() && !gt_is_bagman_any()) {
-                update_tracker();
-            }
-        },
-    };
-
     ConsoleCommand2 spectate_powerups_cmd{
         "spectate_powerups",
         []() {
@@ -152,6 +135,15 @@ namespace
         "Toggle powerup respawn timers during demo playback",
         "spectate_powerups",
     };
+}
+
+// Correct through seek fast-forward bursts too: the pump advances the demo clock
+// per-record before feeding.
+void demo_powerup_timers_on_item_update()
+{
+    if (demo_playback_active() && !gt_is_bagman_any()) {
+        update_tracker();
+    }
 }
 
 void demo_powerup_timers_reset()
@@ -233,6 +225,5 @@ void demo_powerup_timers_render()
 
 void demo_powerup_timers_do_patch()
 {
-    process_item_update_packet_hook.install();
     spectate_powerups_cmd.register_cmd();
 }

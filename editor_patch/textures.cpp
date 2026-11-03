@@ -1,11 +1,13 @@
 #include <cstring>
 #include <cctype>
+#include <format>
 #include <string>
 #include <string_view>
 #include <vector>
 #include <algorithm>
 #include <unordered_set>
 #include <windows.h>
+#include <commctrl.h>
 #include <xlog/xlog.h>
 #include <patch_common/MemUtils.h>
 #include <patch_common/FunHook.h>
@@ -15,8 +17,11 @@
 #include "level.h"
 #include "textures.h"
 #include "meshes.h"
+#include "sounds.h"
 #include "event.h"
 #include "bitmap_loaders.h"
+#include "editor_settings.h"
+#include "resources.h"
 #include <common/utils/string-utils.h>
 
 // Subdirectory names registered during init, used by VPP packing fix
@@ -109,19 +114,8 @@ static void register_custom_texture_subdirectories(TextureManager* texture_manag
                subdirs.size(), category_array->size);
 }
 
-// Hook FUN_0046ac30: the master config/init function that either loads categories from
-// red.cfg or falls through to default initialization. By hooking here (instead of
-// init_texture_categories at 0x004778e0), custom subdirectory categories are registered
-// regardless of whether red.cfg exists.
-void __fastcall texture_config_init_new(PreferencesDialog* self, int edx);
-FunHook texture_config_init_hook{0x0046ac30, texture_config_init_new};
-
-void __fastcall texture_config_init_new(PreferencesDialog* self, int edx)
+void texture_categories_loaded(TextureManager* texture_manager)
 {
-    // Call original: loads from red.cfg if present, otherwise initializes defaults
-    texture_config_init_hook.call_target(self, edx);
-
-    TextureManager* texture_manager = self->texture_manager;
     g_texture_manager = texture_manager;
     register_custom_texture_subdirectories(texture_manager);
 }
@@ -178,14 +172,44 @@ static int __cdecl permissive_texture_browser_validator(void* entry)
     return browser_extension_allowed(ext) ? 1 : 0;
 }
 
+// The Format filter's choices after All; a .jpeg counts as JPG
+static constexpr const char* texture_browser_formats[] = {"TGA", "VBM", "DDS", "PNG", "JPG", "ATX"};
+// Its selection for the session, 0 for All
+static int g_texture_browser_format = 0;
+
+static bool texture_browser_format_matches(const char* filename)
+{
+    const int sel = g_texture_browser_format;
+    if (sel <= 0 || sel > static_cast<int>(std::size(texture_browser_formats))) return true;
+    const char* ext = std::strrchr(filename, '.');
+    if (!ext) return false;
+    const char* format = texture_browser_formats[sel - 1];
+    return _stricmp(ext + 1, format) == 0 || (std::strcmp(format, "JPG") == 0 && _stricmp(ext + 1, "jpeg") == 0);
+}
+
+// The stock validator's Material filter: one of the material's prefixes starts the name
+static bool texture_browser_material_matches(const char* filename)
+{
+    const int sel = texture_browser_material_index;
+    if (sel <= 0 || sel > texture_browser_materials.size) return true;
+    const TextureBrowserMaterial* material = texture_browser_materials.data_ptr[sel - 1];
+    if (!material) return true;
+    for (int i = 0; i < material->bitmap_prefixes.size; i++) {
+        const char* prefix = material->bitmap_prefixes.data_ptr[i].c_str();
+        if (_strnicmp(filename, prefix, std::strlen(prefix)) == 0) return true;
+    }
+    return false;
+}
+
 static int __cdecl filtered_texture_browser_validator(void* entry)
 {
     if (!permissive_texture_browser_validator(entry)) return 0;
 
-    auto& texture_browser_filter = addr_as_ref<char[256]>(0x006ca408);
+    const char* filename = static_cast<const char*>(entry) + 8;
+    if (!texture_browser_format_matches(filename) || !texture_browser_material_matches(filename)) return 0;
+
     if (!texture_browser_filter[0]) return 1;
 
-    const char* filename = static_cast<const char*>(entry) + 8;
     return string_icontains(filename, static_cast<const char*>(texture_browser_filter)) ? 1 : 0;
 }
 
@@ -199,20 +223,230 @@ FunHook<int __cdecl(void*)> texture_sidebar_validator_hook{
     permissive_texture_browser_validator
 };
 
-// FUN_00477460 saves texture categories to red.cfg. Skip "Custom - " subdirectory
-// categories so they don't pollute red.cfg (they're re-added dynamically at startup).
-// Inject at 0x004774b2 (after ESI = category pointer, before name is written).
-// Jump to 0x0047755d (loop increment) to skip the entry entirely.
-CodeInjection config_save_skip_custom_subdirs{
-    0x004774b2,
+// FUN_0046f880 lays the thumbnail grid out at 32, 64 or 128 px by Display Size; 256 and 512 follow those, and One To
+// One moves after them (its dispatch at 0x0046fccc compares with 5 instead of 3). No trampoline: it always resumes past
+// the size switch at 0x0046f8c2, so the replaced mov eax, [esi+0x2b8] is never needed.
+static constexpr int texture_browser_one_to_one = 5;
+CodeInjection texture_browser_thumbnail_size_injection{
+    0x0046f89e,
     [](auto& regs) {
-        auto* cat = reinterpret_cast<TextureCategory*>(static_cast<int>(regs.esi));
-        const char* name = cat->name.c_str();
-        if (category_name_starts_with(name, custom_subdir_category_prefix)) {
-            regs.eip = 0x0047755d;
+        static constexpr int sizes[] = {32, 64, 128, 256, 512};
+        const TextureBrowserPanel* panel = regs.esi;
+        const int mode = panel->display_size;
+        regs.ebp = mode >= 0 && mode < static_cast<int>(std::size(sizes)) ? sizes[mode] : 64;
+        regs.eip = 0x0046f8c2;
+    },
+    false,
+};
+
+// A frame narrower than one 512 px cell would give no columns, which the layout divides by
+CodeInjection texture_browser_min_columns_injection{
+    0x0046f8f0,
+    [](auto& regs) {
+        if (static_cast<int>(regs.eax) < 1) {
+            regs.eax = 1;
+        }
+    },
+};
+
+// The Texture Browser resizes: its view grows with the window and the grid is laid out again for it, the favorites
+// strip and the buttons keep to the bottom. Its placement and Display Size are kept in the settings, and the mouse
+// wheel scrolls it.
+namespace
+{
+struct TextureBrowserLayout
+{
+    SIZE min_size{};
+    SIZE client{};
+    SIZE applied{};
+    int wheel = 0;
+    RECT view{};
+    std::vector<std::pair<int, POINT>> to_bottom;
+};
+TextureBrowserLayout g_texture_browser_layout;
+
+// the favorites strip, its Change buttons, OK and Cancel
+constexpr int texture_browser_bottom_ids[] = {1506, 1507, 1508, 1509, 1510, 1511, 1512, 1513, 1514, IDOK, IDCANCEL};
+
+// As if the scroll bar were hidden: the grid's layout shows and hides it, which must not resize the view again
+SIZE texture_browser_client_size(HWND hdlg)
+{
+    RECT r{};
+    GetClientRect(hdlg, &r);
+    const bool scroll_bar = (GetWindowLongA(hdlg, GWL_STYLE) & WS_VSCROLL) != 0;
+    return {r.right + (scroll_bar ? GetSystemMetrics(SM_CXVSCROLL) : 0), r.bottom};
+}
+
+RECT texture_browser_child_rect(HWND hdlg, int id)
+{
+    RECT r{};
+    if (const HWND child = GetDlgItem(hdlg, id)) {
+        GetWindowRect(child, &r);
+        MapWindowPoints(nullptr, hdlg, reinterpret_cast<POINT*>(&r), 2);
+    }
+    return r;
+}
+
+void texture_browser_layout_init(HWND hdlg)
+{
+    TextureBrowserLayout& layout = g_texture_browser_layout;
+    RECT window{};
+    GetWindowRect(hdlg, &window);
+    layout.min_size = {window.right - window.left, window.bottom - window.top};
+    layout.client = texture_browser_client_size(hdlg);
+    layout.applied = layout.client;
+    layout.wheel = 0;
+    layout.view = texture_browser_child_rect(hdlg, IDC_TEXTURE_BROWSER_VIEW);
+    layout.to_bottom.clear();
+    for (int id : texture_browser_bottom_ids) {
+        const RECT r = texture_browser_child_rect(hdlg, id);
+        layout.to_bottom.emplace_back(id, POINT{r.left, r.top});
+    }
+}
+
+void texture_browser_layout_apply(HWND hdlg, SIZE size)
+{
+    const TextureBrowserLayout& layout = g_texture_browser_layout;
+    const int dx = std::max(0, static_cast<int>(size.cx - layout.client.cx));
+    const int dy = std::max(0, static_cast<int>(size.cy - layout.client.cy));
+    if (const HWND view = GetDlgItem(hdlg, IDC_TEXTURE_BROWSER_VIEW)) {
+        // no bigger than the back buffer it is drawn from
+        const int width = std::min(static_cast<int>(layout.view.right - layout.view.left) + dx, gr_get_max_width());
+        const int height = std::min(static_cast<int>(layout.view.bottom - layout.view.top) + dy, gr_get_max_height());
+        SetWindowPos(view, nullptr, 0, 0, width, height, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    for (const auto& [id, pos] : layout.to_bottom) {
+        if (const HWND child = GetDlgItem(hdlg, id)) {
+            SetWindowPos(child, nullptr, pos.x, pos.y + dy, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
         }
     }
+    InvalidateRect(hdlg, nullptr, TRUE);
+}
+
+// The restored rect, so a maximized browser comes back to it
+void texture_browser_remember_rect(HWND hdlg)
+{
+    if (!IsIconic(hdlg) && !IsZoomed(hdlg)) {
+        GetWindowRect(hdlg, &g_editor_settings.texture_browser_rect);
+    }
+}
+
+// On the monitor nearest the saved rect, fitted to its work area, which may have changed since
+void texture_browser_restore_placement(HWND hdlg)
+{
+    const RECT saved = g_editor_settings.texture_browser_rect;
+    const long long saved_width = static_cast<long long>(saved.right) - saved.left;
+    const long long saved_height = static_cast<long long>(saved.bottom) - saved.top;
+    MONITORINFO info{};
+    info.cbSize = sizeof(info);
+    if (saved_width > 0 && saved_height > 0
+        && GetMonitorInfoA(MonitorFromRect(&saved, MONITOR_DEFAULTTONEAREST), &info)) {
+        const RECT& work = info.rcWork;
+        const SIZE& min_size = g_texture_browser_layout.min_size;
+        const long long width =
+            std::max<long long>(min_size.cx, std::min<long long>(saved_width, work.right - work.left));
+        const long long height =
+            std::max<long long>(min_size.cy, std::min<long long>(saved_height, work.bottom - work.top));
+        const long long x = std::max<long long>(work.left, std::min<long long>(saved.left, work.right - width));
+        const long long y = std::max<long long>(work.top, std::min<long long>(saved.top, work.bottom - height));
+        SetWindowPos(hdlg, nullptr, static_cast<int>(x), static_cast<int>(y), static_cast<int>(width),
+                     static_cast<int>(height), SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    if (g_editor_settings.texture_browser_maximized) {
+        ShowWindow(hdlg, SW_MAXIMIZE);
+    }
+}
+} // namespace
+
+static LRESULT CALLBACK texture_browser_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam, UINT_PTR subclass_id,
+                                             DWORD_PTR panel)
+{
+    if (msg == WM_GETMINMAXINFO) {
+        auto* info = reinterpret_cast<MINMAXINFO*>(lparam);
+        info->ptMinTrackSize = {g_texture_browser_layout.min_size.cx, g_texture_browser_layout.min_size.cy};
+        return 0;
+    }
+    if (msg == WM_MOUSEWHEEL) {
+        // a step per notch, as the scroll bar's arrows go
+        int& wheel = g_texture_browser_layout.wheel;
+        wheel += GET_WHEEL_DELTA_WPARAM(wparam);
+        for (; wheel >= WHEEL_DELTA; wheel -= WHEEL_DELTA) {
+            SendMessageA(hwnd, WM_VSCROLL, SB_LINEUP, 0);
+        }
+        for (; wheel <= -WHEEL_DELTA; wheel += WHEEL_DELTA) {
+            SendMessageA(hwnd, WM_VSCROLL, SB_LINEDOWN, 0);
+        }
+        return 0;
+    }
+    if (msg == WM_SIZE && wparam != SIZE_MINIMIZED && g_texture_browser_layout.client.cx > 0) {
+        const SIZE size = texture_browser_client_size(hwnd);
+        SIZE& applied = g_texture_browser_layout.applied;
+        if (size.cx != applied.cx || size.cy != applied.cy) {
+            applied = size;
+            texture_browser_layout_apply(hwnd, size);
+            // the scroll range follows the rows, and the view keeps its scroll position
+            auto* browser = reinterpret_cast<TextureBrowserPanel*>(panel);
+            const int scrolled = GetScrollPos(hwnd, SB_VERT);
+            texture_browser_relayout(browser, true, 0, 0);
+            if (scrolled > 0) {
+                texture_browser_relayout(browser, false, SB_THUMBPOSITION, scrolled);
+            }
+        }
+    }
+    if (msg == WM_SIZE || msg == WM_MOVE) {
+        texture_browser_remember_rect(hwnd);
+    }
+    if (msg == WM_DESTROY) {
+        texture_browser_remember_rect(hwnd);
+        g_editor_settings.texture_browser_maximized = IsZoomed(hwnd) != FALSE;
+        g_editor_settings.texture_browser_display_size = reinterpret_cast<TextureBrowserPanel*>(panel)->display_size;
+    }
+    if (msg == WM_COMMAND && LOWORD(wparam) == IDC_TEXTURE_BROWSER_FORMAT && HIWORD(wparam) == CBN_SELCHANGE) {
+        const int sel = static_cast<int>(SendMessageA(reinterpret_cast<HWND>(lparam), CB_GETCURSEL, 0, 0));
+        g_texture_browser_format = sel > 0 ? sel : 0;
+        texture_browser_refresh(reinterpret_cast<TextureBrowserPanel*>(panel));
+        return 0;
+    }
+    if (msg == WM_NCDESTROY) {
+        RemoveWindowSubclass(hwnd, texture_browser_proc, subclass_id);
+    }
+    return DefSubclassProc(hwnd, msg, wparam, lparam);
+}
+
+// FUN_00470a10: the browser's OnInitDialog
+static BOOL __fastcall texture_browser_init_dialog_hooked(TextureBrowserPanel* panel);
+FunHook<decltype(texture_browser_init_dialog_hooked)> texture_browser_init_dialog_hook{
+    0x00470a10,
+    texture_browser_init_dialog_hooked
 };
+static BOOL __fastcall texture_browser_init_dialog_hooked(TextureBrowserPanel* panel)
+{
+    // Before the stock dialog lays the grid out by it
+    panel->display_size = std::clamp(g_editor_settings.texture_browser_display_size, 0, texture_browser_one_to_one);
+    const BOOL result = texture_browser_init_dialog_hook.call_target(panel);
+    HWND hdlg = WndToHandle(reinterpret_cast<CWnd*>(panel));
+
+    // stock selected the size before these existed
+    HWND sizes = GetDlgItem(hdlg, IDC_TEXTURE_BROWSER_SIZES);
+    SendMessageA(sizes, CB_INSERTSTRING, 3, reinterpret_cast<LPARAM>("256 x 256"));
+    SendMessageA(sizes, CB_INSERTSTRING, 4, reinterpret_cast<LPARAM>("512 x 512"));
+    SendMessageA(sizes, CB_SETCURSEL, panel->display_size, 0);
+
+    HWND formats = GetDlgItem(hdlg, IDC_TEXTURE_BROWSER_FORMAT);
+    SendMessageA(formats, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("All"));
+    for (const char* format : texture_browser_formats) {
+        SendMessageA(formats, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(format));
+    }
+    SendMessageA(formats, CB_SETCURSEL, g_texture_browser_format, 0);
+
+    // The Name handler copies the text unbounded into its buffer
+    SendDlgItemMessageA(hdlg, IDC_TEXTURE_BROWSER_NAME, EM_LIMITTEXT, sizeof(texture_browser_filter) - 1, 0);
+
+    texture_browser_layout_init(hdlg);
+    SetWindowSubclass(hdlg, texture_browser_proc, 1, reinterpret_cast<DWORD_PTR>(panel));
+    texture_browser_restore_placement(hdlg);
+    return result;
+}
 
 // FUN_0041b7c0 (startup default-texture folder group build) indexes
 // TextureManager::folder_names with each category's path_handle. Custom subdirectory
@@ -227,6 +461,21 @@ CodeInjection folder_group_build_skip_custom_subdirs{
             regs.eip = 0x0041bad7;
         }
     }
+};
+
+// The sidebar's OnInitDialog (FUN_00444eb0) shows the selected category's first texture without checking that the
+// list has one, so an empty category (every stock one until startup builds the texture groups) passed the bytes past
+// the list head to bm_load as a filename, a fatal error. With an empty list the preview gets the fallback stock's
+// Reload uses (0x00445dc0) and the rest is skipped; the init flag stays clear, so the next init builds the list again.
+CodeInjection sidebar_init_empty_list_fix{
+    0x004450fb,
+    [](auto& regs) {
+        const TextureModePanel* panel = regs.esi;
+        if (panel->textures.head == reinterpret_cast<const TextureListNode*>(&panel->textures)) {
+            panel->preview->bm_handle = bm_load("Rck_default.tga", -1, 1);
+            regs.eip = 0x0044515d;
+        }
+    },
 };
 
 // FUN_004452f0 (texture mode sidebar) uses a fixed path_handle from [dialog+0x98] for all
@@ -530,13 +779,13 @@ CodeInjection vpp_texture_path_fix{
     }
 };
 
-// Texture names come out of level and mesh files, which are shared content.
+// File names come out of level and mesh files, which are shared content.
 // Only bare filenames should be packable, not paths.
 static bool has_packable_path(const char* filename)
 {
     if (!filename || !filename[0]) return false;
     if (strpbrk(filename, "\\/:") != nullptr) {
-        xlog::warn("Refusing to pack texture with a path in its name: '{}'", filename);
+        xlog::warn("Refusing to pack file with a path in its name: '{}'", filename);
         return false;
     }
     return true;
@@ -636,15 +885,23 @@ static void expand_atx_deps_in_pack_list(void* temp_list)
     }
 }
 
-// Clear the RED console log at the start of VPP packfile creation (FUN_0044cb10),
-// before "Creating Packfile..." is printed. FUN_00444940 is __thiscall LogDlg_Clear.
+// Clear the RED console log at the start of Create Level Packfile (FUN_004482c0), so the warnings
+// its file gathering reports stay above "Creating Packfile...", which the writer FUN_0044cb10 prints.
+// FUN_00444940 is __thiscall LogDlg_Clear.
 CodeInjection vpp_clear_log_injection{
-    0x0044cb10,
+    0x004482c0,
     [](auto& regs) {
-        void* log_dlg = struct_field_ref<void*>(g_main_frame, 0x2b4);
-        log_dlg_clear(log_dlg);
+        log_dlg_clear(GetLogDlg());
     }
 };
+
+// Ships with the game: inside a packfile the editor mounted (the stock ones, alpinefaction.vpp). A file only loose in
+// an editor folder (red\textures, say) does not count, since the game will not have it either. FUN_004caae0 looks in
+// the packfiles alone, where File::open would find a loose copy first; it copies the name into 256 bytes.
+static bool shipped_in_packfile(const char* name)
+{
+    return name && std::strlen(name) < 256 && AddrCaller{0x004caae0}.c_call<void*>(name) != nullptr;
+}
 
 // FUN_0044c7a0 (process single VPP file) fails fatally when fopen returns NULL, which
 // causes two bugs: a blank VPP is left on disk, and the file list is never cleaned up
@@ -658,19 +915,18 @@ CodeInjection vpp_skip_missing_file_injection{
         auto* vstr = reinterpret_cast<VString*>(static_cast<int>(regs.esp) + 0x20);
         const char* filename = vstr->c_str();
 
-        // Silently skip known stock textures that the editor incorrectly tries to pack
-        const char* bare_name = std::strrchr(filename, '\\');
-        bare_name = bare_name ? bare_name + 1 : filename;
-        if (_stricmp(bare_name, "rock02.tga") != 0) {
-            // Only log during the data pass (param_4 != 0, param_5 == 0) to avoid
-            // duplicate warnings from count and directory passes
-            int file_handle = *reinterpret_cast<int*>(static_cast<int>(regs.esp) + 0x2C);
-            int mode = *reinterpret_cast<int*>(static_cast<int>(regs.esp) + 0x30);
-            if (file_handle != 0 && mode == 0) {
-                xlog::warn("Packfile: Skipping missing file: {}", filename);
-
-                void* log_dlg = struct_field_ref<void*>(g_main_frame, 0x2b4);
-                log_dlg_append(log_dlg, "Warning: Skipping missing file %s\n", filename);
+        // Only log during the data pass (param_4 != 0, param_5 == 0) to avoid
+        // duplicate warnings from count and directory passes
+        int file_handle = *reinterpret_cast<int*>(static_cast<int>(regs.esp) + 0x2C);
+        int mode = *reinterpret_cast<int*>(static_cast<int>(regs.esp) + 0x30);
+        if (file_handle != 0 && mode == 0) {
+            // The stock texture filter misses some textures that ship with the game (rock02.tga in
+            // ui.vpp, alpinefaction.vpp's), which then get pushed as missing user_maps\textures files
+            const char* bare_name = std::strrchr(filename, '\\');
+            bare_name = bare_name ? bare_name + 1 : filename;
+            if (!shipped_in_packfile(bare_name)) {
+                editor_report(EditorReportLevel::warn, "Packfile",
+                              std::format("Warning: Skipping missing file {}", filename), true);
             }
         }
 
@@ -681,19 +937,13 @@ CodeInjection vpp_skip_missing_file_injection{
 
 // ─── Mesh file VPP helpers ──────────────────────────────────────────────────
 
-// Add a mesh file to the global VPP file list (0x006c9ba8) if it exists on disk.
+// Add a mesh file to the global VPP file list if it exists on disk.
 static void add_mesh_to_vpp_list(const char* filename)
 {
     std::string full_path = find_mesh_on_disk(filename);
     if (full_path.empty()) return;
 
-    VString str;
-    str.assign_0(full_path.c_str());
-    int ml = str.max_len;
-    char* b = str.buf;
-    str.max_len = 0;
-    str.buf = nullptr;
-    AddrCaller{0x00438640}.this_call<int>(reinterpret_cast<void*>(0x006c9ba8), ml, b);
+    push_to_pack_list(&vpp_file_list, full_path.c_str());
     xlog::info("VPP: Added mesh file '{}'", full_path);
 }
 
@@ -748,8 +998,16 @@ CodeInjection vpp_extra_textures_injection{
                     add_texture_to_pack_list(temp_list, evt->str1.c_str());
                     add_texture_to_pack_list(temp_list, evt->str2.c_str());
                 }
-                else if (evt->event_type == af_ded_event_to_int(AlpineDedEventID::Switch_Model)) {
+                else if (evt->event_type == af_ded_event_to_int(AlpineDedEventID::Switch_Model)
+                         || evt->event_type == af_ded_event_to_int(AlpineDedEventID::Set_Debris)) {
                     add_mesh_textures_to_pack_list(temp_list, evt->str1.c_str());
+                }
+                else if (evt->event_type == af_ded_event_to_int(AlpineDedEventID::Mesh_Set_Texture)) {
+                    add_texture_to_pack_list(temp_list, evt->str1.c_str());
+                }
+                else if (evt->event_type == af_ded_event_to_int(AlpineDedEventID::World_HUD_Sprite)) {
+                    add_texture_to_pack_list(temp_list, evt->str1.c_str());
+                    add_texture_to_pack_list(temp_list, evt->str2.c_str());
                 }
             }
         }
@@ -757,13 +1015,22 @@ CodeInjection vpp_extra_textures_injection{
         // Geomod default crater texture (VString at CDedLevel+0x24)
         add_texture_to_pack_list(temp_list, level->geomod_texture.c_str());
 
-        // Textures referenced by custom mesh files (.v3m/.v3c)
+        // Textures referenced by custom mesh files (.v3m/.v3c), and per-object texture overrides
         for (auto* mesh : level->GetAlpineLevelProperties().mesh_objects) {
             add_mesh_textures_to_pack_list(temp_list, mesh->mesh_filename.c_str());
             add_mesh_textures_to_pack_list(temp_list, mesh->clutter_props.debris_filename.c_str());
             add_mesh_textures_to_pack_list(temp_list, mesh->clutter_props.corpse_filename.c_str());
             if (mesh->brush_geo_source == 2 && !mesh->collision_mesh_filename.empty()) {
                 add_mesh_textures_to_pack_list(temp_list, mesh->collision_mesh_filename.c_str());
+            }
+            for (const auto& ovr : mesh->texture_overrides) {
+                add_texture_to_pack_list(temp_list, ovr.filename.c_str());
+            }
+        }
+
+        for (auto* region : level->GetAlpineLevelProperties().weather_region_objects) {
+            if (region->weather_type == WeatherRegionType::snow) {
+                add_texture_to_pack_list(temp_list, region->snow_bitmap.c_str());
             }
         }
 
@@ -812,7 +1079,68 @@ CodeInjection vpp_extra_textures_injection{
     }
 };
 
-CodeInjection vpp_mesh_files_injection{
+// ─── Sound file VPP helpers ─────────────────────────────────────────────────
+
+// A sound is custom, and packed, when a file of its name sits loose under user_maps\sounds. A name in a mounted
+// packfile (audio.vpp, music.vpp, alpinefaction.vpp) ships with the game; any other is reported as not found, with
+// `describe_owner()` naming what references it.
+template<typename DescribeOwner>
+static void add_sound_to_vpp_list(const char* filename, DescribeOwner describe_owner,
+                                  std::unordered_set<std::string>& seen)
+{
+    if (!filename || !filename[0]) return;
+    if (!seen.insert(string_to_lower(filename)).second) return;
+    if (!has_packable_path(filename)) return;
+
+    std::string full_path = find_sound_on_disk(filename);
+    if (!full_path.empty()) {
+        push_to_pack_list(&vpp_file_list, full_path.c_str());
+        xlog::info("VPP: Added sound file '{}'", full_path);
+        return;
+    }
+
+    if (shipped_in_packfile(filename)) return;
+    editor_report(EditorReportLevel::warn, "Packfile",
+                  std::format("Warning: Sound file {} not found ({})", filename, describe_owner()), true);
+}
+
+// Every sound file name a level holds: ambient sounds, Play_Sound, Switch and Music_Start events (str1, which
+// the game's event loader, RF.exe 0x00462150, hands on as the file name), and each moving group's start, loop,
+// stop and close sounds.
+static void add_level_sounds_to_vpp_list(CDedLevel& level)
+{
+    // Picks up sounds and subdirectories added since startup
+    reload_custom_sounds();
+
+    std::unordered_set<std::string> seen;
+    for (int i = 0; i < level.master_objects.get_size(); i++) {
+        auto* obj = level.master_objects[i];
+        if (obj->type == DedObjectType::DED_AMBIENT_SOUND) {
+            add_sound_to_vpp_list(static_cast<DedAmbientSound*>(obj)->sound_filename.c_str(),
+                                  [obj] { return std::format("ambient sound uid {}", obj->uid); }, seen);
+        }
+        else if (obj->type == DedObjectType::DED_EVENT) {
+            auto* evt = static_cast<DedEvent*>(obj);
+            if (evt->event_type == af_ded_event_to_int(AlpineDedEventID::Play_Sound)
+                || evt->event_type == af_ded_event_to_int(AlpineDedEventID::Switch)
+                || evt->event_type == af_ded_event_to_int(AlpineDedEventID::Music_Start)) {
+                add_sound_to_vpp_list(evt->str1.c_str(), [obj] { return std::format("event uid {}", obj->uid); },
+                                      seen);
+            }
+        }
+    }
+
+    for (int i = 0; i < level.moving_groups.get_size(); i++) {
+        const GroupEntry* group = level.moving_groups[i];
+        if (!group || !group->is_moving_group()) continue;
+        for (const auto& sound : group->keyframes->sounds) {
+            add_sound_to_vpp_list(sound.filename.c_str(),
+                                  [group] { return std::format("moving group '{}'", group->name.c_str()); }, seen);
+        }
+    }
+}
+
+CodeInjection vpp_extra_files_injection{
     0x004485e2,
     [](auto& regs) {
         auto* level = CDedLevel::Get();
@@ -844,13 +1172,14 @@ CodeInjection vpp_mesh_files_injection{
             }
         }
 
-        // Events: Switch_Model (str1=mesh), Play_Animation (str1=anim),
+        // Events: Switch_Model and Set_Debris (str1=mesh), Play_Animation (str1=anim),
         // Mesh_Animate (str1=anim)
         for (int i = 0; i < level->master_objects.get_size(); i++) {
             auto* obj = level->master_objects[i];
             if (obj->type != DedObjectType::DED_EVENT) continue;
             auto* evt = static_cast<DedEvent*>(obj);
-            if (evt->event_type == af_ded_event_to_int(AlpineDedEventID::Switch_Model)) {
+            if (evt->event_type == af_ded_event_to_int(AlpineDedEventID::Switch_Model)
+                || evt->event_type == af_ded_event_to_int(AlpineDedEventID::Set_Debris)) {
                 add_mesh_to_vpp_list(evt->str1.c_str());
             }
             else if (evt->event_type == af_ded_event_to_int(AlpineDedEventID::Play_Animation)) {
@@ -860,6 +1189,8 @@ CodeInjection vpp_mesh_files_injection{
                 add_mesh_to_vpp_list(evt->str1.c_str());
             }
         }
+
+        add_level_sounds_to_vpp_list(*level);
     }
 };
 
@@ -872,7 +1203,7 @@ CodeInjection vpp_mesh_files_injection{
 static bool reload_entry_in_place(BitmapEntry* entry, int original_checksum, const char* name)
 {
     const int new_handle = BitmapEntry::load(name, -1);
-    const int new_index = new_handle >= 0 ? BitmapEntry::handle_to_index(new_handle) : -1;
+    const int new_index = new_handle >= 0 ? rf::bm::get_cache_slot(new_handle) : -1;
     BitmapEntry* new_entry = new_index >= 0 ? &BitmapEntry::entries[new_index] : nullptr;
     if (!new_entry || new_entry == entry) {
         entry->name_checksum = original_checksum;
@@ -912,7 +1243,7 @@ static bool reload_entry_in_place(BitmapEntry* entry, int original_checksum, con
 // handle stays valid (faces referencing it don't break on save/load).
 static void reload_bm_placeholders()
 {
-    int table_size = BitmapEntry::hash_table_size_m1 + 1;
+    int table_size = rf::bm::num_cache_slots + 1;
 
     struct Placeholder {
         BitmapEntry* entry;
@@ -971,7 +1302,7 @@ bool reload_bitmap_in_place(const char* filename)
         BitmapEntry::load(filename, -1);
         return true;
     }
-    const int index = BitmapEntry::handle_to_index(handle);
+    const int index = rf::bm::get_cache_slot(handle);
     if (index < 0) return false;
     BitmapEntry* entry = &BitmapEntry::entries[index];
     const int checksum = entry->name_checksum;
@@ -1005,19 +1336,22 @@ void reload_custom_textures()
 }
 
 void ApplyTexturesPatches() {
-    texture_config_init_hook.install();
     texture_browser_validator_hook.install();
     texture_sidebar_validator_hook.install();
+    texture_browser_thumbnail_size_injection.install();
+    texture_browser_min_columns_injection.install();
+    write_mem<int8_t>(0x0046fcce, texture_browser_one_to_one);
+    texture_browser_init_dialog_hook.install();
     custom_category_check_hook.install();
     sidebar_custom_texture_path_injection.install();
+    sidebar_init_empty_list_fix.install();
     texture_reverse_lookup_fix.install();
     texture_reverse_lookup_index_fix.install();
     vpp_texture_path_fix.install();
     vpp_extra_textures_injection.install();
     vpp_skip_missing_file_injection.install();
     vpp_clear_log_injection.install();
-    vpp_mesh_files_injection.install();
-    config_save_skip_custom_subdirs.install();
+    vpp_extra_files_injection.install();
     folder_group_build_skip_custom_subdirs.install();
     texture_refresh_all_iterate_custom_injection.install();
     texture_refresh_dedup_master_injection.install();

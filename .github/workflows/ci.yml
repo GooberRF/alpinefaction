@@ -28,19 +28,20 @@ jobs:
 
     - name: Install packages
       run: |
-        dpkg --add-architecture i386
         apt-get update
         DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-          g++-mingw-w64-i686-posix ninja-build wine32 wine cmake ca-certificates
+          g++-mingw-w64-i686-posix ninja-build cmake ca-certificates
 
     - name: Create a build environment
       run: cmake -E make_directory ./build
 
+    # Shaders would need Wine + vkd3d, which crashes on some of them; the packfile ships from the MSVC job
     - name: Configure CMake
       working-directory: ./build
       run: |
         cmake .. \
           -G Ninja \
+          -D ALPINE_BUILD_PACKFILE=OFF \
           -D CMAKE_C_COMPILER_LAUNCHER=sccache \
           -D CMAKE_CXX_COMPILER_LAUNCHER=sccache \
           -D CMAKE_BUILD_TYPE=$BUILD_TYPE \
@@ -48,10 +49,7 @@ jobs:
 
     - name: Build
       working-directory: ./build
-      run: |
-        export WINEPREFIX=$GITHUB_WORKSPACE/.wine
-        mkdir -p $WINEPREFIX
-        cmake --build . -j $(nproc)
+      run: cmake --build . -j $(nproc)
 
     - name: Stage artifacts
       shell: bash
@@ -60,7 +58,7 @@ jobs:
         out="$GITHUB_WORKSPACE/dist/gnu"
         mkdir -p "$out"
 
-        want=(AlpineFaction.dll AlpineEditor.dll AlpineFactionLauncher.exe CrashHandler.exe d3d8to9.dll alpinefaction.vpp)
+        want=(AlpineFaction.dll AlpineEditor.dll AlpineFactionLauncher.exe CrashHandler.exe d3d8to9.dll)
 
         for f in "${want[@]}"; do
           src="$(find "$GITHUB_WORKSPACE/build" -type f -name "$f" -print -quit || true)"

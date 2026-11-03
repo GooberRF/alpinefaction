@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <common/atx/spec.h>
 #include "../rf/bmpman.h"
 
 // ATX is a text-based (TOML) container that bundles a list of existing texture files
@@ -32,6 +33,9 @@ void unlock_atx_bitmap(rf::bm::BitmapEntry& bm_entry);
 // the ATX's current frame, or nullopt if the ATX has no overrides configured (caller falls
 // through to the stock material logic in that case).
 std::optional<uint8_t> atx_material_override(const rf::bm::BitmapEntry& bm_entry);
+
+// Null when none. Valid until atx_level_reset.
+const AtxSpec::Detail* atx_detail_texture(const rf::bm::BitmapEntry& bm_entry);
 
 // Called from bm_free_entry_hook for TYPE_ATX bitmaps. Removes this handle from the
 // controller's tracking set so subsequent dirty marks don't reach a freed handle. Does NOT

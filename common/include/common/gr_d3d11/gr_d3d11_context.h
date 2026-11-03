@@ -1,0 +1,923 @@
+#pragma once
+
+#include <array>
+#include <cstdint>
+#include <optional>
+#include <d3d11.h>
+#include <common/ComPtr.h>
+#include "gr_d3d11_transform.h"
+#include "gr_d3d11_vertex.h"
+#include "gr_d3d11_shader.h"
+#include "gr_d3d11_texture.h"
+#include "gr_d3d11_state.h"
+#include <gr_d3d11_engine.h>
+#include "gr_d3d11_mesh.h"
+#include "gr_d3d11_caustics.h"
+#include "gr_d3d11_liquid.h"
+
+namespace gr::d3d11
+{
+
+    class StateManager;
+    class ShaderManager;
+    class TextureManager;
+
+    class ModelTransformBuffer
+    {
+    public:
+        ModelTransformBuffer(ID3D11Device* device);
+
+        // Setting a model transform also CLEARS the UV offset, so no draw inherits the last scroll.
+        void update(const rf::Vector3& pos, const rf::Matrix3& orient, ID3D11DeviceContext* device_context)
+        {
+            if (current_model_pos_ != pos || current_model_orient_ != orient
+                || current_uv0_offset_u_ != 0.0f || current_uv0_offset_v_ != 0.0f) {
+                current_model_pos_ = pos;
+                current_model_orient_ = orient;
+                current_uv0_offset_u_ = 0.0f;
+                current_uv0_offset_v_ = 0.0f;
+                update_buffer(device_context);
+            }
+        }
+
+        void set_uv0_offset(float u, float v, ID3D11DeviceContext* device_context)
+        {
+            if (current_uv0_offset_u_ != u || current_uv0_offset_v_ != v) {
+                current_uv0_offset_u_ = u;
+                current_uv0_offset_v_ = v;
+                update_buffer(device_context);
+            }
+        }
+
+        operator ID3D11Buffer*() const
+        {
+            return buffer_;
+        }
+
+    private:
+        void update_buffer(ID3D11DeviceContext* device_context);
+
+        ComPtr<ID3D11Buffer> buffer_;
+        rf::Vector3 current_model_pos_;
+        rf::Matrix3 current_model_orient_;
+        float current_uv0_offset_u_ = 0.0f;
+        float current_uv0_offset_v_ = 0.0f;
+    };
+
+    class ViewProjTransformBuffer
+    {
+    public:
+        ViewProjTransformBuffer(ID3D11Device* device);
+
+        // Builds the view matrix from rf::gr::eye_pos / rf::gr::eye_matrix as they
+        // stand right now. Correct while the engine is mid-scene; end-of-frame
+        // passes have to use the explicit-camera overload instead, because
+        // gr_setup_3d has re-pointed those globals by then.
+        void update(const Projection& proj, ID3D11DeviceContext* device_context);
+        void update(const Projection& proj, const rf::Vector3& eye_pos, const rf::Matrix3& eye_orient,
+            ID3D11DeviceContext* device_context);
+
+        operator ID3D11Buffer*() const
+        {
+            return buffer_;
+        }
+
+    private:
+        ComPtr<ID3D11Buffer> buffer_;
+    };
+
+    // The point lights a draw's lights buffer carries, the stock game's Direct3D 9 maximum
+    constexpr int max_point_lights = 32;
+
+    class LightsBuffer
+    {
+    public:
+        LightsBuffer(ID3D11Device* device);
+        void update(ID3D11DeviceContext* device_context, bool force_neutral = false, const float* ambient_override = nullptr,
+            float sun_scale = 0.0f);
+
+        operator ID3D11Buffer*() const
+        {
+            return buffer_;
+        }
+
+    private:
+        ComPtr<ID3D11Buffer> buffer_;
+    };
+
+    // Directional Light objects over a GPU-lit mesh draw (b8)
+    class DirLightsBuffer
+    {
+    public:
+        static constexpr int max_lights = 8;
+
+        DirLightsBuffer(ID3D11Device* device);
+        // Without bounds only unbounded lights are chosen.
+        void update(ID3D11DeviceContext* device_context, const rf::Vector3* center, float radius);
+
+        operator ID3D11Buffer*() const
+        {
+            return buffer_;
+        }
+
+    private:
+        ComPtr<ID3D11Buffer> buffer_;
+        std::array<int, max_lights> current_{};
+        int current_count_ = -1;
+        std::uint32_t current_generation_ = 0;
+    };
+
+    class RenderModeBuffer
+    {
+    public:
+        RenderModeBuffer(ID3D11Device* device);
+
+        void update(rf::gr::Mode mode, rf::Color color, bool lightmap_only, bool dynamic_lighting, float self_illumination, bool apply_light_scale, bool emissive_override, float fixed_light_scale, ID3D11DeviceContext* device_context)
+        {
+            bool alpha_test = mode.get_zbuffer_type() == rf::gr::ZBUFFER_TYPE_FULL_ALPHA_TEST;
+            bool fog_allowed = mode.get_fog_type() != rf::gr::FOG_NOT_ALLOWED;
+            int colorblind_mode = engine::colorblind_mode();
+            float dynamic_light_ndotl = engine::dynamic_light_ndotl();
+            float pixel_light_overbright = g_level_pixel_light_overbright;
+            float alpha_test_threshold = g_alpha_test_threshold;
+            if (force_update_ || current_alpha_test_ != alpha_test || current_fog_allowed_ != fog_allowed || current_color_ != color || current_colorblind_mode_ != colorblind_mode || current_lightmap_only_ != lightmap_only || current_dynamic_lighting_ != dynamic_lighting || current_self_illumination_ != self_illumination || current_apply_light_scale_ != apply_light_scale || current_fixed_light_scale_ != fixed_light_scale || current_emissive_override_ != emissive_override || current_dynamic_light_ndotl_ != dynamic_light_ndotl || current_pixel_light_overbright_ != pixel_light_overbright || current_alpha_test_threshold_ != alpha_test_threshold) {
+                current_alpha_test_ = alpha_test;
+                current_fog_allowed_ = fog_allowed;
+                current_color_ = color;
+                current_colorblind_mode_ = colorblind_mode;
+                current_lightmap_only_ = lightmap_only;
+                current_dynamic_lighting_ = dynamic_lighting;
+                current_self_illumination_ = self_illumination;
+                current_apply_light_scale_ = apply_light_scale;
+                current_fixed_light_scale_ = fixed_light_scale;
+                current_emissive_override_ = emissive_override;
+                current_dynamic_light_ndotl_ = dynamic_light_ndotl;
+                current_pixel_light_overbright_ = pixel_light_overbright;
+                current_alpha_test_threshold_ = alpha_test_threshold;
+                force_update_ = false;
+                update_buffer(device_context);
+            }
+        }
+
+        operator ID3D11Buffer*() const
+        {
+            return buffer_;
+        }
+
+        void handle_fog_change()
+        {
+            if (current_fog_allowed_) {
+                force_update_ = true;
+            }
+        }
+
+        // Not part of update()'s change detection: the sky room is a scoped property of the draw
+        // sequence, not of the render mode, so it uploads on its own.
+        void set_sky_room(bool sky_room, ID3D11DeviceContext* device_context)
+        {
+            if (current_sky_room_ != sky_room) {
+                current_sky_room_ = sky_room;
+                update_buffer(device_context);
+            }
+        }
+
+        // Room the current draw belongs to, or -1 when it has none. Same reasoning as
+        // set_sky_room: a property of the draw sequence, uploaded on its own.
+        void set_draw_room_uid(int room_uid, ID3D11DeviceContext* device_context)
+        {
+            if (current_draw_room_uid_ != room_uid) {
+                current_draw_room_uid_ = room_uid;
+                update_buffer(device_context);
+            }
+        }
+
+        // Liquid surface pass. Same reasoning again: scoped to the draw sequence, not the mode.
+        void set_liquid_surface(bool liquid_surface, ID3D11DeviceContext* device_context)
+        {
+            if (current_liquid_surface_ != liquid_surface) {
+                current_liquid_surface_ = liquid_surface;
+                update_buffer(device_context);
+            }
+        }
+
+    private:
+        void update_buffer(ID3D11DeviceContext* device_context);
+
+        ComPtr<ID3D11Buffer> buffer_;
+        bool current_alpha_test_ = false;
+        bool current_fog_allowed_ = false;
+        bool force_update_ = true;
+        rf::Color current_color_{255, 255, 255};
+        int current_colorblind_mode_ = 0;
+        bool current_lightmap_only_ = false;
+        bool current_dynamic_lighting_ = false;
+        float current_self_illumination_ = 0.0f;
+        bool current_apply_light_scale_ = true;
+        float current_fixed_light_scale_ = 0.0f;
+        bool current_emissive_override_ = false;
+        float current_dynamic_light_ndotl_ = 0.0f;
+        float current_pixel_light_overbright_ = 0.5f;
+        float current_alpha_test_threshold_ = 1.0f / 255.0f;
+        bool current_sky_room_ = false;
+        int current_draw_room_uid_ = -1;
+        bool current_liquid_surface_ = false;
+    };
+
+    class PerFrameBuffer
+    {
+    public:
+        PerFrameBuffer(ID3D11Device* device);
+        void update(ID3D11DeviceContext* device_context);
+
+        operator ID3D11Buffer*() const
+        {
+            return buffer_;
+        }
+
+    private:
+        ComPtr<ID3D11Buffer> buffer_;
+    };
+
+    class TextureScaleBuffer
+    {
+    public:
+        TextureScaleBuffer(ID3D11Device* device);
+
+        void update(float u_scale, float v_scale, ID3D11DeviceContext* device_context)
+        {
+            if (current_u_scale_ != u_scale || current_v_scale_ != v_scale) {
+                current_u_scale_ = u_scale;
+                current_v_scale_ = v_scale;
+                update_buffer(device_context);
+            }
+        }
+
+        void update_ghost(float fill_y, float alpha_ratio, ID3D11DeviceContext* device_context)
+        {
+            if (current_ghost_fill_y_ != fill_y || current_ghost_alpha_ratio_ != alpha_ratio) {
+                current_ghost_fill_y_ = fill_y;
+                current_ghost_alpha_ratio_ = alpha_ratio;
+                update_buffer(device_context);
+            }
+        }
+
+        // texels_per_repeat 0 = no detail texture
+        void update_detail(float texels_per_repeat, float strength, float inv_mean, ID3D11DeviceContext* device_context)
+        {
+            if (current_detail_texels_ != texels_per_repeat || current_detail_strength_ != strength
+                || current_detail_inv_mean_ != inv_mean) {
+                current_detail_texels_ = texels_per_repeat;
+                current_detail_strength_ = strength;
+                current_detail_inv_mean_ = inv_mean;
+                update_buffer(device_context);
+            }
+        }
+
+        operator ID3D11Buffer*() const
+        {
+            return buffer_;
+        }
+
+    private:
+        void update_buffer(ID3D11DeviceContext* device_context);
+
+        ComPtr<ID3D11Buffer> buffer_;
+        float current_u_scale_ = 1.0f;
+        float current_v_scale_ = 1.0f;
+        float current_ghost_fill_y_ = 0.0f;
+        float current_ghost_alpha_ratio_ = 0.0f;
+        float current_detail_texels_ = 0.0f;
+        float current_detail_strength_ = 0.0f;
+        float current_detail_inv_mean_ = 0.0f;
+    };
+
+    class GasRegionBuffer
+    {
+    public:
+        static constexpr int max_gas_regions = 32;
+
+        GasRegionBuffer(ID3D11Device* device);
+        void update(ID3D11DeviceContext* device_context, const Projection& projection);
+
+        bool has_gas_regions() const
+        {
+            return current_gas_count_ > 0;
+        }
+
+        operator ID3D11Buffer*() const
+        {
+            return buffer_;
+        }
+
+    private:
+        ComPtr<ID3D11Buffer> buffer_;
+        int current_gas_count_ = 0;
+    };
+
+    class RenderContext
+    {
+    public:
+        RenderContext(
+            ComPtr<ID3D11Device> device,
+            ComPtr<ID3D11DeviceContext> device_context,
+            StateManager& state_manager,
+            ShaderManager& shader_manager,
+            TextureManager& texture_manager
+        );
+
+        ID3D11Device* device() const
+        {
+            return device_;
+        }
+
+        ID3D11DeviceContext* device_context() const
+        {
+            return device_context_;
+        }
+
+        // detail: also bind tex_handle0's detail texture; detail_material: engine::detail_material for this draw
+        void set_textures(int tex_handle0, int tex_handle1 = -1, bool detail = false, int detail_material = 0)
+        {
+            if (current_tex_handles_[0] != tex_handle0 || current_tex_handles_[1] != tex_handle1) {
+                current_tex_handles_[0] = tex_handle0;
+                current_tex_handles_[1] = tex_handle1;
+
+                if (pow2_tex_active_) {
+                    // Combined lookup: get SRV and UV scale in a single cache access
+                    auto [srv, u_scale, v_scale] = texture_manager_.lookup_texture_with_scale(tex_handle0);
+                    ID3D11ShaderResourceView* shader_resources[] = {
+                        // Same split get_diffuse_texture_view makes below: an unbound handle is
+                        // an untextured draw (TEXTURE_SOURCE_NONE) and wants white, while a real
+                        // handle that failed to load stays null.
+                        srv ? srv : (tex_handle0 < 0 ? texture_manager_.get_white_texture() : nullptr),
+                        get_lightmap_texture_view(tex_handle1),
+                    };
+                    device_context_->PSSetShaderResources(0, std::size(shader_resources), shader_resources);
+
+                    if (!suppress_texture_uv_scale_) {
+                        texture_scale_cbuffer_.update(u_scale, v_scale, device_context_);
+                    }
+                }
+                else {
+                    ID3D11ShaderResourceView* shader_resources[] = {
+                        get_diffuse_texture_view(tex_handle0),
+                        get_lightmap_texture_view(tex_handle1),
+                    };
+                    device_context_->PSSetShaderResources(0, std::size(shader_resources), shader_resources);
+                }
+            }
+            bind_detail_texture(detail ? tex_handle0 : -1, detail ? detail_material : 0);
+        }
+
+        // -1 unbinds
+        void bind_detail_texture(int tex_handle, int detail_material)
+        {
+            if (current_detail_tex_handle_ != tex_handle || current_detail_material_ != detail_material) {
+                update_detail_texture(tex_handle, detail_material);
+            }
+        }
+
+        // Null when p2t padded it: wrapping would repeat the padding
+        ID3D11ShaderResourceView* detail_texture_view(int bm)
+        {
+            auto [srv, u_scale, v_scale] = texture_manager_.lookup_texture_with_scale(bm);
+            return u_scale == 1.0f && v_scale == 1.0f ? srv : nullptr;
+        }
+
+        // A bm handle's SRV depends on which render target is bound — an ATX whose live feed is
+        // the current target has to resolve back to its own texture — so the cached handle pair
+        // stops being a valid answer the moment the target changes.
+        void invalidate_texture_cache()
+        {
+            current_tex_handles_ = {-2, -2};
+            current_detail_tex_handle_ = -2;
+            current_detail_srv_.reset();
+        }
+
+        // Ghost-mesh fill constants, ratio 0 = inactive. Never outlives a single mesh draw.
+        void set_ghost_fill(float fill_y, float alpha_ratio)
+        {
+            texture_scale_cbuffer_.update_ghost(fill_y, alpha_ratio, device_context_);
+        }
+
+        void set_suppress_texture_uv_scale(bool suppress)
+        {
+            if (pow2_tex_active_) {
+                suppress_texture_uv_scale_ = suppress;
+                if (suppress) {
+                    texture_scale_cbuffer_.update(1.0f, 1.0f, device_context_);
+                }
+                else {
+                    // Invalidate so next set_textures() re-evaluates the scale
+                    current_tex_handles_ = {-2, -2};
+                }
+            }
+        }
+
+        bool is_pow2_tex_active() const
+        {
+            return pow2_tex_active_;
+        }
+
+        void set_pow2_tex_active(bool active)
+        {
+            pow2_tex_active_ = active;
+            suppress_texture_uv_scale_ = false;
+            if (active) {
+                // Invalidate cached texture handles so the next set_textures() call
+                // updates the scale buffer for the currently bound texture
+                current_tex_handles_ = {-2, -2};
+            }
+            else {
+                // Reset scale to (1,1) when p2t is disabled
+                texture_scale_cbuffer_.update(1.0f, 1.0f, device_context_);
+            }
+        }
+
+        void set_picmip_active(bool active)
+        {
+            // Clamp to false when r_picmip is disabled
+            picmip_active_ = active && engine::picmip() > 1;
+        }
+
+        bool picmip_active() const { return picmip_active_; }
+
+        // RAII: set picmip_active for the lifetime of the guard, restore on destruction.
+        // Use at the top of geometry-rendering functions (mesh/CSG draws) so r_picmip's
+        // MinLOD clamp bites on those draws and not on sprite/UI draws that follow.
+        class ScopedPicmipActive
+        {
+        public:
+            ScopedPicmipActive(RenderContext& ctx, bool active)
+                : ctx_{ctx}
+                , prev_{ctx.picmip_active_}
+            {
+                ctx_.set_picmip_active(active);
+            }
+            ~ScopedPicmipActive() { ctx_.picmip_active_ = prev_; }
+            ScopedPicmipActive(const ScopedPicmipActive&) = delete;
+            ScopedPicmipActive& operator=(const ScopedPicmipActive&) = delete;
+        private:
+            RenderContext& ctx_;
+            bool prev_;
+        };
+
+        // fixed_light_scale > 0 replaces the level's static mesh light modifier when apply_light_scale is set
+        void set_mode(rf::gr::Mode mode, rf::Color color = {255, 255, 255, 255}, bool lightmap_only = false, bool dynamic_lighting = false, float self_illumination = 0.0f, bool apply_light_scale = true, bool emissive_override = false, float fixed_light_scale = 0.0f)
+        {
+            render_mode_cbuffer_.update(mode, color, lightmap_only, dynamic_lighting, self_illumination, apply_light_scale, emissive_override, fixed_light_scale, device_context_);
+            if (!current_mode_ || current_mode_.value() != mode || current_picmip_active_ != picmip_active_) {
+                if (!current_mode_ || current_mode_.value().get_texture_source() != mode.get_texture_source() || current_picmip_active_ != picmip_active_) {
+                    std::array<ID3D11SamplerState*, 2> sampler_states = {
+                        state_manager_.lookup_sampler_state(mode.get_texture_source(), 0, picmip_active_),
+                        // Slot 1 is the lightmap, r_picmip should scale diffuse textures only
+                        state_manager_.lookup_sampler_state(mode.get_texture_source(), 1, false),
+                    };
+                    set_sampler_states(sampler_states);
+                    current_picmip_active_ = picmip_active_;
+                }
+                if (!current_mode_ || current_mode_.value().get_alpha_blend() != mode.get_alpha_blend()) {
+                    ID3D11BlendState* blend_state =
+                        state_manager_.lookup_blend_state(mode.get_alpha_blend());
+                    set_blend_state(blend_state);
+                }
+                if (!current_mode_ || current_mode_.value().get_zbuffer_type() != mode.get_zbuffer_type()) {
+                    ID3D11DepthStencilState* depth_stencil_state =
+                        state_manager_.lookup_depth_stencil_state(mode.get_zbuffer_type());
+                    set_depth_stencil_state(depth_stencil_state);
+                }
+                current_mode_.emplace(mode);
+            }
+        }
+
+        // Alpha to coverage in place of the blend the last set_mode applied. Forgets that mode, so the next
+        // set_mode applies its own blend again.
+        void set_alpha_to_coverage()
+        {
+            set_blend_state(state_manager_.get_alpha_to_coverage_blend_state());
+            current_mode_.reset();
+        }
+
+        void set_sampler_states(std::array<ID3D11SamplerState*, 2> sampler_states)
+        {
+            if (current_sampler_states_ != sampler_states) {
+                current_sampler_states_ = sampler_states;
+                device_context_->PSSetSamplers(0, sampler_states.size(), sampler_states.data());
+            }
+        }
+
+        void set_blend_state(ID3D11BlendState* blend_state)
+        {
+            if (current_blend_state_ != blend_state) {
+                current_blend_state_ = blend_state;
+                device_context_->OMSetBlendState(blend_state, nullptr, 0xffffffff);
+            }
+        }
+
+        void set_depth_stencil_state(ID3D11DepthStencilState* depth_stencil_state, UINT stencil_ref = 0)
+        {
+            if (current_depth_stencil_state_ != depth_stencil_state || current_stencil_ref_ != stencil_ref) {
+                current_depth_stencil_state_ = depth_stencil_state;
+                current_stencil_ref_ = stencil_ref;
+                device_context_->OMSetDepthStencilState(depth_stencil_state, stencil_ref);
+            }
+        }
+
+        // Invalidate cached render mode so the next set_mode() call forces a full
+        // state reset. Call this after directly setting depth/blend/sampler states
+        // outside of set_mode() (e.g., outline rendering) to prevent stale caches.
+        void invalidate_mode()
+        {
+            current_mode_.reset();
+            // Re-bind constant buffers so that slots overwritten by the outline
+            // renderer (VS b4 = outline params, PS b2 = outline color) are
+            // restored to the correct buffers before normal rendering resumes.
+            bind_cbuffers();
+        }
+
+        void set_rasterizer_state(ID3D11RasterizerState* rasterizer_state)
+        {
+            if (current_rasterizer_state_ != rasterizer_state) {
+                current_rasterizer_state_ = rasterizer_state;
+                device_context_->RSSetState(rasterizer_state);
+            }
+        }
+
+        void set_render_target(ID3D11RenderTargetView* render_target_view, ID3D11DepthStencilView* depth_stencil_view)
+        {
+            render_target_view_ = render_target_view;
+            depth_stencil_view_ = depth_stencil_view;
+            ID3D11RenderTargetView* render_targets[] = { render_target_view };
+            device_context_->OMSetRenderTargets(std::size(render_targets), render_targets, depth_stencil_view);
+        }
+
+        // A bm handle's SRV for a draw that binds its own texture slots; white for -1.
+        ID3D11ShaderResourceView* texture_view(int tex_handle)
+        {
+            return get_diffuse_texture_view(tex_handle);
+        }
+
+        // The wrapping diffuse sampler set_mode would bind, honouring the texture filter and picmip.
+        ID3D11SamplerState* wrap_sampler_state()
+        {
+            return state_manager_.lookup_sampler_state(rf::gr::TEXTURE_SOURCE_WRAP, 0, picmip_active_);
+        }
+
+        void bind_vs_cbuffer(int index, ID3D11Buffer* cbuffer)
+        {
+            ID3D11Buffer* vs_cbuffers[] = { cbuffer };
+            device_context_->VSSetConstantBuffers(index, std::size(vs_cbuffers), vs_cbuffers);
+        }
+
+        void bind_ps_cbuffer(int index, ID3D11Buffer* cbuffer)
+        {
+            ID3D11Buffer* ps_cbuffers[] = { cbuffer };
+            device_context_->PSSetConstantBuffers(index, std::size(ps_cbuffers), ps_cbuffers);
+        }
+
+        void clear();
+        void zbuffer_clear();
+        void set_clip();
+
+        void update_view_proj_transform(Projection proj)
+        {
+            projection_ = proj;
+            view_proj_transform_cbuffer_.update(projection_, device_context_);
+        }
+
+        // Same, but with the camera passed in rather than read from the engine
+        // globals. Needed by anything that draws world geometry after the scene
+        // phase: gr_setup_3d overwrites rf::gr::eye_pos / eye_matrix several more
+        // times before the frame is presented, so "restore the projection" alone
+        // still leaves the view matrix pointing at a different camera.
+        void update_view_proj_transform(Projection proj, const rf::Vector3& eye_pos, const rf::Matrix3& eye_orient)
+        {
+            projection_ = proj;
+            view_proj_transform_cbuffer_.update(projection_, eye_pos, eye_orient, device_context_);
+        }
+
+        void update_per_frame_constants()
+        {
+            per_frame_buffer_.update(device_context_);
+            gas_region_buffer_.update(device_context_, projection_);
+            caustics_renderer_.update(device_context_);
+        }
+
+        Projection update_liquid_fx(const Projection& projection, const rf::Vector3& eye_pos,
+                                    const rf::Matrix3& eye_orient, float scene_depth_mode)
+        {
+            return liquid_fx_renderer_.update(device_context_, projection, eye_pos, eye_orient,
+                                              scene_depth_mode);
+        }
+
+        const LiquidState& liquid_state() const
+        {
+            return liquid_fx_renderer_.state();
+        }
+
+        bool liquid_background_color(rf::Vector3& out) const
+        {
+            return liquid_fx_renderer_.background_color(out);
+        }
+
+        void suspend_liquid_fx()
+        {
+            liquid_fx_renderer_.write_disabled(device_context_);
+        }
+
+        void resume_liquid_fx()
+        {
+            liquid_fx_renderer_.rewrite(device_context_);
+        }
+
+        bool has_gas_regions() const
+        {
+            return gas_region_buffer_.has_gas_regions();
+        }
+
+        void fog_set()
+        {
+            render_mode_cbuffer_.handle_fog_change();
+        }
+
+        // Sky rooms are drawn at their authored world location with the camera translated into
+        // them, so their fragments carry world positions that mean nothing to the caustics and
+        // liquid volume tests.
+        // Skipping the cache write as well as the upload keeps the cache and the buffer in step,
+        // so the first differing call after these become live uploads correctly.
+        void set_sky_room(bool sky_room)
+        {
+            // Also read by the liquid block's sky-ray branch, which runs without caustics, and by detail textures
+            if (engine::underwater_fx() < 2 && !caustics_renderer_.active() && !engine::detail_textures_enabled()) {
+                return;
+            }
+            render_mode_cbuffer_.set_sky_room(sky_room, device_context_);
+        }
+
+        // Lets the caustics test match a fragment to its own room instead of trusting a room
+        // AABB, which routinely overshoots into dry neighbours.
+        void set_draw_room_uid(int room_uid)
+        {
+            if (engine::underwater_fx() < 1 || !caustics_renderer_.active()) {
+                return;
+            }
+            render_mode_cbuffer_.set_draw_room_uid(room_uid, device_context_);
+        }
+
+        // Marks the liquid surface pass, which the shader gives its own distance opacity.
+        void set_liquid_surface(bool liquid_surface)
+        {
+            if (liquid_surface && engine::underwater_fx() < 2) {
+                return;
+            }
+            render_mode_cbuffer_.set_liquid_surface(liquid_surface, device_context_);
+        }
+
+        void set_vertex_buffer(ID3D11Buffer* vertex_buffer, UINT stride, UINT slot = 0)
+        {
+            assert(slot < vertex_buffer_slots);
+            if (current_vertex_buffers_[slot] != vertex_buffer) {
+                current_vertex_buffers_[slot] = vertex_buffer;
+                UINT offsets[] = { 0 };
+                ID3D11Buffer* vertex_buffers[] = { vertex_buffer };
+                device_context_->IASetVertexBuffers(slot, std::size(vertex_buffers), vertex_buffers, &stride, offsets);
+            }
+        }
+
+        void set_index_buffer(ID3D11Buffer* index_buffer, DXGI_FORMAT format = DXGI_FORMAT_R16_UINT)
+        {
+            if (index_buffer != current_index_buffer_ || format != current_index_format_) {
+                current_index_buffer_ = index_buffer;
+                current_index_format_ = format;
+                device_context_->IASetIndexBuffer(index_buffer, format, 0);
+            }
+        }
+
+        void set_primitive_topology(D3D11_PRIMITIVE_TOPOLOGY primitive_topology)
+        {
+            if (current_primitive_topology_ != primitive_topology) {
+                current_primitive_topology_ = primitive_topology;
+                device_context_->IASetPrimitiveTopology(primitive_topology);
+            }
+        }
+
+        void set_input_layout(ID3D11InputLayout* input_layout)
+        {
+            if (current_input_layout_ != input_layout) {
+                current_input_layout_ = input_layout;
+                device_context_->IASetInputLayout(input_layout);
+            }
+        }
+
+        void set_vertex_shader(ID3D11VertexShader* vertex_shader)
+        {
+            if (current_vertex_shader_ != vertex_shader) {
+                current_vertex_shader_ = vertex_shader;
+                device_context_->VSSetShader(vertex_shader, nullptr, 0);
+            }
+        }
+
+        void set_vertex_shader(const VertexShaderAndLayout& vertex_shader_and_layout)
+        {
+            set_input_layout(vertex_shader_and_layout.input_layout);
+            set_vertex_shader(vertex_shader_and_layout.vertex_shader);
+        }
+
+        void set_pixel_shader(ID3D11PixelShader* pixel_shader)
+        {
+            if (current_pixel_shader_ != pixel_shader) {
+                current_pixel_shader_ = pixel_shader;
+                device_context_->PSSetShader(pixel_shader, nullptr, 0);
+            }
+        }
+
+        void set_cull_mode(D3D11_CULL_MODE cull_mode)
+        {
+            if (current_cull_mode_ != cull_mode || zbias_changed_ || depth_clip_enabled_changed_) {
+                current_cull_mode_ = cull_mode;
+                zbias_changed_ = false;
+                depth_clip_enabled_changed_ = false;
+                set_rasterizer_state(state_manager_.lookup_rasterizer_state(current_cull_mode_, zbias_, depth_clip_enabled_));
+            }
+        }
+
+        void set_model_transform(const rf::Vector3& pos, const rf::Matrix3& orient)
+        {
+            model_transform_cbuffer_.update(pos, orient, device_context_);
+        }
+
+        // Per-draw UV0 offset for the standard vertex shader; cleared by set_model_transform.
+        void set_model_uv0_offset(float u, float v)
+        {
+            model_transform_cbuffer_.set_uv0_offset(u, v, device_context_);
+        }
+
+        void set_zbias(int zbias)
+        {
+            if (zbias_ != zbias) {
+                zbias_ = zbias;
+                zbias_changed_ = true;
+            }
+        }
+
+        void set_depth_clip_enabled(bool depth_clip_enabled)
+        {
+            if (depth_clip_enabled_ != depth_clip_enabled) {
+                depth_clip_enabled_ = depth_clip_enabled;
+                depth_clip_enabled_changed_ = true;
+            }
+        }
+
+        void update_lights(bool force_neutral = false, const float* ambient_override = nullptr, float sun_scale = 0.0f)
+        {
+            lights_buffer_.update(device_context_, force_neutral, ambient_override, sun_scale);
+        }
+
+        // Bounding sphere of the mesh whose GPU-lit draws follow, set alongside its point light gather
+        void set_mesh_bounds(const rf::Vector3& center, float radius)
+        {
+            mesh_bounds_center_ = center;
+            mesh_bounds_radius_ = radius;
+            has_mesh_bounds_ = true;
+        }
+
+        void clear_mesh_bounds()
+        {
+            has_mesh_bounds_ = false;
+        }
+
+        void update_dir_lights()
+        {
+            dir_lights_buffer_.update(device_context_, has_mesh_bounds_ ? &mesh_bounds_center_ : nullptr,
+                                      mesh_bounds_radius_);
+        }
+
+        void update_dir_lights(const rf::Vector3& center, float radius)
+        {
+            dir_lights_buffer_.update(device_context_, &center, radius);
+        }
+
+        void draw_indexed(int index_count, int index_start_location, int base_vertex_location)
+        {
+            device_context_->DrawIndexed(index_count, index_start_location, base_vertex_location);
+        }
+
+        void draw_indexed_instanced(int index_count, int instance_count, int index_start_location,
+                                    int base_vertex_location, int instance_start_location)
+        {
+            device_context_->DrawIndexedInstanced(index_count, instance_count, index_start_location,
+                                                  base_vertex_location, instance_start_location);
+        }
+
+        const Projection& projection() const
+        {
+            return projection_;
+        }
+
+        void invalidate_cached_state()
+        {
+            for (auto& vb : current_vertex_buffers_) vb = nullptr;
+            current_index_buffer_ = nullptr;
+            current_index_format_ = DXGI_FORMAT_UNKNOWN;
+            current_input_layout_ = nullptr;
+            current_vertex_shader_ = nullptr;
+            current_pixel_shader_ = nullptr;
+            current_primitive_topology_ = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
+            current_tex_handles_ = {-2, -2};
+            current_detail_tex_handle_ = -2;
+            current_detail_srv_.reset();
+            current_cull_mode_ = D3D11_CULL_NONE;
+            current_mode_.reset();
+            current_picmip_active_ = false;
+            current_sampler_states_ = {nullptr, nullptr};
+            current_blend_state_ = nullptr;
+            current_depth_stencil_state_ = nullptr;
+            current_rasterizer_state_ = nullptr;
+            zbias_changed_ = true;
+            depth_clip_enabled_changed_ = true;
+            // Re-bind RenderContext's own constant buffers (restores b1 VP after shadow pass etc.)
+            bind_cbuffers();
+        }
+
+        ModelTransformBuffer& model_transform_cbuffer()
+        {
+            return model_transform_cbuffer_;
+        }
+
+        ViewProjTransformBuffer& view_proj_transform_cbuffer()
+        {
+            return view_proj_transform_cbuffer_;
+        }
+
+    private:
+        void bind_cbuffers();
+        void update_detail_texture(int tex_handle, int detail_material);
+
+        ID3D11ShaderResourceView* get_diffuse_texture_view(int tex_handle)
+        {
+            if (tex_handle != -1) {
+                return texture_manager_.lookup_texture(tex_handle);
+            }
+            return texture_manager_.get_white_texture();
+        }
+
+        ID3D11ShaderResourceView* get_lightmap_texture_view(int tex_handle)
+        {
+            if (tex_handle != -1) {
+                return texture_manager_.lookup_texture(tex_handle);
+            }
+            return texture_manager_.get_gray_texture();
+        }
+
+        static constexpr int vertex_buffer_slots = 2;
+
+        ComPtr<ID3D11Device> device_;
+        ComPtr<ID3D11DeviceContext> device_context_;
+        StateManager& state_manager_;
+        ShaderManager& shader_manager_;
+        TextureManager& texture_manager_;
+        ModelTransformBuffer model_transform_cbuffer_;
+        ViewProjTransformBuffer view_proj_transform_cbuffer_;
+        LightsBuffer lights_buffer_;
+        RenderModeBuffer render_mode_cbuffer_;
+        PerFrameBuffer per_frame_buffer_;
+        TextureScaleBuffer texture_scale_cbuffer_;
+        GasRegionBuffer gas_region_buffer_;
+        CausticsRenderer caustics_renderer_;
+        LiquidFxRenderer liquid_fx_renderer_;
+        DirLightsBuffer dir_lights_buffer_;
+        rf::Vector3 mesh_bounds_center_{};
+        float mesh_bounds_radius_ = 0.0f;
+        bool has_mesh_bounds_ = false;
+
+        ID3D11RenderTargetView* render_target_view_ = nullptr;
+        ID3D11DepthStencilView* depth_stencil_view_ = nullptr;
+        ID3D11Buffer* current_vertex_buffers_[vertex_buffer_slots] = {};
+        ID3D11Buffer* current_index_buffer_ = nullptr;
+        DXGI_FORMAT current_index_format_ = DXGI_FORMAT_UNKNOWN;
+        ID3D11InputLayout* current_input_layout_ = nullptr;
+        ID3D11VertexShader* current_vertex_shader_ = nullptr;
+        ID3D11PixelShader* current_pixel_shader_ = nullptr;
+        D3D11_PRIMITIVE_TOPOLOGY current_primitive_topology_ = D3D11_PRIMITIVE_TOPOLOGY_UNDEFINED;
+        std::array<int, 2> current_tex_handles_ = {-2, -2};
+        int current_detail_tex_handle_ = -2;
+        int current_detail_material_ = 0;
+        std::optional<ID3D11ShaderResourceView*> current_detail_srv_;
+        D3D11_CULL_MODE current_cull_mode_ = D3D11_CULL_NONE;
+        std::optional<rf::gr::Mode> current_mode_;
+        bool picmip_active_ = false;
+        bool current_picmip_active_ = false;
+        std::array<ID3D11SamplerState*, 2> current_sampler_states_ = {nullptr, nullptr};
+        ID3D11BlendState* current_blend_state_ = nullptr;
+        ID3D11DepthStencilState* current_depth_stencil_state_ = nullptr;
+        UINT current_stencil_ref_ = 0;
+        ID3D11RasterizerState* current_rasterizer_state_ = nullptr;
+        int zbias_ = 0;
+        bool zbias_changed_ = true;
+        bool depth_clip_enabled_ = true;
+        bool depth_clip_enabled_changed_ = true;
+        Projection projection_;
+        bool pow2_tex_active_ = false;
+        bool suppress_texture_uv_scale_ = false;
+    };
+}

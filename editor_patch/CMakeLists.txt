@@ -8,13 +8,34 @@ set(SRCS
     alpine_spinner.h
     brush_import.cpp
     brush_import.h
+    command_line.cpp
+    command_line.h
     dialog_tooltips.cpp
     dialog_tooltips.h
+    editor_settings.cpp
+    editor_settings.h
     event.cpp
     file_dialogs.cpp
     file_dialogs.h
     geometry.cpp
+    gizmo.cpp
+    gizmo.h
     graphics.cpp
+    graphics/editor_gr.cpp
+    graphics/editor_gr.h
+    graphics/d3d11/gr_d3d11_editor.cpp
+    graphics/d3d11/gr_d3d11_editor.h
+    graphics/d3d11/gr_d3d11_editor_faces.cpp
+    graphics/d3d11/gr_d3d11_editor_faces.h
+    graphics/d3d11/gr_d3d11_editor_hooks.cpp
+    graphics/d3d11/gr_d3d11_editor_hooks.h
+    graphics/d3d11/gr_d3d11_editor_lightmaps.cpp
+    graphics/d3d11/gr_d3d11_editor_lightmaps.h
+    graphics/d3d11/engine/gr_d3d11_engine.h
+    graphics/d3d11/engine/rf_geometry.h
+    graphics/d3d11/engine/rf_gr.h
+    graphics/d3d11/engine/rf_math.h
+    graphics/d3d11/engine/rf_mesh.h
     headless_bake.cpp
     headless_bake.h
     mesh_export.cpp
@@ -23,6 +44,16 @@ set(SRCS
     mesh.h
     mesh_browser.cpp
     mesh_browser.h
+    sound_browser.cpp
+    sound_browser.h
+    sound_preview.cpp
+    sound_preview.h
+    vfs_browser.cpp
+    vfs_browser.h
+    placement_panel.cpp
+    placement_panel.h
+    viewport_input.cpp
+    viewport_input.h
     note.cpp
     note.h
     corona.cpp
@@ -35,8 +66,12 @@ set(SRCS
     vehicle_factory.h
     projection_camera.cpp
     projection_camera.h
+    dir_light.cpp
+    dir_light.h
     rope_emitter.cpp
     rope_emitter.h
+    waypoint_helper.cpp
+    waypoint_helper.h
     terrain.cpp
     terrain.h
     terrain_build.cpp
@@ -53,8 +88,13 @@ set(SRCS
     textures.cpp
     bitmap_loaders.cpp
     bitmap_loaders.h
+    bitmap_texels.h
     meshes.cpp
     meshes.h
+    search_paths.cpp
+    search_paths.h
+    sounds.cpp
+    sounds.h
     minimap_bake.cpp
     minimap_bake.h
     tbl.cpp
@@ -67,10 +107,33 @@ set(SRCS
     lightmap.cpp
     lightmap_mesh_occluders.cpp
     lightmap_mesh_occluders.h
+    lightmap_pages.cpp
+    lightmap_pages.h
+    lightmap_alpha_masks.cpp
+    lightmap_alpha_masks.h
     alpine_lightmaps.cpp
     alpine_lightmaps.h
+    overflow_charts.cpp
+    overflow_charts.h
+    overflow_preview.cpp
+    particles.cpp
+    selection.cpp
+    selection.h
+    texture_lock.cpp
+    texture_lock.h
+    uv_map.h
+    texture_mode.cpp
+    texture_mode.h
+    brush_preview.cpp
+    brush_preview.h
+    bake_progress.cpp
+    bake_progress.h
+    build_repair.cpp
+    build_repair.h
     face_list_cache.cpp
     face_list_cache.h
+    memory_guard.cpp
+    memory_guard.h
     work_pool.cpp
     work_pool.h
 )
@@ -93,11 +156,13 @@ target_include_directories(AlpineEditor PRIVATE
     ${CMAKE_SOURCE_DIR}/vendor/stb
     ${CMAKE_SOURCE_DIR}/vendor/zlib
     ${CMAKE_SOURCE_DIR}/vendor/xxhash
+    ${CMAKE_CURRENT_SOURCE_DIR}/graphics/d3d11/engine
 )
 
 target_link_libraries(AlpineEditor
     PatchCommon
     Common
+    GrD3D11Core
     Xlog
     CrashHandlerStub
     comctl32
@@ -105,7 +170,10 @@ target_link_libraries(AlpineEditor
     ole32
     shell32
     uuid
+    winmm
+    msacm32
     stb_image
+    stb_vorbis
     zlib
     bc7enc_rdo
     xxhash

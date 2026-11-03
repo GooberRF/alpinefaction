@@ -8,11 +8,13 @@
 #include <string>
 #include <vector>
 #include <xlog/xlog.h>
+#include <patch_common/CallHook.h>
 #include <patch_common/FunHook.h>
 #include <patch_common/MemUtils.h>
 #include <patch_common/Traits.h>
 #include "gr.h"
 #include "weather.h"
+#include "d3d11/gr_d3d11_hooks.h"
 #include "../main/main.h"
 #include "../misc/alpine_settings.h"
 #include "../misc/level.h"
@@ -30,6 +32,7 @@
 #include "../rf/player/camera.h"
 #include "../rf/player/player.h"
 #include "../object/object.h"
+#include "../object/particle_sim.h"
 
 namespace
 {
@@ -63,6 +66,11 @@ constexpr float weather_column_width_max = 8.0f;
 constexpr int weather_column_max_cells_axis = 512;
 constexpr int weather_column_trace_budget = 256;
 constexpr int weather_column_geomod_delay_frames = 30;
+// Cells the GPU path's proactive fill may examine per region per frame: a large visible distance makes a
+// 512x512 grid, which must not be rescanned whole every frame the camera crosses a cell.
+constexpr int weather_column_fill_checks = 4096;
+// Dirty cells closer together than this go up to the GPU as one write
+constexpr int weather_column_upload_gap = 32;
 
 constexpr int rain_count = 4096;
 constexpr float rain_box_half_x = 26.0f;
@@ -77,6 +85,8 @@ constexpr float snow_box_half_z = 22.0f;
 constexpr float snow_drift_speed = 0.25f;
 constexpr float snow_spin_min = 0.5f;
 constexpr float snow_spin_max = 1.5f;
+// A common period of the sway's sin(phase) and cos(0.7 * phase)
+constexpr double snow_sway_period = 20.0 * 3.14159265358979323846;
 
 // Every active region draws out of one shared arena instead of owning a fixed pool, so the number of
 // regions a level can run at once is bounded by a particle budget rather than by a slot count.
@@ -194,12 +204,42 @@ struct WeatherRegionState
     float cell = 0.0f;
     float region_top = 0.0f;
     float region_bottom = 0.0f;
+    // GPU path: the cells its copy of the grid is missing, and the cell range under the box it last
+    // found fully traced
+    std::vector<int> column_dirty;
+    int gpu_column_cells = 0;
+    bool columns_filled = false;
+    int32_t filled_min_cx = 0;
+    int32_t filled_max_cx = 0;
+    int32_t filled_min_cz = 0;
+    int32_t filled_max_cz = 0;
+    // The pass in progress, resumed next frame where the check limit or the trace budget stopped it
+    bool fill_in_pass = false;
+    bool fill_pass_clean = true;
+    int32_t fill_min_cx = 0;
+    int32_t fill_max_cx = 0;
+    int32_t fill_min_cz = 0;
+    int32_t fill_max_cz = 0;
+    int32_t fill_center_cz = 0;
+    int32_t fill_step = 0;
+    int32_t fill_cx = 0;
+};
+
+enum class WeatherGpuSeeds
+{
+    pending,
+    ready,
+    failed,
 };
 
 std::vector<WeatherRegion> g_weather_regions;
 std::vector<WeatherRegionState> g_weather_states;
 WeatherParticle g_weather_arena[weather_arena_count];
 float g_weather_share_scale = 1.0f;
+// Weather time since the regions were last reset; the GPU path places every particle from it
+double g_weather_clock = 0.0;
+WeatherGpuSeeds g_weather_gpu_seeds = WeatherGpuSeeds::pending;
+std::vector<gr::d3d11::WeatherColumn> g_weather_column_upload;
 
 rf::Camera* weather_get_camera()
 {
@@ -257,11 +297,24 @@ void plankton_update_state()
     plankton_reseed(camera_pos, weather_find_room(camera_pos));
 }
 
+// The only gr_3d_bitmap_angle call site in plankton_update_render: one mote per iteration, with
+// its colour already pushed through gr_set_color and the texture set once before the loop.
+CallHook<void(rf::Vector3*, float, float, rf::gr::Mode)> plankton_bitmap_3d_angle_hook{
+    0x0049868A,
+    [](rf::Vector3* pos, float angle, float radius, rf::gr::Mode mode) {
+        if (particle_sim_gpu_enabled() && gr::d3d11::batched_billboard(*pos, angle, radius, mode)) {
+            return;
+        }
+        plankton_bitmap_3d_angle_hook.call_target(pos, angle, radius, mode);
+    },
+};
+
 FunHook<void()> plankton_update_render_hook{
     0x004980F0,
     []() {
         plankton_update_state();
         plankton_update_render_hook.call_target();
+        gr::d3d11::flush_batched_quads();
     },
 };
 
@@ -332,6 +385,7 @@ void weather_reset_states()
 {
     g_weather_states.assign(g_weather_regions.size(), WeatherRegionState{});
     g_weather_share_scale = 1.0f;
+    g_weather_clock = 0.0;
 }
 
 bool weather_make_box(const rf::Vector3& camera_pos, float half_x, float half_y, float half_z,
@@ -631,17 +685,45 @@ void weather_column_grid_prepare(WeatherRegionState& state, const WeatherRegion&
         state.cols_z = cols;
         state.cell = cell;
         state.columns.assign(static_cast<std::size_t>(cols) * cols, WeatherColumnCell{});
+        state.column_dirty.clear();
+        state.gpu_column_cells = 0;
+        state.columns_filled = false;
+        state.fill_in_pass = false;
     }
 }
 
-// The ceiling above one world column: one trace straight down the region's own height, cached.
-bool weather_column_floor(WeatherRegionState& state, float x, float z, int& budget, float& floor_y)
+int32_t weather_column_coord(float value, float cell)
 {
-    const int32_t cx = static_cast<int32_t>(std::floor(x / state.cell));
-    const int32_t cz = static_cast<int32_t>(std::floor(z / state.cell));
+    return static_cast<int32_t>(std::floor(value / cell));
+}
+
+int weather_column_slot(const WeatherRegionState& state, int32_t cx, int32_t cz)
+{
     const int mx = ((cx % state.cols_x) + state.cols_x) % state.cols_x;
     const int mz = ((cz % state.cols_z) + state.cols_z) % state.cols_z;
-    WeatherColumnCell& slot = state.columns[mx + mz * state.cols_x];
+    return mx + mz * state.cols_x;
+}
+
+// One trace straight down the region's own height through the middle of the column
+void weather_column_trace(const WeatherRegionState& state, WeatherColumnCell& slot, int32_t cx, int32_t cz)
+{
+    rf::Vector3 p0{(cx + 0.5f) * state.cell, state.region_top, (cz + 0.5f) * state.cell};
+    rf::Vector3 p1{p0.x, state.region_bottom, p0.z};
+    rf::GCollisionOutput out{};
+    slot.cx = cx;
+    slot.cz = cz;
+    slot.retrace_frame = 0;
+    slot.floor_y = rf::collide_linesegment_level_solid(p0, p1, 0, &out)
+        ? out.hit_point.y
+        : -std::numeric_limits<float>::max();
+}
+
+// The ceiling above one world column, cached.
+bool weather_column_floor(WeatherRegionState& state, float x, float z, int& budget, float& floor_y)
+{
+    const int32_t cx = weather_column_coord(x, state.cell);
+    const int32_t cz = weather_column_coord(z, state.cell);
+    WeatherColumnCell& slot = state.columns[weather_column_slot(state, cx, cz)];
 
     const bool hit = slot.cx == cx && slot.cz == cz;
     const bool needs_trace = !hit || (slot.retrace_frame != 0 && rf::frame_count >= slot.retrace_frame);
@@ -658,17 +740,130 @@ bool weather_column_floor(WeatherRegionState& state, float x, float z, int& budg
     }
 
     --budget;
-    rf::Vector3 p0{(cx + 0.5f) * state.cell, state.region_top, (cz + 0.5f) * state.cell};
-    rf::Vector3 p1{p0.x, state.region_bottom, p0.z};
-    rf::GCollisionOutput out{};
-    slot.cx = cx;
-    slot.cz = cz;
-    slot.retrace_frame = 0;
-    slot.floor_y = rf::collide_linesegment_level_solid(p0, p1, 0, &out)
-        ? out.hit_point.y
-        : -std::numeric_limits<float>::max();
+    weather_column_trace(state, slot, cx, cz);
     floor_y = slot.floor_y;
     return true;
+}
+
+// The GPU cannot ask for a column on demand, so the GPU path traces every column under the sim box
+// ahead of time, nearest row to the camera first, out of the same shared budget.
+void weather_column_fill_box(WeatherRegionState& state, const rf::Vector3& camera_pos, int& budget)
+{
+    const WeatherBox& box = state.box;
+    const int32_t min_cx = weather_column_coord(box.center.x - box.half_x, state.cell);
+    const int32_t max_cx = weather_column_coord(box.center.x + box.half_x, state.cell);
+    const int32_t min_cz = weather_column_coord(box.center.z - box.half_z, state.cell);
+    const int32_t max_cz = weather_column_coord(box.center.z + box.half_z, state.cell);
+    if (state.columns_filled && min_cx == state.filled_min_cx && max_cx == state.filled_max_cx
+        && min_cz == state.filled_min_cz && max_cz == state.filled_max_cz) {
+        return;
+    }
+    state.columns_filled = false;
+
+    // A pass starts at the camera's row so the nearest rows come first. The box follows the camera, so a
+    // range change while a pass is running keeps its cursor: restarting would re-check the near rows on
+    // every cell crossing and never reach the far ones while the camera moves. Only a box that has left
+    // the pass's starting row behind (a teleport, or travel faster than the trace budget) restarts it.
+    if (!state.fill_in_pass || state.fill_center_cz < min_cz || state.fill_center_cz > max_cz) {
+        state.fill_in_pass = true;
+        state.fill_pass_clean = true;
+        state.fill_center_cz = std::clamp(weather_column_coord(camera_pos.z, state.cell), min_cz, max_cz);
+        state.fill_step = 0;
+        state.fill_cx = min_cx;
+    }
+    else if (min_cx != state.fill_min_cx || max_cx != state.fill_max_cx || min_cz != state.fill_min_cz
+        || max_cz != state.fill_max_cz) {
+        // Cells the shift exposed are covered by this pass or the next, so only a pass that never saw the
+        // range change can end clean.
+        state.fill_pass_clean = false;
+    }
+    state.fill_min_cx = min_cx;
+    state.fill_max_cx = max_cx;
+    state.fill_min_cz = min_cz;
+    state.fill_max_cz = max_cz;
+
+    const int32_t center_cz = state.fill_center_cz;
+    const int32_t reach = std::max(center_cz - min_cz, max_cz - center_cz);
+    int checks = weather_column_fill_checks;
+    for (int32_t step = state.fill_step; step <= reach * 2; ++step) {
+        const int32_t cz = (step & 1) ? center_cz + (step + 1) / 2 : center_cz - step / 2;
+        const int32_t first_cx = step == state.fill_step ? std::max(state.fill_cx, min_cx) : min_cx;
+        if (cz < min_cz || cz > max_cz) {
+            continue;
+        }
+        for (int32_t cx = first_cx; cx <= max_cx; ++cx) {
+            if (checks <= 0) {
+                state.fill_step = step;
+                state.fill_cx = cx;
+                return;
+            }
+            --checks;
+            const int index = weather_column_slot(state, cx, cz);
+            WeatherColumnCell& slot = state.columns[index];
+            if (slot.cx == cx && slot.cz == cz && slot.retrace_frame == 0) {
+                continue;
+            }
+            if (slot.cx == cx && slot.cz == cz && rf::frame_count < slot.retrace_frame) {
+                state.fill_pass_clean = false;
+                continue;
+            }
+            if (budget <= 0) {
+                state.fill_step = step;
+                state.fill_cx = cx;
+                return;
+            }
+            --budget;
+            weather_column_trace(state, slot, cx, cz);
+            state.column_dirty.push_back(index);
+        }
+    }
+
+    state.fill_in_pass = false;
+    if (state.fill_pass_clean) {
+        state.columns_filled = true;
+        state.filled_min_cx = min_cx;
+        state.filled_max_cx = max_cx;
+        state.filled_min_cz = min_cz;
+        state.filled_max_cz = max_cz;
+    }
+}
+
+bool weather_column_upload_range(int slot, const WeatherRegionState& state, int first, int end)
+{
+    g_weather_column_upload.clear();
+    for (int i = first; i < end; ++i) {
+        const WeatherColumnCell& cell = state.columns[i];
+        g_weather_column_upload.push_back({cell.cx, cell.cz, cell.floor_y});
+    }
+    return gr::d3d11::update_weather_columns(slot, static_cast<int>(state.columns.size()), first,
+        g_weather_column_upload);
+}
+
+// Brings the GPU copy of the grid up to date: the whole grid after anything the GPU did not see, else
+// only what the fill traced, merged into runs.
+bool weather_column_upload(int slot, WeatherRegionState& state)
+{
+    const int num_cells = static_cast<int>(state.columns.size());
+    auto& dirty = state.column_dirty;
+    bool ok = true;
+    if (state.gpu_column_cells != num_cells) {
+        ok = weather_column_upload_range(slot, state, 0, num_cells);
+    }
+    else if (!dirty.empty()) {
+        std::sort(dirty.begin(), dirty.end());
+        std::size_t i = 0;
+        while (ok && i < dirty.size()) {
+            const int first = dirty[i];
+            int end = first + 1;
+            while (++i < dirty.size() && dirty[i] <= end + weather_column_upload_gap) {
+                end = dirty[i] + 1;
+            }
+            ok = weather_column_upload_range(slot, state, first, end);
+        }
+    }
+    dirty.clear();
+    state.gpu_column_cells = ok ? num_cells : 0;
+    return ok;
 }
 
 int weather_region_bitmap(const std::string& name, int& handle)
@@ -677,6 +872,119 @@ int weather_region_bitmap(const std::string& name, int& handle)
         handle = rf::bm::load(name.c_str(), -1, true);
     }
     return handle;
+}
+
+// Seeded like the CPU arena, in the unit box: the GPU path reads them for every region.
+bool weather_gpu_ready()
+{
+    if (!particle_sim_gpu_enabled()) {
+        return false;
+    }
+    if (g_weather_gpu_seeds == WeatherGpuSeeds::pending) {
+        std::vector<WeatherParticle> particles(weather_arena_count);
+        weather_seed(particles.data(), weather_arena_count, WeatherBox{{0.5f, 0.5f, 0.5f}, 0.5f, 0.5f, 0.5f},
+            WeatherRegionType::snow);
+        std::vector<gr::d3d11::WeatherSeed> seeds;
+        seeds.reserve(particles.size());
+        for (const WeatherParticle& p : particles) {
+            seeds.push_back({p.pos.x, p.pos.y, p.pos.z, p.phase, p.angle, p.spin, p.drift_x, p.drift_z});
+        }
+        g_weather_gpu_seeds = gr::d3d11::upload_weather_seeds(seeds) ? WeatherGpuSeeds::ready : WeatherGpuSeeds::failed;
+        if (g_weather_gpu_seeds == WeatherGpuSeeds::failed) {
+            xlog::warn("[Weather] Weather is simulated on the CPU: the GPU seed buffer could not be created");
+        }
+    }
+    return g_weather_gpu_seeds == WeatherGpuSeeds::ready;
+}
+
+// Where the box lattice has moved to by now along one axis: the box-relative offset and the whole laps.
+// Double precision, so the uniform motion stays exact however long the level runs.
+float weather_lattice_shift(float velocity, float box_min, float box_size, double& laps)
+{
+    const double travelled = static_cast<double>(velocity) * g_weather_clock - box_min;
+    laps = std::floor(travelled / box_size);
+    return static_cast<float>(travelled - laps * box_size);
+}
+
+// The GPU path: weather_vs places each particle from its seed and the clock, the same motion the CPU
+// path integrates. The CPU folds the uniform part into the box and keeps the ceiling cache filled.
+bool weather_draw_gpu(int index, WeatherRegion& region, WeatherRegionState& state, int& trace_budget,
+    const rf::Vector3& camera_pos, const rf::Matrix3& camera_orient, bool has_surface, float surface_y)
+{
+    gr::d3d11::WeatherDraw draw;
+    rf::Vector3 velocity;
+    switch (region.type) {
+        case WeatherRegionType::rain: {
+            velocity = rf::Vector3{region.rain_wind_x, -region.rain_fall_speed, region.rain_wind_z};
+            const float speed = velocity.len();
+            if (speed < 0.001f) {
+                return true;
+            }
+            draw.mode = rain_streak_mode;
+            draw.color = region.rain_color;
+            draw.fall_dir = velocity / speed;
+            draw.streak_half_len = std::max(speed * region.rain_streak_seconds * 0.5f, 0.001f);
+            draw.half_width = rain_streak_half_width;
+            break;
+        }
+        case WeatherRegionType::snow:
+            // gr_3d_bitmap_oriented_wh draws nothing this small
+            if (region.snow_sprite_radius <= 1e-5f) {
+                return true;
+            }
+            velocity = rf::Vector3{0.0f, -region.snow_fall_speed, 0.0f};
+            draw.snow = true;
+            draw.mode = rf::gr::glow_3d_bitmap_mode;
+            draw.bm_handle = weather_region_bitmap(region.snow_bitmap, region.snow_bm_handle);
+            draw.color = region.snow_color;
+            draw.half_width = region.snow_sprite_radius;
+            draw.sway_amplitude = region.snow_sway_amplitude;
+            draw.sway_speed = region.snow_sway_speed;
+            draw.sway_phase = static_cast<float>(
+                std::fmod(static_cast<double>(region.snow_sway_speed) * g_weather_clock, snow_sway_period));
+            break;
+    }
+
+    const WeatherBox& box = state.box;
+    draw.count = state.length;
+    draw.box_min = rf::Vector3{box.center.x - box.half_x, box.center.y - box.half_y, box.center.z - box.half_z};
+    draw.box_size = rf::Vector3{box.half_x * 2.0f, box.half_y * 2.0f, box.half_z * 2.0f};
+    double unused_laps = 0.0;
+    double vertical_laps = 0.0;
+    draw.box_shift.x = weather_lattice_shift(velocity.x, draw.box_min.x, draw.box_size.x, unused_laps);
+    draw.box_shift.y = weather_lattice_shift(velocity.y, draw.box_min.y, draw.box_size.y, vertical_laps);
+    draw.box_shift.z = weather_lattice_shift(velocity.z, draw.box_min.z, draw.box_size.z, unused_laps);
+    // Only ever hashed, so the lap count wrapping round 32 bits is harmless
+    draw.wrap_base = static_cast<uint32_t>(static_cast<int64_t>(std::fmod(vertical_laps, 4294967296.0)));
+    draw.salt = static_cast<uint32_t>(index);
+    draw.time = static_cast<float>(g_weather_clock);
+    draw.camera_pos = camera_pos;
+    draw.camera_orient = camera_orient;
+    draw.sphere = region.shape == WeatherRegionShape::sphere;
+    draw.region_center = region.center;
+    draw.region_orient = region.orient;
+    draw.region_half_extents = region.half_extents;
+    draw.region_radius = region.radius;
+    draw.has_surface = has_surface;
+    draw.surface_y = surface_y;
+
+    if (region.block_by_geometry) {
+        weather_column_grid_prepare(state, region);
+        weather_column_fill_box(state, camera_pos, trace_budget);
+        if (!weather_column_upload(index, state)) {
+            return false;
+        }
+        draw.columns_slot = index;
+        draw.column_cell = state.cell;
+        draw.cols_x = state.cols_x;
+        draw.cols_z = state.cols_z;
+        // One column of slack under the box, for a position rounding into the column below it
+        const int32_t below_cx = weather_column_coord(draw.box_min.x, state.cell) - 1;
+        const int32_t below_cz = weather_column_coord(draw.box_min.z, state.cell) - 1;
+        draw.column_origin_x = below_cx - ((below_cx % state.cols_x) + state.cols_x) % state.cols_x;
+        draw.column_origin_z = below_cz - ((below_cz % state.cols_z) + state.cols_z) % state.cols_z;
+    }
+    return gr::d3d11::draw_weather(draw);
 }
 
 void rain_do_frame(WeatherParticle* particles, int count, const WeatherBox& box, const WeatherRegion& region,
@@ -986,6 +1294,10 @@ static void weather_drop_columns(std::size_t i)
     state.cols_x = 0;
     state.cols_z = 0;
     state.cell = 0.0f;
+    state.column_dirty.clear();
+    state.gpu_column_cells = 0;
+    state.columns_filled = false;
+    state.fill_in_pass = false;
 }
 
 // Called by the Anchor_Marker events for each of their link UIDs, same as the other region types.
@@ -1035,6 +1347,8 @@ void weather_notify_geomod(const rf::Vector3& pos, float radius)
             const float dz = (slot.cz + 0.5f) * state.cell - pos.z;
             if (dx * dx + dz * dz <= reach_sq) {
                 slot.retrace_frame = rf::frame_count + weather_column_geomod_delay_frames;
+                state.columns_filled = false;
+                state.fill_in_pass = false;
             }
         }
     }
@@ -1047,6 +1361,7 @@ void weather_clear_regions()
 {
     g_weather_regions.clear();
     weather_reset_states();
+    gr::d3d11::release_weather_columns();
 }
 
 void weather_render()
@@ -1094,7 +1409,9 @@ void weather_render()
 
     const rf::Matrix3 camera_orient = rf::camera_get_orient(camera);
     const float dt = std::clamp(rf::frametime, 0.0f, max_frame_delta) * demo_playback_sim_time_scale();
+    g_weather_clock += dt;
     int trace_budget = weather_column_trace_budget;
+    const bool gpu = weather_gpu_ready();
 
     for (std::size_t i = 0; i < g_weather_regions.size(); ++i) {
         WeatherRegionState& state = g_weather_states[i];
@@ -1102,11 +1419,16 @@ void weather_render()
             continue;
         }
         WeatherRegion& region = g_weather_regions[i];
+        if (gpu && weather_draw_gpu(static_cast<int>(i), region, state, trace_budget, camera_pos, camera_orient,
+            has_surface, surface_y)) {
+            continue;
+        }
         WeatherParticle* particles = g_weather_arena + state.offset;
 
         if (region.block_by_geometry) {
             weather_column_grid_prepare(state, region);
         }
+        const int budget_before = trace_budget;
 
         switch (region.type) {
             case WeatherRegionType::rain:
@@ -1118,17 +1440,23 @@ void weather_render()
                     camera_orient, has_surface, surface_y, dt);
                 break;
         }
+        // The GPU copy did not see what these traces wrote
+        if (trace_budget != budget_before) {
+            state.gpu_column_cells = 0;
+        }
     }
 
     // The tint and the snow texture are global gr state, and everything drawn after this hook would
     // inherit them.
     rf::gr::set_color(255, 255, 255, 255);
     rf::gr::set_texture(-1, -1);
+    gr::d3d11::flush_batched_quads();
 }
 
 void weather_apply_patch()
 {
     weather_reset_states();
     plankton_update_render_hook.install();
+    plankton_bitmap_3d_angle_hook.install();
     r_weather_cmd.register_cmd();
 }

@@ -101,6 +101,11 @@ namespace
         jeep.upright_air_scale = 0.50f;
         jeep.tilt_damp = 2.5f;
         jeep.chassis_trim_side = 0.20f;
+        jeep.chassis_trim_top = 0.15f;
+        // Only the roll cage, windshield and gun mount rise above the hood and rear deck.
+        jeep.chassis_cab_z_min = -1.10f;
+        jeep.chassis_cab_z_max = 1.10f;
+        jeep.chassis_body_top = 0.80f;
         jeep.chassis_clearance = 0.10f;
         jeep.step_climb_height = 0.60f;
         jeep.cam_enable = 1.0f;
@@ -261,6 +266,7 @@ namespace
     {
         for (auto& [handle, obstacle] : g_vphys.obstacles) {
             if (g_vphys.world && obstacle.body) {
+                g_vphys.world->release_predictive_manifolds();
                 g_vphys.world->removeRigidBody(obstacle.body);
                 g_vphys.manifolds_dirty = true;
             }
@@ -276,6 +282,7 @@ namespace
         car_teardown(b);
         if (b.body) {
             if (g_vphys.world) {
+                g_vphys.world->release_predictive_manifolds();
                 g_vphys.world->removeRigidBody(b.body);
                 g_vphys.manifolds_dirty = true;
             }
@@ -407,11 +414,6 @@ namespace
             if (!owned->body) {
                 continue;
             }
-            // WANTS_DEACTIVATION too: buildIslands puts such a body to sleep on the next substep.
-            const int state = owned->body->getActivationState();
-            if (state != ISLAND_SLEEPING && state != WANTS_DEACTIVATION) {
-                continue;
-            }
             btVector3 blo;
             btVector3 bhi;
             owned->body->getAabb(blo, bhi);
@@ -419,8 +421,15 @@ namespace
             blo.setY(blo.y() - (owned->wheel_reach + 0.5f));
             blo -= bpad;
             bhi += bpad;
-            if (blo.x() <= hi.x() && bhi.x() >= lo.x() && blo.y() <= hi.y()
-                && bhi.y() >= lo.y() && blo.z() <= hi.z() && bhi.z() >= lo.z()) {
+            if (blo.x() > hi.x() || bhi.x() < lo.x() || blo.y() > hi.y() || bhi.y() < lo.y()
+                || blo.z() > hi.z() || bhi.z() < lo.z()) {
+                continue;
+            }
+            // Awake or not: a hull resting here may be replaying wheel casts against what just changed.
+            owned->wheel_casts.clear();
+            // WANTS_DEACTIVATION too: buildIslands puts such a body to sleep on the next substep.
+            const int state = owned->body->getActivationState();
+            if (state == ISLAND_SLEEPING || state == WANTS_DEACTIVATION) {
                 owned->body->activate(true);
             }
         }
@@ -431,13 +440,14 @@ namespace
     {
         for (int i = 0; i < m.pending_wake_count; ++i) {
             wake_sleeping_bodies_in(m.pending_wake[i].lo, m.pending_wake[i].hi);
+            ragdoll_wake_in_box(m.pending_wake[i].lo, m.pending_wake[i].hi);
         }
         m.pending_wake_count = 0;
     }
 } // namespace
 
 // Cleared at multi_stop as well as level init: level-init-only state goes stale across a switch.
-bool g_level_has_bullet_vehicles = false;
+bool g_level_wants_bullet_mesh = false;
 
 // A vehicle carries a player, so the PLAYER standard applies: OF_WEAPON_ONLY_COLLIDE only.
 bool mover_brush_is_solid(const rf::Object& mb)
@@ -542,7 +552,9 @@ namespace
         if (face.attributes.portal_id != 0) {
             return false; // portals are not solid
         }
-        return true;
+        // Bullet's triangles are two-sided, so the buried wall between two chunks snags a hull on the edge a
+        // crater exposes where its tunnel crosses the seam.
+        return !alpine_terrain_is_interior_seam_face(face);
     }
 
     // The verts/indices survive, so a chunk being REBUILT in place can be freed and finished again.
@@ -550,6 +562,7 @@ namespace
     {
         if (m.body) {
             if (g_vphys.world) {
+                g_vphys.world->release_predictive_manifolds();
                 g_vphys.world->removeRigidBody(m.body);
                 g_vphys.manifolds_dirty = true;
             }
@@ -705,7 +718,7 @@ namespace
         ci.m_restitution = 0.0f;
         ci.m_friction = 0.6f;
         m.body = new btRigidBody(ci);
-        g_vphys.world->addRigidBody(m.body, vphys_group_level, vphys_group_hull);
+        g_vphys.world->addRigidBody(m.body, vphys_group_level, vphys_mask_level);
         m.bytes = m.verts.size() * sizeof(float) + m.indices.size() * sizeof(int);
         m.aabb_min = rf::Vector3{m.verts[0], m.verts[1], m.verts[2]};
         m.aabb_max = m.aabb_min;
@@ -781,9 +794,12 @@ namespace
     void mover_mesh_free(MoverMeshBody& m)
     {
         if (m.body) {
-            if (g_vphys.world && m.in_world) {
-                g_vphys.world->removeRigidBody(m.body);
-                g_vphys.manifolds_dirty = true;
+            if (g_vphys.world) {
+                g_vphys.world->release_predictive_manifolds();
+                if (m.in_world) {
+                    g_vphys.world->removeRigidBody(m.body);
+                    g_vphys.manifolds_dirty = true;
+                }
             }
             m.in_world = false;
             delete m.body;
@@ -871,7 +887,7 @@ namespace
                                         & ~btCollisionObject::CF_STATIC_OBJECT)
                                        | btCollisionObject::CF_KINEMATIC_OBJECT);
             m->body->setActivationState(DISABLE_DEACTIVATION);
-            g_vphys.world->addRigidBody(m->body, vphys_group_level, vphys_group_hull);
+            g_vphys.world->addRigidBody(m->body, vphys_group_level, vphys_mask_level);
             m->in_world = true;
             m->bytes = m->verts.size() * sizeof(float) + m->indices.size() * sizeof(int);
             g_level_mesh_tris += m->tris;
@@ -902,10 +918,11 @@ namespace
 void level_mesh_build()
 {
     level_mesh_destroy();
-    if (!g_level_has_bullet_vehicles || !g_vphys.world) {
+    if (!g_level_wants_bullet_mesh || !g_vphys.world) {
         return;
     }
     g_level_mesh_built = true;
+    const AlpineTerrainSeamScope seam_scope;
     int rooms = 0;
     // A null level solid is not a reason to skip the movers, so only the room pass is guarded.
     if (rf::GSolid* solid = rf::level.geometry) {
@@ -925,7 +942,7 @@ void level_mesh_build()
                rooms, static_cast<int>(level_mesh_chunk_count()), mover_brushes,
                static_cast<int>(g_mover_mesh.size()), g_level_mesh_tris, g_level_mesh_bytes / 1024);
     if (!level_mesh_active()) {
-        xlog::error("[vphys-mesh] level mesh unavailable - vehicles on this level have no world "
+        xlog::error("[vphys-mesh] level mesh unavailable - Bullet bodies on this level have no world "
                     "collision");
     }
 }
@@ -955,7 +972,7 @@ void movers_update_all(bool step_will_run, float step_time, float engine_dt)
         const bool solid = mover_brush_is_solid(*op);
         if (solid != m.in_world) {
             if (solid) {
-                g_vphys.world->addRigidBody(m.body, vphys_group_level, vphys_group_hull);
+                g_vphys.world->addRigidBody(m.body, vphys_group_level, vphys_mask_level);
             }
             else {
                 g_vphys.world->removeRigidBody(m.body);
@@ -1011,6 +1028,23 @@ void movers_update_all(bool step_will_run, float step_time, float engine_dt)
         if (moved_box) {
             mover_wake_bank(m, moved_lo, moved_hi);
         }
+        // A machine with no body to step never refreshes the broadphase or derives a kinematic velocity, yet
+        // the scrape probe asks this world for what a watched hull touches.
+        if (!step_will_run) {
+            // As saveKinematicState derives it, angular part included: a turntable's surface moves too.
+            btVector3 lin_vel(0.0f, 0.0f, 0.0f);
+            btVector3 ang_vel(0.0f, 0.0f, 0.0f);
+            if (moved && engine_dt > 0.0f) {
+                const btTransform from(to_bt(m.carry_orient), to_bt(m.carry_pos));
+                const btTransform to(to_bt(op->orient), to_bt(op->pos));
+                btTransformUtil::calculateVelocity(from, to, engine_dt, lin_vel, ang_vel);
+            }
+            m.body->setLinearVelocity(lin_vel);
+            m.body->setAngularVelocity(ang_vel);
+            if (moved) {
+                g_vphys.world->updateSingleAabb(m.body);
+            }
+        }
         // Only ahead of a substep: a sleeping hull woken on a skipped frame would just idle awake.
         if (consumed) {
             mover_wake_flush(m);
@@ -1050,6 +1084,7 @@ void level_mesh_rebuild_pending()
         changed_lo.setMin(to_bt(m.aabb_min));
         changed_hi.setMax(to_bt(m.aabb_max));
     };
+    const AlpineTerrainSeamScope seam_scope;
     for (auto& pending : g_remesh_pending) {
         rf::GRoom* room = pending.first;
         const RemeshRequest& req = pending.second;
@@ -1176,6 +1211,16 @@ bool level_mesh_active()
     return g_level_mesh_built && !(level_mesh_chunk_count() == 0 && g_mover_mesh.empty());
 }
 
+uint32_t level_mesh_rebuild_serial()
+{
+    return g_level_mesh_rebuild_serial;
+}
+
+bool level_mesh_remesh_pending()
+{
+    return !g_remesh_pending.empty();
+}
+
 void level_mesh_debug_collect(const rf::Vector3& center, float radius,
                               std::vector<LevelMeshDebugChunk>& out)
 {
@@ -1217,7 +1262,7 @@ namespace
         if (!g_vphys.world) {
             return;
         }
-        g_level_has_bullet_vehicles = true;
+        g_level_wants_bullet_mesh = true;
         if (!g_level_mesh_built) {
             level_mesh_build();
         }
@@ -1236,8 +1281,17 @@ namespace
     }
 } // namespace
 
+void vphys_world_ensure_level_mesh()
+{
+    if (!g_vphys.world) {
+        world_create();
+    }
+    level_mesh_ensure_for_body();
+}
+
 void world_destroy()
 {
+    ragdoll_destroy_all();
     level_mesh_destroy();
     obstacles_destroy_all();
     sim_bodies_free_all();
@@ -1326,12 +1380,8 @@ namespace
         return types[row];
     }
 
-    const VehicleHullBoxOverride* vehicle_hull_box_override(const rf::Object* op)
+    const VehicleHullBoxOverride* vehicle_hull_box_override_for_type(int type)
     {
-        if (!op || op->type != rf::OT_ENTITY) {
-            return nullptr;
-        }
-        const int type = static_cast<const rf::Entity*>(op)->info_index;
         if (type < 0) {
             return nullptr;
         }
@@ -1341,6 +1391,22 @@ namespace
             }
         }
         return nullptr;
+    }
+
+    const VehicleHullBoxOverride* vehicle_hull_box_override(const rf::Object* op)
+    {
+        if (!op || op->type != rf::OT_ENTITY) {
+            return nullptr;
+        }
+        return vehicle_hull_box_override_for_type(static_cast<const rf::Entity*>(op)->info_index);
+    }
+
+    HullBox override_hull_box(const VehicleHullBoxOverride& ov)
+    {
+        HullBox box;
+        box.half = btVector3(std::max(ov.half_x, 0.05f), std::max(ov.half_y, 0.05f), std::max(ov.half_z, 0.05f));
+        box.center = btVector3(ov.center_x, ov.center_y, ov.center_z);
+        return box;
     }
 
     // ONE derivation for every mesh-measured box. False means no mesh, or a degenerate/unloaded one.
@@ -1373,15 +1439,21 @@ namespace
     }
 } // namespace
 
+bool vphys_type_hull_box(int entity_type, HullBox* out)
+{
+    const VehicleHullBoxOverride* ov = vehicle_hull_box_override_for_type(entity_type);
+    if (!ov) {
+        return false;
+    }
+    *out = override_hull_box(*ov);
+    return true;
+}
+
 // The hull's TRUE local box: min/max over the cspheres, NOT folded about the origin.
 HullBox hull_local_box(const rf::Object* op)
 {
     if (const VehicleHullBoxOverride* ov = vehicle_hull_box_override(op)) {
-        HullBox box;
-        box.half = btVector3(std::max(ov->half_x, 0.05f), std::max(ov->half_y, 0.05f),
-                             std::max(ov->half_z, 0.05f));
-        box.center = btVector3(ov->center_x, ov->center_y, ov->center_z);
-        return box;
+        return override_hull_box(*ov);
     }
     // No row of its own: the live mesh is the measurement, as a clutter prop's box already is.
     HullBox mesh_box;
@@ -1417,11 +1489,8 @@ HullBox hull_local_box(const rf::Object* op)
 
 VehicleSimBody* body_create(rf::Entity* ep, int cls)
 {
-    if (!g_vphys.world) {
-        world_create();
-    }
     // Every class, not just the automobiles: the level mesh is the only world collision a hull has.
-    level_mesh_ensure_for_body();
+    vphys_world_ensure_level_mesh();
     auto owned = std::make_unique<VehicleSimBody>();
     VehicleSimBody& b = *owned;
     if (vphys_class_is_automobile(cls)) {
@@ -1642,8 +1711,18 @@ namespace
                 obstacle.info_index = w.info_index;
                 obstacle.vmesh = w.op->vmesh;
                 obstacle.built_half = obox.half;
-                // A prop keeps the default static group/mask addRigidBody gives it.
-                g_vphys.world->addRigidBody(obstacle.body);
+                g_vphys.world->addRigidBody(obstacle.body, vphys_group_prop, vphys_mask_prop);
+                btVector3 lo;
+                btVector3 hi;
+                obstacle.body->getAabb(lo, hi);
+                for (auto& owned : g_vphys.bodies) {
+                    btVector3 blo;
+                    btVector3 bhi;
+                    if (owned->body) {
+                        owned->body->getAabb(blo, bhi);
+                        owned->impact_prop_built |= TestAabbAgainstAabb2(blo, bhi, lo, hi);
+                    }
+                }
             }
         }
     }
@@ -1712,9 +1791,6 @@ void vehicle_physics_notify_geomod(const rf::Vector3& pos, float radius)
         }
         // (b) every face the crater touches, marked in the cell owning its CENTROID - possibly far away.
         for (rf::GFace& face : room->face_list) {
-            if (!level_mesh_face_is_solid(face)) {
-                continue;
-            }
             rf::Vector3 centroid;
             rf::Vector3 flo;
             rf::Vector3 fhi;
@@ -1723,6 +1799,9 @@ void vehicle_physics_notify_geomod(const rf::Vector3& pos, float radius)
             }
             if (fhi.x < lo.x || flo.x > hi.x || fhi.y < lo.y || flo.y > hi.y || fhi.z < lo.z
                 || flo.z > hi.z) {
+                continue;
+            }
+            if (!level_mesh_face_is_solid(face)) {
                 continue;
             }
             remesh_mark_cell(req, level_mesh_cell_of(centroid));

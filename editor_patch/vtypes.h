@@ -2,9 +2,15 @@
 
 #include <algorithm>
 #include <climits>
+#include <cstddef>
+#include <cstdint>
 #include <iterator>
 #include <patch_common/MemUtils.h>
 #include "mfc_types.h"
+#include "graphics/d3d11/engine/rf_math.h"
+#include "graphics/d3d11/engine/rf_gr.h"
+#include "graphics/d3d11/engine/rf_geometry.h"
+#include "graphics/d3d11/engine/rf_mesh.h"
 
 namespace rf
 {
@@ -134,6 +140,8 @@ namespace rf
         };
     };
     static_assert(sizeof(File) == 0x114, "File size mismatch");
+    static_assert(offsetof(File, filename) == 0x05);
+    static_assert(offsetof(File, packfile_entry) == 0x108);
 }
 
 // ─── Editor VMesh ────────────────────────────────────────────────────────────
@@ -173,8 +181,7 @@ struct EditorMeshMaterial {
     int material_type;
     int flags;
     bool use_additive_blending;
-    char _pad[3];
-    Color diffuse_color;
+    Color diffuse_color; // +0x09, as the stock .vfx renderer (RF 0x00553EE0) reads it
     EditorTextureMap texture_maps[2];
     int framerate;
     int num_mix_frames;
@@ -306,8 +313,41 @@ static_assert(sizeof(EditorV3d) == 0x90);
 static_assert(offsetof(EditorV3d, num_meshes) == 0x48);
 static_assert(offsetof(EditorV3d, meshes) == 0x4C);
 
+// .vfx SFXO/CHNE chunk, shared by every instance of the effect. Same layout as the game's rf::VfxSfxoChunk.
+struct EditorVfxChunk
+{
+    char pad_00[0xA0];
+    float radius;              // 0xA0: billboard and glow sprite radius
+    char pad_A4[0x0C];
+    int num_vertices;          // 0xB0
+    char pad_B4[0x58];
+    float ribbon_width;        // 0x10C: CHNE ribbon width
+    char pad_110[0x14];
+};
+static_assert(sizeof(EditorVfxChunk) == 0x124);
+static_assert(offsetof(EditorVfxChunk, radius) == 0xA0);
+static_assert(offsetof(EditorVfxChunk, num_vertices) == 0xB0);
+static_assert(offsetof(EditorVfxChunk, ribbon_width) == 0x10C);
+
+// Per-instance render state of one .vfx chunk, drawn by FUN_004fb060. Same layout as the game's rf::VfxSfxoRenderObj.
+struct EditorVfxPart
+{
+    EditorVfxChunk* chunk;     // 0x00
+    Vector3 pivot;             // 0x04: object space
+    float width;               // 0x10: billboard width, or beam width
+    float height;              // 0x14: billboard height, or beam length
+    char pad_18[0x68];
+    Vector3* vertex_positions; // 0x80: object space, chunk->num_vertices entries
+    char pad_84[0x14];
+};
+static_assert(sizeof(EditorVfxPart) == 0x98);
+static_assert(offsetof(EditorVfxPart, pivot) == 0x04);
+static_assert(offsetof(EditorVfxPart, width) == 0x10);
+static_assert(offsetof(EditorVfxPart, height) == 0x14);
+static_assert(offsetof(EditorVfxPart, vertex_positions) == 0x80);
+
 // EditorVifFace::flags bit marking a face the renderer draws from both sides.
-constexpr int VIF_FACE_DOUBLE_SIDED = 0x20;
+using rf::VIF_FACE_DOUBLE_SIDED;
 
 // Level the LOD walkers clamp to the mesh's lowest detail.
 inline constexpr int vmesh_lowest_lod = INT_MAX;
@@ -440,12 +480,14 @@ static auto& vmesh_load_v3c = addr_as_ref<EditorVMesh*(const char* filename, int
 static auto& vmesh_load_vfx = addr_as_ref<EditorVMesh*(const char* filename, int param2)>(0x004BFE10);
 static auto& vmesh_free = addr_as_ref<void(EditorVMesh* vmesh)>(0x004BFEC0);
 static auto& vmesh_render = addr_as_ref<void(EditorVMesh* vmesh, const void* pos, const void* orient, const EditorRenderParams* params)>(0x004C04B0);
-// vmesh_render of one submesh of a static mesh (-1 = all). The engine takes the camera into mesh space
-// with orient's transpose (FUN_004edf50), so an orient scaled by s draws the submesh as if the camera
+// vmesh_render of one submesh of a static mesh (-1 = all). The Direct3D 8 renderer takes the camera into mesh
+// space with orient's transpose (FUN_004edf50), so an orient scaled by s draws the submesh as if the camera
 // sat s * s times as far from its centre.
 static auto& vmesh_render_submesh = addr_as_ref<void(EditorVMesh* vmesh, int submesh, const void* pos,
                                                      const void* orient, const EditorRenderParams* params)>(0x004BFED0);
 static auto& vmesh_get_bound_sphere = addr_as_ref<void(EditorVMesh* vmesh, void* center_out, void* radius_out)>(0x004C0680);
+// Object-space box of any mesh kind (0x004BED10); a .vfx's is the cube around its bounding sphere.
+static auto& vmesh_get_bbox = addr_as_ref<void(EditorVMesh* vmesh, Vector3* min_out, Vector3* max_out)>(0x004C06C0);
 static auto& vmesh_process = addr_as_ref<void(EditorVMesh* vmesh, float time, int param3, const void* pos, const void* orient, int param6)>(0x004C0710);
 static auto& vmesh_anim_init = addr_as_ref<void(EditorVMesh* vmesh, int start_frame, float speed)>(0x004C0740);
 static auto& vmesh_get_type = addr_as_ref<EditorVMeshType(EditorVMesh* vmesh)>(0x004BFEB0);
@@ -457,6 +499,8 @@ static auto& editor_vmesh_get_materials_array = addr_as_ref<void(EditorVMesh* vm
 // Bitmap load: loads a texture file, returns handle (or -1 on failure)
 static auto& bm_load = addr_as_ref<int(const char* filename, int path_id, int generate_mipmaps)>(0x004BBBF0);
 static auto& bm_get_filename = addr_as_ref<const char*(int bm_handle)>(0x004BDC60);
+// A bitmap's size in pixels. The handle must be a loaded bitmap's: -1 is taken for an animation slot's.
+static auto& bm_get_dimensions = addr_as_ref<void __cdecl(int bm_handle, int* width, int* height)>(0x004BCB80);
 static auto& bm_get_mipmap_info = addr_as_ref<void(int bm_handle, int* width, int* height,
                                                   int* num_pixels_in_all_levels, int* mip_levels)>(0x004BCBD0);
 // Nonzero when the bitmap's pixel format carries alpha (formats 4, 5 and 7).
@@ -533,6 +577,10 @@ static auto& gr_setup_3d = addr_as_ref<void __cdecl(const Matrix3* orient, const
 
 static auto& gr_set_far_clip = addr_as_ref<void __cdecl(float dist)>(0x004C5B30);
 static auto& gr_far_clip_dist = addr_as_ref<float>(0x0158F3F8);
+// Fog on or off in gr_screen, then the backend's fog_set. The clip pair is stored only when on and
+// 0 <= near_clip <= far_clip; otherwise the last pair stays. Stock RED calls it only from gr_init.
+static auto& gr_fog_set =
+    addr_as_ref<void __cdecl(bool on, int r, int g, int b, float near_clip, float far_clip)>(0x004BA7A0);
 
 // Gathers the scene lights reaching a sphere into the render light list; paired with room_cleanup.
 static auto& room_setup = addr_as_ref<int __cdecl(void* room, const Vector3* pos, float radius,
@@ -544,21 +592,74 @@ static auto& room_setup_bbox = addr_as_ref<int __cdecl(void* room, const Vector3
 // Transforms each light in the render light list into the current local frame.
 static auto& room_lights_to_local = addr_as_ref<void __cdecl()>(0x00488BE0);
 
-// The Preferences page holding the editor's user configurable colours; the viewport painter
-// (0x0047DAE0) feeds the background one to set_draw_color before its clear.
+// Frees every room's viewport geometry cache (FUN_0049b550 builds them), so each is rebuilt when next drawn.
+static auto& geo_cache_flush_all = addr_as_ref<void __cdecl()>(0x0049B4E0);
+// End of the viewport geometry cache pool.
+static auto& geo_cache_pool_end = addr_as_ref<char*>(0x010A84C0);
+// Its start and next free byte (0x0049B470 allocates the pool, geo_cache_flush_all rewinds it)
+static auto& geo_cache_pool_base = addr_as_ref<void*>(0x010E8F60);
+static auto& geo_cache_pool_cursor = addr_as_ref<void*>(0x01128364);
+// Rooms holding a cache from the pool; geo_cache_flush_all clears it with the pool
+static auto& geo_cache_num_rooms = addr_as_ref<int>(0x010AC748);
+// A batch record of a viewport geometry cache, as FUN_0049b550 fills it.
+struct RedCacheBatch
+{
+    char _pad_00[0x40];
+    int texture;  // +0x40
+    int lightmap; // +0x44
+    char _pad_48[0x8];
+};
+static_assert(sizeof(RedCacheBatch) == 0x50);
+static_assert(offsetof(RedCacheBatch, texture) == 0x40);
+static_assert(offsetof(RedCacheBatch, lightmap) == 0x44);
+
+// A Visual page colour and the copy Cancel restores (taken at 0x00478F90, put back at 0x00479070)
+struct EditorColorPref
+{
+    Color color;
+    Color saved;
+};
+static_assert(sizeof(EditorColorPref) == 8);
+
+enum class EditorColorPrefIndex
+{
+    background,
+    grid,
+    cookie_cutter,
+    brush,
+    locked_brush,
+    detail_brush,
+    portal_brush,
+    mover_brush,
+    link,
+    keyframe_link,
+    node,
+    bounding_box,
+    trigger,
+    geo_region,
+    climb_region,
+    push_region,
+    count,
+};
+
+// The Visual page (template 0xE5) of the Preferences dialog; the viewport painter (0x0047DAE0) feeds the
+// background colour to set_draw_color before its clear.
 struct EditorColorPrefs
 {
-    uint8_t pad_00[0x424];
-    COLORREF background;
-    uint8_t pad_428[0x464 - 0x428];
-    uint8_t link_r;
-    uint8_t link_g;
-    uint8_t link_b;
+    uint8_t pad_00[0x41C];
+    DedFloatSpinner* far_clip; // 0x41C
+    float saved_far_clip;      // 0x420 — Cancel's copy
+    EditorColorPref colors[static_cast<int>(EditorColorPrefIndex::count)]; // 0x424
+
+    const Color& color(EditorColorPrefIndex index) const
+    {
+        return colors[static_cast<int>(index)].color;
+    }
 };
-static_assert(offsetof(EditorColorPrefs, background) == 0x424);
-static_assert(offsetof(EditorColorPrefs, link_r) == 0x464);
-static_assert(offsetof(EditorColorPrefs, link_g) == 0x465);
-static_assert(offsetof(EditorColorPrefs, link_b) == 0x466);
+static_assert(sizeof(EditorColorPrefs) == 0x4A4);
+static_assert(offsetof(EditorColorPrefs, far_clip) == 0x41C);
+static_assert(offsetof(EditorColorPrefs, saved_far_clip) == 0x420);
+static_assert(offsetof(EditorColorPrefs, colors) == 0x424);
 static auto& editor_color_prefs = addr_as_ref<EditorColorPrefs* __cdecl()>(0x00483E10);
 
 // character_mesh_load_action: __thiscall on mesh_data, loads .rfa file, returns action index
@@ -578,9 +679,10 @@ static auto& set_draw_color = addr_as_ref<void(uint32_t r, uint32_t g, uint32_t 
 static auto& gr_set_bitmap = addr_as_ref<void(int bm_handle, int unk)>(0x004B97E0);
 // View > Show Just Textures: nonzero draws level faces fullbright, without lightmaps.
 static auto& editor_textures_enabled = addr_as_ref<int>(0x006C9AA8);
-// Set around a .vfx draw so the renderer takes its transparency path.
-static auto& vfx_render_transparent = addr_as_ref<int>(0x0059E21C);
-static auto& gr_render_billboard = addr_as_ref<void(void* pos, int unk, float scale, float param)>(0x004CB360);
+// Set around a .vfx draw so the renderer takes its transparency path. Every stock access is byte wide.
+static auto& vfx_render_transparent = addr_as_ref<bool>(0x0059E21C);
+// The game's gr::bitmap_3d_angle (RF 0x00515B40)
+static auto& gr_render_billboard = addr_as_ref<void(void* pos, int unk, float scale, rf::gr::Mode mode)>(0x004CB360);
 static auto& draw_line_2d = addr_as_ref<uint32_t(const void* pt1, const void* pt2, uint32_t mode)>(0x004CB150);
 static auto& project_to_screen_2d = addr_as_ref<bool(const void* world_pos, float* out_x, float* out_y)>(0x004C6630);
 
@@ -589,6 +691,10 @@ static auto& project_to_screen_2d = addr_as_ref<bool(const void* world_pos, floa
 // crossings that a raw project-and-draw pass loses. Colour comes from set_draw_color.
 // Box dimensions are full size; the routine halves them itself.
 static auto& draw_wireframe_sphere_3d = addr_as_ref<bool(const Vector3* center, float radius, uint32_t mode)>(0x004CB4F0);
+// A cylinder about orient's uvec, its height centered on pos
+static auto& draw_cylinder_gizmo =
+    addr_as_ref<bool __cdecl(const Vector3* pos, const Matrix3* orient, float radius, float height, uint32_t mode)>(
+        0x004CB490);
 static auto& draw_wireframe_box_3d =
     addr_as_ref<bool(const Vector3* center, const Matrix3* orient, const Vector3* dims, uint32_t mode)>(0x004CB840);
 // Draw mode the stock editor passes to the shape/line routines.
@@ -599,8 +705,26 @@ inline uint32_t editor_line_mode()
 static auto& gr_line_3d = addr_as_ref<uint8_t __cdecl(const Vector3* p0, const Vector3* p1, uint32_t mode)>(0x004CB180);
 // Origin at +0, unit direction at +0xC, for the view last set up
 static auto& screen_to_ray = addr_as_ref<void __cdecl(float* ray_out, float x, float y)>(0x004C5FB0);
+struct EditorRay
+{
+    Vector3 o;
+    Vector3 d; // unit
+};
+// The world ray through a client point of the view last set up.
+inline EditorRay editor_screen_ray(float x, float y)
+{
+    float r[8] = {};
+    screen_to_ray(r, x, y);
+    return {{r[0], r[1], r[2]}, {r[3], r[4], r[5]}};
+}
 static auto& gr_perspective = addr_as_ref<uint8_t>(0x0057E0ED);
+// The view-space z gr_rotate_vertex (0x004C66C0) gives every vertex of an orthographic view; gr_setup_3d sets 0.98
+static auto& gr_ortho_rotated_z = addr_as_ref<float>(0x0158F40C);
+// Set by gr_init; the vertex projection and polygon paths clip on the CPU while it is
+static auto& gr_needs_software_clipping = addr_as_ref<bool>(0x0057DAB6);
+// The screen centre of the view last set up, which screen_to_ray measures from
 static auto& gr_half_width = addr_as_ref<float>(0x0158F2EC);
+static auto& gr_half_height = addr_as_ref<float>(0x0158F2B4);
 
 // View menu state
 enum LevelRenderMode : int
@@ -614,7 +738,160 @@ static auto& level_render_mode = addr_as_ref<int>(0x0057B9B8); // LevelRenderMod
 static auto& view_see_through = addr_as_ref<int>(0x006C9A94);
 static auto& view_room_colors = addr_as_ref<int>(0x006C9A98);
 static auto& view_lightmaps_only = addr_as_ref<int>(0x006C9AA4);
+// Set by each 3D view paint (0x0047AE3F): 1 only for View > Draw Non-see-thru Portal Faces
+static auto& view_portal_faces = addr_as_ref<int>(0x006C9A9C);
+// View > Don't Draw / Draw See-thru / Draw Non-see-thru Portal Faces (handlers 0x00449EE0 / 0x00449F20 / 0x00449F60)
+enum ViewPortalOption : int
+{
+    VIEW_PORTAL_FACES_NONE = 0,
+    VIEW_PORTAL_FACES_SEE_THRU = 1,
+    VIEW_PORTAL_FACES_SOLID = 2,
+};
+static auto& view_portal_option = addr_as_ref<int>(0x006CA630); // ViewPortalOption
+// The View menu display mode (handlers 0x00449FE0..0x0044A120 set 2..7), which each 3D view paint (0x0047ADB3) turns
+// into the flags above: 2 textures only, 5 lightmaps only, 6 room colours, 7 see-through, 4 (and 0, 1, 3) textures
+// with lightmaps
+static auto& view_display_mode = addr_as_ref<int>(0x0057B9B4);
+constexpr int view_display_mode_lightmapped = 4;
 static auto& painting_view_index = addr_as_ref<int>(0x006C9ACC);
+
+// ─── Texture mode panel ──────────────────────────────────────────────────────
+
+// Resize Map's dialog (252), kept for the session. Cylinder Map reads Radius; Height only sizes the gizmo.
+struct ResizeMapDialog
+{
+    char _pad_00[0x5C];
+    DedFloatSpinner* radius; // +0x5C
+    DedFloatSpinner* height; // +0x60
+};
+static_assert(offsetof(ResizeMapDialog, radius) == 0x5C);
+static_assert(offsetof(ResizeMapDialog, height) == 0x60);
+// The map combo's items; Sphere is Alpine's, added after the stock three
+enum TextureMapType : int
+{
+    TEXTURE_MAP_BOX = 0,
+    TEXTURE_MAP_CYLINDER = 1,
+    TEXTURE_MAP_PLANAR = 2,
+    TEXTURE_MAP_SPHERE = 3,
+};
+// Texels per meter Box, Cylinder and Planar Map lay textures out at
+static auto& texture_map_pixels_per_meter = addr_as_ref<float>(0x0057CADC);
+
+// ─── UV Unwrap ───────────────────────────────────────────────────────────────
+
+struct BrushNode;
+struct GFace;
+struct GFaceVertex;
+// A corner of a face being unwrapped, one per corner (FUN_00473f10); each face's corners are consecutive
+struct UvUnwrapVertex
+{
+    BrushNode* brush;         // +0x00
+    GFace* face;              // +0x04
+    GFaceVertex* face_vertex; // +0x08
+    float orig_u;             // +0x0C  restored by Cancel
+    float orig_v;             // +0x10
+    bool selected;            // +0x14
+};
+static_assert(offsetof(UvUnwrapVertex, face) == 0x04);
+static_assert(offsetof(UvUnwrapVertex, face_vertex) == 0x08);
+static_assert(offsetof(UvUnwrapVertex, orig_u) == 0x0C);
+static_assert(offsetof(UvUnwrapVertex, selected) == 0x14);
+static_assert(sizeof(UvUnwrapVertex) == 0x18);
+// The dialog, CDedLevel::dialog_panels[uv_unwrap_dialog_panel_index]
+struct UvUnwrapDialog
+{
+    char _pad_00[0xC0];
+    uint8_t line_color[4];    // +0xC0  r, g, b, a
+};
+static_assert(offsetof(UvUnwrapDialog, line_color) == 0xC0);
+constexpr int uv_unwrap_dialog_panel_index = (0x47C - 0x444) / 4;
+// UV Unwrap's drag mode while its key is held
+enum UvUnwrapDragMode : int
+{
+    UV_UNWRAP_DRAG_SELECT = 0,
+    UV_UNWRAP_DRAG_SELECT_ADD = 1,    // Ctrl
+    UV_UNWRAP_DRAG_SELECT_REMOVE = 2, // Alt
+    UV_UNWRAP_DRAG_MOVE = 3,
+    UV_UNWRAP_DRAG_ROTATE = 4,
+    UV_UNWRAP_DRAG_SCALE = 5,
+};
+static auto& uv_unwrap_vertices = addr_as_ref<VArray<UvUnwrapVertex*>>(0x006CA558);
+static auto& uv_unwrap_drag_mode = addr_as_ref<int>(0x006CA618); // UvUnwrapDragMode
+static auto& uv_unwrap_pivot_u = addr_as_ref<float>(0x006CA5B0);
+static auto& uv_unwrap_pivot_v = addr_as_ref<float>(0x006CA5B4);
+// 1 / the unwrapped face's texture width and height
+static auto& uv_unwrap_texel_u = addr_as_ref<float>(0x006CA584);
+static auto& uv_unwrap_texel_v = addr_as_ref<float>(0x006CA5D8);
+// The Rotation Increment list's degrees and its selection
+static auto& uv_unwrap_rotate_steps = addr_as_ref<float[8]>(0x0057AA68);
+static auto& uv_unwrap_rotate_step_index = addr_as_ref<int>(0x0057AA8C);
+// Set while a button pressed in the view is down
+static auto& uv_unwrap_dragging = addr_as_ref<bool>(0x006CA622);
+// Set from a move, rotate or scale's first step until its key comes up
+static auto& uv_unwrap_transforming = addr_as_ref<bool>(0x006CA621);
+// Non-zero in Decal UVs mode
+static auto& uv_unwrap_decal_mode = addr_as_ref<int>(0x006CA61C);
+// The view: UV at its top left, UV per pixel, and the center and extent FUN_00473ab0 frames it from
+static auto& uv_unwrap_view_u0 = addr_as_ref<float>(0x006CA578);
+static auto& uv_unwrap_view_v0 = addr_as_ref<float>(0x006CA57C);
+static auto& uv_unwrap_view_du = addr_as_ref<float>(0x006CA5F0);
+static auto& uv_unwrap_view_dv = addr_as_ref<float>(0x006CA5F4);
+static auto& uv_unwrap_view_center_u = addr_as_ref<float>(0x006CA600);
+static auto& uv_unwrap_view_center_v = addr_as_ref<float>(0x006CA604);
+static auto& uv_unwrap_view_extent = addr_as_ref<float>(0x006CA52C);
+// FUN_004741b0: selects a corner, and its vertex in its brush's vertex selection
+static auto& uv_unwrap_select = addr_as_ref<void __cdecl(UvUnwrapVertex* vertex)>(0x004741B0);
+// UV Unwrap's own undo: FUN_004757e0 opens a step from the selected corners' UVs, FUN_00475900 records what they
+// became (by selection order, so the selection must not change in between)
+inline void uv_unwrap_push_undo(UvUnwrapDialog* dialog)
+{
+    AddrCaller{0x004757E0}.this_call(dialog);
+}
+inline void uv_unwrap_record_undo(UvUnwrapDialog* dialog)
+{
+    AddrCaller{0x00475900}.this_call(dialog);
+}
+// FUN_00474e70: pushes the unwrapped faces' UVs to the level geometry
+inline void uv_unwrap_commit(UvUnwrapDialog* dialog)
+{
+    AddrCaller{0x00474E70}.this_call(dialog);
+}
+// FUN_00473ab0: lays the view out again from its center and extent
+inline void uv_unwrap_layout(UvUnwrapDialog* dialog)
+{
+    AddrCaller{0x00473AB0}.this_call(dialog);
+}
+// 2D line in the current viewport, with the mode at gr_line_2d_mode
+static auto& gr_line_2d = addr_as_ref<void __cdecl(float x1, float y1, float x2, float y2, uint32_t mode)>(0x004B9EF0);
+static auto& gr_line_2d_mode = addr_as_ref<uint32_t>(0x0147D688);
+
+// ─── Particles ───────────────────────────────────────────────────────────────
+
+enum EditorParticleEmitterFlags : int
+{
+    EPEF_CONTINUOUS = 0x4,
+};
+// Partial runtime emitter, the layout of RF's ParticleEmitter (0x00481E10 takes it from the pool)
+struct EditorParticleEmitter
+{
+    char _pad_00[0x30];
+    float min_spawn_delay; // +0x30
+    float max_spawn_delay; // +0x34
+    int emitter_flags;     // +0x38 EditorParticleEmitterFlags
+    char _pad_3c[0x154 - 0x3C];
+    int spawn_timer;       // +0x154 ms timestamp, negative while unset
+};
+static_assert(offsetof(EditorParticleEmitter, min_spawn_delay) == 0x30);
+static_assert(offsetof(EditorParticleEmitter, max_spawn_delay) == 0x34);
+static_assert(offsetof(EditorParticleEmitter, emitter_flags) == 0x38);
+static_assert(offsetof(EditorParticleEmitter, spawn_timer) == 0x154);
+// Partial particle, the layout of RF's Particle
+struct EditorParticle
+{
+    char _pad_00[0x18];
+    Vector3 velocity; // +0x18
+};
+static_assert(offsetof(EditorParticle, velocity) == 0x18);
 
 // ─── Render Params ───────────────────────────────────────────────────────────
 
@@ -683,6 +960,25 @@ struct EditorTreeCtrl : CWnd
 };
 static_assert(sizeof(EditorTreeCtrl) == sizeof(CWnd));
 
+// The object mode side panel, a CFormView (ctor 0x004429A0) whose tree lists the object classes.
+constexpr int editor_object_panel_template = 173;
+constexpr int editor_object_tree_id = 1015;
+
+struct EditorObjectPanel
+{
+    uint8_t pad_00[0x5C];
+    EditorTreeCtrl tree; // +0x5C
+
+    // The tree's NM_DBLCLK handler (0x004431C0): creates an object of the class under the cursor at the
+    // active viewport's camera through CDedLevel::add_object (0x004146B0), which records its undo.
+    void create_object_under_cursor()
+    {
+        LRESULT result = 0;
+        AddrCaller{0x004431C0}.this_call(this, static_cast<void*>(nullptr), &result);
+    }
+};
+static_assert(offsetof(EditorObjectPanel, tree) == 0x5C);
+
 // ─── Viewport ────────────────────────────────────────────────────────────────
 
 // Editor view data — accessed from the active viewport at +0x54
@@ -702,11 +998,15 @@ struct EditorViewport
     int view_type;                      // +0x4C  editor_view_type_perspective for the 3D view
     int view_index;                     // +0x50  its slot in the main frame, as painting_view_index
     EditorViewData* view_data;          // +0x54
-    uint8_t pad_58[0x6C - 0x58];        // +0x58
+    uint8_t pad_58[0x60 - 0x58];        // +0x58
+    // Latched by the button handlers; while any is set RED's idle loop warps the cursor back to its anchor
+    uint8_t rbutton_held;               // +0x60
+    uint8_t mbutton_held;               // +0x61
+    uint8_t lbutton_held;               // +0x62
+    uint8_t pad_63[0x6C - 0x63];        // +0x63
     uint8_t needs_repaint;              // +0x6C  repainted from RED's idle loop while set
 
-    // The message map's (0x0055C170) WM_LBUTTONDOWN, WM_LBUTTONUP and WM_LBUTTONDBLCLK handlers,
-    // thiscall (UINT flags, CPoint point)
+    // The message map's (0x0055C170) mouse button handlers, thiscall (UINT flags, CPoint point)
     void on_lbutton_down(UINT flags, int x, int y)
     {
         AddrCaller{0x0047CF20}.this_call(this, flags, x, y);
@@ -722,6 +1022,36 @@ struct EditorViewport
         AddrCaller{0x0047D590}.this_call(this, flags, x, y);
     }
 
+    void on_rbutton_down(UINT flags, int x, int y)
+    {
+        AddrCaller{0x0047D2A0}.this_call(this, flags, x, y);
+    }
+
+    void on_rbutton_up(UINT flags, int x, int y)
+    {
+        AddrCaller{0x0047D420}.this_call(this, flags, x, y);
+    }
+
+    void on_rbutton_dblclk(UINT flags, int x, int y)
+    {
+        AddrCaller{0x0047D570}.this_call(this, flags, x, y);
+    }
+
+    void on_mbutton_down(UINT flags, int x, int y)
+    {
+        AddrCaller{0x0047D1F0}.this_call(this, flags, x, y);
+    }
+
+    void on_mbutton_up(UINT flags, int x, int y)
+    {
+        AddrCaller{0x0047D260}.this_call(this, flags, x, y);
+    }
+
+    void on_mbutton_dblclk(UINT flags, int x, int y)
+    {
+        AddrCaller{0x0047D5B0}.this_call(this, flags, x, y);
+    }
+
     // FUN_0047dae0: sets up gr for the view (window, viewport, camera), as the RBUTTONUP handler does
     // before it casts a ray (0x0047d476)
     void setup_gr(char begin_frame)
@@ -732,17 +1062,39 @@ struct EditorViewport
 static_assert(offsetof(EditorViewport, view_type) == 0x4C);
 static_assert(offsetof(EditorViewport, view_index) == 0x50);
 static_assert(offsetof(EditorViewport, view_data) == 0x54);
+static_assert(offsetof(EditorViewport, rbutton_held) == 0x60);
+static_assert(offsetof(EditorViewport, mbutton_held) == 0x61);
+static_assert(offsetof(EditorViewport, lbutton_held) == 0x62);
 static_assert(offsetof(EditorViewport, needs_repaint) == 0x6C);
 
 constexpr int editor_view_type_perspective = 0;
 
 static auto& get_active_viewport = addr_as_ref<EditorViewport* __cdecl()>(0x004835B0);
 
+// Where the object tree puts a new object: the active viewport's camera, else the origin.
+inline void editor_new_object_pose(Vector3& pos, Matrix3& orient)
+{
+    pos = {};
+    orient = identity_orient;
+    const EditorViewport* viewport = get_active_viewport();
+    if (viewport && viewport->view_data) {
+        pos = viewport->view_data->camera_pos;
+        orient = viewport->view_data->camera_orient;
+    }
+}
+
 // The main frame's four views
 constexpr int editor_num_views = 4;
 inline void* editor_view_at(int i)
 {
     return g_main_frame && i >= 0 && i < editor_num_views ? g_main_frame->views[i] : nullptr;
+}
+inline bool editor_is_view(const void* view)
+{
+    for (int i = 0; view && i < editor_num_views; i++) {
+        if (editor_view_at(i) == view) return true;
+    }
+    return false;
 }
 inline void editor_view_mark_repaint(void* view)
 {
@@ -755,6 +1107,20 @@ inline void editor_views_mark_repaint_all()
     for (int i = 0; i < editor_num_views; i++) {
         editor_view_mark_repaint(editor_view_at(i));
     }
+}
+inline HWND editor_view_hwnd(void* view)
+{
+    return view ? WndToHandle(static_cast<CWnd*>(view)) : nullptr;
+}
+// The visible view whose window is under a screen point.
+inline void* editor_view_under_cursor(POINT cursor)
+{
+    const HWND over = WindowFromPoint(cursor);
+    for (int i = 0; over && i < editor_num_views; i++) {
+        void* view = editor_view_at(i);
+        if (view && editor_view_hwnd(view) == over && IsWindowVisible(over)) return view;
+    }
+    return nullptr;
 }
 
 // ─── Editor GrVertex ─────────────────────────────────────────────────────────
@@ -836,7 +1202,8 @@ static auto& gr_batch_open = addr_as_ref<bool>(0x0183930d);
 static auto& gr_d3d_render_mode_cache = addr_as_ref<int>(0x01838dc0);
 
 // Render mode and polygon submission
-static auto& gr_set_mode = addr_as_ref<void(int)>(0x004BA730);
+// Clamped to 0..16 into gr_screen; RED's Direct3D 8 backend ignores it (0x004E0450 is a RET), as Direct3D 11 does
+static auto& gr_set_zbias = addr_as_ref<void(int zbias)>(0x004BA730);
 // Fanned from vertex 0; mode as FUN_0047e140 packs it (0x004E8400 hands it to FUN_004e0490).
 static auto& gr_poly_render = addr_as_ref<uint8_t __cdecl(int count, GrVertex** verts, uint32_t tmap_flags,
                                                           uint32_t mode, int override_z, float z)>(0x004CB1C0);
@@ -851,10 +1218,14 @@ constexpr uint32_t tmap_alpha = 0x8;
 constexpr uint32_t gr_mode_color_shift = 5;
 constexpr uint32_t gr_mode_color_mask = 0x1F;
 constexpr uint32_t gr_mode_color_texture = 1;
+constexpr uint32_t gr_mode_blend_shift = 15;
+constexpr uint32_t gr_mode_blend_mask = 0x1F;
+constexpr uint32_t gr_mode_blend_additive = 1;
+constexpr uint32_t gr_mode_blend_alpha_additive = 2;
 // FUN_0047e140's packing of a gr_poly_render mode
 constexpr uint32_t gr_mode(uint32_t tex, uint32_t color, uint32_t alpha, uint32_t blend, uint32_t zbuf, uint32_t fog)
 {
-    return tex | color << gr_mode_color_shift | alpha << 10 | blend << 15 | zbuf << 20 | fog << 25;
+    return tex | color << gr_mode_color_shift | alpha << 10 | blend << gr_mode_blend_shift | zbuf << 20 | fog << 25;
 }
 // clamped texture times vertex colour, full z-buffer
 constexpr uint32_t mode_textured = gr_mode(2, 2, 0, 0, 4, 0);
@@ -864,10 +1235,18 @@ constexpr uint32_t mode_vertex = gr_mode(0, 0, 0, 0, 4, 0);
 // vertex colour and alpha, alpha blended (0x004deda0: SRCALPHA / INVSRCALPHA), z-buffer read without write.
 // RED never culls (0x004ecdae sets D3DCULL_NONE), so each polygon shows from both sides.
 constexpr uint32_t mode_vertex_alpha = gr_mode(0, 0, 0, 3, 1, 0);
+// as mode_vertex_alpha, ignoring the depth buffer: drawn over everything
+constexpr uint32_t mode_overlay = gr_mode(0, 0, 0, 3, 0, 0);
+// The vertex alpha of the translucent guide planes drawn in mode_vertex_alpha: the Terrain Tools mirror lines and
+// View > Draw See-thru Portal Faces
+constexpr uint8_t guide_plane_alpha = 0x20;
 
 // Depth of the pushed instance transforms (0x004edf50 pushes, 0x004ee0a0 pops): nonzero while a mover's
 // is pushed, when the scene lights are kept in its frame too (GrLight::local_vec).
 static auto& gr_transform_stack_depth = addr_as_ref<int>(0x0158f414);
+// The pushed frame the lights are moved into: local = orient (rows) * (world - pos).
+static auto& gr_transform_pos = addr_as_ref<Vector3>(0x0158f2b8);
+static auto& gr_transform_orient = addr_as_ref<Matrix3>(0x0158f2c8);
 
 // Computes clip flags from view-space coords in a GrVertex
 static auto& gr_compute_clip_flags = addr_as_ref<uint32_t(void*)>(0x004c5df0);
@@ -876,8 +1255,14 @@ static auto& gr_compute_clip_flags = addr_as_ref<uint32_t(void*)>(0x004c5df0);
 static auto& ed_cam_pos = addr_as_ref<float[3]>(0x0158ef20);
 static auto& ed_view_mat = addr_as_ref<float[9]>(0x0158ef58); // row-major 3x3
 
-// Billboard camera parameter (used as depth sort / z-bias)
-static auto& gr_cam_param = addr_as_ref<float>(0x014cf7e0);
+struct GRoom;
+struct GSolid;
+// The solid's sky room while View > Draw Sky is on, else null
+static auto& level_sky_room = addr_as_ref<GRoom* __cdecl(GSolid* solid)>(0x00425F60);
+// Clips the room draws that follow to the room's portal bounds; null ends it
+static auto& room_draw_clip_set = addr_as_ref<void __cdecl(GRoom* room)>(0x00424630);
+// Draws the sky room from its eye, then clears depth for the level drawn over it
+static auto& sky_room_draw = addr_as_ref<void __cdecl(GSolid* solid, GRoom* sky_room, int unk)>(0x00424C90);
 
 // ─── Lighting ────────────────────────────────────────────────────────────────
 
@@ -900,7 +1285,10 @@ struct GrLight
     Vector3 vec2; // +0x18  tube end
     char _pad_24[0x3C - 0x24];
     float rad_2; // +0x3C  radius
-    char _pad_40[0x50 - 0x40];
+    float r;     // +0x40
+    float g;     // +0x44
+    float b;     // +0x48
+    char _pad_4C[0x50 - 0x4C];
     int shadow_condition; // +0x50  0 casts no shadows
     char _pad_54[0x5C - 0x54];
     Vector3 local_vec;  // +0x5C  vec in the pushed instance frame (room_lights_to_local)
@@ -912,6 +1300,9 @@ static_assert(offsetof(GrLight, type) == 0x08);
 static_assert(offsetof(GrLight, vec) == 0x0C);
 static_assert(offsetof(GrLight, vec2) == 0x18);
 static_assert(offsetof(GrLight, rad_2) == 0x3C);
+static_assert(offsetof(GrLight, r) == 0x40);
+static_assert(offsetof(GrLight, g) == 0x44);
+static_assert(offsetof(GrLight, b) == 0x48);
 static_assert(offsetof(GrLight, shadow_condition) == 0x50);
 static_assert(offsetof(GrLight, local_vec) == 0x5C);
 static_assert(offsetof(GrLight, local_vec2) == 0x68);
@@ -925,10 +1316,129 @@ static auto& light_free = addr_as_ref<void __cdecl(int light_handle, int unk)>(0
 static auto& light_accum_at_texel =
     addr_as_ref<void __cdecl(float* r, float* g, float* b, const Vector3* pos, const Vector3* normal,
                              void* masks, int texel_index, const void* smooth_flag)>(0x004894C0);
+// Length of the per-face light list FUN_00488810 gathers and light_accum_at_texel walks.
+static auto& face_light_count = addr_as_ref<int>(0x007432ec);
 // Copies out the level's ambient light color.
 static auto& light_get_ambient = addr_as_ref<void __cdecl(float* r, float* g, float* b)>(0x00487920);
 // RED's shared read-only 0.5f, which FUN_004ac470 halves the ambient seed by.
 static auto& red_const_half = addr_as_ref<const float>(0x00554720);
+
+// Scene light capacity of lightmap.cpp's relocated light pool and per-face light list.
+constexpr int max_scene_lights = 8192;
+// The per-face light list room_setup gathers face_light_count entries into; lightmap.cpp relocates it from the stock
+// 0x006F9FF8 so that it can hold every scene light.
+extern rf::gr::Light* face_light_list[max_scene_lights];
+
+// ─── Shared Direct3D 11 core ─────────────────────────────────────────────────
+// RED's renderer state and functions under the game's rf:: names (game_patch/rf), for the core the D3D11 renderer
+// shares with the game. Where an editor declaration above already names the address, the rf:: name refers to it.
+
+namespace rf
+{
+    static auto& frametime_total_milliseconds = addr_as_ref<int>(0x0171C274);
+    static auto& identity_matrix = addr_as_ref<Matrix3>(0x0147B9B0);
+    static auto& zero_vector = addr_as_ref<Vector3>(0x0147BA10);
+
+    static auto& g_decal_list = addr_as_ref<GDecal*>(0x010A6BEC);
+    static auto& geo_cache_num_rooms = ::geo_cache_num_rooms;
+    static auto& gr_decal_self_illuminated_mode = addr_as_ref<gr::Mode>(0x01621FA0);
+    static auto& gr_use_far_clip = addr_as_ref<bool>(0x0158F3F5);
+    static auto& gr_far_clip_dist_scaled = addr_as_ref<float>(0x0158F3FC);
+
+    // The sky room's eye, set by sky_room_draw
+    static auto& sky_room_center = addr_as_ref<Vector3>(0x0059E010);
+    static auto& sky_room_offset = addr_as_ref<Vector3>(0x0058A000);
+    static auto& sky_room_orient = addr_as_ref<Matrix3*>(0x006C9A6C);
+    // Set while sky_room_draw draws; the editor also sets it around a .vfx draw so the renderer takes its
+    // transparency path
+    static auto& sky_room_pass_active = vfx_render_transparent;
+
+    static auto& vif_min_lod = addr_as_ref<int>(0x01ABC054);
+    static auto& vif_lod_full_detail = addr_as_ref<bool>(0x01ABC058);
+
+    static auto& num_particles_rendered_this_frame = addr_as_ref<int>(0x006EEB64);
+    static auto& particle_draw_bbox = addr_as_ref<bool>(0x006EEB51);
+}
+
+namespace rf::gr
+{
+    static auto& screen = reinterpret_cast<Screen&>(red::gr_screen);
+    static auto& view_pos = reinterpret_cast<Vector3&>(ed_cam_pos);
+    static auto& view_matrix = reinterpret_cast<Matrix3&>(ed_view_mat);
+    static auto& eye_pos = addr_as_ref<Vector3>(0x0158EF10);
+    static auto& eye_matrix = addr_as_ref<Matrix3>(0x0158F290);
+    static auto& matrix_scale = addr_as_ref<Vector3>(0x0158F3D8);
+    static auto& perspective_projection = gr_perspective;
+    static auto& show_lightmaps = view_lightmaps_only;
+
+    static auto& solid_mode = addr_as_ref<Mode>(0x01611F88);
+    static auto& solid_alpha_mode = addr_as_ref<Mode>(0x01611F8C);
+    static auto& decal_mode = addr_as_ref<Mode>(0x01611F78);
+    static auto& decal_tiling_u_mode = addr_as_ref<Mode>(0x01611F7C);
+    static auto& decal_tiling_v_mode = addr_as_ref<Mode>(0x01621F9C);
+    // RED's own flag (0x0057DAB4) is read only by the stock draws the renderer replaces (0x00503286 in 0x00502040,
+    // 0x0050502F in 0x005040B0); View > Show Decals sets this one
+    inline bool decals_enabled = true;
+    static auto& bitmap_3d_mode_no_z = addr_as_ref<Mode>(0x014CF7E0);
+    static auto& glow_3d_bitmap_mode = addr_as_ref<Mode>(0x0147D6B8);
+    // The stock modes the .vfx renderer picks between
+    static auto& vfx_untextured_mode = addr_as_ref<Mode>(0x014CF740);
+    static auto& vfx_flag8_mode = addr_as_ref<Mode>(0x0147D698);
+    static auto& vfx_additive_mode = addr_as_ref<Mode>(0x0147D240);
+    static auto& vfx_opaque_mode = addr_as_ref<Mode>(0x0147D674);
+    static auto& vfx_crossfade_alpha_mode = addr_as_ref<Mode>(0x014CF7EC);
+
+    static auto& cull_bounding_box = addr_as_ref<bool(const Vector3& mn, const Vector3& mx)>(0x004C6220);
+    static auto& world_poly = addr_as_ref<bool(int bm_handle, int n_verts, const Vector3* verts, const Vector2* uvs,
+                                               Mode mode, const Color& color)>(0x004CC930);
+    static auto& start_instance = addr_as_ref<void(const Vector3& pos, const Matrix3& orient)>(0x004C59D0);
+    static auto& stop_instance = addr_as_ref<void()>(0x004C59F0);
+    // Distance from the eye scaled by the projection, as LOD selection compares it
+    static auto& get_apparent_distance_from_camera = addr_as_ref<float(const Vector3& pos)>(0x004C5DC0);
+
+    static auto& light_get_ambient = ::light_get_ambient;
+    static auto& light_filter_set_solid =
+        addr_as_ref<int(GSolid* s, bool include_dynamic, bool include_static)>(0x004889E0);
+    static auto& light_filter_reset = room_cleanup;
+    static auto& light_rotate_all = room_lights_to_local;
+    static auto& light_apply = addr_as_ref<void(ubyte* r, ubyte* g, ubyte* b, char use_ambient, const Vector3* pos,
+                                                const Vector3* normal, float scale)>(0x00489C00);
+    static auto& light_apply_specular = addr_as_ref<bool(const Vector3* pos, const Vector3* normal, ubyte* r, ubyte* g,
+                                                         ubyte* b, float level, float power, char allow_restricted)>(
+        0x00489DC0);
+    static auto& apply_chrome_mapping =
+        addr_as_ref<void(float* u, float* v, const Vector3* pos, const Vector3* normal)>(0x0048A370);
+    static auto& num_relevant_lights = face_light_count;
+    static auto& relevant_lights = face_light_list;
+}
+
+namespace rf::gr::d3d
+{
+    // Power of 2 texture enforcement
+    static auto& p2t = addr_as_ref<int>(0x0183B948);
+}
+
+namespace rf::bm
+{
+    // Slot count handle_to_index reduces a non-user handle against; the name hash has one bucket more.
+    static auto& num_cache_slots = addr_as_ref<int>(0x0057DBB0);
+
+    static auto& load = bm_load;
+    static auto& get_filename = bm_get_filename;
+    static auto& get_dimensions = bm_get_dimensions;
+    static auto& get_mipmap_info = bm_get_mipmap_info;
+    static auto& has_alpha = bm_has_alpha;
+    static auto& release = bm_release;
+    static auto& lock = reinterpret_cast<Format (&)(int bm_handle, ubyte** data, ubyte** pal)>(bm_lock);
+    static auto& unlock = bm_unlock;
+    static auto& handle_to_index = addr_as_ref<int(int bm_handle)>(0x004BB430);
+    // The cache slot of a bitmap, for an animation its current frame's
+    static auto& get_cache_slot = addr_as_ref<int(int bm_handle)>(0x004BB990);
+    static auto& get_type = addr_as_ref<Type(int bm_handle)>(0x004BB8A0);
+    static auto& get_format = addr_as_ref<Format(int bm_handle)>(0x004BCC40);
+    // The grey checker bm_load gives a missing file (0x004BC9C0): 32x32 888 pixels, allocated by bmpman init
+    static auto& missing_placeholder_pixels = addr_as_ref<const ubyte*>(0x014EA31C);
+}
 
 // ─── Virtual file system ─────────────────────────────────────────────────────
 
@@ -997,9 +1507,39 @@ constexpr int editor_packfile_entry_max = 0x34BC;
 
 // ─── Misc ────────────────────────────────────────────────────────────────────
 
+// FUN_004d1a50: sets a ms timestamp to elapse `ms` from now
+inline void timestamp_set(int* timestamp, int ms)
+{
+    AddrCaller{0x004D1A50}.this_call(timestamp, ms);
+}
+
 struct GFace;
 // The CSG's global face list (the head, then the count, as GSolid::face_list_head)
 static auto& csg_face_list_head = addr_as_ref<GFace*>(0x01131388);
+
+// A line the views draw: added by Check for Holes (0x0043c420) and out-of-level marks, freed by Remove check lines
+// (0x0043c900)
+struct HoleLine
+{
+    std::uint8_t r;       // +0x00
+    std::uint8_t g;       // +0x01
+    std::uint8_t b;       // +0x02
+    std::uint8_t _pad_03; // +0x03
+    Vector3 from;         // +0x04
+    Vector3 to;           // +0x10
+};
+static_assert(sizeof(HoleLine) == 0x1C);
+static_assert(offsetof(HoleLine, from) == 0x04);
+static_assert(offsetof(HoleLine, to) == 0x10);
+static auto& hole_lines = addr_as_ref<VArray<HoleLine*>>(0x0112d2b0);
+// The point lookup's (0x0048c0c0) recasts, logged by Build Geometry as "Rays recast"
+static auto& point_lookup_recasts = addr_as_ref<int>(0x00e13b94);
+// Level > Rebuild with hole lines (toggled at 0x0044a350)
+static auto& build_draws_hole_lines = addr_as_ref<bool>(0x006ca636);
+
+// The Brush Clip dialog while it is open: viewport clicks place clip points, and the brush transform finalize
+// (0x00427390) leaves geometry_needs_rebuild alone.
+static auto& brush_clip_dialog = addr_as_ref<void*>(0x006C9DD8);
 
 static auto& generate_uid = addr_as_ref<int()>(0x00484230);
 // True if uid is already taken. Scans master objects, brush list, undo/redo stacks.
@@ -1009,6 +1549,9 @@ static auto& file_scan_path = addr_as_ref<void(int slot_index)>(0x004CF800);
 static auto& rf_alloc = addr_as_ref<void* __cdecl(size_t size)>(0x0052ee74);
 static auto& log_dlg_append = addr_as_ref<int __cdecl(void*, const char*, ...)>(0x00444980);
 static auto& log_dlg_clear = addr_as_ref<void __fastcall(void* self)>(0x00444940);
+// What Create Level Packfile (FUN_004482c0) gathers and FUN_0044cb10 writes. FUN_00438640 adds a name
+// unless it is already listed.
+static auto& vpp_file_list = addr_as_ref<VArray<VString>>(0x006C9BA8);
 // Whether segment a-b crosses segment (x1,y1)-(x2,y2) in the xy plane, ends included; parallel
 // segments never do.
 static auto& segments_intersect_2d =

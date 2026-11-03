@@ -8,9 +8,11 @@
 #include <patch_common/MemUtils.h>
 #include <xlog/xlog.h>
 #include "geometry.h"
+#include "gizmo.h"
 #include "level.h"
 #include "mfc_types.h"
 #include "resources.h"
+#include "texture_mode.h"
 
 
 // Recompute a GSolid's bounding box from its face bounding boxes.
@@ -153,6 +155,12 @@ static void mirror_object(DedObject* obj, int axis)
         orient[i * 3 + axis] = -orient[i * 3 + axis];
     }
 
+    // A reflection across X or Z reverses the box yaw's sense.
+    if (obj->type == DedObjectType::DED_DIRECTIONAL_LIGHT && axis != 1) {
+        auto* light = static_cast<DedDirectionalLight*>(obj);
+        light->box_yaw = alpine_dir_light::normalize_degrees(-light->box_yaw);
+    }
+
     // For lights, sync the updated position/orient to the level_light object
     // so lightmap calculation uses the new values
     if (obj->type == DedObjectType::DED_LIGHT) {
@@ -160,19 +168,10 @@ static void mirror_object(DedObject* obj, int axis)
     }
 }
 
-// Collect selected brushes from the level's brush list.
-static std::vector<BrushNode*> collect_selected_brushes(CDedLevel* level)
+std::vector<BrushNode*> collect_selected_brushes(CDedLevel* level)
 {
-    std::vector<BrushNode*> selected;
-    BrushNode* head = level->brush_list;
-    if (!head) return selected;
-    BrushNode* b = head;
-    do {
-        if (b->state == BRUSH_STATE_SELECTED && b->geometry) {
-            selected.push_back(b);
-        }
-        b = b->next;
-    } while (b != head);
+    std::vector<BrushNode*> selected = level->selected_brushes();
+    std::erase_if(selected, [](const BrushNode* b) { return !b->geometry; });
     return selected;
 }
 
@@ -1248,25 +1247,29 @@ void handle_vertex_bridge()
 }
 
 // ============================================================================
+// Vertex mode: Weld
+// ============================================================================
+
+// Stock weld frees all but the last selected vertex yet leaves them selected, so the next move dereferences them
+void __fastcall solid_weld_vertices_hooked(GSolid* solid, void* edx_unused);
+FunHook<decltype(solid_weld_vertices_hooked)> solid_weld_vertices_hook{0x0048FA60, solid_weld_vertices_hooked};
+void __fastcall solid_weld_vertices_hooked(GSolid* solid, void* edx_unused)
+{
+    auto& sel = solid->vertex_selection;
+    const bool welds = sel.size >= 2;
+    solid_weld_vertices_hook.call_target(solid, edx_unused);
+    if (welds) {
+        sel.data_ptr[0] = sel.data_ptr[sel.size - 1];
+        sel.size = 1;
+    }
+}
+
+// ============================================================================
 // Brush mode: Fuse / Carve
 // ============================================================================
 
-constexpr int undo_delete_brushes = 4;
-constexpr int undo_modify_brushes = 10;
-
 // Fuse records a modify snapshot and then a separate delete of the absorbed brushes. The delete
-// entry carries this block in raw_blocks so undo/redo can treat the pair as one step. Stock
-// move/rotate code indexes raw_blocks of whatever entry is on top, reading +0x00 and writing
-// +0x30..+0x5F of its 0x60 byte move records, so the link is shaped like one and keeps its fields
-// clear of those ranges. The spare array slots are nulled so any further index faults as in stock.
-struct FuseUndoLink
-{
-    char move_record_pos[0x0C];
-    uint32_t magic;
-    UndoEntry* snapshot;
-    char move_record_rest[0x4C];
-};
-static_assert(sizeof(FuseUndoLink) == 0x60);
+// entry carries an undo link to the snapshot so undo/redo can treat the pair as one step.
 constexpr uint32_t fuse_undo_link_magic = 0x45535546;
 
 static UndoEntry* fuse_linked_snapshot(UndoEntry* entry)
@@ -1274,8 +1277,7 @@ static UndoEntry* fuse_linked_snapshot(UndoEntry* entry)
     if (!entry || entry->type != undo_delete_brushes || entry->raw_blocks.size != 1) {
         return nullptr;
     }
-    auto* link = static_cast<FuseUndoLink*>(entry->raw_blocks.data_ptr[0]);
-    return link && link->magic == fuse_undo_link_magic ? link->snapshot : nullptr;
+    return reinterpret_cast<UndoEntry*>(undo_link_value(*entry, 0, fuse_undo_link_magic));
 }
 
 // The boolean hands every face taken from the second solid to this texturer. Mode 4 stamps the
@@ -1313,16 +1315,7 @@ void __fastcall brush_fuse_hooked(CDedLevel* level, void* edx_unused)
         snapshot->type != undo_modify_brushes || deletion->raw_blocks.size != 0) {
         return;
     }
-    auto* link = static_cast<FuseUndoLink*>(rf_alloc(sizeof(FuseUndoLink)));
-    if (!link) {
-        return;
-    }
-    std::memset(link, 0, sizeof(FuseUndoLink));
-    link->magic = fuse_undo_link_magic;
-    link->snapshot = snapshot;
-    auto& blocks = deletion->raw_blocks;
-    blocks.push_back(link);
-    std::fill(blocks.data_ptr + blocks.size, blocks.data_ptr + blocks.capacity, nullptr);
+    undo_link_append(*deletion, fuse_undo_link_magic, reinterpret_cast<uintptr_t>(snapshot));
 }
 
 void __fastcall brush_carve_hooked(CDedLevel* level, void* edx_unused);
@@ -1337,8 +1330,13 @@ void __fastcall level_undo_hooked(CDedLevel* level, void* edx_unused);
 FunHook<decltype(level_undo_hooked)> level_undo_hook{0x0043D210, level_undo_hooked};
 void __fastcall level_undo_hooked(CDedLevel* level, void* edx_unused)
 {
-    UndoEntry* snapshot = fuse_linked_snapshot(undo_stack_top(level->undo_stack));
+    UndoEntry* undone = undo_stack_top(level->undo_stack);
+    UndoEntry* snapshot = fuse_linked_snapshot(undone);
     level_undo_hook.call_target(level, edx_unused);
+    if (undone && undo_stack_top(level->redo_stack) == undone) {
+        gizmo_undo_entry_applied(undone, true);
+        texture_undo_entry_applied(*level, *undone);
+    }
     if (snapshot && undo_stack_top(level->undo_stack) == snapshot) {
         level_undo_hook.call_target(level, edx_unused);
     }
@@ -1350,6 +1348,10 @@ void __fastcall level_redo_hooked(CDedLevel* level, void* edx_unused)
 {
     UndoEntry* redone = undo_stack_top(level->redo_stack);
     level_redo_hook.call_target(level, edx_unused);
+    if (redone && undo_stack_top(level->undo_stack) == redone) {
+        gizmo_undo_entry_applied(redone, false);
+        texture_undo_entry_applied(*level, *redone);
+    }
     if (redone && fuse_linked_snapshot(undo_stack_top(level->redo_stack)) == redone) {
         level_redo_hook.call_target(level, edx_unused);
     }
@@ -1361,4 +1363,5 @@ void ApplyGeometryPatches()
     brush_carve_hook.install();
     level_undo_hook.install();
     level_redo_hook.install();
+    solid_weld_vertices_hook.install();
 }

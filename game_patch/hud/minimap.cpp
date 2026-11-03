@@ -30,6 +30,7 @@
 #include "../multi/jetpack.h"
 #include "../multi/multi.h"
 #include "../multi/salvage.h"
+#include "../multi/scavenger.h"
 #include "../multi/vehicles/vehicle.h"
 #include "../multi/vehicles/vehicle_render.h"
 #include "../multi/vehicles/vehicle_markers.h"
@@ -460,8 +461,12 @@ namespace
 
     void draw_salvage_flag(const View& view)
     {
-        if (!gt_is_salvage()) {
+        if (!salvage_framework_active()) {
             return;
+        }
+        rf::Vector3 zone_pos{};
+        if (scavenger_get_zone(&zone_pos)) {
+            draw_objective(view, zone_pos, kScavZoneColorIdle);
         }
         const SalFlagState state = salvage_get_state();
         rf::Vector3 pos{};

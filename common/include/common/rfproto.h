@@ -178,6 +178,7 @@ enum RF_GameType
     RF_GT_WO = 0x0B,
     RF_GT_GG = 0x0C,
     RF_GT_SAL = 0x0D,
+    RF_GT_SCAV = 0x0E,
     // Sentinel: must always be the last entry. Keep in sync with rf::NetGameType.
     RF_GT_UNK
 };
@@ -750,18 +751,23 @@ struct RF_ItemCreatePacket
     struct RF_GamePacketHeader header; // RF_GPT_ITEM_CREATE
 #ifdef PSEUDOCODE
     char script_name[];                // Zero-terminated string
-    uint8_t unknown;                   // Ie. 00
-    uint32_t item_type;                // Item type ID (entry number in items.tbl)
-    uint32_t respawn_time;             // Item respawn time in ms (0xFFFFFFFF if item is temporary)
-    uint32_t count;                    // $Count or $Count Multi from items.tbl (not value from RFL)
-    uint32_t item_handle;              // Item object ID
-    uint16_t item_bit;                 // Item index in RF_ItemUpdatePacket, 0xFFFF if item is temporary (created after death)
-    uint8_t unknown2;                  // 0x75 - enabled, 0x68 - not enabled
-    struct RF_Vector pos;
-    struct RF_Matrix rot_matrix;
+    struct RF_ItemCreatePacketRest rest;
 #else
     char rest[];
 #endif
+};
+
+struct RF_ItemCreatePacketRest
+{
+    uint8_t unknown;              // Ie. 00
+    uint32_t item_type;           // Item type ID (entry number in items.tbl)
+    uint32_t respawn_time;        // Item respawn time in ms (0xFFFFFFFF if item is temporary)
+    uint32_t count;               // $Count or $Count Multi from items.tbl (not value from RFL)
+    uint32_t item_handle;         // Item object ID
+    uint16_t item_bit;            // Item index in RF_ItemUpdatePacket, 0xFFFF if item is temporary (created after death)
+    uint8_t unknown2;             // 0x75 - enabled, 0x68 - not enabled
+    struct RF_Vector pos;
+    struct RF_Matrix rot_matrix;
 };
 
 struct RF_ReloadPacket

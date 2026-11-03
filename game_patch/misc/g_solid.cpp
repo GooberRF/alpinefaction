@@ -26,11 +26,13 @@
 #include "../os/console.h"
 #include "../os/os.h"
 #include "../bmpman/bmpman.h"
-#include "../bmpman/fmt_conv_templates.h"
+#include <common/bitmap/fmt_conv_templates.h>
 #include "../rf/gr/gr_light.h"
+#include "../rf/math/ix.h"
 #include "destruction.h"
 #include "level.h"
 #include "alpine_terrain.h"
+#include "../graphics/af_lightmap.h"
 
 constexpr auto reference_fps = 30.0f;
 constexpr auto reference_frametime = 1.0f / reference_fps;
@@ -337,10 +339,14 @@ CodeInjection GSolid_get_ambient_color_from_lightmap_patch{
     },
 };
 
-// Terrain faces have no surface, so stock returns white ("no lightmap") for anything on them.
+// Terrain and overflow-charted faces have no surface, so stock returns white ("no lightmap") for anything on them.
 FunHook<rf::Color* __fastcall(rf::GSolid*, int, rf::Color*, rf::GFace*, rf::Vector3*)> GSolid_get_ambient_color_hook{
     0x004E5C60,
     [](rf::GSolid* solid, int edx, rf::Color* out, rf::GFace* face, rf::Vector3* pos) FASTCALL_LAMBDA -> rf::Color* {
+        // Capped below 255 so the D3D11 mesh path never reads it as "no lightmap"
+        const auto to_byte = [](float v) {
+            return static_cast<rf::ubyte>(std::clamp(v * 255.0f + 0.5f, 0.0f, 254.0f));
+        };
         if (face && pos && face->attributes.surface_index < 0) {
             if (const AlpineTerrainRoomRef* ref = alpine_terrain_find_room(face->which_room)) {
                 const AlpineTerrain& t = alpine_terrain_get_all()[ref->terrain];
@@ -349,10 +355,11 @@ FunHook<rf::Color* __fastcall(rf::GSolid*, int, rf::Color*, rf::GFace*, rf::Vect
                 float texel[3];
                 const auto kind = alpine_terrain_face_kind(alpine_terrain_grid(t), *face);
                 alpine_terrain_sample_light(ref->terrain, kind, p, n, texel);
-                // Capped below 255 so the D3D11 mesh path never reads it as "no lightmap"
-                auto to_byte = [](float v) {
-                    return static_cast<rf::ubyte>(std::clamp(v * 255.0f + 0.5f, 0.0f, 254.0f));
-                };
+                out->set(to_byte(texel[0]), to_byte(texel[1]), to_byte(texel[2]), 255);
+                return out;
+            }
+            float texel[3];
+            if (af_lightmap_overflow_light(solid, face, texel)) {
                 out->set(to_byte(texel[0]), to_byte(texel[1]), to_byte(texel[2]), 255);
                 return out;
             }
@@ -1137,6 +1144,7 @@ static void face_list_shadow_reset()
 FunHook<void __fastcall(GFaceListRaw*, int, rf::GFace*)> solid_face_list_add_hook{
     0x004D3160,
     [](GFaceListRaw* list, int edx, rf::GFace* face) FASTCALL_LAMBDA {
+        af_lightmap_overflow_capture_face(face);
         if (!g_face_list_shadow_active) {
             solid_face_list_add_hook.call_target(list, edx, face);
             return;
@@ -1148,6 +1156,7 @@ FunHook<void __fastcall(GFaceListRaw*, int, rf::GFace*)> solid_face_list_add_hoo
 FunHook<void __fastcall(GFaceListRaw*, int, rf::GFace*)> solid_face_list_remove_hook{
     0x004CE2A0,
     [](GFaceListRaw* list, int edx, rf::GFace* face) FASTCALL_LAMBDA {
+        af_lightmap_overflow_capture_drop(face);
         if (!g_face_list_shadow_active) {
             solid_face_list_remove_hook.call_target(list, edx, face);
             return;
@@ -1212,6 +1221,57 @@ FunHook<void*(void*, void*, int)> geo_load_static_geometry_section_hook{
     },
 };
 
+// The level's static geometry section; the movers section reads mover solids through the same loader.
+CallHook<void*(void*, void*, int)> level_geometry_load_hook{
+    0x00461A9E,
+    [](void* file, void* solid, int unk) {
+        // a level load passes no solid; a second geometry section passes the first one's and frees its own faces
+        const bool capture = !solid;
+        if (capture) {
+            af_lightmap_overflow_capture_begin();
+        }
+        void* result = level_geometry_load_hook.call_target(file, solid, unk);
+        if (capture) {
+            af_lightmap_overflow_capture_end();
+        }
+        return result;
+    },
+};
+
+// Every face the engine frees passes here (the only caller of the face pool's release, 0x004E3CB0).
+FunHook<void(rf::GFace*)> face_destroy_hook{
+    0x004DFC70,
+    [](rf::GFace* face) {
+        af_lightmap_overflow_face_destroyed(face);
+        face_destroy_hook.call_target(face);
+    },
+};
+
+// Copies a face's attributes and loop into a new face in its plane (thiscall on the source, RET 4).
+FunHook<rf::GFace* __fastcall(rf::GFace*, int, int)> face_clone_hook{
+    0x004E2A80,
+    [](rf::GFace* source, int edx, int arg) FASTCALL_LAMBDA -> rf::GFace* {
+        rf::GFace* clone = face_clone_hook.call_target(source, edx, arg);
+        af_lightmap_overflow_face_cloned(source, clone);
+        return clone;
+    },
+};
+
+// Splits a face in two along a chord (thiscall on the source, RET 0x18), for booleans and oversized faces; the
+// caller then deletes the source.
+FunHook<bool __fastcall(rf::GFace*, int, void*, int, int, void*, rf::GFace**, rf::GFace**)> face_split_hook{
+    0x004E2650,
+    [](rf::GFace* source, int edx, void* solid, int a, int b, void* verts, rf::GFace** out1,
+       rf::GFace** out2) FASTCALL_LAMBDA -> bool {
+        const bool split = face_split_hook.call_target(source, edx, solid, a, b, verts, out1, out2);
+        if (split) {
+            af_lightmap_overflow_face_cloned(source, *out1);
+            af_lightmap_overflow_face_cloned(source, *out2);
+        }
+        return split;
+    },
+};
+
 // clean up sky room overrides and destruction state when shutting down level
 CodeInjection level_release_sky_room_shutdown_patch{
     0x0045CAF9,
@@ -1237,6 +1297,120 @@ CodeInjection collect_visible_rooms_append_injection{
     },
     false,
 };
+
+// The stock walk enters a room once per on-screen path to it, which heavy geomod makes exponential. Past this
+// many calls in one search, it stops and visible_rooms_flood completes the list.
+static constexpr int visible_rooms_search_budget = 2048;
+
+// Completes the list the full walk would make: every room reachable through visible portals is listed, with its
+// window grown to the union of every window it is reached with.
+static void visible_rooms_flood(const rf::Vector3& eye)
+{
+    static std::vector<rf::GRoom*> queue;
+    static std::vector<bool> queued; // by room_index, all false between floods
+    auto is_queued = [](const rf::GRoom* room) {
+        const auto idx = static_cast<std::size_t>(room->room_index);
+        return idx < queued.size() && queued[idx];
+    };
+    auto set_queued = [](const rf::GRoom* room, bool value) {
+        const auto idx = static_cast<std::size_t>(room->room_index);
+        if (idx >= queued.size()) {
+            queued.resize(idx + 1, false);
+        }
+        queued[idx] = value;
+    };
+    // Out of memory leaves the rooms not reached yet out of the list
+    try {
+        queue.assign(g_visible_rooms, g_visible_rooms + rf::g_num_visible_rooms);
+        for (rf::GRoom* room : queue) {
+            set_queued(room, true);
+        }
+        for (std::size_t head = 0; head < queue.size(); ++head) {
+            rf::GRoom* room = queue[head];
+            set_queued(room, false);
+            if (room->is_blocked && room != rf::g_portal_camera_room) {
+                continue;
+            }
+            for (rf::GPortal* portal : room->portals) {
+                rf::GRoom* other = portal->room1 == room ? portal->room2 : portal->room1;
+                if (other->is_sky || other->is_detail) {
+                    continue;
+                }
+                if (!portal->rect_computed) {
+                    portal->rect_computed = true;
+                    if (rf::ix_point_in_box_expanded(eye, 1.0f, portal->bbox_min, portal->bbox_max)) {
+                        portal->rect = {0.0f, 0.0f, static_cast<float>(rf::gr::screen_width()),
+                            static_cast<float>(rf::gr::screen_height())};
+                        portal->is_invisible = false;
+                    }
+                    else {
+                        portal->is_invisible = rf::gr::cull_bounding_box(portal->bbox_min, portal->bbox_max) ||
+                            !rf::gr::project_bounding_box(portal->bbox_min, portal->bbox_max, &portal->rect.left,
+                                &portal->rect.top, &portal->rect.right, &portal->rect.bot);
+                    }
+                }
+                if (portal->is_invisible) {
+                    continue;
+                }
+                const rf::GClipWnd wnd{
+                    std::max(room->clip_wnd.left, portal->rect.left),
+                    std::max(room->clip_wnd.top, portal->rect.top),
+                    std::min(room->clip_wnd.right, portal->rect.right),
+                    std::min(room->clip_wnd.bot, portal->rect.bot),
+                };
+                if (!(wnd.left < wnd.right && wnd.top < wnd.bot)) {
+                    continue;
+                }
+                if (!other->visited_this_search) {
+                    if (rf::g_num_visible_rooms < static_cast<int>(std::size(g_visible_rooms))) {
+                        g_visible_rooms[rf::g_num_visible_rooms++] = other;
+                    }
+                    other->visited_this_frame = true;
+                    other->visited_this_search = true;
+                    other->clip_wnd = wnd;
+                }
+                else {
+                    rf::GClipWnd& cur = other->clip_wnd;
+                    if (wnd.left >= cur.left && wnd.top >= cur.top && wnd.right <= cur.right && wnd.bot <= cur.bot) {
+                        continue;
+                    }
+                    cur.left = std::min(cur.left, wnd.left);
+                    cur.top = std::min(cur.top, wnd.top);
+                    cur.right = std::max(cur.right, wnd.right);
+                    cur.bot = std::max(cur.bot, wnd.bot);
+                    if (is_queued(other)) {
+                        continue;
+                    }
+                }
+                queue.push_back(other);
+                set_queued(other, true);
+            }
+        }
+    }
+    catch (const std::bad_alloc&) {
+        queued.assign(queued.size(), false);
+        xlog::warn("Out of memory listing visible rooms");
+    }
+}
+
+FunHook<void(rf::GSolid*, rf::GRoom*, rf::GClipWnd*, int, unsigned, const rf::Vector3*)>
+    g_solid_collect_visible_rooms_recursive_hook{
+        0x004D4860,
+        [](rf::GSolid* solid, rf::GRoom* room, rf::GClipWnd* clip, int depth, unsigned flags,
+            const rf::Vector3* eye) {
+            static int num_calls = 0;
+            if (depth == 0) {
+                num_calls = 0;
+            }
+            if (++num_calls > visible_rooms_search_budget) {
+                return;
+            }
+            g_solid_collect_visible_rooms_recursive_hook.call_target(solid, room, clip, depth, flags, eye);
+            if (depth == 0 && num_calls > visible_rooms_search_budget) {
+                visible_rooms_flood(*eye);
+            }
+        },
+    };
 
 void g_solid_do_patch()
 {
@@ -1275,6 +1449,7 @@ void g_solid_do_patch()
     // g_solid_collect_visible_rooms_recursive addresses the last room as [count * 4 + base - 4]
     write_mem<uintptr_t>(0x004D499D + 3, reinterpret_cast<uintptr_t>(&g_visible_rooms) - sizeof(rf::GRoom*));
     collect_visible_rooms_append_injection.install();
+    g_solid_collect_visible_rooms_recursive_hook.install();
 
     // 32-bit color format - geomod
     GSurface_calculate_lightmap_color_conv_patch.install();
@@ -1337,6 +1512,12 @@ void g_solid_do_patch()
     bbox_face_list_remove_hook.install();
     room_face_list_add_hook.install();
     room_face_list_remove_hook.install();
+
+    // Alpine overflow lightmaps know the level's faces by their place in the geometry section
+    level_geometry_load_hook.install();
+    face_destroy_hook.install();
+    face_clone_hook.install();
+    face_split_hook.install();
 
     // Commands
     max_decals_cmd.register_cmd();

@@ -155,7 +155,7 @@ static void rope_clamp_properties(DedRopeEmitter* rope)
 void DestroyDedRopeEmitter(DedRopeEmitter* rope)
 {
     if (!rope) return;
-    rope->field_4.free();
+    rope->class_mesh_filename.free();
     rope->script_name.free();
     rope->class_name.free();
     delete rope;
@@ -1617,22 +1617,6 @@ DedRopeEmitter* CloneRopeEmitterObject(DedRopeEmitter* source, bool add_to_level
     return rope;
 }
 
-void DeleteRopeEmitterObject(DedRopeEmitter* rope)
-{
-    if (!rope) return;
-    auto* level = CDedLevel::Get();
-    if (!level) return;
-
-    auto& ropes = level->GetAlpineLevelProperties().rope_emitter_objects;
-    auto it = std::find(ropes.begin(), ropes.end(), rope);
-    if (it != ropes.end()) {
-        ropes.erase(it);
-    }
-    alpine_remove_from_groups(level, static_cast<DedObject*>(rope));
-    level->master_objects.remove_by_value(static_cast<DedObject*>(rope));
-    DestroyDedRopeEmitter(rope);
-}
-
 // ─── Rendering ──────────────────────────────────────────────────────────────
 
 void rope_emitter_render(CDedLevel* level)
@@ -1642,7 +1626,7 @@ void rope_emitter_render(CDedLevel* level)
 
     rope_emitter_load_icon();
 
-    const float cam_param = gr_cam_param;
+    const rf::gr::Mode billboard_mode = rf::gr::bitmap_3d_mode_no_z;
     static std::vector<rope_curve::Vec3> solved;
 
     // One index per repaint, so the preview still tracks an anchor being dragged without each
@@ -1755,7 +1739,7 @@ void rope_emitter_render(CDedLevel* level)
         if (g_rope_emitter_icon_handle >= 0) {
             gr_set_bitmap(g_rope_emitter_icon_handle, -1);
         }
-        gr_render_billboard(&rope->pos, 0, 0.25f, cam_param);
+        gr_render_billboard(&rope->pos, 0, 0.25f, billboard_mode);
     }
 }
 
@@ -1821,6 +1805,11 @@ void rope_emitter_paste_objects(CDedLevel* level)
     }
 }
 
+void rope_emitter_swap_clipboard(std::vector<DedRopeEmitter*>& other)
+{
+    g_rope_emitter_clipboard.swap(other);
+}
+
 void rope_emitter_clear_clipboard()
 {
     for (auto* rope : g_rope_emitter_clipboard) {
@@ -1840,12 +1829,6 @@ void rope_emitter_handle_delete_or_cut(DedObject* obj)
     if (it != ropes.end()) {
         ropes.erase(it);
     }
-}
-
-void rope_emitter_handle_delete_selection(CDedLevel* level)
-{
-    alpine_compact_selection<DedRopeEmitter>(level, DedObjectType::DED_ROPE_EMITTER,
-                                             DeleteRopeEmitterObject);
 }
 
 void rope_emitter_ensure_uid(int& uid)

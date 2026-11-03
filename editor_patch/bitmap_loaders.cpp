@@ -14,6 +14,7 @@
 #include <patch_common/FunHook.h>
 #include <common/utils/string-utils.h>
 #include <common/bitmap/formats.h>
+#include <common/bitmap/tga.h>
 #include <common/atx/parse.h>
 #include "bitmap_loaders.h"
 #include "vtypes.h"
@@ -505,7 +506,7 @@ namespace
             xlog::warn("editor ATX: '{}' could not load frame[0] '{}'", atx_filename, *frame0);
             return false;
         }
-        const int idx = BitmapEntry::handle_to_index(child_handle);
+        const int idx = rf::bm::get_cache_slot(child_handle);
         if (idx < 0) return false;
         BitmapEntry& child = BitmapEntry::entries[idx];
 
@@ -527,11 +528,25 @@ namespace
         return true;
     }
 
-    FunHook<int(const char*, int*, int*, int*, int*, void*, int*, int*, int*, void*, const char*)>
+    // Applies the stock TGA pixel loaders' checks up front, because bm_lock allocates the pixel
+    // buffer from the header dimensions before those loaders reject the file.
+    bool tga_header_loadable(const char* filename, int path_id)
+    {
+        rf::File file;
+        if (file.open_mode(filename, 1, path_id) != 0) {
+            return true;
+        }
+        uint8_t hdr[tga_header_size];
+        const int bytes_read = file.read(hdr, sizeof(hdr));
+        file.close();
+        return bytes_read == sizeof(hdr) && tga_header_supported(hdr);
+    }
+
+    FunHook<int(const char*, int*, int*, int*, int*, void*, int*, int*, int*, void*, int)>
     editor_bm_read_header_hook{
         0x004BC200,
         [](const char* name, int* w, int* h, int* format, int* num_levels, void* pal_buf,
-           int* num_frames, int* fps, int* total_bytes, void* vbm_ver_buf, const char* default_path)
+           int* num_frames, int* fps, int* total_bytes, void* vbm_ver_buf, int path_id)
         {
             if (is_stb_filename(name)) {
                 if (fill_stb_header(name, w, h, format, num_levels, num_frames, fps, total_bytes)) {
@@ -580,8 +595,13 @@ namespace
                     // sibling probe failed; fall through to stock dispatch below
                 }
             }
-            return editor_bm_read_header_hook.call_target(name, w, h, format, num_levels, pal_buf,
-                num_frames, fps, total_bytes, vbm_ver_buf, default_path);
+            const int bm_type = editor_bm_read_header_hook.call_target(name, w, h, format, num_levels, pal_buf,
+                num_frames, fps, total_bytes, vbm_ver_buf, path_id);
+            if (bm_type == EDITOR_BM_TYPE_TGA && !tga_header_loadable(name, path_id)) {
+                xlog::warn("[Bitmap] Failed to load bitmap header for '{}'", string_escape_control_chars(name));
+                return 0;
+            }
+            return bm_type;
         }
     };
 
@@ -596,7 +616,7 @@ namespace
     FunHook<int(int, void**, void**)> editor_bm_lock_hook{
         0x004BCCD0,
         [](int handle, void** pixels_out, void** palette_out) -> int {
-            const int idx = BitmapEntry::handle_to_index(handle);
+            const int idx = rf::bm::get_cache_slot(handle);
             if (idx < 0) {
                 *pixels_out = nullptr;
                 *palette_out = nullptr;
@@ -642,7 +662,7 @@ namespace
             if (child_handle < 0) {
                 *pixels_out = nullptr; *palette_out = nullptr; return 0;
             }
-            const int child_idx = BitmapEntry::handle_to_index(child_handle);
+            const int child_idx = rf::bm::get_cache_slot(child_handle);
             if (child_idx < 0) {
                 *pixels_out = nullptr; *palette_out = nullptr; return 0;
             }
@@ -653,7 +673,12 @@ namespace
             return dispatch_lock(child, child_handle, pixels_out, palette_out);
         }
         // Stock bm_type — safe to invoke RED's original lock.
-        return editor_bm_lock_hook.call_target(handle, pixels_out, palette_out);
+        const int format = editor_bm_lock_hook.call_target(handle, pixels_out, palette_out);
+        if (!format) {
+            *pixels_out = nullptr;
+            *palette_out = nullptr;
+        }
+        return format;
     }
 }
 
@@ -698,6 +723,10 @@ std::vector<std::string> parse_atx_dependencies(const char* atx_filename)
     // Each [[frame]].file — parser already enforces non-empty and non-.atx.
     for (auto& f : spec->frames) {
         deps.push_back(std::move(f.filename));
+    }
+    // [detail].texture; the parser keeps it only when enabled and valid
+    if (spec->detail && spec->detail->enabled) {
+        deps.push_back(std::move(spec->detail->texture));
     }
     return deps;
 }

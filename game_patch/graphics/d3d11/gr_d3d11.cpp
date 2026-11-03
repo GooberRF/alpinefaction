@@ -7,6 +7,7 @@
 #include "../../rf/v3d.h"
 #include "../../rf/gameseq.h"
 #include "../../rf/level.h"
+#include "../../rf/particle_emitter.h"
 #include "../../rf/os/frametime.h"
 #include "../../rf/os/os.h"
 #include "../../bmpman/bmpman.h"
@@ -15,20 +16,21 @@
 #include "../../os/os.h"
 #include "../gr.h"
 #include "gr_d3d11.h"
-#include "gr_d3d11_af_lightmap.h"
-#include "gr_d3d11_context.h"
-#include "gr_d3d11_shader.h"
-#include "gr_d3d11_texture.h"
-#include "gr_d3d11_state.h"
-#include "gr_d3d11_dynamic_geometry.h"
-#include "gr_d3d11_solid.h"
-#include "gr_d3d11_mesh.h"
-#include "gr_d3d11_decoration.h"
-#include "gr_d3d11_vfx.h"
+#include <common/gr_d3d11/gr_d3d11_af_lightmap.h>
+#include <common/gr_d3d11/gr_d3d11_context.h>
+#include <common/gr_d3d11/gr_d3d11_shader.h>
+#include <common/gr_d3d11/gr_d3d11_texture.h>
+#include <common/gr_d3d11/gr_d3d11_state.h>
+#include <common/gr_d3d11/gr_d3d11_dynamic_geometry.h>
+#include <common/gr_d3d11/gr_d3d11_solid.h>
+#include <common/gr_d3d11/gr_d3d11_mesh.h>
+#include <common/gr_d3d11/gr_d3d11_decoration.h>
+#include <common/gr_d3d11/gr_d3d11_vfx.h>
 #include "gr_d3d11_entity_shadow.h"
 #include "gr_d3d11_outline.h"
-#include "gr_d3d11_gamma.h"
+#include <common/gr_d3d11/gr_d3d11_gamma.h>
 #include "gr_d3d11_scenefx.h"
+#include <common/gr_d3d11/gr_d3d11_particle.h>
 
 extern void monitor_refresh_all();
 
@@ -65,14 +67,9 @@ namespace gr::d3d11
         allow_tearing_ = g_alpine_system_config.allow_tearing;
         init_swap_chain(hwnd);
         // TODO.  `sample_count` is always 1 here, until we load settings earlier.
-        if (supports_sample_count(g_alpine_game_config.sample_count)) {
-            init_back_buffer(g_alpine_game_config.sample_count);
-            init_depth_stencil_buffer(g_alpine_game_config.sample_count);
-        } else {
-            xlog::error("MSAAx{} is not supported", g_alpine_game_config.sample_count);
-            init_back_buffer(1);
-            init_depth_stencil_buffer(1);
-        }
+        frame_buffer_sample_count_ = usable_sample_count();
+        init_back_buffer(frame_buffer_sample_count_);
+        init_depth_stencil_buffer(frame_buffer_sample_count_);
 
         state_manager_ = std::make_unique<StateManager>(device_);
         shader_manager_ = std::make_unique<ShaderManager>(device_);
@@ -80,6 +77,7 @@ namespace gr::d3d11
         render_context_ = std::make_unique<RenderContext>(device_, context_, *state_manager_, *shader_manager_, *texture_manager_);
         dyn_geo_renderer_ = std::make_unique<DynamicGeometryRenderer>(device_, *shader_manager_, *render_context_);
         af_lightmap_renderer_ = std::make_unique<AfLightmapRenderer>(device_, context_);
+        particle_renderer_ = std::make_unique<ParticleRenderer>(device_, *shader_manager_, *render_context_);
         solid_renderer_ = std::make_unique<SolidRenderer>(device_, *shader_manager_, *state_manager_, *dyn_geo_renderer_, *render_context_, *af_lightmap_renderer_);
         mesh_renderer_ = std::make_unique<MeshRenderer>(device_, *shader_manager_, *state_manager_, *render_context_);
         decoration_renderer_ =
@@ -97,6 +95,13 @@ namespace gr::d3d11
         // (on state changes or at explicit flush points like render_alpha_detail_room),
         // and outlines would later render on top of those already-drawn particles.
         dyn_geo_renderer_->set_pre_flush_callback([this]() {
+            outline_renderer_->flush(*mesh_renderer_);
+        });
+
+        // Anything queued elsewhere has to reach the framebuffer before the quads a batch is
+        // about to start collecting, the same pair render_particle_emitter drains by hand.
+        particle_renderer_->set_pre_batch_callback([this]() {
+            dyn_geo_renderer_->flush();
             outline_renderer_->flush(*mesh_renderer_);
         });
 
@@ -147,6 +152,11 @@ namespace gr::d3d11
         DF_GR_D3D11_CHECK_HR(
             swap_chain_->SetFullscreenState(fullscreen, nullptr)
         );
+        resize_swap_chain_buffers();
+    }
+
+    void Renderer::resize_swap_chain_buffers()
+    {
         // unref swapchain resources before calling ResizeBuffers
         context_->OMSetRenderTargets(0, nullptr, nullptr);
         back_buffer_.release();
@@ -159,7 +169,7 @@ namespace gr::d3d11
             swap_chain_->ResizeBuffers(0, rf::gr::screen.max_w, rf::gr::screen.max_h, DXGI_FORMAT_UNKNOWN, swap_chain_flags_)
         );
         // get back buffer from the swap chain after it has been resized
-        init_back_buffer(g_alpine_game_config.sample_count);
+        init_back_buffer(frame_buffer_sample_count_);
         render_context_->set_render_target(default_render_target_view_, depth_stencil_view_);
     }
 
@@ -476,6 +486,19 @@ namespace gr::d3d11
         return true;
     }
 
+    void Renderer::copy_scene_to_postfx_source()
+    {
+        // CopyResource forbids the source being bound as a render target, and without MSAA
+        // scene_texture_ is exactly that.
+        context_->OMSetRenderTargets(0, nullptr, nullptr);
+        if (msaa_render_target_) {
+            context_->ResolveSubresource(postfx_source_, 0, msaa_render_target_, 0, swap_chain_format);
+        }
+        else {
+            context_->CopyResource(postfx_source_, scene_texture_);
+        }
+    }
+
     void Renderer::init_depth_stencil_buffer(const uint32_t sample_count)
     {
         D3D11_TEXTURE2D_DESC depth_stencil_desc;
@@ -566,6 +589,15 @@ namespace gr::d3d11
         }
     }
 
+    uint32_t Renderer::usable_sample_count()
+    {
+        if (supports_sample_count(g_alpine_game_config.sample_count)) {
+            return g_alpine_game_config.sample_count;
+        }
+        xlog::error("MSAAx{} is not supported", g_alpine_game_config.sample_count);
+        return 1;
+    }
+
     uint32_t Renderer::get_sample_count() const {
         ComPtr<ID3D11Resource> resource{};
         default_render_target_view_->GetResource(&resource);
@@ -581,14 +613,9 @@ namespace gr::d3d11
     }
 
     void Renderer::flush_frame_buffers() {
-        if (supports_sample_count(g_alpine_game_config.sample_count)) {
-            init_back_buffer(g_alpine_game_config.sample_count);
-            init_depth_stencil_buffer(g_alpine_game_config.sample_count);
-        } else {
-            xlog::error("MSAAx{} is not supported", g_alpine_game_config.sample_count);
-            init_back_buffer(1);
-            init_depth_stencil_buffer(1);
-        }
+        frame_buffer_sample_count_ = usable_sample_count();
+        init_back_buffer(frame_buffer_sample_count_);
+        init_depth_stencil_buffer(frame_buffer_sample_count_);
         texture_manager_->flush_render_targets();
         // Their targets are gone, but MF_BM_RENDERED is still latched from the last render.
         monitor_refresh_all();
@@ -607,6 +634,7 @@ namespace gr::d3d11
         // framebuffer first, and subsequent bitmaps (scope etc.) commit on top of them.
         // If outlines were already flushed in zbuffer_clear this is a no-op.
         flush_outlines_before_2d();
+        particle_renderer_->flush_batch();
         dyn_geo_renderer_->bitmap(bm_handle,
             static_cast<float>(x), static_cast<float>(y), static_cast<float>(w), static_cast<float>(h),
             static_cast<float>(sx), static_cast<float>(sy), static_cast<float>(sw), static_cast<float>(sh),
@@ -616,12 +644,14 @@ namespace gr::d3d11
     void Renderer::bitmap(int bm_handle, float x, float y, float w, float h, float sx, float sy, float sw, float sh, bool flip_x, bool flip_y, rf::gr::Mode mode)
     {
         flush_outlines_before_2d();
+        particle_renderer_->flush_batch();
         dyn_geo_renderer_->bitmap(bm_handle, x, y, w, h, sx, sy, sw, sh, flip_x, flip_y, mode);
     }
 
     void Renderer::poly_2d(int bm_handle, int nv, const rf::gr::Vertex* vertices, rf::gr::Mode mode)
     {
         flush_outlines_before_2d();
+        particle_renderer_->flush_batch();
         dyn_geo_renderer_->poly_2d(bm_handle, nv, vertices, mode);
     }
 
@@ -707,6 +737,7 @@ namespace gr::d3d11
 
     void Renderer::clear()
     {
+        particle_renderer_->flush_batch();
         dyn_geo_renderer_->flush();
         render_context_->clear();
     }
@@ -718,7 +749,7 @@ namespace gr::d3d11
         // so outlines must be rendered while scene depth data is still available.
         // Outlines are flushed first so that subsequently flushed dyn_geo draws
         // (player labels, crosshair, world HUD) always render on top of outlines.
-        // The outline silhouette pass writes depth (DepthWriteMask = ALL) to prevent
+        // An outline that isn't fading writes depth (DepthWriteMask = ALL) to prevent
         // liquid surfaces from alpha-blending over outline pixels. This is safe here
         // because the zbuffer is about to be cleared for the fpgun pass, and the
         // written depth values are geometrically correct (at the character's depth).
@@ -737,12 +768,14 @@ namespace gr::d3d11
         // later consumer found nothing left. The .vfx outlines are drawn from
         // flush_forced_xray() instead, which rebinds the scene camera explicitly.
         outline_renderer_->flush(*mesh_renderer_);
+        particle_renderer_->flush_batch();
         dyn_geo_renderer_->flush();
         render_context_->zbuffer_clear();
     }
 
     void Renderer::set_clip()
     {
+        particle_renderer_->flush_batch();
         dyn_geo_renderer_->flush();
         render_context_->set_clip();
     }
@@ -771,6 +804,9 @@ namespace gr::d3d11
                 frame_latency_stall_logged_ = false;
             }
         }
+        // Last stop for a batch nothing else drained this frame; the ring buffer stays mapped
+        // until it is submitted.
+        particle_renderer_->flush_batch();
         outline_renderer_->flush_forced_xray(*mesh_renderer_);
         dyn_geo_renderer_->flush();
         entity_shadow_renderer_->render_debug_overlay(context_);
@@ -807,9 +843,22 @@ namespace gr::d3d11
         if (allow_tearing_ && sync_interval == 0) {
             present_flags |= DXGI_PRESENT_ALLOW_TEARING;
         }
-        DF_GR_D3D11_CHECK_HR(
-            swap_chain_->Present(sync_interval, present_flags)
-        );
+        const HRESULT present_hr = swap_chain_->Present(sync_interval, present_flags);
+        // DXGI can leave exclusive fullscreen while the window keeps focus, so window_inactive never runs, and a
+        // flip-model swap chain then rejects every Present until its buffers are resized. This frame is lost.
+        if (present_hr == DXGI_ERROR_INVALID_CALL && rf::gr::screen.window_mode == rf::gr::FULLSCREEN
+            && !present_recovered_) {
+            BOOL swap_chain_fullscreen = FALSE;
+            swap_chain_->GetFullscreenState(&swap_chain_fullscreen, nullptr);
+            xlog::warn("[D3D11] Present was rejected in fullscreen (swap chain fullscreen: {}); resizing its buffers",
+                       swap_chain_fullscreen != FALSE);
+            present_recovered_ = true;
+            resize_swap_chain_buffers();
+        }
+        else {
+            DF_GR_D3D11_CHECK_HR(present_hr);
+            present_recovered_ = false;
+        }
         // Flip swap effect clears render target after Present call
         render_context_->set_render_target(default_render_target_view_, depth_stencil_view_);
         // Note: it would be better to call update_per_frame_constants after frametime_calculate
@@ -868,17 +917,22 @@ namespace gr::d3d11
 
     void Renderer::tmapper(int nv, const rf::gr::Vertex **vertices, int vertex_attributes, rf::gr::Mode mode)
     {
+        // A pending batch was collected before this poly and has to be drawn before it. No-op
+        // unless a batched pass (particles, plankton) is open.
+        particle_renderer_->flush_batch();
         std::array<int, 2> tex_handles{rf::gr::screen.current_texture_1, rf::gr::screen.current_texture_2};
         dyn_geo_renderer_->add_poly(nv, vertices, vertex_attributes, tex_handles, mode);
     }
 
     void Renderer::line_3d(const rf::gr::Vertex& v0, const rf::gr::Vertex& v1, rf::gr::Mode mode)
     {
+        particle_renderer_->flush_batch();
         dyn_geo_renderer_->line_3d(v0, v1, mode);
     }
 
     void Renderer::line_2d(float x1, float y1, float x2, float y2, rf::gr::Mode mode)
     {
+        particle_renderer_->flush_batch();
         dyn_geo_renderer_->line_2d(x1, y1, x2, y2, mode);
     }
 
@@ -923,6 +977,7 @@ namespace gr::d3d11
 
     bool Renderer::set_render_target(int bm_handle)
     {
+        particle_renderer_->flush_batch();
         dyn_geo_renderer_->flush();
         if (bm_handle != -1) {
             ID3D11RenderTargetView* const render_target_view =
@@ -983,6 +1038,7 @@ namespace gr::d3d11
         // so the other gr_read_backbuffer callers (bitmap locks that can land in the
         // middle of a frame) keep their existing behaviour.
         static auto& screenshot_pending = addr_as_ref<char>(0x00637085);
+        particle_renderer_->flush_batch();
         if (screenshot_pending) {
             outline_renderer_->flush_forced_xray(*mesh_renderer_);
         }
@@ -1034,6 +1090,7 @@ namespace gr::d3d11
 
     void Renderer::render_solid(rf::GSolid* solid, rf::GRoom** rooms, int num_rooms)
     {
+        particle_renderer_->flush_batch();
         dyn_geo_renderer_->flush();
 
         // Generate entity shadow map before rendering the scene
@@ -1056,13 +1113,30 @@ namespace gr::d3d11
         solid_renderer_->render_solid(solid, rooms, num_rooms);
         // With the opaque world, before objects and alpha detail draw over it
         if (solid == rf::level.geometry && !solid_renderer_->decoration_chunks().empty()) {
-            decoration_renderer_->render(solid, solid_renderer_->decoration_chunks());
+            const bool multisampled = msaa_render_target_ && render_target_bm_handle_ == -1;
+            decoration_renderer_->render(solid, solid_renderer_->decoration_chunks(), DecorationPass::core,
+                                         multisampled);
+        }
+    }
+
+    void Renderer::render_room_decoration_edges(rf::GSolid* solid, rf::GRoom* room)
+    {
+        if (solid != rf::level.geometry) {
+            return;
+        }
+        const auto& chunks = solid_renderer_->room_decoration_chunks(solid, room);
+        if (decoration_renderer_->has_soft_edges(chunks)) {
+            particle_renderer_->flush_batch();
+            dyn_geo_renderer_->flush();
+            decoration_renderer_->render(solid, chunks, DecorationPass::edge);
+            render_context_->set_draw_room_uid(object_room_uid_);
         }
     }
 
     void Renderer::render_movable_solid(rf::GSolid* solid, const rf::Vector3& pos, const rf::Matrix3& orient,
         bool include_alpha)
     {
+        particle_renderer_->flush_batch();
         dyn_geo_renderer_->flush();
         solid_renderer_->render_movable_solid(solid, pos, orient, include_alpha);
     }
@@ -1079,6 +1153,7 @@ namespace gr::d3d11
         // phase is rejected wherever they got there first. Draining the queue here instead of
         // leaving it to whichever sorted item happens to flush next keeps outlines in front.
         outline_renderer_->flush(*mesh_renderer_);
+        particle_renderer_->flush_batch();
         dyn_geo_renderer_->flush();
         solid_renderer_->render_movable_solid_alpha(solid, pos, orient);
     }
@@ -1086,19 +1161,83 @@ namespace gr::d3d11
     void Renderer::render_alpha_detail_room(rf::GRoom *room, rf::GSolid *solid)
     {
         outline_renderer_->flush(*mesh_renderer_);
+        particle_renderer_->flush_batch();
         dyn_geo_renderer_->flush();
         solid_renderer_->render_alpha_detail(room, solid);
     }
 
+    bool Renderer::render_particle_emitter(rf::ParticleEmitter* emitter, float interp_dt, int* out_drawn,
+        int* out_draws)
+    {
+        // Stock 0x00497BF0 draws nothing for an empty list, so nothing has to reach the framebuffer first
+        if (emitter->particle_list.next == &emitter->particle_list) {
+            if (out_drawn) {
+                *out_drawn = 0;
+            }
+            if (out_draws) {
+                *out_draws = 0;
+            }
+            return true;
+        }
+        // Draw where stock drew: anything the dyn_geo batcher is still holding, and the outlines
+        // queued to render behind it, have to reach the framebuffer before the emitter's quads.
+        dyn_geo_renderer_->flush();
+        outline_renderer_->flush(*mesh_renderer_);
+        return particle_renderer_->render_emitter(emitter, interp_dt, out_drawn, out_draws);
+    }
+
+    bool Renderer::batched_billboard(const rf::Vector3& pos, float angle, float radius, rf::gr::Mode mode)
+    {
+        return particle_renderer_->add_billboard(pos, angle, radius, mode);
+    }
+
+    bool Renderer::batched_particle(const rf::Particle& particle)
+    {
+        return particle_renderer_->add_particle(particle);
+    }
+
+    void Renderer::flush_batched_quads()
+    {
+        particle_renderer_->flush_batch();
+    }
+
+    bool Renderer::upload_weather_seeds(const std::vector<WeatherSeed>& seeds)
+    {
+        return particle_renderer_->upload_weather_seeds(seeds);
+    }
+
+    bool Renderer::update_weather_columns(int slot, int num_cells, int first, const std::vector<WeatherColumn>& cells)
+    {
+        return particle_renderer_->update_weather_columns(slot, num_cells, first, cells);
+    }
+
+    void Renderer::release_weather_columns()
+    {
+        particle_renderer_->release_weather_columns();
+    }
+
+    bool Renderer::draw_weather(const WeatherDraw& draw)
+    {
+        return particle_renderer_->draw_weather(draw);
+    }
+
     void Renderer::render_sky_room(rf::GRoom *room, rf::Vector3& out_sky_transform_pos, rf::Matrix3& out_sky_transform_orient)
     {
+        particle_renderer_->flush_batch();
         dyn_geo_renderer_->flush();
+        // The projection ends at the camera far clip, which must not cut the sky; the far clip set after the sky
+        // pass re-enables depth clipping
+        if (level_camera_far_clip() > 0.0f) {
+            set_far_clip(false);
+        }
         solid_renderer_->render_sky_room(room, out_sky_transform_pos, out_sky_transform_orient);
     }
 
     void Renderer::render_room_liquid_surface(rf::GSolid* solid, rf::GRoom* room)
     {
-        // Flush outlines before liquid renders. The outline silhouette pass writes
+        // The room's sorted particles drawn ahead of the surface are still batched
+        particle_renderer_->flush_batch();
+        // Flush outlines before liquid renders. An outline that isn't fading writes
         // depth (DepthWriteMask=ALL), so outline pixels claim depth ownership.
         // When the liquid subsequently depth-tests at those pixels, it fails
         // (outline is closer than liquid), preventing liquid alpha-blend from
@@ -1207,6 +1346,7 @@ namespace gr::d3d11
 
         // Drains the batched HUD so the vignette composites on top of it, exactly where the
         // stock flash lands.
+        particle_renderer_->flush_batch();
         dyn_geo_renderer_->flush();
         render_context_->set_clip();
         scene_post_pass_->render(context_, nullptr, default_render_target_view_, data);
@@ -1294,19 +1434,12 @@ namespace gr::d3d11
         data.flags = static_cast<float>(flags);
 
         // Both modes draw over the finished scene, so drain pending 2D geometry first
+        particle_renderer_->flush_batch();
         dyn_geo_renderer_->flush();
         render_context_->set_clip();
 
         if (distort) {
-            // CopyResource forbids the source being bound as a render target, and without MSAA
-            // scene_texture_ is exactly that.
-            context_->OMSetRenderTargets(0, nullptr, nullptr);
-            if (msaa_render_target_) {
-                context_->ResolveSubresource(postfx_source_, 0, msaa_render_target_, 0, swap_chain_format);
-            }
-            else {
-                context_->CopyResource(postfx_source_, scene_texture_);
-            }
+            copy_scene_to_postfx_source();
             scene_post_pass_->render(context_, postfx_source_srv_, default_render_target_view_, data);
         }
         else {
@@ -1314,6 +1447,37 @@ namespace gr::d3d11
         }
 
         liquid_tint_drawn_frame_ = rf::frame_count;
+
+        render_context_->invalidate_cached_state();
+        render_context_->set_render_target(default_render_target_view_, depth_stencil_view_);
+        render_context_->set_clip();
+    }
+
+    void Renderer::run_scope_glass_pass()
+    {
+        if (g_alpine_game_config.scope_glass < 1 || render_target_bm_handle_ != -1 || !ensure_postfx_source()) {
+            return;
+        }
+
+        const ScopeGlassTier& tier = g_alpine_game_config.scope_glass >= 2
+            ? scenefx_scope_glass_heavy
+            : scenefx_scope_glass_light;
+
+        SceneFxBufferData data{};
+        data.rt_size = {static_cast<float>(rt_width_), static_cast<float>(rt_height_)};
+        data.flags = static_cast<float>(scenefx_flag_scope_glass);
+        data.viewport_rect = current_viewport_rect();
+        data.scope_glass = {tier.distortion, tier.rim_distortion, tier.dispersion, tier.vignette};
+        data.scope_rim = {tier.rim_start, tier.rim_end, tier.vignette_start, tier.fringe};
+
+        // Runs before the stock scope ring and reticle are drawn, so they stay sharp on top of the lens
+        flush_outlines_before_2d();
+        particle_renderer_->flush_batch();
+        dyn_geo_renderer_->flush();
+        render_context_->set_clip();
+
+        copy_scene_to_postfx_source();
+        scene_post_pass_->render(context_, postfx_source_srv_, default_render_target_view_, data);
 
         render_context_->invalidate_cached_state();
         render_context_->set_render_target(default_render_target_view_, depth_stencil_view_);
@@ -1359,6 +1523,7 @@ namespace gr::d3d11
 
     void Renderer::render_v3d_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::MeshRenderParams& params, bool skip_ambient_cache)
     {
+        particle_renderer_->flush_batch();
         dyn_geo_renderer_->flush();
         render_context_->set_draw_room_uid(object_room_uid_);
         mesh_renderer_->render_v3d_vif(lod_mesh, lod_index, pos, orient, params, skip_ambient_cache);
@@ -1396,6 +1561,7 @@ namespace gr::d3d11
     void Renderer::render_vfx(rf::VfxSfxoRenderObj* obj, float frame)
     {
         // Keep ordering against gr_poly-drawn geometry (billboard vfx chunks, particles)
+        particle_renderer_->flush_batch();
         dyn_geo_renderer_->flush();
         render_context_->set_draw_room_uid(object_room_uid_);
         vfx_renderer_->render(obj, frame);
@@ -1403,6 +1569,7 @@ namespace gr::d3d11
 
     void Renderer::render_character_vif(rf::VifLodMesh *lod_mesh, int lod_index, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::CharacterInstance *ci, const rf::MeshRenderParams& params, bool skip_ambient_cache)
     {
+        particle_renderer_->flush_batch();
         dyn_geo_renderer_->flush();
         render_context_->set_draw_room_uid(object_room_uid_);
         mesh_renderer_->render_character_vif(lod_mesh, lod_index, pos, orient, ci, params, skip_ambient_cache);
@@ -1438,6 +1605,7 @@ namespace gr::d3d11
 
     void Renderer::fog_set()
     {
+        particle_renderer_->flush_batch();
         dyn_geo_renderer_->flush();
         render_context_->fog_set();
     }
@@ -1478,6 +1646,12 @@ namespace gr::d3d11
     void Renderer::clear_mesh_lights()
     {
         render_context_->update_lights();
+        render_context_->clear_mesh_bounds();
+    }
+
+    void Renderer::set_mesh_bounds(const rf::Vector3& center, float radius)
+    {
+        render_context_->set_mesh_bounds(center, radius);
     }
 
     float Renderer::z_far() const

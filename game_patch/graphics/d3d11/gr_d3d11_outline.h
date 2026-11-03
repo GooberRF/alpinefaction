@@ -6,7 +6,7 @@
 #include <vector>
 #include <d3d11.h>
 #include <common/ComPtr.h>
-#include "gr_d3d11_transform.h"
+#include <common/gr_d3d11/gr_d3d11_transform.h>
 #include "../../rf/math/vector.h"
 #include "../../rf/math/matrix.h"
 
@@ -129,11 +129,12 @@ namespace gr::d3d11
 
     private:
         void queue_unrendered_xray_outlines();
+        float distance_fade(const rf::Vector3& pos) const;
         void refresh_vfx_transforms();
         void render_outline(const QueuedOutline& outline, MeshRenderer& mesh_renderer);
         // Two passes: parts of a multi-part hull share a stencil ref, so all must mark before any draws.
         void render_v3d_outline_mark(const QueuedV3dOutline& outline, MeshRenderer& mesh_renderer);
-        void render_v3d_outline_draw(const QueuedV3dOutline& outline, MeshRenderer& mesh_renderer);
+        void render_v3d_outline_draw(const QueuedV3dOutline& outline, float fade, MeshRenderer& mesh_renderer);
         void render_v3d_queue(MeshRenderer& mesh_renderer);
         void render_vfx_outline(const QueuedVfxOutline& outline);
 
@@ -171,6 +172,7 @@ namespace gr::d3d11
         const OutlineInfo* current_character_outline_ = nullptr; // outline info of last rendered character
         ForcedV3dXrayEntry bagman_pickup_xray_{};
         ForcedV3dXrayEntry bagman_carrier_xray_{};
+        ForcedV3dXrayEntry objective_static_xray_{};
         // Frame-persistent: this renders every frame, so elements are reset and reused instead of
         // destroyed, and each one's lod_meshes keeps its buffer. vehicle_target_count_ is the live prefix.
         std::vector<VehicleOutlineTarget> vehicle_targets_;

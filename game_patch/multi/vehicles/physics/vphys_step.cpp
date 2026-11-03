@@ -4,15 +4,18 @@
 #include <patch_common/CallHook.h>
 #include <patch_common/FunHook.h>
 #include <common/utils/list-utils.h>
+#include "ragdoll.h"
 #include "vphys_internal.h"
 #include "../vehicle_physics.h"
 #include "../vehicle.h"
 #include "../vehicle_crash_tuning.h"
 #include "../../../input/gamepad.h"
+#include "../../demo/demo.h"
 #include "../../../misc/destruction.h"
 #include "../../../misc/level.h"
 #include "../../../os/os.h"
 #include "../../../rf/entity.h"
+#include "../../../rf/gameseq.h"
 #include "../../../rf/geometry.h"
 #include "../../../rf/multi.h"
 #include "../../../rf/os/frametime.h"
@@ -22,6 +25,9 @@
 
 namespace
 {
+    // A corridor half width for a class with no measured box (a mod hull not spawned yet).
+    constexpr float default_corridor_half_width = 2.0f;
+
     // The whole taxonomy, in one place: VPHYS class of a WIRE-FROZEN VehicleDamageClass row.
     int vphys_class_from_vdc(int vdc)
     {
@@ -218,6 +224,18 @@ namespace
         b.impact_land_ext = false;
     }
 
+    // pos/next_pos share a value so the stock batch tail is a no-op; phb is what it rebuilds from.
+    void vphys_entity_take_pose(rf::Entity* ep, rf::Vector3 pos, const rf::Matrix3& orient)
+    {
+        ep->p_data.pos = pos;
+        ep->p_data.next_pos = pos;
+        ep->p_data.orient = orient;
+        ep->p_data.next_orient = orient;
+        ep->orient = orient;
+        ep->control_data.phb = vehicle_make_orient_phb(orient);
+        ep->move(&pos);
+    }
+
     void vphys_world_pre_step()
     {
         obstacles_update_all();
@@ -236,8 +254,8 @@ namespace
         b.handbrake_pin = false;
         bool reseeded = false;
 
-        // A teleport or correction wins - but NOT for a server body: the interp echo is our own output.
-        if (!b.server_owned && (ep->pos - b.written_pos).len() > 0.05f) {
+        // A teleport or correction wins - but NOT for a coasting server body: the interp echo is our own output.
+        if ((!b.server_owned || b.server_driven) && (ep->pos - b.written_pos).len() > 0.05f) {
             reseeded = true;
             vphys_impact_window_close(b);
             body_seed_from_entity(b, ep);
@@ -285,6 +303,14 @@ namespace
                 g_vphys.world->addVehicle(b.raycast_vehicle);
                 b.car_action_in_world = true;
                 b.raycast_vehicle->resetSuspension();
+                // Whatever woke it may have changed the ground, and resetSuspension leaves the old contacts
+                // standing: the handbrake would pin on them before this step's casts land.
+                for (int i = 0; i < b.raycast_vehicle->getNumWheels(); ++i) {
+                    btWheelInfo::RaycastInfo& ri = b.raycast_vehicle->getWheelInfo(i).m_raycastInfo;
+                    ri.m_isInContact = false;
+                    ri.m_groundObject = nullptr;
+                }
+                b.wheel_casts.clear();
             }
         }
         if (b.server_owned && body->getActivationState() == ISLAND_SLEEPING) {
@@ -312,7 +338,9 @@ namespace
             // Last, so every velocity write above is the step's input and never reads as an impact.
             b.impact_pre_vel = body->getLinearVelocity();
             b.impact_armed = true;
-            b.impact_skip = reseeded || pushed || timer::get_i64(1000) < b.shove_brake_until_ms;
+            b.impact_skip = reseeded || pushed || b.impact_prop_built
+                         || timer::get_i64(1000) < b.shove_brake_until_ms;
+            b.impact_prop_built = false;
             b.impact_drilling = is_car && car_drills_on(ep, p);
         }
     }
@@ -340,12 +368,23 @@ namespace
     {
         for (const auto& owned : g_vphys.bodies) {
             owned->chassis_ground_contact_pass = false;
+            owned->paired_with_kinematic = false;
         }
+        const auto awake_kinematic = [](const btCollisionObject* obj) {
+            return obj->isKinematicObject() && obj->getActivationState() != ISLAND_SLEEPING;
+        };
         const int nm = g_vphys.dispatcher->getNumManifolds();
         for (int m = 0; m < nm; ++m) {
             const btPersistentManifold* pm = g_vphys.dispatcher->getManifoldByIndexInternal(m);
             VehicleSimBody* car0 = car_body_of(pm->getBody0());
             VehicleSimBody* car1 = car_body_of(pm->getBody1());
+            // Contacts or none, as Bullet's island manager has it.
+            if (car0 && awake_kinematic(pm->getBody1())) {
+                car0->paired_with_kinematic = true;
+            }
+            if (car1 && awake_kinematic(pm->getBody0())) {
+                car1->paired_with_kinematic = true;
+            }
             // getBody1 is the flipped side: its ground normal is the negated m_normalWorldOnB.
             if ((!car0 || car0->chassis_ground_contact_pass)
                 && (!car1 || car1->chassis_ground_contact_pass)) {
@@ -353,7 +392,7 @@ namespace
             }
             for (int c = 0; c < pm->getNumContacts(); ++c) {
                 const btManifoldPoint& cp = pm->getContactPoint(c);
-                if (cp.getDistance() > 0.02f) {
+                if (cp.getDistance() > vehicle_physics_touch_dist) {
                     continue;
                 }
                 const float ny = cp.m_normalWorldOnB.y();
@@ -376,17 +415,22 @@ namespace
         return b && b->body == obj && b->impact_armed ? b : nullptr;
     }
 
+    // The level mesh, the movers and the clutter props.
     bool impact_is_level_object(const btCollisionObject* obj)
     {
         const btBroadphaseProxy* proxy = obj ? obj->getBroadphaseHandle() : nullptr;
-        return proxy && proxy->m_collisionFilterGroup == vphys_group_level;
+        return proxy
+            && (proxy->m_collisionFilterGroup == vphys_group_level
+                || proxy->m_collisionFilterGroup == vphys_group_prop);
     }
 
-    // The level mesh and movers only: another hull's box forms no pair, and hull on hull is the ram's.
+    // Another hull's box forms no pair, and hull on hull is the ram's.
     void vphys_impact_contact_pass()
     {
         for (const auto& owned : g_vphys.bodies) {
             owned->impact_contact = false;
+            owned->scrape_speed = 0.0f;
+            owned->scrape_ground_speed = 0.0f;
         }
         const int nm = g_vphys.dispatcher->getNumManifolds();
         for (int m = 0; m < nm; ++m) {
@@ -406,7 +450,7 @@ namespace
             const btRigidBody* other = btRigidBody::upcast(side > 0.0f ? pm->getBody1() : pm->getBody0());
             for (int c = 0; c < pm->getNumContacts(); ++c) {
                 const btManifoldPoint& cp = pm->getContactPoint(c);
-                if (cp.getDistance() > 0.02f) {
+                if (cp.getDistance() > vehicle_physics_touch_dist) {
                     continue;
                 }
                 const btVector3 n = cp.m_normalWorldOnB * side;
@@ -414,13 +458,17 @@ namespace
                     && n.dot(fwd) < vehicle_crash_drill_face_dot) {
                     continue;
                 }
+                btVector3 surface_vel(0.0f, 0.0f, 0.0f);
+                if (other) {
+                    const btVector3& p = side > 0.0f ? cp.getPositionWorldOnB() : cp.getPositionWorldOnA();
+                    surface_vel = other->getVelocityInLocalPoint(p - other->getCenterOfMassPosition());
+                }
+                const btVector3 rel_post = b->body->getLinearVelocity() - surface_vel;
+                float& scrape = n.y() < vehicle_crash_ground_ny ? b->scrape_speed : b->scrape_ground_speed;
+                scrape = std::max(scrape, (rel_post - n * rel_post.dot(n)).length());
                 const float dvn = dv.dot(n);
                 if (!b->impact_contact || dvn > b->impact_contact_dvn) {
-                    btVector3 rel_pre = b->impact_pre_vel;
-                    if (other) {
-                        const btVector3& p = side > 0.0f ? cp.getPositionWorldOnB() : cp.getPositionWorldOnA();
-                        rel_pre -= other->getVelocityInLocalPoint(p - other->getCenterOfMassPosition());
-                    }
+                    const btVector3 rel_pre = b->impact_pre_vel - surface_vel;
                     b->impact_contact = true;
                     b->impact_contact_dvn = dvn;
                     b->impact_contact_ny = n.y();
@@ -436,6 +484,15 @@ namespace
         int vehicle_handle;
         float impact_dv;
         bool ground;
+    };
+
+    struct VehicleScrape
+    {
+        int vehicle_handle;
+        rf::Vector3 vel; // post-step, capped
+        float wall_slide;
+        float ground_slide;
+        float step_time;
     };
 
     void vphys_impact_measure(VehicleSimBody& b, bool speed_clamped, float step_time,
@@ -535,7 +592,37 @@ namespace
         }
     }
 
-    void vphys_body_post_step(BodyStepScratch& s, float step_time, std::vector<VehicleImpact>& impacts)
+    // A never-entered hull pinned on its handbrake holds still until something moves it, so it need not
+    // wait out Bullet's 2 s of deactivation time. A hull a mover keeps awake would only flicker.
+    bool vphys_parked_hull_can_sleep(const VehicleSimBody& b)
+    {
+        return b.server_owned && !b.server_driven && b.handbrake_pin && b.auto_handbrake && !b.paired_with_kinematic;
+    }
+
+    // At the pose the entity was just given, so neither it nor a later wake moves the hull. The wheels come
+    // off here rather than at the next pre-step, so a wake in between takes the same re-attach path.
+    void vphys_body_sleep_now(VehicleSimBody& b)
+    {
+        if (b.car_action_in_world) {
+            g_vphys.world->removeVehicle(b.raycast_vehicle);
+            b.car_action_in_world = false;
+        }
+        btRigidBody* body = b.body;
+        btTransform t;
+        b.motion_state->getWorldTransform(t);
+        body->setWorldTransform(t);
+        body->setInterpolationWorldTransform(t);
+        const btVector3 zero(0.0f, 0.0f, 0.0f);
+        body->setLinearVelocity(zero);
+        body->setAngularVelocity(zero);
+        body->setInterpolationLinearVelocity(zero);
+        body->setInterpolationAngularVelocity(zero);
+        body->clearForces();
+        body->setActivationState(ISLAND_SLEEPING);
+    }
+
+    void vphys_body_post_step(BodyStepScratch& s, float step_time, std::vector<VehicleImpact>& impacts,
+                              std::vector<VehicleScrape>& scrapes)
     {
         VehicleSimBody& b = *s.b;
         rf::Entity* ep = s.ep;
@@ -566,6 +653,18 @@ namespace
 
         rf::Vector3 capped_vel = vel;
         const bool speed_clamped = vphys_clamp_class_velocity(cls, capped_vel);
+        // Every counted step, a slide of 0 included: that is what flushes a scrape once the hull comes away. A
+        // clamped step counts too, at the capped speed.
+        if (b.impact_armed && !b.impact_skip && step_time > 0.0f) {
+            float wall_slide = b.scrape_speed;
+            float ground_slide = b.scrape_ground_speed;
+            if (speed_clamped) {
+                const float cap = vphys_class_speed_cap(cls);
+                wall_slide = std::min(wall_slide, cap);
+                ground_slide = std::min(ground_slide, cap);
+            }
+            scrapes.push_back({b.vehicle_handle, capped_vel, wall_slide, ground_slide, step_time});
+        }
         vphys_impact_measure(b, speed_clamped, step_time, impacts);
         if (speed_clamped) {
             vel = capped_vel;
@@ -594,18 +693,11 @@ namespace
         body->setLinearVelocity(to_bt(vel));
         body->setInterpolationLinearVelocity(to_bt(vel));
 
-        // pos/next_pos share a value so the stock batch tail is a no-op; phb is what it rebuilds from.
-        ep->p_data.pos = pos;
-        ep->p_data.next_pos = pos;
-        ep->p_data.orient = orient;
-        ep->p_data.next_orient = orient;
-        ep->orient = orient;
-        // A server hull's REPLICATED velocity must be zeroed HERE: obj_update packs it later this frame.
-        ep->p_data.vel = b.server_owned ? rf::Vector3{} : vel;
+        // A coasting server hull's REPLICATED velocity must be zeroed HERE: obj_update packs it later this frame.
+        ep->p_data.vel = b.server_owned && !b.server_driven ? rf::Vector3{} : vel;
         ep->p_data.rotvel = rf::Vector3{};
         ep->p_data.ang_momentum = rf::Vector3{};
-        ep->control_data.phb = vehicle_make_orient_phb(orient);
-        ep->move(&pos);
+        vphys_entity_take_pose(ep, pos, orient);
         // A server body has no stock re-room follow-up, and the drown/liquid tests are room-keyed.
         if (b.server_owned) {
             ep->update_room();
@@ -615,11 +707,18 @@ namespace
         vehicle_refresh_aim_orient(ep); // the aim outranks this hull-derived seed
         b.written_pos = ep->pos;
         vehicle_note_observed_pose(ep->handle, pos, std::atan2(orient.fvec.x, orient.fvec.z));
+
+        if (vphys_parked_hull_can_sleep(b)) {
+            vphys_body_sleep_now(b);
+        }
     }
 
     void vphys_step_frame()
     {
         vphys_reconcile();
+        // This runs outside the sim frame, so a paused game or demo still reaches it.
+        const float dt = rf::game_paused ? 0.0f : rf::frametime * demo_playback_sim_time_scale();
+        ragdoll_pre_step(dt);
         // Ahead of the empty-world return, so the step_will_run answer below is exact.
         std::vector<VehicleSimBody*> stale;
         for (const auto& owned : g_vphys.bodies) {
@@ -635,13 +734,12 @@ namespace
                 sim_body_destroy(dead);
             }
         }
-        const float dt = rf::frametime;
-        const bool step_will_run = !g_vphys.bodies.empty() && dt > 0.0f;
+        const bool step_will_run = (!g_vphys.bodies.empty() || ragdoll_needs_step()) && dt > 0.0f;
         // Must advance on exactly the frames vphys_world_step is reached: it is Bullet's own
         // m_localTime accumulator, re-derived.
         const float step_time = step_will_run ? vphys_frame_step_time(dt) : 0.0f;
         const float moved_dt = g_vphys_prev_frame_dt;
-        g_vphys_prev_frame_dt = dt;
+        g_vphys_prev_frame_dt = rf::frametime;
         // Every frame the world exists, not just the ones that step.
         if (g_vphys.world) {
             movers_update_all(step_will_run, step_time, moved_dt);
@@ -672,15 +770,22 @@ namespace
         if (step_time > 0.0f) {
             vphys_impact_contact_pass();
         }
+        ragdoll_post_step(dt);
         std::vector<VehicleImpact> impacts;
+        std::vector<VehicleScrape> scrapes;
         for (BodyStepScratch& s : step) {
-            vphys_body_post_step(s, step_time, impacts);
+            vphys_body_post_step(s, step_time, impacts, scrapes);
         }
         g_vphys.manifolds_dirty = false;
         // After the walk: the damage can destroy a hull, and its body with it.
         for (const VehicleImpact& impact : impacts) {
             if (rf::Entity* ep = rf::entity_from_handle(impact.vehicle_handle)) {
                 vehicle_crash_impact(ep, impact.impact_dv, impact.ground);
+            }
+        }
+        for (const VehicleScrape& scrape : scrapes) {
+            if (rf::Entity* ep = rf::entity_from_handle(scrape.vehicle_handle)) {
+                vehicle_scrape_contact(ep, scrape.vel, scrape.wall_slide, scrape.ground_slide, scrape.step_time);
             }
         }
     }
@@ -696,6 +801,30 @@ namespace
                 gamepad_apply_vehicle_driver_input(driven);
             }
             vphys_step_frame();
+        },
+    };
+
+    // Where a listen host's MP world is simulated outside gameplay_do_frame (menus, limbo): a step here keeps vphys
+    // in lockstep with the world sim. Not while the host drives: his ci is not read there, and every body freezes
+    // with his.
+    CallHook<void()> multi_menu_world_sim_vphys_hook{
+        0x004361B2,
+        []() {
+            if (rf::is_server && !rf::is_dedicated_server && !g_vphys.driven) {
+                vphys_step_frame();
+            }
+            multi_menu_world_sim_vphys_hook.call_target();
+        },
+    };
+
+    // A cutscene frame runs the sim without the controls call above.
+    CallHook<void()> cutscene_sim_frame_vphys_hook{
+        0x0045B877,
+        []() {
+            if (!rf::is_multi) {
+                vphys_step_frame();
+            }
+            cutscene_sim_frame_vphys_hook.call_target();
         },
     };
 
@@ -716,12 +845,14 @@ namespace
 
     void notify_geomod_params(const rf::GeomodParams* params)
     {
-        // No factory means no level mesh, so the shape lookup below would be paid for nothing.
-        if (!params || !g_level_has_bullet_vehicles) {
+        // No level mesh means the shape lookup below would be paid for nothing.
+        if (!params || !g_level_wants_bullet_mesh) {
             return;
         }
-        const float radius = geomod_crater_radius(*params).value_or(0.0f);
-        vehicle_physics_notify_geomod(params->pos, radius > 0.0f ? radius : 0.0f);
+        const float crater_radius = geomod_crater_radius(*params).value_or(0.0f);
+        const float radius = crater_radius > 0.0f ? crater_radius : 0.0f;
+        vehicle_physics_notify_geomod(params->pos, radius);
+        ragdoll_wake_near(params->pos, radius);
     }
 
     // Live craters: geomod_create and the client's 0x29 handler both queue here; geomod_create returns
@@ -743,6 +874,46 @@ namespace
             pregame_boolean_geomod_init_vphys_hook.call_target(params);
         },
     };
+
+    // The body this machine steers from live input: the local player's, or a server-driven one.
+    const VehicleSimBody* vphys_steered_body(int vehicle_handle)
+    {
+        const VehicleSimBody* b = sim_body_from_handle(vehicle_handle);
+        return b && b->body && (b == g_vphys.driven || b->server_driven) ? b : nullptr;
+    }
+
+    // forceActivationState: body_create stamped DISABLE_DEACTIVATION; a coast's thresholds are < Bullet's.
+    void vphys_server_body_apply_activation(VehicleSimBody& b)
+    {
+        if (b.server_driven) {
+            b.body->forceActivationState(DISABLE_DEACTIVATION);
+            return;
+        }
+        b.body->forceActivationState(ACTIVE_TAG);
+        b.body->setDeactivationTime(0.0f);
+        b.body->setSleepingThresholds(0.25f, 0.25f);
+    }
+
+    void vphys_server_body_set_driven(VehicleSimBody& b, rf::Entity* ep, bool driven)
+    {
+        if (b.server_driven == driven) {
+            return;
+        }
+        b.server_driven = driven;
+        // A detached sleeping car's wheels go back on at the next pre-step, which now finds it awake.
+        vphys_server_body_apply_activation(b);
+        if (!vphys_class_is_automobile(b.vehicle_class)) {
+            body_apply_shape(b, params_for_class(b.vehicle_class), ep);
+        }
+        if (!driven) {
+            return;
+        }
+        // The coast's PF_NET_PLAYER echo left the entity off the body; the correction test now applies.
+        btTransform interp;
+        b.motion_state->getWorldTransform(interp);
+        vphys_entity_take_pose(ep, from_bt(interp.getOrigin()), from_bt(interp.getBasis()));
+        b.written_pos = ep->pos;
+    }
 } // namespace
 
 int vphys_class_for(const rf::Entity* ep)
@@ -818,12 +989,24 @@ bool vehicle_physics_driven_velocity(int vehicle_handle, rf::Vector3* out)
 
 bool vehicle_physics_driven_steer_angle(int vehicle_handle, float* out)
 {
-    const VehicleSimBody* b = g_vphys.driven;
-    if (!b || !b->body || b->vehicle_handle != vehicle_handle) {
+    const VehicleSimBody* b = vphys_steered_body(vehicle_handle);
+    if (!b) {
         return false;
     }
     if (out) {
         *out = b->steer_current;
+    }
+    return true;
+}
+
+bool vehicle_physics_steer_held(int vehicle_handle, float* out)
+{
+    const VehicleSimBody* b = vphys_steered_body(vehicle_handle);
+    if (!b) {
+        return false;
+    }
+    if (out) {
+        *out = b->steer_input;
     }
     return true;
 }
@@ -840,19 +1023,22 @@ void vehicle_physics_do_frame()
 
     vphys_reconcile();
 
-    // A dedicated server never reaches that hook, so it steps here; exactly one of the two per frame.
+    // Neither hook steps a dedicated server, so it steps here.
     if (rf::is_dedicated_server) {
         vphys_step_frame();
     }
 }
 
-bool vehicle_physics_server_ensure(rf::Entity* ep, const rf::Vector3* seed_vel)
+bool vehicle_physics_server_ensure(rf::Entity* ep, const rf::Vector3* seed_vel, bool driven)
 {
     if (!ep || !rf::is_multi || !rf::is_server) {
         return false;
     }
     // Already ours: do NOT reseed - the body is mid-simulation.
     if (VehicleSimBody* held = sim_body_from_handle(ep->handle)) {
+        if (held->server_owned) {
+            vphys_server_body_set_driven(*held, ep, driven);
+        }
         return held->server_owned;
     }
     if (rf::entity_is_dying(ep) || ep->life <= 0.0f) {
@@ -869,17 +1055,15 @@ bool vehicle_physics_server_ensure(rf::Entity* ep, const rf::Vector3* seed_vel)
         return false;
     }
     b->server_owned = true;
+    b->server_driven = driven;
     if (!vphys_class_is_automobile(cls)) {
-        body_apply_shape(*b, params_for_class(cls), ep); // the parked cylinder keys off server_owned
+        body_apply_shape(*b, params_for_class(cls), ep); // the parked cylinder keys off both flags
     }
     if (seed_vel) {
         b->body->setLinearVelocity(to_bt(*seed_vel));
         b->body->setInterpolationLinearVelocity(to_bt(*seed_vel));
     }
-    // forceActivationState because body_create stamped DISABLE_DEACTIVATION; thresholds < Bullet's.
-    b->body->forceActivationState(ACTIVE_TAG);
-    b->body->setDeactivationTime(0.0f);
-    b->body->setSleepingThresholds(0.25f, 0.25f);
+    vphys_server_body_apply_activation(*b);
     return true;
 }
 
@@ -993,6 +1177,45 @@ void vehicle_physics_render_debug()
     vphys_render_debug();
 }
 
+bool vehicle_physics_class_car_tuning(int vdc_class, VehicleCarTuning& out)
+{
+    const int cls = vphys_class_from_vdc(vdc_class);
+    if (cls < 0 || !vphys_class_is_automobile(cls)) {
+        return false;
+    }
+    const VehiclePhysicsParams& p = params_for_class(cls);
+    out.top_speed = vphys_class_top_speed(cls);
+    out.brake_accel = std::max(p.brake_force, 0.0f);
+    out.steer_angle_max = std::max(p.steer_angle_max, 0.0f);
+    out.steer_input_gain = std::max(p.steer_input_gain, 0.0f);
+    out.steer_speed_falloff = std::max(p.steer_speed_falloff, 0.0f);
+    out.yaw_sign = p.yaw_sign;
+    out.thrust_sign = p.thrust_sign;
+    return true;
+}
+
+bool vehicle_physics_class_flight_tuning(int vdc_class, VehicleFlightTuning& out)
+{
+    const int cls = vphys_class_from_vdc(vdc_class);
+    if (cls < 0 || vphys_class_is_automobile(cls)) {
+        return false;
+    }
+    const VehiclePhysicsParams& p = params_for_class(cls);
+    out.top_speed = vphys_class_top_speed(cls);
+    out.thrust_accel = std::max(p.thrust_accel, 0.0f);
+    out.strafe_accel = std::max(p.strafe_accel, 0.0f);
+    out.lift_accel = std::max(p.lift_accel, 0.0f);
+    out.pitch_rate = std::max(p.pitch_rate, 0.0f);
+    out.yaw_rate = std::max(p.yaw_rate, 0.0f);
+    out.ceiling_band = std::max(p.ceiling_band, 0.0f);
+    out.pitch_sign = p.pitch_sign;
+    out.yaw_sign = p.yaw_sign;
+    out.thrust_sign = p.thrust_sign;
+    out.strafe_sign = p.strafe_sign;
+    out.lift_sign = p.lift_sign;
+    return true;
+}
+
 bool vehicle_physics_class_syncs_driver_aim(const rf::Entity* vehicle)
 {
     // Spelled out rather than read off cam_enable: a wire gate must not move when a camera is tuned.
@@ -1010,6 +1233,96 @@ float vehicle_physics_class_top_speed(int vdc_class)
 {
     const int cls = vphys_class_from_vdc(vdc_class);
     return cls < 0 ? 0.0f : vphys_class_top_speed(cls);
+}
+
+float vehicle_physics_hull_standoff(const rf::Entity* ep)
+{
+    const int cls = ep ? vphys_class_for(ep) : -1;
+    if (cls < 0 || vphys_class_is_automobile(cls)) {
+        return 0.0f;
+    }
+    return hull_standoff(params_for_class(cls), ep);
+}
+
+float vehicle_physics_type_corridor_radius(int entity_type)
+{
+    const int cls = vphys_class_from_vdc(vehicle_damage_class_from_type(entity_type));
+    if (cls < 0) {
+        return 0.0f;
+    }
+    HullBox box;
+    const bool measured = vphys_type_hull_box(entity_type, &box);
+    if (vphys_class_is_automobile(cls)) {
+        return measured ? static_cast<float>(box.half.x()) : default_corridor_half_width;
+    }
+    // hull_standoff with no entity to derive the sphere from: the measured box stands in for the cspheres.
+    const VehiclePhysicsParams& p = params_for_class(cls);
+    float radius = p.hull_radius;
+    if (radius <= 0.0f) {
+        radius = measured ? static_cast<float>(box.half.length()) : default_corridor_half_width;
+    }
+    return radius + std::max(p.ground_clearance, 0.0f);
+}
+
+int vehicle_physics_sphere_contacts(const rf::Vector3& center, float radius, VehiclePhysicsContact* out,
+                                    int max_contacts)
+{
+    if (!g_vphys.world || !(radius > 0.0f) || max_contacts <= 0 || !vehicle_vector_is_finite(center)) {
+        return 0;
+    }
+    struct SphereContactCallback : btCollisionWorld::ContactResultCallback
+    {
+        const btCollisionObject* probe = nullptr;
+        VehiclePhysicsContact* out = nullptr;
+        int max_contacts = 0;
+        int num_contacts = 0;
+
+        btScalar addSingleResult(btManifoldPoint& cp, const btCollisionObjectWrapper* wrap0, int, int,
+                                 const btCollisionObjectWrapper* wrap1, int, int) override
+        {
+            if (num_contacts >= max_contacts || cp.getDistance() > vehicle_physics_touch_dist) {
+                return 0.0f;
+            }
+            // m_normalWorldOnB points at object A.
+            const bool probe_is_a = wrap0->getCollisionObject() == probe;
+            const btCollisionObject* surface = probe_is_a ? wrap1->getCollisionObject() : wrap0->getCollisionObject();
+            const btVector3 point = probe_is_a ? cp.getPositionWorldOnB() : cp.getPositionWorldOnA();
+            const btVector3 normal = probe_is_a ? cp.m_normalWorldOnB : -cp.m_normalWorldOnB;
+            // Every triangle reports its own point, so one face split into several gives several of one touch.
+            constexpr float same_point_dist_sq = 0.25f * 0.25f;
+            constexpr float same_normal_dot = 0.9f;
+            for (int i = 0; i < num_contacts; ++i) {
+                if ((from_bt(point) - out[i].point).len_sq() < same_point_dist_sq
+                    && from_bt(normal).dot_prod(out[i].normal) > same_normal_dot) {
+                    return 0.0f;
+                }
+            }
+            btVector3 surface_vel(0.0f, 0.0f, 0.0f);
+            if (const btRigidBody* body = btRigidBody::upcast(surface)) {
+                surface_vel = body->getVelocityInLocalPoint(point - body->getCenterOfMassPosition());
+            }
+            out[num_contacts++] = {from_bt(point), from_bt(normal), from_bt(surface_vel)};
+            return 0.0f;
+        }
+    };
+
+    btSphereShape shape(radius);
+    btCollisionObject probe;
+    probe.setCollisionShape(&shape);
+    btTransform t;
+    t.setIdentity();
+    t.setOrigin(to_bt(center));
+    probe.setWorldTransform(t);
+
+    SphereContactCallback cb;
+    cb.probe = &probe;
+    cb.out = out;
+    cb.max_contacts = max_contacts;
+    // As a hull: the level, the movers and the props, never another hull.
+    cb.m_collisionFilterGroup = vphys_group_hull;
+    cb.m_collisionFilterMask = vphys_group_level | vphys_group_prop;
+    g_vphys.world->contactTest(&probe, cb);
+    return cb.num_contacts;
 }
 
 float vehicle_physics_class_bounce_gain(int vdc_class)
@@ -1057,14 +1370,14 @@ void vehicle_physics_level_reset()
     // The EARLY hook: teardown only - this fires before the RFL parse, so factory records are empty.
     world_destroy();
     g_vcam = VehicleChaseCamera{};
-    g_level_has_bullet_vehicles = false;
+    g_level_wants_bullet_mesh = false;
 }
 
 void vehicle_physics_level_init_post()
 {
     // After the stock level_init_post, hence the whole RFL parse; a dedicated server runs it too.
-    g_level_has_bullet_vehicles = vehicle_level_has_factories();
-    if (!g_level_has_bullet_vehicles) {
+    g_level_wants_bullet_mesh = vehicle_level_has_factories() || ragdolls_wanted();
+    if (!g_level_wants_bullet_mesh) {
         return;
     }
     if (!g_vphys.world) {
@@ -1077,16 +1390,19 @@ void vehicle_physics_on_multi_shutdown()
 {
     world_destroy();
     g_vcam = VehicleChaseCamera{};
-    g_level_has_bullet_vehicles = false;
+    g_level_wants_bullet_mesh = false;
 }
 
 void vehicle_physics_apply_patches()
 {
     physics_simulate_entity_vphys_hook.install();
     player_process_controls_vphys_hook.install();
+    multi_menu_world_sim_vphys_hook.install();
+    cutscene_sim_frame_vphys_hook.install();
     geomod_queue_add_vphys_hook.install();
     pregame_boolean_geomod_init_vphys_hook.install();
     vphys_world_install_patches();
     vphys_camera_install_patches();
     vphys_debug_install_patches();
+    ragdoll_apply_patches();
 }

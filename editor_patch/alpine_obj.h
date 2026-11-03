@@ -3,17 +3,19 @@
 #include <windows.h>
 #include <commctrl.h>
 #include <algorithm>
-#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <optional>
 #include <string>
+#include <common/utils/string-utils.h>
 #include "alpine_color_picker.h"
 #include "vtypes.h"
 #include "level.h"
 #include "textures.h"
+#include "graphics/editor_gr.h"
 
 // Shared Alpine object infrastructure — hooks that dispatch to all Alpine object types.
 // Type-specific logic lives in mesh.cpp / note.cpp / corona.cpp; this file wires them together.
@@ -26,18 +28,53 @@ void alpine_hide_objects(CDedLevel* level);
 // Singular display name for an object type, as the object lists show it.
 const char* get_type_display_name(DedObjectType type);
 
+// An Alpine object taken out of the level stays allocated here, since undo records may still point at
+// it; stock undo cleanup frees it, or the next DeleteContents does.
+void alpine_graveyard_add(DedObject* obj);
+void alpine_graveyard_clear();
+
+// Copy and paste of the selection, the user's clipboards kept; the copies become the selection. Returns the paste's
+// create entry, which holds every copy, or null if none was pushed.
+UndoEntry* alpine_duplicate_selection(CDedLevel* level);
+
 inline void alpine_remove_from_groups(CDedLevel* level, DedObject* obj)
 {
     auto& mg = level->moving_groups;
     for (int i = 0; i < mg.size; i++) {
         auto* group = mg[i];
         if (!group) continue;
+        bool was_member = false;
         for (int j = group->objects.size - 1; j >= 0; j--) {
             if (group->objects[j] == obj) {
                 group->objects.remove_at(j);
+                was_member = true;
+            }
+        }
+        // As stock FUN_0041c570 does: a stale entry would win the first-match uid lookup if the uid rejoins.
+        // An emptied group is kept, since stock's group deletion can't be undone.
+        if (was_member && group->keyframes) {
+            auto& members = group->keyframes->members;
+            for (int j = 0; j < members.size; j++) {
+                if (members[j]->uid == obj->uid) {
+                    editor_free(members[j]);
+                    members.remove_at(j);
+                    break;
+                }
             }
         }
     }
+}
+
+// Takes `obj` out of its type list, every group and master_objects, into the graveyard.
+template<typename T>
+inline void alpine_detach_object(CDedLevel* level, std::vector<T*>& objects, T* obj)
+{
+    auto it = std::find(objects.begin(), objects.end(), obj);
+    if (it != objects.end()) {
+        objects.erase(it);
+    }
+    level->master_objects.remove_by_value(obj);
+    alpine_graveyard_add(obj);
 }
 
 // ─── Shared selection helper ────────────────────────────────────────────────
@@ -61,24 +98,6 @@ inline void alpine_ensure_uid(const std::vector<T*>& objects, int& uid)
     }
 }
 
-// Deletes every selected object of one type, compacting the selection in place. Reverse
-// iteration is required: `destroy` frees the object, and each removal shifts the tail down.
-template<typename T, typename DestroyFn>
-inline void alpine_compact_selection(CDedLevel* level, DedObjectType type, DestroyFn destroy)
-{
-    auto& sel = level->selection;
-    for (int i = sel.size - 1; i >= 0; i--) {
-        DedObject* obj = sel.data_ptr[i];
-        if (obj && obj->type == type) {
-            for (int j = i; j < sel.size - 1; j++) {
-                sel.data_ptr[j] = sel.data_ptr[j + 1];
-            }
-            sel.size--;
-            destroy(static_cast<T*>(obj));
-        }
-    }
-}
-
 template<typename T>
 inline Vector3 alpine_obj_pos(const T& obj)
 {
@@ -88,13 +107,14 @@ inline Vector3 alpine_obj_pos(const T& obj)
 // Closest object whose position (pos_of, the placed position by default) projects within radius_sq of
 // the click, in pixels.
 template<typename T, typename PosFn = Vector3 (*)(const T&)>
-inline T* alpine_click_pick_point(const std::vector<T*>& objects, float click_x, float click_y,
+inline T* alpine_click_pick_point(T* const* first, T* const* last, float click_x, float click_y,
                                   float radius_sq, PosFn pos_of = alpine_obj_pos<T>)
 {
     float best_dist_sq = 1e30f;
     T* best = nullptr;
 
-    for (auto* obj : objects) {
+    for (; first != last; ++first) {
+        T* obj = *first;
         if (obj->hidden_in_editor) continue;
 
         const Vector3 pos = pos_of(*obj);
@@ -113,6 +133,14 @@ inline T* alpine_click_pick_point(const std::vector<T*>& objects, float click_x,
     }
 
     return best;
+}
+
+template<typename T, typename PosFn = Vector3 (*)(const T&)>
+inline T* alpine_click_pick_point(const std::vector<T*>& objects, float click_x, float click_y,
+                                  float radius_sq, PosFn pos_of = alpine_obj_pos<T>)
+{
+    return alpine_click_pick_point(objects.data(), objects.data() + objects.size(), click_x, click_y, radius_sq,
+                                   pos_of);
 }
 
 // Screen radius the point-picked Alpine object types share (20 px).
@@ -159,6 +187,17 @@ inline float alpine_dlg_get_float_field(HWND hdlg, int idc)
 {
     char buf[32] = {};
     GetDlgItemTextA(hdlg, idc, buf, sizeof(buf));
+    return static_cast<float>(std::atof(buf));
+}
+
+// Empty for a blank field.
+inline std::optional<float> alpine_dlg_get_optional_float_field(HWND hdlg, int idc)
+{
+    char buf[32] = {};
+    GetDlgItemTextA(hdlg, idc, buf, sizeof(buf));
+    if (trim(buf).empty()) {
+        return std::nullopt;
+    }
     return static_cast<float>(std::atof(buf));
 }
 
@@ -385,6 +424,36 @@ inline void draw_wireframe_sphere(float cx, float cy, float cz, float radius, in
     }
 }
 
+// Cylinder along orient.fvec, centred on center, its end circles in the rvec/uvec plane; drawn with
+// the clipped line routine the stock shapes use, in the set_draw_color colour.
+inline void draw_wireframe_cylinder_3d(const Vector3& center, const Matrix3& orient, float radius, float length,
+                                       uint32_t mode)
+{
+    constexpr int segments = 24;
+    constexpr float pi2 = 6.2831853f;
+    const float h = length * 0.5f;
+    const Vector3& a = orient.fvec;
+    Vector3 prev_top, prev_bottom;
+    for (int i = 0; i <= segments; i++) {
+        const float ang = pi2 * static_cast<float>(i) / segments;
+        const float c = std::cos(ang) * radius;
+        const float s = std::sin(ang) * radius;
+        const Vector3 off{orient.rvec.x * c + orient.uvec.x * s, orient.rvec.y * c + orient.uvec.y * s,
+                          orient.rvec.z * c + orient.uvec.z * s};
+        const Vector3 top{center.x + off.x + a.x * h, center.y + off.y + a.y * h, center.z + off.z + a.z * h};
+        const Vector3 bottom{center.x + off.x - a.x * h, center.y + off.y - a.y * h, center.z + off.z - a.z * h};
+        if (i > 0) {
+            gr_line_3d(&prev_top, &top, mode);
+            gr_line_3d(&prev_bottom, &bottom, mode);
+        }
+        if (i < segments && i % (segments / 4) == 0) {
+            gr_line_3d(&bottom, &top, mode);
+        }
+        prev_top = top;
+        prev_bottom = bottom;
+    }
+}
+
 // ─── Additive blending helpers ──────────────────────────────────────────────
 
 namespace d3d8 {
@@ -409,7 +478,8 @@ namespace d3d8 {
     }
 }
 
-// Flush the current batch with additive blend states, then restart with normal states
+// Direct3D 9: flush the current batch with additive blend states, then restart with normal states. Direct3D 11 has no
+// D3D8 device: the draw's own mode blends it (editor_gr_additive_mode).
 inline void flush_additive()
 {
     void* device = d3d_device_ptr;
@@ -431,9 +501,9 @@ inline void flush_additive()
 }
 
 // Render a billboard with additive blending
-inline void render_additive_billboard(void* pos, float scale, float cam_param)
+inline void render_additive_billboard(void* pos, float scale, rf::gr::Mode mode)
 {
-    gr_render_billboard(pos, 0, scale, cam_param);
+    gr_render_billboard(pos, 0, scale, editor_gr_additive_mode(mode));
     flush_additive();
 }
 
@@ -452,7 +522,7 @@ inline void world_to_view(GrVertex& v, const Vector3& w)
 // The quad is locked along the given forward axis and rotates around it to face the camera.
 inline void render_additive_axial_quad(
     const Vector3& pos, const Matrix3& orient,
-    float length, float height, float cam_param)
+    float length, float height, rf::gr::Mode mode)
 {
     Vector3 cam_pos = {ed_cam_pos[0], ed_cam_pos[1], ed_cam_pos[2]};
 
@@ -510,8 +580,7 @@ inline void render_additive_axial_quad(
 
     GrVertex* ptrs[4] = {&verts[0], &verts[1], &verts[2], &verts[3]};
 
-    gr_set_mode(0x10);
-    // The mode slot has always received the bits of this global (0x014cf7e0), typed float here.
-    gr_poly_render(4, ptrs, 1, std::bit_cast<uint32_t>(cam_param), 0, 0.0f);
+    gr_set_zbias(16);
+    gr_poly_render(4, ptrs, 1, static_cast<uint32_t>(static_cast<int>(editor_gr_additive_mode(mode))), 0, 0.0f);
     flush_additive();
 }

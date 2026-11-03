@@ -214,6 +214,8 @@ const MutatorDescription mutator_descriptions[] = {
      "Sets the score limit for the game type being voted, instead of the server's."},
     {"idealplayers",
      "Sets the player count the server advertises as its target size."},
+    {"joinbots",
+     "Bots join for the level, or fill a match's open slots once the other players are ready."},
 };
 
 const char* mutator_description_for(std::string_view name)
@@ -248,6 +250,7 @@ const VoteTypeInfo vote_type_infos[] = {
     {AfVoteType::Extend, "Extend", "Extend the time limit of the round in progress."},
     {AfVoteType::Match, "Match", "Set up a match on the chosen level with the chosen team size."},
     {AfVoteType::CancelMatch, "Cancel Match", "Cancel the match that is currently set up."},
+    {AfVoteType::Surrender, "Surrender", "Concede the match. Passes only if every player on your team agrees."},
     {AfVoteType::Kick, "Kick", "Kick the selected player from the server."},
 };
 
@@ -273,6 +276,7 @@ const char* gametype_short_name(uint8_t id)
         case rf::NG_TYPE_WO: return "WO";
         case rf::NG_TYPE_GG: return "GG";
         case rf::NG_TYPE_SAL: return "SAL";
+        case rf::NG_TYPE_SCAV: return "SCAV";
         default: return nullptr; // unknown to this build
     }
 }
@@ -3056,7 +3060,8 @@ void do_form(PanelUi& ui, const Layout& lo, const VoteOptionsData& options,
     }
 
     if (tabs.empty()) {
-        do_message_block(ui, lo, {"This server has no votes enabled."});
+        do_message_block(ui, lo, {vote_client_spectating_match() ? "Only players in the current match can call votes."
+                                                                 : "This server has no votes enabled."});
         return;
     }
 

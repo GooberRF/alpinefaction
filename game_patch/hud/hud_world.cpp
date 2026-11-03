@@ -14,6 +14,8 @@
 #include "../multi/gametype.h"
 #include "../multi/bagman.h"
 #include "../multi/salvage.h"
+#include "../multi/scavenger.h"
+#include "scavenger_zone.h"
 #include "../misc/alpine_settings.h"
 #include "../sound/sound.h"
 #include "../multi/demo/demo.h"
@@ -277,25 +279,49 @@ static float koth_fill_scale_from_progress(uint8_t progress01_100, float base_ic
     return base_icon_scale * g_koth_hud_tuning.fill_vs_ring_scale * r;
 }
 
-static void render_string_3d_pos_new(const rf::Vector3& pos, const std::string& text, int offset_x, int offset_y,
-    int font, rf::ubyte r, rf::ubyte g, rf::ubyte b, rf::ubyte a)
-{
-    rf::gr::Vertex dest;
-
-    // Transform the position to screen space
-    if (!rf::gr::rotate_vertex(&dest, &pos))
-    {
-        rf::gr::project_vertex(&dest);
-
-        // Check if projection was successful
-        if (dest.flags & 1)
-        {
-            int screen_x = static_cast<int>(dest.sx) + offset_x;
-            int screen_y = static_cast<int>(dest.sy) + offset_y;
-            rf::gr::set_color(r, g, b, a);
-            rf::gr::string(screen_x, screen_y, text.c_str(), font);
-        }
+// Assumes `rf::gr::screen.aspect` to be 1, so x and y scales are equal.
+static float world_units_per_pixel(const rf::Vector3& pos) {
+    const rf::Vector3 delta = pos - rf::gr::view_pos;
+    const float z = rf::gr::view_matrix.fvec.dot_prod(delta);
+    if (z <= 1e-6f) {
+        return 0.f;
     }
+    return 2.f * z / (rf::gr::screen.clip_height * rf::gr::matrix_scale.y);
+}
+
+static void render_string_3d(
+    rf::Vector3 pos,
+    const char* const string,
+    const int screen_offset_x,
+    const int screen_offset_y,
+    const int font_num,
+    const rf::gr::Color color
+) {
+    const float scale = world_units_per_pixel(pos);
+    if (scale <= .0f) {
+        return;
+    }
+    if (screen_offset_x != 0) {
+        pos += rf::gr::eye_matrix.rvec
+            * static_cast<float>(screen_offset_x)
+            * scale;
+    }
+    if (screen_offset_y != 0) {
+        pos -= rf::gr::eye_matrix.uvec
+            * static_cast<float>(screen_offset_y)
+            * scale;
+    }
+    const rf::gr::Color prev_color{rf::gr::screen.current_color};
+    rf::gr::set_color(color);
+    rf::gr::string_3d(
+        &pos,
+        &rf::gr::eye_matrix,
+        scale,
+        string,
+        font_num,
+        rf::gr::bitmap_clamp_mode
+    );
+    rf::gr::set_color(prev_color);
 }
 
 static WorldHUDView make_world_hud_view(rf::Vector3 pos, bool stay_inside_fog = true)
@@ -474,25 +500,9 @@ void do_render_world_hud_text_label(const NameLabelTex& label, const rf::Vector3
 }
 
 // Session-lifetime, like the font atlases: lets a solid quad share the textured labels' render modes.
-static int world_hud_white_bitmap()
+int world_hud_white_bitmap()
 {
-    static int white_bm = -1;
-    static bool failed = false;
-    if (white_bm == -1 && !failed) {
-        const int bm = rf::bm::create(rf::bm::FORMAT_8888_ARGB, 8, 8);
-        if (bm == -1) {
-            failed = true;
-            return -1;
-        }
-        if (!bm_fill(bm, 0xFFFFFFFFu)) {
-            rf::gr::mark_texture_dirty(bm);
-            rf::bm::release(bm);
-            failed = true;
-            return -1;
-        }
-        rf::bm::texture_add_ref(bm);
-        white_bm = bm;
-    }
+    static const int white_bm = bm_create_procedural(8, 8, [](int, int) { return 0xFFFFFFFFu; });
     return white_bm;
 }
 
@@ -701,7 +711,7 @@ static void build_koth_hill_icons()
 // offset_y is the plate's bottom edge; the plate extends upward so it never covers
 // the player model. Both bars share one scale so the 50-unit notches line up; the
 // scale grows in 50-unit steps when a value exceeds 100 (super health/armor amps).
-static void render_player_info_bars(const rf::Vector3& pos, int offset_y, float life, float armor)
+static void render_player_info_bars(const rf::Vector3& pos, int offset_y, float life, float armor, float fade)
 {
     rf::gr::Vertex dest;
     if (rf::gr::rotate_vertex(&dest, &pos))
@@ -726,7 +736,9 @@ static void render_player_info_bars(const rf::Vector3& pos, int offset_y, float 
     const int x = static_cast<int>(dest.sx) - plate_w / 2;
     const int y = static_cast<int>(dest.sy) + offset_y - plate_h;
 
-    rf::gr::set_color(0, 0, 0, 140);
+    auto faded = [fade](int alpha) { return static_cast<int>(std::lround(alpha * fade)); };
+
+    rf::gr::set_color(0, 0, 0, faded(140));
     rf::gr::rect(x, y, plate_w, plate_h);
 
     const int health_y = y + pad;
@@ -736,15 +748,15 @@ static void render_player_info_bars(const rf::Vector3& pos, int offset_y, float 
         return static_cast<int>(std::lround(static_cast<float>(std::min(value, bar_max)) / bar_max * bar_w));
     };
 
-    rf::gr::set_color(90, 200, 90, 220); // health - green
+    rf::gr::set_color(90, 200, 90, faded(220)); // health - green
     if (int w = fill_w(health); w > 0)
         rf::gr::rect(x + pad, health_y, w, bar_h);
-    rf::gr::set_color(210, 175, 60, 220); // armor - amber
+    rf::gr::set_color(210, 175, 60, faded(220)); // armor - amber
     if (int w = fill_w(armor_points); w > 0)
         rf::gr::rect(x + pad, armor_y, w, bar_h);
 
     // notches every 50 units, spanning both bars
-    rf::gr::set_color(0, 0, 0, 200);
+    rf::gr::set_color(0, 0, 0, faded(200));
     for (int notch = 50; notch < bar_max; notch += 50) {
         int notch_x = x + pad + static_cast<int>(std::lround(static_cast<float>(notch) / bar_max * bar_w));
         rf::gr::rect(notch_x, health_y, 1, 2 * bar_h + gap);
@@ -758,6 +770,7 @@ void build_player_labels() {
     bool is_team_mode = multi_is_team_game_type();
     bool show_teammates = g_alpine_game_config.world_hud_team_player_labels && is_team_mode && !is_spectating;
     auto spectate_target = multi_spectate_get_target_player();
+    rf::Camera* const camera = rf::local_player ? rf::local_player->cam : nullptr;
 
     const int font = get_world_hud_font(g_alpine_game_config.get_world_hud_label_text_scale());
     const int base_font = get_world_hud_font(1.0f);
@@ -804,11 +817,15 @@ void build_player_labels() {
 
         rf::Vector3 string_pos = player_entity->pos;
         string_pos.y += 0.85f;
+        const float fade = camera ? fog_far_clip_fade(string_pos.distance_to(rf::camera_get_pos(camera))) : 1.0f;
+        if (!(fade > 0.0f)) {
+            continue;
+        }
         std::string label = player.name;
 
         // determine label width
         const auto [text_width, text_height] = rf::gr::get_string_size(label, font);
-        const int base_text_height = rf::gr::get_string_size(label, base_font).second;
+        const int base_text_height = rf::gr::get_font_height(base_font);
         int half_text_width = text_width / 2;
         int centered_offset_y = -25 - ((text_height - base_text_height) / 2);
 
@@ -838,11 +855,12 @@ void build_player_labels() {
             label_a = teammate_override_a;
         }
 
-        render_string_3d_pos_new(string_pos, label.c_str(), -half_text_width, centered_offset_y, font, label_r, label_g, label_b, label_a);
+        label_a = static_cast<uint8_t>(std::lround(label_a * fade));
+        render_string_3d(string_pos, label.c_str(), -half_text_width, centered_offset_y, font, {label_r, label_g, label_b, label_a});
 
         if (demo_player_info) {
             render_player_info_bars(string_pos, centered_offset_y - 2, player_entity->life,
-                                    player_entity->armor);
+                                    player_entity->armor, fade);
         }
     }
 }
@@ -852,21 +870,27 @@ void build_ephemeral_world_hud_sprite_icons() {
         return !es.timestamp.valid() || es.timestamp.elapsed();
     });
 
-    for (const auto& es : ephemeral_world_hud_sprites) {
-        const int font = get_world_hud_font(g_alpine_game_config.get_world_hud_ping_label_text_scale());
+    if (ephemeral_world_hud_sprites.empty()) {
+        return;
+    }
 
-        rf::gr::set_color(es.color.red, es.color.green, es.color.blue, es.color.alpha);
+    const int base_font = get_world_hud_font(1.f);
+    const int font =
+        get_world_hud_font(g_alpine_game_config.get_world_hud_ping_label_text_scale());
+
+    for (const auto& es : ephemeral_world_hud_sprites) {
+        rf::gr::set_color(es.color);
         if (es.bitmap != -1) {
             do_render_world_hud_sprite(es.pos, 1.0f, es.bitmap, es.render_mode, true, true, true);
         }
 
-        // determine label width
+        // Determine label's width.
         const auto [text_width, text_height] = rf::gr::get_string_size(es.label, font);
-        int half_text_width = text_width / 2;
+        const int half_text_width = text_width / 2;
+        const int base_text_height = rf::gr::get_font_height(base_font);
+        const int offset_y = -25 - (text_height - base_text_height);
 
-        auto text_pos = es.pos;
-        render_string_3d_pos_new(text_pos, es.label.c_str(), -half_text_width, -25,
-            font, es.color.red, es.color.green, es.color.blue, es.color.alpha);
+        render_string_3d(es.pos, es.label.c_str(), -half_text_width, offset_y, font, es.color);
     }
 }
 
@@ -874,42 +898,75 @@ void build_ephemeral_world_hud_sprite_icons() {
 constexpr float world_hud_crit_damage_text_scale = 1.5f;
 
 void build_ephemeral_world_hud_strings() {
-    std::erase_if(ephemeral_world_hud_strings, [](const EphemeralWorldHUDString& es) {
+    std::erase_if(ephemeral_world_hud_strings, [] (const EphemeralWorldHUDString& es) {
         return !es.timestamp.valid() || es.timestamp.elapsed();
     });
 
-    for (const auto& es : ephemeral_world_hud_strings) {
-        int label_y_offset = 0;
-        const float text_scale = g_alpine_game_config.get_world_hud_damage_text_scale()
-            * (es.crit ? world_hud_crit_damage_text_scale : 1.0f);
-        const int font = get_world_hud_font(text_scale);
+    if (ephemeral_world_hud_strings.empty()) {
+        return;
+    }
+
+    const int base_font = get_world_hud_font(1.f);
+    const int dmg_font =
+         get_world_hud_font(g_alpine_game_config.get_world_hud_damage_text_scale());
+    const int critical_font = get_world_hud_font(
+        g_alpine_game_config.get_world_hud_damage_text_scale() * world_hud_crit_damage_text_scale
+    );
+
+    for (const EphemeralWorldHUDString& es : ephemeral_world_hud_strings) {
+        const int font = es.crit ? critical_font : dmg_font;
         rf::Vector3 string_pos = es.pos;
-        string_pos.y += 0.85f;
+        string_pos.y += .85f;
 
         if (es.float_away) {
-            // Calculate the progress of the fade effect
+            // Calculate the progress of the fade effect.
             const float progress = es.timestamp.elapsed_frac();
-            string_pos.y += progress * 3.0f;
+            string_pos.y += progress * 3.f;
 
-            // Apply wind effect
-            const float elapsed_time = es.timestamp.time_since_sec();
-            float wind_amplitude = 0.15f;
-            float wind_frequency_x = 12.0f;
-            float wind_frequency_z = 9.0f;
-
-            string_pos.x += wind_amplitude * std::sin((elapsed_time * 0.002f) + es.wind_phase_offset);
-            string_pos.z += wind_amplitude * std::cos((elapsed_time * 0.002f) + es.wind_phase_offset * 0.8f);
+            // Apply wind.
+            const float elapsed_sec = es.timestamp.time_since_sec();
+            const float wind_amplitude = .15f;
+            const float wind_phase = elapsed_sec * 2.f;
+            string_pos.x +=
+                wind_amplitude * std::sin(wind_phase + es.wind_phase_offset);
+            string_pos.z +=
+                wind_amplitude * std::cos(wind_phase + es.wind_phase_offset * .8f);
         }
 
-        std::string label = std::to_string(es.damage);
-
-        // determine label width
+        const std::string label = std::to_string(es.damage);
         const auto [text_width, text_height] = rf::gr::get_string_size(label, font);
-        int half_text_width = text_width / 2;
+        const int half_text_width = text_width / 2;
+        const int base_text_height = rf::gr::get_font_height(base_font);
+        const int centered_offset_y = -25 - ((text_height - base_text_height) / 2);
 
-        render_string_3d_pos_new(string_pos, label.c_str(), -half_text_width, -25,
-            font, es.color.red, es.color.green, es.color.blue, es.color.alpha);
+        render_string_3d(
+            string_pos,
+            label.c_str(),
+            -half_text_width,
+            centered_offset_y,
+            font,
+            es.color
+        );
     }
+}
+
+static rf::Player* world_hud_viewed_player()
+{
+    if (multi_spectate_is_spectating()) {
+        return multi_spectate_get_target_player();
+    }
+    return rf::local_player;
+}
+
+static int world_hud_viewer_team()
+{
+    const rf::Player* viewer = world_hud_viewed_player();
+    return viewer ? static_cast<int>(viewer->team) : -1;
+}
+
+static int objective_carrier_icon(bool carrier_is_friendly)
+{
+    return carrier_is_friendly ? g_world_hud_assets.sal_wait : g_world_hud_assets.bag_player_icon;
 }
 
 void build_bag_icon()
@@ -926,8 +983,9 @@ void build_bag_icon()
         rf::Vector3 pos = carrier_ep->pos;
         pos.y += WorldHUDRender::bag_player_icon_offset;
 
-        const int bitmap_handle = g_world_hud_assets.bag_player_icon;
-        do_render_world_hud_sprite(pos, 0.6f, bitmap_handle, WorldHUDRenderMode::overdraw, true, true, true);
+        const bool carrier_is_friendly = gt_is_tbag() && g_bagman_info.carrier->team == world_hud_viewer_team();
+        do_render_world_hud_sprite(pos, 0.6f, objective_carrier_icon(carrier_is_friendly),
+            WorldHUDRenderMode::overdraw, true, true, true);
         return;
     }
 
@@ -951,8 +1009,7 @@ void build_bag_icon()
         rf::Vector3 text_pos = vec;
         text_pos.y += WorldHUDRender::bag_countdown_offset;
 
-        render_string_3d_pos_new(text_pos, label, -half_text_width, -25, font, hud_amber_color.red,
-                                 hud_amber_color.green, hud_amber_color.blue, hud_amber_color.alpha);
+        render_string_3d(text_pos, label.c_str(), -half_text_width, -25, font, hud_amber_color);
     }
 }
 
@@ -968,13 +1025,7 @@ static void render_world_hud_countdown(const rf::Vector3& anchor, float y_offset
     rf::Vector3 text_pos = anchor;
     text_pos.y += y_offset;
 
-    render_string_3d_pos_new(text_pos, label, -half_text_width, -25, font, hud_amber_color.red,
-                             hud_amber_color.green, hud_amber_color.blue, hud_amber_color.alpha);
-}
-
-static int sal_icon_carrier(bool carrier_is_friendly)
-{
-    return carrier_is_friendly ? g_world_hud_assets.sal_wait : g_world_hud_assets.bag_player_icon;
+    render_string_3d(text_pos, label.c_str(), -half_text_width, -25, font, hud_amber_color);
 }
 
 static int sal_icon_on_ground()    { return g_world_hud_assets.sal_take; }
@@ -989,28 +1040,33 @@ static void render_salvage_sprite(const rf::Vector3& pos, int bitmap_handle, Wor
     do_render_world_hud_sprite(pos, 0.6f, bitmap_handle, render_mode, true, true, true);
 }
 
-static rf::Player* salvage_viewed_player()
-{
-    if (multi_spectate_is_spectating()) {
-        return multi_spectate_get_target_player();
-    }
-    return rf::local_player;
-}
-
-static int salvage_viewer_team()
-{
-    const rf::Player* viewer = salvage_viewed_player();
-    return viewer ? static_cast<int>(viewer->team) : -1;
-}
-
 // Team whose base should show the capture sprite.
 static int salvage_deliver_base_team()
 {
-    rf::Player* viewer = salvage_viewed_player();
+    rf::Player* viewer = world_hud_viewed_player();
     if (salvage_player_is_carrier(viewer)) {
         return viewer->team;
     }
     return -1;
+}
+
+// Scavenger's capture zone, with its timeout countdown near the end. The deliver sprite for the carrier.
+static void build_scavenger_zone_icon(WorldHUDRenderMode render_mode)
+{
+    rf::Vector3 zone_pos{};
+    if (!scavenger_get_zone(&zone_pos)) return;
+
+    rf::Player* viewer = world_hud_viewed_player();
+    int bitmap_handle = g_world_hud_assets.koth_neutral;
+    if (salvage_player_is_carrier(viewer)) {
+        bitmap_handle = viewer->team == rf::TEAM_RED ? sal_icon_deliver_red() : sal_icon_deliver_blue();
+    }
+    zone_pos.y += WorldHUDRender::ctf_flag_offset;
+    render_salvage_sprite(zone_pos, bitmap_handle, render_mode);
+    const int time_left_ms = scavenger_get_zone_time_left_ms();
+    if (time_left_ms <= kScavZoneCountdownVisibleMs) {
+        render_world_hud_countdown(zone_pos, WorldHUDRender::bag_countdown_offset, time_left_ms);
+    }
 }
 
 // Draw Salvage's flag sprites.
@@ -1031,6 +1087,7 @@ void build_salvage_icons()
         render_salvage_sprite(base_blue,
             deliver_team == rf::TEAM_BLUE ? sal_icon_deliver_blue() : sal_icon_base_blue(), render_mode);
     }
+    build_scavenger_zone_icon(render_mode);
 
     if (state == SalFlagState::Carried) {
         rf::Player* carrier = salvage_get_carrier();
@@ -1039,10 +1096,10 @@ void build_salvage_icons()
                 rf::Vector3 pos = carrier_ep->pos;
                 pos.y += WorldHUDRender::bag_player_icon_offset;
                 // Team-relative marker.
-                const int viewer_team = salvage_viewer_team();
+                const int viewer_team = world_hud_viewer_team();
                 const bool carrier_is_friendly =
                     viewer_team >= 0 && viewer_team == static_cast<int>(carrier->team);
-                render_salvage_sprite(pos, sal_icon_carrier(carrier_is_friendly), render_mode);
+                render_salvage_sprite(pos, objective_carrier_icon(carrier_is_friendly), render_mode);
             }
         }
         return; // nothing marks the vacant spawn while somebody is running the flag
@@ -1424,7 +1481,9 @@ void hud_world_do_frame() {
     if (rf::is_multi && g_alpine_game_config.world_hud_ctf_icons && rf::multi_get_game_type() == rf::NetGameType::NG_TYPE_CTF) {
         build_ctf_flag_icons();
     }
-    if (rf::is_multi && gt_is_salvage()) {
+    // Unconditional: it also deletes the zone light once Scavenger is gone.
+    scavenger_zone_render();
+    if (rf::is_multi && salvage_framework_active()) {
         salvage_update_dynamic_light();
         if (g_alpine_game_config.world_hud_ctf_icons) {
             build_salvage_icons();
@@ -1579,7 +1638,7 @@ void add_damage_notify_world_hud_string(rf::Vector3 pos, uint8_t damaged_player_
     es.player_id = damaged_player_id;
     es.hull_handle = hull_handle;
     es.damage = damage;
-    es.timestamp.set_ms(1000);
+    es.timestamp.set_ms(damage_number_merge_ms);
     es.float_away = true;
     es.wind_phase_offset = wind_offset_dist(g_rng);
     es.crit = crit;

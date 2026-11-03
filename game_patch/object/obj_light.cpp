@@ -18,7 +18,8 @@
 #include "../rf/v3d.h"
 #include "../rf/character.h"
 #include "../rf/gr/gr.h"
-#include "../graphics/d3d11/gr_d3d11_mesh.h"
+#include <common/gr_d3d11/gr_d3d11_mesh.h>
+#include "../graphics/d3d11/gr_d3d11_hooks.h"
 #include "../rf/multi.h"
 #include "../rf/crt.h"
 #include "../os/console.h"

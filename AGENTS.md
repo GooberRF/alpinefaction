@@ -39,11 +39,13 @@ This file is intended to help Codex, Claude, and other assistants (and other aut
   - Consolidates code where reasonable using `common/`
   - Reuses existing shared logic where possible (such as the utilities in `common/utils`)
   - Adheres to existing codebase style convention and `STYLE.md`
+  - No unexpected regressions affecting existing behaviour
 
 ## Change guidelines
 - Keep changes minimal and focused on the requested task.
 - Match existing formatting and naming in nearby code.
 - Update documentation when behavior or usage changes.
+- When adding, removing, or changing console commands, command line switches, or dedicated server config options, update the matching file in `docs/reference/`.
 
 ## Core game tie-ins (hooking/injection primitives)
 - `FunHook`: Function-level hook helper. Use when you need to intercept or wrap an

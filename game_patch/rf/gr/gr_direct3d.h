@@ -67,6 +67,5 @@ namespace rf::gr::d3d
     static auto& primitive_type = addr_as_ref<D3DPRIMITIVETYPE>(0x01D862A8);
 #endif
     static auto& zm = addr_as_ref<float>(0x005A7DD8);
-    static auto& p2t = addr_as_ref<int>(0x01CFCC18);
     static auto& use_glorad_detail_map = addr_as_ref<bool>(0x01CFCBCC);
 }

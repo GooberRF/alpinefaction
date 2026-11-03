@@ -11,6 +11,22 @@ namespace rf
     struct Object;
     struct Entity;
 
+    // Surface material (foley.tbl $Material, parser 0x00434960); PCollisionOut::material holds it,
+    // resolved from the hit face's texture by 0x00468700.
+    enum SurfaceMaterial
+    {
+        MATERIAL_DEFAULT = 0,
+        MATERIAL_ROCK = 1,
+        MATERIAL_METAL = 2,
+        MATERIAL_FLESH = 3,
+        MATERIAL_WATER = 4,
+        MATERIAL_LAVA = 5,
+        MATERIAL_SOLID = 6,
+        MATERIAL_SAND = 7,
+        MATERIAL_ICE = 8,
+        MATERIAL_GLASS = 9,
+    };
+
     struct PCollisionOut
     {
         Vector3 hit_point;
@@ -87,6 +103,8 @@ namespace rf
         PF_SIMULATED_THIS_FRAME = 0x40000000, // set before the physics tick in obj_move_all, cleared at the end of obj_process_physics
     };
 
+    // Cached material, else from the name prefix (and caches it)
+    static auto& bm_get_surface_material = addr_as_ref<int(int bm_handle)>(0x00468700);
     static auto& physics_frame_init = addr_as_ref<void(PhysicsData* pd)>(0x0049F1E0);
     // Full per-entity physics step: movemode input conversion (ai.ci), mouselook
     // rotation, acceleration and velocity integration

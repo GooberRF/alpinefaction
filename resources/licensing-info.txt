@@ -116,6 +116,12 @@ leeor_net:
 mcpable:
 * af_jeep_horn.ogg (CC0: https://freesound.org/s/131930/)
 
+F.M.Audio:
+* af_fighter_scrape_loop.wav (CC-BY 4.0: https://freesound.org/s/620428/)
+
+Quaternius:
+* af_scavpumap1.dds and af-scavpumap1.v3m (CC0: https://opengameart.org/content/sci-fi-essentials-kit/)
+
 ###############################################################################
 ## stb_image, stb_vorbis
 ###############################################################################

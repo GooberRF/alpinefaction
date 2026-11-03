@@ -64,6 +64,7 @@ namespace rf
         OF_IS_PLAYER = 0x8,            // checked by obj_is_player (FUN_004895d0)
         OF_WAS_RENDERED = 0x10,
         OF_UNK_80 = 0x80,
+        OF_MESH_NOT_OWNED = 0x400,       // obj_delete_mesh (0x00489FC0) leaves the vmesh alone: a corpse took it
         // An attached object keeps its own orientation (0x0048771B) and stays simulated
         // (obj_should_sim_physics 0x0048807C). Set 0x004A61BA / cleared 0x004A61D0, local player only.
         OF_KEEP_ORIENT_ON_HOST = 0x100,
@@ -76,6 +77,30 @@ namespace rf
         OF_IN_LIQUID = 0x80000,
         OF_HAS_ALPHA = 0x100000,
         OF_WAS_TELEPORTED = 0x4000000, // forces physics/position update this frame
+    };
+
+    // Uniform Catmull-Rom spline through points[1..num_points]; points[0] and points[num_points + 1] are
+    // the phantom end points build() extrapolates. Evaluated only by ObjInterp position lookups (0x005305F0).
+    struct CatmullRomCurve
+    {
+        Vector3 points[32];
+        int num_points;
+
+        void build(int num, const Vector3* control_points)
+        {
+            AddrCaller{0x00530500}.this_call(this, num, control_points);
+        }
+    };
+    static_assert(sizeof(CatmullRomCurve) == 0x184);
+    static_assert(offsetof(CatmullRomCurve, num_points) == 0x180);
+
+    enum ObjInterpFlags : uint32_t
+    {
+        // The next keyframe insert re-anchors interp_time. Set by Clear(); the frame advance waits while it is set.
+        OIF_REANCHOR = 0x1,
+        // The next position update also sets p_data.pos instead of sweeping to the new position. Set by a
+        // re-anchor or a keyframe >= 2.5 from the object.
+        OIF_SNAP = 0x2,
     };
 
     // Network interpolation state of a remote object: a 20-keyframe ring of replicated
@@ -95,9 +120,7 @@ namespace rf
         Vector3 move_array[max_keyframes];
         uint32_t always_0_array[max_keyframes];
         uint16_t time_array[max_keyframes]; // 16-bit server ms ticks
-        uint32_t flags;    // bit 0: force re-anchor - the next keyframe insert re-anchors
-                           // interp_time and then clears this bit; Clear() zeroes the whole
-                           // word. bit 1: a sample was inserted this frame
+        uint32_t flags; // ObjInterpFlags
         uint16_t interp_time; // evaluation time (16-bit server ms ticks)
         uint8_t pad_52e[2];
         uint32_t frame_time_us; // wall-clock stamp of the last frame advance (ms with AF's
@@ -108,8 +131,8 @@ namespace rf
         int32_t arrive_time_diff[max_keyframes]; // wall-clock arrival gaps between samples (ms)
         float arrive_time_avg_diff; // average of arrive_time_diff - drives the spline endpoint
                                     // dead-reckoning step and the interp_time re-anchor headroom
-        char pos_curve[0x184]; // CatmullRomCurve
-        char unk_curve[0x184]; // CatmullRomCurve
+        CatmullRomCurve pos_curve; // keyframe positions + one dead-reckoned end point
+        CatmullRomCurve unk_curve;
         char lag_comp_data[0x68];
 
         void Clear()
@@ -136,6 +159,12 @@ namespace rf
     static_assert(offsetof(ObjInterp, interp_time) == 0x52C);
     static_assert(offsetof(ObjInterp, num) == 0x534);
     static_assert(offsetof(ObjInterp, arrive_time_avg_diff) == 0x58C);
+    static_assert(offsetof(ObjInterp, vel_array) == 0x2D0);
+    static_assert(offsetof(ObjInterp, move_array) == 0x3C0);
+    static_assert(offsetof(ObjInterp, always_0_array) == 0x4B0);
+    static_assert(offsetof(ObjInterp, last_update_time) == 0x538);
+    static_assert(offsetof(ObjInterp, arrive_time_diff) == 0x53C);
+    static_assert(offsetof(ObjInterp, pos_curve) == 0x590);
 
     enum ObjFriendliness
     {
@@ -206,6 +235,7 @@ namespace rf
     };
 #pragma pack(pop)
     static_assert(sizeof(Object) == 0x28C);
+    static_assert(offsetof(Object, server_handle) == 0x274);
 
     struct ObjectCreateInfo
     {

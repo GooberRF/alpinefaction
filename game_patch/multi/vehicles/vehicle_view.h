@@ -28,9 +28,12 @@ bool vehicle_apc_minigun_muzzle_pos(rf::Entity* hull, rf::Vector3* out_pos);
 // The memoized prop indices must not outlive the level's meshes.
 void vehicle_view_level_init();
 
-// Client, once per frame: the local turret operator's alt trigger toggles his zoom.
-void vehicle_turret_zoom_do_frame();
-// The local operator's turret zoom as a FOV divisor: 1 unless he has toggled it on in the turret he mans.
-float vehicle_turret_zoom_fov_scale();
+// Client HUD: the controls of the seat the local player rides, in the spectate hints' place.
+void vehicle_render_control_hints();
+
+// Client, once per frame: the local turret operator's or jeep gunner's alt trigger toggles his zoom.
+void vehicle_gun_zoom_do_frame();
+// The local gunner's zoom as a FOV divisor: 1 unless he has toggled it on in the turret or jeep he mans.
+float vehicle_gun_zoom_fov_scale();
 
 void vehicle_view_apply_patch();

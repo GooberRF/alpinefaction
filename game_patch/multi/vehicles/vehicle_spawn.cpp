@@ -115,6 +115,10 @@ namespace
             VehicleState& st = g_vehicle_state.hull_state[ep->handle];
             st.team = info ? info->team : -1;
             st.lock_to_team = info && info->lock_to_team;
+            st.yaw_limit_deg = slot.is_turret && info ? info->turret_yaw_limit_deg : uint8_t{0};
+            // entity_create uprighted the factory's matrix, so this is the facing the hull spawned with.
+            st.yaw_base = vehicle_quantize_angle(vehicle_make_orient_phb(ep->orient).y);
+            st.yaw_rel = 0.0f;
             if (announce) {
                 vehicle_slot_announce(slot);
                 // Nothing else states a fresh hull's team and lock; the join sweep covers a
@@ -431,8 +435,11 @@ void vehicle_factory_load_chunk(rf::File& file, std::size_t chunk_len)
         uint8_t team = 0xFF;
         if (!reader.read_bytes(&team, sizeof(team))) return;
         info.team = (team == 0 || team == 1) ? static_cast<int32_t>(team) : -1;
-        uint8_t reserved[2] = {};
-        if (!reader.read_bytes(reserved, sizeof(reserved))) return;
+        uint8_t yaw_limit_deg = 0;
+        if (!reader.read_bytes(&yaw_limit_deg, sizeof(yaw_limit_deg))) return;
+        info.turret_yaw_limit_deg = yaw_limit_deg <= vehicle_turret_max_yaw_limit_deg ? yaw_limit_deg : uint8_t{0};
+        uint8_t reserved = 0;
+        if (!reader.read_bytes(&reserved, sizeof(reserved))) return;
         uint8_t lock_to_team = 0;
         if (!reader.read_bytes(&lock_to_team, sizeof(lock_to_team))) return;
         // A team-none factory keeps its lock: a control point can hand it a team later, and
@@ -535,17 +542,20 @@ namespace
         std::optional<float> damage_radius; // $Damage Radius
         std::optional<float> crater_radius; // +Crater Radius
         bool clear_homing;                  // $Homing: false
+        std::optional<float> lifetime;        // $Lifetime
+        std::optional<float> thrust_lifetime; // $Thrust Lifetime
     };
 
-    // The mods/gg diff, with the APC and fighter minigun pools doubled. Anything not listed keeps its stock value.
+    // The mods/gg diff, with the APC and fighter minigun pools doubled and the torpedo's and fighter rocket's
+    // lifetimes our own. Anything not listed keeps its stock value.
     constexpr VehicleWeaponOverride vehicle_weapon_overrides[] = {
-        {"Torpedo",         17.0f, 1.25f, 275.0f, 5,   12.0f, 8.5f,  true},
-        {"Fighter Rocket",  {},    2.0f,  275.0f, 5,   {},    10.0f, true},
-        {"APC Rocket",      {},    {},    275.0f, 5,   {},    {},    false},
-        {"APC Minigun",     {},    {},    45.0f,  200, {},    {},    false},
-        {"Jeep Gun",        {},    {},    45.0f,  150, {},    {},    false},
-        {"Fighter Minigun", {},    {},    45.0f,  200, {},    {},    false},
-        {"Vauss",           {},    {},    45.0f,  150, {},    {},    false},
+        {"Torpedo",         17.0f, 1.25f, 275.0f, 5,   12.0f, 8.5f,  true,  5.0f,  {}},
+        {"Fighter Rocket",  {},    2.0f,  275.0f, 5,   {},    10.0f, true,  15.0f, 5.0f},
+        {"APC Rocket",      {},    {},    275.0f, 5,   {},    {},    false, {},    {}},
+        {"APC Minigun",     {},    {},    45.0f,  200, {},    {},    false, {},    {}},
+        {"Jeep Gun",        {},    {},    45.0f,  150, {},    {},    false, {},    {}},
+        {"Fighter Minigun", {},    {},    45.0f,  200, {},    {},    false, {},    {}},
+        {"Vauss",           {},    {},    45.0f,  150, {},    {},    false, {},    {}},
     };
 
     struct VehicleEntityOverride
@@ -567,6 +577,7 @@ namespace
     {
         int weapon_type;
         float max_speed, max_speed_multi, max_speed_single, lifetime_mul_vel;
+        float lifetime_seconds, lifetime_seconds_single, lifetime_seconds_multi, thrust_lifetime_seconds;
         float fire_wait, damage_multi;
         float damage_radius, damage_radius_single, damage_radius_multi;
         float crater_radius;
@@ -754,6 +765,10 @@ void vehicle_tbl_overrides_revert()
         wi.max_speed_multi = s.max_speed_multi;
         wi.max_speed_single = s.max_speed_single;
         wi.lifetime_mul_vel = s.lifetime_mul_vel;
+        wi.lifetime_seconds = s.lifetime_seconds;
+        wi.lifetime_seconds_single = s.lifetime_seconds_single;
+        wi.lifetime_seconds_multi = s.lifetime_seconds_multi;
+        wi.thrust_lifetime_seconds = s.thrust_lifetime_seconds;
         wi.fire_wait = s.fire_wait;
         wi.damage_multi = s.damage_multi;
         wi.damage_radius = s.damage_radius;
@@ -808,7 +823,9 @@ void vehicle_tbl_overrides_level_init_post()
         }
         rf::WeaponInfo& wi = rf::weapon_types[wt];
         g_vehicle_tbl_weapon_saved.push_back({wt, wi.max_speed, wi.max_speed_multi,
-                                              wi.max_speed_single, wi.lifetime_mul_vel, wi.fire_wait,
+                                              wi.max_speed_single, wi.lifetime_mul_vel,
+                                              wi.lifetime_seconds, wi.lifetime_seconds_single,
+                                              wi.lifetime_seconds_multi, wi.thrust_lifetime_seconds, wi.fire_wait,
                                               wi.damage_multi, wi.damage_radius,
                                               wi.damage_radius_single, wi.damage_radius_multi,
                                               wi.crater_radius, wi.max_ammo, wi.max_ammo_multi,
@@ -819,9 +836,19 @@ void vehicle_tbl_overrides_level_init_post()
             wi.max_speed = *o.velocity;
             wi.max_speed_multi = *o.velocity;
             wi.max_speed_single = *o.velocity;
-            // Precomputed at startup and NOT re-derived by the resolver, so a velocity change must
-            // carry it or the round keeps its old maximum range.
+        }
+        if (o.lifetime) {
+            wi.lifetime_seconds = *o.lifetime;
+            wi.lifetime_seconds_single = *o.lifetime;
+            wi.lifetime_seconds_multi = *o.lifetime;
+        }
+        if (o.velocity || o.lifetime) {
+            // The AI's firing range, precomputed at startup and NOT re-derived by the resolver.
             wi.lifetime_mul_vel = wi.max_speed * wi.lifetime_seconds;
+        }
+        if (o.thrust_lifetime) {
+            // Read only at weapon creation; nothing re-derives it. Past it the round falls under gravity.
+            wi.thrust_lifetime_seconds = *o.thrust_lifetime;
         }
         if (o.fire_wait) {
             wi.fire_wait = *o.fire_wait;

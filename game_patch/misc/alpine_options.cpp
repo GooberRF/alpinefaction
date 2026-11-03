@@ -30,6 +30,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <variant>
+#include <vector>
 #include <windows.h>
 #include <shellapi.h>
 #include <xlog/xlog.h>
@@ -384,6 +385,21 @@ void load_level_info_config(const std::string& level_filename)
             }
             else {
                 xlog::warn("Invalid mesh replacement format in {}", info_filename);
+            }
+
+            continue;
+        }
+
+        // handle looping sounds
+        if (option_name == "$Looping Sound") {
+            std::string filename = trim(trim(option_value, true), false);
+            // Sound entries are bare file names, so a path or a stray quote could never match one
+            if (!filename.empty() && filename.find_first_of("/\\\"") == std::string::npos) {
+                g_alpine_level_info_config.looping_sounds.insert(string_to_lower(filename));
+                xlog::debug("Looping Sound Added: {} in {}", filename, level_filename);
+            }
+            else {
+                xlog::warn("Invalid looping sound format in {}", info_filename);
             }
 
             continue;
@@ -802,6 +818,9 @@ void load_single_af_options_file(const std::string& file_name)
         return;
     }
 
+    const bool is_af_client_file = file_name.starts_with("af_client") && file_name.ends_with(".tbl");
+    std::optional<FpgunArmsOverride> fpgun_arms_override;
+
     // Process options until #End marker is found
     bool found_end = false;
     while (std::getline(file_stream, line)) {
@@ -822,6 +841,51 @@ void load_single_af_options_file(const std::string& file_name)
 
         std::string option_name = trim(line.substr(0, delimiter_pos), false);
         std::string option_value = trim(line.substr(delimiter_pos + 1), false);
+
+        if (fpgun_arms_override && option_name.starts_with('$')) {
+            player_fpgun_add_arms_override(std::move(*fpgun_arms_override));
+            fpgun_arms_override.reset();
+        }
+
+        if (is_af_client_file && !rf::is_dedicated_server) {
+            if (option_name == "$Fpgun Override") {
+                std::regex quoted_pattern("\\\"([^\"]+)\\\"");
+                std::vector<std::string> names;
+                for (auto it = std::sregex_iterator(option_value.begin(), option_value.end(), quoted_pattern);
+                     it != std::sregex_iterator(); ++it) {
+                    names.push_back((*it)[1].str());
+                }
+                if (names.size() == 2) {
+                    fpgun_arms_override = FpgunArmsOverride{names[0], names[1]};
+                }
+                else {
+                    xlog::warn("[Fpgun] $Fpgun Override in {} needs a quoted character and weapon name", file_name);
+                }
+                continue;
+            }
+            if (fpgun_arms_override && option_name.starts_with('+')) {
+                std::string value = trim(option_value, true);
+                if (value.empty()) {
+                    xlog::warn("[Fpgun] Empty {} in {}", option_name, file_name);
+                }
+                else if (option_name == "+Model") {
+                    fpgun_arms_override->model = std::move(value);
+                }
+                else if (option_name == "+Hand Texture") {
+                    fpgun_arms_override->textures[0] = std::move(value);
+                }
+                else if (option_name == "+Forearm Texture") {
+                    fpgun_arms_override->textures[1] = std::move(value);
+                }
+                else if (option_name == "+Bicep Texture") {
+                    fpgun_arms_override->textures[2] = std::move(value);
+                }
+                else {
+                    xlog::warn("[Fpgun] Unknown $Fpgun Override field {} in {}", option_name, file_name);
+                }
+                continue;
+            }
+        }
 
         // Handle af_level_quirks.tbl
         if (file_name == "af_level_quirks.tbl" &&
@@ -856,8 +920,7 @@ void load_single_af_options_file(const std::string& file_name)
         const bool meta_found = meta_it != option_metadata.end();
 
         // Allow any af_client*.tbl file for options designated to af_client.tbl
-        const bool is_af_client_variant = (meta_found && meta_it->second.filename == "af_client.tbl" &&
-                                           file_name.rfind("af_client", 0) == 0 && file_name.ends_with(".tbl"));
+        const bool is_af_client_variant = meta_found && meta_it->second.filename == "af_client.tbl" && is_af_client_file;
 
         if (meta_found &&
             (meta_it->second.filename == file_name || is_af_client_variant) &&
@@ -883,6 +946,10 @@ void load_single_af_options_file(const std::string& file_name)
                 xlog::debug("Option {} in {} skipped (reason unknown)", option_name, file_name);
             }
         }
+    }
+
+    if (fpgun_arms_override) {
+        player_fpgun_add_arms_override(std::move(*fpgun_arms_override));
     }
 
     if (!found_end) {

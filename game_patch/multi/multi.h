@@ -1,9 +1,13 @@
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
 #include <expected>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
+#include <vector>
 #include <xlog/xlog.h>
 #include "server_internal.h"
 #include "../rf/player/player.h"
@@ -153,6 +157,7 @@ struct AlpineFactionServerInfo
     bool skiing = false;
     bool dodging = false;
     bool pogo = false;
+    bool scrapyard_gibs = false;
 };
 
 enum class AlpineRestrictVerdict : uint8_t
@@ -165,7 +170,7 @@ enum class AlpineRestrictVerdict : uint8_t
 };
 
 extern rf::Timestamp g_select_weapon_done_timestamp[rf::multi_max_player_id];
-extern bool g_multi_limbo_just_joined_req_leave;
+extern bool g_gameseq_defer_new_level;
 
 void set_local_pending_game_type(rf::NetGameType game_type, int win_condition);
 void reset_local_pending_game_type();
@@ -186,6 +191,9 @@ bool client_bot_headless_enabled();
 bool is_awpgen_active();
 bool is_headless_mode();
 void multi_init_player(rf::Player* player);
+bool multi_is_selecting_weapon(rf::Player* pp);
+// chat_line wire packet (header + {player id, team flag, message}); the message is capped at 255 chars.
+std::vector<std::byte> build_chat_line_packet(uint8_t player_id, bool is_team_msg, std::string_view msg);
 void send_chat_line_packet(std::string_view msg, rf::Player* target, rf::Player* sender = nullptr, bool is_team_msg = false);
 const std::optional<AlpineFactionServerInfo>& get_af_server_info();
 std::optional<AlpineFactionServerInfo>& get_af_server_info_mutable();
@@ -203,8 +211,15 @@ void server_set_player_weapon(rf::Player* pp, rf::Entity* ep, int weapon_type);
 void multi_turn_weapon_on(rf::Entity* ep, rf::Player* pp, bool alt_fire);
 void multi_turn_weapon_off(rf::Entity* ep);
 bool is_remote_charge_pair(int weapon_a, int weapon_b);
+// The server refuses this weapon switch (multi_select_weapon_server_side) whatever the player owns.
+bool multi_is_weapon_switch_locked(int from_weapon, int to_weapon);
+// The remote-fire handler (0x0047D220) creates these itself instead of going through entity_fire_weapon.
+bool multi_weapon_fire_is_thrown(int weapon_type, bool alt_fire);
 void multi_hide_level_items(const std::vector<int>& allowed_item_type_indices, bool preserve_ctf_objects = false);
-void start_level_in_multi(std::string filename);
+// Without a game type, the type is inferred from the level name's prefix.
+void start_level_in_multi(std::string filename, std::optional<rf::NetGameType> game_type = std::nullopt);
+// Leaves the current game and hosts a local listen server on the level, as levelm does.
+void start_local_multi_game(std::string_view filename, std::optional<rf::NetGameType> game_type);
 std::optional<std::string> multi_ban_unban_last();
 std::string_view multi_game_type_name(rf::NetGameType game_type);
 std::string_view multi_game_type_name_upper(rf::NetGameType game_type);

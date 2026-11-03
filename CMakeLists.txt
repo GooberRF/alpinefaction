@@ -10,6 +10,8 @@ set(CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+option(ALPINE_BUILD_PACKFILE "Compile the shaders and build alpinefaction.vpp" ON)
+
 # Set our target version to Windows 7.
 add_compile_definitions(
     _WIN32_WINNT=0x0601

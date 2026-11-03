@@ -4,6 +4,7 @@
 #include "../rf/gr/gr.h"
 #include "../rf/os/frametime.h"
 #include "../rf/os/string.h"
+#include <common/lighting/alpine_sun_state.h>
 
 void gr_apply_patch();
 void evaluate_pow2tex(const rf::String& level_filename);
@@ -23,23 +24,29 @@ bool gr_3d_bitmap_oriented_wh(const rf::Vector3* pnt, const rf::Matrix3* M, floa
 // Current view's screen position of a world point; false when behind the camera or not projected.
 bool gr_project_world_to_screen(const rf::Vector3& world_pos, float& out_sx, float& out_sy);
 int gr_fit_string(std::string& text, int max_width, int font_id = -1, std::string_view suffix = "-");
+void explosion_flash_light_create(
+    const rf::Vector3& pos, float radius, float intensity, float r, float g, float b, int duration_ms, bool fade_only);
 void explosion_flash_lights_level_init();
 void explosion_flash_lights_destroy_all();
 
-// Per-level directional sunlight (AlpineLevelProperties v5)
-struct SunLightState
-{
-    bool enabled = false;
-    bool affects_meshes = true;
-    bool drives_shadowmap_dir = true;
-    int mesh_mode = 0;
-    rf::Vector3 travel_dir{0.0f, -1.0f, 0.0f}; // direction the light travels
-    float color[3] = {0.0f, 0.0f, 0.0f};       // premultiplied by sun intensity
-};
 SunLightState gr_get_sun_state();
 float gr_sun_get_mesh_scale(const float* ambient);
 // The D3D11 mesh ambient for a custom ambient (a lightmap colour 0..1): mostly the level ambient, tinted by it.
 void gr_mesh_blend_ambient(const float (&lightmap)[3], float (&out)[3]);
+
+// Fog near clip the Direct3D 11 fog starts at; levels below RFL 306 keep stock fog, which starts at the eye
+float gr_fog_near_clip();
+// The level's camera far clip, clamped on the legacy renderers; 0 when it sets none
+float level_camera_far_clip();
+// gr::default_wfar, unless the level sets a camera far clip
+float level_default_far_clip();
+// Far clip the engine culls at with a dry eye
+float level_dry_far_clip();
+// Far plane of the Direct3D 11 projection, where drawn geometry ends
+float level_projection_far();
+// Opacity of an outline or player label `distance` from the camera: full up to 3/4 of the way to the level's fog
+// far clip, none at it, and always full without fog
+float fog_far_clip_fade(float distance);
 
 bool gr_is_antialiasing_err();
 bool gr_supports_sample_count(uint32_t sample_count);

@@ -1,4 +1,5 @@
 #include "bot_personality.h"
+#include "bot_context.h"
 #include "../../main/main.h"
 #include "../../misc/alpine_settings.h"
 #include "../../rf/item.h"
@@ -11,9 +12,6 @@
 #include <random>
 #include <string_view>
 #include <xlog/xlog.h>
-
-const BotPersonality kDefaultBotPersonality{};
-const BotSkillProfile kDefaultBotSkillProfile{};
 
 namespace
 {
@@ -38,14 +36,6 @@ struct SkillPresetDef
 {
     BotSkillProfile profile;
 };
-
-// ---------------------------------------------------------------------------
-// State
-// ---------------------------------------------------------------------------
-
-BotPersonality g_active_bot_personality = kDefaultBotPersonality;
-BotSkillProfile g_active_bot_skill_profile = kDefaultBotSkillProfile;
-bool g_profiles_initialized = false;
 
 // ---------------------------------------------------------------------------
 // Utilities
@@ -112,6 +102,7 @@ PersonalityPresetDef make_aggressive_preset()
     PersonalityPresetDef def{};
     auto& p = def.personality;
     p.name = "aggressive";
+    p.vehicle_affinity_bias = 1.4f;
     p.attack_style = BotAttackStyle::aggressive;
     p.preferred_engagement_near = 4.5f;
     p.preferred_engagement_far = 10.0f;
@@ -158,6 +149,8 @@ PersonalityPresetDef make_defensive_preset()
     PersonalityPresetDef def{};
     auto& p = def.personality;
     p.name = "defensive";
+    p.vehicle_gunner_bias = 1.3f;
+    p.quirk_mask = static_cast<uint64_t>(BotPersonalityQuirk::turret_camper);
     p.attack_style = BotAttackStyle::evasive;
     p.preferred_engagement_near = 9.0f;
     p.preferred_engagement_far = 18.0f;
@@ -204,6 +197,7 @@ PersonalityPresetDef make_tactician_preset()
     PersonalityPresetDef def{};
     auto& p = def.personality;
     p.name = "tactician";
+    p.vehicle_affinity_bias = 1.1f;
     p.preferred_engagement_near = 7.0f;
     p.preferred_engagement_far = 15.0f;
     p.decision_aggression_bias = 0.90f;
@@ -250,6 +244,7 @@ PersonalityPresetDef make_berserker_preset()
     PersonalityPresetDef def{};
     auto& p = def.personality;
     p.name = "berserker";
+    p.vehicle_affinity_bias = 1.4f;
     p.attack_style = BotAttackStyle::aggressive;
     p.preferred_engagement_near = 2.5f;
     p.preferred_engagement_far = 7.0f;
@@ -266,10 +261,10 @@ PersonalityPresetDef make_berserker_preset()
     p.opportunism_bias = 1.70f;
     p.easy_frag_bias = 1.80f;
     p.retaliation_bias = 2.00f;
-    p.crouch_combat_bias = 0.20f;
+    p.crouch_combat_bias = 0.25f;
     p.jump_combat_bias = 0.70f;
     p.dodge_combat_bias = 0.70f;
-    p.camping_bias = 0.10f;
+    p.camping_bias = 0.25f;
     p.power_position_bias = 0.40f;
     p.combat_readiness_threshold = 0.25f;
     p.weapon_switch_bias = 1.50f;
@@ -302,6 +297,7 @@ PersonalityPresetDef make_objective_preset()
     PersonalityPresetDef def{};
     auto& p = def.personality;
     p.name = "objective";
+    p.vehicle_affinity_bias = 1.1f;
     p.attack_style = BotAttackStyle::evasive;
     p.preferred_engagement_near = 6.0f;
     p.preferred_engagement_far = 12.0f;
@@ -342,6 +338,8 @@ PersonalityPresetDef make_sniper_preset()
     PersonalityPresetDef def{};
     auto& p = def.personality;
     p.name = "sniper";
+    p.vehicle_affinity_bias = 0.6f;
+    p.vehicle_gunner_bias = 1.3f;
     p.attack_style = BotAttackStyle::evasive;
     p.preferred_engagement_near = 12.0f;
     p.preferred_engagement_far = 25.0f;
@@ -407,7 +405,7 @@ PersonalityPresetDef make_guerrilla_preset()
     p.crouch_combat_bias = 0.60f;
     p.jump_combat_bias = 0.30f;
     p.dodge_combat_bias = 1.50f;
-    p.camping_bias = 0.20f;
+    p.camping_bias = 0.25f;
     p.power_position_bias = 0.60f;
     p.roam_intensity_bias = 1.50f;
     p.navigation_strafe_bias = 1.20f;
@@ -436,6 +434,7 @@ PersonalityPresetDef make_collector_preset()
     PersonalityPresetDef def{};
     auto& p = def.personality;
     p.name = "collector";
+    p.vehicle_affinity_bias = 0.6f;
     p.attack_style = BotAttackStyle::evasive;
     p.preferred_engagement_near = 7.0f;
     p.preferred_engagement_far = 14.0f;
@@ -499,7 +498,7 @@ PersonalityPresetDef make_brawler_preset()
     p.opportunism_bias = 1.10f;
     p.retaliation_bias = 1.30f;
     p.crouch_combat_bias = 0.90f;
-    p.jump_combat_bias = 0.20f;
+    p.jump_combat_bias = 0.25f;
     p.dodge_combat_bias = 1.30f;
     p.camping_bias = 0.50f;
     p.weapon_switch_bias = 1.35f;
@@ -527,6 +526,7 @@ PersonalityPresetDef make_destroyer_preset()
     PersonalityPresetDef def{};
     auto& p = def.personality;
     p.name = "destroyer";
+    p.vehicle_affinity_bias = 1.4f;
     p.attack_style = BotAttackStyle::aggressive;
     p.preferred_engagement_near = 5.0f;
     p.preferred_engagement_far = 11.0f;
@@ -616,7 +616,7 @@ SkillPresetDef make_average_skill()
 {
     SkillPresetDef def{};
     def.profile.name = "average";
-    // All other fields match kDefaultBotSkillProfile
+    // All other fields match the BotSkillProfile defaults
     return def;
 }
 
@@ -625,9 +625,7 @@ SkillPresetDef make_hard_skill()
     SkillPresetDef def{};
     auto& s = def.profile;
     s.name = "hard";
-    s.base_skill = 0.82f;
-    s.aim_profile_scale = 1.10f;
-    s.decision_profile_scale = 1.15f;
+    s.base_skill = 0.85f;
     s.survivability_maintenance_bias = 1.25f;
     s.alertness = 1.10f;
     s.fov_degrees = 130.0f;
@@ -635,7 +633,13 @@ SkillPresetDef make_hard_skill()
     s.weapon_switch_likelihood = 0.60f;
     s.crouch_likelihood = 0.18f;
     s.jump_likelihood = 0.18f;
-    s.dodge_likelihood = 0.20f;
+    s.dodge_likelihood = 0.45f;
+    s.semi_auto_click_interval_scale = 1.6f;
+    s.aim_prediction = 0.5f;
+    s.aim_error_min = 0.30f;
+    s.aim_error_hold_ms = 200.0f;
+    s.aim_settle_error = 2.2f;
+    s.aim_settle_ms = 550.0f;
     return def;
 }
 
@@ -644,9 +648,7 @@ SkillPresetDef make_expert_skill()
     SkillPresetDef def{};
     auto& s = def.profile;
     s.name = "expert";
-    s.base_skill = 0.92f;
-    s.aim_profile_scale = 1.20f;
-    s.decision_profile_scale = 1.25f;
+    s.base_skill = 0.93f;
     s.survivability_maintenance_bias = 1.50f;
     s.alertness = 1.20f;
     s.fov_degrees = 140.0f;
@@ -654,7 +656,14 @@ SkillPresetDef make_expert_skill()
     s.weapon_switch_likelihood = 0.72f;
     s.crouch_likelihood = 0.22f;
     s.jump_likelihood = 0.22f;
-    s.dodge_likelihood = 0.26f;
+    s.dodge_likelihood = 0.65f;
+    s.semi_auto_click_interval_scale = 1.3f;
+    s.aim_prediction = 0.75f;
+    s.aim_error_min = 0.30f;
+    s.aim_error_hold_ms = 200.0f;
+    s.aim_blend_alpha_max = 0.38f;
+    s.aim_settle_error = 1.9f;
+    s.aim_settle_ms = 500.0f;
     return def;
 }
 
@@ -664,8 +673,6 @@ SkillPresetDef make_nightmare_skill()
     auto& s = def.profile;
     s.name = "nightmare";
     s.base_skill = 1.0f;
-    s.aim_profile_scale = 1.35f;
-    s.decision_profile_scale = 1.40f;
     s.survivability_maintenance_bias = 1.75f;
     s.alertness = 1.35f;
     s.fov_degrees = 150.0f;
@@ -673,7 +680,14 @@ SkillPresetDef make_nightmare_skill()
     s.weapon_switch_likelihood = 0.85f;
     s.crouch_likelihood = 0.25f;
     s.jump_likelihood = 0.25f;
-    s.dodge_likelihood = 0.30f;
+    s.dodge_likelihood = 0.85f;
+    s.semi_auto_click_interval_scale = 1.0f;
+    s.aim_prediction = 1.0f;
+    s.aim_error_min = 0.30f;
+    s.aim_error_hold_ms = 220.0f;
+    s.aim_blend_alpha_max = 0.45f;
+    s.aim_settle_error = 1.6f;
+    s.aim_settle_ms = 450.0f;
     return def;
 }
 
@@ -743,14 +757,14 @@ const SkillPresetDef* find_skill_preset(std::string_view name)
 // Weight initialization from game data
 // ---------------------------------------------------------------------------
 
-void initialize_weights_from_game_data()
+void initialize_weights_from_game_data(BotContext& ctx)
 {
     const int item_count = std::max(rf::num_item_types, 0);
     const int weapon_count = std::max(rf::num_weapon_types, 0);
-    g_active_bot_personality.item_weights.assign(static_cast<size_t>(item_count), 1.0f);
-    g_active_bot_personality.weapon_pickup_weights.assign(static_cast<size_t>(weapon_count), 1.0f);
-    g_active_bot_personality.weapon_preference_weights.assign(static_cast<size_t>(weapon_count), 1.0f);
-    g_active_bot_skill_profile.weapon_skill_weights.assign(static_cast<size_t>(weapon_count), 1.0f);
+    ctx.personality.item_weights.assign(static_cast<size_t>(item_count), 1.0f);
+    ctx.personality.weapon_pickup_weights.assign(static_cast<size_t>(weapon_count), 1.0f);
+    ctx.personality.weapon_preference_weights.assign(static_cast<size_t>(weapon_count), 1.0f);
+    ctx.skill.weapon_skill_weights.assign(static_cast<size_t>(weapon_count), 1.0f);
 
     for (int item_type = 0; item_type < item_count; ++item_type) {
         const rf::ItemInfo& item = rf::item_info[item_type];
@@ -770,218 +784,67 @@ void initialize_weights_from_game_data()
                     || contains_case_insensitive(item.hud_msg_name, "armor")))) {
             weight += 0.45f;
         }
-        g_active_bot_personality.item_weights[static_cast<size_t>(item_type)] = weight;
+        ctx.personality.item_weights[static_cast<size_t>(item_type)] = weight;
     }
 
     for (int weapon_type = 0; weapon_type < weapon_count; ++weapon_type) {
         const rf::WeaponInfo& weapon = rf::weapon_types[weapon_type];
         const float damage = std::max(weapon.damage, weapon.damage_multi);
         const float normalized_damage = std::clamp(damage / 70.0f, 0.0f, 1.5f);
-        g_active_bot_personality.weapon_pickup_weights[static_cast<size_t>(weapon_type)] =
+        ctx.personality.weapon_pickup_weights[static_cast<size_t>(weapon_type)] =
             std::clamp(0.85f + normalized_damage * 0.35f, 0.5f, 2.5f);
-        g_active_bot_personality.weapon_preference_weights[static_cast<size_t>(weapon_type)] =
+        ctx.personality.weapon_preference_weights[static_cast<size_t>(weapon_type)] =
             std::clamp(0.90f + normalized_damage * 0.30f, 0.5f, 2.5f);
-        g_active_bot_skill_profile.weapon_skill_weights[static_cast<size_t>(weapon_type)] = 1.0f;
+        ctx.skill.weapon_skill_weights[static_cast<size_t>(weapon_type)] = 1.0f;
     }
 }
 
-void resolve_preferred_weapons(const PersonalityPresetDef& preset)
+void resolve_preferred_weapons(BotContext& ctx, const PersonalityPresetDef& preset)
 {
-    g_active_bot_personality.preferred_weapon_types.clear();
+    ctx.personality.preferred_weapon_types.clear();
     for (int i = 0; i < preset.preferred_weapon_count; ++i) {
         const char* name = preset.preferred_weapon_names[i];
         if (!name) break;
         const int weapon_type = rf::weapon_lookup_type(name);
         if (weapon_type >= 0) {
-            g_active_bot_personality.preferred_weapon_types.push_back(weapon_type);
+            ctx.personality.preferred_weapon_types.push_back(weapon_type);
         }
     }
 }
 
-void apply_weapon_overrides(const PersonalityPresetDef& preset)
+void apply_weapon_overrides(BotContext& ctx, const PersonalityPresetDef& preset)
 {
-    const int weapon_count = static_cast<int>(g_active_bot_personality.weapon_pickup_weights.size());
+    const int weapon_count = static_cast<int>(ctx.personality.weapon_pickup_weights.size());
     for (int i = 0; i < preset.weapon_override_count; ++i) {
         const auto& ovr = preset.weapon_overrides[i];
         if (!ovr.weapon_name) break;
         const int weapon_type = rf::weapon_lookup_type(ovr.weapon_name);
         if (weapon_type < 0 || weapon_type >= weapon_count) continue;
         const auto idx = static_cast<size_t>(weapon_type);
-        g_active_bot_personality.weapon_pickup_weights[idx] =
-            std::clamp(g_active_bot_personality.weapon_pickup_weights[idx] * ovr.pickup_weight, 0.05f, 8.0f);
-        g_active_bot_personality.weapon_preference_weights[idx] =
-            std::clamp(g_active_bot_personality.weapon_preference_weights[idx] * ovr.preference_weight, 0.05f, 8.0f);
-        g_active_bot_skill_profile.weapon_skill_weights[idx] =
-            std::clamp(g_active_bot_skill_profile.weapon_skill_weights[idx] * ovr.skill_weight, 0.05f, 8.0f);
+        ctx.personality.weapon_pickup_weights[idx] =
+            std::clamp(ctx.personality.weapon_pickup_weights[idx] * ovr.pickup_weight, 0.05f, 8.0f);
+        ctx.personality.weapon_preference_weights[idx] =
+            std::clamp(ctx.personality.weapon_preference_weights[idx] * ovr.preference_weight, 0.05f, 8.0f);
+        ctx.skill.weapon_skill_weights[idx] =
+            std::clamp(ctx.skill.weapon_skill_weights[idx] * ovr.skill_weight, 0.05f, 8.0f);
     }
-}
-
-// ---------------------------------------------------------------------------
-// Main initialization
-// ---------------------------------------------------------------------------
-
-void ensure_profile_weights_initialized()
-{
-    if (g_profiles_initialized) {
-        return;
-    }
-    g_profiles_initialized = true;
-
-    const auto& reg = get_preset_registry();
-
-    // Select personality preset
-    const PersonalityPresetDef* personality_preset = nullptr;
-    const std::string& personality_name = g_alpine_game_config.bot_personality_preset;
-    if (strings_equal_case_insensitive(personality_name, "random")) {
-        std::uniform_int_distribution<int> dist(0, reg.personality_count - 1);
-        personality_preset = &reg.personalities[dist(g_rng)];
-    }
-    else {
-        personality_preset = find_personality_preset(personality_name);
-        if (!personality_preset) {
-            xlog::warn("Bot personality preset '{}' not found, falling back to 'balanced'", personality_name);
-            personality_preset = &reg.personalities[0];
-        }
-    }
-
-    // Select skill preset
-    const SkillPresetDef* skill_preset = nullptr;
-    const std::string& skill_name = g_alpine_game_config.bot_skill_preset;
-    if (strings_equal_case_insensitive(skill_name, "random")) {
-        std::uniform_int_distribution<int> dist(0, reg.skill_count - 1);
-        skill_preset = &reg.skills[dist(g_rng)];
-    }
-    else {
-        skill_preset = find_skill_preset(skill_name);
-        if (!skill_preset) {
-            xlog::warn("Bot skill preset '{}' not found, falling back to 'average'", skill_name);
-            skill_preset = &reg.skills[0];
-        }
-    }
-
-    // Apply selected presets (scalar fields only; vectors populated below)
-    g_active_bot_personality = personality_preset->personality;
-    g_active_bot_skill_profile = skill_preset->profile;
-
-    // Initialize dynamic weight vectors from game data
-    initialize_weights_from_game_data();
-
-    // Resolve weapon names to type indices and apply preset overrides
-    resolve_preferred_weapons(*personality_preset);
-    apply_weapon_overrides(*personality_preset);
-
-    xlog::info("Bot profile: personality={}, skill={}",
-        g_active_bot_personality.name, g_active_bot_skill_profile.name);
-}
-
-} // anonymous namespace
-
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-
-const BotPersonality& get_active_bot_personality()
-{
-    ensure_profile_weights_initialized();
-    return g_active_bot_personality;
-}
-
-const BotSkillProfile& get_active_bot_skill_profile()
-{
-    ensure_profile_weights_initialized();
-    return g_active_bot_skill_profile;
-}
-
-bool bot_personality_has_quirk(const BotPersonalityQuirk quirk)
-{
-    ensure_profile_weights_initialized();
-    const uint64_t bit = static_cast<uint64_t>(quirk);
-    if (bit == 0) {
-        return false;
-    }
-    return (g_active_bot_personality.quirk_mask & bit) != 0;
-}
-
-float bot_get_item_weight(const int item_type)
-{
-    ensure_profile_weights_initialized();
-    return read_weight_or_default(g_active_bot_personality.item_weights, item_type);
-}
-
-float bot_get_weapon_pickup_weight(const int weapon_type)
-{
-    ensure_profile_weights_initialized();
-    return read_weight_or_default(g_active_bot_personality.weapon_pickup_weights, weapon_type);
-}
-
-float bot_get_weapon_preference_weight(const int weapon_type)
-{
-    ensure_profile_weights_initialized();
-    return read_weight_or_default(g_active_bot_personality.weapon_preference_weights, weapon_type);
-}
-
-float bot_get_weapon_skill_weight(const int weapon_type)
-{
-    ensure_profile_weights_initialized();
-    return read_weight_or_default(g_active_bot_skill_profile.weapon_skill_weights, weapon_type);
-}
-
-float bot_get_skill_factor()
-{
-    const float base_skill = std::clamp(get_active_bot_skill_profile().base_skill, 0.0f, 1.0f);
-    const float profile_scale = std::clamp(
-        get_active_bot_skill_profile().aim_profile_scale,
-        0.25f,
-        2.0f
-    );
-    return std::clamp(base_skill * profile_scale, 0.0f, 1.0f);
-}
-
-float bot_get_decision_skill_factor()
-{
-    // Decision quality rises faster at lower levels than pure aim precision.
-    const float skill = bot_get_skill_factor();
-    const float base_decision = std::clamp(std::pow(skill, 0.75f), 0.0f, 1.0f);
-    const float profile_scale = std::clamp(
-        get_active_bot_skill_profile().decision_profile_scale,
-        0.25f,
-        2.0f
-    );
-    return std::clamp(base_decision * profile_scale, 0.0f, 1.0f);
-}
-
-void bot_personality_set_presets(const char* personality_name, const char* skill_name)
-{
-    if (personality_name) {
-        g_alpine_game_config.bot_personality_preset = personality_name;
-    }
-    if (skill_name) {
-        g_alpine_game_config.bot_skill_preset = skill_name;
-    }
-    g_profiles_initialized = false;
-    ensure_profile_weights_initialized();
-}
-
-BotPersonality& bot_personality_get_mutable()
-{
-    ensure_profile_weights_initialized();
-    return g_active_bot_personality;
-}
-
-BotSkillProfile& bot_skill_profile_get_mutable()
-{
-    ensure_profile_weights_initialized();
-    return g_active_bot_skill_profile;
 }
 
 // ---------------------------------------------------------------------------
 // Field override by ID
 // ---------------------------------------------------------------------------
 
-bool bot_personality_apply_field_override(uint8_t field_id, float value)
+bool bot_personality_apply_field_override(BotContext& ctx, uint8_t field_id, float value)
 {
-    auto& p = bot_personality_get_mutable();
-    switch (static_cast<af_personality_field>(field_id)) {
+    const auto field = static_cast<af_personality_field>(field_id);
+    // The quirk masks carry raw bits; every other field must be a number.
+    if (!std::isfinite(value)
+        && field != af_personality_field::quirk_mask_low
+        && field != af_personality_field::quirk_mask_high) {
+        return false;
+    }
+    auto& p = ctx.personality;
+    switch (field) {
         case af_personality_field::attack_style:
             p.attack_style = static_cast<BotAttackStyle>(static_cast<int>(value));
             return true;
@@ -1044,14 +907,19 @@ bool bot_personality_apply_field_override(uint8_t field_id, float value)
         case af_personality_field::gg_on_map_end_chance:       p.gg_on_map_end_chance = value; return true;
         case af_personality_field::hello_on_join_chance:       p.hello_on_join_chance = value; return true;
         case af_personality_field::red_faction_response_chance: p.red_faction_response_chance = value; return true;
+        case af_personality_field::vehicle_affinity_bias:      p.vehicle_affinity_bias = value; return true;
+        case af_personality_field::vehicle_gunner_bias:        p.vehicle_gunner_bias = value; return true;
         default:
             return false;
     }
 }
 
-bool bot_skill_apply_field_override(uint8_t field_id, float value)
+bool bot_skill_apply_field_override(BotContext& ctx, uint8_t field_id, float value)
 {
-    auto& s = bot_skill_profile_get_mutable();
+    if (!std::isfinite(value)) {
+        return false;
+    }
+    auto& s = ctx.skill;
     switch (static_cast<af_skill_field>(field_id)) {
         case af_skill_field::base_skill:                    s.base_skill = value; return true;
         case af_skill_field::aim_profile_scale:             s.aim_profile_scale = value; return true;
@@ -1064,9 +932,226 @@ bool bot_skill_apply_field_override(uint8_t field_id, float value)
         case af_skill_field::crouch_likelihood:             s.crouch_likelihood = value; return true;
         case af_skill_field::jump_likelihood:               s.jump_likelihood = value; return true;
         case af_skill_field::dodge_likelihood:              s.dodge_likelihood = value; return true;
+        case af_skill_field::reaction_time_ms:
+            s.reaction_time_ms = std::clamp(value, 0.0f, 5000.0f);
+            return true;
+        // Moving one bound past the other drags the other with it, so a valid pair lands in either order.
+        case af_skill_field::aim_error_min:
+            s.aim_error_min = std::clamp(value, 0.001f, 5.0f);
+            s.aim_error_max = std::max(s.aim_error_max, s.aim_error_min);
+            return true;
+        case af_skill_field::aim_error_max:
+            s.aim_error_max = std::clamp(value, 0.001f, 5.0f);
+            s.aim_error_min = std::min(s.aim_error_min, s.aim_error_max);
+            return true;
+        case af_skill_field::yaw_speed_cap:                 s.yaw_speed_cap = value; return true;
+        case af_skill_field::pitch_speed_cap:               s.pitch_speed_cap = value; return true;
+        case af_skill_field::fire_alignment_threshold:
+            s.fire_alignment_threshold = std::min(value, 0.999f);
+            return true;
+        case af_skill_field::semi_auto_click_interval_scale:
+            s.semi_auto_click_interval_scale = std::clamp(value, 0.0f, 20.0f);
+            return true;
+        case af_skill_field::aim_prediction:
+            s.aim_prediction = std::clamp(value, 0.0f, 1.0f);
+            return true;
+        case af_skill_field::aim_blend_alpha_max:
+            s.aim_blend_alpha_max = std::clamp(value, 0.05f, 0.60f);
+            return true;
+        case af_skill_field::aim_settle_error:
+            s.aim_settle_error = std::clamp(value, 0.0f, 5.0f);
+            return true;
+        case af_skill_field::aim_settle_ms:
+            s.aim_settle_ms = std::clamp(value, 0.0f, 5000.0f);
+            return true;
+        case af_skill_field::aim_error_hold_ms:
+            s.aim_error_hold_ms = std::clamp(value, 1.0f, 5000.0f);
+            return true;
         default:
             return false;
     }
+}
+
+// ---------------------------------------------------------------------------
+// Main initialization
+// ---------------------------------------------------------------------------
+
+void ensure_profile_weights_initialized(BotContext& ctx)
+{
+    if (ctx.profiles_initialized) {
+        return;
+    }
+    ctx.profiles_initialized = true;
+
+    if (!ctx.is_server_bot) {
+        ctx.personality_preset = g_alpine_game_config.bot_personality_preset;
+        ctx.skill_preset = g_alpine_game_config.bot_skill_preset;
+    }
+
+    const auto& reg = get_preset_registry();
+
+    // Select personality preset
+    const PersonalityPresetDef* personality_preset = nullptr;
+    const std::string& personality_name = ctx.personality_preset;
+    if (strings_equal_case_insensitive(personality_name, "random")) {
+        std::uniform_int_distribution<int> dist(0, reg.personality_count - 1);
+        personality_preset = &reg.personalities[dist(g_rng)];
+    }
+    else {
+        personality_preset = find_personality_preset(personality_name);
+        if (!personality_preset) {
+            xlog::warn("Bot personality preset '{}' not found, falling back to 'balanced'", personality_name);
+            personality_preset = &reg.personalities[0];
+        }
+    }
+
+    // Select skill preset
+    const SkillPresetDef* skill_preset = nullptr;
+    const std::string& skill_name = ctx.skill_preset;
+    if (strings_equal_case_insensitive(skill_name, "random")) {
+        std::uniform_int_distribution<int> dist(0, reg.skill_count - 1);
+        skill_preset = &reg.skills[dist(g_rng)];
+    }
+    else {
+        skill_preset = find_skill_preset(skill_name);
+        if (!skill_preset) {
+            xlog::warn("Bot skill preset '{}' not found, falling back to 'average'", skill_name);
+            skill_preset = &reg.skills[0];
+        }
+    }
+
+    // Apply selected presets (scalar fields only; vectors populated below)
+    ctx.personality = personality_preset->personality;
+    ctx.skill = skill_preset->profile;
+
+    // Initialize dynamic weight vectors from game data
+    initialize_weights_from_game_data(ctx);
+
+    // Resolve weapon names to type indices and apply preset overrides
+    resolve_preferred_weapons(ctx, *personality_preset);
+    apply_weapon_overrides(ctx, *personality_preset);
+
+    for (const BotConfigOverride& ovr : ctx.personality_overrides) {
+        if (!bot_personality_apply_field_override(ctx, ovr.field_id, ovr.value)) {
+            xlog::debug("Bot profile: rejected personality field_id 0x{:02x}", ovr.field_id);
+        }
+    }
+    for (const BotConfigOverride& ovr : ctx.skill_overrides) {
+        if (!bot_skill_apply_field_override(ctx, ovr.field_id, ovr.value)) {
+            xlog::debug("Bot profile: rejected skill field_id 0x{:02x}", ovr.field_id);
+        }
+    }
+
+    xlog::info("Bot profile: personality={}, skill={}",
+        ctx.personality.name, ctx.skill.name);
+}
+
+} // anonymous namespace
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+
+const BotPersonality& bot_personality_get(BotContext& ctx)
+{
+    ensure_profile_weights_initialized(ctx);
+    return ctx.personality;
+}
+
+const BotSkillProfile& bot_skill_profile_get(BotContext& ctx)
+{
+    ensure_profile_weights_initialized(ctx);
+    return ctx.skill;
+}
+
+const BotPersonality& get_active_bot_personality()
+{
+    return bot_personality_get(bot_ctx());
+}
+
+const BotSkillProfile& get_active_bot_skill_profile()
+{
+    return bot_skill_profile_get(bot_ctx());
+}
+
+bool bot_personality_has_quirk(const BotPersonalityQuirk quirk)
+{
+    const BotPersonality& personality = get_active_bot_personality();
+    const uint64_t bit = static_cast<uint64_t>(quirk);
+    if (bit == 0) {
+        return false;
+    }
+    return (personality.quirk_mask & bit) != 0;
+}
+
+float bot_get_item_weight(const int item_type)
+{
+    return read_weight_or_default(get_active_bot_personality().item_weights, item_type);
+}
+
+float bot_get_weapon_pickup_weight(const int weapon_type)
+{
+    return read_weight_or_default(get_active_bot_personality().weapon_pickup_weights, weapon_type);
+}
+
+float bot_get_weapon_preference_weight(const int weapon_type)
+{
+    return read_weight_or_default(get_active_bot_personality().weapon_preference_weights, weapon_type);
+}
+
+float bot_get_weapon_skill_weight(const int weapon_type)
+{
+    return read_weight_or_default(get_active_bot_skill_profile().weapon_skill_weights, weapon_type);
+}
+
+float bot_get_skill_factor()
+{
+    const float base_skill = std::clamp(get_active_bot_skill_profile().base_skill, 0.0f, 1.0f);
+    const float profile_scale = std::clamp(
+        get_active_bot_skill_profile().aim_profile_scale,
+        0.25f,
+        2.0f
+    );
+    return std::clamp(base_skill * profile_scale, 0.0f, 1.0f);
+}
+
+float bot_get_decision_skill_factor()
+{
+    // Decision quality rises faster at lower levels than pure aim precision.
+    const float skill = bot_get_skill_factor();
+    const float base_decision = std::clamp(std::pow(skill, 0.75f), 0.0f, 1.0f);
+    const float profile_scale = std::clamp(
+        get_active_bot_skill_profile().decision_profile_scale,
+        0.25f,
+        2.0f
+    );
+    return std::clamp(base_decision * profile_scale, 0.0f, 1.0f);
+}
+
+void bot_personality_set_presets(
+    BotContext& ctx,
+    const char* personality_name,
+    const char* skill_name,
+    const std::vector<BotConfigOverride>* personality_overrides,
+    const std::vector<BotConfigOverride>* skill_overrides)
+{
+    std::string& personality_preset =
+        ctx.is_server_bot ? ctx.personality_preset : g_alpine_game_config.bot_personality_preset;
+    std::string& skill_preset = ctx.is_server_bot ? ctx.skill_preset : g_alpine_game_config.bot_skill_preset;
+    if (personality_name) {
+        personality_preset = personality_name;
+    }
+    if (skill_name) {
+        skill_preset = skill_name;
+    }
+    if (personality_overrides) {
+        ctx.personality_overrides = *personality_overrides;
+    }
+    if (skill_overrides) {
+        ctx.skill_overrides = *skill_overrides;
+    }
+    ctx.profiles_initialized = false;
+    ensure_profile_weights_initialized(ctx);
 }
 
 // ---------------------------------------------------------------------------
@@ -1129,6 +1214,8 @@ static const FieldNameMapping g_personality_field_map[] = {
     {"gg_on_map_end_chance",                  static_cast<uint8_t>(af_personality_field::gg_on_map_end_chance)},
     {"hello_on_join_chance",                  static_cast<uint8_t>(af_personality_field::hello_on_join_chance)},
     {"red_faction_response_chance",           static_cast<uint8_t>(af_personality_field::red_faction_response_chance)},
+    {"vehicle_affinity_bias",                 static_cast<uint8_t>(af_personality_field::vehicle_affinity_bias)},
+    {"vehicle_gunner_bias",                   static_cast<uint8_t>(af_personality_field::vehicle_gunner_bias)},
 };
 
 static const FieldNameMapping g_skill_field_map[] = {
@@ -1143,6 +1230,18 @@ static const FieldNameMapping g_skill_field_map[] = {
     {"crouch_likelihood",             static_cast<uint8_t>(af_skill_field::crouch_likelihood)},
     {"jump_likelihood",               static_cast<uint8_t>(af_skill_field::jump_likelihood)},
     {"dodge_likelihood",              static_cast<uint8_t>(af_skill_field::dodge_likelihood)},
+    {"reaction_time_ms",              static_cast<uint8_t>(af_skill_field::reaction_time_ms)},
+    {"aim_error_min",                 static_cast<uint8_t>(af_skill_field::aim_error_min)},
+    {"aim_error_max",                 static_cast<uint8_t>(af_skill_field::aim_error_max)},
+    {"aim_error_hold_ms",             static_cast<uint8_t>(af_skill_field::aim_error_hold_ms)},
+    {"aim_blend_alpha_max",           static_cast<uint8_t>(af_skill_field::aim_blend_alpha_max)},
+    {"aim_settle_error",              static_cast<uint8_t>(af_skill_field::aim_settle_error)},
+    {"aim_settle_ms",                 static_cast<uint8_t>(af_skill_field::aim_settle_ms)},
+    {"yaw_speed_cap",                 static_cast<uint8_t>(af_skill_field::yaw_speed_cap)},
+    {"pitch_speed_cap",               static_cast<uint8_t>(af_skill_field::pitch_speed_cap)},
+    {"fire_alignment_threshold",      static_cast<uint8_t>(af_skill_field::fire_alignment_threshold)},
+    {"semi_auto_click_interval_scale", static_cast<uint8_t>(af_skill_field::semi_auto_click_interval_scale)},
+    {"aim_prediction",                static_cast<uint8_t>(af_skill_field::aim_prediction)},
 };
 
 int bot_personality_field_id_from_name(const char* name)
@@ -1179,6 +1278,8 @@ static const QuirkNameMapping g_quirk_name_map[] = {
     {"crater_unlock_affinity",      5},
     {"super_item_hoarder",          6},
     {"sneaky_capper",               7},
+    {"never_drives",                8},
+    {"turret_camper",               9},
 };
 
 int bot_quirk_bit_from_name(const char* name)

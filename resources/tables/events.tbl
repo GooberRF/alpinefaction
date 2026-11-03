@@ -397,6 +397,9 @@ $RFE Level1:      "AF_General"
 $Event Name:      "Mesh_Set_Collision"
 $RFE Level1:      "AF_General"
 
+$Event Name:      "Mesh_Set_Scale"
+$RFE Level1:      "AF_General"
+
 $Event Name:      "AF_Fullscreen_Image"
 $RFE Level1:      "AF_General"
 
@@ -434,6 +437,9 @@ $Event Name:      "Display_Projection"
 $RFE Level1:      "AF_General"
 
 $Event Name:      "Climbing_Region_State"
+$RFE Level1:      "AF_General"
+
+$Event Name:      "Rope_State"
 $RFE Level1:      "AF_General"
 
 #End

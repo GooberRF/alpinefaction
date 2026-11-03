@@ -198,6 +198,7 @@ struct AlpineFactionJoinAcceptPacketExt
         pogo                = 1u << 25,
         dodging             = 1u << 26,
         stats_enabled       = 1u << 27,
+        scrapyard_gibs      = 1u << 28,
     } flags = Flags::none;
 
     float max_fov = 0.0f;
@@ -293,6 +294,14 @@ enum class JoiningClientKind
 // derived from the parsed join-req tail. Only meaningful during
 // process_join_req_packet (the globals are reset afterwards).
 JoiningClientKind get_joining_client_kind();
+
+// player_list without the demo recorder: the count the server-full check uses.
+int multi_num_players_occupying_slots();
+// Joiners whose reliable socket has not attached yet, without the demo recorder.
+int multi_num_players_waiting_for_reliable_socket();
+
+// Longest player name on the wire: clients receive names into 32-byte buffers (g_buffer_overflow_patches).
+constexpr int k_max_player_name_len = 31;
 
 // Look up AF extra data for a server by address. Returns nullptr if not found.
 const AFGameInfoExtra* get_server_browser_extra(const rf::NetAddr& addr);

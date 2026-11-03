@@ -15,6 +15,7 @@
 #include "wipeout.h"
 #include "gungame.h"
 #include "salvage.h"
+#include "scavenger.h"
 #include "vehicles/vehicle.h"
 #include "vehicles/vehicle_render.h"
 #include "vehicles/vehicle_markers.h"
@@ -60,6 +61,8 @@ static char gg_name[] = "GG";
 static char* gg_slot = gg_name;
 static char sal_name[] = "SAL";
 static char* sal_slot = sal_name;
+static char scav_name[] = "SCAV";
+static char* scav_slot = scav_name;
 // UNK is the sentinel; new game types must be added above
 static char unk_name[] = "UNK";
 static char* unk_slot = unk_name;
@@ -105,6 +108,7 @@ void populate_gametype_table() {
     g_af_gametype_names[rf::NG_TYPE_WO]     = &wo_slot;
     g_af_gametype_names[rf::NG_TYPE_GG]     = &gg_slot;
     g_af_gametype_names[rf::NG_TYPE_SAL]    = &sal_slot;
+    g_af_gametype_names[rf::NG_TYPE_SCAV]   = &scav_slot;
     g_af_gametype_names[rf::NG_TYPE_UNK]    = &unk_slot;
 
     for (int i = 0; i < 5; ++i) {
@@ -155,6 +159,7 @@ bool multi_game_type_is_team_type(rf::NetGameType game_type)
         case rf::NG_TYPE_TBAG:
         case rf::NG_TYPE_WO:
         case rf::NG_TYPE_SAL:
+        case rf::NG_TYPE_SCAV:
             return true;
         default:
             return false;
@@ -192,6 +197,45 @@ int multi_koth_get_red_team_score() // KOTH and DC
 int multi_koth_get_blue_team_score() // KOTH and DC
 {
     return g_koth_info.blue_team_score;
+}
+
+void multi_get_team_scores(rf::NetGameType type, int& red, int& blue)
+{
+    red = 0;
+    blue = 0;
+    switch (type) {
+        case rf::NG_TYPE_CTF:
+            red = rf::multi_ctf_get_red_team_score();
+            blue = rf::multi_ctf_get_blue_team_score();
+            break;
+        case rf::NG_TYPE_TEAMDM:
+            red = rf::multi_tdm_get_red_team_score();
+            blue = rf::multi_tdm_get_blue_team_score();
+            break;
+        case rf::NG_TYPE_KOTH:
+        case rf::NG_TYPE_DC:
+        case rf::NG_TYPE_REV:
+        case rf::NG_TYPE_ESC:
+            red = multi_koth_get_red_team_score();
+            blue = multi_koth_get_blue_team_score();
+            break;
+        case rf::NG_TYPE_SAL:
+        case rf::NG_TYPE_SCAV:
+            red = salvage_get_red_team_score();
+            blue = salvage_get_blue_team_score();
+            break;
+        case rf::NG_TYPE_BAG:
+        case rf::NG_TYPE_TBAG:
+            red = bagman_get_red_team_score();
+            blue = bagman_get_blue_team_score();
+            break;
+        case rf::NG_TYPE_WO:
+            red = wipeout_get_red_team_score();
+            blue = wipeout_get_blue_team_score();
+            break;
+        default:
+            break;
+    }
 }
 
 void multi_koth_set_red_team_score(int score) // KOTH and DC
@@ -283,6 +327,11 @@ bool gt_is_salvage()
     return rf::multi_get_game_type() == rf::NetGameType::NG_TYPE_SAL;
 }
 
+bool gt_is_scavenger()
+{
+    return rf::multi_get_game_type() == rf::NetGameType::NG_TYPE_SCAV;
+}
+
 const char* multi_gametype_help_text(rf::NetGameType game_type)
 {
     switch (game_type) {
@@ -314,6 +363,8 @@ const char* multi_gametype_help_text(rf::NetGameType game_type)
             return "Gun Game: Get frags to advance to a new weapon";
         case rf::NG_TYPE_SAL:
             return "Salvage: Steal the flag and take it to your base";
+        case rf::NG_TYPE_SCAV:
+            return "Scavenger: Find the cartridge and take it to the target";
         default:
             return nullptr;
     }
@@ -646,6 +697,20 @@ rf::Trigger* koth_resolve_trigger_from_uid(int uid)
     if (auto* o = rf::obj_lookup_from_uid(uid)) {
         if (o->type == rf::ObjectType::OT_TRIGGER)
             return static_cast<rf::Trigger*>(o);
+    }
+    return nullptr;
+}
+
+rf::Trigger* koth_capture_point_handler_trigger(const rf::Event& handler)
+{
+    const auto& cp = static_cast<const EventCapturePointHandler&>(handler);
+    if (cp.trigger_uid >= 0) {
+        return koth_resolve_trigger_from_uid(cp.trigger_uid);
+    }
+    for (const int handle : handler.links) {
+        if (auto* o = rf::obj_from_handle(handle); o && o->type == rf::ObjectType::OT_TRIGGER) {
+            return static_cast<rf::Trigger*>(o);
+        }
     }
     return nullptr;
 }
@@ -1996,24 +2061,12 @@ static int build_hills_from_capture_point_events()
 
         auto* cp = static_cast<EventCapturePointHandler*>(e);
 
-        // find trigger_uid from event links
-        if (cp->trigger_uid < 0 && !e->links.empty()) {
-            for (int handle : e->links) {
-                if (auto* o = rf::obj_from_handle(handle)) {
-                    if (o->type == rf::ObjectType::OT_TRIGGER) {
-                        cp->trigger_uid = o->uid;
-                        break;
-                    }
-                }
-            }
-        }
-
-        // resolve trigger pointer
-        rf::Trigger* trig = koth_resolve_trigger_from_uid(cp->trigger_uid);
+        rf::Trigger* trig = koth_capture_point_handler_trigger(*e);
         if (!trig) {
             xlog::warn("KOTH: Capture point '{}' has invalid trigger UID {}, skipping", cp->name.c_str(), cp->trigger_uid);
             continue;
         }
+        cp->trigger_uid = trig->uid;
 
         // fix a case where a mapper specified the same trigger for multiple capture point handlers
         if (!seen_uids.insert(cp->trigger_uid).second) {
@@ -2147,6 +2200,7 @@ void multi_level_init_post_gametypes()
     hill_mode_level_init_post();
     bagman_level_init_post();
     salvage_level_init_post();
+    scavenger_level_init_post();
     pit_level_init_post();
     wipeout_level_init_post();
     gungame_level_init_post();
@@ -2172,6 +2226,7 @@ void multi_level_init_post_gametypes()
         af_send_server_info_packet_to_all();
         enforce_alpine_hard_reject_for_all_players_on_current_level();
         afstats::on_game_start();
+        server_broadcast_level_message();
     }
 }
 
@@ -2186,6 +2241,7 @@ CodeInjection multi_level_init_gametypes_injection{
         bagman_level_init();
         jetpack_level_init();
         salvage_level_init();
+        scavenger_level_init();
         pit_level_init();
         wipeout_level_init();
         gungame_level_init();
@@ -2195,7 +2251,7 @@ CodeInjection multi_level_init_gametypes_injection{
     },
 };
 
-// sync scores every 5ms during gameplay to account for clientside prediction errors
+// sync scores every 5 s during gameplay to account for clientside prediction errors
 CodeInjection send_team_score_server_do_frame_patch{
     0x0046E5B4,
     [](auto& regs) {
@@ -2232,8 +2288,8 @@ CodeInjection send_team_score_state_info_patch{
             }
         }
 
-        // send salvage flag state packet on join
-        if (gt_is_salvage()) {
+        // send salvage/scavenger flag state packet on join
+        if (salvage_framework_active()) {
             if (rf::Player* pp = regs.edi) {
                 salvage_force_state_sync_to(pp);
             }
@@ -2303,7 +2359,7 @@ CodeInjection send_team_score_patch{
             regs.ax = blue_score;
             regs.eip = 0x00472176; // use stock game packet send
         }
-        else if (gt_is_salvage()) {
+        else if (salvage_framework_active()) {
             const uint16_t red_score = (uint16_t)std::clamp(salvage_get_red_team_score(), 0, 0xFFFF);
             const uint16_t blue_score = (uint16_t)std::clamp(salvage_get_blue_team_score(), 0, 0xFFFF);
             regs.si = red_score;
@@ -2335,7 +2391,7 @@ CodeInjection process_team_score_patch{
             wipeout_set_red_team_score(red_score);
             wipeout_set_blue_team_score(blue_score);
         }
-        else if (gt_is_salvage()) {
+        else if (salvage_framework_active()) {
             int red_score = static_cast<uint16_t>(regs.si.value);
             int blue_score = static_cast<uint16_t>(regs.di.value);
             salvage_set_red_team_score(red_score);
@@ -2412,7 +2468,6 @@ CodeInjection multi_hud_render_target_name_color_patch{
 CallHook<int()> multi_get_game_type_non_team_mode_hook{
     {
         0x004A4234, // player_create_entity for team coloured player models
-        0x004808EF, // multi_spawn_player_server_side for "You are on team X" for listen server host
         0x00443FC9, // chat_add_msg for [Team] prefix on team chat
         0x00444A93, // multi_chat_say_show
         0x00476CA8, // multi_hud_level_init for "You are on team X" for client

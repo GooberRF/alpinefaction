@@ -1,6 +1,10 @@
 #pragma once
 
 #include <cmath>
+#include <cstdint>
+
+// A turret factory's yaw limit either side of its spawn facing; 0 is none and 180 would be no limit.
+constexpr uint8_t vehicle_turret_max_yaw_limit_deg = 179;
 
 // Finite unit axes, pairwise orthogonal, both within 0.01, and right-handed like the identity: a rotation,
 // so it cannot shear or mirror a derived box.

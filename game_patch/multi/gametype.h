@@ -12,6 +12,10 @@
 
 // forward declarations
 struct EventCapturePointHandler;
+namespace rf
+{
+    struct Event;
+}
 
 static const char* const multi_rfl_prefixes[] = {
     // "m_",
@@ -187,6 +191,7 @@ bool gt_is_pit();
 bool gt_is_wipeout();
 bool gt_is_gungame();
 bool gt_is_salvage();
+bool gt_is_scavenger();
 const char* multi_gametype_help_text(rf::NetGameType game_type);
 
 // Score is driven by gametype-specific logic rather than directly by frags.
@@ -198,6 +203,7 @@ bool esc_all_points_owned_by_one_team();
 bool esc_team_can_attack_hill(const HillInfo& hill, HillOwner team);
 int multi_koth_get_red_team_score();
 int multi_koth_get_blue_team_score();
+void multi_get_team_scores(rf::NetGameType type, int& red, int& blue);
 void multi_koth_set_red_team_score(int score);
 void multi_koth_set_blue_team_score(int score);
 int koth_get_hill_handler_uid(const HillInfo& hill);
@@ -206,6 +212,9 @@ HillInfo* koth_find_hill_by_handler(const EventCapturePointHandler* handler);
 HillInfo* koth_find_hill_by_handler_uid(int handler_uid);
 bool koth_set_capture_point_owner(EventCapturePointHandler* handler, int owner, bool announce = true);
 rf::Trigger* koth_resolve_trigger_from_uid(int uid);
+// The trigger a Capture_Point_Handler event captures in, whatever the game type: its trigger uid, else the first
+// trigger it links to.
+rf::Trigger* koth_capture_point_handler_trigger(const rf::Event& handler);
 float koth_box_cylinder_radius(const rf::Trigger* trigger);
 bool koth_capture_point_handler_uses_cylinder(int handler_uid, int trigger_uid = -1);
 void koth_force_broadcast_all_hill_states();

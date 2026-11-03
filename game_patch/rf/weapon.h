@@ -202,6 +202,7 @@ namespace rf
     static_assert(sizeof(WeaponInfo) == 0x550);
     static_assert(offsetof(WeaponInfo, first_person_fov) == 0x74);
     static_assert(offsetof(WeaponInfo, clip_size_multi) == 0x84);
+    static_assert(offsetof(WeaponInfo, lifetime_seconds) == 0xB0);
     static_assert(offsetof(WeaponInfo, max_speed) == 0xC0);
     static_assert(offsetof(WeaponInfo, max_speed_multi) == 0xC4);
     static_assert(offsetof(WeaponInfo, fire_wait) == 0xD0);
@@ -284,6 +285,32 @@ namespace rf
     };
     static_assert(sizeof(Weapon) == 0x314);
     static_assert(offsetof(Weapon, target_handle) == 0x2E8);
+    static_assert(offsetof(Weapon, firing_pos) == 0x308);
+
+    // Rail driver shot glow, spawned by weapon_create via 0x004C2570 and drawn by 0x004C2650 as a wedge
+    // from tail to tip
+    struct RailBeam
+    {
+        Vector3 tip;         // 0x00
+        Vector3 tail;        // 0x0C
+        Matrix3 orient;      // 0x18
+        float speed;         // 0x3C
+        float age;           // 0x40
+        int weapon_handle;   // 0x44
+        RailBeam* next;      // 0x48
+        RailBeam* prev;      // 0x4C
+    };
+    static_assert(sizeof(RailBeam) == 0x50);
+    static_assert(offsetof(RailBeam, tip) == 0x00);
+    static_assert(offsetof(RailBeam, tail) == 0x0C);
+    static_assert(offsetof(RailBeam, orient) == 0x18);
+    static_assert(offsetof(RailBeam, speed) == 0x3C);
+    static_assert(offsetof(RailBeam, age) == 0x40);
+    static_assert(offsetof(RailBeam, weapon_handle) == 0x44);
+    static_assert(offsetof(RailBeam, next) == 0x48);
+    static_assert(offsetof(RailBeam, prev) == 0x4C);
+    // Circular; 0x004C2570 links each new beam in as the head's prev
+    static auto& rail_beam_list = addr_as_ref<RailBeam*>(0x0085C770);
 
     enum WeaponState
     {
@@ -295,6 +322,8 @@ namespace rf
     constexpr int max_weapon_types = 64;
 
     static auto& weapon_types = addr_as_ref<WeaponInfo[max_weapon_types]>(0x0085CD08);
+    // Sentinel of the live weapon list, linked through Weapon::next/prev.
+    static auto& weapon_list = addr_as_ref<Weapon>(0x00872128);
     static auto& remote_charge_det_weapon_type = addr_as_ref<int>(0x0085CCE0);
     static auto& machine_pistol_special_weapon_type = addr_as_ref<int>(0x0085CD00);
     static auto& machine_pistol_weapon_type = addr_as_ref<int>(0x0085CCD8);

@@ -45,6 +45,8 @@ bool server_sprays_enabled();
 int server_spray_cooldown_ms();
 std::tuple<bool, int, bool, bool> server_features_require_alpine_client();
 void server_reliable_socket_ready(rf::Player* player);
+// Re-sends every client bot's personality, which carries the rules' vehicle courtesy override.
+void server_resend_client_bot_personalities();
 bool server_weapon_items_give_full_ammo();
 bool server_weapon_infinite_magazines();
 void server_add_player_weapon(rf::Player* player, int weapon_type, bool full_ammo);
@@ -56,6 +58,8 @@ void player_idle_check(rf::Player* player);
 void auto_team_balance_on_player_death(rf::Player* killed_player);
 bool auto_team_balance_blocks_team_change(rf::Player* player, int requested_team);
 bool humans_vs_bots_active();
+// Whether spectator follows target; a listen host spectates client-side, without the spectatee bookkeeping.
+bool player_is_spectating(const rf::Player& spectator, const rf::Player* target);
 void send_sound_packet_throwaway(rf::Player* target, int sound_id);
 // World-space sound broadcast to every connected player, via the stock sound packet.
 void broadcast_sound_packet_3d(const rf::Vector3& pos, int sound_id);

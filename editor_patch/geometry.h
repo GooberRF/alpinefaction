@@ -1,9 +1,15 @@
 #pragma once
 
+#include <vector>
 #include <windows.h>
 
 // Forward declarations
 extern HMODULE g_module;
+struct BrushNode;
+struct CDedLevel;
+
+// The selected brushes that have geometry, in brush list order.
+std::vector<BrushNode*> collect_selected_brushes(CDedLevel* level);
 
 // Face mode operations
 void handle_face_delete();
