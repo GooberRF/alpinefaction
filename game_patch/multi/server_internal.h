@@ -638,6 +638,9 @@ struct GibConfig
     bool all_damage = false;
     float damage_threshold = 100.0f;
 
+    // Gibs are random debris instead of meat chunks. Set by the Gibbing mutator.
+    bool scrapyard = false;
+
     // =============================================
 
     void set_damage_threshold(float threshold)

@@ -1962,11 +1962,13 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
     if (base || rules.gibbing.enabled != b.gibbing.enabled ||
         (rules.gibbing.enabled &&
             (rules.gibbing.damage_threshold != b.gibbing.damage_threshold ||
-            rules.gibbing.all_damage != b.gibbing.all_damage))) {
+            rules.gibbing.all_damage != b.gibbing.all_damage ||
+            rules.gibbing.scrapyard != b.gibbing.scrapyard))) {
         std::format_to(iter, "  Gibbing:                               {}\n", rules.gibbing.enabled);
         if (rules.gibbing.enabled) {
             std::format_to(iter, "    Damage threshold:                    {}\n", rules.gibbing.damage_threshold);
             std::format_to(iter, "    All damage types:                    {}\n", rules.gibbing.all_damage);
+            std::format_to(iter, "    Scrapyard mode:                      {}\n", rules.gibbing.scrapyard);
         }
     }
 

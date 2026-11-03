@@ -300,9 +300,10 @@ static void apply_flaming_enemies(AlpineServerConfigRules& r, const toml::table&
 }
 
 // Gibbing: overkill deaths explode into gibs.
-static void apply_gibbing(AlpineServerConfigRules& r, const toml::table& /*opts*/)
+static void apply_gibbing(AlpineServerConfigRules& r, const toml::table& opts)
 {
     r.gibbing.enabled = true;
+    r.gibbing.scrapyard = opts["scrapyard"].value_or(false);
 }
 
 // Jetpacks: every player wears a jetpack and can thrust upward in midair.
@@ -477,6 +478,10 @@ static const MutatorOptionDef VAMPIRE_OPTIONS[] = {
     {1, "full_lifesteal", "Full lifesteal", MutatorOptionType::Bool},
 };
 
+static const MutatorOptionDef GIBBING_OPTIONS[] = {
+    {0, "scrapyard", "Scrapyard mode", MutatorOptionType::Bool},
+};
+
 static const MutatorOptionDef JETPACKS_OPTIONS[] = {
     {0, "explode", "Jetpacks explode", MutatorOptionType::Bool},
 };
@@ -533,7 +538,7 @@ static const MutatorDef MUTATORS[] = {
     {MutatorId::SuperRail, "superrail", "Super Rail", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_super_rail, nullptr, 0},
     {MutatorId::BigCraters, "bigcraters", "Big Craters", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_big_craters, nullptr, 0},
     {MutatorId::FlamingEnemies, "flamingenemies", "Flaming Enemies", 4, &apply_flaming_enemies, nullptr, 0},
-    {MutatorId::Gibbing, "gibbing", "Gibbing", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_gibbing, nullptr, 0},
+    {MutatorId::Gibbing, "gibbing", "Gibbing", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_gibbing, GIBBING_OPTIONS, std::size(GIBBING_OPTIONS)},
     {MutatorId::Jetpacks, "jetpacks", "Jetpacks", 4, &apply_jetpacks, JETPACKS_OPTIONS, std::size(JETPACKS_OPTIONS)},
     {MutatorId::HumansVsBots, "humansvsbots", "Humans vs. Bots", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_humans_vs_bots, nullptr, 0, MutatorGametypeReq::TeamOnly},
     {MutatorId::DelayedSupers, "delayedsupers", "Delayed Supers", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_delayed_supers, nullptr, 0},
@@ -1364,6 +1369,17 @@ bool mutators_pogo_active()
     // Server informs the client via SIF_POGO.
     const auto& info = get_af_server_info();
     return info.has_value() && info->pogo;
+}
+
+bool mutators_scrapyard_gibs_active()
+{
+    if (!rf::is_multi)
+        return false;
+    if (rf::is_server)
+        return g_alpine_server_config_active_rules.gibbing.scrapyard;
+    // Server informs the client via SIF_SCRAPYARD_GIBS.
+    const auto& info = get_af_server_info();
+    return info.has_value() && info->scrapyard_gibs;
 }
 
 static bool any_movement_mutator_active()

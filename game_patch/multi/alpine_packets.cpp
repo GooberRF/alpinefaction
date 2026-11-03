@@ -4604,6 +4604,8 @@ uint32_t af_compute_server_info_flags()
         af |= af_server_info_flags::SIF_DODGING;
     if (g_alpine_server_config_active_rules.mutators.pogo_enabled)
         af |= af_server_info_flags::SIF_POGO;
+    if (g_alpine_server_config_active_rules.gibbing.scrapyard)
+        af |= af_server_info_flags::SIF_SCRAPYARD_GIBS;
     return af;
 }
 
@@ -4740,6 +4742,7 @@ static void decode_af_server_info_flags(const af_server_info_packet& pkt, Alpine
     server_info.skiing = (pkt.af_flags & af_server_info_flags::SIF_SKIING) != 0;
     server_info.dodging = (pkt.af_flags & af_server_info_flags::SIF_DODGING) != 0;
     server_info.pogo = (pkt.af_flags & af_server_info_flags::SIF_POGO) != 0;
+    server_info.scrapyard_gibs = (pkt.af_flags & af_server_info_flags::SIF_SCRAPYARD_GIBS) != 0;
 }
 
 // Apply af_server_info_packet flags to the local server info (for listen server host)
