@@ -159,18 +159,28 @@ namespace
         if (!vehicle_is_synced_entity_type(vehicle)) {
             return rf::Vector3{};
         }
-        rf::Vector3 vel = vehicle->p_data.vel;
-        if (vehicle_driver_entity(vehicle) == rider) {
-            vehicle_physics_driven_velocity(vehicle->handle, &vel);
-        }
+        const rf::Vector3 vel =
+            vehicle_driver_entity(vehicle) == rider ? vehicle_live_hull_velocity(vehicle) : vehicle->p_data.vel;
         return vehicle_physics_cap_class_speed(vehicle_damage_class(vehicle), vel);
     }
 
-    // Applied AFTER vehicle_exit_restore, which zeroes the freed rider's motion. Local player only:
-    // movement is client-authoritative, so a server-side write dies on his next obj_update row.
+    // A player the server itself simulates (an in-process bot): every network player's entity carries PF_NET_PLAYER.
+    bool vehicle_player_server_simulated(rf::Entity* ep)
+    {
+        return rf::is_server && rf::obj_is_player(ep) && !(ep->p_data.flags & rf::PF_NET_PLAYER);
+    }
+
+    // The local player, or a player the server itself simulates. A remote client's movement is
+    // client-authoritative, so a server-side write dies on his next obj_update row.
+    bool vehicle_rider_simulated_here(rf::Entity* rider)
+    {
+        return rider && (rider == rf::local_player_entity || vehicle_player_server_simulated(rider));
+    }
+
+    // Applied AFTER vehicle_exit_restore, which zeroes the freed rider's motion.
     void vehicle_apply_exit_inertia(rf::Entity* rider, const rf::Vector3& vel)
     {
-        if (rider && rider == rf::local_player_entity) {
+        if (vehicle_rider_simulated_here(rider)) {
             rider->p_data.vel = vel;
         }
     }
@@ -190,20 +200,6 @@ namespace
         if (pp->cam && !vehicle_physics_camera_local_seat_is_orbit()) {
             rf::camera_enter_first_person(pp->cam);
         }
-    }
-
-    // THE hull velocity derivation, shared by every handoff point and by the wire: whichever of the
-    // LOCAL driven body, a server body or the entity this machine actually keeps it in.
-    rf::Vector3 vehicle_live_hull_velocity(const rf::Entity* vehicle)
-    {
-        rf::Vector3 vel{};
-        if (vehicle_physics_driven_velocity(vehicle->handle, &vel)) {
-            return vel;
-        }
-        if (vehicle_physics_server_velocity(vehicle->handle, &vel)) {
-            return vel;
-        }
-        return vehicle->p_data.vel;
     }
 
     int16_t vehicle_quantize_hull_vel_axis(float v)
@@ -327,8 +323,8 @@ namespace
             vehicle_local_rider_enter(vehicle);
         }
         if (seat_index == 0) {
-            // The server body is released below and its Bullet velocity is the only copy a coasting
-            // hull has: publish it on the entity so the seed and the announcement below both see it.
+            // A coasting hull's Bullet velocity is its only copy, and the body may be released below:
+            // publish it on the entity so the seed and the announcement below both see it.
             vehicle->p_data.vel = vehicle_live_hull_velocity(vehicle);
         }
         // A driver boarding is always a fresh takeover of a parked/coasting hull, so flush the ring.
@@ -347,10 +343,10 @@ namespace
         // A new occupant in ANY seat takes the vehicle over.
         g_vehicle_state.kinematics.erase(vehicle->handle);
         g_vehicle_state.coast_memory.erase(vehicle->handle);
-        // Seat 0 hands the hull to that driver's client; a gunner boarding changes nothing, which is
-        // the whole reason a gunner-only jeep moves at all.
+        // Seat 0 hands the hull to that driver's client, or keeps it on the server body for a server-local driver; a
+        // gunner boarding changes nothing, which is the whole reason a gunner-only jeep moves at all.
         if (seat_index == 0) {
-            vehicle_physics_server_release(vehicle->handle);
+            vehicle_server_take_driver_body(vehicle);
         }
     }
 
@@ -398,6 +394,25 @@ namespace
         return static_cast<uint8_t>(changed_seat);
     }
 
+    // The server rules' bot switch and driver cap, the one gate both bot kinds pass through.
+    bool vehicle_bot_seat_refused(rf::Player* pp, const rf::Entity* vehicle, int seat_index)
+    {
+        if (!pp->is_bot) {
+            return false;
+        }
+        const VehicleConfig& rules = g_alpine_server_config_active_rules.vehicles;
+        if (!rules.bots_use_vehicles) {
+            vehicle_deny(pp, "Bots may not use vehicles here.");
+            return true;
+        }
+        if (seat_index == 0 && !vehicle_hull_is_turret(vehicle)
+            && vehicle_count_bot_driven_hulls() >= rules.bot_max_drivers) {
+            vehicle_deny(pp, "Too many bot drivers.");
+            return true;
+        }
+        return false;
+    }
+
     void vehicle_server_handle_enter(rf::Player* pp, rf::Entity* rider, int vehicle_handle,
                                      uint8_t seat_index)
     {
@@ -434,7 +449,7 @@ namespace
             vehicle_deny(pp, "That seat is taken.");
             return;
         }
-        if (rider->eye_pos.distance_to(vehicle->pos) > vehicle->info->use_radius + board_range_slack) {
+        if (!vehicle_board_in_range(rider, vehicle, 0.0f)) {
             return;
         }
         if (!vehicle_sub_water_gate_ok(vehicle)) {
@@ -447,6 +462,9 @@ namespace
         }
         if (vehicle_occupied_by_enemy(pp, vehicle)) {
             vehicle_deny(pp, vehicle_enemy_occupant_deny);
+            return;
+        }
+        if (vehicle_bot_seat_refused(pp, vehicle, resolved_seat)) {
             return;
         }
 
@@ -474,7 +492,7 @@ namespace
         if (driver_exit) {
             vehicle->p_data.vel = exit_vel;
         }
-        const rf::Vector3 rider_inertia = (rider == rf::local_player_entity)
+        const rf::Vector3 rider_inertia = vehicle_rider_simulated_here(rider)
             ? vehicle_capture_exit_inertia(vehicle, rider) : rf::Vector3{};
 
         const VehicleExitView view = vehicle_capture_exit_view(vehicle);
@@ -564,6 +582,9 @@ namespace
             vehicle_deny(pp, vehicle_enemy_occupant_deny);
             return;
         }
+        if (seat_index == 0 && vehicle_bot_seat_refused(pp, vehicle, 0)) {
+            return;
+        }
 
         // BEFORE anything below touches it: vehicle_update_interp_ownership zeroes it for a hull left
         // with no driver, so a swap OUT of seat 0 must carry the momentum across the handoff.
@@ -593,9 +614,10 @@ namespace
         // Somebody is aboard, so no ex-driver's coast claim survives - the boarding rule.
         g_vehicle_state.coast_memory.erase(vehicle->handle);
         if (now_driver) {
-            // Seat 0 taken: that driver's client simulates from here and the server owns no body.
+            // Seat 0 taken: that driver's client simulates from here and the server owns no body, unless the
+            // server simulates the driver too.
             g_vehicle_state.kinematics.erase(vehicle->handle);
-            vehicle_physics_server_release(vehicle->handle);
+            vehicle_server_take_driver_body(vehicle);
         }
         else if (was_driver && !rf::entity_is_dying(vehicle)
                  && vehicle_physics_server_ensure(vehicle, &exit_vel)) {
@@ -833,7 +855,7 @@ namespace
         }
         // vehicle_server_handle_enter's own range check, so the prompt never offers a board the
         // server silently drops.
-        if (rider->eye_pos.distance_to(vehicle->pos) > vehicle->info->use_radius + board_range_slack) {
+        if (!vehicle_board_in_range(rider, vehicle, 0.0f)) {
             return false;
         }
         const int vehicle_class = vehicle_damage_class(vehicle);
@@ -929,6 +951,80 @@ namespace
         return true;
     }
 } // namespace
+
+float vehicle_board_range(const rf::Entity* hull)
+{
+    return hull && hull->info ? hull->info->use_radius + board_range_slack : 0.0f;
+}
+
+bool vehicle_board_in_range(const rf::Entity* rider, const rf::Entity* hull, float margin)
+{
+    return rider && hull && hull->info && rider->eye_pos.distance_to(hull->pos) <= vehicle_board_range(hull) - margin;
+}
+
+// THE hull velocity derivation, shared by every handoff point and by the wire: whichever of the
+// LOCAL driven body, a server body or the entity this machine actually keeps it in.
+rf::Vector3 vehicle_live_hull_velocity(const rf::Entity* vehicle)
+{
+    rf::Vector3 vel{};
+    if (vehicle_physics_driven_velocity(vehicle->handle, &vel)) {
+        return vel;
+    }
+    if (vehicle_physics_server_velocity(vehicle->handle, &vel)) {
+        return vel;
+    }
+    return vehicle->p_data.vel;
+}
+
+rf::Entity* vehicle_server_local_occupant(const rf::Entity* vehicle)
+{
+    if (!rf::is_server || !vehicle) {
+        return nullptr;
+    }
+    rf::Entity* occupant = rf::entity_from_handle(vehicle_seat_leech(vehicle, 0));
+    if (!occupant || occupant == rf::local_player_entity || !vehicle_player_server_simulated(occupant)) {
+        return nullptr;
+    }
+    return occupant;
+}
+
+rf::Entity* vehicle_server_local_driver(const rf::Entity* vehicle)
+{
+    return vehicle && !rf::entity_is_dying(const_cast<rf::Entity*>(vehicle))
+        ? vehicle_server_local_occupant(vehicle)
+        : nullptr;
+}
+
+const std::vector<int>& vehicle_hull_handles()
+{
+    if (rf::is_server) {
+        return g_vehicle_state.synced_handles;
+    }
+    static std::vector<int> handles;
+    handles.clear();
+    for (rf::Entity& ep : DoublyLinkedList{rf::entity_list}) {
+        if (vehicle_is_synced_entity_type(&ep)) {
+            handles.push_back(ep.handle);
+        }
+    }
+    return handles;
+}
+
+int vehicle_count_bot_driven_hulls()
+{
+    int count = 0;
+    for (const int handle : vehicle_hull_handles()) {
+        const rf::Entity* const hull = vehicle_live_synced_entity(handle);
+        if (!hull || vehicle_hull_is_turret(hull)) {
+            continue;
+        }
+        const rf::Player* const driver = vehicle_seat_occupant_player(hull, 0);
+        if (driver && driver->is_bot) {
+            ++count;
+        }
+    }
+    return count;
+}
 
 // You may share a vehicle only with people you are on a side with; the requester is never his
 // own enemy, which is what keeps a seat swap working.

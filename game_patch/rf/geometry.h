@@ -122,6 +122,13 @@ namespace rf
         GCF_PROCESS_INVISIBLE_FACES = 0x2000,
     };
 
+    enum LiquidType
+    {
+        LIQUID_WATER = 1,
+        LIQUID_LAVA = 2,
+        LIQUID_ACID = 3,
+    };
+
     enum class GBooleanOperation
     {
         BOP_ALL = 0x0,

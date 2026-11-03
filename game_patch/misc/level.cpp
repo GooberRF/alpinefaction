@@ -23,6 +23,7 @@
 #include "../object/alpine_projection_camera.h"
 #include "../object/alpine_rope.h"
 #include "../object/alpine_dir_light.h"
+#include "../object/alpine_waypoint_helper.h"
 #include "../object/mover.h"
 #include "../hud/hud_world.h"
 #include "../hud/minimap.h"
@@ -131,6 +132,7 @@ CodeInjection level_load_init_patch{
         alpine_projection_camera_clear_state();
         alpine_rope_clear_state();
         alpine_dir_light_clear_state();
+        alpine_waypoint_helper_clear_state();
         alpine_terrain_decorations_clear_state();
         alpine_terrain_clear_state();
         gr::d3d11::release_terrain_gpu();
@@ -154,6 +156,7 @@ void level_shutdown()
     projector_clear_all();
     alpine_rope_clear_state();
     alpine_dir_light_clear_state();
+    alpine_waypoint_helper_clear_state();
     alpine_terrain_decorations_clear_state();
     alpine_terrain_clear_state();
     gr::d3d11::release_terrain_gpu();
@@ -261,6 +264,12 @@ CodeInjection level_load_chunk_patch{
         if (chunk_id == alpine_directional_light_chunk_id) {
             xlog::debug("[Level] Loading alpine directional light chunk: len={}", chunk_len);
             alpine_dir_light_load_chunk(file, chunk_len, file.get_version());
+            regs.eip = 0x004608EF;
+        }
+
+        if (chunk_id == alpine_waypoint_helper_chunk_id) {
+            xlog::debug("[Level] Loading alpine waypoint helper chunk: len={}", chunk_len);
+            alpine_waypoint_helper_load_chunk(file, chunk_len);
             regs.eip = 0x004608EF;
         }
 

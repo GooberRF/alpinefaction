@@ -70,6 +70,22 @@ namespace
     }
 } // namespace
 
+bool vehicle_server_authors_controls(const rf::Entity* vehicle)
+{
+    // Without a factory there is no Bullet world to drive a hull in. The seat occupant, not the live driver, as
+    // vehicle_local_driven_vehicle answers.
+    return rf::is_multi && vehicle_is_synced_entity_type(vehicle)
+        && (vehicle_hull_is_turret(vehicle) || vehicle_level_has_factories())
+        && vehicle_server_local_occupant(vehicle);
+}
+
+void vehicle_server_take_driver_body(rf::Entity* vehicle)
+{
+    if (!vehicle_server_authors_controls(vehicle) || !vehicle_physics_server_ensure(vehicle, nullptr, true)) {
+        vehicle_physics_server_release(vehicle->handle);
+    }
+}
+
 // Re-seed PF_NET_PLAYER ownership from the seats. driver_boarding is a seat-0 boarding, a fresh
 // takeover, so the coast's keyframes must be flushed on every machine.
 void vehicle_update_interp_ownership(rf::Entity* vehicle, bool driver_boarding)
@@ -81,7 +97,10 @@ void vehicle_update_interp_ownership(rf::Entity* vehicle, bool driver_boarding)
     if (driver_boarding || !driver || driver != rf::local_player_entity) {
         vehicle_physics_camera_fp_aim_reset(vehicle->handle);
     }
-    if (driver && driver == rf::local_player_entity) {
+    if (driver_boarding || !vehicle_server_local_driver(vehicle)) {
+        g_vehicle_state.server_driver_aim.erase(vehicle->handle);
+    }
+    if (driver && (driver == rf::local_player_entity || vehicle_server_authors_controls(vehicle))) {
         // The sim continues from control_data.phb through physics_make_orient, so this must be its
         // exact inverse of the hull, or the first frame teleports it.
         vehicle->control_data.phb = vehicle_make_orient_phb(vehicle->orient);
@@ -175,6 +194,31 @@ namespace
     };
 
     void vehicle_apply_aim_orient(rf::Entity* vehicle, VehicleAimSource source);
+
+    // Re-held to the hull as it stands now, which may have turned since the aim was set.
+    bool vehicle_server_driver_aim(const rf::Entity* vehicle, const rf::Entity* driver, rf::Vector3& out_dir)
+    {
+        const auto it = g_vehicle_state.server_driver_aim.find(vehicle->handle);
+        if (it == g_vehicle_state.server_driver_aim.end() || it->second.driver_handle != driver->handle) {
+            return false;
+        }
+        out_dir = it->second.dir;
+        return vehicle_physics_clamp_driver_aim(vehicle, out_dir);
+    }
+
+    // The body mode's own predicate, so input is never written to a hull nobody steps from it.
+    bool vehicle_server_drives(const rf::Entity* vehicle, const rf::Entity* driver)
+    {
+        return vehicle && driver && !vehicle_hull_is_turret(vehicle) && vehicle_server_authors_controls(vehicle)
+            && vehicle_driver_entity(vehicle) == driver;
+    }
+
+    // A dying driver keeps seat 0 through his death animation; the hull must not keep his last input or aim meanwhile.
+    bool vehicle_server_driver_live(const rf::Entity* vehicle, const rf::Entity* driver)
+    {
+        return !rf::entity_is_dying(const_cast<rf::Entity*>(driver))
+            && !rf::entity_is_dying(const_cast<rf::Entity*>(vehicle));
+    }
 
     // A turret's frames never bank, so the right vector stays horizontal at any pitch; the forward
     // vector does not.
@@ -712,6 +756,12 @@ namespace
                 return;
             }
         }
+        else if (driver == vehicle_server_local_occupant(vehicle)) {
+            // The supplement is this machine's own output here; without a held aim the rebuilt frame stands.
+            if (!vehicle_server_driver_aim(vehicle, driver, dir)) {
+                return;
+            }
+        }
         else {
             VehicleOrientSupplement* supp_ptr = vehicle_orient_supplement(vehicle->handle);
             if (!supp_ptr) {
@@ -1051,6 +1101,7 @@ void vehicle_drop_combat_state(int vehicle_handle)
     g_vehicle_state.hull_state.erase(vehicle_handle);
     g_vehicle_state.orient.erase(vehicle_handle);
     g_vehicle_state.orient_sent.erase(vehicle_handle);
+    g_vehicle_state.server_driver_aim.erase(vehicle_handle);
     g_vehicle_state.kinematics.erase(vehicle_handle);
     g_vehicle_state.void_timer.erase(vehicle_handle);
     g_vehicle_state.hazard_time.erase(vehicle_handle);
@@ -1080,7 +1131,7 @@ namespace
             }
             auto* ep = static_cast<rf::Entity*>(obj);
             if ((vehicle_level_has_factories() && vehicle_local_driven_vehicle() == ep)
-                || server_bot_from_entity(ep)) {
+                || server_bot_from_entity(ep) || vehicle_server_authors_controls(ep)) {
                 regs.eip = 0x00487895; // run the collision
             }
         },
@@ -1117,7 +1168,8 @@ namespace
             if (rf::is_multi && obj && obj->type == rf::OT_ENTITY && vehicle_level_has_factories()
                 && !vehicle_driller_contact_halt(static_cast<rf::Entity*>(obj))
                 && (vehicle_local_driven_vehicle() == static_cast<rf::Entity*>(obj)
-                    || vehicle_interp_needs_physics_wake(static_cast<rf::Entity*>(obj)))) {
+                    || vehicle_interp_needs_physics_wake(static_cast<rf::Entity*>(obj))
+                    || vehicle_server_authors_controls(static_cast<rf::Entity*>(obj)))) {
                 return 1;
             }
             return obj_should_sim_physics_hook.call_target(obj);
@@ -1272,6 +1324,18 @@ namespace
         [](rf::Entity* ep, int weapon_type) -> int {
             const int reserve = entity_fire_secondary_watcher_ammo_gate_hook.call_target(ep, weapon_type);
             return vehicle_fire_skips_local_ammo_gate(ep) ? std::max(reserve, 1) : reserve;
+        },
+    };
+
+    // Stock skips the AI of an entity hosting a local player; ai_do_frame (0x00403320) would otherwise zero the
+    // ai.ci a server-local occupant wrote before the physics consumes it.
+    CallHook<bool(rf::Entity*)> entity_should_run_ai_hook{
+        0x0041DBCF,
+        [](rf::Entity* ep) {
+            if (vehicle_server_authors_controls(ep)) {
+                return false;
+            }
+            return entity_should_run_ai_hook.call_target(ep);
         },
     };
 
@@ -1567,7 +1631,8 @@ namespace
             }
             rf::Entity* ep = regs.ebx;
             if (ep && vehicle_is_synced_entity_type(ep)
-                && (vehicle_local_driven_vehicle() == ep || vehicle_server_samples_vehicle(ep))) {
+                && (vehicle_local_driven_vehicle() == ep || vehicle_server_samples_vehicle(ep)
+                    || vehicle_server_authors_controls(ep))) {
                 // pack_obj_update_data would otherwise serialize it out of a ring nothing fills.
                 vehicle_push_local_interp_sample(ep);
                 regs.eip = 0x0047E701; // serialize it
@@ -1702,16 +1767,76 @@ bool vehicle_is_driver_obj_update_row(const rf::Player* pp, const rf::Entity* ep
     return (flags & ~permitted_flags) == 0;
 }
 
+// Mirrors 0x0049CF40, which physics_update_entity applies only after the frame's shots have left.
+float vehicle_clamp_seat_eye_pitch(const rf::Entity* ep, float pitch)
+{
+    if (!(pitch >= ep->min_rel_eye_phb.x)) {
+        return ep->min_rel_eye_phb.x;
+    }
+    if (pitch > ep->max_rel_eye_phb.x) {
+        return ep->max_rel_eye_phb.x;
+    }
+    return pitch;
+}
+
+bool vehicle_server_set_turret_aim(rf::Entity* turret, const rf::Entity* gunner, float heading, float pitch)
+{
+    if (!turret || !gunner || !vehicle_hull_is_turret(turret) || vehicle_server_local_driver(turret) != gunner
+        || !std::isfinite(heading) || !std::isfinite(pitch)) {
+        return false;
+    }
+    // Absolute radian deltas: physics_simulate_entity's turn step (0x0049DE50) adds them to phb.y and eye_phb.x
+    // and zeroes them.
+    rf::EntityControlData& cd = turret->control_data;
+    turret->ai.ci.rot = {};
+    turret->ai.ci.mouse_dh = vehicle_wrap_pi(heading - cd.phb.y);
+    turret->ai.ci.mouse_dp = vehicle_clamp_seat_eye_pitch(turret, pitch) - cd.eye_phb.x;
+    return true;
+}
+
+bool vehicle_server_set_driver_input(rf::Entity* vehicle, const rf::Entity* driver, const rf::Vector3& move,
+                                     float pitch_cmd, float yaw_cmd)
+{
+    if (!vehicle_server_drives(vehicle, driver)) {
+        return false;
+    }
+    const bool live = vehicle_server_driver_live(vehicle, driver);
+    const auto axis = [live](float v) { return live && std::isfinite(v) ? std::clamp(v, -1.0f, 1.0f) : 0.0f; };
+    rf::ControlInfo& ci = vehicle->ai.ci;
+    ci.move = rf::Vector3{axis(move.x), axis(move.y), axis(move.z)};
+    // The flight model doubles rot.x back, undoing the engine's keyboard pitch scale (0x00430BE8).
+    ci.rot = rf::Vector3{axis(pitch_cmd) * 0.5f, axis(yaw_cmd), 0.0f};
+    ci.mouse_dh = 0.0f;
+    ci.mouse_dp = 0.0f;
+    return true;
+}
+
+bool vehicle_server_set_driver_aim(rf::Entity* vehicle, const rf::Entity* driver, const rf::Vector3& dir)
+{
+    if (!vehicle_server_drives(vehicle, driver)) {
+        return false;
+    }
+    rf::Vector3 held = dir;
+    if (!vehicle_server_driver_live(vehicle, driver) || !vehicle_physics_clamp_driver_aim(vehicle, held)) {
+        g_vehicle_state.server_driver_aim.erase(vehicle->handle);
+        return false;
+    }
+    g_vehicle_state.server_driver_aim[vehicle->handle] = VehicleServerDriverAim{driver->handle, held};
+    return true;
+}
+
+// The jeep gun belongs to the gunner's seat alone; every other class holds its gun on seat 0.
+int vehicle_firing_seat_index(const rf::Entity* vehicle)
+{
+    return vehicle && rf::entity_is_jeep(const_cast<rf::Entity*>(vehicle)) ? 1 : 0;
+}
+
 rf::Entity* vehicle_firing_seat_occupant(rf::Entity* vehicle)
 {
     if (vehicle_seat_count(vehicle) < 1) {
         return nullptr;
     }
-    // The jeep gun belongs to the gunner's seat alone; every other class holds its gun on seat 0.
-    if (rf::entity_is_jeep(vehicle)) {
-        return rf::entity_from_handle(vehicle_seat_leech(vehicle, 1));
-    }
-    return rf::entity_from_handle(vehicle_seat_leech(vehicle, 0));
+    return rf::entity_from_handle(vehicle_seat_leech(vehicle, vehicle_firing_seat_index(vehicle)));
 }
 
 bool vehicle_local_owns_firing_seat(rf::Entity* ep)
@@ -2117,5 +2242,6 @@ void vehicle_sync_apply_patch()
     entity_fire_weapon_watcher_ammo_gate_hook.install();
     entity_fire_secondary_watcher_ammo_gate_hook.install();
     ai_catatonic_weapon_off_hook.install();
+    entity_should_run_ai_hook.install();
     weapon_update_homing_target_hook.install();
 }

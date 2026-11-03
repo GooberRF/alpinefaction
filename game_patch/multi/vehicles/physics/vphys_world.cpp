@@ -1364,12 +1364,8 @@ namespace
         return types[row];
     }
 
-    const VehicleHullBoxOverride* vehicle_hull_box_override(const rf::Object* op)
+    const VehicleHullBoxOverride* vehicle_hull_box_override_for_type(int type)
     {
-        if (!op || op->type != rf::OT_ENTITY) {
-            return nullptr;
-        }
-        const int type = static_cast<const rf::Entity*>(op)->info_index;
         if (type < 0) {
             return nullptr;
         }
@@ -1379,6 +1375,22 @@ namespace
             }
         }
         return nullptr;
+    }
+
+    const VehicleHullBoxOverride* vehicle_hull_box_override(const rf::Object* op)
+    {
+        if (!op || op->type != rf::OT_ENTITY) {
+            return nullptr;
+        }
+        return vehicle_hull_box_override_for_type(static_cast<const rf::Entity*>(op)->info_index);
+    }
+
+    HullBox override_hull_box(const VehicleHullBoxOverride& ov)
+    {
+        HullBox box;
+        box.half = btVector3(std::max(ov.half_x, 0.05f), std::max(ov.half_y, 0.05f), std::max(ov.half_z, 0.05f));
+        box.center = btVector3(ov.center_x, ov.center_y, ov.center_z);
+        return box;
     }
 
     // ONE derivation for every mesh-measured box. False means no mesh, or a degenerate/unloaded one.
@@ -1411,15 +1423,21 @@ namespace
     }
 } // namespace
 
+bool vphys_type_hull_box(int entity_type, HullBox* out)
+{
+    const VehicleHullBoxOverride* ov = vehicle_hull_box_override_for_type(entity_type);
+    if (!ov) {
+        return false;
+    }
+    *out = override_hull_box(*ov);
+    return true;
+}
+
 // The hull's TRUE local box: min/max over the cspheres, NOT folded about the origin.
 HullBox hull_local_box(const rf::Object* op)
 {
     if (const VehicleHullBoxOverride* ov = vehicle_hull_box_override(op)) {
-        HullBox box;
-        box.half = btVector3(std::max(ov->half_x, 0.05f), std::max(ov->half_y, 0.05f),
-                             std::max(ov->half_z, 0.05f));
-        box.center = btVector3(ov->center_x, ov->center_y, ov->center_z);
-        return box;
+        return override_hull_box(*ov);
     }
     // No row of its own: the live mesh is the measurement, as a clutter prop's box already is.
     HullBox mesh_box;

@@ -651,6 +651,14 @@ struct VehicleConfig
     // Hulls take damage from hitting the level, a mover or a prop hard, from hard landings, and (the fighter)
     // from scraping along the level.
     bool crash_damage = true;
+    // Bots may board vehicles, and at most this many hulls may have a bot driving them.
+    bool bots_use_vehicles = true;
+    int bot_max_drivers = 4;
+
+    void set_bot_max_drivers(int count)
+    {
+        bot_max_drivers = std::clamp(count, 0, 32);
+    }
 };
 
 // Controls which level pickups survive under a mutator. Enforced server-side in
@@ -786,6 +794,7 @@ struct MutatorConfig
     // Join Bots: this many server bots join for the level, or fill a match's empty slots, all at one skill preset.
     int join_bots = 0;
     std::string join_bots_skill;
+    std::string join_bots_personality;
 
     // Display only: human-readable names of the mutators applied to these rules.
     std::vector<std::string> active_labels;
@@ -1181,7 +1190,7 @@ struct ManualRulesOverride
     // set. A plain vote installs derived rules too, but arms no session set, so a
     // rotation preserve vote after one carries nothing.
     bool explicit_session = false;
-    // Installed by a match vote: its Join Bots exist only while the match is queued, forming or live.
+    // Installed by a match vote: its Join Bots last from when the match is queued until the level after it.
     bool match = false;
 };
 

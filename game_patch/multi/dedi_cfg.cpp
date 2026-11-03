@@ -224,6 +224,10 @@ static VehicleConfig parse_vehicle_config(const toml::table& t, VehicleConfig c)
 {
     if (auto x = t["crash_damage"].value<bool>())
         c.crash_damage = *x;
+    if (auto x = t["bots_use_vehicles"].value<bool>())
+        c.bots_use_vehicles = *x;
+    if (auto v = t["bot_max_drivers"].value<int>())
+        c.set_bot_max_drivers(*v);
 
     return c;
 }
@@ -1770,7 +1774,8 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         rules.mutators.crits_enabled != b.mutators.crits_enabled ||
         rules.mutators.jetpack_explode != b.mutators.jetpack_explode ||
         rules.mutators.join_bots != b.mutators.join_bots ||
-        rules.mutators.join_bots_skill != b.mutators.join_bots_skill;
+        rules.mutators.join_bots_skill != b.mutators.join_bots_skill ||
+        rules.mutators.join_bots_personality != b.mutators.join_bots_personality;
 
     if (base || mutators_changed) {
         std::string joined;
@@ -1804,8 +1809,8 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         }
         // Join Bots options
         if (rules.mutators.join_bots > 0) {
-            std::format_to(iter, "    Join bots:                           {} ({})\n", rules.mutators.join_bots,
-                           rules.mutators.join_bots_skill);
+            std::format_to(iter, "    Join bots:                           {} ({}, {})\n", rules.mutators.join_bots,
+                           rules.mutators.join_bots_skill, rules.mutators.join_bots_personality);
         }
     }
 
@@ -1967,6 +1972,10 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
 
     if (base || rules.vehicles.crash_damage != b.vehicles.crash_damage)
         std::format_to(iter, "  Vehicle crash damage:                  {}\n", rules.vehicles.crash_damage);
+    if (base || rules.vehicles.bots_use_vehicles != b.vehicles.bots_use_vehicles)
+        std::format_to(iter, "  Bots use vehicles:                     {}\n", rules.vehicles.bots_use_vehicles);
+    if (base || rules.vehicles.bot_max_drivers != b.vehicles.bot_max_drivers)
+        std::format_to(iter, "  Max bot drivers:                       {}\n", rules.vehicles.bot_max_drivers);
 
     // spawn weapon
     if (base || rules.default_player_weapon.index != b.default_player_weapon.index ||
@@ -2706,6 +2715,7 @@ void apply_rules_for_current_level()
     if (cfg.levels.size() < 1) {
         return;
     }
+    const bool prev_bots_use_vehicles = g_alpine_server_config_active_rules.vehicles.bots_use_vehicles;
 
     // The rotation can be reloaded or reshuffled under the running level.
     const int idx = rotation_index_for_level(rf::level_filename_to_load.c_str());
@@ -2791,6 +2801,9 @@ void apply_rules_for_current_level()
 
     // apply the rules
     apply_alpine_dedicated_server_rules(netgame, g_alpine_server_config_active_rules);
+    if (g_alpine_server_config_active_rules.vehicles.bots_use_vehicles != prev_bots_use_vehicles) {
+        server_resend_client_bot_personalities();
+    }
     server_bots_sync_join_bots();
 
     // Must precede the blob rebuild below: the mutator registry caches its live-value

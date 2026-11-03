@@ -1025,8 +1025,13 @@ void vehicle_do_frame()
             vehicle_server_body_do_frame(ep);
         }
         else {
-            // Nothing to author: a driven hull, or a driverless one that is not server-simulated.
-            vehicle_physics_server_release(handle);
+            // Nothing to coast: a driven hull, or a driverless one that is not server-simulated.
+            if (driverless) {
+                vehicle_physics_server_release(handle);
+            }
+            else {
+                vehicle_server_take_driver_body(ep);
+            }
             g_vehicle_state.kinematics.erase(handle);
             g_vehicle_state.coast_memory.erase(handle); // ends the ex-driver's window
         }

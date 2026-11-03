@@ -284,8 +284,10 @@ struct VehicleSimBody
 {
     int vehicle_handle = -1;
     int vehicle_class = 0;        // VehiclePhysicsClass
-    // Server-owned (driverless): inputs read released, lift scaled by deadstick_lift, may SLEEP.
+    // A server body. Driverless unless server_driven: inputs read released, lift scaled by deadstick_lift, may SLEEP.
     bool server_owned = false;
+    // A server-local driver (an in-process bot) feeds ai.ci: read like a driver's own body, never slept.
+    bool server_driven = false;
     // Registered with the world? Detached while a server body sleeps - updateActions ignores sleep.
     bool car_action_in_world = false;
 
@@ -510,6 +512,8 @@ void sim_body_destroy(VehicleSimBody* b);
 void driven_body_destroy();
 const VehiclePhysicsParams& params_for_class(int cls);
 HullBox hull_local_box(const rf::Object* op);
+// The measured box of an entity.tbl class with a row of its own, for a hull not spawned yet.
+bool vphys_type_hull_box(int entity_type, HullBox* out);
 VehicleSimBody* body_create(rf::Entity* ep, int cls);
 void world_create();
 void world_destroy();
