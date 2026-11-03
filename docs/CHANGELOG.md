@@ -178,6 +178,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Add `Waypoint Helper` object type
 - Add `$Fpgun Override` to `af_client.tbl` to replace the first person weapon model and arm textures per multiplayer character and weapon
 - Don't load Alpine Faction `af_*.tbl` option files from packfiles in `user_maps`
+- Add client-side ragdoll deaths, toggleable with `cl_ragdolls`, with the number kept in the world adjustable with `cl_ragdolls_max`
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color

@@ -407,6 +407,14 @@ struct AlpineGameSettings
         freelook_cam_slide = std::clamp(value, min_freelook_cam_slide, max_freelook_cam_slide);
     }
     bool gib_flames = true;
+    bool ragdolls = false;
+    static constexpr int min_ragdolls_max = 4;
+    static constexpr int max_ragdolls_max = 128;
+    int ragdolls_max = 16;
+    void set_ragdolls_max(int value)
+    {
+        ragdolls_max = std::clamp(value, min_ragdolls_max, max_ragdolls_max);
+    }
     bool shell_casings = true;
     bool shell_casings_collide = true;
     static constexpr int min_shell_casing_lifetime_ms = 1000;

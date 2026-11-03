@@ -4,14 +4,17 @@
 #include <patch_common/CallHook.h>
 #include <patch_common/FunHook.h>
 #include <common/utils/list-utils.h>
+#include "ragdoll.h"
 #include "vphys_internal.h"
 #include "../vehicle_physics.h"
 #include "../vehicle.h"
 #include "../vehicle_crash_tuning.h"
+#include "../../demo/demo.h"
 #include "../../../misc/destruction.h"
 #include "../../../misc/level.h"
 #include "../../../os/os.h"
 #include "../../../rf/entity.h"
+#include "../../../rf/gameseq.h"
 #include "../../../rf/geometry.h"
 #include "../../../rf/multi.h"
 #include "../../../rf/os/frametime.h"
@@ -712,6 +715,9 @@ namespace
     void vphys_step_frame()
     {
         vphys_reconcile();
+        // This runs outside the sim frame, so a paused game or demo still reaches it.
+        const float dt = rf::game_paused ? 0.0f : rf::frametime * demo_playback_sim_time_scale();
+        ragdoll_pre_step(dt);
         // Ahead of the empty-world return, so the step_will_run answer below is exact.
         std::vector<VehicleSimBody*> stale;
         for (const auto& owned : g_vphys.bodies) {
@@ -727,13 +733,12 @@ namespace
                 sim_body_destroy(dead);
             }
         }
-        const float dt = rf::frametime;
-        const bool step_will_run = !g_vphys.bodies.empty() && dt > 0.0f;
+        const bool step_will_run = (!g_vphys.bodies.empty() || ragdoll_needs_step()) && dt > 0.0f;
         // Must advance on exactly the frames vphys_world_step is reached: it is Bullet's own
         // m_localTime accumulator, re-derived.
         const float step_time = step_will_run ? vphys_frame_step_time(dt) : 0.0f;
         const float moved_dt = g_vphys_prev_frame_dt;
-        g_vphys_prev_frame_dt = dt;
+        g_vphys_prev_frame_dt = rf::frametime;
         // Every frame the world exists, not just the ones that step.
         if (g_vphys.world) {
             movers_update_all(step_will_run, step_time, moved_dt);
@@ -764,6 +769,7 @@ namespace
         if (step_time > 0.0f) {
             vphys_impact_contact_pass();
         }
+        ragdoll_post_step(dt);
         std::vector<VehicleImpact> impacts;
         std::vector<VehicleScrape> scrapes;
         for (BodyStepScratch& s : step) {
@@ -805,6 +811,17 @@ namespace
         },
     };
 
+    // A cutscene frame runs the sim without the controls call above.
+    CallHook<void()> cutscene_sim_frame_vphys_hook{
+        0x0045B877,
+        []() {
+            if (!rf::is_multi) {
+                vphys_step_frame();
+            }
+            cutscene_sim_frame_vphys_hook.call_target();
+        },
+    };
+
     // The physics batch's per-entity integration CALL: skipping it removes stock movement only.
     CallHook<void(rf::Entity*)> physics_simulate_entity_vphys_hook{
         0x004877C9,
@@ -822,12 +839,14 @@ namespace
 
     void notify_geomod_params(const rf::GeomodParams* params)
     {
-        // No factory means no level mesh, so the shape lookup below would be paid for nothing.
-        if (!params || !g_level_has_bullet_vehicles) {
+        // No level mesh means the shape lookup below would be paid for nothing.
+        if (!params || !g_level_wants_bullet_mesh) {
             return;
         }
-        const float radius = geomod_crater_radius(*params).value_or(0.0f);
-        vehicle_physics_notify_geomod(params->pos, radius > 0.0f ? radius : 0.0f);
+        const float crater_radius = geomod_crater_radius(*params).value_or(0.0f);
+        const float radius = crater_radius > 0.0f ? crater_radius : 0.0f;
+        vehicle_physics_notify_geomod(params->pos, radius);
+        ragdoll_wake_near(params->pos, radius);
     }
 
     // Live craters: geomod_create and the client's 0x29 handler both queue here; geomod_create returns
@@ -1345,14 +1364,14 @@ void vehicle_physics_level_reset()
     // The EARLY hook: teardown only - this fires before the RFL parse, so factory records are empty.
     world_destroy();
     g_vcam = VehicleChaseCamera{};
-    g_level_has_bullet_vehicles = false;
+    g_level_wants_bullet_mesh = false;
 }
 
 void vehicle_physics_level_init_post()
 {
     // After the stock level_init_post, hence the whole RFL parse; a dedicated server runs it too.
-    g_level_has_bullet_vehicles = vehicle_level_has_factories();
-    if (!g_level_has_bullet_vehicles) {
+    g_level_wants_bullet_mesh = vehicle_level_has_factories() || ragdolls_wanted();
+    if (!g_level_wants_bullet_mesh) {
         return;
     }
     if (!g_vphys.world) {
@@ -1365,7 +1384,7 @@ void vehicle_physics_on_multi_shutdown()
 {
     world_destroy();
     g_vcam = VehicleChaseCamera{};
-    g_level_has_bullet_vehicles = false;
+    g_level_wants_bullet_mesh = false;
 }
 
 void vehicle_physics_apply_patches()
@@ -1373,9 +1392,11 @@ void vehicle_physics_apply_patches()
     physics_simulate_entity_vphys_hook.install();
     player_process_controls_vphys_hook.install();
     multi_menu_world_sim_vphys_hook.install();
+    cutscene_sim_frame_vphys_hook.install();
     geomod_queue_add_vphys_hook.install();
     pregame_boolean_geomod_init_vphys_hook.install();
     vphys_world_install_patches();
     vphys_camera_install_patches();
     vphys_debug_install_patches();
+    ragdoll_apply_patches();
 }

@@ -20,6 +20,7 @@
 #include "vehicle_damage.h"
 #include "vehicle_horn.h"
 #include "vehicle_view.h"
+#include "physics/ragdoll.h"
 #include "../alpine_packets.h"
 #include "../multi.h"
 #include "../bots/server_bots.h"
@@ -1246,6 +1247,10 @@ namespace
     FunHook<bool(rf::Object*, rf::Object*, unsigned*)> obj_pair_should_skip_hook{
         0x0048BE00,
         [](rf::Object* a, rf::Object* b, unsigned* out_flags) -> bool {
+            // A ragdoll exists on this machine alone, so nothing may collide with it.
+            if (ragdoll_is_ghost(a) || ragdoll_is_ghost(b)) {
+                return true;
+            }
             rf::Object* weapon = nullptr;
             rf::Object* other = nullptr;
             rf::Entity* parent = nullptr;

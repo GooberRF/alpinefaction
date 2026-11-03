@@ -337,6 +337,14 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.gib_flames = std::stoi(settings["GibFlames"]);
         processed_keys.insert("GibFlames");
     }
+    if (settings.count("Ragdolls")) {
+        g_alpine_game_config.ragdolls = std::stoi(settings["Ragdolls"]);
+        processed_keys.insert("Ragdolls");
+    }
+    if (settings.count("RagdollsMax")) {
+        g_alpine_game_config.set_ragdolls_max(std::stoi(settings["RagdollsMax"]));
+        processed_keys.insert("RagdollsMax");
+    }
     if (settings.count("ShellCasings")) {
         g_alpine_game_config.shell_casings = std::stoi(settings["ShellCasings"]);
         processed_keys.insert("ShellCasings");
@@ -1592,6 +1600,8 @@ void alpine_player_settings_save(rf::Player* player)
     file << "GibLifetimeMs=" << g_alpine_game_config.gib_lifetime_ms << "\n";
     file << "FreelookCamSlide=" << g_alpine_game_config.freelook_cam_slide << "\n";
     file << "GibFlames=" << g_alpine_game_config.gib_flames << "\n";
+    file << "Ragdolls=" << g_alpine_game_config.ragdolls << "\n";
+    file << "RagdollsMax=" << g_alpine_game_config.ragdolls_max << "\n";
     file << "ShellCasings=" << g_alpine_game_config.shell_casings << "\n";
     file << "ShellCasingsCollide=" << g_alpine_game_config.shell_casings_collide << "\n";
     file << "ShellCasingLifetimeMs=" << g_alpine_game_config.shell_casing_lifetime_ms << "\n";

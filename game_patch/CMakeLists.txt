@@ -177,6 +177,8 @@ set(SRCS
     multi/vehicles/physics/vphys_step.cpp
     multi/vehicles/physics/vphys_camera.cpp
     multi/vehicles/physics/vphys_debug.cpp
+    multi/vehicles/physics/ragdoll.h
+    multi/vehicles/physics/ragdoll.cpp
     multi/sprays.h
     multi/sprays.cpp
     multi/mutators.h

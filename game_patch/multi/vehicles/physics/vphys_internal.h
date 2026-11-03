@@ -262,6 +262,11 @@ public:
     {
         return m_localTime;
     }
+    // A predictive manifold is outside the pair cache, so it outlives removeRigidBody until the next substep.
+    void release_predictive_manifolds()
+    {
+        releasePredictiveContacts();
+    }
 };
 
 // One wheel's last real cast, replayed while the ray and the level mesh are unchanged.
@@ -437,6 +442,8 @@ struct VehiclePhysicsWorld
 // Bullet requires the filter to match BOTH ways: (maskA & groupB) && (maskB & groupA).
 constexpr short vphys_group_hull = 0x80;
 constexpr short vphys_group_level = 0x40;
+constexpr short vphys_group_ragdoll = 0x100;
+constexpr short vphys_mask_level = vphys_group_hull | vphys_group_ragdoll;
 // The clutter props: Bullet's own static group and mask, which nothing else in the world is given.
 constexpr short vphys_group_prop = btBroadphaseProxy::StaticFilter;
 constexpr short vphys_mask_prop = btBroadphaseProxy::AllFilter ^ btBroadphaseProxy::StaticFilter;
@@ -502,8 +509,16 @@ struct VehicleChaseCamera
 
 // Shared globals, defined once in the TU named beside each.
 extern VehiclePhysicsWorld g_vphys;         // vphys_world.cpp
-extern bool g_level_has_bullet_vehicles;    // vphys_world.cpp
+extern bool g_level_wants_bullet_mesh;      // vphys_world.cpp
 extern VehicleChaseCamera g_vcam;           // vphys_camera.cpp
+
+// ---- ragdoll.cpp ----
+void ragdoll_pre_step(float dt);
+bool ragdoll_needs_step();
+void ragdoll_post_step(float dt);
+void ragdoll_destroy_all();
+void ragdoll_wake_near(const rf::Vector3& pos, float radius);
+void ragdoll_wake_in_box(const btVector3& lo, const btVector3& hi);
 
 // ---- vphys_world.cpp ----
 bool vphys_class_is_automobile(int cls);
@@ -518,6 +533,7 @@ VehicleSimBody* body_create(rf::Entity* ep, int cls);
 void world_create();
 void world_destroy();
 void level_mesh_build();
+void vphys_world_ensure_level_mesh();
 void level_mesh_rebuild_pending();
 void level_mesh_poll_remesh();
 bool level_mesh_geomod_settled();

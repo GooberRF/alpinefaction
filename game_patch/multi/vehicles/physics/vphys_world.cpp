@@ -266,6 +266,7 @@ namespace
     {
         for (auto& [handle, obstacle] : g_vphys.obstacles) {
             if (g_vphys.world && obstacle.body) {
+                g_vphys.world->release_predictive_manifolds();
                 g_vphys.world->removeRigidBody(obstacle.body);
                 g_vphys.manifolds_dirty = true;
             }
@@ -281,6 +282,7 @@ namespace
         car_teardown(b);
         if (b.body) {
             if (g_vphys.world) {
+                g_vphys.world->release_predictive_manifolds();
                 g_vphys.world->removeRigidBody(b.body);
                 g_vphys.manifolds_dirty = true;
             }
@@ -438,13 +440,14 @@ namespace
     {
         for (int i = 0; i < m.pending_wake_count; ++i) {
             wake_sleeping_bodies_in(m.pending_wake[i].lo, m.pending_wake[i].hi);
+            ragdoll_wake_in_box(m.pending_wake[i].lo, m.pending_wake[i].hi);
         }
         m.pending_wake_count = 0;
     }
 } // namespace
 
 // Cleared at multi_stop as well as level init: level-init-only state goes stale across a switch.
-bool g_level_has_bullet_vehicles = false;
+bool g_level_wants_bullet_mesh = false;
 
 // A vehicle carries a player, so the PLAYER standard applies: OF_WEAPON_ONLY_COLLIDE only.
 bool mover_brush_is_solid(const rf::Object& mb)
@@ -559,6 +562,7 @@ namespace
     {
         if (m.body) {
             if (g_vphys.world) {
+                g_vphys.world->release_predictive_manifolds();
                 g_vphys.world->removeRigidBody(m.body);
                 g_vphys.manifolds_dirty = true;
             }
@@ -714,7 +718,7 @@ namespace
         ci.m_restitution = 0.0f;
         ci.m_friction = 0.6f;
         m.body = new btRigidBody(ci);
-        g_vphys.world->addRigidBody(m.body, vphys_group_level, vphys_group_hull);
+        g_vphys.world->addRigidBody(m.body, vphys_group_level, vphys_mask_level);
         m.bytes = m.verts.size() * sizeof(float) + m.indices.size() * sizeof(int);
         m.aabb_min = rf::Vector3{m.verts[0], m.verts[1], m.verts[2]};
         m.aabb_max = m.aabb_min;
@@ -790,9 +794,12 @@ namespace
     void mover_mesh_free(MoverMeshBody& m)
     {
         if (m.body) {
-            if (g_vphys.world && m.in_world) {
-                g_vphys.world->removeRigidBody(m.body);
-                g_vphys.manifolds_dirty = true;
+            if (g_vphys.world) {
+                g_vphys.world->release_predictive_manifolds();
+                if (m.in_world) {
+                    g_vphys.world->removeRigidBody(m.body);
+                    g_vphys.manifolds_dirty = true;
+                }
             }
             m.in_world = false;
             delete m.body;
@@ -880,7 +887,7 @@ namespace
                                         & ~btCollisionObject::CF_STATIC_OBJECT)
                                        | btCollisionObject::CF_KINEMATIC_OBJECT);
             m->body->setActivationState(DISABLE_DEACTIVATION);
-            g_vphys.world->addRigidBody(m->body, vphys_group_level, vphys_group_hull);
+            g_vphys.world->addRigidBody(m->body, vphys_group_level, vphys_mask_level);
             m->in_world = true;
             m->bytes = m->verts.size() * sizeof(float) + m->indices.size() * sizeof(int);
             g_level_mesh_tris += m->tris;
@@ -911,7 +918,7 @@ namespace
 void level_mesh_build()
 {
     level_mesh_destroy();
-    if (!g_level_has_bullet_vehicles || !g_vphys.world) {
+    if (!g_level_wants_bullet_mesh || !g_vphys.world) {
         return;
     }
     g_level_mesh_built = true;
@@ -935,7 +942,7 @@ void level_mesh_build()
                rooms, static_cast<int>(level_mesh_chunk_count()), mover_brushes,
                static_cast<int>(g_mover_mesh.size()), g_level_mesh_tris, g_level_mesh_bytes / 1024);
     if (!level_mesh_active()) {
-        xlog::error("[vphys-mesh] level mesh unavailable - vehicles on this level have no world "
+        xlog::error("[vphys-mesh] level mesh unavailable - Bullet bodies on this level have no world "
                     "collision");
     }
 }
@@ -965,7 +972,7 @@ void movers_update_all(bool step_will_run, float step_time, float engine_dt)
         const bool solid = mover_brush_is_solid(*op);
         if (solid != m.in_world) {
             if (solid) {
-                g_vphys.world->addRigidBody(m.body, vphys_group_level, vphys_group_hull);
+                g_vphys.world->addRigidBody(m.body, vphys_group_level, vphys_mask_level);
             }
             else {
                 g_vphys.world->removeRigidBody(m.body);
@@ -1255,7 +1262,7 @@ namespace
         if (!g_vphys.world) {
             return;
         }
-        g_level_has_bullet_vehicles = true;
+        g_level_wants_bullet_mesh = true;
         if (!g_level_mesh_built) {
             level_mesh_build();
         }
@@ -1274,8 +1281,17 @@ namespace
     }
 } // namespace
 
+void vphys_world_ensure_level_mesh()
+{
+    if (!g_vphys.world) {
+        world_create();
+    }
+    level_mesh_ensure_for_body();
+}
+
 void world_destroy()
 {
+    ragdoll_destroy_all();
     level_mesh_destroy();
     obstacles_destroy_all();
     sim_bodies_free_all();
@@ -1473,11 +1489,8 @@ HullBox hull_local_box(const rf::Object* op)
 
 VehicleSimBody* body_create(rf::Entity* ep, int cls)
 {
-    if (!g_vphys.world) {
-        world_create();
-    }
     // Every class, not just the automobiles: the level mesh is the only world collision a hull has.
-    level_mesh_ensure_for_body();
+    vphys_world_ensure_level_mesh();
     auto owned = std::make_unique<VehicleSimBody>();
     VehicleSimBody& b = *owned;
     if (vphys_class_is_automobile(cls)) {
