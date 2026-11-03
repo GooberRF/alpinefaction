@@ -1420,7 +1420,7 @@ static float compute_zoom_sensitivity_scale(bool has_player_entity, float scanne
         return scanner_sens_value;
 
     // Same zoom the mouse uses: a vehicle turret's zoom has no fpgun zoom_factor behind it.
-    float zoom = std::max(rf::local_player->fpgun_data.zoom_factor, vehicle_turret_zoom_fov_scale());
+    float zoom = std::max(rf::local_player->fpgun_data.zoom_factor, vehicle_gun_zoom_fov_scale());
     if (zoom <= 1.0f)
         return 1.0f;
 

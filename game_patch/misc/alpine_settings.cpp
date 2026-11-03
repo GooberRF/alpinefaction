@@ -1287,7 +1287,7 @@ bool alpine_player_settings_load(rf::Player* player)
     }
     if (settings.count("ControllerWarningShown")) {
         g_alpine_game_config.controller_warning_shown = std::stoi(settings["ControllerWarningShown"]);
-        processed_keys.insert("ControllerWarningShown");  
+        processed_keys.insert("ControllerWarningShown");
     }
     if (settings.count("WorldHUDAltDamageIndicators")) {
         g_alpine_game_config.world_hud_alt_damage_indicators = std::stoi(settings["WorldHUDAltDamageIndicators"]);
