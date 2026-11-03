@@ -14,6 +14,7 @@
 #include <sstream>
 #include <numeric>
 #include <unordered_set>
+#include <set>
 #include <array>
 #include <utility>
 #include <windows.h>
@@ -110,6 +111,7 @@ const std::vector<std::string> g_rcon_cmd_masterlist = {
     "sv_force_spectate",
     "sv_toggle_ready",
     "sv_force_unspectate",
+    "sv_mute_chat",
 };
 
 std::vector<rf::AlpineRespawnPoint> g_alpine_respawn_points;
@@ -1266,6 +1268,11 @@ bool handle_server_chat_command(std::string_view server_command, rf::Player* sen
         handle_drop_flag_request(sender);
     }
     else if (cmd_name == "coinflip") {
+        // The result goes to everyone, so it would let a muted player talk.
+        if (server_player_chat_muted(sender)) {
+            af_send_automated_chat_msg("You are muted on this server.", sender);
+            return true;
+        }
         std::uniform_int_distribution<int> dist(0, 1);
         const char* result = dist(g_rng) == 0 ? "HEADS" : "TAILS";
         af_broadcast_automated_chat_msg(std::format("Server is flipping a coin... the result is {}", result));
@@ -3519,6 +3526,30 @@ std::optional<std::string> server_toggle_player_ready(rf::Player* player)
     if (get_ready_status(player) == was_ready && !g_match_info.everyone_ready) {
         return "their team or the match is full";
     }
+    return std::nullopt;
+}
+
+// Held by IP so it survives reconnects, until unmuted or the server restarts.
+static std::set<rf::IpAddr> g_chat_muted;
+
+bool server_player_chat_muted(const rf::Player* player)
+{
+    // Server bots share 127.0.0.1 with local clients.
+    return !player->is_bot && player->net_data && g_chat_muted.contains(player->net_data->addr.ip_addr);
+}
+
+std::optional<std::string> server_toggle_player_chat_mute(rf::Player* player)
+{
+    if (player->is_bot || !player->net_data || player == rf::local_player) {
+        return "that player cannot be muted";
+    }
+    const rf::IpAddr ip = player->net_data->addr.ip_addr;
+    const bool mute = g_chat_muted.insert(ip).second;
+    if (!mute) {
+        g_chat_muted.erase(ip);
+    }
+    af_send_automated_chat_msg(
+        std::format("Your chat has been {} on this server.", mute ? "muted" : "unmuted"), player);
     return std::nullopt;
 }
 

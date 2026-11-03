@@ -111,6 +111,7 @@ enum class PopoutButtonKind
     Spectate,
     Kick,
     Ban,
+    ServerMuteChat,
     SwapTeam,
     ToggleSpectate,
     ToggleReady,
@@ -295,6 +296,10 @@ static void scoreboard_press_button(PopoutButtonKind kind)
             multi_spectate_set_target_player(target);
             g_pin.ban_armed = false;
             break;
+        case PopoutButtonKind::ServerMuteChat:
+            af_send_rcon_player_action(static_cast<uint8_t>(g_pin.player_id), AF_RCON_PLAYER_MUTE_CHAT);
+            g_pin.ban_armed = false;
+            break;
         case PopoutButtonKind::Kick:
             af_send_rcon_player_action(static_cast<uint8_t>(g_pin.player_id), AF_RCON_PLAYER_KICK);
             g_pin = {};
@@ -473,6 +478,9 @@ static std::vector<PopoutButtonKind> scoreboard_popout_manage(const rf::Player* 
     if (!player->is_bot && local_rcon_command_available("ban")) {
         kinds.push_back(PopoutButtonKind::Ban);
     }
+    if (!player->is_bot && local_rcon_command_available("sv_mute_chat")) {
+        kinds.push_back(PopoutButtonKind::ServerMuteChat);
+    }
     if (player->is_browser) {
         return kinds;
     }
@@ -496,6 +504,8 @@ static const char* scoreboard_button_label(PopoutButtonKind kind, const rf::Play
     switch (kind) {
         case PopoutButtonKind::Mute:
             return player->is_muted ? "Unmute" : "Mute";
+        case PopoutButtonKind::ServerMuteChat:
+            return player_role_flags(player) & AF_PLAYER_ROLE_CHAT_MUTED ? "Server unmute chat" : "Server mute chat";
         case PopoutButtonKind::Spectate:
             return player == multi_spectate_get_target_player() ? "Spectating" : "Spectate";
         case PopoutButtonKind::Kick:
@@ -517,6 +527,8 @@ static bool scoreboard_button_is_active(PopoutButtonKind kind, const rf::Player*
     switch (kind) {
         case PopoutButtonKind::Mute:
             return player->is_muted;
+        case PopoutButtonKind::ServerMuteChat:
+            return (player_role_flags(player) & AF_PLAYER_ROLE_CHAT_MUTED) != 0;
         case PopoutButtonKind::Spectate:
             return player == multi_spectate_get_target_player();
         case PopoutButtonKind::Ban:
@@ -540,6 +552,7 @@ static int scoreboard_button_icon(PopoutButtonKind kind)
     static const int ready_bm = rf::bm::load("afsbi_btn_ready.tga", -1, true);
     switch (kind) {
         case PopoutButtonKind::Mute:
+        case PopoutButtonKind::ServerMuteChat:
             return mute_bm;
         case PopoutButtonKind::Kick:
             return kick_bm;
@@ -663,7 +676,7 @@ static void draw_scoreboard_player_popout(
     };
     const int right_h = section_h(actions) + (actions.empty() || manage.empty() ? 0 : title_gap) + section_h(manage);
     // Sized for the longest label so the buttons never move when one changes.
-    const int button_w = button_h + button_gap * 2 + rf::gr::get_string_size("Force unspectate", -1).first;
+    const int button_w = button_h + button_gap * 2 + rf::gr::get_string_size("Server unmute chat", -1).first;
     const int right_w = right_h > 0 ? column_gap + button_w : 0;
 
     const int box_w = padding * 2 + left_w + right_w;

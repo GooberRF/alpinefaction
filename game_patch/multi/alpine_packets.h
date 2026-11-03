@@ -374,6 +374,7 @@ enum af_rcon_player_action : uint8_t
     AF_RCON_PLAYER_FORCE_SPECTATE = 3,
     AF_RCON_PLAYER_TOGGLE_READY = 4,
     AF_RCON_PLAYER_FORCE_UNSPECTATE = 5,
+    AF_RCON_PLAYER_MUTE_CHAT = 6,
 };
 
 // af_sreq_player_roles per-player flags. FROZEN wire constants.
@@ -382,6 +383,7 @@ enum af_player_role_flags : uint8_t
     AF_PLAYER_ROLE_RCON_HOLDER = 1 << 0,
     AF_PLAYER_ROLE_SERVER_HOST = 1 << 1,
     AF_PLAYER_ROLE_READY = 1 << 2,
+    AF_PLAYER_ROLE_CHAT_MUTED = 1 << 3,
 };
 
 struct RconPlayerActionReqPayload

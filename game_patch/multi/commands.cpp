@@ -360,6 +360,8 @@ std::optional<std::string> server_run_player_action(rf::Player* player, uint8_t 
             return server_toggle_player_ready(player);
         case AF_RCON_PLAYER_FORCE_UNSPECTATE:
             return server_force_player_unspectate(player);
+        case AF_RCON_PLAYER_MUTE_CHAT:
+            return server_toggle_player_chat_mute(player);
         default:
             return "unknown action";
     }
@@ -385,8 +387,14 @@ std::string run_player_admin_rcon_command(const std::string_view command, const 
     else if (command == "sv_force_unspectate") {
         action = AF_RCON_PLAYER_FORCE_UNSPECTATE;
     }
+    else if (command == "sv_mute_chat") {
+        action = AF_RCON_PLAYER_MUTE_CHAT;
+    }
 
     const auto failure = server_run_player_action(player, action);
+    if (!failure && action == AF_RCON_PLAYER_MUTE_CHAT) {
+        return std::format("{} {}", player->name, server_player_chat_muted(player) ? "is now muted" : "is now unmuted");
+    }
     return failure ? std::format("{} {} failed: {}", command, player->name, *failure)
                    : std::format("{} {} done", command, player->name);
 }
@@ -433,6 +441,17 @@ ConsoleCommand2 sv_toggle_ready_cmd{
     },
     "Toggle a player's ready status during match ready-up",
     "sv_toggle_ready <player>",
+};
+
+ConsoleCommand2 sv_mute_chat_cmd{
+    "sv_mute_chat",
+    [](std::string target) {
+        if (validate_is_server()) {
+            rf::console::print("{}", run_player_admin_rcon_command("sv_mute_chat", target));
+        }
+    },
+    "Toggle a server-wide chat mute on a player, held by IP until unmuted or the server restarts",
+    "sv_mute_chat <player>",
 };
 
 void ban_cmd_handler_hook()
@@ -500,6 +519,7 @@ void init_server_commands()
     sv_force_spectate_cmd.register_cmd();
     sv_force_unspectate_cmd.register_cmd();
     sv_toggle_ready_cmd.register_cmd();
+    sv_mute_chat_cmd.register_cmd();
 
     AsmWriter(0x0047B6F0).jmp(ban_cmd_handler_hook);
     AsmWriter(0x0047B580).jmp(kick_cmd_handler_hook);

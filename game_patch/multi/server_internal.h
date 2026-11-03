@@ -1355,6 +1355,8 @@ std::optional<std::string> server_swap_player_team(rf::Player* player);
 std::optional<std::string> server_force_player_spectate(rf::Player* player);
 std::optional<std::string> server_force_player_unspectate(rf::Player* player);
 std::optional<std::string> server_toggle_player_ready(rf::Player* player);
+std::optional<std::string> server_toggle_player_chat_mute(rf::Player* player);
+bool server_player_chat_muted(const rf::Player* player);
 std::string run_player_admin_rcon_command(std::string_view command, std::string_view target);
 bool ends_with(const rf::String& str, const std::string& suffix);
 const AlpineServerConfig& server_get_alpine_config();

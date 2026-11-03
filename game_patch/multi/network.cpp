@@ -479,6 +479,9 @@ uint8_t player_role_flags(const rf::Player* player)
     if (get_ready_status(player)) {
         flags |= AF_PLAYER_ROLE_READY;
     }
+    if (server_player_chat_muted(player)) {
+        flags |= AF_PLAYER_ROLE_CHAT_MUTED;
+    }
     return flags;
 }
 
@@ -727,8 +730,9 @@ void handle_rcon_player_action(const rf::NetAddr& addr, uint8_t target_player_id
     if (g_alpine_server_config.rcon_profiles.empty()) {
         return;
     }
-    constexpr std::array<std::string_view, 6> action_commands{
-        "kick", "ban", "sv_swap_team", "sv_force_spectate", "sv_toggle_ready", "sv_force_unspectate"};
+    constexpr std::array<std::string_view, 7> action_commands{
+        "kick", "ban", "sv_swap_team", "sv_force_spectate", "sv_toggle_ready", "sv_force_unspectate",
+        "sv_mute_chat"};
     if (action >= action_commands.size()) {
         return;
     }
@@ -1166,15 +1170,21 @@ FunHook<MultiIoPacketHandler> process_chat_line_packet_hook{
             }
 
             const uint8_t team_msg = static_cast<uint8_t>(data[1]);
-            if (team_msg && rf::is_dedicated_server) {
+            // The engine relays only team byte 1 as team chat.
+            const bool is_team_chat = team_msg == 1;
+            const bool chat_muted = server_player_chat_muted(src_player);
+            if (team_msg && rf::is_dedicated_server && !chat_muted) {
                 rf::multi_chat_add_msg(src_player, msg, true);
             }
 
             if (check_server_chat_command(msg, src_player)) {
                 return;
             }
-            // The engine relays only team byte 1 as team chat.
-            const bool is_team_chat = team_msg == 1;
+            if (chat_muted) {
+                rf::console::print("{}{} (MUTED): {}", src_player->name, is_team_chat ? rf::strings::team : "", msg);
+                af_send_automated_chat_msg("You are muted on this server.", src_player);
+                return;
+            }
             server_bots_on_chat_message(*src_player, msg, is_team_chat);
 
             if (is_team_chat && demo_record_active()) {
@@ -1513,7 +1523,8 @@ CodeInjection process_rcon_packet_injection{
                     if (check_result == RconCommandCheckResult::Allowed) {
                         std::string payload_str{payload.value()};
                         if (cmd_lower == "sv_swap_team" || cmd_lower == "sv_force_spectate"
-                            || cmd_lower == "sv_force_unspectate" || cmd_lower == "sv_toggle_ready") {
+                            || cmd_lower == "sv_force_unspectate" || cmd_lower == "sv_toggle_ready"
+                            || cmd_lower == "sv_mute_chat") {
                             send_rcon_feedback(*addr, run_player_admin_rcon_command(cmd_lower, remainder));
                             rf::console::print(
                                 "{} issued command '{}' via rcon", rcon_player_name(*addr), payload.value());
