@@ -2,8 +2,8 @@
 # Version histories and sha256 hashes can be found at SDL release pages: https://github.com/libsdl-org/SDL/releases
 # Read the sdl wiki for more info about CMake-configurations: https://wiki.libsdl.org/SDL3/README-cmake
 
-set(SDL3_VERSION "3.4.18")
-set(SDL3_HASH "9c75cf16330322c217dedd2e0609f1124f1b54b8633e763467b4684d0f4334a3")
+set(SDL3_VERSION "3.4.20")
+set(SDL3_HASH "f3bb06f55bed9557227a700af2ea62e49497ebdf58037732a731a5fb3ef8581f")
 
 include(FetchContent)
 FetchContent_Declare(
