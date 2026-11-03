@@ -12,14 +12,17 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <cmath>
 #include <common/mover_path.h>
 #include <xlog/xlog.h>
 #include "mover.h"
 #include "../misc/level.h"
 #include "../misc/misc.h"
 #include "../rf/os/frametime.h"
+#include "../rf/entity.h"
 #include "../rf/event.h"
 #include "../rf/mover.h"
+#include "../rf/multi.h"
 #include "../rf/object.h"
 #include "../rf/parse.h"
 #include "../rf/level.h"
@@ -101,20 +104,32 @@ struct MoverSegmentPath
     const mpath::Curve* curve = nullptr;
     bool reversed = false;
 };
+
+// A brush's orientation before and after this frame's mover update, read by the ground carry that follows it
+struct BrushTurn
+{
+    mpath::Mat3 before;
+    mpath::Mat3 after;
+};
 } // namespace
 
 static std::unordered_map<int32_t, MoverPathEntry> g_mover_path_entries;
 
-static std::unordered_map<int32_t, uint8_t> g_mover_path_orient_modes;
+static std::unordered_map<int32_t, mpath::MoverSettings> g_mover_path_movers;
 static std::unordered_map<int32_t, MoverOrientEntry> g_mover_orient_entries;
+// By mover brush handle, as a rider's ground object is the brush, not the Mover
+static std::unordered_map<int, uint8_t> g_rider_brush_flags;
+static std::unordered_map<int, BrushTurn> g_rider_brush_turns;
 static bool g_mover_path_needs_init = false;
 
 void alpine_mover_path_clear_state()
 {
     g_mover_path_keyframes.clear();
     g_mover_path_entries.clear();
-    g_mover_path_orient_modes.clear();
+    g_mover_path_movers.clear();
     g_mover_orient_entries.clear();
+    g_rider_brush_flags.clear();
+    g_rider_brush_turns.clear();
     g_mover_path_needs_init = true;
 }
 
@@ -125,17 +140,26 @@ void alpine_mover_path_load_chunk(rf::File& file, std::size_t chunk_len)
     AlpineChunkReader reader{file, remaining};
 
     const bool complete = mpath::read_chunk(
-        reader, [](int32_t uid, uint8_t orient_mode) { g_mover_path_orient_modes[uid] = orient_mode; },
+        reader, [](int32_t uid, const mpath::MoverSettings& settings) { g_mover_path_movers[uid] = settings; },
         [](int32_t uid, const mpath::KeyframeData& data) { g_mover_path_keyframes[uid] = data; });
     if (!complete) {
         xlog::warn("[Mover] Mover path chunk is damaged (len={})", chunk_len);
     }
 }
 
+static mpath::Vec3 to_vec3(const rf::Vector3& v)
+{
+    return {v.x, v.y, v.z};
+}
+
+static mpath::Mat3 to_mat3(const rf::Matrix3& m)
+{
+    return {to_vec3(m.rvec), to_vec3(m.uvec), to_vec3(m.fvec)};
+}
+
 static mpath::Mat3 mover_keyframe_orient(const rf::MoverKeyframe* kf)
 {
-    const rf::Matrix3& m = kf->orient;
-    return {{m.rvec.x, m.rvec.y, m.rvec.z}, {m.uvec.x, m.uvec.y, m.uvec.z}, {m.fvec.x, m.fvec.y, m.fvec.z}};
+    return to_mat3(kf->orient);
 }
 
 static mpath::Vec3 mover_path_direction(const rf::Mover* mp, const mpath::PathSpot& spot, int from, int to)
@@ -156,7 +180,7 @@ static mpath::Vec3 mover_path_direction(const rf::Mover* mp, const mpath::PathSp
 static void alpine_mover_do_path_init()
 {
     g_mover_path_needs_init = false;
-    if ((g_mover_path_keyframes.empty() && g_mover_path_orient_modes.empty())
+    if ((g_mover_path_keyframes.empty() && g_mover_path_movers.empty())
         || AlpineLevelProperties::instance().legacy_movers) {
         return;
     }
@@ -194,12 +218,16 @@ static void alpine_mover_do_path_init()
             }
         }
 
-        const auto orient_mode = count > 1 ? g_mover_path_orient_modes.find(KF(mover, 0)->uid)
-                                           : g_mover_path_orient_modes.end();
-        if (paths && orient_mode != g_mover_path_orient_modes.end()
-            && orient_mode->second != static_cast<uint8_t>(mpath::OrientMode::none)) {
+        const auto settings = count > 0 ? g_mover_path_movers.find(KF(mover, 0)->uid) : g_mover_path_movers.end();
+        if (settings != g_mover_path_movers.end() && settings->second.rider_flags) {
+            for (const int brush : mover->brush_handles) {
+                g_rider_brush_flags[brush] = settings->second.rider_flags;
+            }
+        }
+        if (paths && count > 1 && settings != g_mover_path_movers.end()
+            && settings->second.orient_mode != static_cast<uint8_t>(mpath::OrientMode::none)) {
             MoverOrientEntry entry;
-            entry.mode = static_cast<mpath::OrientMode>(orient_mode->second);
+            entry.mode = static_cast<mpath::OrientMode>(settings->second.orient_mode);
             entry.reference = entry.mode == mpath::OrientMode::follow_path
                 ? mpath::facing(mover_path_direction(mover, {0, 0.0f}, 0, 0))
                 : mover_keyframe_orient(KF(mover, 0));
@@ -913,6 +941,67 @@ CodeInjection mover_interpolate_objects_path_orient_patch{
     },
 };
 
+// The normal-frame tail of mover_interpolate_objects: [esp+0x64] is the child's new orientation and p_data.orient
+// still its old one. The placing branch jumps past it, so a mover put in place never reads as a turn.
+CodeInjection mover_interpolate_objects_rider_turn_patch{
+    0x0046C0B9,
+    [](auto& regs) {
+        if (g_rider_brush_flags.empty()) {
+            return;
+        }
+        rf::Object* child = regs.edi;
+        const auto it = g_rider_brush_flags.find(child->handle);
+        if (it != g_rider_brush_flags.end() && (it->second & mpath::rider_turn)) {
+            const auto& after = addr_as_ref<rf::Matrix3>(regs.esp + 0x64);
+            g_rider_brush_turns[child->handle] = {to_mat3(child->p_data.orient), to_mat3(after)};
+        }
+    },
+};
+
+bool alpine_mover_has_riders()
+{
+    return !g_rider_brush_flags.empty();
+}
+
+bool alpine_mover_carry_rider(rf::Entity& ep, const rf::Object& ground)
+{
+    const auto flags = g_rider_brush_flags.find(ground.handle);
+    if (flags == g_rider_brush_flags.end()) {
+        return false;
+    }
+    const int mode = ep.move_mode->mode;
+    if (mode == rf::MOVE_MODE_FALL && (flags->second & mpath::rider_detach_on_leave)) {
+        // Off the mover: the stock wipe spares local_vel while falling, so the last frame on it carries on
+        return true;
+    }
+    ep.control_data.local_vel = ground.p_data.vel;
+
+    const auto turn = g_rider_brush_turns.find(ground.handle);
+    // The local player moves on its own machine; interpolated entities are moved by whoever simulates them
+    const bool simulated_here = &ep == rf::local_player_entity
+                                || (!(ep.p_data.flags & rf::PF_NET_PLAYER) && (!rf::is_multi || rf::is_server));
+    if (turn == g_rider_brush_turns.end() || mode != rf::MOVE_MODE_RUN || ep.host_handle != -1 || !simulated_here
+        || !(rf::frametime > 0.0f)) {
+        return true;
+    }
+    // A rigid motion about the brush's old origin, which p_data.pos still holds: its velocity is the origin's travel,
+    // this adds the turn
+    const mpath::Vec3 r = to_vec3(ep.p_data.pos) - to_vec3(ground.p_data.pos);
+    const mpath::Vec3 swing = (mpath::carry(turn->second.before, turn->second.after, r) - r) * (1.0f / rf::frametime);
+    ep.control_data.local_vel += rf::Vector3{swing.x, swing.y, swing.z};
+
+    // Mouselook later this frame rebuilds the body and view from phb, adding the player's own input on top
+    const mpath::Vec3 f = to_vec3(ep.p_data.orient.fvec);
+    const mpath::Vec3 turned = mpath::carry(turn->second.before, turn->second.after, f);
+    ep.control_data.phb.y += std::atan2(f.z * turned.x - f.x * turned.z, f.x * turned.x + f.z * turned.z);
+    return true;
+}
+
+void alpine_mover_rider_frame_done()
+{
+    g_rider_brush_turns.clear();
+}
+
 CodeInjection mover_interpolate_objects_force_orient_trans_patch{
     0x0046BF39, // after check for translation movers with "Force Orient" flag
     [](auto& regs) {
@@ -1017,6 +1106,7 @@ void mover_do_patch()
     mover_interpolate_objects_force_orient_rot_patch.install();
 
     mover_interpolate_objects_path_orient_patch.install();
+    mover_interpolate_objects_rider_turn_patch.install();
 
     // Hold Open: patch stock door bounce check to also trigger for Hold Open movers
     mover_stock_door_bounce_hold_open_patch.install();

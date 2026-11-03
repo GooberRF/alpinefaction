@@ -47,6 +47,22 @@ enum class OrientMode : uint8_t
     keyframe_rotation = 2,
 };
 
+// MoverSettings::rider_flags bits
+inline constexpr uint8_t rider_turn = 0x1;            // riders swing round and turn with the mover
+inline constexpr uint8_t rider_detach_on_leave = 0x2; // once airborne, riders keep their carry, not track the mover
+inline constexpr uint8_t rider_flags_mask = rider_turn | rider_detach_on_leave;
+
+struct MoverSettings
+{
+    uint8_t orient_mode = static_cast<uint8_t>(OrientMode::none);
+    uint8_t rider_flags = 0;
+};
+
+inline bool is_default(const MoverSettings& s)
+{
+    return s.orient_mode == static_cast<uint8_t>(OrientMode::none) && s.rider_flags == 0;
+}
+
 // rf::MoverKeyframeMoveType, which RED stores as the same integers
 enum class MoveType : int
 {
@@ -186,9 +202,9 @@ void write_keyframe_data(Writer& w, const KeyframeData& d)
     }
 }
 
-// Chunk body: u32 mover count, {i32 first keyframe uid, u8 orient mode, u8 pad[3]}, u32 keyframe count,
-// {i32 keyframe uid, KeyframeData}. A .rfg stores the same body with keyframe indices in place of uids.
-// on_mover(int32_t, uint8_t) and on_keyframe(int32_t, const KeyframeData&) take the sanitized records.
+// Chunk body: u32 mover count, {i32 first keyframe uid, u8 orient mode, u8 rider flags, u8 pad[2]}, u32 keyframe
+// count, {i32 keyframe uid, KeyframeData}. A .rfg stores the same body with keyframe indices in place of uids.
+// on_mover(int32_t, const MoverSettings&) and on_keyframe(int32_t, const KeyframeData&) take the sanitized records.
 template<class Reader, class OnMover, class OnKeyframe>
 bool read_chunk(Reader& r, OnMover&& on_mover, OnKeyframe&& on_keyframe)
 {
@@ -198,12 +214,14 @@ bool read_chunk(Reader& r, OnMover&& on_mover, OnKeyframe&& on_keyframe)
     }
     for (uint32_t i = 0; i < mover_count; i++) {
         int32_t first_keyframe = 0;
-        uint8_t orient_mode = 0;
-        uint8_t pad[3] = {};
-        if (!r.read(first_keyframe) || !r.read(orient_mode) || !r.read(pad)) {
+        MoverSettings settings;
+        uint8_t pad[2] = {};
+        if (!r.read(first_keyframe) || !r.read(settings.orient_mode) || !r.read(settings.rider_flags) || !r.read(pad)) {
             return false;
         }
-        on_mover(first_keyframe, sanitize_orient_mode(orient_mode));
+        settings.orient_mode = sanitize_orient_mode(settings.orient_mode);
+        settings.rider_flags &= rider_flags_mask;
+        on_mover(first_keyframe, settings);
     }
 
     uint32_t keyframe_count = 0;

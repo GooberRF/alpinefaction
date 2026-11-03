@@ -973,7 +973,7 @@ struct AlpineLevelProperties
     std::vector<int32_t> hold_open_keyframe_uids; // first keyframe UIDs of moving groups with "Hold Open"
     // Own chunk. Entries outlive their keyframes; a save writes the live ones.
     std::unordered_map<int32_t, mover_path::KeyframeData> mover_path_keyframes; // by keyframe UID
-    std::unordered_map<int32_t, uint8_t> mover_path_orient_modes;               // by first keyframe UID
+    std::unordered_map<int32_t, mover_path::MoverSettings> mover_path_movers;   // by first keyframe UID
     // v5
     bool enable_sun = false;
     float sun_yaw = 0.0f;   // degrees
@@ -1138,7 +1138,7 @@ struct AlpineLevelProperties
         breakable_materials.clear();
         hold_open_keyframe_uids.clear();
         mover_path_keyframes.clear();
-        mover_path_orient_modes.clear();
+        mover_path_movers.clear();
         enable_sun = false;
         sun_yaw = 0.0f;
         sun_pitch = 90.0f;

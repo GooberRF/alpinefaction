@@ -1,9 +1,11 @@
 #include <windows.h>
 #include <commctrl.h>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <string>
+#include <utility>
 #include <patch_common/CallHook.h>
 #include <patch_common/CodeInjection.h>
 #include <common/rfl_chunk_reader.h>
@@ -156,7 +158,7 @@ std::vector<DedKeyframe*> selected_keyframes(const CDedLevel& level)
 struct MoverRecord
 {
     int32_t first_keyframe;
-    uint8_t orient_mode;
+    mp::MoverSettings settings;
 };
 
 struct KeyframeRecord
@@ -179,8 +181,9 @@ void write_chunk_body(rf::File& file, const std::vector<MoverRecord>& movers,
     file.write<uint32_t>(static_cast<uint32_t>(movers.size()));
     for (const MoverRecord& m : movers) {
         file.write<int32_t>(m.first_keyframe);
-        file.write<uint8_t>(m.orient_mode);
-        for (int i = 0; i < 3; i++) {
+        file.write<uint8_t>(m.settings.orient_mode);
+        file.write<uint8_t>(m.settings.rider_flags);
+        for (int i = 0; i < 2; i++) {
             file.write<uint8_t>(0);
         }
     }
@@ -563,11 +566,32 @@ int shared_value(const std::vector<DedKeyframe*>& keyframes, Fn&& value)
     return shared;
 }
 
+mp::MoverSettings group_settings(const AlpineLevelProperties& props, const GroupEntry& group)
+{
+    const auto it = props.mover_path_movers.find(first_active_keyframe_uid(group));
+    return it != props.mover_path_movers.end() ? it->second : mp::MoverSettings{};
+}
+
 uint8_t group_orient_mode(const AlpineLevelProperties& props, const GroupEntry& group)
 {
-    const auto it = props.mover_path_orient_modes.find(first_active_keyframe_uid(group));
-    return it != props.mover_path_orient_modes.end() ? it->second : static_cast<uint8_t>(mp::OrientMode::none);
+    return group_settings(props, group).orient_mode;
 }
+
+void set_group_settings(AlpineLevelProperties& props, const GroupEntry& group, const mp::MoverSettings& settings)
+{
+    const int uid = first_active_keyframe_uid(group);
+    if (mp::is_default(settings)) {
+        props.mover_path_movers.erase(uid);
+    }
+    else {
+        props.mover_path_movers[uid] = settings;
+    }
+}
+
+constexpr std::array<std::pair<int, uint8_t>, 2> rider_checkboxes{{
+    {IDC_KF_RIDER_TURN, mp::rider_turn},
+    {IDC_KF_RIDER_DETACH, mp::rider_detach_on_leave},
+}};
 
 void update_dialog_enables(HWND hdlg)
 {
@@ -578,6 +602,9 @@ void update_dialog_enables(HWND hdlg)
     EnableWindow(GetDlgItem(hdlg, IDC_KF_PATH_TANGENT), !legacy && !rotating);
     EnableWindow(GetDlgItem(hdlg, IDC_KF_PATH_EASE), !legacy);
     EnableWindow(GetDlgItem(hdlg, IDC_KF_PATH_ORIENT), !legacy && !rotating);
+    for (const auto& [id, flag] : rider_checkboxes) {
+        EnableWindow(GetDlgItem(hdlg, id), !legacy);
+    }
 }
 
 int combo_selection(HWND hdlg, int id)
@@ -1130,9 +1157,9 @@ void mover_path_serialize_chunk(CDedLevel& level, rf::File& file)
     for (int i = 0; i < groups.size; i++) {
         const GroupEntry* group = groups.data_ptr[i];
         if (!group || !group->is_moving_group()) continue;
-        const uint8_t orient_mode = group_orient_mode(props, *group);
-        if (orient_mode != static_cast<uint8_t>(mp::OrientMode::none)) {
-            movers.push_back({first_active_keyframe_uid(*group), orient_mode});
+        const mp::MoverSettings settings = group_settings(props, *group);
+        if (!mp::is_default(settings)) {
+            movers.push_back({first_active_keyframe_uid(*group), settings});
         }
         const auto& objects = group->keyframes->objects;
         for (int j = 0; j < objects.size; j++) {
@@ -1158,9 +1185,9 @@ void mover_path_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_t 
     RflChunkReader<rf::File> reader{file, remaining};
     const bool complete = mp::read_chunk(
         reader,
-        [&](int32_t uid, uint8_t orient_mode) {
-            if (orient_mode != static_cast<uint8_t>(mp::OrientMode::none)) {
-                props.mover_path_orient_modes[uid] = orient_mode;
+        [&](int32_t uid, const mp::MoverSettings& settings) {
+            if (!mp::is_default(settings)) {
+                props.mover_path_movers[uid] = settings;
             }
         },
         [&](int32_t uid, const mp::KeyframeData& data) { props.mover_path_keyframes[uid] = data; });
@@ -1195,9 +1222,9 @@ void mover_path_group_serialize_chunk(CDedLevel& level, rf::File& file)
             if (!kf || !kf->active) continue;
             if (first_active) {
                 first_active = false;
-                const uint8_t orient_mode = group_orient_mode(props, *group);
-                if (orient_mode != static_cast<uint8_t>(mp::OrientMode::none)) {
-                    movers.push_back({base + j, orient_mode});
+                const mp::MoverSettings settings = group_settings(props, *group);
+                if (!mp::is_default(settings)) {
+                    movers.push_back({base + j, settings});
                 }
             }
             const mp::KeyframeData data = mover_path_keyframe_data(*kf);
@@ -1235,9 +1262,9 @@ void mover_path_group_deserialize_chunk(CDedLevel& level, rf::File& file, std::s
     RflChunkReader<rf::File> reader{file, remaining};
     const bool complete = mp::read_chunk(
         reader,
-        [&](int32_t index, uint8_t orient_mode) {
-            if (const int uid = uid_at(index); uid != -1 && orient_mode != 0) {
-                props.mover_path_orient_modes[uid] = orient_mode;
+        [&](int32_t index, const mp::MoverSettings& settings) {
+            if (const int uid = uid_at(index); uid != -1 && !mp::is_default(settings)) {
+                props.mover_path_movers[uid] = settings;
             }
         },
         [&](int32_t index, const mp::KeyframeData& data) {
@@ -1284,7 +1311,7 @@ void mover_path_uid_generated(int uid)
 {
     AlpineLevelProperties& props = CDedLevel::Get()->GetAlpineLevelProperties();
     props.mover_path_keyframes.erase(uid);
-    props.mover_path_orient_modes.erase(uid);
+    props.mover_path_movers.erase(uid);
 }
 
 GroupEntry* find_moving_group_from_selection()
@@ -1337,6 +1364,13 @@ void mover_path_dialog_init(HWND hdlg)
     fill_combo(hdlg, IDC_KF_PATH_TANGENT, {"Auto", "Aligned", "Free"}, tangent);
     fill_combo(hdlg, IDC_KF_PATH_EASE, {"None", "Ease In", "Ease Out", "Ease In and Out"}, ease);
     fill_combo(hdlg, IDC_KF_PATH_ORIENT, {"None", "Follow Path", "Keyframe Rotation"}, orient);
+    for (const auto& [id, flag] : rider_checkboxes) {
+        const int on = shared_value(keyframes, [&](const DedKeyframe& kf) {
+            const GroupEntry* group = moving_group_of(*level, &kf);
+            return group && (group_settings(props, *group).rider_flags & flag) ? 1 : 0;
+        });
+        CheckDlgButton(hdlg, id, on < 0 ? BST_INDETERMINATE : on ? BST_CHECKED : BST_UNCHECKED);
+    }
     update_dialog_enables(hdlg);
 }
 
@@ -1344,6 +1378,12 @@ void mover_path_dialog_command(HWND hdlg, int id)
 {
     if (id == IDC_KF_ROTATE_IN_PLACE) {
         update_dialog_enables(hdlg);
+    }
+    // Mixed movers open on the third state, which means leave them as they are; a click never returns to it.
+    for (const auto& [rider_id, flag] : rider_checkboxes) {
+        if (id == rider_id && IsDlgButtonChecked(hdlg, id) == BST_INDETERMINATE) {
+            CheckDlgButton(hdlg, id, BST_UNCHECKED);
+        }
     }
 }
 
@@ -1391,16 +1431,24 @@ void mover_path_dialog_ok(HWND hdlg)
             mover_path_set_keyframe_data(*kf, data);
             changed = true;
         }
-        if (GroupEntry* group = moving_group_of(*level, kf); group && orient >= 0) {
-            const int uid = first_active_keyframe_uid(*group);
-            const uint8_t mode = static_cast<uint8_t>(orient);
-            if (group_orient_mode(props, *group) != mode) {
-                if (mode == static_cast<uint8_t>(mp::OrientMode::none)) {
-                    props.mover_path_orient_modes.erase(uid);
+        if (GroupEntry* group = moving_group_of(*level, kf)) {
+            const mp::MoverSettings before_settings = group_settings(props, *group);
+            mp::MoverSettings settings = before_settings;
+            if (orient >= 0) {
+                settings.orient_mode = static_cast<uint8_t>(orient);
+            }
+            for (const auto& [id, flag] : rider_checkboxes) {
+                const UINT state = IsDlgButtonChecked(hdlg, id);
+                if (state == BST_CHECKED) {
+                    settings.rider_flags |= flag;
                 }
-                else {
-                    props.mover_path_orient_modes[uid] = mode;
+                else if (state == BST_UNCHECKED) {
+                    settings.rider_flags &= ~flag;
                 }
+            }
+            if (settings.orient_mode != before_settings.orient_mode
+                || settings.rider_flags != before_settings.rider_flags) {
+                set_group_settings(props, *group, settings);
                 changed = true;
             }
         }

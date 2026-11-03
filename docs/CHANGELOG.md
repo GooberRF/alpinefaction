@@ -33,6 +33,8 @@ Version 1.5.0 (Trillium): Not yet released
 - Add curved mover paths, shaped per keyframe in `Keyframe Properties` and with handles dragged in the level editor viewport
   - `Easing` on each keyframe shapes the speed of the segment leaving it, for translating and rotating movers
   - `Mover Facing` turns a mover along its path (`Follow Path`) or between keyframe orientations (`Keyframe Rotation`)
+  - `Turn Riders with Mover` carries players standing on a turning mover round with it and turns their view to match
+  - `Detach Riders on Leave` lets players who jump or fall off a mover keep its velocity instead of following it until they land
   - Selected movers show ticks at equal steps of time along their path
   - The level editor draws the closing link of a looping mover with three or more keyframes
   - `Mover Preview` on the level editor `View` menu plays and scrubs a mover in the viewports without changing the level
