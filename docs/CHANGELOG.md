@@ -339,6 +339,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix waypoint autogeneration placing waypoints on mover brushes set to `No Player Collide`, which players pass through
 - Fix level editor sometimes crashing when moving vertices after using `Weld` in vertex mode
 - Fix some level editor buttons in Face and Vertex modes not working when the mode was entered with a keyboard shortcut
+- Fix players freezing in place in multiplayer for a moment after bumping into another player or mesh
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize
