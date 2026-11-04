@@ -1093,15 +1093,24 @@ GhostPose ghost_pose(const AlpineLevelProperties& props, const GroupEntry& group
         ghost.to = sim.to >= 0 ? mp::slerp(a, to_mat3(path.keyframes[sim.to]->orient), s) : a;
     }
     else if (mode == static_cast<uint8_t>(mp::OrientMode::follow_path)) {
+        std::vector<mp::Curve> curves(path.count());
+        for (int i = 0; i < path.count(); i++) {
+            if (path.segment_curved(i)) {
+                curves[i] = mp::make_segment_curve(path.keys, i);
+            }
+        }
         auto direction = [&](const mp::PathSpot& spot) {
             const bool curved = spot.owner >= 0 && path.segment_curved(spot.owner);
-            const mp::Curve curve = curved ? mp::make_segment_curve(path.keys, spot.owner) : mp::Curve{};
-            return mp::follow_direction(spot, sim.from, sim.to, path.count(), curved ? &curve : nullptr,
+            return mp::follow_direction(spot, sim.from, sim.to, path.count(), curved ? &curves[spot.owner] : nullptr,
                                         [&](int i) { return path.keys[i].pos; });
         };
+        const mp::FollowFrames frames = mp::make_follow_frames(
+            path.count(), path.closing_segment, [&](int owner) { return path.segment_curved(owner); },
+            [&](int owner, float fraction) { return direction({owner, fraction}); });
+        const mp::PathSpot spot = mp::path_spot(sim.from, sim.to, s, path.count(), path.closing_segment);
         ghost.turns = true;
-        ghost.from = mp::facing(direction({0, 0.0f}));
-        ghost.to = mp::facing(direction(mp::path_spot(sim.from, sim.to, s, path.count(), path.closing_segment)));
+        ghost.from = frames.reference;
+        ghost.to = mp::follow_pose(frames, spot, direction(spot));
     }
     else if (group.keyframes->force_orient && sim.to >= 0) {
         ghost.aimed = true;

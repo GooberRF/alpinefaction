@@ -97,6 +97,7 @@ struct MoverOrientEntry
 {
     mpath::OrientMode mode = mpath::OrientMode::none;
     mpath::Mat3 reference;
+    mpath::FollowFrames frames;
 };
 
 struct MoverSegmentPath
@@ -228,10 +229,22 @@ static void alpine_mover_do_path_init()
             && settings->second.orient_mode != static_cast<uint8_t>(mpath::OrientMode::none)) {
             MoverOrientEntry entry;
             entry.mode = static_cast<mpath::OrientMode>(settings->second.orient_mode);
-            entry.reference = entry.mode == mpath::OrientMode::follow_path
-                ? mpath::facing(mover_path_direction(mover, {0, 0.0f}, 0, 0))
-                : mover_keyframe_orient(KF(mover, 0));
-            g_mover_orient_entries[KF(mover, 0)->uid] = entry;
+            if (entry.mode == mpath::OrientMode::follow_path) {
+                entry.frames = mpath::make_follow_frames(
+                    count, closing_segment,
+                    [mover](int owner) {
+                        const auto it = g_mover_path_entries.find(KF(mover, owner)->uid);
+                        return it != g_mover_path_entries.end() && it->second.curved;
+                    },
+                    [mover](int owner, float fraction) {
+                        return mover_path_direction(mover, {owner, fraction}, 0, 0);
+                    });
+                entry.reference = entry.frames.reference;
+            }
+            else {
+                entry.reference = mover_keyframe_orient(KF(mover, 0));
+            }
+            g_mover_orient_entries[KF(mover, 0)->uid] = std::move(entry);
         }
     }
 }
@@ -912,7 +925,7 @@ CodeInjection mover_interpolate_objects_path_orient_patch{
             const auto type = static_cast<mpath::MoveType>(mp->keyframe_move_type);
             const bool closing_segment = mpath::has_closing_segment(type, count);
             const mpath::PathSpot spot = mpath::path_spot(from, to, s, count, closing_segment);
-            pose = mpath::facing(mover_path_direction(mp, spot, from, to));
+            pose = mpath::follow_pose(entry.frames, spot, mover_path_direction(mp, spot, from, to));
         }
         else {
             pose = to >= 0 ? mpath::slerp(mover_keyframe_orient(KF(mp, from)), mover_keyframe_orient(KF(mp, to)), s)

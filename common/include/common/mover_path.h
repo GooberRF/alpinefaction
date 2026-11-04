@@ -486,6 +486,230 @@ inline Mat3 carry(const Mat3& from, const Mat3& to, const Mat3& m)
     return {carry(from, to, m.rvec), carry(from, to, m.uvec), carry(from, to, m.fvec)};
 }
 
+// ─── Follow Path frames ──────────────────────────────────────────────────────
+
+// Follow Path keeps a mover upright, which spins it round ever faster as its path nears straight up or down. Its roll
+// is capped at follow_max_roll times the path's own turning, so near vertical it lags behind upright, and once it lags
+// by more than a quarter turn it settles upside down instead: a vertical loop goes over the top inverted rather than
+// flipping. A join between segments, or a step within one that turns follow_full_kink or more, snaps the pose anyway,
+// so there it rolls toward whichever way up the mover was: at once at a corner between straight segments, and at a
+// kink with a curve the more the sharper it is, fully at follow_full_kink.
+inline constexpr float follow_max_roll = 3.0f;
+inline constexpr float follow_full_kink = 0.5f; // radians
+
+enum class FollowJoin : uint8_t
+{
+    none,
+    kink,
+    corner,
+};
+
+struct FollowSample
+{
+    Mat3 frame;
+    int8_t level = 0; // 1 if frame is held to facing(its forward), -1 if to that upside down, 0 if not held
+};
+
+// Samples by owner keyframe, evenly spaced along each segment
+struct FollowFrames
+{
+    Mat3 reference;
+    std::vector<std::vector<FollowSample>> segments;
+};
+
+inline Mat3 upside_down(const Mat3& m)
+{
+    return {m.rvec * -1.0f, m.uvec * -1.0f, m.fvec};
+}
+
+// The angle about axis from a to b, both perpendicular to it
+inline float roll_between(const Vec3& a, const Vec3& b, const Vec3& axis)
+{
+    return std::atan2(dot(cross(a, b), axis), dot(a, b));
+}
+
+inline Mat3 rolled(const Mat3& m, float angle)
+{
+    const Vec3 r = m.rvec * std::cos(angle) + cross(m.fvec, m.rvec) * std::sin(angle);
+    return {r, cross(m.fvec, r), m.fvec};
+}
+
+// m turned by the least rotation that brings its forward to dir
+inline Mat3 transported(const Mat3& m, const Vec3& dir)
+{
+    const Vec3 w = cross(m.fvec, dir);
+    const float c = dot(m.fvec, dir);
+    if (w == Vec3{} && c > 0.0f) {
+        return m;
+    }
+    // Turned right round, the half turn about its up stands in
+    Vec3 r = c < -0.9999f ? m.rvec * -1.0f : m.rvec * c + cross(w, m.rvec) + w * (dot(w, m.rvec) / (1.0f + c));
+    r = normalized(r - dir * dot(r, dir));
+    return r == Vec3{} ? facing(dir) : Mat3{r, cross(dir, r), dir};
+}
+
+// Also true for no direction at all
+inline bool is_vertical(const Vec3& dir)
+{
+    return normalized(cross({0.0f, 1.0f, 0.0f}, dir)) == Vec3{};
+}
+
+// Radians, exact for nearly parallel directions where acos of their dot is not
+inline float turn_between(const Vec3& a, const Vec3& b)
+{
+    return std::atan2(length(cross(a, b)), dot(a, b));
+}
+
+// Rolls toward the nearer of upright and upside down unless want picks one. Straight up or down there is no upright to
+// roll toward, so the frame is only carried.
+inline FollowSample follow_step(const Mat3& prev, const Vec3& dir, int8_t want, FollowJoin join)
+{
+    FollowSample s{transported(prev, dir)};
+    if (is_vertical(dir)) {
+        return s;
+    }
+    constexpr float quarter_turn = 1.5707964f;
+    const Mat3 upright = facing(dir);
+    const float roll = roll_between(upright.rvec, s.frame.rvec, upright.fvec);
+    int8_t level = want;
+    if (level == 0) {
+        level = std::abs(roll) <= quarter_turn ? 1 : -1;
+    }
+    const Mat3 target = level > 0 ? upright : upside_down(upright);
+    const float off = level > 0 ? roll : roll - std::copysign(2.0f * quarter_turn, roll);
+    const float turn = turn_between(prev.fvec, dir);
+    // Plus rounding, so a step that barely turns still lands exactly upright
+    float limit = follow_max_roll * turn + 1.0e-4f;
+    if (join == FollowJoin::corner) {
+        limit = 2.0f * quarter_turn;
+    }
+    else if (join == FollowJoin::kink) {
+        limit = std::max(limit, 2.0f * quarter_turn * std::min(turn / follow_full_kink, 1.0f));
+    }
+    if (std::abs(off) <= limit) {
+        s.level = level;
+        s.frame = target;
+    }
+    else {
+        s.frame = rolled(target, off - std::copysign(limit, off));
+    }
+    return s;
+}
+
+// dir(owner, fraction) is the path's direction there, as follow_direction gives it; curved(owner) is whether the
+// segment can turn between its ends.
+template<class CurvedFn, class DirFn>
+FollowFrames make_follow_frames(int keyframe_count, bool closing_segment, CurvedFn&& curved, DirFn&& dir)
+{
+    constexpr int curve_samples = 2 * arc_table_steps + 1;
+    const int segment_count = closing_segment ? keyframe_count : keyframe_count - 1;
+    FollowFrames frames;
+    frames.reference = facing(dir(0, 0.0f));
+    frames.segments.resize(std::max(segment_count, 0));
+    std::vector<Vec3> dirs;
+    std::vector<FollowJoin> joins; // into each sample from the one before it
+    bool prev_curved = segment_count > 0 && curved(segment_count - 1);
+    for (int owner = 0; owner < segment_count; owner++) {
+        const bool is_curved = curved(owner);
+        const int n = is_curved ? curve_samples : 2;
+        frames.segments[owner].resize(n);
+        for (int i = 0; i < n; i++) {
+            dirs.push_back(normalized(dir(owner, static_cast<float>(i) / static_cast<float>(n - 1))));
+            joins.push_back(i > 0 ? FollowJoin::none
+                                  : (is_curved || prev_curved ? FollowJoin::kink : FollowJoin::corner));
+        }
+        prev_curved = is_curved;
+    }
+    for (std::size_t k = 1; k < dirs.size(); k++) {
+        if (joins[k] == FollowJoin::none && turn_between(dirs[k - 1], dirs[k]) >= follow_full_kink) {
+            joins[k] = FollowJoin::kink;
+        }
+    }
+    std::vector<FollowSample*> samples;
+    for (auto& segment : frames.segments) {
+        for (FollowSample& s : segment) {
+            samples.push_back(&s);
+        }
+    }
+
+    auto step = [&](const Mat3& prev, int k, int8_t want, FollowJoin join) {
+        return dirs[k] == Vec3{} ? FollowSample{prev} : follow_step(prev, dirs[k], want, join);
+    };
+    const int count = static_cast<int>(samples.size());
+    if (count > 0) {
+        // The start is the reference itself, so members begin where the level placed them
+        *samples[0] = {frames.reference, static_cast<int8_t>(is_vertical(dirs[0]) ? 0 : 1)};
+    }
+    for (int k = 1; k < count; k++) {
+        const FollowSample& prev = *samples[k - 1];
+        *samples[k] = step(prev.frame, k, joins[k] != FollowJoin::none ? prev.level : 0, joins[k]);
+    }
+    // A lap can come round rolled from the reference, so its end is built back from the reference, rolling toward
+    // whichever way up the forward walk is, and taken from there on from where the two meet. Walks that never meet
+    // join where the roll between them is slowest to spread over the rest of the lap.
+    if (closing_segment && count > 2) {
+        std::vector<FollowSample> back(count);
+        Mat3 carried = frames.reference;
+        int join = count - 2;
+        float join_roll = 0.0f;
+        float slowest = -1.0f;
+        for (int k = count - 1; k > 0; k--) {
+            back[k] = step(carried, k, samples[k]->level, joins[(k + 1) % count]);
+            carried = back[k].frame;
+            if (back[k].level != 0 && back[k].level == samples[k]->level) {
+                for (int j = k + 1; j < count; j++) {
+                    *samples[j] = back[j];
+                }
+                return frames;
+            }
+            if (k < count - 1) {
+                const float roll = roll_between(back[k].frame.rvec, samples[k]->frame.rvec, back[k].frame.fvec);
+                const float rate = std::abs(roll) / static_cast<float>(count - 1 - k);
+                if (slowest < 0.0f || rate < slowest) {
+                    slowest = rate;
+                    join = k;
+                    join_roll = roll;
+                }
+            }
+        }
+        // Spread over the smooth steps only, as joins and cusps snap anyway
+        std::vector<float> steps_after(count, 0.0f);
+        for (int j = count - 2; j >= join; j--) {
+            steps_after[j] = steps_after[j + 1] + (joins[j + 1] == FollowJoin::none ? 1.0f : 0.0f);
+        }
+        const float span = std::max(steps_after[join], 1.0f);
+        for (int j = join + 1; j < count; j++) {
+            *samples[j] = {rolled(back[j].frame, join_roll * steps_after[j] / span)};
+        }
+    }
+    return frames;
+}
+
+// The pose at spot, heading along dir from follow_direction. A jump between keyframes that are not neighbours has no
+// frames to follow, so it stays upright.
+inline Mat3 follow_pose(const FollowFrames& frames, const PathSpot& spot, const Vec3& dir)
+{
+    if (spot.owner < 0 || spot.owner >= static_cast<int>(frames.segments.size()) || dir == Vec3{}) {
+        return facing(dir);
+    }
+    const auto& samples = frames.segments[spot.owner];
+    const int last = static_cast<int>(samples.size()) - 1;
+    if (last < 1) {
+        return facing(dir);
+    }
+    const float fraction = spot.fraction > 0.0f ? std::min(spot.fraction, 1.0f) : 0.0f;
+    const float x = fraction * static_cast<float>(last);
+    const int i = std::min(static_cast<int>(x), last - 1);
+    const FollowSample& a = samples[i];
+    const FollowSample& b = samples[i + 1];
+    if (a.level != 0 && a.level == b.level) {
+        return a.level > 0 ? facing(dir) : upside_down(facing(dir));
+    }
+    const Mat3 from = transported(a.frame, dir);
+    const Mat3 to = transported(b.frame, dir);
+    return rolled(from, roll_between(from.rvec, to.rvec, from.fvec) * (x - static_cast<float>(i)));
+}
+
 struct Quat
 {
     float x = 0.0f;
