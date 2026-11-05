@@ -3,10 +3,11 @@ Alpine Faction
 ![Alpine Faction](docs/alpinelogo1.png)
 
 [![Download](https://img.shields.io/github/v/release/GooberRF/alpinefaction?label=download&color=brightgreen)](https://dl.alpinefaction.com/)
-[![Website](https://img.shields.io/badge/website-alpinefaction.com-blue)](https://alpinefaction.com)
+[![License: MPL-2.0](https://img.shields.io/badge/license-MPL--2.0-blue)](LICENSE.txt)
 [![Changelog](https://img.shields.io/badge/changelog-view-blue)](docs/CHANGELOG.md)
 [![CI](https://github.com/GooberRF/alpinefaction/actions/workflows/ci.yml/badge.svg)](https://github.com/GooberRF/alpinefaction/actions/workflows/ci.yml)
-[![License: MPL-2.0](https://img.shields.io/badge/license-MPL--2.0-blue)](LICENSE.txt)
+
+[![Website](https://img.shields.io/badge/website-alpinefaction.com-blue)](https://alpinefaction.com)
 [![Discord](https://img.shields.io/badge/Discord-FactionFiles-5865F2?logo=discord&logoColor=white)](https://discord.gg/factionfiles)
 
 About
