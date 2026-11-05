@@ -2010,6 +2010,18 @@ struct CDedLevel
         AddrCaller{0x00414140}.this_call(this);
     }
 
+    // FUN_004073d0: opens the Links dialog for the selection
+    void open_links_dialog()
+    {
+        AddrCaller{0x004073D0}.this_call(this);
+    }
+
+    // FUN_00408d30: opens the selected event's properties dialog for its type (Alpine types in event.cpp)
+    void open_event_properties()
+    {
+        AddrCaller{0x00408D30}.this_call(this);
+    }
+
     // FUN_0043d210: Edit > Undo of the top entry (AF-hooked in geometry.cpp)
     void undo()
     {
