@@ -353,6 +353,8 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix lighting for pistol silencer and remote charge detonator
 - Fix third-person crouch animations on remote players flickering and snapping
 - Fix the multiplayer camera sitting above the eyes other players see on Parker and Ultor guard characters, which made other players look shorter than you
+- Fix level editor viewports flashing white or leaving black areas when resized under Wine/Proton
+- Fix occasional crash on startup with the Direct3D 11 renderer in MinGW builds
 
 [@GooberRF](https://github.com/GooberRF) & [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Fix severe frame rate drops when looking over heavily geomodded areas
