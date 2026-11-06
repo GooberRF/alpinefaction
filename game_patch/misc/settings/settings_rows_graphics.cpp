@@ -191,7 +191,7 @@ const SettingRow rows[] = {
             [](rf::Player*, float v) {
                 rf::gr::set_gamma(v);
                 // The stock Video panel reads gamma into its slider only when the panel is built.
-                if (legacy_options_menu_enabled()) {
+                if (legacy_menus_enabled()) {
                     rf::ui::video_gamma_slider.set_value(v);
                 }
             }, 0.7f, 2.2f},

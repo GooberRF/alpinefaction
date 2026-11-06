@@ -17,6 +17,7 @@
 #include "../rf/level.h"
 #include "../rf/cutscene.h"
 #include "../multi/multi.h"
+#include "../ui/extras_menu.h"
 #include "../ui/settings_menu.h"
 #include "misc.h"
 
@@ -156,8 +157,10 @@ CodeInjection gameplay_render_frame_display_full_screen_image_injection{
 static FunHook<void(rf::GameState, bool)> rf_do_state_hook{
     0x004B1E70,
     [] (const rf::GameState state, const bool paused) {
-        if (state == rf::GS_OPTIONS_MENU && !legacy_options_menu_enabled()) {
+        if (state == rf::GS_OPTIONS_MENU && !legacy_menus_enabled()) {
             settings_menu_do_frame(paused);
+        } else if (state == rf::GS_EXTRAS_MENU && !legacy_menus_enabled()) {
+            extras_menu_do_frame(paused);
         } else if (state == rf::GS_MULTI_LIMBO_JUST_JOINED) {
             multi_limbo_just_joined_do_frame();
         } else if (state == rf::GS_MULTI_LEVEL_DOWNLOAD) {

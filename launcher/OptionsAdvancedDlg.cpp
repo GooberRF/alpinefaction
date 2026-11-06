@@ -15,7 +15,7 @@ BOOL OptionsAdvancedDlg::OnInitDialog()
     CheckDlgButton(IDC_ALLOW_OVERWRITE_GAME_CHECK, m_conf.allow_overwrite_game_files ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(IDC_EDITOR_LAA_CHECK, m_conf.editor_large_address_aware ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(IDC_AUTOPLAY_AF_DEMOS_CHECK, m_conf.autoplay_af_demos ? BST_CHECKED : BST_UNCHECKED);
-    CheckDlgButton(IDC_LEGACY_OPTIONS_MENU_CHECK, m_conf.legacy_options_menu ? BST_CHECKED : BST_UNCHECKED);
+    CheckDlgButton(IDC_LEGACY_MENUS_CHECK, m_conf.legacy_menus ? BST_CHECKED : BST_UNCHECKED);
 
     return TRUE;
 }
@@ -29,7 +29,7 @@ void OptionsAdvancedDlg::InitToolTip()
     m_tool_tip.AddTool(GetDlgItem(IDC_ALLOW_OVERWRITE_GAME_CHECK), "Allows files in custom level folders to override core game files. Recommended to keep disabled (client_mods should be used for this instead)");
     m_tool_tip.AddTool(GetDlgItem(IDC_EDITOR_LAA_CHECK), "Start the level editor from a large address aware copy of RED.exe (RED_laa.exe), so it can use up to 4 GB of memory instead of 2 GB");
     m_tool_tip.AddTool(GetDlgItem(IDC_AUTOPLAY_AF_DEMOS_CHECK), "Skip the confirmation window when opening af://demo links and start playback immediately");
-    m_tool_tip.AddTool(GetDlgItem(IDC_LEGACY_OPTIONS_MENU_CHECK), "Use Red Faction's original options menu in game instead of the Alpine Faction one. Takes effect the next time the game starts");
+    m_tool_tip.AddTool(GetDlgItem(IDC_LEGACY_MENUS_CHECK), "Use Red Faction's original options and extras menus in game instead of the Alpine Faction ones. Takes effect the next time the game starts");
 }
 
 BOOL OptionsAdvancedDlg::OnCommand(WPARAM wparam, LPARAM lparam)
@@ -48,5 +48,5 @@ void OptionsAdvancedDlg::OnSave()
     m_conf.allow_overwrite_game_files = (IsDlgButtonChecked(IDC_ALLOW_OVERWRITE_GAME_CHECK) == BST_CHECKED);
     m_conf.editor_large_address_aware = (IsDlgButtonChecked(IDC_EDITOR_LAA_CHECK) == BST_CHECKED);
     m_conf.autoplay_af_demos = (IsDlgButtonChecked(IDC_AUTOPLAY_AF_DEMOS_CHECK) == BST_CHECKED);
-    m_conf.legacy_options_menu = (IsDlgButtonChecked(IDC_LEGACY_OPTIONS_MENU_CHECK) == BST_CHECKED);
+    m_conf.legacy_menus = (IsDlgButtonChecked(IDC_LEGACY_MENUS_CHECK) == BST_CHECKED);
 }

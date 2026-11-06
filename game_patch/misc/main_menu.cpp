@@ -690,7 +690,7 @@ void apply_main_menu_patches()
     // Support scroll wheel in menu list boxes
     multi_create_game_do_frame_patch.install();
     multi_join_server_do_frame_patch.install();
-    if (legacy_options_menu_enabled()) {
+    if (legacy_menus_enabled()) {
         options_do_frame_patch.install();
     }
     game_load_do_frame_patch.install();

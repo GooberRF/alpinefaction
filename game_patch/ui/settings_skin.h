@@ -166,12 +166,13 @@ bool skin_button(UiContext& ctx, const UiRect& r, const char* text, int font, Sk
                  bool enabled, UiId id);
 // One stock menu button. `r` is the part left visible, which is the hit area; the well carries
 // on `hidden_w` further left, under the side bar. `selected` lights it like the highlight does;
-// `arrow` marks a button that opens a panel. The label is centred on the visible well and takes
+// `arrow` marks a button that opens a panel. The label is centred between the end cap and
+// `label_inset` (<= 0) left of `r`, where the bar's narrower body leaves the well showing, and takes
 // two lines when one cannot hold it.
-bool skin_menu_button(UiContext& ctx, const UiRect& r, int hidden_w, const char* label, int font, bool selected,
-                      bool arrow, UiId id);
+bool skin_menu_button(UiContext& ctx, const UiRect& r, int hidden_w, int label_inset, const char* label, int font,
+                      bool selected, bool arrow, UiId id);
 // Widest label line a menu button `w` wide holds.
-int skin_menu_button_label_w(const UiContext& ctx, int w);
+int skin_menu_button_label_w(const UiContext& ctx, int w, int label_inset);
 // Icon-only affordance (per-row reset, search clear).
 bool skin_icon_button(UiContext& ctx, const UiRect& r, const char* icon, rf::Color tint,
                       rf::Color tint_hover, UiId id);

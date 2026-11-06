@@ -30,7 +30,8 @@ Version 1.5.0 (Trillium): Not yet released
   - Context-specific bindings for vehicles, spectator, and demo playback
   - `af_set` and `af_get` console commands to read and write any setting by name
   - Draw menus from resolution-independent vector artwork
-  - `Use legacy options menu` launcher option to use the stock options screens instead of the new menu
+  - Redraw the extras menu in the same style
+  - `Use deprecated legacy menus` launcher option to use the stock options and extras screens instead of the new menus
 - Add server-side bots, which run inside the dedicated or listen server process in addition to (or instead of) bot clients
   - `server_bots` ADS option (0-31) sets how many server bots join; they use the `bot_profiles` profiles and follow `ideal_player_count` like bot clients
   - Add `sv_bot_add [profile_index] [red|blue]`, `sv_bot_remove <name|all>` and `sv_bot_list` server console commands, which also work through rcon

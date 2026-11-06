@@ -429,6 +429,10 @@ set(SRCS
     ui/settings_skin.cpp
     ui/settings_menu.h
     ui/settings_menu.cpp
+    ui/menu_shell.h
+    ui/menu_shell.cpp
+    ui/extras_menu.h
+    ui/extras_menu.cpp
     sound/sound.cpp
     sound/sound.h
     sound/sound_ds.cpp

@@ -778,6 +778,17 @@ void demo_browser_open()
     reload_entries();
 }
 
+void demo_browser_do_input()
+{
+    if (!g_open) {
+        return;
+    }
+    rf::game_poll(demo_browser_handle_key);
+    int x = 0, y = 0, z = 0;
+    rf::mouse_get_pos(x, y, z);
+    demo_browser_handle_mouse(x, y);
+}
+
 void demo_browser_render()
 {
     if (!g_open) {

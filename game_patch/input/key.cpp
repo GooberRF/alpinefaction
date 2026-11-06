@@ -673,7 +673,7 @@ void key_apply_patch()
     // Num pads need a patch to support `PgUp`, `PgDown`, `End`, and `Home`.
     key_msg_handler_hook.install();
 
-    if (legacy_options_menu_enabled()) {
+    if (legacy_menus_enabled()) {
         key_name_in_options_patch.install();
         // Allow binding Alt keys and extra mouse buttons in the controls options panel
         options_controls_record_binding_hook.install();

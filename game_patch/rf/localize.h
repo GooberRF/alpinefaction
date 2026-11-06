@@ -46,6 +46,13 @@ namespace rf
         static const auto &ctf = array[724];
         static const auto &teamdm = array[725];
 
+        // extras menu
+        static const auto &summoner_trailer = array[389];
+        static const auto &back = array[772];
+        static const auto &extras = array[982];
+        static const auto &credits = array[983];
+        static const auto &glass_house = array[985];
+
         // dedi config lookups
         static const auto& dedi_header = array[855];
 

@@ -12,8 +12,8 @@ namespace rf {
 
 extern bool g_character_meshes_are_fullbright;
 void misc_init();
-// The launcher's "Use legacy options menu", as it was when the game started.
-bool legacy_options_menu_enabled();
+// The launcher's "Use deprecated legacy menus", as it was when the game started.
+bool legacy_menus_enabled();
 void apply_reduced_speed_in_background();
 void set_jump_to_multi_server_list(bool jump);
 void set_jump_to_demo_browser(bool jump);

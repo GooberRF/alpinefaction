@@ -780,14 +780,14 @@ bool skin_button(UiContext& ctx, const UiRect& r, const char* text, int font, Sk
     return hovered && ctx.click;
 }
 
-int skin_menu_button_label_w(const UiContext& ctx, int w)
+int skin_menu_button_label_w(const UiContext& ctx, int w, int label_inset)
 {
     // The visible well left of the end cap, less a pad each side.
-    return std::max(0, w - skin_px(ctx, skin::menu_cap_w) - 2 * skin_px(ctx, 12.0f));
+    return std::max(0, w - label_inset - skin_px(ctx, skin::menu_cap_w) - 2 * skin_px(ctx, 12.0f));
 }
 
-bool skin_menu_button(UiContext& ctx, const UiRect& r, int hidden_w, const char* label, int font, bool selected,
-                      bool arrow, UiId id)
+bool skin_menu_button(UiContext& ctx, const UiRect& r, int hidden_w, int label_inset, const char* label, int font,
+                      bool selected, bool arrow, UiId id)
 {
     // The part under the bar still takes clicks, as stock's buttons do.
     const bool hovered = ui_hover(ctx, UiRect{r.x - hidden_w, r.y, r.w + hidden_w, r.h}, id);
@@ -825,8 +825,8 @@ bool skin_menu_button(UiContext& ctx, const UiRect& r, int hidden_w, const char*
             skin_focus_ring(ctx, d.x, d.y, d.w, d.h);
         }
 
-        const int well_cx = (d.x + cap_x) / 2;
-        const int max_w = skin_menu_button_label_w(ctx, d.w);
+        const int well_cx = (d.x + label_inset + cap_x) / 2;
+        const int max_w = skin_menu_button_label_w(ctx, d.w, label_inset);
         const std::string_view text{label ? label : ""};
         rf::gr::set_color(lit ? skin::txt_hi : skin::txt);
         if (rf::gr::get_string_size(text, font).first <= max_w) {

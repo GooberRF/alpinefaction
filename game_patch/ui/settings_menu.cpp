@@ -10,10 +10,10 @@
 #include <unordered_set>
 #include <vector>
 #include <common/utils/string-utils.h>
+#include "menu_shell.h"
 #include "settings_menu.h"
 #include "settings_skin.h"
 #include "ui_kit.h"
-#include "../graphics/gr.h"
 #include "../graphics/ui_draw.h"
 #include "../input/bind_context.h"
 #include "../input/input.h"
@@ -28,7 +28,6 @@
 #include "../rf/level.h"
 #include "../rf/multi.h"
 #include "../rf/os/console.h"
-#include "../rf/os/frametime.h"
 #include "../rf/player/control_config.h"
 #include "../rf/player/player.h"
 #include "../rf/ui.h"
@@ -37,20 +36,10 @@
 namespace
 {
 
-constexpr float ref_w = 1920.0f;
-constexpr float ref_h = 1080.0f;
-
-// Horizontally the layout hangs off the stock side bars, which are drawn in 640-wide units.
-constexpr float rail_inner_units = 57.0f;
-constexpr float rail_tuck_units = 11.0f;
-constexpr float column_y = 130.0f;
 // Button slots down the column, which the panel spans. The categories then BACK fill them from the
 // top and the rest stay empty, as on stock.
 constexpr int column_slots = 11;
 static_assert(static_cast<int>(SettingCategory::_count) + 1 <= column_slots);
-// The visible part of a column button's well; the end cap follows it.
-constexpr float well_visible_w = 220.0f;
-constexpr float connector_w = 48.0f;
 // The panel frame around the dark content area: the left channel and the top and bottom ridges.
 constexpr float frame_left = 34.0f;
 constexpr float frame_edge = 22.0f;
@@ -59,9 +48,29 @@ constexpr float rail_clearance = 16.0f;
 // Left inset of a row's label and right inset of its controls.
 constexpr float row_inset = 32.0f;
 
-// Every slide runs at constant speed for as long as the stock menus' do.
-constexpr float slide_seconds = 0.25f;
-constexpr float min_animation_step = 0.002f;
+// The category column, top to bottom. The longest labels take the top slots, beside the side
+// bar's flat stretch and clear of the brackets lower down.
+constexpr std::array<SettingCategory, static_cast<std::size_t>(SettingCategory::_count)> category_order{
+    SettingCategory::Multiplayer, SettingCategory::Gameplay, SettingCategory::Graphics,
+    SettingCategory::Interface,   SettingCategory::Hud,      SettingCategory::Audio,
+    SettingCategory::Input,       SettingCategory::Bindings,
+};
+
+constexpr bool category_order_complete()
+{
+    for (int c = 0; c < static_cast<int>(SettingCategory::_count); ++c) {
+        if (std::ranges::count(category_order, static_cast<SettingCategory>(c)) != 1) {
+            return false;
+        }
+    }
+    return true;
+}
+static_assert(category_order_complete(), "every category needs exactly one slot in category_order");
+
+int category_slot(SettingCategory category)
+{
+    return static_cast<int>(std::ranges::find(category_order, category) - category_order.begin());
+}
 
 enum class Modal
 {
@@ -74,7 +83,7 @@ enum class Modal
 };
 
 UiContext g_ui;
-SettingCategory g_category = SettingCategory::Graphics;
+SettingCategory g_category = category_order.front();
 bool g_closing = false;
 UiId g_prev_text_focus = 0;
 float g_content_scroll = 0.0f;
@@ -287,24 +296,6 @@ void request_close()
     g_closing = true;
     remember_category_scroll();
     rf::gameseq_pop_state();
-}
-
-float screen_scale()
-{
-    return std::min(rf::gr::clip_width() / ref_w, rf::gr::clip_height() / ref_h);
-}
-
-int menu_font(bool bold, float ref_px, float scale)
-{
-    // TTF sizes for a window under 480 px are unreadable, so stock keeps its bitmap fonts there.
-    if (rf::gr::clip_height() >= 480) {
-        const int px = std::max(8, static_cast<int>(std::lround(ref_px * scale)));
-        const int font = ui_ttf_font(bold, px);
-        if (font >= 0) {
-            return font;
-        }
-    }
-    return bold ? rf::ui::large_font : rf::ui::medium_font_0;
 }
 
 struct Fonts
@@ -1244,8 +1235,8 @@ std::vector<Entry> build_search_entries(std::string_view query, std::vector<std:
     match_count = 0;
     // Reserving up front keeps the crumb strings stable while entries point at them.
     crumbs.reserve(settings_registry_all().size());
-    for (int c = 0; c < static_cast<int>(SettingCategory::_count); ++c) {
-        const auto category = static_cast<SettingCategory>(c);
+    // In column order, so the results read the way the categories are laid out.
+    for (const SettingCategory category : category_order) {
         bool captioned = false;
         for (const SettingRow* row : settings_in_category(category)) {
             if ((row->flags & SF_HIDDEN) || !row_matches(*row, query)) {
@@ -2371,8 +2362,8 @@ void build_grid_picker_modal(UiContext& ctx, int canvas_x, int canvas_y, const F
 
     const int dialog_w = s(1000.0f);
     const int dialog_h = s(760.0f);
-    const UiRect dialog{canvas_x + (static_cast<int>(ref_w * ctx.scale()) - dialog_w) / 2,
-                        canvas_y + (static_cast<int>(ref_h * ctx.scale()) - dialog_h) / 2, dialog_w,
+    const UiRect dialog{canvas_x + (static_cast<int>(menu_ref_w * ctx.scale()) - dialog_w) / 2,
+                        canvas_y + (static_cast<int>(menu_ref_h * ctx.scale()) - dialog_h) / 2, dialog_w,
                         dialog_h};
     const int pad = s(24.0f);
     const int band_h = s(56.0f);
@@ -2455,8 +2446,8 @@ void build_color_picker_modal(UiContext& ctx, int canvas_x, int canvas_y, const 
 
     const int dialog_w = s(900.0f);
     const int dialog_h = s(540.0f);
-    const UiRect dialog{canvas_x + (static_cast<int>(ref_w * ctx.scale()) - dialog_w) / 2,
-                        canvas_y + (static_cast<int>(ref_h * ctx.scale()) - dialog_h) / 2, dialog_w,
+    const UiRect dialog{canvas_x + (static_cast<int>(menu_ref_w * ctx.scale()) - dialog_w) / 2,
+                        canvas_y + (static_cast<int>(menu_ref_h * ctx.scale()) - dialog_h) / 2, dialog_w,
                         dialog_h};
     const int pad = s(24.0f);
     const int edge = s(1.0f);
@@ -2636,62 +2627,18 @@ void register_offscreen_focus(UiContext& ctx, const Entry& entry)
     }
 }
 
-// Horizontal anchors in screen pixels, taken from the side bars.
-struct ScreenLayout
-{
-    int rail_left = 0;     // inner edges of the side bar pillars
-    int rail_right = 0;
-    int column_x = 0;      // where the buttons come out from under the left bar
-    int column_hidden = 0; // how much of each well stays under it
-    int column_w = 0;      // visible button width, end cap included
-    int panel_x = 0;       // seated
-    int panel_r = 0;       // under the right bar
-};
-
-ScreenLayout screen_layout(const UiContext& ctx)
-{
-    const int w = rf::gr::clip_width();
-    // The side bars are drawn at stock's own menu scale; fall back to the screen's ratio if stock
-    // has not set it.
-    const float sx = rf::ui::scale_x > 0.0f ? rf::ui::scale_x : static_cast<float>(w) / 640.0f;
-    const int tuck = static_cast<int>(std::lround(rail_tuck_units * sx));
-    ScreenLayout lay;
-    lay.rail_left = static_cast<int>(std::lround(rail_inner_units * sx));
-    lay.rail_right = w - lay.rail_left;
-    lay.column_x = lay.rail_left;
-    lay.column_hidden = lay.rail_left - tuck;
-    lay.column_w = skin_px(ctx, well_visible_w) + skin_px(ctx, skin::menu_cap_w);
-    lay.panel_x = lay.column_x + lay.column_w + skin_px(ctx, connector_w);
-    lay.panel_r = w - tuck;
-    return lay;
-}
-
-// `clear_r` is the right pillar's inner edge.
 void draw_title_bar(const UiContext& ctx, int x, int right, int clear_r, int canvas_y, const Fonts& fonts)
 {
-    const auto s = [&](float v) { return ctx.scaled(v); };
-    const UiRect bar{x, canvas_y + s(20.0f), right - x, s(84.0f)};
-    skin_brushed_plate(ctx, bar.x, bar.y, bar.w, bar.h, false);
-    const int block_w = s(84.0f);
-    skin_brushed_plate(ctx, bar.x, bar.y, block_w, bar.h, true);
-    const int mid_y = bar.y + bar.h / 2;
-    skin_screw(ctx, bar.x + block_w / 2, mid_y, 20.0f);
-    skin_screw(ctx, clear_r - s(30.0f), mid_y, 20.0f);
-
-    const int title_x = bar.x + block_w + s(24.0f);
-    rf::gr::set_color(skin::ink_title);
-    rf::gr::string(title_x, mid_y - rf::gr::get_font_height(fonts.title) / 2, "Options", fonts.title);
-
+    const UiRect free = menu_draw_title_bar(ctx, x, right, clear_r, canvas_y, "Options", fonts.title);
     const std::string status = status_strip_text();
     if (status.empty()) {
         return;
     }
-    const int status_r = clear_r - s(60.0f);
-    const int status_l = title_x + rf::gr::get_string_size("Options", fonts.title).first + s(40.0f);
-    const SkinText fitted = skin_fit_text(ctx, status, fonts.caption_bold, std::max(0, status_r - status_l));
+    const SkinText fitted = skin_fit_text(ctx, status, fonts.caption_bold, free.w);
     rf::gr::set_color(status_strip_color());
-    rf::gr::string_aligned(rf::gr::ALIGN_RIGHT, status_r, mid_y - rf::gr::get_font_height(fitted.font) / 2,
-                           fitted.text.c_str(), fitted.font);
+    rf::gr::string_aligned(rf::gr::ALIGN_RIGHT, free.x + free.w,
+                           free.y + free.h / 2 - rf::gr::get_font_height(fitted.font) / 2, fitted.text.c_str(),
+                           fitted.font);
 }
 
 void draw_panel(const UiContext& ctx, const UiRect& panel, const UiRect& inset)
@@ -2715,45 +2662,34 @@ void draw_panel(const UiContext& ctx, const UiRect& panel, const UiRect& inset)
     skin_steel_field(ctx, inset.x, inset.y, inset.w, inset.h);
 }
 
-void build_category_column(UiContext& ctx, const ScreenLayout& lay, int col_x, int col_y, int button_h,
-                           const Fonts& fonts)
+void build_category_column(UiContext& ctx, const MenuLayout& lay, int col_x, int col_y, const Fonts& fonts)
 {
     constexpr int category_count = static_cast<int>(SettingCategory::_count);
-    std::array<std::string, category_count> labels;
-    // Every label takes the size the widest one fits at, so the column reads as one set.
-    std::string_view widest = "BACK";
-    for (int i = 0; i < category_count; ++i) {
-        labels[i] = string_to_upper(setting_category_name(static_cast<SettingCategory>(i)));
-        if (rf::gr::get_string_size(labels[i], fonts.body_bold).first
-            > rf::gr::get_string_size(widest, fonts.body_bold).first) {
-            widest = labels[i];
-        }
-    }
-    const int font = skin_fit_text(ctx, widest, fonts.body_bold, skin_menu_button_label_w(ctx, lay.column_w)).font;
-
     const std::optional<SettingCategory> selected = selected_category();
+    std::array<MenuColumnItem, category_count> items;
     for (int i = 0; i < category_count; ++i) {
-        const auto category = static_cast<SettingCategory>(i);
-        const UiRect r{col_x, col_y + i * button_h, lay.column_w, button_h};
-        if (skin_menu_button(ctx, r, lay.column_hidden, labels[i].c_str(), font, selected == category, true,
-                             ui_id("category", i))) {
-            if (selected != category) {
-                // Picking the panel's own category again turns a slide-out around.
-                if (g_switch_to && category == g_category && g_search.empty()) {
-                    g_switch_to.reset();
-                }
-                else {
-                    g_switch_to = category;
-                }
-                ctx.description().pinned = false;
-            }
-            ui_play_click();
-        }
+        const SettingCategory category = category_order[i];
+        items[i] = MenuColumnItem{string_to_upper(setting_category_name(category)), selected == category};
     }
-    const UiRect back{col_x, col_y + category_count * button_h, lay.column_w, button_h};
-    if (skin_menu_button(ctx, back, lay.column_hidden, "BACK", font, false, false, ui_id("back"))) {
-        ui_play_click();
+    const int clicked = menu_build_column(ctx, lay, col_x, col_y, items, "BACK", fonts.body_bold, "category");
+    if (clicked < 0) {
+        return;
+    }
+    ui_play_click();
+    if (clicked == category_count) {
         request_close();
+        return;
+    }
+    const SettingCategory category = category_order[clicked];
+    if (selected != category) {
+        // Picking the panel's own category again turns a slide-out around.
+        if (g_switch_to && category == g_category && g_search.empty()) {
+            g_switch_to.reset();
+        }
+        else {
+            g_switch_to = category;
+        }
+        ctx.description().pinned = false;
     }
 }
 
@@ -3088,16 +3024,15 @@ void build_screen(UiContext& ctx, int canvas_y, const Fonts& fonts, bool sync_st
     const float scale = ctx.scale();
     const auto s = [&](float v) { return static_cast<int>(v * scale); };
     const auto cy = [&](float v) { return canvas_y + s(v); };
-    const ScreenLayout lay = screen_layout(ctx);
+    const MenuLayout lay = menu_layout(ctx);
 
     const int slide_w = rf::gr::clip_width() - lay.panel_x;
     const int enter_dx = static_cast<int>((1.0f - g_slide) * static_cast<float>(slide_w));
     const int panel_dx = enter_dx + static_cast<int>(g_switch * static_cast<float>(slide_w));
     const int col_dx = -static_cast<int>((1.0f - g_slide) * static_cast<float>(lay.column_x + lay.column_w));
 
-    // Every slot uses the same rounded height, so the connector lines up with its button exactly.
-    const int button_h = skin_px(ctx, skin::menu_button_h);
-    const int top = cy(column_y);
+    const int button_h = menu_button_h(ctx);
+    const int top = cy(menu_column_y);
     const int panel_h = column_slots * button_h;
 
     if (ctx.draw) {
@@ -3105,7 +3040,7 @@ void build_screen(UiContext& ctx, int canvas_y, const Fonts& fonts, bool sync_st
                        fonts);
     }
 
-    build_category_column(ctx, lay, lay.column_x + col_dx, top, button_h, fonts);
+    build_category_column(ctx, lay, lay.column_x + col_dx, top, fonts);
 
     const UiRect panel{lay.panel_x + panel_dx, top, lay.panel_r - lay.panel_x, panel_h};
     const int inset_x = panel.x + s(frame_left);
@@ -3115,9 +3050,9 @@ void build_screen(UiContext& ctx, int canvas_y, const Fonts& fonts, bool sync_st
         draw_panel(ctx, panel, inset);
         // Search results belong to no category, so nothing is connected.
         if (g_search.empty()) {
-            const int cw = skin_px(ctx, connector_w);
+            const int cw = skin_px(ctx, menu_connector_w);
             const int ch = skin_px(ctx, 60.0f);
-            const int mid = top + static_cast<int>(g_category) * button_h + button_h / 2;
+            const int mid = top + category_slot(g_category) * button_h + button_h / 2;
             skin_sized_chrome("af_connector", UiRect{panel.x - cw, mid - ch / 2, cw, ch});
         }
     }
@@ -3173,11 +3108,11 @@ void settings_menu_build(UiContext& ctx)
 {
     const int screen_w = rf::gr::clip_width();
     const int screen_h = rf::gr::clip_height();
-    const float scale = screen_scale();
+    const float scale = menu_screen_scale();
     ctx.set_scale(scale);
 
-    const int canvas_x = (screen_w - static_cast<int>(ref_w * scale)) / 2;
-    const int canvas_y = (screen_h - static_cast<int>(ref_h * scale)) / 2;
+    const int canvas_x = (screen_w - static_cast<int>(menu_ref_w * scale)) / 2;
+    const int canvas_y = (screen_h - static_cast<int>(menu_ref_h * scale)) / 2;
 
     Fonts fonts;
     fonts.title = menu_font(true, 46.0f, scale);
@@ -3321,19 +3256,17 @@ void settings_menu_input()
     }
 }
 
-// Frame-time driven, with a floor under the step so a stalled frametime can never park the exit
-// animation short of the end and stall the state pop.
 void advance_animation()
 {
-    const float step = std::max(rf::frametime, min_animation_step);
+    const float step = menu_slide_step();
     if (g_closing) {
-        g_slide = std::max(0.0f, g_slide - step / slide_seconds);
+        g_slide = std::max(0.0f, g_slide - step);
     }
     else {
-        g_slide = std::min(1.0f, g_slide + step / slide_seconds);
+        g_slide = std::min(1.0f, g_slide + step);
     }
     if (g_switch_to) {
-        g_switch = std::min(1.0f, g_switch + step / slide_seconds);
+        g_switch = std::min(1.0f, g_switch + step);
         if (g_switch >= 1.0f) {
             remember_category_scroll();
             show_category(*g_switch_to);
@@ -3341,7 +3274,7 @@ void advance_animation()
         }
     }
     else {
-        g_switch = std::max(0.0f, g_switch - step / slide_seconds);
+        g_switch = std::max(0.0f, g_switch - step);
     }
 }
 
@@ -3414,7 +3347,7 @@ void settings_menu_do_frame(bool paused)
     settings_menu_build(g_ui);
     g_ui.end_pass();
     g_ui.draw_overlays();
-    g_ui.draw_toasts(menu_font(false, 17.0f, screen_scale()));
+    g_ui.draw_toasts(menu_font(false, 17.0f, menu_screen_scale()));
     rf::gr::reset_clip();
 }
 

@@ -242,6 +242,11 @@ namespace rf::ui
     static auto& menu_draw_side_bars = addr_as_ref<void()>(0x00442DB0);
     static auto& menu_background_bitmap = addr_as_ref<int>(0x00598FEC); // mars_background.tga, -1 if missing
 
+    // Stock Extras button on_click handlers.
+    static auto& extras_credits_click = addr_as_ref<void(int x, int y)>(0x0043EC70);
+    static auto& extras_summoner_trailer_click = addr_as_ref<void(int x, int y)>(0x0043EC80);
+    static auto& extras_glass_house_click = addr_as_ref<void(int x, int y)>(0x0043ECA0);
+
     static auto& get_gadget_from_pos = addr_as_ref<int(int x, int y, Gadget * const gadgets[], int num_gadgets)>(0x00442ED0);
     static auto& update_input_box_cursor = addr_as_ref<void()>(0x00456960);
 

@@ -338,7 +338,7 @@ FunHook<bool __fastcall(void *this_, int edx, rf::Key key)> UiInputBox_process_k
 };
 
 // ─── Legacy options menu: Advanced panel and stock panel extras ───
-// Installed only while the launcher's "Use legacy options menu" is on. Every control writes through
+// Installed only while the launcher's "Use deprecated legacy menus" is on. Every control writes through
 // the settings registry, so the console, the ini and the setting's own apply hook stay in step.
 
 namespace
@@ -1835,7 +1835,7 @@ CodeInjection server_list_set_single_refresh_inactive_patch{
 
 void ui_apply_patch()
 {
-    if (legacy_options_menu_enabled()) {
+    if (legacy_menus_enabled()) {
         legacy_options_menu_apply_patch();
     }
 

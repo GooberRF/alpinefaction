@@ -87,7 +87,7 @@
 #define IDC_EDITOR_LAA_CHECK            1067
 #define IDC_ADVANCED_OPTIONS_BOX        1068
 #define IDC_ADVANCED_TOGGLE_BTN         1069
-#define IDC_LEGACY_OPTIONS_MENU_CHECK   1070
+#define IDC_LEGACY_MENUS_CHECK          1070
 
 #define IDC_VERSION_TEXT                3050
 
