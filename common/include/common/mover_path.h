@@ -1,6 +1,6 @@
 #pragma once
 
-// Mover path data (RFL chunk 0x0AFBAE0D) and the mover timing rules, shared by the game and RED so the editor preview
+// Mover path data (RFL chunk 0x0AFBAE0E) and the mover timing rules, shared by the game and RED so the editor preview
 // plays what the game plays. Free of engine types: callers convert their own vectors to and from Vec3.
 
 #include <algorithm>
@@ -12,7 +12,7 @@
 namespace mover_path
 {
 
-inline constexpr uint32_t chunk_id = 0x0AFBAE0Du;
+inline constexpr uint32_t chunk_id = 0x0AFBAE0Eu;
 
 // ─── Limits and wire values ──────────────────────────────────────────────────
 

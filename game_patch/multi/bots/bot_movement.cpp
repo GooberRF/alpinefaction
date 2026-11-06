@@ -25,6 +25,11 @@ constexpr float kJumpPadFinalApproachStopDistance = 0.05f;
 constexpr float kWeaponStopDistanceCapScale = 1.5f;
 constexpr float kWeaponSafeStopDistanceScale = 1.25f;
 constexpr float kSplashRetreatProbeDistance = 1.5f;
+constexpr float kHullDodgeProbeDistance = 2.5f;
+constexpr int kCombatStrafeMinMs = 350;
+constexpr int kCombatStrafeMaxMs = 850;
+constexpr float kCombatStrafeReverseChance = 0.65f;
+constexpr float kCombatStrafeProbeDistance = 1.5f;
 // A cornered verdict outlives the think that found it until the next movement update.
 constexpr int kSplashRetreatBlockedHoldMs = 100;
 constexpr float kLadderClimbVerticalThreshold = 0.12f;
@@ -45,7 +50,10 @@ constexpr float kLinkFloorProbeDownDistance = 2.0f;
 constexpr float kLinkFloorLinkTraceYOffset = 0.05f;
 constexpr int kUpwardLinkObstacleCacheMaxEntries = 4096;
 
-std::unordered_map<uint64_t, bool> g_upward_link_obstacle_cache{};
+// How far along an upward link its jump belongs: a share of the way, or one of the two values below.
+std::unordered_map<uint64_t, float> g_upward_link_obstacle_cache{};
+constexpr float kUpwardLinkNoJump = -1.0f;
+constexpr float kUpwardLinkJumpAnywhere = 2.0f;
 int g_upward_link_obstacle_cache_waypoint_total = 0;
 
 uint64_t make_directed_link_key(const int from_waypoint, const int to_waypoint)
@@ -85,7 +93,7 @@ bool trace_floor_below_waypoint_pos(
     return true;
 }
 
-bool compute_upward_link_requires_jump_uncached(
+float compute_upward_link_jump_share_uncached(
     const int from_waypoint,
     const int to_waypoint)
 {
@@ -94,7 +102,12 @@ bool compute_upward_link_requires_jump_uncached(
     if (!waypoints_get_pos(from_waypoint, from_pos)
         || !waypoints_get_pos(to_waypoint, to_pos)
         || to_pos.y <= from_pos.y + kWaypointLinkRadiusEpsilon) {
-        return false;
+        return kUpwardLinkNoJump;
+    }
+    if (bot_nav_link_climbs_ledge(from_waypoint, to_waypoint)) {
+        float ledge_share = kUpwardLinkJumpAnywhere;
+        bot_link_floor_step(from_pos, to_pos, &ledge_share);
+        return ledge_share;
     }
 
     rf::Vector3 from_floor{};
@@ -102,7 +115,7 @@ bool compute_upward_link_requires_jump_uncached(
     if (!trace_floor_below_waypoint_pos(from_pos, from_floor)
         || !trace_floor_below_waypoint_pos(to_pos, to_floor)
         || to_floor.y <= from_floor.y + kWaypointLinkRadiusEpsilon) {
-        return false;
+        return kUpwardLinkNoJump;
     }
 
     rf::Vector3 p0 = from_floor;
@@ -114,17 +127,17 @@ bool compute_upward_link_requires_jump_uncached(
         p0,
         p1,
         kBotMovementTraceFlags,
-        &collision);
+        &collision) ? kUpwardLinkJumpAnywhere : kUpwardLinkNoJump;
 }
 
-bool upward_link_requires_jump_for_obstruction(
+float upward_link_jump_share(
     const int from_waypoint,
     const int to_waypoint)
 {
     if (from_waypoint <= 0
         || to_waypoint <= 0
         || !bot_nav_is_link_traversable_for_route(from_waypoint, to_waypoint)) {
-        return false;
+        return kUpwardLinkNoJump;
     }
 
     const int waypoint_total = waypoints_count();
@@ -148,10 +161,9 @@ bool upward_link_requires_jump_for_obstruction(
         return it->second;
     }
 
-    const bool requires_jump =
-        compute_upward_link_requires_jump_uncached(from_waypoint, to_waypoint);
-    g_upward_link_obstacle_cache.emplace(edge_key, requires_jump);
-    return requires_jump;
+    const float jump_share = compute_upward_link_jump_share_uncached(from_waypoint, to_waypoint);
+    g_upward_link_obstacle_cache.emplace(edge_key, jump_share);
+    return jump_share;
 }
 
 bool get_next_waypoint_link(int& out_from_waypoint, int& out_to_waypoint)
@@ -190,6 +202,7 @@ bool get_active_waypoint_link(int& out_from_waypoint, int& out_to_waypoint)
 
 void request_soft_repath_around_waypoint(const int avoid_waypoint)
 {
+    bot_state().route_repair_path.clear();
     if (bot_state().drop_link_route_locked) {
         return;
     }
@@ -407,6 +420,12 @@ bool is_forward_probe_over_edge(
     return drop_height > kForwardEdgeUnsafeDropHeight;
 }
 
+bool is_move_probe_shut(const rf::Entity& entity, const rf::Vector3& direction, const float distance)
+{
+    return is_forward_probe_blocked(entity, direction, distance)
+        || is_forward_probe_over_edge(entity, direction, distance);
+}
+
 bool is_eye_level_probe_blocked(
     const rf::Entity& entity,
     const rf::Vector3& direction,
@@ -559,7 +578,8 @@ bool should_jump_to_clear_obstructed_upward_link(
     const int from_waypoint,
     const int to_waypoint)
 {
-    if (!upward_link_requires_jump_for_obstruction(from_waypoint, to_waypoint)) {
+    const float jump_share = upward_link_jump_share(from_waypoint, to_waypoint);
+    if (jump_share == kUpwardLinkNoJump) {
         return false;
     }
 
@@ -585,7 +605,14 @@ bool should_jump_to_clear_obstructed_upward_link(
         1.0f
     );
 
-    return progress_t >= 0.10f && progress_t <= 0.72f;
+    if (jump_share == kUpwardLinkJumpAnywhere) {
+        return progress_t >= 0.10f && progress_t <= 0.72f;
+    }
+    // Off the ground too early and the bot lands short of the ledge.
+    constexpr float kLedgeJumpLeadDist = 1.2f;
+    constexpr float kLedgeJumpLateDist = 0.3f;
+    const float dist_to_ledge = (jump_share - progress_t) * std::sqrt(segment_len_sq);
+    return dist_to_ledge <= kLedgeJumpLeadDist && dist_to_ledge >= -kLedgeJumpLateDist;
 }
 
 void update_traversal_crouch_state_for_waypoint_path(
@@ -864,6 +891,8 @@ void bot_process_movement(
     else {
         // On the ground and not on a drop link — clear the drop freefall flag.
         bot_state().drop_freefall_active = false;
+        // Walking a downhill link never falls, so a lock left from it would keep vetoing reroutes until the next fall.
+        bot_state().drop_link_route_locked = false;
     }
     rf::Vector3 climb_region_probe = local_entity.pos;
     const bool in_climb_region = rf::level_point_in_climb_region(&climb_region_probe) != nullptr;
@@ -1043,8 +1072,7 @@ void bot_process_movement(
             const std::array<rf::Vector3, 5> escapes{away, away + side, away - side, side, -side};
             const rf::Vector3* escape = nullptr;
             for (const rf::Vector3& dir : escapes) {
-                if (!is_forward_probe_blocked(local_entity, dir, kSplashRetreatProbeDistance)
-                    && !is_forward_probe_over_edge(local_entity, dir, kSplashRetreatProbeDistance)) {
+                if (!is_move_probe_shut(local_entity, dir, kSplashRetreatProbeDistance)) {
                     escape = &dir;
                     break;
                 }
@@ -1083,17 +1111,49 @@ void bot_process_movement(
 
     bool maneuver_jump = false;
     bool combat_crouch_hold = false;
-    if (pursuing_enemy_goal && enemy_has_los && !respawn_gearup_active) {
+    if (pursuing_enemy_goal && enemy_has_los) {
         const BotSkillProfile& skill_profile = get_active_bot_skill_profile();
+        std::uniform_real_distribution<float> roll_dist(0.0f, 1.0f);
 
-        if (!bot_state().combat_maneuver_timer.valid()
-            || bot_state().combat_maneuver_timer.elapsed()) {
+        if (!bot_state().combat_strafe_timer.valid()
+            || bot_state().combat_strafe_timer.elapsed()) {
             const float dodge_chance = std::clamp(
                 skill_profile.dodge_likelihood
                     * std::clamp(personality.dodge_combat_bias, 0.0f, 2.5f),
                 0.0f,
                 1.0f
             );
+            if (roll_dist(g_rng) <= dodge_chance) {
+                const float strafe_strength = std::lerp(0.35f, 0.9f, skill_factor);
+                const float previous = bot_state().combat_maneuver_strafe;
+                const bool left = previous != 0.0f
+                    ? (roll_dist(g_rng) < kCombatStrafeReverseChance) == (previous > 0.0f)
+                    : roll_dist(g_rng) < 0.5f;
+                bot_state().combat_maneuver_strafe = left ? -strafe_strength : strafe_strength;
+            }
+            else {
+                bot_state().combat_maneuver_strafe = 0.0f;
+            }
+            std::uniform_int_distribution<int> period_dist(kCombatStrafeMinMs, kCombatStrafeMaxMs);
+            bot_state().combat_strafe_timer.set(period_dist(g_rng));
+        }
+
+        if (bot_state().combat_maneuver_strafe != 0.0f) {
+            const rf::Vector3 view_forward =
+                forward_from_non_linear_yaw_pitch(local_entity.control_data.phb.y, 0.0f);
+            const float side_sign = bot_state().combat_maneuver_strafe > 0.0f ? 1.0f : -1.0f;
+            const rf::Vector3 side = rf::Vector3{view_forward.z, 0.0f, -view_forward.x} * side_sign;
+            if (is_move_probe_shut(local_entity, side, kCombatStrafeProbeDistance)) {
+                bot_state().combat_maneuver_strafe =
+                    is_move_probe_shut(local_entity, -side, kCombatStrafeProbeDistance)
+                        ? 0.0f
+                        : -bot_state().combat_maneuver_strafe;
+            }
+        }
+
+        if (!respawn_gearup_active
+            && (!bot_state().combat_maneuver_timer.valid()
+                || bot_state().combat_maneuver_timer.elapsed())) {
             const float crouch_chance = std::clamp(
                 skill_profile.crouch_likelihood
                     * std::clamp(personality.crouch_combat_bias, 0.0f, 2.5f),
@@ -1106,17 +1166,6 @@ void bot_process_movement(
                 0.0f,
                 1.0f
             );
-            std::uniform_real_distribution<float> roll_dist(0.0f, 1.0f);
-
-            if (roll_dist(g_rng) <= dodge_chance) {
-                std::uniform_int_distribution<int> strafe_sign(0, 1);
-                const float strafe_strength = std::lerp(0.35f, 0.9f, skill_factor);
-                bot_state().combat_maneuver_strafe =
-                    strafe_sign(g_rng) == 0 ? -strafe_strength : strafe_strength;
-            }
-            else {
-                bot_state().combat_maneuver_strafe = 0.0f;
-            }
 
             if (roll_dist(g_rng) <= crouch_chance) {
                 const int crouch_ms = static_cast<int>(std::lround(
@@ -1153,7 +1202,31 @@ void bot_process_movement(
     else {
         bot_state().combat_maneuver_strafe = 0.0f;
         bot_state().combat_maneuver_timer.invalidate();
+        bot_state().combat_strafe_timer.invalidate();
         bot_state().combat_crouch_timer.invalidate();
+    }
+
+    if (bot_state().hull_dodge_timer.valid() && !bot_state().hull_dodge_timer.elapsed()
+        && !bot_state().hull_dodge_checked) {
+        // An enemy hull bearing down: out of its path whatever the route wants, to the other side if this one is shut,
+        // and not at all when both are (a ledge or a bridge): a step off is worse than the hit.
+        bot_state().hull_dodge_checked = true;
+        rf::Vector3& dodge = bot_state().hull_dodge_dir;
+        if (is_move_probe_shut(local_entity, dodge, kHullDodgeProbeDistance)) {
+            if (is_move_probe_shut(local_entity, -dodge, kHullDodgeProbeDistance)) {
+                bot_state().hull_dodge_timer.invalidate();
+            }
+            else {
+                dodge = -dodge;
+            }
+        }
+    }
+    if (bot_state().hull_dodge_timer.valid() && !bot_state().hull_dodge_timer.elapsed()) {
+        const rf::Vector3& dodge = bot_state().hull_dodge_dir;
+        const rf::Vector3 view_forward = forward_from_non_linear_yaw_pitch(local_entity.control_data.phb.y, 0.0f);
+        const rf::Vector3 view_right{view_forward.z, 0.0f, -view_forward.x};
+        desired_move_z = std::clamp(dodge.dot_prod(view_forward), -1.0f, 1.0f);
+        desired_move_x = std::clamp(dodge.dot_prod(view_right), -1.0f, 1.0f);
     }
 
     apply_corner_centering_steer(

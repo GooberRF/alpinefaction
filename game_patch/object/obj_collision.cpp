@@ -1,10 +1,14 @@
 #include <cstdint>
 #include <new>
 #include <xlog/xlog.h>
+#include <patch_common/CallHook.h>
 #include <patch_common/FunHook.h>
+#include "../rf/entity.h"
 #include "../rf/object.h"
+#include "../rf/physics.h"
 #include "../os/console.h"
 #include "../os/os.h"
+#include "../multi/vehicles/vehicle.h"
 #include "obj_collision.h"
 
 constexpr int initial_chunk_nodes = 8192;
@@ -65,6 +69,20 @@ FunHook<bool(rf::Object*, rf::Object*)> obj_collision_pair_create_hook{
     },
 };
 
+// An interp-driven entity's move to its keyframe target is cut short by any pair contact, and with no time left it
+// never slides, so it stays latched there. Its lowered hit_time also defers the move of whatever touches it.
+CallHook<void(rf::Entity*)> obj_move_all_physics_update_entity_hook{
+    0x00487935,
+    [](rf::Entity* ep) {
+        if ((ep->p_data.flags & rf::PF_NET_PLAYER) && ep != rf::local_player_entity && ep->obj_interp
+            && !vehicle_is_synced_entity_type(ep)) {
+            ep->p_data.collide_out.hit_time = 1.0f;
+            ep->p_data.flags &= ~rf::PF_COLLIDE_DEFERRED;
+        }
+        obj_move_all_physics_update_entity_hook.call_target(ep);
+    },
+};
+
 ConsoleCommand2 collision_pairs_cmd{
     "dbg_collision_pairs",
     []() {
@@ -79,6 +97,9 @@ void obj_collision_apply_patch()
     // Replace the fixed 8192 node pair pool with a growable one
     obj_collision_pairs_init_hook.install();
     obj_collision_pair_create_hook.install();
+
+    // Stop entities from sticking together on collisions in multiplayer
+    obj_move_all_physics_update_entity_hook.install();
 
     collision_pairs_cmd.register_cmd();
 }

@@ -102,6 +102,7 @@ PersonalityPresetDef make_aggressive_preset()
     PersonalityPresetDef def{};
     auto& p = def.personality;
     p.name = "aggressive";
+    p.vehicle_affinity_bias = 1.4f;
     p.attack_style = BotAttackStyle::aggressive;
     p.preferred_engagement_near = 4.5f;
     p.preferred_engagement_far = 10.0f;
@@ -148,6 +149,8 @@ PersonalityPresetDef make_defensive_preset()
     PersonalityPresetDef def{};
     auto& p = def.personality;
     p.name = "defensive";
+    p.vehicle_gunner_bias = 1.3f;
+    p.quirk_mask = static_cast<uint64_t>(BotPersonalityQuirk::turret_camper);
     p.attack_style = BotAttackStyle::evasive;
     p.preferred_engagement_near = 9.0f;
     p.preferred_engagement_far = 18.0f;
@@ -194,6 +197,7 @@ PersonalityPresetDef make_tactician_preset()
     PersonalityPresetDef def{};
     auto& p = def.personality;
     p.name = "tactician";
+    p.vehicle_affinity_bias = 1.1f;
     p.preferred_engagement_near = 7.0f;
     p.preferred_engagement_far = 15.0f;
     p.decision_aggression_bias = 0.90f;
@@ -240,6 +244,7 @@ PersonalityPresetDef make_berserker_preset()
     PersonalityPresetDef def{};
     auto& p = def.personality;
     p.name = "berserker";
+    p.vehicle_affinity_bias = 1.4f;
     p.attack_style = BotAttackStyle::aggressive;
     p.preferred_engagement_near = 2.5f;
     p.preferred_engagement_far = 7.0f;
@@ -292,6 +297,7 @@ PersonalityPresetDef make_objective_preset()
     PersonalityPresetDef def{};
     auto& p = def.personality;
     p.name = "objective";
+    p.vehicle_affinity_bias = 1.1f;
     p.attack_style = BotAttackStyle::evasive;
     p.preferred_engagement_near = 6.0f;
     p.preferred_engagement_far = 12.0f;
@@ -332,6 +338,8 @@ PersonalityPresetDef make_sniper_preset()
     PersonalityPresetDef def{};
     auto& p = def.personality;
     p.name = "sniper";
+    p.vehicle_affinity_bias = 0.6f;
+    p.vehicle_gunner_bias = 1.3f;
     p.attack_style = BotAttackStyle::evasive;
     p.preferred_engagement_near = 12.0f;
     p.preferred_engagement_far = 25.0f;
@@ -426,6 +434,7 @@ PersonalityPresetDef make_collector_preset()
     PersonalityPresetDef def{};
     auto& p = def.personality;
     p.name = "collector";
+    p.vehicle_affinity_bias = 0.6f;
     p.attack_style = BotAttackStyle::evasive;
     p.preferred_engagement_near = 7.0f;
     p.preferred_engagement_far = 14.0f;
@@ -517,6 +526,7 @@ PersonalityPresetDef make_destroyer_preset()
     PersonalityPresetDef def{};
     auto& p = def.personality;
     p.name = "destroyer";
+    p.vehicle_affinity_bias = 1.4f;
     p.attack_style = BotAttackStyle::aggressive;
     p.preferred_engagement_near = 5.0f;
     p.preferred_engagement_far = 11.0f;
@@ -623,7 +633,13 @@ SkillPresetDef make_hard_skill()
     s.weapon_switch_likelihood = 0.60f;
     s.crouch_likelihood = 0.18f;
     s.jump_likelihood = 0.18f;
-    s.dodge_likelihood = 0.20f;
+    s.dodge_likelihood = 0.45f;
+    s.semi_auto_click_interval_scale = 1.6f;
+    s.aim_prediction = 0.5f;
+    s.aim_error_min = 0.30f;
+    s.aim_error_hold_ms = 200.0f;
+    s.aim_settle_error = 2.2f;
+    s.aim_settle_ms = 550.0f;
     return def;
 }
 
@@ -640,7 +656,14 @@ SkillPresetDef make_expert_skill()
     s.weapon_switch_likelihood = 0.72f;
     s.crouch_likelihood = 0.22f;
     s.jump_likelihood = 0.22f;
-    s.dodge_likelihood = 0.26f;
+    s.dodge_likelihood = 0.65f;
+    s.semi_auto_click_interval_scale = 1.3f;
+    s.aim_prediction = 0.75f;
+    s.aim_error_min = 0.30f;
+    s.aim_error_hold_ms = 200.0f;
+    s.aim_blend_alpha_max = 0.38f;
+    s.aim_settle_error = 1.9f;
+    s.aim_settle_ms = 500.0f;
     return def;
 }
 
@@ -657,7 +680,14 @@ SkillPresetDef make_nightmare_skill()
     s.weapon_switch_likelihood = 0.85f;
     s.crouch_likelihood = 0.25f;
     s.jump_likelihood = 0.25f;
-    s.dodge_likelihood = 0.30f;
+    s.dodge_likelihood = 0.85f;
+    s.semi_auto_click_interval_scale = 1.0f;
+    s.aim_prediction = 1.0f;
+    s.aim_error_min = 0.30f;
+    s.aim_error_hold_ms = 220.0f;
+    s.aim_blend_alpha_max = 0.45f;
+    s.aim_settle_error = 1.6f;
+    s.aim_settle_ms = 450.0f;
     return def;
 }
 
@@ -877,6 +907,8 @@ bool bot_personality_apply_field_override(BotContext& ctx, uint8_t field_id, flo
         case af_personality_field::gg_on_map_end_chance:       p.gg_on_map_end_chance = value; return true;
         case af_personality_field::hello_on_join_chance:       p.hello_on_join_chance = value; return true;
         case af_personality_field::red_faction_response_chance: p.red_faction_response_chance = value; return true;
+        case af_personality_field::vehicle_affinity_bias:      p.vehicle_affinity_bias = value; return true;
+        case af_personality_field::vehicle_gunner_bias:        p.vehicle_gunner_bias = value; return true;
         default:
             return false;
     }
@@ -919,6 +951,21 @@ bool bot_skill_apply_field_override(BotContext& ctx, uint8_t field_id, float val
             return true;
         case af_skill_field::semi_auto_click_interval_scale:
             s.semi_auto_click_interval_scale = std::clamp(value, 0.0f, 20.0f);
+            return true;
+        case af_skill_field::aim_prediction:
+            s.aim_prediction = std::clamp(value, 0.0f, 1.0f);
+            return true;
+        case af_skill_field::aim_blend_alpha_max:
+            s.aim_blend_alpha_max = std::clamp(value, 0.05f, 0.60f);
+            return true;
+        case af_skill_field::aim_settle_error:
+            s.aim_settle_error = std::clamp(value, 0.0f, 5.0f);
+            return true;
+        case af_skill_field::aim_settle_ms:
+            s.aim_settle_ms = std::clamp(value, 0.0f, 5000.0f);
+            return true;
+        case af_skill_field::aim_error_hold_ms:
+            s.aim_error_hold_ms = std::clamp(value, 1.0f, 5000.0f);
             return true;
         default:
             return false;
@@ -1167,6 +1214,8 @@ static const FieldNameMapping g_personality_field_map[] = {
     {"gg_on_map_end_chance",                  static_cast<uint8_t>(af_personality_field::gg_on_map_end_chance)},
     {"hello_on_join_chance",                  static_cast<uint8_t>(af_personality_field::hello_on_join_chance)},
     {"red_faction_response_chance",           static_cast<uint8_t>(af_personality_field::red_faction_response_chance)},
+    {"vehicle_affinity_bias",                 static_cast<uint8_t>(af_personality_field::vehicle_affinity_bias)},
+    {"vehicle_gunner_bias",                   static_cast<uint8_t>(af_personality_field::vehicle_gunner_bias)},
 };
 
 static const FieldNameMapping g_skill_field_map[] = {
@@ -1184,10 +1233,15 @@ static const FieldNameMapping g_skill_field_map[] = {
     {"reaction_time_ms",              static_cast<uint8_t>(af_skill_field::reaction_time_ms)},
     {"aim_error_min",                 static_cast<uint8_t>(af_skill_field::aim_error_min)},
     {"aim_error_max",                 static_cast<uint8_t>(af_skill_field::aim_error_max)},
+    {"aim_error_hold_ms",             static_cast<uint8_t>(af_skill_field::aim_error_hold_ms)},
+    {"aim_blend_alpha_max",           static_cast<uint8_t>(af_skill_field::aim_blend_alpha_max)},
+    {"aim_settle_error",              static_cast<uint8_t>(af_skill_field::aim_settle_error)},
+    {"aim_settle_ms",                 static_cast<uint8_t>(af_skill_field::aim_settle_ms)},
     {"yaw_speed_cap",                 static_cast<uint8_t>(af_skill_field::yaw_speed_cap)},
     {"pitch_speed_cap",               static_cast<uint8_t>(af_skill_field::pitch_speed_cap)},
     {"fire_alignment_threshold",      static_cast<uint8_t>(af_skill_field::fire_alignment_threshold)},
     {"semi_auto_click_interval_scale", static_cast<uint8_t>(af_skill_field::semi_auto_click_interval_scale)},
+    {"aim_prediction",                static_cast<uint8_t>(af_skill_field::aim_prediction)},
 };
 
 int bot_personality_field_id_from_name(const char* name)
@@ -1224,6 +1278,8 @@ static const QuirkNameMapping g_quirk_name_map[] = {
     {"crater_unlock_affinity",      5},
     {"super_item_hoarder",          6},
     {"sneaky_capper",               7},
+    {"never_drives",                8},
+    {"turret_camper",               9},
 };
 
 int bot_quirk_bit_from_name(const char* name)

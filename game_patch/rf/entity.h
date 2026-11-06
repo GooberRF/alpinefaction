@@ -530,6 +530,10 @@ namespace rf
         addr_as_ref<Entity*(int entity_type, const char* name, int parent_handle, const Vector3& pos,
         const Matrix3& orient, int create_flags, int mp_character)>(0x00422360);
     static auto& entity_maybe_die = addr_as_ref<void(Entity* ep)>(0x0041FDC0);
+    static auto& blood_splat_decal =
+        addr_as_ref<void(float damage, const Vector3* pos, const Vector3* dir)>(0x0042E1C0);
+    static auto& blood_spray =
+        addr_as_ref<void(const Vector3* pos, GRoom* room, const Vector3* src_pos, float damage)>(0x0042E3D0);
     static auto& entity_calc_eye_pos = addr_as_ref<void(Entity* ep)>(0x004194E0);
     static auto& entity_get_first_leech = addr_as_ref<int(Entity* ep)>(0x00427DA0);
     static auto& entity_is_dying = addr_as_ref<bool(Entity *ep)>(0x00427020);
@@ -562,6 +566,8 @@ namespace rf
     static auto& entity_can_crouch = addr_as_ref<bool(Entity* ep)>(0x00428010);
     static auto& entity_is_falling = addr_as_ref<bool(Entity* ep)>(0x0042A020);
     static auto& entity_is_climbing = addr_as_ref<bool(Entity* ep)>(0x0042D8B0);
+    static auto& entity_make_climb = addr_as_ref<void(Entity* ep, ClimbRegion* region)>(0x004281E0);
+    static auto& entity_is_grounded_move_mode = addr_as_ref<bool(Entity* ep)>(0x0042A100);
     static auto& entity_is_running = addr_as_ref<bool(Entity* ep)>(0x00429FF0);
     static auto& entity_make_freefall = addr_as_ref<void(Entity* ep)>(0x004281A0);
     static auto& entity_is_flying = addr_as_ref<bool(Entity* ep)>(0x0042A060);

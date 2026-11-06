@@ -70,6 +70,8 @@ set(SRCS
     dir_light.h
     rope_emitter.cpp
     rope_emitter.h
+    waypoint_helper.cpp
+    waypoint_helper.h
     mover_path.cpp
     mover_path.h
     terrain.cpp

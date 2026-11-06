@@ -4604,6 +4604,8 @@ uint32_t af_compute_server_info_flags()
         af |= af_server_info_flags::SIF_DODGING;
     if (g_alpine_server_config_active_rules.mutators.pogo_enabled)
         af |= af_server_info_flags::SIF_POGO;
+    if (g_alpine_server_config_active_rules.gibbing.scrapyard)
+        af |= af_server_info_flags::SIF_SCRAPYARD_GIBS;
     return af;
 }
 
@@ -4740,6 +4742,7 @@ static void decode_af_server_info_flags(const af_server_info_packet& pkt, Alpine
     server_info.skiing = (pkt.af_flags & af_server_info_flags::SIF_SKIING) != 0;
     server_info.dodging = (pkt.af_flags & af_server_info_flags::SIF_DODGING) != 0;
     server_info.pogo = (pkt.af_flags & af_server_info_flags::SIF_POGO) != 0;
+    server_info.scrapyard_gibs = (pkt.af_flags & af_server_info_flags::SIF_SCRAPYARD_GIBS) != 0;
 }
 
 // Apply af_server_info_packet flags to the local server info (for listen server host)
@@ -5686,12 +5689,27 @@ void af_send_bot_control_update_personality(rf::Player* player, const ServerBotC
         return;
     }
 
+    // Courtesy only: the server refuses a bot's boarding itself while vehicles are off for bots.
+    std::vector<BotConfigOverride> overrides = config.personality_overrides;
+    if (!g_alpine_server_config_active_rules.vehicles.bots_use_vehicles) {
+        const auto field = static_cast<uint8_t>(af_personality_field::vehicle_affinity_bias);
+        const auto it = std::find_if(overrides.begin(), overrides.end(), [field](const BotConfigOverride& ovr) {
+            return ovr.field_id == field;
+        });
+        if (it != overrides.end()) {
+            it->value = 0.0f;
+        }
+        else {
+            overrides.push_back({field, 0.0f});
+        }
+    }
+
     std::byte buf[rf::max_packet_size];
     const size_t len = write_profile_update_payload(
         buf, sizeof(buf),
         af_bot_control_type::update_personality,
         config.personality_preset,
-        config.personality_overrides);
+        overrides);
     if (len == 0) {
         return;
     }

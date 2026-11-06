@@ -37,6 +37,7 @@
 #include "../rf/math/vector.h"
 #include "../rf/gameseq.h"
 #include "../multi/multi.h"
+#include "../multi/mutators.h"
 #include "../multi/server.h"
 #include "../multi/bots/server_bots.h"
 
@@ -604,13 +605,46 @@ FunHook<void(int)> entity_blood_throw_gibs_hook{
         static constexpr float spin_scale_min = 10.0f;
         static constexpr float spin_scale_max = 25.0f;
         static constexpr float velocity_factor = 0.5f;
-        static const char* snd_set = "gib bounce";
-        static const std::vector<const char*> gib_filenames = {
+        static const std::vector<const char*> meat_gib_filenames = {
             "meatchunk1.v3m",
             "meatchunk2.v3m",
             "meatchunk3.v3m",
             "meatchunk4.v3m",
             "meatchunk5.v3m"};
+        static const std::vector<const char*> scrapyard_gib_filenames = {
+            "beerbottle01.v3m",
+            "camera1.v3m",
+            "capekscane.v3m",
+            "clipboard1.v3m",
+            "desktopPC_key.v3m",
+            "desktopPC_mon.v3m",
+            "Disk.v3m",
+            "doctools3.v3m",
+            "firextinguisher1.v3m",
+            "minertool2.v3m",
+            "Morter01.v3m",
+            "mug2.v3m",
+            "pan1.v3m",
+            "portrait1.v3m",
+            "portrait2.v3m",
+            "pot1.v3m",
+            "robotpart1.v3m",
+            "robotpart3.v3m",
+            "showerhead1.v3m",
+            "syringe1.v3m",
+            "Tech01_helmet.v3m",
+            "tools1.v3m",
+            "tools2.v3m",
+            "tools3.v3m",
+            "torpedo01.v3m",
+            "wallcal1.v3m",
+            "wallcal2.v3m",
+            "wastebasket1.v3m",
+            "weapon_remote_detonate.v3m",
+            "welder1.v3m"};
+        const bool scrapyard = mutators_scrapyard_gibs_active();
+        const char* snd_set = scrapyard ? "large debris bounce" : "gib bounce";
+        const auto& gib_filenames = scrapyard ? scrapyard_gib_filenames : meat_gib_filenames;
 
         const int gib_count = g_alpine_game_config.gib_chunk_count; // 7 from Volition
         const float velocity_scale = g_alpine_game_config.gib_velocity_scale;

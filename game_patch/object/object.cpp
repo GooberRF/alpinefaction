@@ -34,6 +34,7 @@
 #include "../multi/gametype.h"
 #include "../multi/server_internal.h"
 #include "../multi/mutators.h"
+#include "../multi/vehicles/physics/ragdoll.h"
 #include "../multi/vehicles/vehicle.h"
 #include "../graphics/weather.h"
 #include "../misc/alpine_options.h"
@@ -718,6 +719,7 @@ FunHook<void(rf::Entity*)> entity_on_dead_hook{
         // which the vehicle module's exit broadcast never sees, so it announces them here.
         vehicle_before_entity_die(ep);
         entity_on_dead_hook.call_target(ep);
+        ragdoll_after_entity_dead(ep);
         vehicle_after_entity_die(ep);
     },
 };

@@ -29,6 +29,7 @@
 #include "weather_region.h"
 #include "vehicle_factory.h"
 #include "projection_camera.h"
+#include "waypoint_helper.h"
 #include "rope_emitter.h"
 #include "alpine_obj.h"
 #include "alpine_spinner.h"
@@ -326,6 +327,10 @@ CodeInjection CDedLevel_LoadLevel_patch2{
             if (file.check_version(306)) {
                 if (chunk_id == alpine_vehicle_factory_chunk_id) {
                     vehicle_factory_deserialize_chunk(level, file, chunk_size);
+                    regs.eip = 0x0043090C;
+                }
+                if (chunk_id == alpine_waypoint_helper_chunk_id) {
+                    waypoint_helper_deserialize_chunk(level, file, chunk_size);
                     regs.eip = 0x0043090C;
                 }
                 if (chunk_id == alpine_mover_path_chunk_id) {
@@ -1113,7 +1118,8 @@ CodeInjection skip_alpine_objects_bounds_check{
             obj->type == DedObjectType::DED_PROJECTION_CAMERA ||
             obj->type == DedObjectType::DED_ROPE_EMITTER ||
             obj->type == DedObjectType::DED_TERRAIN ||
-            obj->type == DedObjectType::DED_DIRECTIONAL_LIGHT) {
+            obj->type == DedObjectType::DED_DIRECTIONAL_LIGHT ||
+            obj->type == DedObjectType::DED_WAYPOINT_HELPER) {
             regs.eip = 0x0041dcfa;
         }
     },
@@ -1233,6 +1239,8 @@ CodeInjection CDedLevel_SaveLevel_patch{
 
         // Write directional light objects chunk
         directional_light_serialize_chunk(level, file);
+
+        waypoint_helper_serialize_chunk(level, file);
 
         mover_path_serialize_chunk(level, file);
 
@@ -2347,7 +2355,8 @@ static bool is_link_allowed(const DedObject* src, const DedObject* dst)
     return
         t0 == DedObjectType::DED_TRIGGER ||
         t0 == DedObjectType::DED_EVENT ||
-        (t0 == DedObjectType::DED_NAV_POINT && t1 == DedObjectType::DED_EVENT);
+        (t0 == DedObjectType::DED_NAV_POINT && t1 == DedObjectType::DED_EVENT) ||
+        waypoint_helper_link_allowed(src, dst);
 }
 
 // Stock RED DoLink (0x00415850) stores links at DedObject+0x7C for all types.

@@ -18,6 +18,8 @@
 #include "../rf/trigger.h"
 #include "../graphics/gr.h"
 #include "../input/control_input_filter.h"
+#include "../multi/bots/bot_vehicle_nav.h"
+#include "waypoints_vehicle.h"
 #include <patch_common/FunHook.h>
 #include <algorithm>
 #include <array>
@@ -33,6 +35,8 @@
 #include <unordered_set>
 #include <vector>
 
+namespace awh = alpine_waypoint_helper;
+
 namespace
 {
 enum class WaypointEditorSelectionKind : int
@@ -41,6 +45,7 @@ enum class WaypointEditorSelectionKind : int
     waypoint = 1,
     zone = 2,
     target = 3,
+    vehicle_node = 4,
 };
 
 struct WaypointEditorSelectionState
@@ -159,6 +164,12 @@ struct WaypointEditorViewLockState
 };
 
 WaypointEditorSelectionState g_waypoint_editor_selection{};
+// Picking, adding and linking work on the vehicle layer's nodes instead of the foot waypoints.
+bool g_waypoint_editor_vehicle_mode = false;
+// The vehicle node a link (or the next new node) starts from, or -1.
+int g_waypoint_editor_vehicle_anchor = -1;
+// The mode the panel's Generate uses once cycled; until then the loaded graph's.
+std::optional<WaypointGenerationMode> g_waypoint_editor_generation_mode;
 std::deque<std::string> g_waypoint_editor_log{};
 constexpr size_t kWaypointEditorLogMaxLines = 128;
 bool g_waypoint_editor_mouse_ui_mode = false;
@@ -674,6 +685,220 @@ bool create_new_box_zone_from_view(const WaypointZoneType zone_type)
     return true;
 }
 
+void end_waypoint_gizmo_drag(bool finalize);
+
+bool is_valid_vehicle_node_local(const int node)
+{
+    return node >= 0 && node < static_cast<int>(waypoints_vehicle_layer().nodes.size());
+}
+
+bool vehicle_anchor_valid()
+{
+    return is_valid_vehicle_node_local(g_waypoint_editor_vehicle_anchor);
+}
+
+awh::SizeClass vehicle_link_default_size(const int a, const int b)
+{
+    const auto& nodes = waypoints_vehicle_layer().nodes;
+    return nodes[a].type == awh::Type::ground ? std::min(nodes[a].size, nodes[b].size) : awh::SizeClass::driller;
+}
+
+// A ground node 1 u over the surface in reach, else an air node 20 u ahead; either becomes a water node in liquid. A
+// node of the anchor's type is linked both ways to it and becomes the anchor, so a road is laid node by node.
+bool create_new_vehicle_node_from_view()
+{
+    constexpr float kTraceDist = 20.0f;
+    constexpr float kSurfaceYOffset = 1.0f;
+    const auto trace = trace_forward_from_camera(kTraceDist);
+    if (!trace.valid) {
+        return false;
+    }
+    rf::Vector3 pos = trace.point;
+    awh::Type type = awh::Type::air;
+    if (trace.hit) {
+        pos.y += kSurfaceYOffset;
+        type = awh::Type::ground;
+    }
+    if (bot_vehicle_nav_point_in_liquid(pos)) {
+        type = awh::Type::water;
+    }
+    const int node = waypoints_vehicle_add_node(pos, type);
+    if (node < 0) {
+        push_waypoint_editor_log("The vehicle layer is full");
+        return false;
+    }
+    std::string linked;
+    if (vehicle_anchor_valid() && waypoints_vehicle_layer().nodes[g_waypoint_editor_vehicle_anchor].type == type) {
+        const int anchor = g_waypoint_editor_vehicle_anchor;
+        const awh::SizeClass size = vehicle_link_default_size(anchor, node);
+        waypoints_vehicle_set_link(anchor, node, true, size);
+        waypoints_vehicle_set_link(node, anchor, true, size);
+        linked = std::format(", linked both ways to {}", anchor);
+    }
+    g_waypoint_editor_vehicle_anchor = node;
+    push_waypoint_editor_log(std::format(
+        "Added {} vehicle node {} at {:.2f},{:.2f},{:.2f}{}", waypoints_vehicle_type_name(type), node,
+        waypoints_vehicle_layer().nodes[node].pos.x, waypoints_vehicle_layer().nodes[node].pos.y,
+        waypoints_vehicle_layer().nodes[node].pos.z, linked));
+    return true;
+}
+
+enum class VehicleLinkState : int
+{
+    none = 0,
+    both = 1,
+    from_anchor = 2,
+    to_anchor = 3,
+};
+
+VehicleLinkState vehicle_link_state(const int anchor, const int node)
+{
+    const bool forward = waypoints_vehicle_find_link(anchor, node) != nullptr;
+    const bool backward = waypoints_vehicle_find_link(node, anchor) != nullptr;
+    if (forward && backward) {
+        return VehicleLinkState::both;
+    }
+    if (forward) {
+        return VehicleLinkState::from_anchor;
+    }
+    return backward ? VehicleLinkState::to_anchor : VehicleLinkState::none;
+}
+
+const char* vehicle_link_state_label(const VehicleLinkState state)
+{
+    switch (state) {
+        case VehicleLinkState::both:
+            return "Link: both ways";
+        case VehicleLinkState::from_anchor:
+            return "Link: anchor > this";
+        case VehicleLinkState::to_anchor:
+            return "Link: this > anchor";
+        case VehicleLinkState::none:
+            break;
+    }
+    return "Link: none";
+}
+
+bool vehicle_link_editable(const int node)
+{
+    const auto& nodes = waypoints_vehicle_layer().nodes;
+    return vehicle_anchor_valid() && is_valid_vehicle_node_local(node) && node != g_waypoint_editor_vehicle_anchor
+        && nodes[node].type == nodes[g_waypoint_editor_vehicle_anchor].type;
+}
+
+// none -> both ways -> anchor to this -> this to anchor -> none; an existing link keeps its size.
+void cycle_vehicle_link(const int node)
+{
+    if (!vehicle_link_editable(node)) {
+        return;
+    }
+    const int anchor = g_waypoint_editor_vehicle_anchor;
+    const VehicleLinkState state = vehicle_link_state(anchor, node);
+    const VehicleLinkState next = static_cast<VehicleLinkState>((static_cast<int>(state) + 1) % 4);
+    awh::SizeClass size = vehicle_link_default_size(anchor, node);
+    if (const VehicleWaypointLink* link = waypoints_vehicle_find_link(anchor, node)) {
+        size = link->size;
+    }
+    else if (const VehicleWaypointLink* back = waypoints_vehicle_find_link(node, anchor)) {
+        size = back->size;
+    }
+    const bool forward = next == VehicleLinkState::both || next == VehicleLinkState::from_anchor;
+    const bool backward = next == VehicleLinkState::both || next == VehicleLinkState::to_anchor;
+    waypoints_vehicle_set_link(anchor, node, forward, size);
+    waypoints_vehicle_set_link(node, anchor, backward, size);
+    push_waypoint_editor_log(std::format(
+        "Vehicle nodes {} and {}: {}", anchor, node, vehicle_link_state_label(vehicle_link_state(anchor, node))));
+}
+
+void cycle_vehicle_link_size(const int node)
+{
+    if (!vehicle_link_editable(node)) {
+        return;
+    }
+    const int anchor = g_waypoint_editor_vehicle_anchor;
+    const VehicleWaypointLink* forward = waypoints_vehicle_find_link(anchor, node);
+    const VehicleWaypointLink* backward = waypoints_vehicle_find_link(node, anchor);
+    const VehicleWaypointLink* current = forward ? forward : backward;
+    if (!current) {
+        return;
+    }
+    const auto size = static_cast<awh::SizeClass>((static_cast<int>(current->size) + 1) % (awh::size_class_max + 1));
+    if (forward) {
+        waypoints_vehicle_set_link(anchor, node, true, size);
+    }
+    if (backward) {
+        waypoints_vehicle_set_link(node, anchor, true, size);
+    }
+    push_waypoint_editor_log(std::format(
+        "Vehicle link {} - {} takes up to {}", anchor, node, waypoints_vehicle_size_name(size)));
+}
+
+void report_vehicle_exit(const int node, const bool found)
+{
+    const VehicleWaypointNode& target = waypoints_vehicle_layer().nodes[node];
+    push_waypoint_editor_log(found
+        ? std::format("Vehicle node {} exits at {:.2f},{:.2f},{:.2f}", node, target.exit_pos.x, target.exit_pos.y,
+                      target.exit_pos.z)
+        : std::format("Vehicle node {}: no foot waypoint to exit to", node));
+}
+
+void cycle_vehicle_node_type(const int node)
+{
+    if (!is_valid_vehicle_node_local(node)) {
+        return;
+    }
+    VehicleWaypointNode& target = waypoints_vehicle_edit_layer().nodes[node];
+    target.type = static_cast<awh::Type>((static_cast<int>(target.type) + 1) % (awh::type_max + 1));
+    if (target.type == awh::Type::ground) {
+        target.flags = static_cast<uint8_t>(target.flags & ~awh::flag_landing);
+        target.has_exit = false;
+    }
+    else if (target.landing()) {
+        waypoints_vehicle_update_exit(node);
+    }
+    const int dropped = waypoints_vehicle_drop_cross_type_links(node);
+    push_waypoint_editor_log(std::format(
+        "Vehicle node {} is now {} ({} links to other types dropped)", node, waypoints_vehicle_type_name(target.type),
+        dropped));
+}
+
+void cycle_vehicle_node_size(const int node)
+{
+    if (!is_valid_vehicle_node_local(node)) {
+        return;
+    }
+    VehicleWaypointNode& target = waypoints_vehicle_edit_layer().nodes[node];
+    target.size = static_cast<awh::SizeClass>((static_cast<int>(target.size) + 1) % (awh::size_class_max + 1));
+    push_waypoint_editor_log(std::format(
+        "Vehicle node {} takes up to {}", node, waypoints_vehicle_size_name(target.size)));
+}
+
+void scale_vehicle_node_radius(const int node, const float scale)
+{
+    if (!is_valid_vehicle_node_local(node)) {
+        return;
+    }
+    VehicleWaypointNode& target = waypoints_vehicle_edit_layer().nodes[node];
+    target.radius = awh::sanitize_radius(target.radius * scale);
+    push_waypoint_editor_log(std::format("Vehicle node {} radius {:.2f}", node, target.radius));
+}
+
+void toggle_vehicle_node_landing(const int node)
+{
+    if (!is_valid_vehicle_node_local(node) || waypoints_vehicle_layer().nodes[node].type == awh::Type::ground) {
+        return;
+    }
+    uint8_t& flags = waypoints_vehicle_edit_layer().nodes[node].flags;
+    flags = static_cast<uint8_t>(flags ^ awh::flag_landing);
+    const bool found = waypoints_vehicle_update_exit(node);
+    if (waypoints_vehicle_layer().nodes[node].landing()) {
+        report_vehicle_exit(node, found);
+    }
+    else {
+        push_waypoint_editor_log(std::format("Vehicle node {} is no longer a landing spot", node));
+    }
+}
+
 void clear_waypoint_editor_selection()
 {
     g_waypoint_editor_selection = {};
@@ -804,6 +1029,30 @@ bool is_waypoint_editor_selected_target(int target_uid)
         && g_waypoint_editor_selection.uid == target_uid;
 }
 
+int waypoint_editor_selected_vehicle_node()
+{
+    return g_waypoint_editor_selection.kind == WaypointEditorSelectionKind::vehicle_node
+        ? g_waypoint_editor_selection.uid : -1;
+}
+
+void update_vehicle_node_selection(const rf::Vector3& ray_origin, const rf::Vector3& ray_dir, const float ray_max_dist)
+{
+    WaypointEditorSelectionState best_selection{};
+    float best_t = ray_max_dist;
+    const auto& nodes = waypoints_vehicle_layer().nodes;
+    for (int i = 0; i < static_cast<int>(nodes.size()); ++i) {
+        const float selection_radius = std::clamp(nodes[i].radius * 0.25f, 0.6f, 1.5f);
+        const auto hit_t = ray_sphere_intersection_t(ray_origin, ray_dir, nodes[i].pos, selection_radius);
+        if (!hit_t || hit_t.value() > best_t) {
+            continue;
+        }
+        best_t = hit_t.value();
+        best_selection.kind = WaypointEditorSelectionKind::vehicle_node;
+        best_selection.uid = i;
+    }
+    g_waypoint_editor_selection = best_selection;
+}
+
 void update_waypoint_editor_selection()
 {
     if (!waypoint_editor_selection_mode_active()) {
@@ -816,6 +1065,10 @@ void update_waypoint_editor_selection()
     float ray_max_dist = 0.0f;
     if (!get_waypoint_editor_camera_ray(ray_origin, ray_dir, ray_max_dist)) {
         clear_waypoint_editor_selection();
+        return;
+    }
+    if (g_waypoint_editor_vehicle_mode) {
+        update_vehicle_node_selection(ray_origin, ray_dir, ray_max_dist);
         return;
     }
 
@@ -933,6 +1186,18 @@ void delete_selected_waypoint_editor_object()
             push_waypoint_editor_log(std::format("Deleted target {}", target_uid));
         }
     }
+    else if (g_waypoint_editor_selection.kind == WaypointEditorSelectionKind::vehicle_node) {
+        const int node = g_waypoint_editor_selection.uid;
+        // The drag holds the index, which the delete shifts.
+        if (g_waypoint_gizmo_drag.active) {
+            end_waypoint_gizmo_drag(false);
+        }
+        if (waypoints_vehicle_remove_node(node)) {
+            push_waypoint_editor_log(std::format("Deleted vehicle node {}", node));
+            int& anchor = g_waypoint_editor_vehicle_anchor;
+            anchor = anchor == node ? -1 : anchor - (anchor > node ? 1 : 0);
+        }
+    }
 
     clear_waypoint_editor_selection();
 }
@@ -1039,6 +1304,11 @@ std::optional<rf::Vector3> get_selection_center(const WaypointEditorSelectionSta
             }
             return target->pos;
         }
+        case WaypointEditorSelectionKind::vehicle_node:
+            if (is_valid_vehicle_node_local(selection.uid)) {
+                return waypoints_vehicle_layer().nodes[selection.uid].pos;
+            }
+            return std::nullopt;
         case WaypointEditorSelectionKind::none:
         default:
             return std::nullopt;
@@ -1137,6 +1407,14 @@ bool apply_selection_translation(
             target->pos += delta;
             return true;
         }
+        case WaypointEditorSelectionKind::vehicle_node: {
+            if (!is_valid_vehicle_node_local(selection.uid)) {
+                return false;
+            }
+            rf::Vector3& pos = waypoints_vehicle_edit_layer().nodes[selection.uid].pos;
+            pos = waypoints_vehicle_clamp_to_level(pos + delta);
+            return true;
+        }
         case WaypointEditorSelectionKind::none:
         default:
             return false;
@@ -1162,6 +1440,12 @@ void finalize_selection_after_translation(const WaypointEditorSelectionState& se
         return;
     }
 
+    if (selection.kind == WaypointEditorSelectionKind::vehicle_node && is_valid_vehicle_node_local(selection.uid)
+        && waypoints_vehicle_layer().nodes[selection.uid].landing()) {
+        report_vehicle_exit(selection.uid, waypoints_vehicle_update_exit(selection.uid));
+        return;
+    }
+
     // Targets keep their waypoint refs on move — use Auto link to rebuild.
 }
 
@@ -1174,6 +1458,16 @@ std::string selection_debug_name(const WaypointEditorSelectionState& selection)
             return std::format("zone {}", selection.uid);
         case WaypointEditorSelectionKind::target:
             return std::format("target {}", selection.uid);
+        case WaypointEditorSelectionKind::vehicle_node: {
+            if (!is_valid_vehicle_node_local(selection.uid)) {
+                return std::format("vehicle node {}", selection.uid);
+            }
+            const VehicleWaypointNode& node = waypoints_vehicle_layer().nodes[selection.uid];
+            return std::format("vehicle node {} {}{} r {:.1f}{}", selection.uid, waypoints_vehicle_type_name(node.type),
+                               node.type == awh::Type::ground
+                                   ? std::format(" {}", waypoints_vehicle_size_name(node.size)) : std::string{},
+                               node.radius, node.landing() ? " landing" : "");
+        }
         case WaypointEditorSelectionKind::none:
         default:
             return "none";
@@ -2408,6 +2702,8 @@ rf::Color debug_waypoint_color(WaypointType type)
             return {60, 140, 255, 150};
         case WaypointType::salvage_flag:
             return {255, 235, 120, 150};
+        case WaypointType::vehicle_factory:
+            return {120, 255, 220, 150};
         default:
             return {200, 200, 200, 150};
     }
@@ -2772,6 +3068,39 @@ void draw_debug_waypoint_targets(bool show_waypoint_arrows, bool show_labels)
                 draw_centered_debug_label(dest.sx, dest.sy, label, target_info.color);
             }
         }
+    }
+}
+
+void draw_debug_vehicle_waypoints()
+{
+    const bool editing = g_waypoint_editor_vehicle_mode && waypoint_editor_runtime_mode_active();
+    if (g_debug_waypoints_mode == 0 && !editing) {
+        return;
+    }
+    const int selected = waypoint_editor_selected_vehicle_node();
+    waypoints_vehicle_render_debug(selected);
+    const auto& nodes = waypoints_vehicle_layer().nodes;
+    if (vehicle_anchor_valid()) {
+        rf::gr::set_color(255, 255, 255, 255);
+        rf::gr::sphere(nodes[g_waypoint_editor_vehicle_anchor].pos, 0.9f, no_overdraw_2d_line);
+    }
+    const bool show_labels = g_debug_waypoints_mode >= 3;
+    for (int i = 0; i < static_cast<int>(nodes.size()); ++i) {
+        if (!show_labels && i != selected && i != g_waypoint_editor_vehicle_anchor) {
+            continue;
+        }
+        const VehicleWaypointNode& node = nodes[i];
+        float sx = 0.0f;
+        float sy = 0.0f;
+        if (!gr_project_world_to_screen(node.pos + rf::Vector3{0.0f, 0.4f, 0.0f}, sx, sy)) {
+            continue;
+        }
+        const std::string label = std::format("v{} {}{}{}", i, waypoints_vehicle_type_name(node.type),
+                                              node.type == awh::Type::ground
+                                                  ? std::format(" {}", waypoints_vehicle_size_name(node.size))
+                                                  : std::string{},
+                                              i == g_waypoint_editor_vehicle_anchor ? " (anchor)" : "");
+        draw_centered_debug_label(sx, sy, label.c_str(), rf::Color{255, 255, 255, 255});
     }
 }
 
@@ -3830,12 +4159,39 @@ void render_waypoint_editor_overlay_panel()
     }
     button_y += button_h + 6;
 
+    static constexpr std::array<const char*, kWaypointGenerationModeCount> kGenerationModeLabels{
+        "Gen mode: Default",
+        "Gen mode: Coarse",
+        "Gen mode: Fine",
+    };
+    const WaypointGenerationMode generation_mode =
+        g_waypoint_editor_generation_mode.value_or(waypoints_generation_mode());
+    int mode_w = 0;
+    for (const char* label : kGenerationModeLabels) {
+        mode_w = std::max(mode_w, rf::gr::get_string_size(label, font_id).first + 16);
+    }
+    const int generate_w = button_w - mode_w - 6;
+    const char* generate_label = "Generate waypoints (INTENSE)";
+    if (rf::gr::get_string_size(generate_label, font_id).first + 8 > generate_w) {
+        generate_label = "Generate (INTENSE)";
+    }
     if (draw_waypoint_editor_button(
-            {panel_x + 10, button_y, button_w, button_h},
-            "Generate waypoints (INTENSE)",
+            {panel_x + 10, button_y, generate_w, button_h},
+            generate_label,
             font_id,
             main_controls_enabled)) {
-        execute_waypoint_editor_console_command("waypoints_generate", "Triggered waypoint generation");
+        const auto mode_name = waypoint_generation_mode_name(generation_mode);
+        execute_waypoint_editor_console_command(
+            std::format("waypoints_generate {}", mode_name).c_str(),
+            std::format("Triggered waypoint generation ({})", mode_name));
+    }
+    if (draw_waypoint_editor_button(
+            {panel_x + 10 + generate_w + 6, button_y, mode_w, button_h},
+            kGenerationModeLabels[static_cast<int>(generation_mode)],
+            font_id,
+            main_controls_enabled)) {
+        g_waypoint_editor_generation_mode = static_cast<WaypointGenerationMode>(
+            (static_cast<int>(generation_mode) + 1) % kWaypointGenerationModeCount);
     }
     button_y += button_h + 6;
 
@@ -3911,6 +4267,37 @@ void render_waypoint_editor_overlay_panel()
             font_id,
             main_controls_enabled)) {
         open_waypoint_target_create_dialog();
+    }
+    button_y += button_h + 6;
+
+    if (draw_waypoint_editor_button(
+            {tri_x0, button_y, tri_w, button_h},
+            "Vehicles",
+            font_id,
+            main_controls_enabled,
+            g_waypoint_editor_vehicle_mode)) {
+        g_waypoint_editor_vehicle_mode = !g_waypoint_editor_vehicle_mode;
+        clear_waypoint_editor_selection();
+        push_waypoint_editor_log(g_waypoint_editor_vehicle_mode
+            ? "Editing the vehicle layer (lost when the AWP is regenerated)"
+            : "Editing foot waypoints");
+    }
+    if (draw_waypoint_editor_button(
+            {tri_x1, button_y, tri_w, button_h},
+            "New VNode",
+            font_id,
+            main_controls_enabled && g_waypoint_editor_vehicle_mode)) {
+        create_new_vehicle_node_from_view();
+    }
+    const std::string anchor_label = vehicle_anchor_valid()
+        ? std::format("Anchor {} (clear)", g_waypoint_editor_vehicle_anchor)
+        : std::string{"No anchor"};
+    if (draw_waypoint_editor_button(
+            {tri_x2, button_y, tri_w, button_h},
+            anchor_label.c_str(),
+            font_id,
+            main_controls_enabled && vehicle_anchor_valid())) {
+        g_waypoint_editor_vehicle_anchor = -1;
     }
     button_y += button_h + 6;
 
@@ -4113,6 +4500,86 @@ void render_waypoint_editor_overlay_panel()
                 delete_selected_waypoint_editor_object();
             }
         }
+        else if (g_waypoint_editor_selection.kind == WaypointEditorSelectionKind::vehicle_node
+                 && is_valid_vehicle_node_local(g_waypoint_editor_selection.uid)) {
+            int action_y = selection_section.y + 8 + (font_h * 2) + 8;
+            const int action_h = std::max(24, font_h + 6);
+            const int action_w = selection_section.w - 16;
+            const int action_gap = 6;
+            const int half_w = (action_w - action_gap) / 2;
+            const int third_w = (action_w - action_gap * 2) / 3;
+            const int action_x = selection_section.x + 8;
+            const int third_x1 = action_x + third_w + action_gap;
+            const int third_x2 = third_x1 + third_w + action_gap;
+            const bool enabled = main_controls_enabled;
+            const int node = g_waypoint_editor_selection.uid;
+            const VehicleWaypointNode& vnode = waypoints_vehicle_layer().nodes[node];
+            const bool ground = vnode.type == awh::Type::ground;
+
+            if (draw_waypoint_editor_button(
+                    {action_x, action_y, third_w, action_h}, "Cycle type", font_id, enabled)) {
+                cycle_vehicle_node_type(node);
+            }
+            if (draw_waypoint_editor_button(
+                    {third_x1, action_y, third_w, action_h}, "Cycle size", font_id, enabled && ground)) {
+                cycle_vehicle_node_size(node);
+            }
+            if (draw_waypoint_editor_button(
+                    {third_x2, action_y, third_w, action_h}, "Landing", font_id, enabled && !ground,
+                    vnode.landing())) {
+                toggle_vehicle_node_landing(node);
+            }
+            action_y += action_h + 4;
+
+            if (draw_waypoint_editor_button(
+                    {action_x, action_y, third_w, action_h}, "Radius -", font_id, enabled)) {
+                scale_vehicle_node_radius(node, 0.8f);
+            }
+            if (draw_waypoint_editor_button(
+                    {third_x1, action_y, third_w, action_h}, "Radius +", font_id, enabled)) {
+                scale_vehicle_node_radius(node, 1.25f);
+            }
+            if (draw_waypoint_editor_button(
+                    {third_x2, action_y, third_w, action_h}, "Delete", font_id, enabled)) {
+                delete_selected_waypoint_editor_object();
+            }
+            action_y += action_h + 4;
+
+            if (waypoint_editor_selected_vehicle_node() == node && is_valid_vehicle_node_local(node)) {
+                const bool link_enabled = enabled && vehicle_link_editable(node);
+                const VehicleLinkState link_state =
+                    link_enabled ? vehicle_link_state(g_waypoint_editor_vehicle_anchor, node) : VehicleLinkState::none;
+                if (draw_waypoint_editor_button(
+                        {action_x, action_y, half_w, action_h}, "Set as anchor", font_id, enabled)) {
+                    g_waypoint_editor_vehicle_anchor = node;
+                    push_waypoint_editor_log(std::format("Vehicle node {} is the link anchor", node));
+                }
+                if (draw_waypoint_editor_button(
+                        {action_x + half_w + action_gap, action_y, half_w, action_h},
+                        vehicle_link_state_label(link_state), font_id, link_enabled)) {
+                    cycle_vehicle_link(node);
+                }
+                action_y += action_h + 4;
+
+                const VehicleWaypointLink* link = link_enabled
+                    ? waypoints_vehicle_find_link(g_waypoint_editor_vehicle_anchor, node) : nullptr;
+                if (link_enabled && !link) {
+                    link = waypoints_vehicle_find_link(node, g_waypoint_editor_vehicle_anchor);
+                }
+                const std::string size_label = link && ground
+                    ? std::format("Link takes {}", waypoints_vehicle_size_name(link->size))
+                    : std::string{"Link size"};
+                if (draw_waypoint_editor_button(
+                        {action_x, action_y, half_w, action_h}, size_label.c_str(), font_id, link && ground)) {
+                    cycle_vehicle_link_size(node);
+                }
+                if (draw_waypoint_editor_button(
+                        {action_x + half_w + action_gap, action_y, half_w, action_h}, "Find exit", font_id,
+                        enabled && waypoints_vehicle_layer().nodes[node].landing())) {
+                    report_vehicle_exit(node, waypoints_vehicle_update_exit(node));
+                }
+            }
+        }
     }
 
     const int log_y = selection_section.y + selection_section.h + 10;
@@ -4132,6 +4599,11 @@ void render_waypoint_editor_overlay_panel()
 void reset_waypoint_editor_runtime_state(const bool clear_log)
 {
     clear_waypoint_editor_selection();
+    if (clear_log) {
+        g_waypoint_editor_vehicle_mode = false;
+        g_waypoint_editor_vehicle_anchor = -1;
+        g_waypoint_editor_generation_mode.reset();
+    }
     g_waypoint_editor_mouse_ui_mode = false;
     apply_waypoint_editor_mouse_look_override(false);
     g_waypoint_link_editor_dialog = {};
@@ -4228,6 +4700,7 @@ void waypoints_utils_on_waypoints_cleared()
 {
     end_waypoint_gizmo_drag(false);
     clear_waypoint_editor_selection();
+    g_waypoint_editor_vehicle_anchor = -1;
     close_waypoint_link_editor_dialog(false);
     close_waypoint_type_change_dialog();
     close_target_link_editor_dialog(false);
@@ -4317,6 +4790,7 @@ void waypoints_utils_render_overlay()
 
 void waypoints_utils_render_debug()
 {
+    draw_debug_vehicle_waypoints();
     draw_debug_waypoints();
     draw_waypoint_editor_gizmo();
 }

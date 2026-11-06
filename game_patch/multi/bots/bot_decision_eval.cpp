@@ -3,6 +3,8 @@
 #include "bot_context.h"
 #include "bot_internal.h"
 #include "bot_utils.h"
+#include "bot_vehicle.h"
+#include "../vehicles/vehicle.h"
 #include "../../rf/player/player.h"
 #include "../../rf/weapon.h"
 #include <algorithm>
@@ -40,11 +42,17 @@ bool weapon_has_readiness_ammo(const rf::Entity& entity, const int weapon_type)
 
 float bot_decision_get_entity_health_ratio(const rf::Entity& entity)
 {
+    if (vehicle_is_synced_entity_type(&entity)) {
+        return bot_vehicle_health_ratio(entity);
+    }
     return std::clamp(entity.life / kBotNominalMaxHealth, 0.0f, 1.0f);
 }
 
 float bot_decision_get_entity_armor_ratio(const rf::Entity& entity)
 {
+    if (vehicle_is_synced_entity_type(&entity)) {
+        return 0.0f;
+    }
     return std::clamp(entity.armor / kBotNominalMaxArmor, 0.0f, 1.0f);
 }
 

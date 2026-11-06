@@ -864,6 +864,7 @@ enum af_server_info_flags : uint32_t {
     SIF_SKIING = 1u << 25,
     SIF_POGO = 1u << 26,
     SIF_DODGING = 1u << 27,
+    SIF_SCRAPYARD_GIBS = 1u << 28,
 };
 
 // Subset of `rf::NetGameFlags`.
@@ -1001,6 +1002,8 @@ enum class af_personality_field : uint8_t
     gg_on_map_end_chance = 0x2F,
     hello_on_join_chance = 0x30,
     red_faction_response_chance = 0x31,
+    vehicle_affinity_bias = 0x32,
+    vehicle_gunner_bias = 0x33,
 };
 
 enum class af_skill_field : uint8_t
@@ -1023,6 +1026,11 @@ enum class af_skill_field : uint8_t
     pitch_speed_cap = 0x0F,
     fire_alignment_threshold = 0x10,
     semi_auto_click_interval_scale = 0x11,
+    aim_prediction = 0x12,
+    aim_blend_alpha_max = 0x13,
+    aim_settle_error = 0x14,
+    aim_settle_ms = 0x15,
+    aim_error_hold_ms = 0x16,
 };
 
 #pragma pack(pop)

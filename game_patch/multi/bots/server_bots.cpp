@@ -2,12 +2,15 @@
 #include "bot_chat_manager.h"
 #include "bot_combat.h"
 #include "bot_context.h"
+#include "bot_utils.h"
+#include "bot_vehicle.h"
 #include "../gametype.h"
 #include "../multi.h"
 #include "../network.h"
 #include "../server.h"
 #include "../server_internal.h"
 #include "../demo/demo.h"
+#include "../vehicles/vehicle.h"
 #include "../vehicles/vehicle_sync.h"
 #include "../../fflink/afstats_events.h"
 #include "../../misc/alpine_settings.h"
@@ -86,6 +89,7 @@ struct ServerBotRosterEntry
     int id = 0;
     bool join_bot = false;
     std::string skill; // Join Bots only: the preset that replaces the profile's skill
+    std::string personality; // Join Bots only: the preset that replaces the profile's personality
 };
 
 std::vector<std::unique_ptr<ServerBot>> g_server_bots;
@@ -102,13 +106,17 @@ const ServerBotConfig& server_bot_config_for(const rf::Player* player, const Ser
     return (slot >= 0 && slot < static_cast<int>(configs.size())) ? configs[slot] : fallback;
 }
 
-void server_bot_apply_config(BotContext& ctx, const ServerBotConfig& config, const std::string& skill)
+void server_bot_apply_config(
+    BotContext& ctx, const ServerBotConfig& config, const std::string& skill, const std::string& personality)
 {
-    // A Join Bots skill replaces the profile's skill tuning too, so every such bot plays at the voted level
+    // A Join Bots skill or personality replaces the profile's tuning of it too, so every such bot plays as voted
     static const std::vector<BotConfigOverride> no_overrides;
     const bool override_skill = !skill.empty();
-    bot_personality_set_presets(ctx, config.personality_preset.c_str(),
-        override_skill ? skill.c_str() : config.skill_preset.c_str(), &config.personality_overrides,
+    const bool override_personality = !personality.empty();
+    bot_personality_set_presets(ctx,
+        override_personality ? personality.c_str() : config.personality_preset.c_str(),
+        override_skill ? skill.c_str() : config.skill_preset.c_str(),
+        override_personality ? &no_overrides : &config.personality_overrides,
         override_skill ? &no_overrides : &config.skill_overrides);
 }
 
@@ -320,8 +328,11 @@ void server_bot_apply_fire(ServerBot& bot, rf::Player& pp, rf::Entity& ep, const
         server_bot_fire(ep, weapon_type, alt_fire);
         server_bot_note_fire_anim(bot, ep, weapon_type, alt_fire);
     }
+    if (!thrown && rf::weapon_is_semi_automatic(weapon_type)) {
+        ep.ai.next_fire_primary.set(bot_semi_auto_min_interval_ms(weapon_type));
+    }
     // Thrown weapons leave through the remote-fire handler, which never re-arms the fire wait.
-    if (!ep.ai.next_fire_primary.valid() || ep.ai.next_fire_primary.elapsed()) {
+    else if (!ep.ai.next_fire_primary.valid() || ep.ai.next_fire_primary.elapsed()) {
         ep.ai.next_fire_primary.set(rf::weapon_get_fire_wait_ms(weapon_type, alt_fire));
     }
 }
@@ -370,6 +381,22 @@ CallHook<void(rf::Player*, const char*, int)> listen_host_chat_add_msg_hook{
     },
 };
 
+// Stock enters and leaves climbing regions only for a local player, in its control handling (0x00430C70).
+void server_bot_update_climbing(rf::Entity& ep)
+{
+    rf::ClimbRegion* const region = rf::level_point_in_climb_region(&ep.pos);
+    const bool climbing = rf::entity_is_climbing(&ep);
+    if (!region) {
+        if (climbing) {
+            rf::entity_make_run(&ep);
+            ep.p_data.vel.y = 0.0f;
+        }
+    }
+    else if (!climbing && (rf::entity_is_grounded_move_mode(&ep) || region != ep.ignored_climb_region)) {
+        rf::entity_make_climb(&ep, region);
+    }
+}
+
 void server_bot_apply_outputs(ServerBot& bot, const bool thought)
 {
     BotContext& ctx = bot.ctx;
@@ -383,11 +410,18 @@ void server_bot_apply_outputs(ServerBot& bot, const bool thought)
     ep->ai.ci.rot = {};
     ep->ai.ci.mouse_dh = 0.0f;
     ep->ai.ci.mouse_dp = 0.0f;
-    ep->ai.ci.move = state.movement_override_active
+    // Not the live hull: a rider of a dying one gets no foot input.
+    rf::Entity* const hull = vehicle_ridden_hull(ep);
+    ep->ai.ci.move = state.movement_override_active && !hull
         ? rf::Vector3{state.move_input_x, state.move_input_y, state.move_input_z}
         : rf::Vector3{};
 
-    if (!rf::entity_is_dying(ep)) {
+    if (hull) {
+        bot.pending_throw = {};
+        bot_vehicle_server_apply_outputs(ctx, *pp, *ep, *hull);
+    }
+    else if (!rf::entity_is_dying(ep)) {
+        server_bot_update_climbing(*ep);
         if (!thought) {
             BotActiveScope scope{ctx};
             bot_track_aim_goal(*ep);
@@ -402,6 +436,9 @@ void server_bot_stop_idle_entity(ServerBot& bot)
 {
     bot.pending_throw = {};
     rf::Player* const pp = bot.ctx.player;
+    if (pp) {
+        bot_vehicle_server_stop_outputs(bot.ctx, *pp);
+    }
     if (rf::Entity* const ep = pp ? rf::entity_from_handle(pp->entity_handle) : nullptr) {
         ep->ai.ci.move = {};
         multi_turn_weapon_off(ep);
@@ -458,9 +495,10 @@ bool server_bot_roster_has_entry(const int roster_id)
 }
 
 void server_bot_roster_add(const int profile_index, const int team, const bool join_bot = false,
-                           const std::string& skill = {})
+                           const std::string& skill = {}, const std::string& personality = {})
 {
-    g_server_bot_roster.push_back({profile_index, team, g_next_server_bot_roster_id++, join_bot, skill});
+    g_server_bot_roster.push_back(
+        {profile_index, team, g_next_server_bot_roster_id++, join_bot, skill, personality});
 }
 
 const ServerBotRosterEntry* server_bot_roster_entry(const int roster_id)
@@ -596,7 +634,7 @@ void server_bot_create(const ServerBotRosterEntry& entry)
     bot->roster_id = entry.id;
     // Bots created together think on different frames.
     bot->think_wait = k_server_bot_think_interval * std::fmod(static_cast<float>(entry.id) * 0.618034f, 1.0f);
-    server_bot_apply_config(bot->ctx, config, entry.skill);
+    server_bot_apply_config(bot->ctx, config, entry.skill, entry.personality);
     g_server_bots.push_back(std::move(bot));
 
     rf::send_new_player_packet(pp);
@@ -610,7 +648,8 @@ void server_bot_create(const ServerBotRosterEntry& entry)
     afstats::on_player_join(pp);
 
     rf::console::print("  Server bot {} uses profile '{}' (slot {}, skill '{}', character={})\n", pp->name,
-        config.personality_preset, g_bot_profile_slots.get_slot(pp),
+        entry.personality.empty() ? config.personality_preset : entry.personality,
+        g_bot_profile_slots.get_slot(pp),
         entry.skill.empty() ? config.skill_preset : entry.skill, character);
 }
 
@@ -754,13 +793,16 @@ void server_bots_sync_join_bots()
     const bool match_rules = g_manual_rules_override && g_manual_rules_override->match;
     int wanted = (match_rules && !join_bots_held_for_match()) ? 0 : mutators.join_bots;
     const std::string& skill = mutators.join_bots_skill;
+    const std::string& personality = mutators.join_bots_personality;
     const bool was_configured = server_bots_configured();
 
     // A forming or live match only loses bots: one that left gave its slot to the humans
     const bool match_forming = g_match_info.pre_match_active || g_match_info.match_active;
     if (!match_forming) {
-        // Bots from another skill leave and are replaced
-        std::erase_if(g_server_bot_roster, [&](const auto& e) { return e.join_bot && e.skill != skill; });
+        // Bots from another skill or personality leave and are replaced
+        std::erase_if(g_server_bot_roster, [&](const auto& e) {
+            return e.join_bot && (e.skill != skill || e.personality != personality);
+        });
     }
     int have = server_bots_num_join_bots();
     if (match_forming) {
@@ -774,12 +816,13 @@ void server_bots_sync_join_bots()
         }
     }
     for (; have < wanted && static_cast<int>(g_server_bot_roster.size()) < k_max_server_bots; ++have) {
-        server_bot_roster_add(-1, -1, true, skill);
+        server_bot_roster_add(-1, -1, true, skill, personality);
     }
     server_bot_roster_on_changed(was_configured);
 }
 
-// A match's bots leave with it; the rules it leaves behind keep them out (see server_bots_sync_join_bots)
+// For a match cancelled before it starts, as no level load follows. After a played match, the next level's rules take
+// the bots out (see server_bots_sync_join_bots).
 void server_bots_end_join_bots()
 {
     const bool was_configured = server_bots_configured();

@@ -150,6 +150,7 @@ void mutators_on_player_destroy(rf::Player* player);
 bool mutators_skiing_active();
 bool mutators_dodging_active();
 bool mutators_pogo_active();
+bool mutators_scrapyard_gibs_active();
 
 // ---------------------------------------------------------------------------
 // Critical Hits mutator
