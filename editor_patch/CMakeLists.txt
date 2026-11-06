@@ -72,6 +72,8 @@ set(SRCS
     rope_emitter.h
     waypoint_helper.cpp
     waypoint_helper.h
+    mover_path.cpp
+    mover_path.h
     terrain.cpp
     terrain.h
     terrain_build.cpp
