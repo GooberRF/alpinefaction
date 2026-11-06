@@ -40,6 +40,8 @@
 #include "../object/object.h"
 #include "../fflink/afstats_client.h"
 #include "waypoints.h"
+#include "settings_registry.h"
+#include "../ui/settings_menu.h"
 
 void achievements_apply_patch();
 void apply_main_menu_patches();
@@ -195,6 +197,12 @@ FunHook<void(rf::GameState, rf::GameState, bool)> rf_close_state_hook{
 FunHook<void(rf::GameState, rf::GameState)> rf_init_state_hook{
     0x004B1AC0,
     [] (rf::GameState state, rf::GameState old_state) {
+        if (state == rf::GS_OPTIONS_MENU && !legacy_options_menu_enabled()) {
+            // The stock init would build the stock options panels, which Alpine does not render.
+            settings_menu_enter();
+            return;
+        }
+
         rf_init_state_hook.call_target(state, old_state);
 
         xlog::trace(
@@ -284,8 +292,16 @@ FunHook<void(rf::GameState, rf::GameState)> rf_init_state_hook{
 FunHook<bool(int)> rf_state_is_closed_hook{
     0x004B1DD0,
     [](int state) {
-        if (g_jump_to_multi_server_list || g_jump_to_demo_browser)
+        const bool alpine_options = state == rf::GS_OPTIONS_MENU && !legacy_options_menu_enabled();
+        if (g_jump_to_multi_server_list || g_jump_to_demo_browser) {
+            if (alpine_options) {
+                settings_menu_abandon();
+            }
             return true;
+        }
+        if (alpine_options) {
+            return settings_menu_is_closed();
+        }
         return rf_state_is_closed_hook.call_target(state);
     },
 };
@@ -295,7 +311,7 @@ FunHook<void()> multi_after_players_packet_hook{
     []() {
         multi_after_players_packet_hook.call_target();
         g_in_mp_game = true;
-        mp_send_handicap_request(false);
+        mp_send_handicap_request(true);
         fflink::afstats_client_on_entered_game();
     },
 };
@@ -737,7 +753,7 @@ CodeInjection static_bomb_code_patch{
 ConsoleCommand2 static_bomb_code_cmd{
     "sp_staticbombcode",
     []() {
-        g_alpine_game_config.static_bomb_code = !g_alpine_game_config.static_bomb_code;
+        setting_console_set("static_bomb_code", "toggle");
         rf::console::print("Static bomb code is {}", g_alpine_game_config.static_bomb_code ? "enabled" : "disabled");
     },
     "Toggle bomb code between randomized (default) and static.",
@@ -746,14 +762,33 @@ ConsoleCommand2 static_bomb_code_cmd{
 ConsoleCommand2 geo_chunk_physics_cmd{
     "sp_geochunkphysics",
     []() {
-        g_alpine_game_config.geo_chunk_physics = !g_alpine_game_config.geo_chunk_physics;
+        setting_console_set("geo_chunk_physics", "toggle");
         rf::console::print("GeoMod chunk physics is {}", g_alpine_game_config.geo_chunk_physics ? "enabled" : "disabled");
     },
     "Toggle whether isolated geomod chunks fall as physics objects or disappear.",
 };
 
+void apply_reduced_speed_in_background()
+{
+    // Stock sleeps a second per frame while the window is in the background unless this JNZ skips it.
+    // Headless bot clients always bypass the throttle to keep net/sim stable.
+    const bool throttle = g_alpine_game_config.reduced_speed_in_background && !is_headless_mode();
+    write_mem<u8>(0x004353CC, throttle ? asm_opcodes::jnz_rel_short : asm_opcodes::jmp_rel_short);
+}
+
+// Latched once: the launcher config is reloaded mid-session (FactionFiles link), and the options
+// menu in use must not change under a running game.
+static bool g_legacy_options_menu = false;
+
+bool legacy_options_menu_enabled()
+{
+    return g_legacy_options_menu;
+}
+
 void misc_init()
 {
+    g_legacy_options_menu = g_game_config.legacy_options_menu;
+
     // Static bomb code
     static_bomb_code_patch.install();
     static_bomb_code_cmd.register_cmd();
@@ -855,11 +890,7 @@ void misc_init()
     camera_set_pos_null_crash_fix.install();
     camera_set_orient_null_crash_fix.install();
 
-    // If speed reduction in background is not wanted disable that code in RF.
-    // Headless bot clients should always bypass this throttle to keep net/sim stable.
-    if (!g_game_config.reduced_speed_in_background || is_headless_mode()) {
-        write_mem<u8>(0x004353CC, asm_opcodes::jmp_rel_short);
-    }
+    apply_reduced_speed_in_background();
 
     // Fix stack corruption when packfile has lower size than expected
     vfile_read_stack_corruption_fix.install();

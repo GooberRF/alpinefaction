@@ -36,6 +36,7 @@
 #include "salvage.h"
 #include "server.h"
 #include "server_internal.h"
+#include "../misc/settings_registry.h"
 
 // Server-detected per-player awards. The server owns every condition below; the client is told an
 // id and owns the text and the sound for it, so adding an award never needs a wire change.
@@ -941,7 +942,7 @@ bool award_currently_displaying()
 ConsoleCommand2 awards_display_cmd{
     "cl_awards",
     []() {
-        g_alpine_game_config.show_awards = !g_alpine_game_config.show_awards;
+        setting_console_set("show_awards", "toggle");
         rf::console::print("Display of earned awards is {}",
                            g_alpine_game_config.show_awards ? "enabled" : "disabled");
     },
@@ -952,7 +953,7 @@ ConsoleCommand2 awards_display_cmd{
 ConsoleCommand2 domination_msgs_display_cmd{
     "cl_dominationmsgs",
     []() {
-        g_alpine_game_config.show_domination_msgs = !g_alpine_game_config.show_domination_msgs;
+        setting_console_set("show_domination_msgs", "toggle");
         rf::console::print("Display of dominating and revenge chat messages is {}",
                            g_alpine_game_config.show_domination_msgs ? "enabled" : "disabled");
     },

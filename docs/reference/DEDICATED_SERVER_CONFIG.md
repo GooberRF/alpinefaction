@@ -258,6 +258,7 @@ If neither the rotation nor `allowed_levels` names a level, `glass_house.rfl` is
 | --- | --- | --- | --- |
 | `team_damage` | Boolean | `false` | Players can damage teammates. |
 | `fall_damage` | Boolean | `false` | Players take fall damage. |
+| `exposure_damage` | Boolean | `true` | Players take exposure damage when outside without armor, as in single player. |
 | `weapons_stay` | Boolean | `false` | Weapon pickups stay after being picked up (see `weapon_stay_exemptions`). |
 | `force_respawn` | Boolean | `false` | Respawn dead players automatically. |
 | `balance_teams` | Boolean | `false` | Balance the teams when a team level starts. Teams are always balanced when the server moves from a non-team game type to a team game type. |

@@ -51,6 +51,7 @@ HudNotificationType hud_big_notification_current_type();
 
 // Returns true if HUD should be hidden (cl_hud off, or cinematic spectate freelook)
 bool is_hud_effectively_hidden();
+bool is_screen_resolution_too_low_for_big_hud();
 
 void hud_apply_patches();
 int hud_get_small_font();

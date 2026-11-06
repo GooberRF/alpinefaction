@@ -5920,6 +5920,11 @@ bool server_no_player_collide()
     return g_alpine_server_config_active_rules.no_player_collide;
 }
 
+bool server_exposure_damage()
+{
+    return g_alpine_server_config_active_rules.exposure_damage;
+}
+
 bool server_location_pinging()
 {
     return g_alpine_server_config_active_rules.location_pinging;

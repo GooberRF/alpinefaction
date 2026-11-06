@@ -60,6 +60,7 @@ namespace custom_sound_id
 // Hardcoded stock sounds.tbl indices
 namespace stock_sound_id
 {
+    constexpr int menu_error           = 2;    // stock menu error beep
     constexpr int end_voice            = 4;    // end_voice.wav
     constexpr int beep_01              = 29;   // Beep01.wav
     constexpr int jolt_01              = 35;   // Jolt_01.wav

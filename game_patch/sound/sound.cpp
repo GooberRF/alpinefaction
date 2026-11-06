@@ -16,6 +16,7 @@
 #include "../rf/os/timestamp.h"
 #include "../multi/multi.h"
 #include "../misc/alpine_settings.h"
+#include "../misc/settings_registry.h"
 #include "../main/main.h"
 #include "../os/console.h"
 #include "../misc/vpackfile.h"
@@ -183,8 +184,7 @@ ConsoleCommand2 level_sounds_cmd{
     "levelsounds",
     [](std::optional<float> volume) {
         if (volume.has_value()) {
-            g_alpine_game_config.set_level_sound_volume(volume.value());
-            set_play_sound_events_volume_scale();
+            setting_console_set("level_sound_volume", std::to_string(volume.value()));
         }
         rf::console::print("Level sound volume: {:.1f}", g_alpine_game_config.level_sound_volume);
     },
@@ -195,8 +195,7 @@ ConsoleCommand2 level_sounds_cmd{
 ConsoleCommand2 sound_enabled_cmd{
     "dbg_togglesound",
     [] {
-        g_alpine_game_config.sound_enabled = !g_alpine_game_config.sound_enabled;
-        set_sound_enabled(g_alpine_game_config.sound_enabled);
+        setting_console_set("sound_enabled", "toggle");
         rf::console::print("Game sound is now {}.", g_alpine_game_config.sound_enabled ? "enabled" : "disabled");
     },
     "Toggle all game sound.",

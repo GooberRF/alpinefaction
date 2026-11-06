@@ -199,6 +199,7 @@ struct AlpineFactionJoinAcceptPacketExt
         dodging             = 1u << 26,
         stats_enabled       = 1u << 27,
         scrapyard_gibs      = 1u << 28,
+        no_exposure_damage  = 1u << 29,
     } flags = Flags::none;
 
     float max_fov = 0.0f;

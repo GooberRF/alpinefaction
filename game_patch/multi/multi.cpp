@@ -61,6 +61,7 @@
 #include "../sound/sound.h"
 #include "../main/main.h"
 #include "../graphics/gr.h"
+#include "../misc/settings_registry.h"
 
 // Note: this must be called from DLL init function
 // Note: we can't use global variable because that would lead to crash when launcher loads this DLL to check dependencies
@@ -1407,7 +1408,7 @@ ConsoleCommand2 dbg_bot_cmd{
     "dbg_bot",
     [](std::optional<int> enabled) {
         if (enabled.has_value()) {
-            g_alpine_game_config.dbg_bot = enabled.value() != 0;
+            setting_console_set("dbg_bot", enabled.value() != 0 ? "1" : "0");
         }
         rf::console::print(
             "Bot debug console logging is {}.",
@@ -1418,9 +1419,19 @@ ConsoleCommand2 dbg_bot_cmd{
     "dbg_bot [0|1]",
 };
 
-void mp_send_handicap_request(bool force) {
-    if (force || g_alpine_game_config.desired_handicap > 0) {
+static int g_last_sent_handicap = 0;
+
+void mp_send_handicap_request(bool on_join)
+{
+    if (!rf::is_multi || rf::is_server) {
+        return;
+    }
+    if (on_join) {
+        g_last_sent_handicap = 0;
+    }
+    if (g_alpine_game_config.desired_handicap != g_last_sent_handicap) {
         af_send_handicap_request(static_cast<uint8_t>(g_alpine_game_config.desired_handicap));
+        g_last_sent_handicap = g_alpine_game_config.desired_handicap;
     }
 }
 
@@ -1428,8 +1439,7 @@ ConsoleCommand2 set_handicap_cmd{
     "mp_handicap",
     [](std::optional<int> new_handicap) {
         if (new_handicap) {
-            g_alpine_game_config.set_desired_handicap(new_handicap.value());
-            mp_send_handicap_request(true);
+            setting_console_set("desired_handicap", std::to_string(new_handicap.value()));
         }
         rf::console::print("Your desired damage reduction handicap is {}. It will only be applied in servers that support this feature.", g_alpine_game_config.desired_handicap);
     },

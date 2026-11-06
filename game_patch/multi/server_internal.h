@@ -830,6 +830,7 @@ struct AlpineServerConfigRules
     int rf2_geo_limit = -1; // -1 = unlimited, 0 = disabled, >0 = specific limit
     bool team_damage = false;
     bool fall_damage = false;
+    bool exposure_damage = true;
     bool weapons_stay = false;
     bool force_respawn = false;
     bool balance_teams = false;

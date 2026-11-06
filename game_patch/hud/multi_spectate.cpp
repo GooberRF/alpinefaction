@@ -53,6 +53,7 @@
 #include <shlwapi.h>
 #include <windows.h>
 #include "../multi/alpine_packets.h"
+#include "../misc/settings_registry.h"
 
 static rf::Player* g_spectate_mode_target;
 static rf::Camera* g_old_target_camera = nullptr;
@@ -1091,11 +1092,11 @@ static ConsoleCommand2 spectate_povcomp_cmd{
     [](std::optional<std::string> arg) {
         if (arg) {
             if (*arg == "on" || *arg == "auto") {
-                g_alpine_game_config.spectate_povcomp = true;
+                setting_console_set("spectate_povcomp", "1");
                 g_povcomp_override_ms = -1;
             }
             else if (*arg == "off") {
-                g_alpine_game_config.spectate_povcomp = false;
+                setting_console_set("spectate_povcomp", "0");
             }
             else {
                 int value = 0;
@@ -1104,7 +1105,7 @@ static ConsoleCommand2 spectate_povcomp_cmd{
                     rf::console::print("Usage: spectate_povcomp [on|off|<delay ms>]");
                     return;
                 }
-                g_alpine_game_config.spectate_povcomp = true;
+                setting_console_set("spectate_povcomp", "1");
                 g_povcomp_override_ms = std::clamp(value, 0, povcomp_max_ms);
             }
         }
@@ -1527,7 +1528,7 @@ ConsoleCommand2 spectate_cmd{
 static ConsoleCommand2 spectate_mode_minimal_ui_cmd{
     "spectate_minui",
     []() {
-        g_alpine_game_config.spectate_mode_minimal_ui = !g_alpine_game_config.spectate_mode_minimal_ui;
+        setting_console_set("spectate_mode_minimal_ui", "toggle");
         rf::console::print("Spectate mode minimal UI is {}",
                            g_alpine_game_config.spectate_mode_minimal_ui ? "enabled" : "disabled");
     },
@@ -1546,7 +1547,7 @@ static ConsoleCommand2 spectate_mode_follow_killer_cmd{
 static ConsoleCommand2 spectate_cameras_cmd{
     "spectate_cameras",
     []() {
-        g_alpine_game_config.spectate_show_camera_meshes = !g_alpine_game_config.spectate_show_camera_meshes;
+        setting_console_set("spectate_show_camera_meshes", "toggle");
         rf::console::print("Static camera meshes in free look spectate are {}",
             g_alpine_game_config.spectate_show_camera_meshes ? "shown" : "hidden");
     },

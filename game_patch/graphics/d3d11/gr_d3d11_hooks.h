@@ -19,6 +19,8 @@ namespace alpine_lightmap
 }
 
 namespace gr::d3d11 {
+    struct UiSdfDraw;
+
     // Cache the level's mesh lighting settings for the core (gr_d3d11_mesh.h) at level load
     void evaluate_mesh_lighting(const std::string& level_filename);
     void evaluate_pixel_light_overbright(const std::string& level_filename);
@@ -38,6 +40,7 @@ namespace gr::d3d11 {
     bool supports_sample_count(uint32_t sample_count);
     void flush_frame_buffers();
     void flush_outlines_before_fpgun();
+    void ui_sdf(const UiSdfDraw& draw, rf::gr::Mode mode);
     bool trigger_damage_vignette(unsigned dir_mask);
     // Frees a carved detail room's render cache; the room builds a new one when next drawn.
     void release_detail_room_render_cache(rf::GRoom* room);

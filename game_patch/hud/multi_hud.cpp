@@ -58,6 +58,7 @@
 #include "../multi/bots/bot_main.h"
 #include "../multi/mutators.h"
 #include "multi_spectate.h"
+#include "../misc/settings_registry.h"
 
 static bool g_big_team_scores_hud = false;
 constexpr bool g_debug_team_scores_hud = false;
@@ -2522,7 +2523,7 @@ CodeInjection multi_hud_update_target_player_patch_2{
 ConsoleCommand2 ui_playernames_cmd{
     "ui_playernames",
     []() {
-        g_alpine_game_config.display_target_player_names = !g_alpine_game_config.display_target_player_names;
+        setting_console_set("display_target_player_names", "toggle");
         rf::console::print("Display of names of targeted players is {}", g_alpine_game_config.display_target_player_names ? "enabled" : "disabled");
     },
     "Toggle displaying names of targeted players",
@@ -2611,8 +2612,7 @@ void build_time_left_string_format() {
 ConsoleCommand2 ui_verbosetimer_cmd{
     "ui_verbosetimer",
     []() {
-        g_alpine_game_config.verbose_time_left_display = !g_alpine_game_config.verbose_time_left_display;
-        build_time_left_string_format();
+        setting_console_set("verbose_time_left_display", "toggle");
         rf::console::print("Verbose in-game timer display is {}", g_alpine_game_config.verbose_time_left_display ? "enabled" : "disabled");
     },
     "Control whether the in-game timer displays the 'Time Left:' text",
@@ -2622,7 +2622,7 @@ ConsoleCommand2 ui_verbosetimer_cmd{
 ConsoleCommand2 ui_runtimer_cmd{
     "ui_runtimer",
     [] {
-        g_alpine_game_config.show_run_timer = !g_alpine_game_config.show_run_timer;
+        setting_console_set("show_run_timer", "toggle");
         rf::console::print("RUN game type timer display is {}", g_alpine_game_config.show_run_timer ? "enabled" : "disabled"
         );
     },
@@ -2633,8 +2633,7 @@ ConsoleCommand2 ui_runtimer_cmd{
 ConsoleCommand2 cl_vehiclemarkers_cmd{
     "cl_vehiclemarkers",
     [](std::optional<bool> enabled) {
-        g_alpine_game_config.vehicle_respawn_markers =
-            enabled.value_or(!g_alpine_game_config.vehicle_respawn_markers);
+        setting_console_set_bool("vehicle_respawn_markers", enabled);
         rf::console::print("Vehicle factory respawn markers are {}",
             g_alpine_game_config.vehicle_respawn_markers ? "enabled" : "disabled");
     },
@@ -2645,7 +2644,7 @@ ConsoleCommand2 cl_vehiclemarkers_cmd{
 ConsoleCommand2 cl_vehiclehealthbars_cmd{
     "cl_vehiclehealthbars",
     [](std::optional<bool> enabled) {
-        g_alpine_game_config.vehicle_health_bars = enabled.value_or(!g_alpine_game_config.vehicle_health_bars);
+        setting_console_set_bool("vehicle_health_bars", enabled);
         rf::console::print("Vehicle health bars are {}",
             g_alpine_game_config.vehicle_health_bars ? "enabled" : "disabled");
     },
@@ -2656,7 +2655,7 @@ ConsoleCommand2 cl_vehiclehealthbars_cmd{
 ConsoleCommand2 cl_vehiclehints_cmd{
     "cl_vehiclehints",
     [](std::optional<bool> enabled) {
-        g_alpine_game_config.vehicle_control_hints = enabled.value_or(!g_alpine_game_config.vehicle_control_hints);
+        setting_console_set_bool("vehicle_control_hints", enabled);
         rf::console::print("Vehicle control hints are {}",
             g_alpine_game_config.vehicle_control_hints ? "enabled" : "disabled");
     },
@@ -2667,7 +2666,7 @@ ConsoleCommand2 cl_vehiclehints_cmd{
 ConsoleCommand2 ui_gametype_help_cmd{
     "ui_gametype_help",
     [] {
-        g_alpine_game_config.show_gametype_help = !g_alpine_game_config.show_gametype_help;
+        setting_console_set("show_gametype_help", "toggle");
         rf::console::print("Gametype help notification is {}", g_alpine_game_config.show_gametype_help ? "enabled" : "disabled");
     },
     "Toggle the gametype help notification shown when spawning on a server",
@@ -2677,7 +2676,7 @@ ConsoleCommand2 ui_gametype_help_cmd{
 ConsoleCommand2 ui_miniscoreboard_cmd{
     "ui_minisb_dm",
     [] {
-        g_alpine_game_config.show_mini_scoreboard_dm = !g_alpine_game_config.show_mini_scoreboard_dm;
+        setting_console_set("show_mini_scoreboard_dm", "toggle");
         rf::console::print("Mini scoreboard HUD element in DM is {}",
             g_alpine_game_config.show_mini_scoreboard_dm ? "enabled" : "disabled");
     },
@@ -2688,7 +2687,7 @@ ConsoleCommand2 ui_miniscoreboard_cmd{
 ConsoleCommand2 ui_always_show_specators_cmd{
     "ui_always_show_specators",
     [] {
-        g_alpine_game_config.always_show_spectators = !g_alpine_game_config.always_show_spectators;
+        setting_console_set("always_show_spectators", "toggle");
         rf::console::print(
             "Always show spectators is {}",
             g_alpine_game_config.always_show_spectators ? "enabled" : "disabled"
@@ -2701,7 +2700,7 @@ ConsoleCommand2 ui_always_show_specators_cmd{
 ConsoleCommand2 ui_gamefeed_cmd{
     "ui_gamefeed",
     [] {
-        g_alpine_game_config.killfeed_enabled = !g_alpine_game_config.killfeed_enabled;
+        setting_console_set("killfeed_enabled", "toggle");
         rf::console::print("Game feed is {}", g_alpine_game_config.killfeed_enabled ? "enabled" : "disabled");
     },
     "Toggle game event messages in a dedicated feed instead of chat",
@@ -2711,8 +2710,7 @@ ConsoleCommand2 ui_gamefeed_cmd{
 ConsoleCommand2 ui_simple_server_chat_messages_cmd{
     "ui_simple_server_chat_messages",
     [] {
-        g_alpine_game_config.simple_server_chat_msgs =
-            !g_alpine_game_config.simple_server_chat_msgs;
+        setting_console_set("simple_server_chat_msgs", "toggle");
         rf::console::print(
             "Simple server chat messages is {}",
             g_alpine_game_config.simple_server_chat_msgs ? "enabled" : "disabled"

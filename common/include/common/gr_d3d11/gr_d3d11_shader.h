@@ -37,6 +37,7 @@ namespace gr::d3d11
         standard,
         standard_no_gas,
         ui,
+        ui_sdf,
         shadow_debug,
         outline,
         gamma,
@@ -118,6 +119,8 @@ namespace gr::d3d11
                 return "standard_nogas_ps.bin";
             case PixelShaderId::ui:
                 return "ui_ps.bin";
+            case PixelShaderId::ui_sdf:
+                return "ui_sdf_ps.bin";
             case PixelShaderId::shadow_debug:
                 return "shadow_debug_ps.bin";
             case PixelShaderId::outline:

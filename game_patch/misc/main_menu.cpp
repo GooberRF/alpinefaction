@@ -17,7 +17,6 @@
 #include "../rf/gr/gr.h"
 #include "../rf/gr/gr_font.h"
 #include "../rf/input.h"
-#include "../rf/file/file.h"
 #include "../rf/multi.h"
 #include "../rf/sound/sound.h"
 #include "../rf/sound/sound_ds.h"
@@ -26,7 +25,6 @@
 #include "../main/main.h"
 #include "../graphics/gr.h"
 #include "../os/os.h"
-#include "../input/input.h"
 #include "misc.h"
 #include "alpine_settings.h"
 #include "../multi/network.h"
@@ -289,13 +287,12 @@ FunHook<void()> menu_draw_background_hook{
 CodeInjection menu_draw_background_injection{
     0x00442D5C,
     [](auto& regs) {
-        auto& menu_background_bitmap = addr_as_ref<int>(0x00598FEC);
         auto& menu_background_x = addr_as_ref<float>(0x0063C074);
 
         rf::gr::set_color(255, 255, 255, 255);
         // Use function that accepts float sx
         //for (int i = 0; i < 100; ++i)
-        gr_bitmap_scaled_float(menu_background_bitmap, 0.0f, 0.0f,
+        gr_bitmap_scaled_float(rf::ui::menu_background_bitmap, 0.0f, 0.0f,
             static_cast<float>(rf::gr::screen.max_w), static_cast<float>(rf::gr::screen.max_h),
             menu_background_x, 0.0f, 640.0f, 480.0f, false, false, rf::gr::bitmap_clamp_mode);
         regs.eip = 0x00442D94;
@@ -693,7 +690,9 @@ void apply_main_menu_patches()
     // Support scroll wheel in menu list boxes
     multi_create_game_do_frame_patch.install();
     multi_join_server_do_frame_patch.install();
-    options_do_frame_patch.install();
+    if (legacy_options_menu_enabled()) {
+        options_do_frame_patch.install();
+    }
     game_load_do_frame_patch.install();
     game_save_do_frame_patch.install();
     message_log_do_frame_patch.install();

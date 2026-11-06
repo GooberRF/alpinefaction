@@ -26,6 +26,11 @@ Version 1.5.0 (Trillium): Not yet released
   - Mirror `Terrain Tools` brush strokes across the terrain's X and/or Z axis, with movable mirror lines
   - Up to 4 detail overlays (leaves, debris) and 8 mesh decoration layers per terrain (grass, rocks, bushes)
   - `Geoable` terrains are carved by RF2-style geomod craters, with their own underside and crater textures
+- Replace the stock options screens with a fully new options menu
+  - Context-specific bindings for vehicles, spectator, and demo playback
+  - `af_set` and `af_get` console commands to read and write any setting by name
+  - Draw menus from resolution-independent vector artwork
+  - `Use legacy options menu` launcher option to use the stock options screens instead of the new menu
 - Add server-side bots, which run inside the dedicated or listen server process in addition to (or instead of) bot clients
   - `server_bots` ADS option (0-31) sets how many server bots join; they use the `bot_profiles` profiles and follow `ideal_player_count` like bot clients
   - Add `sv_bot_add [profile_index] [red|blue]`, `sv_bot_remove <name|all>` and `sv_bot_list` server console commands, which also work through rcon
@@ -180,6 +185,11 @@ Version 1.5.0 (Trillium): Not yet released
 - Add `$Fpgun Override` to `af_client.tbl` to replace the first person weapon model and arm textures per multiplayer character and weapon
 - Don't load Alpine Faction `af_*.tbl` option files from packfiles in `user_maps`
 - Add client-side ragdoll deaths, toggleable with `cl_ragdolls`, with the number kept in the world adjustable with `cl_ragdolls_max`
+- Save `ShowHUD`, `ShowCrosshair`, `PlayGlobalRadioMsgs`, and `PlayTeamRadioMsgs` in `alpine_settings.ini`
+- Move anisotropic filtering and reduced speed in background from the launcher to the settings menu (`alpine_settings.ini`); both now apply without a restart
+- Add `exposure_damage` dedicated server rule and make `sp_exposuredamage` apply only in single player
+- Raise minimum `maxfps` from 1 to 10, for both the client and the dedicated server
+- Allow pasting text with `Ctrl+V` into vote panel text boxes
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color
@@ -359,6 +369,8 @@ Version 1.5.0 (Trillium): Not yet released
 ### Imported libraries
 - [Bullet Physics 3.25](https://github.com/bulletphysics/bullet3) by Erwin Coumans
 - [bc7enc_rdo](https://github.com/richgel999/bc7enc_rdo) by Richard Geldreich, Jr.
+- [LunaSVG 3.5.0](https://github.com/sammycage/lunasvg) by Samuel Ugochukwu
+- [PlutoVG 1.3.3](https://github.com/sammycage/plutovg) by Samuel Ugochukwu
 
 Version 1.4.0 (Lupin): Released Aug-25-2026
 --------------------------------
