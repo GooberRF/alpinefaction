@@ -108,7 +108,7 @@ void ui_aa_line(float x0, float y0, float x1, float y1, float width, rf::Color c
         const float half_width = width * 0.5f;
         const float cx = (x0 + x1) * 0.5f;
         const float cy = (y0 + y1) * 0.5f;
-        const float qh = half_len + sdf_padding;
+        const float qh = half_len + half_width + sdf_padding;
         const float qw = half_width + sdf_padding;
         const float local_x[4] = {-qh, qh, qh, -qh};
         const float local_y[4] = {-qw, -qw, qw, qw};
