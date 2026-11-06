@@ -29,6 +29,7 @@
 #include "../../misc/alpine_settings.h"
 #include "../../misc/level.h"
 #include "../../misc/player.h"
+#include "../../object/mover.h"
 #include "../../os/os.h"
 #include "../../rf/ai.h"
 #include "../../rf/collide.h"
@@ -1185,10 +1186,12 @@ namespace
 
     // Stock copies the ground object's current velocity into local_vel every frame, so a player who
     // jumped off a hull kept tracking it until the next floor hit. Falling off a hull now keeps the
-    // carry of the last grounded frame; walking or riding on it still tracks it every frame.
+    // carry of the last grounded frame; walking or riding on it still tracks it every frame. Movers with
+    // rider options get their own carry from the mover code.
     void entity_update_ground_carry()
     {
-        if (!rf::is_multi || !vehicle_level_has_factories()) {
+        const bool hulls = rf::is_multi && vehicle_level_has_factories();
+        if (!hulls && !alpine_mover_has_riders()) {
             entity_update_ground_carry_hook.call_target();
             return;
         }
@@ -1202,16 +1205,17 @@ namespace
                 continue;
             }
             rf::Entity* hull = ground->type == rf::OT_ENTITY ? static_cast<rf::Entity*>(ground) : nullptr;
-            if (mode == rf::MOVE_MODE_FALL && vehicle_is_synced_entity_type(hull)) {
+            if (hulls && mode == rf::MOVE_MODE_FALL && vehicle_is_synced_entity_type(hull)) {
                 // An interpolated hull's velocity can spike for a sample; never launch past its class cap.
                 ep.control_data.local_vel =
                     vehicle_physics_cap_class_speed(vehicle_damage_class(hull), ep.control_data.local_vel);
             }
-            else {
+            else if (!alpine_mover_carry_rider(ep, *ground)) {
                 ep.control_data.local_vel = ground->p_data.vel;
             }
             rf::obj_physics_activate(&ep);
         }
+        alpine_mover_rider_frame_done();
     }
 
     // The stock drill-contact halt suspends physics while a crater forms, which on an interp-driven

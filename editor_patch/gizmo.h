@@ -1,7 +1,10 @@
 #pragma once
 
 #include <windows.h>
+#include <common/mover_path.h>
 
+struct CDedLevel;
+struct DedObject;
 struct EditorViewport;
 struct UndoEntry;
 
@@ -34,6 +37,10 @@ bool gizmo_textured_preview();
 bool gizmo_holds_view_focus();
 // Ends a drag in progress, putting back what it moved, with no undo step. False if that failed part way.
 bool gizmo_cancel_drag();
+
+bool gizmo_snapping();
+void gizmo_commit_keyframe_path(CDedLevel& level, DedObject& keyframe, const mover_path::KeyframeData& before,
+                                const mover_path::KeyframeData& after);
 
 // The top bar's gizmo, Texture Lock and Textured Preview buttons and Scale step list, from CMainFrame::OnCmdMsg.
 void gizmo_button_clicked(UINT id);

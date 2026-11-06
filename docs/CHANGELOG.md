@@ -178,9 +178,20 @@ Version 1.5.0 (Trillium): Not yet released
 - Add `Join Bots` mutator with configurable skill and personality to level votes, and to fill empty slots in matches
 - Add `Waypoint Helper` object type
 - Add `$Fpgun Override` to `af_client.tbl` to replace the first person weapon model and arm textures per multiplayer character and weapon
+- Add `$Custom Weapon Props` to `af_client.tbl` to set a weapon's first person FOV, offset, muzzle flash bitmap and muzzle flash radius
 - Don't load Alpine Faction `af_*.tbl` option files from packfiles in `user_maps`
 - Add client-side ragdoll deaths, toggleable with `cl_ragdolls`, with the number kept in the world adjustable with `cl_ragdolls_max`
 - Add an event type dropdown to Alpine event properties in the level editor
+- Add curved mover paths, shaped per keyframe in `Keyframe Properties` and with handles dragged in the level editor viewport
+  - `Easing` on each keyframe shapes the speed of the segment leaving it, for translating and rotating movers
+  - `Mover Facing` turns a mover along its path (`Follow Path`) or between keyframe orientations (`Keyframe Rotation`)
+  - `Segment Facing` gives the segment leaving a keyframe a facing of its own, and `Align & OK` turns keyframes to face along the path so the two kinds of segment meet smoothly
+  - Keyframes whose orientation turns a mover show which way they face
+  - `Turn Riders with Mover` carries players standing on a turning mover round with it and turns their view to match
+  - `Detach Riders on Leave` lets players who jump or fall off a mover keep its velocity instead of following it until they land
+- Make level editor draw ticks at equal steps of time along mover paths
+- Make level editor draw the closing link of a looping mover with three or more keyframes
+- Add `Mover Preview` on the level editor `View` menu plays and scrubs a mover in the viewports without changing the level
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color
