@@ -36,6 +36,7 @@
 #include "../../input/control_input_filter.h"
 #include "../../misc/alpine_settings.h"
 #include "../../misc/waypoints.h"
+#include "../../object/zipline.h"
 #include "../../rf/ai.h"
 #include "../../rf/collide.h"
 #include "../../rf/entity.h"
@@ -628,6 +629,13 @@ void capture_global_failsafe_watchdog_snapshot(const rf::Entity& entity)
 // A bot holding a spot is meant to stay put, so standing still there is not a stall.
 bool bot_is_holding_position(const rf::Entity& entity)
 {
+    const int next_index = bot_state().waypoint_next_index;
+    const rf::Timestamp& hold_refresh = bot_state().zipline_hold_refresh_timer;
+    if (bot_state().zipline_entrance > 0 && hold_refresh.valid() && !hold_refresh.elapsed() && next_index >= 0
+        && next_index < static_cast<int>(bot_state().waypoint_path.size())
+        && bot_state().waypoint_path[next_index] == bot_state().zipline_entrance) {
+        return true;
+    }
     if (bot_goal_is_vehicle(bot_state().active_goal)) {
         return bot_vehicle_is_boarding(entity);
     }
@@ -2246,6 +2254,10 @@ const char* waypoint_type_to_string(const WaypointType type)
             return "salvage_flag";
         case WaypointType::vehicle_factory:
             return "vehicle_factory";
+        case WaypointType::zipline_entrance:
+            return "zipline_entrance";
+        case WaypointType::zipline_exit:
+            return "zipline_exit";
         default:
             return "unknown";
     }
@@ -2286,6 +2298,10 @@ rf::Color waypoint_debug_color(const WaypointType type)
             return {255, 235, 120, 150};
         case WaypointType::vehicle_factory:
             return {120, 255, 220, 150};
+        case WaypointType::zipline_entrance:
+            return {255, 200, 140, 150};
+        case WaypointType::zipline_exit:
+            return {200, 140, 255, 150};
         default:
             return {200, 200, 200, 150};
     }
@@ -2710,9 +2726,8 @@ void reset_bot_frame_scratch(BotContext& ctx)
     ctx.state.forced_goal_refresh_this_frame = false;
     ctx.state.weapon_readiness_cached = false;
 }
-}
 
-void bot_reset_foot_watchdogs()
+void reset_foot_watchdogs_keeping_route()
 {
     reset_goal_stuck_watchdog(true);
     reset_no_move_target_watchdog();
@@ -2720,6 +2735,63 @@ void bot_reset_foot_watchdogs()
     reset_objective_progress_watchdog(true);
     reset_global_failsafe_watchdog(true);
     reset_confusion_abort_tracking();
+}
+
+// While a zip line carries the bot it only fights: the line steers, and the foot watchdogs would take the
+// ride for being stuck.
+void run_zipline_riding_frame(BotContext& ctx, rf::Player& player, rf::Entity& entity)
+{
+    ctx.state.zipline_riding = true;
+    reset_foot_watchdogs_keeping_route();
+    update_retaliation_context(player, entity);
+
+    bot_combat_manager_prepare_frame(player, entity);
+    rf::Entity* const enemy_target = bot_perception_manager_select_enemy_target(player, entity);
+    const bool enemy_has_los = enemy_target && bot_perception_manager_get_enemy_los_cached(entity, *enemy_target);
+    if (!enemy_target) {
+        bot_perception_manager_reset_tracking();
+        clear_enemy_aim_error_state();
+        clear_semi_auto_click_state();
+    }
+    bot_combat_manager_process_frame(player, entity, enemy_target, enemy_has_los, bot_get_skill_factor(), false, {});
+}
+
+// A ride carried to the end comes down at the exit, whose node sits where the let-go lands; any other replans.
+void note_off_zipline(BotContext& ctx, const rf::Entity& entity)
+{
+    if (!ctx.state.zipline_riding) {
+        return;
+    }
+    ctx.state.zipline_riding = false;
+    const std::vector<int>& path = ctx.state.waypoint_path;
+    const int index = ctx.state.waypoint_next_index;
+    if (index > 0 && index < static_cast<int>(path.size())
+        && waypoints_get_zipline_ride(path[index - 1], path[index], nullptr, nullptr, nullptr)
+        && zipline_last_ride_reached_end(&entity)) {
+        if (g_alpine_game_config.dbg_bot && ctx.player) {
+            xlog::info("[BotZip] {} let go at the exit", ctx.player->name);
+        }
+        bot_nav_record_waypoint_visit(path[index]);
+        if (index + 1 < static_cast<int>(path.size())) {
+            ++ctx.state.waypoint_next_index;
+            return;
+        }
+    }
+    else if (index > 0 && index < static_cast<int>(path.size())
+             && waypoints_get_zipline_ride(path[index - 1], path[index], nullptr, nullptr, nullptr)) {
+        // Whatever held it off the line may still be there: the planner must not send it straight back.
+        bot_nav_register_failed_edge_cooldown(path[index - 1], path[index], kZiplineFailedRideCooldownMs);
+        if (g_alpine_game_config.dbg_bot && ctx.player) {
+            xlog::info("[BotZip] {} let go short of the exit", ctx.player->name);
+        }
+    }
+    bot_internal_clear_waypoint_route();
+}
+}
+
+void bot_reset_foot_watchdogs()
+{
+    reset_foot_watchdogs_keeping_route();
     bot_state_clear_waypoint_route(true, true, false);
 }
 
@@ -3086,6 +3158,9 @@ void bot_run_frame(BotContext& ctx)
         ctx.state.vehicle.reset();
         ctx.state.drop_link_route_locked = false;
         ctx.state.drop_freefall_active = false;
+        ctx.state.zipline_entrance = 0;
+        ctx.state.zipline_attempt_entrance = 0;
+        ctx.state.zipline_riding = false;
         ctx.state.crater_goal_abort_timer.invalidate();
         ctx.state.crater_standoff_abort_timer.invalidate();
         ctx.state.crater_goal_timeout_timer.invalidate();
@@ -3192,6 +3267,11 @@ void bot_run_frame(BotContext& ctx)
         return;
     }
     bot_vehicle_note_on_foot(ctx);
+    if (zipline_entity_simulates_ride(local_entity)) {
+        run_zipline_riding_frame(ctx, *local_player, *local_entity);
+        return;
+    }
+    note_off_zipline(ctx, *local_entity);
 
     if (!ctx.state.respawn_gearup_timer.valid()) {
         ctx.state.respawn_gearup_timer.set(kBotRespawnGearupDurationMs);

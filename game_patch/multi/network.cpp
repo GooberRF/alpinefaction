@@ -82,6 +82,7 @@
 #include "../fflink/afstats_client.h"
 #include "../fflink/afstats_events.h"
 #include "../fflink/fflink_session.h"
+#include "../object/zipline.h"
 
 // NET_IFINDEX_UNSPECIFIED is not defined in MinGW headers
 #ifndef NET_IFINDEX_UNSPECIFIED
@@ -3301,6 +3302,8 @@ CodeInjection send_state_info_injection{
         rf::Player* player = regs.edi;
         trigger_send_state_info(player);
         sprays_force_state_sync_to(player);
+        zipline_send_state_to(player);
+        af_send_rope_states_to(player, false);
     },
 };
 

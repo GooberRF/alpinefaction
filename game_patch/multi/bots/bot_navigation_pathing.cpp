@@ -9,6 +9,8 @@
 #include "bot_utils.h"
 #include "bot_waypoint_route.h"
 #include "../../main/main.h"
+#include "../../misc/alpine_settings.h"
+#include "../../object/zipline.h"
 #include "../../rf/collide.h"
 #include <algorithm>
 #include <array>
@@ -18,12 +20,24 @@
 #include <random>
 #include <unordered_set>
 #include <vector>
+#include <xlog/xlog.h>
 
 namespace
 {
 constexpr int kBotNavProbeTraceFlags = rf::CF_ANY_HIT | rf::CF_PROCESS_INVISIBLE_FACES;
 constexpr float kWaypointTurnRelaxHeightThreshold = 0.40f;
 constexpr float kJumpPadWaypointReachRadius = 0.35f;
+constexpr float kZiplineEntranceReachRadius = 1.0f;
+// Looser than the reach: the bot's jumps for the line carry it well above the node.
+constexpr float kZiplineEntranceHoldRadius = 1.5f;
+constexpr float kZiplineEntranceHoldHeight = 2.0f;
+constexpr int kZiplineGrabJumpDelayMs = 300;
+constexpr int kZiplineGrabJumpRetryMs = 900;
+constexpr int kZiplineGrabGiveUpMs = 2500;
+// Away from the entrance this long, a return is a fresh attempt.
+constexpr int kZiplineAttemptLapseMs = 3000;
+// A hold not renewed this soon has been left (navigation paused); coming back starts it afresh.
+constexpr int kZiplineHoldRefreshMs = 500;
 constexpr float kPathFallFastForwardRadius = kWaypointReachRadius * 1.75f;
 constexpr float kPathFallFastForwardVerticalSlack = 1.0f;
 constexpr float kPathFallFastForwardLevelTolerance = 0.25f;
@@ -626,6 +640,7 @@ void clear_waypoint_route()
 {
     bot_state().waypoint_path.clear();
     bot_state().waypoint_next_index = 0;
+    bot_state().zipline_entrance = 0;
     bot_state().waypoint_goal = 0;
     bot_state().route_request_goal = 0;
     bot_state().has_waypoint_target = false;
@@ -1328,7 +1343,8 @@ bool is_on_significant_downward_link()
 
     const int from = bot_state().waypoint_path[bot_state().waypoint_next_index - 1];
     const int to = bot_state().waypoint_path[bot_state().waypoint_next_index];
-    if (from <= 0 || to <= 0 || !waypoints_has_direct_link(from, to)) {
+    if (from <= 0 || to <= 0 || !waypoints_has_direct_link(from, to)
+        || waypoints_get_zipline_ride(from, to, nullptr, nullptr, nullptr)) {
         return false;
     }
     rf::Vector3 from_pos{};
@@ -1351,7 +1367,8 @@ bool is_next_link_significant_downward()
 
     const int from = bot_state().waypoint_path[next_idx];
     const int to = bot_state().waypoint_path[next_idx + 1];
-    if (from <= 0 || to <= 0 || !waypoints_has_direct_link(from, to)) {
+    if (from <= 0 || to <= 0 || !waypoints_has_direct_link(from, to)
+        || waypoints_get_zipline_ride(from, to, nullptr, nullptr, nullptr)) {
         return false;
     }
     rf::Vector3 from_pos{};
@@ -1826,6 +1843,97 @@ bool commit_single_hop_fallback_route(
     return true;
 }
 
+enum class ZiplineHold
+{
+    none,
+    waiting,
+    riding,
+    failed,
+};
+
+bool current_link_leads_to_zipline_ride(const int current_waypoint, int32_t* rope_uid, int* dir)
+{
+    const int next_index = bot_state().waypoint_next_index + 1;
+    return next_index < static_cast<int>(bot_state().waypoint_path.size())
+        && waypoints_get_zipline_ride(current_waypoint, bot_state().waypoint_path[next_index], rope_uid, dir, nullptr);
+}
+
+// Only taking hold moves the route past an entrance; walking on to the exit would skip the ride.
+ZiplineHold hold_at_zipline_entrance(
+    const rf::Entity& entity, const int current_waypoint, const rf::Vector3& entrance_pos, const float distance_sq)
+{
+    const int next_index = bot_state().waypoint_next_index + 1;
+    int32_t rope_uid = -1;
+    int dir = 1;
+    const float dx = entity.pos.x - entrance_pos.x;
+    const float dz = entity.pos.z - entrance_pos.z;
+    const rf::Timestamp& hold_refresh = bot_state().zipline_hold_refresh_timer;
+    const bool holding =
+        bot_state().zipline_entrance == current_waypoint && hold_refresh.valid() && !hold_refresh.elapsed();
+    const bool in_reach = holding
+        ? dx * dx + dz * dz <= kZiplineEntranceHoldRadius * kZiplineEntranceHoldRadius
+              && std::fabs(entity.pos.y - entrance_pos.y) <= kZiplineEntranceHoldHeight
+        : distance_sq <= kZiplineEntranceReachRadius * kZiplineEntranceReachRadius;
+    if (!in_reach || !current_link_leads_to_zipline_ride(current_waypoint, &rope_uid, &dir)) {
+        bot_state().zipline_entrance = 0;
+        return ZiplineHold::none;
+    }
+    const int exit = bot_state().waypoint_path[next_index];
+    // A closed line may reopen soon, so only the usual short cooldown.
+    if (!waypoints_has_direct_link(current_waypoint, exit)) {
+        bot_nav_register_failed_edge_cooldown(current_waypoint, exit, kFailedEdgeCooldownMs);
+        bot_state().zipline_entrance = 0;
+        bot_state().zipline_attempt_entrance = 0;
+        return ZiplineHold::failed;
+    }
+    const rf::Timestamp& lapse = bot_state().zipline_attempt_lapse_timer;
+    if (bot_state().zipline_attempt_entrance != current_waypoint || !lapse.valid() || lapse.elapsed()) {
+        bot_state().zipline_attempt_entrance = current_waypoint;
+        bot_state().zipline_give_up_timer.set(kZiplineGrabGiveUpMs);
+    }
+    else if (!holding && hold_refresh.elapsed()) {
+        // Time away from the entrance doesn't count toward giving up; a route clear or a brief slip does.
+        bot_state().zipline_give_up_timer.set(bot_state().zipline_attempt_left_ms);
+    }
+    bot_state().zipline_attempt_left_ms = std::max(0, bot_state().zipline_give_up_timer.time_until());
+    bot_state().zipline_attempt_lapse_timer.set(kZiplineAttemptLapseMs);
+    if (!holding) {
+        bot_state().zipline_entrance = current_waypoint;
+        bot_state().zipline_jump_timer.set(kZiplineGrabJumpDelayMs);
+    }
+    bot_state().zipline_hold_refresh_timer.set(kZiplineHoldRefreshMs);
+    rf::Entity& rider = const_cast<rf::Entity&>(entity);
+    if (zipline_bot_grab(&rider, rope_uid, dir)) {
+        if (g_alpine_game_config.dbg_bot) {
+            xlog::info("[BotZip] {} took zip line {} ({})", bot_player() ? bot_player()->name.c_str() : "?", rope_uid,
+                       dir);
+        }
+        bot_nav_record_waypoint_visit(current_waypoint);
+        bot_state().zipline_entrance = 0;
+        bot_state().zipline_attempt_entrance = 0;
+        bot_state().zipline_riding = true;
+        bot_state().waypoint_next_index = next_index;
+        return ZiplineHold::riding;
+    }
+    if (bot_state().zipline_give_up_timer.elapsed()) {
+        if (g_alpine_game_config.dbg_bot) {
+            xlog::warn("[BotZip] {} could not take hold of zip line {}",
+                       bot_player() ? bot_player()->name.c_str() : "?", rope_uid);
+        }
+        bot_nav_register_failed_edge_cooldown(current_waypoint, exit, kZiplineFailedRideCooldownMs);
+        bot_state().zipline_entrance = 0;
+        bot_state().zipline_attempt_entrance = 0;
+        return ZiplineHold::failed;
+    }
+    if (bot_state().zipline_jump_timer.elapsed() && !rf::entity_is_falling(&rider)) {
+        if (rf::Player* const player = bot_player()) {
+            bot_backend_jump(*player);
+        }
+        bot_state().zipline_jump_timer.set(kZiplineGrabJumpRetryMs);
+    }
+    return ZiplineHold::waiting;
+}
+
 bool update_waypoint_target_from_current_path(const rf::Entity& entity)
 {
     if (bot_state().waypoint_path.empty()) {
@@ -1838,6 +1946,15 @@ bool update_waypoint_target_from_current_path(const rf::Entity& entity)
             >= static_cast<int>(bot_state().waypoint_path.size())) {
         clear_waypoint_route();
         return false;
+    }
+
+    // Routes start with their first node counted as reached, so one planned from an entrance starts on the ride;
+    // on foot the ride starts at the entrance.
+    if (!bot_state().zipline_riding && bot_state().waypoint_next_index > 0
+        && waypoints_get_zipline_ride(bot_state().waypoint_path[bot_state().waypoint_next_index - 1],
+                                      bot_state().waypoint_path[bot_state().waypoint_next_index], nullptr, nullptr,
+                                      nullptr)) {
+        --bot_state().waypoint_next_index;
     }
 
     int current_waypoint =
@@ -1859,6 +1976,23 @@ bool update_waypoint_target_from_current_path(const rf::Entity& entity)
     }
 
     const float distance_sq = rf::vec_dist_squared(&entity.pos, &target_pos);
+    if (const ZiplineHold hold = hold_at_zipline_entrance(entity, current_waypoint, target_pos, distance_sq);
+        hold != ZiplineHold::none) {
+        if (hold == ZiplineHold::failed) {
+            clear_waypoint_route();
+            return false;
+        }
+        if (hold == ZiplineHold::riding
+            && !waypoints_get_pos(bot_state().waypoint_path[bot_state().waypoint_next_index], target_pos)) {
+            clear_waypoint_route();
+            return false;
+        }
+        bot_state().waypoint_progress_timer.invalidate();
+        bot_state().waypoint_progress_waypoint = 0;
+        bot_state().waypoint_target_pos = target_pos;
+        bot_state().has_waypoint_target = true;
+        return true;
+    }
     if (bot_state().waypoint_progress_waypoint != current_waypoint) {
         bot_state().waypoint_progress_waypoint = current_waypoint;
         bot_state().waypoint_progress_best_dist_sq = distance_sq;
@@ -1951,6 +2085,11 @@ bool update_waypoint_target_from_current_path(const rf::Entity& entity)
         // Jump pads must be entered, not just approached.
         if (current_type == WaypointType::jump_pad) {
             waypoint_reach_radius = std::min(waypoint_reach_radius, kJumpPadWaypointReachRadius);
+        }
+        // Only taking hold of the line moves a ride's route on (hold_at_zipline_entrance).
+        if (current_type == WaypointType::zipline_entrance
+            && current_link_leads_to_zipline_ride(current_waypoint, nullptr, nullptr)) {
+            waypoint_reach_radius = std::min(waypoint_reach_radius, kZiplineEntranceReachRadius);
         }
     }
     if (distance_sq <= waypoint_reach_radius * waypoint_reach_radius && !early_turn_blocked(entity, target_pos)) {
@@ -2565,7 +2704,9 @@ bool update_waypoint_target_for_local_los_reposition(
     const int link_count = waypoints_get_links(anchor_waypoint, links);
     for (int i = 0; i < link_count; ++i) {
         const int linked_waypoint = links[i];
-        if (linked_waypoint <= 0 || linked_waypoint == anchor_waypoint) {
+        // A ride's exit is no side step.
+        if (linked_waypoint <= 0 || linked_waypoint == anchor_waypoint
+            || waypoints_get_zipline_ride(anchor_waypoint, linked_waypoint, nullptr, nullptr, nullptr)) {
             continue;
         }
         add_candidate(linked_waypoint, false);

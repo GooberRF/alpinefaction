@@ -1,4 +1,5 @@
 #include <cctype>
+#include <cstring>
 #include <patch_common/FunHook.h>
 #include <patch_common/CodeInjection.h>
 #include <patch_common/AsmWriter.h>
@@ -47,6 +48,13 @@ rf::String get_action_bind_name(int action)
         name = "?";
     }
     return name;
+}
+
+std::string get_action_bind_name_or(int action, const char* fallback)
+{
+    const rf::String bind = get_action_bind_name(action);
+    const char* name = bind.c_str();
+    return (!name || !*name || std::strcmp(name, "?") == 0) ? std::string{fallback} : std::string{name};
 }
 
 rf::ControlConfigAction get_af_control(rf::AlpineControlConfigAction alpine_control)

@@ -1,5 +1,4 @@
 #include <algorithm>
-#include <cstring>
 #include <string>
 #include <unordered_map>
 #include <xlog/xlog.h>
@@ -32,6 +31,7 @@
 #include "../hud/hud_internal.h"
 #include "../hud/multi_spectate.h"
 #include "../misc/alpine_settings.h"
+#include "../object/zipline.h"
 
 constexpr float JETPACK_BURN_TIME_S = 5.0f;
 constexpr float JETPACK_RECHARGE_TIME_S = 7.5f;
@@ -524,11 +524,8 @@ void jetpack_server_do_frame()
 // built on the edge where the hint becomes wanted, never on a frame it is drawn.
 void jetpack_rebuild_hint_text()
 {
-    const rf::String bind = get_action_bind_name(rf::CC_ACTION_JUMP);
-    const char* name = bind.c_str();
-    const std::string key = (!name || !*name || std::strcmp(name, "?") == 0)
-        ? std::string{JETPACK_HINT_FALLBACK_KEY} : std::string{name};
-    g_jetpack_hint_text = "Jetpack - Hold [" + key + "]";
+    g_jetpack_hint_text =
+        "Jetpack - Hold [" + get_action_bind_name_or(rf::CC_ACTION_JUMP, JETPACK_HINT_FALLBACK_KEY) + "]";
 }
 
 void jetpack_reset_local_state()
@@ -580,7 +577,8 @@ void jetpack_update_local_player()
 
     const bool typing = rf::console::console_is_visible() || rf::multi_chat_is_say_visible();
     const bool falling = rf::entity_is_falling(ep) && !rf::entity_in_vehicle(ep)
-        && !rf::entity_is_swimming(ep) && !rf::entity_is_climbing(ep);
+        && !rf::entity_is_swimming(ep) && !rf::entity_is_climbing(ep)
+        && !zipline_local_is_riding(ep);
 
     // The pack is only active after a moment of sustained falling, so an ordinary
     // held jump does not sip fuel on the way up.
@@ -693,21 +691,6 @@ int jetpack_carrier_prop_idx(rf::VMesh* vmesh)
     const int idx = rf::vmesh_lookup_prop_point(vmesh, "$prop_flag");
     g_jetpack_carrier_prop_idx.insert_or_assign(vmesh, JetpackCarrierPropIdx{character, idx});
     return idx;
-}
-
-bool jetpack_viewer_is_first_person(rf::Entity* ep)
-{
-    if (!rf::local_player) {
-        return false;
-    }
-    if (multi_spectate_is_spectating()) {
-        if (!multi_spectate_is_first_person()) {
-            return false;
-        }
-        rf::Player* target = multi_spectate_get_target_player();
-        return target && ep->handle == target->entity_handle;
-    }
-    return ep->handle == rf::local_player->entity_handle;
 }
 
 // Solve the world transform that lays `mesh`'s $prop_flag exactly over the
@@ -943,7 +926,7 @@ void jetpack_render_attachment(rf::Entity* ep)
     if (!rf::player_from_entity_handle(ep->handle)) {
         return;
     }
-    if (jetpack_viewer_is_first_person(ep)) {
+    if (multi_spectate_view_is_first_person_of(ep)) {
         return;
     }
     if (gt_is_bagman_any() && g_bagman_info.carrier

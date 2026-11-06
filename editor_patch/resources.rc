@@ -848,7 +848,7 @@ FONT 8, "MS Sans Serif", 0, 0, 0
 
 // Alpine Rope Emitter Properties dialog
 LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
-IDD_ALPINE_ROPE_PROPERTIES DIALOGEX 0, 0, 260, 341
+IDD_ALPINE_ROPE_PROPERTIES DIALOGEX 0, 0, 260, 417
 STYLE DS_MODALFRAME | WS_CAPTION | WS_VISIBLE | WS_POPUP | WS_SYSMENU
 CAPTION "Rope Emitter Properties"
 FONT 8, "MS Sans Serif", 0, 0, 0
@@ -912,15 +912,27 @@ FONT 8, "MS Sans Serif", 0, 0, 0
     EDITTEXT        IDC_ROPE_SWAY_SPEED, 66, 258, 40, 14, ES_AUTOHSCROLL
     CONTROL         "Spin8", IDC_ROPE_SWAY_SPEED_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 106, 258, 11, 14
 
-    AUTOCHECKBOX    "Initially on", IDC_ROPE_INITIALLY_ON, 7, 287, 54, 10
+    GROUPBOX        "Zip Line", -1, 7, 284, 245, 71
+    AUTOCHECKBOX    "Zip line", IDC_ROPE_ZIPLINE, 14, 298, 40, 10
+    LTEXT           "(needs a target)", -1, 60, 299, 60, 8
+    LTEXT           "Down (m/s):", IDC_ROPE_ZIP_DOWN_SPEED_LABEL, 14, 316, 44, 8
+    EDITTEXT        IDC_ROPE_ZIP_DOWN_SPEED, 60, 314, 40, 14, ES_AUTOHSCROLL
+    CONTROL         "Spin9", IDC_ROPE_ZIP_DOWN_SPEED_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 100, 314, 11, 14
+    LTEXT           "Up (m/s):", IDC_ROPE_ZIP_UP_SPEED_LABEL, 120, 316, 52, 8
+    EDITTEXT        IDC_ROPE_ZIP_UP_SPEED, 180, 314, 40, 14, ES_AUTOHSCROLL
+    CONTROL         "Spin10", IDC_ROPE_ZIP_UP_SPEED_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 220, 314, 11, 14
+    LTEXT           "Direction:", IDC_ROPE_ZIP_DIRECTION_LABEL, 14, 336, 44, 8
+    COMBOBOX        IDC_ROPE_ZIP_DIRECTION, 60, 334, 85, 60, WS_TABSTOP | CBS_DROPDOWNLIST
+
+    AUTOCHECKBOX    "Initially on", IDC_ROPE_INITIALLY_ON, 7, 363, 54, 10
 
     // The decoration list and its placement rules live in their own popup; the checkbox gates it
     // the same way the destructible checkbox gates the mesh panel's block.
-    AUTOCHECKBOX    "Decorations", IDC_ROPE_DECORATIONS, 7, 305, 60, 10
-    PUSHBUTTON      "Decorations...", IDC_ROPE_DECO_EDIT, 72, 302, 60, 14
+    AUTOCHECKBOX    "Decorations", IDC_ROPE_DECORATIONS, 7, 381, 60, 10
+    PUSHBUTTON      "Decorations...", IDC_ROPE_DECO_EDIT, 72, 378, 60, 14
 
-    DEFPUSHBUTTON   "OK", IDOK, 145, 320, 50, 14
-    PUSHBUTTON      "Cancel", IDCANCEL, 200, 320, 50, 14
+    DEFPUSHBUTTON   "OK", IDOK, 145, 396, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 200, 396, 50, 14
 }
 
 // Rope decorations, opened from the rope dialog's Decorations... button. Edits the rope dialog's
