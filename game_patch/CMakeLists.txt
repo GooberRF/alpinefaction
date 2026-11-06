@@ -354,6 +354,8 @@ set(SRCS
     object/alpine_rope.h
     object/alpine_dir_light.cpp
     object/alpine_dir_light.h
+    object/zipline.cpp
+    object/zipline.h
     object/clock.cpp
     misc/achievements.h
     misc/achievements.cpp

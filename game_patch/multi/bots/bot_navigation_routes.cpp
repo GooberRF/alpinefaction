@@ -288,7 +288,8 @@ bool is_link_unclimbable_upward_for_route(const int from_waypoint, const int to_
     (void)from_subtype;
     (void)to_subtype;
     if (waypoint_type_allows_special_vertical_route(from_type)
-        || waypoint_type_allows_special_vertical_route(to_type)) {
+        || waypoint_type_allows_special_vertical_route(to_type)
+        || waypoints_get_zipline_ride(from_waypoint, to_waypoint, nullptr, nullptr, nullptr)) {
         return false;
     }
 
@@ -395,7 +396,14 @@ void optimize_noisy_route_path(std::vector<int>& path)
     constexpr int kLookahead = 6;
     for (size_t i = 0; i + 2 < path.size();) {
         int best_jump = -1;
-        const size_t max_jump = std::min(path.size() - 1, i + kLookahead);
+        size_t max_jump = std::min(path.size() - 1, i + kLookahead);
+        // A shortcut must not cut a zip line ride out of the route.
+        for (size_t k = i; k < max_jump; ++k) {
+            if (waypoints_get_zipline_ride(path[k], path[k + 1], nullptr, nullptr, nullptr)) {
+                max_jump = k;
+                break;
+            }
+        }
         for (size_t j = max_jump; j >= i + 2; --j) {
             const int from = path[i];
             const int to = path[j];
@@ -1543,7 +1551,8 @@ bool bot_nav_link_climbs_ledge(const int from_waypoint, const int to_waypoint)
         || !waypoints_get_type_subtype(to_waypoint, to_type_raw, subtype)
         || waypoint_type_allows_special_vertical_route(static_cast<WaypointType>(from_type_raw))
         || waypoint_type_allows_special_vertical_route(static_cast<WaypointType>(to_type_raw))
-        || waypoints_link_has_target_type(from_waypoint, to_waypoint, WaypointTargetType::jump)) {
+        || waypoints_link_has_target_type(from_waypoint, to_waypoint, WaypointTargetType::jump)
+        || waypoints_get_zipline_ride(from_waypoint, to_waypoint, nullptr, nullptr, nullptr)) {
         return false;
     }
     const uint64_t edge_key = (static_cast<uint64_t>(from_waypoint) << 32) | static_cast<uint32_t>(to_waypoint);

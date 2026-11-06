@@ -36,6 +36,7 @@
 #include "../rf/localize.h"
 #include "../rf/v3d.h"
 #include "../rf/vmesh.h"
+#include "../object/zipline.h"
 
 static char* const* g_af_gametype_names[rf::NG_TYPE_UNK + 1];
 
@@ -2406,12 +2407,13 @@ CodeInjection carrier_attachment_render_patch{
         auto* ep = reinterpret_cast<rf::Entity*>(regs.esi.value);
         if (!ep) return;
 
-        // Shared entity_render attachment point for jetpacks. Deliberately ahead
+        // Shared entity_render attachment point for jetpacks and zip line trolleys. Deliberately ahead
         // of the bagman gates below and not gated on rf::is_multi: the Jetpacks
         // mutator applies to every gametype, and the single player `jetpack`
         // command uses this same hook. jetpack_render_attachment() does its own
         // active/first-person checks and yields to the bag on the carrier.
         jetpack_render_attachment(ep);
+        zipline_render_attachment(ep);
 
         // Same attachment point: AF's jeep hull carries no tires, so they are drawn right after it.
         vehicle_render_jeep_tires(ep);

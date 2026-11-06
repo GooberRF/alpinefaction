@@ -353,6 +353,8 @@
 #define IDC_ROPE_SWAY_SPEED_SPIN 3295
 #define IDC_ROPE_DECO_COUNT_SPIN 3296
 #define IDC_ROPE_DECO_SPACING_SPIN 3297
+#define IDC_ROPE_ZIPLINE 3298
+#define IDC_ROPE_ZIP_DOWN_SPEED 3299
 
 // Per-slot decoration FX popup, opened from the FX... buttons above
 #define IDD_ALPINE_ROPE_SLOT_FX 3300
@@ -418,6 +420,15 @@
 #define IDC_ROPEFX_LIGHT_INTENSITY_SPIN 3359
 // Copies the popup's staged effects into every decoration slot
 #define IDC_ROPEFX_APPLY_ALL 3360
+
+// Rope dialog Zip Line group, continuing IDC_ROPE_ZIPLINE / IDC_ROPE_ZIP_DOWN_SPEED above
+#define IDC_ROPE_ZIP_DOWN_SPEED_SPIN 3361
+#define IDC_ROPE_ZIP_DOWN_SPEED_LABEL 3362
+#define IDC_ROPE_ZIP_DIRECTION 3363
+#define IDC_ROPE_ZIP_DIRECTION_LABEL 3364
+#define IDC_ROPE_ZIP_UP_SPEED 3365
+#define IDC_ROPE_ZIP_UP_SPEED_SPIN 3366
+#define IDC_ROPE_ZIP_UP_SPEED_LABEL 3367
 
 // Decorations popup, opened from the rope dialog's Decorations... button. Its mesh rows and
 // placement controls keep the IDCs they had when they were the rope dialog's right column.

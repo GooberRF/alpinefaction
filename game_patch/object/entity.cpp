@@ -40,12 +40,14 @@
 #include "../multi/mutators.h"
 #include "../multi/server.h"
 #include "../multi/bots/server_bots.h"
+#include "object.h"
+#include "zipline.h"
 
 rf::Timestamp g_player_jump_timestamp;
 // Server bots are simulated at this machine's frame rate.
 static std::unordered_map<int, rf::Timestamp> g_server_bot_jump_timestamps;
 
-static void skip_land_handling_after_jump(rf::Entity* entity)
+void entity_skip_land_handling_after_jump(rf::Entity* entity)
 {
     if (entity->local_player) {
         g_player_jump_timestamp.set(64);
@@ -78,7 +80,7 @@ CodeInjection stuck_to_ground_when_jumping_fix{
     0x0042891E,
     [](auto& regs) {
         // Skip land handling code for next 64 ms (like in PF)
-        skip_land_handling_after_jump(regs.esi);
+        entity_skip_land_handling_after_jump(regs.esi);
     },
 };
 
@@ -86,14 +88,18 @@ CodeInjection stuck_to_ground_when_using_jump_pad_fix{
     0x00486B60,
     [](auto& regs) {
         // Skip land handling code for next 64 ms
-        skip_land_handling_after_jump(regs.esi);
+        entity_skip_land_handling_after_jump(regs.esi);
     },
 };
 
 CodeInjection stuck_to_ground_fix{
     0x00487F82,
     [](auto& regs) {
-        if (entity_skips_land_handling(regs.esi)) {
+        rf::Entity* entity = regs.esi;
+        // A rider is held off the ground only while still falling, so swim or climb mode taken
+        // this frame is not overwritten and ends the ride.
+        const bool riding = zipline_entity_simulates_ride(entity) && rf::entity_is_falling(entity);
+        if (riding || entity_skips_land_handling(entity)) {
             // Jump to jump handling code that sets entity to falling movement mode
             regs.eip = 0x00487F7B;
         }
@@ -256,7 +262,13 @@ CodeInjection entity_collision_push_rate_limit{
     0x0049DDBB,
     [](auto& regs) {
         rf::Entity* ep = regs.esi;
-        if (!rf::is_multi || !rf::entity_from_handle(ep->p_data.collide_out.obj_handle)) {
+        rf::Entity* other = rf::entity_from_handle(ep->p_data.collide_out.obj_handle);
+        // A zip line rider carries up to 70 m/s of ride speed; brushing past one is not a hit.
+        if (other && zipline_entity_is_riding(other)) {
+            addr_as_ref<float>(regs.esp + 4) = 0.0f;
+            return;
+        }
+        if (!rf::is_multi || !other) {
             return;
         }
         const int64_t now = timer::get_i64(1000);

@@ -175,6 +175,8 @@ extern KothInfo g_koth_info;
 bool player_inside_hill_trigger(const HillInfo& h, const rf::Player& p);
 bool player_is_countable(rf::Player& p);
 
+bool obj_inside_trigger(const rf::Trigger* t, const rf::Object* o);
+
 bool multi_game_type_is_team_type(rf::NetGameType game_type);
 bool multi_game_type_has_hills(rf::NetGameType game_type);
 bool multi_is_game_type_with_hills();
