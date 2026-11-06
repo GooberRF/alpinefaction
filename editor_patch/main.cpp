@@ -1708,7 +1708,7 @@ static int get_editing_group_first_keyframe_uid([[maybe_unused]] HWND hdlg)
 static LRESULT CALLBACK KfPropsSubclassProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     if (msg == WM_COMMAND) {
-        mover_path_dialog_command(hwnd, LOWORD(wParam));
+        mover_path_dialog_command(hwnd, LOWORD(wParam), reinterpret_cast<HWND>(lParam));
     }
     if (msg == WM_COMMAND && LOWORD(wParam) == IDOK) {
         mover_path_dialog_ok(hwnd);

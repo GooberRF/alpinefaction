@@ -92,14 +92,6 @@ struct MoverPathEntry
     uint8_t ease = 0;
 };
 
-// By first keyframe uid. reference is the pose in which the mover's members are where the level placed them.
-struct MoverOrientEntry
-{
-    mpath::OrientMode mode = mpath::OrientMode::none;
-    mpath::Mat3 reference;
-    mpath::FollowFrames frames;
-};
-
 struct MoverSegmentPath
 {
     const mpath::Curve* curve = nullptr;
@@ -117,7 +109,8 @@ struct BrushTurn
 static std::unordered_map<int32_t, MoverPathEntry> g_mover_path_entries;
 
 static std::unordered_map<int32_t, mpath::MoverSettings> g_mover_path_movers;
-static std::unordered_map<int32_t, MoverOrientEntry> g_mover_orient_entries;
+// By first keyframe uid
+static std::unordered_map<int32_t, mpath::PathFacing> g_mover_orient_entries;
 // By mover brush handle, as a rider's ground object is the brush, not the Mover
 static std::unordered_map<int, uint8_t> g_rider_brush_flags;
 static std::unordered_map<int, BrushTurn> g_rider_brush_turns;
@@ -227,24 +220,13 @@ static void alpine_mover_do_path_init()
         }
         if (paths && count > 1 && settings != g_mover_path_movers.end()
             && settings->second.orient_mode != static_cast<uint8_t>(mpath::OrientMode::none)) {
-            MoverOrientEntry entry;
-            entry.mode = static_cast<mpath::OrientMode>(settings->second.orient_mode);
-            if (entry.mode == mpath::OrientMode::follow_path) {
-                entry.frames = mpath::make_follow_frames(
-                    count, closing_segment,
-                    [mover](int owner) {
-                        const auto it = g_mover_path_entries.find(KF(mover, owner)->uid);
-                        return it != g_mover_path_entries.end() && it->second.curved;
-                    },
-                    [mover](int owner, float fraction) {
-                        return mover_path_direction(mover, {owner, fraction}, 0, 0);
-                    });
-                entry.reference = entry.frames.reference;
-            }
-            else {
-                entry.reference = mover_keyframe_orient(KF(mover, 0));
-            }
-            g_mover_orient_entries[KF(mover, 0)->uid] = std::move(entry);
+            g_mover_orient_entries[KF(mover, 0)->uid] = mpath::make_path_facing(
+                settings->second.orient_mode, keys, closing_segment, mover_keyframe_orient(KF(mover, 0)),
+                [mover](int owner) {
+                    const auto it = g_mover_path_entries.find(KF(mover, owner)->uid);
+                    return it != g_mover_path_entries.end() && it->second.curved;
+                },
+                [mover](int owner, float fraction) { return mover_path_direction(mover, {owner, fraction}, 0, 0); });
         }
     }
 }
@@ -904,7 +886,7 @@ CodeInjection mover_interpolate_objects_path_orient_patch{
             return;
         }
 
-        const MoverOrientEntry& entry = it->second;
+        const mpath::PathFacing& entry = it->second;
         const MoverSegmentPath path = to >= 0 ? mover_segment_path(mp, from, to) : MoverSegmentPath{};
         // From the clock, as a segment between coincident keyframes has no distance to measure
         float s = 0.0f;
@@ -920,17 +902,11 @@ CodeInjection mover_interpolate_objects_path_orient_patch{
             s = mpath::segment_progress(mp->travel_time_seconds, travel, accel, decel, mover_keyframe_ease(kfA));
         }
 
-        mpath::Mat3 pose;
-        if (entry.mode == mpath::OrientMode::follow_path) {
-            const auto type = static_cast<mpath::MoveType>(mp->keyframe_move_type);
-            const bool closing_segment = mpath::has_closing_segment(type, count);
-            const mpath::PathSpot spot = mpath::path_spot(from, to, s, count, closing_segment);
-            pose = mpath::follow_pose(entry.frames, spot, mover_path_direction(mp, spot, from, to));
-        }
-        else {
-            pose = to >= 0 ? mpath::slerp(mover_keyframe_orient(KF(mp, from)), mover_keyframe_orient(KF(mp, to)), s)
-                           : mover_keyframe_orient(KF(mp, from));
-        }
+        const auto type = static_cast<mpath::MoveType>(mp->keyframe_move_type);
+        const mpath::PathSpot spot = mpath::path_spot(from, to, s, count, mpath::has_closing_segment(type, count));
+        const mpath::Mat3 pose = mpath::path_facing_pose(
+            entry, spot, from, to, s, [mp](int i) { return mover_keyframe_orient(KF(mp, i)); },
+            [&](const mpath::PathSpot& at) { return mover_path_direction(mp, at, from, to); });
 
         const rf::Vector3& kf0_pos = KF(mp, 0)->pos;
         const mpath::Vec3 rest{child->start_pos.x - kf0_pos.x, child->start_pos.y - kf0_pos.y,

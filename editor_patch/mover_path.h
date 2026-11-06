@@ -36,7 +36,7 @@ void mover_path_uid_generated(int uid);
 GroupEntry* find_moving_group_from_selection();
 
 void mover_path_dialog_init(HWND hdlg);
-void mover_path_dialog_command(HWND hdlg, int id);
+void mover_path_dialog_command(HWND hdlg, int id, HWND ctrl);
 void mover_path_dialog_ok(HWND hdlg);
 
 bool mover_path_view_lbutton_down(EditorViewport* view, UINT flags, int x, int y);

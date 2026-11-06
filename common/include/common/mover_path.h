@@ -118,12 +118,16 @@ inline Vec3 normalized(const Vec3& v)
     return len > 1.0e-6f ? v * (1.0f / len) : Vec3{};
 }
 
+// The bits of a keyframe's facing byte that hold segment_orient; the others are left for later per-segment settings
+inline constexpr uint8_t segment_orient_bits = 0x3;
+
 // What a keyframe adds to the stock record. in_handle and out_handle are offsets from the keyframe.
 struct KeyframeData
 {
     uint8_t segment_mode = static_cast<uint8_t>(SegmentMode::straight);
     uint8_t tangent_mode = static_cast<uint8_t>(TangentMode::automatic);
     uint8_t ease = static_cast<uint8_t>(Ease::none);
+    uint8_t segment_orient = static_cast<uint8_t>(OrientMode::none); // for the segment it owns; none is the mover's
     Vec3 in_handle{};
     Vec3 out_handle{};
 };
@@ -136,14 +140,14 @@ inline bool operator==(const Vec3& a, const Vec3& b)
 inline bool operator==(const KeyframeData& a, const KeyframeData& b)
 {
     return a.segment_mode == b.segment_mode && a.tangent_mode == b.tangent_mode && a.ease == b.ease
-        && a.in_handle == b.in_handle && a.out_handle == b.out_handle;
+        && a.segment_orient == b.segment_orient && a.in_handle == b.in_handle && a.out_handle == b.out_handle;
 }
 
 inline bool is_default(const KeyframeData& d)
 {
     return d.segment_mode == static_cast<uint8_t>(SegmentMode::straight)
         && d.tangent_mode == static_cast<uint8_t>(TangentMode::automatic)
-        && d.ease == static_cast<uint8_t>(Ease::none);
+        && d.ease == static_cast<uint8_t>(Ease::none) && d.segment_orient == static_cast<uint8_t>(OrientMode::none);
 }
 
 inline float sanitize_handle_axis(float v)
@@ -154,6 +158,12 @@ inline float sanitize_handle_axis(float v)
 inline Vec3 sanitize_handle(const Vec3& v)
 {
     return {sanitize_handle_axis(v.x), sanitize_handle_axis(v.y), sanitize_handle_axis(v.z)};
+}
+
+inline uint8_t sanitize_orient_mode(uint8_t mode)
+{
+    return mode <= static_cast<uint8_t>(OrientMode::keyframe_rotation) ? mode
+                                                                       : static_cast<uint8_t>(OrientMode::none);
 }
 
 inline void sanitize(KeyframeData& d)
@@ -167,24 +177,18 @@ inline void sanitize(KeyframeData& d)
     if (d.ease > static_cast<uint8_t>(Ease::in_out)) {
         d.ease = static_cast<uint8_t>(Ease::none);
     }
+    d.segment_orient = sanitize_orient_mode(d.segment_orient & segment_orient_bits);
     d.in_handle = sanitize_handle(d.in_handle);
     d.out_handle = sanitize_handle(d.out_handle);
-}
-
-inline uint8_t sanitize_orient_mode(uint8_t mode)
-{
-    return mode <= static_cast<uint8_t>(OrientMode::keyframe_rotation) ? mode
-                                                                       : static_cast<uint8_t>(OrientMode::none);
 }
 
 // Reader provides read(T&), as RflChunkReader does.
 template<class Reader>
 bool read_keyframe_data(Reader& r, KeyframeData& d)
 {
-    uint8_t pad = 0;
     auto read_vec = [&](Vec3& v) { return r.read(v.x) && r.read(v.y) && r.read(v.z); };
-    return r.read(d.segment_mode) && r.read(d.tangent_mode) && r.read(d.ease) && r.read(pad) && read_vec(d.in_handle)
-        && read_vec(d.out_handle);
+    return r.read(d.segment_mode) && r.read(d.tangent_mode) && r.read(d.ease) && r.read(d.segment_orient)
+        && read_vec(d.in_handle) && read_vec(d.out_handle);
 }
 
 // Writer provides the rf::File write<T>(v) of each DLL.
@@ -194,7 +198,7 @@ void write_keyframe_data(Writer& w, const KeyframeData& d)
     w.template write<uint8_t>(d.segment_mode);
     w.template write<uint8_t>(d.tangent_mode);
     w.template write<uint8_t>(d.ease);
-    w.template write<uint8_t>(0);
+    w.template write<uint8_t>(d.segment_orient);
     for (const Vec3* v : {&d.in_handle, &d.out_handle}) {
         w.template write<float>(v->x);
         w.template write<float>(v->y);
@@ -791,6 +795,83 @@ inline Mat3 slerp(const Mat3& a, const Mat3& b, float s)
     }
     return to_mat(normalized(Quat{ka * qa.x + kb * qb.x, ka * qa.y + kb * qb.y, ka * qa.z + kb * qb.z,
                                   ka * qa.w + kb * qb.w}));
+}
+
+// ─── Facing by segment ───────────────────────────────────────────────────────
+
+// A keyframe can pick the facing of the segment it owns, once its mover has a facing of its own at all
+inline OrientMode segment_orient(uint8_t mover_mode, const KeyframeData& owner)
+{
+    if (mover_mode == static_cast<uint8_t>(OrientMode::none)
+        || owner.segment_orient == static_cast<uint8_t>(OrientMode::none)) {
+        return static_cast<OrientMode>(mover_mode);
+    }
+    return static_cast<OrientMode>(owner.segment_orient);
+}
+
+// reference is the pose in which the mover's members are where the level placed them: how the first segment faces at
+// its start.
+struct PathFacing
+{
+    OrientMode mover = OrientMode::none;
+    std::vector<OrientMode> segments; // by owner
+    Mat3 reference;
+    FollowFrames frames; // only if a segment follows the path
+};
+
+// A jump between keyframes that are not neighbours faces as the mover does
+inline OrientMode facing_mode(const PathFacing& f, int owner)
+{
+    return owner >= 0 && owner < static_cast<int>(f.segments.size()) ? f.segments[owner] : f.mover;
+}
+
+// first_orient is keyframe 0's own; curved and dir are make_follow_frames'
+template<class CurvedFn, class DirFn>
+PathFacing make_path_facing(uint8_t mover_mode, const std::vector<Key>& keys, bool closing_segment,
+                            const Mat3& first_orient, CurvedFn&& curved, DirFn&& dir)
+{
+    PathFacing f;
+    f.mover = static_cast<OrientMode>(mover_mode);
+    const int count = static_cast<int>(keys.size());
+    const int segment_count = closing_segment ? count : count - 1;
+    for (int owner = 0; owner < segment_count; owner++) {
+        f.segments.push_back(segment_orient(mover_mode, keys[owner].data));
+    }
+    const bool follows = f.mover == OrientMode::follow_path
+                      || std::find(f.segments.begin(), f.segments.end(), OrientMode::follow_path) != f.segments.end();
+    if (follows) {
+        f.frames = make_follow_frames(count, closing_segment, curved, dir);
+    }
+    f.reference = facing_mode(f, 0) == OrientMode::follow_path ? f.frames.reference : first_orient;
+    return f;
+}
+
+// The pose s of the way from keyframe `from` to `to` (-1 at rest) at spot. orient(i) is keyframe i's own, dir(spot)
+// the path's direction there as follow_direction gives it.
+template<class OrientFn, class DirFn>
+Mat3 path_facing_pose(const PathFacing& f, const PathSpot& spot, int from, int to, float s, OrientFn&& orient,
+                      DirFn&& dir)
+{
+    if (facing_mode(f, spot.owner) == OrientMode::follow_path) {
+        return follow_pose(f.frames, spot, dir(spot));
+    }
+    return to >= 0 ? slerp(orient(from), orient(to), s) : orient(from);
+}
+
+// How keyframe i faces along the path: as the Follow Path segment into it ends, else as the one out of it starts, and
+// with neither, as the path arrives (leaves, at the start of a path). Set as its orientation, a Follow Path segment
+// there meets a turning one without a snap.
+template<class DirFn>
+Mat3 facing_along_path(const PathFacing& f, int i, bool closing_segment, DirFn&& dir)
+{
+    const int count = static_cast<int>(f.segments.size()) + (closing_segment ? 0 : 1);
+    const int before = i > 0 ? i - 1 : (closing_segment ? count - 1 : -1);
+    const int after = i < count - 1 || closing_segment ? i : -1;
+    const bool before_follows = before >= 0 && facing_mode(f, before) == OrientMode::follow_path;
+    const bool after_follows = after >= 0 && facing_mode(f, after) == OrientMode::follow_path;
+    const bool use_after = after >= 0 && (before < 0 || (after_follows && !before_follows));
+    const PathSpot spot = use_after ? PathSpot{after, 0.0f} : PathSpot{before, 1.0f};
+    return follow_pose(f.frames, spot, dir(spot));
 }
 
 // ─── Timing ──────────────────────────────────────────────────────────────────

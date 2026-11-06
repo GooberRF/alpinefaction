@@ -32,6 +32,20 @@ Vector3 to_world(const mp::Vec3& v)
     return {v.x, v.y, v.z};
 }
 
+mp::Mat3 to_mat3(const Matrix3& m)
+{
+    return {to_path(m.rvec), to_path(m.uvec), to_path(m.fvec)};
+}
+
+Matrix3 to_matrix(const mp::Mat3& m)
+{
+    Matrix3 out = identity_orient;
+    out.rvec = to_world(m.rvec);
+    out.uvec = to_world(m.uvec);
+    out.fvec = to_world(m.fvec);
+    return out;
+}
+
 bool has_path_data(const AlpineLevelProperties& props)
 {
     return !props.mover_path_keyframes.empty();
@@ -100,6 +114,45 @@ int first_active_keyframe_uid(const GroupEntry& group)
         }
     }
     return -1;
+}
+
+mp::MoverSettings group_settings(const AlpineLevelProperties& props, const GroupEntry& group)
+{
+    const auto it = props.mover_path_movers.find(first_active_keyframe_uid(group));
+    return it != props.mover_path_movers.end() ? it->second : mp::MoverSettings{};
+}
+
+uint8_t group_orient_mode(const AlpineLevelProperties& props, const GroupEntry& group)
+{
+    return group_settings(props, group).orient_mode;
+}
+
+std::vector<mp::Curve> path_curves(const GroupPath& path)
+{
+    std::vector<mp::Curve> curves(path.count());
+    for (int i = 0; i < path.count(); i++) {
+        if (path.segment_curved(i)) {
+            curves[i] = mp::make_segment_curve(path.keys, i);
+        }
+    }
+    return curves;
+}
+
+// from and to only matter for a jump between keyframes that are not neighbours
+mp::Vec3 path_direction(const GroupPath& path, const std::vector<mp::Curve>& curves, const mp::PathSpot& spot,
+                        int from, int to)
+{
+    const bool curved = spot.owner >= 0 && path.segment_curved(spot.owner);
+    return mp::follow_direction(spot, from, to, path.count(), curved ? &curves[spot.owner] : nullptr,
+                                [&](int i) { return path.keys[i].pos; });
+}
+
+mp::PathFacing path_facing(uint8_t mode, const GroupPath& path, const std::vector<mp::Curve>& curves)
+{
+    return mp::make_path_facing(
+        mode, path.keys, path.closing_segment, to_mat3(path.keyframes[0]->orient),
+        [&](int owner) { return path.segment_curved(owner); },
+        [&](int owner, float fraction) { return path_direction(path, curves, {owner, fraction}, 0, 0); });
 }
 
 GroupEntry* moving_group_of(const CDedLevel& level, const DedObject* obj)
@@ -206,6 +259,11 @@ constexpr int max_ticks_per_segment = 64;
 const Color handle_color{255, 200, 0};
 const Color drag_color{255, 255, 255};
 const Color tick_color{120, 220, 255};
+constexpr float facing_arrow_length = 1.0f;
+constexpr float facing_up_length = 0.4f;
+// Not the keyframe link colour, as an aligned arrow lies along a link
+const Color facing_color{255, 60, 255};
+const Color facing_up_color{60, 220, 60};
 
 void draw_line(const Vector3& a, const Vector3& b, const Color& c)
 {
@@ -322,6 +380,14 @@ void draw_keyframe_handles(const DedKeyframe& kf, const GroupPath& path, int ind
     }
 }
 
+// Where a mover turns to match its keyframes: which way each faces, and a tick for its up
+void draw_keyframe_facing(const DedKeyframe& kf)
+{
+    const Vector3 tip = kf.pos + kf.orient.fvec * facing_arrow_length;
+    draw_3d_arrow(kf.pos.x, kf.pos.y, kf.pos.z, tip.x, tip.y, tip.z, facing_color.r, facing_color.g, facing_color.b);
+    draw_line(kf.pos, kf.pos + kf.orient.uvec * facing_up_length, facing_up_color);
+}
+
 void draw_group_path(const CDedLevel& level, const GroupEntry& group, const Color& link_color)
 {
     const AlpineLevelProperties& props = const_cast<CDedLevel&>(level).GetAlpineLevelProperties();
@@ -351,6 +417,20 @@ void draw_group_path(const CDedLevel& level, const GroupEntry& group, const Colo
     for (int i = 0; i < path.count(); i++) {
         if (selected && !path.keyframes[i]->hidden_in_editor) {
             draw_keyframe_handles(*path.keyframes[i], path, i);
+        }
+    }
+
+    const uint8_t mode = group_orient_mode(props, group);
+    std::vector<bool> faced(path.count(), false);
+    for (int i = 0; i < path.count(); i++) {
+        if (path.has_segment(i) && mp::segment_orient(mode, path.keys[i].data) == mp::OrientMode::keyframe_rotation) {
+            faced[i] = true;
+            faced[(i + 1) % path.count()] = true;
+        }
+    }
+    for (int i = 0; i < path.count(); i++) {
+        if (faced[i] && !path.keyframes[i]->hidden_in_editor) {
+            draw_keyframe_facing(*path.keyframes[i]);
         }
     }
 }
@@ -566,17 +646,6 @@ int shared_value(const std::vector<DedKeyframe*>& keyframes, Fn&& value)
     return shared;
 }
 
-mp::MoverSettings group_settings(const AlpineLevelProperties& props, const GroupEntry& group)
-{
-    const auto it = props.mover_path_movers.find(first_active_keyframe_uid(group));
-    return it != props.mover_path_movers.end() ? it->second : mp::MoverSettings{};
-}
-
-uint8_t group_orient_mode(const AlpineLevelProperties& props, const GroupEntry& group)
-{
-    return group_settings(props, group).orient_mode;
-}
-
 void set_group_settings(AlpineLevelProperties& props, const GroupEntry& group, const mp::MoverSettings& settings)
 {
     const int uid = first_active_keyframe_uid(group);
@@ -586,6 +655,11 @@ void set_group_settings(AlpineLevelProperties& props, const GroupEntry& group, c
     else {
         props.mover_path_movers[uid] = settings;
     }
+}
+
+int combo_selection(HWND hdlg, int id)
+{
+    return static_cast<int>(SendDlgItemMessageA(hdlg, id, CB_GETCURSEL, 0, 0));
 }
 
 constexpr std::array<std::pair<int, uint8_t>, 2> rider_checkboxes{{
@@ -602,14 +676,74 @@ void update_dialog_enables(HWND hdlg)
     EnableWindow(GetDlgItem(hdlg, IDC_KF_PATH_TANGENT), !legacy && !rotating);
     EnableWindow(GetDlgItem(hdlg, IDC_KF_PATH_EASE), !legacy);
     EnableWindow(GetDlgItem(hdlg, IDC_KF_PATH_ORIENT), !legacy && !rotating);
+    // A mover with no facing of its own keeps stock's on every segment
+    const bool faces = combo_selection(hdlg, IDC_KF_PATH_ORIENT) != static_cast<int>(mp::OrientMode::none);
+    EnableWindow(GetDlgItem(hdlg, IDC_KF_PATH_SEGMENT_ORIENT), !legacy && !rotating && faces);
+    EnableWindow(GetDlgItem(hdlg, IDC_KF_ALIGN_TO_PATH), !legacy && !rotating && faces);
     for (const auto& [id, flag] : rider_checkboxes) {
         EnableWindow(GetDlgItem(hdlg, id), !legacy);
     }
 }
 
-int combo_selection(HWND hdlg, int id)
+// Turns each keyframe to face along its path, in one undo step. False if none has a path facing to align to.
+bool align_keyframes_to_path(CDedLevel& level, const std::vector<DedKeyframe*>& keyframes)
 {
-    return static_cast<int>(SendDlgItemMessageA(hdlg, id, CB_GETCURSEL, 0, 0));
+    const AlpineLevelProperties& props = level.GetAlpineLevelProperties();
+    std::vector<std::pair<DedKeyframe*, mp::Mat3>> turns;
+    for (DedKeyframe* kf : keyframes) {
+        const GroupEntry* group = moving_group_of(level, kf);
+        if (!group || !group_has_paths(props, *group)) continue;
+        const uint8_t mode = group_orient_mode(props, *group);
+        if (mode == static_cast<uint8_t>(mp::OrientMode::none)) continue;
+        const GroupPath path = group_path(props, *group);
+        const auto it = std::find(path.keyframes.begin(), path.keyframes.end(), kf);
+        if (path.count() < 2 || it == path.keyframes.end()) continue;
+        const std::vector<mp::Curve> curves = path_curves(path);
+        const mp::PathFacing facing = path_facing(mode, path, curves);
+        turns.emplace_back(kf, mp::facing_along_path(facing, static_cast<int>(it - path.keyframes.begin()),
+                                                     path.closing_segment, [&](const mp::PathSpot& at) {
+                                                         return path_direction(path, curves, at, 0, 0);
+                                                     }));
+    }
+    if (turns.empty()) return false;
+
+    level.commit_pending_transform();
+    const UndoEntry* top_before = undo_stack_top(level.undo_stack);
+    level.begin_transform();
+    const bool undoable = level.transform_in_progress && undo_stack_top(level.undo_stack) != top_before;
+    for (const auto& [kf, orient] : turns) {
+        kf->orient = to_matrix(orient);
+    }
+    if (undoable) {
+        level.finish_transform();
+    }
+    else {
+        level.transform_in_progress = false;
+        xlog::warn("[MoverPath] keyframes were aligned to their path without an undo step");
+    }
+    mark_level_modified();
+    return true;
+}
+
+bool g_align_on_close = false;
+
+// Stock writes the dialog's Movement Type and Rotate in Place to the group once it has closed, just before this call to
+// the dialog's destructor, so Align & OK aligns here.
+void __fastcall keyframe_dialog_destroy(void* dialog, int edx);
+CallHook<void __fastcall(void*, int)> keyframe_dialog_destroy_hook{0x0040D5CD, keyframe_dialog_destroy};
+void __fastcall keyframe_dialog_destroy(void* dialog, int edx)
+{
+    keyframe_dialog_destroy_hook.call_target(dialog, edx);
+    if (!std::exchange(g_align_on_close, false)) return;
+    try {
+        CDedLevel* level = CDedLevel::Get();
+        if (level && align_keyframes_to_path(*level, selected_keyframes(*level))) {
+            redraw_all_viewports();
+        }
+    }
+    catch (const std::exception& e) {
+        xlog::error("[MoverPath] {}", e.what());
+    }
 }
 
 // ─── Playback preview ───────────────────────────────────────────────────────
@@ -989,20 +1123,6 @@ INT_PTR CALLBACK MoverPreviewProc(HWND hdlg, UINT msg, WPARAM wparam, LPARAM)
     return FALSE;
 }
 
-mp::Mat3 to_mat3(const Matrix3& m)
-{
-    return {to_path(m.rvec), to_path(m.uvec), to_path(m.fvec)};
-}
-
-Matrix3 to_matrix(const mp::Mat3& m)
-{
-    Matrix3 out = identity_orient;
-    out.rvec = to_world(m.rvec);
-    out.uvec = to_world(m.uvec);
-    out.fvec = to_world(m.fvec);
-    return out;
-}
-
 mp::Vec3 rotated_about(const mp::Vec3& v, const mp::Vec3& axis, float angle)
 {
     const float c = std::cos(angle);
@@ -1086,31 +1206,15 @@ GhostPose ghost_pose(const AlpineLevelProperties& props, const GroupEntry& group
     }
 
     const uint8_t mode = group_orient_mode(props, group);
-    if (mode == static_cast<uint8_t>(mp::OrientMode::keyframe_rotation)) {
-        ghost.turns = true;
-        ghost.from = to_mat3(path.keyframes[0]->orient);
-        const mp::Mat3 a = to_mat3(path.keyframes[sim.from]->orient);
-        ghost.to = sim.to >= 0 ? mp::slerp(a, to_mat3(path.keyframes[sim.to]->orient), s) : a;
-    }
-    else if (mode == static_cast<uint8_t>(mp::OrientMode::follow_path)) {
-        std::vector<mp::Curve> curves(path.count());
-        for (int i = 0; i < path.count(); i++) {
-            if (path.segment_curved(i)) {
-                curves[i] = mp::make_segment_curve(path.keys, i);
-            }
-        }
-        auto direction = [&](const mp::PathSpot& spot) {
-            const bool curved = spot.owner >= 0 && path.segment_curved(spot.owner);
-            return mp::follow_direction(spot, sim.from, sim.to, path.count(), curved ? &curves[spot.owner] : nullptr,
-                                        [&](int i) { return path.keys[i].pos; });
-        };
-        const mp::FollowFrames frames = mp::make_follow_frames(
-            path.count(), path.closing_segment, [&](int owner) { return path.segment_curved(owner); },
-            [&](int owner, float fraction) { return direction({owner, fraction}); });
+    if (mode != static_cast<uint8_t>(mp::OrientMode::none)) {
+        const std::vector<mp::Curve> curves = path_curves(path);
+        const mp::PathFacing facing = path_facing(mode, path, curves);
         const mp::PathSpot spot = mp::path_spot(sim.from, sim.to, s, path.count(), path.closing_segment);
         ghost.turns = true;
-        ghost.from = frames.reference;
-        ghost.to = mp::follow_pose(frames, spot, direction(spot));
+        ghost.from = facing.reference;
+        ghost.to = mp::path_facing_pose(
+            facing, spot, sim.from, sim.to, s, [&](int i) { return to_mat3(path.keyframes[i]->orient); },
+            [&](const mp::PathSpot& at) { return path_direction(path, curves, at, sim.from, sim.to); });
     }
     else if (group.keyframes->force_orient && sim.to >= 0) {
         ghost.aimed = true;
@@ -1368,11 +1472,16 @@ void mover_path_dialog_init(HWND hdlg)
         const GroupEntry* group = moving_group_of(*level, &kf);
         return group ? static_cast<int>(group_orient_mode(props, *group)) : 0;
     });
+    const int segment_orient = shared_value(keyframes, [](const DedKeyframe& kf) {
+        return static_cast<int>(mover_path_keyframe_data(kf).segment_orient);
+    });
 
     fill_combo(hdlg, IDC_KF_PATH_SEGMENT, {"Straight", "Curved"}, segment);
     fill_combo(hdlg, IDC_KF_PATH_TANGENT, {"Auto", "Aligned", "Free"}, tangent);
     fill_combo(hdlg, IDC_KF_PATH_EASE, {"None", "Ease In", "Ease Out", "Ease In and Out"}, ease);
     fill_combo(hdlg, IDC_KF_PATH_ORIENT, {"None", "Follow Path", "Keyframe Rotation"}, orient);
+    fill_combo(hdlg, IDC_KF_PATH_SEGMENT_ORIENT, {"Mover's Setting", "Follow Path", "Keyframe Rotation"},
+               segment_orient);
     for (const auto& [id, flag] : rider_checkboxes) {
         const int on = shared_value(keyframes, [&](const DedKeyframe& kf) {
             const GroupEntry* group = moving_group_of(*level, &kf);
@@ -1383,10 +1492,21 @@ void mover_path_dialog_init(HWND hdlg)
     update_dialog_enables(hdlg);
 }
 
-void mover_path_dialog_command(HWND hdlg, int id)
+void mover_path_dialog_command(HWND hdlg, int id, HWND ctrl)
 {
-    if (id == IDC_KF_ROTATE_IN_PLACE) {
+    if (id == IDC_KF_ROTATE_IN_PLACE || id == IDC_KF_PATH_ORIENT) {
         update_dialog_enables(hdlg);
+    }
+    // Align & OK presses stock's OK as itself. An OK that fails stock's checks leaves the dialog open, and closing it is
+    // always IDCANCEL.
+    if (id == IDC_KF_ALIGN_TO_PATH) {
+        SendMessageA(hdlg, WM_COMMAND, MAKEWPARAM(IDOK, BN_CLICKED), reinterpret_cast<LPARAM>(ctrl));
+    }
+    else if (id == IDOK) {
+        g_align_on_close = ctrl && ctrl == GetDlgItem(hdlg, IDC_KF_ALIGN_TO_PATH);
+    }
+    else if (id == IDCANCEL) {
+        g_align_on_close = false;
     }
     // Mixed movers open on the third state, which means leave them as they are; a click never returns to it.
     for (const auto& [rider_id, flag] : rider_checkboxes) {
@@ -1405,6 +1525,7 @@ void mover_path_dialog_ok(HWND hdlg)
     const int tangent = combo_selection(hdlg, IDC_KF_PATH_TANGENT);
     const int ease = combo_selection(hdlg, IDC_KF_PATH_EASE);
     const int orient = combo_selection(hdlg, IDC_KF_PATH_ORIENT);
+    const int segment_orient = combo_selection(hdlg, IDC_KF_PATH_SEGMENT_ORIENT);
 
     bool changed = false;
     const std::vector<DedKeyframe*> keyframes = selected_keyframes(*level);
@@ -1416,6 +1537,9 @@ void mover_path_dialog_ok(HWND hdlg)
         }
         if (ease >= 0) {
             data.ease = static_cast<uint8_t>(ease);
+        }
+        if (segment_orient >= 0) {
+            data.segment_orient = static_cast<uint8_t>(segment_orient);
         }
         if (!(data == before)) {
             mover_path_set_keyframe_data(*kf, data);
@@ -1697,6 +1821,7 @@ void mover_path_render(CDedLevel* level)
 void ApplyMoverPathPatches()
 {
     draw_keyframes_hook.install();
+    keyframe_dialog_destroy_hook.install();
     keyframe_link_injection.install();
     unselected_mover_brush_draw_hook.install();
 }
