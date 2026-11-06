@@ -201,6 +201,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Move anisotropic filtering and reduced speed in background from the launcher to the settings menu (`alpine_settings.ini`); both now apply without a restart
 - Add `exposure_damage` dedicated server rule and make `sp_exposuredamage` apply only in single player
 - Raise minimum `maxfps` from 1 to 10, for both the client and the dedicated server
+- Limit `r_gamma` to 0.7-2.2
 - Allow pasting text with `Ctrl+V` into vote panel text boxes
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
