@@ -178,6 +178,20 @@ CodeInjection muzzle_flash_light_not_disabled_fix{
     },
 };
 
+// weapon_move_one, on a multiplayer server: a weapon's fuse or lifetime explosion is followed by a remote charge kill
+// packet that has every client set off all of its owner's remote charges. Stock sends it for grenades and the other
+// weapons that explode this way too, so a thrown grenade blew up its thrower's charges on every client but not on the
+// server.
+CodeInjection weapon_explode_remote_charge_kill_fix{
+    0x004C6CAC,
+    [](auto& regs) {
+        rf::Weapon* weapon = regs.esi;
+        if (!(weapon->info->flags & rf::WTF_REMOTE_CHARGE)) {
+            regs.eip = 0x004C6CB9;
+        }
+    },
+};
+
 CallHook<void(rf::Player*, int)> process_create_entity_packet_switch_weapon_fix{
     0x004756B7,
     [](rf::Player* player, int weapon_type) {
@@ -472,6 +486,9 @@ void apply_weapon_patches()
     // Fix muzzle flash light sometimes not getting disabled (e.g. when weapon is switched during riot stick attack
     // in multiplayer)
     muzzle_flash_light_not_disabled_fix.install();
+
+    // Fix exploding grenades setting off their thrower's remote charges on clients in multiplayer
+    weapon_explode_remote_charge_kill_fix.install();
 
     // Fix weapon being auto-switched to previous one after respawn even when auto-switch is disabled
     process_create_entity_packet_switch_weapon_fix.install();
