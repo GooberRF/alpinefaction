@@ -27,6 +27,7 @@
 #include "../rf/math/matrix.h"
 #include "../rf/player/player.h"
 #include "../rf/player/camera.h"
+#include "../misc/settings_registry.h"
 
 namespace
 {
@@ -259,8 +260,7 @@ namespace
     ConsoleCommand2 cl_sprays_cmd{
         "cl_sprays",
         []() {
-            g_alpine_game_config.spray_display = !g_alpine_game_config.spray_display;
-            sprays_apply_display_toggle();
+            setting_console_set("spray_display", "toggle");
             rf::console::print("Local spray display is {}", g_alpine_game_config.spray_display ? "enabled" : "disabled");
         },
         "Toggle whether players' sprays are displayed locally",
@@ -275,7 +275,7 @@ namespace
                     rf::console::print("Invalid spray id {}. Valid range is 0-{}.", *spray_id, spray_count() - 1);
                     return;
                 }
-                g_alpine_game_config.set_selected_spray_index(*spray_id);
+                setting_console_set("selected_spray_index", std::to_string(*spray_id));
             }
             rf::console::print("Selected spray: {} ({})", g_alpine_game_config.selected_spray_index,
                 spray_texture_name(static_cast<uint16_t>(g_alpine_game_config.selected_spray_index)));

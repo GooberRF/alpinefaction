@@ -69,6 +69,7 @@
 #include "../object/alpine_rope.h"
 #include "../object/zipline.h"
 #include "../sound/sound.h"
+#include "../input/bind_context.h"
 #include "../input/input.h"
 #include "../rf/gr/gr.h"
 #include "../rf/multi.h"
@@ -198,6 +199,7 @@ FunHook<int()> rf_do_frame_hook{
         atx_do_frame();
         fflink::do_frame();
         int result = rf_do_frame_hook.call_target();
+        bind_context_do_frame();
         maybe_autosave();
         debug_do_frame_post();
         multi_level_download_update();
@@ -588,6 +590,10 @@ void load_config()
     catch (std::exception& e) {
         xlog::error("Failed to load configuration: {}", e.what());
     }
+    // Seed the ini-backed copies so a missing key keeps the registry choice, and so renderer init
+    // (before the ini loads) sees it.
+    g_alpine_game_config.anisotropic_filtering = g_game_config.anisotropic_filtering;
+    g_alpine_game_config.reduced_speed_in_background = g_game_config.reduced_speed_in_background;
 
     // Log information from config
     xlog::info("Resolution: {}x{}x{}", g_game_config.res_width.value(), g_game_config.res_height.value(), g_game_config.res_bpp.value());

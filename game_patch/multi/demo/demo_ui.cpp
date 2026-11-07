@@ -18,6 +18,7 @@
 #include "../../input/control_input_filter.h"
 #include "../../input/input.h"
 #include "../../misc/alpine_settings.h"
+#include "../../misc/settings_registry.h"
 #include "../../os/console.h"
 #include "../../sound/sound.h"
 #include "../../rf/gameseq.h"
@@ -865,7 +866,7 @@ void draw_transport_button(const Rect& rect, TransportIcon icon, const std::stri
 ConsoleCommand2 spectate_minimalbar_cmd{
     "spectate_minimalbar",
     []() {
-        g_alpine_game_config.demo_minimal_compact_bar = !g_alpine_game_config.demo_minimal_compact_bar;
+        setting_console_set("demo_minimal_compact_bar", "toggle");
         rf::console::print("Minimal compact demo bar is {}",
                            g_alpine_game_config.demo_minimal_compact_bar ? "enabled" : "disabled");
     },

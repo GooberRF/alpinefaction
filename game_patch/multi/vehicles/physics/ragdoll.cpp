@@ -3,6 +3,7 @@
 #include <cmath>
 #include <memory>
 #include <optional>
+#include <string>
 #include <unordered_map>
 #include <vector>
 #include <patch_common/CallHook.h>
@@ -15,6 +16,7 @@
 #include "vphys_internal.h"
 #include "../../demo/demo.h"
 #include "../../../misc/alpine_settings.h"
+#include "../../../misc/settings_registry.h"
 #include "../../../os/console.h"
 #include "../../../os/os.h"
 #include "../../../rf/character.h"
@@ -1297,7 +1299,7 @@ namespace
     ConsoleCommand2 cl_ragdolls_cmd{
         "cl_ragdolls",
         [](std::optional<bool> enabled) {
-            g_alpine_game_config.ragdolls = enabled.value_or(!g_alpine_game_config.ragdolls);
+            setting_console_set_bool("ragdolls", enabled);
             rf::console::print("Ragdoll deaths are {}", g_alpine_game_config.ragdolls ? "enabled" : "disabled");
         },
         "Toggle client-side ragdoll deaths",
@@ -1308,7 +1310,7 @@ namespace
         "cl_ragdolls_max",
         [](std::optional<int> value) {
             if (value) {
-                g_alpine_game_config.set_ragdolls_max(*value);
+                setting_console_set("ragdolls_max", std::to_string(*value));
             }
             rf::console::print("Ragdoll limit is {}", g_alpine_game_config.ragdolls_max);
         },

@@ -52,6 +52,7 @@ HudNotificationType hud_big_notification_current_type();
 
 // Returns true if HUD should be hidden (cl_hud off, or cinematic spectate freelook)
 bool is_hud_effectively_hidden();
+bool is_screen_resolution_too_low_for_big_hud();
 
 // Hidden state is session-only; cl_chat additionally hides chat as a saved setting.
 enum class HudElement : uint8_t

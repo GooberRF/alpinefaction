@@ -40,6 +40,7 @@ add_shader(terrain_nogas_ps standard_ps.hlsl ps_4_0 -DTERRAIN -DMAX_GAS_REGIONS=
 add_shader(decoration_ps standard_ps.hlsl ps_4_0 -DINSTANCE_LIGHT)
 add_shader(decoration_nogas_ps standard_ps.hlsl ps_4_0 -DINSTANCE_LIGHT -DMAX_GAS_REGIONS=0)
 add_shader(ui_ps ui_ps.hlsl ps_4_0)
+add_shader(ui_sdf_ps ui_ps.hlsl ps_4_0 -DUI_SDF)
 add_shader(shadow_debug_ps shadow_debug_ps.hlsl ps_4_0)
 add_shader(outline_ps outline_ps.hlsl ps_4_0)
 

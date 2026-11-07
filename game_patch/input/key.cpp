@@ -9,6 +9,8 @@
 #include "../misc/player.h"
 #include "../misc/achievements.h"
 #include "../misc/alpine_settings.h"
+#include "../misc/misc.h"
+#include "../misc/settings_registry.h"
 #include "../misc/waypoints_utils.h"
 #include "../multi/multi.h"
 #include "../multi/demo/demo.h"
@@ -44,6 +46,9 @@ rf::String get_action_bind_name(int action)
     else if (config_item.mouse_btn_id >= 0) {
         rf::control_config_get_mouse_button_name(&name, config_item.mouse_btn_id);
     }
+    else if (ctrl_is_extra_mouse_scan(config_item.scan_codes[1])) {
+        rf::control_config_get_key_name(&name, config_item.scan_codes[1]);
+    }
     else {
         name = "?";
     }
@@ -60,6 +65,11 @@ std::string get_action_bind_name_or(int action, const char* fallback)
 rf::ControlConfigAction get_af_control(rf::AlpineControlConfigAction alpine_control)
 {
     return static_cast<rf::ControlConfigAction>(starting_alpine_control_index + static_cast<int>(alpine_control));
+}
+
+int alpine_control_start_index()
+{
+    return starting_alpine_control_index;
 }
 
 FunHook<int(int16_t)> key_to_ascii_hook{
@@ -206,8 +216,7 @@ FunHook<rf::Key()> key_get_hook{
 ConsoleCommand2 key_quick_exit_cmd{
     "key_quick_exit",
     [] {
-        g_alpine_game_config.quick_exit =
-            !g_alpine_game_config.quick_exit;
+        setting_console_set("quick_exit", "toggle");
         rf::console::print(
             "Shift+Esc to quit out of Red Faction is {}",
             g_alpine_game_config.quick_exit ? "enabled" : "disabled"
@@ -632,9 +641,7 @@ FunHook<void(int, int, int)> key_msg_handler_hook{
 FunHook<void(int)> options_controls_record_binding_hook{
     0x0044FE60,
     [](int key) {
-        bool is_extra_mouse_scan = key >= CTRL_EXTRA_MOUSE_SCAN_BASE
-            && key < CTRL_EXTRA_MOUSE_SCAN_BASE + CTRL_EXTRA_MOUSE_SCAN_COUNT;
-        if (is_extra_mouse_scan || key == rf::KEY_LALT || key == rf::KEY_RALT) {
+        if (ctrl_is_extra_mouse_scan(key) || key == rf::KEY_LALT || key == rf::KEY_RALT) {
             rf::ui::options_controls_assign_binding(key, -1);
             rf::ui::options_controls_stop_waiting_for_key();
             return;
@@ -659,7 +666,6 @@ void key_apply_patch()
     // Support non-US keyboard layouts
     key_to_ascii_hook.install();
     get_key_name_hook.install();
-    key_name_in_options_patch.install();
 
     // Disable broken numlock handling
     write_mem<int8_t>(0x004B14B2 + 1, 0);
@@ -675,6 +681,9 @@ void key_apply_patch()
     // Num pads need a patch to support `PgUp`, `PgDown`, `End`, and `Home`.
     key_msg_handler_hook.install();
 
-    // Allow binding Alt keys and extra mouse buttons in the controls options panel
-    options_controls_record_binding_hook.install();
+    if (legacy_menus_enabled()) {
+        key_name_in_options_patch.install();
+        // Allow binding Alt keys and extra mouse buttons in the controls options panel
+        options_controls_record_binding_hook.install();
+    }
 }

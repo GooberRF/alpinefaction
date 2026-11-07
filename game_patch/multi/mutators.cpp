@@ -49,6 +49,7 @@
 #include "../misc/player.h"
 #include "../misc/alpine_options.h"
 #include "../misc/alpine_settings.h"
+#include "../misc/settings_registry.h"
 
 // Spawn reserve for a no-clip "infinite ammo" weapon. Firing draws from reserve,
 // but we suppress the per-shot decrement, so this is purely the (constant) number
@@ -3159,7 +3160,7 @@ void crits_client_render_reticle_flash()
 ConsoleCommand2 crit_reticle_flash_cmd{
     "mp_crit_flash",
     []() {
-        g_alpine_game_config.crit_reticle_flash = !g_alpine_game_config.crit_reticle_flash;
+        setting_console_set("crit_reticle_flash", "toggle");
         rf::console::print("Crit reticle flashes are {}", g_alpine_game_config.crit_reticle_flash ? "enabled" : "disabled");
     },
     "Toggles the reticle flash shown when you fire a critical hit",

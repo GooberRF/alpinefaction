@@ -8,6 +8,12 @@
 #include "../hud/hud.h"
 #include "../hud/remote_server_cfg_ui.h"
 
+namespace rf
+{
+    struct Player;
+    struct ControlConfig;
+}
+
 extern bool g_loaded_alpine_settings_file;
 
 // forward declaration (in sprays.cpp)
@@ -52,31 +58,39 @@ struct AlpineGameSettings
         scanner_sensitivity_modifier = std::clamp(mod, min_sens_mod, max_sens_mod);
     }
 
+    static constexpr float min_level_sound_volume = 0.0f;
+    static constexpr float max_level_sound_volume = 1.0f;
     float level_sound_volume = 1.0f;
     void set_level_sound_volume(float scale)
     {
-        level_sound_volume = std::clamp(scale, 0.0f, 1.0f);
+        level_sound_volume = std::clamp(scale, min_level_sound_volume, max_level_sound_volume);
     }
 
     // lod settings
     bool multi_no_character_lod = true;
 
+    static constexpr float min_entity_sim_distance = 1.0f;
+    static constexpr float max_entity_sim_distance = 100000.0f;
     float entity_sim_distance = 100.0f;
     void set_entity_sim_distance(float dist)
     {
-        entity_sim_distance = std::clamp(dist, 1.0f, 100000.0f);
+        entity_sim_distance = std::clamp(dist, min_entity_sim_distance, max_entity_sim_distance);
     }
 
+    static constexpr float min_lod_dist_scale = 0.1f;
+    static constexpr float max_lod_dist_scale = 1000.0f;
     float lod_dist_scale = 10.0f;
     void set_lod_dist_scale(float scale)
     {
-        lod_dist_scale = std::clamp(scale, 0.1f, 1000.0f);
+        lod_dist_scale = std::clamp(scale, min_lod_dist_scale, max_lod_dist_scale);
     }
 
+    static constexpr int min_monitor_resolution_scale = 1;
+    static constexpr int max_monitor_resolution_scale = 8;
     int monitor_resolution_scale = 2;
     void set_monitor_resolution_scale(int scale)
     {
-        monitor_resolution_scale = std::clamp(scale, 1, 8);
+        monitor_resolution_scale = std::clamp(scale, min_monitor_resolution_scale, max_monitor_resolution_scale);
     }
 
     bool scope_static_sensitivity = false;
@@ -126,11 +140,12 @@ struct AlpineGameSettings
         }
     }
     static constexpr float default_vehicle_cam_velocity = 1.0f;
+    static constexpr float max_vehicle_cam_velocity = 1.0f;
     float vehicle_cam_velocity = default_vehicle_cam_velocity; // share of the travel heading at speed
     void set_vehicle_cam_velocity(float value)
     {
         if (!std::isnan(value)) {
-            vehicle_cam_velocity = std::clamp(value, 0.0f, 1.0f);
+            vehicle_cam_velocity = std::clamp(value, 0.0f, max_vehicle_cam_velocity);
         }
     }
     static constexpr float default_vehicle_cam_min_speed = 1.5f;
@@ -161,11 +176,12 @@ struct AlpineGameSettings
         }
     }
     static constexpr float default_vehicle_cam_pitch_follow = 0.35f;
+    static constexpr float max_vehicle_cam_pitch_follow = 1.0f;
     float vehicle_cam_pitch_follow = default_vehicle_cam_pitch_follow; // share of the hull pitch
     void set_vehicle_cam_pitch_follow(float value)
     {
         if (!std::isnan(value)) {
-            vehicle_cam_pitch_follow = std::clamp(value, 0.0f, 1.0f);
+            vehicle_cam_pitch_follow = std::clamp(value, 0.0f, max_vehicle_cam_pitch_follow);
         }
     }
     static constexpr float default_vehicle_cam_pitch_smooth = 0.9f;
@@ -252,10 +268,12 @@ struct AlpineGameSettings
     bool multi_ricochet = false;
     bool crit_reticle_flash = true;
     // 0=off, 1=stock red screen flash, 2=screen-edge vignette (d3d11 only)
+    static constexpr int min_damage_flash = 0;
+    static constexpr int max_damage_flash = 2;
     int damage_flash = 1;
     void set_damage_flash(int value)
     {
-        damage_flash = std::clamp(value, 0, 2);
+        damage_flash = std::clamp(value, min_damage_flash, max_damage_flash);
     }
     bool spectate_damage_screen_flash = true;
     bool explosion_weapon_flash_lights = true;
@@ -266,29 +284,35 @@ struct AlpineGameSettings
     int mesh_lighting_mode = 2;
     bool mesh_lighting_use_static() const { return mesh_lighting_mode >= 1; }
     bool mesh_lighting_use_vertex() const { return mesh_lighting_mode <= 1; }
+    static constexpr float max_dynamic_light_ndotl = 1.0f;
     float dynamic_light_ndotl = 1.0f; // N·L blend for dynamic lights on BSP faces: 0.0 = none, 1.0 = full
     void set_dynamic_light_ndotl(float value)
     {
-        dynamic_light_ndotl = std::clamp(value, 0.0f, 1.0f);
+        dynamic_light_ndotl = std::clamp(value, 0.0f, max_dynamic_light_ndotl);
     }
+    static constexpr float max_pixel_light_overbright = 3.0f;
     float pixel_light_overbright = 0.5f; // overbright range for pixel lighting compression: 0.0 = hard clamp, higher = more overbright
     void set_pixel_light_overbright(float value)
     {
-        pixel_light_overbright = std::clamp(value, 0.0f, 3.0f);
+        pixel_light_overbright = std::clamp(value, 0.0f, max_pixel_light_overbright);
     }
     bool show_glares = true;
     bool weather = true;
     // 0=stock, 1=caustics, 2=+fog/waterline/tint/vignette, 3=+screen distortion (d3d11 only)
+    static constexpr int min_underwater_fx = 0;
+    static constexpr int max_underwater_fx = 3;
     int underwater_fx = 3;
     void set_underwater_fx(int value)
     {
-        underwater_fx = std::clamp(value, 0, 3);
+        underwater_fx = std::clamp(value, min_underwater_fx, max_underwater_fx);
     }
     // 0=off, 1=light, 2=heavy scope lens (d3d11 only)
+    static constexpr int min_scope_glass = 0;
+    static constexpr int max_scope_glass = 2;
     int scope_glass = 2;
     void set_scope_glass(int value)
     {
-        scope_glass = std::clamp(value, 0, 2);
+        scope_glass = std::clamp(value, min_scope_glass, max_scope_glass);
     }
     bool particle_sim_cull = true; // skip simulating level particle emitters that are not being rendered
     bool particle_sim_fixed_step = true; // step cosmetic particle lists at a fixed rate instead of once per frame
@@ -351,6 +375,8 @@ struct AlpineGameSettings
     bool display_target_player_names = true;
     bool verbose_time_left_display = true;
     bool nearest_texture_filtering = false;
+    bool anisotropic_filtering = true;
+    bool reduced_speed_in_background = false;
     bool direct_input = true;
     bool scoreboard_anim = true;
     bool legacy_bob = false;
@@ -428,6 +454,7 @@ struct AlpineGameSettings
     bool ejected_magazines = true;
     bool real_armor_values = false;
     bool always_show_spectators = false;
+    bool show_advanced_settings = false; // settings menu lists SF_ADVANCED rows
     RemoteServerCfgPopup::DisplayMode remote_server_cfg_display_mode =
         RemoteServerCfgPopup::DISPLAY_MODE_ALIGN_RIGHT_HIGHLIGHT_BOX;
     bool simple_server_chat_msgs = true;
@@ -525,10 +552,12 @@ struct AlpineGameSettings
         world_hud_ping_label_text_scale.reset();
     }
 
+    static constexpr int min_picmip = 1;
+    static constexpr int max_picmip = 256;
     int picmip = 1; // d3d11 only
     void set_picmip(int value)
     {
-        picmip = std::clamp(value, 1, 256);
+        picmip = std::clamp(value, min_picmip, max_picmip);
     }
 
     static constexpr int detail_textures_off = 0;
@@ -540,10 +569,12 @@ struct AlpineGameSettings
         detail_textures = std::clamp(value, detail_textures_off, detail_textures_auto);
     }
 
+    static constexpr int min_colorblind_mode = 0;
+    static constexpr int max_colorblind_mode = 3;
     int colorblind_mode = 0;    // 0=off,1=protanopia,2=deuteranopia,3=tritanopia (d3d11 only)
     void set_colorblind_mode(int value)
     {
-        colorblind_mode = std::clamp(value, 0, 3);
+        colorblind_mode = std::clamp(value, min_colorblind_mode, max_colorblind_mode);
     }
 
     bool precache_rooms = true; // d3d11 only
@@ -560,10 +591,13 @@ struct AlpineGameSettings
     std::optional<uint32_t> outlines_color_enemy{};
     std::optional<uint32_t> outlines_color_team{};
 
+    static constexpr int min_suppress_autoswitch_fire_wait = 0;
+    static constexpr int max_suppress_autoswitch_fire_wait = 10000;
     int suppress_autoswitch_fire_wait = 0;
     void set_suppress_autoswitch_fire_wait(int value)
     {
-        suppress_autoswitch_fire_wait = std::clamp(value, 0, 10000);
+        suppress_autoswitch_fire_wait =
+            std::clamp(value, min_suppress_autoswitch_fire_wait, max_suppress_autoswitch_fire_wait);
     }
 
     std::string multiplayer_tracker = "rfgt.factionfiles.com";
@@ -577,7 +611,8 @@ struct AlpineGameSettings
     }
 
     // max_fps default is 120
-    static constexpr unsigned min_fps_limit = 1u;
+    // Below this a frame limit only makes the game (and the menu used to undo it) unusable.
+    static constexpr unsigned min_fps_limit = 10u;
     static constexpr unsigned max_fps_limit = 100000u;
     static constexpr unsigned max_fps_limit_mp = 240u;
     unsigned max_fps = 240u;
@@ -602,34 +637,40 @@ struct AlpineGameSettings
         server_netfps = std::clamp(netfps_value, min_server_netfps, max_server_netfps);
     }
 
+    static constexpr int min_desired_handicap = 0;
+    static constexpr int max_desired_handicap = 99;
     int desired_handicap = 0;
     void set_desired_handicap(int value)
     {
-        desired_handicap = std::clamp(value, 0, 99);
+        desired_handicap = std::clamp(value, min_desired_handicap, max_desired_handicap);
     }
+
+    static constexpr float max_control_point_height_scale = 1000.0f;
+    static constexpr int min_control_point_segments = 3;
+    static constexpr int max_control_point_segments = 256;
 
     float control_point_outline_height_scale = 5.0f;
     void set_control_point_outline_height_scale(float scale)
     {
-        control_point_outline_height_scale = std::clamp(scale, 0.0f, 1000.0f);
+        control_point_outline_height_scale = std::clamp(scale, 0.0f, max_control_point_height_scale);
     }
 
     int control_point_outline_segments = 32;
     void set_control_point_outline_segments(int segments)
     {
-        control_point_outline_segments = std::clamp(segments, 3, 256);
+        control_point_outline_segments = std::clamp(segments, min_control_point_segments, max_control_point_segments);
     }
 
     int control_point_column_segments = 8;
     void set_control_point_column_segments(int segments)
     {
-        control_point_column_segments = std::clamp(segments, 3, 256);
+        control_point_column_segments = std::clamp(segments, min_control_point_segments, max_control_point_segments);
     }
 
     float control_point_column_height_scale = 1.0f;
     void set_control_point_column_height_scale(float scale)
     {
-        control_point_column_height_scale = std::clamp(scale, 0.0f, 1000.0f);
+        control_point_column_height_scale = std::clamp(scale, 0.0f, max_control_point_height_scale);
     }
 
     bool rendering_enabled = true;
@@ -640,20 +681,26 @@ struct AlpineGameSettings
     // entity shadow settings
     bool shadow_corpses = true;
     bool shadow_items = true;
+    static constexpr int min_shadow_distance = 0;
+    static constexpr int max_shadow_distance = 5;
     int shadow_distance = 3; // 0=lowest, 1=low, 2=medium, 3=high, 4=very_high, 5=maximum
     void set_shadow_distance(int value)
     {
-        shadow_distance = std::clamp(value, 0, 5);
+        shadow_distance = std::clamp(value, min_shadow_distance, max_shadow_distance);
     }
+    static constexpr int min_shadow_quality = 0;
+    static constexpr int max_shadow_quality = 5;
     int shadow_quality = 3; // 0=lowest(blob), 1=low, 2=medium, 3=high, 4=very_high, 5=maximum
     void set_shadow_quality(int value)
     {
-        shadow_quality = std::clamp(value, 0, 5);
+        shadow_quality = std::clamp(value, min_shadow_quality, max_shadow_quality);
     }
+    static constexpr int min_shadow_frame_lag = 1;
+    static constexpr int max_shadow_frame_lag = 30;
     int shadow_frame_lag = 1; // 1=every frame (default), 2-30=refresh every N frames
     void set_shadow_frame_lag(int value)
     {
-        shadow_frame_lag = std::clamp(value, 1, 30);
+        shadow_frame_lag = std::clamp(value, min_shadow_frame_lag, max_shadow_frame_lag);
     }
 };
 
@@ -685,3 +732,5 @@ void set_play_sound_events_volume_scale();
 void apply_entity_sim_distance();
 void gr_d3d_update_vsync();
 bool is_d3d11();
+void resolve_scan_code_conflicts(rf::ControlConfig& config);
+void resolve_mouse_button_conflicts(rf::ControlConfig& config);

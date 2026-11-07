@@ -25,6 +25,7 @@
 #include "../os/console.h"
 #include "../main/main.h"
 #include "../multi/multi.h"
+#include "../misc/settings_registry.h"
 
 void gr_light_use_static(bool use_static);
 
@@ -212,9 +213,7 @@ ConsoleCommand2 mesh_lighting_cmd{
     "r_meshlighting",
     [](std::optional<int> mode_opt) {
         if (mode_opt) {
-            g_alpine_game_config.mesh_lighting_mode = std::clamp(mode_opt.value(), 0, 2);
-            recalc_mesh_static_lighting();
-            gr::d3d11::evaluate_mesh_lighting(rf::level.filename);
+            setting_console_set("mesh_lighting_mode", std::to_string(mode_opt.value()));
         }
         rf::console::print("Mesh lighting: {} (mode {})", mesh_lighting_mode_name(g_alpine_game_config.mesh_lighting_mode), g_alpine_game_config.mesh_lighting_mode);
         if (g_alpine_game_config.mesh_lighting_mode == 2 && gr::d3d11::level_uses_vertex_lighting()) {
@@ -229,7 +228,7 @@ ConsoleCommand2 dynamic_light_ndotl_cmd{
     "r_dynamiclightndotl",
     [](std::optional<float> value_opt) {
         if (value_opt) {
-            g_alpine_game_config.set_dynamic_light_ndotl(value_opt.value());
+            setting_console_set("dynamic_light_ndotl", std::to_string(value_opt.value()));
         }
         rf::console::print("Dynamic light N-L on world geometry: {:.2f} (0.0 = stock, 1.0 = full N-L, D3D11 only)",
             g_alpine_game_config.dynamic_light_ndotl);
@@ -242,9 +241,7 @@ ConsoleCommand2 pixel_light_overbright_cmd{
     "r_pixellightoverbright",
     [](std::optional<float> value_opt) {
         if (value_opt) {
-            g_alpine_game_config.set_pixel_light_overbright(value_opt.value());
-            // Re-evaluate cached state so the change takes effect immediately
-            gr::d3d11::evaluate_pixel_light_overbright(rf::level.filename);
+            setting_console_set("pixel_light_overbright", std::to_string(value_opt.value()));
         }
         rf::console::print("Pixel light overbright range: {:.2f}",
             g_alpine_game_config.pixel_light_overbright);
@@ -259,9 +256,7 @@ ConsoleCommand2 pixel_light_overbright_cmd{
 ConsoleCommand2 ignore_tbl_vertex_lighting_cmd{
     "cl_ignore_tbl_vertex_lighting",
     []() {
-        g_alpine_game_config.ignore_tbl_vertex_lighting = !g_alpine_game_config.ignore_tbl_vertex_lighting;
-        gr::d3d11::evaluate_mesh_lighting(rf::level.filename);
-        recalc_mesh_static_lighting();
+        setting_console_set("ignore_tbl_vertex_lighting", "toggle");
         rf::console::printf("Ignore TBL vertex lighting override: %s", g_alpine_game_config.ignore_tbl_vertex_lighting ? "enabled" : "disabled");
     },
     "Toggle ignoring per-map vertex lighting overrides from mapname_info.tbl.",
@@ -270,8 +265,7 @@ ConsoleCommand2 ignore_tbl_vertex_lighting_cmd{
 ConsoleCommand2 ignore_tbl_pixel_light_overbright_cmd{
     "cl_ignore_tbl_pixel_light_overbright",
     []() {
-        g_alpine_game_config.ignore_tbl_pixel_light_overbright = !g_alpine_game_config.ignore_tbl_pixel_light_overbright;
-        gr::d3d11::evaluate_pixel_light_overbright(rf::level.filename);
+        setting_console_set("ignore_tbl_pixel_light_overbright", "toggle");
         rf::console::printf("Ignore TBL pixel light overbright override: %s", g_alpine_game_config.ignore_tbl_pixel_light_overbright ? "enabled" : "disabled");
     },
     "Toggle ignoring per-map pixel light overbright overrides from mapname_info.tbl.",
@@ -302,9 +296,7 @@ void evaluate_restrict_disable_muzzle_flash()
 ConsoleCommand2 muzzle_flash_cmd{
     "r_muzzleflash",
     []() {
-        g_alpine_game_config.try_disable_muzzle_flash_lights = !g_alpine_game_config.try_disable_muzzle_flash_lights;
-
-        evaluate_restrict_disable_muzzle_flash();
+        setting_console_set("muzzle_flash_lights", "toggle");
 
         rf::console::print("Muzzle flash lights are {}",
                            g_alpine_game_config.try_disable_muzzle_flash_lights
@@ -317,9 +309,7 @@ ConsoleCommand2 muzzle_flash_cmd{
 ConsoleCommand2 fullbright_models_cmd{
     "r_fullbright",
     []() {
-        g_alpine_game_config.try_fullbright_characters = !g_alpine_game_config.try_fullbright_characters;
-
-        evaluate_fullbright_meshes();
+        setting_console_set("fullbright_characters", "toggle");
 
         rf::console::print("Fullbright character meshes are {}", g_alpine_game_config.try_fullbright_characters ?
 			"enabled. In multiplayer, this will only apply if the server allows it." : "disabled.");

@@ -832,7 +832,7 @@ void af_send_handicap_request(uint8_t amount)
     packet.req_type = af_client_req_type::af_req_handicap;
     packet.payload = HandicapPayload{amount};
 
-    af_send_client_req_packet(packet);
+    af_send_client_req_packet(packet, true); // reliable
 }
 
 // af_req_handicap
@@ -4714,6 +4714,8 @@ uint32_t af_compute_server_info_flags()
         af |= af_server_info_flags::SIF_ALLOW_NO_SCREENSHAKE;
     if (g_alpine_server_config_active_rules.no_player_collide)
         af |= af_server_info_flags::SIF_NO_PLAYER_COLLIDE;
+    if (!g_alpine_server_config_active_rules.exposure_damage)
+        af |= af_server_info_flags::SIF_NO_EXPOSURE_DAMAGE;
     if (g_alpine_server_config.allow_disable_muzzle_flash)
         af |= af_server_info_flags::SIF_ALLOW_NO_MUZZLE_FLASH_LIGHT;
     if (g_alpine_server_config.click_limiter_config.enabled)
@@ -4896,6 +4898,7 @@ static void decode_af_server_info_flags(const af_server_info_packet& pkt, Alpine
     server_info.dodging = (pkt.af_flags & af_server_info_flags::SIF_DODGING) != 0;
     server_info.pogo = (pkt.af_flags & af_server_info_flags::SIF_POGO) != 0;
     server_info.scrapyard_gibs = (pkt.af_flags & af_server_info_flags::SIF_SCRAPYARD_GIBS) != 0;
+    server_info.no_exposure_damage = (pkt.af_flags & af_server_info_flags::SIF_NO_EXPOSURE_DAMAGE) != 0;
 }
 
 // Apply af_server_info_packet flags to the local server info (for listen server host)
