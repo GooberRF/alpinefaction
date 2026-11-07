@@ -53,8 +53,11 @@ std::vector<float> wsola_stretch(const std::vector<float>& samples, int num_chan
     const int hop = window_len / 2;
     const int tolerance = sample_rate / 125;
     const int coarse_step = std::max(1, sample_rate / 5512);
+    if (num_channels < 1 || !(speed > 0.0f)) {
+        return {};
+    }
     const int num_frames = static_cast<int>(samples.size()) / num_channels;
-    if (num_channels < 1 || num_frames < 2 * window_len || speed <= 0.0f) {
+    if (num_frames < 2 * window_len) {
         return {};
     }
 
@@ -115,7 +118,9 @@ std::vector<float> wsola_stretch(const std::vector<float>& samples, int num_chan
             }
             const int coarse_pos = pos;
             best_score = -INFINITY;
-            for (int p = std::max(lo, coarse_pos - coarse_step + 1); p <= std::min(hi, coarse_pos + coarse_step - 1); ++p) {
+            const int fine_lo = std::max(lo, coarse_pos - coarse_step + 1);
+            const int fine_hi = std::min(hi, coarse_pos + coarse_step - 1);
+            for (int p = fine_lo; p <= fine_hi; ++p) {
                 const float s = score(p, 1);
                 if (s > best_score) {
                     best_score = s;
@@ -140,7 +145,6 @@ std::vector<float> wsola_stretch(const std::vector<float>& samples, int num_chan
     }
 
     if (!circular) {
-        // Drop the lead-in
         out.erase(out.begin(), out.begin() + static_cast<ptrdiff_t>(hop) * num_channels);
         out.resize(static_cast<size_t>(out_frames) * num_channels);
     }

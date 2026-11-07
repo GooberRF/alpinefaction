@@ -36,6 +36,8 @@ public:
         bool vote;
     };
 
+    static constexpr size_t max_image_size = 8 * 1024 * 1024;
+
     FactionFilesClient();
     std::optional<LevelInfo> find_map(const char* file_name);
     std::vector<bool> check_maps(const std::vector<std::string>& file_names);

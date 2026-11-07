@@ -16,6 +16,8 @@ namespace rf
     struct NetAddr;
     struct Entity;
     struct Vector3;
+    struct Matrix3;
+    struct VMesh;
 }
 
 struct AfDamageNotifyHull;
@@ -73,17 +75,14 @@ void demo_record_crit_shot(unsigned char shooter_id, unsigned char weapon_type);
 // the spectated player. Called from grant_award next to the live award sends; no-op unless
 // recording.
 void demo_record_award(unsigned char award_id, unsigned char victim_player_id, unsigned char earner_id);
-// Powerup pickups the playback seek bar marks. Wire values of the demo-only item pickup
-// record: append only.
+// Values of the demo file's pickup record: append only
 enum class DemoPickupKind : uint8_t
 {
     damage_amp = 0,
     invulnerability = 1,
     fusion = 2,
 };
-// Mirrors a pickup of one of the DemoPickupKind items into the demo, tagged with the
-// player who took it (the stock item_apply only reaches the picker). Called from the
-// server's item pickup path; no-op unless recording or the item is not one of those.
+// No-op unless recording and the item is one of the DemoPickupKind powerups
 void demo_record_item_pickup(rf::Player* player, const rf::Item* item);
 // Reliable-socket slot of the recorder's virtual player, or -1. Used to keep the
 // deferred reliable queue (send_queues_rel_add_packet) away from the fabricated slot -
@@ -134,10 +133,8 @@ bool demo_playback_is_seeking();
 bool demo_playback_in_seek_burst();
 // Current playback position (>= 0). Only meaningful while playback is active.
 double demo_playback_clock_ms();
-// Clock (ms) the ObjInterp rings advance and stamp sample arrivals by, in place of the wall
-// timer: the keyframes they play back are stamped in demo time, so on the wall timer remote
-// entities race through each keyframe gap below 1x and stall on the newest one. Demo time
-// while playback is active (monotonic, holds while paused), timer::get_i64(1000) otherwise.
+// The ObjInterp rings' clock: demo time while playback is active, since their keyframes are
+// stamped in it; timer::get_i64(1000) otherwise
 int64_t demo_playback_interp_clock_ms();
 // Total demo length, or 0 when unknown (footerless file - grows as records stream in).
 uint32_t demo_playback_duration_ms();
@@ -153,13 +150,12 @@ float demo_playback_sim_time_scale();
 // Playback speed multiplier (same value the demo_timescale command sets), clamped to [0.05, 10].
 float demo_playback_timescale();
 void demo_playback_set_timescale(float scale);
-// Server config text a 1.5+ server records (the af_server_msg chunks and EOF a live client
-// gets on request: the remote-safe printout, without passwords, secrets or rcon profiles),
-// fed from af_process_server_msg_packet during playback.
+// vmesh_process without the playback timescale, for catching an animation up by demo time
+void demo_playback_vmesh_catch_up(rf::VMesh* vmesh, float delta_secs, rf::Vector3* pos, rf::Matrix3* orient);
+// The remote-safe server config text 1.5+ servers record, fed from af_process_server_msg_packet
 void demo_playback_on_server_cfg_chunk(std::string_view chunk);
 void demo_playback_on_server_cfg_eof();
-// The server config as of the playback position, or null when the demo has none yet
-// (demos recorded before 1.5 never do). Shown by the remote server config popup.
+// The server config as of the playback position, or null when the demo has none (yet)
 const std::string* demo_playback_server_cfg();
 // True once the demo reached its end (a seek can restart the session).
 bool demo_playback_finished();
@@ -171,9 +167,7 @@ void demo_playback_toggle_pause();
 void demo_playback_stop();
 // True when a seek can be requested (playing or finished).
 bool demo_playback_can_seek();
-// True in gameplay or on the match-end limbo scoreboard a demo file ends on: the
-// level is up and the controls panel and seeks work (stock gameseq_in_gameplay
-// excludes limbo).
+// Gameplay or the match-end limbo scoreboard a demo file ends on (gameseq_in_gameplay excludes limbo)
 bool demo_playback_in_level_view();
 // True while a backward-seek session restart is queued but has not re-entered
 // playback yet (the window in which demo_playback_active() reads false).
@@ -194,7 +188,7 @@ void demo_powerup_timers_render();
 void demo_powerup_timers_on_item_update();
 // Full-screen "SEEKING..." overlay with progress over the frame frozen when the seek was
 // requested; called from after_frame_render_hook (the world render - including the HUD - is
-// skipped while seeking). The backward-seek restart's menus and loading screen are covered too.
+// skipped while seeking).
 void demo_playback_render_seek_overlay();
 // Seek bar markers for a player's moments.
 enum class DemoMarkerKind : uint8_t
@@ -204,8 +198,7 @@ enum class DemoMarkerKind : uint8_t
     invulnerability,
     fusion,
     award,
-    objective_taken,    // CTF's enemy flag, Salvage's flag, Scavenger's cartridge or Bagman's bag,
-                        // from its spawn or off the ground
+    objective_taken,    // CTF's enemy flag, Salvage's flag, Scavenger's cartridge or Bagman's bag
     objective_captured, // CTF, Salvage and Scavenger
     point_captured,     // a KOTH hill or DC/Revolt/Escalation control point, one per player credited
     custom,             // the viewer's own marker; never in demo_playback_player_markers
@@ -216,10 +209,8 @@ struct DemoPlayerMarker
     DemoMarkerKind kind;
     uint8_t detail; // award markers: the AwardId earned; point captures: the hill uid
 };
-// Every marker of the player with this net id in the whole stream, past and future, in
-// stream order, limited to their current stay in the server (a later joiner reusing the
-// id is someone else). Objective events are in every demo, kills and awards are recorded by
-// Alpine 1.4+ servers, pickups by 1.5+. Empty unless playback is active.
+// The player's markers over the whole stream, limited to their current stay (a later joiner may
+// reuse the id). Empty unless playback is active.
 std::vector<DemoPlayerMarker> demo_playback_player_markers(int player_id);
 // Records a player as recently active (killer/attacker) for auto-follow target
 // selection. No-op unless playback is active.

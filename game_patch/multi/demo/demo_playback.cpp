@@ -163,6 +163,9 @@ namespace
         bool seek_obj_update_seen = false;
         int64_t seek_settle_deadline = 0; // wall-clock cap for the settle window
         bool seek_audio_muted = false;
+        // Game time at the seek's start and at its uncoalesced tail, to date event delays by
+        rf::Timestamp seek_begin_game_ts;
+        rf::Timestamp seek_tail_game_ts;
         // Session started by a backward-seek restart whose fast-forward has not begun yet
         bool seek_restarting = false;
         // Demo clock at which each entity (by handle) last started a reload, plus the
@@ -248,9 +251,7 @@ namespace
     };
     std::optional<PendingRestart> g_pending_restart;
 
-    // From a backward seek's request until the restarted session begins its fast-forward. The
-    // restart passes through the menus, the level load and the state info wait, which the seek
-    // overlay covers.
+    // From a backward seek's request until the restarted session begins its fast-forward
     bool seek_restarting()
     {
         if (g_pending_restart) {
@@ -328,8 +329,10 @@ namespace
     {
         if (marks.objective_seeded) {
             const uint8_t prev_carrier_id = marks.objective_carrier_id;
-            if (prev_carrier_id != 0xFF && (red_caps > marks.objective_red_caps || blue_caps > marks.objective_blue_caps))
+            if (prev_carrier_id != 0xFF
+                && (red_caps > marks.objective_red_caps || blue_caps > marks.objective_blue_caps)) {
                 marks.events.push_back({seq, t_ms, prev_carrier_id, DemoMarkerKind::objective_captured});
+            }
             if (carrier_id != 0xFF && carrier_id != prev_carrier_id)
                 marks.events.push_back({seq, t_ms, carrier_id, DemoMarkerKind::objective_taken});
         }
@@ -339,13 +342,27 @@ namespace
         marks.objective_blue_caps = blue_caps;
     }
 
-    // Kills come from the recorded kill_info: the stock obj_kill names entities, not players.
-    // Suicides and world deaths are not kills. Awards come from their earner-tagged demo form,
-    // pickups from the demo-only item pickup record, flag events from the stock CTF packets,
-    // point captures from af_koth_hill_captured and the other objectives from their state packets.
+    // Kills come from kill_info: the stock obj_kill names entities, not players
     void index_stream_record(StreamMarks& marks, const DemoRecord& rec)
     {
         const uint32_t seq = marks.records++;
+        if (rec.type == std::to_underlying(DemoRecordType::pickup) && rec.payload.size() >= 2) {
+            std::optional<DemoMarkerKind> kind;
+            switch (static_cast<DemoPickupKind>(rec.payload[1])) {
+            case DemoPickupKind::damage_amp:
+                kind = DemoMarkerKind::damage_amp;
+                break;
+            case DemoPickupKind::invulnerability:
+                kind = DemoMarkerKind::invulnerability;
+                break;
+            case DemoPickupKind::fusion:
+                kind = DemoMarkerKind::fusion;
+                break;
+            }
+            if (kind)
+                marks.events.push_back({seq, rec.t_ms, rec.payload[0], *kind});
+            return;
+        }
         if (!rec.is_packet())
             return;
         const uint8_t* data = rec.packet_data();
@@ -363,22 +380,6 @@ namespace
                 std::memcpy(&payload, data + 4, sizeof(payload));
                 const uint8_t earner_id = data[4 + sizeof(AwardPayload)];
                 marks.events.push_back({seq, rec.t_ms, earner_id, DemoMarkerKind::award, payload.award_id});
-            }
-            else if (req_type == af_server_req_type::af_sreq_demo_item_pickup && len >= 6) {
-                std::optional<DemoMarkerKind> kind;
-                switch (static_cast<DemoPickupKind>(data[5])) {
-                case DemoPickupKind::damage_amp:
-                    kind = DemoMarkerKind::damage_amp;
-                    break;
-                case DemoPickupKind::invulnerability:
-                    kind = DemoMarkerKind::invulnerability;
-                    break;
-                case DemoPickupKind::fusion:
-                    kind = DemoMarkerKind::fusion;
-                    break;
-                }
-                if (kind)
-                    marks.events.push_back({seq, rec.t_ms, data[4], *kind});
             }
         }
         // ctf_flag_picked_up: {u8 player_id, ...}; ctf_flag_captured: {u8 team, u8 player_id, ...}
@@ -441,6 +442,26 @@ namespace
     void consume_pending_record()
     {
         g_ctx.has_pending = false;
+    }
+
+    // Record range [begin, end) of the player's current stay: between their id's last fed
+    // leave and its next one. A pending record has been read but not fed yet.
+    std::pair<uint32_t, uint32_t> player_current_stay(int player_id)
+    {
+        const uint32_t fed = g_ctx.records_read - (g_ctx.has_pending ? 1 : 0);
+        uint32_t begin = 0;
+        uint32_t end = UINT32_MAX;
+        for (const auto& leave : g_ctx.marks.leaves) {
+            if (leave.player_id != player_id)
+                continue;
+            if (leave.seq < fed)
+                begin = leave.seq + 1;
+            else {
+                end = leave.seq;
+                break;
+            }
+        }
+        return {begin, end};
     }
 
     // A players packet body ends with a continuation byte: 1 = another roster chunk
@@ -617,19 +638,11 @@ namespace
         return fed;
     }
 
-    // Seek-burst coalescing of object state. obj_update and af_obj_update are ~70% of a demo's
-    // records and nearly all of its bytes, and both carry absolute per-object state where only
-    // the newest value matters. Until seek_coalesce_tail_ms before the target the burst folds
-    // them into one entry per object handle instead of running each through the engine, and
-    // feeds the result as synthesized packets once it reaches that tail (or the seek ends). The
-    // tail itself is fed normally, so whatever is still in flight at the target - reloads keyed
-    // on the current weapon, fire edges, the interp rings - sees the real per-tick sequence.
+    // obj_update state is absolute, so the burst keeps only each object's newest until this long
+    // before the target; the tail is fed as recorded so state in flight there sees every tick
     constexpr double seek_coalesce_tail_ms = 5000.0;
 
-    // One obj_update row, merged field by field: a field a later row omits keeps its last value.
-    // Field order and sizes are what process_obj_update_packet (0x0047DF90) reads on a client
-    // (size table at 0x0059EEC8): pos/rot/anim, armor state, weapon lag comp, connection counter,
-    // weapon type, health/armor. Fire bits carry no bytes.
+    // Merged field by field: a field a later row omits keeps its last value
     struct CoalescedObjRow
     {
         uint8_t flags = 0;
@@ -855,6 +868,7 @@ namespace
             rf::snd_pause(false);
         }
         snd_set_global_rate(1.0f);
+        snd_clear_global_rate_cache();
         seek_restore_audio(); // teardown can arrive mid-seek
         seek_coalesce_reset();
         demo_powerup_timers_reset();
@@ -879,6 +893,8 @@ namespace
         g_ctx.seek_settle = false;
         g_ctx.seek_obj_update_seen = false;
         g_ctx.seek_settle_deadline = 0;
+        g_ctx.seek_begin_game_ts = {};
+        g_ctx.seek_tail_game_ts = {};
         g_ctx.seek_restarting = false;
         g_ctx.reload_starts.clear();
         g_ctx.cam_want_attached = true;
@@ -1207,11 +1223,7 @@ namespace
     // system is kept alive so perspective switching, third-person orbit, static cams
     // and freelook flying keep working; input processing and rendering run outside
     // this function and are unaffected.
-    // At a timescale the sim frame runs on demo time - rf::frametime scaled for its
-    // duration, game time by game_time_add_delta_hook - so locally simulated projectiles,
-    // particles, animations and every rf::Timestamp follow the playback speed. Everything
-    // outside it (console, menus, HUD) keeps the wall frametime. The freelook camera is
-    // flown at wall speed beforehand and skipped by obj_move_all, as on freelook entry.
+    // At a timescale the sim step runs on demo time, so the freelook camera is flown at wall speed first
     FunHook<void()> gameplay_sim_frame_hook{
         0x00433260,
         []() {
@@ -1238,18 +1250,23 @@ namespace
         },
     };
 
-    // Game time (every rf::Timestamp) advances in frametime_calculate by the wall frame's
-    // milliseconds; at a timescale it advances by demo milliseconds instead, carrying the
-    // fraction so slow speeds don't truncate every frame to 0.
+    // Only game time follows the timescale: the realtime clock drives menus and input timing. The
+    // fraction is carried so slow speeds don't truncate every frame to 0.
     CallHook<void(int)> game_time_add_delta_hook{
         0x005096AF,
         [](int delta_ms) {
-            if (g_ctx.state != PlaybackState::inactive && g_ctx.timescale != 1.0f) {
-                g_ctx.game_time_carry_ms += delta_ms * static_cast<double>(g_ctx.timescale);
-                delta_ms = static_cast<int>(g_ctx.game_time_carry_ms);
-                g_ctx.game_time_carry_ms -= delta_ms;
-            }
+            const int game_time_before = rf::timer::game_time_ms;
             game_time_add_delta_hook.call_target(delta_ms);
+            const bool level_view = g_ctx.state == PlaybackState::playing || g_ctx.state == PlaybackState::finished;
+            if (!level_view || g_ctx.timescale == 1.0f || rf::timer::game_paused_count != 0) {
+                return;
+            }
+            g_ctx.game_time_carry_ms += delta_ms * static_cast<double>(g_ctx.timescale);
+            const int scaled_ms = static_cast<int>(g_ctx.game_time_carry_ms);
+            g_ctx.game_time_carry_ms -= scaled_ms;
+            const int64_t game_time = static_cast<int64_t>(game_time_before) + scaled_ms;
+            rf::timer::game_time_ms = static_cast<int>(
+                game_time > rf::timer::game_time_wrap_ms ? game_time - rf::timer::game_time_wrap_ms : game_time);
         },
     };
 
@@ -1302,13 +1319,16 @@ namespace
         vehicle_fx_clear();
         vehicle_hazard_clear_client_clocks();
         hud_world_seek_reset();
-        // Event delays (Delay events, per-event delay fields) are game-time timestamps
-        // too: a chain armed during the burst fires minutes late, after the overlay
-        // drops (Crystalwood: When_Dead -> Delay -> 6 s -> fullscreen image). Cancel
-        // every pending delay the way Clear_Queued does; anything still legitimately
-        // pending at the target is a visual we would rather lose than replay.
+        // A delay armed during the burst before the tail would fire long after its recorded time
+        const int seek_age_ms = g_ctx.seek_begin_game_ts.valid() ? g_ctx.seek_begin_game_ts.time_since() : 0;
+        const int tail_age_ms = g_ctx.seek_tail_game_ts.valid() ? g_ctx.seek_tail_game_ts.time_since() : 0;
         for (int i = 0; i < rf::event_list.size(); ++i) {
-            if (auto* event = rf::event_list[i]) {
+            rf::Event* event = rf::event_list[i];
+            if (!event || !event->delay_timestamp.valid() || !std::isfinite(event->delay_seconds))
+                continue;
+            // Rounded like the engine's own arming, so delays armed on a boundary frame land on it
+            const long armed_age_ms = std::lround(event->delay_seconds * 1000.0 - event->delay_timestamp.time_until());
+            if (armed_age_ms > tail_age_ms && armed_age_ms <= seek_age_ms) {
                 event->delay_timestamp.invalidate();
                 event->delayed_msg = false;
             }
@@ -1320,16 +1340,7 @@ namespace
     // every latch; a genuinely-firing entity is re-latched by the first normal-paced
     // obj_update, which is exactly what the settle window waits for. A synced vehicle ignores
     // those bits; its latch already follows the af_vehicle_fire edges the fast-forward fed.
-    // Reloads are the same shape: a reload packet fed during the burst sets EF_RELOADING
-    // and arms reload_done_timestamp, but that is game time and barely advances while
-    // records are burst-fed, so every reload started in the skipped span is still "in
-    // progress" at the target. The spectate edge detector then sees a fresh rising edge
-    // and plays the fpgun reload from frame 0, and the body's reload action anim is
-    // still at its start. Using the demo clock recorded when the reload started: a
-    // reload that is genuinely mid-flight at the target is re-armed with the time it
-    // has left and its anims advanced by the skipped span; anything else is finished
-    // the way entity_reload_do_frame does on an MP client (flag off, timestamps
-    // dropped - ammo is server state) with the body action anim stopped.
+    // Reloads armed during the burst barely aged in game time: resume them by demo time or finish them.
     void cull_seek_fire_latches()
     {
         multi_spectate_reset_action_anim_edge_state();
@@ -1349,8 +1360,8 @@ namespace
             const double elapsed_ms = it != g_ctx.reload_starts.end() ? g_ctx.clock_ms - it->second.start_ms : -1.0;
             if (elapsed_ms >= 0.0 && elapsed_ms < it->second.duration_ms) {
                 const auto& rs = it->second;
-                // The body anim already ran for the burst's wall time since the reload
-                // started (game time keeps ticking at wall rate during the burst); only
+                // The body anim already ran for the game time the burst took since the reload
+                // started (game time keeps ticking at the timescale during the burst); only
                 // advance it by what the burst skipped. Read before re-arming the deadline.
                 const int sim_elapsed_ms = rs.duration_ms - entity.reload_done_timestamp.time_until();
                 const double advance_ms = elapsed_ms - sim_elapsed_ms;
@@ -1362,8 +1373,8 @@ namespace
                     entity.drop_clip_timestamp.invalidate();
                 }
                 if (entity.vmesh && advance_ms > 0.0) {
-                    rf::vmesh_process(entity.vmesh, static_cast<float>(advance_ms / 1000.0), 0, &entity.pos,
-                                      &entity.orient, 1);
+                    demo_playback_vmesh_catch_up(entity.vmesh, static_cast<float>(advance_ms / 1000.0), &entity.pos,
+                                                 &entity.orient);
                 }
                 multi_spectate_resume_reload_anim(&entity, static_cast<float>(elapsed_ms / 1000.0));
                 continue;
@@ -1378,15 +1389,12 @@ namespace
         }
     }
 
-    // Record the demo clock at which each entity starts a reload (fed reload packets
-    // route through here via process_reload_packet), so a seek landing mid-reload can
-    // resume it - see cull_seek_fire_latches. The deadlines are read back right after
-    // the engine armed them, so time_until() is the full delay. clock_ms is the fed
-    // record's own timestamp in the burst loop and within a frame of it when paced.
+    // Read right after the engine armed them, so time_until() is the full delay
     FunHook<bool(rf::Entity*, bool, bool)> entity_reload_current_primary_demo_hook{
         0x00425280,
         [](rf::Entity* entity, bool no_sound, bool is_reload_packet) {
-            const bool reloaded = entity_reload_current_primary_demo_hook.call_target(entity, no_sound, is_reload_packet);
+            const bool reloaded =
+                entity_reload_current_primary_demo_hook.call_target(entity, no_sound, is_reload_packet);
             if (reloaded && g_ctx.state == PlaybackState::playing) {
                 g_ctx.reload_starts[entity->handle] = {
                     g_ctx.clock_ms,
@@ -1403,6 +1411,10 @@ namespace
         if (g_ctx.seek_target_ms < 0.0) {
             // Fresh seek (not a mid-seek retarget)
             g_ctx.seek_start_ms = g_ctx.clock_ms;
+            // A restart's burst began with its session (state_info is fed before gameplay)
+            if (!g_ctx.seek_restarting) {
+                g_ctx.seek_begin_game_ts.set(0);
+            }
             if (!g_ctx.seek_audio_muted) {
                 // Cutscene-skip mute pattern: silence everything currently audible and
                 // keep snd_play* rejecting new sounds until the post-seek settle ends
@@ -1413,6 +1425,11 @@ namespace
             }
         }
         g_ctx.seek_target_ms = target_ms;
+        g_ctx.seek_tail_game_ts = {};
+        // The records a restart fed before its burst may already be in the tail
+        if (g_ctx.seek_restarting && g_ctx.clock_ms > target_ms - seek_coalesce_tail_ms) {
+            g_ctx.seek_tail_game_ts = g_ctx.seek_begin_game_ts;
+        }
         g_ctx.seek_settle = false;
         g_ctx.seek_restarting = false;
     }
@@ -1524,9 +1541,7 @@ namespace
         playback_teardown();
     }
 
-    // Harvests the footer (duration), indexes the seek bar markers and counts skippable packet
-    // types, then rewinds the reader to the first record. Closes the reader and returns false
-    // when it can't play.
+    // Closes the reader and returns false when the file can't play
     bool demo_pre_scan(const std::string& path)
     {
         uint32_t records = 0;
@@ -1919,7 +1934,8 @@ namespace
             uint32_t last_t_ms = 0;
             DemoRecord rec;
             while (reader.next_record(rec)) {
-                ++records;
+                if (rec.is_packet())
+                    ++records;
                 last_t_ms = rec.t_ms;
             }
             const auto& header = reader.header();
@@ -2020,7 +2036,14 @@ float demo_playback_timescale()
 
 void demo_playback_set_timescale(float scale)
 {
+    if (!(scale > 0.0f))
+        return;
     g_ctx.timescale = std::clamp(scale, 0.05f, 10.0f);
+}
+
+void demo_playback_vmesh_catch_up(rf::VMesh* vmesh, float delta_secs, rf::Vector3* pos, rf::Matrix3* orient)
+{
+    vmesh_process_hook.call_target(vmesh, delta_secs, 0, pos, orient, 1);
 }
 
 void demo_playback_on_server_cfg_chunk(std::string_view chunk)
@@ -2110,29 +2133,6 @@ void demo_playback_request_seek(double target_ms)
             g_ctx.cam_free_orient, g_ctx.cam_free_phb, g_ctx.cam_free_eye_phb};
         g_ctx.teardown_queued = true;
         rf::console::print("Seeking backward - reloading the level...");
-    }
-}
-
-namespace
-{
-    // Record range [begin, end) of the player's current stay: between their id's last fed
-    // leave and its next one. A pending record has been read but not fed yet.
-    std::pair<uint32_t, uint32_t> player_current_stay(int player_id)
-    {
-        const uint32_t fed = g_ctx.records_read - (g_ctx.has_pending ? 1 : 0);
-        uint32_t begin = 0;
-        uint32_t end = UINT32_MAX;
-        for (const auto& leave : g_ctx.marks.leaves) {
-            if (leave.player_id != player_id)
-                continue;
-            if (leave.seq < fed)
-                begin = leave.seq + 1;
-            else {
-                end = leave.seq;
-                break;
-            }
-        }
-        return {begin, end};
     }
 }
 
@@ -2298,6 +2298,9 @@ void demo_playback_do_frame()
                     static_cast<double>(g_ctx.pending.t_ms) > g_ctx.seek_target_ms - seek_coalesce_tail_ms;
                 if (in_tail) {
                     seek_coalesce_flush();
+                    if (!g_ctx.seek_tail_game_ts.valid()) {
+                        g_ctx.seek_tail_game_ts.set(0);
+                    }
                 }
                 if (in_tail || !seek_coalesce_record(g_ctx.pending)) {
                     feed_packet_record(g_ctx.pending, true);
@@ -2480,17 +2483,14 @@ void demo_playback_render_seek_overlay()
     draw_seek_overlay();
 }
 
-// Tail of game_flip (0x004355F0, after the cursor): every frame of the backward-seek restart's
-// menus, loading screen and state info wait is presented here, so cover each with the seek
-// overlay instead of only the frames after_frame_render_hook draws (it skips the non-visible
-// states, and the loading screen is drawn after it)
+// after_frame_render_hook skips the restart's menus and loading screen, so the seek overlay covers them here
 static void game_flip_tail()
 {
     if (seek_restarting()) {
         rf::gr::reset_clip(); // a menu may have left its clip set
         draw_seek_overlay();
     }
-    AddrCaller{0x0050CE20}.c_call(); // gr_flip
+    rf::gr::flip();
 }
 
 void demo_playback_on_state_init(int state)
@@ -2510,6 +2510,7 @@ void demo_playback_on_state_init(int state)
     g_pending_restart.reset();
     if (demo_play_start(restart.path, restart.seek_ms, true, restart.extent)) {
         g_ctx.seek_restarting = true;
+        g_ctx.seek_begin_game_ts.set(0);
         g_ctx.timescale = restart.timescale;
         g_ctx.paused = restart.paused;
         g_ctx.cam_want_attached = restart.cam_want_attached;

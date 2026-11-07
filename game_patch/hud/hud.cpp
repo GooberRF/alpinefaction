@@ -37,7 +37,7 @@ struct HudElementInfo
     const char* label;
 };
 
-constexpr std::array<HudElementInfo, hud_element_count> hud_element_info{{
+constexpr HudElementInfo hud_element_info[] = {
     {"health", "Health & armor"},
     {"ammo", "Weapon & ammo"},
     {"reticle", "Reticle"},
@@ -50,28 +50,25 @@ constexpr std::array<HudElementInfo, hud_element_count> hud_element_info{{
     {"scores", "Scores"},
     {"messages", "Messages"},
     {"minimap", "Minimap"},
-}};
+};
+static_assert(static_cast<int>(std::size(hud_element_info)) == hud_element_count);
 
-// Indexed by HudElement; chat lives in g_alpine_game_config.hide_chat instead
 std::array<bool, hud_element_count> g_hud_element_hidden{};
 } // namespace
 
+bool hud_element_hidden_by_cl_chat(HudElement element)
+{
+    return element == HudElement::chat && g_alpine_game_config.hide_chat;
+}
+
 bool hud_element_visible(HudElement element)
 {
-    if (element == HudElement::chat) {
-        return !g_alpine_game_config.hide_chat;
-    }
-    return !g_hud_element_hidden[static_cast<int>(element)];
+    return !hud_element_hidden_by_cl_chat(element) && !g_hud_element_hidden[static_cast<int>(element)];
 }
 
 void hud_element_set_visible(HudElement element, bool visible)
 {
-    if (element == HudElement::chat) {
-        g_alpine_game_config.hide_chat = !visible;
-    }
-    else {
-        g_hud_element_hidden[static_cast<int>(element)] = !visible;
-    }
+    g_hud_element_hidden[static_cast<int>(element)] = !visible;
 }
 
 const char* hud_element_label(HudElement element)
@@ -148,14 +145,14 @@ ConsoleCommand2 hud_cmd{
 ConsoleCommand2 hud_element_cmd{
     "cl_hudelement",
     [](std::optional<std::string> name, std::optional<bool> visible) {
-        const auto print_state = [](HudElement element) {
-            rf::console::print("{} is {}", hud_element_label(element),
-                hud_element_visible(element) ? "shown" : "hidden");
+        const auto print_state = [](int i) {
+            const auto element = static_cast<HudElement>(i);
+            rf::console::print("{}: {}", hud_element_info[i].name, hud_element_hidden_by_cl_chat(element)
+                ? "hidden (cl_chat)" : hud_element_visible(element) ? "shown" : "hidden");
         };
         if (!name) {
             for (int i = 0; i < hud_element_count; ++i) {
-                rf::console::print("{}: {}", hud_element_info[i].name,
-                    hud_element_visible(static_cast<HudElement>(i)) ? "shown" : "hidden");
+                print_state(i);
             }
             return;
         }
@@ -163,24 +160,25 @@ ConsoleCommand2 hud_element_cmd{
             for (int i = 0; i < hud_element_count; ++i) {
                 hud_element_set_visible(static_cast<HudElement>(i), visible.value_or(true));
             }
-            rf::console::print("All HUD elements are {}", visible.value_or(true) ? "shown" : "hidden");
+            rf::console::print("All HUD elements are {}{}", visible.value_or(true) ? "shown" : "hidden",
+                visible.value_or(true) && hud_element_hidden_by_cl_chat(HudElement::chat)
+                    ? " (chat hidden by cl_chat)" : "");
             return;
         }
         for (int i = 0; i < hud_element_count; ++i) {
             if (string_iequals(*name, hud_element_info[i].name)) {
                 const auto element = static_cast<HudElement>(i);
                 hud_element_set_visible(element, visible.value_or(!hud_element_visible(element)));
-                print_state(element);
+                print_state(i);
                 return;
             }
         }
         rf::console::print("Unknown HUD element: {}. Run cl_hudelement without arguments to list them.", *name);
     },
-    "Show or hide a HUD element (toggles without a value), all of them, or list them",
+    "Show or hide a HUD element for this session (an element alone toggles, all alone shows all), or list them",
     "cl_hudelement [element|all] [bool]",
 };
 
-// Active powerup icons
 FunHook<void()> multi_powerup_render_hook{
     0x0047FEC0,
     []() {

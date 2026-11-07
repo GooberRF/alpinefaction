@@ -2332,7 +2332,8 @@ void draw_chat_menu_text(const int x, int y, const int w) {
             : element.display_string;
         std::string line = element.hud_element
             ? std::format("{}: {} [{}]", display_index, display_name,
-                hud_element_visible(*element.hud_element) ? "ON" : "OFF")
+                hud_element_hidden_by_cl_chat(*element.hud_element) ? "OFF: cl_chat"
+                    : hud_element_visible(*element.hud_element) ? "ON" : "OFF")
             : std::format("{}: {}", display_index, display_name);
         gr_fit_string(line, w - 8 * 2, font_id);
         rf::gr::string_aligned(

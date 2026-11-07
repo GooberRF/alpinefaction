@@ -186,6 +186,24 @@ void DemoFileWriter::write_server_info(const std::vector<uint8_t>& block)
     }
 }
 
+void DemoFileWriter::write_pickup(uint32_t t_ms, uint8_t player_id, uint8_t kind)
+{
+    if (!m_file)
+        return;
+    std::vector<uint8_t> buf;
+    append_le(buf, t_ms);
+    buf.push_back(std::to_underlying(DemoRecordType::pickup));
+    append_le(buf, static_cast<uint16_t>(2));
+    buf.push_back(player_id);
+    buf.push_back(kind);
+    if (!gz_write_all(as_gz(m_file), buf.data(), buf.size())) {
+        xlog::error("Failed writing to demo file {} - stopping recording", m_path);
+        gzclose(as_gz(m_file));
+        m_file = nullptr;
+        m_had_error = true;
+    }
+}
+
 void DemoFileWriter::close(uint32_t duration_ms)
 {
     if (!m_file)
@@ -373,7 +391,7 @@ bool DemoFileReader::next_record(DemoRecord& out)
                 m_server_config = decode_server_config_block(payload.data(), payload.size());
             continue;
         }
-        if (type != std::to_underlying(DemoRecordType::packet)) {
+        if (type != std::to_underlying(DemoRecordType::packet) && type != std::to_underlying(DemoRecordType::pickup)) {
             xlog::debug("Skipping unknown demo record type 0x{:02x}", type);
             continue; // unknown/reserved record type - skip (forward compat)
         }

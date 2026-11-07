@@ -20,7 +20,7 @@
 
 static std::unique_ptr<std::byte* []> g_screenshot_scanlines_buf;
 
-static std::optional<std::string> get_screenshots_dir()
+std::optional<std::string> get_screenshots_dir()
 {
     auto full_path = std::format("{}\\screenshots", rf::root_path);
     if (full_path.size() > rf::max_path_len - 20) {

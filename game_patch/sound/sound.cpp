@@ -737,6 +737,13 @@ void snd_set_global_rate(float rate)
     }
 }
 
+void snd_clear_global_rate_cache()
+{
+    if (rf::sound_backend == rf::SOUND_BACKEND_DS) {
+        snd_ds_clear_stretch_cache();
+    }
+}
+
 int snd_play_unscaled(int handle, int group, float pan, float volume)
 {
     snd_ds_set_new_channel_unscaled(true);

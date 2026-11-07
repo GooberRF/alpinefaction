@@ -14,6 +14,7 @@ extern bool g_character_meshes_are_fullbright;
 void misc_init();
 void set_jump_to_multi_server_list(bool jump);
 void set_jump_to_demo_browser(bool jump);
+std::optional<std::string> get_screenshots_dir();
 void start_join_multi_game_sequence(const rf::NetAddr& addr, const std::string& password);
 void start_levelm_load_sequence(std::string filename, std::optional<rf::NetGameType> game_type = std::nullopt);
 bool multi_join_game(const rf::NetAddr& addr, const std::string& password);

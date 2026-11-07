@@ -5,6 +5,7 @@
 #include <chrono>
 #include <functional>
 #include <stdexcept>
+#include <charconv>
 #include <nlohmann/json.hpp>
 #include <xlog/xlog.h>
 #include <common/version/version.h>
@@ -199,8 +200,6 @@ void FactionFilesClient::download_map(const char* tmp_filename, const std::strin
 
 std::vector<unsigned char> FactionFilesClient::fetch_image(const std::string& image_url)
 {
-    static constexpr size_t max_image_size = 8 * 1024 * 1024; // 8 MB
-
     xlog::info("Fetching map image from: {}", image_url);
     HttpRequest req{image_url, "GET", session_};
     req.send();
@@ -212,6 +211,18 @@ std::vector<unsigned char> FactionFilesClient::fetch_image(const std::string& im
         if (data.size() > max_image_size) {
             xlog::warn("Image download exceeded max size ({} bytes), aborting", max_image_size);
             return {};
+        }
+    }
+
+    // WinINet reports a connection the server dropped mid-body as a normal end of data
+    if (const auto content_length = req.get_header("Content-Length")) {
+        size_t expected = 0;
+        const auto [end, ec] = std::from_chars(content_length->data(),
+            content_length->data() + content_length->size(), expected);
+        if (ec == std::errc{} && expected != data.size()) {
+            // Sizes stay out of the message: callers look for "404" in it
+            xlog::warn("Image download truncated: {} of {} bytes", data.size(), expected);
+            throw std::runtime_error{"Image download truncated"};
         }
     }
 

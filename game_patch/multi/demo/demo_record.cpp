@@ -238,8 +238,7 @@ namespace
         rf::send_state_info(recorder);
         // AF "new joiner" packets outside send_state_info.
         af_send_server_info_packet(recorder);
-        // The remote-safe server config text (no passwords, secrets or rcon profiles) that
-        // playback shows in the server config popup
+        // For playback's server config popup
         af_send_server_cfg(recorder);
         recorder->remote_server_cfg_sent = true;
         // Current scores/pings so playback has a sane scoreboard from the start.
@@ -516,7 +515,11 @@ void demo_record_item_pickup(rf::Player* player, const rf::Item* item)
         kind = DemoPickupKind::invulnerability;
     else
         return;
-    af_send_item_pickup_for_demo(g_state.recorder, player->net_data->player_id, static_cast<uint8_t>(kind));
+    g_state.writer.write_pickup(record_time_ms(), player->net_data->player_id, static_cast<uint8_t>(kind));
+    if (g_state.writer.had_error()) {
+        rf::console::print("Demo recording stopped: write failed");
+        g_state.teardown_pending = true;
+    }
 }
 
 void demo_server_on_level_init_post()

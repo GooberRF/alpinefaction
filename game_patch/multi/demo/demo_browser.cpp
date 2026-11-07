@@ -1,11 +1,16 @@
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <ctime>
+#include <exception>
+#include <memory>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
+#include <xlog/xlog.h>
 #include <common/utils/string-utils.h>
 #include <patch_common/CodeInjection.h>
 #include <patch_common/FunHook.h>
@@ -42,11 +47,18 @@ namespace
         std::string type_short;
         std::string type_name;
         bool valid = false;
-        // Demo needs features this build doesn't know - listed and previewed, but not playable
         bool requires_newer = false;
         DemoHeaderInfo header;
-        // Final scoreboard etc. for the preview pane; needs a full scan, so it is filled on hover
+        // Needs a full scan of the file, so it is filled in the background for hovered rows
         std::optional<DemoDetails> details;
+    };
+
+    struct ScanJob
+    {
+        std::string name;
+        int entry = -1;
+        DemoDetails details;
+        std::atomic<bool> done = false;
     };
 
     std::vector<Entry> g_entries;
@@ -65,8 +77,9 @@ namespace
     // The hover must rest this long before the demo is scanned, so sweeping the cursor down the
     // list doesn't scan every demo it crosses.
     constexpr auto preview_scan_delay = std::chrono::milliseconds{150};
+    // Dropped whenever g_entries is rebuilt, so a scan still running can't fill the wrong row
+    std::shared_ptr<ScanJob> g_scan_job;
 
-    // Scoreboard display lines (team section headers interleaved with player rows).
     struct ScoreLine
     {
         enum class Kind
@@ -118,25 +131,28 @@ namespace
         return rf::gr::get_string_size(text, font).first;
     }
 
-    // Width of the widest "YYYY-MM-DD HH:MM": the menu font's digits are proportional, so a
-    // sample like all zeros can come out narrower than a real date.
-    int date_column_width(int font)
+    // Width of `sample` with each '0' replaced by the widest digit: the menu font's digits are
+    // proportional, so a sample like all zeros can come out narrower than a real value.
+    int digit_sample_width(std::string sample, int font)
     {
         static int cached_font = -1;
-        static int cached_w = 0;
+        static char widest = '0';
         if (font != cached_font) {
-            char widest = '0';
+            widest = '0';
             for (char digit = '1'; digit <= '9'; ++digit) {
                 if (text_width({&digit, 1}, font) > text_width({&widest, 1}, font)) {
                     widest = digit;
                 }
             }
-            std::string sample = "0000-00-00 00:00";
-            std::replace(sample.begin(), sample.end(), '0', widest);
             cached_font = font;
-            cached_w = text_width(sample, font);
         }
-        return cached_w;
+        std::replace(sample.begin(), sample.end(), '0', widest);
+        return text_width(sample, font);
+    }
+
+    int date_column_width(int font)
+    {
+        return digit_sample_width("0000-00-00 00:00", font);
     }
 
     Layout compute_layout()
@@ -150,7 +166,6 @@ namespace
         const int font = text_font();
         const int fh = rf::gr::get_font_height(font);
 
-        // Wide panel (list + preview pane) that leaves a clear margin at every resolution.
         lo.pw = std::min(s(1240.0f), clip_w - 40);
         lo.ph = std::min(s(740.0f), clip_h - 40);
         lo.px = (clip_w - lo.pw) / 2;
@@ -237,7 +252,6 @@ namespace
         return 1 + static_cast<int>(std::count(rel_dir.begin(), rel_dir.end(), '\\'));
     }
 
-    // Index of the row under the cursor, or -1 (rows scrolled out of the content region never hit).
     int row_at(const Layout& lo, int x, int y)
     {
         if (!point_in(x, y, lo.content_x, lo.content_y, lo.content_w, lo.content_h)) {
@@ -258,6 +272,7 @@ namespace
     {
         g_scroll = 0.0f;
         g_preview = -1;
+        g_scan_job.reset();
         g_entries.clear();
 
         DemoDirListing listing = demo_file_list_dir(g_current_dir);
@@ -340,7 +355,6 @@ namespace
         return buf;
     }
 
-    // "ctf01.rfl" -> "ctf01"
     std::string level_display_name(const std::string& level_filename)
     {
         if (string_iends_with(level_filename, ".rfl")) {
@@ -378,7 +392,6 @@ namespace
         return lines;
     }
 
-    // Follows the hovered demo row and scans it once the hover has settled.
     void update_preview(int hovered)
     {
         const auto now = std::chrono::steady_clock::now();
@@ -386,11 +399,31 @@ namespace
             g_preview = hovered;
             g_preview_since = now;
         }
-        if (g_preview >= 0 && g_preview < static_cast<int>(g_entries.size())) {
-            Entry& entry = g_entries[g_preview];
-            if (!entry.details && now - g_preview_since >= preview_scan_delay) {
-                entry.details = demo_scan_details(join_rel(g_current_dir, entry.name));
+        if (g_scan_job && g_scan_job->done.load(std::memory_order_acquire)) {
+            if (g_scan_job->entry < static_cast<int>(g_entries.size())) {
+                g_entries[g_scan_job->entry].details = std::move(g_scan_job->details);
             }
+            g_scan_job.reset();
+        }
+        if (g_scan_job || g_preview < 0 || g_preview >= static_cast<int>(g_entries.size())) {
+            return;
+        }
+        const Entry& entry = g_entries[g_preview];
+        if (!entry.details && now - g_preview_since >= preview_scan_delay) {
+            auto job = std::make_shared<ScanJob>();
+            job->name = join_rel(g_current_dir, entry.name);
+            job->entry = g_preview;
+            // Detached so a slow disk never blocks the game; the job is shared with the thread
+            std::thread{[job]() {
+                try {
+                    job->details = demo_scan_details(job->name);
+                }
+                catch (const std::exception& e) {
+                    xlog::warn("[DemoBrowser] failed to scan {}: {}", job->name, e.what());
+                }
+                job->done.store(true, std::memory_order_release);
+            }}.detach();
+            g_scan_job = std::move(job);
         }
     }
 
@@ -399,6 +432,7 @@ namespace
         g_open = false;
         g_scroll = 0.0f;
         g_preview = -1;
+        g_scan_job.reset();
         g_entries.clear();
         map_thumbnails_release_bitmaps();
     }
@@ -485,16 +519,14 @@ namespace
         rf::gr::string_aligned(rf::gr::ALIGN_CENTER, x + w / 2, y + (h - fh) / 2, label, font);
     }
 
-    // The level's FactionFiles preview cropped to fill the box, or a dark placeholder until
-    // (or unless) one is available. Returns whether the image was drawn.
-    bool draw_level_thumbnail(const std::string& level_filename, int x, int y, int w, int h)
+    void draw_level_thumbnail(const std::string& level_filename, int x, int y, int w, int h)
     {
         int img_w = 0, img_h = 0;
         const int bm = map_thumbnail_get(level_filename, &img_w, &img_h);
         if (bm == -1 || img_w <= 0 || img_h <= 0) {
             rf::gr::set_color(10, 10, 10, 255);
             rf::gr::rect(x, y, w, h);
-            return false;
+            return;
         }
         int sx = 0, sy = 0, sw = img_w, sh = img_h;
         if (img_w * h > w * img_h) {
@@ -507,10 +539,8 @@ namespace
         }
         rf::gr::set_color(255, 255, 255, 255);
         rf::gr::bitmap_scaled(bm, x, y, w, h, sx, sy, sw, sh);
-        return true;
     }
 
-    // Right side of the panel: thumbnail, header info and final scoreboard of g_preview.
     void render_preview(const Layout& lo, int font, int fh)
     {
         rf::gr::set_color(30, 30, 30, 235);
@@ -533,7 +563,6 @@ namespace
         const DemoHeaderInfo& hdr = entry.header;
         int y = lo.pane_y + lo.text_pad;
 
-        // Thumbnail with the level and game type captioned along its bottom edge
         const int thumb_h = w * 9 / 16;
         draw_level_thumbnail(hdr.level_filename, x, y, w, thumb_h);
         const int caption_h = fh + 2 * lo.gap;
@@ -550,7 +579,6 @@ namespace
         rf::gr::string(x + lo.text_pad, caption_y + lo.gap, level_str.c_str(), font);
         y += thumb_h + 2 * lo.gap;
 
-        // Info lines: two label/value columns, the server name across the full width
         const DemoDetails* details = entry.details ? &*entry.details : nullptr;
         const std::string pending = "...";
         std::string duration = pending;
@@ -566,33 +594,55 @@ namespace
             }
         }
         const int line_h = fh + std::max(2, static_cast<int>(6 * lo.scale));
-        const int label_w = text_width("Duration:", font) + lo.text_pad;
-        const int half_w = w / 2;
-        const auto info = [&](int col, int line, const char* label, const std::string& value, int cell_w) {
-            const int cx = x + col * half_w;
+        const int label0_w =
+            std::max({text_width("Date:", font), text_width("Players:", font), text_width("Server:", font)})
+            + lo.text_pad;
+        const int label1_w = std::max(text_width("Duration:", font), text_width("Mod:", font)) + lo.text_pad;
+        const int date_need = label0_w + date_column_width(font) + lo.col_gap;
+        const int col1_need = label1_w + digit_sample_width("0:00:00 (incomplete)", font);
+        const std::string date = entry.date_str.empty() ? std::string{"-"} : entry.date_str;
+        const std::string server = hdr.server_name.empty() ? std::string{"-"} : hdr.server_name;
+        const auto info = [&](int cx, int line, int label_w, const char* label, const std::string& value,
+            int value_w) {
             const int cy = y + line * line_h;
             rf::gr::set_color(160, 160, 160, 255);
             rf::gr::string(cx, cy, label, font);
             rf::gr::set_color(255, 255, 255, 255);
-            const std::string fitted = hud_fit_string(value, std::max(20, cell_w - label_w - lo.text_pad), nullptr, font);
+            const std::string fitted = hud_fit_string(value, std::max(20, value_w), nullptr, font);
             rf::gr::string(cx + label_w, cy, fitted.c_str(), font);
         };
-        info(0, 0, "Date:", entry.date_str.empty() ? std::string{"-"} : entry.date_str, half_w);
-        info(1, 0, "Duration:", duration, half_w);
-        info(0, 1, "Players:", players, half_w);
-        if (!hdr.mod_name.empty()) {
-            info(1, 1, "Mod:", hdr.mod_name, half_w);
+        int info_lines = 0;
+        if (date_need + col1_need <= w) {
+            const int col0_w = std::min(std::max(w / 2, date_need), w - col1_need);
+            const int col1_x = x + col0_w;
+            info(x, 0, label0_w, "Date:", date, col0_w - label0_w - lo.col_gap);
+            info(col1_x, 0, label1_w, "Duration:", duration, w - col0_w - label1_w);
+            info(x, 1, label0_w, "Players:", players, col0_w - label0_w - lo.col_gap);
+            if (!hdr.mod_name.empty()) {
+                info(col1_x, 1, label1_w, "Mod:", hdr.mod_name, w - col0_w - label1_w);
+            }
+            info(x, 2, label0_w, "Server:", server, w - label0_w);
+            info_lines = 3;
         }
-        info(0, 2, "Server:", hdr.server_name.empty() ? std::string{"-"} : hdr.server_name, w);
-        int info_lines = 3;
+        else {
+            // Too narrow for a full date and duration side by side
+            const int label_w = std::max(label0_w, label1_w);
+            info(x, info_lines++, label_w, "Date:", date, w - label_w);
+            info(x, info_lines++, label_w, "Duration:", duration, w - label_w);
+            info(x, info_lines++, label_w, "Players:", players, w - label_w);
+            if (!hdr.mod_name.empty()) {
+                info(x, info_lines++, label_w, "Mod:", hdr.mod_name, w - label_w);
+            }
+            info(x, info_lines++, label_w, "Server:", server, w - label_w);
+        }
         if (entry.requires_newer) {
             rf::gr::set_color(255, 170, 80, 255);
-            rf::gr::string(x, y + info_lines * line_h, "Requires a newer Alpine Faction to play", font);
+            const std::string notice = hud_fit_string("Requires a newer Alpine Faction to play", w, nullptr, font);
+            rf::gr::string(x, y + info_lines * line_h, notice.c_str(), font);
             ++info_lines;
         }
         y += info_lines * line_h + lo.gap;
 
-        // Final scoreboard, cut off with a "+N more" line when it doesn't fit
         if (!details) {
             return;
         }
@@ -605,8 +655,8 @@ namespace
             || hdr.game_type == rf::NG_TYPE_SCAV;
         const int col_ping_r = x + w;
         const int col_caps_r = col_ping_r - text_width("Ping", font) - lo.col_gap;
-        const int col_score_r = (show_caps ? col_caps_r - text_width("Caps", font) : col_ping_r - text_width("Ping", font))
-            - lo.col_gap;
+        const int col_score_r =
+            (show_caps ? col_caps_r - text_width("Caps", font) : col_ping_r - text_width("Ping", font)) - lo.col_gap;
         const int name_max_w = col_score_r - text_width("Score", font) - lo.col_gap - x;
 
         rf::gr::set_color(160, 160, 160, 255);
@@ -659,7 +709,7 @@ namespace
             rf::gr::string_aligned(rf::gr::ALIGN_RIGHT, col_ping_r, y,
                 row.has_stats ? std::to_string(row.ping).c_str() : "-", font);
         }
-        if (overflow) {
+        if (overflow && max_lines > 0) {
             const int more_players = static_cast<int>(std::count_if(lines.begin() + shown, lines.end(),
                 [](const ScoreLine& line) { return line.kind == ScoreLine::Kind::player; }));
             rf::gr::set_color(150, 150, 150, 255);
@@ -803,7 +853,6 @@ void demo_browser_render()
     rf::gr::string_aligned(rf::gr::ALIGN_CENTER, lo.px + lo.pw / 2,
         lo.py + static_cast<int>(14 * lo.scale), title.c_str(), title_font);
 
-    // Column header (fixed, above the scrolled region).
     const int row_x = lo.content_x + lo.gap;
     rf::gr::set_color(160, 160, 160, 255);
     rf::gr::string(row_x + lo.col_name_x, lo.list_header_y, "Name", font);

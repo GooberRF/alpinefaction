@@ -31,12 +31,10 @@
 namespace
 {
 
-// Expanded: the interactive controls over the nameplate row, with a free cursor.
-// Otherwise the panel is compact: a progress line over the nameplate row.
+// Expanded (interactive, free cursor); compact otherwise
 bool g_open = false;
-// The panel expands by default whenever it can; USE compacts it until pressed again.
-// Survives the backward-seek session restart (which force-closes the panel when
-// gameplay tears down), so a rewind brings the controls back; reset once playback ends.
+// Compacted with USE. Survives the backward-seek session restart, which force-closes the panel,
+// so a rewind brings the controls back; reset once playback ends.
 bool g_compact = false;
 // Expanded with USE while in a mouse-look camera; see auto_close_in_mouse_look().
 bool g_opened_in_mouse_look = false;
@@ -52,9 +50,7 @@ int g_reopen_cursor_y = 0;
 // pass through.
 int g_swallow_attack_frames = 0;
 bool g_veto_registered = false;
-// The viewer's own seek bar marker, set with the Quick Save bind or the panel's marker button,
-// jumped to with the Quick Load bind or a click on it.
-// Survives the backward-seek session restart like g_compact; cleared once playback ends.
+// Survives the backward-seek session restart like g_compact; cleared once playback ends
 std::optional<uint32_t> g_custom_marker_ms;
 
 struct Rect
@@ -90,8 +86,6 @@ struct Layout
     int award_dot_y;  // award dot row (below the track), center
 };
 
-// Key binds on the panel: the transport buttons carry their keyboard shortcuts, and
-// the nameplate arrows the attack binds that cycle players. Empty when unbound.
 struct PanelLabels
 {
     std::string back_bind;
@@ -151,7 +145,6 @@ void draw_keycap(int x, int y, const std::string& bind, bool bright)
     rf::gr::string(x + keycap_pad_x(), y + 1, bind.c_str(), hud_get_small_font());
 }
 
-// Playback speeds the speed button steps through
 constexpr float speed_steps[] = {0.25f, 0.5f, 1.0f, 2.0f, 4.0f, 8.0f};
 // The widest label the button sizes for, so it doesn't resize as the speed changes
 constexpr const char* widest_speed_label = "0.25x";
@@ -172,9 +165,6 @@ bool nameplate_arrows_shown(bool expanded)
         && (expanded || !g_alpine_game_config.spectate_mode_minimal_ui);
 }
 
-// Minimal compact bar (spectate_minimalbar): compact, the panel is just the stock plaque
-// around the nameplate text, without its "Spectating" lead, the player's quick-bind numbers or
-// the progress line.
 bool minimal_compact(bool expanded)
 {
     return !expanded && g_alpine_game_config.demo_minimal_compact_bar;
@@ -194,20 +184,13 @@ Layout compute_layout(bool expanded, const PanelLabels& labels)
 
     Layout lay{};
     lay.strip.w = std::min(scaled(700.0f), rf::gr::clip_width() - scaled(120.0f));
-    // Keep clear of the spectate hint column at the bottom left
-    if (const int hints_right = hud_control_hints_right_x(); hints_right > 0) {
-        const int clear_w = rf::gr::clip_width() - 2 * (hints_right + scaled(12.0f));
-        lay.strip.w = std::min(lay.strip.w, std::max(clear_w, scaled(360.0f)));
-    }
     const bool minimal = minimal_compact(expanded);
     if (const int plaque_w = multi_spectate_nameplate_row_width(true); minimal && plaque_w > 0) {
         lay.strip.w = plaque_w;
     }
     lay.strip.x = (rf::gr::clip_width() - lay.strip.w) / 2;
-    // The nameplate row takes the stock plaque's spot at the bottom of the screen
     lay.nameplate = {lay.strip.x, multi_spectate_nameplate_top_y(), lay.strip.w, multi_spectate_nameplate_height()};
-    // Expanded: track with its marker dot rows, transport buttons, their keycaps. Dot rows
-    // clear the handle, which overhangs the track by 4px each side.
+    // Dot rows clear the handle, which overhangs the track by 4px each side
     const int track_y = scaled(18.0f);
     const int track_h = scaled(10.0f);
     const int dot_r = std::max(2, scaled(3.0f));
@@ -253,8 +236,6 @@ Layout compute_layout(bool expanded, const PanelLabels& labels)
     const int pad = scaled(6.0f);
     lay.track_hit = {lay.track.x - pad, lay.track.y - pad, lay.track.w + 2 * pad, lay.track.h + 2 * pad};
 
-    // Media-player cluster: skip back, play/pause, skip forward, speed, then set marker set apart,
-    // wide enough for their keycaps and the speed label
     const int skip_w = std::max({scaled(56.0f), keycap_w(labels.back_bind), keycap_w(labels.fwd_bind)});
     const int pause_w = std::max(scaled(44.0f), keycap_w(labels.pause_bind));
     const int speed_w = std::max(scaled(44.0f),
@@ -301,8 +282,7 @@ void play_click_sound()
     snd_play_unscaled(stock_sound_id::panel_button_click, 0, 0.0f, 1.0f);
 }
 
-// Next speed step up (up) or down from the current speed, wrapping back to normal speed
-// past either end. A console-set speed between steps moves to the neighbouring step.
+// Stepping past either end wraps back to normal speed
 void step_timescale(bool up)
 {
     play_click_sound();
@@ -326,7 +306,6 @@ void step_timescale(bool up)
     demo_playback_set_timescale(next);
 }
 
-// Replaces any earlier custom marker
 void set_custom_marker()
 {
     play_click_sound();
@@ -476,10 +455,6 @@ struct ButtonStyle
     bool enabled;
 };
 
-// Markers for the player spectated in first person: a tick on the track at each kill,
-// powerup pickup dots, objective squares (hollow when taken, filled when captured) and
-// point capture diamonds above it, and award dots below. Clicking one seeks to just before it. The custom marker, a pennant
-// on a pole across all rows, shows in every camera and seeks exactly to it.
 struct Marker
 {
     int x; // center
@@ -523,7 +498,6 @@ bool marker_is_dot(const Marker& marker)
     return marker.kind != DemoMarkerKind::kill && marker.kind != DemoMarkerKind::custom;
 }
 
-// The custom marker's pole spans the pickup row to the award row
 int custom_marker_top(const Layout& lay)
 {
     return lay.pickup_dot_y - lay.dot_r;
@@ -539,8 +513,6 @@ int marker_dot_y(const Marker& marker, const Layout& lay)
     return marker.kind == DemoMarkerKind::award ? lay.award_dot_y : lay.pickup_dot_y;
 }
 
-// Marker nearest the cursor, within a few pixels of reach so the small markers stay
-// clickable; null when no marker is close.
 const Marker* hovered_marker(const std::vector<Marker>& markers, int mx, int my, const Layout& lay)
 {
     const int tick_reach = std::max(3, lay.track.h / 2);
@@ -565,10 +537,7 @@ const Marker* hovered_marker(const std::vector<Marker>& markers, int mx, int my,
     return best;
 }
 
-// Anti-aliased fill, in the current color, of a shape given as its horizontal span
-// [left, right) at each y within [top, bottom) (pixel units; pixel x covers [x, x + 1)).
-// Each pixel row averages sub-scanlines and blends edge pixels by coverage, so small
-// shapes don't stair-step.
+// span(y) is the shape's [left, right) at y; pixel x covers [x, x + 1)
 template<typename SpanFn>
 void fill_shape_aa(float top, float bottom, SpanFn span)
 {
@@ -607,7 +576,6 @@ void fill_shape_aa(float top, float bottom, SpanFn span)
         for (int x = static_cast<int>(std::floor(row_left)); x < x_end;) {
             const float c = coverage(x);
             if (c >= 0.99f) {
-                // Fully covered run in one rect
                 int run_end = x + 1;
                 while (run_end < x_end && coverage(run_end) >= 0.99f) {
                     ++run_end;
@@ -627,7 +595,6 @@ void fill_shape_aa(float top, float bottom, SpanFn span)
     rf::gr::set_color(color);
 }
 
-// Filled disc of radius r + 0.5 centered on pixel (cx, cy)
 void fill_dot(int cx, int cy, int r)
 {
     const float center_x = cx + 0.5f;
@@ -640,7 +607,6 @@ void fill_dot(int cx, int cy, int r)
     });
 }
 
-// Filled diamond of half-diagonal r + 0.5 centered on pixel (cx, cy)
 void fill_diamond(int cx, int cy, int r)
 {
     const float center_x = cx + 0.5f;
@@ -736,8 +702,6 @@ std::string marker_label(const Marker& marker)
     return "";
 }
 
-// Filled triangle pointing left or right, spanning rows cy - half_h to cy + half_h; x is
-// its left edge
 void fill_arrow_triangle(int x, int cy, int half_h, int len, bool left)
 {
     const float center_y = cy + 0.5f;
@@ -748,7 +712,6 @@ void fill_arrow_triangle(int x, int cy, int half_h, int len, bool left)
     });
 }
 
-// Pole from top to bottom (exclusive) at x, with a right-pointing pennant at its top
 void draw_pennant(int x, int top, int bottom, int pole_w, int half_h)
 {
     rf::gr::rect(x, top, pole_w, bottom - top);
@@ -795,11 +758,12 @@ void draw_markers(const std::vector<Marker>& markers, const Marker* hovered, con
     }
 }
 
-// Label above the strip, centered on cx
 void draw_tooltip(const Rect& strip, int cx, const std::string& text, int font)
 {
     const auto [text_w, text_h] = rf::gr::get_string_size(text, font);
-    cx = std::clamp(cx, strip.x + text_w / 2 + 4, strip.x + strip.w - text_w / 2 - 4);
+    const int min_cx = strip.x + text_w / 2 + 4;
+    const int max_cx = strip.x + strip.w - text_w / 2 - 4;
+    cx = min_cx <= max_cx ? std::clamp(cx, min_cx, max_cx) : strip.x + strip.w / 2;
     const int ty = strip.y - text_h - 6;
     rf::gr::set_color(0, 0, 0, 200);
     rf::gr::rect(cx - text_w / 2 - 4, ty - 2, text_w + 8, text_h + 4);
@@ -836,7 +800,6 @@ std::string transport_tooltip(TransportIcon icon)
     return "";
 }
 
-// Flat icon button with its keycap centered underneath
 void draw_transport_button(const Rect& rect, TransportIcon icon, const std::string& bind, int keycap_y,
                            const ButtonStyle& style)
 {
@@ -885,7 +848,6 @@ void draw_transport_button(const Rect& rect, TransportIcon icon, const std::stri
         break;
     }
     case TransportIcon::set_marker: {
-        // The custom marker's pennant, in its color
         const int pole_w = std::max(2, half_h / 3);
         if (style.enabled) {
             rf::gr::set_color(255, style.hovered ? 120 : 64, style.hovered ? 200 : 160, 255);
@@ -900,7 +862,6 @@ void draw_transport_button(const Rect& rect, TransportIcon icon, const std::stri
     }
 }
 
-// Keycap over caption, centered in the arrow's slot at the nameplate row's edge
 ConsoleCommand2 spectate_minimalbar_cmd{
     "spectate_minimalbar",
     []() {
@@ -982,7 +943,7 @@ bool demo_controls_ui_execute_action(rf::ControlConfigAction action, bool was_pr
         }
     }
     else if (rewind || forward) {
-        // Keyboard shortcuts for the popup's -10s/+10s buttons. Voting does not
+        // Keyboard shortcuts for the panel's -10s/+10s buttons. Voting does not
         // exist during playback, so the vote keys are free for reuse.
         if (was_pressed && demo_playback_can_seek() && !demo_playback_is_seeking()) {
             play_click_sound();
@@ -990,7 +951,7 @@ bool demo_controls_ui_execute_action(rf::ControlConfigAction action, bool was_pr
         }
     }
     else if (action == rf::CC_ACTION_QUICK_SAVE) {
-        // Keyboard shortcut for the popup's marker button. Saving does not exist in
+        // Keyboard shortcut for the panel's marker button. Saving does not exist in
         // multiplayer, so the Quick Save key is free for reuse.
         if (was_pressed && demo_playback_can_seek() && !demo_playback_is_seeking()) {
             set_custom_marker();
@@ -1005,7 +966,7 @@ bool demo_controls_ui_execute_action(rf::ControlConfigAction action, bool was_pr
         }
     }
     else if (action == rf::CC_ACTION_RELOAD) {
-        // Keyboard shortcut for the popup's play/pause button; meaningless once
+        // Keyboard shortcut for the panel's play/pause button; meaningless once
         // the demo has finished (a seek restarts the session instead).
         if (was_pressed && !demo_playback_finished()) {
             play_click_sound();
@@ -1119,6 +1080,14 @@ bool demo_controls_ui_draws_nameplate()
         && (g_open || !is_hud_effectively_hidden());
 }
 
+int demo_controls_ui_top_y()
+{
+    if (!demo_controls_ui_draws_nameplate() || demo_playback_is_seeking()) {
+        return rf::gr::clip_height();
+    }
+    return compute_layout(g_open, panel_labels()).strip.y;
+}
+
 void demo_controls_ui_render()
 {
     // The input pump runs before gameseq_process; a level change or teardown can
@@ -1215,12 +1184,10 @@ void demo_controls_ui_render()
             hovered_button = {lay.btn_mark, TransportIcon::set_marker};
         }
 
-        // Divider over the nameplate row
         rf::gr::set_color(90, 90, 90, 255);
         rf::gr::rect(lay.strip.x + 1, lay.nameplate.y, lay.strip.w - 2, 1);
     }
     else if (!minimal_compact(expanded)) {
-        // Progress line across the top edge
         const double progress = std::clamp(demo_playback_clock_ms() / effective_duration_ms(), 0.0, 1.0);
         rf::gr::set_color(0, 0x80, 0, 255);
         rf::gr::rect(lay.track.x, lay.track.y, static_cast<int>(progress * lay.track.w), lay.track.h);
@@ -1232,7 +1199,6 @@ void demo_controls_ui_render()
         }
     }
 
-    // Nameplate row
     multi_spectate_render_nameplate_row(lay.nameplate.x + lay.nameplate.w / 2, lay.nameplate.y,
                                         minimal_compact(expanded));
     if (nameplate_arrows_shown(expanded)) {
