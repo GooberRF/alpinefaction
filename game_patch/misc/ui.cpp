@@ -22,8 +22,6 @@
 #include "../rf/sound/sound.h"
 #include "../sound/sound.h"
 #include "../rf/input.h"
-#include "../input/gyro.h"
-#include "../input/gamepad.h"
 #include "../rf/player/player.h"
 #include "../rf/misc.h"
 

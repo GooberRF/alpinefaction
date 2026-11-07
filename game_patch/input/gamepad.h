@@ -38,9 +38,8 @@ const char* gamepad_get_scan_code_name(int scan_code);
 const char* gamepad_get_menu_cancel_button_name();
 int         gamepad_get_button_count();
 void        gamepad_reset_to_defaults();
-void        gamepad_sync_bindings_from_scan_codes();
 
-// Scan codes used while the CONTROLLER tab is active (unused gap in RF's key table)
+// Scan codes for controller inputs (unused gap in RF's key table)
 static constexpr int CTRL_GAMEPAD_SCAN_BASE    = 0x59; // SDL button 0
 static constexpr int CTRL_GAMEPAD_LEFT_TRIGGER  = 0x73; // SCAN_BASE + 26
 static constexpr int CTRL_GAMEPAD_RIGHT_TRIGGER = 0x74; // SCAN_BASE + 27
@@ -51,14 +50,24 @@ static constexpr int CTRL_GAMEPAD_MENU_BASE    = 0x75; // SCAN_BASE + 28
 // Returns true if an action index should live in g_menu_button_map
 bool gamepad_is_menu_only_action(int action_idx);
 
-// Per-binding get/set for save/load
-int  gamepad_get_button_binding(int button_idx);
+// Per-input setters for legacy config keys.
 void gamepad_set_button_binding(int button_idx, int action_idx);
-int  gamepad_get_trigger_action(int trigger_idx);
 void gamepad_set_trigger_action(int trigger_idx, int action_idx);
 
-// rebind gamepad buttons/triggers
-void gamepad_apply_rebind(int16_t new_code);
+// Menu binding capture: after begin, the next button or trigger press is held instead of acting.
+void gamepad_bind_capture_begin();
+void gamepad_bind_capture_end();
+bool gamepad_bind_capture_take(int& code); // true once per captured press
+
+// Two controller inputs per action (slot 0 = BUTTON, 1 = ALT). Codes: CTRL_GAMEPAD_SCAN_BASE +
+// button, or a trigger code.
+int  gamepad_get_action_code(int action_idx, int slot); // -1 if unbound
+// Binds the slot to the code (-1 unbinds). Returns the action that held the code in the same
+// table and lost it, or -1. A reserved or out-of-range code changes nothing.
+int  gamepad_bind_action(int action_idx, int slot, int code);
+// Raw write of one slot, with no exclusivity: for the bind context layer, which resolves
+// conflicts itself.
+void gamepad_set_action_code(int action_idx, int slot, int code);
 
 // Returns and clears any pending scroll delta produced by the right-stick menu scroll tick (+1=up, -1=down, 0=none)
 int gamepad_consume_menu_scroll();

@@ -2,6 +2,7 @@
 #include <optional>
 #include <type_traits>
 #include "bind_context.h"
+#include "gamepad.h"
 #include "../hud/multi_spectate.h"
 #include "../multi/demo/demo.h"
 #include "../multi/vehicles/vehicle.h"
@@ -26,27 +27,36 @@ bool g_shadowed[bind_context_max_bindings];
 BindContextId g_active = BindContextId::Global;
 int g_suspend_depth = 0;
 
-void read_item(const rf::ControlConfigItem& item, BindOverride& out)
+void read_item(int index, const rf::ControlConfigItem& item, BindOverride& out)
 {
     out.scan_codes[0] = item.scan_codes[0];
     out.scan_codes[1] = item.scan_codes[1];
     out.mouse_btn_id = item.mouse_btn_id;
+    for (int slot = 0; slot < 2; ++slot) {
+        out.pad_codes[slot] = static_cast<int16_t>(gamepad_get_action_code(index, slot));
+    }
 }
 
-void write_item(rf::ControlConfigItem& item, const BindOverride& value)
+void write_item(int index, rf::ControlConfigItem& item, const BindOverride& value)
 {
     item.scan_codes[0] = value.scan_codes[0];
     item.scan_codes[1] = value.scan_codes[1];
     item.mouse_btn_id = value.mouse_btn_id;
+    for (int slot = 0; slot < 2; ++slot) {
+        gamepad_set_action_code(index, slot, value.pad_codes[slot]);
+    }
 }
 
 // Writes only the fields the context owns; the item already holds Global, so an inherited field
 // is simply left alone. Only valid on a restored table.
-void compose_item(rf::ControlConfigItem& item, const BindOverride& value)
+void compose_item(int index, rf::ControlConfigItem& item, const BindOverride& value)
 {
     for (int j = 0; j < 2; ++j) {
         if (value.scan_codes[j] != bind_inherit) {
             item.scan_codes[j] = value.scan_codes[j];
+        }
+        if (value.pad_codes[j] != bind_inherit) {
+            gamepad_set_action_code(index, j, value.pad_codes[j]);
         }
     }
     if (value.mouse_btn_id != bind_inherit) {
@@ -68,7 +78,8 @@ void drain_key_presses(const rf::ControlConfigItem& item)
 bool all_inherit(const BindOverride& value)
 {
     return value.scan_codes[0] == bind_inherit && value.scan_codes[1] == bind_inherit
-        && value.mouse_btn_id == bind_inherit;
+        && value.mouse_btn_id == bind_inherit && value.pad_codes[0] == bind_inherit
+        && value.pad_codes[1] == bind_inherit;
 }
 
 void restore()
@@ -83,7 +94,7 @@ void restore()
             // so the next do_frame tries again rather than losing the Global values.
             return;
         }
-        write_item(cc->bindings[i], g_shadow[i]);
+        write_item(i, cc->bindings[i], g_shadow[i]);
         drain_key_presses(cc->bindings[i]);
         g_shadowed[i] = false;
     }
@@ -105,10 +116,10 @@ void apply(BindContextId ctx)
             continue;
         }
         if (!g_shadowed[i]) {
-            read_item(cc->bindings[i], g_shadow[i]);
+            read_item(i, cc->bindings[i], g_shadow[i]);
             g_shadowed[i] = true;
         }
-        compose_item(cc->bindings[i], *value);
+        compose_item(i, cc->bindings[i], *value);
         drain_key_presses(cc->bindings[i]);
     }
     g_active = ctx;
@@ -138,6 +149,21 @@ bool valid_override_slot(BindContextId ctx, int index)
 {
     const int c = static_cast<int>(ctx);
     return c > 0 && c < ctx_count && index >= 0 && index < bind_context_max_bindings;
+}
+
+void update_override(BindContextId ctx, int index, std::optional<BindOverride> value)
+{
+    if (!valid_override_slot(ctx, index)) {
+        return;
+    }
+    const bool live = g_active == ctx;
+    if (live) {
+        restore();
+    }
+    g_overrides[static_cast<int>(ctx)][index] = value;
+    if (live) {
+        apply(ctx);
+    }
 }
 
 } // namespace
@@ -204,7 +230,7 @@ void bind_context_resume()
 
 BindOverride bind_context_global_binding(int index)
 {
-    BindOverride out{{-1, -1}, -1};
+    BindOverride out{{-1, -1}, -1, {-1, -1}};
     if (index < 0 || index >= bind_context_max_bindings) {
         return out;
     }
@@ -213,7 +239,7 @@ BindOverride bind_context_global_binding(int index)
     }
     const rf::ControlConfig* cc = bind_context_controls();
     if (cc && index < bind_context_binding_count()) {
-        read_item(cc->bindings[index], out);
+        read_item(index, cc->bindings[index], out);
     }
     return out;
 }
@@ -235,6 +261,9 @@ BindOverride bind_context_effective(BindContextId ctx, int index)
             if (value->scan_codes[j] != bind_inherit) {
                 out.scan_codes[j] = value->scan_codes[j];
             }
+            if (value->pad_codes[j] != bind_inherit) {
+                out.pad_codes[j] = value->pad_codes[j];
+            }
         }
         if (value->mouse_btn_id != bind_inherit) {
             out.mouse_btn_id = value->mouse_btn_id;
@@ -245,36 +274,16 @@ BindOverride bind_context_effective(BindContextId ctx, int index)
 
 void bind_context_set_override(BindContextId ctx, int index, BindOverride value)
 {
-    if (!valid_override_slot(ctx, index)) {
-        return;
-    }
     if (all_inherit(value)) {
-        bind_context_clear_override(ctx, index);
+        update_override(ctx, index, std::nullopt);
         return;
     }
-    const bool live = g_active == ctx;
-    if (live) {
-        restore();
-    }
-    g_overrides[static_cast<int>(ctx)][index] = value;
-    if (live) {
-        apply(ctx);
-    }
+    update_override(ctx, index, value);
 }
 
 void bind_context_clear_override(BindContextId ctx, int index)
 {
-    if (!valid_override_slot(ctx, index)) {
-        return;
-    }
-    const bool live = g_active == ctx;
-    if (live) {
-        restore();
-    }
-    g_overrides[static_cast<int>(ctx)][index].reset();
-    if (live) {
-        apply(ctx);
-    }
+    update_override(ctx, index, std::nullopt);
 }
 
 void bind_context_clear_all(BindContextId ctx)
@@ -337,6 +346,28 @@ bool bind_context_dedupe_against_global()
             if (value->mouse_btn_id != bind_inherit && value->mouse_btn_id >= 0
                 && taken_by_other(value->mouse_btn_id, true)) {
                 value->mouse_btn_id = -1;
+                changed = true;
+            }
+            // Controller inputs compete only with actions of the same kind (gameplay or menu).
+            const bool menu_only = gamepad_is_menu_only_action(i);
+            const auto pad_taken_by_other = [&](int16_t code) {
+                for (int k = 0; k < total; ++k) {
+                    if (k == i || gamepad_is_menu_only_action(k) != menu_only) {
+                        continue;
+                    }
+                    const BindOverride other = bind_context_effective(ctx, k);
+                    if (other.pad_codes[0] == code || other.pad_codes[1] == code) {
+                        return true;
+                    }
+                }
+                return false;
+            };
+            for (int j = 0; j < 2; ++j) {
+                const int16_t code = value->pad_codes[j];
+                if (code == bind_inherit || code < 0 || !pad_taken_by_other(code)) {
+                    continue;
+                }
+                value->pad_codes[j] = -1;
                 changed = true;
             }
         }

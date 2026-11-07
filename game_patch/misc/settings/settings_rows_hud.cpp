@@ -21,6 +21,9 @@ bool damage_flash_offered(const int value)
 
 const char* const labels_damage_flash[] = {"Off", "Screen flash", "Edge vignette"};
 const char* const labels_scope_glass[] = {"Off", "Light", "Heavy"};
+const char* const labels_gamepad_icons[] = {"Auto", "Generic", "Xbox 360", "Xbox One", "DualShock 3", "DualShock 4",
+                                            "DualSense", "Nintendo Switch", "GameCube", "Steam"};
+const char* const labels_input_prompts[] = {"Auto", "Controller", "Keyboard / Mouse"};
 
 const SettingRow rows[] = {
     {
@@ -246,6 +249,30 @@ const SettingRow rows[] = {
         .access = AccBool{&AGS::show_gametype_help},
         .flags = SF_MP_ONLY | SF_ADVANCED,
         .console_cmd = "ui_gametype_help",
+    },
+    {
+        .id = "input_prompt_override",
+        .key = "InputPromptMode",
+        .label = "Input prompts",
+        .tooltip = "Whether prompts show controller buttons or keyboard/mouse icons. Auto detects the last device used.",
+        .category = Cat::Hud,
+        .subcategory = "Input Prompts",
+        .widget = Wid::Enum,
+        .access = AccInt{&AGS::input_prompt_override, nullptr, 0, 2},
+        ENUM_LABELS(labels_input_prompts),
+        .console_cmd = "input_prompts",
+    },
+    {
+        .id = "gamepad_icon_override",
+        .key = "GamepadIconOverride",
+        .label = "Controller glyphs",
+        .tooltip = "Controller button icons shown in prompts.",
+        .category = Cat::Hud,
+        .subcategory = "Input Prompts",
+        .widget = Wid::Enum,
+        .access = AccInt{&AGS::gamepad_icon_override, nullptr, 0, 9},
+        ENUM_LABELS(labels_gamepad_icons),
+        .console_cmd = "gamepad_prompts",
     },
     {
         .id = "verbose_time_left_display",

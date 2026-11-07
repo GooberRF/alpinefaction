@@ -1,5 +1,4 @@
 #include <cctype>
-#include <utility>
 #include <cstring>
 #include <patch_common/FunHook.h>
 #include <patch_common/CodeInjection.h>
@@ -200,17 +199,13 @@ CodeInjection key_name_in_options_patch{
     [](auto& regs) {
         static char buf[64];
         int key = regs.edx;
-        // Gamepad scan codes installed by the CONTROLLER binding view.
+        // Gamepad scan codes in the stock options controls list.
         if (key >= CTRL_GAMEPAD_SCAN_BASE && key <= CTRL_GAMEPAD_RIGHT_TRIGGER) {
             std::strncpy(buf, gamepad_get_scan_code_name(key), std::size(buf) - 1);
             buf[std::size(buf) - 1] = '\0';
         } else if (key >= CTRL_GAMEPAD_MENU_BASE && key < CTRL_GAMEPAD_MENU_BASE + gamepad_get_button_count()) {
             // Menu-only action: separate namespace, never carries a secondary binding.
             std::strncpy(buf, gamepad_get_scan_code_name(key), std::size(buf) - 1);
-            buf[std::size(buf) - 1] = '\0';
-        } else if (key == 0 && ui_ctrl_bindings_view_active()) {
-            // Unbound action in CONTROLLER view — show placeholder
-            std::strncpy(buf, "<none>", std::size(buf) - 1);
             buf[std::size(buf) - 1] = '\0';
         } else {
             get_key_name(key, buf, std::size(buf));

@@ -56,12 +56,21 @@ static int g_trigger_action[2] = {rf::CC_ACTION_CROUCH, rf::CC_ACTION_SECONDARY_
 static int g_menu_button_map[SDL_GAMEPAD_BUTTON_COUNT];
 static int g_menu_trigger_action[2] = {-1, -1};
 
+// Set while the settings menu waits for a controller input to bind. The next button or trigger
+// press is held in g_bind_capture_code instead of acting, and ends the wait.
+static bool g_bind_capture_active = false;
+static int g_bind_capture_code = -1;
+
 static bool g_lt_was_down = false;
 static bool g_rt_was_down = false;
 
 static constexpr int k_action_count = 128;
 static bool g_action_prev[k_action_count] = {};
 static bool g_action_curr[k_action_count] = {};
+
+// The controller inputs bound to each action, two slots (BUTTON and ALT), -1 for none. This is
+// the source of truth; the button and trigger tables above are rebuilt from it.
+static int g_action_pad[k_action_count][2];
 
 static float g_message_log_close_cooldown = 0.0f;
 static int g_pending_scroll_delta = 0;
@@ -631,12 +640,10 @@ static void sync_extra_actions_for_scancode(int16_t sc, bool down, int primary_a
     }
 }
 
-static void gamepad_capture_rebind(int16_t new_code)
+static void gamepad_capture_bind_input(int16_t code)
 {
-    rf::ui::options_controls_assign_binding(static_cast<int>(CTRL_REBIND_SENTINEL), -1);
-    gamepad_apply_rebind(new_code);
-    gamepad_sync_bindings_from_scan_codes();
-    rf::ui::options_controls_stop_waiting_for_key();
+    g_bind_capture_code = code;
+    g_bind_capture_active = false;
 }
 
 static void handle_trigger_down(int trigger_idx, SDL_JoystickID which)
@@ -649,8 +656,8 @@ static void handle_trigger_down(int trigger_idx, SDL_JoystickID which)
 
     int16_t gp_sc = (trigger_idx == 0) ? static_cast<int16_t>(CTRL_GAMEPAD_LEFT_TRIGGER)
                                         : static_cast<int16_t>(CTRL_GAMEPAD_RIGHT_TRIGGER);
-    if (ui_ctrl_bindings_view_active() && rf::ui::options_controls_waiting_for_key) {
-        gamepad_capture_rebind(gp_sc);
+    if (g_bind_capture_active) {
+        gamepad_capture_bind_input(gp_sc);
         return;
     }
 
@@ -940,7 +947,7 @@ static void handle_gamepad_button_down(const SDL_GamepadButtonEvent& ev)
 
     input_active_gamepad(ev.which);
 
-    if (ui_ctrl_bindings_view_active() && rf::ui::options_controls_waiting_for_key) {
+    if (g_bind_capture_active) {
         if (ev.button == SDL_GAMEPAD_BUTTON_START || ev.button == SDL_GAMEPAD_BUTTON_GUIDE) {
             menu_nav_inject_key(rf::KEY_ESC);
         } else {
@@ -949,7 +956,7 @@ static void handle_gamepad_button_down(const SDL_GamepadButtonEvent& ev)
             // TODO: when next major SDL3 release adds proper support for capsense/gripsense, remove this entirely 
             if (is_capsense_gripsense_rebind_blocked(SDL_GetGamepadFromID(ev.which), ev.button))
                 return;
-            gamepad_capture_rebind(static_cast<int16_t>(CTRL_GAMEPAD_SCAN_BASE + ev.button));
+            gamepad_capture_bind_input(static_cast<int16_t>(CTRL_GAMEPAD_SCAN_BASE + ev.button));
         }
         return;
     }
@@ -1598,35 +1605,8 @@ void flush_freelook_gamepad_deltas()
 
 static bool is_gamepad_controls_rebind_active()
 {
-    return ui_ctrl_bindings_view_active() && rf::ui::options_controls_waiting_for_key;
+    return g_bind_capture_active;
 }
-
-static bool is_key_allowed_during_rebind(int scan_code)
-{
-    if (scan_code == CTRL_REBIND_SENTINEL)
-        return true;
-    if ((scan_code & rf::KEY_MASK) == rf::KEY_ESC)
-        return true;
-    return false;
-}
-
-FunHook<void(int,int,int)> key_process_event_hook{
-    0x0051E6C0,
-    [](int scan_code, int key_down, int delta_time) {
-        if (is_gamepad_controls_rebind_active() && !is_key_allowed_during_rebind(scan_code))
-            return;
-        key_process_event_hook.call_target(scan_code, key_down, delta_time);
-    }
-};
-
-FunHook<int(int)> mouse_was_button_pressed_hook{
-    0x0051E5D0,
-    [](int btn_idx) -> int {
-        if (is_gamepad_controls_rebind_active())
-            return 0;
-        return mouse_was_button_pressed_hook.call_target(btn_idx);
-    }
-};
 
 FunHook<bool(rf::ControlConfig*, rf::ControlConfigAction)> control_is_control_down_hook{
     0x00430F40,
@@ -2203,141 +2183,174 @@ const char* gamepad_get_menu_cancel_button_name()
     return gamepad_get_scan_code_name(CTRL_GAMEPAD_SCAN_BASE + static_cast<int>(get_menu_cancel_button()));
 }
 
-void gamepad_clear_all_bindings()
+void gamepad_bind_capture_begin()
+{
+    g_bind_capture_code = -1;
+    g_bind_capture_active = true;
+}
+
+void gamepad_bind_capture_end()
+{
+    g_bind_capture_active = false;
+    g_bind_capture_code = -1;
+}
+
+bool gamepad_bind_capture_take(int& code)
+{
+    if (g_bind_capture_code < 0)
+        return false;
+    code = g_bind_capture_code;
+    g_bind_capture_code = -1;
+    return true;
+}
+
+static bool is_bindable_gamepad_code(int code)
+{
+    if (code == CTRL_GAMEPAD_LEFT_TRIGGER || code == CTRL_GAMEPAD_RIGHT_TRIGGER)
+        return true;
+    const int button = code - CTRL_GAMEPAD_SCAN_BASE;
+    // START and GUIDE are reserved for the menu and never rebindable.
+    return button >= 0 && button < SDL_GAMEPAD_BUTTON_COUNT
+        && button != SDL_GAMEPAD_BUTTON_START && button != SDL_GAMEPAD_BUTTON_GUIDE;
+}
+
+static void rebuild_pad_tables()
 {
     memset(g_button_map, -1, sizeof(g_button_map));
-    g_trigger_action[0] = g_trigger_action[1] = -1;
     memset(g_menu_button_map, -1, sizeof(g_menu_button_map));
+    g_trigger_action[0] = g_trigger_action[1] = -1;
     g_menu_trigger_action[0] = g_menu_trigger_action[1] = -1;
-}
 
-void gamepad_sync_bindings_from_scan_codes()
-{
-    if (!rf::local_player) return;
-    gamepad_clear_all_bindings();
-    auto& cc = rf::local_player->settings.controls;
-    for (int i = 0; i < cc.num_bindings; ++i) {
-        int16_t sc = cc.bindings[i].scan_codes[0];
-        bool menu_only = is_menu_only_action(i);
-
-        int menu_offset = static_cast<int>(sc) - CTRL_GAMEPAD_MENU_BASE;
-        if (menu_only && menu_offset >= 0 && menu_offset < SDL_GAMEPAD_BUTTON_COUNT) {
-            if (menu_offset != SDL_GAMEPAD_BUTTON_START)
-                g_menu_button_map[menu_offset] = i;
-        }
-        else {
-            int offset = static_cast<int>(sc) - CTRL_GAMEPAD_SCAN_BASE;
-            if (offset >= 0 && offset < SDL_GAMEPAD_BUTTON_COUNT) {
-                if (offset != SDL_GAMEPAD_BUTTON_START && offset != SDL_GAMEPAD_BUTTON_GUIDE) { // START and GUIDE are reserved, never rebindable
-                    if (menu_only)
-                        g_menu_button_map[offset] = i;
-                    else
-                        g_button_map[offset] = i;
-                }
-            }
-            else if (sc == static_cast<int16_t>(CTRL_GAMEPAD_LEFT_TRIGGER)) {
-                if (menu_only) g_menu_trigger_action[0] = i;
-                else           g_trigger_action[0] = i;
-            }
-            else if (sc == static_cast<int16_t>(CTRL_GAMEPAD_RIGHT_TRIGGER)) {
-                if (menu_only) g_menu_trigger_action[1] = i;
-                else           g_trigger_action[1] = i;
-            }
+    for (int a = 0; a < k_action_count; ++a) {
+        const bool menu_only = is_menu_only_action(a);
+        int* buttons = menu_only ? g_menu_button_map : g_button_map;
+        int* triggers = menu_only ? g_menu_trigger_action : g_trigger_action;
+        for (const int code : g_action_pad[a]) {
+            if (code == CTRL_GAMEPAD_LEFT_TRIGGER)
+                triggers[0] = a;
+            else if (code == CTRL_GAMEPAD_RIGHT_TRIGGER)
+                triggers[1] = a;
+            else if (code >= CTRL_GAMEPAD_SCAN_BASE && code - CTRL_GAMEPAD_SCAN_BASE < SDL_GAMEPAD_BUTTON_COUNT)
+                buttons[code - CTRL_GAMEPAD_SCAN_BASE] = a;
         }
     }
 }
 
-void gamepad_apply_rebind(int16_t new_code)
+int gamepad_get_action_code(int action_idx, int slot)
 {
-    if (!rf::local_player)
+    if (action_idx < 0 || action_idx >= k_action_count || slot < 0 || slot > 1)
+        return -1;
+    return g_action_pad[action_idx][slot];
+}
+
+int gamepad_bind_action(int action_idx, int slot, int code)
+{
+    if (action_idx < 0 || action_idx >= k_action_count || slot < 0 || slot > 1)
+        return -1;
+    if (code >= 0 && !is_bindable_gamepad_code(code))
+        return -1;
+
+    // An input serves one action per table. Gameplay and menu-only actions live in separate
+    // tables, so only actions of the same kind compete. The action's own other slot loses it
+    // silently.
+    int displaced = -1;
+    if (code >= 0) {
+        const bool menu_only = is_menu_only_action(action_idx);
+        for (int a = 0; a < k_action_count; ++a) {
+            if (is_menu_only_action(a) != menu_only)
+                continue;
+            for (int s = 0; s < 2; ++s) {
+                if (g_action_pad[a][s] != code || (a == action_idx && s == slot))
+                    continue;
+                g_action_pad[a][s] = -1;
+                if (a != action_idx)
+                    displaced = a;
+            }
+        }
+    }
+    g_action_pad[action_idx][slot] = code;
+    rebuild_pad_tables();
+    return displaced;
+}
+
+void gamepad_set_action_code(int action_idx, int slot, int code)
+{
+    if (action_idx < 0 || action_idx >= k_action_count || slot < 0 || slot > 1)
         return;
-
-    auto& cc = rf::local_player->settings.controls;
-
-    for (int i = 0; i < cc.num_bindings; ++i) {
-        if (cc.bindings[i].scan_codes[0] != CTRL_REBIND_SENTINEL)
-            continue;
-
-        if (new_code != -1) {
-            bool target_is_menu_only = is_menu_only_action(i);
-            int new_offset = static_cast<int>(new_code) - CTRL_GAMEPAD_SCAN_BASE;
-
-            // Menu-only actions use the CTRL_GAMEPAD_MENU_BASE scan-code namespace so they are
-            // never confused with gameplay actions that share the same physical button.
-            if (target_is_menu_only && new_offset >= 0 && new_offset < SDL_GAMEPAD_BUTTON_COUNT)
-                new_code = static_cast<int16_t>(CTRL_GAMEPAD_MENU_BASE + new_offset);
-
-            // Clear this button from any other action in the same binding context.
-            for (int j = 0; j < cc.num_bindings; ++j) {
-                if (j != i && cc.bindings[j].scan_codes[0] == new_code
-                    && is_menu_only_action(j) == target_is_menu_only)
-                    cc.bindings[j].scan_codes[0] = -1;
-            }
-        }
-
-        cc.bindings[i].scan_codes[0] = new_code;
-        break;
-    }
+    if (code >= 0 && !is_bindable_gamepad_code(code))
+        return;
+    g_action_pad[action_idx][slot] = code;
+    rebuild_pad_tables();
 }
 
-int gamepad_get_button_binding(int button_idx)
+// Legacy per-input setters: the input joins the action's first free slot, or replaces its ALT.
+static void bind_legacy_input(int code, int action_idx)
 {
-    if (button_idx < 0 || button_idx >= SDL_GAMEPAD_BUTTON_COUNT) return -1;
-    return g_button_map[button_idx];
+    if (action_idx < 0 || action_idx >= k_action_count) {
+        for (auto& slots : g_action_pad) {
+            for (int& slot_code : slots) {
+                if (slot_code == code)
+                    slot_code = -1;
+            }
+        }
+        rebuild_pad_tables();
+        return;
+    }
+    gamepad_bind_action(action_idx, g_action_pad[action_idx][0] < 0 ? 0 : 1, code);
 }
 
 void gamepad_set_button_binding(int button_idx, int action_idx)
 {
     if (button_idx < 0 || button_idx >= SDL_GAMEPAD_BUTTON_COUNT) return;
-    if (is_menu_only_action(action_idx))
-        g_menu_button_map[button_idx] = action_idx;
-    else
-        g_button_map[button_idx] = action_idx;
-}
-
-int gamepad_get_trigger_action(int trigger_idx)
-{
-    if (trigger_idx < 0 || trigger_idx > 1) return -1;
-    return g_trigger_action[trigger_idx];
+    bind_legacy_input(CTRL_GAMEPAD_SCAN_BASE + button_idx, action_idx);
 }
 
 void gamepad_set_trigger_action(int trigger_idx, int action_idx)
 {
     if (trigger_idx < 0 || trigger_idx > 1) return;
-    if (is_menu_only_action(action_idx))
-        g_menu_trigger_action[trigger_idx] = action_idx;
-    else
-        g_trigger_action[trigger_idx] = action_idx;
+    bind_legacy_input(trigger_idx == 0 ? CTRL_GAMEPAD_LEFT_TRIGGER : CTRL_GAMEPAD_RIGHT_TRIGGER, action_idx);
+}
+
+static void bind_default_code(int code, int action_idx)
+{
+    if (action_idx < 0 || action_idx >= k_action_count)
+        return;
+    const int slot = g_action_pad[action_idx][0] < 0 ? 0 : 1;
+    g_action_pad[action_idx][slot] = code;
+}
+
+static void bind_default(int button, int action_idx)
+{
+    bind_default_code(CTRL_GAMEPAD_SCAN_BASE + button, action_idx);
 }
 
 void gamepad_reset_to_defaults()
 {
-    memset(g_button_map, -1, sizeof(g_button_map));
-    memset(g_menu_button_map, -1, sizeof(g_menu_button_map));
-    g_trigger_action[0] = g_trigger_action[1] = -1;
-    g_menu_trigger_action[0] = g_menu_trigger_action[1] = -1;
+    for (auto& slots : g_action_pad)
+        slots[0] = slots[1] = -1;
 
-    g_button_map[SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER] = rf::CC_ACTION_CROUCH;
-    g_button_map[SDL_GAMEPAD_BUTTON_LEFT_SHOULDER]  = rf::CC_ACTION_JUMP;
-    g_button_map[SDL_GAMEPAD_BUTTON_SOUTH]          = rf::CC_ACTION_USE;
-    g_button_map[SDL_GAMEPAD_BUTTON_NORTH]          = rf::CC_ACTION_RELOAD;
-    g_button_map[SDL_GAMEPAD_BUTTON_EAST]           = rf::CC_ACTION_NEXT_WEAPON;
-    g_button_map[SDL_GAMEPAD_BUTTON_WEST]           = rf::CC_ACTION_PREV_WEAPON;
-    g_button_map[SDL_GAMEPAD_BUTTON_DPAD_LEFT]      = rf::CC_ACTION_HIDE_WEAPON;
-    g_button_map[SDL_GAMEPAD_BUTTON_DPAD_RIGHT]     = rf::CC_ACTION_MESSAGES;
-    g_button_map[SDL_GAMEPAD_BUTTON_DPAD_DOWN]      = static_cast<int>(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_CENTER_VIEW));
-    g_menu_button_map[SDL_GAMEPAD_BUTTON_DPAD_RIGHT] = rf::CC_ACTION_MP_STATS;
-    g_button_map[SDL_GAMEPAD_BUTTON_BACK]            = static_cast<int>(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SKIP_CUTSCENE));
+    bind_default(SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, rf::CC_ACTION_CROUCH);
+    bind_default(SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, rf::CC_ACTION_JUMP);
+    bind_default(SDL_GAMEPAD_BUTTON_SOUTH, rf::CC_ACTION_USE);
+    bind_default(SDL_GAMEPAD_BUTTON_NORTH, rf::CC_ACTION_RELOAD);
+    bind_default(SDL_GAMEPAD_BUTTON_EAST, rf::CC_ACTION_NEXT_WEAPON);
+    bind_default(SDL_GAMEPAD_BUTTON_WEST, rf::CC_ACTION_PREV_WEAPON);
+    bind_default(SDL_GAMEPAD_BUTTON_DPAD_LEFT, rf::CC_ACTION_HIDE_WEAPON);
+    bind_default(SDL_GAMEPAD_BUTTON_DPAD_RIGHT, rf::CC_ACTION_MESSAGES);
+    bind_default(SDL_GAMEPAD_BUTTON_DPAD_DOWN, static_cast<int>(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_CENTER_VIEW)));
+    bind_default(SDL_GAMEPAD_BUTTON_DPAD_RIGHT, rf::CC_ACTION_MP_STATS);
+    bind_default(SDL_GAMEPAD_BUTTON_BACK, static_cast<int>(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SKIP_CUTSCENE)));
 
     // Spectator / multiplayer-only actions
-    g_menu_button_map[SDL_GAMEPAD_BUTTON_SOUTH]      = static_cast<int>(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_CHANGE_VIEW));
-    g_menu_button_map[SDL_GAMEPAD_BUTTON_EAST]      = static_cast<int>(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_ATTACH));
-    g_menu_button_map[SDL_GAMEPAD_BUTTON_WEST]      = static_cast<int>(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE));
-    g_menu_button_map[SDL_GAMEPAD_BUTTON_NORTH]     = static_cast<int>(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_MENU));
+    bind_default(SDL_GAMEPAD_BUTTON_SOUTH, static_cast<int>(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_CHANGE_VIEW)));
+    bind_default(SDL_GAMEPAD_BUTTON_EAST, static_cast<int>(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_ATTACH)));
+    bind_default(SDL_GAMEPAD_BUTTON_WEST, static_cast<int>(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE)));
+    bind_default(SDL_GAMEPAD_BUTTON_NORTH, static_cast<int>(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_MENU)));
 
     // Trigger defaults (gameplay action)
-    g_trigger_action[0] = rf::CC_ACTION_SECONDARY_ATTACK;
-    g_trigger_action[1] = rf::CC_ACTION_PRIMARY_ATTACK;
+    bind_default_code(CTRL_GAMEPAD_LEFT_TRIGGER, rf::CC_ACTION_SECONDARY_ATTACK);
+    bind_default_code(CTRL_GAMEPAD_RIGHT_TRIGGER, rf::CC_ACTION_PRIMARY_ATTACK);
+    rebuild_pad_tables();
 }
 
 void gamepad_apply_patch()
@@ -2349,8 +2362,6 @@ void gamepad_apply_patch()
     physics_simulate_entity_hook.install();
     player_fpgun_process_hook.install();
     vmesh_process_hook.install();
-    key_process_event_hook.install();
-    mouse_was_button_pressed_hook.install();
     joy_sens_cmd.register_cmd();
     joy_move_deadzone_cmd.register_cmd();
     joy_camera_deadzone_cmd.register_cmd();

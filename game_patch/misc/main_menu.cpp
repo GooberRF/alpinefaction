@@ -25,6 +25,7 @@
 #include "../main/main.h"
 #include "../graphics/gr.h"
 #include "../os/os.h"
+#include "../input/gamepad.h"
 #include "misc.h"
 #include "alpine_settings.h"
 #include "../multi/network.h"
@@ -591,11 +592,6 @@ CodeInjection options_do_frame_patch{
                     break;
                 }
             }
-        } else {
-            // Options menu has closed — restore keyboard scan codes if the
-            // controller bindings view was still active.
-            if (ui_ctrl_bindings_view_active())
-                ui_ctrl_bindings_view_reset();
         }
     },
 };
@@ -669,7 +665,7 @@ FunHook<void()> on_mult_btn_click_hook{
                 show_warning = false;
             } else if (gamepad_is_motionsensors_supported()) {
                 // Gyro available but not enabled
-                warning_message = "Controller with gyroscopic function (can be enabled via Options > Advanced > Input > Gyro Aiming) or using Simultaneous controller+keyboard/mouse inputs (Mixed Input) is recommended.";
+                warning_message = "Controller with gyroscopic function (can be enabled via Options > Input > Controller) or using Simultaneous controller+keyboard/mouse inputs (Mixed Input) is recommended.";
             } else {
                 // Controller doesn't have gyro
                 warning_message = "Controller with gyroscopic function or using Simultaneous controller+keyboard/mouse inputs (Mixed Input) is recommended.";

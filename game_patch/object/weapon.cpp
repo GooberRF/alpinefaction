@@ -19,6 +19,7 @@
 #include "../multi/mutators.h"
 #include "../misc/misc.h"
 #include "../misc/alpine_settings.h"
+#include "../misc/settings_registry.h"
 #include "../input/rumble.h"
 #include "../misc/settings_registry.h"
 #include "alpine_rope.h"
