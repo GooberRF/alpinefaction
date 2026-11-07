@@ -3415,16 +3415,8 @@ struct EventRopeState : rf::Event
     void set_rope_links(bool on)
     {
         for (const int link : this->links) {
-            if (!alpine_rope_is_rope(link)) {
-                continue;
-            }
-            if (Object* obj = rf::obj_from_handle(link)) {
-                if (on) {
-                    rf::obj_unhide(obj);
-                }
-                else {
-                    rf::obj_hide(obj);
-                }
+            if (alpine_rope_is_rope(link)) {
+                alpine_rope_set_anchor_on(link, on);
             }
         }
     }

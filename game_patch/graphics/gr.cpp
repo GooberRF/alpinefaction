@@ -20,6 +20,7 @@
 #include "../main/main.h"
 #include "../multi/multi.h"
 #include "../misc/alpine_settings.h"
+#include "../misc/settings_registry.h"
 #include "../misc/level.h"
 #include "../misc/misc.h"
 #include "../rf/gr/gr.h"
@@ -232,7 +233,7 @@ ConsoleCommand2 fov_cmd{
     "r_fov",
     [](std::optional<float> fov_opt) {
         if (fov_opt) {
-            g_alpine_game_config.set_horz_fov(std::max(0.0f, fov_opt.value()));
+            setting_console_set("horz_fov", std::to_string(std::max(0.0f, fov_opt.value())));
         }
         rf::console::print("Horizontal FOV: {:.2f}", gr_scale_world_fov());
 
@@ -249,8 +250,7 @@ ConsoleCommand2 gamma_cmd{
     "r_gamma",
     [] (const std::optional<float> gamma) {
         if (gamma) {
-            rf::gr::set_gamma(*gamma);
-            rf::ui::video_gamma_slider.set_value(*gamma);
+            setting_console_set("gamma", std::to_string(*gamma));
         }
         rf::console::print("Gamma: {:.2f}", rf::gr::gamma);
     },
@@ -277,7 +277,7 @@ ConsoleCommand2 colorblind_cmd{
             rf::console::print("Usage: r_colorblind <off|protanopia|deuteranopia|tritanopia>");
             return;
         }
-        g_alpine_game_config.set_colorblind_mode(new_mode);
+        setting_console_set("colorblind_mode", std::to_string(new_mode));
         rf::console::print("Colorblind mode set to {} (Direct3D 11 renderer only)", names[g_alpine_game_config.colorblind_mode]);
     },
     "Configure colorblind mode rendering filter (Direct3D 11 renderer only)",
@@ -287,7 +287,7 @@ ConsoleCommand2 colorblind_cmd{
 ConsoleCommand2 precache_rooms_cmd{
     "r_precache_rooms",
     []() {
-        g_alpine_game_config.precache_rooms = !g_alpine_game_config.precache_rooms;
+        setting_console_set("precache_rooms", "toggle");
         rf::console::print("D3D11 room precaching is {}", g_alpine_game_config.precache_rooms ? "enabled" : "disabled");
     },
     "Toggle room precaching in D3D11 renderer (increases initial level load time, reduces risk of hitches during gameplay)",
@@ -317,9 +317,7 @@ void evaluate_lightmaps_only()
 ConsoleCommand2 lightmaps_only_cmd{
     "r_lightmaps",
     []() {
-        g_alpine_game_config.try_disable_textures = !g_alpine_game_config.try_disable_textures;
-
-        evaluate_lightmaps_only();
+        setting_console_set("lightmaps_only", "toggle");
 
         rf::console::print("Lightmap only mode is {}", g_alpine_game_config.try_disable_textures ?
             "enabled. In multiplayer, this will only apply if the server allows it." : "disabled.");
@@ -331,7 +329,7 @@ ConsoleCommand2 lightmaps_only_cmd{
 ConsoleCommand2 disable_rendering_cmd{
     "dbg_togglerendering",
     []() {
-        g_alpine_game_config.rendering_enabled = !g_alpine_game_config.rendering_enabled;
+        setting_console_set("rendering_enabled", "toggle");
         rf::console::print("Rendering is now {}.", g_alpine_game_config.rendering_enabled ? "enabled" : "disabled");
     },
     "Toggle all game rendering.",
@@ -520,7 +518,7 @@ void gr_poly_2d(int bitmap_handle, int nv, const rf::gr::Vertex* vertices, rf::g
     }
 }
 
-void gr_set_window_mode(rf::gr::WindowMode window_mode)
+static void gr_set_window_mode(rf::gr::WindowMode window_mode)
 {
     if (rf::gr::screen.mode == rf::gr::DIRECT3D) {
         rf::gr::screen.window_mode = window_mode;
@@ -562,8 +560,7 @@ ConsoleCommand2 windowed_cmd{
 ConsoleCommand2 nearest_texture_filtering_cmd{
     "r_nearest",
     []() {
-        g_alpine_game_config.nearest_texture_filtering = !g_alpine_game_config.nearest_texture_filtering;
-        gr_update_texture_filtering();
+        setting_console_set("nearest_texture_filtering", "toggle");
         rf::console::print("Nearest texture filtering is {}", g_alpine_game_config.nearest_texture_filtering ? "enabled" : "disabled");
     },
     "Toggle nearest texture filtering",
@@ -577,24 +574,7 @@ ConsoleCommand2 picmip_cmd{
                 rf::console::print("r_picmip is supported only by the Direct3D 11 renderer");
                 return;
             }
-            int old_divisor = g_alpine_game_config.picmip;
-            int divisor = picmip_opt.value();
-            if (divisor < 1) {
-                divisor = 1;
-            }
-            g_alpine_game_config.set_picmip(divisor);
-            gr_update_texture_filtering();
-            // Auto-mip gen happens at texture upload and is gated on picmip > 1. When the
-            // gate crosses, already-cached textures have the wrong mip chain state; evict
-            // them so they re-upload on next use. Critically, we skip TYPE_USER bitmaps
-            // (fonts, HUD glyph atlases, dynamically-written textures) — their pixel data
-            // lives inside the D3D11 texture and is written externally via gr::lock; a
-            // force flush would leave them blank forever.
-            bool was_on = old_divisor > 1;
-            bool now_on = g_alpine_game_config.picmip > 1;
-            if (was_on != now_on) {
-                gr::d3d11::texture_flush_non_user_cache();
-            }
+            setting_console_set("picmip", std::to_string(picmip_opt.value()));
         }
         rf::console::print(
             "Texture resolution divisor is set to {} (Direct3D 11 renderer only, 1 = full resolution)",
@@ -609,7 +589,7 @@ ConsoleCommand2 lod_distance_scale_cmd{
     "r_lodscale",
     [](std::optional<float> scale_opt) {
         if (scale_opt.has_value()) {
-            g_alpine_game_config.set_lod_dist_scale(scale_opt.value());
+            setting_console_set("lod_dist_scale", std::to_string(scale_opt.value()));
         }
         rf::console::print("LOD distance scale: {:.2f}", g_alpine_game_config.lod_dist_scale);
     },
@@ -697,7 +677,7 @@ ConsoleCommand2 underwater_fx_cmd{
     "r_underwater",
     [](std::optional<int> level_opt) {
         if (level_opt) {
-            g_alpine_game_config.set_underwater_fx(level_opt.value());
+            setting_console_set("underwater_fx", std::to_string(level_opt.value()));
         }
         rf::console::print(
             "Underwater effects level is {} (Direct3D 11 renderer only, 0 = stock)",
@@ -713,7 +693,7 @@ ConsoleCommand2 scope_glass_cmd{
     "r_scopeglass",
     [](std::optional<int> level_opt) {
         if (level_opt) {
-            g_alpine_game_config.set_scope_glass(level_opt.value());
+            setting_console_set("scope_glass", std::to_string(level_opt.value()));
         }
         rf::console::print(
             "Scope lens effect level is {} (Direct3D 11 renderer only, 0 = off)",

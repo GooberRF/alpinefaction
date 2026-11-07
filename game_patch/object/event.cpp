@@ -11,6 +11,7 @@
 #include <format>
 #include "../misc/misc.h"
 #include "../misc/alpine_settings.h"
+#include "../input/input.h"
 #include "../misc/level.h"
 #include "../rf/file/file.h"
 #include "../rf/object.h"
@@ -597,9 +598,14 @@ FunHook<char*(char*)> hud_translate_special_character_token_hook{
                 result = std::string(key_name.c_str());
             }
 
+            rf::String mouse_name;
             if (binding.mouse_btn_id >= 0) {
-                rf::String mouse_name;
                 rf::control_config_get_mouse_button_name(&mouse_name, binding.mouse_btn_id);
+            }
+            else if (ctrl_is_extra_mouse_scan(binding.scan_codes[1])) {
+                rf::control_config_get_key_name(&mouse_name, binding.scan_codes[1]);
+            }
+            if (!mouse_name.empty()) {
                 if (!result.empty())
                     result += ", ";
                 result += std::string(mouse_name.c_str());

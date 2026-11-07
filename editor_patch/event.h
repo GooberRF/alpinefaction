@@ -118,7 +118,8 @@ enum FieldType
     FIELD_BOOL1 = 1007,
     FIELD_BOOL2 = 1008,
     FIELD_STR1 = 1009,
-    FIELD_STR2 = 1010
+    FIELD_STR2 = 1010,
+    FIELD_EVENT_TYPE = 1011
 };
 
 // Field configuration for each event_type
@@ -130,5 +131,4 @@ struct FieldConfig
     std::map<FieldType, bool> dropdownSaveIndex;
 };
 
-static auto OpenLinksDialog = reinterpret_cast<void(__thiscall*)(void* this_)>(0x004073D0);
 static auto links_list_add_string = reinterpret_cast<void(__thiscall*)(void* this_, const char* text)>(0x0045A1A0);

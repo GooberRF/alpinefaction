@@ -15,6 +15,7 @@
 #include "../graphics/d3d11/gr_d3d11_hooks.h"
 #include "../hud/hud.h"
 #include "../misc/alpine_settings.h"
+#include "../misc/settings_registry.h"
 #include "../multi/multi.h"
 #include "../os/console.h"
 #include "../os/os.h"
@@ -740,7 +741,7 @@ ConsoleCommand2 dbg_particles_log_cmd{
 ConsoleCommand2 particle_cull_sim_cmd{
     "cl_particlecull",
     []() {
-        g_alpine_game_config.particle_sim_cull = !g_alpine_game_config.particle_sim_cull;
+        setting_console_set("particle_sim_cull", "toggle");
         rf::console::print("Particle simulation culling is {}",
             g_alpine_game_config.particle_sim_cull ? "enabled" : "disabled");
     },
@@ -761,7 +762,7 @@ ConsoleCommand2 particle_sim_warmup_cmd{
 ConsoleCommand2 particle_fixed_step_cmd{
     "cl_particlefixedstep",
     []() {
-        g_alpine_game_config.particle_sim_fixed_step = !g_alpine_game_config.particle_sim_fixed_step;
+        setting_console_set("particle_sim_fixed_step", "toggle");
         rf::console::print("Fixed timestep particle simulation is {}",
             g_alpine_game_config.particle_sim_fixed_step ? "enabled" : "disabled");
     },
@@ -773,7 +774,7 @@ ConsoleCommand2 particle_sim_rate_cmd{
     "cl_particlerate",
     [](std::optional<int> hz) {
         if (hz) {
-            g_alpine_game_config.set_particle_sim_rate(hz.value());
+            setting_console_set("particle_sim_rate", std::to_string(hz.value()));
         }
         rf::console::print("Particle simulation rate is {} Hz (valid range {}-{})",
             g_alpine_game_config.particle_sim_rate, AlpineGameSettings::min_particle_sim_rate,
@@ -797,7 +798,7 @@ ConsoleCommand2 gpu_particles_cmd{
 ConsoleCommand2 particle_collide_lod_cmd{
     "cl_particlecollidelod",
     []() {
-        g_alpine_game_config.particle_sim_collide_lod = !g_alpine_game_config.particle_sim_collide_lod;
+        setting_console_set("particle_sim_collide_lod", "toggle");
         rf::console::print("Amortised particle world collision is {}",
             g_alpine_game_config.particle_sim_collide_lod ? "enabled" : "disabled");
     },
@@ -809,7 +810,7 @@ ConsoleCommand2 particle_pool_size_cmd{
     "cl_particlepoolsize",
     [](std::optional<int> size) {
         if (size) {
-            g_alpine_game_config.set_particle_pool_size(size.value());
+            setting_console_set("particle_pool_size", std::to_string(size.value()));
             rf::console::print("Applies at the next level load.");
         }
         if (g_alpine_game_config.particle_pool_size == 0) {

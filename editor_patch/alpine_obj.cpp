@@ -42,6 +42,7 @@
 #include "resources.h"
 #include "brush_preview.h"
 #include "graphics/editor_gr.h"
+#include "mover_path.h"
 #include "tbl.h"
 
 // ─── Utilities ──────────────────────────────────────────────────────────────
@@ -448,6 +449,7 @@ FunHook<int()> alpine_generate_uid_hook{
             terrain_ensure_uid(uid);
             directional_light_ensure_uid(uid);
             waypoint_helper_ensure_uid(uid);
+            mover_path_uid_generated(uid);
         }
         return uid;
     },
@@ -1642,6 +1644,7 @@ CodeInjection alpine_render_patch{
         directional_light_render(level);
         waypoint_helper_render(level);
         sun_arrow_render(level);
+        mover_path_render(level);
         placement_panel_render_ghost();
     },
 };
@@ -2941,8 +2944,18 @@ CodeInjection alpine_group_save_clear_hook{
         g_group_save_directional_lights.clear();
         g_group_save_waypoint_helpers.clear();
         g_group_save_brush_uids.clear();
+        mover_path_group_save_begin();
     },
 };
+
+// FUN_0041ce20's write of each group (FUN_00435630)
+void __fastcall group_write(CDedLevel* level, int edx, rf::File* file, GroupEntry* group);
+CallHook<void __fastcall(CDedLevel*, int, rf::File*, GroupEntry*)> group_write_hook{0x0041D106, group_write};
+void __fastcall group_write(CDedLevel* level, int edx, rf::File* file, GroupEntry* group)
+{
+    mover_path_group_saved(group);
+    group_write_hook.call_target(level, edx, file, group);
+}
 
 // Hook at 0x004358af: inside FUN_00435630's brush serialization loop.
 // At this point ECX = BrushNode* (loaded at 0x004358ad from VArray element).
@@ -3159,6 +3172,8 @@ CodeInjection alpine_group_save_hook{
             }
         }
 
+        mover_path_group_serialize_chunk(*level, *file);
+
         xlog::info("[AlpineObj] Saved {} meshes, {} notes, {} coronas, {} bags, {} weather regions, "
             "{} vehicle factories, {} projection cameras, {} rope emitters, {} terrains, "
             "{} directional lights, {} waypoint helpers to group",
@@ -3328,6 +3343,9 @@ CodeInjection alpine_group_load_hook{
             else if (chunk_id == alpine_terrain_chunk_id) {
                 if (!terrain_deserialize_chunk(*level, *file, chunk_size, true))
                     terrain_chunks_dropped++;
+            }
+            else if (chunk_id == alpine_mover_path_chunk_id) {
+                mover_path_group_deserialize_chunk(*level, *file, chunk_size, g_moving_groups_size_before_load);
             }
             else if (chunk_id == alpine_brush_group_chunk_id) {
                 // Read brush metadata chunk, tracking remaining bytes to stay within chunk bounds
@@ -3644,6 +3662,7 @@ void ApplyAlpineObjectPatches()
     stock_vmesh_pass_selection_sphere_hook.install();
     vfx_part_render_hook.install();
     alpine_group_save_clear_hook.install();
+    group_write_hook.install();
     alpine_group_brush_save_capture_hook.install();
     alpine_group_type_collect_hook.install();
     alpine_group_save_hook.install();

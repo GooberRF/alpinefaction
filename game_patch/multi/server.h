@@ -30,6 +30,7 @@ bool server_allow_fullbright_meshes();
 bool server_allow_lightmaps_only();
 bool server_allow_disable_screenshake();
 bool server_no_player_collide();
+bool server_exposure_damage();
 bool server_location_pinging();
 bool server_delayed_spawns();
 bool server_allow_disable_muzzle_flash();

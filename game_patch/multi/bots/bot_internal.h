@@ -100,6 +100,7 @@ inline constexpr float kForwardObstacleProbeDistance = 2.75f;
 inline constexpr int kNavigationBlockedProgressWindowMs = 800;
 inline constexpr float kNavigationBlockedProgressDistance = 1.5f;
 inline constexpr int kFailedEdgeCooldownMs = 3500;
+inline constexpr int kZiplineFailedRideCooldownMs = 30000;
 inline constexpr int kLoopBreakerEdgeCooldownMs = 6500;
 inline constexpr int kFailedEdgeCooldownCapacity = 24;
 inline constexpr int kFailedWaypointBlacklistMs = 20000;
@@ -1023,6 +1024,16 @@ struct BotState
     // Set while a splash weapon's holder, inside its blast distance of the enemy, finds no clear way back or aside.
     rf::Timestamp splash_retreat_blocked_timer{};
     bool drop_freefall_active = false;
+    // The zip line entrance the bot stands at to take hold of the line, while it tries.
+    int zipline_entrance = 0;
+    rf::Timestamp zipline_hold_refresh_timer{};
+    // Outlives the hold and route clears, so a line that cannot be taken always reaches the give-up.
+    int zipline_attempt_entrance = 0;
+    rf::Timestamp zipline_attempt_lapse_timer{};
+    int zipline_attempt_left_ms = 0;
+    rf::Timestamp zipline_give_up_timer{};
+    rf::Timestamp zipline_jump_timer{};
+    bool zipline_riding = false;
     bool jump_pad_landing_steer_active = false;
     bool obstacle_crouch_active = false;
     rf::Timestamp jump_pad_steer_delay_timer{};

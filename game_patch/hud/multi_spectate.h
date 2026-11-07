@@ -35,6 +35,9 @@ void multi_spectate_on_destroy_player(rf::Player* player);
 void multi_spectate_player_create_entity_post(rf::Player* player, rf::Entity* entity);
 bool multi_spectate_is_spectating();
 bool multi_spectate_is_first_person();
+// True when the view is drawn from inside `ep`: the local player's own first-person camera, or
+// first-person spectate of that player.
+bool multi_spectate_view_is_first_person_of(const rf::Entity* ep);
 bool multi_spectate_is_following_player();
 void multi_spectate_enter_freelook();
 void multi_spectate_toggle_attach();

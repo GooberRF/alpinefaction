@@ -84,6 +84,9 @@ enum class WaypointType : int
     bag = 15,
     salvage_flag = 16,
     vehicle_factory = 17,
+    // Identifier = rope uid, subtype 0 rides toward the target end, 1 back.
+    zipline_entrance = 18,
+    zipline_exit = 19,
 };
 
 enum class WaypointDroppedSubtype : int
@@ -190,6 +193,8 @@ struct WaypointNode
     // A temporary node with no free inbound slot borrows one from a full neighbour, restored on removal.
     int borrowed_link_from = 0;
     int borrowed_link_target = 0;
+    // A zip line entrance whose line cannot be taken right now (switched off, or moved out of reach).
+    bool ride_closed = false;
     bool valid = true;
 };
 
@@ -270,6 +275,9 @@ bool waypoints_find_vehicle_factory_waypoint(int factory_uid, int& out_waypoint,
 // A temporary boarding node next to a hull standing away from its factory; re-placed only once the hull has moved
 // and come to rest, and dropped when the hull goes or nobody has asked for it for a while. 0 if there is no spot.
 int waypoints_ensure_hull_waypoint(const rf::Entity& hull);
+// Whether from -> to is a zip line ride, open or not: the line, its direction (+1 toward the target end) and its route
+// cost.
+bool waypoints_get_zipline_ride(int from, int to, int32_t* rope_uid, int* dir, float* route_cost);
 
 bool waypoints_get_bridge_zone_state(int zone_uid, WaypointBridgeZoneState& out_state);
 bool waypoints_find_nearest_inactive_bridge_zone(const rf::Vector3& from_pos, WaypointBridgeZoneState& out_state);

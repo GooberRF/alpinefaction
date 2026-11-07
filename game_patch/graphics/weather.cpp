@@ -17,6 +17,7 @@
 #include "d3d11/gr_d3d11_hooks.h"
 #include "../main/main.h"
 #include "../misc/alpine_settings.h"
+#include "../misc/settings_registry.h"
 #include "../misc/level.h"
 #include "../multi/demo/demo.h"
 #include "../os/console.h"
@@ -1086,7 +1087,7 @@ void snow_do_frame(WeatherParticle* particles, int count, const WeatherBox& box,
 ConsoleCommand2 r_weather_cmd{
     "r_weather",
     []() {
-        g_alpine_game_config.weather = !g_alpine_game_config.weather;
+        setting_console_set("weather", "toggle");
         rf::console::print("Weather region effects are {}",
             g_alpine_game_config.weather ? "enabled" : "disabled");
     },

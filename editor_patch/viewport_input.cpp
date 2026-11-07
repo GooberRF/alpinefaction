@@ -2,6 +2,7 @@
 #include <patch_common/CallHook.h>
 #include <patch_common/MemUtils.h>
 #include "gizmo.h"
+#include "mover_path.h"
 #include "placement_panel.h"
 #include "terrain_paint.h"
 #include "viewport_input.h"
@@ -41,13 +42,14 @@ bool keep_press(Button button, EditorViewport* view, UINT flags, int x, int y)
     bool kept = false;
     switch (button) {
         case button_left:
-            kept = terrain_paint_view_lbutton_down(view, flags) || gizmo_view_lbutton_down(view, flags, x, y);
+            kept = terrain_paint_view_lbutton_down(view, flags) || mover_path_view_lbutton_down(view, flags, x, y)
+                || gizmo_view_lbutton_down(view, flags, x, y);
             break;
         case button_right:
-            kept = gizmo_view_rbutton_down(view);
+            kept = mover_path_view_rbutton_down() || gizmo_view_rbutton_down(view);
             break;
         case button_middle:
-            kept = gizmo_view_mbutton_down(view);
+            kept = mover_path_view_mbutton_down() || gizmo_view_mbutton_down(view);
             break;
         default:
             break;
@@ -62,6 +64,7 @@ bool keep_release(Button button, EditorViewport* view)
     g_kept_press[button] = false;
     if (button == button_left) {
         terrain_paint_view_lbutton_up(view);
+        mover_path_view_lbutton_up();
         gizmo_view_lbutton_up(view);
     }
     return true;
@@ -132,16 +135,17 @@ void __fastcall view_mbutton_up(EditorViewport* view, void* /*edx*/, UINT flags,
 }
 
 // RED's idle loop focuses whichever view's rect holds the cursor, even under another window such as the Terrain
-// Tools panel, which cancels that window's button clicks mid-press. Stock behaviour while it is closed. A drag out
-// of the placement panel or a gizmo drag leaves the focus where it was until it ends.
+// Tools panel, which cancels that window's button clicks mid-press and closes its dropdowns. Stock behaviour while no
+// such panel is open. A drag out of the placement panel, a gizmo or handle drag, or the open preview dropdown leaves
+// the focus where it was until it ends.
 void* __fastcall view_hover_focus(void* view, void* edx);
 CallHook<void* __fastcall(void*, void*)> view_hover_focus_hook{0x004834E1, view_hover_focus};
 void* __fastcall view_hover_focus(void* view, void* edx)
 {
-    if (placement_panel_dragging() || gizmo_holds_view_focus()) return nullptr;
+    if (placement_panel_dragging() || gizmo_holds_view_focus() || mover_path_holds_view_focus()) return nullptr;
     const HWND hwnd = editor_view_hwnd(view);
     POINT cursor{};
-    if (terrain_paint_panel_open() && hwnd && GetCursorPos(&cursor)) {
+    if ((terrain_paint_panel_open() || mover_path_preview_shown()) && hwnd && GetCursorPos(&cursor)) {
         const HWND over = WindowFromPoint(cursor);
         if (over && over != hwnd && !IsChild(hwnd, over)) return nullptr;
     }

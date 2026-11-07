@@ -36,6 +36,7 @@
 #include "../misc/misc.h"
 #include "kill.h"
 #include "kill_attribution.h"
+#include "../misc/settings_registry.h"
 #include "vehicles/vehicle.h"
 #include "bots/server_bots.h"
 
@@ -557,7 +558,7 @@ ConsoleCommand2 kill_messages_cmd{
 ConsoleCommand2 ui_assist_names_cmd{
     "ui_assist_names",
     [] {
-        g_alpine_game_config.show_assist_names = !g_alpine_game_config.show_assist_names;
+        setting_console_set("show_assist_names", "toggle");
         rf::console::print("Assists in kill messages are {}",
                            g_alpine_game_config.show_assist_names ? "enabled" : "disabled");
     },
@@ -568,7 +569,7 @@ ConsoleCommand2 ui_assist_names_cmd{
 ConsoleCommand2 ui_assist_highlight_cmd{
     "ui_assist_highlight",
     [] {
-        g_alpine_game_config.highlight_assisted_kills = !g_alpine_game_config.highlight_assisted_kills;
+        setting_console_set("highlight_assisted_kills", "toggle");
         rf::console::print("Highlighting of kills you assisted is {}",
                            g_alpine_game_config.highlight_assisted_kills ? "enabled" : "disabled");
     },

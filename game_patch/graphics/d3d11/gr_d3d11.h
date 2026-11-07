@@ -52,6 +52,7 @@ namespace gr::d3d11
     class OutlineRenderer;
     class VfxMeshRenderer;
     class GammaPass;
+    struct UiSdfDraw;
 
     class Renderer
     {
@@ -88,6 +89,7 @@ namespace gr::d3d11
         void tmapper(int nv, const rf::gr::Vertex **vertices, int vertex_attributes, rf::gr::Mode mode);
         void line_3d(const rf::gr::Vertex& v0, const rf::gr::Vertex& v1, rf::gr::Mode mode);
         void line_2d(float x1, float y1, float x2, float y2, rf::gr::Mode mode);
+        void ui_sdf(const UiSdfDraw& draw, rf::gr::Mode mode);
         bool poly(int nv, rf::gr::Vertex** vertices, int vertex_attributes, rf::gr::Mode mode, bool constant_sw, float sw);
         void project_vertex(rf::gr::Vertex* v);
         void setup_3d(Projection proj);

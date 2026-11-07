@@ -102,6 +102,21 @@ inline std::optional<std::string_view> console_read_arg() {
     return std::optional{rf::console::str_arg};
 }
 
+// The engine lowercases a string argument unless told otherwise; a handler takes this type where
+// the case is part of the value.
+struct ConsoleCasedString
+{
+    std::string value;
+};
+
+template<>
+inline std::optional<ConsoleCasedString> console_read_arg()
+{
+    if (!console_read_arg_internal(rf::console::ARG_STR, true))
+        return {};
+    return std::optional{ConsoleCasedString{rf::console::str_arg}};
+}
+
 class BaseCommand : public rf::console::Command
 {
 protected:

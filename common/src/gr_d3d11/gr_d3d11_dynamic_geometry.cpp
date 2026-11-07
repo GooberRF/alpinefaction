@@ -1,4 +1,8 @@
+#include <algorithm>
+#include <array>
 #include <cassert>
+#include <cstddef>
+#include <cstring>
 #include <common/gr_d3d11/gr_d3d11_util.h>
 #include <common/gr_d3d11/gr_d3d11_dynamic_geometry.h>
 #include <common/gr_d3d11/gr_d3d11_shader.h>
@@ -9,6 +13,20 @@ namespace gr::d3d11
     constexpr int batch_max_vertex = 6000;
     constexpr int batch_max_index = 10000;
 
+    namespace
+    {
+        // Past every slot standard_ps binds (b0-b9), so a UI shape never displaces scene state.
+        constexpr UINT ui_sdf_cbuffer_slot = 10;
+
+        struct alignas(16) UiSdfBufferData
+        {
+            std::array<float, 4> params;
+            std::array<float, 4> type;
+        };
+        static_assert(sizeof(UiSdfBufferData) == 32);
+        static_assert(offsetof(UiSdfBufferData, type) == 16);
+    }
+
     DynamicGeometryRenderer::DynamicGeometryRenderer(ComPtr<ID3D11Device> device, ShaderManager& shader_manager, RenderContext& render_context) :
         device_{device}, render_context_(render_context),
         vertex_ring_buffer_{batch_max_vertex, D3D11_BIND_VERTEX_BUFFER, device_, render_context.device_context()},
@@ -18,6 +36,14 @@ namespace gr::d3d11
         std_pixel_shader_ = shader_manager.get_pixel_shader(PixelShaderId::standard);
         std_pixel_shader_no_gas_ = shader_manager.get_pixel_shader(PixelShaderId::standard_no_gas);
         ui_pixel_shader_ = shader_manager.get_pixel_shader(PixelShaderId::ui);
+        ui_sdf_pixel_shader_ = shader_manager.get_pixel_shader(PixelShaderId::ui_sdf);
+        CD3D11_BUFFER_DESC cbuffer_desc{
+            sizeof(UiSdfBufferData),
+            D3D11_BIND_CONSTANT_BUFFER,
+            D3D11_USAGE_DYNAMIC,
+            D3D11_CPU_ACCESS_WRITE,
+        };
+        DF_GR_D3D11_CHECK_HR(device_->CreateBuffer(&cbuffer_desc, nullptr, &ui_sdf_cbuffer_));
     }
 
     void DynamicGeometryRenderer::set_pre_flush_callback(std::function<void()> callback)
@@ -267,6 +293,59 @@ namespace gr::d3d11
         *(gpu_ind_ptr++) = base_vertex;
         *(gpu_ind_ptr++) = base_vertex + 2;
         *(gpu_ind_ptr++) = base_vertex + 3;
+    }
+
+    void DynamicGeometryRenderer::sdf_shape(const UiSdfDraw& draw, rf::gr::Mode mode)
+    {
+        if (!ui_sdf_pixel_shader_ || !ui_sdf_cbuffer_) {
+            return;
+        }
+        // Every shape shares one constant buffer, so each is drawn (the flush at the end) before the
+        // next overwrites it. A pending batch of any other state is flushed by setup() and never
+        // reads this slot.
+        UiSdfBufferData data{};
+        std::copy(std::begin(draw.params), std::end(draw.params), data.params.begin());
+        data.type[0] = static_cast<float>(static_cast<int>(draw.type));
+
+        auto* device_context = render_context_.device_context();
+        D3D11_MAPPED_SUBRESOURCE mapped_subres;
+        DF_GR_D3D11_CHECK_HR(
+            device_context->Map(ui_sdf_cbuffer_, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped_subres)
+        );
+        std::memcpy(mapped_subres.pData, &data, sizeof(data));
+        device_context->Unmap(ui_sdf_cbuffer_, 0);
+        ID3D11Buffer* cbuffers[] = {ui_sdf_cbuffer_};
+        device_context->PSSetConstantBuffers(ui_sdf_cbuffer_slot, 1, cbuffers);
+
+        constexpr int num_verts = 4;
+        constexpr int num_inds = 6;
+        State new_state{
+            D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
+            {-1, -1},
+            mode,
+            ui_sdf_pixel_shader_,
+        };
+        auto [gpu_verts, gpu_ind_ptr, base_vertex] = setup(num_verts, num_inds, new_state);
+
+        int diffuse = pack_color(get_vertex_color_from_screen(mode));
+        for (int i = 0; i < num_verts; ++i) {
+            GpuTransformedVertex& gpu_vert = gpu_verts[i];
+            gpu_vert.x = draw.pos_x[i] / rf::gr::screen.clip_width * 2.0f - 1.0f;
+            gpu_vert.y = draw.pos_y[i] / rf::gr::screen.clip_height * -2.0f + 1.0f;
+            gpu_vert.z = 1.0f;
+            gpu_vert.w = 1.0f;
+            gpu_vert.diffuse = diffuse;
+            gpu_vert.u0 = draw.uv_x[i];
+            gpu_vert.v0 = draw.uv_y[i];
+        }
+        *(gpu_ind_ptr++) = base_vertex;
+        *(gpu_ind_ptr++) = base_vertex + 1;
+        *(gpu_ind_ptr++) = base_vertex + 2;
+        *(gpu_ind_ptr++) = base_vertex;
+        *(gpu_ind_ptr++) = base_vertex + 2;
+        *(gpu_ind_ptr++) = base_vertex + 3;
+
+        flush();
     }
 
     void DynamicGeometryRenderer::poly_2d(int bm_handle, int nv, const rf::gr::Vertex* vertices, rf::gr::Mode mode)

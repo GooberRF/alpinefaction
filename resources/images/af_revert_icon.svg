@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Alpine Faction: shipped copy is drawn in white so the engine can tint it to any palette colour at draw time. -->
+<!-- Alpine Faction settings chrome: revert_icon - hooked return arrow (paired with the OVERRIDE badge). Authored 24x24. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+  <path d="M5 17 L5 11 A6 6 0 0 1 11 5 L18 5"
+        fill="none" stroke="#ffffff" stroke-width="2"/>
+  <polygon points="1,15 9,15 5,21" fill="#ffffff"/>
+</svg>

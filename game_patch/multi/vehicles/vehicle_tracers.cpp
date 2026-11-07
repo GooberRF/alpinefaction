@@ -14,6 +14,7 @@
 #include "../../hud/hud_world.h"
 #include "../../graphics/gr.h"
 #include "../../misc/alpine_settings.h"
+#include "../../misc/settings_registry.h"
 #include "../../os/console.h"
 #include "../../os/os.h"
 #include "../../rf/collide.h"
@@ -384,7 +385,7 @@ namespace
     ConsoleCommand2 vehicletracers_cmd{
         "cl_vehicletracers",
         [](std::optional<bool> enabled) {
-            g_alpine_game_config.vehicle_tracers = enabled.value_or(!g_alpine_game_config.vehicle_tracers);
+            setting_console_set_bool("vehicle_tracers", enabled);
             rf::console::print("Vehicle gun tracers are {}",
                                g_alpine_game_config.vehicle_tracers ? "enabled" : "disabled");
         },
@@ -396,7 +397,7 @@ namespace
         "cl_vehicletracers_frequency",
         [](std::optional<int> value) {
             if (value) {
-                g_alpine_game_config.set_vehicle_tracer_frequency(*value);
+                setting_console_set("vehicle_tracer_frequency", std::to_string(*value));
             }
             rf::console::print("Vehicle tracer frequency is every {} round(s) (default {})",
                                g_alpine_game_config.vehicle_tracer_frequency,
@@ -412,10 +413,11 @@ namespace
             if (value) {
                 const std::string lowered = string_to_lower(*value);
                 if (lowered == "default" || lowered == "clear" || lowered == "-1") {
-                    g_alpine_game_config.vehicle_tracer_color = AlpineGameSettings::default_vehicle_tracer_color;
+                    setting_console_set("vehicle_tracer_color",
+                                        format_hex_color_string(AlpineGameSettings::default_vehicle_tracer_color));
                 }
                 else if (const auto c = parse_hex_color_string(*value)) {
-                    g_alpine_game_config.vehicle_tracer_color = *c;
+                    setting_console_set("vehicle_tracer_color", format_hex_color_string(*c));
                 }
                 else {
                     rf::console::print("Invalid color. Specify hex RRGGBB / RRGGBBAA or comma-separated "
@@ -435,7 +437,7 @@ namespace
         "cl_vehicletracers_length",
         [](std::optional<float> value) {
             if (value) {
-                g_alpine_game_config.set_vehicle_tracer_length(*value);
+                setting_console_set("vehicle_tracer_length", std::to_string(*value));
             }
             rf::console::print("Vehicle tracer length is {:.2f} m (default {:.2f})",
                                g_alpine_game_config.vehicle_tracer_length,

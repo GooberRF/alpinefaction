@@ -638,6 +638,9 @@ struct GibConfig
     bool all_damage = false;
     float damage_threshold = 100.0f;
 
+    // Gibs are random debris instead of meat chunks. Set by the Gibbing mutator.
+    bool scrapyard = false;
+
     // =============================================
 
     void set_damage_threshold(float threshold)
@@ -827,6 +830,7 @@ struct AlpineServerConfigRules
     int rf2_geo_limit = -1; // -1 = unlimited, 0 = disabled, >0 = specific limit
     bool team_damage = false;
     bool fall_damage = false;
+    bool exposure_damage = true;
     bool weapons_stay = false;
     bool force_respawn = false;
     bool balance_teams = false;

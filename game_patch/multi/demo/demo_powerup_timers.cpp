@@ -20,6 +20,7 @@
 #include "../../rf/multi.h"
 #include "../../rf/object.h"
 #include "../../rf/os/console.h"
+#include "../../misc/settings_registry.h"
 
 // Powerup respawn timers for demo playback. Clients never run item_check_for_respawns
 // and the server's item_update visibility bitmap (250 ms cadence) hides/unhides items
@@ -136,7 +137,7 @@ namespace
     ConsoleCommand2 spectate_powerups_cmd{
         "spectate_powerups",
         []() {
-            g_alpine_game_config.demo_powerup_timers = !g_alpine_game_config.demo_powerup_timers;
+            setting_console_set("demo_powerup_timers", "toggle");
             rf::console::print("Demo playback powerup respawn timers are {}",
                                g_alpine_game_config.demo_powerup_timers ? "enabled" : "disabled");
         },

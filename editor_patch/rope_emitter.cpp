@@ -148,6 +148,13 @@ static void rope_clamp_properties(DedRopeEmitter* rope)
                                                     rope_curve::rope_max_sway_amplitude, 0.05f);
     rope->sway_speed =
         rope_curve::clamp_finite(rope->sway_speed, 0.0f, rope_curve::rope_max_sway_speed, 1.0f);
+    rope->zip_down_speed = rope_curve::clamp_finite(rope->zip_down_speed, rope_curve::zip_min_speed,
+                                                    rope_curve::zip_max_speed,
+                                                    rope_curve::zip_default_down_speed);
+    rope->zip_up_speed = rope_curve::clamp_finite(rope->zip_up_speed, rope_curve::zip_min_speed,
+                                                  rope_curve::zip_max_speed,
+                                                  rope_curve::zip_default_up_speed);
+    if (rope->zip_direction > rope_curve::zip_direction_max) rope->zip_direction = 0;
 }
 
 // ─── Cleanup ─────────────────────────────────────────────────────────────────
@@ -261,6 +268,10 @@ void rope_emitter_serialize_chunk(CDedLevel& level, rf::File& file)
             file.write<uint8_t>(rope->deco_random_order ? 1 : 0);
             file.write<uint8_t>(rope->deco_orient_mode);
         }
+
+        file.write<float>(rope->zip_down_speed);
+        file.write<float>(rope->zip_up_speed);
+        file.write<uint8_t>(rope->zip_direction);
     }
 
     level.EndRflSection(file, start_pos);
@@ -428,6 +439,10 @@ void rope_emitter_deserialize_chunk(CDedLevel& level, rf::File& file, std::size_
             rope->deco_orient_mode = orient_mode > 1 ? 0 : orient_mode;
             rope_compact_deco_meshes(rope);
         }
+
+        if (!reader.read_bytes(&rope->zip_down_speed, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+        if (!reader.read_bytes(&rope->zip_up_speed, sizeof(float))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
+        if (!reader.read_bytes(&rope->zip_direction, sizeof(uint8_t))) { DestroyDedRopeEmitter(rope); return rope_emitter_log_truncated(loaded); }
 
         rope_clamp_properties(rope);
 
@@ -641,8 +656,11 @@ static void rope_emitter_update_state(HWND hdlg)
     // the readout, so the two can never disagree about what the rope is hanging from.
     const bool has_target = rope_emitter_update_target_info(hdlg);
     const bool single = g_selected_rope_emitters.size() == 1;
-    const bool dynamic = IsDlgButtonChecked(hdlg, IDC_ROPE_DYNAMIC) == BST_CHECKED;
-    const bool sway = IsDlgButtonChecked(hdlg, IDC_ROPE_SWAY) == BST_CHECKED;
+    // A zip line is always a static, still rope in game, so it overrides the Motion flags without
+    // clearing them.
+    const bool zipline = IsDlgButtonChecked(hdlg, IDC_ROPE_ZIPLINE) == BST_CHECKED;
+    const bool dynamic = !zipline && IsDlgButtonChecked(hdlg, IDC_ROPE_DYNAMIC) == BST_CHECKED;
+    const bool sway = !zipline && IsDlgButtonChecked(hdlg, IDC_ROPE_SWAY) == BST_CHECKED;
     const bool decorations = IsDlgButtonChecked(hdlg, IDC_ROPE_DECORATIONS) == BST_CHECKED;
 
     static const int slack_controls[] = {IDC_ROPE_SLACK, IDC_ROPE_SLACK_SPIN, IDC_ROPE_SLACK_LABEL};
@@ -668,6 +686,18 @@ static void rope_emitter_update_state(HWND hdlg)
     };
     for (int id : sway_controls) {
         EnableWindow(GetDlgItem(hdlg, id), sway);
+    }
+
+    EnableWindow(GetDlgItem(hdlg, IDC_ROPE_DYNAMIC), !zipline);
+    EnableWindow(GetDlgItem(hdlg, IDC_ROPE_SWAY), !zipline);
+
+    static const int zip_controls[] = {
+        IDC_ROPE_ZIP_DOWN_SPEED, IDC_ROPE_ZIP_DOWN_SPEED_SPIN, IDC_ROPE_ZIP_DOWN_SPEED_LABEL,
+        IDC_ROPE_ZIP_UP_SPEED, IDC_ROPE_ZIP_UP_SPEED_SPIN, IDC_ROPE_ZIP_UP_SPEED_LABEL,
+        IDC_ROPE_ZIP_DIRECTION, IDC_ROPE_ZIP_DIRECTION_LABEL,
+    };
+    for (int id : zip_controls) {
+        EnableWindow(GetDlgItem(hdlg, id), zipline);
     }
 
     // The decoration list is one shared staging set, so writing it over a whole selection would
@@ -1267,6 +1297,15 @@ static INT_PTR CALLBACK RopeEmitterDialogProc(HWND hdlg, UINT msg, WPARAM wp, LP
         alpine_dlg_set_float_field(hdlg, IDC_ROPE_UV_TILES, rope->uv_tiles_per_meter);
         alpine_dlg_set_float_field(hdlg, IDC_ROPE_SWAY_AMPLITUDE, rope->sway_amplitude);
         alpine_dlg_set_float_field(hdlg, IDC_ROPE_SWAY_SPEED, rope->sway_speed);
+        alpine_dlg_set_float_field(hdlg, IDC_ROPE_ZIP_DOWN_SPEED, rope->zip_down_speed);
+        alpine_dlg_set_float_field(hdlg, IDC_ROPE_ZIP_UP_SPEED, rope->zip_up_speed);
+
+        HWND zip_dir_combo = GetDlgItem(hdlg, IDC_ROPE_ZIP_DIRECTION);
+        SendMessageA(zip_dir_combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Two-way"));
+        SendMessageA(zip_dir_combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Emitter -> Target"));
+        SendMessageA(zip_dir_combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Target -> Emitter"));
+        SendMessageA(zip_dir_combo, CB_SETCURSEL,
+            rope->zip_direction > rope_curve::zip_direction_max ? 0 : rope->zip_direction, 0);
 
         g_rope_color_r = rope->color_r;
         g_rope_color_g = rope->color_g;
@@ -1292,6 +1331,8 @@ static INT_PTR CALLBACK RopeEmitterDialogProc(HWND hdlg, UINT msg, WPARAM wp, LP
             (rope->flags & ded_rope_flag_glow) ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hdlg, IDC_ROPE_SWAY,
             (rope->flags & ded_rope_flag_sway) ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hdlg, IDC_ROPE_ZIPLINE,
+            (rope->flags & ded_rope_flag_zipline) ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hdlg, IDC_ROPE_INITIALLY_ON, rope->initially_on ? BST_CHECKED : BST_UNCHECKED);
 
         // The decoration list and its placement rules have no controls on this panel: they are
@@ -1327,6 +1368,10 @@ static INT_PTR CALLBACK RopeEmitterDialogProc(HWND hdlg, UINT msg, WPARAM wp, LP
                             0.0f, rope_curve::rope_max_sway_amplitude, 2);
         alpine_spinner_init(hdlg, IDC_ROPE_SWAY_SPEED, IDC_ROPE_SWAY_SPEED_SPIN, 0.05f, 0.0f,
                             rope_curve::rope_max_sway_speed, 2);
+        alpine_spinner_init(hdlg, IDC_ROPE_ZIP_DOWN_SPEED, IDC_ROPE_ZIP_DOWN_SPEED_SPIN, 0.5f,
+                            rope_curve::zip_min_speed, rope_curve::zip_max_speed, 2);
+        alpine_spinner_init(hdlg, IDC_ROPE_ZIP_UP_SPEED, IDC_ROPE_ZIP_UP_SPEED_SPIN, 0.5f,
+                            rope_curve::zip_min_speed, rope_curve::zip_max_speed, 2);
 
         rope_emitter_capture_preview(hdlg);
         g_rope_preview.active = true;
@@ -1344,6 +1389,7 @@ static INT_PTR CALLBACK RopeEmitterDialogProc(HWND hdlg, UINT msg, WPARAM wp, LP
             return TRUE;
         case IDC_ROPE_DYNAMIC:
         case IDC_ROPE_SWAY:
+        case IDC_ROPE_ZIPLINE:
             rope_emitter_update_state(hdlg);
             return TRUE;
         case IDC_ROPE_TARGET_UID:
@@ -1419,6 +1465,13 @@ static INT_PTR CALLBACK RopeEmitterDialogProc(HWND hdlg, UINT msg, WPARAM wp, LP
             if (IsDlgButtonChecked(hdlg, IDC_ROPE_DYNAMIC) == BST_CHECKED) flags |= ded_rope_flag_dynamic;
             if (IsDlgButtonChecked(hdlg, IDC_ROPE_GLOW) == BST_CHECKED) flags |= ded_rope_flag_glow;
             if (IsDlgButtonChecked(hdlg, IDC_ROPE_SWAY) == BST_CHECKED) flags |= ded_rope_flag_sway;
+            if (IsDlgButtonChecked(hdlg, IDC_ROPE_ZIPLINE) == BST_CHECKED) flags |= ded_rope_flag_zipline;
+            float zip_down_speed = alpine_dlg_get_float_field(hdlg, IDC_ROPE_ZIP_DOWN_SPEED);
+            float zip_up_speed = alpine_dlg_get_float_field(hdlg, IDC_ROPE_ZIP_UP_SPEED);
+            const LRESULT zip_sel = SendDlgItemMessageA(hdlg, IDC_ROPE_ZIP_DIRECTION, CB_GETCURSEL, 0, 0);
+            uint8_t zip_direction = (zip_sel > 0 && zip_sel <= rope_curve::zip_direction_max)
+                                        ? static_cast<uint8_t>(zip_sel)
+                                        : 0;
             bool initially_on = IsDlgButtonChecked(hdlg, IDC_ROPE_INITIALLY_ON) == BST_CHECKED;
 
             // Compacted, and each slot's effects move with its name: what the wire unit and both
@@ -1461,6 +1514,9 @@ static INT_PTR CALLBACK RopeEmitterDialogProc(HWND hdlg, UINT msg, WPARAM wp, LP
                 rope->color_b = b;
                 rope->color_a = a;
                 rope->flags = flags;
+                rope->zip_down_speed = zip_down_speed;
+                rope->zip_up_speed = zip_up_speed;
+                rope->zip_direction = zip_direction;
                 rope->initially_on = initially_on;
                 // The whole decoration set comes from one shared staging loaded off the first
                 // selected rope, so writing it over the selection would replace every other rope's
@@ -1603,6 +1659,9 @@ DedRopeEmitter* CloneRopeEmitterObject(DedRopeEmitter* source, bool add_to_level
     rope->deco_spacing = source->deco_spacing;
     rope->deco_random_order = source->deco_random_order;
     rope->deco_orient_mode = source->deco_orient_mode;
+    rope->zip_down_speed = source->zip_down_speed;
+    rope->zip_up_speed = source->zip_up_speed;
+    rope->zip_direction = source->zip_direction;
 
     rope->uid = generate_uid();
 

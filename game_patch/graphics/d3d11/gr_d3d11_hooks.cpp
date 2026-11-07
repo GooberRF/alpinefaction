@@ -35,6 +35,7 @@
 #include "gr_d3d11.h"
 #include "gr_d3d11_hooks.h"
 #include "../gr_ghost_mesh.h"
+#include "../../misc/settings_registry.h"
 #include <common/gr_d3d11/gr_d3d11_terrain.h>
 #include <common/gr_d3d11/gr_d3d11_liquid.h>
 #include <common/gr_d3d11/gr_d3d11_mesh.h>
@@ -238,6 +239,11 @@ namespace gr::d3d11
     void bitmap_float(int bitmap_handle, float x, float y, float w, float h, float sx, float sy, float sw, float sh, bool flip_x, bool flip_y, rf::gr::Mode mode)
     {
         renderer->bitmap(bitmap_handle, x, y, w, h, sx, sy, sw, sh, flip_x, flip_y, mode);
+    }
+
+    void ui_sdf(const UiSdfDraw& draw, rf::gr::Mode mode)
+    {
+        renderer->ui_sdf(draw, mode);
     }
 
     void poly_2d(int bitmap_handle, int nv, const rf::gr::Vertex* vertices, rf::gr::Mode mode)
@@ -1280,8 +1286,7 @@ namespace gr::d3d11
                 constexpr std::string_view MSAA_PREFIX = "msaax";
                 if (string_iequals(*mode, "none")) {
                     if (g_alpine_game_config.sample_count != 1) {
-                        g_alpine_game_config.sample_count = 1;
-                        gr::d3d11::renderer->flush_frame_buffers();
+                        setting_console_set("sample_count", "1");
                         rf::console::print("Anti-aliasing mode is none");
                     } else {
                         rf::console::print("Anti-aliasing mode is already none");
@@ -1306,8 +1311,7 @@ namespace gr::d3d11
                         if (!gr::d3d11::renderer->supports_sample_count(value)) {
                             rf::console::print("MSAAx{} is an unsupported mode!", value);
                         } else {
-                            g_alpine_game_config.sample_count = value;
-                            gr::d3d11::renderer->flush_frame_buffers();
+                            setting_console_set("sample_count", std::to_string(value));
                             rf::console::print("Anti-aliasing mode is MSAAx{}", value);
                         }
                     } else {
@@ -1337,14 +1341,12 @@ namespace gr::d3d11
             if (g_alpine_game_config.sample_count != 1) {
                 // Currently on -> remember the level and switch to none
                 g_aa_restore_sample_count = g_alpine_game_config.sample_count;
-                g_alpine_game_config.sample_count = 1;
-                gr::d3d11::renderer->flush_frame_buffers();
+                setting_console_set("sample_count", "1");
                 rf::console::print("Anti-aliasing is disabled");
             } else if (g_aa_restore_sample_count >= 2
                        && gr::d3d11::renderer->supports_sample_count(g_aa_restore_sample_count)) {
                 // Currently off -> restore the level we last turned off from
-                g_alpine_game_config.sample_count = g_aa_restore_sample_count;
-                gr::d3d11::renderer->flush_frame_buffers();
+                setting_console_set("sample_count", std::to_string(g_aa_restore_sample_count));
                 rf::console::print(
                     "Anti-aliasing is enabled (MSAAx{})",
                     g_alpine_game_config.sample_count

@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Alpine Faction settings chrome: connector - the stock pipe fitting that joins the selected menu button's end cap to the panel. Authored 48x60; drawn stretched to the gap between the two. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 60" width="48" height="60">
+  <defs>
+    <linearGradient id="cn-pipe" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5a5a62"/>
+      <stop offset="0.35" stop-color="#e2e2e6"/>
+      <stop offset="0.6" stop-color="#b0b0b6"/>
+      <stop offset="1" stop-color="#4a4a52"/>
+    </linearGradient>
+    <linearGradient id="cn-block" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#8a8a90"/>
+      <stop offset="0.35" stop-color="#d4d4d8"/>
+      <stop offset="1" stop-color="#8a8a92"/>
+    </linearGradient>
+  </defs>
+  <rect x="4" y="14" width="34" height="10" fill="url(#cn-pipe)" stroke="#2e2e33" stroke-width="1"/>
+  <rect x="4" y="36" width="34" height="10" fill="url(#cn-pipe)" stroke="#2e2e33" stroke-width="1"/>
+  <rect x="18.5" y="11.5" width="7" height="15" fill="url(#cn-block)" stroke="#2e2e33" stroke-width="1"/>
+  <rect x="18.5" y="33.5" width="7" height="15" fill="url(#cn-block)" stroke="#2e2e33" stroke-width="1"/>
+  <rect x="0.5" y="9.5" width="7" height="41" fill="url(#cn-block)" stroke="#2e2e33" stroke-width="1"/>
+  <rect x="35.5" y="3.5" width="12" height="53" fill="url(#cn-block)" stroke="#2e2e33" stroke-width="1"/>
+  <rect x="38" y="25" width="7" height="10" fill="#1a1a1c" stroke="#55555c" stroke-width="1"/>
+</svg>

@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <iterator>
 #include <optional>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -10,6 +11,7 @@
 #include "../bmpman/bmpman.h"
 #include "../misc/alpine_settings.h"
 #include "../misc/player.h"
+#include "../misc/settings_registry.h"
 #include "../os/console.h"
 #include "../rf/bmpman.h"
 #include "../rf/physics.h"
@@ -130,8 +132,7 @@ namespace
         "r_detailtextures",
         [](std::optional<int> mode) {
             if (mode) {
-                g_alpine_game_config.set_detail_textures(mode.value());
-                detail_texture_level_reset();
+                setting_console_set("detail_textures", std::to_string(mode.value()));
             }
             static constexpr const char* mode_names[] = {"off", "ATX only", "ATX and automatic"};
             rf::console::print("Detail textures: {} (Direct3D 11 renderer only)",

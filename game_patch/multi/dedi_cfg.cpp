@@ -632,6 +632,8 @@ static void apply_rules_keys_from_toml(const toml::table& t, AlpineServerConfigR
         o.team_damage   = *v;
     if (auto v = t["fall_damage"].value<bool>())
         o.fall_damage   = *v;
+    if (auto v = t["exposure_damage"].value<bool>())
+        o.exposure_damage = *v;
     if (auto v = t["weapons_stay"].value<bool>())
         o.weapons_stay  = *v;
     if (auto v = t["force_respawn"].value<bool>())
@@ -1736,12 +1738,14 @@ static void download_missing_server_levels()
     if (!cfg.vote_level.allowed_maps.empty()) {
         rf::console::print("\nChecking for missing maps on vote-allowed list...\n");
 
+        // Installing a level can append installed levels to allowed_maps, so walk a copy.
+        const auto requested = cfg.vote_level.allowed_maps;
         std::vector<std::string> resolved_allowed;
-        resolved_allowed.reserve(cfg.vote_level.allowed_maps.size());
+        resolved_allowed.reserve(requested.size());
 
-        for (auto& filename : cfg.vote_level.allowed_maps) {
+        for (const auto& filename : requested) {
             if (download_level_if_missing(filename)) {
-                resolved_allowed.push_back(std::move(filename));
+                resolved_allowed.push_back(filename);
             }
             else {
                 rf::console::print("--> Skipping vote-allowed level {} (download failed).\n", filename);
@@ -1884,6 +1888,8 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         std::format_to(iter, "  Team damage:                           {}\n", rules.team_damage);
     if (base || rules.fall_damage != b.fall_damage)
         std::format_to(iter, "  Fall damage:                           {}\n", rules.fall_damage);
+    if (base || rules.exposure_damage != b.exposure_damage)
+        std::format_to(iter, "  Exposure damage:                       {}\n", rules.exposure_damage);
     if (base || rules.weapons_stay != b.weapons_stay)
         std::format_to(iter, "  Weapon stay:                           {}\n", rules.weapons_stay);
     if (base || rules.force_respawn != b.force_respawn)
@@ -1962,11 +1968,13 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
     if (base || rules.gibbing.enabled != b.gibbing.enabled ||
         (rules.gibbing.enabled &&
             (rules.gibbing.damage_threshold != b.gibbing.damage_threshold ||
-            rules.gibbing.all_damage != b.gibbing.all_damage))) {
+            rules.gibbing.all_damage != b.gibbing.all_damage ||
+            rules.gibbing.scrapyard != b.gibbing.scrapyard))) {
         std::format_to(iter, "  Gibbing:                               {}\n", rules.gibbing.enabled);
         if (rules.gibbing.enabled) {
             std::format_to(iter, "    Damage threshold:                    {}\n", rules.gibbing.damage_threshold);
             std::format_to(iter, "    All damage types:                    {}\n", rules.gibbing.all_damage);
+            std::format_to(iter, "    Scrapyard mode:                      {}\n", rules.gibbing.scrapyard);
         }
     }
 

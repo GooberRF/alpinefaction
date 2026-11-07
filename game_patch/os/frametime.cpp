@@ -19,6 +19,7 @@
 #include "../hud/hud.h"
 #include "../hud/minimap.h"
 #include <xlog/xlog.h>
+#include "../misc/settings_registry.h"
 
 static float g_frametime_history[1024];
 static int g_frametime_history_index = 0;
@@ -227,7 +228,7 @@ void frametime_render_ui()
 ConsoleCommand2 fps_counter_cmd{
     "ui_show_fps",
     []() {
-        g_alpine_game_config.fps_counter = !g_alpine_game_config.fps_counter;
+        setting_console_set("fps_counter", "toggle");
         rf::console::print("FPS counter display is {}", g_alpine_game_config.fps_counter ? "enabled" : "disabled");
     },
     "Toggle FPS counter",
@@ -238,7 +239,7 @@ ConsoleCommand2 fps_counter_average_cmd{
     "ui_fpsavg",
     [](std::optional<int> window_ms) {
         if (window_ms) {
-            g_alpine_game_config.set_fps_counter_average_ms(window_ms.value());
+            setting_console_set("fps_counter_average_ms", std::to_string(window_ms.value()));
         }
 
         rf::console::print(
@@ -251,7 +252,7 @@ ConsoleCommand2 fps_counter_average_cmd{
 ConsoleCommand2 ping_display_cmd{
     "ui_show_ping",
     []() {
-        g_alpine_game_config.ping_display = !g_alpine_game_config.ping_display;
+        setting_console_set("ping_display", "toggle");
         rf::console::print("Ping counter display is {}", g_alpine_game_config.ping_display ? "enabled" : "disabled");
     },
     "Toggle ping counter",
@@ -261,7 +262,7 @@ ConsoleCommand2 ping_display_cmd{
 ConsoleCommand2 speed_display_cmd{
     "ui_show_speed",
     []() {
-        g_alpine_game_config.speed_display = !g_alpine_game_config.speed_display;
+        setting_console_set("speed_display", "toggle");
         rf::console::print("Speed display is {}", g_alpine_game_config.speed_display ? "enabled" : "disabled");
     },
     "Toggle speed meter display",
@@ -327,16 +328,10 @@ ConsoleCommand2 max_fps_cmd{
     [] (const std::optional<int> limit_opt) {
         if (limit_opt) {
             if (rf::is_dedicated_server) {
-                const unsigned int old_v = g_alpine_game_config.server_max_fps;
-                g_alpine_game_config.set_server_max_fps(*limit_opt);
-                if (g_alpine_game_config.server_max_fps != old_v) {
-                    g_alpine_server_config.printed_cfg.clear();
-                    g_alpine_server_config.signal_cfg_changed = true;
-                }
+                setting_console_set("server_max_fps", std::to_string(*limit_opt));
             } else {
-                g_alpine_game_config.set_max_fps(*limit_opt);
+                setting_console_set("max_fps", std::to_string(*limit_opt));
             }
-            apply_maximum_fps();
         }
         rf::console::print("Maximal FPS: {:.1f}", get_maximum_fps());
     },

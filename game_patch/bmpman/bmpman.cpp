@@ -545,6 +545,26 @@ bool bm_fill(int bm_handle, uint32_t argb)
                              lock.w, lock.h, lock.stride_in_bytes, 0, nullptr);
 }
 
+bool bm_write_argb(int bm_handle, const void* argb, int w, int h, int pitch)
+{
+    if (w <= 0 || h <= 0) {
+        return false;
+    }
+    rf::gr::LockInfo lock{};
+    if (!rf::gr::lock(bm_handle, 0, &lock, rf::gr::LOCK_WRITE_ONLY)) {
+        return false;
+    }
+
+    ScopeGuard lock_guard{[&] { rf::gr::unlock(&lock); }};
+
+    // A legacy texture can be padded past the bitmap, which is fine; a smaller one would overrun.
+    if (!bm_is_blit_format(lock.format) || lock.w < w || lock.h < h) {
+        return false;
+    }
+    return bm_convert_format(lock.data, lock.format, argb, rf::bm::FORMAT_8888_ARGB, w, h,
+                             lock.stride_in_bytes, pitch, nullptr);
+}
+
 static bool bm_fill_procedural(int bm_handle, const std::function<uint32_t(int x, int y)>& argb_at)
 {
     rf::gr::LockInfo lock{};

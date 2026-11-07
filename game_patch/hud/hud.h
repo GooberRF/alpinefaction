@@ -51,6 +51,11 @@ HudNotificationType hud_big_notification_current_type();
 
 // Returns true if HUD should be hidden (cl_hud off, or cinematic spectate freelook)
 bool is_hud_effectively_hidden();
+bool is_screen_resolution_too_low_for_big_hud();
+
+// The line under the reticle, shared by the vehicle Use prompt and the zip line hint.
+void hud_render_reticle_prompt();
+void hud_reticle_prompt_clear();
 
 void hud_apply_patches();
 int hud_get_small_font();

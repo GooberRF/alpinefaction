@@ -24,6 +24,7 @@
 #include "../rf/player/player.h"
 #include "../rf/weapon.h"
 #include "../rf/gameseq.h"
+#include "../misc/settings_registry.h"
 
 int g_target_player_name_font = -1;
 
@@ -78,7 +79,7 @@ ConsoleCommand2 hud_cmd{
 
         // toggle if no parameter passed
         bool hud_visible = hud_opt.value_or(rf::hud_disabled);
-        rf::hud_disabled = !hud_visible;
+        setting_console_set("hud_disabled", hud_visible ? "0" : "1");
     },
     "Show and hide HUD",
 };
@@ -86,7 +87,7 @@ ConsoleCommand2 hud_cmd{
 ConsoleCommand2 spectate_cinematic_mode_cmd{
     "spectate_cinematic_mode",
     []() {
-        g_alpine_game_config.spectate_cinematic_mode = !g_alpine_game_config.spectate_cinematic_mode;
+        setting_console_set("spectate_cinematic_mode", "toggle");
         rf::console::print("Spectate cinematic mode is {}",
             g_alpine_game_config.spectate_cinematic_mode ? "enabled" : "disabled");
     },
@@ -151,7 +152,7 @@ void set_big_countdown_counter(bool is_big)
     rf::hud_coords[rf::hud_countdown_timer] = hud_scale_coords(rf::hud_coords[rf::hud_countdown_timer], scale);
 }
 
-static bool is_screen_resolution_too_low_for_big_hud()
+bool is_screen_resolution_too_low_for_big_hud()
 {
     return rf::gr::screen_width() < 1024 || rf::gr::screen_height() < 768;
 }
@@ -182,8 +183,7 @@ ConsoleCommand2 bighud_cmd{
             rf::console::print("Screen resolution is too low for big HUD!");
             return;
         }
-        g_alpine_game_config.big_hud = !g_alpine_game_config.big_hud;
-        set_big_hud(g_alpine_game_config.big_hud);
+        setting_console_set("big_hud", "toggle");
         rf::console::print("Big HUD is {}", g_alpine_game_config.big_hud ? "enabled" : "disabled");
     },
     "Toggle big HUD",
@@ -193,9 +193,7 @@ ConsoleCommand2 bighud_cmd{
 ConsoleCommand2 bighud_health_cmd{
     "bighud_health",
     [] (const std::optional<bool> enabled) {
-        g_alpine_game_config.big_hud_health =
-            enabled.value_or(!g_alpine_game_config.big_hud_health);
-        set_big_hud(g_alpine_game_config.big_hud);
+        setting_console_set_bool("big_hud_health", enabled);
         if (!g_alpine_game_config.big_hud && g_alpine_game_config.big_hud_health) {
             rf::console::print(
                 "Big HUD health is enabled but ignored, because big HUD is disabled"
@@ -214,9 +212,7 @@ ConsoleCommand2 bighud_health_cmd{
 ConsoleCommand2 bighud_ammo_cmd{
     "bighud_ammo",
     [] (const std::optional<bool> enabled) {
-        g_alpine_game_config.big_hud_ammo =
-            enabled.value_or(!g_alpine_game_config.big_hud_ammo);
-        set_big_hud(g_alpine_game_config.big_hud);
+        setting_console_set_bool("big_hud_ammo", enabled);
         if (!g_alpine_game_config.big_hud && g_alpine_game_config.big_hud_ammo) {
             rf::console::print(
                 "Big HUD ammo is enabled but ignored, because big HUD is disabled"
@@ -235,7 +231,7 @@ ConsoleCommand2 bighud_ammo_cmd{
 ConsoleCommand2 ui_realarmor_cmd{
     "ui_realarmor",
     []() {
-        g_alpine_game_config.real_armor_values = !g_alpine_game_config.real_armor_values;
+        setting_console_set("real_armor_values", "toggle");
         rf::console::print("Real armor value display is {}", g_alpine_game_config.real_armor_values ? "enabled" : "disabled");
     },
     "Toggle whether armor is displayed on HUD using real values (1:1 armor to effective health) or classic (2:1 - default).",
@@ -456,9 +452,10 @@ CallHook hud_msg_render_gr_get_font_height_hook{
 
 void hud_render_00437BC0()
 {
-    // Single player jetpack HUD. Multiplayer draws it from multi_hud_render.
+    // Single player jetpack HUD and reticle prompt. Multiplayer draws them from multi_hud_render.
     if (!rf::is_multi) {
         jetpack_render_hud();
+        hud_render_reticle_prompt();
     }
 
     if (!rf::is_multi || !rf::local_player) {

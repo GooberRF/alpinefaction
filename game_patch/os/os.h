@@ -4,6 +4,7 @@
 #include <chrono>
 #include <optional>
 #include <algorithm>
+#include <string>
 #include <windows.h>
 #include <xlog/xlog.h>
 
@@ -23,6 +24,8 @@ bool headless_bot_requested_from_raw_cmdline();
 bool awpgen_requested_from_raw_cmdline();
 bool headless_requested_from_raw_cmdline();
 void wnd_set_flash(HWND hwnd);
+// Not rf::os_get_clipboard_text: it leaves the clipboard open when it holds no text.
+std::string read_clipboard_text(std::size_t max_len);
 
 struct WaitableTimer {
     HANDLE handle;

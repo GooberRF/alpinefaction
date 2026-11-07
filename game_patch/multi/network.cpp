@@ -83,6 +83,8 @@
 #include "../fflink/afstats_client.h"
 #include "../fflink/afstats_events.h"
 #include "../fflink/fflink_session.h"
+#include "../misc/settings_registry.h"
+#include "../object/zipline.h"
 
 // NET_IFINDEX_UNSPECIFIED is not defined in MinGW headers
 #ifndef NET_IFINDEX_UNSPECIFIED
@@ -1994,6 +1996,9 @@ CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_join_accept_packet_ho
         if (server_no_player_collide()) {
             ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::no_player_collide;
         }
+        if (!server_exposure_damage()) {
+            ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::no_exposure_damage;
+        }
         if (server_allow_disable_muzzle_flash()) {
             ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::allow_no_mf;
         }
@@ -2069,6 +2074,10 @@ CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_join_accept_packet_ho
         // Pogo: the client owns the entire movement, so it has to know.
         if (g_alpine_server_config_active_rules.mutators.pogo_enabled) {
             ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::pogo;
+        }
+        // Gibbing Scrapyard mode: gibs are spawned client-side, so the client picks the meshes.
+        if (g_alpine_server_config_active_rules.gibbing.scrapyard) {
+            ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::scrapyard_gibs;
         }
         // Direct connects have no browser game_info entry, so this is the only
         // point at which they learn to run the stats key exchange.
@@ -2273,6 +2282,8 @@ CodeInjection process_join_accept_injection{
             server_info.skiing = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::skiing);
             server_info.dodging = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::dodging);
             server_info.pogo = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::pogo);
+            server_info.scrapyard_gibs = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::scrapyard_gibs);
+            server_info.no_exposure_damage = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::no_exposure_damage);
             // featured_no_clip is intentionally not stored here, it's consumed inline below via mutators_set_no_clip_weapon.
 
             // parsed_full is the only state reaching this branch, so the stats flag was
@@ -3254,12 +3265,7 @@ ConsoleCommand2 netfps_cmd{
     "sv_netfps",
     [] (std::optional<int> update_rate) {
         if (update_rate) {
-            const unsigned int old_v = g_alpine_game_config.server_netfps;
-            g_alpine_game_config.set_server_netfps(*update_rate);
-            if (rf::is_server && g_alpine_game_config.server_netfps != old_v) {
-                g_alpine_server_config.printed_cfg.clear();
-                g_alpine_server_config.signal_cfg_changed = true;
-            }
+            setting_console_set("server_netfps", std::to_string(*update_rate));
         }
         rf::console::print("Server netfps: {}", g_alpine_game_config.server_netfps);
     },
@@ -3298,6 +3304,8 @@ CodeInjection send_state_info_injection{
         trigger_send_state_info(player);
         sprays_force_state_sync_to(player);
         powerups_send_state_to(player);
+        zipline_send_state_to(player);
+        af_send_rope_states_to(player, false);
     },
 };
 

@@ -826,7 +826,7 @@ std::map<AlpineDedEventID, FieldConfig> eventFieldConfigs = {
     }},
 };
 
-void CreateDynamicControls(HWND hwndDlg, const FieldConfig& config, const std::string& className)
+void CreateDynamicControls(HWND hwndDlg, const FieldConfig& config, int eventType)
 {
     HDC hdc = GetDC(hwndDlg); // Get device context to measure font size
     TEXTMETRIC tm;
@@ -848,8 +848,24 @@ void CreateDynamicControls(HWND hwndDlg, const FieldConfig& config, const std::s
 
         SendMessage(hLabel, WM_SETFONT, (WPARAM)hDefaultFont, TRUE);
 
-        HWND hField = CreateWindowA("STATIC", className.c_str(), WS_VISIBLE | WS_CHILD, xField, yOffset + 4, fieldWidth,
-                                    controlHeight, hwndDlg, nullptr, nullptr, nullptr);
+        HWND hField = CreateWindowA("COMBOBOX", "", WS_VISIBLE | WS_CHILD | WS_VSCROLL | CBS_DROPDOWNLIST | CBS_SORT |
+                                    WS_TABSTOP, xField, yOffset, fieldWidth, controlHeight * 20, hwndDlg,
+                                    reinterpret_cast<HMENU>(FIELD_EVENT_TYPE), nullptr, nullptr);
+
+        // the last name is the count sentinel, which stock's list leaves out too
+        for (int i = 0; i < total_event_count - 1; ++i) {
+            if (extended_event_names[i]) {
+                int item = SendMessage(hField, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(extended_event_names[i]));
+                SendMessage(hField, CB_SETITEMDATA, item, i);
+            }
+        }
+        int count = SendMessage(hField, CB_GETCOUNT, 0, 0);
+        for (int item = 0; item < count; ++item) {
+            if (SendMessage(hField, CB_GETITEMDATA, item, 0) == eventType) {
+                SendMessage(hField, CB_SETCURSEL, item, 0);
+                break;
+            }
+        }
 
         SendMessage(hField, WM_SETFONT, (WPARAM)hDefaultFont, TRUE);
         yOffset += controlHeight + 10; // Increment vertical spacing
@@ -1081,7 +1097,7 @@ INT_PTR CALLBACK DialogProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPara
             SetWindowTextA(hwndDlg, title.c_str());
 
             // Create dynamic controls (already populates dropdowns)
-            CreateDynamicControls(hwndDlg, config, currentDedEvent->class_name.c_str());
+            CreateDynamicControls(hwndDlg, config, currentDedEvent->event_type);
 
             // Populate mandatory fields
             SetDlgItemTextA(hwndDlg, FIELD_SCRIPT_NAME, currentDedEvent->script_name.c_str());
@@ -1188,6 +1204,23 @@ INT_PTR CALLBACK DialogProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPara
             EndDialog(hwndDlg, IDCANCEL);
             return TRUE;
         }
+        else if (LOWORD(wParam) == FIELD_EVENT_TYPE && HIWORD(wParam) == CBN_SELCHANGE && currentDedEvent) {
+            HWND hType = reinterpret_cast<HWND>(lParam);
+            int selectedIndex = SendMessage(hType, CB_GETCURSEL, 0, 0);
+            if (selectedIndex == CB_ERR) {
+                return TRUE;
+            }
+            int newType = static_cast<int>(SendMessage(hType, CB_GETITEMDATA, selectedIndex, 0));
+            if (newType == currentDedEvent->event_type) {
+                return TRUE;
+            }
+            SaveCurrentFields(hwndDlg);
+            currentDedEvent->event_type = newType;
+            currentDedEvent->class_name.assign_0(extended_event_names[newType]);
+            // makes OpenAlpineEventProperties reopen the dialog for the new type, as stock does
+            EndDialog(hwndDlg, FIELD_EVENT_TYPE);
+            return TRUE;
+        }
         else if (LOWORD(wParam) == ID_LINKS && currentDedEvent) {
             // Save current fields before opening Links dialog
             SaveCurrentFields(hwndDlg);
@@ -1195,7 +1228,7 @@ INT_PTR CALLBACK DialogProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPara
 
             if (currentDedLevel) {
                 xlog::info("Opening Links dialog...");
-                OpenLinksDialog(currentDedLevel);
+                currentDedLevel->open_links_dialog();
             }
             return TRUE;
         }
@@ -1209,7 +1242,7 @@ INT_PTR CALLBACK DialogProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPara
     return FALSE;
 }
 
-bool ShowAlpineEventDialog(HWND parent, DedEvent* dedEvent, CDedLevel* level)
+int ShowAlpineEventDialog(HWND parent, DedEvent* dedEvent, CDedLevel* level)
 {
     currentDedEvent = dedEvent;
     currentDedLevel = level;
@@ -1227,11 +1260,15 @@ bool ShowAlpineEventDialog(HWND parent, DedEvent* dedEvent, CDedLevel* level)
     currentDedEvent = nullptr;
     currentDedLevel = nullptr;
 
-    return (result == IDOK);
+    return result;
 }
 
 void OpenAlpineEventProperties(DedEvent* dedEvent, CDedLevel* level) {
-    if (ShowAlpineEventDialog(GetActiveWindow(), dedEvent, level)) {
+    int result = ShowAlpineEventDialog(GetActiveWindow(), dedEvent, level);
+    if (result == FIELD_EVENT_TYPE) {
+        level->open_event_properties();
+    }
+    else if (result == IDOK) {
         xlog::info("Dialog saved successfully!");
     }
     else {

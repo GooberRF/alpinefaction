@@ -11,6 +11,7 @@
 #include <common/alpine_dir_light.h>
 #include <common/alpine_waypoint_helper.h>
 #include <common/alpine_camera_far_clip.h>
+#include <common/mover_path.h>
 #include <common/lightmap/alpine_lightmap.h>
 #include <common/terrain/alpine_terrain.h>
 #include "../rf/geometry.h"
@@ -32,6 +33,7 @@ constexpr int alpine_terrain_chunk_id = static_cast<int>(alpine_terrain::chunk_i
 constexpr int alpine_lightmaps_chunk_id = static_cast<int>(alpine_lightmap::chunk_id); // 0x0AFBAE09
 constexpr int alpine_directional_light_chunk_id = static_cast<int>(alpine_dir_light::chunk_id); // 0x0AFBAE0C
 constexpr int alpine_waypoint_helper_chunk_id = static_cast<int>(alpine_waypoint_helper::chunk_id); // 0x0AFBAE0D
+constexpr int alpine_mover_path_chunk_id = static_cast<int>(mover_path::chunk_id); // 0x0AFBAE0E
 constexpr int stock_lightmaps_chunk_id = 0x1200;
 
 // Length limit (with the terminator) for bitmap names read from untrusted alpine level chunks.

@@ -16,7 +16,6 @@ public:
     std::vector<std::string> get_adapters() override;
     std::set<Resolution> get_resolutions(unsigned adapter, unsigned format) override;
     std::set<uint32_t> get_multisample_types(uint32_t adapter, uint32_t format, bool windowed) override;
-    bool has_anisotropy_support(unsigned adapter) override;
 
     unsigned get_format_from_bpp(unsigned bpp) override
     {
@@ -166,13 +165,6 @@ std::set<uint32_t> VideoDeviceInfoProviderD3D11::get_multisample_types(
         }
     }
     return result;
-}
-
-bool VideoDeviceInfoProviderD3D11::has_anisotropy_support(
-    [[maybe_unused]] unsigned adapter
-) {
-    // 9_1 feature level already supports anistoropy level 2
-    return true;
 }
 
 std::unique_ptr<VideoDeviceInfoProvider> create_d3d11_device_info_provider()

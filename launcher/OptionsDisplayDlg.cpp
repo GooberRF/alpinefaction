@@ -42,7 +42,6 @@ BOOL OptionsDisplayDlg::OnInitDialog()
     UpdateColorDepthCombo(); // should be before resolution
     UpdateResolutionCombo();
     m_wnd_mode_combo.SetCurSel(static_cast<int>(m_conf.wnd_mode));
-    UpdateAnisotropyCheckbox();
     CheckDlgButton(IDC_HIGH_SCANNER_RES_CHECK, m_conf.high_scanner_res ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(IDC_TRUE_COLOR_TEXTURES_CHECK, m_conf.true_color_textures ? BST_CHECKED : BST_UNCHECKED);
 
@@ -51,32 +50,12 @@ BOOL OptionsDisplayDlg::OnInitDialog()
     return TRUE;
 }
 
-void OptionsDisplayDlg::UpdateAnisotropyCheckbox()
-{
-    bool anisotropy_supported = false;
-    try {
-        if (m_video_info) {
-            anisotropy_supported = m_video_info->has_anisotropy_support(m_conf.selected_video_card);
-        }
-    }
-    catch (std::exception &e) {
-        xlog::error("Cannot check anisotropy support: {}", e.what());
-    }
-    if (anisotropy_supported) {
-        GetDlgItem(IDC_ANISOTROPIC_CHECK).EnableWindow(TRUE);
-        CheckDlgButton(IDC_ANISOTROPIC_CHECK, m_conf.anisotropic_filtering ? BST_CHECKED : BST_UNCHECKED);
-    }
-    else
-        GetDlgItem(IDC_ANISOTROPIC_CHECK).EnableWindow(FALSE);
-}
-
 void OptionsDisplayDlg::InitToolTip()
 {
     m_tool_tip.Create(*this);
     m_tool_tip.SetMaxTipWidth(512);
     m_tool_tip.AddTool(GetDlgItem(IDC_ADAPTER_COMBO), "Graphics adapter used for rendering");
     m_tool_tip.AddTool(GetDlgItem(IDC_RESOLUTIONS_COMBO), "Select resolution from provided drop-down list, or type a resolution manually");
-    m_tool_tip.AddTool(GetDlgItem(IDC_ANISOTROPIC_CHECK), "Improve render quality of textures at far distances");
     m_tool_tip.AddTool(GetDlgItem(IDC_HIGH_SCANNER_RES_CHECK), "Increase scanner resolution (used by Rail Driver, Rocket Launcher, and Fusion Launcher)");
     m_tool_tip.AddTool(GetDlgItem(IDC_TRUE_COLOR_TEXTURES_CHECK), "Increase texture color depth, especially visible for lightmaps and shadows");
 }
@@ -205,7 +184,6 @@ void OptionsDisplayDlg::OnSave()
         m_conf.res_backbuffer_format = m_video_info->get_format_from_bpp(m_conf.res_bpp);
     }
     m_conf.wnd_mode = static_cast<GameConfig::WndMode>(m_wnd_mode_combo.GetCurSel());
-    m_conf.anisotropic_filtering = (IsDlgButtonChecked(IDC_ANISOTROPIC_CHECK) == BST_CHECKED);
     m_conf.high_scanner_res = (IsDlgButtonChecked(IDC_HIGH_SCANNER_RES_CHECK) == BST_CHECKED);
     m_conf.true_color_textures = (IsDlgButtonChecked(IDC_TRUE_COLOR_TEXTURES_CHECK) == BST_CHECKED);
 }
@@ -226,7 +204,6 @@ void OptionsDisplayDlg::OnRendererChange()
     UpdateAdapterCombo();
     UpdateResolutionCombo();
     UpdateColorDepthCombo();
-    UpdateAnisotropyCheckbox();
 }
 
 void OptionsDisplayDlg::OnAdapterChange()
@@ -234,7 +211,6 @@ void OptionsDisplayDlg::OnAdapterChange()
     m_conf.selected_video_card = m_adapter_combo.GetCurSel();
     UpdateResolutionCombo();
     UpdateColorDepthCombo();
-    UpdateAnisotropyCheckbox();
 }
 
 void OptionsDisplayDlg::OnColorDepthChange()

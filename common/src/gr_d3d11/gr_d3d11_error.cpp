@@ -1,6 +1,7 @@
 #include <common/error/error-utils.h>
 #include <common/gr_d3d11/gr_d3d11_util.h>
 #include <gr_d3d11_engine.h>
+#include <common/ComPtr.h>
 
 namespace gr::d3d11
 {

@@ -95,6 +95,26 @@ inline constexpr float rope_max_uv_tiles = 1000.0f;
 inline constexpr float rope_max_sway_amplitude = 100.0f;
 inline constexpr float rope_max_sway_speed = 100.0f;
 
+// ─── Zip lines ──────────────────────────────────────────────────────────────
+
+// Rope flags bit shared by the editor (ded_rope_flag_zipline) and the game (rope_flag_zipline).
+inline constexpr uint32_t rope_flag_zipline_bit = 0x8;
+
+// Cruise speeds per travel direction. Down is toward the lower anchor; on a level line the emitter to
+// target direction counts as down.
+inline constexpr float zip_min_speed = 4.0f;
+inline constexpr float zip_max_speed = 40.0f;
+inline constexpr float zip_default_down_speed = 15.0f;
+inline constexpr float zip_default_up_speed = 10.0f;
+
+enum class ZipDirection : uint8_t
+{
+    two_way = 0,
+    emitter_to_target = 1,
+    target_to_emitter = 2,
+};
+inline constexpr uint8_t zip_direction_max = 2;
+
 // sinh(u)/u, series-continued through u = 0 where the quotient is 0/0.
 inline double sinh_over_u(double u)
 {

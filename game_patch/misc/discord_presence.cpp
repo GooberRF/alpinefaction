@@ -22,6 +22,7 @@
 #include "discord_presence.h"
 #include "alpine_settings.h"
 #include "misc.h"
+#include "settings_registry.h"
 #include "../hud/hud.h"
 #include "../hud/multi_spectate.h"
 #include "../multi/demo/demo.h"
@@ -572,7 +573,7 @@ json build_activity()
 ConsoleCommand2 discord_presence_cmd{
     "cl_discord_presence",
     [](std::optional<bool> enabled) {
-        g_alpine_game_config.discord_rich_presence = enabled.value_or(!g_alpine_game_config.discord_rich_presence);
+        setting_console_set_bool("discord_rich_presence", enabled);
         rf::console::print("Discord rich presence is {}",
             g_alpine_game_config.discord_rich_presence ? "enabled" : "disabled");
     },
@@ -583,7 +584,7 @@ ConsoleCommand2 discord_presence_cmd{
 ConsoleCommand2 discord_join_button_cmd{
     "cl_discord_join_button",
     [](std::optional<bool> enabled) {
-        g_alpine_game_config.discord_join_button = enabled.value_or(!g_alpine_game_config.discord_join_button);
+        setting_console_set_bool("discord_join_button", enabled);
         rf::console::print("Discord rich presence join button is {}",
             g_alpine_game_config.discord_join_button ? "enabled" : "disabled");
     },

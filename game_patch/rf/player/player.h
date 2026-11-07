@@ -434,6 +434,9 @@ namespace rf
     static auto& player_delete = addr_as_ref<void(Player* player)>(0x004A35C0);
 
     static auto& player_from_entity_handle = addr_as_ref<Player*(int entity_handle)>(0x004A3740);
+    // Trims, validates and commits a name to local_player; false when empty or longer than 20 characters
+    // (with a message), or silently with no local player.
+    static auto& player_change_name = addr_as_ref<bool(String::Pod name)>(0x004A7540);
     static auto& player_is_undercover = addr_as_ref<bool()>(0x004B0580);
     static auto& player_undercover_alarm_is_on = addr_as_ref<bool()>(0x004B05F0);
     static auto& player_is_dead = addr_as_ref<bool(const Player *player)>(0x004A4920);

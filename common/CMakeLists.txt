@@ -1,6 +1,7 @@
 set(SRCS
     include/common/HttpRequest.h
     include/common/rfproto.h
+    include/common/mover_path.h
     include/common/rope_curve.h
     include/common/alpine_mesh_scale.h
     include/common/alpine_camera_far_clip.h

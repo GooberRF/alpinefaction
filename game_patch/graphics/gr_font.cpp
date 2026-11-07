@@ -1,5 +1,7 @@
+#include <format>
 #include <algorithm>
 #include <memory>
+#include <map>
 #include <unordered_map>
 #include <unordered_set>
 #include <cstddef>
@@ -627,6 +629,37 @@ int gr_font_get_default()
 void gr_font_set_default(int font_id)
 {
     g_default_font_id = font_id;
+}
+
+// (bold, pixel size) of every font handed out by ui_ttf_font, so a caller that has only the
+// id can ask for the same face one size down.
+static std::unordered_map<int, std::pair<bool, int>> g_ui_ttf_fonts;
+
+int ui_ttf_font(bool bold, int pixel_size)
+{
+    // Text fitting asks for many sizes every frame; the load below formats a name and scans
+    // every loaded font, so known sizes - and failed loads - are answered from here.
+    static std::map<std::pair<bool, int>, int> font_ids;
+    if (const auto it = font_ids.find({bold, pixel_size}); it != font_ids.end()) {
+        return it->second;
+    }
+    const int font = rf::gr::load_font(std::format("{}font.ttf:{}", bold ? "bold" : "regular", pixel_size).c_str());
+    if (font >= 0) {
+        g_ui_ttf_fonts[font] = {bold, pixel_size};
+    }
+    font_ids.emplace(std::pair{bold, pixel_size}, font);
+    return font;
+}
+
+bool ui_ttf_font_info(int font, bool& bold, int& pixel_size)
+{
+    const auto it = g_ui_ttf_fonts.find(font);
+    if (it == g_ui_ttf_fonts.end()) {
+        return false;
+    }
+    bold = it->second.first;
+    pixel_size = it->second.second;
+    return true;
 }
 
 FunHook<int(const char*, int)> gr_init_font_hook{

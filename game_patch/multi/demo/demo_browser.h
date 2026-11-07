@@ -12,3 +12,5 @@ bool demo_browser_is_open();
 // state is active - the renderer force-closes it in any other state. Also used by the
 // demo-exit navigation in misc.cpp to land back on the demo list after playback.
 void demo_browser_open();
+// The browser's input for one frame, for an Extras menu that does not run the stock input handlers.
+void demo_browser_do_input();

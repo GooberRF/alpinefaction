@@ -35,6 +35,7 @@
 #include "../rf/sound/sound.h"
 #include "../rf/ui.h"
 #include "../sound/sound.h"
+#include "../ui/ui_kit.h"
 
 namespace
 {
@@ -75,10 +76,6 @@ bool level_matches_name_filter(const std::string& filename)
         != std::string::npos;
 }
 
-
-// Description area: hover drives it, a toggle pins it until the next hover.
-bool g_hovered_mutator_this_pass = false;
-bool g_description_pinned = false;
 
 // Filtered + sorted + deduped display rows for the level list, plus the resolved
 // selection row. Both panel passes in a frame reuse this; it is rebuilt only when
@@ -366,7 +363,6 @@ struct FormState
     int team_size = 4;
     int extend_minutes = af_vote_extend_default_minutes;
     std::vector<PanelMutatorSelection> mutators;
-    int description_mutator = -1;
 
     // Re-derived whenever its context moves, but only until the player touches it.
     bool mutators_touched = false;
@@ -491,37 +487,15 @@ enum class PanelMode
 };
 
 // ---------------------------------------------------------------------------
-// Immediate-mode widget helpers. `vote_panel_do` runs twice per frame: once
-// from the mouse handler (draw = false, hit-testing only) and once from the
-// render injection (draw = true), so layout only exists in one place.
+// Immediate-mode panel plumbing. `vote_panel_do` runs twice per frame: once
+// from the mouse handler (hit-test pass) and once from the render injection
+// (draw pass), so layout only exists in one place.
 // ---------------------------------------------------------------------------
 
-struct Rect
-{
-    int x = 0;
-    int y = 0;
-    int w = 0;
-    int h = 0;
-};
+using Rect = UiRect;
+using TextInputResult = UiTextInputResult;
 
-struct PanelUi
-{
-    bool draw = true;
-    int mx = 0;
-    int my = 0;
-    bool click = false;
-    bool rclick = false; // right-click; only the cyclers act on it
-    int wheel = 0;
-
-    // Active scroll viewport. Widgets are always laid out in absolute screen
-    // space; inside a region the draw pass subtracts the clip origin (set_clip
-    // moves the drawing origin) while hit-testing stays absolute but is gated on
-    // the viewport, so rows scrolled out of sight are not clickable.
-    Rect clip_rect;
-    bool clip_active = false;
-    int origin_x = 0;
-    int origin_y = 0;
-};
+UiContext g_ui;
 
 struct Layout
 {
@@ -537,39 +511,78 @@ struct Layout
     int title_font = 0;
 };
 
-// Panel layout reference size, matching spray_picker.cpp.
+// Panel layout reference size.
 constexpr float REF_WIDTH = 1280.0f;
 constexpr float REF_HEIGHT = 800.0f;
 
-// Uniform panel scale, shared with the widget helpers that only get a Rect.
-float g_panel_scale = 1.0f;
-
 int scaled(float value)
 {
-    return static_cast<int>(value * g_panel_scale);
+    return g_ui.scaled(value);
 }
 
 bool point_in(int px, int py, const Rect& r)
 {
-    return px >= r.x && px < r.x + r.w && py >= r.y && py < r.y + r.h;
+    return ui_point_in(px, py, r);
 }
 
-// Hover test honouring the active scroll viewport.
-bool ui_hover(const PanelUi& ui, const Rect& r)
+std::string fit_middle(std::string_view text, int max_w, int font)
 {
-    if (ui.clip_active && !point_in(ui.mx, ui.my, ui.clip_rect)) {
-        return false;
-    }
-    return point_in(ui.mx, ui.my, r);
+    return ui_fit_middle(text, max_w, font);
+}
+
+std::vector<std::string> wrap_text(std::string_view text, int max_w, int font)
+{
+    return ui_wrap_text(text, max_w, font);
+}
+
+void draw_wrapped(const Rect& r, std::string_view text, int font, int line_h)
+{
+    ui_draw_wrapped(g_ui, r, text, font, line_h);
+}
+
+int line_block_height(const std::vector<std::string>& lines, int max_w, int font, int line_h, int max_h)
+{
+    return ui_line_block_height(lines, max_w, font, line_h, max_h);
+}
+
+void draw_line_block(const Rect& r, const std::vector<std::string>& lines, int font, int line_h,
+                     int red, int green, int blue)
+{
+    ui_draw_line_block(r, lines, font, line_h, red, green, blue);
+}
+
+// Colour conventions on the dark panel: gold for section headers, white for
+// widget labels, light grey for secondary/explanatory text.
+void set_header_color()
+{
+    ui_set_header_color(g_ui);
+}
+
+void set_text_color(bool enabled, bool hovered)
+{
+    ui_set_text_color(g_ui, enabled, hovered);
+}
+
+void draw_label(const UiContext& ui, const Rect& r, const char* text, int font,
+                bool secondary = false)
+{
+    ui_draw_label(ui, r, text, font, secondary);
+}
+
+int ui_cycler_arrow_width()
+{
+    return ::ui_cycler_arrow_width(g_ui);
+}
+
+// Space the cycler has for its value text, between the two arrows.
+int ui_cycler_value_width(const Rect& r)
+{
+    return ::ui_cycler_value_width(g_ui, r);
 }
 
 // String boxes (level filter, manual level name) edit their bound string live.
-// Numeric boxes (mutator Int/Float options, Extend duration) edit g_text_input_buffer and commit
+// Numeric boxes (mutator Int/Float options, Extend duration) edit the context's buffer and commit
 // on ENTER / click-away / focus loss, or revert on ESC.
-
-// Defined below with the other widget helpers; needed here because the text
-// input draws inside scroll regions, where the clip origin must be subtracted.
-Rect ui_draw_rect(const PanelUi& ui, const Rect& r);
 
 constexpr uint32_t kTextInputLevelFilter = 1;
 constexpr uint32_t kTextInputManualLevel = 2;
@@ -580,55 +593,11 @@ uint32_t text_input_id_for_option(uint8_t mutator_id, uint8_t option_id)
     return 0x10000u | (static_cast<uint32_t>(mutator_id) << 8) | option_id;
 }
 
-uint32_t g_text_input_focus = 0; // 0 = none
-// Latched by the focused box's hit-test.
-bool g_text_input_seen_this_pass = false;
-// Numeric edit buffer; the bound value is only written on commit.
-std::string g_text_input_buffer;
-
-struct TextInputTarget
+// End the focused edit. String boxes edit live, so for them this only drops focus; a numeric box
+// runs the commit callback it registered when it took focus.
+void text_input_release_focus(bool commit)
 {
-    std::string* text = nullptr;
-    size_t max_len = 0;
-    bool (*allow_char)(char) = nullptr;
-};
-TextInputTarget g_text_input_target;
-bool g_text_input_changed = false;
-
-// One keystroke the callback captured. The callback runs BETWEEN a frame's two passes,
-// so keys are recorded in order and applied at the top of the next hit-test pass.
-struct PendingTextKey
-{
-    enum class Kind : uint8_t
-    {
-        Char,
-        Backspace,
-        Escape,
-        Enter,
-    };
-
-    Kind kind = Kind::Char;
-    char c = 0;
-};
-
-std::vector<PendingTextKey> g_text_input_pending;
-// A single frame cannot legitimately produce more than the key ring holds.
-constexpr size_t TEXT_INPUT_PENDING_MAX = 64;
-
-bool text_input_char_filename(char c)
-{
-    return std::isalnum(static_cast<unsigned char>(c)) != 0
-        || c == '-' || c == '_' || c == '.' || c == ' ';
-}
-
-bool text_input_char_numeric(char c)
-{
-    return std::isdigit(static_cast<unsigned char>(c)) != 0 || c == '-' || c == '.';
-}
-
-bool text_input_char_digit(char c)
-{
-    return std::isdigit(static_cast<unsigned char>(c)) != 0;
+    g_ui.release_text_focus(commit);
 }
 
 // Parse-and-write for a numeric box. Re-validated before application.
@@ -657,22 +626,22 @@ void commit_numeric_text_input()
         // Claimed here too: a baseline overlay can run earlier in the same pass and
         // reset ownership.
         if (schema.options[g_popup_option].type == MutatorOptionType::Int) {
-            value.int_value = std::stoi(g_text_input_buffer);
+            value.int_value = std::stoi(g_ui.text_buffer());
             value.player_owned = true;
         }
         else {
-            const float parsed = std::stof(g_text_input_buffer);
+            const float parsed = std::stof(g_ui.text_buffer());
             if (std::isfinite(parsed)) {
                 value.float_value = parsed;
                 value.player_owned = true;
             }
             else {
-                xlog::info("vote panel: non-finite option input '{}' ignored", g_text_input_buffer);
+                xlog::info("vote panel: non-finite option input '{}' ignored", g_ui.text_buffer());
             }
         }
     }
     catch (const std::exception& e) {
-        xlog::info("vote panel: invalid option input '{}', reason: {}", g_text_input_buffer, e.what());
+        xlog::info("vote panel: invalid option input '{}', reason: {}", g_ui.text_buffer(), e.what());
     }
 }
 
@@ -681,116 +650,15 @@ void commit_numeric_text_input()
 void commit_extend_minutes_text_input()
 {
     try {
-        g_form.extend_minutes = std::clamp(std::stoi(g_text_input_buffer),
+        g_form.extend_minutes = std::clamp(std::stoi(g_ui.text_buffer()),
             static_cast<int>(af_vote_extend_min_minutes),
             static_cast<int>(af_vote_extend_max_minutes));
     }
     catch (const std::exception& e) {
         // Empty or out of int range: keep whatever was already selected.
-        xlog::info("vote panel: invalid extend duration '{}', reason: {}", g_text_input_buffer,
+        xlog::info("vote panel: invalid extend duration '{}', reason: {}", g_ui.text_buffer(),
             e.what());
     }
-}
-
-// End the focused edit. String boxes edit live, so for them this only drops focus.
-void text_input_release_focus(bool commit)
-{
-    if (g_text_input_focus == 0) {
-        return;
-    }
-    if (g_text_input_focus == kTextInputExtendMinutes) {
-        if (commit) {
-            commit_extend_minutes_text_input();
-        }
-    }
-    else if (g_popup_mutator >= 0) { // a numeric box owns the write-back target
-        if (commit) {
-            commit_numeric_text_input();
-        }
-        clear_popup_target();
-    }
-    g_text_input_focus = 0;
-    g_text_input_buffer.clear();
-    g_text_input_target = TextInputTarget{};
-    g_text_input_changed = false;
-    g_text_input_pending.clear();
-}
-
-struct TextInputResult
-{
-    bool changed = false;      // `text` was edited since the previous pass
-    bool gained_focus = false; // this click focused the box; caller seeds state
-};
-
-TextInputResult ui_text_input(PanelUi& ui, const Rect& r, uint32_t id, std::string& text,
-                              size_t max_len, bool (*allow_char)(char), const char* hint,
-                              int font, bool enabled = true)
-{
-    TextInputResult res;
-    const bool focused_at_entry = g_text_input_focus == id;
-
-    if (!ui.draw) {
-        // Focus on a greyed box strands the control veto with nothing to type into.
-        if (focused_at_entry && !enabled) {
-            text_input_release_focus(false);
-            return res;
-        }
-        if (focused_at_entry) {
-            g_text_input_seen_this_pass = true;
-        }
-        if (ui.click) {
-            const bool inside = enabled && ui_hover(ui, r);
-            if (inside && !focused_at_entry) {
-                text_input_release_focus(true); // commit whatever box held it
-                g_text_input_focus = id;
-                // Latch on gain as well as on hold.
-                g_text_input_seen_this_pass = true;
-                res.gained_focus = true;
-            }
-            else if (!inside && focused_at_entry) {
-                text_input_release_focus(true);
-            }
-        }
-        if (focused_at_entry && g_text_input_focus == id) {
-            g_text_input_target = TextInputTarget{&text, max_len, allow_char};
-            res.changed = g_text_input_changed;
-            g_text_input_changed = false;
-        }
-        return res;
-    }
-
-    // Draw pass. Layout is absolute screen space; inside a scroll region the
-    // clip origin has moved the drawing origin, so subtract it like every other
-    // widget does.
-    const Rect d = ui_draw_rect(ui, r);
-    const bool focused = g_text_input_focus == id;
-    rf::gr::set_color(8, 8, 8, 235);
-    rf::gr::rect(d.x, d.y, d.w, d.h);
-    const int border = !enabled ? 80 : (focused ? 220 : 120);
-    rf::gr::set_color(border, border, border, 255);
-    hud_rect_border(d.x, d.y, d.w, d.h, 1);
-    const int pad = std::max(3, scaled(6.0f));
-    const int text_y = d.y + (d.h - rf::gr::get_font_height(font)) / 2;
-    if (text.empty() && !focused) {
-        const int hint_grey = enabled ? 140 : 90;
-        rf::gr::set_color(hint_grey, hint_grey, hint_grey, 255);
-        rf::gr::string(d.x + pad, text_y, hint ? hint : "", font);
-    }
-    else {
-        // Trailing underscore as the caret while typing.
-        const std::string shown = focused ? text + "_" : text;
-        const int text_grey = enabled ? 255 : 120;
-        rf::gr::set_color(text_grey, text_grey, text_grey, 255);
-        rf::gr::string(d.x + pad, text_y,
-            hud_fit_string(shown, d.w - 2 * pad, nullptr, font).c_str(), font);
-    }
-    return res;
-}
-
-// Absolute rect -> coordinates to draw at under the active clip window.
-Rect ui_draw_rect(const PanelUi& ui, const Rect& r)
-{
-    return Rect{r.x - ui.origin_x, r.y - ui.origin_y, r.w, r.h};
 }
 
 Layout compute_layout()
@@ -799,7 +667,7 @@ Layout compute_layout()
     const int clip_w = rf::gr::clip_width();
     const int clip_h = rf::gr::clip_height();
     lo.scale = std::min(clip_w / REF_WIDTH, clip_h / REF_HEIGHT);
-    g_panel_scale = lo.scale;
+    g_ui.set_scale(lo.scale);
 
     // Compact panel that leaves a clear margin at every resolution.
     lo.pw = std::min(scaled(880.0f), clip_w - 80);
@@ -828,326 +696,6 @@ Layout compute_layout()
         lo.ch = lo.row_h;
     }
     return lo;
-}
-
-// Colour conventions on the dark panel: gold for section headers, white for
-// widget labels, light grey for secondary/explanatory text.
-void set_header_color()
-{
-    rf::gr::set_color(255, 215, 0, 255);
-}
-
-void set_text_color(bool enabled, bool hovered)
-{
-    if (!enabled) {
-        rf::gr::set_color(130, 130, 130, 255);
-    }
-    else if (hovered) {
-        rf::gr::set_color(255, 255, 255, 255);
-    }
-    else {
-        rf::gr::set_color(230, 230, 230, 255);
-    }
-}
-
-void draw_label(const PanelUi& ui, const Rect& r, const char* text, int font,
-                bool secondary = false)
-{
-    if (secondary) {
-        rf::gr::set_color(210, 210, 210, 255);
-    }
-    else {
-        rf::gr::set_color(255, 255, 255, 255);
-    }
-    const Rect d = ui_draw_rect(ui, r);
-    rf::gr::string(d.x, d.y, text, font);
-}
-
-// A flat clickable box. Returns true only in the hit-test pass, on a click.
-bool ui_button(PanelUi& ui, const Rect& r, const char* text, int font, bool enabled = true,
-               bool active = false)
-{
-    const bool hovered = enabled && ui_hover(ui, r);
-    if (ui.draw) {
-        const Rect d = ui_draw_rect(ui, r);
-        // Active reuses the green the listbox selection and checkbox ticks use.
-        if (active) {
-            rf::gr::set_color(hovered ? 50 : 35, hovered ? 115 : 90, hovered ? 80 : 60, 255);
-        }
-        else {
-            rf::gr::set_color(hovered ? 70 : 45, hovered ? 70 : 45, hovered ? 70 : 45, 255);
-        }
-        rf::gr::rect(d.x, d.y, d.w, d.h);
-        if (active) {
-            rf::gr::set_color(120, 230, 120, 255);
-        }
-        else {
-            rf::gr::set_color(enabled ? 150 : 100, enabled ? 150 : 100, enabled ? 150 : 100, 255);
-        }
-        hud_rect_border(d.x, d.y, d.w, d.h, 1);
-        if (active) {
-            rf::gr::set_color(255, 255, 255, 255);
-        }
-        else {
-            set_text_color(enabled, hovered);
-        }
-        rf::gr::string_aligned(rf::gr::ALIGN_CENTER, d.x + d.w / 2,
-            d.y + (d.h - rf::gr::get_font_height(font)) / 2, text, font);
-        return false;
-    }
-    return hovered && ui.click;
-}
-
-bool ui_checkbox(PanelUi& ui, const Rect& r, bool checked, const char* text, int font,
-                 bool enabled = true)
-{
-    const bool hovered = enabled && ui_hover(ui, r);
-    if (ui.draw) {
-        const Rect d = ui_draw_rect(ui, r);
-        const int box = std::min(d.h - 2, rf::gr::get_font_height(font));
-        const int by = d.y + (d.h - box) / 2;
-        rf::gr::set_color(hovered ? 70 : 45, hovered ? 70 : 45, hovered ? 70 : 45, 255);
-        rf::gr::rect(d.x, by, box, box);
-        rf::gr::set_color(enabled ? 170 : 100, enabled ? 170 : 100, enabled ? 170 : 100, 255);
-        hud_rect_border(d.x, by, box, box, 1);
-        if (checked) {
-            // Muted tick for a pinned/non-interactive checkbox.
-            if (enabled) {
-                rf::gr::set_color(120, 230, 120, 255);
-            }
-            else {
-                rf::gr::set_color(85, 135, 85, 255);
-            }
-            rf::gr::rect(d.x + 2, by + 2, box - 4, box - 4);
-        }
-        set_text_color(enabled, hovered);
-        rf::gr::string(d.x + box + std::max(3, scaled(5.0f)),
-            d.y + (d.h - rf::gr::get_font_height(font)) / 2, text, font);
-        return false;
-    }
-    return hovered && ui.click;
-}
-
-int ui_cycler_arrow_width()
-{
-    return std::max(10, scaled(16.0f));
-}
-
-// Space the cycler has for its value text, between the two arrows.
-int ui_cycler_value_width(const Rect& r)
-{
-    return std::max(0, r.w - 2 * ui_cycler_arrow_width());
-}
-
-// Middle-truncate so both ends of a long name stay readable.
-std::string fit_middle(std::string_view text, int max_w, int font)
-{
-    if (text.empty() || rf::gr::get_string_size(text, font).first <= max_w) {
-        return std::string{text};
-    }
-    for (size_t keep = text.size(); keep > 0; --keep) {
-        const size_t left = (keep + 1) / 2;
-        const size_t right = keep - left;
-        std::string candidate{text.substr(0, left)};
-        candidate += "...";
-        candidate += std::string{text.substr(text.size() - right, right)};
-        if (rf::gr::get_string_size(candidate, font).first <= max_w) {
-            return candidate;
-        }
-    }
-    return std::string{"..."};
-}
-
-// Fake cycler: "< value >" with clickable arrows. Returns -1, 0 or +1.
-int ui_cycler(PanelUi& ui, const Rect& r, const char* value, int font)
-{
-    const int arrow_w = ui_cycler_arrow_width();
-    const Rect left{r.x, r.y, arrow_w, r.h};
-    const Rect right{r.x + r.w - arrow_w, r.y, arrow_w, r.h};
-    const Rect middle{r.x + arrow_w, r.y, r.w - 2 * arrow_w, r.h};
-
-    const bool hover_left = ui_hover(ui, left);
-    const bool hover_right = ui_hover(ui, right);
-    const bool hover_mid = ui_hover(ui, middle);
-
-    if (ui.draw) {
-        const Rect d = ui_draw_rect(ui, r);
-        const Rect dl = ui_draw_rect(ui, left);
-        const Rect dr = ui_draw_rect(ui, right);
-        const Rect dm = ui_draw_rect(ui, middle);
-
-        rf::gr::set_color(hover_mid ? 70 : 45, hover_mid ? 70 : 45, hover_mid ? 70 : 45, 255);
-        rf::gr::rect(d.x, d.y, d.w, d.h);
-        rf::gr::set_color(150, 150, 150, 255);
-        hud_rect_border(d.x, d.y, d.w, d.h, 1);
-
-        const int text_y = d.y + (d.h - rf::gr::get_font_height(font)) / 2;
-        set_text_color(true, hover_left);
-        rf::gr::string_aligned(rf::gr::ALIGN_CENTER, dl.x + dl.w / 2, text_y, "<", font);
-        set_text_color(true, hover_right);
-        rf::gr::string_aligned(rf::gr::ALIGN_CENTER, dr.x + dr.w / 2, text_y, ">", font);
-
-        set_text_color(true, hover_mid);
-        if (ui.clip_active) {
-            // Already inside a scroll region's clip window, and set_clip replaces
-            // rather than nests, so rely on that clip plus the caller's
-            // fit_middle() sizing instead of narrowing to the value box here.
-            rf::gr::string_aligned(rf::gr::ALIGN_CENTER, dm.x + dm.w / 2,
-                dm.y + (dm.h - rf::gr::get_font_height(font)) / 2, value, font);
-        }
-        else {
-            int save_x = 0, save_y = 0, save_w = 0, save_h = 0;
-            rf::gr::get_clip(&save_x, &save_y, &save_w, &save_h);
-            rf::gr::set_clip(dm.x, dm.y, dm.w, dm.h);
-            // set_clip moved the drawing origin, so draw relative to the clip window.
-            rf::gr::string_aligned(rf::gr::ALIGN_CENTER, dm.w / 2,
-                (dm.h - rf::gr::get_font_height(font)) / 2, value, font);
-            rf::gr::set_clip(save_x, save_y, save_w, save_h);
-        }
-        return 0;
-    }
-
-    // Right-click anywhere on the widget steps backwards, so a value can be
-    // walked either way without aiming for the small left arrow.
-    if (ui.rclick && (hover_left || hover_right || hover_mid)) {
-        return -1;
-    }
-    if (!ui.click) {
-        return 0;
-    }
-    if (hover_left) {
-        return -1;
-    }
-    if (hover_right || hover_mid) {
-        return 1;
-    }
-    return 0;
-}
-
-// Row pitch of ui_listbox, shared so a caller can turn a row index into the
-// scroll offset that brings that row to the top of the window.
-int ui_listbox_row_height(int font)
-{
-    return rf::gr::get_font_height(font) + 2;
-}
-
-// Scrolling list. Returns the clicked index in the hit-test pass, else -1.
-int ui_listbox(PanelUi& ui, const Rect& r, const std::vector<std::string>& items, int sel,
-               float& scroll, int font)
-{
-    const int row_h = ui_listbox_row_height(font);
-    const int total_h = static_cast<int>(items.size()) * row_h;
-    const float max_scroll = static_cast<float>(std::max(0, total_h - r.h));
-    const bool inside = point_in(ui.mx, ui.my, r);
-
-    if (!ui.draw && inside && ui.wheel != 0) {
-        scroll += (ui.wheel > 0 ? -1.0f : 1.0f) * static_cast<float>(row_h * 3);
-    }
-    scroll = std::clamp(scroll, 0.0f, max_scroll);
-
-    if (!ui.draw) {
-        if (inside && ui.click) {
-            const int index = (ui.my - r.y + static_cast<int>(scroll)) / row_h;
-            if (index >= 0 && index < static_cast<int>(items.size())) {
-                return index;
-            }
-        }
-        return -1;
-    }
-
-    rf::gr::set_color(8, 8, 8, 235);
-    rf::gr::rect(r.x, r.y, r.w, r.h);
-    rf::gr::set_color(120, 120, 120, 255);
-    hud_rect_border(r.x, r.y, r.w, r.h, 1);
-
-    int save_x = 0, save_y = 0, save_w = 0, save_h = 0;
-    rf::gr::get_clip(&save_x, &save_y, &save_w, &save_h);
-    rf::gr::set_clip(r.x, r.y, r.w, r.h);
-    for (int i = 0; i < static_cast<int>(items.size()); ++i) {
-        const int iy = r.y + i * row_h - static_cast<int>(scroll);
-        if (iy + row_h < r.y || iy > r.y + r.h) {
-            continue;
-        }
-        // Drawing coords are relative to the clip window origin.
-        const int dy = iy - r.y;
-        const bool hovered = inside && ui.my >= iy && ui.my < iy + row_h;
-        if (i == sel) {
-            rf::gr::set_color(35, 90, 60, 255);
-            rf::gr::rect(0, dy, r.w, row_h);
-        }
-        else if (hovered) {
-            rf::gr::set_color(70, 70, 70, 255);
-            rf::gr::rect(0, dy, r.w, row_h);
-        }
-        if (i == sel) {
-            rf::gr::set_color(160, 255, 190, 255);
-        }
-        else {
-            rf::gr::set_color(hovered ? 255 : 230, hovered ? 255 : 230, hovered ? 255 : 230, 255);
-        }
-        rf::gr::string(3, dy + 1, items[i].c_str(), font);
-    }
-    rf::gr::set_clip(save_x, save_y, save_w, save_h);
-
-    if (max_scroll > 0.0f) {
-        const float ratio = scroll / max_scroll;
-        const int bar_w = std::max(3, scaled(6.0f));
-        const int bar_h = std::max(bar_w, r.h * r.h / std::max(1, total_h));
-        const int bar_y = r.y + static_cast<int>(ratio * (r.h - bar_h));
-        rf::gr::set_color(100, 255, 200, 255);
-        rf::gr::rect(r.x + r.w - bar_w, bar_y, bar_w, bar_h);
-    }
-    return -1;
-}
-
-std::vector<std::string> wrap_text(std::string_view text, int max_w, int font)
-{
-    std::vector<std::string> lines;
-    std::string current;
-    size_t pos = 0;
-    while (pos <= text.size()) {
-        const size_t space = text.find(' ', pos);
-        const std::string_view word = text.substr(pos, space == std::string_view::npos ? std::string_view::npos
-                                                                                       : space - pos);
-        std::string candidate = current.empty() ? std::string{word} : current + " " + std::string{word};
-        if (!current.empty() && rf::gr::get_string_size(candidate, font).first > max_w) {
-            lines.push_back(current);
-            current = std::string{word};
-        }
-        else {
-            current = std::move(candidate);
-        }
-        if (space == std::string_view::npos) {
-            break;
-        }
-        pos = space + 1;
-    }
-    if (!current.empty()) {
-        lines.push_back(current);
-    }
-    return lines;
-}
-
-void draw_wrapped(const Rect& r, std::string_view text, int font, int line_h)
-{
-    const int max_lines = std::max(1, r.h / line_h);
-    auto lines = wrap_text(text, r.w, font);
-    if (static_cast<int>(lines.size()) > max_lines) {
-        // Mark the cut so an over-long paragraph never just stops mid-sentence.
-        lines.resize(max_lines);
-        std::string& last = lines.back();
-        while (!last.empty() && rf::gr::get_string_size(last + "...", font).first > r.w) {
-            last.pop_back();
-        }
-        last += "...";
-    }
-
-    int y = r.y;
-    rf::gr::set_color(215, 215, 215, 255);
-    for (const auto& line : lines) {
-        rf::gr::string(r.x, y, line.c_str(), font);
-        y += line_h;
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1374,7 +922,7 @@ void build_form(const VoteOptionsData& options)
     g_form.manual_level_name.clear();
     g_form.team_size = 4;
     g_form.extend_minutes = af_vote_extend_default_minutes;
-    g_form.description_mutator = -1;
+    g_ui.description().id = -1;
     g_form.level_scroll = 0.0f;
     g_form.kick_scroll = 0.0f;
     g_form.mutator_scroll = 0.0f;
@@ -1609,12 +1157,12 @@ PanelMode compute_mode()
 
 void play_click_sound()
 {
-    rf::snd_play(stock_sound_id::panel_button_click, 0, 0.0f, 1.0f);
+    ui_play_click();
 }
 
 void play_toggle_sound(bool on)
 {
-    rf::snd_play(on ? stock_sound_id::checkbox_off : stock_sound_id::checkbox_on, 0, 0.0f, 1.0f);
+    ui_play_toggle(on);
 }
 
 // ---------------------------------------------------------------------------
@@ -1689,62 +1237,6 @@ std::vector<std::string> saved_vote_printout(const SavedVote& vote, const VoteOp
         }
     }
     return lines;
-}
-
-// Height draw_line_block needs for these lines at this width, never more than max_h.
-int line_block_height(const std::vector<std::string>& lines, int max_w, int font, int line_h, int max_h)
-{
-    const int max_lines = std::max(1, max_h / line_h);
-    int count = 0;
-    for (const auto& line : lines) {
-        count += std::max(1, static_cast<int>(wrap_text(line, max_w, font).size()));
-        if (count >= max_lines) {
-            return max_lines * line_h;
-        }
-    }
-    return count * line_h;
-}
-
-// Pre-split lines, each wrapped, cut off at the rect's height with an ellipsis
-// line - the same convention as draw_wrapped, which only takes one paragraph.
-void draw_line_block(const Rect& r, const std::vector<std::string>& lines, int font, int line_h,
-                     int red, int green, int blue)
-{
-    const int max_lines = std::max(1, r.h / line_h);
-    std::vector<std::string> out;
-    bool truncated = false;
-    for (const auto& line : lines) {
-        auto wrapped = wrap_text(line, r.w, font);
-        if (wrapped.empty()) {
-            wrapped.emplace_back(); // a blank line stays a blank line
-        }
-        for (auto& piece : wrapped) {
-            if (static_cast<int>(out.size()) >= max_lines) {
-                truncated = true;
-                break;
-            }
-            out.push_back(std::move(piece));
-        }
-        if (truncated) {
-            break;
-        }
-    }
-    if (truncated && !out.empty()) {
-        std::string& last = out.back();
-        while (!last.empty() && rf::gr::get_string_size(last + "...", font).first > r.w) {
-            last.pop_back();
-        }
-        last += "...";
-    }
-
-    int y = r.y;
-    rf::gr::set_color(red, green, blue, 255);
-    for (const auto& line : out) {
-        // wrap_text can only break on spaces, so a single long token (a level file
-        // name is one) stays over-wide, and nothing clips this block.
-        rf::gr::string(r.x, y, fit_middle(line, r.w, font).c_str(), font);
-        y += line_h;
-    }
 }
 
 // Load a saved vote back into the form for editing. Unlike calling one, this is
@@ -1896,7 +1388,7 @@ void load_saved_vote_into_form(const SavedVote& vote, const VoteOptionsData& opt
 
 // Saved-vote list. The look is ui_listbox's, plus a per-row delete zone pinned to
 // the right edge; a click there deletes and deliberately does NOT select.
-void do_saved_list(PanelUi& ui, const Layout& lo, const Rect& r)
+void do_saved_list(UiContext& ui, const Layout& lo, const Rect& r)
 {
     if (!ui.draw) {
         g_saved_hovered = -1;
@@ -2057,7 +1549,7 @@ void do_saved_list(PanelUi& ui, const Layout& lo, const Rect& r)
     }
 }
 
-void do_saved_preview(PanelUi& ui, const Layout& lo, const Rect& pane, const VoteOptionsData* options, PanelMode mode)
+void do_saved_preview(UiContext& ui, const Layout& lo, const Rect& pane, const VoteOptionsData* options, PanelMode mode)
 {
     const auto& store = saved_votes_get();
     const int line_h = rf::gr::get_font_height(lo.font) + 1;
@@ -2124,7 +1616,7 @@ void do_saved_preview(PanelUi& ui, const Layout& lo, const Rect& pane, const Vot
     }
 }
 
-void do_saved_tab(PanelUi& ui, const Layout& lo, const Rect& content, const VoteOptionsData* options,
+void do_saved_tab(UiContext& ui, const Layout& lo, const Rect& content, const VoteOptionsData* options,
                   PanelMode mode)
 {
     // Availability for every entry.
@@ -2391,7 +1883,7 @@ void begin_save_from_form(const VoteOptionsData& options)
     rf::ui::popup_message("Name this saved vote:", "", saved_vote_name_popup_callback, 1);
 }
 
-void do_message_block(PanelUi& ui, const Layout& lo, const std::vector<std::string>& lines)
+void do_message_block(UiContext& ui, const Layout& lo, const std::vector<std::string>& lines)
 {
     if (!ui.draw) {
         return;
@@ -2430,7 +1922,7 @@ int mutator_content_height(const Layout& lo, const VoteOptionsData& options, uin
 // One mutator checkbox plus, when it is checked, its option widgets indented
 // underneath. Rects are absolute screen space with the scroll offset already
 // applied by the caller; rows outside `view` are neither drawn nor hit-tested.
-void do_mutator_rows(PanelUi& ui, const Layout& lo, const VoteOptionsData& options,
+void do_mutator_rows(UiContext& ui, const Layout& lo, const VoteOptionsData& options,
                      const Rect& view, int start_y, uint8_t game_type)
 {
     const int indent = std::max(8, scaled(16.0f));
@@ -2453,17 +1945,12 @@ void do_mutator_rows(PanelUi& ui, const Layout& lo, const VoteOptionsData& optio
             // Hovering still describes an unavailable mutator.
             if (!ui.draw && ui_hover(ui, row)) {
                 // A toggle pins its description until the next hover.
-                if (g_form.description_mutator != static_cast<int>(i)) {
-                    g_description_pinned = false;
-                }
-                g_form.description_mutator = static_cast<int>(i);
-                g_hovered_mutator_this_pass = true;
+                g_ui.description().hover(static_cast<int>(i));
             }
             if (ui_checkbox(ui, row, selection.enabled, schema.label.c_str(), lo.font, offered)) {
                 selection.enabled = !selection.enabled;
                 g_form.mutators_touched = true; // the form is the player's from here on
-                g_form.description_mutator = static_cast<int>(i);
-                g_description_pinned = true;
+                g_ui.description().pin(static_cast<int>(i));
                 play_toggle_sound(selection.enabled);
             }
         }
@@ -2536,12 +2023,12 @@ void do_mutator_rows(PanelUi& ui, const Layout& lo, const VoteOptionsData& optio
                     const Rect value_rect{opt_row.x + label_w, opt_row.y, opt_row.w - label_w, lo.row_h};
                     // Inline edit.
                     const uint32_t input_id = text_input_id_for_option(schema.id, option.id);
-                    const bool editing = g_text_input_focus == input_id;
+                    const bool editing = g_ui.focused_text_id() == input_id;
                     std::string display = option.type == MutatorOptionType::Int
                         ? std::format("{}", value.int_value)
                         : std::format("{:.2f}", value.float_value);
                     const TextInputResult res = ui_text_input(ui, value_rect, input_id,
-                        editing ? g_text_input_buffer : display, 15, text_input_char_numeric,
+                        editing ? g_ui.text_buffer() : display, 15, ui_char_filter_numeric,
                         nullptr, lo.font);
                     if (res.gained_focus) {
                         // Indices, not positions, so scrolling can't misdirect the
@@ -2551,9 +2038,17 @@ void do_mutator_rows(PanelUi& ui, const Layout& lo, const VoteOptionsData& optio
                         g_popup_mutator_id = schema.id;
                         g_popup_option_id = option.id;
                         // Seed without trailing zeros: "30", not "30.00".
-                        g_text_input_buffer = option.type == MutatorOptionType::Int
+                        g_ui.text_buffer() = option.type == MutatorOptionType::Int
                             ? std::format("{}", value.int_value)
                             : std::format("{:g}", value.float_value);
+                        // The write-back target lives in the globals above; the context only
+                        // knows when the edit ends.
+                        g_ui.set_text_commit_callback([](bool commit) {
+                            if (commit) {
+                                commit_numeric_text_input();
+                            }
+                            clear_popup_target();
+                        });
                         // Marked on focus rather than on commit: the box owns the
                         // value from here, and it must not be re-derived underneath.
                         g_form.mutators_touched = true;
@@ -2573,71 +2068,29 @@ void do_mutator_rows(PanelUi& ui, const Layout& lo, const VoteOptionsData& optio
 // Mutator list as a clipped scroll region. When the content fits, nothing is
 // clipped, no scrollbar is drawn and the wheel is left alone, so the layout is
 // identical to what it was before scrolling existed.
-void do_mutator_scroll_region(PanelUi& ui, const Layout& lo, const VoteOptionsData& options,
+void do_mutator_scroll_region(UiContext& ui, const Layout& lo, const VoteOptionsData& options,
                               const Rect& view, uint8_t game_type)
 {
     if (!ui.draw) {
-        g_hovered_mutator_this_pass = false;
+        g_ui.description().begin_pass();
     }
     const int content_h = mutator_content_height(lo, options, game_type);
-    const float max_scroll = static_cast<float>(std::max(0, content_h - view.h));
 
-    if (!ui.draw && max_scroll > 0.0f && ui.wheel != 0 && point_in(ui.mx, ui.my, view)) {
-        g_form.mutator_scroll += (ui.wheel > 0 ? -1.0f : 1.0f) * static_cast<float>(lo.row_h * 3);
-    }
-    // Also clamps after a mutator collapses and the content shrinks.
-    g_form.mutator_scroll = std::clamp(g_form.mutator_scroll, 0.0f, max_scroll);
+    UiScrollRegion region =
+        ui_scroll_begin(ui, view, content_h, g_form.mutator_scroll, lo.row_h * 3);
 
-    const int start_y = view.y - static_cast<int>(g_form.mutator_scroll);
-
-    // Gate hit-testing on the viewport in both passes so rows scrolled out of
-    // sight can never be clicked.
-    const Rect saved_clip_rect = ui.clip_rect;
-    const bool saved_clip_active = ui.clip_active;
-    const int saved_origin_x = ui.origin_x;
-    const int saved_origin_y = ui.origin_y;
-    ui.clip_rect = view;
-    ui.clip_active = true;
-
-    int save_x = 0, save_y = 0, save_w = 0, save_h = 0;
-    if (ui.draw) {
-        rf::gr::get_clip(&save_x, &save_y, &save_w, &save_h);
-        rf::gr::set_clip(view.x, view.y, view.w, view.h);
-        // set_clip moves the drawing origin; widgets subtract it via ui_draw_rect.
-        ui.origin_x = view.x;
-        ui.origin_y = view.y;
-    }
-
-    do_mutator_rows(ui, lo, options, view, start_y, game_type);
+    do_mutator_rows(ui, lo, options, view, region.start_y(), game_type);
 
     // Hovering away clears the description unless the mutator was toggled (a
     // deliberate click keeps its description pinned).
-    if (!ui.draw && !g_hovered_mutator_this_pass && !g_description_pinned) {
-        g_form.description_mutator = -1;
+    if (!ui.draw) {
+        g_ui.description().end_pass();
     }
 
-    if (ui.draw) {
-        rf::gr::set_clip(save_x, save_y, save_w, save_h);
-    }
-
-    ui.clip_rect = saved_clip_rect;
-    ui.clip_active = saved_clip_active;
-    ui.origin_x = saved_origin_x;
-    ui.origin_y = saved_origin_y;
-
-    // Scrollbar, drawn after the clip is restored so it uses absolute coords
-    // (same constants as the level/player listboxes).
-    if (ui.draw && max_scroll > 0.0f) {
-        const float ratio = g_form.mutator_scroll / max_scroll;
-        const int bar_w = std::max(3, scaled(6.0f));
-        const int bar_h = std::max(bar_w, view.h * view.h / std::max(1, content_h));
-        const int bar_y = view.y + static_cast<int>(ratio * (view.h - bar_h));
-        rf::gr::set_color(100, 255, 200, 255);
-        rf::gr::rect(view.x + view.w - bar_w, bar_y, bar_w, bar_h);
-    }
+    ui_scroll_end(ui, region);
 }
 
-void do_level_column(PanelUi& ui, const Layout& lo, const VoteOptionsData& options, const Rect& col,
+void do_level_column(UiContext& ui, const Layout& lo, const VoteOptionsData& options, const Rect& col,
                      bool is_match, uint8_t gametype)
 {
     const int header_h = rf::gr::get_font_height(lo.font);
@@ -2673,7 +2126,7 @@ void do_level_column(PanelUi& ui, const Layout& lo, const VoteOptionsData& optio
     {
         const Rect box{col.x, y, col.w, lo.row_h};
         const TextInputResult res = ui_text_input(ui, box, kTextInputLevelFilter,
-            g_level_filter_text, LEVEL_FILTER_MAX_LEN, text_input_char_filename,
+            g_level_filter_text, LEVEL_FILTER_MAX_LEN, ui_char_filter_filename,
             "Click to filter maps...", lo.font);
         if (res.gained_focus) {
             play_click_sound();
@@ -2899,7 +2352,7 @@ void do_level_column(PanelUi& ui, const Layout& lo, const VoteOptionsData& optio
     // Inline, same widget as the filter box.
     // Greyed and non-focusable until the checkbox above enables manual entry.
     const TextInputResult manual_res = ui_text_input(ui, manual_value, kTextInputManualLevel,
-        g_form.manual_level_name, 31, text_input_char_filename,
+        g_form.manual_level_name, 31, ui_char_filter_filename,
         "(click to type a level name)", lo.font, g_form.manual_level);
     if (manual_res.gained_focus) {
         play_click_sound();
@@ -2907,27 +2360,12 @@ void do_level_column(PanelUi& ui, const Layout& lo, const VoteOptionsData& optio
 }
 
 // Close button in the panel's top-right corner, drawn in every mode.
-bool do_close_button(PanelUi& ui, const Layout& lo)
+bool do_close_button(UiContext& ui, const Layout& lo)
 {
     const int size = std::max(14, scaled(30.0f));
     const int inset = std::max(6, scaled(12.0f));
     const Rect r{lo.px + lo.pw - inset - size, lo.py + inset, size, size};
-    const bool hovered = ui_hover(ui, r);
-
-    if (ui.draw) {
-        const Rect d = ui_draw_rect(ui, r);
-        rf::gr::set_color(hovered ? 150 : 45, hovered ? 40 : 45, hovered ? 40 : 45, 255);
-        rf::gr::rect(d.x, d.y, d.w, d.h);
-        rf::gr::set_color(hovered ? 220 : 150, hovered ? 120 : 150, hovered ? 120 : 150, 255);
-        hud_rect_border(d.x, d.y, d.w, d.h, 1);
-        set_text_color(true, hovered);
-        // A plain "X".
-        rf::gr::string_aligned(rf::gr::ALIGN_CENTER, d.x + d.w / 2,
-            d.y + (d.h - rf::gr::get_font_height(lo.font)) / 2, "X", lo.font);
-        return false;
-    }
-
-    if (hovered && ui.click) {
+    if (ui_close_button(ui, r, lo.font)) {
         vote_panel_close();
         play_click_sound();
         return true;
@@ -2936,7 +2374,7 @@ bool do_close_button(PanelUi& ui, const Layout& lo)
 }
 
 // Tab row across the top: "Saved" first, then one button per enabled vote type.
-int do_tab_row(PanelUi& ui, const Layout& lo, const std::vector<VoteTab>& tabs)
+int do_tab_row(UiContext& ui, const Layout& lo, const std::vector<VoteTab>& tabs)
 {
     // One uniform width sized to the widest label, "Saved" included, keeps the
     // grid aligned; the content below starts under however many rows that makes.
@@ -2995,7 +2433,7 @@ int do_tab_row(PanelUi& ui, const Layout& lo, const std::vector<VoteTab>& tabs)
 
 // The Rotation tab: pick one of the enabled rotation votes, decide whether the
 // session's voted rules ride along, read what the pick does.
-void do_rotation_form(PanelUi& ui, const Layout& lo, const VoteOptionsData& options,
+void do_rotation_form(UiContext& ui, const Layout& lo, const VoteOptionsData& options,
                       const VoteTab& tab, int y)
 {
     const int font_h = rf::gr::get_font_height(lo.font);
@@ -3041,7 +2479,7 @@ void do_rotation_form(PanelUi& ui, const Layout& lo, const VoteOptionsData& opti
     }
 }
 
-void do_form(PanelUi& ui, const Layout& lo, const VoteOptionsData& options,
+void do_form(UiContext& ui, const Layout& lo, const VoteOptionsData& options,
              const std::vector<VoteTab>& tabs, int content_y)
 {
     // The level key only matters on a server too old to push an active set.
@@ -3133,12 +2571,17 @@ void do_form(PanelUi& ui, const Layout& lo, const VoteOptionsData& options,
         }
         const Rect value_rect{lo.cx + label_w, y, value_w, lo.row_h};
         // Inline edit, same idiom as the mutator Int/Float boxes.
-        const bool editing = g_text_input_focus == kTextInputExtendMinutes;
+        const bool editing = g_ui.focused_text_id() == kTextInputExtendMinutes;
         std::string display = std::format("{}", g_form.extend_minutes);
         const TextInputResult res = ui_text_input(ui, value_rect, kTextInputExtendMinutes,
-            editing ? g_text_input_buffer : display, 2, text_input_char_digit, nullptr, lo.font);
+            editing ? g_ui.text_buffer() : display, 2, ui_char_filter_digit, nullptr, lo.font);
         if (res.gained_focus) {
-            g_text_input_buffer = std::format("{}", g_form.extend_minutes);
+            g_ui.text_buffer() = std::format("{}", g_form.extend_minutes);
+            g_ui.set_text_commit_callback([](bool commit) {
+                if (commit) {
+                    commit_extend_minutes_text_input();
+                }
+            });
             play_click_sound();
         }
         y += lo.row_h + lo.gap * 2;
@@ -3313,15 +2756,15 @@ void do_form(PanelUi& ui, const Layout& lo, const VoteOptionsData& options,
     if (ui.draw) {
         const Rect desc{right_col.x, right_col.y + right_col.h - desc_h, right_col.w, desc_h};
         const char* text = "Hover or toggle a mutator to read what it does.";
-        if (g_form.description_mutator >= 0
-            && g_form.description_mutator < static_cast<int>(options.mutators.size())) {
-            text = mutator_description_for(options.mutators[g_form.description_mutator].name);
+        const int described = g_ui.description().id;
+        if (described >= 0 && described < static_cast<int>(options.mutators.size())) {
+            text = mutator_description_for(options.mutators[described].name);
         }
         draw_wrapped(desc, text, lo.font, desc_line_h);
     }
 }
 
-void vote_panel_do(PanelUi& ui)
+void vote_panel_do(UiContext& ui)
 {
     const Layout lo = compute_layout();
 
@@ -3492,46 +2935,6 @@ void drain_bound_key_counters()
     }
 }
 
-// Fold the recorded keys into the focused box, in arrival order. Must run at the TOP
-// of the hit-test pass so both passes of the frame read the same string.
-void apply_pending_text_input()
-{
-    if (g_text_input_pending.empty()) {
-        return;
-    }
-    std::vector<PendingTextKey> queue;
-    queue.swap(g_text_input_pending);
-
-    for (const PendingTextKey& pending : queue) {
-        if (g_text_input_focus == 0) {
-            break; // an ESC or ENTER earlier in the burst ended the edit
-        }
-        std::string* const text = g_text_input_target.text;
-        switch (pending.kind) {
-            case PendingTextKey::Kind::Escape:
-                text_input_release_focus(false);
-                play_click_sound();
-                break;
-            case PendingTextKey::Kind::Enter:
-                text_input_release_focus(true);
-                break;
-            case PendingTextKey::Kind::Backspace:
-                if (text && !text->empty()) {
-                    text->pop_back();
-                    g_text_input_changed = true;
-                }
-                break;
-            case PendingTextKey::Kind::Char:
-                if (text && g_text_input_target.allow_char(pending.c)
-                    && text->size() < g_text_input_target.max_len) {
-                    text->push_back(pending.c);
-                    g_text_input_changed = true;
-                }
-                break;
-        }
-    }
-}
-
 void vote_panel_gameplay_input()
 {
     if (!g_open) {
@@ -3558,11 +2961,9 @@ void vote_panel_gameplay_input()
 
     // The console reads the same key queue this panel's text boxes drain, so a
     // focused box would type into both at once.
-    if (rf::console::console_is_visible() && g_text_input_focus != 0) {
+    if (rf::console::console_is_visible() && g_ui.focused_text_id() != 0) {
         text_input_release_focus(true);
     }
-
-    apply_pending_text_input();
 
     // Read the wheel accumulator before touching the mouse API.
     const int wheel = rf::mouse_dz;
@@ -3570,21 +2971,14 @@ void vote_panel_gameplay_input()
     int x = 0, y = 0, z = 0;
     rf::mouse_get_pos(x, y, z);
 
-    PanelUi ui;
-    ui.draw = false;
-    ui.mx = x;
-    ui.my = y;
-    ui.click = rf::mouse_was_button_pressed(0) != 0;
-    ui.rclick = rf::mouse_was_button_pressed(1) != 0;
-    ui.wheel = wheel;
-    g_text_input_seen_this_pass = false;
-    vote_panel_do(ui);
-    // A pass that never reached the focused box (tab switch, collapsed mutator,
-    // scrolled-away row) commits and drops it, so the blanket control veto
-    // cannot persist without a visible box.
-    if (g_text_input_focus != 0 && !g_text_input_seen_this_pass) {
-        text_input_release_focus(true);
-    }
+    g_ui.begin_frame(x, y, wheel, rf::mouse_button_is_down(0),
+        rf::mouse_was_button_pressed(0) != 0, rf::mouse_was_button_pressed(1) != 0);
+    // Folds in the keys the callback recorded between the frame's two passes.
+    g_ui.begin_pass(UiPass::HitTest);
+    vote_panel_do(g_ui);
+    // Commits and drops a focus no box claimed this pass (tab switch, collapsed mutator,
+    // scrolled-away row), so the blanket control veto cannot persist without a visible box.
+    g_ui.end_pass();
 }
 
 void vote_panel_gameplay_render()
@@ -3603,11 +2997,10 @@ void vote_panel_gameplay_render()
     int x = 0, y = 0, z = 0;
     rf::mouse_get_pos(x, y, z);
 
-    PanelUi ui;
-    ui.draw = true;
-    ui.mx = x;
-    ui.my = y;
-    vote_panel_do(ui);
+    g_ui.set_mouse_pos(x, y);
+    g_ui.begin_pass(UiPass::Draw);
+    vote_panel_do(g_ui);
+    g_ui.end_pass();
 
     rf::gr::reset_clip();
 
@@ -3634,41 +3027,15 @@ CallHook<rf::GameState()> gameseq_process_hook{
 };
 
 // A focused panel box takes precedence, everything else passes straight through. Keys
-// are only RECORDED here (see PendingTextKey), but still swallowed, so nothing fires.
+// are only RECORDED here (the context replays them), but still swallowed, so nothing fires.
 FunHook<void(int)> gameplay_key_callback_hook{
     0x004306F0,
     [](int key) {
-        if (key == rf::KEY_NONE || !g_open || g_text_input_focus == 0) {
+        if (key == rf::KEY_NONE || !g_open || g_ui.focused_text_id() == 0) {
             gameplay_key_callback_hook.call_target(key);
             return;
         }
-
-        const auto queue = [](PendingTextKey pending) {
-            if (g_text_input_pending.size() < TEXT_INPUT_PENDING_MAX) {
-                g_text_input_pending.push_back(pending);
-            }
-        };
-
-        const int code = key & rf::KEY_MASK;
-        if (code == rf::KEY_ESC) {
-            queue({PendingTextKey::Kind::Escape, 0});
-            return;
-        }
-        if (code == rf::KEY_ENTER || code == rf::KEY_PADENTER) {
-            queue({PendingTextKey::Kind::Enter, 0});
-            return;
-        }
-        if (!g_text_input_target.text) {
-            return;
-        }
-        if (code == rf::KEY_BACKSP) {
-            queue({PendingTextKey::Kind::Backspace, 0});
-            return;
-        }
-        const int ascii = rf::key_to_ascii(static_cast<int16_t>(key));
-        if (ascii > 0 && ascii < 0x80 && ascii != 0xFF) {
-            queue({PendingTextKey::Kind::Char, static_cast<char>(ascii)});
-        }
+        g_ui.push_key(static_cast<rf::Key>(key));
     },
 };
 
@@ -3700,7 +3067,7 @@ bool gameplay_overlay_blocks_action(rf::ControlConfig* ccp, rf::ControlConfigAct
     if (!rf::local_player || ccp != &rf::local_player->settings.controls) {
         return false;
     }
-    if (g_open && g_text_input_focus != 0) {
+    if (g_open && g_ui.focused_text_id() != 0) {
         return true;
     }
     return action == rf::CC_ACTION_PRIMARY_ATTACK || action == rf::CC_ACTION_SECONDARY_ATTACK;
@@ -3821,7 +3188,7 @@ bool vote_panel_is_gameplay_overlay_active()
 
 bool vote_panel_is_capturing_text()
 {
-    return g_open && g_text_input_focus != 0;
+    return g_open && g_ui.focused_text_id() != 0;
 }
 
 void vote_panel_reset()
@@ -3848,6 +3215,7 @@ void vote_panel_reset()
     g_level_scroll_to_selection = false;
     // The form this edit was writing into is gone with the server.
     text_input_release_focus(false);
+    g_ui.description().id = -1;
     g_level_filter_text.clear();
 }
 
@@ -3871,7 +3239,7 @@ void vote_panel_toggle_gameplay()
 
     ensure_control_veto_registered();
     g_open = true;
-    g_form.description_mutator = -1;
+    g_ui.description().id = -1;
     g_form.mutator_scroll = 0.0f;
     clear_popup_target();
     clear_pending_save();
