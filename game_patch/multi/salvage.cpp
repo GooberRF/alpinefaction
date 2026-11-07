@@ -16,6 +16,7 @@
 #include "scavenger.h"
 #include "awards.h"
 #include "gametype.h"
+#include "powerups.h"
 #include "server_internal.h"
 #include "alpine_packets.h"
 #include "../fflink/afstats_events.h"
@@ -90,15 +91,6 @@ constexpr SalFlagSpawnEntry kSalFlagSpawnPositions[] = {
     { "ctfdarktess.rfl", 8.0f, 3.0f, 48.0f },
     { "CTF-RFU3-Pyramid.rfl", 4.74f, -2.97f, -0.55f },
     { "CTF_TERROR.rfl", -0.63f, -3.0f, -22.0f },
-};
-
-// Priority-ordered item classes considered as the map center.
-constexpr const char* const kSalCenterCandidateClasses[] = {
-    "Multi Damage Amplifier",
-    "Multi Invulnerability",
-    "Multi Super Armor",
-    "shoulder cannon",
-    "Multi Super Health",
 };
 
 int g_salvage_light_handle = -1;
@@ -515,8 +507,8 @@ std::vector<CenterCandidate> collect_center_candidates()
     std::vector<CenterCandidate> out;
     if (!g_salvage_info.bases_known) return out;
 
-    for (int priority = 0; priority < static_cast<int>(std::size(kSalCenterCandidateClasses)); ++priority) {
-        const int type_idx = rf::item_lookup_type(kSalCenterCandidateClasses[priority]);
+    for (int priority = 0; priority < static_cast<int>(std::size(super_item_class_names)); ++priority) {
+        const int type_idx = rf::item_lookup_type(super_item_class_names[priority]);
         if (type_idx < 0) continue;
         for (rf::Item* it = rf::item_list.next; it && it != &rf::item_list; it = it->next) {
             if (it->info_index != type_idx) continue;
@@ -573,7 +565,7 @@ void resolve_flag_spawn_pos()
         g_salvage_info.spawn_orient = best->item->orient;
         g_salvage_info.spawn_known = true;
         xlog::info("salvage: flag spawn from {} '{}' (imbalance {:.2f}) at ({},{},{})",
-            source, kSalCenterCandidateClasses[best->priority], best->imbalance,
+            source, super_item_class_names[best->priority], best->imbalance,
             g_salvage_info.spawn_pos.x, g_salvage_info.spawn_pos.y, g_salvage_info.spawn_pos.z);
         return;
     }

@@ -1163,9 +1163,11 @@ bool try_apply_named_replenish_profile(
         bool is_super;
     };
 
-    static constexpr std::array<NamedProfile, 6> kProfiles{{
+    static constexpr std::array<NamedProfile, 8> kProfiles{{
         {"Multi Super Health", ReplenishItemKind::health, 200, 4, true},
         {"Multi Super Armor", ReplenishItemKind::armor, 200, 5, true},
+        {"Alpine Health Shard", ReplenishItemKind::health, 10, 0, false},
+        {"Alpine Armor Shard", ReplenishItemKind::armor, 10, 0, false},
         {"Suit Repair", ReplenishItemKind::armor, 50, 2, false},
         {"Medical Kit", ReplenishItemKind::health, 50, 1, false},
         {"First Aid Kit", ReplenishItemKind::health, 25, 0, false},

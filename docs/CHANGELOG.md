@@ -51,8 +51,12 @@ Version 1.5.0 (Trillium): Not yet released
 - Add `Rope Emitter` object for ropes, cables, and power lines, with optional decorations
 - Add flames to gib chunks thrown by exploding entities, toggleable with `cl_gibflames`
 - Add `Jetpacks explode` option to the Jetpacks mutator
-- Add `Multi Jetpack` multiplayer powerup item: picking it up gives a jetpack with a full tank for 30 seconds, the same as the Jetpacks mutator; it can be placed in the level editor or added with `item_replacements`, and is not spawned while the Jetpacks mutator is on
-  - Levels that use it can only be joined by Alpine Faction 1.5 or newer clients
+- Add multiplayer powerup items that can be placed in the level editor or added with `item_replacements`
+  - `Alpine Jetpack` gives a jetpack with a full tank for 30 seconds, the same as the Jetpacks mutator, and is not spawned while the Jetpacks mutator is on
+  - `Alpine Haste` makes movement, climbing, swimming, firing, reloading and weapon switching 1.3 times faster and jumps 1.3 times higher for 30 seconds
+  - `Alpine Vampire` heals the holder by the health and armor their hits take from enemy players for 30 seconds, filling health before armor
+  - `Alpine Health Shard` and `Alpine Armor Shard` add 10 health or armor, up to the 200 that `Multi Super Health` and `Multi Super Armor` give, respawn after 10 seconds by default, and also work in single player
+  - Levels that use them can only be joined by Alpine Faction 1.5 or newer clients
 - Ignore `item_replacements` entries whose `replacement` names an unknown item class (an empty `replacement` still removes the item)
 - Add underwater rendering effects — animated caustics, depth-based water fog with a waterline, screen tint/vignette and distortion — with quality levels 0-3 via `r_underwater` (Direct3D 11 renderer only)
 - Extend view distance while submerged at `r_underwater` 2 or higher, up to 4x the liquid visibility, with the extension capped at the normal far clip

@@ -22,6 +22,7 @@
 #include "kill.h"
 #include "kill_attribution.h"
 #include "alpine_packets.h"
+#include "powerups.h"
 #include "server.h"
 #include "demo/demo.h"
 #include "bots/server_bots.h"
@@ -320,17 +321,9 @@ static void apply_humans_vs_bots(AlpineServerConfigRules& r, const toml::table& 
 
 // Delayed Supers: super-tier items start hidden and only begin their normal
 // respawn timer once it first elapses.
-static const char* const DELAYED_SUPERS_ITEMS[] = {
-    "Multi Super Health",
-    "Multi Super Armor",
-    "Multi Invulnerability",
-    "Multi Damage Amplifier",
-    "shoulder cannon",
-};
-
 static void apply_delayed_supers(AlpineServerConfigRules& r, const toml::table& /*opts*/)
 {
-    for (const char* name : DELAYED_SUPERS_ITEMS)
+    for (const char* name : super_item_class_names)
         r.delayed_items.add(name);
 
     // Only delay the rail gun pickup when Super Rail is also active; applied
@@ -1899,7 +1892,7 @@ void mutators_level_init_post()
             // Composed on top of the policy, not instead of it: Vampire removes
             // the standard health/armour pickups from whatever set the policy
             // would otherwise keep.
-            if (m.hide_health_armor_pickups && is_standard_health_or_armor_item(info))
+            if (m.hide_health_armor_pickups && (is_standard_health_or_armor_item(info) || item_type_is_alpine_shard(i)))
                 continue;
 
             if (m.pickup_policy == PickupPolicy::Normal) {
@@ -2041,10 +2034,6 @@ void mutators_on_pvp_damage(rf::Player* attacker, rf::Player* victim, float effe
     if (!rf::is_server || !rf::is_multi)
         return;
 
-    const auto& m = g_alpine_server_config_active_rules.mutators;
-    if (!m.vampire_enabled)
-        return;
-
     // Prevent Vampire healing from self damage.
     if (!attacker || !victim || attacker == victim)
         return;
@@ -2060,11 +2049,18 @@ void mutators_on_pvp_damage(rf::Player* attacker, rf::Player* victim, float effe
     if (!ep || !ep->info || rf::entity_is_dying(ep))
         return;
 
+    // The Vampire powerup is full lifesteal, which no mutator ratio exceeds.
+    const auto& m = g_alpine_server_config_active_rules.mutators;
+    const float heal_ratio = powerup_is_active(ep, AlpinePowerup::vampire) ? VAMPIRE_FULL_LIFESTEAL_RATIO
+        : m.vampire_enabled ? m.vampire_heal_ratio : 0.0f;
+    if (!(heal_ratio > 0.0f))
+        return;
+
     const float max_life_limit = std::max(ep->life, ep->info->max_life);
     const float max_armor_limit = std::max(ep->armor, ep->info->max_armor);
 
     // Same logic effective health kill reward uses.
-    distribute_effective_health(ep, effective_damage * m.vampire_heal_ratio, max_life_limit, max_armor_limit);
+    distribute_effective_health(ep, effective_damage * heal_ratio, max_life_limit, max_armor_limit);
 }
 
 // Super Drain tick: one global timer drains every alive player's health and
@@ -2397,6 +2393,7 @@ static const char* const FLAME_EXTINGUISH_HEALTH_ITEMS[] = {
     "Medical Kit",
     "First Aid Kit",
     "Multi Super Health",
+    "Alpine Health Shard",
 };
 
 void mutators_on_item_picked_up(rf::Item* item, rf::Entity* entity)

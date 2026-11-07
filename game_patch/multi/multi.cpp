@@ -26,6 +26,7 @@
 #include "vehicles/vehicle.h"
 #include "vehicles/vehicle_physics.h"
 #include "mutators.h"
+#include "powerups.h"
 #include "bots/bot_chat_manager.h"
 #include "bots/bot_context_fwd.h"
 #include "bots/bot_vehicle_nav.h"
@@ -559,7 +560,7 @@ void server_set_player_weapon(rf::Player* pp, rf::Entity* ep, int weapon_type)
 {
     rf::player_make_weapon_current_selection(pp, weapon_type);
     ep->ai.current_primary_weapon = weapon_type;
-    g_select_weapon_done_timestamp[pp->net_data->player_id].set(300);
+    g_select_weapon_done_timestamp[pp->net_data->player_id].set(haste_scale_ms(ep, 300));
 }
 
 bool is_remote_charge_pair(int weapon_a, int weapon_b)
@@ -684,7 +685,7 @@ FunHook<void(rf::Player*, rf::Entity*, int)> multi_select_weapon_server_side_hoo
         else {
             rf::player_make_weapon_current_selection(pp, weapon_type);
             ep->ai.current_primary_weapon = weapon_type;
-            g_select_weapon_done_timestamp[pp->net_data->player_id].set(300);
+            g_select_weapon_done_timestamp[pp->net_data->player_id].set(haste_scale_ms(ep, 300));
         }
     },
 };
@@ -735,7 +736,7 @@ void multi_reload_weapon_server_side(rf::Player* pp, int weapon_type)
                 reload_secs = 2.5f;
             }
 
-            pp->rail_gun_reload_timer.set(static_cast<int>(reload_secs * 1000.0f));
+            pp->rail_gun_reload_timer.set(haste_scale_ms(ep, static_cast<int>(reload_secs * 1000.0f)));
         }
     }
 }
@@ -864,9 +865,18 @@ bool multi_is_player_firing_too_fast(const rf::Player* const pp, const int weapo
 
     static std::vector<int> last_weapon_id(rf::multi_max_player_id, 0);
     static std::vector<int64_t> last_weapon_fire(rf::multi_max_player_id, 0);
+    static std::vector<bool> last_weapon_fire_hasted(rf::multi_max_player_id, false);
 
     const int player_id = pp->net_data->player_id;
     const int64_t now = timer::get_i64(1000);
+
+    // The client's Haste timer runs up to half a round trip behind the server's, so allow its rate for one shot after
+    // expiry.
+    const bool hasted = powerup_is_active(rf::entity_from_handle(pp->entity_handle), AlpinePowerup::haste);
+    if (hasted || last_weapon_fire_hasted[player_id]) {
+        fire_wait_ms = static_cast<int>(fire_wait_ms / haste_speed_factor);
+    }
+    last_weapon_fire_hasted[player_id] = hasted;
 
     // If weapon changed, skip interval check.
     if (last_weapon_id[player_id] != weapon_type) {

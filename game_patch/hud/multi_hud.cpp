@@ -18,6 +18,7 @@
 #include "../multi/gametype.h"
 #include "../multi/bagman.h"
 #include "../multi/jetpack.h"
+#include "../multi/powerups.h"
 #include "../multi/vehicles/vehicle_seats.h"
 #include "../multi/salvage.h"
 #include "../multi/wipeout.h"
@@ -2170,6 +2171,7 @@ CodeInjection multi_hud_render_patch{
         }
 
         jetpack_render_hud();
+        powerups_render_hud();
         crits_client_render_reticle_flash();
     }
 };

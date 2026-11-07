@@ -12,6 +12,10 @@ namespace rf
     struct NetAddr;
     struct VifLodMesh;
     struct VMesh;
+    namespace gr
+    {
+        struct Color;
+    }
 }
 
 enum class BagState : uint8_t
@@ -73,6 +77,8 @@ rf::VifLodMesh* static_vmesh_lod0(rf::VMesh* vmesh);
 bool bagman_query_pickup_bag_outline(rf::VifLodMesh** out_lod_mesh, rf::Vector3* out_pos, rf::Matrix3* out_orient);
 bool bagman_query_carrier_bag_outline(rf::VifLodMesh** out_lod_mesh, rf::Vector3* out_pos, rf::Matrix3* out_orient);
 rf::VMesh* bagman_get_carrier_mesh();
+// The overlay tint for `bmh` when it is the bag aura, else null.
+const rf::gr::Color* bagman_aura_tint(int bmh);
 void bagman_update_dynamic_light();
 void bagman_play_return_sound();
 

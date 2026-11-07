@@ -1354,8 +1354,7 @@ float get_waypoint_item_value(const int waypoint_index)
     }
 
     const rf::ItemInfo& item = rf::item_info[subtype];
-    // Bots make no use of Alpine powerups, so their pickups are not worth a detour.
-    if ((item.flags & rf::IIF_NO_PICKUP) || item_type_is_alpine_powerup(subtype)) {
+    if ((item.flags & rf::IIF_NO_PICKUP) || item_type_is_bot_unusable_powerup(subtype)) {
         return 0.0f;
     }
 
@@ -1535,18 +1534,6 @@ bool path_contains_failed_edge_cooldown(const std::vector<int>& path)
     return bot_nav_path_contains_failed_edge_cooldown(path);
 }
 
-bool is_super_pickup_name(const char* name)
-{
-    if (!name || !name[0]) {
-        return false;
-    }
-
-    return std::strcmp(name, "Multi Damage Amplifier") == 0
-        || std::strcmp(name, "Multi Invulnerability") == 0
-        || std::strcmp(name, "Multi Super Armor") == 0
-        || std::strcmp(name, "Multi Super Health") == 0;
-}
-
 bool contains_case_insensitive(std::string_view haystack, std::string_view needle)
 {
     if (needle.empty() || haystack.empty() || needle.size() > haystack.size()) {
@@ -1617,16 +1604,12 @@ int resolve_item_type_index(const rf::Item& item)
     return -1;
 }
 
+// Super weapons count only as Super Item Hoarder targets.
 bool item_matches_super_pickup(const rf::Item& item, const rf::ItemInfo* item_info)
 {
-    if (is_super_pickup_name(item.name.c_str())) {
-        return true;
-    }
-    if (item_info) {
-        return is_super_pickup_name(item_info->hud_msg_name)
-            || is_super_pickup_name(item_info->cls_name.c_str());
-    }
-    return false;
+    const int item_type = resolve_item_type_index(item);
+    return item_info && item_info->gives_weapon_id < 0 && item_type_is_super(item_type)
+        && !item_type_is_bot_unusable_powerup(item_type);
 }
 
 bool item_matches_super_item_hoarder_target(const rf::Item& item, const rf::ItemInfo* item_info)
@@ -1959,17 +1942,21 @@ float compute_collectible_item_goal_value(
         value += is_super_pickup ? 165.0f : 115.0f;
     }
 
+    const int count = std::max(item_info->count_multi, item_info->count);
+    // A pickup smaller than a First Aid Kit (25) meets that much less of the need. Super pickups' count is not their
+    // amount.
+    const float need_scale = is_super_pickup ? 1.0f : std::clamp(static_cast<float>(count) / 25.0f, 0.0f, 1.0f);
+
     if (is_health_pickup) {
         const float need = std::clamp(1.0f - health_ratio, 0.0f, 1.0f);
-        value += need * 36.0f * replenish_bias;
+        value += need * 36.0f * replenish_bias * need_scale;
     }
 
     if (is_armor_pickup) {
         const float need = std::clamp(1.0f - armor_ratio, 0.0f, 1.0f);
-        value += need * 30.0f * replenish_bias;
+        value += need * 30.0f * replenish_bias * need_scale;
     }
 
-    const int count = std::max(item_info->count_multi, item_info->count);
     value += std::clamp(static_cast<float>(count) * 0.08f, 0.0f, 2.0f);
     const float respawn_seconds =
         std::max(static_cast<float>(item_info->respawn_time_millis), 0.0f) / 1000.0f;

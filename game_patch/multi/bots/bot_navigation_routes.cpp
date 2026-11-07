@@ -624,8 +624,7 @@ float get_waypoint_item_value(const int waypoint_index)
     }
 
     const rf::ItemInfo& item = rf::item_info[subtype];
-    // Bots make no use of Alpine powerups, so their pickups are not worth a detour.
-    if ((item.flags & rf::IIF_NO_PICKUP) || item_type_is_alpine_powerup(subtype)) {
+    if ((item.flags & rf::IIF_NO_PICKUP) || item_type_is_bot_unusable_powerup(subtype)) {
         return 0.0f;
     }
 

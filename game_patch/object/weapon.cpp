@@ -17,6 +17,7 @@
 #include "../multi/multi.h"
 #include "../multi/kill_attribution.h"
 #include "../multi/mutators.h"
+#include "../multi/powerups.h"
 #include "../misc/misc.h"
 #include "../misc/alpine_settings.h"
 #include "alpine_rope.h"
@@ -376,6 +377,7 @@ CodeInjection entity_fire_primary_weapon_semi_auto_patch {
         if (rf::obj_is_player(entity) && rf::weapon_is_semi_automatic(weapon_type) && fire_wait == 500) {
             regs.eax = get_semi_auto_fire_wait_override();
         }
+        regs.eax = haste_scale_ms(entity, regs.eax);
 
         // apply first shot accuracy if 2x the weapon's fire wait has elapsed since the last shot
         // Note this also disables the difficulty-based rapid fire spread increase for the pistol in SP

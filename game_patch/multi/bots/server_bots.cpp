@@ -7,6 +7,7 @@
 #include "../gametype.h"
 #include "../multi.h"
 #include "../network.h"
+#include "../powerups.h"
 #include "../server.h"
 #include "../server_internal.h"
 #include "../demo/demo.h"
@@ -334,6 +335,10 @@ void server_bot_apply_fire(ServerBot& bot, rf::Player& pp, rf::Entity& ep, const
     // Thrown weapons leave through the remote-fire handler, which never re-arms the fire wait.
     else if (!ep.ai.next_fire_primary.valid() || ep.ai.next_fire_primary.elapsed()) {
         ep.ai.next_fire_primary.set(rf::weapon_get_fire_wait_ms(weapon_type, alt_fire));
+    }
+    // Haste shortens whichever fire wait the shot left.
+    if (ep.ai.next_fire_primary.valid() && !ep.ai.next_fire_primary.elapsed()) {
+        ep.ai.next_fire_primary.set(haste_scale_ms(&ep, ep.ai.next_fire_primary.time_until()));
     }
 }
 

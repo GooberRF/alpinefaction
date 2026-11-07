@@ -36,6 +36,7 @@
 #include "../multi/gungame.h"
 #include "../multi/awards.h"
 #include "../multi/mutators.h"
+#include "../multi/powerups.h"
 #include "../multi/bots/server_bots.h"
 #include "../multi/vehicles/vehicle.h"
 #include "../hud/multi_spectate.h"
@@ -558,6 +559,10 @@ FunHook<void(rf::Player*, int)> player_make_weapon_current_selection_hook{
 
 void __fastcall player_execute_action_timestamp_set_new(rf::Timestamp* fire_wait_timer, int, int value)
 {
+    rf::Entity* ep = rf::local_player_entity;
+    if (ep && fire_wait_timer == &ep->ai.next_fire_primary) {
+        value = haste_scale_ms(ep, value);
+    }
     if (!fire_wait_timer->valid() || fire_wait_timer->time_until() < value) {
         fire_wait_timer->set(value);
     }
