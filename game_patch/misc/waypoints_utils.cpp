@@ -2704,6 +2704,10 @@ rf::Color debug_waypoint_color(WaypointType type)
             return {255, 235, 120, 150};
         case WaypointType::vehicle_factory:
             return {120, 255, 220, 150};
+        case WaypointType::zipline_entrance:
+            return {255, 200, 140, 150};
+        case WaypointType::zipline_exit:
+            return {200, 140, 255, 150};
         default:
             return {200, 200, 200, 150};
     }

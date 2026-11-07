@@ -67,6 +67,7 @@
 #include "../graphics/af_lightmap.h"
 #include "../object/alpine_corona.h"
 #include "../object/alpine_rope.h"
+#include "../object/zipline.h"
 #include "../sound/sound.h"
 #include "../input/bind_context.h"
 #include "../input/input.h"
@@ -193,6 +194,7 @@ FunHook<int()> rf_do_frame_hook{
         gungame_client_do_frame();      // client-side Gun Game level-up notification watcher
         alpine_mesh_do_frame();
         alpine_rope_do_frame();
+        zipline_do_frame();
         item_do_frame();
         atx_do_frame();
         fflink::do_frame();
@@ -355,6 +357,13 @@ FunHook<void(bool)> level_init_post_hook{
         level_init_post_hook.call_target(transition);
         xlog::info("Level loaded: {}{}", rf::level.filename, transition ? " (transition)" : "");
 
+        // Create corona objects (clutter + glare pairs) now that geometry is loaded
+        alpine_corona_create_all();
+
+        // Ropes resolve their target uids here, once every level object exists.
+        alpine_rope_level_init();
+        zipline_level_init();
+
         // Flow 2A: bots start their AWP download before the waypoints load
         waypoints_level_init_with_awp_download();
         if (is_waypoint_bot_mode_active()) {
@@ -366,12 +375,6 @@ FunHook<void(bool)> level_init_post_hook{
             && g_alpine_game_config.autodl_download_awps) {
             start_awp_download_for_installed_map(std::string{rf::level.filename.c_str()}, 1);
         }
-
-        // Create corona objects (clutter + glare pairs) now that geometry is loaded
-        alpine_corona_create_all();
-
-        // Ropes resolve their target uids here, once every level object exists
-        alpine_rope_level_init();
 
         apply_maximum_fps(); // set maximum FPS based on game state
         process_queued_spawn_points_from_items();
@@ -399,6 +402,7 @@ FunHook<void(bool)> level_init_post_hook{
             set_levelmod_autotexture_ppm();
             if (!rf::is_multi) {
                 update_player_flashlight();
+                hud_reticle_prompt_clear();
             }
             else {
                 toggle_chat_menu(ChatMenuType::None);

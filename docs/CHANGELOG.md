@@ -54,7 +54,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Bump RFL version to 306
 - Add `Display_Projection` event and `Projection Camera` object for rendering live camera views onto ATX textures (Direct3D 11 renderer only)
 - Add `Rope_State` event to switch `Rope Emitter` objects on and off at runtime
-- Add `Rope Emitter` object for ropes, cables, and power lines, with optional decorations
+- Add `Rope Emitter` object for ropes, cables, power lines, and zip lines that players and bots can ride, with optional decorations
 - Add flames to gib chunks thrown by exploding entities, toggleable with `cl_gibflames`
 - Add `Jetpacks explode` option to the Jetpacks mutator
 - Add `Scrapyard mode` option to the Gibbing mutator
@@ -364,6 +364,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix level editor sometimes crashing when moving vertices after using `Weld` in vertex mode
 - Fix some level editor buttons in Face and Vertex modes not working when the mode was entered with a keyboard shortcut
 - Fix players freezing in place in multiplayer for a moment after bumping into another player or mesh
+- Fix possible dedicated server crash when auto-downloading missing vote-allowed levels with `add_installed_to_allowed_levels` enabled
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize

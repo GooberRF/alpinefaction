@@ -37,6 +37,7 @@
 #include "../rf/trigger.h"
 #include "../object/object.h"
 #include "../object/mover.h"
+#include "../object/zipline.h"
 #include "../graphics/gr.h"
 #include <common/utils/string-utils.h>
 #include <patch_common/FunHook.h>
@@ -514,6 +515,10 @@ WaypointType waypoint_type_from_int(int raw_type)
             return WaypointType::salvage_flag;
         case static_cast<int>(WaypointType::vehicle_factory):
             return WaypointType::vehicle_factory;
+        case static_cast<int>(WaypointType::zipline_entrance):
+            return WaypointType::zipline_entrance;
+        case static_cast<int>(WaypointType::zipline_exit):
+            return WaypointType::zipline_exit;
         default:
             return static_cast<WaypointType>(raw_type);
     }
@@ -567,6 +572,10 @@ std::string_view waypoint_type_name(WaypointType type)
             return "salvage_flag";
         case WaypointType::vehicle_factory:
             return "vehicle_factory";
+        case WaypointType::zipline_entrance:
+            return "zipline_entrance";
+        case WaypointType::zipline_exit:
+            return "zipline_exit";
         default:
             return "unknown";
     }
@@ -1172,6 +1181,17 @@ bool conveyer_outbound_link_allowed(const WaypointNode& from_node, const Waypoin
     return dot > 0.0f;
 }
 
+// An entrance's link to its own ride's exit; any other link of it is walked.
+bool waypoint_is_zipline_ride(const WaypointNode& from_node, const int to)
+{
+    if (from_node.type != WaypointType::zipline_entrance || to <= 0 || to >= static_cast<int>(g_waypoints.size())) {
+        return false;
+    }
+    const auto& to_node = g_waypoints[to];
+    return to_node.type == WaypointType::zipline_exit && to_node.identifier == from_node.identifier
+        && to_node.subtype == from_node.subtype;
+}
+
 bool waypoint_link_types_allowed(const WaypointNode& from_node, const WaypointNode& to_node)
 {
     return tele_entrance_outbound_link_allowed(from_node, to_node)
@@ -1232,6 +1252,13 @@ bool waypoint_link_blocked_by_bridge_zone_state(const int from_waypoint_uid, con
 {
     return !waypoint_uid_enabled_by_bridge_zone_state(from_waypoint_uid)
         || !waypoint_uid_enabled_by_bridge_zone_state(to_waypoint_uid);
+}
+
+bool waypoint_link_blocked_by_runtime_state(const int from_waypoint_uid, const int to_waypoint_uid)
+{
+    const auto& from_node = g_waypoints[from_waypoint_uid];
+    return waypoint_link_blocked_by_bridge_zone_state(from_waypoint_uid, to_waypoint_uid)
+        || (from_node.ride_closed && waypoint_is_zipline_ride(from_node, to_waypoint_uid));
 }
 
 int count_waypoint_inbound_links(int waypoint_uid, bool persistent_sources_only = false)
@@ -1296,6 +1323,10 @@ void link_waypoint(int from, int to)
     else {
         std::uniform_int_distribution<int> dist(0, kMaxWaypointLinks - 1);
         replace_slot = dist(g_rng);
+        // Never evict an entrance's ride: nothing else would ever link it back.
+        if (waypoint_is_zipline_ride(node, node.links[replace_slot])) {
+            replace_slot = (replace_slot + 1) % kMaxWaypointLinks;
+        }
     }
     waypoints_mark_graph_changed(persistent);
     node.links[replace_slot] = to;
@@ -3749,7 +3780,7 @@ bool can_link_waypoint_indices(int from, int to)
     if (!waypoint_link_types_allowed(from_node, to_node)) {
         return false;
     }
-    if (from_node.type == WaypointType::tele_entrance) {
+    if (from_node.type == WaypointType::tele_entrance || waypoint_is_zipline_ride(from_node, to)) {
         return true;
     }
 
@@ -3820,6 +3851,8 @@ bool waypoint_type_requires_floor_supported_midpoint_for_autogen_link(WaypointTy
         case WaypointType::tele_entrance:
         case WaypointType::tele_exit:
         case WaypointType::conveyer:
+        case WaypointType::zipline_entrance:
+        case WaypointType::zipline_exit:
             return true;
         default:
             return false;
@@ -4103,7 +4136,8 @@ void link_temporary_waypoint_like_crater(int waypoint_uid)
         int borrow_slot = -1;
         for (int slot = 0; slot < from_node.num_links; ++slot) {
             const int link = from_node.links[slot];
-            if (link <= 0 || link >= static_cast<int>(g_waypoints.size()) || g_waypoints[link].temporary) {
+            if (link <= 0 || link >= static_cast<int>(g_waypoints.size()) || g_waypoints[link].temporary
+                || waypoint_is_zipline_ride(from_node, link)) {
                 continue;
             }
             const bool continues_to_link = waypoint_link_exists(g_waypoints[waypoint_uid], link);
@@ -4487,6 +4521,89 @@ void update_hull_temporary_waypoints()
         it = g_hull_waypoint_tracks.erase(it);
     }
 }
+
+constexpr float kZiplineEntranceProbeDepth = 6.0f;
+constexpr float kZiplineExitProbeDepth = 8.0f;
+// A ride is costed as the distance a bot would run in the same time, plus the stop to take hold.
+constexpr float kZiplineRouteFootSpeed = 8.0f;
+constexpr float kZiplineRouteGrabCost = 3.0f;
+constexpr float kZiplineClosedRouteCost = 100000.0f;
+constexpr int kZiplineRideStateIntervalMs = 250;
+
+rf::Timestamp g_zipline_ride_state_timer;
+
+int zipline_dir_subtype(const int dir)
+{
+    return dir > 0 ? 0 : 1;
+}
+
+int zipline_subtype_dir(const int subtype)
+{
+    return subtype == zipline_dir_subtype(1) ? 1 : -1;
+}
+
+bool find_zipline_entrance_spot(const ZiplineBotRoute& route, rf::Vector3& out_spot)
+{
+    for (const rf::Vector3& grab : route.grab_points) {
+        rf::Vector3 floor_pos{};
+        if (!trace_ground_below_point(grab, kZiplineEntranceProbeDepth, &floor_pos)) {
+            continue;
+        }
+        const rf::Vector3 spot = floor_pos + rf::Vector3{0.0f, kWaypointGenerateGroundOffset, 0.0f};
+        if (zipline_bot_reaches_line(spot, grab, true)) {
+            out_spot = spot;
+            return true;
+        }
+    }
+    return false;
+}
+
+void seed_zipline_waypoints(std::vector<int>& seeded_indices, std::vector<int>& auto_link_source_indices)
+{
+    std::vector<ZiplineBotRoute> routes;
+    zipline_collect_bot_routes(routes);
+    for (const ZiplineBotRoute& route : routes) {
+        rf::Vector3 entrance_spot{};
+        rf::Vector3 exit_floor{};
+        if (!find_zipline_entrance_spot(route, entrance_spot)
+            || !trace_ground_below_point(route.landing_pos, kZiplineExitProbeDepth, &exit_floor)) {
+            continue;
+        }
+        const rf::Vector3 exit_spot = exit_floor + rf::Vector3{0.0f, kWaypointGenerateGroundOffset, 0.0f};
+        const int subtype = zipline_dir_subtype(route.dir);
+        const int entrance = add_waypoint(
+            entrance_spot, WaypointType::zipline_entrance, subtype, false, true, kWaypointLinkRadius, route.rope_uid);
+        const int exit = add_waypoint(
+            exit_spot, WaypointType::zipline_exit, subtype, false, true, kWaypointLinkRadius, route.rope_uid);
+        link_waypoint(entrance, exit);
+        for (const int waypoint_uid : {entrance, exit}) {
+            seeded_indices.push_back(waypoint_uid);
+            auto_link_source_indices.push_back(waypoint_uid);
+        }
+    }
+}
+
+// A ride whose line is switched off, or has been carried away from its entrance, is left out of routes like a bridge
+// zone that is off.
+void update_zipline_ride_states()
+{
+    if (!is_waypoint_bot_mode_active()
+        || (g_zipline_ride_state_timer.valid() && !g_zipline_ride_state_timer.elapsed())) {
+        return;
+    }
+    g_zipline_ride_state_timer.set(kZiplineRideStateIntervalMs);
+    bool changed = false;
+    for (const int waypoint_uid : waypoints_get_by_type(WaypointType::zipline_entrance)) {
+        auto& node = g_waypoints[waypoint_uid];
+        const bool closed =
+            !zipline_bot_ride_open(node.identifier, zipline_subtype_dir(node.subtype), node.pos, nullptr);
+        changed = changed || closed != node.ride_closed;
+        node.ride_closed = closed;
+    }
+    if (changed) {
+        waypoints_mark_graph_changed();
+    }
+}
 } // namespace
 
 bool waypoints_find_vehicle_factory_waypoint(const int factory_uid, int& out_waypoint, rf::Vector3& out_pos)
@@ -4539,6 +4656,32 @@ int waypoints_ensure_hull_waypoint(const rf::Entity& hull)
     const int waypoint_uid = add_vehicle_waypoint(spot, WaypointVehicleSubtype::parked_hull, hull.handle, true);
     link_temporary_waypoint_like_crater(waypoint_uid);
     return waypoint_uid;
+}
+
+bool waypoints_get_zipline_ride(const int from, const int to, int32_t* rope_uid, int* dir, float* route_cost)
+{
+    if (!is_waypoint_uid_valid(from) || !is_waypoint_uid_valid(to)
+        || !waypoint_is_zipline_ride(g_waypoints[from], to)) {
+        return false;
+    }
+    const auto& entrance = g_waypoints[from];
+    if (rope_uid) {
+        *rope_uid = entrance.identifier;
+    }
+    if (dir) {
+        *dir = zipline_subtype_dir(entrance.subtype);
+    }
+    if (route_cost) {
+        float ride_seconds = 0.0f;
+        // Prices out a line already closed when the edges are built but not yet marked ride_closed. No cheaper than
+        // the straight distance, which the route search's estimate counts on.
+        *route_cost = zipline_bot_ride_open(entrance.identifier, zipline_subtype_dir(entrance.subtype), entrance.pos,
+                                            &ride_seconds)
+            ? std::max(ride_seconds * kZiplineRouteFootSpeed + kZiplineRouteGrabCost,
+                       (g_waypoints[to].pos - entrance.pos).len())
+            : kZiplineClosedRouteCost;
+    }
+    return true;
 }
 
 void update_ctf_dropped_flag_temporary_waypoint_for_team(bool red_flag)
@@ -5242,6 +5385,7 @@ void seed_waypoints_from_objects()
     seed_waypoints_from_teleport_events(&seeded_indices, &auto_link_source_indices);
     seed_waypoints_from_legacy_teleporters(&seeded_indices, &auto_link_source_indices);
     seed_vehicle_factory_waypoints(seeded_indices, auto_link_source_indices);
+    seed_zipline_waypoints(seeded_indices, auto_link_source_indices);
     auto_link_default_seeded_waypoints(seeded_indices, auto_link_source_indices);
 }
 
@@ -5252,6 +5396,7 @@ void clear_waypoints()
     g_waypoints.clear();
     g_waypoints.push_back({});
     g_hull_waypoint_tracks.clear();
+    g_zipline_ride_state_timer.invalidate();
     g_waypoint_zones.clear();
     g_waypoint_targets.clear();
     g_waypoint_authors.clear();
@@ -5279,12 +5424,13 @@ std::vector<int> collect_generation_seed_waypoint_indices()
     std::vector<int> seed_indices{};
     seed_indices.reserve(g_waypoints.size());
 
-    static constexpr std::array<WaypointType, 5> kSeedTypeOrder{
+    static constexpr std::array<WaypointType, 6> kSeedTypeOrder{
         WaypointType::ctf_flag,
         WaypointType::item,
         WaypointType::respawn,
         WaypointType::tele_exit,
         WaypointType::vehicle_factory,
+        WaypointType::zipline_exit,
     };
 
     for (const auto seed_type : kSeedTypeOrder) {
@@ -6724,7 +6870,8 @@ int prune_redundant_generated_links(WaypointGenerationContext& ctx)
                 if (to <= 0 || to >= waypoint_count || !g_waypoints[to].valid) {
                     continue;
                 }
-                if (generated_lattice_pair(ctx, from, to) || ctx.coarse.keeps_link(from, to)) {
+                if (generated_lattice_pair(ctx, from, to) || ctx.coarse.keeps_link(from, to)
+                    || waypoint_is_zipline_ride(from_node, to)) {
                     continue;
                 }
 
@@ -6738,7 +6885,9 @@ int prune_redundant_generated_links(WaypointGenerationContext& ctx)
                         || !g_waypoints[intermediate].valid) {
                         continue;
                     }
-                    if (!waypoint_has_link_to(intermediate, to)) {
+                    // A ride is no stand-in for walking: the line can be switched off.
+                    if (!waypoint_has_link_to(intermediate, to) || waypoint_is_zipline_ride(from_node, intermediate)
+                        || waypoint_is_zipline_ride(g_waypoints[intermediate], to)) {
                         continue;
                     }
                     // Forward path from→intermediate→to exists.
@@ -6801,7 +6950,8 @@ int reroute_links_through_intermediate_waypoints(
             if (to <= 0 || to >= waypoint_count || !g_waypoints[to].valid) {
                 continue;
             }
-            if (!waypoint_has_link_to(from, to) || generated_lattice_pair(ctx, from, to)) {
+            if (!waypoint_has_link_to(from, to) || generated_lattice_pair(ctx, from, to)
+                || waypoint_is_zipline_ride(from_node, to)) {
                 continue;
             }
 
@@ -6816,6 +6966,9 @@ int reroute_links_through_intermediate_waypoints(
             }
 
             const int through = through_opt.value();
+            if (waypoint_is_zipline_ride(from_node, through) || waypoint_is_zipline_ride(g_waypoints[through], to)) {
+                continue;
+            }
             const bool need_from_to_through = !waypoint_has_link_to(from, through);
             const bool need_through_to_to = !waypoint_has_link_to(through, to);
 
@@ -7234,6 +7387,8 @@ bool waypoint_type_is_special(WaypointType type)
         case WaypointType::tele_entrance:
         case WaypointType::tele_exit:
         case WaypointType::conveyer:
+        case WaypointType::zipline_entrance:
+        case WaypointType::zipline_exit:
             return true;
         default:
             return false;
@@ -10340,6 +10495,21 @@ int run_waypoint_generation_pipeline(
             "Ledge drop pass added {} downward links",
             ledge_drop_links);
     }
+    // An entrance on a ledge or crate under the line has no way in; moving it in the editor fixes the ride.
+    int zipline_rides = 0;
+    std::string unreachable_entrances;
+    for (const int waypoint_uid : waypoints_get_by_type(WaypointType::zipline_entrance)) {
+        ++zipline_rides;
+        if (count_waypoint_inbound_links(waypoint_uid) == 0) {
+            unreachable_entrances += std::format(" {}", waypoint_uid);
+        }
+    }
+    if (zipline_rides > 0) {
+        waypoint_log("Zip lines: {} rides", zipline_rides);
+    }
+    if (!unreachable_entrances.empty()) {
+        waypoint_log("Zip line entrance waypoints nothing links to:{}", unreachable_entrances);
+    }
     if (generated_explosion_target_count > 0) {
         waypoint_log(
             "Generated {} explosion targets from blocked waypoint pairs",
@@ -11204,6 +11374,7 @@ void waypoints_do_frame()
     update_salvage_flag_temporary_waypoint();
     update_scavenger_zone_temporary_waypoint();
     update_hull_temporary_waypoints();
+    update_zipline_ride_states();
     waypoints_utils_do_frame();
 
     if (!are_waypoint_commands_enabled_for_local_client()) {
@@ -11922,7 +12093,7 @@ int waypoints_get_links(int index, std::array<int, kMaxWaypointLinks>& out_links
             || !g_waypoints[link].valid) {
             continue;
         }
-        if (waypoint_link_blocked_by_bridge_zone_state(index, link)) {
+        if (waypoint_link_blocked_by_runtime_state(index, link)) {
             continue;
         }
         out_links[count++] = link;
@@ -11953,7 +12124,7 @@ int waypoints_get_persistent_links(const int index, std::array<int, kMaxWaypoint
                 continue;
             }
         }
-        if (waypoint_link_blocked_by_bridge_zone_state(index, link)) {
+        if (waypoint_link_blocked_by_runtime_state(index, link)) {
             continue;
         }
         out_links[count++] = link;
@@ -12004,7 +12175,7 @@ bool waypoints_has_direct_link(int from, int to)
 
     for (int i = 0; i < node.num_links; ++i) {
         if (node.links[i] == to) {
-            return !waypoint_link_blocked_by_bridge_zone_state(from, to);
+            return !waypoint_link_blocked_by_runtime_state(from, to);
         }
     }
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <string>
 #include "../rf/player/control_config.h"
 
 // Custom scan codes for extra mouse buttons (Mouse 4 and above). Placed in the extended
@@ -17,6 +18,8 @@ rf::ControlConfigAction get_af_control(rf::AlpineControlConfigAction alpine_cont
 // Index of the first Alpine action row in ControlConfig::bindings, or -1 before control init.
 int alpine_control_start_index();
 rf::String get_action_bind_name(int action);
+// The bind name, or `fallback` for an unbound action. Allocates on the engine heap: not per frame.
+std::string get_action_bind_name_or(int action, const char* fallback);
 void mouse_apply_patch();
 void key_apply_patch();
 void control_input_filter_apply_patch();

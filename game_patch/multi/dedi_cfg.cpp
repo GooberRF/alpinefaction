@@ -1738,12 +1738,14 @@ static void download_missing_server_levels()
     if (!cfg.vote_level.allowed_maps.empty()) {
         rf::console::print("\nChecking for missing maps on vote-allowed list...\n");
 
+        // Installing a level can append installed levels to allowed_maps, so walk a copy.
+        const auto requested = cfg.vote_level.allowed_maps;
         std::vector<std::string> resolved_allowed;
-        resolved_allowed.reserve(cfg.vote_level.allowed_maps.size());
+        resolved_allowed.reserve(requested.size());
 
-        for (auto& filename : cfg.vote_level.allowed_maps) {
+        for (const auto& filename : requested) {
             if (download_level_if_missing(filename)) {
-                resolved_allowed.push_back(std::move(filename));
+                resolved_allowed.push_back(filename);
             }
             else {
                 rf::console::print("--> Skipping vote-allowed level {} (download failed).\n", filename);

@@ -97,6 +97,7 @@ add_packfile(alpinefaction.vpp
     sounds/af_award1.ogg
     sounds/af_jeep_horn.ogg
     sounds/af_fighter_scrape_loop.wav
+    sounds/af_zipline_loop1.wav
     sounds/af_killsound1.wav
     sounds/af_radmsg_000.ogg
     sounds/af_radmsg_001.ogg
@@ -392,7 +393,8 @@ add_packfile(alpinefaction.vpp
     meshes/af_Fighter01m.v3m
     meshes/af_Sub_Mini01.v3m
     meshes/af_Sub_Mini01T.v3m
-    
+    meshes/af_zipline1.v3m
+
     animations/af_female_jeep_driver.rfa
     animations/af_female_jeep_gunner.rfa
     animations/af_female_on_turret.rfa

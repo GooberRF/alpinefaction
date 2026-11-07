@@ -3496,6 +3496,7 @@ FunHook<void(rf::Player*)> multi_spawn_player_server_side_hook{
                 // that just ended can never apply to them again.
                 riot_shield_on_player_spawn(player);
                 afstats::on_spawn(player, ep->pos);
+                af_send_rope_states_to(player, true);
             }
 
             // inform newly spawned players of their loadout

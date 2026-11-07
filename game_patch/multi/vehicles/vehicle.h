@@ -49,6 +49,10 @@ rf::Entity* vehicle_ridden_hull(const rf::Entity* rider);
 // As above, and null once the HULL has begun dying.
 rf::Entity* vehicle_ridden_live_hull(const rf::Entity* rider);
 
+// Whether the vehicle code takes a Use press that rf::player_find_use_target answered with target and
+// tag_handle; a hull hit away from its seats falls through to the stock handler.
+bool vehicle_use_target_boards(const rf::Object* target, int tag_handle);
+
 // Contact box: world centre, the hull's own axes, and the hull-LOCAL half extents.
 struct VehicleHullObb
 {

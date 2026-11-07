@@ -52,6 +52,7 @@
 #include <patch_common/CodeInjection.h>
 #include <patch_common/AsmWriter.h>
 #include "../misc/settings_registry.h"
+#include "../object/zipline.h"
 
 static rf::PlayerHeadlampSettings g_local_headlamp_settings;
 
@@ -576,6 +577,9 @@ FunHook<void(rf::Player*, rf::ControlConfigAction, bool)> player_execute_action_
             return; // demo playback controls (USE popup toggle, seek/pause keys)
         }
         if (multi_spectate_execute_action(action, was_pressed)) {
+            return;
+        }
+        if (zipline_execute_action(player, action)) {
             return;
         }
         // A turret operator's or jeep gunner's alt is his zoom, read from the raw control state. Stock
