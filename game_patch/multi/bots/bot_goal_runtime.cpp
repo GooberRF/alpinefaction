@@ -65,6 +65,7 @@ void bot_goal_runtime_clear_non_active_goal_state(const BotGoalType active_goal)
         bot_state().payload_hold_side = 0;
         bot_state().payload_hold_side_timer.invalidate();
         bot_state().payload_hold_progress_timer.invalidate();
+        bot_state().payload_spot_refresh.invalidate();
     }
     if (!bot_goal_is_vehicle(active_goal)) {
         // A later pick of the same seat starts a fresh approach.

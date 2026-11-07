@@ -150,6 +150,9 @@ inline HillOwner opposite(HillOwner o)
                                        : HillOwner::HO_Neutral;
 }
 
+// KOTH has one; the other hill modes and Payload's checkpoints at most this
+inline constexpr int max_hills = 32;
+
 inline HillOwner team_hill_owner(int team)
 {
     return team == 0 ? HillOwner::HO_Red : HillOwner::HO_Blue;

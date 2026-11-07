@@ -9,7 +9,7 @@
 #include <common/utils/list-utils.h>
 #include "payload.h"
 #include "alpine_packets.h"
-#include "bagman.h"
+#include "kill.h"
 #include "gametype.h"
 #include "server_internal.h"
 #include "../hud/hud.h"
@@ -227,14 +227,21 @@ void build_track(const rf::Mover& mover)
             continue;
         }
         auto* handler = static_cast<EventPayloadCheckpoint*>(event);
-        if (i == 0) {
-            xlog::warn("[Payload] Keyframe 0 names checkpoint {}, but the cart starts there; ignored", handler->uid);
+        if (!(g_payload.keyframe_distance[i] > 0.0f)) {
+            xlog::warn("[Payload] Keyframe {} names checkpoint {}, but the cart starts there; ignored", i,
+                       handler->uid);
             continue;
         }
         const bool repeated = std::any_of(g_payload.checkpoints.begin(), g_payload.checkpoints.end(),
             [handler](const PayloadCheckpoint& cp) { return cp.handler == handler; });
         if (repeated) {
-            xlog::warn("[Payload] Checkpoint {} is named by more than one keyframe; keyframe {} ignored", handler->uid, i);
+            xlog::warn("[Payload] Checkpoint {} is named by more than one keyframe; keyframe {} ignored",
+                       handler->uid, i);
+            continue;
+        }
+        if (static_cast<int>(g_payload.checkpoints.size()) >= max_hills) {
+            xlog::warn("[Payload] Checkpoint {} on keyframe {} is past the {} a level can have; ignored", handler->uid,
+                       i, max_hills);
             continue;
         }
         const float level_bonus = AlpineLevelProperties::instance().payload_rules.checkpoint_time_bonus;
@@ -732,6 +739,14 @@ PayloadCartState payload_state()
     return g_payload.state;
 }
 
+std::optional<int> payload_countdown_whole_seconds()
+{
+    if (!g_payload.countdown) {
+        return std::nullopt;
+    }
+    return std::max(1, static_cast<int>(std::ceil(*g_payload.countdown)));
+}
+
 bool payload_defenders_have_cart()
 {
     return g_payload.state == PayloadCartState::blocked || g_payload.state == PayloadCartState::rolling_back;
@@ -800,6 +815,11 @@ std::optional<rf::Vector3> payload_checkpoint_pos(const HillInfo& hill)
 const std::vector<uint8_t>& payload_pusher_ids()
 {
     return g_payload.pushers;
+}
+
+int payload_useful_pushers()
+{
+    return std::min(static_cast<int>(g_payload.pushers.size()), payload::max_useful_pushers);
 }
 
 const std::vector<uint8_t>& payload_blocker_ids()

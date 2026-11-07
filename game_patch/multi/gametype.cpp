@@ -1311,12 +1311,6 @@ static void koth_maybe_grant_lockdown(const HillInfo& captured, HillOwner new_ow
     }
 }
 
-// HO_Neutral 0 / HO_Red 1 / HO_Blue 2 maps onto a Vehicle Factory's -1 none / 0 red / 1 blue.
-static int hill_owner_factory_team(HillOwner owner)
-{
-    return static_cast<int>(owner) - 1;
-}
-
 static void koth_apply_ownership(HillInfo& h, HillOwner new_owner, bool announce = true, HillOwner scoring_team = HillOwner::HO_Neutral)
 {
     const auto attacker = staged_attacker();
@@ -1360,7 +1354,7 @@ static void koth_apply_ownership(HillInfo& h, HillOwner new_owner, bool announce
 
         // Linked Vehicle Factories follow the point's owner.
         for (int factory_index : h.vehicle_factories) {
-            vehicle_factory_set_team(factory_index, hill_owner_factory_team(new_owner));
+            vehicle_factory_set_team(factory_index, hill_owner_team(new_owner));
         }
 
         if (new_owner == HillOwner::HO_Red || new_owner == HillOwner::HO_Blue) {
@@ -2079,7 +2073,7 @@ static int build_hills_from_capture_point_events()
         return int(g_koth_info.hills.size());
 
     int game_type_max_hills =
-        gt == rf::NetGameType::NG_TYPE_KOTH ? 1 : 32;
+        gt == rf::NetGameType::NG_TYPE_KOTH ? 1 : max_hills;
 
     // Payload's checkpoints are the handlers its cart's keyframes name, in track order, and have no trigger
     const bool is_payload = gt == rf::NetGameType::NG_TYPE_PAY;
@@ -2098,14 +2092,16 @@ static int build_hills_from_capture_point_events()
         if (!is_payload) {
             trig = koth_capture_point_handler_trigger(*e);
             if (!trig) {
-                xlog::warn("KOTH: Capture point '{}' has invalid trigger UID {}, skipping", cp->name.c_str(), cp->trigger_uid);
+                xlog::warn("KOTH: Capture point '{}' has invalid trigger UID {}, skipping", cp->name.c_str(),
+                           cp->trigger_uid);
                 continue;
             }
             cp->trigger_uid = trig->uid;
 
             // fix a case where a mapper specified the same trigger for multiple capture point handlers
             if (!seen_uids.insert(cp->trigger_uid).second) {
-                xlog::warn("KOTH: Duplicate capture point for trigger UID {}, ignoring subsequent entries", cp->trigger_uid);
+                xlog::warn("KOTH: Duplicate capture point for trigger UID {}, ignoring subsequent entries",
+                           cp->trigger_uid);
                 continue;
             }
         }
@@ -2234,7 +2230,7 @@ static void hill_mode_apply_linked_factory_teams()
             continue; // a neutral hill leaves the factory's authored team alone
 
         for (int factory_index : hill.vehicle_factories) {
-            vehicle_factory_set_team(factory_index, hill_owner_factory_team(hill.ownership), false);
+            vehicle_factory_set_team(factory_index, hill_owner_team(hill.ownership), false);
         }
     }
 }

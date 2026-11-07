@@ -48,6 +48,7 @@ WorldHUDAssets g_world_hud_assets;
 static KothHudTuning g_koth_hud_tuning{};
 static std::unordered_map<int, NameLabelTex> g_koth_name_labels;
 static std::array<NameLabelTex, 2> g_hill_role_labels; // attack, defend
+static NameLabelTex g_payload_cart_status_label;
 bool draw_mp_spawn_world_hud = false;
 std::unordered_set<EventWorldHUDSprite*> world_hud_sprite_events;
 std::unordered_set<EventFullscreenOverlayBase*> fullscreen_overlay_events;
@@ -440,6 +441,7 @@ void clear_koth_name_textures()
     for (NameLabelTex& lbl : g_hill_role_labels) {
         world_hud_release_text_label(lbl);
     }
+    world_hud_release_text_label(g_payload_cart_status_label);
 }
 
 void world_hud_release_text_label(NameLabelTex& slot)
@@ -616,7 +618,7 @@ constexpr float medallion_role_height = 0.4f;
 struct MedallionLabel
 {
     const NameLabelTex* tex = nullptr;
-    float height = 0.0f; // times the sprites' label scale
+    float height = 0.0f;
 };
 } // namespace
 
@@ -838,7 +840,7 @@ static std::string payload_cart_status()
 {
     switch (payload_state()) {
     case PayloadCartState::pushing:
-        return std::format("x{}", std::min(static_cast<int>(payload_pusher_ids().size()), payload::max_useful_pushers));
+        return std::format("x{}", payload_useful_pushers());
     case PayloadCartState::blocked:
         return "Blocked";
     case PayloadCartState::rolling_back:
@@ -846,7 +848,7 @@ static std::string payload_cart_status()
     case PayloadCartState::finale:
         return "Delivered";
     case PayloadCartState::held: {
-        const int seconds = std::max(1, static_cast<int>(std::ceil(payload_countdown_seconds().value_or(0.0f))));
+        const int seconds = payload_countdown_whole_seconds().value_or(1);
         return payload_in_setup() ? std::to_string(seconds) : std::format("Moving in {}", seconds);
     }
     default:
@@ -884,9 +886,9 @@ static void render_payload_cart_medallion()
 
     const NameLabelTex* status = nullptr;
     if (g_alpine_game_config.world_hud_payload_cart_status) {
-        NameLabelTex& lbl = g_koth_name_labels[cart->uid];
-        world_hud_ensure_text_label(lbl, payload_cart_status(), get_world_hud_label_bitmap_font());
-        status = &lbl;
+        world_hud_ensure_text_label(g_payload_cart_status_label, payload_cart_status(),
+            get_world_hud_label_bitmap_font());
+        status = &g_payload_cart_status_label;
     }
     const auto rm = g_alpine_game_config.world_hud_hill_overdraw ? WorldHUDRenderMode::overdraw
                                                                  : WorldHUDRenderMode::no_overdraw;

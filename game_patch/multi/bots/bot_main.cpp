@@ -3035,6 +3035,7 @@ void bot_run_frame(BotContext& ctx)
         ctx.state.payload_hold_side = 0;
         ctx.state.payload_hold_side_timer.invalidate();
         ctx.state.payload_hold_progress_timer.invalidate();
+        ctx.state.payload_spot_refresh.invalidate();
         ctx.state.payload_hold_best_dist_sq = 0.0f;
         ctx.state.payload_pushed_grace_timer.invalidate();
         ctx.state.last_recorded_health = -1.0f;
@@ -3088,6 +3089,7 @@ void bot_run_frame(BotContext& ctx)
         ctx.state.payload_hold_side = 0;
         ctx.state.payload_hold_side_timer.invalidate();
         ctx.state.payload_hold_progress_timer.invalidate();
+        ctx.state.payload_spot_refresh.invalidate();
         ctx.state.payload_hold_best_dist_sq = 0.0f;
         ctx.state.payload_pushed_grace_timer.invalidate();
         ctx.state.last_recorded_health = -1.0f;
@@ -3195,6 +3197,7 @@ void bot_run_frame(BotContext& ctx)
         ctx.state.payload_hold_side = 0;
         ctx.state.payload_hold_side_timer.invalidate();
         ctx.state.payload_hold_progress_timer.invalidate();
+        ctx.state.payload_spot_refresh.invalidate();
         ctx.state.payload_hold_best_dist_sq = 0.0f;
         ctx.state.payload_pushed_grace_timer.invalidate();
         ctx.state.last_recorded_health = -1.0f;

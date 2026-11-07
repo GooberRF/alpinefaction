@@ -90,6 +90,8 @@ bool payload_in_setup();
 bool payload_in_overtime();
 // Held: seconds until the hold ends. Idle: seconds until the cart starts rolling back. Else nullopt.
 std::optional<float> payload_countdown_seconds();
+// Rounded up and never below 1, as a client's countdown reaches 0 before the server's state change does
+std::optional<int> payload_countdown_whole_seconds();
 // In track order. The last may sit at the end of the track.
 const std::vector<PayloadCheckpoint>& payload_checkpoints();
 // The first checkpoint not yet captured, or the checkpoint count once all are
@@ -101,6 +103,8 @@ bool payload_checkpoint_captured(const PayloadCheckpoint& checkpoint);
 std::optional<rf::Vector3> payload_checkpoint_pos(const HillInfo& hill);
 // The server's lists: attackers and defenders in the push zone
 const std::vector<uint8_t>& payload_pusher_ids();
+// The pushers up to the most that speed the cart up
+int payload_useful_pushers();
 const std::vector<uint8_t>& payload_blocker_ids();
 // Where the cart's centre is at `distance` along the track
 rf::Vector3 payload_track_point(float distance);

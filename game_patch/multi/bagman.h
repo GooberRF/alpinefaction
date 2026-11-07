@@ -57,8 +57,6 @@ int bagman_get_score_tick_ms();
 void bagman_set_red_team_score(int v);
 void bagman_set_blue_team_score(int v);
 void bagman_add_team_score(rf::Player* player, int delta);
-// False if the player has no live entity to heal
-bool apply_effective_health_reward(rf::Player* player, float amount);
 void bagman_force_state_sync_to(rf::Player* player);
 void bagman_broadcast_state();
 // Feeds the bag's temporary waypoint node from the current bag state.

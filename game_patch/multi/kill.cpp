@@ -427,6 +427,18 @@ void print_kill_message(rf::Player* killed_player, rf::Player* killer_player)
     }
 }
 
+bool apply_effective_health_reward(rf::Player* player, float amount)
+{
+    if (!player || amount <= 0.0f) return false;
+    rf::Entity* ep = rf::entity_from_handle(player->entity_handle);
+    if (!ep || ep->life <= 0.0f) return false;
+
+    const float max_life_cap = std::max(ep->life, ep->info->max_life);
+    const float max_armor_cap = std::max(ep->armor, ep->info->max_armor);
+    distribute_effective_health(ep, amount, max_life_cap, max_armor_cap);
+    return true;
+}
+
 void distribute_effective_health(rf::Entity* ep, float amount, float max_life_cap, float max_armor_cap)
 {
     if (!ep || amount <= 0.0f) return;

@@ -308,7 +308,6 @@ rf::Vector3 payload_medallion_center(const rf::Vector3& cart_center)
 void payload_world_render()
 {
     if (!payload_active()) {
-        g_payload_world = {};
         return;
     }
     const int64_t now_ms = timer::get_i64(1000);

@@ -729,8 +729,7 @@ static void hud_draw_payload_state_row(int x, int y, int w, int h, int font_id)
         case PayloadCartState::pushing:
             fill = attackers;
             label = "Pushing";
-            value = std::format(
-                "x{}", std::min(static_cast<int>(payload_pusher_ids().size()), payload::max_useful_pushers));
+            value = std::format("x{}", payload_useful_pushers());
             break;
         case PayloadCartState::blocked:
             fill = defenders;
@@ -747,13 +746,12 @@ static void hud_draw_payload_state_row(int x, int y, int w, int h, int font_id)
         case PayloadCartState::held:
             fill = attackers;
             label = payload_in_setup() ? "Setup" : "Moving in";
-            value = std::format(
-                "{}", std::max(1, static_cast<int>(std::ceil(payload_countdown_seconds().value_or(0.0f)))));
+            value = std::to_string(payload_countdown_whole_seconds().value_or(1));
             break;
         default:
-            if (const auto left = payload_countdown_seconds()) {
+            if (const auto left = payload_countdown_whole_seconds()) {
                 label = "Rollback in";
-                value = std::format("{}", static_cast<int>(std::ceil(*left)));
+                value = std::to_string(*left);
             }
             else {
                 label = "Stopped";

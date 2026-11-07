@@ -1010,6 +1010,13 @@ struct BotState
     rf::Timestamp payload_hold_side_timer{};
     rf::Timestamp payload_hold_progress_timer{};
     float payload_hold_best_dist_sq = 0.0f;
+    // The hold spot as last worked out: where it sits from the cart, and for which goal and cart distance
+    rf::Timestamp payload_spot_refresh{};
+    rf::Vector3 payload_spot_from_cart{};
+    float payload_spot_cart_distance = 0.0f;
+    BotGoalType payload_spot_goal = BotGoalType::none;
+    int payload_spot_waypoint = 0;
+    bool payload_spot_direct = false;
     // Runs on a moment after the last attacker leaves the push zone, so defenders do not flip goals at its edge.
     rf::Timestamp payload_pushed_grace_timer{};
     BotCombatFiringState firing{};

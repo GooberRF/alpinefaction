@@ -2885,6 +2885,7 @@ constexpr float kPayloadHoldMinProgress = 0.5f;
 // Below the floor the cart rides on, how far a hold spot looks for floor; the track may cross a gap.
 constexpr float kPayloadHoldFloorProbe = 3.0f;
 constexpr int kPayloadHoldAheadSamples = 4;
+constexpr int kPayloadSpotRefreshMs = 250;
 
 // How far from the cart's centre a bot holds at most, inside the push zone with a margin.
 float payload_hold_radius()
@@ -2985,57 +2986,73 @@ bool update_payload_objective_goal(
 
     BotState& bs = bot_state();
     const bool hold_ahead = goal == BotGoalType::pay_hold_ahead;
-    float anchor_distance = payload_distance();
-    if (hold_ahead) {
-        // The furthest point with floor up to the hold distance, or the cart itself.
-        for (int sample = kPayloadHoldAheadSamples; sample > 0; --sample) {
-            const float distance = payload_distance()
-                + kPayloadHoldAheadDistance * static_cast<float>(sample) / kPayloadHoldAheadSamples;
-            if (payload_hold_spot_has_floor(payload_track_point(distance))) {
-                anchor_distance = distance;
-                break;
+    // The spot's traces add up with many bots, so it is worked out again only every so often or once the cart moves
+    // a step, and follows the cart in between.
+    if (!bs.payload_spot_refresh.valid() || bs.payload_spot_refresh.elapsed() || bs.payload_spot_goal != goal
+        || std::abs(payload_distance() - bs.payload_spot_cart_distance) > kPayloadHoldStep) {
+        float anchor_distance = payload_distance();
+        if (hold_ahead) {
+            // The furthest point with floor up to the hold distance, or the cart itself.
+            for (int sample = kPayloadHoldAheadSamples; sample > 0; --sample) {
+                const float distance = payload_distance()
+                    + kPayloadHoldAheadDistance * static_cast<float>(sample) / kPayloadHoldAheadSamples;
+                if (payload_hold_spot_has_floor(payload_track_point(distance))) {
+                    anchor_distance = distance;
+                    break;
+                }
             }
         }
-    }
-    const rf::Vector3 anchor = anchor_distance > payload_distance() ? payload_track_point(anchor_distance) : *center;
-    const rf::Vector3 forward = payload_track_forward(anchor_distance);
-    // A track running straight up has no sides, so the bot makes for the anchor itself.
-    const bool has_sides = forward.len_sq() > 0.0001f;
-    const rf::Vector3 lateral{forward.z, 0.0f, -forward.x};
+        const rf::Vector3 anchor =
+            anchor_distance > payload_distance() ? payload_track_point(anchor_distance) : *center;
+        const rf::Vector3 forward = payload_track_forward(anchor_distance);
+        // A track running straight up has no sides, so the bot makes for the anchor itself.
+        const bool has_sides = forward.len_sq() > 0.0001f;
+        const rf::Vector3 lateral{forward.z, 0.0f, -forward.x};
 
-    const float side_offset = (local_entity.pos - anchor).dot_prod(lateral);
-    if (bs.payload_hold_side == 0
-        || (!timer_running(bs.payload_hold_side_timer) && std::abs(side_offset) > kPayloadSideSwitchSlack)) {
-        bs.payload_hold_side = side_offset >= 0.0f ? 1 : -1;
-    }
-
-    rf::Vector3 spot = anchor;
-    if (has_sides && hold_ahead) {
-        // Off the track, so a cart pushed up to the bot does not run it over.
-        const rf::Vector3 aside = anchor + lateral * (static_cast<float>(bs.payload_hold_side) * payload_push_radius());
-        if (!payload_solid_mover_between(anchor, aside) && bot_can_walk_direct(anchor, aside)
-            && payload_hold_spot_has_floor(aside)) {
-            spot = aside;
+        const float side_offset = (local_entity.pos - anchor).dot_prod(lateral);
+        if (bs.payload_hold_side == 0
+            || (!timer_running(bs.payload_hold_side_timer) && std::abs(side_offset) > kPayloadSideSwitchSlack)) {
+            bs.payload_hold_side = side_offset >= 0.0f ? 1 : -1;
         }
+
+        rf::Vector3 new_spot = anchor;
+        if (has_sides && hold_ahead) {
+            // Off the track, so a cart pushed up to the bot does not run it over.
+            const rf::Vector3 aside =
+                anchor + lateral * (static_cast<float>(bs.payload_hold_side) * payload_push_radius());
+            if (!payload_solid_mover_between(anchor, aside) && bot_can_walk_direct(anchor, aside)
+                && payload_hold_spot_has_floor(aside)) {
+                new_spot = aside;
+            }
+        }
+        else if (has_sides
+                 && !payload_cart_hold_spot(
+                     *center, forward, bs.payload_hold_side, goal == BotGoalType::pay_push, new_spot)
+                 && payload_cart_hold_spot(
+                     *center, forward, -bs.payload_hold_side, goal == BotGoalType::pay_push, new_spot)) {
+            bs.payload_hold_side = -bs.payload_hold_side;
+            bs.payload_hold_side_timer.set(kPayloadFlippedSideMs);
+        }
+
+        bs.payload_spot_from_cart = new_spot - *center;
+        bs.payload_spot_cart_distance = payload_distance();
+        bs.payload_spot_goal = goal;
+        bs.payload_spot_waypoint = bot_find_closest_waypoint_with_fallback(new_spot);
+        bs.payload_spot_direct =
+            bot_can_walk_direct(local_entity.pos, new_spot) && !payload_solid_mover_between(local_entity.pos, new_spot);
+        bs.payload_spot_refresh.set(kPayloadSpotRefreshMs);
     }
-    else if (has_sides
-             && !payload_cart_hold_spot(*center, forward, bs.payload_hold_side, goal == BotGoalType::pay_push, spot)
-             && payload_cart_hold_spot(*center, forward, -bs.payload_hold_side, goal == BotGoalType::pay_push, spot)) {
-        bs.payload_hold_side = -bs.payload_hold_side;
-        bs.payload_hold_side_timer.set(kPayloadFlippedSideMs);
-    }
+    const rf::Vector3 spot = *center + bs.payload_spot_from_cart;
 
     bs.goal_target_handle = -1;
     bs.goal_target_identifier = -1;
     bs.goal_target_pos = hold_ahead ? spot : *center;
-    bs.goal_target_waypoint = bot_find_closest_waypoint_with_fallback(spot);
+    bs.goal_target_waypoint = bs.payload_spot_waypoint;
 
     const float spot_dist_sq = bot_horizontal_dist_sq(local_entity.pos, spot);
     if (hold_ahead) {
         if (bot_nav_payload_hold_ahead_reached(local_entity.pos, spot)
-            || (spot_dist_sq <= kSalvageHoldRadius * kSalvageHoldRadius
-                && bot_can_walk_direct(local_entity.pos, spot)
-                && !payload_solid_mover_between(local_entity.pos, spot))) {
+            || (spot_dist_sq <= kSalvageHoldRadius * kSalvageHoldRadius && bs.payload_spot_direct)) {
             bot_internal_clear_waypoint_route();
             bs.ctf_objective_route_fail_timer.invalidate();
             // Kept until the spot moves a step off it, so a cart rolling back does not shift the bot every frame.
@@ -3053,8 +3070,7 @@ bool update_payload_objective_goal(
         const bool in_zone = payload_player_in_push_zone(*bot_player());
         const float direct_reach = payload_push_radius() + kPayloadDirectApproachReach;
         if (in_zone || bot_horizontal_dist_sq(local_entity.pos, *center) <= direct_reach * direct_reach) {
-            const bool direct = bot_can_walk_direct(local_entity.pos, spot)
-                && !payload_solid_mover_between(local_entity.pos, spot);
+            const bool direct = bs.payload_spot_direct;
             if (in_zone || direct) {
                 bot_internal_clear_waypoint_route();
                 bs.ctf_objective_route_fail_timer.invalidate();
@@ -3094,6 +3110,7 @@ bool update_payload_objective_goal(
                 bs.payload_hold_side = -bs.payload_hold_side;
                 bs.payload_hold_side_timer.set(kPayloadFlippedSideMs);
                 bs.payload_hold_progress_timer.invalidate();
+                bs.payload_spot_refresh.invalidate();
                 bot_internal_clear_waypoint_route();
             }
         }
@@ -3115,7 +3132,7 @@ bool update_payload_objective_goal(
         else if (bs.ctf_objective_route_fail_timer.elapsed()) {
             return bot_goal_runtime_abort_ctf_goal();
         }
-        if (bot_can_walk_direct(local_entity.pos, spot) && !payload_solid_mover_between(local_entity.pos, spot)) {
+        if (bs.payload_spot_direct) {
             move_target = spot;
             has_move_target = true;
         }

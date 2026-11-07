@@ -305,18 +305,6 @@ void resolve_bag_spawn_from_placed_item()
 
 } // namespace
 
-bool apply_effective_health_reward(rf::Player* player, float amount)
-{
-    if (!player || amount <= 0.0f) return false;
-    rf::Entity* ep = rf::entity_from_handle(player->entity_handle);
-    if (!ep || ep->life <= 0.0f) return false;
-
-    const float max_life_cap = std::max(ep->life, ep->info->max_life);
-    const float max_armor_cap = std::max(ep->armor, ep->info->max_armor);
-    distribute_effective_health(ep, amount, max_life_cap, max_armor_cap);
-    return true;
-}
-
 void bagman_force_state_sync_to(rf::Player* player)
 {
     if (!gt_is_bagman_any()) return;
