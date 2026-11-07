@@ -76,8 +76,8 @@ namespace
     // so the browser returns to the folder a demo was launched from.
     std::string g_current_dir;
 
-    // Demo row shown in the preview pane: the overlay's last hovered row, so the pane keeps its
-    // content while the cursor leaves the list, or the panel's selection. -1 = none.
+    // Demo row shown in the preview pane: the panel's selection, or the overlay's last hovered row
+    // (kept while the cursor leaves the list). -1 = none.
     int g_preview = -1;
     std::chrono::steady_clock::time_point g_preview_since;
     // The hover must rest this long before the demo is scanned, so sweeping the cursor down the
@@ -101,7 +101,7 @@ namespace
     // The last click on a demo row, for telling a double-click from two single ones.
     int g_last_click_row = -1;
     std::chrono::steady_clock::time_point g_last_click_time;
-    // The second click of a double-click on a folder would land on the folder it opened.
+    // The second click of a double-click on a folder would land in the folder it opened.
     std::chrono::steady_clock::time_point g_last_nav_click_time;
     UiId g_panel_scrolled_to_focus = 0;
 
@@ -296,6 +296,8 @@ namespace
     void reload_entries()
     {
         g_scroll = 0.0f;
+        // Row ids are positional, so a focused row now names a row of the new list; bring it into view.
+        g_panel_scrolled_to_focus = 0;
         g_preview = -1;
         g_scan_job.reset();
         g_entries.clear();
