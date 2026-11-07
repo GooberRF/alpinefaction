@@ -1522,6 +1522,11 @@ void do_action_choice_widget(UiContext& ctx, const SettingRow& row, const UiRect
 // Most enums with at most this many offered values cycle in place.
 constexpr int cycler_max_options = 4;
 
+bool is_controller_debug_action(std::string_view action)
+{
+    return action == "gyro_reset_partial" || action == "gyro_reset_full" || action == "joy_reset";
+}
+
 void do_row_widget(UiContext& ctx, const SettingRow& row, const UiRect& row_rect, int ctl_right,
                    const Fonts& fonts, int slider_readout_w, bool enabled, bool sync_pass, bool hot)
 {
@@ -1727,6 +1732,21 @@ void do_row_widget(UiContext& ctx, const SettingRow& row, const UiRect& row_rect
                 if (skin_button(ctx, r, "RESET BINDINGS", fonts.body_bold, SkinButton::Danger,
                                 enabled && bind_rows_live(), id)) {
                     g_modal = Modal::ResetBindings;
+                    ui_play_click();
+                }
+            }
+            else if (is_controller_debug_action(action)) {
+                const UiRect r = right_rect(ctx, ctl_right, row_rect, skin::control_w, 44.0f);
+                if (skin_button(ctx, r, "RESET", fonts.body_bold, SkinButton::Secondary, enabled, id)) {
+                    if (action == "gyro_reset_partial") {
+                        rf::console::do_command("gyro_reset partial");
+                    }
+                    else if (action == "gyro_reset_full") {
+                        rf::console::do_command("gyro_reset full");
+                    }
+                    else {
+                        rf::console::do_command("joy_reset");
+                    }
                     ui_play_click();
                 }
             }
@@ -2891,10 +2911,10 @@ bool entry_owns_focus(const Entry& entry, UiId focus)
 
 void register_offscreen_focus(UiContext& ctx, const Entry& entry)
 {
-    // Action buttons carry enable conditions of their own; a stand-in for a button that then
-    // refuses focus would drop the cursor back to the top.
+    // Other action buttons can have extra enable conditions the row alone does not capture.
     if (entry.kind == EntryKind::Row
-        && (!row_widget_enabled(*entry.row) || entry.row->widget == SettingWidget::Action)) {
+        && (!row_widget_enabled(*entry.row)
+            || (entry.row->widget == SettingWidget::Action && !is_controller_debug_action(entry.row->id)))) {
         return;
     }
     if (entry.kind == EntryKind::Bind && (!bind_rows_live() || g_capture.row >= 0)) {
