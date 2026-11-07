@@ -23,6 +23,7 @@
 #include "../input/input.h"
 #include "../misc/alpine_settings.h"
 #include "../misc/level.h"
+#include "../misc/settings_registry.h"
 #include "../misc/vote_panel.h"
 #include "../multi/alpine_packets.h"
 #include "../multi/bagman.h"
@@ -932,7 +933,7 @@ void minimap_level_reset()
 ConsoleCommand2 minimap_cmd{
     "cl_minimap",
     [](std::optional<bool> enabled) {
-        g_alpine_game_config.minimap = enabled.value_or(!g_alpine_game_config.minimap);
+        setting_console_set_bool("minimap", enabled);
         rf::console::print("Minimap is {}", g_alpine_game_config.minimap ? "enabled" : "disabled");
     },
     "Show the multiplayer minimap on levels that provide one",
@@ -942,7 +943,7 @@ ConsoleCommand2 minimap_cmd{
 ConsoleCommand2 minimap_rotate_cmd{
     "cl_minimap_rotate",
     [](std::optional<bool> enabled) {
-        g_alpine_game_config.minimap_rotate = enabled.value_or(!g_alpine_game_config.minimap_rotate);
+        setting_console_set_bool("minimap_rotate", enabled);
         rf::console::print("Minimap rotation is {}",
                            g_alpine_game_config.minimap_rotate ? "enabled (player heading up)" : "disabled (north up)");
     },
@@ -953,7 +954,7 @@ ConsoleCommand2 minimap_rotate_cmd{
 ConsoleCommand2 minimap_labels_cmd{
     "cl_minimap_labels",
     [](std::optional<bool> enabled) {
-        g_alpine_game_config.minimap_labels = enabled.value_or(!g_alpine_game_config.minimap_labels);
+        setting_console_set_bool("minimap_labels", enabled);
         rf::console::print("Minimap control point names are {}",
                            g_alpine_game_config.minimap_labels ? "enabled" : "disabled");
     },
@@ -965,7 +966,7 @@ ConsoleCommand2 minimap_size_cmd{
     "cl_minimap_size",
     [](std::optional<float> size) {
         if (size) {
-            g_alpine_game_config.set_minimap_size(*size);
+            setting_console_set("minimap_size", std::to_string(*size));
         }
         rf::console::print("Minimap size is {:.0f} ({:.0f}-{:.0f}, scaled with the big HUD)",
                            g_alpine_game_config.minimap_size, AlpineGameSettings::min_minimap_size,
@@ -979,7 +980,7 @@ ConsoleCommand2 minimap_zoom_cmd{
     "cl_minimap_zoom",
     [](std::optional<float> zoom) {
         if (zoom) {
-            g_alpine_game_config.set_minimap_zoom(*zoom);
+            setting_console_set("minimap_zoom", std::to_string(*zoom));
         }
         rf::console::print("Minimap zoom is {:.2f} (share of the level's width shown across the panel)",
                            g_alpine_game_config.minimap_zoom);

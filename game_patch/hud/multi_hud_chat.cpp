@@ -15,6 +15,7 @@
 #include "../misc/vote_panel.h"
 #include <patch_common/CallHook.h>
 #include "../multi/alpine_packets.h"
+#include "../misc/settings_registry.h"
 
 bool g_big_chatbox = false;
 bool g_all_players_muted = false;
@@ -236,7 +237,7 @@ CodeInjection process_chat_line_packet_injection{
 ConsoleCommand2 hide_chat_cmd{
     "cl_chat",
     []() {
-        g_alpine_game_config.hide_chat = !g_alpine_game_config.hide_chat;
+        setting_console_set("show_chat", "toggle");
         rf::console::print("Chat display is {}", g_alpine_game_config.hide_chat ? "hidden" : "visible");
     },
     "Toggle MP chat display",

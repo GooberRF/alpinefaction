@@ -936,6 +936,12 @@ namespace gr::d3d11
         dyn_geo_renderer_->line_2d(x1, y1, x2, y2, mode);
     }
 
+    void Renderer::ui_sdf(const UiSdfDraw& draw, rf::gr::Mode mode)
+    {
+        particle_renderer_->flush_batch();
+        dyn_geo_renderer_->sdf_shape(draw, mode);
+    }
+
     bool Renderer::poly(int nv, rf::gr::Vertex** vertices, int vertex_attributes, rf::gr::Mode mode, bool constant_sw, float sw)
     {
         rf::ubyte and_code = 0xFF;

@@ -289,6 +289,14 @@ add_packfile(alpinefaction.vpp
     images/dec_af_csp09.tga
     images/dec_af_csp10.tga
     images/af-jetpack1skin1.tga
+    images/af_menu_cap.svg
+    images/af_connector.svg
+    images/af_arrows.svg
+    images/af_search_icon.svg
+    images/af_reset_icon.svg
+    images/af_revert_icon.svg
+    images/af_close_icon.svg
+    images/af_padlock_icon.svg
     images/af_scavpumap1.dds
     images/af_jeeptire1.tga
     images/af_apctread1.atx
@@ -416,6 +424,7 @@ add_packfile(alpinefaction.vpp
     decoration_ps:${CMAKE_BINARY_DIR}/shaders/decoration_ps.bin
     decoration_nogas_ps:${CMAKE_BINARY_DIR}/shaders/decoration_nogas_ps.bin
     ui_ps:${CMAKE_BINARY_DIR}/shaders/ui_ps.bin
+    ui_sdf_ps:${CMAKE_BINARY_DIR}/shaders/ui_sdf_ps.bin
     shadow_debug_ps:${CMAKE_BINARY_DIR}/shaders/shadow_debug_ps.bin
     outline_ps:${CMAKE_BINARY_DIR}/shaders/outline_ps.bin
     gamma_vs:${CMAKE_BINARY_DIR}/shaders/gamma_vs.bin

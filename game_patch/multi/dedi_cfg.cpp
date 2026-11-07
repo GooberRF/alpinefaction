@@ -632,6 +632,8 @@ static void apply_rules_keys_from_toml(const toml::table& t, AlpineServerConfigR
         o.team_damage   = *v;
     if (auto v = t["fall_damage"].value<bool>())
         o.fall_damage   = *v;
+    if (auto v = t["exposure_damage"].value<bool>())
+        o.exposure_damage = *v;
     if (auto v = t["weapons_stay"].value<bool>())
         o.weapons_stay  = *v;
     if (auto v = t["force_respawn"].value<bool>())
@@ -1886,6 +1888,8 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         std::format_to(iter, "  Team damage:                           {}\n", rules.team_damage);
     if (base || rules.fall_damage != b.fall_damage)
         std::format_to(iter, "  Fall damage:                           {}\n", rules.fall_damage);
+    if (base || rules.exposure_damage != b.exposure_damage)
+        std::format_to(iter, "  Exposure damage:                       {}\n", rules.exposure_damage);
     if (base || rules.weapons_stay != b.weapons_stay)
         std::format_to(iter, "  Weapon stay:                           {}\n", rules.weapons_stay);
     if (base || rules.force_respawn != b.force_respawn)

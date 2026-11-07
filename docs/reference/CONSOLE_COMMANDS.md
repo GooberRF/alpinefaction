@@ -11,6 +11,8 @@ Argument notation: `<x>` is required, `[x]` is optional. A `[bool]` argument acc
 | Command | Arguments | Description |
 | --- | --- | --- |
 | `.` | `<query>` | Lists commands whose name or description contains the query. |
+| `af_get` | `<key>` | Prints a setting's current value and whether it differs from the default. `key` is the setting's ID or its `alpine_settings.ini` key (case-insensitive); an unknown key lists up to five settings whose name contains it. |
+| `af_set` | `<key> <value>` | Sets any setting the settings menu can change, with `key` as for `af_get`. Out-of-range numbers are clamped, choice values snap to the nearest option, and text values keep their case. Keybinds, list orderings and launcher settings cannot be set here. Without a value, prints the accepted values and the current one. |
 | `afstats_status` | | Shows the status of this session's FactionFiles player stats link (stats-enabled server, session state, signed-in account). |
 | `autodl_blur_background` | | Toggles the blurred background on the level download screen. Default: on. |
 | `autodl_download_awps` | | Toggles downloading AWP waypoint files along with levels from the autodownloader. Default: off. |
@@ -25,7 +27,7 @@ Argument notation: `<x>` is required, `[x]` is optional. A `[bool]` argument acc
 | `level_info` (`map_info`) | | Shows information about the current level: file, name, author, RFL version, Alpine and Dash level properties, `_info.tbl` overrides and mesh replacements. |
 | `levelm` (`mapm`) | `<filename>` | Starts a new local multiplayer game on the level. Not available on dedicated servers. |
 | `map` | `<filename>` | Alias of the stock `level` command, which Alpine also allows outside multiplayer. Allowed via rcon. |
-| `maxfps` | `[limit]` | Sets the frame rate limit (1-100000, default 240). In multiplayer it is capped at 240 unless you are hosting or the server allows unlimited FPS. On a dedicated server it sets the server limit (default 80). Allowed via rcon. |
+| `maxfps` | `[limit]` | Sets the frame rate limit (10-100000, default 240). In multiplayer it is capped at 240 unless you are hosting or the server allows unlimited FPS. On a dedicated server it sets the server limit (default 80). Allowed via rcon. |
 | `save_commands` | | Stock RF command. Prints all console commands to `console_commands.txt`. |
 | `screenshot` | | Saves a screenshot and prints its file name. |
 | `script` | `<scriptfilename>` | Stock RF command. Runs a console script file from the game directory. |
@@ -55,7 +57,7 @@ Commands marked "D3D11 only" only have an effect with the Direct3D 11 renderer.
 | `r_fpgunfov` | `[scale]` | Sets the FOV scale for first person weapon models (0.1-1.5). Default: 1.0. |
 | `r_fullbright` | | Toggles fullbright character meshes. In multiplayer, only applies if the server allows it. Default: off. |
 | `r_fullrangelighting` | | Toggles full range lighting. Applies on the next level load. Default: on. |
-| `r_gamma` | `[value]` | Sets gamma. |
+| `r_gamma` | `[value]` | Sets gamma (0.7-2.2, the stock slider range). Default: 1.0. |
 | `r_lightmaps` | | Toggles rendering only lightmaps (no textures) on level geometry. In multiplayer, only applies if the server allows it. Default: off. |
 | `r_lodscale` | `[scale]` | Sets the LOD distance scale (0.1-1000). Default: 10. |
 | `r_meshlighting` | `[0-2]` | Mesh lighting: `0` ambient only, `1` vertex (legacy), `2` pixel (D3D11). A level's `_info.tbl` can force vertex lighting. Default: 2. |
@@ -380,7 +382,7 @@ Zone types (or their numeric id): `control_point` (`cp`), `damaging_liquid_room`
 | `sp_camerashake` | | Toggles forcing off all camera shake in single player. Default: off. |
 | `sp_climbfix` | | Toggles the fix for getting stuck climbing after leaving a climbing region while crouched. Default: on. |
 | `sp_difficulty` | `<easy\|medium\|hard\|impossible>` | Stock RF command. Sets the game difficulty. |
-| `sp_exposuredamage` | | Toggles exposure damage when outside without armor. Default: on. |
+| `sp_exposuredamage` | | Toggles exposure damage when outside without armor in single player. In multiplayer the server's `exposure_damage` rule applies. Default: on. |
 | `sp_geochunkphysics` | | Toggles isolated geomod chunks falling as physics objects instead of disappearing. Default: on. |
 | `sp_levelhardness` | `[0-100]` | Stock RF command. Sets the default hardness for geomods. Not in multiplayer. |
 | `sp_spreadmode` | | Toggles bullet spread between the gaussian method and the legacy uniform method. Default: legacy (uniform). |

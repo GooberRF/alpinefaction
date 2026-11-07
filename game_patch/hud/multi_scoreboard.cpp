@@ -31,6 +31,7 @@
 #include "hud_internal.h"
 #include "../graphics/gr.h"
 #include "../misc/player.h"
+#include "../misc/settings_registry.h"
 
 #define DEBUG_SCOREBOARD 0
 
@@ -776,7 +777,7 @@ FunHook<void(bool)> draw_scoreboard_internal_hook{0x00470880, draw_scoreboard_in
 ConsoleCommand2 ui_scoreboard_spectators_cmd{
     "ui_scoreboard_split_spectators",
     [] {
-        g_alpine_game_config.scoreboard_split_spectators = !g_alpine_game_config.scoreboard_split_spectators;
+        setting_console_set("scoreboard_split_spectators", "toggle");
         rf::console::print(
             "Scoreboard spectator separation is {}",
             g_alpine_game_config.scoreboard_split_spectators ? "enabled" : "disabled"
@@ -789,7 +790,7 @@ ConsoleCommand2 ui_scoreboard_spectators_cmd{
 ConsoleCommand2 ui_scoreboard_bots_cmd{
     "ui_scoreboard_split_bots",
     [] {
-        g_alpine_game_config.scoreboard_split_bots = !g_alpine_game_config.scoreboard_split_bots;
+        setting_console_set("scoreboard_split_bots", "toggle");
         rf::console::print(
             "Scoreboard bot separation is {}",
             g_alpine_game_config.scoreboard_split_bots ? "enabled" : "disabled"
@@ -802,7 +803,7 @@ ConsoleCommand2 ui_scoreboard_bots_cmd{
 ConsoleCommand2 ui_scoreboard_browsers_cmd{
     "ui_scoreboard_split_browsers",
     [] {
-        g_alpine_game_config.scoreboard_split_browsers = !g_alpine_game_config.scoreboard_split_browsers;
+        setting_console_set("scoreboard_split_browsers", "toggle");
         rf::console::print(
             "Scoreboard browser separation is {}",
             g_alpine_game_config.scoreboard_split_browsers ? "enabled" : "disabled"
@@ -815,7 +816,7 @@ ConsoleCommand2 ui_scoreboard_browsers_cmd{
 ConsoleCommand2 ui_scoreboard_idle_cmd{
     "ui_scoreboard_split_idle",
     [] {
-        g_alpine_game_config.scoreboard_split_idle = !g_alpine_game_config.scoreboard_split_idle;
+        setting_console_set("scoreboard_split_idle", "toggle");
         rf::console::print(
             "Scoreboard idle player separation is {}",
             g_alpine_game_config.scoreboard_split_idle ? "enabled" : "disabled"
@@ -828,7 +829,7 @@ ConsoleCommand2 ui_scoreboard_idle_cmd{
 ConsoleCommand2 ui_scoreboard_simple_cmd{
     "ui_scoreboard_simplesplit",
     [] {
-        g_alpine_game_config.scoreboard_split_simple = !g_alpine_game_config.scoreboard_split_simple;
+        setting_console_set("scoreboard_split_simple", "toggle");
         rf::console::print(
             "Simple scoreboard separation is {}",
             g_alpine_game_config.scoreboard_split_simple ? "enabled" : "disabled"

@@ -31,6 +31,7 @@
 #include "../rf/math/ix.h"
 #include "destruction.h"
 #include "level.h"
+#include "../misc/settings_registry.h"
 #include "alpine_terrain.h"
 #include "../graphics/af_lightmap.h"
 
@@ -610,7 +611,7 @@ CodeInjection level_load_lightmaps_color_conv_patch{
 ConsoleCommand2 lighting_color_range_cmd{
     "r_fullrangelighting",
     []() {
-        g_alpine_game_config.full_range_lighting = !g_alpine_game_config.full_range_lighting;        
+        setting_console_set("full_range_lighting", "toggle");
         rf::console::printf("Full range lighting is: %s", g_alpine_game_config.full_range_lighting ? "enabled" : "disabled");
     },
     "Toggle full range lighting. Only affects new level loads.",
@@ -619,7 +620,7 @@ ConsoleCommand2 lighting_color_range_cmd{
 ConsoleCommand2 clamp_official_lightmaps_cmd{
     "r_clampofficiallightmaps",
     []() {
-        g_alpine_game_config.always_clamp_official_lightmaps = !g_alpine_game_config.always_clamp_official_lightmaps;
+        setting_console_set("always_clamp_official_lightmaps", "toggle");
         rf::console::printf("Forced clamping of lightmaps in official levels is: %s", g_alpine_game_config.always_clamp_official_lightmaps ? "enabled" : "disabled");
     },
     "Toggle forced lightmap clamping for official Volition levels. Only affects new level loads. Only applicable if full range lighting is enabled.",
@@ -628,7 +629,7 @@ ConsoleCommand2 clamp_official_lightmaps_cmd{
 ConsoleCommand2 ignore_tbl_lightmap_clamping_cmd{
     "cl_ignore_tbl_lightmap_clamping",
     []() {
-        g_alpine_game_config.ignore_tbl_lightmap_clamping = !g_alpine_game_config.ignore_tbl_lightmap_clamping;
+        setting_console_set("ignore_tbl_lightmap_clamping", "toggle");
         rf::console::printf("Ignore TBL lightmap clamping override: %s", g_alpine_game_config.ignore_tbl_lightmap_clamping ? "enabled" : "disabled");
         rf::console::printf("Reload the level for this to take effect.");
     },
