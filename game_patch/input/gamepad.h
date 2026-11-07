@@ -25,7 +25,7 @@ void consume_raw_gamepad_deltas(float& pitch_delta, float& yaw_delta);
 void consume_vehicle_orbit_gamepad_deltas(float& pitch_delta, float& yaw_delta);
 void flush_freelook_gamepad_deltas();
 
-namespace rf { struct Entity; }
+namespace rf { struct ControlConfig; struct Entity; }
 void gamepad_apply_vehicle_driver_input(rf::Entity* vehicle);
 bool gamepad_is_motionsensors_supported();
 bool gamepad_is_trigger_rumble_supported();
@@ -37,7 +37,8 @@ int         gamepad_get_trigger_for_action(int action_idx); // 0=LT, 1=RT, -1 if
 const char* gamepad_get_scan_code_name(int scan_code);
 const char* gamepad_get_menu_cancel_button_name();
 int         gamepad_get_button_count();
-void        gamepad_reset_to_defaults();
+void        gamepad_reset_to_defaults(const rf::ControlConfig* new_profile_controls = nullptr);
+int         gamepad_vehicle_change_view_default_code();
 
 // Scan codes for controller inputs (unused gap in RF's key table)
 static constexpr int CTRL_GAMEPAD_SCAN_BASE    = 0x59; // SDL button 0

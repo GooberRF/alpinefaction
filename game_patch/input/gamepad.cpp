@@ -2,6 +2,7 @@
 #include "gyro.h"
 #include "rumble.h"
 #include "input.h"
+#include "bind_context.h"
 #include "glyph.h"
 #include "../hud/multi_spectate.h"
 #include "../multi/vehicles/vehicle.h"
@@ -2324,7 +2325,12 @@ static void bind_default(int button, int action_idx)
     bind_default_code(CTRL_GAMEPAD_SCAN_BASE + button, action_idx);
 }
 
-void gamepad_reset_to_defaults()
+int gamepad_vehicle_change_view_default_code()
+{
+    return CTRL_GAMEPAD_SCAN_BASE + SDL_GAMEPAD_BUTTON_DPAD_LEFT;
+}
+
+void gamepad_reset_to_defaults(const rf::ControlConfig* new_profile_controls)
 {
     for (auto& slots : g_action_pad)
         slots[0] = slots[1] = -1;
@@ -2351,6 +2357,20 @@ void gamepad_reset_to_defaults()
     bind_default_code(CTRL_GAMEPAD_LEFT_TRIGGER, rf::CC_ACTION_SECONDARY_ATTACK);
     bind_default_code(CTRL_GAMEPAD_RIGHT_TRIGGER, rf::CC_ACTION_PRIMARY_ATTACK);
     rebuild_pad_tables();
+
+    if (new_profile_controls) {
+        const int index = static_cast<int>(get_af_control(rf::AF_ACTION_SPECTATE_CHANGE_VIEW));
+        if (alpine_control_start_index() >= 0 && index < new_profile_controls->num_bindings
+            && index < bind_context_max_bindings) {
+            bind_context_set_override(
+                BindContextId::Vehicles, index,
+                BindOverride{{bind_inherit, bind_inherit}, bind_inherit,
+                             {static_cast<int16_t>(gamepad_vehicle_change_view_default_code()), bind_inherit}});
+        }
+        else {
+            xlog::warn("[Settings] Could not set the default vehicle Change View binding: action unavailable.");
+        }
+    }
 }
 
 void gamepad_apply_patch()

@@ -2328,8 +2328,8 @@ const char* category_summary(SettingCategory category)
             return "Heads-up display, crosshair, scopes, minimap, world markers, spectating and demos.";
         case SettingCategory::Interface: return "Menus, notifications, downloads and the console.";
         case SettingCategory::Audio: return "Volumes, voice messages and audio feedback.";
-        case SettingCategory::Bindings: return "Key and mouse bindings for every action.";
-        case SettingCategory::Input: return "Mouse, keyboard and scope behavior.";
+        case SettingCategory::Bindings: return "Keyboard, mouse and controller binding for every action.";
+        case SettingCategory::Input: return "Mouse, keyboard, controller and scope behavior.";
         case SettingCategory::Gameplay: return "Single-player options, view, autoswitch, gore, weapons and vehicles.";
         case SettingCategory::Multiplayer: return "Identity, handicap, sprays, hosting and FactionFiles account.";
         default: return "";
@@ -2402,6 +2402,12 @@ ModalCopy modal_copy()
         case Modal::ResetBindings:
             if (g_bind_device == BindDevice::Controller) {
                 if (g_bind_context != BindContextId::Global) {
+                    if (g_bind_context == BindContextId::Vehicles) {
+                        return ModalCopy{"RESET BINDINGS",
+                                         std::string{"Restore vehicle controller bindings to their defaults?"},
+                                         std::string{"Change View uses D-Pad Left; other controller overrides are cleared."},
+                                         "RESET BINDINGS"};
+                    }
                     return ModalCopy{"RESET BINDINGS",
                                      std::format("Remove every controller override in the {} context?",
                                                  bind_context_label(g_bind_context)),
@@ -2529,6 +2535,15 @@ void modal_confirmed(UiContext& ctx)
                             BindOverride value = *stored;
                             value.pad_codes[0] = value.pad_codes[1] = bind_inherit;
                             bind_context_set_override(g_bind_context, i, value);
+                        }
+                    }
+                    if (g_bind_context == BindContextId::Vehicles) {
+                        const int index = static_cast<int>(get_af_control(rf::AF_ACTION_SPECTATE_CHANGE_VIEW));
+                        if (alpine_control_start_index() >= 0 && index < bind_context_binding_count()) {
+                            bind_pad_assign_context(ctx, index, 0, gamepad_vehicle_change_view_default_code());
+                        }
+                        else {
+                            ctx.push_toast("CHANGE VIEW BINDING UNAVAILABLE");
                         }
                     }
                 }

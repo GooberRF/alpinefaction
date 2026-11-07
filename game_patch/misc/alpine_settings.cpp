@@ -30,6 +30,7 @@
 #include <shellapi.h>
 #include <array>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <ostream>
@@ -963,11 +964,17 @@ CallHook<void(rf::Player*)> player_settings_load_hook{
             settings_file_found = true;
         }
         if (!settings_file_found) {
+            std::error_code file_error;
+            const bool settings_file_exists = std::filesystem::exists(alpine_get_settings_filename(), file_error);
+            if (file_error) {
+                xlog::warn("[Settings] Could not check whether the settings file exists: {}", file_error.message());
+            }
             xlog::warn("Alpine Faction settings file not found. Attempting to import legacy RF settings file.");
             player_settings_load_hook.call_target(player); // load players.cfg
 
             set_alpine_config_defaults();
-            gamepad_reset_to_defaults();
+            gamepad_reset_to_defaults(!settings_file_exists && !file_error && !g_loaded_players_cfg_file
+                                          ? &player->settings.controls : nullptr);
 
             // Display restart popup due to players.cfg import
             // players.cfg from legacy client version will import fine on first load, apart from Alpine controls
