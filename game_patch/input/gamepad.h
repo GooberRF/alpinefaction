@@ -42,6 +42,7 @@ const char* gamepad_get_scan_code_name(int scan_code);
 const char* gamepad_get_menu_cancel_button_name();
 int         gamepad_get_button_count();
 void        gamepad_reset_to_defaults(const rf::ControlConfig* new_profile_controls = nullptr);
+void        gamepad_set_context_defaults(const rf::ControlConfig& controls);
 int         gamepad_vehicle_change_view_default_code();
 std::array<std::pair<int, int>, 4> gamepad_spectator_default_bindings();
 

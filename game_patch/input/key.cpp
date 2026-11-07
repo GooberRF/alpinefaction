@@ -350,7 +350,7 @@ CodeInjection control_config_init_patch{
                                        rf::AlpineControlConfigAction::AF_ACTION_VOTE_MENU);
         alpine_control_config_add_item(ccp, "Show Map", false, rf::KEY_Q, -1, -1,
                                        rf::AlpineControlConfigAction::AF_ACTION_BIG_MAP);
-        alpine_control_config_add_item(ccp, "Center View", false, -1, -1, -1, 
+        alpine_control_config_add_item(ccp, "Reset Camera View", false, -1, -1, -1, 
                                        rf::AlpineControlConfigAction::AF_ACTION_CENTER_VIEW);
         alpine_control_config_add_item(ccp, "Gyro Ratcheting", false, -1, -1, -1,
                                        rf::AlpineControlConfigAction::AF_ACTION_GYRO_RATCHETING);

@@ -2392,6 +2392,29 @@ std::array<std::pair<int, int>, 4> gamepad_spectator_default_bindings()
     }};
 }
 
+void gamepad_set_context_defaults(const rf::ControlConfig& controls)
+{
+    const auto set_default = [&](BindContextId ctx, int action, int code) {
+        if (alpine_control_start_index() < 0 || action < 0 || action >= controls.num_bindings
+            || action >= bind_context_max_bindings) {
+            xlog::warn("[Settings] Could not set default controller binding {}: action unavailable.", action);
+            return;
+        }
+        if (!bind_context_override(ctx, action)) {
+            bind_context_set_override(
+                ctx, action,
+                BindOverride{{bind_inherit, bind_inherit}, bind_inherit,
+                             {static_cast<int16_t>(code), bind_inherit}});
+        }
+    };
+
+    set_default(BindContextId::Vehicles, static_cast<int>(get_af_control(rf::AF_ACTION_SPECTATE_CHANGE_VIEW)),
+                gamepad_vehicle_change_view_default_code());
+    for (const auto& [action, code] : gamepad_spectator_default_bindings()) {
+        set_default(BindContextId::Spectator, action, code);
+    }
+}
+
 void gamepad_reset_to_defaults(const rf::ControlConfig* new_profile_controls)
 {
     for (auto& slots : g_action_pad)
@@ -2409,35 +2432,16 @@ void gamepad_reset_to_defaults(const rf::ControlConfig* new_profile_controls)
     bind_default(SDL_GAMEPAD_BUTTON_DPAD_RIGHT, rf::CC_ACTION_MP_STATS);
     bind_default(SDL_GAMEPAD_BUTTON_BACK, static_cast<int>(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SKIP_CUTSCENE)));
 
+    // Multiplayer mode toggle
+    bind_default(SDL_GAMEPAD_BUTTON_WEST, static_cast<int>(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE)));
+
     // Trigger defaults (gameplay action)
     bind_default_code(CTRL_GAMEPAD_LEFT_TRIGGER, rf::CC_ACTION_SECONDARY_ATTACK);
     bind_default_code(CTRL_GAMEPAD_RIGHT_TRIGGER, rf::CC_ACTION_PRIMARY_ATTACK);
     rebuild_pad_tables();
 
     if (new_profile_controls) {
-        const int index = static_cast<int>(get_af_control(rf::AF_ACTION_SPECTATE_CHANGE_VIEW));
-        if (alpine_control_start_index() >= 0 && index < new_profile_controls->num_bindings
-            && index < bind_context_max_bindings) {
-            bind_context_set_override(
-                BindContextId::Vehicles, index,
-                BindOverride{{bind_inherit, bind_inherit}, bind_inherit,
-                             {static_cast<int16_t>(gamepad_vehicle_change_view_default_code()), bind_inherit}});
-        }
-        else {
-            xlog::warn("[Settings] Could not set the default vehicle Change View binding: action unavailable.");
-        }
-        for (const auto& [action, code] : gamepad_spectator_default_bindings()) {
-            if (alpine_control_start_index() >= 0 && action >= 0 && action < new_profile_controls->num_bindings
-                && action < bind_context_max_bindings) {
-                bind_context_set_override(
-                    BindContextId::Spectator, action,
-                    BindOverride{{bind_inherit, bind_inherit}, bind_inherit,
-                                 {static_cast<int16_t>(code), bind_inherit}});
-            }
-            else {
-                xlog::warn("[Settings] Could not set default spectator binding {}: action unavailable.", action);
-            }
-        }
+        gamepad_set_context_defaults(*new_profile_controls);
     }
 }
 

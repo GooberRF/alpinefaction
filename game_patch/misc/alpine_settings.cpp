@@ -49,6 +49,8 @@ bool g_loaded_alpine_settings_file = false;
 bool g_loaded_alpine_core_config_file = false;
 static bool g_loaded_players_cfg_file = false;
 static bool g_restart_on_close = false;
+static bool g_pending_import_context_defaults = false;
+static constexpr char pending_import_context_defaults_key[] = "AFSPendingImportContextDefaults";
 std::vector<std::string> orphaned_lines;
 std::vector<std::string> orphaned_lines_core_config;
 int loaded_afs_version = -1;
@@ -344,12 +346,37 @@ static int find_binding_by_name(const rf::ControlConfig& cc, const std::string& 
     return -1;
 }
 
+static bool apply_import_context_defaults(const rf::ControlConfig& controls)
+{
+    if (alpine_control_start_index() < 0) {
+        xlog::warn("[Settings] Imported controller context defaults are waiting for Alpine controls.");
+        return false;
+    }
+    const std::array<std::pair<rf::AlpineControlConfigAction, const char*>, 4> actions{{
+        {rf::AF_ACTION_SPECTATE_CHANGE_VIEW, "Change View"},
+        {rf::AF_ACTION_SPECTATE_ATTACH, "Attach Spectate Camera"},
+        {rf::AF_ACTION_SPECTATE_TOGGLE, "Toggle Spectate"},
+        {rf::AF_ACTION_SPECTATE_MENU, "Spectate Mode Menu"},
+    }};
+    for (const auto& [action, name] : actions) {
+        const int index = static_cast<int>(get_af_control(action));
+        if (index < 0 || index >= controls.num_bindings || index >= bind_context_max_bindings
+            || !(controls.bindings[index].name == name)) {
+            xlog::warn("[Settings] Imported controller context defaults are waiting for action '{}'.", name);
+            return false;
+        }
+    }
+    gamepad_set_context_defaults(controls);
+    return true;
+}
+
 bool alpine_player_settings_load(rf::Player* player)
 {
     // Nothing may be applied over the live table while it is being rewritten, and a reload
     // starts from an empty override store.
     BindContextSuspendGuard bind_context_guard;
     bind_context_reset_all();
+    g_pending_import_context_defaults = false;
 
     handle_afs_param();
     std::string filename = alpine_get_settings_filename();
@@ -376,6 +403,16 @@ bool alpine_player_settings_load(rf::Player* player)
     }
 
     file.close();
+
+    if (const auto it = settings.find(pending_import_context_defaults_key); it != settings.end()) {
+        if (it->second == "1") {
+            g_pending_import_context_defaults = true;
+        }
+        else {
+            xlog::warn("[Settings] Invalid {} value '{}'.", pending_import_context_defaults_key, it->second);
+        }
+        processed_keys.insert(it->first);
+    }
 
     // Store loaded settings file version
     if (settings.count("AFSFileVersion")) {
@@ -643,6 +680,10 @@ bool alpine_player_settings_load(rf::Player* player)
     resolve_scan_code_conflicts(player->settings.controls);
     resolve_mouse_button_conflicts(player->settings.controls);
 
+    if (g_pending_import_context_defaults && apply_import_context_defaults(player->settings.controls)) {
+        g_pending_import_context_defaults = false;
+    }
+
     // Context overrides are loaded before the Global table has settled, so dedupe them now.
     bind_context_dedupe_against_global();
 
@@ -815,6 +856,9 @@ static void alpine_settings_serialize_header(std::ostream& file)
     file << "AFSTimestamp=" << std::put_time(now_tm, "%Y-%m-%d %H:%M:%S") << "\n";
     file << "AFSClientVersion=" << PRODUCT_NAME_VERSION << " (" << VERSION_CODE << ")\n";
     file << "AFSFileVersion=" << AFS_VERSION << "\n";
+    if (g_pending_import_context_defaults) {
+        file << pending_import_context_defaults_key << "=1\n";
+    }
 
     // Write saved orphaned settings
     if (!orphaned_lines.empty()) {
@@ -980,6 +1024,11 @@ CallHook<void(rf::Player*)> player_settings_load_hook{
             // players.cfg from legacy client version will import fine on first load, apart from Alpine controls
             // Restart cleanly loads game without baggage from players.cfg, and adds Alpine controls without issue
             if (g_loaded_players_cfg_file) {
+                if (!settings_file_exists && !file_error) {
+                    // Legacy imports may not have registered Alpine actions until after restart.
+                    g_pending_import_context_defaults = true;
+                    apply_import_context_defaults(player->settings.controls);
+                }
                 ff_link_prompt = false; // do not display both ff link popup and config migration popup
 
                 const char* choices[1] = {"RESTART GAME"};
