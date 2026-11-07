@@ -73,7 +73,7 @@ void multi_hud_render_chat()
     }
 
     if (g_remote_server_cfg_popup.is_active() || vote_panel_is_gameplay_overlay_active()
-        || g_alpine_game_config.hide_chat) {
+        || !hud_element_visible(HudElement::chat)) {
         return;
     }
 

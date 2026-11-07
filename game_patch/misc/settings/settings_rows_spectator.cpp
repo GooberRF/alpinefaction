@@ -131,6 +131,18 @@ const SettingRow rows[] = {
         .flags = SF_MP_ONLY,
         .console_cmd = "spectate_powerups",
     },
+    {
+        .id = "demo_minimal_compact_bar",
+        .key = "DemoMinimalCompactBar",
+        .label = "Minimal compact bar",
+        .tooltip = "Shrink the compact demo playback bar to the plain spectate nameplate.",
+        .category = Cat::Hud,
+        .subcategory = "Demos",
+        .widget = Wid::Toggle,
+        .access = AccBool{&AGS::demo_minimal_compact_bar},
+        .flags = SF_MP_ONLY,
+        .console_cmd = "spectate_minimalbar",
+    },
 };
 
 } // namespace

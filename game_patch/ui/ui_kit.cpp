@@ -1244,6 +1244,23 @@ void ui_scroll_end(UiContext& ctx, UiScrollRegion& region)
     }
 }
 
+void ui_scroll_focus_into_view(const UiContext& ctx, const UiRect& view, const std::optional<UiRect>& focus_rect,
+                               float& scroll, UiId& scrolled_to)
+{
+    if (ctx.draw || ctx.focus_id() == scrolled_to) {
+        return;
+    }
+    if (ctx.focus_visible() && focus_rect) {
+        if (focus_rect->y < view.y) {
+            scroll -= static_cast<float>(view.y - focus_rect->y);
+        }
+        else if (focus_rect->y + focus_rect->h > view.y + view.h) {
+            scroll += static_cast<float>(focus_rect->y + focus_rect->h - (view.y + view.h));
+        }
+    }
+    scrolled_to = ctx.focus_id();
+}
+
 UiScrollbarGeometry ui_scrollbar_geometry(const UiContext& ctx, const UiRect& view, int content_h, float scroll)
 {
     UiScrollbarGeometry g;

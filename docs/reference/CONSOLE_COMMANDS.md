@@ -71,6 +71,7 @@ Commands marked "D3D11 only" only have an effect with the Direct3D 11 renderer.
 | `r_outlines_color_team_b` | `[RRGGBB\|RRGGBBAA\|clear]` | Sets the outline color for blue team players. D3D11 only. Default: `0096FFFF`. |
 | `r_outlines_color_team_r` | `[RRGGBB\|RRGGBBAA\|clear]` | Sets the outline color for red team players. D3D11 only. Default: `FF3232FF`. |
 | `r_outlines_spectator` | | Toggles player outlines while spectating. D3D11 only. Default: off. |
+| `r_outlines_spectator_xray` | | Toggles showing player outlines through walls while spectating. D3D11 only. Default: on. |
 | `r_outlines_team_xray` | | Toggles showing teammate outlines through walls. D3D11 only. Default: on. |
 | `r_picmip` | `[divisor]` | Sets the global texture resolution divisor (1-256, 1 = full resolution). D3D11 only. Default: 1. |
 | `r_pixellightoverbright` | `[0.0-3.0]` | Sets the overbright range for pixel lighting. A level's `_info.tbl` can override it. D3D11 only. Default: 0.5. |
@@ -162,6 +163,7 @@ Commands marked "D3D11 only" only have an effect with the Direct3D 11 renderer.
 | `cl_columnsegments` | `[segments]` | Sets the number of segments of control point light columns (3-256). Default: 8. |
 | `cl_dominationmsgs` | | Toggles dominating and revenge server messages in chat. Default: on. |
 | `cl_hud` | `[bool]` | Shows or hides the HUD. Not saved. |
+| `cl_hudelement` | `[element\|all] [bool]` | Shows or hides one HUD element (`health`, `ammo`, `reticle`, `powerups`, `gauges`, `names`, `killfeed`, `chat`, `timer`, `scores`, `messages`, `minimap`) for this session; an element alone toggles it, `all` alone shows all, no arguments lists them. Not saved. |
 | `cl_locationpings` | | Toggles location pinging (team game types and RUN only). Default: on. |
 | `cl_minimap` | `[bool]` | Shows the multiplayer minimap on levels that provide one. Default: on. |
 | `cl_minimap_labels` | `[bool]` | Shows control point names on the minimap. Default: on. |
@@ -287,6 +289,7 @@ Colors are hex `RRGGBB` or `RRGGBBAA`, or comma-separated `R,G,B[,A]` values in 
 | `demo_seek` | `<mm:ss \| seconds \| +/-seconds>` | Seeks within the playing demo. Seeking backward reloads the level. |
 | `demo_stop` | | Stops demo playback. |
 | `demo_timescale` | `[0.05-10]` | Sets the demo playback speed multiplier. Default: 1.0. |
+| `spectate_minimalbar` | | Toggles the minimal compact demo bar, which shows just the followed player's name. Default: off. |
 | `spectate_playerinfo` | | Toggles player health and armor bars during demo playback. Default: off. |
 | `spectate_powerups` | | Toggles powerup respawn timers during demo playback. Default: on. |
 | `spectate_spawns` | | Toggles respawn point indicators during demo playback. Default: off. |
