@@ -36,6 +36,7 @@
 #include "gungame.h"
 #include "salvage.h"
 #include "scavenger.h"
+#include "payload.h"
 #include "vehicles/vehicle.h"
 #include "vehicles/vehicle_tracers.h"
 #include "bots/server_bots.h"
@@ -938,6 +939,10 @@ std::optional<rf::NetGameType> resolve_gametype_from_name(std::string_view gamet
     if (string_iequals(gametype_name, "scav") ||
         string_iequals(gametype_name, "scavenger")) {
         return rf::NetGameType::NG_TYPE_SCAV;
+    }
+    if (string_iequals(gametype_name, "pay") ||
+        string_iequals(gametype_name, "payload")) {
+        return rf::NetGameType::NG_TYPE_PAY;
     }
 
     return std::nullopt;
@@ -2386,6 +2391,9 @@ FunHook<bool (const char*, int)> multi_is_level_matching_game_type_hook{
         }
         else if (ng_type == rf::NetGameType::NG_TYPE_ESC) {
             return string_istarts_with(filename, "esc");
+        }
+        else if (ng_type == rf::NetGameType::NG_TYPE_PAY) {
+            return string_istarts_with(filename, "pay");
         }
         // Gametypes that can reasonably be played on essentially any MP level.
         else if (multi_game_type_uses_any_level(static_cast<rf::NetGameType>(ng_type))) {
@@ -3978,6 +3986,7 @@ static int pick_weaker_team(const bool for_bot)
         break;
     case rf::NG_TYPE_DC:
     case rf::NG_TYPE_KOTH:
+    case rf::NG_TYPE_PAY:
         red_score = multi_koth_get_red_team_score();
         blue_score = multi_koth_get_blue_team_score();
         break;
@@ -4572,6 +4581,10 @@ bool round_is_tied(rf::NetGameType game_type)
     case rf::NG_TYPE_TBAG: {
         return bagman_get_red_team_score() == bagman_get_blue_team_score();
     }
+    case rf::NG_TYPE_PAY: {
+        // Payload overtime is its own rule, kept by payload_round_over
+        return false;
+    }
     case rf::NG_TYPE_SAL:
     case rf::NG_TYPE_SCAV: {
         const int red_score = salvage_get_red_team_score();
@@ -4693,6 +4706,12 @@ FunHook<void()> multi_check_for_round_end_hook{
                 if (esc_all_points_owned_by_one_team()) {
                     round_over = true;
                 }
+                break;
+            }
+            case rf::NG_TYPE_PAY: {
+                round_over = payload_round_over(time_up);
+                // A finale in payload overtime is the attackers' win, not a time limit end
+                time_up = time_up && !payload_finale_reached();
                 break;
             }
             case rf::NG_TYPE_BAG: {
@@ -6041,7 +6060,7 @@ std::tuple<bool, int, bool, bool> server_features_require_alpine_client()
         min_minor_version = std::max(min_minor_version, 4);
     }
 
-    if (g_alpine_server_config_active_rules.game_type == rf::NG_TYPE_SCAV) {
+    if (static_cast<int>(g_alpine_server_config_active_rules.game_type) >= rf::NG_TYPE_SCAV) {
         requires_alpine = true;
         hard_reject = true;
         min_minor_version = std::max(min_minor_version, 5);

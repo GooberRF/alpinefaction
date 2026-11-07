@@ -2348,6 +2348,7 @@ bool bot_nav_pick_waypoint_route_to_goal_randomized_after_stuck(
         || bot_goal_is_item_collection(bot_state().active_goal)
         || bot_goal_is_ctf_objective(bot_state().active_goal)
         || bot_goal_is_salvage_objective(bot_state().active_goal)
+        || bot_goal_is_payload_objective(bot_state().active_goal)
         || bot_state().active_goal == BotGoalType::activate_bridge
         || bot_state().active_goal == BotGoalType::create_crater
         || bot_state().active_goal == BotGoalType::shatter_glass;
@@ -2580,6 +2581,7 @@ bool bot_nav_pick_waypoint_route_to_goal_long_detour(
         || bot_goal_is_item_collection(bot_state().active_goal)
         || bot_goal_is_ctf_objective(bot_state().active_goal)
         || bot_goal_is_salvage_objective(bot_state().active_goal)
+        || bot_goal_is_payload_objective(bot_state().active_goal)
         || bot_state().active_goal == BotGoalType::activate_bridge
         || bot_state().active_goal == BotGoalType::create_crater
         || bot_state().active_goal == BotGoalType::shatter_glass;

@@ -55,10 +55,16 @@ void bot_goal_runtime_clear_non_active_goal_state(const BotGoalType active_goal)
         bot_state().control_point_patrol_waypoint = 0;
         bot_state().control_point_patrol_timer.invalidate();
     }
-    if (!bot_goal_is_salvage_positioning(active_goal)) {
+    // Payload holds side-step with the salvage hold step.
+    if (!bot_goal_is_salvage_positioning(active_goal) && !bot_goal_is_payload_objective(active_goal)) {
         bot_state().salvage_hold_pos = {};
         bot_state().salvage_hold_orbit_timer.invalidate();
         bot_state().salvage_hold_orbit_left = false;
+    }
+    if (!bot_goal_is_payload_objective(active_goal)) {
+        bot_state().payload_hold_side = 0;
+        bot_state().payload_hold_side_timer.invalidate();
+        bot_state().payload_hold_progress_timer.invalidate();
     }
     if (!bot_goal_is_vehicle(active_goal)) {
         // A later pick of the same seat starts a fresh approach.

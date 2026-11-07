@@ -1560,6 +1560,11 @@ char __fastcall CDedDoc_LoadSaveLevel_new(void* self, int edx, const char* path,
     if (is_load && !is_autosave) {
         headless_bake_level_loaded(path, result != 0);
     }
+    if (op == LevelFileOp::save && result) {
+        if (CDedLevel* level = CDedLevel::Get()) {
+            mover_path_check_payload(*level);
+        }
+    }
     return result;
 }
 

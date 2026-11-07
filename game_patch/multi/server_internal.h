@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <unordered_map>
 #include <unordered_set>
+#include <common/payload.h>
 #include "../rf/math/vector.h"
 #include "../rf/math/matrix.h"
 #include "../rf/os/string.h"
@@ -230,6 +231,44 @@ struct ScavengerConfig
         if (std::isfinite(in_meters)) {
             zone_radius = std::clamp(in_meters, 1.0f, 10.0f);
         }
+    }
+};
+
+// The server's Payload settings. The optionals override the level's rules, unset meaning the level's value.
+struct PayloadConfig
+{
+    static constexpr float max_setup_time = 60.0f;
+    float setup_time = 20.0f; // the cart stays put this long at the round's start
+    std::optional<float> checkpoint_time_bonus; // also wins over a checkpoint's own bonus
+    std::optional<float> overtime_grace;
+    std::optional<float> heal_per_tick; // per second
+
+    // Non-finite input keeps the current value
+    static void set_clamped(std::optional<float>& out, float in, float lo, float hi)
+    {
+        if (std::isfinite(in)) {
+            out = std::clamp(in, lo, hi);
+        }
+    }
+
+    void set_checkpoint_time_bonus(float in_seconds)
+    {
+        set_clamped(checkpoint_time_bonus, in_seconds, 0.0f, payload::max_checkpoint_time_bonus);
+    }
+
+    void set_overtime_grace(float in_seconds)
+    {
+        set_clamped(overtime_grace, in_seconds, 0.0f, payload::max_overtime_grace);
+    }
+
+    void set_heal_per_tick(float in_amount)
+    {
+        set_clamped(heal_per_tick, in_amount, 0.0f, payload::max_heal_per_second);
+    }
+
+    void set_setup_time(float in_seconds)
+    {
+        setup_time = payload::clamp_rule(in_seconds, 0.0f, max_setup_time, setup_time);
     }
 };
 
@@ -863,6 +902,7 @@ struct AlpineServerConfigRules
     BagmanConfig bagman;
     SalvageConfig salvage;
     ScavengerConfig scavenger;
+    PayloadConfig payload;
     std::map<std::string, std::string> item_replacements;
     std::map<std::string, int> item_respawn_time_overrides;
     DelayedItemsConfig delayed_items;
@@ -996,7 +1036,8 @@ struct AlpineServerConfigRules
             case rf::NetGameType::NG_TYPE_WO:      return rounds.wins_to_take_match();
             case rf::NetGameType::NG_TYPE_RUN:
             case rf::NetGameType::NG_TYPE_REV:
-            case rf::NetGameType::NG_TYPE_ESC:     return std::nullopt;
+            case rf::NetGameType::NG_TYPE_ESC:
+            case rf::NetGameType::NG_TYPE_PAY:     return std::nullopt;
             default:                               return individual_kill_limit;
         }
     }
@@ -1020,7 +1061,8 @@ struct AlpineServerConfigRules
             case rf::NetGameType::NG_TYPE_WO:      rounds.set_wins_to_take_match(count); return true;
             case rf::NetGameType::NG_TYPE_RUN:
             case rf::NetGameType::NG_TYPE_REV:
-            case rf::NetGameType::NG_TYPE_ESC:     return false;
+            case rf::NetGameType::NG_TYPE_ESC:
+            case rf::NetGameType::NG_TYPE_PAY:     return false;
             default:                               set_individual_kill_limit(count); return true;
         }
     }

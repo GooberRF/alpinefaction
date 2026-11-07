@@ -51,6 +51,7 @@ enum class af_packet_type : uint8_t
     af_vehicle_orient = 0x68,           // Alpine 1.5
     af_vehicle_factory_state = 0x69,    // Alpine 1.5
     af_scavenger_state = 0x6A,          // Alpine 1.5
+    af_payload_state = 0x6B,            // Alpine 1.5
 };
 
 struct af_ping_location_req_packet
@@ -651,6 +652,29 @@ struct af_scavenger_state_packet
 static_assert(sizeof(af_scavenger_state_packet) == 59);
 static_assert(offsetof(af_scavenger_state_packet, zone_x) == sizeof(af_salvage_state_packet));
 
+// The Payload cart, server -> client. Sent reliably on every change (pusher lists at most every 100 ms) and
+// unreliably while the cart moves or after a heal tick, so the client extrapolates distance with speed in between.
+constexpr uint8_t af_payload_state_flag_overtime = 0x1;
+constexpr uint8_t af_payload_state_flag_heals = 0x2;
+constexpr uint8_t af_payload_state_flag_setup = 0x4;
+constexpr uint16_t af_payload_state_no_countdown = 0xFFFF;
+constexpr uint8_t af_payload_state_max_ids = 64;
+struct af_payload_state_packet
+{
+    RF_GamePacketHeader header;
+    uint8_t sequence;          // wraps; a client ignores a packet older than the last it applied
+    uint8_t state;             // PayloadCartState
+    uint8_t flags;             // af_payload_state_flag_*
+    uint8_t heal_serial;       // wraps; changes on each heal tick with a live pusher
+    uint8_t next_checkpoint;   // checkpoints the cart has passed
+    uint16_t countdown_ds;     // payload_countdown_seconds, or af_payload_state_no_countdown
+    float distance;            // along the track
+    float speed;               // signed, m/s
+    uint8_t num_pushers;
+    // uint8_t pusher_ids[num_pushers], uint8_t num_blockers, uint8_t blocker_ids[num_blockers] appended on the wire
+};
+static_assert(sizeof(af_payload_state_packet) == sizeof(RF_GamePacketHeader) + 16);
+
 // Seat occupancy, server -> client. Handles are server handles. The packet states the hull's FULL
 // occupancy rather than an enter/exit event, so a receiver converges on it with no event history.
 constexpr int af_vehicle_state_max_seats = 6;
@@ -1111,6 +1135,9 @@ void af_process_salvage_state_packet(const void* data, size_t len, const rf::Net
 void af_send_scavenger_state_packet(rf::Player* player);
 void af_send_scavenger_state_packet_to_all();
 void af_process_scavenger_state_packet(const void* data, size_t len, const rf::NetAddr&);
+void af_send_payload_state_packet(rf::Player* player);
+void af_send_payload_state_packet_to_all(bool reliable);
+void af_process_payload_state_packet(const void* data, size_t len, const rf::NetAddr&);
 void af_send_vehicle_state_packet(rf::Player* player, int vehicle_handle, const int32_t* seat_rider,
                                   uint8_t seat_count, uint8_t changed_seat,
                                   const af_vehicle_state_attrs& attrs);

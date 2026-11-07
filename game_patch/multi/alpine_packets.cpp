@@ -37,6 +37,7 @@
 #include "pit.h"
 #include "salvage.h"
 #include "scavenger.h"
+#include "payload.h"
 #include "vehicles/vehicle.h"
 #include "vote_client.h"
 #include "../misc/player.h"
@@ -172,6 +173,10 @@ bool af_process_packet(
         }
         case af_packet_type::af_salvage_state: {
             af_process_salvage_state_packet(data, static_cast<size_t>(len), addr);
+            return true;
+        }
+        case af_packet_type::af_payload_state: {
+            af_process_payload_state_packet(data, static_cast<size_t>(len), addr);
             return true;
         }
         case af_packet_type::af_scavenger_state: {
@@ -3897,6 +3902,146 @@ void af_process_scavenger_state_packet(const void* data, size_t len, const rf::N
         pkt.zone_floor_y, pkt.zone_time_left_ms, captured);
 }
 
+// Returns the wire size, or 0 if the state does not fit
+static size_t build_af_payload_state_packet(std::byte (&buf)[rf::max_packet_size])
+{
+    const PayloadNetState net = payload_build_net_state();
+    const size_t num_pushers = std::min<size_t>(net.pushers.size(), af_payload_state_max_ids);
+    const size_t num_blockers = std::min<size_t>(net.blockers.size(), af_payload_state_max_ids);
+    const size_t wire_size = sizeof(af_payload_state_packet) + num_pushers + 1 + num_blockers;
+    if (wire_size > rf::max_packet_size) {
+        xlog::error("af_payload_state: packet too large ({} > {})", wire_size, rf::max_packet_size);
+        return 0;
+    }
+
+    af_payload_state_packet pkt{};
+    pkt.header.type = static_cast<uint8_t>(af_packet_type::af_payload_state);
+    pkt.header.size = static_cast<uint16_t>(wire_size - sizeof(RF_GamePacketHeader));
+    pkt.sequence = net.sequence;
+    pkt.state = static_cast<uint8_t>(net.state);
+    pkt.flags = static_cast<uint8_t>((net.overtime ? af_payload_state_flag_overtime : 0)
+                                     | (net.heals ? af_payload_state_flag_heals : 0)
+                                     | (net.setup ? af_payload_state_flag_setup : 0));
+    pkt.heal_serial = net.heal_serial;
+    pkt.next_checkpoint = net.next_checkpoint;
+    pkt.countdown_ds = net.countdown_seconds
+        ? static_cast<uint16_t>(std::clamp(std::lround(*net.countdown_seconds * 10.0f), 0L, 0xFFFEL))
+        : af_payload_state_no_countdown;
+    pkt.distance = net.distance;
+    pkt.speed = net.speed;
+    pkt.num_pushers = static_cast<uint8_t>(num_pushers);
+
+    size_t off = 0;
+    std::memcpy(buf + off, &pkt, sizeof(pkt));
+    off += sizeof(pkt);
+    if (num_pushers) {
+        std::memcpy(buf + off, net.pushers.data(), num_pushers);
+        off += num_pushers;
+    }
+    buf[off++] = static_cast<std::byte>(num_blockers);
+    if (num_blockers) {
+        std::memcpy(buf + off, net.blockers.data(), num_blockers);
+        off += num_blockers;
+    }
+    return off;
+}
+
+void af_send_payload_state_packet(rf::Player* player)
+{
+    // server -> single client
+    if (!rf::is_server) {
+        return;
+    }
+    if (!player) {
+        xlog::error("af_payload_state_packet: Attempted to send to an invalid player");
+        return;
+    }
+
+    std::byte buf[rf::max_packet_size];
+    if (const size_t len = build_af_payload_state_packet(buf)) {
+        af_send_packet(player, buf, static_cast<int>(len), true);
+    }
+}
+
+void af_send_payload_state_packet_to_all(bool reliable)
+{
+    // server -> all clients
+    if (!rf::is_server)
+        return;
+
+    std::byte buf[rf::max_packet_size];
+    const size_t len = build_af_payload_state_packet(buf);
+    if (!len)
+        return;
+
+    SinglyLinkedList<rf::Player> players{rf::player_list};
+    for (auto& p : players) {
+        // The listen-server host runs the cart itself
+        if (!p.net_data || &p == rf::local_player)
+            continue;
+        af_send_packet(&p, buf, static_cast<int>(len), reliable);
+    }
+}
+
+void af_process_payload_state_packet(const void* data, size_t len, const rf::NetAddr&)
+{
+    // Receive: client <- server
+    if (!rf::is_multi || rf::is_server)
+        return;
+    if (len < sizeof(RF_GamePacketHeader))
+        return;
+
+    RF_GamePacketHeader hdr{};
+    std::memcpy(&hdr, data, sizeof(hdr));
+    const size_t wire_size = sizeof(RF_GamePacketHeader) + hdr.size;
+    if (wire_size > len) {
+        xlog::warn("payload_state: truncated (declared={}, len={})", hdr.size, len);
+        return;
+    }
+    if (wire_size < sizeof(af_payload_state_packet) + 1) {
+        xlog::warn("payload_state: short packet ({})", wire_size);
+        return;
+    }
+
+    af_payload_state_packet pkt{};
+    std::memcpy(&pkt, data, sizeof(pkt));
+
+    const auto* bytes = static_cast<const uint8_t*>(data);
+    size_t off = sizeof(pkt);
+    if (off + pkt.num_pushers + 1 > wire_size) {
+        xlog::warn("payload_state: bad pusher count {}", pkt.num_pushers);
+        return;
+    }
+    PayloadNetState net;
+    net.pushers.assign(bytes + off, bytes + off + pkt.num_pushers);
+    off += pkt.num_pushers;
+    const uint8_t num_blockers = bytes[off++];
+    if (off + num_blockers != wire_size) {
+        xlog::warn("payload_state: bad blocker count {}", num_blockers);
+        return;
+    }
+    net.blockers.assign(bytes + off, bytes + off + num_blockers);
+
+    if (pkt.state > static_cast<uint8_t>(PayloadCartState::held) || !std::isfinite(pkt.distance)
+        || !std::isfinite(pkt.speed)) {
+        xlog::warn("payload_state: rejecting state {} distance {} speed {}", pkt.state, pkt.distance, pkt.speed);
+        return;
+    }
+    net.sequence = pkt.sequence;
+    net.state = static_cast<PayloadCartState>(pkt.state);
+    net.overtime = (pkt.flags & af_payload_state_flag_overtime) != 0;
+    net.heals = (pkt.flags & af_payload_state_flag_heals) != 0;
+    net.setup = (pkt.flags & af_payload_state_flag_setup) != 0;
+    net.heal_serial = pkt.heal_serial;
+    net.next_checkpoint = pkt.next_checkpoint;
+    if (pkt.countdown_ds != af_payload_state_no_countdown) {
+        net.countdown_seconds = static_cast<float>(pkt.countdown_ds) / 10.0f;
+    }
+    net.distance = pkt.distance;
+    net.speed = pkt.speed;
+    payload_apply_net_state(net);
+}
+
 // server -> every AF 1.5+ client, optionally skipping one
 static void af_broadcast_to_af_clients(const void* data, size_t len, bool is_reliable,
                                        rf::Player* except = nullptr)
@@ -4677,6 +4822,7 @@ static void build_af_server_info_packet(af_server_info_packet& pkt)
         case rf::NetGameType::NG_TYPE_RUN:
         case rf::NetGameType::NG_TYPE_REV:
         case rf::NetGameType::NG_TYPE_ESC:
+        case rf::NetGameType::NG_TYPE_PAY:
             pkt.win_condition = static_cast<uint32_t>(0); // no wincon necessary
             break;
         default:
@@ -4835,6 +4981,7 @@ static void af_process_server_info_packet(const void* data, size_t len, const rf
             case rf::NetGameType::NG_TYPE_RUN:
             case rf::NetGameType::NG_TYPE_REV:
             case rf::NetGameType::NG_TYPE_ESC:
+            case rf::NetGameType::NG_TYPE_PAY:
                 break; // no wincon necessary
             default:
                 rf::netgame.max_kills = static_cast<int>(pkt.win_condition);

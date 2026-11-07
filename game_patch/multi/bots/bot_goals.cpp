@@ -12,12 +12,15 @@
 #include "bot_waypoint_route.h"
 #include "../bagman.h"
 #include "../gametype.h"
+#include "../payload.h"
 #include "../salvage.h"
 #include "../scavenger.h"
 #include "../../main/main.h"
+#include "../../rf/level.h"
 #include "../../rf/multi.h"
 #include "../../rf/player/player.h"
 #include "../../rf/weapon.h"
+#include <common/payload.h>
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -744,29 +747,20 @@ bool build_salvage_runtime_state(SalvageRuntimeState& out_state)
     return true;
 }
 
-// A bot already in the primary role counts itself nearer, so bots at similar distances keep their roles.
-bool scavenger_takes_primary_role(const rf::Entity& local_entity, const SalvageRuntimeState& state)
+// Whether the bot is among the primary_count(team-mates) of its team nearest anchor_pos by route, `excluded` not
+// counted. A bot already in the primary role counts itself nearer, so bots at similar distances keep their roles.
+template<typename PrimaryCount>
+bool objective_takes_primary_role(
+    const rf::Entity& local_entity,
+    const rf::Vector3& anchor_pos,
+    const int role_key,
+    const rf::Player* excluded,
+    const PrimaryCount& primary_count)
 {
     constexpr int kRoleRefreshMs = 1500;
     constexpr float kRoleKeepShare = 0.25f;
     constexpr float kRoleKeepMinDist = 8.0f;
 
-    rf::Vector3 anchor_pos{};
-    if (state.carrier_entity) {
-        anchor_pos = state.carrier_entity->pos;
-    }
-    else if (state.in_world) {
-        anchor_pos = state.flag_pos;
-    }
-    else if (state.staging) {
-        anchor_pos = state.spawn_pos;
-    }
-    else {
-        return true;
-    }
-    const int role_key = state.carrier_entity
-        ? state.carrier_entity->handle
-        : -1 - static_cast<int>(salvage_get_state());
     BotState& bs = bot_state();
     if (bs.scav_role_key == role_key && bs.scav_role_timer.valid() && !bs.scav_role_timer.elapsed()) {
         return bs.scav_role_primary;
@@ -799,7 +793,7 @@ bool scavenger_takes_primary_role(const rf::Entity& local_entity, const SalvageR
     int teammates = 1;
     int nearer = 0;
     for (const rf::Player& candidate : SinglyLinkedList{rf::player_list}) {
-        if (&candidate == &local_player || &candidate == state.carrier || candidate.team != local_player.team) {
+        if (&candidate == &local_player || &candidate == excluded || candidate.team != local_player.team) {
             continue;
         }
         const rf::Entity* candidate_entity = live_participant_entity(candidate);
@@ -812,9 +806,127 @@ bool scavenger_takes_primary_role(const rf::Entity& local_entity, const SalvageR
             ++nearer;
         }
     }
-    const int primary_count = state.ally_carry ? 1 : (teammates + 1) / 2;
-    bs.scav_role_primary = nearer < primary_count;
+    bs.scav_role_primary = nearer < primary_count(teammates);
     return bs.scav_role_primary;
+}
+
+bool scavenger_takes_primary_role(const rf::Entity& local_entity, const SalvageRuntimeState& state)
+{
+    rf::Vector3 anchor_pos{};
+    if (state.carrier_entity) {
+        anchor_pos = state.carrier_entity->pos;
+    }
+    else if (state.in_world) {
+        anchor_pos = state.flag_pos;
+    }
+    else if (state.staging) {
+        anchor_pos = state.spawn_pos;
+    }
+    else {
+        return true;
+    }
+    const int role_key = state.carrier_entity
+        ? state.carrier_entity->handle
+        : -1 - static_cast<int>(salvage_get_state());
+    return objective_takes_primary_role(
+        local_entity, anchor_pos, role_key, state.carrier,
+        [&state](const int teammates) { return state.ally_carry ? 1 : (teammates + 1) / 2; });
+}
+
+struct PayloadRuntimeState
+{
+    bool attacking = false;
+    rf::Vector3 center{};
+    float radius = 0.0f;
+    // Attackers in the push zone, or there a moment ago, whether or not defenders block them
+    bool pushed = false;
+    bool rolling_back = false;
+    bool in_zone = false;
+    // 0 to 1: overtime, a rollback under way or about to start, a checkpoint or the end close, the clock nearly out
+    float urgency = 0.0f;
+};
+
+struct PayloadGoalCandidate
+{
+    BotGoalType goal = BotGoalType::none;
+    int waypoint = 0;
+    rf::Vector3 pos{};
+    float score = -std::numeric_limits<float>::infinity();
+    // Holds the bot's team's place at the cart, rather than fighting round it.
+    bool primary = false;
+};
+
+bool build_payload_runtime_state(PayloadRuntimeState& out_state)
+{
+    out_state = {};
+    if (!payload_active() || !bot_player() || payload_state() == PayloadCartState::finale) {
+        return false;
+    }
+    const auto center = payload_cart_center();
+    const rf::Player& player = *bot_player();
+    if (!center || (player.team != payload_attacking_team() && player.team != payload_defending_team())) {
+        return false;
+    }
+    out_state.attacking = player.team == payload_attacking_team();
+    out_state.center = *center;
+    out_state.radius = payload_push_radius();
+    constexpr int kPushedGraceMs = 1750;
+    // A held cart moves for nobody, so it counts as unpushed
+    const bool held = payload_state() == PayloadCartState::held;
+    if (!held && !payload_pusher_ids().empty()) {
+        bot_state().payload_pushed_grace_timer.set(kPushedGraceMs);
+    }
+    out_state.pushed = !held && timer_running(bot_state().payload_pushed_grace_timer);
+    out_state.rolling_back = payload_state() == PayloadCartState::rolling_back;
+    out_state.in_zone = payload_player_in_push_zone(player);
+
+    constexpr float kRollbackUrgentSeconds = 10.0f;
+    constexpr float kCheckpointUrgentDistance = 12.0f;
+    constexpr float kEndUrgentShare = 0.15f;
+    constexpr float kClockUrgentSeconds = 30.0f;
+    float urgency = payload_in_overtime() ? 1.0f : 0.0f;
+    const auto rollback_left = held ? std::nullopt : payload_countdown_seconds();
+    if (out_state.attacking && out_state.rolling_back) {
+        urgency = 1.0f;
+    }
+    else if (out_state.attacking && rollback_left) {
+        urgency = std::max(urgency, 1.0f - *rollback_left / kRollbackUrgentSeconds);
+    }
+    const auto& checkpoints = payload_checkpoints();
+    const int next_checkpoint = payload_next_checkpoint_index();
+    if (next_checkpoint >= 0 && next_checkpoint < static_cast<int>(checkpoints.size())) {
+        const float gap = checkpoints[next_checkpoint].distance - payload_distance();
+        urgency = std::max(urgency, 1.0f - gap / kCheckpointUrgentDistance);
+    }
+    if (const float total = payload_total_length(); total > 0.0f) {
+        urgency = std::max(urgency, (payload_distance() / total - (1.0f - kEndUrgentShare)) / kEndUrgentShare);
+    }
+    if (out_state.attacking && rf::multi_time_limit > 0.0f) {
+        urgency = std::max(urgency, 1.0f - (rf::multi_time_limit - rf::level.time) / kClockUrgentSeconds);
+    }
+    out_state.urgency = std::clamp(urgency, 0.0f, 1.0f);
+    return true;
+}
+
+// Distinct from the Salvage role keys, which are entity handles or small negative numbers.
+constexpr int kPayloadPushRoleKey = -100;
+constexpr int kPayloadBlockRoleKey = -101;
+constexpr int kPayloadHoldRoleKey = -102;
+
+bool payload_takes_primary_role(const rf::Entity& local_entity, const PayloadRuntimeState& state, const int role_key)
+{
+    // When the cart is urgent every bot goes for it.
+    if (state.urgency >= 0.5f) {
+        return true;
+    }
+    return objective_takes_primary_role(
+        local_entity, state.center, role_key, nullptr, [role_key](const int teammates) {
+            // Most of the defence contests a pushed cart, which any one blocker stops.
+            if (role_key == kPayloadPushRoleKey) {
+                return std::min(teammates, payload::max_useful_pushers);
+            }
+            return role_key == kPayloadBlockRoleKey ? teammates - teammates / 3 : (teammates + 1) / 2;
+        });
 }
 
 bool find_reachable_bridge_zone_waypoint(
@@ -1134,6 +1246,9 @@ int bot_goals_objective_anchors(const rf::Entity& local_entity, BotObjectiveAnch
             out[count++] = BotObjectiveAnchor{pos, control_point_hill_needs_defense(hill, local_team)};
         }
     }
+    if (PayloadRuntimeState pay_state{}; count < max_count && build_payload_runtime_state(pay_state)) {
+        out[count++] = BotObjectiveAnchor{pay_state.center, !pay_state.attacking && pay_state.pushed};
+    }
     return count;
 }
 
@@ -1155,6 +1270,10 @@ bool bot_goals_transport_objective(const rf::Entity& local_entity, rf::Vector3& 
             return false;
         }
         return out_pos.len_sq() > 0.0001f;
+    }
+    if (PayloadRuntimeState pay_state{}; build_payload_runtime_state(pay_state)) {
+        out_pos = pay_state.center;
+        return true;
     }
     if (!is_control_point_mode()) {
         return false;
@@ -1839,6 +1958,14 @@ void bot_refresh_goal_state(
             && !(bot_state().active_goal == BotGoalType::bag_chase_carrier
                 && enemy_target->handle == bot_state().goal_target_handle);
         reevaluate_goal = reevaluate_goal || !goal_valid || new_enemy_pressure;
+    }
+    else if (bot_goal_is_payload_objective(bot_state().active_goal)) {
+        // The cart moves, so update_payload_objective_goal keeps the goal's target and waypoint.
+        PayloadRuntimeState pay_state{};
+        const bool goal_valid = build_payload_runtime_state(pay_state)
+            && (bot_state().active_goal == BotGoalType::pay_push) == pay_state.attacking
+            && !(bot_state().active_goal == BotGoalType::pay_hold_ahead && pay_state.pushed);
+        reevaluate_goal = reevaluate_goal || !goal_valid;
     }
     else if (bot_goal_is_vehicle(bot_state().active_goal)) {
         reevaluate_goal = reevaluate_goal
@@ -2890,6 +3017,88 @@ void bot_refresh_goal_state(
         }
     }
 
+    // Payload goal selection. Reuses the CTF personality biases: pushing is a capture, blocking a flag recovery.
+    PayloadRuntimeState pay_state{};
+    const bool payload_mode = build_payload_runtime_state(pay_state);
+    PayloadGoalCandidate payload_goal{};
+    if (payload_mode) {
+        const float cart_dist = std::sqrt(std::max(rf::vec_dist_squared(&local_entity.pos, &pay_state.center), 0.0f));
+        const float cart_proximity = std::clamp(160.0f - cart_dist * 1.1f, -60.0f, 160.0f);
+        // Enough that an enemy in sight is fought from the zone, not chased out of it.
+        const float in_zone_bonus = pay_state.in_zone ? 150.0f : 0.0f;
+        const auto goal_waypoint = [&](const BotGoalType goal, const rf::Vector3& anchor) {
+            return bot_state().active_goal == goal && bot_state().goal_target_waypoint > 0
+                ? bot_state().goal_target_waypoint
+                : bot_find_closest_waypoint_with_fallback(anchor);
+        };
+        // A defender near an unpushed cart guards its zone, so the next push is blocked as it starts. One further out
+        // makes for the hold spot ahead of the cart, which is mostly on its way in. Each bot asks for one role, so the
+        // role keeps its hysteresis.
+        constexpr float kPayloadGuardReach = 20.0f;
+        constexpr float kPayloadGuardKeepMargin = 5.0f;
+        const float guard_reach = kPayloadGuardReach
+            + (bot_state().active_goal == BotGoalType::pay_block ? kPayloadGuardKeepMargin : 0.0f);
+        const bool guarding = !pay_state.attacking && !pay_state.pushed && cart_dist <= guard_reach;
+        if (pay_state.attacking || pay_state.pushed || guarding) {
+            const BotGoalType goal = pay_state.attacking ? BotGoalType::pay_push : BotGoalType::pay_block;
+            const bool primary = payload_takes_primary_role(
+                local_entity, pay_state, pay_state.attacking ? kPayloadPushRoleKey : kPayloadBlockRoleKey);
+            const float role_score = pay_state.attacking
+                ? std::lerp(280.0f, 400.0f, ctf_capture_norm)
+                : std::lerp(300.0f, 420.0f, ctf_recovery_norm) * (guarding ? 0.6f : 1.0f);
+            const float score = primary
+                ? role_score + cart_proximity + in_zone_bonus + pay_state.urgency * 220.0f
+                : 140.0f + cart_proximity * 0.5f + pay_state.urgency * 300.0f;
+            payload_goal = PayloadGoalCandidate{
+                goal,
+                goal_waypoint(goal, pay_state.center),
+                pay_state.center,
+                score,
+                primary,
+            };
+        }
+        else if (payload_takes_primary_role(local_entity, pay_state, kPayloadHoldRoleKey)) {
+            const rf::Vector3 ahead = payload_track_point(payload_distance() + kPayloadHoldAheadDistance);
+            const float ahead_dist = std::sqrt(std::max(rf::vec_dist_squared(&local_entity.pos, &ahead), 0.0f));
+            payload_goal = PayloadGoalCandidate{
+                BotGoalType::pay_hold_ahead,
+                goal_waypoint(BotGoalType::pay_hold_ahead, ahead),
+                ahead,
+                (pay_state.rolling_back ? 90.0f : 150.0f) + std::clamp(45.0f - ahead_dist * 0.55f, -25.0f, 45.0f),
+                true,
+            };
+        }
+
+        // Leaving the cart for a pickup lets it move or stop. Health is still worth it to a bot the cart doesn't heal.
+        const bool health_exempt =
+            item_goal.goal_type == BotGoalType::collect_health && !(pay_state.attacking && payload_heals_now());
+        if (payload_goal.primary && has_item_goal && !health_exempt
+            && !item_pickup_is_on_the_way(local_entity.pos, payload_goal.pos, item_goal.item_pos)) {
+            constexpr float kPayloadPickupPenalty = 300.0f;
+            item_goal_score -= kPayloadPickupPenalty;
+        }
+
+        // Defenders in the push zone are what stops the cart, and attackers near it what moves it. A bot further out
+        // fights its way in, since running in under fire from the zone mostly fails; one near the cart steps in and
+        // fights from the zone, which is what blocks a push or keeps one going.
+        // A pushed cart is blocked by touching it at once, so defenders commit from further out.
+        constexpr float kPayloadStepInReach = 8.0f;
+        constexpr float kPayloadBlockStepInReach = 16.0f;
+        const float step_in_reach = !pay_state.attacking && pay_state.pushed ? kPayloadBlockStepInReach
+                                                                             : kPayloadStepInReach;
+        const bool steps_in = payload_goal.primary && payload_goal.goal != BotGoalType::pay_hold_ahead
+            && cart_dist <= pay_state.radius + step_in_reach;
+        if (enemy_target && !steps_in) {
+            const float enemy_reach = pay_state.radius + (pay_state.attacking ? 1.5f : 6.0f);
+            const float enemy_dist = std::sqrt(bot_horizontal_dist_sq(enemy_target->pos, pay_state.center));
+            if (enemy_dist <= enemy_reach) {
+                control_point_enemy_defense_bonus = std::max(
+                    control_point_enemy_defense_bonus,
+                    std::clamp(245.0f - enemy_dist * 11.0f, 45.0f, 245.0f) + pay_state.urgency * 95.0f);
+            }
+        }
+    }
+
     BotVehicleGoalContext vehicle_context{};
     vehicle_context.enemy_contact = bot_vehicle_enemy_contact(enemy_target != nullptr || retaliation_active);
     vehicle_context.carrying_ctf_flag = ctf_mode && ctf_state.local_has_enemy_flag;
@@ -2909,6 +3118,7 @@ void bot_refresh_goal_state(
         note_objective(bagman_goal.goal, bagman_goal.pos, bagman_goal.score);
         note_objective(salvage_goal.goal, salvage_goal.pos, salvage_goal.score);
         note_objective(control_point_goal.goal, control_point_goal.pos, control_point_goal.score);
+        note_objective(payload_goal.goal, payload_goal.pos, payload_goal.score);
     }
     BotVehicleGoalCandidate vehicle_goal{};
     const bool has_vehicle_goal =
@@ -2924,7 +3134,7 @@ void bot_refresh_goal_state(
             float score = -std::numeric_limits<float>::infinity();
             int identifier = -1;
         };
-        RankedEntry entries[11]{};
+        RankedEntry entries[12]{};
         int n = 0;
         const auto push_entry = [&](const BotGoalType g, const float s, const int id) {
             if (std::isfinite(s) && n < static_cast<int>(std::size(entries))) {
@@ -2941,6 +3151,7 @@ void bot_refresh_goal_state(
         if (bagman_goal.goal != BotGoalType::none) push_entry(bagman_goal.goal, bagman_goal.score, bagman_goal.identifier);
         if (salvage_goal.goal != BotGoalType::none) push_entry(salvage_goal.goal, salvage_goal.score, salvage_goal.identifier);
         if (control_point_goal.goal != BotGoalType::none) push_entry(control_point_goal.goal, control_point_goal.score, control_point_goal.identifier);
+        if (payload_goal.goal != BotGoalType::none) push_entry(payload_goal.goal, payload_goal.score, -1);
         if (has_vehicle_goal) push_entry(vehicle_goal.goal, vehicle_goal.score, vehicle_goal.seat);
         std::sort(entries, entries + n, [](const RankedEntry& a, const RankedEntry& b) {
             return a.score > b.score;
@@ -2962,7 +3173,8 @@ void bot_refresh_goal_state(
             alive_enemy_present
             || (ctf_goal.goal != BotGoalType::none && bot_goal_is_tier1_objective(ctf_goal.goal))
             || (salvage_goal.goal != BotGoalType::none && bot_goal_is_tier1_objective(salvage_goal.goal))
-            || (control_point_goal.goal != BotGoalType::none);
+            || (control_point_goal.goal != BotGoalType::none)
+            || (payload_goal.goal != BotGoalType::none && bot_goal_is_tier1_objective(payload_goal.goal));
         if (!has_tier1 && has_item_goal) {
             const float tier2_boost = std::lerp(65.0f, 35.0f, aggression_norm);
             item_goal_score += tier2_boost;
@@ -3060,6 +3272,18 @@ void bot_refresh_goal_state(
         selected_pos = control_point_goal.pos;
         selected_score = control_point_goal.score;
     }
+    const auto select_payload_goal = [&] {
+        selected_goal = payload_goal.goal;
+        selected_handle = -1;
+        selected_identifier = -1;
+        selected_waypoint = payload_goal.waypoint;
+        selected_pos = payload_goal.pos;
+        selected_score = payload_goal.score;
+    };
+    if (payload_goal.goal != BotGoalType::none
+        && goal_score_wins_with_tie_break(payload_goal.score, selected_score)) {
+        select_payload_goal();
+    }
     if (has_vehicle_goal && goal_score_wins_with_tie_break(vehicle_goal.score, selected_score)) {
         selected_goal = vehicle_goal.goal;
         selected_handle = vehicle_goal.hull_handle;
@@ -3068,22 +3292,27 @@ void bot_refresh_goal_state(
         selected_pos = vehicle_goal.pos;
         selected_score = vehicle_goal.score;
     }
+    const bool secondary_goal_selected =
+        selected_goal == BotGoalType::roam
+        || selected_goal == BotGoalType::activate_bridge
+        || selected_goal == BotGoalType::create_crater
+        || selected_goal == BotGoalType::shatter_glass
+        || bot_goal_is_item_collection(selected_goal);
+    const float objective_priority_margin = std::clamp(
+        std::lerp(110.0f, 48.0f, opportunism_norm) * std::clamp(goal_commitment, 0.55f, 2.20f),
+        35.0f,
+        185.0f
+    );
+    if (payload_goal.primary
+        && secondary_goal_selected
+        && selected_score < payload_goal.score + objective_priority_margin) {
+        select_payload_goal();
+    }
     if (control_point_mode
         && control_point_goal.goal != BotGoalType::none
         && selected_goal != BotGoalType::none) {
-        const bool secondary_goal =
-            selected_goal == BotGoalType::roam
-            || selected_goal == BotGoalType::activate_bridge
-            || selected_goal == BotGoalType::create_crater
-            || selected_goal == BotGoalType::shatter_glass
-            || bot_goal_is_item_collection(selected_goal);
-        if (secondary_goal) {
-            const float control_point_priority_margin = std::clamp(
-                std::lerp(110.0f, 48.0f, opportunism_norm) * std::clamp(goal_commitment, 0.55f, 2.20f),
-                35.0f,
-                185.0f
-            );
-            if (selected_score < control_point_goal.score + control_point_priority_margin) {
+        if (secondary_goal_selected) {
+            if (selected_score < control_point_goal.score + objective_priority_margin) {
                 selected_goal = control_point_goal.goal;
                 selected_handle = -1;
                 selected_identifier = control_point_goal.identifier;
@@ -3268,6 +3497,11 @@ void bot_refresh_goal_state(
         && std::isfinite(active_control_point_goal_score)) {
         current_goal_score = active_control_point_goal_score + 12.0f;
     }
+    else if (bot_goal_is_payload_objective(bot_state().active_goal)
+        && payload_goal.goal == bot_state().active_goal) {
+        current_goal_score = payload_goal.score
+            + (bot_state().active_goal == BotGoalType::pay_hold_ahead ? 12.0f : 30.0f);
+    }
     else if (bot_goal_is_item_collection(bot_state().active_goal)
         && has_crater_enabler_item_goal
         && bot_state().goal_target_handle == crater_enabler_item_goal.item_handle) {
@@ -3323,6 +3557,10 @@ void bot_refresh_goal_state(
         if (bot_state().active_goal == BotGoalType::eliminate_target
             && bot_goal_is_salvage_objective(selected_goal)
             && !bot_goal_is_salvage_positioning(selected_goal)) {
+            switch_margin *= 0.35f;
+        }
+        if (bot_state().active_goal == BotGoalType::eliminate_target
+            && (selected_goal == BotGoalType::pay_push || selected_goal == BotGoalType::pay_block)) {
             switch_margin *= 0.35f;
         }
         if (deathmatch_mode
@@ -3424,7 +3662,9 @@ void bot_refresh_goal_state(
         || bot_goal_is_bagman_objective(selected_goal)
         || (bot_goal_is_salvage_objective(selected_goal)
             && !bot_goal_is_salvage_positioning(selected_goal))
-        || bot_goal_is_control_point_objective(selected_goal);
+        || bot_goal_is_control_point_objective(selected_goal)
+        || selected_goal == BotGoalType::pay_push
+        || selected_goal == BotGoalType::pay_block;
     const bool switch_to_immediate_enemy_threat =
         selected_goal == BotGoalType::eliminate_target
         && enemy_target

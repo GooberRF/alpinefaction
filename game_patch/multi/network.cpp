@@ -305,7 +305,8 @@ enum packet_type : uint8_t {
     af_vehicle_health      = 0x67,
     af_vehicle_orient      = 0x68,
     af_vehicle_factory_state = 0x69,
-    af_scavenger_state     = 0x6A
+    af_scavenger_state     = 0x6A,
+    af_payload_state       = 0x6B
 };
 
 // client -> server
@@ -403,7 +404,8 @@ std::array g_client_side_packet_whitelist{
     af_vehicle_health,
     af_vehicle_orient,
     af_vehicle_factory_state,
-    af_scavenger_state
+    af_scavenger_state,
+    af_payload_state
 };
 // clang-format on
 

@@ -29,7 +29,9 @@ Version 1.5.0 (Trillium): Not yet released
 - Add server-side bots, which run inside the dedicated or listen server process in addition to (or instead of) bot clients
   - `server_bots` ADS option (0-31) sets how many server bots join; they use the `bot_profiles` profiles and follow `ideal_player_count` like bot clients
   - Add `sv_bot_add [profile_index] [red|blue]`, `sv_bot_remove <name|all>` and `sv_bot_list` server console commands, which also work through rcon
-- Add new multiplayer game type: Scavenger (`SCAV`)
+- Add new multiplayer game types:
+  - Scavenger (`SCAV`)
+  - Payload (`PAY`)
 
 [@GooberRF](https://github.com/GooberRF) & [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add multiplayer vehicles and turrets
@@ -192,6 +194,8 @@ Version 1.5.0 (Trillium): Not yet released
 - Make level editor draw ticks at equal steps of time along mover paths
 - Make level editor draw the closing link of a looping mover with three or more keyframes
 - Add `Mover Preview` on the level editor `View` menu plays and scrubs a mover in the viewports without changing the level
+- Show control points as spinning team medallions with a notched capture progress ring
+- Add `cl_wh_tethers`, `cl_wh_pushzone`, and `cl_wh_cartstatus` commands to toggle the world HUD beams from the players pushing or blocking the cart in Payload, the ring around it that shows where to push, and the status text over it
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color

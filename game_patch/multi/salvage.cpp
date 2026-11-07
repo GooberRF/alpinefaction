@@ -818,14 +818,7 @@ bool solve_carrier_flag_transform(rf::Entity* ep, rf::Item* item,
 bool flag_hidden_for_local_view()
 {
     if (g_salvage_info.state != SalFlagState::Carried || !g_salvage_info.carrier) return false;
-
-    if (multi_spectate_is_spectating()) {
-        return multi_spectate_is_first_person()
-            && multi_spectate_get_target_player() == g_salvage_info.carrier;
-    }
-    if (rf::local_player != g_salvage_info.carrier) return false;
-    return rf::local_player->cam
-        && rf::camera_get_mode(*rf::local_player->cam) == rf::CAMERA_FIRST_PERSON;
+    return multi_spectate_view_is_player_eyes(*g_salvage_info.carrier);
 }
 
 } // namespace

@@ -676,6 +676,7 @@ CallHook level_init_pre_console_output_hook{
                             break;
                         case rf::NetGameType::NG_TYPE_ESC:
                         case rf::NetGameType::NG_TYPE_REV:
+                        case rf::NetGameType::NG_TYPE_PAY:
                             break;
                         case rf::NetGameType::NG_TYPE_RUN:
                             break;

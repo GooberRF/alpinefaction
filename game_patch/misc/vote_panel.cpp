@@ -277,6 +277,7 @@ const char* gametype_short_name(uint8_t id)
         case rf::NG_TYPE_GG: return "GG";
         case rf::NG_TYPE_SAL: return "SAL";
         case rf::NG_TYPE_SCAV: return "SCAV";
+        case rf::NG_TYPE_PAY: return "PAY";
         default: return nullptr; // unknown to this build
     }
 }

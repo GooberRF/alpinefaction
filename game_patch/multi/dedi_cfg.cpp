@@ -480,6 +480,21 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
             break;
         }
 
+        case rf::NetGameType::NG_TYPE_PAY: {
+            rules.spawn_delay.enabled = true;
+            rules.spawn_delay.set_base_value(2.0f);
+            rules.location_pinging = true;
+            // Checkpoints add time, so the round starts short
+            rules.set_time_limit(300.0f);
+
+            // secondary weapon
+            rules.spawn_loadout.add("Remote Charge", 3, false, true);
+
+            // primary weapon
+            rules.default_player_weapon.set_weapon("Machine Pistol");
+            break;
+        }
+
         case rf::NetGameType::NG_TYPE_PIT: {
             rules.spawn_delay.enabled = false;
             rules.force_respawn = false;
@@ -623,6 +638,14 @@ static void apply_rules_keys_from_toml(const toml::table& t, AlpineServerConfigR
         o.scavenger.set_zone_timeout(*v);
     if (auto v = t["scav_target_radius"].value<float>())
         o.scavenger.set_zone_radius(*v);
+    if (auto v = t["pay_checkpoint_time_bonus"].value<float>())
+        o.payload.set_checkpoint_time_bonus(*v);
+    if (auto v = t["pay_overtime_grace"].value<float>())
+        o.payload.set_overtime_grace(*v);
+    if (auto v = t["pay_heal_per_tick"].value<float>())
+        o.payload.set_heal_per_tick(*v);
+    if (auto v = t["pay_setup_time"].value<float>())
+        o.payload.set_setup_time(*v);
     if (auto v = t["geo_limit"].value<int>())
         o.set_geo_limit(*v);
     if (auto v = t["rf2_geo_limit"].value<int>())
@@ -1916,6 +1939,20 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         std::format_to(iter, "  SCAV target timeout:                   {} sec\n", rules.scavenger.zone_timeout_ms / 1000.0f);
     if (base || rules.scavenger.zone_radius != b.scavenger.zone_radius)
         std::format_to(iter, "  SCAV target radius:                    {} m\n", rules.scavenger.zone_radius);
+    const auto payload_override = [](const std::optional<float>& value, std::string_view unit) {
+        return value ? std::format("{} {}", *value, unit) : std::string{"level's value"};
+    };
+    if (base || rules.payload.setup_time != b.payload.setup_time)
+        std::format_to(iter, "  PAY setup time:                        {} sec\n", rules.payload.setup_time);
+    if (base || rules.payload.checkpoint_time_bonus != b.payload.checkpoint_time_bonus)
+        std::format_to(iter, "  PAY checkpoint time bonus:             {}\n",
+                       payload_override(rules.payload.checkpoint_time_bonus, "sec"));
+    if (base || rules.payload.overtime_grace != b.payload.overtime_grace)
+        std::format_to(iter, "  PAY overtime grace:                    {}\n",
+                       payload_override(rules.payload.overtime_grace, "sec"));
+    if (base || rules.payload.heal_per_tick != b.payload.heal_per_tick)
+        std::format_to(iter, "  PAY pusher healing:                    {}\n",
+                       payload_override(rules.payload.heal_per_tick, "per sec"));
     if (base || rules.flag_dropping != b.flag_dropping)
         std::format_to(iter, "  CTF flag dropping:                     {}\n", rules.flag_dropping);
     if (base || rules.flag_captures_while_stolen != b.flag_captures_while_stolen)

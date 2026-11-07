@@ -2229,6 +2229,13 @@ struct EventCapturePointHandler : rf::Event
     }
 };
 
+// Payload_Checkpoint extends EventCapturePointHandler, so the hill code takes either
+inline bool event_is_capture_point_handler(const rf::Event& event)
+{
+    return event.event_type == std::to_underlying(rf::EventType::Capture_Point_Handler)
+        || event.event_type == std::to_underlying(rf::EventType::Payload_Checkpoint);
+}
+
 // id 138
 struct EventRespawnPointState : rf::Event
 {
@@ -2329,8 +2336,7 @@ struct EventWhenCaptured : rf::Event
                     }
                     case rf::OT_EVENT: {
                         rf::Event* event = static_cast<Event*>(obj);
-                        if (event->event_type !=
-                            static_cast<int>(rf::EventType::Capture_Point_Handler)) { // don't activate the handler
+                        if (!event_is_capture_point_handler(*event)) { // don't activate the handler
                             rf::event_signal_on(link_handle, -1, -1);
                         }
                         break;
@@ -2380,7 +2386,7 @@ private:
                     continue;
 
                 auto* linked_event = static_cast<rf::Event*>(obj);
-                if (linked_event->event_type != std::to_underlying(rf::EventType::Capture_Point_Handler))
+                if (!event_is_capture_point_handler(*linked_event))
                     continue;
 
                 auto* handler = static_cast<EventCapturePointHandler*>(linked_event);
@@ -2463,7 +2469,7 @@ private:
         }
 
         auto* event = static_cast<Event*>(obj);
-        if (event->event_type != std::to_underlying(rf::EventType::Capture_Point_Handler)) {
+        if (!event_is_capture_point_handler(*event)) {
             return nullptr;
         }
 
@@ -2581,6 +2587,11 @@ struct EventWhenRoundEnds : rf::Event
             }
         }
     }
+};
+
+// id 166 — When_Setup_Ends: fires its links as When_Round_Ends does, once the Payload cart's setup time is over
+struct EventWhenSetupEnds : EventWhenRoundEnds
+{
 };
 
 // id 145
@@ -3427,5 +3438,66 @@ struct EventRopeState : rf::Event
                 }
             }
         }
+    }
+};
+
+// id 164 — Payload_Handler: the Payload cart is the mover it links to. Field defaults are in common/payload.h.
+struct EventPayloadHandler : rf::Event
+{
+    std::string name = "";
+    int attacking_team = 0;
+    float push_radius = 0.0f;
+    int rollback_delay = 0;
+    bool no_healing = false;
+    bool no_finale = false;
+
+    void register_variable_handlers() override
+    {
+        rf::Event::register_variable_handlers();
+
+        auto& handlers = variable_handler_storage[this];
+        handlers[SetVarOpts::str1] = [](rf::Event* event, const std::string& value) {
+            static_cast<EventPayloadHandler*>(event)->name = value;
+        };
+        handlers[SetVarOpts::int1] = [](rf::Event* event, const std::string& value) {
+            static_cast<EventPayloadHandler*>(event)->attacking_team = std::stoi(value);
+        };
+        handlers[SetVarOpts::int2] = [](rf::Event* event, const std::string& value) {
+            static_cast<EventPayloadHandler*>(event)->rollback_delay = std::stoi(value);
+        };
+        handlers[SetVarOpts::float1] = [](rf::Event* event, const std::string& value) {
+            static_cast<EventPayloadHandler*>(event)->push_radius = std::stof(value);
+        };
+        handlers[SetVarOpts::bool1] = [](rf::Event* event, const std::string& value) {
+            static_cast<EventPayloadHandler*>(event)->no_healing = (value == "true");
+        };
+        handlers[SetVarOpts::bool2] = [](rf::Event* event, const std::string& value) {
+            static_cast<EventPayloadHandler*>(event)->no_finale = (value == "true");
+        };
+    }
+};
+
+// id 165 — Payload_Checkpoint: a checkpoint on the Payload cart's track, named by a keyframe's event uid. A capture
+// point handler to the hill code, which leaves its capture point fields at their defaults. Field defaults are in
+// common/payload.h.
+struct EventPayloadCheckpoint : EventCapturePointHandler
+{
+    float hold_seconds = 0.0f;
+    int time_bonus = 0;
+
+    void register_variable_handlers() override
+    {
+        rf::Event::register_variable_handlers();
+
+        auto& handlers = variable_handler_storage[this];
+        handlers[SetVarOpts::str1] = [](rf::Event* event, const std::string& value) {
+            static_cast<EventPayloadCheckpoint*>(event)->name = value;
+        };
+        handlers[SetVarOpts::float1] = [](rf::Event* event, const std::string& value) {
+            static_cast<EventPayloadCheckpoint*>(event)->hold_seconds = std::stof(value);
+        };
+        handlers[SetVarOpts::int1] = [](rf::Event* event, const std::string& value) {
+            static_cast<EventPayloadCheckpoint*>(event)->time_bonus = std::stoi(value);
+        };
     }
 };

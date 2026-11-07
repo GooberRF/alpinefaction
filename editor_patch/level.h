@@ -19,6 +19,7 @@
 #include <common/lighting/alpine_lighting.h>
 #include <common/lightmap/alpine_lightmap.h>
 #include <common/mover_path.h>
+#include <common/payload.h>
 #include "vtypes.h"
 #include "mfc_types.h"
 #include "resources.h"
@@ -1010,6 +1011,7 @@ struct AlpineLevelProperties
     bool require_d3d11 = false; // the mapper's "Require Direct3D 11" setting
     float camera_far_clip = 0.0f; // 0 = the stock far clip (fog far clip, else 275)
     bool alpha_tested_occlusion = false; // see-through faces and alpha mesh triangles occlude by texel alpha
+    payload::LevelRules payload_rules;
 
     // Alpine mesh objects (stored separately from stock object VArrays)
     std::vector<DedMesh*> mesh_objects;
@@ -1177,6 +1179,7 @@ struct AlpineLevelProperties
         require_d3d11 = false;
         camera_far_clip = 0.0f;
         alpha_tested_occlusion = false;
+        payload_rules = {};
         for (auto* m : mesh_objects) {
             DestroyDedMesh(m);
         }
@@ -1321,6 +1324,12 @@ struct AlpineLevelProperties
                                                            (require_d3d11 ? require_d3d11_setting : 0u)));
         file.write<float>(camera_far_clip);
         file.write<std::uint8_t>(alpha_tested_occlusion ? 1u : 0u);
+        file.write<float>(payload_rules.push_speed);
+        file.write<float>(payload_rules.rollback_speed);
+        file.write<float>(payload_rules.cart_accel);
+        file.write<float>(payload_rules.checkpoint_time_bonus);
+        file.write<float>(payload_rules.heal_per_second);
+        file.write<float>(payload_rules.overtime_grace);
     }
 
     void Deserialize(rf::File& file, std::size_t chunk_len)
@@ -1593,6 +1602,14 @@ struct AlpineLevelProperties
             if (!read_bytes(&u8, sizeof(u8)))
                 return;
             alpha_tested_occlusion = (u8 != 0);
+            payload::LevelRules rules;
+            for (float* field : {&rules.push_speed, &rules.rollback_speed, &rules.cart_accel,
+                                 &rules.checkpoint_time_bonus, &rules.heal_per_second, &rules.overtime_grace}) {
+                if (!read_bytes(field, sizeof(*field)))
+                    return;
+            }
+            rules.sanitize();
+            payload_rules = rules;
         }
     }
 };

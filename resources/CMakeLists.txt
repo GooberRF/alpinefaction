@@ -187,6 +187,10 @@ add_packfile(alpinefaction.vpp
     images/af_wh_sal_take.tga
     images/af_wh_sal_base_blue.tga
     images/af_wh_sal_base_red.tga
+    images/af_wh_medallion_red.tga
+    images/af_wh_medallion_blue.tga
+    images/af_wh_medallion_neutral.tga
+    images/af_wh_medallion_lock.tga
     images/afsbi_spawned.tga
     images/afsbi_spawned_1.tga
     images/afsbi_dead.tga

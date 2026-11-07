@@ -255,16 +255,6 @@ namespace
         return {to_byte(rgb[0]), to_byte(rgb[1]), to_byte(rgb[2]), static_cast<rf::ubyte>(a)};
     }
 
-    void tracer_set_vertex(rf::gr::Vertex& v, const rf::Vector3& pos, const rf::Color& color, float alpha)
-    {
-        rf::Vector3 p = pos;
-        rf::gr::rotate_vertex(&v, &p);
-        v.r = color.red;
-        v.g = color.green;
-        v.b = color.blue;
-        v.a = static_cast<rf::ubyte>(std::clamp(alpha * color.alpha + 0.5f, 0.0f, 255.0f));
-    }
-
     // Rows along the streak - tail, knee, head, then a transparent cap one half-width past the head
     // on screen, so a streak seen end-on reads as a dot rather than a flat dash. Four columns across:
     // transparent edges, an opaque middle band.
@@ -279,8 +269,8 @@ namespace
         for (int row = 0; row < rows; ++row) {
             for (int col = 0; col < 4; ++col) {
                 const bool edge = col == 0 || col == 3;
-                tracer_set_vertex(verts[row * 4 + col], pos[row] + side * col_offset[col], color,
-                                  edge ? 0.0f : alpha[row]);
+                gr_set_colored_vertex(verts[row * 4 + col], pos[row] + side * col_offset[col], color,
+                                      edge ? 0.0f : alpha[row]);
             }
         }
         constexpr auto vertex_attributes =

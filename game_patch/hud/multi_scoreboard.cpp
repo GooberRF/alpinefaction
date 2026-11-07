@@ -248,7 +248,8 @@ int draw_scoreboard_header(int x, int y, int w, rf::NetGameType game_type, bool 
                 red_score = rf::multi_tdm_get_red_team_score();
                 blue_score = rf::multi_tdm_get_blue_team_score();
             }
-            else if (game_type == rf::NG_TYPE_KOTH || game_type == rf::NG_TYPE_DC) { // todo: new HUD icons for koth/dc
+            else if (game_type == rf::NG_TYPE_KOTH || game_type == rf::NG_TYPE_DC
+                || game_type == rf::NG_TYPE_PAY) { // todo: new HUD icons for koth/dc
                 static int hud_flag_red_bm = rf::bm::load("hud_flag_red.tga", -1, true);
                 static int hud_flag_blue_bm = rf::bm::load("hud_flag_blue.tga", -1, true);
                 int flag_bm_w, flag_bm_h;

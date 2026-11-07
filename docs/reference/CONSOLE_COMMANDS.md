@@ -169,11 +169,16 @@ Commands marked "D3D11 only" only have an effect with the Direct3D 11 renderer.
 | `cl_outlineheightscale` | `[scale]` | Sets the control point outline height scale (0-1000). Default: 5.0. |
 | `cl_outlinesegments` | `[segments]` | Sets the number of segments of control point outline rings (3-256). Default: 32. |
 | `cl_wh_altdmgindicators` | | Toggles individual instead of cumulative world HUD damage numbers. Default: off. |
-| `cl_wh_cpoverdraw` | | Toggles drawing control point world HUD sprites on top of everything. Default: on. |
+| `cl_wh_cartstatus` | | Toggles the Payload cart's status text over its medallion, such as its pushers or countdown. The Payload panel of the HUD always shows the cart's state. Default: on. |
+| `cl_wh_cpmedallions` | | Toggles spinning medallions with a capture progress ring for control points, instead of sprites. Default: on. |
+| `cl_wh_cpoverdraw` | | Toggles drawing control point world HUD sprites or medallions and the Payload cart medallion on top of everything. Default: on. |
+| `cl_wh_cproletext` | | Toggles the Attack/Defend text over control point medallions in Revolution and Escalation. Default: on. |
 | `cl_wh_ctf` | | Toggles world HUD indicators for CTF flags. Default: on. |
 | `cl_wh_flagoverdraw` | | Toggles drawing CTF flag world HUD sprites on top of everything. Default: on. |
 | `cl_wh_hitnumbers` | | Toggles damage numbers when you hit players in multiplayer, if the Alpine Faction server enables them. Default: on. |
+| `cl_wh_pushzone` | | Toggles the ring on the ground around the Payload cart that shows where players push it. Default: on. |
 | `cl_wh_teamplayerlabels` | | Toggles name labels over teammates. Default: off. |
+| `cl_wh_tethers` | | Toggles the Payload beams linking the players pushing or blocking the cart to it. Default: on. |
 | `kill_messages` | | Toggles kill messages in the chat box and console. Default: on. Not saved. |
 | `mp_crit_flash` | | Toggles the reticle flash when you land a critical hit. Default: on. |
 | `mp_deathbars` | | Toggles red bars at the top and bottom of the screen while dead. Default: on. |
@@ -310,7 +315,7 @@ Colors are hex `RRGGBB` or `RRGGBBAA`, or comma-separated `R,G,B[,A]` values in 
 | `sv_fflink_resync` | | Forces a new FactionFiles session key exchange. Allowed via rcon. |
 | `sv_fflink_status` | | Shows the FactionFiles server session link status. Allowed via rcon. |
 | `sv_fraglimit` | `<kills>` | Stock RF command. Sets the kill limit. Server only. Allowed via rcon. |
-| `sv_gametype` (`gt`) | `[type] [level]` | Changes the game type: `dm`, `tdm`, `ctf`, `koth`, `dc`, `rev`, `run`, `esc`, `bag`, `tbag`, `pit`, `wo`, `gg`, `sal` or `scav`. See the note below. Allowed via rcon. |
+| `sv_gametype` (`gt`) | `[type] [level]` | Changes the game type: `dm`, `tdm`, `ctf`, `koth`, `dc`, `rev`, `run`, `esc`, `bag`, `tbag`, `pit`, `wo`, `gg`, `sal`, `scav` or `pay`. See the note below. Allowed via rcon. |
 | `sv_geolimit` | `<geomods>` | Stock RF command. Sets the geomod limit. Server only. Allowed via rcon. |
 | `sv_kickall` | | Stock RF command. Kicks all clients. Server only. |
 | `sv_loadconfig` | `[config]` | Loads a server config, or reloads the launch config, and applies it to the current level. Not between levels. ADS only. Allowed via rcon for full-admin rcon profiles only. |

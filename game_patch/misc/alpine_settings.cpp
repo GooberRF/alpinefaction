@@ -1045,9 +1045,29 @@ bool alpine_player_settings_load(rf::Player* player)
         g_alpine_game_config.world_hud_hill_overdraw = std::stoi(settings["WorldHUDHillOverdraw"]);
         processed_keys.insert("WorldHUDHillOverdraw");
     }
+    if (settings.count("WorldHUDCPMedallions")) {
+        g_alpine_game_config.world_hud_cp_medallions = std::stoi(settings["WorldHUDCPMedallions"]);
+        processed_keys.insert("WorldHUDCPMedallions");
+    }
+    if (settings.count("WorldHUDCPRoleText")) {
+        g_alpine_game_config.world_hud_cp_role_text = std::stoi(settings["WorldHUDCPRoleText"]);
+        processed_keys.insert("WorldHUDCPRoleText");
+    }
     if (settings.count("WorldHUDDamageNumbers")) {
         g_alpine_game_config.world_hud_damage_numbers = std::stoi(settings["WorldHUDDamageNumbers"]);
         processed_keys.insert("WorldHUDDamageNumbers");
+    }
+    if (settings.count("WorldHUDPayloadTethers")) {
+        g_alpine_game_config.world_hud_payload_tethers = std::stoi(settings["WorldHUDPayloadTethers"]);
+        processed_keys.insert("WorldHUDPayloadTethers");
+    }
+    if (settings.count("WorldHUDPayloadPushZone")) {
+        g_alpine_game_config.world_hud_payload_push_zone = std::stoi(settings["WorldHUDPayloadPushZone"]);
+        processed_keys.insert("WorldHUDPayloadPushZone");
+    }
+    if (settings.count("WorldHUDPayloadCartStatus")) {
+        g_alpine_game_config.world_hud_payload_cart_status = std::stoi(settings["WorldHUDPayloadCartStatus"]);
+        processed_keys.insert("WorldHUDPayloadCartStatus");
     }
     if (settings.count("VehicleRespawnMarkers")) {
         g_alpine_game_config.vehicle_respawn_markers = std::stoi(settings["VehicleRespawnMarkers"]);
@@ -1806,7 +1826,12 @@ void alpine_player_settings_save(rf::Player* player)
     file << "WorldHUDObjIcons=" << g_alpine_game_config.world_hud_ctf_icons << "\n";
     file << "WorldHUDFlagOverdraw=" << g_alpine_game_config.world_hud_flag_overdraw << "\n";
     file << "WorldHUDHillOverdraw=" << g_alpine_game_config.world_hud_hill_overdraw << "\n";
+    file << "WorldHUDCPMedallions=" << g_alpine_game_config.world_hud_cp_medallions << "\n";
+    file << "WorldHUDCPRoleText=" << g_alpine_game_config.world_hud_cp_role_text << "\n";
     file << "WorldHUDDamageNumbers=" << g_alpine_game_config.world_hud_damage_numbers << "\n";
+    file << "WorldHUDPayloadTethers=" << g_alpine_game_config.world_hud_payload_tethers << "\n";
+    file << "WorldHUDPayloadPushZone=" << g_alpine_game_config.world_hud_payload_push_zone << "\n";
+    file << "WorldHUDPayloadCartStatus=" << g_alpine_game_config.world_hud_payload_cart_status << "\n";
     file << "VehicleRespawnMarkers=" << g_alpine_game_config.vehicle_respawn_markers << "\n";
     file << "VehicleHealthBars=" << g_alpine_game_config.vehicle_health_bars << "\n";
     file << "VehicleDriverThirdPerson=" << g_alpine_game_config.vehicle_driver_third_person << "\n";

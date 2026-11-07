@@ -206,6 +206,19 @@ FONT 8, "MS Sans Serif"
     AUTOCHECKBOX    "Limit vehicle flight ceiling", IDC_VEHICLE_FLIGHT_CEILING_ENABLE, 14, 44, 200, 10
     LTEXT           "Ceiling height (Y):", IDC_VEHICLE_FLIGHT_CEILING_LABEL, 26, 61, 62, 8
     EDITTEXT        IDC_VEHICLE_FLIGHT_CEILING, 90, 58, 40, 14, ES_AUTOHSCROLL
+    GROUPBOX        "Payload", IDC_PAYLOAD_GROUP, 14, 80, 270, 72
+    LTEXT           "Push speed (m/s):", IDC_PAYLOAD_PUSH_SPEED_LABEL, 21, 97, 80, 8
+    EDITTEXT        IDC_PAYLOAD_PUSH_SPEED, 103, 94, 36, 14, ES_AUTOHSCROLL
+    LTEXT           "Rollback (x push speed):", IDC_PAYLOAD_ROLLBACK_SPEED_LABEL, 147, 97, 90, 8
+    EDITTEXT        IDC_PAYLOAD_ROLLBACK_SPEED, 239, 94, 36, 14, ES_AUTOHSCROLL
+    LTEXT           "Acceleration (m/s/s):", IDC_PAYLOAD_CART_ACCEL_LABEL, 21, 115, 80, 8
+    EDITTEXT        IDC_PAYLOAD_CART_ACCEL, 103, 112, 36, 14, ES_AUTOHSCROLL
+    LTEXT           "Checkpoint bonus (s):", IDC_PAYLOAD_TIME_BONUS_LABEL, 147, 115, 90, 8
+    EDITTEXT        IDC_PAYLOAD_TIME_BONUS, 239, 112, 36, 14, ES_AUTOHSCROLL
+    LTEXT           "Healing per second:", IDC_PAYLOAD_HEAL_LABEL, 21, 133, 80, 8
+    EDITTEXT        IDC_PAYLOAD_HEAL, 103, 130, 36, 14, ES_AUTOHSCROLL
+    LTEXT           "Overtime grace (s):", IDC_PAYLOAD_OVERTIME_GRACE_LABEL, 147, 133, 90, 8
+    EDITTEXT        IDC_PAYLOAD_OVERTIME_GRACE, 239, 130, 36, 14, ES_AUTOHSCROLL
 
     // Minimap
     AUTOCHECKBOX    "Enable minimap", IDC_MINIMAP_ENABLE, 14, 28, 180, 10
@@ -1358,6 +1371,7 @@ FONT 8, "MS Sans Serif"
     LTEXT           "Contains Item UID(s):", -1, 13, 305, 68, 8
     LTEXT           "Static", IDC_KF_ITEM_UID1, 95, 303, 38, 14
     LTEXT           "Static", IDC_KF_ITEM_UID2, 146, 303, 38, 14
+    LTEXT           "Payload cart: travel times, acceleration, deceleration, easing and pause time are ignored. Trigger a Payload_Checkpoint to make this keyframe a checkpoint.", IDC_KF_PAYLOAD_NOTE, 13, 324, 192, 32, NOT WS_VISIBLE
 
     // Rotation Properties group
     GROUPBOX        "Rotation Properties", -1, 211, 169, 122, 36
@@ -1400,6 +1414,7 @@ FONT 8, "MS Sans Serif"
     CONTROL         "", IDC_MOVER_PREVIEW_SLIDER, "msctls_trackbar32", TBS_NOTICKS | WS_TABSTOP, 7, 25, 226, 14
     LTEXT           "", IDC_MOVER_PREVIEW_STATUS, 7, 43, 226, 8
     LTEXT           "Legacy mover levels play differently in game.", IDC_MOVER_PREVIEW_LEGACY, 7, 55, 226, 8, NOT WS_VISIBLE
+    LTEXT           "", IDC_MOVER_PREVIEW_PAYLOAD, 7, 55, 226, 8, NOT WS_VISIBLE
 }
 
 // Face split dialog
