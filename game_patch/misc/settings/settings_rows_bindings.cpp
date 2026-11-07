@@ -8,7 +8,7 @@ const SettingRow rows[] = {
         .id = "bindings",
         .key = "Bind",
         .label = "Key bindings",
-        .tooltip = "Assign keys and mouse buttons to actions.",
+        .tooltip = "Assign Input Bindings to actions.",
         .category = Cat::Bindings,
         .subcategory = "Bindings",
         .widget = Wid::Keybind,
@@ -18,7 +18,7 @@ const SettingRow rows[] = {
     {
         .id = "bindings_reset",
         .label = "Reset bindings",
-        .tooltip = "Restore the factory key bindings.",
+        .tooltip = "Restore the factory Input Bindings.",
         .category = Cat::Bindings,
         .subcategory = "Bindings",
         .widget = Wid::Action,
