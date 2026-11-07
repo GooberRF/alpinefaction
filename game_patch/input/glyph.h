@@ -14,16 +14,6 @@ enum class ControllerIconType {
     Steam,
 };
 
-// Blocks MISC3-MISC6 (capsense/gripsense) from rebinding on hardware that fires them as buttons.
-// TODO: remove this workaround when next major SDL3 release adds proper capsense/gripsense support.
-inline bool is_capsense_gripsense_rebind_blocked(SDL_Gamepad* ctrl, int button)
-{
-    if (button < SDL_GAMEPAD_BUTTON_MISC3 || button > SDL_GAMEPAD_BUTTON_MISC6 || !ctrl)
-        return false;
-    SDL_GamepadType type = SDL_GetGamepadType(ctrl);
-    return type == SDL_GAMEPAD_TYPE_STEAM;
-}
-
 // Positional (controller-agnostic) name for a button index
 const char* gamepad_get_button_name(int button_idx);
 

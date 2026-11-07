@@ -942,6 +942,16 @@ static void handle_gamepad_removed(const SDL_GamepadDeviceEvent& ev)
     xlog::info("Remaining gamepad: '{}'", SDL_GetGamepadName(gamepad_get_primary()));
 }
 
+// Blocks MISC3-MISC6 (capsense/gripsense) from rebinding on hardware that fires them as buttons.
+// TODO: remove this workaround when SDL 3.6.0 comes out, it'll have proper capsense/gripsense support.
+static bool is_capsense_binding_block(SDL_Gamepad* ctrl, int button)
+{
+    if (button < SDL_GAMEPAD_BUTTON_MISC3 || button > SDL_GAMEPAD_BUTTON_MISC6 || !ctrl)
+        return false;
+    SDL_GamepadType type = SDL_GetGamepadType(ctrl);
+    return type == SDL_GAMEPAD_TYPE_STEAM;
+}
+
 static void handle_gamepad_button_down(const SDL_GamepadButtonEvent& ev)
 {
     if (g_message_log_close_cooldown > 0.0f) return;
@@ -953,10 +963,7 @@ static void handle_gamepad_button_down(const SDL_GamepadButtonEvent& ev)
         if (ev.button == SDL_GAMEPAD_BUTTON_START || ev.button == SDL_GAMEPAD_BUTTON_GUIDE) {
             menu_nav_inject_key(rf::KEY_ESC);
         } else {
-            // Block Misc3-Misc6 (capsense/gripsense) from controller rebinding when using 
-            // Steam Hardware devices (Steam Controller 2026, Steam Deck, Horipad for Steam)
-            // TODO: when next major SDL3 release adds proper support for capsense/gripsense, remove this entirely 
-            if (is_capsense_gripsense_rebind_blocked(SDL_GetGamepadFromID(ev.which), ev.button))
+            if (is_capsense_binding_block(SDL_GetGamepadFromID(ev.which), ev.button))
                 return;
             gamepad_capture_bind_input(static_cast<int16_t>(CTRL_GAMEPAD_SCAN_BASE + ev.button));
         }
