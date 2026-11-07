@@ -56,6 +56,7 @@ Version 1.5.0 (Trillium): Not yet released
   - `Alpine Haste` makes movement, climbing, swimming, firing, reloading and weapon switching 1.3 times faster and jumps 1.3 times higher for 30 seconds
   - `Alpine Vampire` heals the holder by the health and armor their hits take from enemy players for 30 seconds, filling health before armor
   - `Alpine Health Shard` and `Alpine Armor Shard` add 10 health or armor, up to the 200 that `Multi Super Health` and `Multi Super Armor` give, respawn after 10 seconds by default, and also work in single player
+  - `Alpine Haste`, `Alpine Vampire` and `Alpine Jetpack` count as super items for Delayed Supers, `drop_amps`, Bagman, the Salvage flag spawn and the generated respawn points; bots go for Haste and Vampire
   - Levels that use them can only be joined by Alpine Faction 1.5 or newer clients
 - Ignore `item_replacements` entries whose `replacement` names an unknown item class (an empty `replacement` still removes the item)
 - Add underwater rendering effects — animated caustics, depth-based water fog with a waterline, screen tint/vignette and distortion — with quality levels 0-3 via `r_underwater` (Direct3D 11 renderer only)
