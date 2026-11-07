@@ -36,15 +36,7 @@
 namespace
 {
 
-// Button slots down the column, which the panel spans. The categories then BACK fill them from the
-// top and the rest stay empty, as on stock.
-constexpr int column_slots = 11;
-static_assert(static_cast<int>(SettingCategory::_count) + 1 <= column_slots);
-// The panel frame around the dark content area: the left channel and the top and bottom ridges.
-constexpr float frame_left = 34.0f;
-constexpr float frame_edge = 22.0f;
-// Space kept between anything in the content area and the right pillar.
-constexpr float rail_clearance = 16.0f;
+static_assert(static_cast<int>(SettingCategory::_count) + 1 <= menu_panel_slots);
 // Left inset of a row's label and right inset of its controls.
 constexpr float row_inset = 32.0f;
 
@@ -2641,27 +2633,6 @@ void draw_title_bar(const UiContext& ctx, int x, int right, int clear_r, int can
                            fitted.font);
 }
 
-void draw_panel(const UiContext& ctx, const UiRect& panel, const UiRect& inset)
-{
-    skin_brushed_plate(ctx, panel.x, panel.y, panel.w, panel.h, false);
-    const int margin = skin_px(ctx, 6.0f);
-    skin_brushed_plate(ctx, panel.x + margin, panel.y + margin, skin_px(ctx, 20.0f), panel.h - 2 * margin, true);
-
-    const int t = skin_px(ctx, 1.0f);
-    const int ridge_x = panel.x + skin_px(ctx, 30.0f);
-    const int ridge_w = panel.x + panel.w - ridge_x;
-    for (const float y_ref : {7.0f, 13.0f}) {
-        for (const int y : {panel.y + skin_px(ctx, y_ref), panel.y + panel.h - skin_px(ctx, y_ref + 2.0f)}) {
-            rf::gr::set_color(skin::steel_dark);
-            rf::gr::rect(ridge_x, y, ridge_w, t);
-            rf::gr::set_color(skin::steel_hi);
-            rf::gr::rect(ridge_x, y + t, ridge_w, t);
-        }
-    }
-
-    skin_steel_field(ctx, inset.x, inset.y, inset.w, inset.h);
-}
-
 void build_category_column(UiContext& ctx, const MenuLayout& lay, int col_x, int col_y, const Fonts& fonts)
 {
     constexpr int category_count = static_cast<int>(SettingCategory::_count);
@@ -2921,19 +2892,7 @@ void build_content(UiContext& ctx, const UiRect& view, const std::vector<Entry>&
 
     ui_scroll_end(ctx, region);
 
-    // Keyboard navigation brings the newly focused entry into view; a focus that merely sits
-    // there does not, so the wheel and scrollbar can still move away from it.
-    if (!ctx.draw && ctx.focus_id() != g_scrolled_to_focus) {
-        if (ctx.focus_visible() && focus_rect) {
-            if (focus_rect->y < view.y) {
-                g_content_scroll -= static_cast<float>(view.y - focus_rect->y);
-            }
-            else if (focus_rect->y + focus_rect->h > view.y + view.h) {
-                g_content_scroll += static_cast<float>(focus_rect->y + focus_rect->h - (view.y + view.h));
-            }
-        }
-        g_scrolled_to_focus = ctx.focus_id();
-    }
+    ui_scroll_focus_into_view(ctx, view, focus_rect, g_content_scroll, g_scrolled_to_focus);
 
     if (ctx.draw) {
         skin_scrollbar(ctx, view, content_h, g_content_scroll, ctx.captured_id() == ui_id("content"));
@@ -3033,7 +2992,6 @@ void build_screen(UiContext& ctx, int canvas_y, const Fonts& fonts, bool sync_st
 
     const int button_h = menu_button_h(ctx);
     const int top = cy(menu_column_y);
-    const int panel_h = column_slots * button_h;
 
     if (ctx.draw) {
         draw_title_bar(ctx, lay.panel_x + enter_dx, lay.panel_r + enter_dx, lay.rail_right + enter_dx, canvas_y,
@@ -3042,18 +3000,13 @@ void build_screen(UiContext& ctx, int canvas_y, const Fonts& fonts, bool sync_st
 
     build_category_column(ctx, lay, lay.column_x + col_dx, top, fonts);
 
-    const UiRect panel{lay.panel_x + panel_dx, top, lay.panel_r - lay.panel_x, panel_h};
-    const int inset_x = panel.x + s(frame_left);
-    const UiRect inset{inset_x, top + s(frame_edge), lay.rail_right - s(rail_clearance) + panel_dx - inset_x,
-                       panel_h - 2 * s(frame_edge)};
+    const MenuPanel panel = menu_panel(ctx, lay, panel_dx, top);
+    const UiRect& inset = panel.inset;
     if (ctx.draw) {
-        draw_panel(ctx, panel, inset);
+        menu_draw_panel(ctx, panel);
         // Search results belong to no category, so nothing is connected.
         if (g_search.empty()) {
-            const int cw = skin_px(ctx, menu_connector_w);
-            const int ch = skin_px(ctx, 60.0f);
-            const int mid = top + category_slot(g_category) * button_h + button_h / 2;
-            skin_sized_chrome("af_connector", UiRect{panel.x - cw, mid - ch / 2, cw, ch});
+            menu_draw_connector(ctx, panel, top + category_slot(g_category) * button_h + button_h / 2);
         }
     }
     // A panel on its way out is only painted: anything done on it would land on the category
@@ -3062,9 +3015,9 @@ void build_screen(UiContext& ctx, int canvas_y, const Fonts& fonts, bool sync_st
         return;
     }
 
-    const int content_x = inset.x + s(20.0f);
-    const int content_r = inset.x + inset.w - s(16.0f);
-    const UiRect header{content_x, cy(158.0f), content_r - content_x, s(54.0f)};
+    const int content_x = panel.content_x;
+    const int content_r = panel.content_r;
+    const UiRect header{content_x, cy(menu_panel_header_y), content_r - content_x, s(menu_panel_header_h)};
     const int title_right = build_header_controls(ctx, header, fonts);
     const bool searching = !g_search.empty();
 
@@ -3080,9 +3033,10 @@ void build_screen(UiContext& ctx, int canvas_y, const Fonts& fonts, bool sync_st
     }
 
     // The header line has no room left beside the search box, so Bindings takes a second one.
-    float view_top = 218.0f;
+    float view_top = menu_panel_body_y;
     if (!searching && g_category == SettingCategory::Bindings && bind_context_controls() != nullptr) {
-        build_bindings_header(ctx, UiRect{content_x, cy(218.0f), content_r - content_x, s(36.0f)}, fonts);
+        build_bindings_header(ctx, UiRect{content_x, cy(menu_panel_body_y), content_r - content_x, s(36.0f)},
+                              fonts);
         view_top = 262.0f;
     }
     else if (!ctx.draw) {
@@ -3092,7 +3046,7 @@ void build_screen(UiContext& ctx, int canvas_y, const Fonts& fonts, bool sync_st
         g_bind_device = BindDevice::Keyboard;
     }
 
-    const int footer_y = inset.y + inset.h - s(52.0f);
+    const int footer_y = inset.y + inset.h - s(menu_panel_footer_inset);
     const int desc_y = footer_y - s(74.0f);
     // The rows start left of the content edge so a focused row's LED lines up with the headers'.
     const UiRect view{content_x - s(16.0f), cy(view_top), content_r - content_x + s(16.0f),
@@ -3101,7 +3055,8 @@ void build_screen(UiContext& ctx, int canvas_y, const Fonts& fonts, bool sync_st
     if (ctx.draw) {
         draw_description_strip(ctx, UiRect{content_x, desc_y, content_r - content_x, s(66.0f)}, fonts);
     }
-    build_panel_footer(ctx, UiRect{content_x, footer_y, content_r - content_x, s(40.0f)}, searching, fonts);
+    build_panel_footer(ctx, UiRect{content_x, footer_y, content_r - content_x, s(menu_panel_footer_h)}, searching,
+                       fonts);
 }
 
 void settings_menu_build(UiContext& ctx)

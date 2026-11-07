@@ -28,6 +28,7 @@
 #include "../../rf/multi.h"
 #include "../../rf/player/player.h"
 #include "../../rf/sound/sound.h"
+#include "../../ui/ui_kit.h"
 
 namespace
 {
@@ -54,10 +55,7 @@ bool g_veto_registered = false;
 // Survives the backward-seek session restart like g_compact; cleared once playback ends
 std::optional<uint32_t> g_custom_marker_ms;
 
-struct Rect
-{
-    int x, y, w, h;
-};
+using Rect = UiRect;
 
 // The expanded panel's backing as of the last input pass. The attack veto tests the
 // cursor against it: the engine can read a click before the input pass sees it.
@@ -65,7 +63,7 @@ Rect g_expanded_strip{};
 
 bool point_in(int px, int py, const Rect& rect)
 {
-    return px >= rect.x && px < rect.x + rect.w && py >= rect.y && py < rect.y + rect.h;
+    return ui_point_in(px, py, rect);
 }
 
 struct Layout

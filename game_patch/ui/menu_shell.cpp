@@ -21,6 +21,12 @@ constexpr float rail_tuck_units = 11.0f;
 // The visible part of a column button's well; the end cap follows it.
 constexpr float well_visible_w = 220.0f;
 
+// The panel frame around the content area: the left channel and the top and bottom ridges.
+constexpr float frame_left = 34.0f;
+constexpr float frame_edge = 22.0f;
+// Space kept between anything in the content area and the right pillar.
+constexpr float rail_clearance = 16.0f;
+
 constexpr float slide_seconds = 0.25f;
 constexpr float min_animation_step = 0.002f;
 
@@ -109,6 +115,49 @@ UiRect menu_draw_title_bar(const UiContext& ctx, int x, int right, int clear_r, 
     const int free_l = title_x + rf::gr::get_string_size(title, title_font).first + s(40.0f);
     const int free_r = clear_r - s(60.0f);
     return UiRect{free_l, bar.y, std::max(0, free_r - free_l), bar.h};
+}
+
+MenuPanel menu_panel(const UiContext& ctx, const MenuLayout& lay, int dx, int top)
+{
+    const auto s = [&](float v) { return ctx.scaled(v); };
+    const int h = menu_panel_slots * menu_button_h(ctx);
+    MenuPanel panel;
+    panel.frame = UiRect{lay.panel_x + dx, top, lay.panel_r - lay.panel_x, h};
+    const int inset_x = panel.frame.x + s(frame_left);
+    panel.inset = UiRect{inset_x, top + s(frame_edge), lay.rail_right - s(rail_clearance) + dx - inset_x,
+                         h - 2 * s(frame_edge)};
+    panel.content_x = panel.inset.x + s(20.0f);
+    panel.content_r = panel.inset.x + panel.inset.w - s(16.0f);
+    return panel;
+}
+
+void menu_draw_panel(const UiContext& ctx, const MenuPanel& panel)
+{
+    const UiRect& f = panel.frame;
+    skin_brushed_plate(ctx, f.x, f.y, f.w, f.h, false);
+    const int margin = skin_px(ctx, 6.0f);
+    skin_brushed_plate(ctx, f.x + margin, f.y + margin, skin_px(ctx, 20.0f), f.h - 2 * margin, true);
+
+    const int t = skin_px(ctx, 1.0f);
+    const int ridge_x = f.x + skin_px(ctx, 30.0f);
+    const int ridge_w = f.x + f.w - ridge_x;
+    for (const float y_ref : {7.0f, 13.0f}) {
+        for (const int y : {f.y + skin_px(ctx, y_ref), f.y + f.h - skin_px(ctx, y_ref + 2.0f)}) {
+            rf::gr::set_color(skin::steel_dark);
+            rf::gr::rect(ridge_x, y, ridge_w, t);
+            rf::gr::set_color(skin::steel_hi);
+            rf::gr::rect(ridge_x, y + t, ridge_w, t);
+        }
+    }
+
+    skin_steel_field(ctx, panel.inset.x, panel.inset.y, panel.inset.w, panel.inset.h);
+}
+
+void menu_draw_connector(const UiContext& ctx, const MenuPanel& panel, int mid_y)
+{
+    const int cw = skin_px(ctx, menu_connector_w);
+    const int ch = skin_px(ctx, 60.0f);
+    skin_sized_chrome("af_connector", UiRect{panel.frame.x - cw, mid_y - ch / 2, cw, ch});
 }
 
 int menu_build_column(UiContext& ctx, const MenuLayout& lay, int x, int y, std::span<const MenuColumnItem> items,
