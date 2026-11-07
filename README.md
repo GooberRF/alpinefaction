@@ -1,134 +1,122 @@
 Alpine Faction
 ============
-<img src="https://raw.githubusercontent.com/GooberRF/alpinefaction/refs/heads/master/docs/alpinelogo1.png">
+![Alpine Faction](docs/alpinelogo1.png)
 
-Alpine Faction website: <a href="https://alpinefaction.com">alpinefaction.com</a>
+[![Download](https://img.shields.io/github/v/release/GooberRF/alpinefaction?label=download&color=brightgreen)](https://dl.alpinefaction.com/)
+[![License: MPL-2.0](https://img.shields.io/badge/license-MPL--2.0-blue)](LICENSE.txt)
+[![Changelog](https://img.shields.io/badge/changelog-view-blue)](docs/CHANGELOG.md)
+[![CI](https://github.com/GooberRF/alpinefaction/actions/workflows/ci.yml/badge.svg)](https://github.com/GooberRF/alpinefaction/actions/workflows/ci.yml)
+
+[![Website](https://img.shields.io/badge/website-alpinefaction.com-blue)](https://alpinefaction.com)
+[![Discord](https://img.shields.io/badge/Discord-FactionFiles-5865F2?logo=discord&logoColor=white)](https://discord.gg/factionfiles)
 
 About
 -----
-Alpine Faction is a patch/modification for the 2001 FPS game Red Faction which resolves numerous bugs in the original game while also providing a plethora of new and improved features for singleplayer, multiplayer, and level/mod development. While Alpine Faction is not a source port, its goals and features are similar to what you might expect from one.
+Alpine Faction is a free, open source, and actively developed patch for Red Faction (2001), and the definitive way to play the game today. It fixes the original game's bugs and security vulnerabilities, runs properly on modern systems, restores cut content, improves performance and graphics, and adds the features players expect from a modern game.
 
-Alpine Faction is a fork of and uses Rafalh's incredible <a href="https://github.com/rafalh/dashfaction">Dash Faction</a> project as its foundation.
+It isn't a source port, but it offers much of what you'd expect from one. It patches the original game and is compatible with any official copy of Red Faction.
 
-Alpine Faction project goals:
-* Fix bugs and security vulnerabilities in the original game
-* Improve compatibility with modern hardware and operating systems
-* Modernize the Red Faction experience by adding features typically expected in modern games
-* Enhance engine performance and graphical quality
-* Restore valuable functionality that was cut from the original game
-* Empower players with extensive control over their gameplay experience
-* Offer server operators enhanced flexibility to customize their servers as desired
-* Equip level and mod designers with a robust set of tools so they can create awesome stuff
+Whether you're playing through the campaign, competing in multiplayer, running a server, building levels, or making a total conversion, Alpine Faction gives you the tools and the control you need to get the most out of Red Faction.
+
+Alpine Faction began as a fork of rafalh's <a href="https://github.com/rafalh/dashfaction">Dash Faction</a>.
 
 Alpine Faction requires:
 * Windows 7 or newer (or you can use Wine)
-* Any official distribution of Red Faction (Steam, GoG, retail, etc.)
+* Any official distribution of Red Faction (Steam, GOG, retail, etc.)
     * All official localizations are supported (English, French, German)
     * Many other localizations are supported via mods
 
 Key Features
 -----
-Most important:
-* Fixes for critical security vulnerabilities
-* Direct3D 11 renderer with GPU accelerated realtime per-pixel lighting and full mesh shadows
-* Demo (replay) recording and playback
-* FactionFiles-integrated statistics platform (multiplayer) and achievements system (single player)
-* 12 brand new multiplayer game types: `King of the Hill`, `Damage Control`, `Revolt`, `Escalation`, `Run`, `Bagman`, `Team Bagman`, `Pit`, `Gun Game`, `Wipeout`, `Salvage`, and `Scavenger`
-* Advanced multiplayer bots system with headless bot clients, profile customization, and a fully integrated waypoint grid editor (with autogeneration for custom maps)
-* Multiplayer level auto-downloader (using API at https://autodl.factionfiles.com)
-* Fix for infamous submarine explosion bug (and other FPS-related issues)
+### Highlights
+* Fixes for critical security vulnerabilities, game-breaking bugs, and high frame rate issues (including the infamous submarine explosion bug)
+* Direct3D 11 renderer with real-time per-pixel lighting and full mesh shadows
+* Drivable multiplayer vehicles and turrets: jeeps, APCs, drillers, fighters, and submarines
+* 12 new multiplayer game types, plus server-configurable mutators and an in-game voting panel
+* Multiplayer bots, with automatic waypoint generation for custom maps
+* Demo recording and playback
+* FactionFiles integration: multiplayer stats, single player achievements, level ratings, automatic level downloads, and one-click level and mod installs
+* Terrain, ray traced lightmap baking, and 60+ new scripting events for level designers
+
+### Gameplay
 * Checkpoint autosaves at the start of each level
-* Optional account linking with `FactionFiles.com` to support achievement tracking, multiplayer statistics, and in-game level rating
-* Access to `Install with Alpine Faction` on `FactionFiles.com` to streamline custom level and mod installation
-* Enemies explode into gibs when killed by explosives
+* Skippable cutscenes
+* Restored water/lava rising in Geothermal Plant
 * Player headlamp (flashlight)
-* Support for any resolution and aspect ratio
-* Fullscreen, windowed, borderless window modes
+* Gibs from explosive kills, and ragdoll deaths
 * Enhanced mouse input with selectable sensitivity scaling
-* Ability to skip cutscenes
-* Restored water/lava rising functionality in Geothermal Plant
-* Enhanced graphics options such as anti-aliasing, full color range lighting, and colorblind mode
+
+### Graphics and display
+* Any resolution and aspect ratio, in fullscreen, windowed, or borderless window modes
+* Anti-aliasing, full color range lighting, and colorblind mode
+* Underwater effects including caustics, depth-based water fog, and distortion
 * High resolution HUD and vector fonts
-* Speedometer HUD widget
-* Many performance and graphical improvements
+* Many performance and visual improvements
 
-Multiplayer:
-* Increased (and configurable) tick rate
-* Many substantial netcode improvements
-* TOML-based `ADS` dedicated server configuration with per-level rules, on-demand reloading, and on-the-fly game type switching
-* Competitive match framework including "ready up" system and overtime
-* Improved gaussian distribution method for bullet spread
-* Damage feedback system including hit sounds, kill sounds, and visual damage number indicators
-* Sprays, awards, and assists
-* Radio messages and taunts
-* Visual indicators and nameplates in the world for objectives and teammates
-* Player outlines with per-team and enemy colors, plus optional team X-ray
+### Multiplayer
+* 12 new game types: King of the Hill, Damage Control, Revolt, Escalation, Run, Bagman, Team Bagman, Pit, Gun Game, Wipeout, Salvage, and Scavenger
+* Higher (and configurable) tick rate and many netcode improvements
+* Damage feedback with hit sounds, kill sounds, and damage numbers
+* Sprays, awards, assists, radio messages, and taunts
+* Objective and teammate indicators, nameplates, location pings, and a minimap
+* Player outlines with team and enemy colors, plus optional team X-ray
 * Enemy and teammate footstep audio
-* Location pinging visible to teammates
-* First person, third person, and free camera spectate, with static cameras and spectator lag compensation
-* Improved scoreboard with splittable categories for spectators, bots, browsers, and idle players
-* Server-configurable (and votable) mutators
-* Voting system with a GUI panel for calling votes - kick players, change levels or game types, toggle mutators
-* Server-configurable gibbing, weapon loadouts, spawn delays, delayed item spawns, etc.
+* First person, third person, and free camera spectating, with static cameras and lag compensation
+* Improved scoreboard with separate categories for spectators, bots, browsers, and idle players
+* Competitive match framework with ready-up and overtime
 * Cheating prevention
-* Many server fixes, performance improvements, and customizable features
-* `rf://` protocol handler for joining servers
+* Join servers from `rf://` links
+* Discord rich presence
 
-Community development:
-* 60+ new event scripting objects for crafting advanced logic systems in maps, including events for gas regions, respawn points, capture points, mesh animation, fullscreen images, and gameplay rules
-* Support for gas regions
-* Support for weather regions (rain and snow)
-* Support for dynamic lights in maps
-* Support for using dynamic lights, particle emitters, and push regions with movers
-* Enhanced and more immersive skyboxes, including support for movers, meshes, and mesh pixel lighting in skyboxes
-* Expanded destruction system with `Brush-based geomod` (RF2-style) and breakable detail brushes with dynamic debris generation
-* New `Mesh`, `Corona`, and `Note` object types
-* Removed legacy PS2 compatibility measures that resulted in decreased map performance
-* Access for many hardcoded settings to be customized in mods
-* Support for custom HUDs and translation packs as clientside mods
-* Ability to use custom meshes in multiplayer
-* Teleporters that can be used safely without negative side effects
-* Enhanced trigger options for multiplayer
-* Fixed support for events in multiplayer (removed requirement to use hacky workarounds)
-* Full color range lightmaps (removed lightmap clamping)
-* Support for the Alpine Texture (`ATX`) declarative texture format for fine-tuned texture animation, scriptable via the event system
-* DDS texture support in both editor and game
-* PNG and JPG texture support in both editor and game
-* 8-bit greyscale TGA support in both editor and game
-* OGG audio support
-* Support for custom BIK videos and bluebeard.bty in mods
-* Advanced debugging features for developing maps and mods
-* Many engine geometry and object limits raised or removed
-* Many level editor bug fixes, performance, and workflow improvements, including:
-  * `Mirror` tool for brushes and groups
-  * `Delete`, `Delete Ext.`, `Split`, and `Flip Normal` face-mode tools
-  * `Delete` and `Bridge` vertex-mode tools
-  * `To Mesh` tool for converting brushes directly to `.v3m` static meshes
-  * Custom texture subdirectories
-  * Improved packfile creation that includes used meshes, animations, and textures
+### Server hosting
+* Dedicated server configuration file with per-level rules, live reloading, and on-the-fly game type switching
+* Configurable (and votable) mutators, gibbing, weapon loadouts, spawn delays, delayed item spawns, and more
+* Voting panel for kicking players, changing levels or game types, toggling mutators, and surrendering matches
+* Server-side bots and headless bot clients, with customizable bot profiles
+* Automatic demo recording
+* Many server fixes and performance improvements
+
+### Level and mod creation
+* Ray traced lightmap baking with directional sunlight, baked mesh shadows, and high-resolution Alpine Lightmaps
+* Heightmap terrain with sculpting, texture layer painting, mesh decorations (grass, rocks, etc.), and geomod support
+* 60+ new scripting events, including events for gas regions, respawn points, capture points, mesh animation, fullscreen images, and gameplay rules
+* Events and triggers that work properly in multiplayer, with new multiplayer trigger options
+* New object types: Mesh, Corona, Note, Rope Emitter, Directional Light, Projection Camera, and Vehicle Factory
+* Gas regions, weather regions (rain and snow), and dynamic lights
+* Movers that can carry dynamic lights, particle emitters, and push regions
+* More immersive skyboxes, with support for movers, meshes, and mesh lighting
+* RF2-style brush-based geomod and breakable detail brushes with debris
+* Full color range lightmaps
+* Alpine Texture (ATX) format for texture animation (scriptable through events) and detail textures
+* DDS, PNG, JPG, and 8-bit greyscale TGA textures, OGG audio, and custom BIK videos
+* Custom HUDs and translation packs as client-side mods, custom meshes in multiplayer, and many hardcoded settings exposed to mods
+* Many engine limits raised or removed, and legacy PS2 restrictions that hurt map performance removed
+* Advanced debugging tools for maps and mods
+
+### Level editor
+* Move, rotate, and scale gizmo with snapping
+* Mesh, sound, and improved texture browsers
+* Texture mode tools such as Fit, Justify, Wrap, texture lock, and UV unwrapping
+* Mirror tool, plus new face tools (Delete, Split, Flip Normal) and vertex tools (Delete, Bridge)
+* Brush to static mesh (`.v3m`) conversion, and back
+* Custom texture subdirectories
+* Packfile creation that includes used meshes, animations, and textures
+* Many bug fixes, performance, and workflow improvements
 
 See the [CHANGELOG file](docs/CHANGELOG.md) for a detailed list of all features.
 
 Compatibility
 -------------
-Alpine Faction is directly compatible only with Red Faction 1.20 North America (retail).
+Alpine Faction runs on Red Faction 1.20 (North America). The installer converts other official versions automatically:
+* For 1.00 or 1.10 NA, the installer applies the official 1.20 patch.
+* For other retail localizations (French/German), the installer patches your game executable as needed and keeps your localization.
+* For digital distributions (Steam, GOG, etc.), the installer patches your game executable as needed.
 
-If you have another official distribution, Alpine Faction will attempt to apply the patches required:
-* For 1.00 or 1.10 NA, the installer will apply the 1.20 official patch.
-* For other retail localizations (French/German), the installer will patch your game executable as needed and maintain your localization.
-* For digital distributions (Steam, GoG, etc.), the installer will patch your game executable as needed.
-
-If you are somehow using an unsupported game executable, the installer and launcher will prompt you to obtain the correct one when you try to launch the game.
-
-In order to fully support current features and enable future expansion, Alpine Faction uses its own unique file for storing player settings (`alpine_settings.ini`)
-
-When you first launch Alpine, if you have a legacy player settings file (`players.cfg`) from any other Red Faction client, Alpine Faction will import those settings for you automatically.
-
-The level editor likewise stores its `Preferences` window settings in `alpine_editor.ini`, importing them from the stock `red\red.cfg` the first time it starts.
+If you are using an unsupported game executable, the installer and launcher will prompt you to obtain the correct one when you try to launch the game.
 
 Usage
 -----
-1. Install with the installer. Note that Alpine Faction does NOT have to be installed to your Red Faction folder.
+1. Download the installer from [dl.alpinefaction.com](https://dl.alpinefaction.com/) and run it. Alpine Faction does NOT have to be installed to your Red Faction folder.
 
 2. Run `AlpineFactionLauncher.exe`.
 
@@ -136,31 +124,37 @@ Usage
 
 4. Click the "Play" button to start playing.
 
+### Settings files
+Alpine Faction stores player settings in its own file, `alpine_settings.ini`, so that it can support its new features. The first time you launch Alpine Faction, it automatically imports your settings from a legacy `players.cfg` file left by any other Red Faction client.
+
+The level editor likewise stores its `Preferences` window settings in `alpine_editor.ini`, importing them from the stock `red\red.cfg` the first time it starts.
+
 Advanced usage
 --------------
-Alpine Faction adds many new console commands, command line options, and dedicated server configuration settings. You can find full documentation on the RF Wiki:
-* https://www.redfactionwiki.com/wiki/Red_Faction_Console_Commands#Alpine_Faction
-* https://www.redfactionwiki.com/wiki/Red_Faction_Command_Line_Parameters#Alpine_Faction
-* https://www.redfactionwiki.com/wiki/Alpine_Faction_Dedicated_Server_Config
+Alpine Faction adds many new console commands, command line options, and dedicated server configuration settings. See the reference documentation:
+* [Console commands](docs/reference/CONSOLE_COMMANDS.md)
+* [Command line switches](docs/reference/COMMAND_LINE.md)
+* [Dedicated server configuration](docs/reference/DEDICATED_SERVER_CONFIG.md)
 
-NOTE: To use Red Faction or RED command line options with Alpine Faction, use them with `AlpineFactionLauncher.exe`. They will be forwarded to the launched process.
+Pass command line switches to `AlpineFactionLauncher.exe`, which forwards them to the game or level editor.
 
 Alpine Faction also adds many new features for level designers and mod developers. You can find full documentation on the RF Wiki:
-* https://www.redfactionwiki.com/wiki/Alpine_Faction_Level_Design
-* https://www.redfactionwiki.com/wiki/Alpine_Faction_Mod_Development
+* [Level design](https://www.redfactionwiki.com/wiki/Alpine_Faction_Level_Design)
+* [Mod development](https://www.redfactionwiki.com/wiki/Alpine_Faction_Mod_Development)
 
-Problems
---------
-If your antivirus software detects Alpine Faction as malicious, you may need to explicitly allow it to run.
-While Alpine Faction is safe to use, many antivirus vendors wrongfully flag new programs as malicious/suspicious.
-If you do not trust officially provided Alpine Faction distributions, you can review the code and compile it yourself.
+Troubleshooting and support
+---------------------------
+Some antivirus software flags Alpine Faction as malicious. The launcher injects Alpine Faction's code into the game process as it starts, which is the kind of behaviour antivirus heuristics look for. Alpine Faction is safe to use, but you may need to explicitly allow it to run. If you do not trust the official Alpine Faction builds, you can review the code and compile it yourself.
 
-If you run into any problems or have questions, please ask in the Faction Files Discord server: https://discord.gg/factionfiles
+If you run into any problems or have questions, please ask in the [Faction Files Discord server](https://discord.gg/factionfiles). You can also report bugs on [GitHub Issues](https://github.com/GooberRF/alpinefaction/issues).
 
 Building
 --------
-
 See [docs/BUILDING.md](docs/BUILDING.md) for information about building Alpine Faction from source.
+
+Contributing
+------------
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) to get started, and use [GitHub Issues](https://github.com/GooberRF/alpinefaction/issues) to report bugs or suggest features.
 
 Terms of Use
 ------------
@@ -170,7 +164,6 @@ License
 -------
 Alpine Faction's source code is licensed under Mozilla Public License 2.0. See [LICENSE.txt](LICENSE.txt).
 
-Alpine Faction includes contributions from several authors. See [resources/licensing-info.txt](resources/licensing-info.txt) for more information
+Alpine Faction includes contributions from several authors. See [resources/licensing-info.txt](resources/licensing-info.txt) for more information.
 
-Alpine Faction is a fork of Dash Faction, which is developed by rafalh. Licensing information for Dash Faction is available here:
-https://github.com/rafalh/dashfaction?tab=readme-ov-file#license
+Alpine Faction is a fork of Dash Faction, which is developed by rafalh. Licensing information for Dash Faction is available in [its README](https://github.com/rafalh/dashfaction?tab=readme-ov-file#license).

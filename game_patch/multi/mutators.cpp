@@ -40,6 +40,7 @@
 #include "../rf/physics.h"
 #include "../rf/gr/gr.h"
 #include "../object/alpine_rope.h"
+#include "../object/zipline.h"
 #include "../rf/sound/sound.h"
 #include "../os/console.h"
 #include "../os/os.h"
@@ -300,9 +301,10 @@ static void apply_flaming_enemies(AlpineServerConfigRules& r, const toml::table&
 }
 
 // Gibbing: overkill deaths explode into gibs.
-static void apply_gibbing(AlpineServerConfigRules& r, const toml::table& /*opts*/)
+static void apply_gibbing(AlpineServerConfigRules& r, const toml::table& opts)
 {
     r.gibbing.enabled = true;
+    r.gibbing.scrapyard = opts["scrapyard"].value_or(false);
 }
 
 // Jetpacks: every player wears a jetpack and can thrust upward in midair.
@@ -398,25 +400,57 @@ static const MutatorOptionChoice JOIN_BOTS_SKILLS[] = {
     {"Nightmare", "nightmare"},
 };
 static constexpr uint8_t JOIN_BOTS_DEFAULT_SKILL = 2;
+// Bot personality presets offered by Join Bots, as {UI label, preset name}. Random rolls once per bot.
+static const MutatorOptionChoice JOIN_BOTS_PERSONALITIES[] = {
+    {"Balanced", "balanced"},
+    {"Aggressive", "aggressive"},
+    {"Defensive", "defensive"},
+    {"Tactician", "tactician"},
+    {"Berserker", "berserker"},
+    {"Objective", "objective"},
+    {"Sniper", "sniper"},
+    {"Guerrilla", "guerrilla"},
+    {"Collector", "collector"},
+    {"Brawler", "brawler"},
+    {"Destroyer", "destroyer"},
+    {"Random", "random"},
+};
+static constexpr uint8_t JOIN_BOTS_DEFAULT_PERSONALITY = 0;
 static constexpr int JOIN_BOTS_DEFAULT_COUNT = 2;
 static constexpr int JOIN_BOTS_MAX_COUNT = 8;
+
+template<std::size_t N>
+static std::string join_bots_choice(
+    const toml::table& opts,
+    const char* key,
+    const MutatorOptionChoice (&choices)[N],
+    const uint8_t default_choice)
+{
+    const std::string& fallback = choices[default_choice].value;
+    const auto v = opts[key].value<std::string>();
+    if (!v) {
+        return fallback;
+    }
+    const auto it = std::ranges::find_if(choices, [&](const MutatorOptionChoice& c) {
+        return string_iequals(*v, c.value);
+    });
+    if (it != std::end(choices)) {
+        return it->value;
+    }
+    if (!g_rules_parse_quiet) {
+        rf::console::print("  [WARN] Join Bots: unknown {} '{}', using {}\n", key, clamp_for_console(*v), fallback);
+    }
+    return fallback;
+}
 
 // Join Bots: server bots that join for the level, or fill a match (see server_bots_sync_join_bots).
 static void apply_join_bots(AlpineServerConfigRules& r, const toml::table& opts)
 {
     r.mutators.join_bots = static_cast<int>(
         std::clamp<int64_t>(opts["bots"].value_or(int64_t{JOIN_BOTS_DEFAULT_COUNT}), 1, JOIN_BOTS_MAX_COUNT));
-    r.mutators.join_bots_skill = JOIN_BOTS_SKILLS[JOIN_BOTS_DEFAULT_SKILL].value;
-    if (auto v = opts["skill"].value<std::string>()) {
-        const auto it = std::ranges::find_if(JOIN_BOTS_SKILLS, [&](const MutatorOptionChoice& c) {
-            return string_iequals(*v, c.value);
-        });
-        if (it != std::end(JOIN_BOTS_SKILLS))
-            r.mutators.join_bots_skill = it->value;
-        else if (!g_rules_parse_quiet)
-            rf::console::print("  [WARN] Join Bots: unknown skill '{}', using {}\n", clamp_for_console(*v),
-                               r.mutators.join_bots_skill);
-    }
+    r.mutators.join_bots_skill = join_bots_choice(opts, "skill", JOIN_BOTS_SKILLS, JOIN_BOTS_DEFAULT_SKILL);
+    r.mutators.join_bots_personality =
+        join_bots_choice(opts, "personality", JOIN_BOTS_PERSONALITIES, JOIN_BOTS_DEFAULT_PERSONALITY);
 }
 
 // ============================================================================
@@ -445,6 +479,10 @@ static const MutatorOptionDef VAMPIRE_OPTIONS[] = {
     {1, "full_lifesteal", "Full lifesteal", MutatorOptionType::Bool},
 };
 
+static const MutatorOptionDef GIBBING_OPTIONS[] = {
+    {0, "scrapyard", "Scrapyard mode", MutatorOptionType::Bool},
+};
+
 static const MutatorOptionDef JETPACKS_OPTIONS[] = {
     {0, "explode", "Jetpacks explode", MutatorOptionType::Bool},
 };
@@ -460,6 +498,7 @@ static const MutatorOptionDef IDEAL_PLAYERS_OPTIONS[] = {
 static const MutatorOptionDef JOIN_BOTS_OPTIONS[] = {
     {0, "bots", "Bots (1-8)", MutatorOptionType::Int},
     {1, "skill", "Skill", MutatorOptionType::Choice},
+    {2, "personality", "Personality", MutatorOptionType::Choice},
 };
 
 struct MutatorDef
@@ -500,7 +539,7 @@ static const MutatorDef MUTATORS[] = {
     {MutatorId::SuperRail, "superrail", "Super Rail", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_super_rail, nullptr, 0},
     {MutatorId::BigCraters, "bigcraters", "Big Craters", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_big_craters, nullptr, 0},
     {MutatorId::FlamingEnemies, "flamingenemies", "Flaming Enemies", 4, &apply_flaming_enemies, nullptr, 0},
-    {MutatorId::Gibbing, "gibbing", "Gibbing", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_gibbing, nullptr, 0},
+    {MutatorId::Gibbing, "gibbing", "Gibbing", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_gibbing, GIBBING_OPTIONS, std::size(GIBBING_OPTIONS)},
     {MutatorId::Jetpacks, "jetpacks", "Jetpacks", 4, &apply_jetpacks, JETPACKS_OPTIONS, std::size(JETPACKS_OPTIONS)},
     {MutatorId::HumansVsBots, "humansvsbots", "Humans vs. Bots", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_humans_vs_bots, nullptr, 0, MutatorGametypeReq::TeamOnly},
     {MutatorId::DelayedSupers, "delayedsupers", "Delayed Supers", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_delayed_supers, nullptr, 0},
@@ -758,6 +797,10 @@ const std::vector<MutatorInfo>& mutators_get_registry()
             else if (def.id == MutatorId::JoinBots && opt.name == "skill") {
                 opt.choices.assign(std::begin(JOIN_BOTS_SKILLS), std::end(JOIN_BOTS_SKILLS));
                 opt.default_choice = JOIN_BOTS_DEFAULT_SKILL;
+            }
+            else if (def.id == MutatorId::JoinBots && opt.name == "personality") {
+                opt.choices.assign(std::begin(JOIN_BOTS_PERSONALITIES), std::end(JOIN_BOTS_PERSONALITIES));
+                opt.default_choice = JOIN_BOTS_DEFAULT_PERSONALITY;
             }
 
             info.options.push_back(std::move(opt));
@@ -1329,6 +1372,17 @@ bool mutators_pogo_active()
     return info.has_value() && info->pogo;
 }
 
+bool mutators_scrapyard_gibs_active()
+{
+    if (!rf::is_multi)
+        return false;
+    if (rf::is_server)
+        return g_alpine_server_config_active_rules.gibbing.scrapyard;
+    // Server informs the client via SIF_SCRAPYARD_GIBS.
+    const auto& info = get_af_server_info();
+    return info.has_value() && info->scrapyard_gibs;
+}
+
 static bool any_movement_mutator_active()
 {
     return mutators_skiing_active() || mutators_dodging_active() || mutators_pogo_active();
@@ -1723,21 +1777,25 @@ CallHook<void(rf::Entity*)> ski_ground_move_hook{
 
 // Slam and rigid-body impact fall damage: immunity in single player and multiplayer
 // when movement mutators are active, for the local player and server bots (simulated
-// on the server). Note 0x004A0C28 (landing) fall damage is not hooked, because we
-// want it to still apply.
+// on the server), and around a zip line ride. Note 0x004A0C28 (landing) fall damage is
+// not hooked, because we want it to still apply.
 CallHook<void __cdecl(rf::Entity*, float)> ski_fall_damage_hook{
     {0x0049D4B6, 0x0049DE23, 0x0049DE39},
     [](rf::Entity* ep, float impact) {
-        if (ep && any_movement_mutator_active() && (ep == rf::local_player_entity || server_bot_from_entity(ep)))
+        if (ep && ((any_movement_mutator_active() && (ep == rf::local_player_entity || server_bot_from_entity(ep)))
+                   || zipline_slam_immune(ep)))
             return;
         ski_fall_damage_hook.call_target(ep, impact);
     },
 };
 
-// Shared by multiple movement mutators to fix getting stuck in the floor.
+// Shared by multiple movement mutators to fix getting stuck in the floor; zip line riders
+// replace it outright.
 CallHook<void(rf::Entity*)> ski_air_move_hook{
     0x0049F6AD,
     [](rf::Entity* ep) {
+        if (g_move_replay_depth == 0 && zipline_air_move(ep))
+            return;
         if (g_move_replay_depth > 0 || !any_movement_mutator_active()
             || ep != rf::local_player_entity) {
             ski_air_move_hook.call_target(ep);

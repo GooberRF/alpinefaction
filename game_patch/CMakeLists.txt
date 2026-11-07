@@ -177,6 +177,8 @@ set(SRCS
     multi/vehicles/physics/vphys_step.cpp
     multi/vehicles/physics/vphys_camera.cpp
     multi/vehicles/physics/vphys_debug.cpp
+    multi/vehicles/physics/ragdoll.h
+    multi/vehicles/physics/ragdoll.cpp
     multi/sprays.h
     multi/sprays.cpp
     multi/mutators.h
@@ -296,6 +298,14 @@ set(SRCS
     multi/bots/bot_state.h
     multi/bots/bot_utils.cpp
     multi/bots/bot_utils.h
+    multi/bots/bot_vehicle.cpp
+    multi/bots/bot_vehicle.h
+    multi/bots/bot_vehicle_drive.cpp
+    multi/bots/bot_vehicle_drive.h
+    multi/bots/bot_vehicle_flight.cpp
+    multi/bots/bot_vehicle_flight.h
+    multi/bots/bot_vehicle_nav.cpp
+    multi/bots/bot_vehicle_nav.h
     multi/bots/bot_waypoint_route.cpp
     multi/bots/bot_waypoint_route.h
     multi/bots/bot_weapon_profiles.h
@@ -340,10 +350,14 @@ set(SRCS
     object/alpine_bag.h
     object/alpine_projection_camera.cpp
     object/alpine_projection_camera.h
+    object/alpine_waypoint_helper.cpp
+    object/alpine_waypoint_helper.h
     object/alpine_rope.cpp
     object/alpine_rope.h
     object/alpine_dir_light.cpp
     object/alpine_dir_light.h
+    object/zipline.cpp
+    object/zipline.h
     object/clock.cpp
     misc/achievements.h
     misc/achievements.cpp
@@ -384,8 +398,12 @@ set(SRCS
     misc/waypoints.cpp
     misc/waypoints.h
     misc/waypoints_internal.h
+    misc/waypoints_terrain.cpp
+    misc/waypoints_terrain.h
     misc/waypoints_utils.cpp
     misc/waypoints_utils.h
+    misc/waypoints_vehicle.cpp
+    misc/waypoints_vehicle.h
     misc/alpine_options.h
     misc/alpine_options.cpp
     misc/alpine_settings.h

@@ -37,14 +37,17 @@
 #include "../rf/math/vector.h"
 #include "../rf/gameseq.h"
 #include "../multi/multi.h"
+#include "../multi/mutators.h"
 #include "../multi/server.h"
 #include "../multi/bots/server_bots.h"
+#include "object.h"
+#include "zipline.h"
 
 rf::Timestamp g_player_jump_timestamp;
 // Server bots are simulated at this machine's frame rate.
 static std::unordered_map<int, rf::Timestamp> g_server_bot_jump_timestamps;
 
-static void skip_land_handling_after_jump(rf::Entity* entity)
+void entity_skip_land_handling_after_jump(rf::Entity* entity)
 {
     if (entity->local_player) {
         g_player_jump_timestamp.set(64);
@@ -77,7 +80,7 @@ CodeInjection stuck_to_ground_when_jumping_fix{
     0x0042891E,
     [](auto& regs) {
         // Skip land handling code for next 64 ms (like in PF)
-        skip_land_handling_after_jump(regs.esi);
+        entity_skip_land_handling_after_jump(regs.esi);
     },
 };
 
@@ -85,14 +88,18 @@ CodeInjection stuck_to_ground_when_using_jump_pad_fix{
     0x00486B60,
     [](auto& regs) {
         // Skip land handling code for next 64 ms
-        skip_land_handling_after_jump(regs.esi);
+        entity_skip_land_handling_after_jump(regs.esi);
     },
 };
 
 CodeInjection stuck_to_ground_fix{
     0x00487F82,
     [](auto& regs) {
-        if (entity_skips_land_handling(regs.esi)) {
+        rf::Entity* entity = regs.esi;
+        // A rider is held off the ground only while still falling, so swim or climb mode taken
+        // this frame is not overwritten and ends the ride.
+        const bool riding = zipline_entity_simulates_ride(entity) && rf::entity_is_falling(entity);
+        if (riding || entity_skips_land_handling(entity)) {
             // Jump to jump handling code that sets entity to falling movement mode
             regs.eip = 0x00487F7B;
         }
@@ -255,7 +262,13 @@ CodeInjection entity_collision_push_rate_limit{
     0x0049DDBB,
     [](auto& regs) {
         rf::Entity* ep = regs.esi;
-        if (!rf::is_multi || !rf::entity_from_handle(ep->p_data.collide_out.obj_handle)) {
+        rf::Entity* other = rf::entity_from_handle(ep->p_data.collide_out.obj_handle);
+        // A zip line rider carries up to 70 m/s of ride speed; brushing past one is not a hit.
+        if (other && zipline_entity_is_riding(other)) {
+            addr_as_ref<float>(regs.esp + 4) = 0.0f;
+            return;
+        }
+        if (!rf::is_multi || !other) {
             return;
         }
         const int64_t now = timer::get_i64(1000);
@@ -604,13 +617,46 @@ FunHook<void(int)> entity_blood_throw_gibs_hook{
         static constexpr float spin_scale_min = 10.0f;
         static constexpr float spin_scale_max = 25.0f;
         static constexpr float velocity_factor = 0.5f;
-        static const char* snd_set = "gib bounce";
-        static const std::vector<const char*> gib_filenames = {
+        static const std::vector<const char*> meat_gib_filenames = {
             "meatchunk1.v3m",
             "meatchunk2.v3m",
             "meatchunk3.v3m",
             "meatchunk4.v3m",
             "meatchunk5.v3m"};
+        static const std::vector<const char*> scrapyard_gib_filenames = {
+            "beerbottle01.v3m",
+            "camera1.v3m",
+            "capekscane.v3m",
+            "clipboard1.v3m",
+            "desktopPC_key.v3m",
+            "desktopPC_mon.v3m",
+            "Disk.v3m",
+            "doctools3.v3m",
+            "firextinguisher1.v3m",
+            "minertool2.v3m",
+            "Morter01.v3m",
+            "mug2.v3m",
+            "pan1.v3m",
+            "portrait1.v3m",
+            "portrait2.v3m",
+            "pot1.v3m",
+            "robotpart1.v3m",
+            "robotpart3.v3m",
+            "showerhead1.v3m",
+            "syringe1.v3m",
+            "Tech01_helmet.v3m",
+            "tools1.v3m",
+            "tools2.v3m",
+            "tools3.v3m",
+            "torpedo01.v3m",
+            "wallcal1.v3m",
+            "wallcal2.v3m",
+            "wastebasket1.v3m",
+            "weapon_remote_detonate.v3m",
+            "welder1.v3m"};
+        const bool scrapyard = mutators_scrapyard_gibs_active();
+        const char* snd_set = scrapyard ? "large debris bounce" : "gib bounce";
+        const auto& gib_filenames = scrapyard ? scrapyard_gib_filenames : meat_gib_filenames;
 
         const int gib_count = g_alpine_game_config.gib_chunk_count; // 7 from Volition
         const float velocity_scale = g_alpine_game_config.gib_velocity_scale;

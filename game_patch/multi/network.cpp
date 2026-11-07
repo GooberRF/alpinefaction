@@ -82,6 +82,7 @@
 #include "../fflink/afstats_client.h"
 #include "../fflink/afstats_events.h"
 #include "../fflink/fflink_session.h"
+#include "../object/zipline.h"
 
 // NET_IFINDEX_UNSPECIFIED is not defined in MinGW headers
 #ifndef NET_IFINDEX_UNSPECIFIED
@@ -2069,6 +2070,10 @@ CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_join_accept_packet_ho
         if (g_alpine_server_config_active_rules.mutators.pogo_enabled) {
             ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::pogo;
         }
+        // Gibbing Scrapyard mode: gibs are spawned client-side, so the client picks the meshes.
+        if (g_alpine_server_config_active_rules.gibbing.scrapyard) {
+            ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::scrapyard_gibs;
+        }
         // Direct connects have no browser game_info entry, so this is the only
         // point at which they learn to run the stats key exchange.
         if (fflink::afstats_server_enabled()) {
@@ -2272,6 +2277,7 @@ CodeInjection process_join_accept_injection{
             server_info.skiing = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::skiing);
             server_info.dodging = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::dodging);
             server_info.pogo = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::pogo);
+            server_info.scrapyard_gibs = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::scrapyard_gibs);
             // featured_no_clip is intentionally not stored here, it's consumed inline below via mutators_set_no_clip_weapon.
 
             // parsed_full is the only state reaching this branch, so the stats flag was
@@ -3305,6 +3311,8 @@ CodeInjection send_state_info_injection{
         rf::Player* player = regs.edi;
         trigger_send_state_info(player);
         sprays_force_state_sync_to(player);
+        zipline_send_state_to(player);
+        af_send_rope_states_to(player, false);
     },
 };
 

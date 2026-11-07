@@ -16,6 +16,7 @@
 #define IDD_OPTIONS_MULTIPLAYER         109
 // #define IDD_OPTIONS_INPUT               110
 // #define IDD_OPTIONS_INTERFACE           111
+#define IDD_OPTIONS_ADVANCED            112
 #define IDC_PLAY_BTN                    999
 #define IDC_EDITOR_BTN                  1000
 #define IDC_OPTIONS_BTN                 1001
@@ -84,6 +85,8 @@
 // #define IDC_DAMAGEFLASH                 1065
 // #define IDC_POW2TEX                     1066
 #define IDC_EDITOR_LAA_CHECK            1067
+#define IDC_ADVANCED_OPTIONS_BOX        1068
+#define IDC_ADVANCED_TOGGLE_BTN         1069
 
 #define IDC_VERSION_TEXT                3050
 
@@ -178,9 +181,9 @@
 //
 #ifdef APSTUDIO_INVOKED
 #ifndef APSTUDIO_READONLY_SYMBOLS
-#define _APS_NEXT_RESOURCE_VALUE        112
+#define _APS_NEXT_RESOURCE_VALUE        113
 #define _APS_NEXT_COMMAND_VALUE         32771
-#define _APS_NEXT_CONTROL_VALUE         1068
+#define _APS_NEXT_CONTROL_VALUE         1070
 #define _APS_NEXT_SYMED_VALUE           101
 #endif
 #endif

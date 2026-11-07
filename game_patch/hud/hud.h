@@ -66,7 +66,7 @@ enum class HudElement : uint8_t
     chat,
     timer,
     scores,       // includes the mini scoreboard
-    messages,     // includes notifications and award callouts
+    messages,     // includes notifications, award callouts and the under-reticle Use prompts
     minimap,      // corner panel only; the held big map stays available
     count,
 };
@@ -75,6 +75,10 @@ bool hud_element_visible(HudElement element);
 bool hud_element_hidden_by_cl_chat(HudElement element);
 void hud_element_set_visible(HudElement element, bool visible);
 const char* hud_element_label(HudElement element);
+
+// The line under the reticle, shared by the vehicle Use prompt and the zip line hint.
+void hud_render_reticle_prompt();
+void hud_reticle_prompt_clear();
 
 void hud_apply_patches();
 int hud_get_small_font();

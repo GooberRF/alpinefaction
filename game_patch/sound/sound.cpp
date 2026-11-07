@@ -878,6 +878,7 @@ void gamesound_parse_custom_sounds()
         {"af_spray1.ogg", 10.0f, 1.0f, 1.0f},
         {"af_award1.ogg", 10.0f, 1.0f, 1.0f},
         {"af_jeep_horn.ogg", 15.0f, 1.0f, 1.0f},
+        {"af_zipline_loop1.wav", 10.0f, 1.0f, 1.0f},
     };
 
     for (const auto& sound : custom_sounds) 
@@ -898,6 +899,9 @@ void gamesound_parse_custom_sounds()
     if (g_jeep_horn_sound_id >= 0) {
         // Looping comes from the stock sound database, which has no record for an AF file.
         rf::sounds[g_jeep_horn_sound_id].is_looping = true;
+    }
+    if (const int zipline_loop = rf::snd_pc_find_by_name("af_zipline_loop1.wav"); zipline_loop >= 0) {
+        rf::sounds[zipline_loop].is_looping = true;
     }
 
     //xlog::warn("Custom sounds added, starting at ID {}. Taunts start at ID {}", g_custom_sound_entry_start, g_taunt_sound_start);

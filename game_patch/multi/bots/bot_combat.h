@@ -25,3 +25,14 @@ void bot_process_combat(
     float skill_factor,
     bool has_move_target,
     const rf::Vector3& move_target);
+// One frame's turn of a (yaw, non-linear pitch) aim toward the unit dir, with the active bot's smoothing and turn
+// rates. True when the new aim is aligned enough to fire; out_alignment gets its dot product with dir.
+bool bot_aim_step(float& yaw, float& pitch, const rf::Vector3& dir, float dt, float skill_factor, float& out_alignment);
+// The least dot product of aim and target direction the active bot fires at.
+float bot_aim_fire_alignment(float skill_factor);
+// Where a shot of weapon_type from origin must aim to hit the enemy, with the active bot's lead and aim error.
+rf::Vector3 bot_combat_enemy_aim_point(
+    const rf::Vector3& origin, int weapon_type, const rf::Entity& enemy, float skill_factor);
+float bot_combat_weapon_effective_range(int weapon_type);
+// A blast at impact_pos spares a rider sitting out in the open, and his team-mates.
+bool bot_combat_mounted_splash_is_safe(const rf::Entity& rider, int weapon_type, const rf::Vector3& impact_pos);

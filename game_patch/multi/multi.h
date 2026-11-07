@@ -157,6 +157,7 @@ struct AlpineFactionServerInfo
     bool skiing = false;
     bool dodging = false;
     bool pogo = false;
+    bool scrapyard_gibs = false;
 };
 
 enum class AlpineRestrictVerdict : uint8_t

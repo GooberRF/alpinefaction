@@ -23,6 +23,7 @@ bool bot_fsm_state_should_have_move_target(
         case BotFsmState::ctf_objective:
         case BotFsmState::control_point_objective:
         case BotFsmState::roam:
+        case BotFsmState::vehicle_acquire:
             return true;
         case BotFsmState::engage_enemy:
             return pursuing_enemy_goal && !enemy_has_los;
@@ -81,6 +82,14 @@ const char* bot_fsm_state_to_string(const BotFsmState state)
             return "ctf_objective";
         case BotFsmState::control_point_objective:
             return "control_point_objective";
+        case BotFsmState::vehicle_acquire:
+            return "vehicle_acquire";
+        case BotFsmState::vehicle_drive:
+            return "vehicle_drive";
+        case BotFsmState::vehicle_gun:
+            return "vehicle_gun";
+        case BotFsmState::vehicle_ride:
+            return "vehicle_ride";
         default:
             return "unknown";
     }
@@ -139,6 +148,14 @@ const char* bot_goal_type_to_string(const BotGoalType goal)
             return "control_point_objective";
         case BotGoalType::roam:
             return "roam";
+        case BotGoalType::vehicle_acquire:
+            return "vehicle_acquire";
+        case BotGoalType::vehicle_turret:
+            return "vehicle_turret";
+        case BotGoalType::vehicle_gun:
+            return "vehicle_gun";
+        case BotGoalType::vehicle_hunt:
+            return "vehicle_hunt";
         default:
             return "unknown";
     }

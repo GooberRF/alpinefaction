@@ -60,6 +60,13 @@ void bot_goal_runtime_clear_non_active_goal_state(const BotGoalType active_goal)
         bot_state().salvage_hold_orbit_timer.invalidate();
         bot_state().salvage_hold_orbit_left = false;
     }
+    if (!bot_goal_is_vehicle(active_goal)) {
+        // A later pick of the same seat starts a fresh approach.
+        bot_state().vehicle.target_hull_handle = -1;
+        bot_state().vehicle.target_seat = -1;
+        bot_state().vehicle.acquire_timeout_timer.invalidate();
+        bot_state().vehicle.route_fail_timer.invalidate();
+    }
 }
 
 bool bot_goal_runtime_abort_bridge_goal()
@@ -139,7 +146,7 @@ bool bot_goal_runtime_route_to_waypoint_target_with_recovery(
         nullptr,
         primary_repath_ms);
     if (!routed) {
-        bot_internal_start_recovery_anchor_reroute(local_entity, goal_waypoint);
+        bot_internal_retry_route_recovery(local_entity, goal_waypoint);
         routed = bot_internal_update_waypoint_target_towards(
             local_entity,
             waypoint_target_pos,

@@ -8,11 +8,13 @@
 #include "bot_personality.h"
 #include "bot_personality_manager.h"
 #include "bot_utils.h"
+#include "bot_vehicle.h"
 #include "../gametype.h"
 #include "../../rf/collide.h"
 #include "../../rf/multi.h"
 #include "../../rf/weapon.h"
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 
@@ -47,6 +49,54 @@ bool has_visibility_to_target_entity(
     );
 }
 
+int los_recheck_interval_ms(const bool visible)
+{
+    const float alertness = std::clamp(
+        bot_personality_manager_get_active_skill_profile().alertness,
+        0.0f,
+        2.5f
+    );
+    const float alertness_norm = std::clamp((alertness - 0.25f) / 2.25f, 0.0f, 1.0f);
+    return static_cast<int>(std::lround(
+        visible ? std::lerp(300.0f, 110.0f, alertness_norm) : std::lerp(130.0f, 55.0f, alertness_norm)
+    ));
+}
+
+bool candidate_has_los(const rf::Entity& local_entity, const rf::Entity& candidate)
+{
+    BotState& state = bot_state();
+    if (candidate.handle == state.los_target_handle) {
+        if (!state.los_check_timer.valid() || state.los_check_timer.elapsed()) {
+            state.los_to_enemy = has_visibility_to_target_entity(local_entity, candidate);
+            state.los_check_timer.set(los_recheck_interval_ms(state.los_to_enemy));
+        }
+        return state.los_to_enemy;
+    }
+    BotCandidateLos* slot = nullptr;
+    for (BotCandidateLos& entry : state.candidate_los) {
+        if (entry.handle == candidate.handle) {
+            slot = &entry;
+            break;
+        }
+    }
+    if (slot && slot->timer.valid() && !slot->timer.elapsed()) {
+        return slot->visible;
+    }
+    if (!slot) {
+        slot = &state.candidate_los[0];
+        for (BotCandidateLos& entry : state.candidate_los) {
+            if (!entry.timer.valid() || entry.timer.elapsed()) {
+                slot = &entry;
+                break;
+            }
+        }
+    }
+    slot->handle = candidate.handle;
+    slot->visible = has_visibility_to_target_entity(local_entity, candidate);
+    slot->timer.set(los_recheck_interval_ms(slot->visible));
+    return slot->visible;
+}
+
 // resolve_weapon_type_cached and entity_has_weapon_type are defined in bot_utils.cpp
 }
 
@@ -55,6 +105,7 @@ void bot_perception_manager_reset_tracking()
     bot_state().los_check_timer.invalidate();
     bot_state().los_target_handle = -1;
     bot_state().los_to_enemy = false;
+    bot_state().candidate_los = {};
     bot_state().preferred_enemy_handle = -1;
     bot_state().preferred_enemy_lock_timer.invalidate();
 }
@@ -67,6 +118,13 @@ bool bot_perception_manager_get_enemy_los_cached(
     if (bot_state().los_target_handle != enemy_handle) {
         bot_state().los_target_handle = enemy_handle;
         bot_state().los_check_timer.invalidate();
+        for (const BotCandidateLos& entry : bot_state().candidate_los) {
+            if (entry.handle == enemy_handle && entry.timer.valid() && !entry.timer.elapsed()) {
+                bot_state().los_to_enemy = entry.visible;
+                bot_state().los_check_timer = entry.timer;
+                break;
+            }
+        }
     }
 
     if (!bot_state().los_check_timer.valid()
@@ -75,23 +133,7 @@ bool bot_perception_manager_get_enemy_los_cached(
             local_entity,
             enemy_entity
         );
-        const float alertness = std::clamp(
-            bot_personality_manager_get_active_skill_profile().alertness,
-            0.0f,
-            2.5f
-        );
-        const float alertness_norm = std::clamp((alertness - 0.25f) / 2.25f, 0.0f, 1.0f);
-        const int visible_interval = static_cast<int>(std::lround(
-            std::lerp(300.0f, 110.0f, alertness_norm)
-        ));
-        const int blocked_interval = static_cast<int>(std::lround(
-            std::lerp(130.0f, 55.0f, alertness_norm)
-        ));
-        bot_state().los_check_timer.set(
-            bot_state().los_to_enemy
-                ? visible_interval
-                : blocked_interval
-        );
+        bot_state().los_check_timer.set(los_recheck_interval_ms(bot_state().los_to_enemy));
     }
 
     return bot_state().los_to_enemy;
@@ -151,10 +193,13 @@ rf::Entity* bot_perception_manager_select_enemy_target(
         bot_state().retaliation_target_handle >= 0
         && bot_state().retaliation_timer.valid();
 
-    rf::Entity* best_target = nullptr;
-    float best_score = std::numeric_limits<float>::max();
-    rf::Entity* locked_target_candidate = nullptr;
-    float locked_target_score = std::numeric_limits<float>::max();
+    struct Candidate
+    {
+        rf::Entity* entity;
+        float score;
+    };
+    std::array<Candidate, rf::multi_max_player_slots> candidates{};
+    int num_candidates = 0;
 
     for (const rf::Player& candidate : SinglyLinkedList{rf::player_list}) {
         if (&candidate == &local_player) {
@@ -173,7 +218,7 @@ rf::Entity* bot_perception_manager_select_enemy_target(
             continue;
         }
 
-        rf::Entity* candidate_entity = rf::entity_from_handle(candidate.entity_handle);
+        rf::Entity* candidate_entity = bot_vehicle_effective_target(rf::entity_from_handle(candidate.entity_handle));
         if (!candidate_entity) {
             continue;
         }
@@ -298,14 +343,35 @@ rf::Entity* bot_perception_manager_select_enemy_target(
             score *= std::lerp(1.0f, 1.22f, eliminate_commitment_norm);
         }
 
-        if (score < best_score) {
-            best_score = score;
-            best_target = candidate_entity;
+        if (std::isfinite(score) && num_candidates < static_cast<int>(candidates.size())) {
+            candidates[num_candidates++] = {candidate_entity, score};
         }
-        if (has_locked_target
-            && candidate_entity->handle == bot_state().preferred_enemy_handle) {
-            locked_target_candidate = candidate_entity;
-            locked_target_score = score;
+    }
+
+    std::sort(candidates.begin(), candidates.begin() + num_candidates,
+        [](const Candidate& a, const Candidate& b) { return a.score < b.score; });
+    // An enemy in sight outranks better-scored ones behind cover: the best of the first few the bot can see leads, and
+    // the lock then holds only to a target in sight.
+    int lead = 0;
+    bool lead_visible = false;
+    for (int i = 0; i < std::min(num_candidates, kSelectorLosCandidates); ++i) {
+        if (candidate_has_los(local_entity, *candidates[i].entity)) {
+            lead = i;
+            lead_visible = true;
+            break;
+        }
+    }
+    rf::Entity* best_target = num_candidates > 0 ? candidates[lead].entity : nullptr;
+    float best_score = num_candidates > 0 ? candidates[lead].score : std::numeric_limits<float>::max();
+    rf::Entity* locked_target_candidate = nullptr;
+    float locked_target_score = std::numeric_limits<float>::max();
+    for (int i = 0; has_locked_target && i < num_candidates; ++i) {
+        if (candidates[i].entity->handle == bot_state().preferred_enemy_handle) {
+            if (!lead_visible || (i > lead && candidate_has_los(local_entity, *candidates[i].entity))) {
+                locked_target_candidate = candidates[i].entity;
+                locked_target_score = candidates[i].score;
+            }
+            break;
         }
     }
 

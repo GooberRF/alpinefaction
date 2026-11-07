@@ -561,9 +561,10 @@ CallHook hud_msg_render_gr_get_font_height_hook{
 
 void hud_render_00437BC0()
 {
-    // Single player jetpack HUD. Multiplayer draws it from multi_hud_render.
+    // Single player jetpack HUD and reticle prompt. Multiplayer draws them from multi_hud_render.
     if (!rf::is_multi) {
         jetpack_render_hud();
+        hud_render_reticle_prompt();
     }
 
     if (!rf::is_multi || !rf::local_player) {

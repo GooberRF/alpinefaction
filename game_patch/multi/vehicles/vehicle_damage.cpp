@@ -241,15 +241,6 @@ namespace
         return false;
     }
 
-    float vehicle_hull_damage_multiplier(const rf::Entity* victim, int damage_type)
-    {
-        if (damage_type < 0 || damage_type >= rf::DT_COUNT) {
-            return 1.0f;
-        }
-        const int hull_class = vehicle_damage_class(victim);
-        return hull_class >= 0 ? vehicle_damage_tuning[hull_class].hull[damage_type] : 1.0f;
-    }
-
     // Who may repair with a negative-multiplier blow: anybody if the hull is empty, otherwise an
     // occupant himself and - in a team gametype - anyone teamed with every occupant. NOT the
     // factory team lock, which says who may DRIVE a spawn.
@@ -421,10 +412,9 @@ namespace
         return victim_handle != -1 && victim_handle == g_vehicle_blast_mint.occupant_handle;
     }
 
-    // A hull the SERVER simulates carries its velocity only in Bullet - vehicle_server_body_do_frame
-    // leaves p_data.vel at zero for one. Every other hull's p_data.vel is its own client's row,
-    // clamped on receipt, so it is bounded but not trustworthy. Whole-vector capped: a fall must not
-    // multiply what a ram or a roadkill bills.
+    // A COASTING server hull's replicated p_data.vel is zero; its velocity lives in Bullet. A client-driven hull's
+    // p_data.vel is its own client's row, clamped on receipt, so it is bounded but not trustworthy. Whole-vector
+    // capped: a fall must not multiply what a ram or a roadkill bills.
     rf::Vector3 vehicle_server_hull_velocity(const rf::Entity* ep)
     {
         rf::Vector3 vel = ep->p_data.vel;
@@ -604,6 +594,15 @@ namespace
         }
     }
 } // namespace
+
+float vehicle_hull_damage_multiplier(const rf::Entity* victim, int damage_type)
+{
+    if (damage_type < 0 || damage_type >= rf::DT_COUNT) {
+        return 1.0f;
+    }
+    const int hull_class = vehicle_damage_class(victim);
+    return hull_class >= 0 ? vehicle_damage_tuning[hull_class].hull[damage_type] : 1.0f;
+}
 
 // Opened by vehicle_server_handle_exit; closed by a boarding, a settle, the vehicle dying or going
 // away, or expiry - whichever comes first.
