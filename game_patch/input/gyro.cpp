@@ -201,11 +201,11 @@ static bool g_gyro_toggle_prev_down = false;
 // If Gyro Ratcheting is unbound -> always active.
 // Behavior while bound is determined by the Gyro Ratchet setting:
 //   0 = Always  -> always active regardless of binding
-//   1 = HoldOff -> active while NOT held
-//   2 = HoldOn  -> active while held
-//   3 = Toggle  -> button press flips on/off (starts on)
-//   4 = TouchOn -> active while touchpad is touched (binding ignored)
-//   5 = TouchOff-> active while touchpad is NOT touched (binding ignored)
+//   1 = Hold Off -> active while NOT held
+//   2 = Hold On  -> active while held
+//   3 = Toggle  -> button press toggles gyro either on/off
+//   4 = Touch On -> active while touchpad is touched (binding ignored)
+//   5 = Touch Off-> active while touchpad is NOT touched (binding ignored)
 bool gyro_ratcheting_is_active()
 {
     using namespace rf;
@@ -217,6 +217,9 @@ bool gyro_ratcheting_is_active()
     int mode = std::clamp(g_alpine_game_config.gamepad_gyro_ratcheting, 0, 5);
 
     if (mode == 0) // Always
+        return true;
+
+    if (mode >= 4 && !gamepad_is_touchpad_supported())
         return true;
 
     if (mode == 4) // Touch On

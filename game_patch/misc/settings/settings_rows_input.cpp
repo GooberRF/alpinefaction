@@ -63,7 +63,7 @@ void describe_camera_sensitivity(std::string& text)
 void describe_gyro_ratcheting(std::string& text)
 {
     if (g_alpine_game_config.gamepad_gyro_ratcheting >= 4 && needs_touchpad()) {
-        text = "(Touch mode requires a controller touchpad.) " + text;
+        text = "(No touchpad detected; Always On is now active until a touchpad is available.) " + text;
     }
     else if (g_alpine_game_config.gamepad_gyro_ratcheting >= 1
         && g_alpine_game_config.gamepad_gyro_ratcheting <= 3
