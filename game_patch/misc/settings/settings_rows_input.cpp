@@ -77,6 +77,17 @@ void describe_gyro_ratcheting(std::string& text)
 
 const SettingRow rows[] = {
     {
+        .id = "skip_cutscene_bind_alias",
+        .key = "SkipCutsceneBindAlias",
+        .label = "Extra skip cutscene key/action",
+        .tooltip = "Also use this action's key/button to skip cutscenes.",
+        .category = Cat::Input,
+        .subcategory = "Core",
+        .widget = Wid::Enum,
+        .access = AccInt{&AGS::skip_cutscene_bind_alias, nullptr, -1, 127},
+        .flags = SF_SP_ONLY | SF_ACTION_CHOICE | SF_ADVANCED,
+    },
+    {
         .id = "toggle_crouch",
         .key = "ToggleCrouch",
         .label = "Toggle crouch",
@@ -88,17 +99,6 @@ const SettingRow rows[] = {
         .flags = SF_NEEDS_LOCAL_PLAYER,
         .console_cmd = "cl_togglecrouch",
         .default_str = "0",
-    },
-    {
-        .id = "skip_cutscene_bind_alias",
-        .key = "SkipCutsceneBindAlias",
-        .label = "Extra skip cutscene key/action",
-        .tooltip = "Also use this action's key/button to skip cutscenes.",
-        .category = Cat::Input,
-        .subcategory = "Core",
-        .widget = Wid::Enum,
-        .access = AccInt{&AGS::skip_cutscene_bind_alias, nullptr, -1, 127},
-        .flags = SF_SP_ONLY | SF_ACTION_CHOICE | SF_ADVANCED,
     },
     {
         .id = "mouse_linear_pitch",

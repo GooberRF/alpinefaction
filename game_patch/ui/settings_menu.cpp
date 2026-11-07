@@ -2075,8 +2075,9 @@ void do_pad_bind_row(UiContext& ctx, const UiRect& r, int index, const Fonts& fo
     const bool focused = ctx.focus_visible()
         && (ctx.focus_id() == ui_id("bindkey", index) || ctx.focus_id() == ui_id("bindmouse", index));
     if (!ctx.draw && hovered) {
-        g_desc_custom = "Click a cap, then press a controller button or trigger. ESC or START cancels; "
-                        "the x or a right click unbinds.";
+        g_desc_custom = std::format(
+            "Click a cap, then press a controller button or trigger. ESC Key or {} Button cancels.",
+            gamepad_get_scan_code_name(CTRL_GAMEPAD_SCAN_BASE + SDL_GAMEPAD_BUTTON_START));
     }
 
     if (ctx.draw) {
@@ -2566,6 +2567,17 @@ void modal_confirmed(UiContext& ctx)
                         }
                         else {
                             ctx.push_toast("CHANGE VIEW BINDING UNAVAILABLE");
+                        }
+                    }
+                    else if (g_bind_context == BindContextId::Spectator) {
+                        for (const auto& [action, code] : gamepad_spectator_default_bindings()) {
+                            if (alpine_control_start_index() >= 0 && action >= 0
+                                && action < bind_context_binding_count()) {
+                                bind_pad_assign_context(ctx, action, 0, code);
+                            }
+                            else {
+                                ctx.push_toast("SPECTATOR BINDING UNAVAILABLE");
+                            }
                         }
                     }
                 }

@@ -1,5 +1,7 @@
 #pragma once
+#include <array>
 #include <cstdint>
+#include <utility>
 #include <SDL3/SDL.h>
 #include "rumble.h"
 
@@ -41,6 +43,7 @@ const char* gamepad_get_menu_cancel_button_name();
 int         gamepad_get_button_count();
 void        gamepad_reset_to_defaults(const rf::ControlConfig* new_profile_controls = nullptr);
 int         gamepad_vehicle_change_view_default_code();
+std::array<std::pair<int, int>, 4> gamepad_spectator_default_bindings();
 
 // Scan codes for controller inputs (unused gap in RF's key table)
 static constexpr int CTRL_GAMEPAD_SCAN_BASE    = 0x59; // SDL button 0
