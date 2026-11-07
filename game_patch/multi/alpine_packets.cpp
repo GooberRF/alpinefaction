@@ -989,6 +989,14 @@ void serialize_payload(const AwardPayload& payload, std::byte* buf, size_t& offs
     buf[offset++] = static_cast<std::byte>(payload.victim_player_id);
 }
 
+// af_sreq_reserve_ammo
+void serialize_payload(const ReserveAmmoPayload& payload, std::byte* buf, size_t& offset)
+{
+    buf[offset++] = static_cast<std::byte>(payload.weapon_type);
+    std::memcpy(buf + offset, &payload.reserve, sizeof(payload.reserve));
+    offset += sizeof(payload.reserve);
+}
+
 // af_sreq_teleport_entity
 void serialize_payload(const TeleportEntityPayload& payload, std::byte* buf, size_t& offset)
 {
@@ -2274,6 +2282,30 @@ void af_send_award(rf::Player* player, uint8_t award_id, uint8_t victim_player_i
     af_send_server_req_packet(packet, player);
 }
 
+void af_send_reserve_ammo(rf::Player* player, int weapon_type, int reserve)
+{
+    // The listen-server host's entity is the server's
+    if (!rf::is_server || !player || player == rf::local_player || !player->net_data || player->is_bot
+        || player->is_browser) {
+        return;
+    }
+    if (!is_player_minimum_af_client_version(player, 1, 5, 0)) {
+        return;
+    }
+    if (weapon_type < 0 || weapon_type >= rf::num_weapon_types) {
+        return;
+    }
+
+    af_server_req_packet packet{};
+    packet.header.type = static_cast<uint8_t>(af_packet_type::af_server_req);
+    packet.header.size = sizeof(uint8_t) + sizeof(ReserveAmmoPayload);
+    packet.req_type = af_server_req_type::af_sreq_reserve_ammo;
+    packet.payload = ReserveAmmoPayload{static_cast<uint8_t>(weapon_type),
+                                        static_cast<uint16_t>(std::clamp(reserve, 0, 0xFFFF))};
+
+    af_send_server_req_packet(packet, player);
+}
+
 void af_send_award_for_demo(rf::Player* recorder, uint8_t award_id, uint8_t victim_player_id, uint8_t earner_id)
 {
     if (!rf::is_server || !recorder) {
@@ -3124,6 +3156,25 @@ static void af_process_server_req_packet(const void* data, size_t len, const rf:
             rf::Vector3 impact_pos;
             std::memcpy(&impact_pos, &payload.impact_pos, sizeof(impact_pos));
             riot_shield_apply_remote_state(entity, payload.life, impact_pos);
+            break;
+        }
+        case af_server_req_type::af_sreq_reserve_ammo: {
+            if (remaining < sizeof(ReserveAmmoPayload)) {
+                xlog::warn("af_process_server_req_packet: ReserveAmmo payload too short");
+                return;
+            }
+            ReserveAmmoPayload payload{};
+            payload.weapon_type = static_cast<uint8_t>(bytes[offset]);
+            std::memcpy(&payload.reserve, bytes + offset + sizeof(payload.weapon_type), sizeof(payload.reserve));
+
+            rf::Entity* entity = rf::local_player_entity;
+            if (!entity || payload.weapon_type >= rf::num_weapon_types) {
+                return;
+            }
+            const int ammo_type = rf::weapon_types[payload.weapon_type].ammo_type;
+            if (ammo_type >= 0 && ammo_type < static_cast<int>(std::size(entity->ai.ammo))) {
+                entity->ai.ammo[ammo_type] = payload.reserve;
+            }
             break;
         }
         case af_server_req_type::af_sreq_award: {

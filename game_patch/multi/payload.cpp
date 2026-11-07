@@ -4,6 +4,7 @@
 #include <limits>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <xlog/xlog.h>
 #include <common/payload.h>
 #include <common/utils/list-utils.h>
@@ -29,6 +30,7 @@
 #include "../rf/os/timestamp.h"
 #include "../rf/player/player.h"
 #include "../rf/vmesh.h"
+#include "../rf/weapon.h"
 
 namespace
 {
@@ -56,6 +58,16 @@ constexpr const char* finale_vclip = "shoulder_cannon_explode";
 // From the cart reaching the end of its track to the level ending
 constexpr int finale_delay_ms = 5000;
 constexpr float nearly_there_fraction = 0.9f;
+// Of the held weapon's magazine, on each heal tick
+constexpr float resupply_magazine_share = 0.25f;
+
+// What a pusher's resupply has yet to hand over, so a small magazine still gets its share across ticks
+struct ResupplyOwed
+{
+    int entity_handle = -1;
+    int weapon_type = -1;
+    float rounds = 0.0f;
+};
 
 struct KeyframeEvent
 {
@@ -115,6 +127,7 @@ struct PayloadInfo
     bool end_announced = false;
     // Unreliable sends may be lost, so changes are judged against the last reliable one
     std::optional<PayloadNetState> last_reliable;
+    std::unordered_map<const rf::Player*, ResupplyOwed> resupply_owed;
     uint8_t sent_heal_serial = 0;
 
     // Client
@@ -470,6 +483,45 @@ std::vector<uint8_t> player_ids(const std::vector<rf::Player*>& players)
     return ids;
 }
 
+// A share of the held weapon's magazine into its reserve, as far as the reserve has room. Weapons without a magazine
+// have no reserve apart from what they fire.
+void resupply_held_weapon(rf::Player& player)
+{
+    rf::Entity* ep = rf::entity_from_handle(player.entity_handle);
+    if (!ep || ep->life <= 0.0f) {
+        return;
+    }
+    const int weapon_type = ep->ai.current_primary_weapon;
+    if (weapon_type < 0 || weapon_type >= rf::num_weapon_types || rf::weapon_is_melee(weapon_type)) {
+        return;
+    }
+    const rf::WeaponInfo& info = rf::weapon_types[weapon_type];
+    if (!rf::weapon_uses_clip(weapon_type) || info.ammo_type < 0
+        || info.ammo_type >= static_cast<int>(std::size(ep->ai.ammo))) {
+        return;
+    }
+    ResupplyOwed& owed = g_payload.resupply_owed[&player];
+    if (owed.entity_handle != ep->handle || owed.weapon_type != weapon_type) {
+        owed = {ep->handle, weapon_type, 0.0f};
+    }
+    int& reserve = ep->ai.ammo[info.ammo_type];
+    const int room = info.max_ammo - reserve;
+    if (room <= 0) {
+        // Nothing builds up while the reserve is full
+        owed.rounds = 0.0f;
+        return;
+    }
+    owed.rounds += static_cast<float>(info.clip_size) * resupply_magazine_share;
+    const int added = std::min(static_cast<int>(owed.rounds), room);
+    if (added <= 0) {
+        return;
+    }
+    // What a full reserve cut off is dropped, so a reload before the next tick can't release it all at once
+    owed.rounds = added == room ? 0.0f : owed.rounds - static_cast<float>(added);
+    reserve += added;
+    af_send_reserve_ammo(&player, weapon_type, reserve);
+}
+
 void heal_pushers(const std::vector<rf::Player*>& attackers)
 {
     if (!payload_heals_now()) {
@@ -483,6 +535,7 @@ void heal_pushers(const std::vector<rf::Player*>& attackers)
     bool healed = false;
     for (rf::Player* pl : attackers) {
         healed |= apply_effective_health_reward(pl, amount);
+        resupply_held_weapon(*pl);
     }
     if (healed) {
         ++g_payload.heal_serial;

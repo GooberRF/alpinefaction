@@ -254,7 +254,7 @@ If neither the rotation nor `allowed_levels` names a level, `glass_house.rfl` is
 | `pay_setup_time` | Number | `20` | Seconds the PAY cart stays put at the start of a round, without healing attackers, so the teams can take their places, 0-60. It counts against the time limit, as the BAG and SAL spawn delays do. The level's `When_Setup_Ends` events fire when it ends. |
 | `pay_checkpoint_time_bonus` | Number | Unset | Overrides the seconds added to the PAY time limit when the cart captures a checkpoint, 0-3600. Unset uses the level's value (a checkpoint's own bonus, else the level property). When set, it applies to every checkpoint. |
 | `pay_overtime_grace` | Number | Unset | Overrides the seconds of PAY overtime with no attacker at the cart before the defenders win, 0-60. Unset uses the level's value. |
-| `pay_heal_per_tick` | Number | Unset | Overrides the effective health given each second to every PAY attacker at the cart, 0-500. Unset uses the level's value. A level can turn healing off. |
+| `pay_heal_per_tick` | Number | Unset | Overrides the effective health given each second to every PAY attacker at the cart, 0-500. Unset uses the level's value. A level can turn healing off. Each heal tick also adds a quarter of a magazine to the reserve of the attacker's held weapon, up to its maximum (a 1-round magazine gets a round every fourth tick), so 0 turns that off too, as does a level turning healing off. |
 
 ### Gameplay flags
 

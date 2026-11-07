@@ -657,7 +657,7 @@ std::map<AlpineDedEventID, FieldConfig> eventFieldConfigs = {
             {FIELD_INT1, "Attacking team (int1):"},
             {FIELD_FLOAT1, "Push radius (0 = 3 m) (float1):"},
             {FIELD_INT2, "Rollback (0 = 30 s, <0 never) (int2):"},
-            {FIELD_BOOL1, "No healing (bool1):"},
+            {FIELD_BOOL1, "No healing or ammo (bool1):"},
             {FIELD_BOOL2, "No finale explosion (bool2):"}
         },
         {

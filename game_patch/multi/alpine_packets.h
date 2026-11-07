@@ -393,6 +393,7 @@ enum class af_server_req_type : uint8_t
     af_sreq_award = 0xB,               // Alpine 1.4 (2 bytes: award_id, victim_player_id; 0xFF = no victim)
     af_sreq_active_mutators = 0xC,     // Alpine 1.4 (variable: one declaration set, see blob_declaration_set)
     af_sreq_match_state = 0xD,         // Alpine 1.5 (1 byte: af_match_state_flags)
+    af_sreq_reserve_ammo = 0xE,        // Alpine 1.5 (3 bytes: weapon_type, reserve)
 };
 
 struct ShouldGibPayload
@@ -522,10 +523,19 @@ struct AwardPayload
 };
 static_assert(sizeof(AwardPayload) == 2);
 
+// The server topped up the reserve of the recipient's weapon, which its client would not otherwise learn until it
+// reloads; the Payload cart's resupply sends it
+struct ReserveAmmoPayload
+{
+    uint8_t weapon_type = 0;
+    uint16_t reserve = 0;
+};
+static_assert(sizeof(ReserveAmmoPayload) == 3);
+
 using af_server_req_payload = std::variant<ShouldGibPayload, TeleportEntityPayload, SprayPayload,
                                            ReadyPromptPayload, PitQueueStatePayload, EntityOnFirePayload,
                                            EntityJetpackPayload, RiotShieldStatePayload, AwardPayload,
-                                           MatchStatePayload>;
+                                           MatchStatePayload, ReserveAmmoPayload>;
 
 struct af_server_req_packet
 {
@@ -1111,6 +1121,7 @@ void af_send_jetpack_state_request(bool on, uint8_t fuel_pct);
 void af_send_jetpack_state(uint32_t obj_handle, bool on, uint8_t fuel_pct);
 void af_send_riot_shield_state(uint32_t obj_handle, float life, const rf::Vector3& impact_pos);
 void af_send_award(rf::Player* player, uint8_t award_id, uint8_t victim_player_id);
+void af_send_reserve_ammo(rf::Player* player, int weapon_type, int reserve);
 void af_send_award_for_demo(rf::Player* recorder, uint8_t award_id, uint8_t victim_player_id, uint8_t earner_id);
 void af_send_teleport_entity_req(uint32_t obj_handle, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::Vector3& vel);
 void af_send_spray_to_player(uint8_t player_id, uint16_t texture_id, const rf::Vector3& pos, const rf::Vector3& normal, uint8_t flags, rf::Player* player);
