@@ -3502,6 +3502,7 @@ FunHook<void(rf::Player*)> multi_spawn_player_server_side_hook{
                 // that just ended can never apply to them again.
                 riot_shield_on_player_spawn(player);
                 afstats::on_spawn(player, ep->pos);
+                af_send_rope_states_to(player, true);
             }
 
             // inform newly spawned players of their loadout
@@ -5924,6 +5925,11 @@ bool server_allow_disable_screenshake()
 bool server_no_player_collide()
 {
     return g_alpine_server_config_active_rules.no_player_collide;
+}
+
+bool server_exposure_damage()
+{
+    return g_alpine_server_config_active_rules.exposure_damage;
 }
 
 bool server_location_pinging()

@@ -264,6 +264,11 @@ void collect_route_edges(
         if (to <= 0 || to >= graph.waypoint_total || !graph.has_pos[to] || !bot_nav_link_allows_route(from, to)) {
             continue;
         }
+        float ride_cost = 0.0f;
+        if (waypoints_get_zipline_ride(from, to, nullptr, nullptr, &ride_cost)) {
+            out.push_back({to, ride_cost});
+            continue;
+        }
         const float ledge_cost = bot_nav_link_climbs_ledge(from, to) ? kLedgeLinkRouteCost : 0.0f;
         out.push_back({to, (graph.pos[to] - graph.pos[from]).len() + ledge_cost});
     }

@@ -100,6 +100,8 @@ namespace rf
         PF_USE_CUSTOM_MAX_VEL = 0x200000, // movement clamps use Entity::custom_max_vel instead of EntityInfo::max_vel; cleared by entity_land (0x00419830)
         PF_SKIP_SIM_ONCE = 0x800000, // set by camera_enter_freelook/deadlook; obj_move_all skips one physics frame, then clears it
         PF_ACCEL_APPLIED = 0x1000000, // dispatcher tail sets this; stock acceleration blocks bail when set (once-per-frame gate)
+        PF_COLLIDE_DEFERRED = 0x20000000, // pair copied the other side's earlier hit; physics_update_entity skips the
+                                          // move and keeps frame_time_left for the next pass (0x004A0124)
         PF_SIMULATED_THIS_FRAME = 0x40000000, // set before the physics tick in obj_move_all, cleared at the end of obj_process_physics
     };
 

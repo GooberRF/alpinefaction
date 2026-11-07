@@ -51,6 +51,8 @@
 #include <patch_common/CallHook.h>
 #include <patch_common/CodeInjection.h>
 #include <patch_common/AsmWriter.h>
+#include "../misc/settings_registry.h"
+#include "../object/zipline.h"
 
 static rf::PlayerHeadlampSettings g_local_headlamp_settings;
 
@@ -464,7 +466,7 @@ CodeInjection stop_continous_alternate_fire_patch{
 ConsoleCommand2 swap_assault_rifle_controls_cmd{
     "cl_swaparcontrols",
     []() {
-        g_alpine_game_config.swap_ar_controls = !g_alpine_game_config.swap_ar_controls;
+        setting_console_set("swap_ar_controls", "toggle");
         rf::console::print("Swap assault rifle controls: {}", g_alpine_game_config.swap_ar_controls ? "enabled" : "disabled");
     },
     "Swap Assault Rifle controls",
@@ -473,7 +475,7 @@ ConsoleCommand2 swap_assault_rifle_controls_cmd{
 ConsoleCommand2 swap_grenade_controls_cmd{
     "cl_swapgrenadecontrols",
     []() {
-        g_alpine_game_config.swap_gn_controls = !g_alpine_game_config.swap_gn_controls;
+        setting_console_set("swap_gn_controls", "toggle");
         rf::console::print("Swap grenade controls: {}", g_alpine_game_config.swap_gn_controls ? "enabled" : "disabled"); 
     },
     "Swap grenade controls",
@@ -482,7 +484,7 @@ ConsoleCommand2 swap_grenade_controls_cmd{
 ConsoleCommand2 swap_shotgun_controls_cmd{
     "cl_swapsgcontrols",
     []() {
-        g_alpine_game_config.swap_sg_controls = !g_alpine_game_config.swap_sg_controls;
+        setting_console_set("swap_sg_controls", "toggle");
         rf::console::print("Swap shotgun controls: {}", g_alpine_game_config.swap_sg_controls ? "enabled" : "disabled"); 
     },
     "Swap shotgun controls",
@@ -491,7 +493,7 @@ ConsoleCommand2 swap_shotgun_controls_cmd{
 ConsoleCommand2 mp_join_beep_cmd{
     "mp_join_beep",
     [] {
-        g_alpine_game_config.player_join_beep = !g_alpine_game_config.player_join_beep;
+        setting_console_set("player_join_beep", "toggle");
         rf::console::print(
             "Beeps upon player joins are {}",
             g_alpine_game_config.player_join_beep ? "enabled" : "disabled"
@@ -503,7 +505,7 @@ ConsoleCommand2 mp_join_beep_cmd{
 ConsoleCommand2 mp_join_flash_cmd{
     "mp_join_flash",
     [] {
-        g_alpine_game_config.player_join_flash = !g_alpine_game_config.player_join_flash;
+        setting_console_set("player_join_flash", "toggle");
         rf::console::print(
             "Window flashes upon player joins are {}",
             g_alpine_game_config.player_join_flash ? "enabled" : "disabled"
@@ -529,7 +531,7 @@ ConsoleCommand2 mp_set_character_cmd{
                 return;
             }
 
-            player->settings.multi_character = index;
+            setting_console_set("multi_character", std::to_string(index));
         }
 
         rf::console::print("Multiplayer character index is {}.", player->settings.multi_character);
@@ -575,6 +577,9 @@ FunHook<void(rf::Player*, rf::ControlConfigAction, bool)> player_execute_action_
             return; // demo playback controls (USE popup toggle, seek/pause keys)
         }
         if (multi_spectate_execute_action(action, was_pressed)) {
+            return;
+        }
+        if (zipline_execute_action(player, action)) {
             return;
         }
         // A turret operator's or jeep gunner's alt is his zoom, read from the raw control state. Stock
@@ -701,7 +706,7 @@ ConsoleCommand2 damage_screen_flash_cmd{
     "cl_damageflash",
     [](std::optional<int> level_opt) {
         if (level_opt) {
-            g_alpine_game_config.set_damage_flash(level_opt.value());
+            setting_console_set("damage_flash", std::to_string(level_opt.value()));
         }
         rf::console::print("Damage feedback level is {}", g_alpine_game_config.damage_flash);
     },
@@ -712,7 +717,7 @@ ConsoleCommand2 damage_screen_flash_cmd{
 ConsoleCommand2 spectate_damage_screen_flash_cmd{
     "cl_damageflash_spectator",
     []() {
-        g_alpine_game_config.spectate_damage_screen_flash = !g_alpine_game_config.spectate_damage_screen_flash;
+        setting_console_set("spectate_damage_screen_flash", "toggle");
         rf::console::print("Spectator damage screen flash effect is {}", g_alpine_game_config.spectate_damage_screen_flash ? "enabled" : "disabled");
     },
     "Toggle damage screen flash effect while spectating",
@@ -721,7 +726,7 @@ ConsoleCommand2 spectate_damage_screen_flash_cmd{
 ConsoleCommand2 weapon_explosion_flash_lights_cmd{
     "cl_explosionflashweapons",
     []() {
-        g_alpine_game_config.explosion_weapon_flash_lights = !g_alpine_game_config.explosion_weapon_flash_lights;
+        setting_console_set("explosion_weapon_flash_lights", "toggle");
         rf::console::print("Explosion flash lights from weapons are {}",
             g_alpine_game_config.explosion_weapon_flash_lights ? "enabled" : "disabled");
     },
@@ -731,7 +736,7 @@ ConsoleCommand2 weapon_explosion_flash_lights_cmd{
 ConsoleCommand2 env_explosion_flash_lights_cmd{
     "cl_explosionflashenv",
     []() {
-        g_alpine_game_config.explosion_env_flash_lights = !g_alpine_game_config.explosion_env_flash_lights;
+        setting_console_set("explosion_env_flash_lights", "toggle");
         rf::console::print("Explosion flash lights from environmental sources are {}",
             g_alpine_game_config.explosion_env_flash_lights ? "enabled" : "disabled");
     },
@@ -741,7 +746,7 @@ ConsoleCommand2 env_explosion_flash_lights_cmd{
 ConsoleCommand2 burning_entity_lights_cmd{
     "cl_burningentityglow",
     []() {
-        g_alpine_game_config.burning_entity_lights = !g_alpine_game_config.burning_entity_lights;
+        setting_console_set("burning_entity_lights", "toggle");
         rf::console::print("Dynamic light glow from burning entities is {}",
             g_alpine_game_config.burning_entity_lights ? "enabled" : "disabled");
     },
@@ -804,7 +809,7 @@ void play_local_hit_sound(uint8_t victim_player_id, int victim_hull_handle, bool
 ConsoleCommand2 tauntsound_cmd{
     "mp_taunts",
     []() {
-        g_alpine_game_config.play_taunt_sounds = !g_alpine_game_config.play_taunt_sounds;
+        setting_console_set("play_taunt_sounds", "toggle");
         rf::console::print("Voice lines for multiplayer taunts are {}", g_alpine_game_config.play_taunt_sounds ? "enabled" : "disabled");
     },
     "Toggle whether to play voice lines for taunts used by players in multiplayer",
@@ -814,7 +819,7 @@ ConsoleCommand2 tauntsound_cmd{
 ConsoleCommand2 localhitsound_cmd{
     "cl_hitsounds",
     []() {
-        g_alpine_game_config.play_hit_sounds = !g_alpine_game_config.play_hit_sounds;
+        setting_console_set("play_hit_sounds", "toggle");
         rf::console::print("Playing of hit sounds is {}", g_alpine_game_config.play_hit_sounds ? "enabled" : "disabled");
     },
     "Toggle whether to play a sound when you hit players in multiplayer (if enabled by an Alpine Faction server)",
@@ -825,7 +830,7 @@ ConsoleCommand2 hit_sound_interval_cmd{
     "cl_hitsounds_min_interval",
     [](std::optional<int> interval_ms) {
         if (interval_ms) {
-            g_alpine_game_config.set_hit_sound_min_interval_ms(interval_ms.value());
+            setting_console_set("hit_sound_min_interval_ms", std::to_string(interval_ms.value()));
         }
         rf::console::print("Hit sound minimum interval is {} ms.", g_alpine_game_config.hit_sound_min_interval_ms);
     },
@@ -846,7 +851,7 @@ ConsoleCommand2 hit_sound_streak_pitch_cmd{
 ConsoleCommand2 location_ping_display_cmd{
     "cl_locationpings",
     []() {
-        g_alpine_game_config.show_location_pings = !g_alpine_game_config.show_location_pings;
+        setting_console_set("show_location_pings", "toggle");
         rf::console::print("Location pinging is {}", g_alpine_game_config.show_location_pings ? "enabled" : "disabled");
     },
     "Toggle whether location pinging is enabled (only available in team gametypes and in RUN)",
@@ -857,7 +862,7 @@ ConsoleCommand2 set_autoswitch_fire_wait_cmd{
     "cl_autoswitchfirewait",
     [](std::optional<int> new_fire_wait) {
         if (new_fire_wait) {
-            g_alpine_game_config.set_suppress_autoswitch_fire_wait(new_fire_wait.value());
+            setting_console_set("suppress_autoswitch_fire_wait", std::to_string(new_fire_wait.value()));
         }
         rf::console::print("Your suppress autoswitch fire wait is {}.", g_alpine_game_config.suppress_autoswitch_fire_wait);
     },
@@ -920,7 +925,7 @@ void ping_looked_at_location() {
 ConsoleCommand2 death_bars_cmd{
     "mp_deathbars",
     []() {
-        g_alpine_game_config.death_bars = !g_alpine_game_config.death_bars;
+        setting_console_set("death_bars", "toggle");
         rf::console::print("Death bars are {}", g_alpine_game_config.death_bars ? "enabled" : "disabled");
     },
     "Toggle red bars at the top and bottom of screen when dead",

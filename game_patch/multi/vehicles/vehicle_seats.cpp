@@ -884,9 +884,7 @@ namespace
         default:
             break;
         }
-        const rf::String bind = get_action_bind_name(rf::CC_ACTION_USE);
-        const char* key = bind.c_str();
-        return "Press " + std::string{(key && *key) ? key : "?"} + " to enter the " + name;
+        return "Press " + get_action_bind_name_or(rf::CC_ACTION_USE, "?") + " to enter the " + name;
     }
 
     // Release a rider the stated occupancy no longer seats. `announced` is the packet's changed
@@ -951,6 +949,15 @@ namespace
         return true;
     }
 } // namespace
+
+bool vehicle_use_target_boards(const rf::Object* target, int tag_handle)
+{
+    if (!rf::is_multi || !target || target->type != rf::OT_ENTITY || !vehicle_level_has_factories()) {
+        return false;
+    }
+    rf::Entity* vehicle = vehicle_synced_entity(target->handle);
+    return vehicle && vehicle_use_request_seat(vehicle, tag_handle) >= 0;
+}
 
 float vehicle_board_range(const rf::Entity* hull)
 {

@@ -30,6 +30,7 @@
 #include "player.h"
 #include "../hud/multi_spectate.h"
 #include "../hud/remote_server_cfg_ui.h"
+#include "../misc/settings_registry.h"
 
 constexpr auto screen_shake_fps = 150.0f;
 static float g_camera_shake_factor = 0.6f;
@@ -139,9 +140,7 @@ CallHook<rf::CameraMode(rf::Camera*)> camera_get_mode_emit_sound_hook{
 ConsoleCommand2 disable_weaphake_cmd{
     "cl_weapshake",
     []() {
-        g_alpine_game_config.try_disable_weapon_shake = !g_alpine_game_config.try_disable_weapon_shake;
-
-        evaluate_restrict_disable_ss();
+        setting_console_set("weapon_shake", "toggle");
 
         rf::console::print("Camera shake from weapon fire is {}",
                            g_alpine_game_config.try_disable_weapon_shake
@@ -154,7 +153,7 @@ ConsoleCommand2 disable_weaphake_cmd{
 ConsoleCommand2 force_disable_camerashake_cmd{
     "sp_camerashake",
     []() {
-        g_alpine_game_config.screen_shake_force_off = !g_alpine_game_config.screen_shake_force_off;
+        setting_console_set("screen_shake_sp", "toggle");
 
         rf::console::print("All instances of camera shake are {}being forcefully turned off in single player.",
                            g_alpine_game_config.screen_shake_force_off
@@ -271,7 +270,7 @@ ConsoleCommand2 freelook_slide_cmd{
     "cl_freelookslide",
     [](std::optional<float> scale_opt) {
         if (scale_opt) {
-            g_alpine_game_config.set_freelook_cam_slide(*scale_opt);
+            setting_console_set("freelook_cam_slide", std::to_string(*scale_opt));
         }
         rf::console::print("Freelook camera slide scale is {:.2f} (0 = no slide, 1 = default)",
                            g_alpine_game_config.freelook_cam_slide);
@@ -541,7 +540,7 @@ ConsoleCommand2 linear_pitch_cmd{
 #ifdef DEBUG
         linear_pitch_test();
 #endif
-        g_alpine_game_config.mouse_linear_pitch = !g_alpine_game_config.mouse_linear_pitch;
+        setting_console_set("mouse_linear_pitch", "toggle");
         rf::console::print("Linear pitch is {}", g_alpine_game_config.mouse_linear_pitch ? "enabled" : "disabled");
     },
     "Toggles mouse linear pitch angle",

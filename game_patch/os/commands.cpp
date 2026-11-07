@@ -4,8 +4,12 @@
 #include <common/config/BuildConfig.h>
 #include <common/version/version.h>
 #include <common/utils/list-utils.h>
+#include <common/utils/string-utils.h>
 #include <algorithm>
 #include <optional>
+#include <format>
+#include <string>
+#include <vector>
 #include "console.h"
 #include "../misc/alpine_options.h"
 #include "../misc/alpine_settings.h"
@@ -20,6 +24,7 @@
 #include "../rf/character.h"
 #include "../misc/misc.h"
 #include "../misc/vpackfile.h"
+#include "../misc/settings_registry.h"
 
 ConsoleCommand2 dot_cmd{
     ".",
@@ -43,8 +48,7 @@ ConsoleCommand2 dot_cmd{
 ConsoleCommand2 console_history_cmd{
     "dbg_consolehistory",
     []() {
-        g_alpine_game_config.save_console_history = !g_alpine_game_config.save_console_history;
-        apply_console_history_setting();
+        setting_console_set("save_console_history", "toggle");
         rf::console::print("Console history {}.", g_alpine_game_config.save_console_history ? "enabled" : "disabled");
     },
     "Toggles whether console history persists between game launches",
@@ -53,7 +57,7 @@ ConsoleCommand2 console_history_cmd{
 ConsoleCommand2 vli_cmd{
     "vli",
     []() {
-        g_alpine_game_config.show_glares = !g_alpine_game_config.show_glares;
+        setting_console_set("show_glares", "toggle");
         rf::console::print("Volumetric lightining is {}.", g_alpine_game_config.show_glares ? "enabled" : "disabled");
     },
     "Toggles volumetric lightining",
@@ -63,7 +67,7 @@ ConsoleCommand2 monitor_resolution_scale_cmd{
     "r_monitorscale",
     [](std::optional<int> scale_opt) {
         if (scale_opt) {
-            g_alpine_game_config.set_monitor_resolution_scale(scale_opt.value());
+            setting_console_set("monitor_resolution_scale", std::to_string(scale_opt.value()));
         }
         rf::console::print("Monitor resolution scale is {}", g_alpine_game_config.monitor_resolution_scale);
     },
@@ -73,7 +77,7 @@ ConsoleCommand2 monitor_resolution_scale_cmd{
 ConsoleCommand2 fast_anim_cmd{
     "r_fastanim",
     []() {
-        rf::g_fast_animations = !rf::g_fast_animations;
+        setting_console_set("fast_animations", "toggle");
         rf::console::print("Fast animations are {}.", rf::g_fast_animations ? "enabled" : "disabled");
     },
     "Toggles fast animations for characters (reduce animation smoothness at far distances)",
@@ -269,6 +273,173 @@ ConsoleCommand2 version_cmd{
     "Display version info",
 };
 
+// af_set / af_get expose every registry row, including the ones with no dedicated command.
+namespace
+{
+
+std::string setting_value_hint(const SettingRow& row)
+{
+    if (row.enum_labels && row.enum_count > 0) {
+        std::string out;
+        for (int i = 0; i < row.enum_count; ++i) {
+            out += (i ? "|" : "");
+            out += std::to_string(setting_enum_value(row, i));
+        }
+        return out;
+    }
+    return std::visit(
+        [](const auto& acc) -> std::string {
+            using T = std::decay_t<decltype(acc)>;
+            if constexpr (std::is_same_v<T, AccBool> || std::is_same_v<T, AccCoreBool> || std::is_same_v<T, AccFnBool>) {
+                return "0|1|on|off|toggle";
+            }
+            else if constexpr (std::is_same_v<T, AccInt> || std::is_same_v<T, AccFnInt>) {
+                return acc.hi < acc.lo ? "an integer" : std::format("an integer {}-{}", acc.lo, acc.hi);
+            }
+            else if constexpr (std::is_same_v<T, AccUint>) {
+                return acc.hi < acc.lo ? "an integer" : std::format("an integer {}-{}", acc.lo, acc.hi);
+            }
+            else if constexpr (std::is_same_v<T, AccFloat> || std::is_same_v<T, AccFnFloat>) {
+                return acc.hi < acc.lo ? "a number" : std::format("a number {}-{}", acc.lo, acc.hi);
+            }
+            else if constexpr (std::is_same_v<T, AccColor>) {
+                return "a color RRGGBB or RRGGBBAA";
+            }
+            else if constexpr (std::is_same_v<T, AccOptColor>) {
+                return "a color RRGGBB, RRGGBBAA or 'default'";
+            }
+            else if constexpr (std::is_same_v<T, AccOptFloat>) {
+                return "a number or 'default'";
+            }
+            else if constexpr (std::is_same_v<T, AccString> || std::is_same_v<T, AccFnString>) {
+                return "text";
+            }
+            else {
+                return "nothing";
+            }
+        },
+        row.access);
+}
+
+void print_setting_suggestions(const std::string& key)
+{
+    std::vector<const char*> matches;
+    for (const auto& row : settings_registry_all()) {
+        if (matches.size() >= 5) {
+            break;
+        }
+        if (string_icontains(row.id, key) || (row.key && string_icontains(row.key, key))) {
+            matches.push_back(row.id);
+        }
+    }
+    rf::console::print("Unknown setting '{}'.", key);
+    if (!matches.empty()) {
+        std::string list;
+        for (const char* id : matches) {
+            list += (list.empty() ? "" : ", ");
+            list += id;
+        }
+        rf::console::print("Did you mean: {}", list);
+    }
+}
+
+// af_set / af_get speak the meaning a row is presented with; an SF_INVERTED row stores the
+// opposite ("weapon_shake" is stored as "disable weapon shake").
+std::string setting_console_value(const SettingRow& row)
+{
+    const std::string stored = setting_get_as_string(row);
+    if (!(row.flags & SF_INVERTED)) {
+        return stored;
+    }
+    return stored == "1" ? "0" : "1";
+}
+
+bool setting_console_assign(const SettingRow& row, const std::string& value)
+{
+    if (!(row.flags & SF_INVERTED) || string_iequals(value, "toggle")) {
+        return setting_set_from_string(row, value);
+    }
+    const std::optional<bool> enabled = setting_parse_bool_word(value);
+    return enabled && setting_set_from_string(row, *enabled ? "0" : "1");
+}
+
+void print_setting_gating(const SettingRow& row)
+{
+    if (const char* reason = setting_disabled_reason(row)) {
+        rf::console::print("Note: this setting has no effect right now ({}).", reason);
+    }
+    else if (setting_server_permission_blocked(row)) {
+        rf::console::print("Note: this server does not currently allow this setting.");
+    }
+}
+
+} // namespace
+
+ConsoleCommand2 af_set_cmd{
+    "af_set",
+    [](std::optional<std::string> key_opt, std::optional<ConsoleCasedString> value_opt) {
+        if (!key_opt) {
+            rf::console::print("Usage: af_set <key> <value>");
+            return;
+        }
+        const SettingRow* row = settings_find(*key_opt);
+        if (!row) {
+            print_setting_suggestions(*key_opt);
+            return;
+        }
+        if (!setting_has_setter(*row)) {
+            if (row->widget == SettingWidget::Keybind || row->widget == SettingWidget::ListReorder) {
+                rf::console::print("{} can only be changed in the settings menu.", row->id);
+            }
+            else {
+                rf::console::print("{} is read only{}.", row->id,
+                    row->persistence == SettingPersistence::Registry ? " here - change it in the launcher" : "");
+            }
+            return;
+        }
+        if (!value_opt) {
+            rf::console::print("Usage: af_set <key> <value>");
+            rf::console::print("{} takes {} (currently {})", row->id, setting_value_hint(*row),
+                               setting_console_value(*row));
+            return;
+        }
+        if (!setting_console_assign(*row, value_opt->value)) {
+            rf::console::print("Invalid value '{}' for {}: expected {}.", value_opt->value, row->id,
+                               setting_value_hint(*row));
+            return;
+        }
+        rf::console::print("{} = {}{}", row->id, setting_console_value(*row),
+            (row->flags & SF_RESTART_REQUIRED) ? " (restart required)" : "");
+        print_setting_gating(*row);
+    },
+    "Set any Alpine Faction setting by name",
+    "af_set <key> <value>",
+};
+
+ConsoleCommand2 af_get_cmd{
+    "af_get",
+    [](std::optional<std::string> key_opt) {
+        if (!key_opt) {
+            rf::console::print("Usage: af_get <key>");
+            return;
+        }
+        const SettingRow* row = settings_find(*key_opt);
+        if (!row) {
+            print_setting_suggestions(*key_opt);
+            return;
+        }
+        if (setting_value_type(*row) == SettingValueType::None) {
+            rf::console::print("{} has no value to print; see the settings menu.", row->id);
+            return;
+        }
+        rf::console::print("{} = {} ({})", row->id, setting_console_value(*row),
+            setting_is_modified_from_default(*row) ? "modified" : "default");
+        print_setting_gating(*row);
+    },
+    "Show the current value of any Alpine Faction setting",
+    "af_get <key>",
+};
+
 ConsoleCommand2 dbg_berserk_cmd{
     "dbg_berserk",
     []() {
@@ -367,7 +538,7 @@ FunHook<void()> verify_level_cmd_hook{
 ConsoleCommand2 autosave_cmd{
     "sp_autosave",
     []() {
-        g_alpine_game_config.autosave = !g_alpine_game_config.autosave;
+        setting_console_set("autosave", "toggle");
         rf::console::print("Autosave is {}", g_alpine_game_config.autosave ? "enabled" : "disabled");
     },
     "Toggle autosave",
@@ -488,7 +659,7 @@ static void warn_if_not_d3d11()
 ConsoleCommand2 r_outlines_cmd{
     "r_outlines",
     []() {
-        g_alpine_game_config.try_outlines = !g_alpine_game_config.try_outlines;
+        setting_console_set("outlines", "toggle");
         rf::console::print("Player outlines {}.", g_alpine_game_config.try_outlines ? "enabled" : "disabled");
         warn_if_not_d3d11();
     },
@@ -499,7 +670,7 @@ ConsoleCommand2 r_outlines_cmd{
 ConsoleCommand2 r_outlines_spectator_cmd{
     "r_outlines_spectator",
     []() {
-        g_alpine_game_config.outlines_spectator = !g_alpine_game_config.outlines_spectator;
+        setting_console_set("outlines_spectator", "toggle");
         rf::console::print("Spectator outlines {}.", g_alpine_game_config.outlines_spectator ? "enabled" : "disabled");
         warn_if_not_d3d11();
     },
@@ -510,7 +681,7 @@ ConsoleCommand2 r_outlines_spectator_cmd{
 ConsoleCommand2 r_outlines_team_xray_cmd{
     "r_outlines_team_xray",
     []() {
-        g_alpine_game_config.try_outlines_team_xray = !g_alpine_game_config.try_outlines_team_xray;
+        setting_console_set("outlines_team_xray", "toggle");
         rf::console::print("Teammate outline x-ray {}.", g_alpine_game_config.try_outlines_team_xray ? "enabled" : "disabled");
         warn_if_not_d3d11();
     },
@@ -624,6 +795,8 @@ void console_commands_init()
     level_info_cmd.register_cmd();
     map_info_cmd.register_cmd();
     version_cmd.register_cmd();
+    af_set_cmd.register_cmd();
+    af_get_cmd.register_cmd();
     dbg_berserk_cmd.register_cmd();
     server_password_cmd.register_cmd();
     server_rcon_password_cmd.register_cmd();

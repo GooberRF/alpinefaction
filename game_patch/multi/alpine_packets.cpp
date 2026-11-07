@@ -34,6 +34,8 @@
 #include "kill_attribution.h"
 #include "bagman.h"
 #include "jetpack.h"
+#include "../object/alpine_rope.h"
+#include "../object/zipline.h"
 #include "pit.h"
 #include "salvage.h"
 #include "scavenger.h"
@@ -830,7 +832,7 @@ void af_send_handicap_request(uint8_t amount)
     packet.req_type = af_client_req_type::af_req_handicap;
     packet.payload = HandicapPayload{amount};
 
-    af_send_client_req_packet(packet);
+    af_send_client_req_packet(packet, true); // reliable
 }
 
 // af_req_handicap
@@ -907,6 +909,25 @@ void serialize_payload(const VehicleCrushReqPayload& payload, std::byte* buf, si
     buf[offset++] = static_cast<std::byte>(payload.kind);
     std::memcpy(buf + offset, &payload.impact_dv, sizeof(payload.impact_dv));
     offset += sizeof(payload.impact_dv);
+}
+
+// af_req_zipline_state
+void serialize_payload(const ZiplineStateReqPayload& payload, std::byte* buf, size_t& offset)
+{
+    std::memcpy(buf + offset, &payload.rope_uid, sizeof(payload.rope_uid));
+    offset += sizeof(payload.rope_uid);
+    buf[offset++] = static_cast<std::byte>(payload.riding);
+    buf[offset++] = static_cast<std::byte>(payload.dir);
+}
+
+// af_sreq_zipline_state
+void serialize_payload(const ZiplineStatePayload& payload, std::byte* buf, size_t& offset)
+{
+    buf[offset++] = static_cast<std::byte>(payload.player_id);
+    buf[offset++] = static_cast<std::byte>(payload.riding);
+    buf[offset++] = static_cast<std::byte>(payload.dir);
+    std::memcpy(buf + offset, &payload.rope_uid, sizeof(payload.rope_uid));
+    offset += sizeof(payload.rope_uid);
 }
 
 // af_req_stats_pssk
@@ -1122,6 +1143,22 @@ void af_send_jetpack_state_request(bool on, uint8_t fuel_pct)
     packet.header.size = sizeof(uint8_t) + sizeof(JetpackStateReqPayload);
     packet.req_type = af_client_req_type::af_req_jetpack_state;
     packet.payload = JetpackStateReqPayload{static_cast<uint8_t>(on ? 1 : 0), fuel_pct};
+
+    af_send_client_req_packet(packet, true); // reliable
+}
+
+// Zip lines: report that the local player grabbed or let go of a line.
+void af_send_zipline_state_request(int32_t rope_uid, bool riding, int8_t dir)
+{
+    if (!rf::is_multi || rf::is_server) {
+        return;
+    }
+
+    af_client_req_packet packet{};
+    packet.header.type = static_cast<uint8_t>(af_packet_type::af_client_req);
+    packet.header.size = sizeof(uint8_t) + sizeof(ZiplineStateReqPayload);
+    packet.req_type = af_client_req_type::af_req_zipline_state;
+    packet.payload = ZiplineStateReqPayload{rope_uid, static_cast<uint8_t>(riding ? 1 : 0), dir};
 
     af_send_client_req_packet(packet, true); // reliable
 }
@@ -2015,6 +2052,18 @@ static void af_process_client_req_packet(const void* data, size_t len, const rf:
             }
             break;
         }
+        case af_client_req_type::af_req_zipline_state: {
+            if (remaining < sizeof(ZiplineStateReqPayload)) {
+                xlog::warn("af_process_client_req_packet: ZiplineState payload too short");
+                return;
+            }
+            int32_t rope_uid = -1;
+            std::memcpy(&rope_uid, bytes + offset, sizeof(rope_uid));
+            const bool riding = bytes[offset + 4] != 0;
+            const int8_t dir = static_cast<int8_t>(bytes[offset + 5]) < 0 ? -1 : 1;
+            zipline_server_on_state_request(player, rope_uid, riding, dir);
+            break;
+        }
         case af_client_req_type::af_req_stats_pssk: {
             constexpr int64_t k_pssk_min_interval_ms = 1000;
             const int64_t now_ms = timer::get_i64(1000);
@@ -2324,6 +2373,76 @@ void af_send_jetpack_state(uint32_t obj_handle, bool on, uint8_t fuel_pct)
         if (is_player_minimum_af_client_version(&player, 1, 4, 0)) {
             af_send_server_req_packet(packet, &player);
         }
+    }
+}
+
+// Zip lines: relay a player's riding state. The rider is skipped because it drives its own effects.
+void af_send_zipline_state(uint8_t player_id, int32_t rope_uid, bool riding, int8_t dir, rf::Player* only_to)
+{
+    if (!rf::is_server) {
+        return;
+    }
+
+    af_server_req_packet packet{};
+    packet.header.type = static_cast<uint8_t>(af_packet_type::af_server_req);
+    packet.header.size = sizeof(uint8_t) + sizeof(ZiplineStatePayload);
+    packet.req_type = af_server_req_type::af_sreq_zipline_state;
+    packet.payload = ZiplineStatePayload{player_id, static_cast<uint8_t>(riding ? 1 : 0), dir, rope_uid};
+
+    const auto wants = [&](rf::Player& player) {
+        if (!player.net_data || player.is_bot || player.is_browser) {
+            return false;
+        }
+        if (player.net_data->player_id == player_id) {
+            return false;
+        }
+        return is_player_minimum_af_client_version(&player, 1, 5, 0);
+    };
+
+    if (only_to) {
+        if (wants(*only_to)) {
+            af_send_server_req_packet(packet, only_to);
+        }
+        return;
+    }
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        // A still-joining client is caught up by zipline_send_state_to from the state info send.
+        if (wants(player) && player.net_data->state == 2) {
+            af_send_server_req_packet(packet, &player);
+        }
+    }
+}
+
+void af_send_rope_states_to(rf::Player* player, bool ziplines_only)
+{
+    if (!rf::is_server || !player || player == rf::local_player || !player->net_data || player->is_bot
+        || player->is_browser || !is_player_minimum_af_client_version(player, 1, 5, 0)) {
+        return;
+    }
+    std::vector<AlpineRopeState> states;
+    alpine_rope_collect_states(states, ziplines_only);
+
+    constexpr std::size_t entry_size = sizeof(int32_t) + sizeof(uint8_t);
+    constexpr std::size_t prefix_size = sizeof(RF_GamePacketHeader) + sizeof(uint8_t) + sizeof(uint16_t);
+    constexpr std::size_t per_packet = (rf::max_packet_size - prefix_size) / entry_size;
+    for (std::size_t first = 0; first < states.size(); first += per_packet) {
+        const std::size_t n = std::min(per_packet, states.size() - first);
+        std::byte buf[rf::max_packet_size];
+        std::size_t offset = sizeof(RF_GamePacketHeader);
+        buf[offset++] = static_cast<std::byte>(af_server_req_type::af_sreq_rope_states);
+        const auto count = static_cast<uint16_t>(n);
+        std::memcpy(buf + offset, &count, sizeof(count));
+        offset += sizeof(count);
+        for (std::size_t i = first; i < first + n; ++i) {
+            std::memcpy(buf + offset, &states[i].uid, sizeof(states[i].uid));
+            offset += sizeof(states[i].uid);
+            buf[offset++] = static_cast<std::byte>(states[i].on ? 1 : 0);
+        }
+        RF_GamePacketHeader header{};
+        header.type = static_cast<uint8_t>(af_packet_type::af_server_req);
+        header.size = static_cast<uint16_t>(offset - sizeof(header));
+        std::memcpy(buf, &header, sizeof(header));
+        af_send_packet(player, buf, static_cast<int>(offset), true);
     }
 }
 
@@ -3119,6 +3238,40 @@ static void af_process_server_req_packet(const void* data, size_t len, const rf:
             rf::Vector3 impact_pos;
             std::memcpy(&impact_pos, &payload.impact_pos, sizeof(impact_pos));
             riot_shield_apply_remote_state(entity, payload.life, impact_pos);
+            break;
+        }
+        case af_server_req_type::af_sreq_zipline_state: {
+            if (remaining < sizeof(ZiplineStatePayload)) {
+                xlog::warn("af_process_server_req_packet: ZiplineState payload too short");
+                return;
+            }
+            const uint8_t player_id = bytes[offset];
+            const bool riding = bytes[offset + 1] != 0;
+            const int8_t dir = static_cast<int8_t>(bytes[offset + 2]) < 0 ? -1 : 1;
+            int32_t rope_uid = -1;
+            std::memcpy(&rope_uid, bytes + offset + 3, sizeof(rope_uid));
+            zipline_on_remote_state(player_id, rope_uid, riding, dir);
+            break;
+        }
+        case af_server_req_type::af_sreq_rope_states: {
+            uint16_t count = 0;
+            if (remaining < sizeof(count)) {
+                xlog::warn("af_process_server_req_packet: RopeStates payload too short");
+                return;
+            }
+            std::memcpy(&count, bytes + offset, sizeof(count));
+            offset += sizeof(count);
+            constexpr std::size_t entry_size = sizeof(int32_t) + sizeof(uint8_t);
+            if (remaining - sizeof(count) < std::size_t{count} * entry_size) {
+                xlog::warn("af_process_server_req_packet: RopeStates declares {} entries past the payload", count);
+                return;
+            }
+            for (uint16_t i = 0; i < count; ++i) {
+                int32_t rope_uid = -1;
+                std::memcpy(&rope_uid, bytes + offset, sizeof(rope_uid));
+                alpine_rope_apply_state(rope_uid, bytes[offset + sizeof(rope_uid)] != 0);
+                offset += entry_size;
+            }
             break;
         }
         case af_server_req_type::af_sreq_award: {
@@ -4561,6 +4714,8 @@ uint32_t af_compute_server_info_flags()
         af |= af_server_info_flags::SIF_ALLOW_NO_SCREENSHAKE;
     if (g_alpine_server_config_active_rules.no_player_collide)
         af |= af_server_info_flags::SIF_NO_PLAYER_COLLIDE;
+    if (!g_alpine_server_config_active_rules.exposure_damage)
+        af |= af_server_info_flags::SIF_NO_EXPOSURE_DAMAGE;
     if (g_alpine_server_config.allow_disable_muzzle_flash)
         af |= af_server_info_flags::SIF_ALLOW_NO_MUZZLE_FLASH_LIGHT;
     if (g_alpine_server_config.click_limiter_config.enabled)
@@ -4743,6 +4898,7 @@ static void decode_af_server_info_flags(const af_server_info_packet& pkt, Alpine
     server_info.dodging = (pkt.af_flags & af_server_info_flags::SIF_DODGING) != 0;
     server_info.pogo = (pkt.af_flags & af_server_info_flags::SIF_POGO) != 0;
     server_info.scrapyard_gibs = (pkt.af_flags & af_server_info_flags::SIF_SCRAPYARD_GIBS) != 0;
+    server_info.no_exposure_damage = (pkt.af_flags & af_server_info_flags::SIF_NO_EXPOSURE_DAMAGE) != 0;
 }
 
 // Apply af_server_info_packet flags to the local server info (for listen server host)

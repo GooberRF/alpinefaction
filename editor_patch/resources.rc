@@ -393,6 +393,8 @@ IDR_MAIN_FRAME MENU
         MENUITEM "Show Path Node Connections", 32900
         MENUITEM SEPARATOR
         MENUITEM "Textured Brush Preview\t7", ID_GIZMO_TEXPREVIEW
+        MENUITEM SEPARATOR
+        MENUITEM "Mover Preview...", ID_VIEW_MOVER_PREVIEW
     }
     POPUP "&Tools"
     {
@@ -846,7 +848,7 @@ FONT 8, "MS Sans Serif", 0, 0, 0
 
 // Alpine Rope Emitter Properties dialog
 LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
-IDD_ALPINE_ROPE_PROPERTIES DIALOGEX 0, 0, 260, 341
+IDD_ALPINE_ROPE_PROPERTIES DIALOGEX 0, 0, 260, 417
 STYLE DS_MODALFRAME | WS_CAPTION | WS_VISIBLE | WS_POPUP | WS_SYSMENU
 CAPTION "Rope Emitter Properties"
 FONT 8, "MS Sans Serif", 0, 0, 0
@@ -910,15 +912,27 @@ FONT 8, "MS Sans Serif", 0, 0, 0
     EDITTEXT        IDC_ROPE_SWAY_SPEED, 66, 258, 40, 14, ES_AUTOHSCROLL
     CONTROL         "Spin8", IDC_ROPE_SWAY_SPEED_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 106, 258, 11, 14
 
-    AUTOCHECKBOX    "Initially on", IDC_ROPE_INITIALLY_ON, 7, 287, 54, 10
+    GROUPBOX        "Zip Line", -1, 7, 284, 245, 71
+    AUTOCHECKBOX    "Zip line", IDC_ROPE_ZIPLINE, 14, 298, 40, 10
+    LTEXT           "(needs a target)", -1, 60, 299, 60, 8
+    LTEXT           "Down (m/s):", IDC_ROPE_ZIP_DOWN_SPEED_LABEL, 14, 316, 44, 8
+    EDITTEXT        IDC_ROPE_ZIP_DOWN_SPEED, 60, 314, 40, 14, ES_AUTOHSCROLL
+    CONTROL         "Spin9", IDC_ROPE_ZIP_DOWN_SPEED_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 100, 314, 11, 14
+    LTEXT           "Up (m/s):", IDC_ROPE_ZIP_UP_SPEED_LABEL, 120, 316, 52, 8
+    EDITTEXT        IDC_ROPE_ZIP_UP_SPEED, 180, 314, 40, 14, ES_AUTOHSCROLL
+    CONTROL         "Spin10", IDC_ROPE_ZIP_UP_SPEED_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 220, 314, 11, 14
+    LTEXT           "Direction:", IDC_ROPE_ZIP_DIRECTION_LABEL, 14, 336, 44, 8
+    COMBOBOX        IDC_ROPE_ZIP_DIRECTION, 60, 334, 85, 60, WS_TABSTOP | CBS_DROPDOWNLIST
+
+    AUTOCHECKBOX    "Initially on", IDC_ROPE_INITIALLY_ON, 7, 363, 54, 10
 
     // The decoration list and its placement rules live in their own popup; the checkbox gates it
     // the same way the destructible checkbox gates the mesh panel's block.
-    AUTOCHECKBOX    "Decorations", IDC_ROPE_DECORATIONS, 7, 305, 60, 10
-    PUSHBUTTON      "Decorations...", IDC_ROPE_DECO_EDIT, 72, 302, 60, 14
+    AUTOCHECKBOX    "Decorations", IDC_ROPE_DECORATIONS, 7, 381, 60, 10
+    PUSHBUTTON      "Decorations...", IDC_ROPE_DECO_EDIT, 72, 378, 60, 14
 
-    DEFPUSHBUTTON   "OK", IDOK, 145, 320, 50, 14
-    PUSHBUTTON      "Cancel", IDCANCEL, 200, 320, 50, 14
+    DEFPUSHBUTTON   "OK", IDOK, 145, 396, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 200, 396, 50, 14
 }
 
 // Rope decorations, opened from the rope dialog's Decorations... button. Edits the rope dialog's
@@ -1284,7 +1298,7 @@ FONT 8, "MS Sans Serif"
 
 // Keyframe Properties dialog (stock dialog 280 + Hold Open checkbox)
 LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
-IDD_KEYFRAME_PROPERTIES DIALOGEX 0, 0, 405, 330
+IDD_KEYFRAME_PROPERTIES DIALOGEX 0, 0, 405, 368
 STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "Keyframe Properties"
 FONT 8, "MS Sans Serif"
@@ -1333,7 +1347,7 @@ FONT 8, "MS Sans Serif"
     PUSHBUTTON      "Preview", IDC_KF_CLOSE_SOUND_PREVIEW, 267, 132, 40, 14
 
     // Keyframe Properties group
-    GROUPBOX        "Keyframe Properties", -1, 7, 160, 332, 161
+    GROUPBOX        "Keyframe Properties", -1, 7, 160, 332, 201
     LTEXT           "Script Name:", -1, 14, 174, 42, 8
     EDITTEXT        IDC_KF_SCRIPT_NAME, 60, 172, 84, 14, ES_AUTOHSCROLL
     LTEXT           "Pause Time:", -1, 14, 193, 40, 8
@@ -1362,9 +1376,42 @@ FONT 8, "MS Sans Serif"
     LTEXT           "Degrees about Axis:", -1, 215, 188, 64, 8
     LTEXT           "", IDC_KF_DEGREES_ABOUT_AXIS, 287, 185, 40, 14
 
-    // OK / Cancel
-    DEFPUSHBUTTON   "OK", IDOK, 348, 290, 50, 14
-    PUSHBUTTON      "Cancel", IDCANCEL, 348, 307, 50, 14
+    GROUPBOX        "Path", -1, 211, 210, 122, 106
+    LTEXT           "Segment:", -1, 215, 224, 36, 8
+    COMBOBOX        IDC_KF_PATH_SEGMENT, 256, 222, 72, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "Handles:", -1, 215, 242, 36, 8
+    COMBOBOX        IDC_KF_PATH_TANGENT, 256, 240, 72, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "Easing:", -1, 215, 260, 36, 8
+    COMBOBOX        IDC_KF_PATH_EASE, 256, 258, 72, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "Mover Facing:", -1, 215, 278, 40, 16
+    COMBOBOX        IDC_KF_PATH_ORIENT, 256, 276, 72, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "Segment Facing:", -1, 215, 296, 40, 16
+    COMBOBOX        IDC_KF_PATH_SEGMENT_ORIENT, 256, 294, 72, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+
+    GROUPBOX        "Riders", -1, 211, 319, 122, 36
+    AUTO3STATE      "Turn Riders with Mover", IDC_KF_RIDER_TURN, 215, 330, 112, 10
+    AUTO3STATE      "Detach Riders on Leave", IDC_KF_RIDER_DETACH, 215, 342, 112, 10
+
+    // Align & OK / OK / Cancel
+    PUSHBUTTON      "Align && OK", IDC_KF_ALIGN_TO_PATH, 348, 313, 50, 14
+    DEFPUSHBUTTON   "OK", IDOK, 348, 330, 50, 14
+    PUSHBUTTON      "Cancel", IDCANCEL, 348, 347, 50, 14
+}
+
+// Mover Preview panel
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+IDD_ALPINE_MOVER_PREVIEW DIALOGEX 0, 0, 240, 72
+STYLE DS_SETFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Mover Preview"
+FONT 8, "MS Sans Serif"
+{
+    PUSHBUTTON      "Play", IDC_MOVER_PREVIEW_PLAY, 7, 7, 40, 14
+    PUSHBUTTON      "Stop", IDC_MOVER_PREVIEW_STOP, 51, 7, 40, 14
+    LTEXT           "Speed:", -1, 150, 10, 24, 8
+    COMBOBOX        IDC_MOVER_PREVIEW_SPEED, 178, 7, 55, 60, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    CONTROL         "", IDC_MOVER_PREVIEW_SLIDER, "msctls_trackbar32", TBS_NOTICKS | WS_TABSTOP, 7, 25, 226, 14
+    LTEXT           "", IDC_MOVER_PREVIEW_STATUS, 7, 43, 226, 8
+    LTEXT           "Legacy mover levels play differently in game.", IDC_MOVER_PREVIEW_LEGACY, 7, 55, 226, 8, NOT WS_VISIBLE
 }
 
 // Face split dialog

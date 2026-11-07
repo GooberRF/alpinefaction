@@ -238,6 +238,14 @@ namespace rf::ui
     static auto& popup_is_active = addr_as_ref<bool()>(0x00456680);
 
     static auto& mainmenu_quit_game_confirmed = addr_as_ref<void()>(0x00443CB0);
+    static auto& menu_draw_background = addr_as_ref<void()>(0x00442CE0);
+    static auto& menu_draw_side_bars = addr_as_ref<void()>(0x00442DB0);
+    static auto& menu_background_bitmap = addr_as_ref<int>(0x00598FEC); // mars_background.tga, -1 if missing
+
+    // Stock Extras button on_click handlers.
+    static auto& extras_credits_click = addr_as_ref<void(int x, int y)>(0x0043EC70);
+    static auto& extras_summoner_trailer_click = addr_as_ref<void(int x, int y)>(0x0043EC80);
+    static auto& extras_glass_house_click = addr_as_ref<void(int x, int y)>(0x0043ECA0);
 
     static auto& get_gadget_from_pos = addr_as_ref<int(int x, int y, Gadget * const gadgets[], int num_gadgets)>(0x00442ED0);
     static auto& update_input_box_cursor = addr_as_ref<void()>(0x00456960);
@@ -264,9 +272,9 @@ namespace rf::ui
     static auto& audio_message_button = addr_as_ref<Button>(0x00642228);
 
     // options
-    static auto& g_MenuMainButtonsY = *reinterpret_cast<int*>(0x00598FCC);
-    static auto& menu_button_offset_y = *reinterpret_cast<int*>(0x00598FD0);
-    static auto& g_fOptionsMenuOffset = *reinterpret_cast<float*>(0x0063F8D8);
+    static auto& menu_main_buttons_y = addr_as_ref<int>(0x00598FCC);
+    static auto& menu_button_offset_y = addr_as_ref<int>(0x00598FD0);
+    static auto& options_menu_offset = addr_as_ref<float>(0x0063F8D8);
     static auto& options_menu_tab_move_anim_speed = addr_as_ref<float>(0x0063F930);
     static auto& options_current_panel = addr_as_ref<int>(0x0059A5D4);
     static auto& menu_move_anim_speed = addr_as_ref<float>(0x00598FD4);
@@ -276,7 +284,7 @@ namespace rf::ui
     static auto& options_panel_x = addr_as_ref<int>(0x0063C058);
     static auto& options_panel_y = addr_as_ref<int>(0x00598FE0);
     static auto& options_animated_offset = addr_as_ref<float>(0x0063FA14);
-    static auto& options_back_button = addr_as_ref<Button>(0x0063FB28);
+    static auto& options_buttons = addr_as_ref<Gadget*[5]>(0x0063FB6C); // Game, Video, Audio, Controls, Back
     static auto& options_is_panel_open = addr_as_ref<bool>(0x0063F920);
 
     // options -> game
@@ -289,9 +297,8 @@ namespace rf::ui
     static auto& options_controls_bindings_down_on_click = addr_as_ref<void(int x, int y)>(0x00450130);
     static auto& options_controls_current_gadget = addr_as_ref<int>(0x0063FFE8);
     static auto& options_controls_waiting_for_key = addr_as_ref<bool>(0x00640060);
-    
-    // Assigns to the currently selected binding row and clears the same scan code /
-    // mouse button from all other bindings (pass -1 for the unused parameter)
+    // Assigns to the selected binding row and clears the same scan code / mouse button from every
+    // other binding (pass -1 for the unused parameter).
     static auto& options_controls_assign_binding = addr_as_ref<void(int scan_code, int mouse_btn_id)>(0x0044FFD0);
     static auto& options_controls_stop_waiting_for_key = addr_as_ref<void()>(0x0044FC00);
 

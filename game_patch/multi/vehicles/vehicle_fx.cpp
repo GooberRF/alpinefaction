@@ -19,6 +19,7 @@
 #include "../../main/main.h"
 #include "../../misc/alpine_settings.h"
 #include "../../misc/level.h"
+#include "../../misc/settings_registry.h"
 #include "../../object/particle_sim.h"
 #include "../../os/console.h"
 #include "../../rf/bmpman.h"
@@ -1263,10 +1264,7 @@ namespace
     ConsoleCommand2 vehiclefx_cmd{
         "cl_vehiclefx",
         [](std::optional<bool> enabled) {
-            g_alpine_game_config.vehicle_effects = enabled.value_or(!g_alpine_game_config.vehicle_effects);
-            if (!g_alpine_game_config.vehicle_effects) {
-                vehicle_fx_clear();
-            }
+            setting_console_set_bool("vehicle_effects", enabled);
             rf::console::print("Vehicle effects are {}", g_alpine_game_config.vehicle_effects ? "enabled" : "disabled");
         },
         "Show dust, sparks, spray, smoke and fire effects, with their sounds and lights, for vehicles in multiplayer",

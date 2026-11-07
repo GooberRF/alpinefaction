@@ -53,6 +53,8 @@
 #include <shlwapi.h>
 #include <windows.h>
 #include "../multi/alpine_packets.h"
+#include "../misc/settings_registry.h"
+#include "../object/zipline.h"
 
 static rf::Player* g_spectate_mode_target;
 static rf::Camera* g_old_target_camera = nullptr;
@@ -236,11 +238,15 @@ static bool state_animation_is_crouch(int state)
 // Hook entity_set_next_state_anim to remap non-crouch animations to crouch
 // variants for the spectated entity when it's crouching. This prevents the
 // movement state machine from constantly overriding the crouch animation.
+// Zip line riders are posed here too.
 //
 // SINGLE OWNER of 0x0042A580: the vehicles module needs its early-out here, not a second FunHook.
 FunHook<void(rf::Entity*, int, float)> spectate_entity_set_next_state_anim_hook{
     0x0042A580,
     [](rf::Entity* entity, int state_anim_index, float transition_time) {
+        if (zipline_entity_is_riding(entity)) {
+            state_anim_index = rf::ENTITY_STATE_FREEFALL;
+        }
         // A seated rider whose character lacks the seated anims re-requests the state every frame and
         // never finishes. Seat-locked MP riders only, or an SP NPC would freeze mid STAND->WALK.
         const bool turret_rider = vehicle_is_turret_rider_state(entity, state_anim_index);
@@ -450,6 +456,24 @@ bool multi_spectate_is_spectating()
 bool multi_spectate_is_first_person()
 {
     return spectate_first_person_render_active();
+}
+
+bool multi_spectate_view_is_first_person_of(const rf::Entity* ep)
+{
+    if (!ep || !rf::local_player) {
+        return false;
+    }
+    if (multi_spectate_is_spectating()) {
+        if (!multi_spectate_is_first_person()) {
+            return false;
+        }
+        rf::Player* target = multi_spectate_get_target_player();
+        return target && ep->handle == target->entity_handle;
+    }
+    if (ep->handle != rf::local_player->entity_handle) {
+        return false;
+    }
+    return !rf::local_player->cam || rf::camera_get_mode(*rf::local_player->cam) == rf::CAMERA_FIRST_PERSON;
 }
 
 bool multi_spectate_is_following_player()
@@ -1091,11 +1115,11 @@ static ConsoleCommand2 spectate_povcomp_cmd{
     [](std::optional<std::string> arg) {
         if (arg) {
             if (*arg == "on" || *arg == "auto") {
-                g_alpine_game_config.spectate_povcomp = true;
+                setting_console_set("spectate_povcomp", "1");
                 g_povcomp_override_ms = -1;
             }
             else if (*arg == "off") {
-                g_alpine_game_config.spectate_povcomp = false;
+                setting_console_set("spectate_povcomp", "0");
             }
             else {
                 int value = 0;
@@ -1104,7 +1128,7 @@ static ConsoleCommand2 spectate_povcomp_cmd{
                     rf::console::print("Usage: spectate_povcomp [on|off|<delay ms>]");
                     return;
                 }
-                g_alpine_game_config.spectate_povcomp = true;
+                setting_console_set("spectate_povcomp", "1");
                 g_povcomp_override_ms = std::clamp(value, 0, povcomp_max_ms);
             }
         }
@@ -1527,7 +1551,7 @@ ConsoleCommand2 spectate_cmd{
 static ConsoleCommand2 spectate_mode_minimal_ui_cmd{
     "spectate_minui",
     []() {
-        g_alpine_game_config.spectate_mode_minimal_ui = !g_alpine_game_config.spectate_mode_minimal_ui;
+        setting_console_set("spectate_mode_minimal_ui", "toggle");
         rf::console::print("Spectate mode minimal UI is {}",
                            g_alpine_game_config.spectate_mode_minimal_ui ? "enabled" : "disabled");
     },
@@ -1546,7 +1570,7 @@ static ConsoleCommand2 spectate_mode_follow_killer_cmd{
 static ConsoleCommand2 spectate_cameras_cmd{
     "spectate_cameras",
     []() {
-        g_alpine_game_config.spectate_show_camera_meshes = !g_alpine_game_config.spectate_show_camera_meshes;
+        setting_console_set("spectate_show_camera_meshes", "toggle");
         rf::console::print("Static camera meshes in free look spectate are {}",
             g_alpine_game_config.spectate_show_camera_meshes ? "shown" : "hidden");
     },
@@ -1740,6 +1764,8 @@ static void spectate_render_camera_mesh(const rf::Vector3& pos, const rf::Matrix
 static CodeInjection spectate_render_camera_meshes_patch{
     0x00432000,
     []() {
+        // entity_render skips the body seen in first person, so its trolley is drawn here.
+        zipline_render_first_person();
         if (!g_alpine_game_config.spectate_show_camera_meshes || !multi_spectate_is_freelook()
             || spectate_static_camera_count() <= 0 || !g_spectate_camera_mesh
             || !rf::local_player || !rf::local_player->cam) {

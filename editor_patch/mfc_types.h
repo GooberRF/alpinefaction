@@ -15,6 +15,7 @@
 #include <common/terrain/alpine_terrain.h>
 #include <common/alpine_dir_light.h>
 #include <common/alpine_waypoint_helper.h>
+#include <common/rope_curve.h>
 
 extern "C" IMAGE_DOS_HEADER __ImageBase;
 
@@ -512,6 +513,25 @@ static_assert(offsetof(DedObject, type) == 0x5C);
 static_assert(offsetof(DedObject, listed_in_tree) == 0x78);
 
 
+// Constructor FUN_00452770
+struct DedKeyframe : DedObject
+{
+    bool active;              // +0x94 set by the constructor; a clear one is neither drawn nor saved
+    char padding_95[3];
+    float pause_time;         // +0x98
+    float depart_travel_time; // +0x9C
+    float return_travel_time; // +0xA0
+    float accel_time;         // +0xA4
+    float decel_time;         // +0xA8
+    int event_uid;            // +0xAC
+    int item_uids[2];         // +0xB0
+    float rotation_degrees;   // +0xB8
+};
+static_assert(sizeof(DedKeyframe) == 0xBC, "DedKeyframe size mismatch");
+static_assert(offsetof(DedKeyframe, active) == 0x94);
+static_assert(offsetof(DedKeyframe, depart_travel_time) == 0x9C);
+static_assert(offsetof(DedKeyframe, rotation_degrees) == 0xB8);
+
 struct DedEvent : DedObject
 {
     //DedObject baseclass_0;
@@ -814,6 +834,7 @@ struct DedWaypointHelper : DedObject
 constexpr uint32_t ded_rope_flag_dynamic = 0x1;
 constexpr uint32_t ded_rope_flag_glow = 0x2;
 constexpr uint32_t ded_rope_flag_sway = 0x4;
+constexpr uint32_t ded_rope_flag_zipline = rope_curve::rope_flag_zipline_bit;
 
 // Fields the solved preview polyline depends on: pos (3), has_target, target pos (3), slack,
 // segments, dangle length, target uid.
@@ -877,6 +898,11 @@ struct DedRopeEmitter : DedObject
     float deco_spacing = 1.0f;
     bool deco_random_order = false;
     uint8_t deco_orient_mode = 0;    // 0 = follow curve, 1 = upright
+
+    // Zip line settings, only live under ded_rope_flag_zipline but kept either way
+    float zip_down_speed = rope_curve::zip_default_down_speed;
+    float zip_up_speed = rope_curve::zip_default_up_speed;
+    uint8_t zip_direction = 0;       // rope_curve::ZipDirection
 
     // Viewport preview cache, never serialized: the solved polyline plus the quantized inputs it
     // was solved from, so a repaint only re-solves when something the curve depends on moved.

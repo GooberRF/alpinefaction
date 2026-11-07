@@ -61,6 +61,10 @@ set(SRCS
     graphics/gr.h
     graphics/gr_ghost_mesh.h
     graphics/gr_light.cpp
+    graphics/svg_cache.cpp
+    graphics/svg_cache.h
+    graphics/ui_draw.cpp
+    graphics/ui_draw.h
     graphics/af_lightmap.cpp
     graphics/af_lightmap.h
     graphics/weather.cpp
@@ -85,6 +89,8 @@ set(SRCS
     graphics/d3d11/engine/gr_d3d11_engine.h
     input/input.cpp
     input/input.h
+    input/bind_context.h
+    input/bind_context.cpp
     input/mouse.h
     input/mouse.cpp
     input/key.cpp
@@ -363,6 +369,8 @@ set(SRCS
     object/alpine_rope.h
     object/alpine_dir_light.cpp
     object/alpine_dir_light.h
+    object/zipline.cpp
+    object/zipline.h
     object/clock.cpp
     misc/achievements.h
     misc/achievements.cpp
@@ -413,6 +421,29 @@ set(SRCS
     misc/alpine_options.cpp
     misc/alpine_settings.h
     misc/alpine_settings.cpp
+    misc/settings_registry.h
+    misc/settings/settings_rows.h
+    misc/settings/settings_registry.cpp
+    misc/settings/settings_rows_graphics.cpp
+    misc/settings/settings_rows_hud.cpp
+    misc/settings/settings_rows_interface.cpp
+    misc/settings/settings_rows_audio.cpp
+    misc/settings/settings_rows_bindings.cpp
+    misc/settings/settings_rows_input.cpp
+    misc/settings/settings_rows_gameplay.cpp
+    misc/settings/settings_rows_vehicles.cpp
+    misc/settings/settings_rows_multiplayer.cpp
+    misc/settings/settings_rows_spectator.cpp
+    ui/ui_kit.h
+    ui/ui_kit.cpp
+    ui/settings_skin.h
+    ui/settings_skin.cpp
+    ui/settings_menu.h
+    ui/settings_menu.cpp
+    ui/menu_shell.h
+    ui/menu_shell.cpp
+    ui/extras_menu.h
+    ui/extras_menu.cpp
     sound/sound.cpp
     sound/sound.h
     sound/sound_ds.cpp
@@ -482,6 +513,7 @@ target_link_libraries(AlpineFaction
     freetype
     stb_vorbis
     stb_image
+    lunasvg
     BulletDynamics
     BulletCollision
     LinearMath

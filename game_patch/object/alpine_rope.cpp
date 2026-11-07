@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <iterator>
 #include <string>
 #include <vector>
 #include <common/rope_curve.h>
@@ -45,6 +46,7 @@ constexpr std::size_t rope_max_bitmap_ext_len = 14;
 constexpr uint32_t rope_flag_dynamic = 0x1;
 constexpr uint32_t rope_flag_glow = 0x2;
 constexpr uint32_t rope_flag_sway = 0x4;
+constexpr uint32_t rope_flag_zipline = rope_curve::rope_flag_zipline_bit;
 
 constexpr float rope_sim_step = 1.0f / 60.0f;
 constexpr int rope_max_substeps = 4;
@@ -260,6 +262,11 @@ struct AlpineRope
     float sway_speed = 1.0f;
     uint32_t flags = 0;
     bool initially_on = true;
+    float zip_down_speed = rope_curve::zip_default_down_speed;
+    float zip_up_speed = rope_curve::zip_default_up_speed;
+    uint8_t zip_direction = static_cast<uint8_t>(rope_curve::ZipDirection::two_way);
+    // Switched on or off since the level loaded; no other rope can differ from its authored state.
+    bool toggled = false;
 
     rf::Vector3 end_a{};
     rf::Vector3 end_b{};
@@ -298,9 +305,13 @@ struct AlpineRope
     int32_t qb[3] = {0, 0, 0};
     bool endpoints_valid = false;
 
-    bool is_dynamic() const { return (flags & rope_flag_dynamic) != 0; }
+    // A zip line has to be ridden along the same shape on every machine, so the flag always means the
+    // static solve: no verlet, no painted sway. Without a target there is nothing to ride.
+    bool has_zipline_flag() const { return (flags & rope_flag_zipline) != 0; }
+    bool is_zipline() const { return has_zipline_flag() && target_uid != -1; }
+    bool is_dynamic() const { return (flags & rope_flag_dynamic) != 0 && !has_zipline_flag(); }
     bool is_glow() const { return (flags & rope_flag_glow) != 0; }
-    bool has_sway() const { return (flags & rope_flag_sway) != 0; }
+    bool has_sway() const { return (flags & rope_flag_sway) != 0 && !has_zipline_flag(); }
 };
 
 std::vector<AlpineRope> g_ropes;
@@ -1682,6 +1693,97 @@ void log_rope_chunk_truncated(uint32_t created)
     xlog::warn("[AlpineRope] Chunk is truncated, keeping {} rope(s)", created);
 }
 
+// A zip line's ride path, kept apart from AlpineRope so it exists on machines that never build
+// rope geometry: dedicated servers need it too.
+struct ZiplineEntry
+{
+    std::size_t rope_index = 0;
+    AlpineZipline zip;
+    int32_t key[7] = {};
+    bool key_valid = false;
+};
+
+std::vector<ZiplineEntry> g_ziplines;
+std::vector<const AlpineZipline*> g_active_ziplines;
+
+// Sample spacing for nearest-point queries; the chord error it leaves on a sagging line is far below
+// the grab reach.
+constexpr float zipline_sample_step = 0.5f;
+constexpr int zipline_max_samples = 256;
+// Anything shorter is not a ride, it is a step.
+constexpr float zipline_min_length = 1.0f;
+
+void rope_zipline_solve(ZiplineEntry& e, const rf::Vector3& a, const rf::Vector3& b, float slack)
+{
+    AlpineZipline& zip = e.zip;
+    zip.curve = rope_curve::solve(to_curve(a), to_curve(b), a.distance_to(b) + slack);
+    const float len = zip.curve.length;
+    const int segs = std::clamp(static_cast<int>(std::ceil(len / zipline_sample_step)), 1,
+                                zipline_max_samples);
+    zip.sample_step = len / static_cast<float>(segs);
+    zip.points.resize(static_cast<std::size_t>(segs) + 1);
+    for (int i = 0; i <= segs; ++i) {
+        const float arc = (i == segs) ? len : zip.sample_step * static_cast<float>(i);
+        zip.points[static_cast<std::size_t>(i)] =
+            from_curve(rope_curve::sample_at_arclength(zip.curve, arc));
+    }
+    zip.aabb_min = zip.points.front();
+    zip.aabb_max = zip.points.front();
+    for (const rf::Vector3& p : zip.points) {
+        zip.aabb_min.x = std::min(zip.aabb_min.x, p.x);
+        zip.aabb_min.y = std::min(zip.aabb_min.y, p.y);
+        zip.aabb_min.z = std::min(zip.aabb_min.z, p.z);
+        zip.aabb_max.x = std::max(zip.aabb_max.x, p.x);
+        zip.aabb_max.y = std::max(zip.aabb_max.y, p.y);
+        zip.aabb_max.z = std::max(zip.aabb_max.z, p.z);
+    }
+}
+
+// Brings the ride path up to date with the endpoints. False when the line cannot be ridden at all.
+bool rope_zipline_refresh(ZiplineEntry& e)
+{
+    const AlpineRope& rope = g_ropes[e.rope_index];
+    if (rope.target_handle == -1) {
+        return false;
+    }
+    const rf::Object* target = rf::obj_from_handle(rope.target_handle);
+    if (!target || !std::isfinite(target->pos.x) || !std::isfinite(target->pos.y) ||
+        !std::isfinite(target->pos.z)) {
+        return false;
+    }
+    using rope_curve::quantize_1024;
+    const int32_t key[7] = {quantize_1024(rope.pos.x),    quantize_1024(rope.pos.y),
+                            quantize_1024(rope.pos.z),    quantize_1024(target->pos.x),
+                            quantize_1024(target->pos.y), quantize_1024(target->pos.z),
+                            quantize_1024(rope.slack)};
+    if (!e.key_valid || !std::equal(std::begin(key), std::end(key), std::begin(e.key))) {
+        std::copy(std::begin(key), std::end(key), std::begin(e.key));
+        e.key_valid = true;
+        rope_zipline_solve(e, rope.pos, target->pos, rope.slack);
+    }
+    return e.zip.curve.length >= zipline_min_length;
+}
+
+void rope_zipline_level_init()
+{
+    g_ziplines.clear();
+    g_active_ziplines.clear();
+    for (std::size_t i = 0; i < g_ropes.size(); ++i) {
+        const AlpineRope& rope = g_ropes[i];
+        if (!rope.is_zipline()) {
+            continue;
+        }
+        ZiplineEntry e;
+        e.rope_index = i;
+        e.zip.uid = rope.uid;
+        e.zip.down_speed = rope.zip_down_speed;
+        e.zip.up_speed = rope.zip_up_speed;
+        e.zip.direction = static_cast<rope_curve::ZipDirection>(rope.zip_direction);
+        g_ziplines.push_back(std::move(e));
+    }
+    g_active_ziplines.reserve(g_ziplines.size());
+}
+
 CallHook<void(rf::Vector3*, float, float, int, int)> rope_explosion_apply_radius_damage_hook{
     // Fourth and only unwrapped caller of explosion_apply_radius_damage (0x00488DC0). The
     // function itself opens on FLD m32fp + FCOMP m32fp, and SubHook cannot relocate FCOMP, so the
@@ -1912,6 +2014,12 @@ void alpine_rope_load_chunk(rf::File& file, std::size_t chunk_len)
             rope.deco.slots.assign(rope.deco.mesh_names.size(), -1);
         }
 
+        float zip_down_speed = 0.0f, zip_up_speed = 0.0f;
+        uint8_t zip_direction = 0;
+        if (!reader.read_bytes(&zip_down_speed, sizeof(zip_down_speed))) return log_rope_chunk_truncated(created);
+        if (!reader.read_bytes(&zip_up_speed, sizeof(zip_up_speed))) return log_rope_chunk_truncated(created);
+        if (!reader.read_bytes(&zip_direction, sizeof(zip_direction))) return log_rope_chunk_truncated(created);
+
         rope.dangle_length = rope_curve::clamp_finite(dangle, rope_curve::rope_min_dangle,
                                                      rope_curve::rope_max_dangle, 3.0f);
         rope.slack = rope_curve::clamp_finite(slack, 0.0f, rope_curve::rope_max_slack, 0.5f);
@@ -1927,6 +2035,11 @@ void alpine_rope_load_chunk(rf::File& file, std::size_t chunk_len)
             rope_curve::clamp_finite(sway_amplitude, 0.0f, rope_curve::rope_max_sway_amplitude, 0.05f);
         rope.sway_speed =
             rope_curve::clamp_finite(sway_speed, 0.0f, rope_curve::rope_max_sway_speed, 1.0f);
+        rope.zip_down_speed = rope_curve::clamp_finite(zip_down_speed, rope_curve::zip_min_speed,
+                                                       rope_curve::zip_max_speed, rope_curve::zip_default_down_speed);
+        rope.zip_up_speed = rope_curve::clamp_finite(zip_up_speed, rope_curve::zip_min_speed,
+                                                     rope_curve::zip_max_speed, rope_curve::zip_default_up_speed);
+        rope.zip_direction = zip_direction > rope_curve::zip_direction_max ? 0 : zip_direction;
         rope.initially_on = initially_on != 0;
 
         if (!std::isfinite(rope.pos.x) || !std::isfinite(rope.pos.y) || !std::isfinite(rope.pos.z)) {
@@ -2043,6 +2156,8 @@ void alpine_rope_level_init()
         rope_fx_update(rope, rope.initially_on, g_clock_ms);
     }
 
+    rope_zipline_level_init();
+
     if (!cosmetics) {
         g_draw_order.clear();
         return;
@@ -2094,6 +2209,8 @@ void alpine_rope_clear_state()
     }
     g_rope_glare_infos.clear();
 
+    g_ziplines.clear();
+    g_active_ziplines.clear();
     g_ropes.clear();
     g_draw_order.clear();
     g_pushers.clear();
@@ -2270,6 +2387,85 @@ void alpine_rope_apply_explosion(const rf::Vector3& pos, float radius, float str
             rope.sleep_timer = 0.0f;
         }
     }
+}
+
+void alpine_rope_collect_states(std::vector<AlpineRopeState>& out, bool ziplines_only)
+{
+    out.clear();
+    for (const AlpineRope& rope : g_ropes) {
+        if (rope.toggled && (!ziplines_only || rope.is_zipline())) {
+            out.push_back(AlpineRopeState{rope.uid, rope_is_on(rope)});
+        }
+    }
+}
+
+void alpine_rope_on_anchor_toggled(int handle)
+{
+    for (AlpineRope& rope : g_ropes) {
+        if (rope.clutter_handle == handle) {
+            rope.toggled = true;
+            return;
+        }
+    }
+}
+
+void alpine_rope_set_anchor_on(int handle, bool on)
+{
+    if (rf::Object* obj = rf::obj_from_handle(handle)) {
+        if (on) {
+            rf::obj_unhide(obj);
+        }
+        else {
+            rf::obj_hide(obj);
+        }
+    }
+}
+
+void alpine_rope_apply_state(int32_t uid, bool on)
+{
+    for (const AlpineRope& rope : g_ropes) {
+        if (rope.uid == uid) {
+            alpine_rope_set_anchor_on(rope.clutter_handle, on);
+            return;
+        }
+    }
+}
+
+void alpine_rope_update_ziplines()
+{
+    g_active_ziplines.clear();
+    for (ZiplineEntry& e : g_ziplines) {
+        if (rope_is_on(g_ropes[e.rope_index]) && rope_zipline_refresh(e)) {
+            g_active_ziplines.push_back(&e.zip);
+        }
+    }
+}
+
+std::vector<const AlpineZipline*> alpine_rope_all_ziplines()
+{
+    std::vector<const AlpineZipline*> out;
+    out.reserve(g_ziplines.size());
+    for (ZiplineEntry& e : g_ziplines) {
+        if (rope_zipline_refresh(e)) {
+            out.push_back(&e.zip);
+        }
+    }
+    return out;
+}
+
+const std::vector<const AlpineZipline*>& alpine_rope_active_ziplines()
+{
+    return g_active_ziplines;
+}
+
+const AlpineZipline* alpine_rope_find_zipline(int32_t uid)
+{
+    for (const AlpineZipline* zip : g_active_ziplines) {
+        if (zip->uid == uid) {
+            return zip;
+        }
+    }
+    return nullptr;
 }
 
 void alpine_rope_apply_patch()

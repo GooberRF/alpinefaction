@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Alpine Faction settings chrome: arrows - white shapes tinted at draw time. Six 32x32 cells: left, right, up, down, up outline, down outline. Sheet is 192x32. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 32" width="192" height="32">
+  <polygon points="23,5 9,16 23,27" fill="#ffffff"/>
+  <polygon points="41,5 55,16 41,27" fill="#ffffff"/>
+  <polygon points="69,23 80,9 91,23" fill="#ffffff"/>
+  <polygon points="101,9 112,23 123,9" fill="#ffffff"/>
+  <polygon points="135,25 144,8 153,25" fill="none" stroke="#ffffff" stroke-width="3.5" stroke-linejoin="miter"/>
+  <polygon points="167,7 176,24 185,7" fill="none" stroke="#ffffff" stroke-width="3.5" stroke-linejoin="miter"/>
+</svg>

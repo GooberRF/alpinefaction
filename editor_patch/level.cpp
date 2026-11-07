@@ -49,6 +49,7 @@
 #include "bake_progress.h"
 #include "face_list_cache.h"
 #include "memory_guard.h"
+#include "mover_path.h"
 
 // Forward declarations
 int get_level_rfl_version();
@@ -187,6 +188,7 @@ void __fastcall CDedLevel_DeleteContents_hooked(CDedLevel* level, void* edx_unus
     lightmap_reset_level_state();
     texture_mode_level_reset();
     brush_preview_level_reset();
+    mover_path_level_reset();
     // Also runs as the document closes at exit, when the views may be gone, so nothing is repainted.
     alpine_lm_reset_level_state();
 }
@@ -329,6 +331,10 @@ CodeInjection CDedLevel_LoadLevel_patch2{
                 }
                 if (chunk_id == alpine_waypoint_helper_chunk_id) {
                     waypoint_helper_deserialize_chunk(level, file, chunk_size);
+                    regs.eip = 0x0043090C;
+                }
+                if (chunk_id == alpine_mover_path_chunk_id) {
+                    mover_path_deserialize_chunk(level, file, chunk_size);
                     regs.eip = 0x0043090C;
                 }
             }
@@ -1046,6 +1052,7 @@ void __fastcall build_geometry_start_hooked(CDedLevel* level, void* edx_unused)
     // the build frees the faces the overflow preview is keyed on
     overflow_preview_clear();
     brush_preview_build_started(*level);
+    mover_path_preview_close();
     // before the start shows the stock dialog this window replaces
     unsigned phases = build_phase_bit(BuildPhase::count) - 1;
     if (level->GetAlpineLevelProperties().terrain_objects.empty()) {
@@ -1234,6 +1241,8 @@ CodeInjection CDedLevel_SaveLevel_patch{
         directional_light_serialize_chunk(level, file);
 
         waypoint_helper_serialize_chunk(level, file);
+
+        mover_path_serialize_chunk(level, file);
 
         // Re-write any foreign-editor chunks
         retained_chunks_serialize(level, file);

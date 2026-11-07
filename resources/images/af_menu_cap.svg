@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Alpine Faction settings chrome: menu_cap - the steel end cap of a stock menu button, with its LED and brackets. The rails and well are drawn in code so the button can take any width. Four 72x78 states stacked 86 apart: arrow, arrow lit, plain, plain lit. Sheet is 72x336. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 72 336" width="72" height="336">
+  <defs>
+    <linearGradient id="mc-steelv" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#e4e4e8"/>
+      <stop offset="0.4" stop-color="#b0b0b6"/>
+      <stop offset="1" stop-color="#76767e"/>
+    </linearGradient>
+    <linearGradient id="mc-steelh" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#8a8a90"/>
+      <stop offset="0.3" stop-color="#d4d4d8"/>
+      <stop offset="1" stop-color="#9a9aa0"/>
+    </linearGradient>
+    <radialGradient id="mc-ledon" cx="0.5" cy="0.45" r="0.6">
+      <stop offset="0" stop-color="#ffd8d0"/>
+      <stop offset="0.35" stop-color="#ff2a2a"/>
+      <stop offset="1" stop-color="#7a0f0f"/>
+    </radialGradient>
+    <radialGradient id="mc-halo" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#ff3020" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#ff3020" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <!-- arrow -->
+  <rect x="0.75" y="4.68" width="56.89" height="68.64" fill="url(#mc-steelh)" stroke="#2e2e33" stroke-width="1.5"/>
+  <rect x="57.64" y="14.04" width="13.1" height="12.48" fill="url(#mc-steelv)" stroke="#2e2e33" stroke-width="1.5"/>
+  <rect x="57.64" y="51.48" width="13.1" height="12.48" fill="url(#mc-steelv)" stroke="#2e2e33" stroke-width="1.5"/>
+  <polygon points="7.86,28.08 19.65,39 7.86,49.92" fill="#0a0a0a"/>
+  <rect x="32.75" y="20.28" width="15.72" height="37.44" fill="#1a1a1c" stroke="#55555c" stroke-width="1"/>
+  <rect x="36.68" y="26.52" width="7.86" height="24.96" rx="3.93" fill="#3a0a08" stroke="#120302" stroke-width="1"/>
+  <!-- arrow, lit -->
+  <rect x="0.75" y="90.68" width="56.89" height="68.64" fill="url(#mc-steelh)" stroke="#2e2e33" stroke-width="1.5"/>
+  <rect x="57.64" y="100.04" width="13.1" height="12.48" fill="url(#mc-steelv)" stroke="#2e2e33" stroke-width="1.5"/>
+  <rect x="57.64" y="137.48" width="13.1" height="12.48" fill="url(#mc-steelv)" stroke="#2e2e33" stroke-width="1.5"/>
+  <polygon points="7.86,114.08 19.65,125 7.86,135.92" fill="#0a0a0a"/>
+  <rect x="32.75" y="106.28" width="15.72" height="37.44" fill="#1a1a1c" stroke="#55555c" stroke-width="1"/>
+  <ellipse cx="40.61" cy="125" rx="17.3" ry="32.4" fill="url(#mc-halo)"/>
+  <rect x="36.68" y="112.52" width="7.86" height="24.96" rx="3.93" fill="url(#mc-ledon)" stroke="#120302" stroke-width="1"/>
+  <!-- plain -->
+  <rect x="0.75" y="176.68" width="56.89" height="68.64" fill="url(#mc-steelh)" stroke="#2e2e33" stroke-width="1.5"/>
+  <rect x="57.64" y="186.04" width="13.1" height="12.48" fill="url(#mc-steelv)" stroke="#2e2e33" stroke-width="1.5"/>
+  <rect x="57.64" y="223.48" width="13.1" height="12.48" fill="url(#mc-steelv)" stroke="#2e2e33" stroke-width="1.5"/>
+  <rect x="32.75" y="192.28" width="15.72" height="37.44" fill="#1a1a1c" stroke="#55555c" stroke-width="1"/>
+  <rect x="36.68" y="198.52" width="7.86" height="24.96" rx="3.93" fill="#3a0a08" stroke="#120302" stroke-width="1"/>
+  <!-- plain, lit -->
+  <rect x="0.75" y="262.68" width="56.89" height="68.64" fill="url(#mc-steelh)" stroke="#2e2e33" stroke-width="1.5"/>
+  <rect x="57.64" y="272.04" width="13.1" height="12.48" fill="url(#mc-steelv)" stroke="#2e2e33" stroke-width="1.5"/>
+  <rect x="57.64" y="309.48" width="13.1" height="12.48" fill="url(#mc-steelv)" stroke="#2e2e33" stroke-width="1.5"/>
+  <rect x="32.75" y="278.28" width="15.72" height="37.44" fill="#1a1a1c" stroke="#55555c" stroke-width="1"/>
+  <ellipse cx="40.61" cy="297" rx="17.3" ry="32.4" fill="url(#mc-halo)"/>
+  <rect x="36.68" y="284.52" width="7.86" height="24.96" rx="3.93" fill="url(#mc-ledon)" stroke="#120302" stroke-width="1"/>
+</svg>

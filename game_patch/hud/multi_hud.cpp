@@ -58,6 +58,8 @@
 #include "../multi/bots/bot_main.h"
 #include "../multi/mutators.h"
 #include "multi_spectate.h"
+#include "../misc/settings_registry.h"
+#include "../object/zipline.h"
 
 static bool g_big_team_scores_hud = false;
 constexpr bool g_debug_team_scores_hud = false;
@@ -103,19 +105,20 @@ static void hud_big_notification_clear()
     hud_notification_clear_slot(g_hud_big_notification);
 }
 
-// Third slot, under the reticle: the vehicle Use prompt. It is local-only and re-asserted every
-// frame it applies, so it carries no HudNotificationType and never competes for the two slots above.
+// Third slot, under the reticle: the vehicle Use prompt or the zip line hint. It is local-only and
+// re-asserted every frame it applies, so it carries no HudNotificationType and never competes for the
+// two slots above.
 static struct {
     bool active = false;
     std::string text;
     rf::Timestamp fade_start; // invalid while not fading
-} g_hud_vehicle_prompt;
+} g_hud_reticle_prompt;
 
-static void hud_vehicle_prompt_clear()
+void hud_reticle_prompt_clear()
 {
-    g_hud_vehicle_prompt.active = false;
-    g_hud_vehicle_prompt.text.clear();
-    g_hud_vehicle_prompt.fade_start.invalidate();
+    g_hud_reticle_prompt.active = false;
+    g_hud_reticle_prompt.text.clear();
+    g_hud_reticle_prompt.fade_start.invalidate();
 }
 
 // Latest Pit duel-queue state pushed by the server (af_sreq_pit_queue_state).
@@ -1504,36 +1507,37 @@ static void hud_render_big_notification()
                            g_hud_big_notification.text.c_str(), big_font);
 }
 
-// Keep the under-reticle vehicle prompt alive while the local player is looking at a vehicle he
-// could act on; the render pass fades it out once this stops asserting it.
-static void hud_vehicle_prompt_ensure()
+// The vehicle prompt wins the line, as it wins the Use press; otherwise the zip line hint. The slot
+// fades out once neither asserts it.
+static void hud_reticle_prompt_ensure()
 {
-    if (rf::is_dedicated_server) return;
-
-    const std::string& text = vehicle_use_prompt_text();
+    const std::string& vehicle_text = vehicle_use_prompt_text();
+    const std::string& text = vehicle_text.empty() ? zipline_hint_text() : vehicle_text;
     if (text.empty()) {
-        if (g_hud_vehicle_prompt.active && !g_hud_vehicle_prompt.fade_start.valid()) {
-            g_hud_vehicle_prompt.fade_start.set(0);
+        if (g_hud_reticle_prompt.active && !g_hud_reticle_prompt.fade_start.valid()) {
+            g_hud_reticle_prompt.fade_start.set(0);
         }
         return;
     }
-    if (g_hud_vehicle_prompt.text != text) {
-        g_hud_vehicle_prompt.text = text;
+    if (g_hud_reticle_prompt.text != text) {
+        g_hud_reticle_prompt.text = text;
     }
-    g_hud_vehicle_prompt.active = true;
-    g_hud_vehicle_prompt.fade_start.invalidate();
+    g_hud_reticle_prompt.active = true;
+    g_hud_reticle_prompt.fade_start.invalidate();
 }
 
 // Under-reticle slot: the big slot's fade and shadow-then-main draw, placed below screen centre.
-static void hud_vehicle_prompt_render()
+void hud_render_reticle_prompt()
 {
-    if (!g_hud_vehicle_prompt.active) return;
+    if (rf::is_dedicated_server) return;
+    hud_reticle_prompt_ensure();
+    if (!g_hud_reticle_prompt.active) return;
 
     int alpha = 225;
-    if (g_hud_vehicle_prompt.fade_start.valid()) {
-        const int elapsed = g_hud_vehicle_prompt.fade_start.time_since();
+    if (g_hud_reticle_prompt.fade_start.valid()) {
+        const int elapsed = g_hud_reticle_prompt.fade_start.time_since();
         if (elapsed >= kHudNotificationFadeMs) {
-            hud_vehicle_prompt_clear();
+            hud_reticle_prompt_clear();
             return;
         }
         const float t = static_cast<float>(elapsed) / static_cast<float>(kHudNotificationFadeMs);
@@ -1555,10 +1559,10 @@ static void hud_vehicle_prompt_render()
     const int center_x = rf::gr::clip_width() / 2;
     rf::gr::set_color(0, 0, 0, alpha / 2);
     rf::gr::string_aligned(rf::gr::ALIGN_CENTER, center_x + 2, y + 2,
-                           g_hud_vehicle_prompt.text.c_str(), font);
+                           g_hud_reticle_prompt.text.c_str(), font);
     rf::gr::set_color(255, 255, 255, alpha);
     rf::gr::string_aligned(rf::gr::ALIGN_CENTER, center_x, y,
-                           g_hud_vehicle_prompt.text.c_str(), font);
+                           g_hud_reticle_prompt.text.c_str(), font);
 }
 
 void draw_hud_ready_notification(bool draw)
@@ -2152,10 +2156,9 @@ CodeInjection multi_hud_render_patch{
         hud_pit_queue_ensure();
         hud_salvage_carrier_ensure();
         hud_bag_carrier_ensure();
-        hud_vehicle_prompt_ensure();
         hud_render_notification();
         hud_render_big_notification();
-        hud_vehicle_prompt_render();
+        hud_render_reticle_prompt();
 
         if (g_draw_respawn_timer_notification) {
             hud_render_respawn_timer_notification();
@@ -2182,7 +2185,7 @@ void multi_hud_level_init() {
     g_run_timer_fade_active = false;
     hud_notification_clear();
     hud_big_notification_clear();
-    hud_vehicle_prompt_clear();
+    hud_reticle_prompt_clear();
     reset_local_pit_queue_state();
     reset_local_pit_roster();
     reset_local_gungame_order();
@@ -2522,7 +2525,7 @@ CodeInjection multi_hud_update_target_player_patch_2{
 ConsoleCommand2 ui_playernames_cmd{
     "ui_playernames",
     []() {
-        g_alpine_game_config.display_target_player_names = !g_alpine_game_config.display_target_player_names;
+        setting_console_set("display_target_player_names", "toggle");
         rf::console::print("Display of names of targeted players is {}", g_alpine_game_config.display_target_player_names ? "enabled" : "disabled");
     },
     "Toggle displaying names of targeted players",
@@ -2611,8 +2614,7 @@ void build_time_left_string_format() {
 ConsoleCommand2 ui_verbosetimer_cmd{
     "ui_verbosetimer",
     []() {
-        g_alpine_game_config.verbose_time_left_display = !g_alpine_game_config.verbose_time_left_display;
-        build_time_left_string_format();
+        setting_console_set("verbose_time_left_display", "toggle");
         rf::console::print("Verbose in-game timer display is {}", g_alpine_game_config.verbose_time_left_display ? "enabled" : "disabled");
     },
     "Control whether the in-game timer displays the 'Time Left:' text",
@@ -2622,7 +2624,7 @@ ConsoleCommand2 ui_verbosetimer_cmd{
 ConsoleCommand2 ui_runtimer_cmd{
     "ui_runtimer",
     [] {
-        g_alpine_game_config.show_run_timer = !g_alpine_game_config.show_run_timer;
+        setting_console_set("show_run_timer", "toggle");
         rf::console::print("RUN game type timer display is {}", g_alpine_game_config.show_run_timer ? "enabled" : "disabled"
         );
     },
@@ -2633,8 +2635,7 @@ ConsoleCommand2 ui_runtimer_cmd{
 ConsoleCommand2 cl_vehiclemarkers_cmd{
     "cl_vehiclemarkers",
     [](std::optional<bool> enabled) {
-        g_alpine_game_config.vehicle_respawn_markers =
-            enabled.value_or(!g_alpine_game_config.vehicle_respawn_markers);
+        setting_console_set_bool("vehicle_respawn_markers", enabled);
         rf::console::print("Vehicle factory respawn markers are {}",
             g_alpine_game_config.vehicle_respawn_markers ? "enabled" : "disabled");
     },
@@ -2645,7 +2646,7 @@ ConsoleCommand2 cl_vehiclemarkers_cmd{
 ConsoleCommand2 cl_vehiclehealthbars_cmd{
     "cl_vehiclehealthbars",
     [](std::optional<bool> enabled) {
-        g_alpine_game_config.vehicle_health_bars = enabled.value_or(!g_alpine_game_config.vehicle_health_bars);
+        setting_console_set_bool("vehicle_health_bars", enabled);
         rf::console::print("Vehicle health bars are {}",
             g_alpine_game_config.vehicle_health_bars ? "enabled" : "disabled");
     },
@@ -2656,7 +2657,7 @@ ConsoleCommand2 cl_vehiclehealthbars_cmd{
 ConsoleCommand2 cl_vehiclehints_cmd{
     "cl_vehiclehints",
     [](std::optional<bool> enabled) {
-        g_alpine_game_config.vehicle_control_hints = enabled.value_or(!g_alpine_game_config.vehicle_control_hints);
+        setting_console_set_bool("vehicle_control_hints", enabled);
         rf::console::print("Vehicle control hints are {}",
             g_alpine_game_config.vehicle_control_hints ? "enabled" : "disabled");
     },
@@ -2667,7 +2668,7 @@ ConsoleCommand2 cl_vehiclehints_cmd{
 ConsoleCommand2 ui_gametype_help_cmd{
     "ui_gametype_help",
     [] {
-        g_alpine_game_config.show_gametype_help = !g_alpine_game_config.show_gametype_help;
+        setting_console_set("show_gametype_help", "toggle");
         rf::console::print("Gametype help notification is {}", g_alpine_game_config.show_gametype_help ? "enabled" : "disabled");
     },
     "Toggle the gametype help notification shown when spawning on a server",
@@ -2677,7 +2678,7 @@ ConsoleCommand2 ui_gametype_help_cmd{
 ConsoleCommand2 ui_miniscoreboard_cmd{
     "ui_minisb_dm",
     [] {
-        g_alpine_game_config.show_mini_scoreboard_dm = !g_alpine_game_config.show_mini_scoreboard_dm;
+        setting_console_set("show_mini_scoreboard_dm", "toggle");
         rf::console::print("Mini scoreboard HUD element in DM is {}",
             g_alpine_game_config.show_mini_scoreboard_dm ? "enabled" : "disabled");
     },
@@ -2688,7 +2689,7 @@ ConsoleCommand2 ui_miniscoreboard_cmd{
 ConsoleCommand2 ui_always_show_specators_cmd{
     "ui_always_show_specators",
     [] {
-        g_alpine_game_config.always_show_spectators = !g_alpine_game_config.always_show_spectators;
+        setting_console_set("always_show_spectators", "toggle");
         rf::console::print(
             "Always show spectators is {}",
             g_alpine_game_config.always_show_spectators ? "enabled" : "disabled"
@@ -2701,7 +2702,7 @@ ConsoleCommand2 ui_always_show_specators_cmd{
 ConsoleCommand2 ui_gamefeed_cmd{
     "ui_gamefeed",
     [] {
-        g_alpine_game_config.killfeed_enabled = !g_alpine_game_config.killfeed_enabled;
+        setting_console_set("killfeed_enabled", "toggle");
         rf::console::print("Game feed is {}", g_alpine_game_config.killfeed_enabled ? "enabled" : "disabled");
     },
     "Toggle game event messages in a dedicated feed instead of chat",
@@ -2711,8 +2712,7 @@ ConsoleCommand2 ui_gamefeed_cmd{
 ConsoleCommand2 ui_simple_server_chat_messages_cmd{
     "ui_simple_server_chat_messages",
     [] {
-        g_alpine_game_config.simple_server_chat_msgs =
-            !g_alpine_game_config.simple_server_chat_msgs;
+        setting_console_set("simple_server_chat_msgs", "toggle");
         rf::console::print(
             "Simple server chat messages is {}",
             g_alpine_game_config.simple_server_chat_msgs ? "enabled" : "disabled"

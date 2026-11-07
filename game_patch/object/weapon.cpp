@@ -20,6 +20,7 @@
 #include "../misc/misc.h"
 #include "../misc/alpine_settings.h"
 #include "../input/rumble.h"
+#include "../misc/settings_registry.h"
 #include "alpine_rope.h"
 
 static std::array<uint8_t, 64U> weapon_reticle_custom_mask{}; // bit 0 = _0, bit 1 = _1
@@ -197,8 +198,7 @@ void apply_show_enemy_bullets() {
 ConsoleCommand2 show_enemy_bullets_cmd{
     "cl_showenemybullets",
     []() {
-        g_alpine_game_config.show_enemy_bullets = !g_alpine_game_config.show_enemy_bullets;
-        apply_show_enemy_bullets();
+        setting_console_set("show_enemy_bullets", "toggle");
         rf::console::print("Enemy bullet impact effects are {}", g_alpine_game_config.show_enemy_bullets ? "enabled" : "disabled");
     },
     "Toggles visibility of enemy bullet impacts",
@@ -221,7 +221,7 @@ CallHook<void(rf::Vector3&, float, float, int, int)> weapon_hit_wall_obj_apply_r
 ConsoleCommand2 multi_ricochet_cmd{
     "mp_ricochet",
     []() {
-        g_alpine_game_config.multi_ricochet = !g_alpine_game_config.multi_ricochet;
+        setting_console_set("multi_ricochet", "toggle");
         rf::console::print("Multiplayer ricochets are {}", g_alpine_game_config.multi_ricochet ? "enabled" : "disabled");
     },
     "Toggles whether bullets ricochet in multiplayer (strictly visual, they deal no damage regardless)",
@@ -291,7 +291,7 @@ CallHook<rf::Weapon*(int, int, rf::Vector3*, rf::Matrix3*, int, int)> rail_gun_l
 ConsoleCommand2 rail_beam_fix_cmd{
     "cl_railbeamfix",
     []() {
-        g_alpine_game_config.rail_beam_fix = !g_alpine_game_config.rail_beam_fix;
+        setting_console_set("rail_beam_fix", "toggle");
         rf::console::print("Rail Driver beam path fix is {}",
             g_alpine_game_config.rail_beam_fix ? "enabled" : "disabled");
     },
@@ -301,7 +301,7 @@ ConsoleCommand2 rail_beam_fix_cmd{
 ConsoleCommand2 gaussian_spread_cmd{
     "sp_spreadmode",
     []() {
-        g_alpine_game_config.gaussian_spread = !g_alpine_game_config.gaussian_spread;
+        setting_console_set("gaussian_spread", "toggle");
         rf::console::print("Random bullet spread calculation is using the {} method",
             g_alpine_game_config.gaussian_spread ? "new (gaussian)" : "legacy (uniform)");
     },
@@ -326,7 +326,7 @@ bool should_use_gaussian_spread()
 ConsoleCommand2 unlimited_semi_auto_cmd{
     "sp_unlimitedsemiauto",
     []() {
-        g_alpine_game_config.unlimited_semi_auto = !g_alpine_game_config.unlimited_semi_auto;
+        setting_console_set("unlimited_semi_auto", "toggle");
         rf::console::print("Fire rate cooldown for semi-automatic weapons in single player is {}",
             g_alpine_game_config.unlimited_semi_auto ? "disabled" : "enabled");
     },
@@ -434,7 +434,7 @@ CodeInjection autoswitch_empty_weapon_patch {
 ConsoleCommand2 always_autoswitch_empty_cmd{
     "cl_autoswitchempty",
     []() {
-        g_alpine_game_config.always_autoswitch_empty = !g_alpine_game_config.always_autoswitch_empty;
+        setting_console_set("always_autoswitch_empty", "toggle");
         rf::console::print("Always autoswitch empty weapons is {}",
                            g_alpine_game_config.always_autoswitch_empty ? "enabled" : "disabled");
     },

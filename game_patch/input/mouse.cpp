@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <format>
 #include <patch_common/FunHook.h>
 #include <patch_common/CodeInjection.h>
 #include <patch_common/AsmWriter.h>
@@ -20,6 +21,7 @@
 #include "../multi/vehicles/vehicle_physics.h"
 #include "../multi/vehicles/vehicle_view.h"
 #include "input.h"
+#include "../misc/settings_registry.h"
 
 // Raw mouse delta accumulators — captured in mouse_get_delta_hook, then consumed
 // by consume_raw_mouse_deltas() (via linear_pitch_patch for the player entity, or
@@ -171,7 +173,7 @@ static void flush_freelook_mouse_deltas()
     cam_entity->control_data.phb.y += yaw;
 }
 
-bool set_direct_input_enabled(bool enabled)
+static bool set_direct_input_enabled(bool enabled)
 {
     auto direct_input_initialized = addr_as_ref<bool>(0x01885460);
 
@@ -199,6 +201,28 @@ bool set_direct_input_enabled(bool enabled)
             rf::di_mouse->Acquire();
     }
     return true;
+}
+
+void apply_direct_input()
+{
+    if (is_headless_mode() || !g_alpine_game_config.direct_input) {
+        set_direct_input_enabled(false);
+        return;
+    }
+    if (!set_direct_input_enabled(true)) {
+        rf::console::print("Failed to initialize DirectInput");
+        g_alpine_game_config.direct_input = false;
+        return;
+    }
+    // DirectInput is only acquired while the mouse is captured.
+    set_direct_input_enabled(rf::keep_mouse_centered);
+}
+
+void apply_mouse_scale()
+{
+    if (g_alpine_game_config.mouse_scale == 0) {
+        reset_mouse_delta_accumulators();
+    }
 }
 
 FunHook<void()> mouse_eval_deltas_hook{
@@ -344,26 +368,13 @@ ConsoleCommand2 input_mode_cmd{
     "inputmode",
     []() {
         if (is_headless_mode()) {
-            g_alpine_game_config.direct_input = false;
-            set_direct_input_enabled(false);
+            setting_console_set("direct_input", "0");
             rf::console::print("DirectInput is disabled in headless bot mode");
             return;
         }
 
-        g_alpine_game_config.direct_input = !g_alpine_game_config.direct_input;
-
-        if (g_alpine_game_config.direct_input) {
-            if (!set_direct_input_enabled(g_alpine_game_config.direct_input)) {
-                rf::console::print("Failed to initialize DirectInput");
-            }
-            else {
-                set_direct_input_enabled(rf::keep_mouse_centered);
-                rf::console::print("DirectInput is enabled");
-            }
-        }
-        else {
-            rf::console::print("DirectInput is disabled");
-        }
+        setting_console_set("direct_input", "toggle");
+        rf::console::print("DirectInput is {}", g_alpine_game_config.direct_input ? "enabled" : "disabled");
     },
     "Toggles DirectInput mouse mode",
 };
@@ -373,10 +384,9 @@ ConsoleCommand2 ms_cmd{
     [](std::optional<float> value_opt) {
         if (!rf::local_player) return;
         if (value_opt) {
-            float value = std::max(value_opt.value(), 0.0f);
-            rf::local_player->settings.controls.mouse_sensitivity = value;
+            setting_console_set("mouse_sensitivity", std::format("{}", value_opt.value()));
         }
-        rf::console::print("Mouse sensitivity: {:.4f}", rf::local_player->settings.controls.mouse_sensitivity);
+        rf::console::print("Mouse sensitivity: {:.5f}", rf::local_player->settings.controls.mouse_sensitivity);
     },
     "Sets mouse sensitivity",
     "ms <value>",
@@ -386,10 +396,7 @@ ConsoleCommand2 ms_scale_cmd{
     "ms_scale",
     [](std::optional<int> value_opt) {
         if (value_opt) {
-            g_alpine_game_config.mouse_scale = std::clamp(value_opt.value(), 0, 2);
-            if (g_alpine_game_config.mouse_scale == 0) {
-                reset_mouse_delta_accumulators();
-            }
+            setting_console_set("mouse_scale", std::to_string(value_opt.value()));
         }
         static constexpr const char* mode_names[] = {"Classic", "Raw", "Modern"};
         int mode = std::clamp(g_alpine_game_config.mouse_scale, 0, 2);
@@ -415,7 +422,7 @@ void update_scanner_sensitivity()
 ConsoleCommand2 static_scope_sens_cmd{
     "cl_staticscopesens",
     []() {
-        g_alpine_game_config.scope_static_sensitivity = !g_alpine_game_config.scope_static_sensitivity;
+        setting_console_set("scope_static_sensitivity", "toggle");
         rf::console::print("Scope sensitivity is {}", g_alpine_game_config.scope_static_sensitivity ? "static" : "dynamic");
     },
     "Toggle whether scope mouse sensitivity is static or dynamic (based on zoom level)."
@@ -425,8 +432,7 @@ ConsoleCommand2 scope_sens_cmd{
     "cl_scopesens",
     [](std::optional<float> value_opt) {
         if (value_opt) {
-            g_alpine_game_config.set_scope_sens_mod(value_opt.value());
-            update_scope_sensitivity();
+            setting_console_set("scope_sensitivity_modifier", std::format("{}", value_opt.value()));
         }
         else {
             rf::console::print("Scope sensitivity modifier: {:.2f}", g_alpine_game_config.scope_sensitivity_modifier);
@@ -440,8 +446,7 @@ ConsoleCommand2 scanner_sens_cmd{
     "cl_scannersens",
     [](std::optional<float> value_opt) {
         if (value_opt) {
-            g_alpine_game_config.set_scanner_sens_mod(value_opt.value());
-            update_scanner_sensitivity();
+            setting_console_set("scanner_sensitivity_modifier", std::format("{}", value_opt.value()));
         }
         else {
             rf::console::print("Scanner sensitivity modifier: {:.2f}", g_alpine_game_config.scanner_sensitivity_modifier);

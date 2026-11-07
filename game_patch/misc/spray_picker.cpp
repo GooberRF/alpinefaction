@@ -5,6 +5,7 @@
 #include <string>
 #include "spray_picker.h"
 #include "alpine_settings.h"
+#include "settings_registry.h"
 #include "../multi/sprays.h"
 #include "../rf/gr/gr.h"
 #include "../rf/gr/gr_font.h"
@@ -317,7 +318,9 @@ void spray_picker_handle_mouse(int x, int y)
                 int cx = 0, cy = 0;
                 cell_rect(lo, i, cx, cy);
                 if (point_in(x, y, cx, cy, lo.thumb, lo.thumb)) {
-                    g_alpine_game_config.set_selected_spray_index(i);
+                    if (const SettingRow* row = settings_find("selected_spray_index")) {
+                        setting_set_from_string(*row, std::to_string(i));
+                    }
                     g_open = false;
                     return;
                 }
