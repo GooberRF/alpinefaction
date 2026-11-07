@@ -29,6 +29,7 @@ namespace rf { struct ControlConfig; struct Entity; }
 void gamepad_apply_vehicle_driver_input(rf::Entity* vehicle);
 bool gamepad_is_motionsensors_supported();
 bool gamepad_is_trigger_rumble_supported();
+bool gamepad_is_touchpad_supported();
 bool gamepad_is_touchpad_touched();
 
 // Controller binding UI

@@ -1519,7 +1519,7 @@ void do_action_choice_widget(UiContext& ctx, const SettingRow& row, const UiRect
     }
 }
 
-// Enums with at most this many offered values cycle in place; longer ones get the dropdown list.
+// Most enums with at most this many offered values cycle in place.
 constexpr int cycler_max_options = 4;
 
 void do_row_widget(UiContext& ctx, const SettingRow& row, const UiRect& row_rect, int ctl_right,
@@ -1620,14 +1620,16 @@ void do_row_widget(UiContext& ctx, const SettingRow& row, const UiRect& row_rect
             const int count = static_cast<int>(offered.size());
             const int value = static_cast<int>(std::lround(row_float(row,
                 static_cast<float>(setting_enum_value(row, offered[0])))));
-            int pos = 0;
+            int pos = -1;
             for (int i = 0; i < count; ++i) {
                 if (setting_enum_value(row, offered[i]) == value) {
                     pos = i;
                     break;
                 }
             }
-            if (count <= cycler_max_options) {
+            if (count <= cycler_max_options && pos >= 0
+                && std::string_view{row.id} != "gamepad_gyro_autocalibration"
+                && std::string_view{row.id} != "gamepad_gyro_ratcheting") {
                 const UiRect r = right_rect(ctx, ctl_right, row_rect, skin::control_w, skin::widget_h);
                 const int delta = skin_cycler(ctx, r, row.enum_labels[offered[pos]], font, enabled, id, hot);
                 if (delta != 0 && enabled) {
@@ -3240,6 +3242,9 @@ void draw_description_strip(UiContext& ctx, const UiRect& desc, const Fonts& fon
     }
     else if (desc_row) {
         text = desc_row->tooltip ? desc_row->tooltip : "";
+        if (desc_row->describe) {
+            desc_row->describe(text);
+        }
         // A row can be both locked out and blocked by the server; saying only the first
         // reason hides the one the player would act on.
         const char* reason = setting_disabled_reason(*desc_row);

@@ -188,6 +188,11 @@ static bool gyro_action_has_binding(rf::ControlConfigAction action)
         || gamepad_get_trigger_for_action(idx) >= 0;
 }
 
+bool gyro_ratcheting_has_binding()
+{
+    return gyro_action_has_binding(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_GYRO_RATCHETING));
+}
+
 // Toggle state for Gyro Ratcheting binding.
 static bool g_gyro_toggle_state = true;
 static bool g_gyro_toggle_prev_down = false;

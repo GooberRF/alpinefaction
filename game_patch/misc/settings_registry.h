@@ -245,6 +245,7 @@ struct SettingRow
     // toggle). Returns why the row is unavailable, or nullptr when it is available. Read by
     // setting_disabled_reason, so the menu greys the row and the console refuses the edit.
     const char* (*unavailable_reason)() = nullptr;
+    void (*describe)(std::string& text) = nullptr;
 };
 
 // Table access

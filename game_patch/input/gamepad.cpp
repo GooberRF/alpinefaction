@@ -27,6 +27,7 @@
 #include "../rf/os/frametime.h"
 #include "../rf/gameseq.h"
 #include "../misc/alpine_settings.h"
+#include "../misc/settings_registry.h"
 #include "../misc/misc.h"
 #include "../main/main.h"
 #include <common/utils/os-utils.h>
@@ -1075,8 +1076,9 @@ static void handle_gamepad_touchpad_motion(const SDL_GamepadTouchpadEvent& ev)
     g_touchpad.last_y = ev.y;
     if (g_message_log_close_cooldown > 0.0f) return;
     if (!is_gamepad_menu_navigation_state()) return;
-    float fdx = dx * static_cast<float>(rf::gr::screen_width());
-    float fdy = dy * static_cast<float>(rf::gr::screen_height());
+    float sensitivity = g_alpine_game_config.gamepad_touchpad_menu_cursor_sensitivity;
+    float fdx = dx * static_cast<float>(rf::gr::screen_width()) * sensitivity;
+    float fdy = dy * static_cast<float>(rf::gr::screen_height()) * sensitivity;
     menu_nav_apply_cursor_delta(fdx, fdy);
 }
 
@@ -1189,7 +1191,8 @@ static void menu_nav_handle_cursor_frame()
     float sx, sy;
     get_axis_circular(SDL_GAMEPAD_AXIS_LEFTX, SDL_GAMEPAD_AXIS_LEFTY, k_menu_stick_deadzone, sx, sy);
     if (sx == 0.0f && sy == 0.0f) return;
-    float speed = k_base_speed * (static_cast<float>(rf::gr::screen_height()) / 600.0f);
+    float speed = k_base_speed * (static_cast<float>(rf::gr::screen_height()) / 600.0f)
+        * g_alpine_game_config.gamepad_joy_menu_cursor_sensitivity;
     float dx = sx * speed * rf::frametime;
     float dy = sy * speed * rf::frametime;
     menu_nav_apply_cursor_delta(dx, dy);
@@ -2002,6 +2005,26 @@ ConsoleCommand2 joy_led_cmd{
     "joy_led <0|1>",
 };
 
+ConsoleCommand2 touchpad_menu_cursor_sens_cmd{
+    "touchpad_menu_cursor_sens",
+    [](std::optional<float> val) {
+        if (val && !setting_console_set("gamepad_touchpad_menu_cursor_sensitivity", std::to_string(*val))) return;
+        rf::console::print("Touchpad menu cursor sensitivity: {:.2f}", g_alpine_game_config.gamepad_touchpad_menu_cursor_sensitivity);
+    },
+    "Set touchpad cursor sensitivity for menus",
+    "touchpad_menu_cursor_sens <value> (valid range: 0.0 - 3.0)",
+};
+
+ConsoleCommand2 joy_menu_cursor_sens_cmd{
+    "joy_menu_cursor_sens",
+    [](std::optional<float> val) {
+        if (val && !setting_console_set("gamepad_joy_menu_cursor_sensitivity", std::to_string(*val))) return;
+        rf::console::print("Stick menu cursor sensitivity: {:.2f}", g_alpine_game_config.gamepad_joy_menu_cursor_sensitivity);
+    },
+    "Set stick cursor sensitivity for menus",
+    "joy_menu_cursor_sens <value> (valid range: 0.0 - 3.0)",
+};
+
 ConsoleCommand2 gyro_menu_cursor_sens_cmd{
     "gyro_menu_cursor_sens",
     [](std::optional<float> val) {
@@ -2139,6 +2162,13 @@ bool gamepad_is_motionsensors_supported()
 bool gamepad_is_trigger_rumble_supported()
 {
     return g_trigger_rumble_supported;
+}
+
+bool gamepad_is_touchpad_supported()
+{
+    for (auto* gp : g_gamepads)
+        if (gp && SDL_GetNumGamepadTouchpads(gp) > 0) return true;
+    return false;
 }
 
 bool gamepad_is_menu_only_action(int action_idx)
@@ -2406,6 +2436,8 @@ void gamepad_apply_patch()
     joy_rumble_vibration_filter_cmd.register_cmd();
     joy_led_cmd.register_cmd();
     gyro_sens_cmd.register_cmd();
+    touchpad_menu_cursor_sens_cmd.register_cmd();
+    joy_menu_cursor_sens_cmd.register_cmd();
     gyro_menu_cursor_sens_cmd.register_cmd();
     gyro_camera_cmd.register_cmd();
     gyro_vehicle_camera_cmd.register_cmd();

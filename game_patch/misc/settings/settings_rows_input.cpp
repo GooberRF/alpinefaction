@@ -1,6 +1,8 @@
 #include <algorithm>
+#include "../../input/bind_context.h"
 #include "../../input/gamepad.h"
 #include "../../input/gyro.h"
+#include "../../input/input.h"
 #include "../../input/mouse.h"
 #include "settings_rows.h"
 
@@ -15,7 +17,17 @@ const char* const labels_rumble_filter[] = {"Off", "Auto", "On"};
 
 const char* needs_motion_sensors()
 {
-    return gamepad_is_motionsensors_supported() ? nullptr : "the controller has no motion sensors support";
+    return gamepad_is_motionsensors_supported() ? nullptr : "this controller has no motion sensors";
+}
+
+const char* needs_touchpad()
+{
+    return gamepad_is_touchpad_supported() ? nullptr : "this controller has no touchpad";
+}
+
+bool gyro_ratcheting_offered(int value)
+{
+    return value < 4 || gamepad_is_touchpad_supported();
 }
 
 const char* needs_gyro_enabled()
@@ -28,7 +40,7 @@ const char* needs_gyro_enabled()
 
 const char* needs_trigger_rumble()
 {
-    return gamepad_is_trigger_rumble_supported() ? nullptr : "the controller has no trigger rumble";
+    return gamepad_is_trigger_rumble_supported() ? nullptr : "this controller has no trigger rumble";
 }
 
 const char* needs_flick_stick()
@@ -41,7 +53,76 @@ const char* needs_standard_stick()
     return g_alpine_game_config.gamepad_joy_camera ? "not used with Flick stick camera" : nullptr;
 }
 
+void describe_camera_sensitivity(std::string& text)
+{
+    if (g_alpine_game_config.gamepad_joy_camera) {
+        text = "Flick Stick is enabled, Camera sensitivity only affects vehicles.";
+    }
+}
+
+void describe_gyro_ratcheting(std::string& text)
+{
+    if (g_alpine_game_config.gamepad_gyro_ratcheting >= 4 && needs_touchpad()) {
+        text = "(Touch mode requires a controller touchpad.) " + text;
+    }
+    else if (g_alpine_game_config.gamepad_gyro_ratcheting >= 1
+        && g_alpine_game_config.gamepad_gyro_ratcheting <= 3
+        && alpine_control_start_index() >= 0
+        && static_cast<int>(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_GYRO_RATCHETING))
+            < bind_context_binding_count()
+        && !gyro_ratcheting_has_binding()) {
+        text = "(Assign the Gyro Ratcheting action in Bindings.) " + text;
+    }
+}
+
 const SettingRow rows[] = {
+    {
+        .id = "toggle_crouch",
+        .key = "ToggleCrouch",
+        .label = "Toggle crouch",
+        .tooltip = "Press once to crouch, again to stand.",
+        .category = Cat::Input,
+        .subcategory = "Core",
+        .widget = Wid::Toggle,
+        .access = PS_BOOL(toggle_crouch, false),
+        .flags = SF_NEEDS_LOCAL_PLAYER,
+        .console_cmd = "cl_togglecrouch",
+        .default_str = "0",
+    },
+    {
+        .id = "skip_cutscene_bind_alias",
+        .key = "SkipCutsceneBindAlias",
+        .label = "Extra skip cutscene key/action",
+        .tooltip = "Also use this action's key/button to skip cutscenes.",
+        .category = Cat::Input,
+        .subcategory = "Core",
+        .widget = Wid::Enum,
+        .access = AccInt{&AGS::skip_cutscene_bind_alias, nullptr, -1, 127},
+        .flags = SF_SP_ONLY | SF_ACTION_CHOICE | SF_ADVANCED,
+    },
+    {
+        .id = "mouse_linear_pitch",
+        .key = "MouseLinearPitch",
+        .label = "Linear pitch",
+        .tooltip = "Make vertical camera movement feel linear across the full pitch range.",
+        .category = Cat::Input,
+        .subcategory = "Camera",
+        .widget = Wid::Toggle,
+        .access = AccBool{&AGS::mouse_linear_pitch},
+        .console_cmd = "cl_linearpitch",
+    },
+    {
+        .id = "scope_static_sensitivity",
+        .key = "StaticScopeSensitivity",
+        .label = "Fixed scope sensitivity",
+        .tooltip = "Use one fixed scope sensitivity instead of scaling with zoom.",
+        .category = Cat::Input,
+        .subcategory = "Camera",
+        .widget = Wid::Toggle,
+        .access = AccBool{&AGS::scope_static_sensitivity},
+        .flags = SF_ADVANCED,
+        .console_cmd = "cl_staticscopesens",
+    },
     {
         .id = "swap_ar_controls",
         .key = "SwapARBinds",
@@ -149,17 +230,6 @@ const SettingRow rows[] = {
         .console_cmd = "inputmode",
     },
     {
-        .id = "mouse_linear_pitch",
-        .key = "MouseLinearPitch",
-        .label = "Linear pitch",
-        .tooltip = "Make vertical mouse movement feel linear across the full pitch range.",
-        .category = Cat::Input,
-        .subcategory = "Mouse",
-        .widget = Wid::Toggle,
-        .access = AccBool{&AGS::mouse_linear_pitch},
-        .console_cmd = "cl_linearpitch",
-    },
-    {
         .id = "background_mouse",
         .key = "EnableBackgroundMouse",
         .label = "Mouse when unfocused",
@@ -169,18 +239,6 @@ const SettingRow rows[] = {
         .widget = Wid::Toggle,
         .access = AccBool{&AGS::background_mouse},
         .flags = SF_HIDDEN,
-    },
-    {
-        .id = "scope_static_sensitivity",
-        .key = "StaticScopeSensitivity",
-        .label = "Fixed scope sensitivity",
-        .tooltip = "Use one fixed scope sensitivity instead of scaling with zoom.",
-        .category = Cat::Input,
-        .subcategory = "Mouse",
-        .widget = Wid::Toggle,
-        .access = AccBool{&AGS::scope_static_sensitivity},
-        .flags = SF_ADVANCED,
-        .console_cmd = "cl_staticscopesens",
     },
     {
         .id = "scope_sensitivity_modifier",
@@ -219,30 +277,6 @@ const SettingRow rows[] = {
         .ui_decimals = 5,
     },
     {
-        .id = "toggle_crouch",
-        .key = "ToggleCrouch",
-        .label = "Toggle crouch",
-        .tooltip = "Press once to crouch, again to stand.",
-        .category = Cat::Input,
-        .subcategory = "Keyboard",
-        .widget = Wid::Toggle,
-        .access = PS_BOOL(toggle_crouch, false),
-        .flags = SF_NEEDS_LOCAL_PLAYER,
-        .console_cmd = "cl_togglecrouch",
-        .default_str = "0",
-    },
-    {
-        .id = "skip_cutscene_bind_alias",
-        .key = "SkipCutsceneBindAlias",
-        .label = "Extra skip cutscene key",
-        .tooltip = "Also use this action's key to skip cutscenes.",
-        .category = Cat::Input,
-        .subcategory = "Keyboard",
-        .widget = Wid::Enum,
-        .access = AccInt{&AGS::skip_cutscene_bind_alias, nullptr, -1, 127},
-        .flags = SF_SP_ONLY | SF_ACTION_CHOICE | SF_ADVANCED,
-    },
-    {
         .id = "quick_exit",
         .key = "QuickExit",
         .label = "Shift+Esc quits",
@@ -278,8 +312,7 @@ const SettingRow rows[] = {
         .id = "gamepad_joy_sensitivity",
         .key = "GamepadCameraSensitivity",
         .label = "Camera sensitivity",
-        .tooltip = "How fast the stick turns the view. With Flick stick camera it only affects the stick's "
-                   "secondary camera use.",
+        .tooltip = "How fast the view turns with joystick",
         .category = Cat::Input,
         .subcategory = "Controller",
         .widget = Wid::Slider,
@@ -289,33 +322,7 @@ const SettingRow rows[] = {
         .ui_max = 10.0f,
         .ui_nudge = 0.1f,
         .ui_decimals = 2,
-    },
-    {
-        .id = "gamepad_move_deadzone",
-        .key = "GamepadMoveDeadzone",
-        .label = "Move stick deadzone",
-        .tooltip = "Left stick range ignored as drift.",
-        .category = Cat::Input,
-        .subcategory = "Controller",
-        .widget = Wid::Slider,
-        .access = AccFloat{&AGS::gamepad_move_deadzone, nullptr, 0.0f, 0.9f},
-        .console_cmd = "joy_move_deadzone",
-        .ui_nudge = 0.01f,
-        .ui_decimals = 2,
-    },
-    {
-        .id = "gamepad_look_deadzone",
-        .key = "GamepadLookDeadzone",
-        .label = "Look stick deadzone",
-        .tooltip = "Right stick range ignored as drift.",
-        .category = Cat::Input,
-        .subcategory = "Controller",
-        .widget = Wid::Slider,
-        .access = AccFloat{&AGS::gamepad_look_deadzone, nullptr, 0.0f, 0.9f},
-        .console_cmd = "joy_camera_deadzone",
-        .ui_nudge = 0.01f,
-        .ui_decimals = 2,
-        .unavailable_reason = needs_standard_stick,
+        .describe = describe_camera_sensitivity,
     },
     {
         .id = "gamepad_joy_scope_sens",
@@ -350,9 +357,36 @@ const SettingRow rows[] = {
         .ui_decimals = 2,
     },
     {
+        .id = "gamepad_move_deadzone",
+        .key = "GamepadMoveDeadzone",
+        .label = "Move stick deadzone",
+        .tooltip = "Left stick range ignored as drift.",
+        .category = Cat::Input,
+        .subcategory = "Controller",
+        .widget = Wid::Slider,
+        .access = AccFloat{&AGS::gamepad_move_deadzone, nullptr, 0.0f, 0.9f},
+        .console_cmd = "joy_move_deadzone",
+        .ui_nudge = 0.01f,
+        .ui_decimals = 2,
+    },
+    {
+        .id = "gamepad_look_deadzone",
+        .key = "GamepadLookDeadzone",
+        .label = "Look stick deadzone",
+        .tooltip = "Right stick range ignored as drift.",
+        .category = Cat::Input,
+        .subcategory = "Controller",
+        .widget = Wid::Slider,
+        .access = AccFloat{&AGS::gamepad_look_deadzone, nullptr, 0.0f, 0.9f},
+        .console_cmd = "joy_camera_deadzone",
+        .ui_nudge = 0.01f,
+        .ui_decimals = 2,
+        .unavailable_reason = needs_standard_stick,
+    },
+    {
         .id = "gamepad_joy_invert_x",
         .key = "GamepadJoyInvertX",
-        .label = "Invert stick X",
+        .label = "Invert camera stick X",
         .tooltip = "Invert horizontal stick camera movement.",
         .category = Cat::Input,
         .subcategory = "Controller",
@@ -363,7 +397,7 @@ const SettingRow rows[] = {
     {
         .id = "gamepad_joy_invert_y",
         .key = "GamepadJoyInvertY",
-        .label = "Invert stick Y",
+        .label = "Invert camera stick Y",
         .tooltip = "Invert vertical stick camera movement.",
         .category = Cat::Input,
         .subcategory = "Controller",
@@ -375,7 +409,7 @@ const SettingRow rows[] = {
         .id = "gamepad_swap_sticks",
         .key = "GamepadSwapSticks",
         .label = "Swap sticks",
-        .tooltip = "Move with the right stick and look with the left stick.",
+        .tooltip = "Swaps joysticks for movement and camera controls.",
         .category = Cat::Input,
         .subcategory = "Controller",
         .widget = Wid::Toggle,
@@ -386,7 +420,7 @@ const SettingRow rows[] = {
         .id = "gamepad_gyro_enabled",
         .key = "GamepadGyroEnabled",
         .label = "Gyro camera",
-        .tooltip = "Aim by moving the controller. Needs a controller with motion sensors.",
+        .tooltip = "Move the Camera by tilting the controller.",
         .category = Cat::Input,
         .subcategory = "Controller - Gyro",
         .widget = Wid::Toggle,
@@ -399,7 +433,7 @@ const SettingRow rows[] = {
         .id = "gamepad_joy_camera",
         .key = "GamepadJoyCamera",
         .label = "Flick stick camera",
-        .tooltip = "Aim by flicking and turning the right stick instead of the standard stick camera.",
+        .tooltip = "Control the camera by flicking and rotating the stick. Gyro Aiming or Mixed Input is recommended",
         .category = Cat::Input,
         .subcategory = "Controller - Flick Stick",
         .widget = Wid::Toggle,
@@ -410,7 +444,7 @@ const SettingRow rows[] = {
         .id = "gamepad_flickstick_sweep",
         .key = "GamepadFlickstickSweep",
         .label = "Flick stick sweep",
-        .tooltip = "How far the view turns when the stick is swept around.",
+        .tooltip = "How fast the Camera turns when rotating the stick.",
         .category = Cat::Input,
         .subcategory = "Controller - Flick Stick",
         .widget = Wid::Slider,
@@ -452,7 +486,7 @@ const SettingRow rows[] = {
         .id = "gamepad_flickstick_smoothing",
         .key = "GamepadFlickstickSmoothing",
         .label = "Flick stick smoothing",
-        .tooltip = "Smooths the turning while the stick is held after a flick.",
+        .tooltip = "Smooths flick turning.",
         .category = Cat::Input,
         .subcategory = "Controller - Flick Stick",
         .widget = Wid::Slider,
@@ -466,7 +500,7 @@ const SettingRow rows[] = {
         .id = "gamepad_flickstick_invert",
         .key = "GamepadFlickstickInvert",
         .label = "Invert flick stick",
-        .tooltip = "Invert the direction the view turns while flicking.",
+        .tooltip = "Invert the flick turning.",
         .category = Cat::Input,
         .subcategory = "Controller - Flick Stick",
         .widget = Wid::Toggle,
@@ -489,12 +523,13 @@ const SettingRow rows[] = {
     {
         .id = "gamepad_gyro_vehicle_camera",
         .key = "GamepadGyroVehicleEnabled",
-        .label = "Gyro in vehicles",
-        .tooltip = "Also aim with gyro while driving or gunning a vehicle.",
+        .label = "Gyro with vehicle camera",
+        .tooltip = "Enables gyro camera while using vehicle.",
         .category = Cat::Input,
         .subcategory = "Controller - Gyro",
         .widget = Wid::Toggle,
         .access = AccBool{&AGS::gamepad_gyro_vehicle_camera},
+        .flags = SF_ADVANCED,
         .console_cmd = "gyro_vehicle_camera",
         .unavailable_reason = needs_gyro_enabled,
     },
@@ -502,14 +537,14 @@ const SettingRow rows[] = {
         .id = "gamepad_gyro_sensitivity",
         .key = "GamepadGyroCameraSensitivity",
         .label = "Gyro sensitivity",
-        .tooltip = "How fast the view turns with controller motion.",
+        .tooltip = "How fast the view turns while tilting the controller.",
         .category = Cat::Input,
         .subcategory = "Controller - Gyro",
         .widget = Wid::Slider,
         .access = AccFloat{&AGS::gamepad_gyro_sensitivity, nullptr, 0.0f, 100.0f},
         .console_cmd = "gyro_sens",
         .ui_min = 0.0f,
-        .ui_max = 10.0f,
+        .ui_max = 30.0f,
         .ui_nudge = 0.1f,
         .ui_decimals = 2,
         .unavailable_reason = needs_gyro_enabled,
@@ -552,20 +587,22 @@ const SettingRow rows[] = {
         .id = "gamepad_gyro_ratcheting",
         .key = "GamepadGyroRatchetingMode",
         .label = "Gyro ratcheting",
-        .tooltip = "When gyro aiming is active: always, or held, toggled or touch-controlled by a button.",
+        .tooltip = "When gyro camera is active: can it be always enabled, held, toggled or touched.",
         .category = Cat::Input,
         .subcategory = "Controller - Gyro",
         .widget = Wid::Enum,
         .access = AccInt{&AGS::gamepad_gyro_ratcheting, nullptr, 0, 5},
         ENUM_LABELS(labels_gyro_ratcheting),
+        .enum_offered = gyro_ratcheting_offered,
         .console_cmd = "gyro_ratcheting",
         .unavailable_reason = needs_gyro_enabled,
+        .describe = describe_gyro_ratcheting,
     },
     {
         .id = "gamepad_gyro_tightening",
         .key = "GamepadGyroTightening",
         .label = "Gyro tightening",
-        .tooltip = "Steadies small gyro movements so slow aim stays smooth.",
+        .tooltip = "Steadies movement by reducing gyro camera speed.",
         .category = Cat::Input,
         .subcategory = "Controller - Gyro",
         .widget = Wid::Slider,
@@ -579,7 +616,7 @@ const SettingRow rows[] = {
         .id = "gamepad_gyro_smoothing",
         .key = "GamepadGyroSmoothing",
         .label = "Gyro smoothing",
-        .tooltip = "Averages gyro input over time at the cost of some responsiveness.",
+        .tooltip = "Smoothes gyro camera  input.",
         .category = Cat::Input,
         .subcategory = "Controller - Gyro",
         .widget = Wid::Slider,
@@ -592,7 +629,7 @@ const SettingRow rows[] = {
     {
         .id = "gamepad_gyro_vh_mixer",
         .key = "GamepadGyroVHMixer",
-        .label = "Gyro vertical/horizontal mix",
+        .label = "Gyro vertical / horizontal ratio",
         .tooltip = "Negative values reduce vertical gyro movement, positive values reduce horizontal.",
         .category = Cat::Input,
         .subcategory = "Controller - Gyro",
@@ -607,8 +644,8 @@ const SettingRow rows[] = {
     {
         .id = "gamepad_gyro_space",
         .key = "GamepadGyroSpace",
-        .label = "Gyro axis space",
-        .tooltip = "How controller rotation maps to the view.",
+        .label = "Gyro turning axis",
+        .tooltip = "How controller's raw motion input converts to view rotation.",
         .category = Cat::Input,
         .subcategory = "Controller - Gyro",
         .widget = Wid::Enum,
@@ -621,7 +658,7 @@ const SettingRow rows[] = {
         .id = "gamepad_gyro_invert_x",
         .key = "GamepadGyroInvertX",
         .label = "Invert gyro X",
-        .tooltip = "Invert horizontal gyro movement.",
+        .tooltip = "Invert horizontal gyro camera.",
         .category = Cat::Input,
         .subcategory = "Controller - Gyro",
         .widget = Wid::Toggle,
@@ -633,7 +670,7 @@ const SettingRow rows[] = {
         .id = "gamepad_gyro_invert_y",
         .key = "GamepadGyroInvertY",
         .label = "Invert gyro Y",
-        .tooltip = "Invert vertical gyro movement.",
+        .tooltip = "Invert vertical gyro camera.",
         .category = Cat::Input,
         .subcategory = "Controller - Gyro",
         .widget = Wid::Toggle,
@@ -645,7 +682,7 @@ const SettingRow rows[] = {
         .id = "gamepad_gyro_autocalibration",
         .key = "GamepadGyroAutocalibrationMode",
         .label = "Gyro auto-calibration",
-        .tooltip = "Corrects gyro drift automatically: never, only while in menus, or always.",
+        .tooltip = "Automatically corrects gyro drift.",
         .category = Cat::Input,
         .subcategory = "Controller - Gyro",
         .widget = Wid::Enum,
@@ -656,12 +693,27 @@ const SettingRow rows[] = {
         .unavailable_reason = needs_motion_sensors,
     },
     {
+        .id = "gamepad_joy_menu_cursor_sensitivity",
+        .key = "GamepadJoyMenuCursorSensitivity",
+        .label = "Stick cursor sensitivity",
+        .tooltip = "How fast the Joystick moves the menu cursor.",
+        .category = Cat::Input,
+        .subcategory = "Controller - Menu",
+        .widget = Wid::Slider,
+        .access = AccFloat{&AGS::gamepad_joy_menu_cursor_sensitivity, nullptr, 0.0f, 3.0f},
+        .flags = SF_ADVANCED,
+        .console_cmd = "joy_menu_cursor_sens",
+        .ui_nudge = 0.05f,
+        .ui_decimals = 2,
+        .ui_zero_label = "Off",
+    },
+    {
         .id = "gamepad_gyro_menu_cursor_sens",
         .key = "GamepadGyroCursorSensitivity",
-        .label = "Gyro menu cursor sensitivity",
-        .tooltip = "How fast controller motion moves the menu cursor.",
+        .label = "Gyro cursor sensitivity",
+        .tooltip = "How fast the gyro moves the menu cursor.",
         .category = Cat::Input,
-        .subcategory = "Controller - Gyro",
+        .subcategory = "Controller - Menu",
         .widget = Wid::Slider,
         .access = AccFloat{&AGS::gamepad_gyro_menu_cursor_sensitivity, nullptr, 0.0f, 30.0f},
         .flags = SF_ADVANCED,
@@ -673,10 +725,26 @@ const SettingRow rows[] = {
         .unavailable_reason = needs_motion_sensors,
     },
     {
+        .id = "gamepad_touchpad_menu_cursor_sensitivity",
+        .key = "GamepadTouchpadMenuCursorSensitivity",
+        .label = "Touchpad cursor sensitivity",
+        .tooltip = "How fast the touchpad moves the menu cursor.",
+        .category = Cat::Input,
+        .subcategory = "Controller - Menu",
+        .widget = Wid::Slider,
+        .access = AccFloat{&AGS::gamepad_touchpad_menu_cursor_sensitivity, nullptr, 0.0f, 3.0f},
+        .flags = SF_ADVANCED,
+        .console_cmd = "touchpad_menu_cursor_sens",
+        .ui_nudge = 0.05f,
+        .ui_decimals = 2,
+        .ui_zero_label = "Off",
+        .unavailable_reason = needs_touchpad,
+    },
+    {
         .id = "gamepad_rumble_intensity",
         .key = "GamepadRumble",
         .label = "Rumble intensity",
-        .tooltip = "Overall controller vibration strength. Zero turns rumble off.",
+        .tooltip = "Vibration strength of controller rumble motors. Zero turns rumbles off.",
         .category = Cat::Input,
         .subcategory = "Controller - Effects",
         .widget = Wid::Slider,
@@ -690,7 +758,7 @@ const SettingRow rows[] = {
         .id = "gamepad_trigger_rumble_intensity",
         .key = "GamepadTriggerRumble",
         .label = "Trigger rumble intensity",
-        .tooltip = "Vibration strength of the trigger motors.",
+        .tooltip = "Vibration strength of the trigger motors. Only applies to Weapons",
         .category = Cat::Input,
         .subcategory = "Controller - Effects",
         .widget = Wid::Slider,
@@ -705,7 +773,7 @@ const SettingRow rows[] = {
         .id = "gamepad_rumble_vibration_filter",
         .key = "GamepadRumbleVibrationFilter",
         .label = "Vibration filter",
-        .tooltip = "Reduces low-frequency rumble that disturbs gyro aiming. Auto does so only while gyro is active.",
+        .tooltip = "Reduces low-frequency rumble intensity. Auto applies when Gyro Camera is active.",
         .category = Cat::Input,
         .subcategory = "Controller - Effects",
         .widget = Wid::Enum,
@@ -728,7 +796,7 @@ const SettingRow rows[] = {
         .id = "gamepad_environmental_rumble_enabled",
         .key = "GamepadEnvironmentalRumble",
         .label = "Environmental rumble",
-        .tooltip = "Vibrate for explosions, damage and other world events.",
+        .tooltip = "Vibrate for various environmental effects (explosions, damage)",
         .category = Cat::Input,
         .subcategory = "Controller - Effects",
         .widget = Wid::Toggle,
@@ -739,7 +807,7 @@ const SettingRow rows[] = {
         .id = "gamepad_rumble_when_primary",
         .key = "GamepadRumbleWhenPrimary",
         .label = "Rumble only when primary",
-        .tooltip = "Turn rumble off while the keyboard and mouse were used last.",
+        .tooltip = "Prioritize rumble based on last input method used.",
         .category = Cat::Input,
         .subcategory = "Controller - Effects",
         .widget = Wid::Toggle,
@@ -750,7 +818,7 @@ const SettingRow rows[] = {
         .id = "gamepad_lightbar_effects",
         .key = "GamepadLightbarEffect",
         .label = "Controller light effects",
-        .tooltip = "Show health on the controller light bar, if it has one.",
+        .tooltip = "[EXPERIMENTAL] Show health status on the controller's light bar.",
         .category = Cat::Input,
         .subcategory = "Controller - Effects",
         .widget = Wid::Toggle,
