@@ -200,6 +200,8 @@ void FactionFilesClient::download_map(const char* tmp_filename, const std::strin
 
 std::vector<unsigned char> FactionFilesClient::fetch_image(const std::string& image_url)
 {
+    static constexpr size_t max_image_size = 8 * 1024 * 1024; // 8 MB
+
     xlog::info("Fetching map image from: {}", image_url);
     HttpRequest req{image_url, "GET", session_};
     req.send();
