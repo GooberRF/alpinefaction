@@ -2097,6 +2097,7 @@ ConsoleCommand2 input_prompts_cmd{
     [](std::optional<int> val) {
         if (val) {
             g_alpine_game_config.input_prompt_override = std::clamp(*val, 0, 2);
+            hud_mark_bindings_dirty();
         }
         static const char* modes[] = {"Auto", "Controller", "Keyboard/Mouse"};
         rf::console::print("Input prompts: {} ({})", modes[g_alpine_game_config.input_prompt_override], g_alpine_game_config.input_prompt_override);
@@ -2113,7 +2114,10 @@ ConsoleCommand2 gamepad_prompts_cmd{
             "DualShock 3", "DualShock 4", "DualSense", "Nintendo Switch Controller", "Nintendo GameCube Controller",
             "Steam",
         };
-        if (val) g_alpine_game_config.gamepad_icon_override = std::clamp(val.value(), 0, 9);
+        if (val) {
+            g_alpine_game_config.gamepad_icon_override = std::clamp(val.value(), 0, 9);
+            hud_mark_bindings_dirty();
+        }
         rf::console::print("Gamepad icons: {} ({})",
             icon_names[g_alpine_game_config.gamepad_icon_override],
             g_alpine_game_config.gamepad_icon_override);
@@ -2196,6 +2200,17 @@ int gamepad_get_trigger_for_action(int action_idx)
     if (g_trigger_action[0] == action_idx || g_menu_trigger_action[0] == action_idx) return 0;
     if (g_trigger_action[1] == action_idx || g_menu_trigger_action[1] == action_idx) return 1;
     return -1;
+}
+
+const char* gamepad_get_action_bind_name(int action_idx)
+{
+    int button = gamepad_get_button_for_action(action_idx);
+    if (button >= 0)
+        return gamepad_get_scan_code_name(CTRL_GAMEPAD_SCAN_BASE + button);
+    int trigger = gamepad_get_trigger_for_action(action_idx);
+    if (trigger == 0) return gamepad_get_scan_code_name(CTRL_GAMEPAD_LEFT_TRIGGER);
+    if (trigger == 1) return gamepad_get_scan_code_name(CTRL_GAMEPAD_RIGHT_TRIGGER);
+    return nullptr;
 }
 
 int gamepad_get_button_count()

@@ -43,12 +43,8 @@ rf::String get_action_bind_name(int action)
 {
     // Prefer gamepad button name when a controller is active
     if (input_last_gamepad_active()) {
-        int btn = gamepad_get_button_for_action(action);
-        if (btn >= 0)
-            return gamepad_get_scan_code_name(CTRL_GAMEPAD_SCAN_BASE + btn);
-        int trig = gamepad_get_trigger_for_action(action);
-        if (trig == 0) return gamepad_get_scan_code_name(CTRL_GAMEPAD_LEFT_TRIGGER);
-        if (trig == 1) return gamepad_get_scan_code_name(CTRL_GAMEPAD_RIGHT_TRIGGER);
+        if (const char* name = gamepad_get_action_bind_name(action))
+            return name;
     }
 
     auto& config_item = rf::local_player->settings.controls.bindings[action];

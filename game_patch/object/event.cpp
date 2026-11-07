@@ -12,6 +12,7 @@
 #include "../misc/misc.h"
 #include "../misc/alpine_settings.h"
 #include "../input/input.h"
+#include "../input/gamepad.h"
 #include "../misc/level.h"
 #include "../rf/file/file.h"
 #include "../rf/object.h"
@@ -581,13 +582,17 @@ FunHook<char*(char*)> hud_translate_special_character_token_hook{
         std::string token_str{token};
         std::string replacement;
 
-        // Safely retrieve a string for the key/mouse binding for a given action name
         const auto get_binding_or_unbound = [](const char* action_name) -> std::string {
             if (!rf::local_player)
                 return "UNBOUND";
             int action_index = rf::control_config_find_action_by_name(&rf::local_player->settings, action_name);
             if (action_index < 0)
                 return "UNBOUND";
+
+            if (input_last_gamepad_active()) {
+                if (const char* name = gamepad_get_action_bind_name(action_index))
+                    return name;
+            }
 
             const auto& binding = rf::local_player->settings.controls.bindings[action_index];
             std::string result;

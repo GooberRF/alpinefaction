@@ -1,5 +1,6 @@
 #include "../../hud/hud.h"
 #include "../../rf/hud.h"
+#include "../misc.h"
 #include "settings_rows.h"
 
 namespace
@@ -259,6 +260,7 @@ const SettingRow rows[] = {
         .subcategory = "Input Prompts",
         .widget = Wid::Enum,
         .access = AccInt{&AGS::input_prompt_override, nullptr, 0, 2},
+        .apply = hud_mark_bindings_dirty,
         ENUM_LABELS(labels_input_prompts),
         .console_cmd = "input_prompts",
     },
@@ -271,6 +273,7 @@ const SettingRow rows[] = {
         .subcategory = "Input Prompts",
         .widget = Wid::Enum,
         .access = AccInt{&AGS::gamepad_icon_override, nullptr, 0, 9},
+        .apply = hud_mark_bindings_dirty,
         ENUM_LABELS(labels_gamepad_icons),
         .console_cmd = "gamepad_prompts",
     },

@@ -35,6 +35,7 @@ bool gamepad_is_touchpad_touched();
 // Controller binding UI
 int         gamepad_get_button_for_action(int action_idx);  // -1 if unbound
 int         gamepad_get_trigger_for_action(int action_idx); // 0=LT, 1=RT, -1 if unbound
+const char* gamepad_get_action_bind_name(int action_idx);
 const char* gamepad_get_scan_code_name(int scan_code);
 const char* gamepad_get_menu_cancel_button_name();
 int         gamepad_get_button_count();
