@@ -48,7 +48,7 @@ namespace rf
         AF_ACTION_VOTE_NO = 0x4,
         AF_ACTION_READY = 0x5,
         AF_ACTION_DROP_FLAG = 0x6,
-		AF_ACTION_CHAT_MENU = 0x7,
+		    AF_ACTION_CHAT_MENU = 0x7,
         AF_ACTION_TAUNT_MENU = 0x8,
         AF_ACTION_COMMAND_MENU = 0x9,
         AF_ACTION_PING_LOCATION = 0xA,
@@ -62,7 +62,9 @@ namespace rf
         AF_ACTION_SPRAY = 0x12,
         AF_ACTION_VOTE_MENU = 0x13,
         AF_ACTION_BIG_MAP = 0x14,
-        _AF_ACTION_LAST_VARIANT = AF_ACTION_BIG_MAP
+        AF_ACTION_CENTER_VIEW = 0x15,
+        AF_ACTION_GYRO_RATCHETING = 0x16,
+        _AF_ACTION_LAST_VARIANT = AF_ACTION_GYRO_RATCHETING
     };
 
     struct ControlConfigItem

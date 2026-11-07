@@ -241,6 +241,10 @@ struct SettingRow
     const char* ui_suffix = "";
     // Shown instead of the number when the stored value is 0.
     const char* ui_zero_label = nullptr;
+    // Availability gate for state the flags cannot express (controller hardware, a related
+    // toggle). Returns why the row is unavailable, or nullptr when it is available. Read by
+    // setting_disabled_reason, so the menu greys the row and the console refuses the edit.
+    const char* (*unavailable_reason)() = nullptr;
 };
 
 // Table access

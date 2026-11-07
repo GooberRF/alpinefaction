@@ -87,12 +87,21 @@ set(SRCS
     graphics/d3d11/gr_d3d11_scenefx.h
     graphics/d3d11/gr_d3d11_scenefx.cpp
     graphics/d3d11/engine/gr_d3d11_engine.h
+    input/input.cpp
     input/input.h
     input/bind_context.h
     input/bind_context.cpp
     input/mouse.h
     input/mouse.cpp
     input/key.cpp
+    input/gamepad.cpp
+    input/gamepad.h
+    input/rumble.cpp
+    input/rumble.h
+    input/glyph.cpp
+    input/glyph.h
+    input/gyro.cpp
+    input/gyro.h
     input/control_input_filter.h
     input/control_input_filter.cpp
     hud/hud_colors.cpp
@@ -467,6 +476,7 @@ target_include_directories(AlpineFaction PRIVATE
     ${CMAKE_SOURCE_DIR}/vendor/stb
     ${CMAKE_SOURCE_DIR}/vendor/freetype/include
     ${CMAKE_CURRENT_SOURCE_DIR}/graphics/d3d11/engine
+    ${CMAKE_SOURCE_DIR}/vendor/gamepadmotionhelpers
 )
 
 if(NOT MSVC)
@@ -507,4 +517,6 @@ target_link_libraries(AlpineFaction
     BulletDynamics
     BulletCollision
     LinearMath
+    SDL3::SDL3
+    GamepadMotionHelpers
 )

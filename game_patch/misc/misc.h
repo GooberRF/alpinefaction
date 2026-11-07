@@ -40,3 +40,9 @@ bool rocket_locked_reticle_is_customized(bool bighud);
 bool gameseq_is_stacked(rf::GameState state);
 bool gameseq_is_deep_stacked(rf::GameState state);
 bool gameseq_is_visible();
+
+// Redraw currently active HUD token message after input icon/settings change
+void hud_refresh_action_tokens();
+
+// Schedule a HUD token refresh on the next game frame (safe to call while menus are open)
+void hud_mark_bindings_dirty();

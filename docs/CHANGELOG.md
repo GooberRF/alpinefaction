@@ -4,6 +4,33 @@
 Version 1.5.0 (Trillium): Not yet released
 --------------------------------
 ### Major features
+[@AL2009man](https://github.com/AL2009man) & [@nickalreadyinuse](https://github.com/nickalreadyinuse)
+- Controller Support
+> [!WARNING]
+> When using Steam Input or Steam Hardware Inputs (Steam Deck, Steam Controller 2026, Steam Controller 2015): change the controller configuration to one of the many `Gamepad` templates to enable controller support.
+  - Full controller support via SDL3 Gamepad API
+  - Glyph support for Xbox, PlayStation, Nintendo, and Steam Hardware (Steam Controller 2015, Steam Deck, Steam Controller 2026)
+  - Dual-Analog support for movement and camera controls
+  - Cursor Menu navigation support for either Gyro (Press `North` Button to toggle Gyro Cursor, off by default) or Swiping and Clicking via PlayStation's Touchpad Input 
+  - Initial Rumble support
+    - only covers all Weapon Fire and select Environmental effects
+    - Trigger Rumble/Impulse Triggers are also supported (requires enabling `GamepadRawInput` in `alpine_settings.ini`) 
+    - Vibration Filtering system to reduce low-frequency rumble.
+      - Enabled by default whenever Gyro Aiming is active. 
+  - Motion Sensor / Gyro Aiming support
+    - Natural Sensitivity Scale / Real World Sensitivity support 
+    - Gyro Space orientation support
+      - Yaw, Roll, Local Space, Player Space, World Space
+    - Gyro Autocalibration system 
+    - Gyro Ratcheting support 
+      - most modes requires `Gyro Ratcheting` action to be bound
+  - Flick Stick support
+    - Best paired with Gyro Aiming or Mixed Input
+  - Simultaneous Controller+Keyboard/Mouse / Mixed Input support
+    - if using SteamInput's supported Input Camera styles: We recommend selecting `ms_scale`'s Modern (`2`) and change the mouse sensitivity to `2.5000`. If it's set to ``6545px`` (default slider on SteamInput): this will skip "[Input] Angles/Degrees to Mouse Pixels" slider.
+  - Partial controller menu navigation support (Mouse controls are handled via Left Stick, Scrollbar are handled by Right Stick)
+- Additional Controller settings are available in `alpine_settings.ini` and/or console commands
+- 
 [@GooberRF](https://github.com/GooberRF)
 - Add ray cast lightmap baking to level editor
   - Add `Invisible faces block light` and `Alpha-textured faces block light` level properties to control whether those faces occlude baked light
@@ -222,6 +249,11 @@ Version 1.5.0 (Trillium): Not yet released
 [@GooberRF](https://github.com/GooberRF) & [@is-this-c](https://github.com/is-this-c)
 - Add lens distortion, chromatic aberration and vignetting to the sniper and precision rifle scope views, with levels 0-2 via `r_scopeglass`: 0 off, 1 light, 2 heavy (Direct3D 11 renderer only)
 
+[@AL2009man](https://github.com/AL2009man)
+- Add `GamepadRawInput` option (via `alpine_settings.ini`) to enable RawInput driver for better handling of XInput controllers, while allowing Trigger Rumble/Impulse Trigger support.
+- Add the ability to scroll through Alpine Settings menu panels with the mouse wheel or right stick, enabling more options in the near future. As of this version: this only applies for Input settings panel 
+
+
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
 - Fix phantom visual flag mesh being visible after Salvage flag is picked up on rare occasions
@@ -386,6 +418,7 @@ Version 1.5.0 (Trillium): Not yet released
 - [bc7enc_rdo](https://github.com/richgel999/bc7enc_rdo) by Richard Geldreich, Jr.
 - [LunaSVG 3.5.0](https://github.com/sammycage/lunasvg) by Samuel Ugochukwu
 - [PlutoVG 1.3.3](https://github.com/sammycage/plutovg) by Samuel Ugochukwu
+
 
 Version 1.4.0 (Lupin): Released Aug-25-2026
 --------------------------------

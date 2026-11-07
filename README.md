@@ -43,7 +43,9 @@ Key Features
 * Skippable cutscenes
 * Restored water/lava rising in Geothermal Plant
 * Player headlamp (flashlight)
-* Gibs from explosive kills, and ragdoll deaths
+* Support for any resolution and aspect ratio
+* Fullscreen, windowed, borderless window modes
+* Controller Support
 * Enhanced mouse input with selectable sensitivity scaling
 
 ### Graphics and display

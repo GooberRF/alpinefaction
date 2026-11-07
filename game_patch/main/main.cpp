@@ -71,6 +71,7 @@
 #include "../sound/sound.h"
 #include "../input/bind_context.h"
 #include "../input/input.h"
+#include "../input/gamepad.h"
 #include "../rf/gr/gr.h"
 #include "../rf/multi.h"
 #include "../rf/level.h"
@@ -100,13 +101,14 @@ void initialize_random_generator() {
 
 CallHook<void()> rf_init_hook{
     0x004B27CD,
-    [] {
-        const uint64_t start_ticks = GetTickCount64();
+    []() {
+        auto start_ticks = GetTickCount64();
         xlog::info("Initializing game...");
         initialize_alpine_core_config();
         rf_init_hook.call_target();
         vpackfile_disable_overriding();
         xlog::info("Game initialized ({} ms).", GetTickCount64() - start_ticks);
+        gamepad_sdl_init();
     },
 };
 
@@ -185,6 +187,7 @@ FunHook<int()> rf_do_frame_hook{
         riot_shield_do_frame();
         client_bot_do_frame();
         koth_do_frame();
+        gamepad_do_frame();
         bagman_do_frame();
         jetpack_do_frame();
         salvage_client_do_frame();      // client-side Salvage carried-flag attachment
@@ -375,6 +378,9 @@ FunHook<void(bool)> level_init_post_hook{
             && g_alpine_game_config.autodl_download_awps) {
             start_awp_download_for_installed_map(std::string{rf::level.filename.c_str()}, 1);
         }
+      
+        gamepad_stop_rumble(); // ensure no rumble bleeds in from the previous level
+        waypoints_level_init();
 
         apply_maximum_fps(); // set maximum FPS based on game state
         process_queued_spawn_points_from_items();
@@ -675,6 +681,7 @@ extern "C" DWORD __declspec(dllexport) Init([[maybe_unused]] void* unused)
     dedi_cfg_init();
     mouse_apply_patch();
     key_apply_patch();
+    gamepad_apply_patch();
     control_input_filter_apply_patch();
 #if !defined(NDEBUG) && defined(HAS_EXPERIMENTAL)
     experimental_init();

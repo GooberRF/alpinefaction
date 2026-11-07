@@ -279,6 +279,11 @@ const char* setting_disabled_reason(const SettingRow& row)
         && is_screen_resolution_too_low_for_big_hud()) {
         return "requires at least 1024x768";
     }
+    if (row.unavailable_reason) {
+        if (const char* reason = row.unavailable_reason()) {
+            return reason;
+        }
+    }
     // A withheld server permission is a state, not an edit lock - see
     // setting_server_permission_blocked. On every permission row the withheld permission is
     // re-checked by the row's apply hook or by the consumer itself before anything is touched.

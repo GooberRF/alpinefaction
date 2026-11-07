@@ -24,6 +24,7 @@
 #include "../rf/sound/sound.h"
 #include "../rf/os/console.h"
 #include "../os/console.h"
+#include "../input/input.h"
 #include "../rf/v3d.h"
 #include "../rf/vmesh.h"
 #include <common/config/GameConfig.h>
@@ -584,7 +585,6 @@ FunHook<char*(char*)> hud_translate_special_character_token_hook{
         const auto get_binding_or_unbound = [](const char* action_name) -> std::string {
             if (!rf::local_player)
                 return "UNBOUND";
-
             int action_index = rf::control_config_find_action_by_name(&rf::local_player->settings, action_name);
             if (action_index < 0)
                 return "UNBOUND";
@@ -665,11 +665,38 @@ FunHook<char*(char*)> hud_translate_special_character_token_hook{
     },
 };
 
+// Cache the raw $TOKEN$ template so we can re-display it with fresh bindings when the
+// player switches between gamepad and keyboard/mouse while the message is still on screen.
+static std::string   g_hud_msg_template;
+static rf::Timestamp g_hud_msg_expire;
+static bool          g_hud_bindings_dirty = false;
+
+void hud_mark_bindings_dirty()
+{
+    g_hud_bindings_dirty = true;
+}
+
+void hud_refresh_action_tokens()
+{
+    if (!g_hud_msg_template.empty() && g_hud_msg_expire.valid() && !g_hud_msg_expire.elapsed()) {
+        rf::hud_msg(g_hud_msg_template.c_str(), 0, std::max(1, g_hud_msg_expire.time_until()), nullptr);
+    }
+}
+
 // Stock hud_msg aborts on an unterminated $ and expands tokens into its 256-byte slot unbounded.
 // Messages it handles safely are passed through untouched.
 FunHook<void(const char*, int, int, rf::Color*)> hud_msg_hook{
     0x004383C0,
     [](const char* text, int unk, int duration, rf::Color* color) {
+        // Remember the raw (unexpanded) template so it can be refreshed when bindings change
+        if (text && std::strchr(text, '$')) {
+            g_hud_msg_template = text;
+            g_hud_msg_expire.set(duration > 0 ? duration : 8000);
+        } else if (text) {
+            g_hud_msg_template.clear();
+            g_hud_msg_expire.invalidate();
+        }
+
         if (!text || std::strlen(text) >= 256) {
             hud_msg_hook.call_target(text, unk, duration, color);
             return;
@@ -707,6 +734,18 @@ FunHook<void(const char*, int, int, rf::Color*)> hud_msg_hook{
     },
 };
 
+FunHook<void(rf::Player*)> hud_do_frame_input_sync_hook{
+    0x00437B80,
+    [](rf::Player* player) {
+        hud_do_frame_input_sync_hook.call_target(player);
+        if (!g_hud_msg_template.empty() && g_hud_msg_expire.valid() && !g_hud_msg_expire.elapsed()
+            && g_hud_bindings_dirty) {
+            g_hud_bindings_dirty = false;
+            rf::hud_msg(g_hud_msg_template.c_str(), 0, std::max(1, g_hud_msg_expire.time_until()), nullptr);
+        }
+    },
+};
+
 void apply_event_patches()
 {
     // allow custom directional events
@@ -721,6 +760,7 @@ void apply_event_patches()
     // HUD Message magic word handling
     hud_translate_special_character_token_hook.install();
     hud_msg_hook.install();
+    hud_do_frame_input_sync_hook.install();
 
     // fix some events not working if delay value is specified (alpine levels only)
     EventUnhide__process_patch.install();
