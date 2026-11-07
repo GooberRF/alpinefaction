@@ -22,6 +22,8 @@ inline rf::Player* ctx_player(rf::Player* player)
 
 // Accessors for stock PlayerSettings fields. `def` is what a caller sees while no player
 // exists (settings can be queried from the console before the player is created).
+// These aren't a perfect STYLE.md match, but they're concise and work.
+// Goober todo: Revisit this approach.
 #define PS_BOOL(field, def)                                                           \
     AccFnBool                                                                         \
     {                                                                                 \
