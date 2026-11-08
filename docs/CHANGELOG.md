@@ -14,7 +14,7 @@ Version 1.5.0 (Trillium): Not yet released
   - Cursor Menu navigation support for either Gyro (Press `North` Button to toggle Gyro Cursor, off by default) or Swiping and Clicking via PlayStation's Touchpad Input 
   - Initial Rumble support
     - only covers all Weapon Fire and select Environmental effects
-    - Trigger Rumble/Impulse Triggers are also supported (requires enabling `GamepadRawInput` in `alpine_settings.ini`) 
+    - Trigger Rumble/Impulse Triggers are also supported (requires enabling `GamepadRawInput` in `alpine_settings.ini`)
     - Vibration Filtering system to reduce low-frequency rumble.
       - Enabled by default whenever Gyro Aiming is active. 
   - Motion Sensor / Gyro Aiming support
@@ -27,9 +27,8 @@ Version 1.5.0 (Trillium): Not yet released
   - Flick Stick support
     - Best paired with Gyro Aiming or Mixed Input
   - Simultaneous Controller+Keyboard/Mouse / Mixed Input support
-    - if using SteamInput's supported Input Camera styles: We recommend selecting `ms_scale`'s Modern (`2`) and change the mouse sensitivity to `2.5000`. If it's set to ``6545px`` (default slider on SteamInput): this will skip "[Input] Angles/Degrees to Mouse Pixels" slider.
-  - Partial controller menu navigation support (Mouse controls are handled via Left Stick, Scrollbar are handled by Right Stick)
-- Additional Controller settings are available in `alpine_settings.ini` and/or console commands
+    - if using SteamInput's supported Input Camera styles: We recommend selecting `ms_scale`'s Modern (`2`) and change the mouse sensitivity to `2.50`. If it's set to ``6545px`` (default slider on SteamInput): this will skip "[Input] Angles/Degrees to Mouse Pixels" slider.
+  - Partial controller menu navigation support (Cursor and Scrollbar are handled by Joystick. If supported: Gyro and Touchpad Cursors are included)
 - 
 [@GooberRF](https://github.com/GooberRF)
 - Add ray cast lightmap baking to level editor
@@ -251,8 +250,6 @@ Version 1.5.0 (Trillium): Not yet released
 
 [@AL2009man](https://github.com/AL2009man)
 - Add `GamepadRawInput` option (via `alpine_settings.ini`) to enable RawInput driver for better handling of XInput controllers, while allowing Trigger Rumble/Impulse Trigger support.
-- Add the ability to scroll through Alpine Settings menu panels with the mouse wheel or right stick, enabling more options in the near future. As of this version: this only applies for Input settings panel 
-
 
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
