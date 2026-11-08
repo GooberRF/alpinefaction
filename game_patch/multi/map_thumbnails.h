@@ -3,8 +3,8 @@
 #include <string>
 
 // FactionFiles preview images for levels, fetched in the background and kept as small bitmaps.
-// The thumbnails are cached as JPEGs in <rf_root>\alpine_cache\map_thumbnails, so a level is only
-// downloaded once.
+// The thumbnails are kept as JPEGs in <rf_root>\alpine_cache\map_thumbs.cache (a cache pack, see
+// common/cache_pack.h), so a level is only downloaded once.
 // Main thread only.
 
 // Bitmap handle of the level's preview (out_w/out_h get its size), or -1 while it is still

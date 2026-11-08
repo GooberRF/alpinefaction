@@ -10,6 +10,7 @@ set(SRCS
     include/common/alpine_waypoint_helper.h
     include/common/ComPtr.h
     include/common/afd_format.h
+    include/common/cache_pack.h
     include/common/rfa_format.h
     include/common/rfl_chunk_reader.h
     include/common/tlv.h
@@ -51,6 +52,7 @@ set(SRCS
     include/common/atx/parse.h
     include/common/version/version.h
     src/HttpRequest.cpp
+    src/cache_pack.cpp
     src/config/GameConfig.cpp
     src/config/AlpineCoreConfig.cpp
     src/error/d3d-error.cpp
