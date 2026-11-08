@@ -131,23 +131,74 @@ Commands marked "D3D11 only" only have an effect with the Direct3D 11 renderer.
 | `mp_taunts` | | Toggles voice lines for taunts used by players in multiplayer. Default: on. |
 | `sound` | `[bool]` | Stock RF command. Toggles sound. |
 
-## Input and mouse
+## Input
 
 | Command | Arguments | Description |
 | --- | --- | --- |
+| `cl_staticscopesens` | | Toggles static scope sensitivity instead of scaling with zoom. Default: off (dynamic). |
+| `cl_linearpitch` | | Toggles linear mouse pitch. Default: on. |
+| `cl_togglecrouch` | | Stock RF command. Toggles crouch mode. |
+| `cl_autoswitchempty` | | Toggles switching away from a weapon with no ammo even when autoswitch is off. Default: on. |
 | `cl_autoswitchempty` | | Toggles switching away from a weapon with no ammo even when autoswitch is off. Default: on. |
 | `cl_autoswitchfirewait` | `[ms]` | Sets the time after firing during which autoswitch is suppressed (0-10000 ms). Default: 0. |
-| `cl_linearpitch` | | Toggles linear mouse pitch. Default: on. |
+
+### Input - keyboard and mouse
+
+| Command | Arguments | Description |
+| --- | --- | --- |
 | `cl_scannersens` | `[value]` | Sets the mouse sensitivity modifier in a scanner (0.01-10). Default: 0.25. |
 | `cl_scopesens` | `[value]` | Sets the mouse sensitivity modifier in a scope (0.01-10). Default: 0.25. |
 | `cl_staticscopesens` | | Toggles static scope sensitivity instead of scaling with zoom. Default: off (dynamic). |
 | `cl_swaparcontrols` | | Toggles swapping the Assault Rifle fire controls. Default: off. |
 | `cl_swapgrenadecontrols` | | Toggles swapping the grenade fire controls. Default: off. |
 | `cl_swapsgcontrols` | | Toggles swapping the shotgun fire controls. Default: off. |
-| `cl_togglecrouch` | | Stock RF command. Toggles crouch mode. |
 | `inputmode` | | Toggles DirectInput mouse mode. Not available in headless bot mode. Default: on. |
 | `ms` | `[value]` | Sets mouse sensitivity. |
 | `ms_scale` | `[0\|1\|2]` | Mouse scale mode: `0` Classic (RF native), `1` Raw (pure degrees), `2` Modern (id Tech/Source style). Default: 0. |
+
+### Input - game controller
+
+| Command | Arguments | Description |
+| --- | --- | --- |
+| `joy_sens` | `[value]` | Sets controller look sensitivity (minimum 0). Default: 2.5. |
+| `joy_scanner_sens` | `[value]` | Sets the controller scanner sensitivity modifier (0.01-10). Default: 0.25. |
+| `joy_scope_sens` | `[value]` | Sets the controller scope sensitivity modifier (0.01-10). Default: 0.25. |
+| `joy_swap_sticks` | `[0\|1]` | Swaps the left and right analog sticks. Default: off. |
+| `joy_move_deadzone` | `[0.0-0.9]` | Sets the movement stick deadzone. Default: 0.14. |
+| `joy_camera_deadzone` | `[0.0-0.9]` | Sets the camera stick deadzone. Default: 0.33. |
+| `joy_camera_invert_x` | `[0\|1]` | Inverts the camera stick X-axis. Default: off. |
+| `joy_camera_invert_y` | `[0\|1]` | Inverts the camera stick Y-axis. Default: off. |
+| `gyro_camera` | `[0\|1]` | Enables gyro camera control. Default: off. |
+| `gyro_sens` | `[value]` | Sets gyro sensitivity (minimum 0). Default: 2.5. |
+| `gyro_scanner_sens` | `[value]` | Sets the gyro scanner sensitivity modifier (0.01-10). Default: 0.25. |
+| `gyro_scope_sens` | `[value]` | Sets the gyro scope sensitivity modifier (0.01-10). Default: 0.25. |
+| `gyro_invert_x` | `[0\|1]` | Inverts the gyro camera X-axis. Default: off. |
+| `gyro_invert_y` | `[0\|1]` | Inverts the gyro camera Y-axis. Default: off. |
+| `gyro_ratcheting` | `[0-5]` | Sets gyro ratcheting. Default: `0`. |
+| `gyro_smoothing` | `[0-100]` | Sets gyro smoothing. Default: 7. |
+| `gyro_space` | `[0-4]` | Sets gyro axis orientation / gyro space. Default: 3. |
+| `gyro_tightening` | `[0-100]` | Sets gyro tightening. Default: 8. |
+| `gyro_vehicle_camera` | `[0\|1]` | Enables gyro camera control in vehicles. Default: off. |
+| `gyro_vh` | `[-100-100]` | Sets the gyro camera's vertical/horizontal mixer: `-100` reduces vertical to zero, `0` keeps it 1:1, `100` reduces horizontal to zero. Default: 0. |
+| `gyro_autocalibration` | `[0-2]` | Sets gyro auto-calibration mode: `0` off, `1` only in menus, `2` always. Default: `1`. |
+| `gyro_reset` | `<partial\|full>` | Resets gyro auto-calibration system. `partial` preserves the calibrated offset; `full` resets it. |
+| `joy_flickstick` | `[0\|1]` | Enables flick-stick camera control. Default: off. |
+| `joy_flickstick_allow_scoped` | `[0\|1]` | Allows flick stick while scoped. Default: on. |
+| `joy_flickstick_deadzone` | `[0.0-0.9]` | Sets the flick-stick activation deadzone. Default: 0.9. |
+| `joy_flickstick_invert` | `[0\|1]` | Inverts flick stick. Default: off. |
+| `joy_flickstick_release_deadzone` | `[0.0-0.9]` | Sets the flick-stick release deadzone. Default: 0.7. |
+| `joy_flickstick_smoothing` | `[0.0-1.0]` | Sets flick-stick smoothing. Default: 0.75. |
+| `joy_flickstick_sweep` | `[0.01-6.0]` | Sets flick-stick sweep sensitivity. Default: 1.0. |
+| `joy_rumble` | `[0.0-1.0]` | Sets controller rumble intensity. Default: 1.0. |
+| `joy_rumble_environmental` | `[0\|1]` | Enables environmental rumble. Default: on. |
+| `joy_rumble_weapon` | `[0\|1]` | Enables weapon rumble. Default: on. |
+| `joy_rumble_triggers` | `[0.0-1.0]` | Sets trigger rumble intensity when supported by the controller. Default: 0.5. |
+| `joy_rumble_vibration_filter` | `[0-2]` | Enables low-frequency rumble filter. Default: 1. |
+| `joy_rumble_when_primary` | `[0\|1]` | Restricts rumble to when the controller is the primary input device. Default: on. |
+| `joy_reset` | | Reset controller state entirely. |
+| `joy_menu_cursor_sens` | `[0.0-3.0]` | Sets stick menu cursor sensitivity. Default: 1.0. |
+| `touchpad_menu_cursor_sens` | `[0.0-3.0]` | Sets touchpad menu cursor sensitivity. Default: 1.0. |
+| `gyro_menu_cursor_sens` | `[0.0-3.0]` | Sets gyro menu cursor sensitivity (0 disables it). Default: 2.0. |
 
 ## HUD
 
@@ -200,6 +251,8 @@ Commands marked "D3D11 only" only have an effect with the Direct3D 11 renderer.
 | `ui_show_speed` | | Toggles the speed meter. Default: off. |
 | `ui_simple_server_chat_messages` | | Toggles simple server chat messages. Default: on. |
 | `ui_verbosetimer` | | Toggles the "Time Left:" text on the in-game timer. Default: on. |
+| `input_prompts` | `[0-2]` | Sets input prompts to either detect last input method, or force between Controller or Keyboard/Mouse glyphs. Default: `0`. |
+| `gamepad_prompts` | `[0-9]` | Sets gamepad button icon style for various controllers types. Default: `0`. |
 
 ## HUD colors and scale
 
