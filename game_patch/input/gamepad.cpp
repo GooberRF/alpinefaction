@@ -715,19 +715,10 @@ static SDL_GamepadButton get_menu_cancel_button()
     return SDL_GAMEPAD_BUTTON_EAST;
 }
 
-static SDL_GamepadButton get_gyro_toggle_button()
-{
-    auto* gp = gamepad_get_primary();
-    if (gp && SDL_GetGamepadButtonLabel(gp, SDL_GAMEPAD_BUTTON_WEST) == SDL_GAMEPAD_BUTTON_LABEL_Y)
-        return SDL_GAMEPAD_BUTTON_WEST;
-    return SDL_GAMEPAD_BUTTON_NORTH;
-}
-
 static bool menu_nav_on_button_down(int btn)
 {
     const SDL_GamepadButton confirm_btn      = get_menu_confirm_button();
     const SDL_GamepadButton cancel_btn       = get_menu_cancel_button();
-    const SDL_GamepadButton gyro_toggle_btn  = get_gyro_toggle_button();
 
     if (btn == static_cast<int>(confirm_btn)) {
         menu_nav_handle_confirm();
@@ -737,7 +728,7 @@ static bool menu_nav_on_button_down(int btn)
         menu_nav_handle_cancel();
         return true;
     }
-    if (btn == static_cast<int>(gyro_toggle_btn)) {
+    if (btn == SDL_GAMEPAD_BUTTON_LEFT_STICK) {
         if (g_motion_sensors_supported && g_alpine_game_config.gamepad_gyro_menu_cursor_sensitivity > 0.0f)
             g_gyro_menu_cursor_active = !g_gyro_menu_cursor_active;
         return true;
@@ -1185,7 +1176,7 @@ static void menu_nav_handle_gyro_cursor_frame()
     gyro_get_calibrated_rates(pitch_dps, yaw_dps);
     if (pitch_dps == 0.0f && yaw_dps == 0.0f) return;
 
-    float scale = sensitivity * (static_cast<float>(rf::gr::screen_height()) / 600.0f) * rf::frametime;
+    float scale = sensitivity * 10.0f * (static_cast<float>(rf::gr::screen_height()) / 600.0f) * rf::frametime;
     float dx = -yaw_dps   * scale;
     float dy = -pitch_dps * scale;
     menu_nav_apply_cursor_delta(dx, dy);
@@ -2035,11 +2026,11 @@ ConsoleCommand2 joy_menu_cursor_sens_cmd{
 ConsoleCommand2 gyro_menu_cursor_sens_cmd{
     "gyro_menu_cursor_sens",
     [](std::optional<float> val) {
-        if (val) g_alpine_game_config.gamepad_gyro_menu_cursor_sensitivity = std::clamp(val.value(), 0.0f, 30.0f);
-        rf::console::print("Gyro menu cursor sensitivity: {:.4f}", g_alpine_game_config.gamepad_gyro_menu_cursor_sensitivity);
+        if (val && !setting_console_set("gamepad_gyro_menu_cursor_sens", std::to_string(*val))) return;
+        rf::console::print("Gyro menu cursor sensitivity: {:.2f}", g_alpine_game_config.gamepad_gyro_menu_cursor_sensitivity);
     },
     "Set gyro cursor sensitivity for menus",
-    "gyro_menu_cursor_sens <value>",
+    "gyro_menu_cursor_sens <value> (valid range: 0.0 - 3.0)",
 };
 
 ConsoleCommand2 gyro_camera_cmd{

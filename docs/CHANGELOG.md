@@ -11,7 +11,7 @@ Version 1.5.0 (Trillium): Not yet released
   - Full controller support via SDL3 Gamepad API
   - Glyph support for Xbox, PlayStation, Nintendo, and Steam Hardware (Steam Controller 2015, Steam Deck, Steam Controller 2026)
   - Dual-Analog support for movement and camera controls
-  - Cursor Menu navigation support for either Gyro (Press `North` Button to toggle Gyro Cursor, off by default) or Swiping and Clicking via PlayStation's Touchpad Input 
+  - Cursor Menu navigation support for either Gyro (Press `Left Stick Click` to toggle Gyro Cursor, off by default) or Swiping and Clicking via PlayStation's Touchpad Input
   - Initial Rumble support
     - only covers all Weapon Fire and select Environmental effects
     - Trigger Rumble/Impulse Triggers are also supported (requires enabling `GamepadRawInput` in `alpine_settings.ini`)
