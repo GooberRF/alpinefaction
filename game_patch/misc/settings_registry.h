@@ -241,6 +241,7 @@ struct SettingRow
     const char* ui_suffix = "";
     // Shown instead of the number when the stored value is 0.
     const char* ui_zero_label = nullptr;
+    void (*ui_adjust)(SettingRow&) = nullptr;
 };
 
 // Table access

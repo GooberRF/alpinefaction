@@ -1281,15 +1281,28 @@ std::vector<Entry> build_search_entries(std::string_view query, std::vector<std:
 // Rows
 // ---------------------------------------------------------------------------
 
+SettingRow slider_presentation(const SettingRow& row)
+{
+    SettingRow presentation = row;
+    if (row.ui_adjust) {
+        row.ui_adjust(presentation);
+    }
+    return presentation;
+}
+
 int row_slider_readout_w(const UiContext& ctx, const SettingRow& row, int font)
 {
+    if (row.widget != SettingWidget::Slider) {
+        return 0;
+    }
+    const SettingRow presentation = slider_presentation(row);
     float lo = 0.0f;
     float hi = 0.0f;
     float step = 0.0f;
-    if (row.widget != SettingWidget::Slider || !setting_ui_range(row, lo, hi, step)) {
+    if (!setting_ui_range(presentation, lo, hi, step)) {
         return 0;
     }
-    return skin_slider_readout_w(ctx, lo, hi, row_number_format(row), font);
+    return skin_slider_readout_w(ctx, lo, hi, row_number_format(presentation), font);
 }
 
 // One readout width for every slider on the panel, so their tracks line up in a column. A category
@@ -1416,20 +1429,21 @@ void do_row_widget(UiContext& ctx, const SettingRow& row, const UiRect& row_rect
             break;
         }
         case SettingWidget::Slider: {
+            const SettingRow presentation = slider_presentation(row);
             float lo = 0.0f;
             float hi = 1.0f;
             float step = 0.0f;
-            const bool ranged = setting_ui_range(row, lo, hi, step);
+            const bool ranged = setting_ui_range(presentation, lo, hi, step);
             if (sync_state && !state.held) {
                 state.f = row_float(row, lo);
                 state.stored_f = state.f;
             }
             const bool integral = is_integral_row(row);
-            const UiNumberFormat fmt = row_number_format(row);
+            const UiNumberFormat fmt = row_number_format(presentation);
             if (ranged) {
                 const int w = skin_px(ctx, skin::control_w);
                 const UiRect r{ctl_right - w, row_rect.y, w, row_rect.h};
-                skin_slider(ctx, r, state.f, lo, hi, integral && step <= 0.0f ? 1.0f : step, row.ui_nudge,
+                skin_slider(ctx, r, state.f, lo, hi, integral && step <= 0.0f ? 1.0f : step, presentation.ui_nudge,
                             fmt, font, slider_readout_w, enabled, id, hot);
             }
             else {
