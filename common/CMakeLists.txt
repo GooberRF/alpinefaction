@@ -70,6 +70,7 @@ enable_warnings(Common)
 target_include_directories(Common PRIVATE
     include/common
     ${CMAKE_SOURCE_DIR}/vendor/d3d8
+    ${CMAKE_SOURCE_DIR}/vendor/zlib
 )
 
 # Make sure Windows min/max macro don't conflict with std::min/std::max
@@ -86,6 +87,7 @@ target_link_libraries(Common
     wininet
     version
     Xlog
+    zlib
 )
 
 # Shared Direct3D 11 renderer core. Each consumer compiles these sources against its own

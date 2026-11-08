@@ -7,6 +7,7 @@
 #include <random>
 #include <string_view>
 #include <unordered_set>
+#include <zlib.h>
 
 namespace cache_pack
 {
@@ -17,8 +18,13 @@ namespace
 
     constexpr uint64_t header_size = 20;
     constexpr std::streamoff write_id_offset = 8;
-    // An index entry without its name: u16 name length, u64 tag, u32 data size
-    constexpr uint64_t entry_fixed_size = 2 + 8 + 4;
+    // An index entry without its name: u16 name length, u64 tag, u32 data size, u32 data CRC
+    constexpr uint64_t entry_fixed_size = 2 + 8 + 4 + 4;
+
+    uint32_t crc_of(std::span<const unsigned char> data)
+    {
+        return static_cast<uint32_t>(crc32(crc32(0, Z_NULL, 0), data.data(), static_cast<uInt>(data.size())));
+    }
 
     template<typename T>
     bool read_value(std::istream& in, T& value)
@@ -60,7 +66,8 @@ namespace
             // Grown as entries are read, so a header claiming many costs nothing until they exist
             Entry& entry = index.entries.emplace_back();
             entry.name.resize(name_len);
-            if (!in.read(entry.name.data(), name_len) || !read_value(in, entry.tag) || !read_value(in, entry.size)) {
+            if (!in.read(entry.name.data(), name_len) || !read_value(in, entry.tag) || !read_value(in, entry.size)
+                || !read_value(in, entry.crc)) {
                 return std::nullopt;
             }
             entry.offset = data_size;
@@ -105,7 +112,7 @@ bool read_data(const std::filesystem::path& path, uint64_t write_id, const Entry
     out.resize(entry.size);
     if (!in || !in.seekg(write_id_offset) || !read_value(in, file_write_id) || file_write_id != write_id
         || !in.seekg(static_cast<std::streamoff>(entry.offset))
-        || !in.read(reinterpret_cast<char*>(out.data()), entry.size)) {
+        || !in.read(reinterpret_cast<char*>(out.data()), entry.size) || crc_of(out) != entry.crc) {
         out.clear();
         return false;
     }
@@ -166,11 +173,12 @@ std::optional<Index> update(const std::filesystem::path& path, std::span<const s
         index.entries.reserve(current.entries.size() + added.size());
         uint64_t offset = data_start;
         for (const Entry& entry : current.entries) {
-            index.entries.push_back({entry.name, entry.tag, offset, entry.size});
+            index.entries.push_back({entry.name, entry.tag, offset, entry.size, entry.crc});
             offset += entry.size;
         }
         for (const NewEntry& entry : added) {
-            index.entries.push_back({entry.name, entry.tag, offset, static_cast<uint32_t>(entry.data.size())});
+            index.entries.push_back(
+                {entry.name, entry.tag, offset, static_cast<uint32_t>(entry.data.size()), crc_of(entry.data)});
             offset += entry.data.size();
         }
 
@@ -184,6 +192,7 @@ std::optional<Index> update(const std::filesystem::path& path, std::span<const s
             out.write(entry.name.data(), static_cast<std::streamsize>(entry.name.size()));
             write_value(out, entry.tag);
             write_value(out, entry.size);
+            write_value(out, entry.crc);
         }
         bool copied = true;
         std::vector<char> buf(64 * 1024);

@@ -11,9 +11,10 @@
 // Alpine cache packs (.cache): named blobs in one file, always rewritten whole (a temporary file
 // beside it, renamed over it) so a reader never sees a partly written pack. Little-endian:
 //   header: u32 signature, u32 version, u64 write id (new on every write), u32 entry count
-//   index:  per entry: u16 name length, name bytes, u64 tag, u32 data size
+//   index:  per entry: u16 name length, name bytes, u64 tag, u32 data size, u32 data CRC-32 (zlib's)
 //   data:   each entry's bytes in index order, ending at the end of the file
-// Names are non-empty and unique. A file that breaks any of this, or has another version, is invalid.
+// Names are non-empty and unique. A file that breaks any of this, or has another version, is invalid;
+// an entry whose data doesn't match its CRC is corrupt, but the rest of the file is still valid.
 
 namespace cache_pack
 {
@@ -28,6 +29,7 @@ struct Entry
     uint64_t tag = 0;    // the writer's own, e.g. a hash or timestamp of what the data was made from
     uint64_t offset = 0; // of the data, from the start of the file
     uint32_t size = 0;
+    uint32_t crc = 0; // of the data
 };
 
 struct Index
@@ -47,8 +49,9 @@ struct NewEntry
 // The pack's index, or nullopt if the file is missing or not a valid pack of this version.
 std::optional<Index> read_index(const std::filesystem::path& path);
 
-// An entry's data, given its index's write id. False if the read fails or the pack is no longer the
-// one the index came from (another process saved it since); read the index again then.
+// An entry's data, given its index's write id. False if the read fails, the data doesn't match its
+// CRC, or the pack is no longer the one the index came from (another process saved it since); read
+// the index again then.
 bool read_data(const std::filesystem::path& path, uint64_t write_id, const Entry& entry,
                std::vector<unsigned char>& out);
 

@@ -287,11 +287,12 @@ namespace
         const std::string& name = job.level_filename;
         std::vector<unsigned char> encoded;
         // The file couldn't be read just now (another game instance saving it, a scanner holding it),
-        // so the entry stays for next time
+        // so the entry stays for next time. A corrupt entry reads the same way, and stays until a
+        // download replaces it
         bool unreadable = false;
         {
             const std::lock_guard lock{g_cache.mutex};
-            // False only when reading the file fails
+            // False only when reading the file fails or the entry is corrupt
             const auto read = [&] {
                 const auto entry = g_cache.index.find(name);
                 return entry == g_cache.index.end() || entry->second.size > max_cached_size
