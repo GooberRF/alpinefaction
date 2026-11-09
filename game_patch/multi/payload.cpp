@@ -136,6 +136,7 @@ struct PayloadInfo
     uint8_t heal_serial = 0;
     uint8_t net_sequence = 0; // the server's last sent, or the client's last applied
     bool setup = true; // until this side fires When_Setup_Ends
+    float setup_end_time = 0.0f; // rf::level.time
 
     // Server
     float hold_left = 0.0f;
@@ -463,6 +464,7 @@ void capture_checkpoint(const PayloadCheckpoint& cp, bool at_end)
 void end_setup()
 {
     g_payload.setup = false;
+    g_payload.setup_end_time = rf::level.time;
     rf::activate_all_events_of_type(rf::EventType::When_Setup_Ends, -1, -1, true);
 }
 
@@ -481,7 +483,9 @@ void begin_finale()
         }
     }
     g_payload.finale_end.set(finale_delay_ms);
-    const std::string text = std::format("The cart reached the end! {} wins!", team_name(g_payload.attacking_team));
+    const int seconds = static_cast<int>(std::lround(std::max(rf::level.time - g_payload.setup_end_time, 0.0f)));
+    const std::string text = std::format("The cart reached the end in {:02}:{:02}! {} wins!", seconds / 60,
+                                         seconds % 60, team_name(g_payload.attacking_team));
     notify_all(text, 5, HudNotificationType::GenericBig);
     g_payload.end_announced = true;
 }
