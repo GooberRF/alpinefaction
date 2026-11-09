@@ -207,7 +207,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Allow pasting text with `Ctrl+V` into vote panel text boxes
 - Add a scoreboard cursor: press `Secondary Attack` while holding the scoreboard key to free the cursor, and the endgame scoreboard frees it automatically
   - Hover a player for a popout with their character image and extra stats, and scroll the player list with the mouse wheel when it is too long to fit on screen
-  - Click a player to pin the popout, with a mute button and, for rcon holders whose profile allows them, buttons to kick, ban, server mute chat, swap team, force into or out of spectator, and toggle ready
+  - Click a player to pin the popout, with a mute button and, for rcon holders whose profile allows them, buttons to kick, ban, server mute, swap team, force into or out of spectator, and toggle ready
   - Label players in the popout as `Server Host`, `Rcon Holder`, `Spectator`, `Browser` or `Bot`
   - Add `sv_swap_team`, `sv_force_spectate`, `sv_force_unspectate`, `sv_toggle_ready` and `sv_mute_chat` commands, usable through rcon profiles that allow them
   - Make `sv_mute_chat` toggle a server-wide chat mute on a player, held by IP until they are unmuted or the server restarts

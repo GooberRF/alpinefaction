@@ -507,7 +507,7 @@ static const char* scoreboard_button_label(PopoutButtonKind kind, const rf::Play
         case PopoutButtonKind::Mute:
             return player->is_muted ? "Unmute" : "Mute";
         case PopoutButtonKind::ServerMuteChat:
-            return player_role_flags(player) & AF_PLAYER_ROLE_CHAT_MUTED ? "Server unmute chat" : "Server mute chat";
+            return player_role_flags(player) & AF_PLAYER_ROLE_CHAT_MUTED ? "Server unmute" : "Server mute";
         case PopoutButtonKind::Spectate:
             return player == multi_spectate_get_target_player() ? "Spectating" : "Spectate";
         case PopoutButtonKind::Kick:
@@ -678,7 +678,7 @@ static void draw_scoreboard_player_popout(
     };
     const int right_h = section_h(actions) + (actions.empty() || manage.empty() ? 0 : title_gap) + section_h(manage);
     // Sized for the longest label so the buttons never move when one changes.
-    const int button_w = button_h + button_gap * 2 + rf::gr::get_string_size("Server unmute chat", -1).first;
+    const int button_w = button_h + button_gap * 2 + rf::gr::get_string_size("Force unspectate", -1).first;
     const int right_w = right_h > 0 ? column_gap + button_w : 0;
 
     const int box_w = padding * 2 + left_w + right_w;
