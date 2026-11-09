@@ -311,8 +311,7 @@ FunHook<void(rf::Player*)> player_destroy_hook{
         // Before the engine frees this player, drop any dangling spectatee
         // back-reference other players hold to it. The engine frees net_data
         // without nulling these, so a stale spectatee pointer would be a
-        // use-after-free (e.g. Pit's clear_spectator_fields notify, or
-        // af_process_spectate_start_packet's old_target notify).
+        // use-after-free (e.g. af_set_player_spectatee's old_target notify).
         for (rf::Player& other : SinglyLinkedList{rf::player_list}) {
             if (&other == player) continue;
             if (other.spectatee.value_or(nullptr) == player) {

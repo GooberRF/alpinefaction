@@ -210,15 +210,13 @@ Version 1.5.0 (Trillium): Not yet released
 - Allow pasting text with `Ctrl+V` into vote panel text boxes
 - Show control points as spinning team medallions with a notched capture progress ring
 - Add `cl_wh_tethers`, `cl_wh_pushzone`, and `cl_wh_cartstatus` commands to toggle the world HUD beams from the players pushing or blocking the cart in Payload, the ring around it that shows where to push, and the status text over it
-- Add a scoreboard cursor: press `Secondary Attack` while holding the scoreboard key to free the cursor, and the endgame scoreboard frees it automatically
-  - Hover a player for a popout with their character image and extra stats, and scroll the player list with the mouse wheel when it is too long to fit on screen
-  - Click a player to pin the popout, with a mute button and, for rcon holders whose profile allows them, buttons to kick, ban, server mute, swap team, force into or out of spectator, and toggle ready
-  - Label players in the popout as `Server Host`, `Rcon Holder`, `Spectator`, `Browser` or `Bot`
-  - Add `sv_swap_team`, `sv_force_spectate`, `sv_force_unspectate`, `sv_toggle_ready` and `sv_mute_chat` commands, usable through rcon profiles that allow them
-  - Make `sv_mute_chat` toggle a server-wide chat mute on a player, held by IP until they are unmuted or the server restarts
-  - Add `ui_scoreboard_cursor` console command to toggle the cursor, and `ui_scoreboard_cursor_hint` to toggle its hint text
-- Balance scoreboard columns evenly when more than 32 players are listed in non-team game types
-- Allow match votes on servers whose base game type is not a team type, as long as the match itself is on a team game type
+- Add a scoreboard cursor to scroll long player lists and view player details
+- Add mute and rcon admin buttons to the scoreboard player popout
+- Add `sv_swap_team`, `sv_force_spectate`, `sv_force_unspectate` and `sv_toggle_ready` commands, usable over rcon
+- Add `sv_mute_chat` command to mute a player's chat for the whole server, usable over rcon
+- Add `ui_scoreboard_cursor` and `ui_scoreboard_cursor_hint` console commands to toggle the scoreboard cursor and its hint text
+- Balance scoreboard columns for large player counts
+- Allow match votes on servers whose base game type is not a team type
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color

@@ -142,25 +142,6 @@ rf::Player* pop_queue_front()
     return nullptr;
 }
 
-// Server-side: strip any engine-spectate state so the spawn gate at
-// server.cpp (`if (player->is_spectator) return;`) doesn't block a promoted
-// dueler. Mirrors af_process_spectate_start_packet's "leaving spectate" path.
-void clear_spectator_fields(rf::Player* p)
-{
-    if (!p) return;
-    rf::Player* old_target = p->spectatee.value_or(nullptr);
-    if (old_target && rf::is_server) {
-        af_send_spectate_notify_packet(old_target, p, false);
-    }
-    const bool was_spectator = p->is_spectator;
-    p->is_spectator = false;
-    p->spectatee = std::nullopt;
-    p->spectate_start_time = std::nullopt;
-    if (was_spectator) {
-        afstats::on_status(p, afstats::StatusKind::spec_stop);
-    }
-}
-
 // Validate/fill both dueler slots. Slot 0 is the "champion seat" by convention
 // (on_round_end parks the winner there), but the fill logic is identical for
 // both slots: keep the current occupant if still connected + eligible,
@@ -186,7 +167,7 @@ void prepare_dueler(rf::Player* p)
     p->round_is_out = false;
     p->round_participated = false;
     p->respawn_timer.invalidate();
-    clear_spectator_fields(p);
+    af_set_player_spectatee(p, nullptr, false);
 }
 
 // The duel counts as started once both duelers have live entities, which is also the

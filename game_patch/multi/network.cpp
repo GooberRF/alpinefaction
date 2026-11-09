@@ -734,14 +734,12 @@ void handle_rcon_player_action(const rf::NetAddr& addr, uint8_t target_player_id
     if (g_alpine_server_config.rcon_profiles.empty()) {
         return;
     }
-    constexpr std::array<std::string_view, 7> action_commands{
-        "kick", "ban", "sv_swap_team", "sv_force_spectate", "sv_toggle_ready", "sv_force_unspectate",
-        "sv_mute_chat"};
-    if (action >= action_commands.size()) {
+    const auto action_cmd = af_rcon_player_action_command(action);
+    if (!action_cmd) {
         return;
     }
 
-    const std::string_view cmd = action_commands[action];
+    const std::string_view cmd = *action_cmd;
     const auto check_result = check_rcon_command_for_addr(addr, cmd);
     if (check_result != RconCommandCheckResult::Allowed) {
         report_rcon_denied(addr, cmd, check_result);
@@ -1526,9 +1524,10 @@ CodeInjection process_rcon_packet_injection{
 
                     if (check_result == RconCommandCheckResult::Allowed) {
                         std::string payload_str{payload.value()};
-                        if (cmd_lower == "sv_swap_team" || cmd_lower == "sv_force_spectate"
-                            || cmd_lower == "sv_force_unspectate" || cmd_lower == "sv_toggle_ready"
-                            || cmd_lower == "sv_mute_chat") {
+                        // Stock kick and ban run through do_command below.
+                        const auto player_action = af_rcon_player_action_from_command(cmd_lower);
+                        if (player_action && player_action != AF_RCON_PLAYER_KICK
+                            && player_action != AF_RCON_PLAYER_BAN) {
                             send_rcon_feedback(*addr, run_player_admin_rcon_command(cmd_lower, remainder));
                             rf::console::print(
                                 "{} issued command '{}' via rcon", rcon_player_name(*addr), payload.value());

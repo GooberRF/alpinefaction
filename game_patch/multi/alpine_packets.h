@@ -1,7 +1,9 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -388,6 +390,50 @@ enum af_rcon_player_action : uint8_t
     AF_RCON_PLAYER_FORCE_UNSPECTATE = 5,
     AF_RCON_PLAYER_MUTE_CHAT = 6,
 };
+
+// The rcon command each action is permission-checked and reported as.
+struct AfRconPlayerActionCommand
+{
+    af_rcon_player_action action;
+    std::string_view command;
+};
+
+inline constexpr std::array<AfRconPlayerActionCommand, 7> af_rcon_player_action_commands{{
+    {AF_RCON_PLAYER_KICK, "kick"},
+    {AF_RCON_PLAYER_BAN, "ban"},
+    {AF_RCON_PLAYER_SWAP_TEAM, "sv_swap_team"},
+    {AF_RCON_PLAYER_FORCE_SPECTATE, "sv_force_spectate"},
+    {AF_RCON_PLAYER_TOGGLE_READY, "sv_toggle_ready"},
+    {AF_RCON_PLAYER_FORCE_UNSPECTATE, "sv_force_unspectate"},
+    {AF_RCON_PLAYER_MUTE_CHAT, "sv_mute_chat"},
+}};
+static_assert(af_rcon_player_action_commands.size() == AF_RCON_PLAYER_MUTE_CHAT + 1);
+static_assert([] {
+    for (size_t i = 0; i < af_rcon_player_action_commands.size(); ++i) {
+        if (static_cast<size_t>(af_rcon_player_action_commands[i].action) != i) {
+            return false;
+        }
+    }
+    return true;
+}(), "af_rcon_player_action_commands must be indexed by action");
+
+constexpr std::optional<std::string_view> af_rcon_player_action_command(uint8_t action)
+{
+    if (action >= af_rcon_player_action_commands.size()) {
+        return std::nullopt;
+    }
+    return af_rcon_player_action_commands[action].command;
+}
+
+constexpr std::optional<af_rcon_player_action> af_rcon_player_action_from_command(std::string_view command)
+{
+    for (const AfRconPlayerActionCommand& entry : af_rcon_player_action_commands) {
+        if (entry.command == command) {
+            return entry.action;
+        }
+    }
+    return std::nullopt;
+}
 
 // af_sreq_player_roles per-player flags. FROZEN wire constants.
 enum af_player_role_flags : uint8_t

@@ -36,9 +36,8 @@
 #include "../rf/level.h"
 #include "../rf/os/console.h"
 #include "../rf/os/timer.h"
-#include "../rf/sound/sound.h"
 #include "../rf/ui.h"
-#include "../sound/sound.h"
+#include "../ui/ui_kit.h"
 #include "../os/console.h"
 #include "../main/main.h"
 #include "hud.h"
@@ -94,19 +93,6 @@ struct ScoreboardListView
     rf::Player* hovered = nullptr;
 };
 
-struct ScoreboardRect
-{
-    int x = 0;
-    int y = 0;
-    int w = 0;
-    int h = 0;
-
-    [[nodiscard]] bool contains(int px, int py) const
-    {
-        return px >= x && px < x + w && py >= y && py < y + h;
-    }
-};
-
 enum class PopoutButtonKind
 {
     Mute,
@@ -122,7 +108,7 @@ enum class PopoutButtonKind
 struct PopoutButton
 {
     PopoutButtonKind kind = PopoutButtonKind::Mute;
-    ScoreboardRect rect{};
+    UiRect rect{};
 };
 
 // By id: the pin outlives frames, and a player can leave at any time.
@@ -133,7 +119,7 @@ struct ScoreboardPin
     int y = 0;
     bool ban_armed = false;
     int64_t ban_armed_ms = 0;
-    ScoreboardRect box{};
+    UiRect box{};
     std::vector<PopoutButton> buttons{};
 };
 
@@ -288,7 +274,7 @@ static void scoreboard_press_button(PopoutButtonKind kind)
         return;
     }
 
-    rf::snd_play(stock_sound_id::panel_button_click, 0, 0.0f, 1.0f);
+    ui_play_click();
     switch (kind) {
         case PopoutButtonKind::Mute:
             target->is_muted = !target->is_muted;
@@ -345,12 +331,12 @@ static void scoreboard_handle_click()
     int x = 0, y = 0, z = 0;
     rf::mouse_get_pos(x, y, z);
     for (const PopoutButton& button : g_pin.buttons) {
-        if (button.rect.contains(x, y)) {
+        if (ui_point_in(x, y, button.rect)) {
             scoreboard_press_button(button.kind);
             return;
         }
     }
-    if (g_pin.player_id >= 0 && g_pin.box.contains(x, y)) {
+    if (g_pin.player_id >= 0 && ui_point_in(x, y, g_pin.box)) {
         return;
     }
     if (g_hovered_player_id >= 0 && g_hovered_player_id != g_pin.player_id) {
@@ -468,34 +454,42 @@ static std::vector<PopoutButtonKind> scoreboard_popout_actions(const rf::Player*
     return kinds;
 }
 
+static bool local_rcon_action_available(af_rcon_player_action action)
+{
+    const auto command = af_rcon_player_action_command(action);
+    return command && local_rcon_command_available(*command);
+}
+
 static std::vector<PopoutButtonKind> scoreboard_popout_manage(const rf::Player* player)
 {
     if (player == rf::local_player || demo_playback_active()) {
         return {};
     }
     std::vector<PopoutButtonKind> kinds{};
-    if (local_rcon_command_available("kick")) {
+    if (local_rcon_action_available(AF_RCON_PLAYER_KICK)) {
         kinds.push_back(PopoutButtonKind::Kick);
     }
-    if (!player->is_bot && local_rcon_command_available("ban")) {
+    if (!player->is_bot && local_rcon_action_available(AF_RCON_PLAYER_BAN)) {
         kinds.push_back(PopoutButtonKind::Ban);
     }
-    if (!player->is_bot && local_rcon_command_available("sv_mute_chat")) {
+    if (!player->is_bot && local_rcon_action_available(AF_RCON_PLAYER_MUTE_CHAT)) {
         kinds.push_back(PopoutButtonKind::ServerMuteChat);
     }
     if (player->is_browser) {
         return kinds;
     }
-    if (multi_game_type_is_team_type(rf::multi_get_game_type()) && local_rcon_command_available("sv_swap_team")) {
+    if (multi_game_type_is_team_type(rf::multi_get_game_type())
+        && local_rcon_action_available(AF_RCON_PLAYER_SWAP_TEAM)) {
         kinds.push_back(PopoutButtonKind::SwapTeam);
     }
     if (!player->is_bot
-        && local_rcon_command_available(player->is_spectator ? "sv_force_unspectate" : "sv_force_spectate")) {
+        && local_rcon_action_available(
+            player->is_spectator ? AF_RCON_PLAYER_FORCE_UNSPECTATE : AF_RCON_PLAYER_FORCE_SPECTATE)) {
         kinds.push_back(PopoutButtonKind::ToggleSpectate);
     }
     // A listen host never receives the ready prompt that sets the local flag.
     const bool pre_match = rf::is_server ? g_match_info.pre_match_active : get_local_pre_match_active();
-    if (pre_match && !player->is_bot && local_rcon_command_available("sv_toggle_ready")) {
+    if (pre_match && !player->is_bot && local_rcon_action_available(AF_RCON_PLAYER_TOGGLE_READY)) {
         kinds.push_back(PopoutButtonKind::ToggleReady);
     }
     return kinds;
@@ -601,6 +595,15 @@ static std::string scoreboard_player_labels(const rf::Player* player)
     return text;
 }
 
+// The death bars draw over the HUD, so the scoreboard and popout stay clear of them.
+static int scoreboard_death_bar_height()
+{
+    if (!rf::local_player || !player_death_bars_visible(rf::local_player)) {
+        return 0;
+    }
+    return (rf::gr::screen_height() - letterbox_clip_height()) / 2;
+}
+
 static void draw_scoreboard_player_popout(
     rf::Player* player,
     rf::NetGameType game_type,
@@ -690,10 +693,7 @@ static void draw_scoreboard_player_popout(
         box_x = anchor_x - cursor_gap - box_w;
     }
     box_x = std::max(box_x, 0);
-    // Stay clear of the death bars, which draw over the HUD.
-    const int bar_h = rf::local_player && player_death_bars_visible(rf::local_player)
-        ? (rf::gr::screen_height() - letterbox_clip_height()) / 2
-        : 0;
+    const int bar_h = scoreboard_death_bar_height();
     const int box_y = std::max(std::min(anchor_y, rf::gr::clip_height() - bar_h - box_h), bar_h);
 
     rf::gr::set_color(0, 0, 0, 0xE0);
@@ -750,8 +750,8 @@ static void draw_scoreboard_player_popout(
         rf::gr::string(button_x, button_y, heading, label_font);
         button_y += heading_h;
         for (const PopoutButtonKind kind : kinds) {
-            const ScoreboardRect rect{button_x, button_y, button_w, button_h};
-            const int shade = rect.contains(mouse_x, mouse_y) ? 0x70 : 0x40;
+            const UiRect rect{button_x, button_y, button_w, button_h};
+            const int shade = ui_point_in(mouse_x, mouse_y, rect) ? 0x70 : 0x40;
             rf::gr::set_color(scoreboard_button_is_active(kind, player) ? 0xA0 : shade, shade, shade, 0xFF);
             rf::gr::rect(rect.x, rect.y, rect.w, rect.h);
             rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xFF);
@@ -1056,7 +1056,7 @@ int draw_scoreboard_players(
 
         if (in_view(y, font_h)) {
             const bool hovered = view && view->hover_enabled
-                && ScoreboardRect{x, y, w, row_h}.contains(view->mouse_x, view->mouse_y);
+                && ui_point_in(view->mouse_x, view->mouse_y, UiRect{x, y, w, row_h});
             if (hovered) {
                 view->hovered = player;
             }
@@ -1399,8 +1399,9 @@ void draw_scoreboard_internal_new(bool draw) {
     const int row_h = font_h + (scale == 1.0f ? 3 : 0);
     const int rows_h = std::max(left_players_h, right_players_h) - list_header_h;
     const int chrome_h = top_padding + hdr_h + list_header_h + bottom_padding;
-    const int max_scoreboard_h =
-        rf::gr::clip_height() - static_cast<int>(rf::gr::clip_height() / 720.f * 40.f);
+    // The panel is centred, so shrinking it by both bars keeps it between them.
+    const int max_scoreboard_h = rf::gr::clip_height() - 2 * scoreboard_death_bar_height()
+        - static_cast<int>(rf::gr::clip_height() / 720.f * 40.f);
     const int hint_font = hud_get_small_font();
     const bool overflows = chrome_h + rows_h > max_scoreboard_h;
     const std::string cursor_hint = scoreboard_cursor_hint(overflows);
@@ -1437,7 +1438,7 @@ void draw_scoreboard_internal_new(bool draw) {
     if (g_cursor_unhooked) {
         int mouse_z = 0;
         rf::mouse_get_pos(view.mouse_x, view.mouse_y, mouse_z);
-        view.hover_enabled = g_pin.player_id < 0 || !g_pin.box.contains(view.mouse_x, view.mouse_y);
+        view.hover_enabled = g_pin.player_id < 0 || !ui_point_in(view.mouse_x, view.mouse_y, g_pin.box);
     }
     rf::Player* const pinned_player = g_pin.player_id >= 0
         ? rf::multi_find_player_by_id(static_cast<uint8_t>(g_pin.player_id))

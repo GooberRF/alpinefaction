@@ -1032,17 +1032,19 @@ int gametype_index_in(const std::vector<const VoteGametypeInfo*>& gametypes, uin
     return -1;
 }
 
-// Cycler index of `game_type`; when this vote does not offer it, TeamDM, else
-// `current_index` held rather than moved under a player who did not ask.
-int gametype_cycler_index(const std::vector<const VoteGametypeInfo*>& gametypes, uint8_t game_type,
-                          int current_index)
+// Cycler index of `game_type`; when this vote does not offer it, TeamDM for a match vote
+// or for DM, else `current_index` held rather than moved under a player who did not ask.
+int gametype_cycler_index(const std::vector<const VoteGametypeInfo*>& gametypes, bool team_only,
+                          uint8_t game_type, int current_index)
 {
     if (const int index = gametype_index_in(gametypes, game_type); index >= 0) {
         return index;
     }
-    const int team_dm = gametype_index_in(gametypes, static_cast<uint8_t>(rf::NG_TYPE_TEAMDM));
-    if (team_dm >= 0) {
-        return team_dm;
+    if (team_only || game_type == static_cast<uint8_t>(rf::NG_TYPE_DM)) {
+        const int team_dm = gametype_index_in(gametypes, static_cast<uint8_t>(rf::NG_TYPE_TEAMDM));
+        if (team_dm >= 0) {
+            return team_dm;
+        }
     }
     const int count = static_cast<int>(gametypes.size());
     return count > 0 ? std::clamp(current_index, 0, count - 1) : 0;
@@ -1050,7 +1052,7 @@ int gametype_cycler_index(const std::vector<const VoteGametypeInfo*>& gametypes,
 
 int gametype_cycler_index(const VoteOptionsData& options, bool team_only, uint8_t game_type, int current_index)
 {
-    return gametype_cycler_index(selectable_gametypes(options, team_only), game_type, current_index);
+    return gametype_cycler_index(selectable_gametypes(options, team_only), team_only, game_type, current_index);
 }
 
 int gametype_cycler_width(const std::vector<const VoteGametypeInfo*>& gametypes, int font, int max_w)
@@ -2686,7 +2688,7 @@ void do_form(UiContext& ui, const Layout& lo, const VoteOptionsData& options,
         // Back to the level's own game type, re-armed so it follows the level again.
         const Rect reset{right_col.x + right_col.w - reset_w, ry, reset_w, lo.row_h};
         if (ui_button(ui, reset, "Reset", lo.font, gametype_count > 0) && gametype_count > 0) {
-            g_form.gametype_index = gametype_cycler_index(gametypes,
+            g_form.gametype_index = gametype_cycler_index(gametypes, is_match,
                 form_default_gametype(options, is_match, selected_level()),
                 g_form.gametype_index);
             g_form.gametype_touched = false;

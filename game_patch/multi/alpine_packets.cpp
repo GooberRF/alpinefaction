@@ -1656,12 +1656,13 @@ void af_send_vote_options_request(bool has_cache, uint32_t known_generation)
     af_send_client_req_packet(packet, true); // reliable
 }
 
-// Shared tail for the three af_sreq_vote_state events: `w` already holds the
-// header, req_type and event byte plus the event-specific fields.
-static void af_finish_vote_state_packet(rf::Player* player, std::byte* buf, VoteWriter& w)
+// Shared tail for a variable-length af_server_req: `w` already holds the
+// header space, req_type and the payload.
+static void af_finish_server_req_packet(rf::Player* player, std::byte* buf, const VoteWriter& w,
+                                        std::string_view sender)
 {
     if (!w.ok) {
-        xlog::warn("af_send_vote_state: payload too large");
+        xlog::warn("{}: payload too large", sender);
         return;
     }
 
@@ -1672,11 +1673,18 @@ static void af_finish_vote_state_packet(rf::Player* player, std::byte* buf, Vote
     af_send_packet(player, buf, static_cast<int>(w.off), true);
 }
 
+// Is this a remote recipient whose client knows a server req added in the given version?
+static bool af_server_req_recipient_supports(rf::Player* player, int version_major, int version_minor,
+                                             int version_patch)
+{
+    return player && player != rf::local_player && player->net_data
+        && is_player_minimum_af_client_version(player, version_major, version_minor, version_patch);
+}
+
 // Can this recipient receive the structured vote events at all?
 static bool af_vote_recipient_is_structured(rf::Player* player)
 {
-    return player && player != rf::local_player && player->net_data
-        && is_player_minimum_af_client_version(player, 1, 4, 0);
+    return af_server_req_recipient_supports(player, 1, 4, 0);
 }
 
 void af_send_vote_state_start(rf::Player* player, AfVoteType type, uint16_t time_remaining_sec,
@@ -1720,7 +1728,7 @@ void af_send_vote_state_start(rf::Player* player, AfVoteType type, uint16_t time
     w.u8(flags);
     w.str(initiator_name.substr(0, name_len));
     w.str(title.substr(0, title_len));
-    af_finish_vote_state_packet(player, buf, w);
+    af_finish_server_req_packet(player, buf, w, "af_send_vote_state");
 }
 
 void af_send_vote_state_update(rf::Player* player, uint8_t yes, uint8_t no, uint8_t remaining)
@@ -1736,7 +1744,7 @@ void af_send_vote_state_update(rf::Player* player, uint8_t yes, uint8_t no, uint
     w.u8(yes);
     w.u8(no);
     w.u8(remaining);
-    af_finish_vote_state_packet(player, buf, w);
+    af_finish_server_req_packet(player, buf, w, "af_send_vote_state");
 }
 
 void af_send_vote_state_end(rf::Player* player, AfVoteResult result, bool passed,
@@ -1761,7 +1769,7 @@ void af_send_vote_state_end(rf::Player* player, AfVoteResult result, bool passed
     w.u8(static_cast<uint8_t>(result));
     w.u8(passed ? AF_VOTE_END_FLAG_PASSED : uint8_t{0});
     w.str(detail.substr(0, detail_len));
-    af_finish_vote_state_packet(player, buf, w);
+    af_finish_server_req_packet(player, buf, w, "af_send_vote_state");
 }
 
 // The mutator set the session is running, which is what the vote panel pre-selects.
@@ -2777,10 +2785,7 @@ void af_send_match_state(rf::Player* player, uint8_t flags)
 
 void af_send_rcon_state(rf::Player* player, bool is_holder, const std::vector<std::string>& commands)
 {
-    if (!rf::is_server || !player || player == rf::local_player || !player->net_data) {
-        return;
-    }
-    if (!is_player_minimum_af_client_version(player, 1, 5, 0)) {
+    if (!rf::is_server || !af_server_req_recipient_supports(player, 1, 5, 0)) {
         return;
     }
 
@@ -2792,21 +2797,12 @@ void af_send_rcon_state(rf::Player* player, bool is_holder, const std::vector<st
     for (const std::string& command : commands) {
         w.str(command);
     }
-    if (!w.ok) {
-        xlog::warn("af_send_rcon_state: {} commands do not fit a packet", commands.size());
-        return;
-    }
-
-    RF_GamePacketHeader header{};
-    header.type = static_cast<uint8_t>(af_packet_type::af_server_req);
-    header.size = static_cast<uint16_t>(w.off - sizeof(header));
-    std::memcpy(buf, &header, sizeof(header));
-    af_send_packet(player, buf, static_cast<int>(w.off), true);
+    af_finish_server_req_packet(player, buf, w, "af_send_rcon_state");
 }
 
 void af_send_force_spectate(rf::Player* player, bool enter)
 {
-    if (!rf::is_server || !player || player == rf::local_player || !player->net_data) {
+    if (!rf::is_server || !af_server_req_recipient_supports(player, 1, 5, 0)) {
         return;
     }
 
@@ -2814,20 +2810,12 @@ void af_send_force_spectate(rf::Player* player, bool enter)
     VoteWriter w{buf, sizeof(buf), sizeof(RF_GamePacketHeader)};
     w.u8(static_cast<uint8_t>(af_server_req_type::af_sreq_force_spectate));
     w.u8(enter ? 1 : 0);
-
-    RF_GamePacketHeader header{};
-    header.type = static_cast<uint8_t>(af_packet_type::af_server_req);
-    header.size = static_cast<uint16_t>(w.off - sizeof(header));
-    std::memcpy(buf, &header, sizeof(header));
-    af_send_packet(player, buf, static_cast<int>(w.off), true);
+    af_finish_server_req_packet(player, buf, w, "af_send_force_spectate");
 }
 
 void af_send_player_roles(rf::Player* player, const std::vector<std::pair<uint8_t, uint8_t>>& roles)
 {
-    if (!rf::is_server || !player || player == rf::local_player || !player->net_data) {
-        return;
-    }
-    if (!is_player_minimum_af_client_version(player, 1, 5, 0)) {
+    if (!rf::is_server || !af_server_req_recipient_supports(player, 1, 5, 0)) {
         return;
     }
 
@@ -2839,16 +2827,7 @@ void af_send_player_roles(rf::Player* player, const std::vector<std::pair<uint8_
         w.u8(player_id);
         w.u8(flags);
     }
-    if (!w.ok) {
-        xlog::warn("af_send_player_roles: {} roles do not fit a packet", roles.size());
-        return;
-    }
-
-    RF_GamePacketHeader header{};
-    header.type = static_cast<uint8_t>(af_packet_type::af_server_req);
-    header.size = static_cast<uint16_t>(w.off - sizeof(header));
-    std::memcpy(buf, &header, sizeof(header));
-    af_send_packet(player, buf, static_cast<int>(w.off), true);
+    af_finish_server_req_packet(player, buf, w, "af_send_player_roles");
 }
 
 // Apply a Pit queue-state update on the local client.

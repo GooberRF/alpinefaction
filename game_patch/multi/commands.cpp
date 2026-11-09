@@ -178,6 +178,12 @@ ConsoleCommand2 map_prev_cmd{
 
 namespace
 {
+// Text rcon passes the arguments through raw, so a quoted name keeps its quotes.
+std::string_view trim_and_unquote(std::string_view arg)
+{
+    return trim(unquote(trim(arg)));
+}
+
 std::string server_bot_add_command(const int profile_index, const std::string_view team_name)
 {
     const int num_profiles = static_cast<int>(g_alpine_server_config.bot_configs.size());
@@ -255,10 +261,7 @@ ConsoleCommand2 sv_bot_list_cmd{
 std::string run_server_bot_rcon_command(const std::string_view command, const std::string_view args)
 {
     if (command == "sv_bot_remove") {
-        std::string_view target = trim(args);
-        if (target.size() >= 2 && target.front() == '"' && target.back() == '"') {
-            target = target.substr(1, target.size() - 2);
-        }
+        const std::string_view target = trim_and_unquote(args);
         return target.empty() ? std::string{"Usage: sv_bot_remove <name|all>"} : server_bot_remove_command(target);
     }
     const auto [profile_arg, team_arg] = split_once_whitespace(args);
@@ -367,8 +370,13 @@ std::optional<std::string> server_run_player_action(rf::Player* player, uint8_t 
     }
 }
 
-std::string run_player_admin_rcon_command(const std::string_view command, const std::string_view target)
+std::string run_player_admin_rcon_command(const std::string_view command, const std::string_view target_arg)
 {
+    const auto action = af_rcon_player_action_from_command(command);
+    if (!action) {
+        return std::format("Unknown player command '{}'", command);
+    }
+    const std::string_view target = trim_and_unquote(target_arg);
     if (target.empty()) {
         return std::format("Usage: {} <player>", command);
     }
@@ -377,21 +385,7 @@ std::string run_player_admin_rcon_command(const std::string_view command, const 
         return std::format("No single player matches '{}'", target);
     }
 
-    uint8_t action = AF_RCON_PLAYER_SWAP_TEAM;
-    if (command == "sv_force_spectate") {
-        action = AF_RCON_PLAYER_FORCE_SPECTATE;
-    }
-    else if (command == "sv_toggle_ready") {
-        action = AF_RCON_PLAYER_TOGGLE_READY;
-    }
-    else if (command == "sv_force_unspectate") {
-        action = AF_RCON_PLAYER_FORCE_UNSPECTATE;
-    }
-    else if (command == "sv_mute_chat") {
-        action = AF_RCON_PLAYER_MUTE_CHAT;
-    }
-
-    const auto failure = server_run_player_action(player, action);
+    const auto failure = server_run_player_action(player, *action);
     if (!failure && action == AF_RCON_PLAYER_MUTE_CHAT) {
         return std::format("{} {}", player->name, server_player_chat_muted(player) ? "is now muted" : "is now unmuted");
     }

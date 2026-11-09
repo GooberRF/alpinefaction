@@ -2901,28 +2901,43 @@ static bool fill_match_with_join_bots()
     return true;
 }
 
+namespace
+{
+struct ReadyRefusal
+{
+    std::string_view to_player;
+    std::string_view to_admin;
+};
+
+std::optional<ReadyRefusal> ready_player_refusal(rf::Player* player)
+{
+    const auto& team_ready_list =
+        (player->team == 0) ? g_match_info.ready_players_red : g_match_info.ready_players_blue;
+    if (team_ready_list.contains(player)) {
+        return ReadyRefusal{"You are already ready.", "that player is already ready"};
+    }
+    if (team_ready_list.size() >= static_cast<size_t>(g_match_info.team_size)) {
+        return ReadyRefusal{"Your team is full.", "their team is full"};
+    }
+    if (match_human_slots_full()) {
+        return ReadyRefusal{"The match is full.", "the match is full"};
+    }
+    return std::nullopt;
+}
+} // namespace
+
 void add_ready_player(rf::Player* player)
 {
     auto& team_ready_list = (player->team == 0) ? g_match_info.ready_players_red : g_match_info.ready_players_blue;
     const std::string_view team_name = (player->team == 0) ? "RED" : "BLUE";
 
-    if (team_ready_list.contains(player)) {
-        af_send_automated_chat_msg("You are already ready.", player);
+    if (const auto refusal = ready_player_refusal(player)) {
+        af_send_automated_chat_msg(refusal->to_player, player);
         return;
     }
 
     const auto match_team_size = static_cast<size_t>(g_match_info.team_size);
-
-    if (team_ready_list.size() >= match_team_size) {
-        af_send_automated_chat_msg("Your team is full.", player);
-        return;
-    }
-
     const int join_bots = match_join_bots();
-    if (match_human_slots_full()) {
-        af_send_automated_chat_msg("The match is full.", player);
-        return;
-    }
 
     team_ready_list.insert(player);
     // Ready players are never idle, so a warning given before readying up must not kick
@@ -3528,12 +3543,13 @@ std::optional<std::string> server_toggle_player_ready(rf::Player* player)
         || player->version_info.software != ClientSoftware::AlpineFaction) {
         return "that player cannot ready for matches";
     }
-    const bool was_ready = get_ready_status(player);
-    toggle_ready_status(player);
-    // Readying the last player starts the match, which empties the ready lists.
-    if (get_ready_status(player) == was_ready && !g_match_info.everyone_ready) {
-        return "their team or the match is full";
+    // Checked here so the refusal reaches the admin rather than the target.
+    if (!get_ready_status(player)) {
+        if (const auto refusal = ready_player_refusal(player)) {
+            return std::string{refusal->to_admin};
+        }
     }
+    toggle_ready_status(player);
     return std::nullopt;
 }
 
@@ -6168,7 +6184,7 @@ int server_spray_cooldown_ms()
 }
 
 // Lets dev builds spawn, play and vote on a match mode server.
-#define MATCH_MODE_ALLOW_DEV_BUILDS 1
+#define MATCH_MODE_ALLOW_DEV_BUILDS 0
 static_assert(!MATCH_MODE_ALLOW_DEV_BUILDS || VERSION_TYPE != VERSION_TYPE_RELEASE);
 
 std::tuple<bool, int, bool, bool> server_features_require_alpine_client()
