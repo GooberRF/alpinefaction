@@ -1068,7 +1068,8 @@ void payload_level_init_post()
 
 void payload_do_frame()
 {
-    if (!payload_active() || rf::gameseq_get_state() != rf::GameState::GS_GAMEPLAY) {
+    // In multiplayer the level keeps running beneath menus, so the cart must too, or its riders are left behind
+    if (!payload_active() || !(rf::level.flags & rf::LEVEL_LOADED) || !gameseq_is_stacked(rf::GS_GAMEPLAY)) {
         return;
     }
     const float dt = std::clamp(rf::frametime, 0.0f, max_frame_seconds);
