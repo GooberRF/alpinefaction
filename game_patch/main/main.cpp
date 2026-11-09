@@ -39,6 +39,7 @@
 #include "../multi/gametype.h"
 #include "../multi/mutators.h"
 #include "../multi/bagman.h"
+#include "../multi/payload.h"
 #include "../multi/jetpack.h"
 #include "../multi/salvage.h"
 #include "../multi/vehicles/vehicle.h"
@@ -185,6 +186,7 @@ FunHook<int()> rf_do_frame_hook{
         riot_shield_do_frame();
         client_bot_do_frame();
         koth_do_frame();
+        payload_do_frame(); // before the stock frame moves the cart
         bagman_do_frame();
         jetpack_do_frame();
         salvage_client_do_frame();      // client-side Salvage carried-flag attachment
@@ -435,6 +437,7 @@ FunHook<void(bool)> level_init_post_hook{
                 minimap_level_init_post();
                 // listen server host spawns before this init, so we need to run on_local_spawn for them again
                 if (rf::is_server) {
+                    payload_greet_listen_host();
                     multi_hud_on_local_spawn();
                 }
             }

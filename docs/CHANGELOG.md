@@ -35,7 +35,9 @@ Version 1.5.0 (Trillium): Not yet released
 - Add server-side bots, which run inside the dedicated or listen server process in addition to (or instead of) bot clients
   - `server_bots` ADS option (0-31) sets how many server bots join; they use the `bot_profiles` profiles and follow `ideal_player_count` like bot clients
   - Add `sv_bot_add [profile_index] [red|blue]`, `sv_bot_remove <name|all>` and `sv_bot_list` server console commands, which also work through rcon
-- Add new multiplayer game type: Scavenger (`SCAV`)
+- Add new multiplayer game types:
+  - Scavenger (`SCAV`)
+  - Payload (`PAY`)
 
 [@GooberRF](https://github.com/GooberRF) & [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add multiplayer vehicles and turrets
@@ -47,6 +49,7 @@ Version 1.5.0 (Trillium): Not yet released
 [@GooberRF](https://github.com/GooberRF)
 - Notify players in a server that is recording demos
 - Add `level_message` dedicated server config section to broadcast a message to all players when a level loads, set globally or per level (`$LEVEL` is replaced with the level name)
+- Add `wave_respawns` option to the `spawn_delay` dedicated server config section to respawn each team together in waves
 - Restore cut first person weapon aim sway, toggleable with `cl_weaponsway`
 - Add `cl_freelookslide` to scale the acceleration and deceleration slide of the freelook camera
 - Add terms of use and notices document to installer
@@ -205,6 +208,8 @@ Version 1.5.0 (Trillium): Not yet released
 - Raise minimum `maxfps` from 1 to 10, for both the client and the dedicated server
 - Limit `r_gamma` to 0.7-2.2
 - Allow pasting text with `Ctrl+V` into vote panel text boxes
+- Show control points as spinning team medallions with a notched capture progress ring
+- Add `cl_wh_tethers`, `cl_wh_pushzone`, and `cl_wh_cartstatus` commands to toggle the world HUD beams from the players pushing or blocking the cart in Payload, the ring around it that shows where to push, and the status text over it
 - Add a scoreboard cursor: press `Secondary Attack` while holding the scoreboard key to free the cursor, and the endgame scoreboard frees it automatically
   - Hover a player for a popout with their character image and extra stats, and scroll the player list with the mouse wheel when it is too long to fit on screen
   - Click a player to pin the popout, with a mute button and, for rcon holders whose profile allows them, buttons to kick, ban, server mute, swap team, force into or out of spectator, and toggle ready
@@ -244,6 +249,9 @@ Version 1.5.0 (Trillium): Not yet released
 
 [@GooberRF](https://github.com/GooberRF) & [@is-this-c](https://github.com/is-this-c)
 - Add lens distortion, chromatic aberration and vignetting to the sniper and precision rifle scope views, with levels 0-2 via `r_scopeglass`: 0 off, 1 light, 2 heavy (Direct3D 11 renderer only)
+
+[@AL2009man](https://github.com/AL2009man)
+- Use a 0-10 range for the `Mouse sensitivity` slider when `ms_scale` is Modern
 
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
@@ -400,6 +408,8 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix lighting for pistol silencer and remote charge detonator
 - Fix third-person crouch animations on remote players flickering and snapping
 - Fix the multiplayer camera sitting above the eyes other players see on Parker and Ultor guard characters, which made other players look shorter than you
+- Fix level editor viewports flashing white or leaving black areas when resized under Wine/Proton
+- Fix occasional crash on startup with the Direct3D 11 renderer in MinGW builds
 
 [@GooberRF](https://github.com/GooberRF) & [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Fix severe frame rate drops when looking over heavily geomodded areas
