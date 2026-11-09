@@ -73,7 +73,7 @@ namespace gr::d3d11::engine
 
     inline bool anisotropic_filtering()
     {
-        return g_game_config.anisotropic_filtering;
+        return g_alpine_game_config.anisotropic_filtering;
     }
 
     inline uint32_t sample_count()

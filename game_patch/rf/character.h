@@ -37,6 +37,51 @@ namespace rf
     };
     static_assert(sizeof(Skeleton) == 0x7C);
 
+    struct SkeletonRotationKey
+    {
+        int time;
+        short rotation[4]; // x, y, z, w
+        char ease_in;
+        char ease_out;
+        short padding;
+    };
+    static_assert(sizeof(SkeletonRotationKey) == 0x10);
+    static_assert(offsetof(SkeletonRotationKey, rotation) == 0x4);
+
+    struct SkeletonBoneTrack
+    {
+        float weight;
+        short num_rotation_keys;
+        short num_position_keys;
+        SkeletonRotationKey rotation_keys[1];
+    };
+    static_assert(offsetof(SkeletonBoneTrack, weight) == 0x0);
+    static_assert(offsetof(SkeletonBoneTrack, num_rotation_keys) == 0x4);
+    static_assert(offsetof(SkeletonBoneTrack, rotation_keys) == 0x8);
+
+    // Skeleton::animation_data: a loaded .rfa. Every offset is relative to this header.
+    struct SkeletonAnimation
+    {
+        int signature;
+        int version;
+        float pos_reduction;
+        float rot_reduction;
+        int start_time;
+        int end_time;
+        int num_bones;
+        int num_morph_vertices;
+        int num_morph_keyframes;
+        int ramp_in_time;
+        int ramp_out_time;
+        Quaternion total_rotation;
+        Vector3 total_translation;
+        int morph_vertex_map_offset;
+        int morph_data_offset;
+        int bone_offsets[1];
+    };
+    static_assert(offsetof(SkeletonAnimation, num_bones) == 0x18);
+    static_assert(offsetof(SkeletonAnimation, bone_offsets) == 0x50);
+
     struct CiAnimInfo
     {
         int anim_index;
@@ -122,6 +167,8 @@ namespace rf
         CharacterInstance *next;
         CharacterInstance *prev;
     };
+    static_assert(offsetof(CharacterInstance, bone_info) == 0x1394);
+    static_assert(offsetof(CharacterInstance, iteration_counter) == 0x1CF8);
 
     static auto& base_characters = addr_as_ref<Character[64]>(0x0181BDC0);
 

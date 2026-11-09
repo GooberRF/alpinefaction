@@ -61,6 +61,10 @@ set(SRCS
     graphics/gr.h
     graphics/gr_ghost_mesh.h
     graphics/gr_light.cpp
+    graphics/svg_cache.cpp
+    graphics/svg_cache.h
+    graphics/ui_draw.cpp
+    graphics/ui_draw.h
     graphics/af_lightmap.cpp
     graphics/af_lightmap.h
     graphics/weather.cpp
@@ -84,6 +88,8 @@ set(SRCS
     graphics/d3d11/gr_d3d11_scenefx.cpp
     graphics/d3d11/engine/gr_d3d11_engine.h
     input/input.h
+    input/bind_context.h
+    input/bind_context.cpp
     input/mouse.h
     input/mouse.cpp
     input/key.cpp
@@ -177,6 +183,8 @@ set(SRCS
     multi/vehicles/physics/vphys_step.cpp
     multi/vehicles/physics/vphys_camera.cpp
     multi/vehicles/physics/vphys_debug.cpp
+    multi/vehicles/physics/ragdoll.h
+    multi/vehicles/physics/ragdoll.cpp
     multi/sprays.h
     multi/sprays.cpp
     multi/mutators.h
@@ -213,6 +221,8 @@ set(SRCS
     multi/saved_info.cpp
     multi/saved_info.h
     multi/level_download.cpp
+    multi/map_thumbnails.h
+    multi/map_thumbnails.cpp
     multi/server.h
     multi/server.cpp
     multi/votes.cpp
@@ -294,6 +304,14 @@ set(SRCS
     multi/bots/bot_state.h
     multi/bots/bot_utils.cpp
     multi/bots/bot_utils.h
+    multi/bots/bot_vehicle.cpp
+    multi/bots/bot_vehicle.h
+    multi/bots/bot_vehicle_drive.cpp
+    multi/bots/bot_vehicle_drive.h
+    multi/bots/bot_vehicle_flight.cpp
+    multi/bots/bot_vehicle_flight.h
+    multi/bots/bot_vehicle_nav.cpp
+    multi/bots/bot_vehicle_nav.h
     multi/bots/bot_waypoint_route.cpp
     multi/bots/bot_waypoint_route.h
     multi/bots/bot_weapon_profiles.h
@@ -338,10 +356,14 @@ set(SRCS
     object/alpine_bag.h
     object/alpine_projection_camera.cpp
     object/alpine_projection_camera.h
+    object/alpine_waypoint_helper.cpp
+    object/alpine_waypoint_helper.h
     object/alpine_rope.cpp
     object/alpine_rope.h
     object/alpine_dir_light.cpp
     object/alpine_dir_light.h
+    object/zipline.cpp
+    object/zipline.h
     object/clock.cpp
     misc/achievements.h
     misc/achievements.cpp
@@ -382,17 +404,46 @@ set(SRCS
     misc/waypoints.cpp
     misc/waypoints.h
     misc/waypoints_internal.h
+    misc/waypoints_terrain.cpp
+    misc/waypoints_terrain.h
     misc/waypoints_utils.cpp
     misc/waypoints_utils.h
+    misc/waypoints_vehicle.cpp
+    misc/waypoints_vehicle.h
     misc/alpine_options.h
     misc/alpine_options.cpp
     misc/alpine_settings.h
     misc/alpine_settings.cpp
+    misc/settings_registry.h
+    misc/settings/settings_rows.h
+    misc/settings/settings_registry.cpp
+    misc/settings/settings_rows_graphics.cpp
+    misc/settings/settings_rows_hud.cpp
+    misc/settings/settings_rows_interface.cpp
+    misc/settings/settings_rows_audio.cpp
+    misc/settings/settings_rows_bindings.cpp
+    misc/settings/settings_rows_input.cpp
+    misc/settings/settings_rows_gameplay.cpp
+    misc/settings/settings_rows_vehicles.cpp
+    misc/settings/settings_rows_multiplayer.cpp
+    misc/settings/settings_rows_spectator.cpp
+    ui/ui_kit.h
+    ui/ui_kit.cpp
+    ui/settings_skin.h
+    ui/settings_skin.cpp
+    ui/settings_menu.h
+    ui/settings_menu.cpp
+    ui/menu_shell.h
+    ui/menu_shell.cpp
+    ui/extras_menu.h
+    ui/extras_menu.cpp
     sound/sound.cpp
     sound/sound.h
     sound/sound_ds.cpp
     sound/sound_foley.cpp
     sound/sound_foley.h
+    sound/sound_stretch.cpp
+    sound/sound_stretch.h
     res/resources.rc
     purefaction/pf.cpp
     purefaction/pf.h
@@ -456,6 +507,7 @@ target_link_libraries(AlpineFaction
     freetype
     stb_vorbis
     stb_image
+    lunasvg
     BulletDynamics
     BulletCollision
     LinearMath

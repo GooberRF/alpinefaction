@@ -26,6 +26,12 @@ Version 1.5.0 (Trillium): Not yet released
   - Mirror `Terrain Tools` brush strokes across the terrain's X and/or Z axis, with movable mirror lines
   - Up to 4 detail overlays (leaves, debris) and 8 mesh decoration layers per terrain (grass, rocks, bushes)
   - `Geoable` terrains are carved by RF2-style geomod craters, with their own underside and crater textures
+- Replace the stock options screens with a fully new options menu
+  - Context-specific bindings for vehicles, spectator, and demo playback
+  - `af_set` and `af_get` console commands to read and write any setting by name
+  - Draw menus from resolution-independent vector artwork
+  - Redraw the extras menu in the same style, with the demo browser as one of its panels
+  - `Use deprecated legacy menus` launcher option to use the stock options and extras screens instead of the new menus
 - Add server-side bots, which run inside the dedicated or listen server process in addition to (or instead of) bot clients
   - `server_bots` ADS option (0-31) sets how many server bots join; they use the `bot_profiles` profiles and follow `ideal_player_count` like bot clients
   - Add `sv_bot_add [profile_index] [red|blue]`, `sv_bot_remove <name|all>` and `sv_bot_list` server console commands, which also work through rcon
@@ -48,9 +54,10 @@ Version 1.5.0 (Trillium): Not yet released
 - Bump RFL version to 306
 - Add `Display_Projection` event and `Projection Camera` object for rendering live camera views onto ATX textures (Direct3D 11 renderer only)
 - Add `Rope_State` event to switch `Rope Emitter` objects on and off at runtime
-- Add `Rope Emitter` object for ropes, cables, and power lines, with optional decorations
+- Add `Rope Emitter` object for ropes, cables, power lines, and zip lines that players and bots can ride, with optional decorations
 - Add flames to gib chunks thrown by exploding entities, toggleable with `cl_gibflames`
 - Add `Jetpacks explode` option to the Jetpacks mutator
+- Add `Scrapyard mode` option to the Gibbing mutator
 - Add underwater rendering effects — animated caustics, depth-based water fog with a waterline, screen tint/vignette and distortion — with quality levels 0-3 via `r_underwater` (Direct3D 11 renderer only)
 - Extend view distance while submerged at `r_underwater` 2 or higher, up to 4x the liquid visibility, with the extension capped at the normal far clip
 - Add edge-vignette damage feedback as `cl_damageflash 2` (Direct3D 11 renderer only); `cl_damageflash` is now a level: 0 off, 1 screen flash, 2 vignette
@@ -156,14 +163,17 @@ Version 1.5.0 (Trillium): Not yet released
 - Add `-nogsk` command line argument to make dedicated servers ignore `fflink_gsk` and skip FactionFiles registration
 - Implement shared Direct3D 11 renderer for game and level editor
 - Reduce the CPU time bots spend choosing goals and planning routes, and stop bots from repeatedly searching for routes to destinations they cannot reach
-- Tweak `hard`, `expert` and `nightmare` bot skill presets
-- Add `reaction_time_ms`, `aim_error_min`, `aim_error_max`, `yaw_speed_cap`, `pitch_speed_cap`, `fire_alignment_threshold` and `semi_auto_click_interval_scale` bot skill fields for `skill_overrides` in bot profiles
 - Allow the `opportunism_bias`, `seek_weapon_bias`, `replenish_bias`, `weapon_switch_bias`, `path_smoothing_bias`, `dodge_combat_bias`, `crouch_combat_bias`, `jump_combat_bias` and `ctf_hold_enemy_flag_safety_bias` bot personality fields, which were raised to at least 0.25, to be set to 0 to switch off what they scale, and `decision_aggression_bias` and `decision_risk_tolerance` to go below 0.25 for bots that retreat and restock earlier and avoid hazardous routes
 - Make bots choose weapons by their expected damage at the current distance (from the weapons' `weapons.tbl` stats, with personality preferences as a weight), switch on pickups and new targets, fire only within a weapon's effective range, and keep one remote charge out at a time, setting it off when an enemy is in the blast
 - Make bots use explosives safely, top up their clip once the enemy is out of sight, and stop leaving fights for pickups that are not on the way
 - Make bots break off to top up armor at a lower armor level, and switch goals less often
+- Make bots fight an enemy they can see instead of a closer one behind cover
+- Make bots strafe in fights straight after respawning, and for longer at a time, turning back from walls and ledges
 - Make bots walk straight to objectives, items and enemies only when nothing  is in the way and there is no ledge to drop off, and look ahead round corners or toward where a threat was last noticed
 - Ignore connected human players who have not spawned yet this level when picking a joining bot's team
+- Speed up waypoint autogeneration on large levels
+- Seed waypoint autogeneration from the floor under every control point and from every spawn point
+- Add a coarse waypoint autogeneration mode that spaces waypoints wider on open ground
 - Add `[detail]` section to ATX textures to tile a greyscale detail texture finely over the texture when seen up close, on level geometry, meshes and terrain (Direct3D 11 renderer only)
 - Add `r_detailtextures` to turn detail textures off (0), show only ATX ones (1, default), or also give other textures a stock one by their material (2), replacing the stock toggle (Direct3D 11 renderer only)
 - Speed up per-pixel mesh lighting and entity shadows (Direct3D 11 renderer only)
@@ -171,15 +181,48 @@ Version 1.5.0 (Trillium): Not yet released
 - Add `Surrender` vote, which a team can call during a match to concede it if all of its players agree
 - During a match, only `Surrender`, `Cancel Match` and `Extend` votes can be called, only players in the match can call or vote in them, and players who don't vote count as no
 - Never treat players as idle during a match, or during the ready-up phase once they have readied up
-- Add `Join Bots` mutator, which adds 1-8 server bots at a chosen skill for the level, or fills a match's open slots once the other players are ready
+- Add `Join Bots` mutator with configurable skill and personality to level votes, and to fill empty slots in matches
+- Add `Waypoint Helper` object type
 - Add `$Fpgun Override` to `af_client.tbl` to replace the first person weapon model and arm textures per multiplayer character and weapon
+- Add `$Custom Weapon Props` to `af_client.tbl` to set a weapon's first person FOV, offset, muzzle flash bitmap and muzzle flash radius
 - Don't load Alpine Faction `af_*.tbl` option files from packfiles in `user_maps`
+- Add client-side ragdoll deaths, toggleable with `cl_ragdolls`, with the number kept in the world adjustable with `cl_ragdolls_max`
+- Add an event type dropdown to Alpine event properties in the level editor
+- Add curved mover paths, shaped per keyframe in `Keyframe Properties` and with handles dragged in the level editor viewport
+  - `Easing` on each keyframe shapes the speed of the segment leaving it, for translating and rotating movers
+  - `Mover Facing` turns a mover along its path (`Follow Path`) or between keyframe orientations (`Keyframe Rotation`)
+  - `Segment Facing` gives the segment leaving a keyframe a facing of its own, and `Align & OK` turns keyframes to face along the path so the two kinds of segment meet smoothly
+  - Keyframes whose orientation turns a mover show which way they face
+  - `Turn Riders with Mover` carries players standing on a turning mover round with it and turns their view to match
+  - `Detach Riders on Leave` lets players who jump or fall off a mover keep its velocity instead of following it until they land
+- Make level editor draw ticks at equal steps of time along mover paths
+- Make level editor draw the closing link of a looping mover with three or more keyframes
+- Add `Mover Preview` on the level editor `View` menu plays and scrubs a mover in the viewports without changing the level
+- Save `ShowHUD`, `ShowCrosshair`, `PlayGlobalRadioMsgs`, and `PlayTeamRadioMsgs` in `alpine_settings.ini`
+- Move anisotropic filtering and reduced speed in background from the launcher to the settings menu (`alpine_settings.ini`); both now apply without a restart
+- Add `exposure_damage` dedicated server rule and make `sp_exposuredamage` apply only in single player
+- Raise minimum `maxfps` from 1 to 10, for both the client and the dedicated server
+- Limit `r_gamma` to 0.7-2.2
+- Allow pasting text with `Ctrl+V` into vote panel text boxes
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color
 - Render animated (`.vfx`) meshes on the GPU with per-pixel lighting, and apply their materials' reflection maps (Direct3D 11 renderer only)
 - Load levels with very large face counts or many level sounds much faster
 - Add Discord rich presence (`cl_discord_presence`) showing the server, gametype, map, team scores, match status, player count and time left in multiplayer, and the level, difficulty and mod in single player, with a `Join server` button for public, password-free servers (`cl_discord_join_button`)
+- Add HUD, player outline, and outline x-ray toggles to the spectate options menu
+- Add `cl_hudelement` console command and a spectate options submenu to show or hide individual HUD elements
+- Keep chat visible while the HUD is hidden
+- Add `r_outlines_spectator_xray` console command to show player outlines through walls while spectating
+- Mark kills, awards, objective captures and powerup pickups on the demo playback scrubber
+- Speed up seeking in demos
+- Merge the demo playback controls and the spectate nameplate into one panel
+- Add `spectate_minimalbar` console command to show only the player's name on the compact demo playback panel
+- Add a custom demo playback marker, set with the Quick Save key and jumped to with the Quick Load key
+- Pause demo playback while the Esc menu is open
+- Add playback speed control (0.25x-8x) to the demo playback panel
+- Show the recording server's config during demo playback with the Remote Server Config key
+- Apply demo playback speed to the whole world, including particles, animations and sounds
 
 [@is-this-c](https://github.com/is-this-c)
 - Add `bighud_health` and `bighud_ammo` console variables to disable `bighud` for health and ammo, which is useful for mods incompatible with `bighud`
@@ -329,8 +372,12 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix "You are on team" showing on every spawn of a listen server host in team modes
 - Fix a spectating listen server host not seeing the spectated player's ammo, weapon fire animations, damage numbers, awards or critical hit flashes
 - Fix bot clients losing the `personality_overrides` and `skill_overrides` of their bot profile (such as `taunt_on_kill_chance`) when the server sent their skill preset
+- Fix bots in objective game types sometimes walking an unrelated route to its end before heading for the flag, bag or control point
+- Fix waypoint autogeneration placing waypoints on mover brushes set to `No Player Collide`, which players pass through
 - Fix level editor sometimes crashing when moving vertices after using `Weld` in vertex mode
 - Fix some level editor buttons in Face and Vertex modes not working when the mode was entered with a keyboard shortcut
+- Fix players freezing in place in multiplayer for a moment after bumping into another player or mesh
+- Fix possible dedicated server crash when auto-downloading missing vote-allowed levels with `add_installed_to_allowed_levels` enabled
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize
@@ -352,6 +399,8 @@ Version 1.5.0 (Trillium): Not yet released
 ### Imported libraries
 - [Bullet Physics 3.25](https://github.com/bulletphysics/bullet3) by Erwin Coumans
 - [bc7enc_rdo](https://github.com/richgel999/bc7enc_rdo) by Richard Geldreich, Jr.
+- [LunaSVG 3.5.0](https://github.com/sammycage/lunasvg) by Samuel Ugochukwu
+- [PlutoVG 1.3.3](https://github.com/sammycage/plutovg) by Samuel Ugochukwu
 
 Version 1.4.0 (Lupin): Released Aug-25-2026
 --------------------------------

@@ -1,4 +1,5 @@
 #include <windows.h>
+#include <cstring>
 #include <cwchar>
 #include <cwctype>
 #include <patch_common/FunHook.h>
@@ -269,6 +270,22 @@ void wnd_set_flash(const HWND hwnd) {
         .dwTimeout = 0
     };
     FlashWindowEx(&flash);
+}
+
+std::string read_clipboard_text(std::size_t max_len)
+{
+    std::string out;
+    if (!OpenClipboard(nullptr)) {
+        return out;
+    }
+    if (HANDLE data = GetClipboardData(CF_TEXT)) {
+        if (const auto* text = static_cast<const char*>(GlobalLock(data))) {
+            out.assign(text, strnlen(text, std::min<std::size_t>(GlobalSize(data), max_len)));
+            GlobalUnlock(data);
+        }
+    }
+    CloseClipboard();
+    return out;
 }
 
 static FunHook<void()> os_close_hook{

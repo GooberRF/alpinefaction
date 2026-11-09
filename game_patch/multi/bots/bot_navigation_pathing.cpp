@@ -2,12 +2,15 @@
 
 #include "bot_context.h"
 #include "bot_decision_eval.h"
+#include "bot_fsm.h"
 #include "bot_internal.h"
 #include "bot_math.h"
 #include "bot_navigation_routes.h"
 #include "bot_utils.h"
 #include "bot_waypoint_route.h"
 #include "../../main/main.h"
+#include "../../misc/alpine_settings.h"
+#include "../../object/zipline.h"
 #include "../../rf/collide.h"
 #include <algorithm>
 #include <array>
@@ -17,12 +20,24 @@
 #include <random>
 #include <unordered_set>
 #include <vector>
+#include <xlog/xlog.h>
 
 namespace
 {
 constexpr int kBotNavProbeTraceFlags = rf::CF_ANY_HIT | rf::CF_PROCESS_INVISIBLE_FACES;
 constexpr float kWaypointTurnRelaxHeightThreshold = 0.40f;
 constexpr float kJumpPadWaypointReachRadius = 0.35f;
+constexpr float kZiplineEntranceReachRadius = 1.0f;
+// Looser than the reach: the bot's jumps for the line carry it well above the node.
+constexpr float kZiplineEntranceHoldRadius = 1.5f;
+constexpr float kZiplineEntranceHoldHeight = 2.0f;
+constexpr int kZiplineGrabJumpDelayMs = 300;
+constexpr int kZiplineGrabJumpRetryMs = 900;
+constexpr int kZiplineGrabGiveUpMs = 2500;
+// Away from the entrance this long, a return is a fresh attempt.
+constexpr int kZiplineAttemptLapseMs = 3000;
+// A hold not renewed this soon has been left (navigation paused); coming back starts it afresh.
+constexpr int kZiplineHoldRefreshMs = 500;
 constexpr float kPathFallFastForwardRadius = kWaypointReachRadius * 1.75f;
 constexpr float kPathFallFastForwardVerticalSlack = 1.0f;
 constexpr float kPathFallFastForwardLevelTolerance = 0.25f;
@@ -625,7 +640,9 @@ void clear_waypoint_route()
 {
     bot_state().waypoint_path.clear();
     bot_state().waypoint_next_index = 0;
+    bot_state().zipline_entrance = 0;
     bot_state().waypoint_goal = 0;
+    bot_state().route_request_goal = 0;
     bot_state().has_waypoint_target = false;
     bot_state().waypoint_progress_timer.invalidate();
     bot_state().waypoint_progress_waypoint = 0;
@@ -643,10 +660,6 @@ void clear_waypoint_route()
     bot_state().combat_los_target_waypoint = 0;
     bot_state().combat_los_reposition_timer.invalidate();
     bot_state().combat_los_reposition_eval_timer.invalidate();
-    bot_state().combat_los_waypoint_guard_timer.invalidate();
-    bot_state().combat_los_waypoint_guard_waypoint = 0;
-    bot_state().combat_los_waypoint_guard_target_handle = -1;
-    bot_state().combat_los_waypoint_guard_visible = false;
     bot_state().forward_obstacle_progress_timer.invalidate();
     bot_state().forward_obstacle_progress_origin = {};
     bot_state().corner_probe_progress_timer.invalidate();
@@ -695,8 +708,9 @@ bool is_following_waypoint_link(const rf::Entity& entity)
     return corridor_dist_sq <= corridor_radius * corridor_radius;
 }
 
-bool start_recovery_anchor_reroute(const rf::Entity& entity, const int avoid_waypoint)
+bool start_recovery_anchor_reroute(const rf::Entity& entity, const int avoid_waypoint, const bool rejoin_route)
 {
+    bot_state().route_repair_path.clear();
     // Block all rerouting while the bot is traversing a drop link.
     if (bot_state().drop_link_route_locked) {
         return false;
@@ -715,6 +729,9 @@ bool start_recovery_anchor_reroute(const rf::Entity& entity, const int avoid_way
 
     int anchor_waypoint = bot_find_closest_waypoint_with_los_fallback(entity);
     anchor_waypoint = choose_recovery_anchor_waypoint(entity, anchor_waypoint);
+    if (rejoin_route) {
+        bot_nav_save_route_for_repair();
+    }
     clear_waypoint_route();
     if (anchor_waypoint <= 0) {
         bot_state().recovery_anchor_waypoint = 0;
@@ -852,9 +869,14 @@ bool try_fast_forward_path_on_downward_fall(
         if (waypoint_pos.y > entity.pos.y + kPathFallFastForwardVerticalSlack) {
             continue;
         }
+        if (waypoint_pos.y < entity.pos.y - kRouteMaxUpwardStepHeight) {
+            continue;
+        }
 
         const float dist_sq = rf::vec_dist_squared(&entity.pos, &waypoint_pos);
-        if (dist_sq > max_dist_sq) {
+        // The bot has landed, so a node it cannot walk to is over a ledge, or past a wall, and skipping to it would
+        // lose the link that gets it there.
+        if (dist_sq > max_dist_sq || !bot_can_walk_direct(entity.pos, waypoint_pos)) {
             continue;
         }
 
@@ -956,12 +978,23 @@ bool enforce_current_link_corridor(const rf::Entity& entity)
     if (from_waypoint <= 0 || to_waypoint <= 0) {
         return true;
     }
+    // A drop, jump pad or knockback carries the bot off the link's line; it is judged again once it lands.
+    if (rf::entity_is_falling(const_cast<rf::Entity*>(&entity))) {
+        return true;
+    }
 
     if (bot_state().validated_link_from_waypoint != from_waypoint
         || bot_state().validated_link_to_waypoint != to_waypoint) {
         bot_state().validated_link_from_waypoint = from_waypoint;
         bot_state().validated_link_to_waypoint = to_waypoint;
-        bot_state().validated_link_clear = waypoints_link_is_clear(from_waypoint, to_waypoint);
+        // A drop or jump link's straight line clips the ledge it spans.
+        rf::Vector3 from_pos{};
+        rf::Vector3 to_pos{};
+        const bool spans_ledge = waypoints_get_pos(from_waypoint, from_pos) && waypoints_get_pos(to_waypoint, to_pos)
+            && std::abs(to_pos.y - from_pos.y) >= kRouteMaxUpwardStepHeight;
+        bot_state().validated_link_clear = spans_ledge
+            ? waypoints_has_direct_link(from_waypoint, to_waypoint)
+            : waypoints_link_is_clear(from_waypoint, to_waypoint);
         bot_state().corridor_violation_from_waypoint = 0;
         bot_state().corridor_violation_to_waypoint = 0;
         bot_state().corridor_violation_count = 0;
@@ -994,7 +1027,7 @@ bool enforce_current_link_corridor(const rf::Entity& entity)
             return true;
         }
         bot_nav_register_failed_edge_cooldown(from_waypoint, to_waypoint, kFailedEdgeCooldownMs);
-        start_recovery_anchor_reroute(entity, to_waypoint);
+        start_recovery_anchor_reroute(entity, to_waypoint, true);
         return false;
     }
 
@@ -1036,8 +1069,42 @@ bool enforce_current_link_corridor(const rf::Entity& entity)
         return true;
     }
     bot_nav_register_failed_edge_cooldown(from_waypoint, to_waypoint, kFailedEdgeCooldownMs);
-    start_recovery_anchor_reroute(entity, to_waypoint);
+    start_recovery_anchor_reroute(entity, to_waypoint, true);
     return false;
+}
+
+// A turn taken early cuts the corner, and the corner can be a ramp's side or edge: the early turn is only for a bot
+// that can walk straight on to the next waypoint from where it is.
+bool early_turn_blocked(const rf::Entity& entity, const rf::Vector3& waypoint_pos)
+{
+    constexpr float kTurnAtWaypointRadius = 0.7f;
+    const int next_index = bot_state().waypoint_next_index + 1;
+    // Across the floor: a node set off the height the bot walks at must still clear.
+    if (bot_horizontal_dist_sq(entity.pos, waypoint_pos) <= kTurnAtWaypointRadius * kTurnAtWaypointRadius
+        || next_index >= static_cast<int>(bot_state().waypoint_path.size())
+        || rf::entity_is_falling(const_cast<rf::Entity*>(&entity))) {
+        return false;
+    }
+    rf::Vector3 next_pos{};
+    if (!waypoints_get_pos(bot_state().waypoint_path[next_index], next_pos)
+        || std::abs(next_pos.y - entity.pos.y) >= kRouteMaxUpwardStepHeight
+        || bot_can_walk_direct(entity.pos, next_pos)) {
+        return false;
+    }
+    // Something may stand on the node, so the wait ends before the progress watchdog can fail a good link.
+    constexpr int kTurnAtWaypointWaitMs = 400;
+    static_assert(kTurnAtWaypointWaitMs < kWaypointObjectiveProgressTimeoutMs);
+    BotState& state = bot_state();
+    const int waypoint = state.waypoint_path[state.waypoint_next_index];
+    if (state.early_turn_waypoint != waypoint) {
+        state.early_turn_waypoint = waypoint;
+        state.early_turn_timer.set(kTurnAtWaypointWaitMs);
+    }
+    if (state.early_turn_timer.elapsed()) {
+        state.early_turn_waypoint = 0;
+        return false;
+    }
+    return true;
 }
 
 void clear_synthetic_movement_controls()
@@ -1046,6 +1113,12 @@ void clear_synthetic_movement_controls()
     bot_state().move_input_y = 0.0f;
     bot_state().move_input_z = 0.0f;
     bot_state().movement_override_active = false;
+    bot_state().rot_override_active = false;
+    bot_state().rot_input_x = 0.0f;
+    bot_state().rot_input_y = 0.0f;
+    bot_state().mouse_delta_override_active = false;
+    bot_state().mouse_dh_input = 0.0f;
+    bot_state().mouse_dp_input = 0.0f;
 }
 
 void reset_client_bot_state()
@@ -1075,6 +1148,14 @@ void reset_client_bot_state()
     bot_state().ctf_threat_visible = false;
     bot_state().ctf_objective_route_fail_timer.invalidate();
     bot_state().ctf_hold_goal_timer.invalidate();
+    bot_state().ctf_hold_spot_waypoint = 0;
+    bot_state().ctf_hold_spot_reached = false;
+    for (BotRouteDanger& danger : bot_state().route_dangers) {
+        danger.handle = -1;
+        danger.expiry.invalidate();
+    }
+    bot_state().route_bias_avoid.clear();
+    bot_state().route_bias_goal = 0;
     bot_state().control_point_route_fail_timer.invalidate();
     bot_state().control_point_patrol_waypoint = 0;
     bot_state().control_point_patrol_timer.invalidate();
@@ -1097,11 +1178,14 @@ void reset_client_bot_state()
     bot_state().los_route_solve_timer.invalidate();
     bot_state().los_target_handle = -1;
     bot_state().los_to_enemy = false;
+    bot_state().candidate_los = {};
     bot_state().preferred_enemy_handle = -1;
     bot_state().preferred_enemy_lock_timer.invalidate();
     bot_state().recovery_anchor_waypoint = 0;
     bot_state().recovery_avoid_waypoint = 0;
     bot_state().recovery_pending_reroute = false;
+    bot_state().route_repair_path.clear();
+    bot_state().route_repair_last_waypoint = 0;
     bot_state().waypoint_progress_timer.invalidate();
     bot_state().waypoint_progress_waypoint = 0;
     bot_state().waypoint_progress_best_dist_sq = 0.0f;
@@ -1155,16 +1239,13 @@ void reset_client_bot_state()
     bot_state().combat_los_anchor_waypoint = 0;
     bot_state().combat_los_target_waypoint = 0;
     bot_state().combat_los_reposition_eval_timer.invalidate();
-    bot_state().combat_los_waypoint_guard_timer.invalidate();
-    bot_state().combat_los_waypoint_guard_waypoint = 0;
-    bot_state().combat_los_waypoint_guard_target_handle = -1;
-    bot_state().combat_los_waypoint_guard_visible = false;
     bot_state().firing.reset();
     bot_state().known_weapons.fill(false);
     bot_state().known_weapons_initialized = false;
     bot_state().weapon_switch_timer.invalidate();
     bot_state().combat_weapon_eval_timer.invalidate();
     bot_state().combat_maneuver_timer.invalidate();
+    bot_state().combat_strafe_timer.invalidate();
     bot_state().combat_crouch_timer.invalidate();
     bot_state().traversal_crouch_active = false;
     bot_state().traversal_crouch_toggled_on = false;
@@ -1187,6 +1268,7 @@ void reset_client_bot_state()
     bot_state().goal_stuck_wd.retry_window_timer.invalidate();
     bot_state().goal_stuck_wd.retry_count = 0;
     bot_state().eliminate_target_reacquire_timer.invalidate();
+    bot_state().visible_enemy_reevaluate_timer.invalidate();
     bot_state().goal_eval_timer.invalidate();
     bot_state().goal_switch_lock_timer.invalidate();
     bot_state().goal_min_dwell_timer.invalidate();
@@ -1235,8 +1317,7 @@ void reset_client_bot_state()
     bot_state().objective_progress_watchdog_handle = -1;
     bot_state().objective_progress_watchdog_identifier = -1;
     bot_state().objective_progress_watchdog_waypoint = 0;
-    bot_state().objective_progress_watchdog_route_waypoint = 0;
-    bot_state().objective_progress_watchdog_route_next_index = 0;
+    bot_state().objective_progress_watchdog_reached_waypoint = 0;
     bot_state().objective_progress_watchdog_best_dist_sq = std::numeric_limits<float>::infinity();
     bot_state().objective_progress_watchdog_retry_count = 0;
     bot_state().global_failsafe_wd.timer.invalidate();
@@ -1262,7 +1343,8 @@ bool is_on_significant_downward_link()
 
     const int from = bot_state().waypoint_path[bot_state().waypoint_next_index - 1];
     const int to = bot_state().waypoint_path[bot_state().waypoint_next_index];
-    if (from <= 0 || to <= 0 || !waypoints_has_direct_link(from, to)) {
+    if (from <= 0 || to <= 0 || !waypoints_has_direct_link(from, to)
+        || waypoints_get_zipline_ride(from, to, nullptr, nullptr, nullptr)) {
         return false;
     }
     rf::Vector3 from_pos{};
@@ -1285,7 +1367,8 @@ bool is_next_link_significant_downward()
 
     const int from = bot_state().waypoint_path[next_idx];
     const int to = bot_state().waypoint_path[next_idx + 1];
-    if (from <= 0 || to <= 0 || !waypoints_has_direct_link(from, to)) {
+    if (from <= 0 || to <= 0 || !waypoints_has_direct_link(from, to)
+        || waypoints_get_zipline_ride(from, to, nullptr, nullptr, nullptr)) {
         return false;
     }
     rf::Vector3 from_pos{};
@@ -1397,7 +1480,8 @@ bool try_recover_from_stuck_on_geometry(const rf::Entity& entity)
         bot_nav_choose_blacklist_waypoint_for_failed_link(previous_waypoint, blocked_waypoint);
     start_recovery_anchor_reroute(
         entity,
-        recovery_avoid_waypoint > 0 ? recovery_avoid_waypoint : blocked_waypoint
+        recovery_avoid_waypoint > 0 ? recovery_avoid_waypoint : blocked_waypoint,
+        true
     );
     return false;
 }
@@ -1759,6 +1843,97 @@ bool commit_single_hop_fallback_route(
     return true;
 }
 
+enum class ZiplineHold
+{
+    none,
+    waiting,
+    riding,
+    failed,
+};
+
+bool current_link_leads_to_zipline_ride(const int current_waypoint, int32_t* rope_uid, int* dir)
+{
+    const int next_index = bot_state().waypoint_next_index + 1;
+    return next_index < static_cast<int>(bot_state().waypoint_path.size())
+        && waypoints_get_zipline_ride(current_waypoint, bot_state().waypoint_path[next_index], rope_uid, dir, nullptr);
+}
+
+// Only taking hold moves the route past an entrance; walking on to the exit would skip the ride.
+ZiplineHold hold_at_zipline_entrance(
+    const rf::Entity& entity, const int current_waypoint, const rf::Vector3& entrance_pos, const float distance_sq)
+{
+    const int next_index = bot_state().waypoint_next_index + 1;
+    int32_t rope_uid = -1;
+    int dir = 1;
+    const float dx = entity.pos.x - entrance_pos.x;
+    const float dz = entity.pos.z - entrance_pos.z;
+    const rf::Timestamp& hold_refresh = bot_state().zipline_hold_refresh_timer;
+    const bool holding =
+        bot_state().zipline_entrance == current_waypoint && hold_refresh.valid() && !hold_refresh.elapsed();
+    const bool in_reach = holding
+        ? dx * dx + dz * dz <= kZiplineEntranceHoldRadius * kZiplineEntranceHoldRadius
+              && std::fabs(entity.pos.y - entrance_pos.y) <= kZiplineEntranceHoldHeight
+        : distance_sq <= kZiplineEntranceReachRadius * kZiplineEntranceReachRadius;
+    if (!in_reach || !current_link_leads_to_zipline_ride(current_waypoint, &rope_uid, &dir)) {
+        bot_state().zipline_entrance = 0;
+        return ZiplineHold::none;
+    }
+    const int exit = bot_state().waypoint_path[next_index];
+    // A closed line may reopen soon, so only the usual short cooldown.
+    if (!waypoints_has_direct_link(current_waypoint, exit)) {
+        bot_nav_register_failed_edge_cooldown(current_waypoint, exit, kFailedEdgeCooldownMs);
+        bot_state().zipline_entrance = 0;
+        bot_state().zipline_attempt_entrance = 0;
+        return ZiplineHold::failed;
+    }
+    const rf::Timestamp& lapse = bot_state().zipline_attempt_lapse_timer;
+    if (bot_state().zipline_attempt_entrance != current_waypoint || !lapse.valid() || lapse.elapsed()) {
+        bot_state().zipline_attempt_entrance = current_waypoint;
+        bot_state().zipline_give_up_timer.set(kZiplineGrabGiveUpMs);
+    }
+    else if (!holding && hold_refresh.elapsed()) {
+        // Time away from the entrance doesn't count toward giving up; a route clear or a brief slip does.
+        bot_state().zipline_give_up_timer.set(bot_state().zipline_attempt_left_ms);
+    }
+    bot_state().zipline_attempt_left_ms = std::max(0, bot_state().zipline_give_up_timer.time_until());
+    bot_state().zipline_attempt_lapse_timer.set(kZiplineAttemptLapseMs);
+    if (!holding) {
+        bot_state().zipline_entrance = current_waypoint;
+        bot_state().zipline_jump_timer.set(kZiplineGrabJumpDelayMs);
+    }
+    bot_state().zipline_hold_refresh_timer.set(kZiplineHoldRefreshMs);
+    rf::Entity& rider = const_cast<rf::Entity&>(entity);
+    if (zipline_bot_grab(&rider, rope_uid, dir)) {
+        if (g_alpine_game_config.dbg_bot) {
+            xlog::info("[BotZip] {} took zip line {} ({})", bot_player() ? bot_player()->name.c_str() : "?", rope_uid,
+                       dir);
+        }
+        bot_nav_record_waypoint_visit(current_waypoint);
+        bot_state().zipline_entrance = 0;
+        bot_state().zipline_attempt_entrance = 0;
+        bot_state().zipline_riding = true;
+        bot_state().waypoint_next_index = next_index;
+        return ZiplineHold::riding;
+    }
+    if (bot_state().zipline_give_up_timer.elapsed()) {
+        if (g_alpine_game_config.dbg_bot) {
+            xlog::warn("[BotZip] {} could not take hold of zip line {}",
+                       bot_player() ? bot_player()->name.c_str() : "?", rope_uid);
+        }
+        bot_nav_register_failed_edge_cooldown(current_waypoint, exit, kZiplineFailedRideCooldownMs);
+        bot_state().zipline_entrance = 0;
+        bot_state().zipline_attempt_entrance = 0;
+        return ZiplineHold::failed;
+    }
+    if (bot_state().zipline_jump_timer.elapsed() && !rf::entity_is_falling(&rider)) {
+        if (rf::Player* const player = bot_player()) {
+            bot_backend_jump(*player);
+        }
+        bot_state().zipline_jump_timer.set(kZiplineGrabJumpRetryMs);
+    }
+    return ZiplineHold::waiting;
+}
+
 bool update_waypoint_target_from_current_path(const rf::Entity& entity)
 {
     if (bot_state().waypoint_path.empty()) {
@@ -1771,6 +1946,15 @@ bool update_waypoint_target_from_current_path(const rf::Entity& entity)
             >= static_cast<int>(bot_state().waypoint_path.size())) {
         clear_waypoint_route();
         return false;
+    }
+
+    // Routes start with their first node counted as reached, so one planned from an entrance starts on the ride;
+    // on foot the ride starts at the entrance.
+    if (!bot_state().zipline_riding && bot_state().waypoint_next_index > 0
+        && waypoints_get_zipline_ride(bot_state().waypoint_path[bot_state().waypoint_next_index - 1],
+                                      bot_state().waypoint_path[bot_state().waypoint_next_index], nullptr, nullptr,
+                                      nullptr)) {
+        --bot_state().waypoint_next_index;
     }
 
     int current_waypoint =
@@ -1786,59 +1970,29 @@ bool update_waypoint_target_from_current_path(const rf::Entity& entity)
         return false;
     }
 
-    if (bot_state().pursuit_target_handle >= 0 && bot_state().los_to_enemy) {
-        rf::Entity* pursuit_target =
-            rf::entity_from_handle(bot_state().pursuit_target_handle);
-        if (pursuit_target) {
-            const bool should_refresh_waypoint_los =
-                !bot_state().combat_los_waypoint_guard_timer.valid()
-                || bot_state().combat_los_waypoint_guard_timer.elapsed()
-                || bot_state().combat_los_waypoint_guard_waypoint != current_waypoint
-                || bot_state().combat_los_waypoint_guard_target_handle
-                    != pursuit_target->handle;
-            if (should_refresh_waypoint_los) {
-                const rf::Vector3 eye_offset = entity.eye_pos - entity.pos;
-                bot_state().combat_los_waypoint_guard_visible =
-                    waypoint_has_visibility_to_target(
-                        target_pos,
-                        eye_offset,
-                        pursuit_target->pos,
-                        pursuit_target->eye_pos,
-                        pursuit_target
-                    );
-                bot_state().combat_los_waypoint_guard_waypoint = current_waypoint;
-                bot_state().combat_los_waypoint_guard_target_handle =
-                    pursuit_target->handle;
-                bot_state().combat_los_waypoint_guard_timer.set(
-                    kCombatLosSampleIntervalMs
-                );
-            }
-
-            if (!bot_state().combat_los_waypoint_guard_visible) {
-                start_recovery_anchor_reroute(entity, current_waypoint);
-                // LOS can flicker near corners; keep advancing this frame while recovery replans.
-            }
-        }
-        else {
-            bot_state().combat_los_waypoint_guard_timer.invalidate();
-            bot_state().combat_los_waypoint_guard_waypoint = 0;
-            bot_state().combat_los_waypoint_guard_target_handle = -1;
-            bot_state().combat_los_waypoint_guard_visible = false;
-        }
-    }
-    else {
-        bot_state().combat_los_waypoint_guard_timer.invalidate();
-        bot_state().combat_los_waypoint_guard_waypoint = 0;
-        bot_state().combat_los_waypoint_guard_target_handle = -1;
-        bot_state().combat_los_waypoint_guard_visible = false;
-    }
-
     if (!enforce_current_link_corridor(entity) && !bot_state().drop_link_route_locked) {
         clear_waypoint_route();
         return false;
     }
 
     const float distance_sq = rf::vec_dist_squared(&entity.pos, &target_pos);
+    if (const ZiplineHold hold = hold_at_zipline_entrance(entity, current_waypoint, target_pos, distance_sq);
+        hold != ZiplineHold::none) {
+        if (hold == ZiplineHold::failed) {
+            clear_waypoint_route();
+            return false;
+        }
+        if (hold == ZiplineHold::riding
+            && !waypoints_get_pos(bot_state().waypoint_path[bot_state().waypoint_next_index], target_pos)) {
+            clear_waypoint_route();
+            return false;
+        }
+        bot_state().waypoint_progress_timer.invalidate();
+        bot_state().waypoint_progress_waypoint = 0;
+        bot_state().waypoint_target_pos = target_pos;
+        bot_state().has_waypoint_target = true;
+        return true;
+    }
     if (bot_state().waypoint_progress_waypoint != current_waypoint) {
         bot_state().waypoint_progress_waypoint = current_waypoint;
         bot_state().waypoint_progress_best_dist_sq = distance_sq;
@@ -1857,18 +2011,19 @@ bool update_waypoint_target_from_current_path(const rf::Entity& entity)
         }
         else if (bot_state().waypoint_progress_timer.valid()
                  && bot_state().waypoint_progress_timer.elapsed()) {
-            // Skip progress failure when approaching or on a significant downward link —
-            // the bot may have minimal horizontal movement while walking off a ledge.
-            if (is_on_significant_downward_link() || is_next_link_significant_downward()) {
+            rf::Vector3 moved = entity.pos - bot_state().waypoint_progress_origin;
+            moved.y = 0.0f;
+            const bool has_world_progress = moved.len_sq()
+                >= kNavigationBlockedProgressDistance * kNavigationBlockedProgressDistance;
+            // On or before a drop the next waypoint barely gets closer while the bot walks to the edge or falls; a bot
+            // that has neither moved nor started falling is held there by something the waypoint graph cannot see.
+            if ((is_on_significant_downward_link() || is_next_link_significant_downward())
+                && (has_world_progress || rf::entity_is_falling(const_cast<rf::Entity*>(&entity)))) {
                 bot_state().waypoint_progress_no_improvement_windows = 0;
                 bot_state().waypoint_progress_timer.set(current_waypoint_progress_timeout_ms());
                 bot_state().waypoint_progress_origin = entity.pos;
             }
             else {
-            rf::Vector3 moved = entity.pos - bot_state().waypoint_progress_origin;
-            moved.y = 0.0f;
-            const bool has_world_progress = moved.len_sq()
-                >= kNavigationBlockedProgressDistance * kNavigationBlockedProgressDistance;
             bool should_fail_progress = !has_world_progress;
             if (has_world_progress) {
                 ++bot_state().waypoint_progress_no_improvement_windows;
@@ -1903,9 +2058,12 @@ bool update_waypoint_target_from_current_path(const rf::Entity& entity)
                         kFailedWaypointBlacklistMs
                     );
                 }
+                // A drop lock would veto the reroute away from a ledge the bot is held at.
+                bot_state().drop_link_route_locked = false;
                 start_recovery_anchor_reroute(
                     entity,
-                    blacklist_waypoint > 0 ? blacklist_waypoint : current_waypoint
+                    blacklist_waypoint > 0 ? blacklist_waypoint : current_waypoint,
+                    true
                 );
                 return false;
             }
@@ -1928,8 +2086,14 @@ bool update_waypoint_target_from_current_path(const rf::Entity& entity)
         if (current_type == WaypointType::jump_pad) {
             waypoint_reach_radius = std::min(waypoint_reach_radius, kJumpPadWaypointReachRadius);
         }
+        // Only taking hold of the line moves a ride's route on (hold_at_zipline_entrance).
+        if (current_type == WaypointType::zipline_entrance
+            && current_link_leads_to_zipline_ride(current_waypoint, nullptr, nullptr)) {
+            waypoint_reach_radius = std::min(waypoint_reach_radius, kZiplineEntranceReachRadius);
+        }
     }
-    if (distance_sq <= waypoint_reach_radius * waypoint_reach_radius) {
+    if (distance_sq <= waypoint_reach_radius * waypoint_reach_radius && !early_turn_blocked(entity, target_pos)) {
+        bot_state().early_turn_waypoint = 0;
         bot_nav_record_waypoint_visit(current_waypoint);
         bot_state().waypoint_progress_timer.invalidate();
         bot_state().waypoint_progress_waypoint = 0;
@@ -2147,39 +2311,50 @@ bool update_waypoint_target_towards(
         return false;
     }
 
-    const bool path_invalid =
+    const bool path_exhausted =
         bot_state().waypoint_path.empty()
         || bot_state().waypoint_next_index < 0
         || bot_state().waypoint_next_index
-            >= static_cast<int>(bot_state().waypoint_path.size())
-        || !bot_state().repath_timer.valid();
+            >= static_cast<int>(bot_state().waypoint_path.size());
+    const bool path_invalid = path_exhausted || !bot_state().repath_timer.valid();
+    // A valid path is otherwise walked to its end, so a route left by retreat or roam would detour the objective.
+    const bool routing_to_fixed_objective =
+        !los_target_eye_pos
+        && goal_waypoint == bot_state().goal_target_waypoint
+        && bot_goal_routes_to_fixed_objective(bot_state().active_goal, bot_state().goal_target_handle);
     const bool allow_opportunistic_repath =
-        bot_state().recovery_pending_reroute
+        (bot_state().recovery_pending_reroute || routing_to_fixed_objective)
         && !stabilize_eliminate_recovery_route_goal;
+
+    const auto goal_anchor_shifted = [&](const int from_goal_waypoint) {
+        rf::Vector3 current_goal_pos{};
+        rf::Vector3 new_goal_pos{};
+        if (from_goal_waypoint <= 0
+            || !waypoints_get_pos(from_goal_waypoint, current_goal_pos)
+            || !waypoints_get_pos(goal_waypoint, new_goal_pos)) {
+            return true;
+        }
+        const float anchor_shift_sq = rf::vec_dist_squared(
+            &current_goal_pos,
+            &new_goal_pos
+        );
+        return anchor_shift_sq > kGoalWaypointSwitchMinDist * kGoalWaypointSwitchMinDist;
+    };
 
     bool need_route = path_invalid;
     if (!need_route && allow_opportunistic_repath && !los_target_eye_pos
         && bot_state().waypoint_goal != goal_waypoint) {
-        bool should_switch_anchor = bot_state().recovery_pending_reroute;
-        if (!should_switch_anchor) {
-            rf::Vector3 current_goal_pos{};
-            rf::Vector3 new_goal_pos{};
-            if (bot_state().waypoint_goal <= 0
-                || !waypoints_get_pos(bot_state().waypoint_goal, current_goal_pos)
-                || !waypoints_get_pos(goal_waypoint, new_goal_pos)) {
-                should_switch_anchor = true;
-            }
-            else {
-                const float anchor_shift_sq = rf::vec_dist_squared(
-                    &current_goal_pos,
-                    &new_goal_pos
-                );
-                should_switch_anchor =
-                    anchor_shift_sq
-                    > kGoalWaypointSwitchMinDist * kGoalWaypointSwitchMinDist;
-            }
-        }
-        need_route = should_switch_anchor;
+        need_route = bot_state().recovery_pending_reroute || goal_anchor_shifted(bot_state().waypoint_goal);
+    }
+    // Without this, a route to a moving target is walked to where the target was. A retreat or item detour routes
+    // elsewhere, so it keeps its route.
+    if (!need_route && bot_goal_chases_moving_target(bot_state().active_goal, bot_state().goal_target_handle)
+        && !stabilize_eliminate_recovery_route_goal
+        && !bot_state().recovery_pending_reroute && bot_state().fsm_state != BotFsmState::retreat
+        && !bot_fsm_is_contextual_item_state(bot_state().fsm_state)
+        && bot_state().repath_timer.elapsed() && bot_state().route_request_goal > 0
+        && bot_state().route_request_goal != goal_waypoint && goal_anchor_shifted(bot_state().route_request_goal)) {
+        need_route = true;
     }
 
     if (!need_route && allow_opportunistic_repath && los_target_eye_pos) {
@@ -2199,11 +2374,13 @@ bool update_waypoint_target_towards(
 
     const bool prefer_long_route =
         los_target_eye_pos && is_long_route_escape_active();
-    if (need_route && bot_state().drop_link_route_locked) {
+    // With no route left there is no drop link to protect.
+    if (need_route && !path_exhausted && bot_state().drop_link_route_locked) {
         need_route = false;
     }
     if (need_route) {
         set_last_heading_change_reason("repath_needed");
+        bot_state().route_request_goal = goal_waypoint;
         int closest_waypoint = 0;
         if (bot_state().recovery_pending_reroute
             && bot_state().recovery_anchor_waypoint > 0) {
@@ -2527,7 +2704,9 @@ bool update_waypoint_target_for_local_los_reposition(
     const int link_count = waypoints_get_links(anchor_waypoint, links);
     for (int i = 0; i < link_count; ++i) {
         const int linked_waypoint = links[i];
-        if (linked_waypoint <= 0 || linked_waypoint == anchor_waypoint) {
+        // A ride's exit is no side step.
+        if (linked_waypoint <= 0 || linked_waypoint == anchor_waypoint
+            || waypoints_get_zipline_ride(anchor_waypoint, linked_waypoint, nullptr, nullptr, nullptr)) {
             continue;
         }
         add_candidate(linked_waypoint, false);

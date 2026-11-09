@@ -16,6 +16,7 @@
 #include "../rf/os/timestamp.h"
 #include "../multi/multi.h"
 #include "../misc/alpine_settings.h"
+#include "../misc/settings_registry.h"
 #include "../main/main.h"
 #include "../os/console.h"
 #include "../misc/vpackfile.h"
@@ -183,8 +184,7 @@ ConsoleCommand2 level_sounds_cmd{
     "levelsounds",
     [](std::optional<float> volume) {
         if (volume.has_value()) {
-            g_alpine_game_config.set_level_sound_volume(volume.value());
-            set_play_sound_events_volume_scale();
+            setting_console_set("level_sound_volume", std::to_string(volume.value()));
         }
         rf::console::print("Level sound volume: {:.1f}", g_alpine_game_config.level_sound_volume);
     },
@@ -195,8 +195,7 @@ ConsoleCommand2 level_sounds_cmd{
 ConsoleCommand2 sound_enabled_cmd{
     "dbg_togglesound",
     [] {
-        g_alpine_game_config.sound_enabled = !g_alpine_game_config.sound_enabled;
-        set_sound_enabled(g_alpine_game_config.sound_enabled);
+        setting_console_set("sound_enabled", "toggle");
         rf::console::print("Game sound is now {}.", g_alpine_game_config.sound_enabled ? "enabled" : "disabled");
     },
     "Toggle all game sound.",
@@ -714,24 +713,42 @@ bool snd_instance_is_playing(int instance_handle)
         && rf::snd_pc_is_playing(instance.sig);
 }
 
-void snd_instance_set_pitch(int instance_handle, float ratio)
+static int snd_instance_ds_channel(int instance_handle)
 {
     if (rf::sound_backend != rf::SOUND_BACKEND_DS || !snd_instance_is_playing(instance_handle)) {
-        return;
+        return -1;
     }
-    const int chnl = rf::snd_ds_get_channel(rf::sound_instances[static_cast<uint8_t>(instance_handle)].sig);
-    if (chnl < 0) {
-        return;
+    return rf::snd_ds_get_channel(rf::sound_instances[static_cast<uint8_t>(instance_handle)].sig);
+}
+
+void snd_instance_set_pitch(int instance_handle, float ratio)
+{
+    const int chnl = snd_instance_ds_channel(instance_handle);
+    if (chnl >= 0) {
+        snd_ds_set_channel_pitch(chnl, ratio);
     }
-    IDirectSoundBuffer* buffer = rf::ds_channels[chnl].pdsb;
-    // Room for a WAVEFORMATEXTENSIBLE: GetFormat fails rather than truncate.
-    alignas(WAVEFORMATEX) BYTE format[64]{};
-    if (!buffer || FAILED(buffer->GetFormat(reinterpret_cast<WAVEFORMATEX*>(format), sizeof(format), nullptr))) {
-        return;
+}
+
+void snd_set_global_rate(float rate)
+{
+    if (rf::sound_backend == rf::SOUND_BACKEND_DS) {
+        snd_ds_set_global_rate(rate);
     }
-    const float freq = reinterpret_cast<const WAVEFORMATEX*>(format)->nSamplesPerSec * ratio;
-    buffer->SetFrequency(static_cast<DWORD>(std::clamp(freq, static_cast<float>(DSBFREQUENCY_MIN),
-                                                       static_cast<float>(DSBFREQUENCY_MAX))));
+}
+
+void snd_clear_global_rate_cache()
+{
+    if (rf::sound_backend == rf::SOUND_BACKEND_DS) {
+        snd_ds_clear_stretch_cache();
+    }
+}
+
+int snd_play_unscaled(int handle, int group, float pan, float volume)
+{
+    snd_ds_set_new_channel_unscaled(true);
+    const int instance = rf::snd_play(handle, group, pan, volume);
+    snd_ds_set_new_channel_unscaled(false);
+    return instance;
 }
 
 void gamesound_parse_custom_sounds() 
@@ -860,6 +877,7 @@ void gamesound_parse_custom_sounds()
         {"af_spray1.ogg", 10.0f, 1.0f, 1.0f},
         {"af_award1.ogg", 10.0f, 1.0f, 1.0f},
         {"af_jeep_horn.ogg", 15.0f, 1.0f, 1.0f},
+        {"af_zipline_loop1.wav", 10.0f, 1.0f, 1.0f},
     };
 
     for (const auto& sound : custom_sounds) 
@@ -880,6 +898,9 @@ void gamesound_parse_custom_sounds()
     if (g_jeep_horn_sound_id >= 0) {
         // Looping comes from the stock sound database, which has no record for an AF file.
         rf::sounds[g_jeep_horn_sound_id].is_looping = true;
+    }
+    if (const int zipline_loop = rf::snd_pc_find_by_name("af_zipline_loop1.wav"); zipline_loop >= 0) {
+        rf::sounds[zipline_loop].is_looping = true;
     }
 
     //xlog::warn("Custom sounds added, starting at ID {}. Taunts start at ID {}", g_custom_sound_entry_start, g_taunt_sound_start);

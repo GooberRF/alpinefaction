@@ -2,6 +2,7 @@
 
 #include "../rf/input.h"
 #include "../os/os.h"
+#include <cstdint>
 #include <variant>
 #include <vector>
 #include <optional>
@@ -51,6 +52,34 @@ HudNotificationType hud_big_notification_current_type();
 
 // Returns true if HUD should be hidden (cl_hud off, or cinematic spectate freelook)
 bool is_hud_effectively_hidden();
+bool is_screen_resolution_too_low_for_big_hud();
+
+// Hidden state is session-only; cl_chat additionally hides chat as a saved setting.
+enum class HudElement : uint8_t
+{
+    health,       // includes a ridden vehicle's status
+    ammo,
+    reticle,      // includes the critical hit flash
+    powerups,
+    gauges,       // jetpack fuel
+    target_names,
+    killfeed,
+    chat,
+    timer,
+    scores,       // includes the mini scoreboard
+    messages,     // includes notifications, award callouts and the under-reticle Use prompts
+    minimap,      // corner panel only; the held big map stays available
+    count,
+};
+inline constexpr int hud_element_count = static_cast<int>(HudElement::count);
+bool hud_element_visible(HudElement element);
+bool hud_element_hidden_by_cl_chat(HudElement element);
+void hud_element_set_visible(HudElement element, bool visible);
+const char* hud_element_label(HudElement element);
+
+// The line under the reticle, shared by the vehicle Use prompt and the zip line hint.
+void hud_render_reticle_prompt();
+void hud_reticle_prompt_clear();
 
 void hud_apply_patches();
 int hud_get_small_font();
@@ -87,6 +116,7 @@ void multi_hud_update_timer_color();
 void toggle_chat_menu(ChatMenuType state);
 bool get_chat_menu_is_active();
 void hud_render_draw_chat_menu();
+void multi_hud_render_chat_menu();
 void chat_menu_action_handler(rf::Key key);
 void build_local_player_spectators_strings();
 std::string_view multi_hud_get_random_taunt_message();

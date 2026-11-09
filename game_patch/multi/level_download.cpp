@@ -37,6 +37,7 @@
 #include "demo/demo.h"
 #include "../misc/alpine_settings.h"
 #include "../misc/waypoints.h"
+#include "../misc/settings_registry.h"
 
 // Resolution of the blurred edge-fill bitmap (box-filter downscale of the map image)
 constexpr int edge_fill_blur_size = 64;
@@ -1502,7 +1503,7 @@ ConsoleCommand2 download_level_force_cmd{
 ConsoleCommand2 autodl_blur_background_cmd{
     "autodl_blur_background",
     []() {
-        g_alpine_game_config.autodl_blur_background = !g_alpine_game_config.autodl_blur_background;
+        setting_console_set("autodl_blur_background", "toggle");
         rf::console::print("Autodownload blur background is {}",
             g_alpine_game_config.autodl_blur_background ? "enabled" : "disabled");
     },
@@ -1513,7 +1514,7 @@ ConsoleCommand2 autodl_blur_background_cmd{
 ConsoleCommand2 autodl_download_awps_cmd{
     "autodl_download_awps",
     []() {
-        g_alpine_game_config.autodl_download_awps = !g_alpine_game_config.autodl_download_awps;
+        setting_console_set("autodl_download_awps", "toggle");
         rf::console::print("Autodownload AWP waypoint files: {}",
             g_alpine_game_config.autodl_download_awps ? "enabled" : "disabled");
     },

@@ -321,6 +321,13 @@ struct VehicleTreadScroll
     int config = -1;     // which vehicle_tread_configs row this hull is
 };
 
+// Server: the world aim a server-local driver (an in-process bot) holds for his APC.
+struct VehicleServerDriverAim
+{
+    int driver_handle = -1;
+    rf::Vector3 dir{};
+};
+
 // Server: the last player blow that took life off a hull, recorded as its destroyer would be, and when.
 struct VehicleLastHurt
 {
@@ -347,6 +354,7 @@ struct VehicleModuleState
     // What arrived for a vehicle this machine watches, and what it last sent for the one it drives.
     std::unordered_map<int, VehicleOrientSupplement> orient;
     std::unordered_map<int, VehicleOrientSend> orient_sent;
+    std::unordered_map<int, VehicleServerDriverAim> server_driver_aim;
     // Server: coast/sink state of fully-unmanned vehicles. Empty for a vehicle at rest.
     std::unordered_map<int, VehicleKinematics> kinematics;
     // Server: an entry is created when the hull is spawned and lives as long as the vehicle does.

@@ -30,6 +30,7 @@ bool server_allow_fullbright_meshes();
 bool server_allow_lightmaps_only();
 bool server_allow_disable_screenshake();
 bool server_no_player_collide();
+bool server_exposure_damage();
 bool server_location_pinging();
 bool server_delayed_spawns();
 bool server_allow_disable_muzzle_flash();
@@ -45,6 +46,8 @@ bool server_sprays_enabled();
 int server_spray_cooldown_ms();
 std::tuple<bool, int, bool, bool> server_features_require_alpine_client();
 void server_reliable_socket_ready(rf::Player* player);
+// Re-sends every client bot's personality, which carries the rules' vehicle courtesy override.
+void server_resend_client_bot_personalities();
 bool server_weapon_items_give_full_ammo();
 bool server_weapon_infinite_magazines();
 void server_add_player_weapon(rf::Player* player, int weapon_type, bool full_ammo);

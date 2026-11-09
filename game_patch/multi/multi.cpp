@@ -28,6 +28,7 @@
 #include "mutators.h"
 #include "bots/bot_chat_manager.h"
 #include "bots/bot_context_fwd.h"
+#include "bots/bot_vehicle_nav.h"
 #include "bots/server_bots.h"
 #include "../fflink/afstats_events.h"
 #include "../hud/hud.h"
@@ -60,6 +61,7 @@
 #include "../sound/sound.h"
 #include "../main/main.h"
 #include "../graphics/gr.h"
+#include "../misc/settings_registry.h"
 
 // Note: this must be called from DLL init function
 // Note: we can't use global variable because that would lead to crash when launcher loads this DLL to check dependencies
@@ -97,6 +99,20 @@ static rf::CmdLineParam& get_awpgen_cmd_line_param()
 {
     static rf::CmdLineParam awpgen_param{"-awpgen", "", true};
     return awpgen_param;
+}
+
+// With -awpgen: probe Alpine terrain like other geometry instead of laying a lattice over it.
+static rf::CmdLineParam& get_awpgen_fine_cmd_line_param()
+{
+    static rf::CmdLineParam awpgen_fine_param{"-awpgen_fine", "", false};
+    return awpgen_fine_param;
+}
+
+// With -awpgen: also probe open ground away from Alpine terrain at a wider spacing.
+static rf::CmdLineParam& get_awpgen_coarse_cmd_line_param()
+{
+    static rf::CmdLineParam awpgen_coarse_param{"-awpgen_coarse", "", false};
+    return awpgen_coarse_param;
 }
 
 static bool g_client_bot_launch_enabled = false;
@@ -292,7 +308,17 @@ bool handle_awpgen_param()
         return true;
     }
 
-    waypoints_start_awpgen(level_filename);
+    WaypointGenerationMode gen_mode = WaypointGenerationMode::standard;
+    if (get_awpgen_fine_cmd_line_param().found()) {
+        if (get_awpgen_coarse_cmd_line_param().found()) {
+            xlog::warn("-awpgen: both -awpgen_fine and -awpgen_coarse given, generating fine");
+        }
+        gen_mode = WaypointGenerationMode::fine;
+    }
+    else if (get_awpgen_coarse_cmd_line_param().found()) {
+        gen_mode = WaypointGenerationMode::coarse;
+    }
+    waypoints_start_awpgen(level_filename, gen_mode);
     start_levelm_load_sequence(level_filename);
     return true;
 }
@@ -314,7 +340,6 @@ FunHook<void()> multi_limbo_init{
                 // winner is derived from are still the finished match's.
                 afstats::on_match_end_derived(afstats::MatchResult::completed);
                 g_match_info.reset();
-                server_bots_end_join_bots();
             }
             else if (g_match_info.pre_match_active && g_match_info.everyone_ready) {
                 limbo_time = 5000; // reduce limbo time to 5 sec on match start (will always be a restart of the current map)
@@ -1383,7 +1408,7 @@ ConsoleCommand2 dbg_bot_cmd{
     "dbg_bot",
     [](std::optional<int> enabled) {
         if (enabled.has_value()) {
-            g_alpine_game_config.dbg_bot = enabled.value() != 0;
+            setting_console_set("dbg_bot", enabled.value() != 0 ? "1" : "0");
         }
         rf::console::print(
             "Bot debug console logging is {}.",
@@ -1394,9 +1419,19 @@ ConsoleCommand2 dbg_bot_cmd{
     "dbg_bot [0|1]",
 };
 
-void mp_send_handicap_request(bool force) {
-    if (force || g_alpine_game_config.desired_handicap > 0) {
+static int g_last_sent_handicap = 0;
+
+void mp_send_handicap_request(bool on_join)
+{
+    if (!rf::is_multi || rf::is_server) {
+        return;
+    }
+    if (on_join) {
+        g_last_sent_handicap = 0;
+    }
+    if (g_alpine_game_config.desired_handicap != g_last_sent_handicap) {
         af_send_handicap_request(static_cast<uint8_t>(g_alpine_game_config.desired_handicap));
+        g_last_sent_handicap = g_alpine_game_config.desired_handicap;
     }
 }
 
@@ -1404,8 +1439,7 @@ ConsoleCommand2 set_handicap_cmd{
     "mp_handicap",
     [](std::optional<int> new_handicap) {
         if (new_handicap) {
-            g_alpine_game_config.set_desired_handicap(new_handicap.value());
-            mp_send_handicap_request(true);
+            setting_console_set("desired_handicap", std::to_string(new_handicap.value()));
         }
         rf::console::print("Your desired damage reduction handicap is {}. It will only be applied in servers that support this feature.", g_alpine_game_config.desired_handicap);
     },
@@ -1575,6 +1609,8 @@ void multi_do_patch()
     get_debugbot_cmd_line_param();
     get_noquit_cmd_line_param();
     get_awpgen_cmd_line_param();
+    get_awpgen_fine_cmd_line_param();
+    get_awpgen_coarse_cmd_line_param();
     g_client_bot_launch_enabled = is_client_bot_requested_from_cmdline() || is_client_debugbot_requested_from_cmdline();
     g_client_bot_debug_render_enabled = is_client_debugbot_requested_from_cmdline();
     if (is_headless_mode()) {
@@ -1591,6 +1627,7 @@ void multi_do_patch()
     mapm_cmd.register_cmd();
     set_handicap_cmd.register_cmd();
     dbg_bot_cmd.register_cmd();
+    bot_vehicle_nav_apply_patches();
 }
 
 void multi_after_full_game_init()

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <format>
 #include <functional>
 #include <patch_common/MemUtils.h>
@@ -401,16 +402,19 @@ namespace rf
     
     struct MpCharacterInfo
     {
-        int screen_name_id;
+        int image_handle;
         int entity_type;
         int anim_entity_type;
         char name[30];
         char padding[2];
-        int image_handle;
+        const char* screen_name;
         char skin_name[16];
         int custom_fpgun[64];
     };
     static_assert(sizeof(MpCharacterInfo) == 0x140);
+    static_assert(offsetof(MpCharacterInfo, screen_name) == 0x2C);
+    static_assert(offsetof(MpCharacterInfo, skin_name) == 0x30);
+    static_assert(offsetof(MpCharacterInfo, custom_fpgun) == 0x40);
 
     constexpr int MAX_MP_CHARACTERS = 31;
     static auto& mp_characters = addr_as_ref<MpCharacterInfo[MAX_MP_CHARACTERS]>(0x006C75A0);
@@ -434,6 +438,8 @@ namespace rf
     static auto& scoreboard_render_internal = addr_as_ref<void(bool netgame_scoreboard)>(0x00470880);
     static auto& multiplayer_walk_speed = addr_as_ref<float>(0x0059458C);
     static auto& multiplayer_crouch_walk_speed = addr_as_ref<float>(0x00594590);
+    // Sends local_player's current name; multiplayer only.
+    static auto& send_name_change_packet = addr_as_ref<void()>(0x0046EA00);
     static auto& send_glass_kill_packet = addr_as_ref<void(int room_uid, Vector3* break_pos, Vector3* explosion_pos, bool explosion)>(0x00472250);
 
     constexpr int multi_max_player_id = 256;

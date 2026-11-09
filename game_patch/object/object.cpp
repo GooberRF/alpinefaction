@@ -34,11 +34,13 @@
 #include "../multi/gametype.h"
 #include "../multi/server_internal.h"
 #include "../multi/mutators.h"
+#include "../multi/vehicles/physics/ragdoll.h"
 #include "../multi/vehicles/vehicle.h"
 #include "../graphics/weather.h"
 #include "../misc/alpine_options.h"
 #include "../misc/misc.h"
 #include "../misc/achievements.h"
+#include "alpine_rope.h"
 #include "event_alpine.h"
 #include "obj_collision.h"
 #include "object.h"
@@ -718,6 +720,7 @@ FunHook<void(rf::Entity*)> entity_on_dead_hook{
         // which the vehicle module's exit broadcast never sees, so it announces them here.
         vehicle_before_entity_die(ep);
         entity_on_dead_hook.call_target(ep);
+        ragdoll_after_entity_dead(ep);
         vehicle_after_entity_die(ep);
     },
 };
@@ -1220,6 +1223,9 @@ FunHook<void(rf::Object*)> obj_hide_hook{
         if (rfl_version_minimum(304) && (obj->p_data.flags & rf::PF_COLLIDE_OBJECTS)) {
             rf::obj_collision_deregister(obj);
         }
+        if (obj->type == rf::OT_CLUTTER) {
+            alpine_rope_on_anchor_toggled(obj->handle);
+        }
     },
 };
 
@@ -1230,6 +1236,9 @@ FunHook<void(rf::Object*)> obj_unhide_hook{
         obj_unhide_hook.call_target(obj);
         if (rfl_version_minimum(304) && had_collision) {
             rf::obj_collision_register(obj);
+        }
+        if (obj->type == rf::OT_CLUTTER) {
+            alpine_rope_on_anchor_toggled(obj->handle);
         }
     },
 };
