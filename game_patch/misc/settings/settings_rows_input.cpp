@@ -67,6 +67,13 @@ const SettingRow rows[] = {
         .ui_max = 0.5f,
         .ui_nudge = 0.01f,
         .ui_decimals = 5,
+        .ui_adjust = [](SettingRow& presentation) {
+            if (g_alpine_game_config.mouse_scale == 2) {
+                presentation.ui_max = 10.0f;
+                presentation.ui_nudge = 0.1f;
+                presentation.ui_decimals = 2;
+            }
+        },
     },
     {
         .id = "mouse_y_invert",
