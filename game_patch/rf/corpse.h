@@ -31,7 +31,11 @@ namespace rf
     static_assert(sizeof(Corpse) == 0x318);
 
     static auto& corpse_from_handle = addr_as_ref<Corpse*(int handle)>(0x004174C0);
+    static auto& corpse_is_cap_exempt = addr_as_ref<bool(Corpse* cp)>(0x00416F60);
     static auto& corpse_restore_mesh = addr_as_ref<void(Corpse *cp, const char *mesh_name)>(0x00417530);
+    static auto& corpse_create = addr_as_ref<
+        Corpse*(Entity* ep, const char* pose_name, const Vector3* pos, const Matrix3* orient, int unk1, int unk2)>(
+        0x00416940);
 
     static auto& corpse_list = addr_as_ref<Corpse>(0x005CABB8);
 }

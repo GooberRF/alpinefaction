@@ -16,6 +16,7 @@
 #define IDD_OPTIONS_MULTIPLAYER         109
 // #define IDD_OPTIONS_INPUT               110
 // #define IDD_OPTIONS_INTERFACE           111
+#define IDD_OPTIONS_ADVANCED            112
 #define IDC_PLAY_BTN                    999
 #define IDC_EDITOR_BTN                  1000
 #define IDC_OPTIONS_BTN                 1001
@@ -27,7 +28,7 @@
 // #define IDC_FAST_ANIMS_CHECK            1009
 #define IDC_RENDERING_CACHE_EDIT        1010
 #define IDC_DIRECT_INPUT_CHECK          1011
-#define IDC_ANISOTROPIC_CHECK           1012
+// #define IDC_ANISOTROPIC_CHECK           1012
 // #define IDC_MSAA_COMBO                  1013
 // #define IDC_DISABLE_LOD_CHECK           1014
 #define IDC_HEADER_PIC                  1015
@@ -52,7 +53,7 @@
 // #define IDC_HIGH_MON_RES_CHECK          1034
 // #define IDC_LINEAR_PITCH_CHECK          1035
 #define IDC_LANG_COMBO                  1036
-#define IDC_REDUCED_SPEED_IN_BG_CHECK   1037
+// #define IDC_REDUCED_SPEED_IN_BG_CHECK   1037
 #define IDC_ABOUT_LINK                  1038
 #define IDC_APP_NAME                    1039
 #define IDC_APP_VERSION                 1040
@@ -84,6 +85,9 @@
 // #define IDC_DAMAGEFLASH                 1065
 // #define IDC_POW2TEX                     1066
 #define IDC_EDITOR_LAA_CHECK            1067
+#define IDC_ADVANCED_OPTIONS_BOX        1068
+#define IDC_ADVANCED_TOGGLE_BTN         1069
+#define IDC_LEGACY_MENUS_CHECK          1070
 
 #define IDC_VERSION_TEXT                3050
 
@@ -178,9 +182,9 @@
 //
 #ifdef APSTUDIO_INVOKED
 #ifndef APSTUDIO_READONLY_SYMBOLS
-#define _APS_NEXT_RESOURCE_VALUE        112
+#define _APS_NEXT_RESOURCE_VALUE        113
 #define _APS_NEXT_COMMAND_VALUE         32771
-#define _APS_NEXT_CONTROL_VALUE         1068
+#define _APS_NEXT_CONTROL_VALUE         1071
 #define _APS_NEXT_SYMED_VALUE           101
 #endif
 #endif

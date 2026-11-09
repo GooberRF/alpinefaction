@@ -147,6 +147,7 @@ enum class af_client_req_type : uint8_t
     af_req_stats_pssk = 0xB,    // Alpine 1.4 (32 bytes: player stats session key, no NUL)
     af_req_vehicle_use = 0xC,   // Alpine 1.5 (5 bytes: vehicle server handle + seat index)
     af_req_vehicle_crush = 0xD, // Alpine 1.5 (13 bytes: VehicleCrushReqPayload)
+    af_req_zipline_state = 0xE, // Alpine 1.5 (6 bytes: rope_uid, riding, dir)
 };
 
 // Frozen wire constants, values can NEVER be reordered or changed.
@@ -337,6 +338,16 @@ struct JetpackStateReqPayload
     uint8_t fuel_pct = 0; // 0-100, display only
 };
 
+// Zip lines: the rider's client owns its own movement and only reports which line it is on, so the
+// other clients can draw the trolley and play the ride sound.
+struct ZiplineStateReqPayload
+{
+    int32_t rope_uid = -1;
+    uint8_t riding = 0;
+    int8_t dir = 1; // +1 toward the target end, -1 toward the emitter end
+};
+static_assert(sizeof(ZiplineStateReqPayload) == 6);
+
 // The player stats session key minted by FactionFiles for this join, handed to the
 // server so it can report this player's stats. Raw, not NUL terminated.
 struct StatsPsskPayload
@@ -377,7 +388,7 @@ using af_client_payload = std::variant<HandicapPayload, SprayReqPayload, Charact
                                        ReadyReqPayload, PitQueueReqPayload, VoteCastReqPayload,
                                        VoteOptionsReqPayload, JetpackStateReqPayload,
                                        StatsPsskPayload, VehicleUseReqPayload,
-                                       VehicleCrushReqPayload, std::monostate>;
+                                       VehicleCrushReqPayload, ZiplineStateReqPayload, std::monostate>;
 
 struct af_client_req_packet
 {
@@ -402,6 +413,8 @@ enum class af_server_req_type : uint8_t
     af_sreq_award = 0xB,               // Alpine 1.4 (2 bytes: award_id, victim_player_id; 0xFF = no victim)
     af_sreq_active_mutators = 0xC,     // Alpine 1.4 (variable: one declaration set, see blob_declaration_set)
     af_sreq_match_state = 0xD,         // Alpine 1.5 (1 byte: af_match_state_flags)
+    af_sreq_zipline_state = 0xE,       // Alpine 1.5 (7 bytes: player_id, riding, dir, rope_uid)
+    af_sreq_rope_states = 0xF,         // Alpine 1.5 (variable: u16 count, count x {i32 rope_uid, u8 on})
 };
 
 struct ShouldGibPayload
@@ -512,6 +525,16 @@ struct EntityJetpackPayload
 };
 static_assert(sizeof(EntityJetpackPayload) == 6);
 
+// Keyed by player id so a late joiner can be told before the rider's entity exists on its side.
+struct ZiplineStatePayload
+{
+    uint8_t player_id = 0;
+    uint8_t riding = 0;
+    int8_t dir = 1;
+    int32_t rope_uid = -1;
+};
+static_assert(sizeof(ZiplineStatePayload) == 7);
+
 // Riot shield durability is server authoritative.
 struct RiotShieldStatePayload
 {
@@ -534,7 +557,7 @@ static_assert(sizeof(AwardPayload) == 2);
 using af_server_req_payload = std::variant<ShouldGibPayload, TeleportEntityPayload, SprayPayload,
                                            ReadyPromptPayload, PitQueueStatePayload, EntityOnFirePayload,
                                            EntityJetpackPayload, RiotShieldStatePayload, AwardPayload,
-                                           MatchStatePayload>;
+                                           MatchStatePayload, ZiplineStatePayload>;
 
 struct af_server_req_packet
 {
@@ -874,6 +897,8 @@ enum af_server_info_flags : uint32_t {
     SIF_SKIING = 1u << 25,
     SIF_POGO = 1u << 26,
     SIF_DODGING = 1u << 27,
+    SIF_SCRAPYARD_GIBS = 1u << 28,
+    SIF_NO_EXPOSURE_DAMAGE = 1u << 29,
 };
 
 // Subset of `rf::NetGameFlags`.
@@ -1011,6 +1036,8 @@ enum class af_personality_field : uint8_t
     gg_on_map_end_chance = 0x2F,
     hello_on_join_chance = 0x30,
     red_faction_response_chance = 0x31,
+    vehicle_affinity_bias = 0x32,
+    vehicle_gunner_bias = 0x33,
 };
 
 enum class af_skill_field : uint8_t
@@ -1033,6 +1060,11 @@ enum class af_skill_field : uint8_t
     pitch_speed_cap = 0x0F,
     fire_alignment_threshold = 0x10,
     semi_auto_click_interval_scale = 0x11,
+    aim_prediction = 0x12,
+    aim_blend_alpha_max = 0x13,
+    aim_settle_error = 0x14,
+    aim_settle_ms = 0x15,
+    aim_error_hold_ms = 0x16,
 };
 
 #pragma pack(pop)
@@ -1100,6 +1132,13 @@ void af_send_kill_info(rf::Player* killed_player);
 void af_send_entity_on_fire(uint32_t obj_handle, bool on, bool reliable = true);
 void af_send_jetpack_state_request(bool on, uint8_t fuel_pct);
 void af_send_jetpack_state(uint32_t obj_handle, bool on, uint8_t fuel_pct);
+void af_send_zipline_state_request(int32_t rope_uid, bool riding, int8_t dir);
+// `only_to` = nullptr broadcasts to every in-game client except the rider's own.
+void af_send_zipline_state(uint8_t player_id, int32_t rope_uid, bool riding, int8_t dir,
+                           rf::Player* only_to = nullptr);
+// Catches a client up on rope on/off states: all ropes when it joins, and the zip lines again on each
+// spawn, by when the one-shot trigger replays (unreliable, unordered with this) have long landed.
+void af_send_rope_states_to(rf::Player* player, bool ziplines_only);
 void af_send_riot_shield_state(uint32_t obj_handle, float life, const rf::Vector3& impact_pos);
 void af_send_award(rf::Player* player, uint8_t award_id, uint8_t victim_player_id);
 void af_send_award_for_demo(rf::Player* recorder, uint8_t award_id, uint8_t victim_player_id, uint8_t earner_id);

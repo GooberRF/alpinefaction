@@ -15,7 +15,6 @@ public:
     std::vector<std::string> get_adapters() override;
     std::set<Resolution> get_resolutions(unsigned adapter, unsigned format) override;
     std::set<uint32_t> get_multisample_types(uint32_t adapter, uint32_t format, bool windowed) override;
-    bool has_anisotropy_support(unsigned adapter) override;
 
     unsigned get_format_from_bpp(unsigned bpp) override
     {
@@ -102,17 +101,6 @@ std::set<uint32_t> VideoDeviceInfoProviderD3D8::get_multisample_types(
         }
     }
     return result;
-}
-
-bool VideoDeviceInfoProviderD3D8::has_anisotropy_support(unsigned adapter)
-{
-    D3DCAPS8 caps;
-    HRESULT hr = m_d3d->GetDeviceCaps(adapter, D3DDEVTYPE_HAL, &caps);
-    if (FAILED(hr))
-        THROW_EXCEPTION("GetDeviceCaps failed, hresult {:x}", hr);
-
-    bool anisotropy_cap = (caps.RasterCaps & D3DPRASTERCAPS_ANISOTROPY) != 0;
-    return anisotropy_cap && caps.MaxAnisotropy > 0;
 }
 
 std::unique_ptr<VideoDeviceInfoProvider> create_d3d8_device_info_provider()

@@ -20,6 +20,7 @@ namespace rf
         EF_DYING = 0x1,
         EF_JUMP_START_ANIM = 0x2,
         EF_GIB_ON_DEATH = 0x80,
+        EF_RELOADING = 0x100, // set by entity_reload_current_primary, cleared by entity_reload_do_frame
         EF_IN_WATER = 0x1000,
         EF_EYE_UNDER_WATER = 0x2000,
         EF_BOARDED = 0x10000, // set by boarding (0x004A1E7F) and the level's "boarded" property (0x0041895D)
@@ -469,6 +470,8 @@ namespace rf
         Timestamp field_1490;
     };
     static_assert(sizeof(Entity) == 0x1494);
+    static_assert(offsetof(Entity, entity_flags) == 0x810);
+    static_assert(offsetof(Entity, reload_done_timestamp) == 0x139C);
     static_assert(offsetof(Entity, interface_points) == 0x8CC);
     static_assert(offsetof(Entity, default_state_anims) == 0xD24);
     static_assert(offsetof(Entity, entity_flags2) == 0x814);
@@ -530,6 +533,10 @@ namespace rf
         addr_as_ref<Entity*(int entity_type, const char* name, int parent_handle, const Vector3& pos,
         const Matrix3& orient, int create_flags, int mp_character)>(0x00422360);
     static auto& entity_maybe_die = addr_as_ref<void(Entity* ep)>(0x0041FDC0);
+    static auto& blood_splat_decal =
+        addr_as_ref<void(float damage, const Vector3* pos, const Vector3* dir)>(0x0042E1C0);
+    static auto& blood_spray =
+        addr_as_ref<void(const Vector3* pos, GRoom* room, const Vector3* src_pos, float damage)>(0x0042E3D0);
     static auto& entity_calc_eye_pos = addr_as_ref<void(Entity* ep)>(0x004194E0);
     static auto& entity_get_first_leech = addr_as_ref<int(Entity* ep)>(0x00427DA0);
     static auto& entity_is_dying = addr_as_ref<bool(Entity *ep)>(0x00427020);
@@ -564,6 +571,8 @@ namespace rf
     static auto& entity_maybe_stop_crouching = addr_as_ref<bool(Entity* ep)>(0x00428A60);
     static auto& entity_is_falling = addr_as_ref<bool(Entity* ep)>(0x0042A020);
     static auto& entity_is_climbing = addr_as_ref<bool(Entity* ep)>(0x0042D8B0);
+    static auto& entity_make_climb = addr_as_ref<void(Entity* ep, ClimbRegion* region)>(0x004281E0);
+    static auto& entity_is_grounded_move_mode = addr_as_ref<bool(Entity* ep)>(0x0042A100);
     static auto& entity_is_running = addr_as_ref<bool(Entity* ep)>(0x00429FF0);
     static auto& entity_make_freefall = addr_as_ref<void(Entity* ep)>(0x004281A0);
     static auto& entity_is_flying = addr_as_ref<bool(Entity* ep)>(0x0042A060);

@@ -202,6 +202,7 @@ namespace rf
     static_assert(sizeof(WeaponInfo) == 0x550);
     static_assert(offsetof(WeaponInfo, first_person_fov) == 0x74);
     static_assert(offsetof(WeaponInfo, clip_size_multi) == 0x84);
+    static_assert(offsetof(WeaponInfo, lifetime_seconds) == 0xB0);
     static_assert(offsetof(WeaponInfo, max_speed) == 0xC0);
     static_assert(offsetof(WeaponInfo, max_speed_multi) == 0xC4);
     static_assert(offsetof(WeaponInfo, fire_wait) == 0xD0);

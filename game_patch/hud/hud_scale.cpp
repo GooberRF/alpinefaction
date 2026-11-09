@@ -4,6 +4,7 @@
 #include <string>
 #include <common/utils/string-utils.h>
 #include "../misc/alpine_settings.h"
+#include "../misc/settings_registry.h"
 #include "../os/console.h"
 #include "hud_internal.h"
 
@@ -18,6 +19,7 @@ enum class UIScaleElement
 struct UIScaleCommandContext
 {
     std::string_view label;
+    const char* setting_id;
     std::optional<float>& target;
 };
 
@@ -27,66 +29,30 @@ UIScaleCommandContext get_ui_scale_context(UIScaleElement element)
         case UIScaleElement::DamageNotify:
             return {
                 "Damage notification text",
+                "world_hud_damage_text_scale",
                 g_alpine_game_config.world_hud_damage_text_scale,
             };
         case UIScaleElement::PlayerLabel:
             return {
                 "Player label text",
+                "world_hud_label_text_scale",
                 g_alpine_game_config.world_hud_label_text_scale,
             };
         case UIScaleElement::PingLabel:
             return {
                 "Location ping label text",
+                "world_hud_ping_label_text_scale",
                 g_alpine_game_config.world_hud_ping_label_text_scale,
             };
         case UIScaleElement::Reticle:
             return {
                 "Reticle",
+                "reticle_scale",
                 g_alpine_game_config.reticle_scale,
             };
         default:
             static std::optional<float> unused_target{};
-            return {"unknown", unused_target};
-    }
-}
-
-void set_ui_scale_value(UIScaleElement element, float scale)
-{
-    switch (element) {
-        case UIScaleElement::DamageNotify:
-            g_alpine_game_config.set_world_hud_damage_text_scale(scale);
-            return;
-        case UIScaleElement::PlayerLabel:
-            g_alpine_game_config.set_world_hud_label_text_scale(scale);
-            return;
-        case UIScaleElement::PingLabel:
-            g_alpine_game_config.set_world_hud_ping_label_text_scale(scale);
-            return;
-        case UIScaleElement::Reticle:
-            g_alpine_game_config.set_reticle_scale(scale);
-            return;
-        default:
-            return;
-    }
-}
-
-void clear_ui_scale_value(UIScaleElement element)
-{
-    switch (element) {
-        case UIScaleElement::DamageNotify:
-            g_alpine_game_config.clear_world_hud_damage_text_scale();
-            return;
-        case UIScaleElement::PlayerLabel:
-            g_alpine_game_config.clear_world_hud_label_text_scale();
-            return;
-        case UIScaleElement::PingLabel:
-            g_alpine_game_config.clear_world_hud_ping_label_text_scale();
-            return;
-        case UIScaleElement::Reticle:
-            g_alpine_game_config.clear_reticle_scale();
-            return;
-        default:
-            return;
+            return {"unknown", "", unused_target};
     }
 }
 
@@ -115,7 +81,7 @@ bool handle_ui_scale_console_command(
     if (normalized_input == "clear" ||
         normalized_input == "default" ||
         normalized_input == "-1") {
-        clear_ui_scale_value(element);
+        setting_console_set(context.setting_id, "clear");
         print_ui_scale_state(context.label, context.target);
         return false;
     }
@@ -129,7 +95,7 @@ bool handle_ui_scale_console_command(
         return false;
     }
 
-    set_ui_scale_value(element, parsed_scale);
+    setting_console_set(context.setting_id, std::to_string(parsed_scale));
     print_ui_scale_state(context.label, context.target);
     return true;
 }

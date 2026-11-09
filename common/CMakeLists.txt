@@ -1,13 +1,16 @@
 set(SRCS
     include/common/HttpRequest.h
     include/common/rfproto.h
+    include/common/mover_path.h
     include/common/rope_curve.h
     include/common/alpine_mesh_scale.h
     include/common/alpine_camera_far_clip.h
     include/common/alpine_dir_light.h
     include/common/alpine_gas_region.h
+    include/common/alpine_waypoint_helper.h
     include/common/ComPtr.h
     include/common/afd_format.h
+    include/common/cache_pack.h
     include/common/rfa_format.h
     include/common/rfl_chunk_reader.h
     include/common/tlv.h
@@ -51,6 +54,7 @@ set(SRCS
     include/common/atx/parse.h
     include/common/version/version.h
     src/HttpRequest.cpp
+    src/cache_pack.cpp
     src/config/GameConfig.cpp
     src/config/AlpineCoreConfig.cpp
     src/error/d3d-error.cpp
@@ -68,6 +72,7 @@ enable_warnings(Common)
 target_include_directories(Common PRIVATE
     include/common
     ${CMAKE_SOURCE_DIR}/vendor/d3d8
+    ${CMAKE_SOURCE_DIR}/vendor/zlib
 )
 
 # Make sure Windows min/max macro don't conflict with std::min/std::max
@@ -84,6 +89,7 @@ target_link_libraries(Common
     wininet
     version
     Xlog
+    zlib
 )
 
 # Shared Direct3D 11 renderer core. Each consumer compiles these sources against its own
@@ -100,6 +106,7 @@ set(GR_D3D11_CORE_SRCS
     include/common/gr_d3d11/gr_d3d11_dynamic_geometry.h
     include/common/gr_d3d11/gr_d3d11_gamma.h
     include/common/gr_d3d11/gr_d3d11_liquid.h
+    include/common/gr_d3d11/gr_d3d11_liquid_mask.h
     include/common/gr_d3d11/gr_d3d11_mesh.h
     include/common/gr_d3d11/gr_d3d11_particle.h
     include/common/gr_d3d11/gr_d3d11_shader.h
@@ -120,6 +127,7 @@ set(GR_D3D11_CORE_SRCS
     src/gr_d3d11/gr_d3d11_error.cpp
     src/gr_d3d11/gr_d3d11_gamma.cpp
     src/gr_d3d11/gr_d3d11_liquid.cpp
+    src/gr_d3d11/gr_d3d11_liquid_mask.cpp
     src/gr_d3d11/gr_d3d11_mesh.cpp
     src/gr_d3d11/gr_d3d11_particle.cpp
     src/gr_d3d11/gr_d3d11_shader.cpp

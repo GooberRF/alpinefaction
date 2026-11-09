@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <functional>
 #include <map>
 #include <optional>
@@ -46,6 +47,28 @@ void ping_looked_at_location();
 void fpgun_play_random_idle_anim();
 // The horizontal FOV the fpgun is drawn with, from the weapon's $1st Person FOV.
 float player_fpgun_render_fov(float base_fov);
+
+// af_client*.tbl $Fpgun Override block; "*" matches every character or weapon
+struct FpgunArmsOverride
+{
+    std::string character;
+    std::string weapon;
+    std::optional<std::string> model;
+    std::array<std::optional<std::string>, 3> textures; // hand, forearm, bicep
+};
+void player_fpgun_add_arms_override(FpgunArmsOverride arms_override);
+
+struct CustomWeaponProps
+{
+    std::string weapon;
+    std::optional<float> first_person_fov;
+    std::optional<rf::Vector3> first_person_offset;
+    std::optional<std::string> first_person_muzzle_flash_bitmap;
+    std::optional<float> first_person_muzzle_flash_radius;
+};
+void player_fpgun_add_custom_weapon_props(CustomWeaponProps props);
+void player_fpgun_collect_override_arm_bitmaps(std::unordered_set<int>& bitmaps);
+
 void set_headlamp_toggle_enabled(bool enabled);
 bool player_is_idle(const rf::Player* player);
 void player_damage_feedback();

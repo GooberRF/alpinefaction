@@ -638,6 +638,9 @@ struct GibConfig
     bool all_damage = false;
     float damage_threshold = 100.0f;
 
+    // Gibs are random debris instead of meat chunks. Set by the Gibbing mutator.
+    bool scrapyard = false;
+
     // =============================================
 
     void set_damage_threshold(float threshold)
@@ -651,6 +654,14 @@ struct VehicleConfig
     // Hulls take damage from hitting the level, a mover or a prop hard, from hard landings, and (the fighter)
     // from scraping along the level.
     bool crash_damage = true;
+    // Bots may board vehicles, and at most this many hulls may have a bot driving them.
+    bool bots_use_vehicles = true;
+    int bot_max_drivers = 4;
+
+    void set_bot_max_drivers(int count)
+    {
+        bot_max_drivers = std::clamp(count, 0, 32);
+    }
 };
 
 // Controls which level pickups survive under a mutator. Enforced server-side in
@@ -786,6 +797,7 @@ struct MutatorConfig
     // Join Bots: this many server bots join for the level, or fill a match's empty slots, all at one skill preset.
     int join_bots = 0;
     std::string join_bots_skill;
+    std::string join_bots_personality;
 
     // Display only: human-readable names of the mutators applied to these rules.
     std::vector<std::string> active_labels;
@@ -818,6 +830,7 @@ struct AlpineServerConfigRules
     int rf2_geo_limit = -1; // -1 = unlimited, 0 = disabled, >0 = specific limit
     bool team_damage = false;
     bool fall_damage = false;
+    bool exposure_damage = true;
     bool weapons_stay = false;
     bool force_respawn = false;
     bool balance_teams = false;
@@ -1185,7 +1198,7 @@ struct ManualRulesOverride
     // set. A plain vote installs derived rules too, but arms no session set, so a
     // rotation preserve vote after one carries nothing.
     bool explicit_session = false;
-    // Installed by a match vote: its Join Bots exist only while the match is queued, forming or live.
+    // Installed by a match vote: its Join Bots last from when the match is queued until the level after it.
     bool match = false;
 };
 
@@ -1357,6 +1370,7 @@ rf::CmdLineParam& get_ads_cmd_line_param();
 rf::CmdLineParam& get_min_cmd_line_param();
 rf::CmdLineParam& get_log_cmd_line_param();
 rf::CmdLineParam& get_nodl_cmd_line_param();
+rf::CmdLineParam& get_nogsk_cmd_line_param();
 void handle_min_param();
 void handle_log_param();
 void handle_nodl_param();

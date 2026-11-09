@@ -35,6 +35,7 @@
 #include "gr_d3d11.h"
 #include "gr_d3d11_hooks.h"
 #include "../gr_ghost_mesh.h"
+#include "../../misc/settings_registry.h"
 #include <common/gr_d3d11/gr_d3d11_terrain.h>
 #include <common/gr_d3d11/gr_d3d11_liquid.h>
 #include <common/gr_d3d11/gr_d3d11_mesh.h>
@@ -238,6 +239,11 @@ namespace gr::d3d11
     void bitmap_float(int bitmap_handle, float x, float y, float w, float h, float sx, float sy, float sw, float sh, bool flip_x, bool flip_y, rf::gr::Mode mode)
     {
         renderer->bitmap(bitmap_handle, x, y, w, h, sx, sy, sw, sh, flip_x, flip_y, mode);
+    }
+
+    void ui_sdf(const UiSdfDraw& draw, rf::gr::Mode mode)
+    {
+        renderer->ui_sdf(draw, mode);
     }
 
     void poly_2d(int bitmap_handle, int nv, const rf::gr::Vertex* vertices, rf::gr::Mode mode)
@@ -705,6 +711,33 @@ namespace gr::d3d11
         }
     }
 
+    static bool g_level_caustics_off = false;
+    static bool g_level_underwater_fog_off = false;
+
+    void evaluate_underwater_fx(const std::string& level_filename)
+    {
+        auto forced_off = [&](AlpineLevelInfoID id, bool ignored) {
+            return !ignored && g_alpine_level_info_config.is_option_loaded(level_filename, id)
+                && get_level_info_value<bool>(id);
+        };
+        g_level_caustics_off = forced_off(AlpineLevelInfoID::DisableCaustics, g_alpine_game_config.ignore_tbl_caustics);
+        g_level_underwater_fog_off =
+            forced_off(AlpineLevelInfoID::DisableUnderwaterFog, g_alpine_game_config.ignore_tbl_underwater_fog);
+    }
+
+    int underwater_fx_level()
+    {
+        // Tint, vignette and distortion build on the fog, so a level without it stops at caustics
+        const int level = g_level_underwater_fog_off
+            ? std::min(g_alpine_game_config.underwater_fx, 1) : g_alpine_game_config.underwater_fx;
+        return level == 1 && g_level_caustics_off ? 0 : level;
+    }
+
+    bool underwater_caustics_enabled()
+    {
+        return underwater_fx_level() >= 1 && !g_level_caustics_off;
+    }
+
     ConsoleCommand2 vfx_gpu_cmd{
         "dbg_vfxgpu",
         []() {
@@ -825,6 +858,13 @@ namespace gr::d3d11
     {
         if (renderer) {
             renderer->release_terrain_gpu();
+        }
+    }
+
+    void build_liquid_volume_mask()
+    {
+        if (renderer) {
+            renderer->build_liquid_volume_mask();
         }
     }
 
@@ -960,7 +1000,7 @@ namespace gr::d3d11
     static CallHook<void(float)> gameplay_render_frame_liquid_far_clip_hook{
         0x00431D3F,
         [](float far_clip) {
-            if (g_alpine_game_config.underwater_fx >= 2) {
+            if (underwater_fx_level() >= 2) {
                 far_clip = liquid_far_clip(far_clip);
             }
             gameplay_render_frame_liquid_far_clip_hook.call_target(far_clip);
@@ -973,7 +1013,7 @@ namespace gr::d3d11
     static CallHook<void(int, int, int, int, float, float)> gameplay_render_frame_liquid_fog_hook{
         0x00431D6A,
         [](int enabled, int r, int g, int b, float fog_near, float fog_far) {
-            if (g_alpine_game_config.underwater_fx >= 2) {
+            if (underwater_fx_level() >= 2) {
                 fog_far = liquid_far_clip(fog_far);
             }
             gameplay_render_frame_liquid_fog_hook.call_target(enabled, r, g, b, fog_near, fog_far);
@@ -986,7 +1026,7 @@ namespace gr::d3d11
         0x00431D8F,
         [](int r, int g, int b, int a) {
             rf::Vector3 col;
-            if (g_alpine_game_config.underwater_fx >= 2 && renderer && renderer->liquid_background_color(col)) {
+            if (underwater_fx_level() >= 2 && renderer && renderer->liquid_background_color(col)) {
                 // Clamp before scaling: the cast is UB outside int range, and !(x > 0) also
                 // catches NaN.
                 auto to_byte = [](float x) {
@@ -1280,8 +1320,7 @@ namespace gr::d3d11
                 constexpr std::string_view MSAA_PREFIX = "msaax";
                 if (string_iequals(*mode, "none")) {
                     if (g_alpine_game_config.sample_count != 1) {
-                        g_alpine_game_config.sample_count = 1;
-                        gr::d3d11::renderer->flush_frame_buffers();
+                        setting_console_set("sample_count", "1");
                         rf::console::print("Anti-aliasing mode is none");
                     } else {
                         rf::console::print("Anti-aliasing mode is already none");
@@ -1306,8 +1345,7 @@ namespace gr::d3d11
                         if (!gr::d3d11::renderer->supports_sample_count(value)) {
                             rf::console::print("MSAAx{} is an unsupported mode!", value);
                         } else {
-                            g_alpine_game_config.sample_count = value;
-                            gr::d3d11::renderer->flush_frame_buffers();
+                            setting_console_set("sample_count", std::to_string(value));
                             rf::console::print("Anti-aliasing mode is MSAAx{}", value);
                         }
                     } else {
@@ -1337,14 +1375,12 @@ namespace gr::d3d11
             if (g_alpine_game_config.sample_count != 1) {
                 // Currently on -> remember the level and switch to none
                 g_aa_restore_sample_count = g_alpine_game_config.sample_count;
-                g_alpine_game_config.sample_count = 1;
-                gr::d3d11::renderer->flush_frame_buffers();
+                setting_console_set("sample_count", "1");
                 rf::console::print("Anti-aliasing is disabled");
             } else if (g_aa_restore_sample_count >= 2
                        && gr::d3d11::renderer->supports_sample_count(g_aa_restore_sample_count)) {
                 // Currently off -> restore the level we last turned off from
-                g_alpine_game_config.sample_count = g_aa_restore_sample_count;
-                gr::d3d11::renderer->flush_frame_buffers();
+                setting_console_set("sample_count", std::to_string(g_aa_restore_sample_count));
                 rf::console::print(
                     "Anti-aliasing is enabled (MSAAx{})",
                     g_alpine_game_config.sample_count

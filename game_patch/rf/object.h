@@ -64,6 +64,7 @@ namespace rf
         OF_IS_PLAYER = 0x8,            // checked by obj_is_player (FUN_004895d0)
         OF_WAS_RENDERED = 0x10,
         OF_UNK_80 = 0x80,
+        OF_MESH_NOT_OWNED = 0x400,       // obj_delete_mesh (0x00489FC0) leaves the vmesh alone: a corpse took it
         // An attached object keeps its own orientation (0x0048771B) and stays simulated
         // (obj_should_sim_physics 0x0048807C). Set 0x004A61BA / cleared 0x004A61D0, local player only.
         OF_KEEP_ORIENT_ON_HOST = 0x100,

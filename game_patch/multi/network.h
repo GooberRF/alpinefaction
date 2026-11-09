@@ -198,8 +198,10 @@ struct AlpineFactionJoinAcceptPacketExt
         pogo                = 1u << 25,
         dodging             = 1u << 26,
         stats_enabled       = 1u << 27,
-        projectile_lag_comp = 1u << 28,
-        delta_obj_update    = 1u << 29, // server sends af_obj_update_delta to clients that asked
+        scrapyard_gibs      = 1u << 28,
+        no_exposure_damage  = 1u << 29,
+        projectile_lag_comp = 1u << 30,
+        delta_obj_update    = 1u << 31, // server sends af_obj_update_delta to clients that asked
     } flags = Flags::none;
 
     float max_fov = 0.0f;
@@ -320,4 +322,5 @@ bool try_to_auto_forward_port(int port);
 void clear_rcon_profile_sessions();
 void clear_rcon_state_for_addr(const rf::NetAddr& addr);
 void multi_disconnect_from_server();
+void server_apply_net_rate();
 void server_set_net_rate(unsigned netfps);

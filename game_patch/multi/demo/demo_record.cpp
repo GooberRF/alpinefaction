@@ -16,14 +16,17 @@
 #include "../server.h"
 #include "../server_internal.h"
 #include "../alpine_packets.h"
+#include "../gametype.h"
 #include "../../fflink/afstats_events.h"
 #include "../../fflink/demo_upload.h"
 #include "../../fflink/fflink_session.h"
 #include "../../misc/alpine_settings.h"
 #include "../../os/os.h"
+#include "../../rf/item.h"
 #include "../../rf/multi.h"
 #include "../../rf/player/player.h"
 #include "../../rf/level.h"
+#include "../../rf/weapon.h"
 #include "../../rf/os/console.h"
 #include "../../rf/os/os.h"
 #include "../../os/console.h"
@@ -233,6 +236,9 @@ namespace
         rf::send_state_info(recorder);
         // AF "new joiner" packets outside send_state_info.
         af_send_server_info_packet(recorder);
+        // For playback's server config popup
+        af_send_server_cfg(recorder);
+        recorder->remote_server_cfg_sent = true;
         // Current scores/pings so playback has a sane scoreboard from the start.
         rf::send_netgame_update_packet(recorder);
     }
@@ -493,6 +499,27 @@ void demo_record_award(unsigned char award_id, unsigned char victim_player_id, u
     af_send_award_for_demo(g_state.recorder, award_id, victim_player_id, earner_id);
 }
 
+void demo_record_item_pickup(rf::Player* player, const rf::Item* item)
+{
+    if (!g_state.recorder || !g_state.writer.is_open() || !player || !player->net_data || !item)
+        return;
+    DemoPickupKind kind;
+    if (rf::item_info[item->info_index].gives_weapon_id == rf::shoulder_cannon_weapon_type)
+        kind = DemoPickupKind::fusion;
+    // Bagman's bag is a damage amp item
+    else if (item->info_index == rf::item_lookup_type("Multi Damage Amplifier") && !gt_is_bagman_any())
+        kind = DemoPickupKind::damage_amp;
+    else if (item->info_index == rf::item_lookup_type("Multi Invulnerability"))
+        kind = DemoPickupKind::invulnerability;
+    else
+        return;
+    g_state.writer.write_pickup(record_time_ms(), player->net_data->player_id, static_cast<uint8_t>(kind));
+    if (g_state.writer.had_error()) {
+        rf::console::print("Demo recording stopped: write failed");
+        g_state.teardown_pending = true;
+    }
+}
+
 void demo_server_on_level_init_post()
 {
     if (!rf::is_multi || !rf::is_server)
@@ -542,6 +569,13 @@ void demo_record_server_do_frame()
     // outside the engine's obj_update send loop, so destroying the recorder is safe.
     if (g_state.teardown_pending) {
         destroy_recorder_player();
+    }
+    // A config change (af_server_info's SIF_SERVER_CFG_CHANGED) clears every player's sent
+    // flag; record the new config so playback's popup follows it
+    rf::Player* recorder = g_state.recorder;
+    if (recorder && g_state.writer.is_open() && !recorder->remote_server_cfg_sent) {
+        af_send_server_cfg(recorder);
+        recorder->remote_server_cfg_sent = true;
     }
 }
 

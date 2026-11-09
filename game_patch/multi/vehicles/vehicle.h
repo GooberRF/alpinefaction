@@ -51,6 +51,10 @@ rf::Entity* vehicle_ridden_hull(const rf::Entity* rider);
 // As above, and null once the HULL has begun dying.
 rf::Entity* vehicle_ridden_live_hull(const rf::Entity* rider);
 
+// Whether the vehicle code takes a Use press that rf::player_find_use_target answered with target and
+// tag_handle; a hull hit away from its seats falls through to the stock handler.
+bool vehicle_use_target_boards(const rf::Object* target, int tag_handle);
+
 // Contact box: world centre, the hull's own axes, and the hull-LOCAL half extents.
 struct VehicleHullObb
 {
@@ -179,6 +183,34 @@ enum VehicleEntryReason
 bool vehicle_hull_entry_allowed(const rf::Entity* hull, const rf::Player* pp, int* reason_out,
                                 int seat = vehicle_seat_auto);
 
+// The server's boarding distance check, tightened by margin.
+bool vehicle_board_in_range(const rf::Entity* rider, const rf::Entity* hull, float margin);
+// How far a rider's eye may be from the hull's origin to board it; 0 without an entity.
+float vehicle_board_range(const rf::Entity* hull);
+
+rf::Vector3 vehicle_live_hull_velocity(const rf::Entity* vehicle);
+
+// Every synced hull this machine knows, dying ones included: the server's tracked list, or on a client (which tracks
+// none) the entity list's. A client's list is rebuilt per call, so a caller keeps its own copy if it calls again.
+const std::vector<int>& vehicle_hull_handles();
+
+// Live non-turret hulls a bot drives; a client counts off the replicated seats.
+int vehicle_count_bot_driven_hulls();
+
+// Server: aims the turret a server-local gunner operates, consumed by this frame's physics. heading and pitch are
+// the turret's control_data phb.y and eye_phb.x.
+bool vehicle_server_set_turret_aim(rf::Entity* turret, const rf::Entity* gunner, float heading, float pitch);
+// The seat's eye pitch limits (min/max_rel_eye_phb.x) applied to an eye_phb.x.
+float vehicle_clamp_seat_eye_pitch(const rf::Entity* ep, float pitch);
+// Server: the controls of the hull a server-local driver drives (zero while he or it is dying), consumed by this
+// frame's physics. Each axis in [-1,1]: move as a driver's keys write it (cars: x steer, y handbrake, z throttle;
+// flyers: x strafe, y lift, z thrust), pitch_cmd and yaw_cmd as full-deflection rates.
+bool vehicle_server_set_driver_input(rf::Entity* vehicle, const rf::Entity* driver, const rf::Vector3& move,
+                                     float pitch_cmd, float yaw_cmd);
+// Server: the world direction a server-local APC driver aims along, held to what the hull allows him. A zero
+// direction (or a dying driver or hull) drops it and the hull's own frame stands; false when nothing is held.
+bool vehicle_server_set_driver_aim(rf::Entity* vehicle, const rf::Entity* driver, const rf::Vector3& dir);
+
 // The hull's affiliation, -1 none. Replicated, so this answers on a client too.
 int vehicle_hull_team(int vehicle_handle);
 
@@ -263,6 +295,7 @@ bool vehicle_is_driver_obj_update_row(const rf::Player* pp, const rf::Entity* ep
 
 // The occupant that owns the vehicle's weapon: the jeep gunner, the driver otherwise.
 rf::Entity* vehicle_firing_seat_occupant(rf::Entity* vehicle);
+int vehicle_firing_seat_index(const rf::Entity* vehicle);
 bool vehicle_local_owns_firing_seat(rf::Entity* ep);
 
 bool vehicle_suppress_local_fire(const rf::Player* pp);
@@ -310,6 +343,9 @@ bool vehicle_hud_ammo_refill_progress(const rf::Entity* vehicle, int slot_index,
 // Server, from obj_damage: the per-class / per-damage-type damage scales. MUST be passed the RAW
 // killer, before vehicle_filter_obj_damage rewrites it; returns damage unchanged off the server.
 float vehicle_scale_damage(int victim_handle, int killer_handle, int damage_type, float damage);
+
+// The hull's per-class scale for one damage type, 1 for anything that is not a synced hull.
+float vehicle_hull_damage_multiplier(const rf::Entity* victim, int damage_type);
 
 // Server, from obj_damage, BEFORE the stock body: *killer_handle is rewritten in place with the
 // occupant responsible for a vehicle killer. False means the damage must not be applied at all.

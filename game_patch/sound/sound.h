@@ -33,6 +33,17 @@ bool snd_instance_is_playing(int instance_handle);
 int snd_play_3d_looping(int handle, const rf::Vector3& pos, float volume, int group);
 // Plays a playing instance at ratio times its recorded rate (DirectSound only).
 void snd_instance_set_pitch(int instance_handle, float ratio);
+// Speeds up all sounds but music and snd_play_unscaled ones (DirectSound only); 1 restores normal playback.
+void snd_set_global_rate(float rate);
+// Frees the stretched copies snd_set_global_rate keeps, which permanent sounds would otherwise hold forever
+void snd_clear_global_rate_cache();
+// snd_play unaffected by snd_set_global_rate (interface sounds)
+int snd_play_unscaled(int handle, int group, float pan, float volume);
+// sound_ds.cpp: the DirectSound side of the above
+void snd_ds_set_channel_pitch(int channel, float ratio);
+void snd_ds_set_new_channel_unscaled(bool unscaled);
+void snd_ds_set_global_rate(float rate);
+void snd_ds_clear_stretch_cache();
 int play_local_sound_2d(uint16_t sound_id, int group, float volume);
 void play_local_sound_3d(uint16_t sound_id, rf::Vector3 pos, int group, float volume);
 void play_chat_sound(std::string_view msg, bool is_taunt);
@@ -60,6 +71,7 @@ namespace custom_sound_id
 // Hardcoded stock sounds.tbl indices
 namespace stock_sound_id
 {
+    constexpr int menu_error           = 2;    // stock menu error beep
     constexpr int end_voice            = 4;    // end_voice.wav
     constexpr int beep_01              = 29;   // Beep01.wav
     constexpr int jolt_01              = 35;   // Jolt_01.wav
@@ -68,6 +80,7 @@ namespace stock_sound_id
     constexpr int panel_button_click   = 43;   // panel_button_click.wav
     constexpr int checkbox_on          = 44;   // checkbox_on.wav
     constexpr int checkbox_off         = 45;   // checkbox_off.wav
+    constexpr int menu_slide_in        = 49;   // stock Extras menu slide-in
     constexpr int flag_capture         = 63;   // Flag_Capture.wav
     constexpr int flag_pickup          = 64;   // Flag_Pickup.wav
     constexpr int flag_respawn         = 65;   // Flag_Respawn.wav

@@ -3,6 +3,7 @@
 #include "../misc/alpine_options.h"
 #include "../misc/alpine_settings.h"
 #include "../os/console.h"
+#include "../misc/settings_registry.h"
 
 void print_hex_color_state(
     const std::string& label,
@@ -20,7 +21,8 @@ void print_hex_color_state(
 bool handle_hex_color_console_command(
     const std::optional<std::string>& input,
     const std::string& label,
-    std::optional<uint32_t>& target)
+    const char* setting_id,
+    const std::optional<uint32_t>& target)
 {
     if (!input) {
         print_hex_color_state(label, target);
@@ -31,7 +33,7 @@ bool handle_hex_color_console_command(
     if (normalized_input == "clear" ||
         normalized_input == "default" ||
         normalized_input == "-1") {
-        target.reset();
+        setting_console_set(setting_id, "clear");
         rf::console::print("{} cleared.", label);
         return false;
     }
@@ -44,7 +46,7 @@ bool handle_hex_color_console_command(
         return false;
     }
 
-    target = parsed_color;
+    setting_console_set(setting_id, *input);
     auto [r, g, b, a] = extract_color_components(*parsed_color);
     rf::console::print("{} set to {}, (RGBA {}, {}, {}, {})", label, format_hex_color_string(*parsed_color), r, g, b, a);
     return true;
@@ -65,6 +67,7 @@ ConsoleCommand2 sniper_scope_color_cmd{
         bool set_opt = handle_hex_color_console_command(
             color_opt,
             "Sniper scope color override",
+            "sniper_scope_color",
             g_alpine_game_config.sniper_scope_color_override);
 
         if (set_opt) {
@@ -83,6 +86,7 @@ ConsoleCommand2 precision_scope_color_cmd{
         bool set_opt = handle_hex_color_console_command(
             color_opt,
             "Precision rifle scope color override",
+            "precision_scope_color",
             g_alpine_game_config.precision_scope_color_override);
 
         if (set_opt) {
@@ -101,6 +105,7 @@ ConsoleCommand2 rail_scope_color_cmd{
         bool set_opt = handle_hex_color_console_command(
             color_opt,
             "Rail driver scope color override",
+            "rail_scope_color",
             g_alpine_game_config.rail_scope_color_override);
 
         if (set_opt) {
@@ -119,6 +124,7 @@ ConsoleCommand2 ar_ammo_color_cmd{
         bool set_opt = handle_hex_color_console_command(
             color_opt,
             "Assault rifle ammo digit color override",
+            "ar_ammo_digit_color",
             g_alpine_game_config.ar_ammo_digit_color_override);
 
         if (set_opt) {
@@ -137,6 +143,7 @@ ConsoleCommand2 damage_notify_color_cmd{
         handle_hex_color_console_command(
             color_opt,
             "Damage notification color override",
+            "damage_notify_color",
             g_alpine_game_config.damage_notify_color_override);
     },
     "Set damage notification color override.",
@@ -149,6 +156,7 @@ ConsoleCommand2 location_ping_color_cmd{
         handle_hex_color_console_command(
             color_opt,
             "Location ping color override",
+            "location_ping_color",
             g_alpine_game_config.location_ping_color_override);
     },
     "Set location ping color override.",
@@ -161,13 +169,13 @@ ConsoleCommand2 multi_timer_color_cmd{
         bool set_opt = handle_hex_color_console_command(
             color_opt,
             "Multiplayer timer color override",
+            "multi_timer_color",
             g_alpine_game_config.multi_timer_color_override);
 
         if (set_opt) {
             warn_if_overridden_by_alpine_option(
                 "Multiplayer timer color override",
                 AlpineOptionID::MultiTimerColor);
-            multi_hud_update_timer_color();
         }
     },
     "Set multiplayer timer color override.",
@@ -180,6 +188,7 @@ ConsoleCommand2 teammate_label_color_cmd{
         handle_hex_color_console_command(
             color_opt,
             "Teammate world label color override",
+            "teammate_label_color",
             g_alpine_game_config.teammate_label_color_override);
     },
     "Set teammate world label color override.",
@@ -192,6 +201,7 @@ ConsoleCommand2 reticle_color_cmd{
         handle_hex_color_console_command(
             color_opt,
             "Reticle color override",
+            "reticle_color",
             g_alpine_game_config.reticle_color_override);
 
         if (g_alpine_game_config.reticle_color_override) {
@@ -208,6 +218,7 @@ ConsoleCommand2 reticle_locked_color_cmd{
         handle_hex_color_console_command(
             color_opt,
             "Locked reticle color override",
+            "reticle_locked_color",
             g_alpine_game_config.reticle_locked_color_override);
 
         if (g_alpine_game_config.reticle_locked_color_override) {
@@ -221,7 +232,7 @@ ConsoleCommand2 reticle_locked_color_cmd{
 ConsoleCommand2 reticle_color_custom_cmd{
     "ui_colorize_custom_reticles",
     [] {
-        g_alpine_game_config.colorize_custom_reticles = !g_alpine_game_config.colorize_custom_reticles;
+        setting_console_set("colorize_custom_reticles", "toggle");
         rf::console::print(
             "Colorization of custom reticle textures is {}",
             g_alpine_game_config.colorize_custom_reticles ? "enabled" : "disabled"
@@ -237,6 +248,7 @@ ConsoleCommand2 thermal_entity_color_cmd{
         handle_hex_color_console_command(
             color_opt,
             "Thermal entity color override",
+            "thermal_entity_color",
             g_alpine_game_config.thermal_entity_color_override);
     },
     "Set thermal/IR entity color override for the Rail Driver scanner. (Direct3D 11 renderer only)",
@@ -254,7 +266,8 @@ static void warn_outlines_if_not_d3d11()
 static void handle_required_color_command(
     const std::optional<std::string>& input,
     const std::string& label,
-    uint32_t& target,
+    const char* setting_id,
+    const uint32_t& target,
     std::optional<uint32_t> default_value = std::nullopt)
 {
     if (!input) {
@@ -266,7 +279,7 @@ static void handle_required_color_command(
     auto normalized_input = string_to_lower(*input);
     if (normalized_input == "clear" || normalized_input == "default" || normalized_input == "-1") {
         if (default_value) {
-            target = *default_value;
+            setting_console_set(setting_id, format_hex_color_string(*default_value));
             auto [r, g, b, a] = extract_color_components(target);
             rf::console::print("{} reset to default {} (RGBA {}, {}, {}, {})", label, format_hex_color_string(target), r, g, b, a);
         }
@@ -283,7 +296,7 @@ static void handle_required_color_command(
         return;
     }
 
-    target = *parsed_color;
+    setting_console_set(setting_id, *input);
     auto [r, g, b, a] = extract_color_components(*parsed_color);
     rf::console::print("{} set to {} (RGBA {}, {}, {}, {})", label, format_hex_color_string(*parsed_color), r, g, b, a);
 }
@@ -291,7 +304,8 @@ static void handle_required_color_command(
 ConsoleCommand2 r_outlines_color_cmd{
     "r_outlines_color",
     [](std::optional<std::string> color_opt) {
-        handle_required_color_command(color_opt, "Outline color (non-team)", g_alpine_game_config.outlines_color, 0xFF3232FF);
+        handle_required_color_command(color_opt, "Outline color (non-team)", "outlines_color",
+                                      g_alpine_game_config.outlines_color, 0xFF3232FF);
         warn_outlines_if_not_d3d11();
     },
     "Set outline color for non-team game modes (Direct3D 11 renderer only).",
@@ -301,7 +315,8 @@ ConsoleCommand2 r_outlines_color_cmd{
 ConsoleCommand2 r_outlines_color_team_r_cmd{
     "r_outlines_color_team_r",
     [](std::optional<std::string> color_opt) {
-        handle_required_color_command(color_opt, "Outline color (team red)", g_alpine_game_config.outlines_color_team_r, 0xFF3232FF);
+        handle_required_color_command(color_opt, "Outline color (team red)", "outlines_color_team_r",
+                                      g_alpine_game_config.outlines_color_team_r, 0xFF3232FF);
         warn_outlines_if_not_d3d11();
     },
     "Set outline color for red team players (Direct3D 11 renderer only).",
@@ -311,7 +326,8 @@ ConsoleCommand2 r_outlines_color_team_r_cmd{
 ConsoleCommand2 r_outlines_color_team_b_cmd{
     "r_outlines_color_team_b",
     [](std::optional<std::string> color_opt) {
-        handle_required_color_command(color_opt, "Outline color (team blue)", g_alpine_game_config.outlines_color_team_b, 0x0096FFFF);
+        handle_required_color_command(color_opt, "Outline color (team blue)", "outlines_color_team_b",
+                                      g_alpine_game_config.outlines_color_team_b, 0x0096FFFF);
         warn_outlines_if_not_d3d11();
     },
     "Set outline color for blue team players (Direct3D 11 renderer only).",
@@ -321,7 +337,8 @@ ConsoleCommand2 r_outlines_color_team_b_cmd{
 ConsoleCommand2 r_outlines_color_enemy_cmd{
     "r_outlines_color_enemy",
     [](std::optional<std::string> color_opt) {
-        handle_hex_color_console_command(color_opt, "Enemy outline color override", g_alpine_game_config.outlines_color_enemy);
+        handle_hex_color_console_command(color_opt, "Enemy outline color override", "outlines_color_enemy",
+                                        g_alpine_game_config.outlines_color_enemy);
         warn_outlines_if_not_d3d11();
     },
     "Override outline color for enemies (Direct3D 11 renderer only, clear to reset).",
@@ -331,7 +348,8 @@ ConsoleCommand2 r_outlines_color_enemy_cmd{
 ConsoleCommand2 r_outlines_color_team_cmd{
     "r_outlines_color_team",
     [](std::optional<std::string> color_opt) {
-        handle_hex_color_console_command(color_opt, "Teammate outline color override", g_alpine_game_config.outlines_color_team);
+        handle_hex_color_console_command(color_opt, "Teammate outline color override", "outlines_color_team",
+                                        g_alpine_game_config.outlines_color_team);
         warn_outlines_if_not_d3d11();
     },
     "Override outline color for teammates (Direct3D 11 renderer only, clear to reset).",
@@ -341,9 +359,8 @@ ConsoleCommand2 r_outlines_color_team_cmd{
 ConsoleCommand2 console_color_cmd{
     "ui_color_console",
     [](std::optional<std::string> color_opt) {
-        handle_required_color_command(color_opt, "Console background color", g_alpine_game_config.console_color,
-                                      AlpineGameSettings::default_console_color);
-        apply_console_color_setting();
+        handle_required_color_command(color_opt, "Console background color", "console_color",
+                                      g_alpine_game_config.console_color, AlpineGameSettings::default_console_color);
     },
     "Set the console background color",
     "ui_color_console <RRGGBB|RRGGBBAA|clear>",

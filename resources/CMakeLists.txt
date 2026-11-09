@@ -89,6 +89,7 @@ add_packfile(alpinefaction.vpp
     tables/dm-RFU4-GraveyardRM_info.tbl
     tables/dm_Galileo2Starliner1-2_info.tbl
     tables/dm_Galileo2StarlinerNS_info.tbl
+    tables/DMDarkrunII_info.tbl
 
     sounds/af_achievement1.wav
     sounds/af_pinglocation1.wav
@@ -97,6 +98,7 @@ add_packfile(alpinefaction.vpp
     sounds/af_award1.ogg
     sounds/af_jeep_horn.ogg
     sounds/af_fighter_scrape_loop.wav
+    sounds/af_zipline_loop1.wav
     sounds/af_killsound1.wav
     sounds/af_radmsg_000.ogg
     sounds/af_radmsg_001.ogg
@@ -288,6 +290,14 @@ add_packfile(alpinefaction.vpp
     images/dec_af_csp09.tga
     images/dec_af_csp10.tga
     images/af-jetpack1skin1.tga
+    images/af_menu_cap.svg
+    images/af_connector.svg
+    images/af_arrows.svg
+    images/af_search_icon.svg
+    images/af_reset_icon.svg
+    images/af_revert_icon.svg
+    images/af_close_icon.svg
+    images/af_padlock_icon.svg
     images/af_scavpumap1.dds
     images/af_jeeptire1.tga
     images/af_apctread1.atx
@@ -384,7 +394,8 @@ add_packfile(alpinefaction.vpp
     meshes/af_Fighter01m.v3m
     meshes/af_Sub_Mini01.v3m
     meshes/af_Sub_Mini01T.v3m
-    
+    meshes/af_zipline1.v3m
+
     animations/af_female_jeep_driver.rfa
     animations/af_female_jeep_gunner.rfa
     animations/af_female_on_turret.rfa
@@ -414,6 +425,7 @@ add_packfile(alpinefaction.vpp
     decoration_ps:${CMAKE_BINARY_DIR}/shaders/decoration_ps.bin
     decoration_nogas_ps:${CMAKE_BINARY_DIR}/shaders/decoration_nogas_ps.bin
     ui_ps:${CMAKE_BINARY_DIR}/shaders/ui_ps.bin
+    ui_sdf_ps:${CMAKE_BINARY_DIR}/shaders/ui_sdf_ps.bin
     shadow_debug_ps:${CMAKE_BINARY_DIR}/shaders/shadow_debug_ps.bin
     outline_ps:${CMAKE_BINARY_DIR}/shaders/outline_ps.bin
     gamma_vs:${CMAKE_BINARY_DIR}/shaders/gamma_vs.bin

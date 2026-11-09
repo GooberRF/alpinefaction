@@ -486,8 +486,9 @@ bool vpackfile_supercede_allowed(const char* requested_filename, const char* sib
 static void vpackfile_add_to_lookup_table(rf::VPackfileEntry* entry)
 {
     std::string filename_str = string_to_lower(entry->name);
-    // dedicated servers don't need .awp files.
-    if (rf::is_dedicated_server && filename_str.ends_with(".awp")) {
+    // Alpine Faction option tables load from client_mods, mods and the game's own packfiles, never user_maps
+    if (entry->parent->is_user_maps && filename_str.starts_with("af_") && filename_str.ends_with(".tbl")) {
+        xlog::warn("Ignoring {} in user_maps packfile {}", entry->name, entry->parent->filename);
         return;
     }
     auto [it, inserted] = g_loopup_table.insert({filename_str, entry});

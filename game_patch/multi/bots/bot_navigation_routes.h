@@ -1,6 +1,5 @@
 #pragma once
 
-#include "bot_waypoint_route.h"
 #include "../../rf/entity.h"
 #include <vector>
 
@@ -10,10 +9,6 @@ float bot_nav_compute_route_score(
 // Never below bot_nav_compute_route_score(path).
 float bot_nav_compute_route_score_upper_bound(const std::vector<int>& path);
 
-// Distance field from a waypoint with a sorted avoid set, cached for the current waypoint graph version. The reference
-// stays valid until eight other fields have been computed.
-const BotWaypointDistanceField& bot_nav_distance_field(int source_waypoint, const std::vector<int>& avoidset = {});
-// Answered from the distance field of from_waypoint.
 bool bot_nav_is_waypoint_reachable(int from_waypoint, int to_waypoint);
 
 void bot_nav_prune_failed_edge_cooldowns();
@@ -38,7 +33,17 @@ void bot_nav_append_blacklisted_waypoints_to_avoidset(
     int start_waypoint,
     int goal_waypoint);
 bool bot_nav_is_link_traversable_for_route(int from_waypoint, int to_waypoint);
+// The route rules for a link, apart from whether the graph has it.
+bool bot_nav_link_allows_route(int from_waypoint, int to_waypoint);
+bool bot_nav_link_climbs_ledge(int from_waypoint, int to_waypoint);
 bool bot_nav_path_has_unclimbable_upward_links(const std::vector<int>& path);
+void bot_nav_save_route_for_repair();
+void bot_nav_note_route_attacker(const rf::Entity& attacker);
+void bot_nav_update_route_dangers(const rf::Player& local_player, const rf::Entity& local_entity);
+// Whether an enemy known to be about could see this spot.
+bool bot_nav_route_danger_sees(const rf::Vector3& pos, const rf::Entity& local_entity);
+// How far the spot is from the nearest known enemy, capped at max_dist.
+float bot_nav_route_danger_distance(const rf::Vector3& pos, float max_dist);
 bool bot_nav_link_midpoint_has_support(int from_waypoint, int to_waypoint);
 
 void bot_nav_record_waypoint_visit(int waypoint);

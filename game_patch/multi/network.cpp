@@ -91,6 +91,8 @@
 #include "../fflink/afstats_client.h"
 #include "../fflink/afstats_events.h"
 #include "../fflink/fflink_session.h"
+#include "../misc/settings_registry.h"
+#include "../object/zipline.h"
 
 // NET_IFINDEX_UNSPECIFIED is not defined in MinGW headers
 #ifndef NET_IFINDEX_UNSPECIFIED
@@ -2010,6 +2012,9 @@ CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_join_accept_packet_ho
         if (server_no_player_collide()) {
             ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::no_player_collide;
         }
+        if (!server_exposure_damage()) {
+            ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::no_exposure_damage;
+        }
         if (server_allow_disable_muzzle_flash()) {
             ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::allow_no_mf;
         }
@@ -2094,6 +2099,10 @@ CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_join_accept_packet_ho
         // Pogo: the client owns the entire movement, so it has to know.
         if (g_alpine_server_config_active_rules.mutators.pogo_enabled) {
             ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::pogo;
+        }
+        // Gibbing Scrapyard mode: gibs are spawned client-side, so the client picks the meshes.
+        if (g_alpine_server_config_active_rules.gibbing.scrapyard) {
+            ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::scrapyard_gibs;
         }
         // Direct connects have no browser game_info entry, so this is the only
         // point at which they learn to run the stats key exchange.
@@ -2298,6 +2307,8 @@ CodeInjection process_join_accept_injection{
             server_info.skiing = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::skiing);
             server_info.dodging = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::dodging);
             server_info.pogo = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::pogo);
+            server_info.scrapyard_gibs = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::scrapyard_gibs);
+            server_info.no_exposure_damage = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::no_exposure_damage);
             server_info.projectile_lag_comp =
                 !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::projectile_lag_comp);
             server_info.server_netfps = ext_data.server_netfps;
@@ -3593,6 +3604,17 @@ CallHook<void(rf::Player*, const void*, int)> obj_update_final_send_hook{
     },
 };
 
+void server_apply_net_rate()
+{
+    apply_maximum_fps(); // dedicated fps follows the tier
+    // Connected clients follow the new tier now rather than at the next 3.5 s stock refresh
+    if (rf::is_server) {
+        for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+            rf::update_player_rate(&player);
+        }
+    }
+}
+
 void server_set_net_rate(unsigned netfps)
 {
     const unsigned old_v = g_alpine_game_config.server_netfps;
@@ -3601,16 +3623,10 @@ void server_set_net_rate(unsigned netfps)
         g_alpine_server_config.printed_cfg.clear();
         g_alpine_server_config.signal_cfg_changed = true;
     }
-    apply_maximum_fps(); // dedicated fps follows the tier
+    server_apply_net_rate();
     // Listen host: the tier lives in alpine_settings.ini (ServerNetFPS). A dedicated server's comes from
     // the `bandwidth` key in its config; a runtime change there lasts until the next load of that config.
     alpine_core_config_save();
-    // Connected clients follow the new tier now rather than at the next 3.5 s stock refresh
-    if (rf::is_server) {
-        for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
-            rf::update_player_rate(&player);
-        }
-    }
     rf::console::print("Server bandwidth: {} ({} netfps, {} fps)",
                        g_alpine_game_config.server_net_rate_tier().name,
                        g_alpine_game_config.server_netfps,
@@ -3677,12 +3693,23 @@ FunHook<void()> dcf_rate_hook{
     },
 };
 
+// set_next_pos_orient stamps each sample's arrival (last_update_time) and logs the gap into
+// arrive_time_diff on the demo interp clock, which follows the timescale and holds while paused
+CallHook<int(int)> obj_interp_arrival_timer_get_hook{
+    {0x0048339C, 0x004833B5},
+    [](int) {
+        return static_cast<int>(demo_playback_interp_clock_ms());
+    },
+};
+
 CodeInjection send_state_info_injection{
     0x0048186F,
     [](auto& regs) {
         rf::Player* player = regs.edi;
         trigger_send_state_info(player);
         sprays_force_state_sync_to(player);
+        zipline_send_state_to(player);
+        af_send_rope_states_to(player, false);
     },
 };
 
@@ -4579,6 +4606,9 @@ void network_init()
     // Skip obj_update records that carry no new keyframe, so a server sending faster than its
     // clients doesn't flood receivers with duplicate keyframes that degrade interpolation
     pack_obj_update_data_hook.install();
+
+    // Stamp interp sample arrivals on the demo interp clock
+    obj_interp_arrival_timer_get_hook.install();
 
     // Send trigger_activate packets for late joiners
     send_state_info_injection.install();

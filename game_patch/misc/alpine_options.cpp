@@ -21,6 +21,9 @@
 #include "../rf/misc.h"
 #include "../rf/os/os.h"
 #include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <iostream>
 #include <fstream>
 #include <memory>
@@ -30,6 +33,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <variant>
+#include <vector>
 #include <windows.h>
 #include <shellapi.h>
 #include <xlog/xlog.h>
@@ -297,7 +301,9 @@ const std::unordered_map<std::string, LevelInfoMetadata> level_info_metadata = {
     {"$Chat Menu 9", {AlpineLevelInfoID::ChatMap9, parse_string_level}},
     {"$Crater Texture PPM", {AlpineLevelInfoID::CraterTexturePPM, parse_float_level}},
     {"$Use Vertex Lighting", {AlpineLevelInfoID::UseVertexLighting, parse_bool_level}},
-    {"$Pixel Lighting Overbright", {AlpineLevelInfoID::PixelLightOverbright, parse_float_level}}
+    {"$Pixel Lighting Overbright", {AlpineLevelInfoID::PixelLightOverbright, parse_float_level}},
+    {"$Disable Caustics", {AlpineLevelInfoID::DisableCaustics, parse_bool_level}},
+    {"$Disable Underwater Fog", {AlpineLevelInfoID::DisableUnderwaterFog, parse_bool_level}}
 };
 
 // Load level info from filename_info.tbl
@@ -776,6 +782,55 @@ void apply_af_options_patches()
     }
 }
 
+static bool parse_custom_weapon_prop(CustomWeaponProps& props, const std::string& name, const std::string& value,
+                                     const std::string& file_name)
+{
+    auto parse_number = [&](float min_value, float& out) {
+        char* end = nullptr;
+        out = std::strtof(value.c_str(), &end);
+        const bool valid = end != value.c_str() && std::isfinite(out) && out >= min_value;
+        if (!valid) {
+            xlog::warn("[Fpgun] Invalid {} {} in {}", name, value, file_name);
+        }
+        return valid;
+    };
+
+    float number = 0.0f;
+    if (string_iequals(name, "+1st Person FOV")) {
+        if (parse_number(1.0f, number)) {
+            props.first_person_fov = number;
+        }
+    }
+    else if (string_iequals(name, "+1st Person offset")) {
+        rf::Vector3 offset;
+        if (std::sscanf(value.c_str(), " < %f , %f , %f >", &offset.x, &offset.y, &offset.z) == 3
+            && std::isfinite(offset.x) && std::isfinite(offset.y) && std::isfinite(offset.z)) {
+            props.first_person_offset = offset;
+        }
+        else {
+            xlog::warn("[Fpgun] Invalid {} {} in {}", name, value, file_name);
+        }
+    }
+    else if (string_iequals(name, "+1st Person Muzzle Flash Bitmap")) {
+        std::string bitmap = trim(value, true);
+        if (bitmap.empty()) {
+            xlog::warn("[Fpgun] Empty {} in {}", name, file_name);
+        }
+        else {
+            props.first_person_muzzle_flash_bitmap = std::move(bitmap);
+        }
+    }
+    else if (string_iequals(name, "+1st Person Muzzle Flash Radius")) {
+        if (parse_number(0.0f, number)) {
+            props.first_person_muzzle_flash_radius = number;
+        }
+    }
+    else {
+        return false;
+    }
+    return true;
+}
+
 void load_single_af_options_file(const std::string& file_name)
 {
     auto af_options_file = std::make_unique<rf::File>();
@@ -817,6 +872,10 @@ void load_single_af_options_file(const std::string& file_name)
         return;
     }
 
+    const bool is_af_client_file = file_name.starts_with("af_client") && file_name.ends_with(".tbl");
+    std::optional<FpgunArmsOverride> fpgun_arms_override;
+    std::optional<CustomWeaponProps> custom_weapon_props;
+
     // Process options until #End marker is found
     bool found_end = false;
     while (std::getline(file_stream, line)) {
@@ -837,6 +896,71 @@ void load_single_af_options_file(const std::string& file_name)
 
         std::string option_name = trim(line.substr(0, delimiter_pos), false);
         std::string option_value = trim(line.substr(delimiter_pos + 1), false);
+
+        if (fpgun_arms_override && option_name.starts_with('$')) {
+            player_fpgun_add_arms_override(std::move(*fpgun_arms_override));
+            fpgun_arms_override.reset();
+        }
+        if (custom_weapon_props && option_name.starts_with('$')) {
+            player_fpgun_add_custom_weapon_props(std::move(*custom_weapon_props));
+            custom_weapon_props.reset();
+        }
+
+        if (is_af_client_file && !rf::is_dedicated_server) {
+            if (option_name == "$Custom Weapon Props") {
+                std::string weapon = trim(option_value, true);
+                if (weapon.empty()) {
+                    xlog::warn("[Fpgun] $Custom Weapon Props in {} needs a quoted weapon name", file_name);
+                }
+                else {
+                    custom_weapon_props = CustomWeaponProps{std::move(weapon)};
+                }
+                continue;
+            }
+            if (custom_weapon_props && option_name.starts_with('+')) {
+                if (!parse_custom_weapon_prop(*custom_weapon_props, option_name, option_value, file_name)) {
+                    xlog::warn("[Fpgun] Unknown $Custom Weapon Props field {} in {}", option_name, file_name);
+                }
+                continue;
+            }
+            if (option_name == "$Fpgun Override") {
+                std::regex quoted_pattern("\\\"([^\"]+)\\\"");
+                std::vector<std::string> names;
+                for (auto it = std::sregex_iterator(option_value.begin(), option_value.end(), quoted_pattern);
+                     it != std::sregex_iterator(); ++it) {
+                    names.push_back((*it)[1].str());
+                }
+                if (names.size() == 2) {
+                    fpgun_arms_override = FpgunArmsOverride{names[0], names[1]};
+                }
+                else {
+                    xlog::warn("[Fpgun] $Fpgun Override in {} needs a quoted character and weapon name", file_name);
+                }
+                continue;
+            }
+            if (fpgun_arms_override && option_name.starts_with('+')) {
+                std::string value = trim(option_value, true);
+                if (value.empty()) {
+                    xlog::warn("[Fpgun] Empty {} in {}", option_name, file_name);
+                }
+                else if (option_name == "+Model") {
+                    fpgun_arms_override->model = std::move(value);
+                }
+                else if (option_name == "+Hand Texture") {
+                    fpgun_arms_override->textures[0] = std::move(value);
+                }
+                else if (option_name == "+Forearm Texture") {
+                    fpgun_arms_override->textures[1] = std::move(value);
+                }
+                else if (option_name == "+Bicep Texture") {
+                    fpgun_arms_override->textures[2] = std::move(value);
+                }
+                else {
+                    xlog::warn("[Fpgun] Unknown $Fpgun Override field {} in {}", option_name, file_name);
+                }
+                continue;
+            }
+        }
 
         // Handle af_level_quirks.tbl
         if (file_name == "af_level_quirks.tbl" &&
@@ -871,8 +995,7 @@ void load_single_af_options_file(const std::string& file_name)
         const bool meta_found = meta_it != option_metadata.end();
 
         // Allow any af_client*.tbl file for options designated to af_client.tbl
-        const bool is_af_client_variant = (meta_found && meta_it->second.filename == "af_client.tbl" &&
-                                           file_name.rfind("af_client", 0) == 0 && file_name.ends_with(".tbl"));
+        const bool is_af_client_variant = meta_found && meta_it->second.filename == "af_client.tbl" && is_af_client_file;
 
         if (meta_found &&
             (meta_it->second.filename == file_name || is_af_client_variant) &&
@@ -898,6 +1021,13 @@ void load_single_af_options_file(const std::string& file_name)
                 xlog::debug("Option {} in {} skipped (reason unknown)", option_name, file_name);
             }
         }
+    }
+
+    if (fpgun_arms_override) {
+        player_fpgun_add_arms_override(std::move(*fpgun_arms_override));
+    }
+    if (custom_weapon_props) {
+        player_fpgun_add_custom_weapon_props(std::move(*custom_weapon_props));
     }
 
     if (!found_end) {

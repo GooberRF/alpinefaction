@@ -7,6 +7,7 @@
 #include "netmeter.h"
 #include "multi.h"
 #include "../misc/alpine_settings.h"
+#include "../misc/settings_registry.h"
 #include "../os/console.h"
 #include "../rf/entity.h"
 #include "../rf/multi.h"
@@ -210,7 +211,7 @@ NetMeterStats netmeter_get_stats()
 ConsoleCommand2 netmeter_cmd{
     "ui_show_netmeter",
     [] {
-        g_alpine_game_config.netmeter_display = !g_alpine_game_config.netmeter_display;
+        setting_console_set("netmeter_display", "toggle");
         rf::console::print("Net meter display is {}", g_alpine_game_config.netmeter_display ? "enabled" : "disabled");
     },
     "Toggle the network meter (update rate, jitter, missed updates, interp delay, bandwidth)",

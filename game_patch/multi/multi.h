@@ -157,6 +157,8 @@ struct AlpineFactionServerInfo
     bool skiing = false;
     bool dodging = false;
     bool pogo = false;
+    bool scrapyard_gibs = false;
+    bool no_exposure_damage = false;
     bool projectile_lag_comp = false;
     int server_netfps = 0; // 0: unknown (older server)
     int projectile_lag_comp_max_ms = 0; // 0: unknown (older server)
@@ -239,5 +241,5 @@ bool multi_level_name_matches_game_type(std::string_view level_filename, rf::Net
 std::string normalize_level_filename(std::string_view name); // appends ".rfl" when it is missing
 [[nodiscard]] int multi_num_spawned_players();
 int get_semi_auto_fire_wait_override();
-void mp_send_handicap_request(bool force);
+void mp_send_handicap_request(bool on_join);
 void print_alpine_dedicated_server_config_info(std::string& output, bool verbose, bool remote = false);

@@ -56,7 +56,7 @@ struct RingStats
     float jitter;   // mean abs deviation of the arrival gaps, in ticks
 };
 
-// In keyframe ticks: arrival gaps are wall-clock, which demo playback scales against sender time
+// In keyframe ticks: arrival gaps are on demo_playback_interp_clock_ms, sender time at any demo timescale
 RingStats ring_stats(const rf::ObjInterp* interp)
 {
     // Until the ring fills after a Clear(), slot 0 is the first sample, whose gap is always 0; the engine's
@@ -71,8 +71,7 @@ RingStats ring_stats(const rf::ObjInterp* interp)
     float dev = 0.0f;
     for (int i = first; i < n; ++i)
         dev += std::fabs(static_cast<float>(interp->arrive_time_diff[i]) - arrival);
-    const float scale = demo_playback_sim_time_scale();
-    float interval = arrival * scale;
+    float interval = arrival;
     // Right after a spawn the ring holds a few arrival gaps only, and two keyframes landing in the same
     // frame read as a ~0 interval (anchor on top of the newest keyframe, then holds). Until the ring fills,
     // don't go below the sender's keyframe spacing (distinct ticks: stock servers can relay duplicates).
@@ -84,7 +83,7 @@ RingStats ring_stats(const rf::ObjInterp* interp)
         if (distinct > 1 && span > 0)
             interval = std::max(interval, static_cast<float>(span) / static_cast<float>(distinct - 1));
     }
-    return {std::clamp(interval, 1.0f, 250.0f), count > 0 ? dev / static_cast<float>(count) * scale : 0.0f};
+    return {std::clamp(interval, 1.0f, 250.0f), count > 0 ? dev / static_cast<float>(count) : 0.0f};
 }
 
 struct KeyFrame
