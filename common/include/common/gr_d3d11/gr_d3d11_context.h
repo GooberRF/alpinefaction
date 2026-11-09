@@ -600,14 +600,21 @@ namespace gr::d3d11
         {
             per_frame_buffer_.update(device_context_);
             gas_region_buffer_.update(device_context_, projection_);
-            caustics_renderer_.update(device_context_);
+            liquid_volume_mask_.update(device_context_);
+            caustics_renderer_.update(device_context_, liquid_volume_mask_);
+        }
+
+        void rebuild_liquid_volume_mask()
+        {
+            liquid_volume_mask_.update(device_context_, true);
         }
 
         Projection update_liquid_fx(const Projection& projection, const rf::Vector3& eye_pos,
                                     const rf::Matrix3& eye_orient, float scene_depth_mode)
         {
+            liquid_volume_mask_.update(device_context_);
             return liquid_fx_renderer_.update(device_context_, projection, eye_pos, eye_orient,
-                                              scene_depth_mode);
+                                              scene_depth_mode, liquid_volume_mask_);
         }
 
         const LiquidState& liquid_state() const
@@ -883,6 +890,7 @@ namespace gr::d3d11
         PerFrameBuffer per_frame_buffer_;
         TextureScaleBuffer texture_scale_cbuffer_;
         GasRegionBuffer gas_region_buffer_;
+        LiquidVolumeMask liquid_volume_mask_;
         CausticsRenderer caustics_renderer_;
         LiquidFxRenderer liquid_fx_renderer_;
         DirLightsBuffer dir_lights_buffer_;

@@ -89,6 +89,7 @@ add_packfile(alpinefaction.vpp
     tables/dm-RFU4-GraveyardRM_info.tbl
     tables/dm_Galileo2Starliner1-2_info.tbl
     tables/dm_Galileo2StarlinerNS_info.tbl
+    tables/DMDarkrunII_info.tbl
 
     sounds/af_achievement1.wav
     sounds/af_pinglocation1.wav

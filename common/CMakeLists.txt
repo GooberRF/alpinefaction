@@ -104,6 +104,7 @@ set(GR_D3D11_CORE_SRCS
     include/common/gr_d3d11/gr_d3d11_dynamic_geometry.h
     include/common/gr_d3d11/gr_d3d11_gamma.h
     include/common/gr_d3d11/gr_d3d11_liquid.h
+    include/common/gr_d3d11/gr_d3d11_liquid_mask.h
     include/common/gr_d3d11/gr_d3d11_mesh.h
     include/common/gr_d3d11/gr_d3d11_particle.h
     include/common/gr_d3d11/gr_d3d11_shader.h
@@ -124,6 +125,7 @@ set(GR_D3D11_CORE_SRCS
     src/gr_d3d11/gr_d3d11_error.cpp
     src/gr_d3d11/gr_d3d11_gamma.cpp
     src/gr_d3d11/gr_d3d11_liquid.cpp
+    src/gr_d3d11/gr_d3d11_liquid_mask.cpp
     src/gr_d3d11/gr_d3d11_mesh.cpp
     src/gr_d3d11/gr_d3d11_particle.cpp
     src/gr_d3d11/gr_d3d11_shader.cpp

@@ -40,8 +40,10 @@ Commands marked "D3D11 only" only have an effect with the Direct3D 11 renderer.
 
 | Command | Arguments | Description |
 | --- | --- | --- |
+| `cl_ignore_tbl_caustics` | | Toggles ignoring per-level overrides from `<level>_info.tbl` that turn caustics off. Default: off. |
 | `cl_ignore_tbl_lightmap_clamping` | | Toggles ignoring per-level lightmap clamping overrides from `<level>_info.tbl`. Applies on the next level load. Default: off. |
 | `cl_ignore_tbl_pixel_light_overbright` | | Toggles ignoring per-level pixel light overbright overrides from `<level>_info.tbl`. Default: off. |
+| `cl_ignore_tbl_underwater_fog` | | Toggles ignoring per-level overrides from `<level>_info.tbl` that turn underwater fog off. Default: off. |
 | `cl_ignore_tbl_vertex_lighting` | | Toggles ignoring per-level vertex lighting overrides from `<level>_info.tbl`. Default: off. |
 | `d_fullscreen` | | Switches to fullscreen mode. |
 | `d_windowed` | | Switches to windowed mode. |
@@ -83,7 +85,7 @@ Commands marked "D3D11 only" only have an effect with the Direct3D 11 renderer.
 | `r_shadowquality` | `[0-5]` | Sets the shadow quality preset: `0` blob shadows, `1`-`5` shadow maps (Low to Maximum). Default: 3 (High). |
 | `r_shadowupdateinterval` | `[1-30]` | Sets how often shadow maps refresh, in frames (1 = every frame). Default: 1. |
 | `r_trilinearfiltering` | | Stock RF command. Toggles trilinear filtering. |
-| `r_underwater` | `[0-3]` | Underwater effects: `0` stock, `1` caustics, `2` adds fog, tint and vignette, `3` adds distortion. D3D11 only. Default: 3. |
+| `r_underwater` | `[0-3]` | Underwater effects: `0` stock, `1` caustics, `2` adds fog, tint and vignette, `3` adds distortion. A level's `_info.tbl` can turn caustics or fog (with the effects built on it) off. D3D11 only. Default: 0. |
 | `r_weather` | | Toggles rendering of level weather regions. Default: on. |
 | `vli` | | Toggles volumetric lighting (glares). Default: on. |
 

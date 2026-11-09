@@ -24,7 +24,9 @@ namespace gr::d3d11::engine
     int colorblind_mode();
     float dynamic_light_ndotl();
     int picmip();
+    // Effective for the current level, which may turn caustics or fog off; caustics imply underwater_fx() >= 1
     int underwater_fx();
+    bool underwater_caustics();
     bool nearest_texture_filtering();
     bool anisotropic_filtering();
     uint32_t sample_count();

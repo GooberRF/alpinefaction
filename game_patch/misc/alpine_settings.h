@@ -301,7 +301,7 @@ struct AlpineGameSettings
     // 0=stock, 1=caustics, 2=+fog/waterline/tint/vignette, 3=+screen distortion (d3d11 only)
     static constexpr int min_underwater_fx = 0;
     static constexpr int max_underwater_fx = 3;
-    int underwater_fx = 3;
+    int underwater_fx = 0;
     void set_underwater_fx(int value)
     {
         underwater_fx = std::clamp(value, min_underwater_fx, max_underwater_fx);
@@ -399,6 +399,8 @@ struct AlpineGameSettings
     bool ignore_tbl_vertex_lighting = false;
     bool ignore_tbl_pixel_light_overbright = false;
     bool ignore_tbl_lightmap_clamping = false;
+    bool ignore_tbl_caustics = false;
+    bool ignore_tbl_underwater_fog = false;
     bool static_bomb_code = false;
     bool entity_pain_sounds = true;
     bool footsteps = true;

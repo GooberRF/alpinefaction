@@ -128,6 +128,8 @@ enum class AlpineLevelInfoID
     CraterTexturePPM,
     UseVertexLighting,
     PixelLightOverbright,
+    DisableCaustics,
+    DisableUnderwaterFog,
     _optioncount       // dummy for total count
 };
 
