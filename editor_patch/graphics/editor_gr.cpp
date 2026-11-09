@@ -1,4 +1,6 @@
 #include <float.h>
+#include <windows.h>
+#include <commctrl.h>
 #include "../editor_settings.h"
 #include "../textures.h"
 #include "../vtypes.h"
@@ -14,6 +16,34 @@ void editor_gr_set_bake_precision()
 {
     if (editor_gr_is_d3d11()) {
         _controlfp(_PC_24, _MCW_PC);
+    }
+}
+
+static LRESULT CALLBACK view_subclass_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam, UINT_PTR id,
+                                           DWORD_PTR ref_data)
+{
+    if (msg == WM_ERASEBKGND) {
+        return 1;
+    }
+    if (msg == WM_PAINT) {
+        // Under Wine a present inside BeginPaint misses what a resize exposed, so RED's idle loop draws the view again
+        const LRESULT result = DefSubclassProc(hwnd, msg, wparam, lparam);
+        editor_view_mark_repaint(reinterpret_cast<void*>(ref_data));
+        return result;
+    }
+    if (msg == WM_NCDESTROY) {
+        RemoveWindowSubclass(hwnd, view_subclass_proc, id);
+    }
+    return DefSubclassProc(hwnd, msg, wparam, lparam);
+}
+
+void editor_gr_init_views()
+{
+    for (int i = 0; i < editor_num_views; i++) {
+        void* const view = editor_view_at(i);
+        if (const HWND hwnd = editor_view_hwnd(view)) {
+            SetWindowSubclass(hwnd, view_subclass_proc, 0, reinterpret_cast<DWORD_PTR>(view));
+        }
     }
 }
 

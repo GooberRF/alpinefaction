@@ -143,6 +143,7 @@ CodeInjection CEditorApp_InitInstance_additional_file_paths_injection{
 CodeInjection CEditorApp_InitInstance_open_level_injection{
     0x00482BF1,
     []() {
+        editor_gr_init_views();
         const std::optional<std::string> level_arg = editor_command_line_path(L"-level");
         const char* level_param = level_arg ? level_arg->c_str() : nullptr;
         if (!level_param && headless_bake_active()) {
