@@ -19,10 +19,15 @@ namespace alpine_lightmap
 }
 
 namespace gr::d3d11 {
+    struct UiSdfDraw;
+
     // Cache the level's mesh lighting settings for the core (gr_d3d11_mesh.h) at level load
     void evaluate_mesh_lighting(const std::string& level_filename);
     void evaluate_pixel_light_overbright(const std::string& level_filename);
     void evaluate_alpha_test_threshold(const std::string& level_filename);
+    void evaluate_underwater_fx(const std::string& level_filename);
+    int underwater_fx_level();
+    bool underwater_caustics_enabled();
     bool set_render_target(int bm_handle);
     void invalidate_texture_cache();
     int render_target_generation();
@@ -38,11 +43,14 @@ namespace gr::d3d11 {
     bool supports_sample_count(uint32_t sample_count);
     void flush_frame_buffers();
     void flush_outlines_before_fpgun();
+    void ui_sdf(const UiSdfDraw& draw, rf::gr::Mode mode);
     bool trigger_damage_vignette(unsigned dir_mask);
     // Frees a carved detail room's render cache; the room builds a new one when next drawn.
     void release_detail_room_render_cache(rf::GRoom* room);
     // Frees every terrain's textures, which the next render cache build creates again.
     void release_terrain_gpu();
+    // Builds the liquid volume mask during the load instead of in the first frame.
+    void build_liquid_volume_mask();
     // Replaces the Alpine Lightmaps atlas; false, with none held, when there is no renderer or the
     // upload fails.
     bool upload_af_lightmap_atlas(const alpine_lightmap::ReadResult& section, const std::vector<std::uint8_t>& blocks);

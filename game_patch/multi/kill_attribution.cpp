@@ -19,6 +19,7 @@
 #include "awards.h"
 #include "kill_attribution.h"
 #include "mutators.h"
+#include "vehicles/physics/ragdoll.h"
 #include "vehicles/vehicle.h"
 
 // Server-side capture of what actually landed the killing blow. The stock obj_kill packet
@@ -315,6 +316,7 @@ FunHook<float(rf::Entity*, rf::Weapon*, rf::Vector3*, int*)> get_hit_region_mult
 FunHook<bool(rf::Weapon*)> weapon_hit_obj_hook{
     0x004C59F0,
     [](rf::Weapon* wp) {
+        ragdoll_note_weapon_hit(wp);
         SplashWeaponScope splash_scope{wp};
         // Covers the direct hit and the impact splash alike.
         const CritWeaponScope crit_scope{wp};

@@ -27,7 +27,6 @@ private:
     void UpdateAdapterCombo();
     void UpdateResolutionCombo();
     void UpdateColorDepthCombo();
-    void UpdateAnisotropyCheckbox();
 
     GameConfig& m_conf;
     // Hosts the renderer and color depth combos

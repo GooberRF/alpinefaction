@@ -45,6 +45,7 @@ This file is intended to help Codex, Claude, and other assistants (and other aut
 - Keep changes minimal and focused on the requested task.
 - Match existing formatting and naming in nearby code.
 - Update documentation when behavior or usage changes.
+- When adding, removing, or changing console commands, command line switches, or dedicated server config options, update the matching file in `docs/reference/`.
 
 ## Core game tie-ins (hooking/injection primitives)
 - `FunHook`: Function-level hook helper. Use when you need to intercept or wrap an

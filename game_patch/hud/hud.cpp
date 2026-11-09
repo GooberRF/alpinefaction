@@ -1,4 +1,6 @@
+#include <array>
 #include <cassert>
+#include <common/utils/string-utils.h>
 #include <patch_common/FunHook.h>
 #include <patch_common/CallHook.h>
 #include <patch_common/AsmWriter.h>
@@ -24,8 +26,56 @@
 #include "../rf/player/player.h"
 #include "../rf/weapon.h"
 #include "../rf/gameseq.h"
+#include "../misc/settings_registry.h"
 
 int g_target_player_name_font = -1;
+
+namespace
+{
+struct HudElementInfo
+{
+    const char* name; // cl_hudelement argument
+    const char* label;
+};
+
+constexpr HudElementInfo hud_element_info[] = {
+    {"health", "Health & armor"},
+    {"ammo", "Weapon & ammo"},
+    {"reticle", "Reticle"},
+    {"powerups", "Powerups"},
+    {"gauges", "Jetpack fuel"},
+    {"names", "Target names"},
+    {"killfeed", "Kill feed"},
+    {"chat", "Chat"},
+    {"timer", "Time left"},
+    {"scores", "Scores"},
+    {"messages", "Messages"},
+    {"minimap", "Minimap"},
+};
+static_assert(static_cast<int>(std::size(hud_element_info)) == hud_element_count);
+
+std::array<bool, hud_element_count> g_hud_element_hidden{};
+} // namespace
+
+bool hud_element_hidden_by_cl_chat(HudElement element)
+{
+    return element == HudElement::chat && g_alpine_game_config.hide_chat;
+}
+
+bool hud_element_visible(HudElement element)
+{
+    return !hud_element_hidden_by_cl_chat(element) && !g_hud_element_hidden[static_cast<int>(element)];
+}
+
+void hud_element_set_visible(HudElement element, bool visible)
+{
+    g_hud_element_hidden[static_cast<int>(element)] = !visible;
+}
+
+const char* hud_element_label(HudElement element)
+{
+    return hud_element_info[static_cast<int>(element)].label;
+}
 
 int hud_transform_value(int val, int old_max, int new_max)
 {
@@ -69,6 +119,16 @@ FunHook<void()> hud_render_for_multi_hook{
         if (!is_hud_effectively_hidden()) {
             hud_render_for_multi_hook.call_target();
         }
+        else {
+            // Chat input and the chat menu stay usable with the HUD hidden, so the menu's toggles can
+            // bring the HUD back.
+            if (rf::multi_chat_is_say_visible()) {
+                rf::multi_chat_say_render();
+            }
+            if (rf::gameseq_get_state() != rf::GS_MULTI_LIMBO) {
+                multi_hud_render_chat_menu();
+            }
+        }
     },
 };
 
@@ -78,15 +138,61 @@ ConsoleCommand2 hud_cmd{
 
         // toggle if no parameter passed
         bool hud_visible = hud_opt.value_or(rf::hud_disabled);
-        rf::hud_disabled = !hud_visible;
+        setting_console_set("hud_disabled", hud_visible ? "0" : "1");
     },
     "Show and hide HUD",
+};
+
+ConsoleCommand2 hud_element_cmd{
+    "cl_hudelement",
+    [](std::optional<std::string> name, std::optional<bool> visible) {
+        const auto print_state = [](int i) {
+            const auto element = static_cast<HudElement>(i);
+            rf::console::print("{}: {}", hud_element_info[i].name, hud_element_hidden_by_cl_chat(element)
+                ? "hidden (cl_chat)" : hud_element_visible(element) ? "shown" : "hidden");
+        };
+        if (!name) {
+            for (int i = 0; i < hud_element_count; ++i) {
+                print_state(i);
+            }
+            return;
+        }
+        if (string_iequals(*name, "all")) {
+            for (int i = 0; i < hud_element_count; ++i) {
+                hud_element_set_visible(static_cast<HudElement>(i), visible.value_or(true));
+            }
+            rf::console::print("All HUD elements are {}{}", visible.value_or(true) ? "shown" : "hidden",
+                visible.value_or(true) && hud_element_hidden_by_cl_chat(HudElement::chat)
+                    ? " (chat hidden by cl_chat)" : "");
+            return;
+        }
+        for (int i = 0; i < hud_element_count; ++i) {
+            if (string_iequals(*name, hud_element_info[i].name)) {
+                const auto element = static_cast<HudElement>(i);
+                hud_element_set_visible(element, visible.value_or(!hud_element_visible(element)));
+                print_state(i);
+                return;
+            }
+        }
+        rf::console::print("Unknown HUD element: {}. Run cl_hudelement without arguments to list them.", *name);
+    },
+    "Show or hide a HUD element for this session (an element alone toggles, all alone shows all), or list them",
+    "cl_hudelement [element|all] [bool]",
+};
+
+FunHook<void()> multi_powerup_render_hook{
+    0x0047FEC0,
+    []() {
+        if (hud_element_visible(HudElement::powerups)) {
+            multi_powerup_render_hook.call_target();
+        }
+    },
 };
 
 ConsoleCommand2 spectate_cinematic_mode_cmd{
     "spectate_cinematic_mode",
     []() {
-        g_alpine_game_config.spectate_cinematic_mode = !g_alpine_game_config.spectate_cinematic_mode;
+        setting_console_set("spectate_cinematic_mode", "toggle");
         rf::console::print("Spectate cinematic mode is {}",
             g_alpine_game_config.spectate_cinematic_mode ? "enabled" : "disabled");
     },
@@ -151,7 +257,7 @@ void set_big_countdown_counter(bool is_big)
     rf::hud_coords[rf::hud_countdown_timer] = hud_scale_coords(rf::hud_coords[rf::hud_countdown_timer], scale);
 }
 
-static bool is_screen_resolution_too_low_for_big_hud()
+bool is_screen_resolution_too_low_for_big_hud()
 {
     return rf::gr::screen_width() < 1024 || rf::gr::screen_height() < 768;
 }
@@ -182,8 +288,7 @@ ConsoleCommand2 bighud_cmd{
             rf::console::print("Screen resolution is too low for big HUD!");
             return;
         }
-        g_alpine_game_config.big_hud = !g_alpine_game_config.big_hud;
-        set_big_hud(g_alpine_game_config.big_hud);
+        setting_console_set("big_hud", "toggle");
         rf::console::print("Big HUD is {}", g_alpine_game_config.big_hud ? "enabled" : "disabled");
     },
     "Toggle big HUD",
@@ -193,9 +298,7 @@ ConsoleCommand2 bighud_cmd{
 ConsoleCommand2 bighud_health_cmd{
     "bighud_health",
     [] (const std::optional<bool> enabled) {
-        g_alpine_game_config.big_hud_health =
-            enabled.value_or(!g_alpine_game_config.big_hud_health);
-        set_big_hud(g_alpine_game_config.big_hud);
+        setting_console_set_bool("big_hud_health", enabled);
         if (!g_alpine_game_config.big_hud && g_alpine_game_config.big_hud_health) {
             rf::console::print(
                 "Big HUD health is enabled but ignored, because big HUD is disabled"
@@ -214,9 +317,7 @@ ConsoleCommand2 bighud_health_cmd{
 ConsoleCommand2 bighud_ammo_cmd{
     "bighud_ammo",
     [] (const std::optional<bool> enabled) {
-        g_alpine_game_config.big_hud_ammo =
-            enabled.value_or(!g_alpine_game_config.big_hud_ammo);
-        set_big_hud(g_alpine_game_config.big_hud);
+        setting_console_set_bool("big_hud_ammo", enabled);
         if (!g_alpine_game_config.big_hud && g_alpine_game_config.big_hud_ammo) {
             rf::console::print(
                 "Big HUD ammo is enabled but ignored, because big HUD is disabled"
@@ -235,7 +336,7 @@ ConsoleCommand2 bighud_ammo_cmd{
 ConsoleCommand2 ui_realarmor_cmd{
     "ui_realarmor",
     []() {
-        g_alpine_game_config.real_armor_values = !g_alpine_game_config.real_armor_values;
+        setting_console_set("real_armor_values", "toggle");
         rf::console::print("Real armor value display is {}", g_alpine_game_config.real_armor_values ? "enabled" : "disabled");
     },
     "Toggle whether armor is displayed on HUD using real values (1:1 armor to effective health) or classic (2:1 - default).",
@@ -456,9 +557,10 @@ CallHook hud_msg_render_gr_get_font_height_hook{
 
 void hud_render_00437BC0()
 {
-    // Single player jetpack HUD. Multiplayer draws it from multi_hud_render.
+    // Single player jetpack HUD and reticle prompt. Multiplayer draws them from multi_hud_render.
     if (!rf::is_multi) {
         jetpack_render_hud();
+        hud_render_reticle_prompt();
     }
 
     if (!rf::is_multi || !rf::local_player) {
@@ -469,7 +571,7 @@ void hud_render_00437BC0()
     multi_spectate_render();
     vehicle_render_control_hints();
 
-    if (rf::gameseq_get_state() != rf::GS_MULTI_LIMBO) {
+    if (rf::gameseq_get_state() != rf::GS_MULTI_LIMBO && hud_element_visible(HudElement::killfeed)) {
         multi_hud_render_killfeed();
     }
 
@@ -491,6 +593,22 @@ void hud_render_00437BC0()
     minimap_render();
 }
 
+FunHook<void(rf::Player*)> hud_render_hook{
+    0x00437BA0,
+    [](rf::Player* player) {
+        // hud_render gates the ammo and status panels on these player settings, so clear them
+        // for the call to hide those elements
+        auto& settings = player->settings;
+        const bool show_ammo = settings.show_hud_ammo;
+        const bool show_status = settings.show_hud_status;
+        settings.show_hud_ammo = show_ammo && hud_element_visible(HudElement::ammo);
+        settings.show_hud_status = show_status && hud_element_visible(HudElement::health);
+        hud_render_hook.call_target(player);
+        settings.show_hud_ammo = show_ammo;
+        settings.show_hud_status = show_status;
+    },
+};
+
 void hud_apply_patches()
 {
     // Fix HUD on not supported resolutions
@@ -500,6 +618,9 @@ void hud_apply_patches()
     hud_render_for_multi_hook.install();
     hud_cmd.register_cmd();
     spectate_cinematic_mode_cmd.register_cmd();
+    hud_render_hook.install();
+    hud_element_cmd.register_cmd();
+    multi_powerup_render_hook.install();
 
     // Add some init code
     hud_init_hook.install();

@@ -35,6 +35,7 @@
 #include "../graphics/gr.h"
 #include "../main/main.h"
 #include "../os/console.h"
+#include "settings_registry.h"
 
 static std::vector<int> g_fpgun_sounds;
 static rf::Player* g_fpgun_main_player = nullptr;
@@ -327,7 +328,7 @@ static FunHook<void(rf::Player*)> player_fpgun_process_hook{
 ConsoleCommand2 weapon_sway_cmd{
     "cl_weaponsway",
     []() {
-        g_alpine_game_config.weapon_sway = !g_alpine_game_config.weapon_sway;
+        setting_console_set("weapon_sway", "toggle");
         rf::console::print("Weapon aim sway: {}",
             g_alpine_game_config.weapon_sway ? "enabled" : "disabled");
     },
@@ -337,7 +338,7 @@ ConsoleCommand2 weapon_sway_cmd{
 ConsoleCommand2 legacy_bob_cmd{
     "cl_legacy_bob",
     []() {
-        g_alpine_game_config.legacy_bob = !g_alpine_game_config.legacy_bob;
+        setting_console_set("legacy_bob", "toggle");
         rf::console::print("Legacy weapon bob: {}",
             g_alpine_game_config.legacy_bob ? "enabled" : "disabled");
     },
@@ -422,7 +423,7 @@ ConsoleCommand2 fpgun_fov_scale_cmd{
     "r_fpgunfov",
     [](std::optional<float> scale_opt) {
         if (scale_opt) {
-            g_alpine_game_config.set_fpgun_fov_scale(scale_opt.value());
+            setting_console_set("fpgun_fov_scale", std::to_string(scale_opt.value()));
         }
         rf::console::print("Fpgun FOV scale: {:.4f}", g_alpine_game_config.fpgun_fov_scale);
     },
@@ -692,12 +693,47 @@ namespace
         return it != g_fpgun_arms_overrides.end() ? it->second : &rf::fpgun_arms[stock_index];
     }
 
+    std::vector<CustomWeaponProps> g_custom_weapon_props;
+
+    void apply_custom_weapon_props()
+    {
+        for (const CustomWeaponProps& props : g_custom_weapon_props) {
+            const int weapon_type = rf::weapon_lookup_type(props.weapon.c_str());
+            if (weapon_type < 0) {
+                xlog::warn("[Fpgun] $Custom Weapon Props: unknown weapon {}", props.weapon);
+                continue;
+            }
+            rf::WeaponInfo& info = rf::weapon_types[weapon_type];
+            if (props.first_person_fov) {
+                info.first_person_fov = *props.first_person_fov;
+            }
+            if (props.first_person_offset) {
+                info.first_person_offset = *props.first_person_offset;
+            }
+            if (props.first_person_muzzle_flash_bitmap) {
+                const std::string& filename = *props.first_person_muzzle_flash_bitmap;
+                const int bitmap = filename.size() <= max_arm_texture_name_len
+                    ? bm_load_if_exists(filename.c_str(), -1, true) : -1;
+                if (bitmap >= 0) {
+                    info.first_person_muzzle_flash_bitmap = bitmap;
+                }
+                else {
+                    xlog::warn("[Fpgun] Muzzle flash bitmap {} not found or its name is too long", filename);
+                }
+            }
+            if (props.first_person_muzzle_flash_radius) {
+                info.first_person_muzzle_flash_radius = *props.first_person_muzzle_flash_radius;
+            }
+        }
+    }
+
     // pc_multi.tbl parse, which runs after fpgun.tbl and weapons.tbl are loaded
     FunHook<void(rf::Parser*)> multi_load_characters_tbl_hook{
         0x00475B00,
         [](rf::Parser* parser) {
             multi_load_characters_tbl_hook.call_target(parser);
             resolve_fpgun_arms_overrides();
+            apply_custom_weapon_props();
         },
     };
 
@@ -732,6 +768,11 @@ void player_fpgun_add_arms_override(FpgunArmsOverride arms_override)
         return;
     }
     g_fpgun_arms_override_specs.push_back(std::move(arms_override));
+}
+
+void player_fpgun_add_custom_weapon_props(CustomWeaponProps props)
+{
+    g_custom_weapon_props.push_back(std::move(props));
 }
 
 void player_fpgun_collect_override_arm_bitmaps(std::unordered_set<int>& bitmaps)
@@ -848,7 +889,7 @@ void player_fpgun_do_patch()
     player_fpgun_sway_enabled_hook.install();
     weapon_sway_cmd.register_cmd();
 
-    // af_client*.tbl $Fpgun Override
+    // af_client*.tbl $Fpgun Override and $Custom Weapon Props
     multi_load_characters_tbl_hook.install();
     player_fpgun_load_meshes_arms_injection.install();
     player_fpgun_load_meshes_detonator_arms_injection.install();

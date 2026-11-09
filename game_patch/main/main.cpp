@@ -67,7 +67,9 @@
 #include "../graphics/af_lightmap.h"
 #include "../object/alpine_corona.h"
 #include "../object/alpine_rope.h"
+#include "../object/zipline.h"
 #include "../sound/sound.h"
+#include "../input/bind_context.h"
 #include "../input/input.h"
 #include "../rf/gr/gr.h"
 #include "../rf/multi.h"
@@ -81,6 +83,7 @@
 #endif
 
 #include "../multi/bots/bot_main.h"
+#include "../multi/bots/bot_vehicle_nav.h"
 
 GameConfig g_game_config;
 AlpineCoreConfig g_alpine_system_config;
@@ -192,10 +195,12 @@ FunHook<int()> rf_do_frame_hook{
         gungame_client_do_frame();      // client-side Gun Game level-up notification watcher
         alpine_mesh_do_frame();
         alpine_rope_do_frame();
+        zipline_do_frame();
         item_do_frame();
         atx_do_frame();
         fflink::do_frame();
         int result = rf_do_frame_hook.call_target();
+        bind_context_do_frame();
         maybe_autosave();
         debug_do_frame_post();
         multi_level_download_update();
@@ -224,6 +229,7 @@ CodeInjection after_level_render_hook{
         waypoints_render_debug();
         client_bot_render_debug();
         vehicle_physics_render_debug();
+        bot_vehicle_nav_render_debug();
         vehicle_markers_render();   // 3D phase: leftovers only; the room pass below draws the rest
         hud_world_do_frame();
     },
@@ -311,6 +317,28 @@ FunHook<int(rf::String&, rf::String&, char*)> level_load_hook{
                 }
             }
 
+            gr::d3d11::evaluate_underwater_fx(level_filename);
+            auto print_underwater_override = [&](AlpineLevelInfoID id, bool ignored, const char* effect,
+                                                 const char* ignore_cmd) {
+                if (!g_alpine_level_info_config.is_option_loaded(level_filename, id)
+                    || !get_level_info_value<bool>(id)) {
+                    return;
+                }
+                if (ignored) {
+                    rf::console::print("Ignoring {} override in mapname_info.tbl for {} ({} is enabled)", effect,
+                                       level_filename, ignore_cmd);
+                }
+                else {
+                    rf::console::print("Disabling {} for {} (per override present in mapname_info.tbl)", effect,
+                                       level_filename);
+                }
+            };
+            print_underwater_override(AlpineLevelInfoID::DisableCaustics, g_alpine_game_config.ignore_tbl_caustics,
+                                      "caustics", "cl_ignore_tbl_caustics");
+            print_underwater_override(AlpineLevelInfoID::DisableUnderwaterFog,
+                                      g_alpine_game_config.ignore_tbl_underwater_fog, "underwater fog",
+                                      "cl_ignore_tbl_underwater_fog");
+
             gr::d3d11::evaluate_alpha_test_threshold(level_filename);
             if (is_stock_alpha_test_level(level_filename)) {
                 rf::console::print("Applying stock alpha test threshold to known affected level {}", level_filename);
@@ -352,20 +380,24 @@ FunHook<void(bool)> level_init_post_hook{
         level_init_post_hook.call_target(transition);
         xlog::info("Level loaded: {}{}", rf::level.filename, transition ? " (transition)" : "");
 
+        // Create corona objects (clutter + glare pairs) now that geometry is loaded
+        alpine_corona_create_all();
+
+        // Ropes resolve their target uids here, once every level object exists.
+        alpine_rope_level_init();
+        zipline_level_init();
+
         // Flow 2A: bots start their AWP download before the waypoints load
         waypoints_level_init_with_awp_download();
+        if (is_waypoint_bot_mode_active()) {
+            bot_vehicle_nav_level_init();
+        }
 
         // Flow 2B: Normal clients with autodl_download_awps — fire-and-forget AWP download
         if (rf::is_multi && !is_waypoint_bot_mode_active() && !rf::is_dedicated_server
             && g_alpine_game_config.autodl_download_awps) {
             start_awp_download_for_installed_map(std::string{rf::level.filename.c_str()}, 1);
         }
-
-        // Create corona objects (clutter + glare pairs) now that geometry is loaded
-        alpine_corona_create_all();
-
-        // Ropes resolve their target uids here, once every level object exists
-        alpine_rope_level_init();
 
         apply_maximum_fps(); // set maximum FPS based on game state
         process_queued_spawn_points_from_items();
@@ -389,10 +421,12 @@ FunHook<void(bool)> level_init_post_hook{
         if (!rf::is_dedicated_server && !is_headless_mode()) {
             alpine_terrain_decorations_level_init();
             explosion_flash_lights_level_init();
+            gr::d3d11::build_liquid_volume_mask();
             evaluate_fullbright_meshes();
             set_levelmod_autotexture_ppm();
             if (!rf::is_multi) {
                 update_player_flashlight();
+                hud_reticle_prompt_clear();
             }
             else {
                 toggle_chat_menu(ChatMenuType::None);
@@ -580,6 +614,10 @@ void load_config()
     catch (std::exception& e) {
         xlog::error("Failed to load configuration: {}", e.what());
     }
+    // Seed the ini-backed copies so a missing key keeps the registry choice, and so renderer init
+    // (before the ini loads) sees it.
+    g_alpine_game_config.anisotropic_filtering = g_game_config.anisotropic_filtering;
+    g_alpine_game_config.reduced_speed_in_background = g_game_config.reduced_speed_in_background;
 
     // Log information from config
     xlog::info("Resolution: {}x{}x{}", g_game_config.res_width.value(), g_game_config.res_height.value(), g_game_config.res_bpp.value());
