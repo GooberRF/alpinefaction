@@ -630,6 +630,11 @@ CallHook player_is_dying_red_bars_hook{0x00432A5F, player_is_dying_and_not_spect
 CallHook player_is_dying_scoreboard_hook{0x00437C01, player_is_dying_and_not_spectating};
 CallHook player_is_dying_scoreboard2_hook{0x00437C36, player_is_dying_and_not_spectating};
 
+bool player_death_bars_visible(rf::Player* player)
+{
+    return player_is_dead_and_not_spectating(player) || player_is_dying_and_not_spectating(player);
+}
+
 // Report our locally-selected mp character to the server whenever it changes,
 // so server-driven spawns (round modes) and the first post-join spawn use it
 // instead of the default.

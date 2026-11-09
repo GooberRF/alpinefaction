@@ -21,6 +21,7 @@
 #include "../multi/wipeout.h"
 #include "../misc/alpine_options.h"
 #include "../misc/alpine_settings.h"
+#include "../misc/misc.h"
 #include "../misc/vote_panel.h"
 #include "../misc/waypoints_utils.h"
 #include "../rf/player/control_config.h"
@@ -689,7 +690,11 @@ static void draw_scoreboard_player_popout(
         box_x = anchor_x - cursor_gap - box_w;
     }
     box_x = std::max(box_x, 0);
-    const int box_y = std::max(std::min(anchor_y, rf::gr::clip_height() - box_h), 0);
+    // Stay clear of the death bars, which draw over the HUD.
+    const int bar_h = rf::local_player && player_death_bars_visible(rf::local_player)
+        ? (rf::gr::screen_height() - letterbox_clip_height()) / 2
+        : 0;
+    const int box_y = std::max(std::min(anchor_y, rf::gr::clip_height() - bar_h - box_h), bar_h);
 
     rf::gr::set_color(0, 0, 0, 0xE0);
     rf::gr::rect(box_x, box_y, box_w, box_h);
