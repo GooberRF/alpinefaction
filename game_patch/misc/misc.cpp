@@ -36,12 +36,15 @@
 #include "../rf/vmesh.h"
 #include "../rf/level.h"
 #include "../rf/localize.h"
+#include "../rf/ui.h"
 #include "../rf/file/file.h"
 #include "../object/object.h"
 #include "../fflink/afstats_client.h"
 #include "waypoints.h"
 #include "settings_registry.h"
 #include "../ui/extras_menu.h"
+#include "../ui/multi_pause_menu.h"
+#include "../ui/reference_menu.h"
 #include "../ui/settings_menu.h"
 
 void achievements_apply_patch();
@@ -191,6 +194,9 @@ FunHook<void(rf::GameState, rf::GameState, bool)> rf_close_state_hook{
             g_gameseq_defer_new_level = false;
         }
 
+        if (immediately && state == rf::GS_MAIN_MENU && multi_pause_menu_is_active()) {
+            multi_pause_menu_release();
+        }
         rf_close_state_hook.call_target(state, new_state, immediately);
     }
 };
@@ -220,6 +226,9 @@ FunHook<void(rf::GameState, rf::GameState)> rf_init_state_hook{
         }
 
         rf_init_state_hook.call_target(state, old_state);
+        if (state == rf::GS_MAIN_MENU && !g_jump_to_multi_server_list && !g_jump_to_demo_browser) {
+            multi_pause_menu_on_main_menu_init();
+        }
 
         xlog::trace(
             "state: {}, old_state: {}, g_jump_to_multi_server_list: {}",
@@ -283,7 +292,7 @@ FunHook<void(rf::GameState, rf::GameState)> rf_init_state_hook{
                 // mainmenu_do_open_multi_menu performs this cleanup before leaving a
                 // post-game main menu; mainmenu_open_extras lacks it because the stock
                 // Extras button is never reachable with game state left behind
-                if (!addr_as_ref<bool>(0x0063C11C)) { // mainmenu "game beneath the menu" flag
+                if (!rf::ui::mainmenu_game_beneath) {
                     rf::game_shutdown();
                 }
                 AddrCaller{0x00443C70}.c_call(); // mainmenu_open_extras
@@ -315,10 +324,19 @@ FunHook<bool(int)> rf_state_is_closed_hook{
             if (alpine_options) {
                 settings_menu_abandon();
             }
+            if (state == rf::GS_EXTRAS_MENU) {
+                reference_menu_release();
+            }
+            if (state == rf::GS_MAIN_MENU && multi_pause_menu_is_active()) {
+                multi_pause_menu_release();
+            }
             return true;
         }
         if (alpine_options) {
             return settings_menu_is_closed();
+        }
+        if (state == rf::GS_MAIN_MENU && multi_pause_menu_is_active()) {
+            return multi_pause_menu_is_closed();
         }
         if (state == rf::GS_EXTRAS_MENU && !legacy_menus_enabled()) {
             return extras_menu_is_closed();

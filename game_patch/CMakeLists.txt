@@ -71,6 +71,8 @@ set(SRCS
     graphics/weather.h
     graphics/scene_capture.cpp
     graphics/scene_capture.h
+    graphics/mesh_preview.cpp
+    graphics/mesh_preview.h
     graphics/legacy/gr_d3d.cpp
     graphics/legacy/gr_d3d_texture.cpp
     graphics/legacy/gr_d3d_capture.cpp
@@ -437,6 +439,12 @@ set(SRCS
     ui/menu_shell.cpp
     ui/extras_menu.h
     ui/extras_menu.cpp
+    ui/multi_pause_menu.h
+    ui/multi_pause_menu.cpp
+    ui/reference_data.h
+    ui/reference_data.cpp
+    ui/reference_menu.h
+    ui/reference_menu.cpp
     sound/sound.cpp
     sound/sound.h
     sound/sound_ds.cpp

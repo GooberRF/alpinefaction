@@ -171,6 +171,12 @@ namespace rf
     static_assert(offsetof(CharacterInstance, iteration_counter) == 0x1CF8);
 
     static auto& base_characters = addr_as_ref<Character[64]>(0x0181BDC0);
+    enum CharacterFlags
+    {
+        CHARACTER_FLAG_LOADED = 0x1,
+        CHARACTER_FLAG_SET_BY_CREATE = 0x2,         // 0x0051D780
+        CHARACTER_FLAG_KEEP_ON_LEVEL_UNLOAD = 0x10, // 0x0051D980
+    };
 
     static auto& g_fast_animations = addr_as_ref<bool>(0x005A4459);
 

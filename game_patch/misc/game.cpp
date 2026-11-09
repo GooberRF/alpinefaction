@@ -18,6 +18,7 @@
 #include "../rf/cutscene.h"
 #include "../multi/multi.h"
 #include "../ui/extras_menu.h"
+#include "../ui/multi_pause_menu.h"
 #include "../ui/settings_menu.h"
 #include "misc.h"
 
@@ -161,6 +162,8 @@ static FunHook<void(rf::GameState, bool)> rf_do_state_hook{
             settings_menu_do_frame(paused);
         } else if (state == rf::GS_EXTRAS_MENU && !legacy_menus_enabled()) {
             extras_menu_do_frame(paused);
+        } else if (state == rf::GS_MAIN_MENU && multi_pause_menu_is_active()) {
+            multi_pause_menu_do_frame(paused);
         } else if (state == rf::GS_MULTI_LIMBO_JUST_JOINED) {
             multi_limbo_just_joined_do_frame();
         } else if (state == rf::GS_MULTI_LEVEL_DOWNLOAD) {

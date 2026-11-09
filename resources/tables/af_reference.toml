@@ -1,0 +1,623 @@
+# Content for the Reference screen, read once at startup. Records match the loaded tables by class name,
+# case-insensitively. Each area lists its records in this file's order, then any table entry with no record
+# (a mod's additions), in table order; in the powerups area only Alpine powerups appear without a record. A mod
+# replaces this file by shipping its own af_reference.toml. A TC mod that ships its own weapons.tbl but not this file
+# shows its weapons as its table has them, without the weapon records below, which are of the stock weapons.
+#
+# In a description, a blank line starts a new paragraph and single line breaks are joined into spaces.
+# Optional keys: name (display name), category (the line under the name in the list), hidden = true (leaves the
+# entry out), seats (vehicles), amount and amount_unit (powerups: what the item's Count means, and its unit),
+# amount_value (powerups: the amount shown instead of the Count, for an item that gives a fixed amount),
+# preview_zoom (how much closer than its bounding box the preview frames the model, e.g. for an effect whose
+# particles reach far beyond it).
+#
+# [[mp_character]] records rename multiplayer characters wherever they are picked (the Player panel of the in-game
+# multiplayer menu and the Options character picker): character is the pc_multi.tbl $Name, name the name shown.
+
+# ------------------------------------------------------------------------------------------------------------
+# Weapons (weapons.tbl $Name)
+# ------------------------------------------------------------------------------------------------------------
+
+[[weapon]]
+class = "Remote Charge"
+category = "Explosive, remote detonated"
+description = """
+A sticky, remotely-detonated explosive. Primary fire throws a charge and alternate fire places one with a
+shorter throw time. A charge sticks to the first thing it touches, including walls, vehicles and players.
+
+Once a charge is out, the detonator comes out. Firing it sets off your charge.
+
+Charges can be thrown underwater. They are best used to cover a doorway, an objective or a route you expect enemies to take, or stuck straight onto a target.
+"""
+
+[[weapon]]
+class = "Riot Stick"
+category = "Melee"
+description = """
+The Ultor security baton, a melee weapon. Primary fire is a swing that uses no ammunition, so the baton is always
+usable.
+
+Holding alternate fire activates the taser, a continuous electric attack at close range that hits harder than a swing
+but drains the baton's power cells. The battery is reloaded like a magazine.
+
+Primary fire on the baton works underwater.
+
+In multiplayer, baton hits repair vehicles that are empty or being piloted by teammates, rather than damaging them.
+"""
+
+[[weapon]]
+class = "12mm handgun"
+name = "12mm Pistol"
+category = "Sidearm, semi-automatic"
+description = """
+The standard sidearm, and the spawn weapon in multiplayer. It is semi-automatic: each click fires one shot,
+and it works underwater.
+
+In single player, alternate fire screws on your silencer for quieter shots.
+"""
+
+[[weapon]]
+class = "Shotgun"
+category = "Close range"
+description = """
+A pellet shotgun built for close range. Every shot fires a spread of pellets, so damage drops off quickly with
+distance as the pellets scatter.
+
+Primary fire is a slower, tighter, double-shot blast. Alternate fire is rapid automatic fire with a much wider spread, for
+emptying the magazine into an enemy at point-blank range.
+"""
+
+[[weapon]]
+class = "Sniper Rifle"
+category = "Long range, scoped"
+description = """
+A long-range rifle firing armor-piercing rounds. Alternate fire raises the scope to zoom in. The rifle is most
+accurate when scoped.
+
+Its rounds can penetrate thin surfaces and hit targets beyond.
+"""
+
+[[weapon]]
+class = "Rocket Launcher"
+category = "Explosive, lock-on"
+description = """
+Fires rockets that explode on impact, hurting everything within the blast, including you. Rockets blow craters
+in destructible materials. A rocket's thrust burns out after a few seconds of flight, and the rocket then drops.
+
+The rocket's first person model has an infrared view which shows heat signatures.
+In single player, alternate fire can be held to lock on to a target, then release to launch a rocket that homes in on that target.
+
+Rockets are slow enough to dodge at range. Aim at the floor or walls next to a target so the splash still
+catches it.
+"""
+
+[[weapon]]
+class = "Assault Rifle"
+category = "Automatic"
+description = """
+A versatile automatic rifle firing armor-piercing rounds. Primary fire shoots a three-round burst. Holding
+alternate fire gives sustained automatic fire. Its rounds penetrate very thin surfaces.
+"""
+
+[[weapon]]
+class = "Machine Pistol"
+category = "Automatic"
+description = """
+A compact submachine gun. Hold the trigger for a fast stream of fire from its 12mm magazine, accurate at close
+to medium range. It shares 12mm ammunition with the pistol.
+
+In single player alternate fire can switch the weapon into its alternate mode, which fires the
+assault rifle's 5.65mm rounds from a separate, smaller magazine, with tracers and some penetration.
+"""
+
+[[weapon]]
+class = "Grenade"
+category = "Explosive, thrown"
+description = """
+A hand grenade. Primary fire throws a grenade that bounces and explodes when its timer runs out.
+Alternate fire throws a contact grenade that explodes as soon as it hits something.
+
+The blast damages you as well, and it blows craters in destructible materials. Grenades work underwater. Bounce them
+around corners or into rooms you cannot see into.
+"""
+
+[[weapon]]
+class = "Flamethrower"
+category = "Close range, incendiary"
+description = """
+A short-range fuel weapon. Hold primary fire for a stream of flame that sets targets alight. It cannot be fired underwater.
+
+Alternate fire throws the fuel canister, which bursts into a large fireball on impact.
+
+It is strong in tight corridors and around corners, but a poor choice against anyone who keeps their
+distance.
+"""
+
+[[weapon]]
+class = "riot shield"
+category = "Defensive"
+description = """
+A hand-held transparent shield. Primary fire bashes with its edge, a melee attack that needs no ammunition.
+
+While you hold the shield, shots that strike it are stopped by the shield instead of you. The shield takes
+damage as it soaks up fire, and it breaks when it has taken too much.
+
+Use it to advance on a gunner or to cover yourself, then switch to a gun to finish the fight.
+"""
+
+[[weapon]]
+class = "rail_gun"
+category = "Piercing, heat scanner"
+description = """
+A magnetic rail weapon that fires one aluminum slug and must reload after every shot. The slug passes
+through walls, floors and every player along its path, so you can even hit targets you cannot see.
+
+Alternate fire beings up the heat scanner, a zoomed view that shows warm bodies through everything. It is the
+usual way to find targets for a shot through a wall.
+
+In multiplayer it is occasionally treated as a super weapon.
+"""
+
+[[weapon]]
+class = "heavy_machine_gun"
+category = "Automatic, heavy"
+description = """
+A belt-fed machine gun firing armor-piercing rounds, which can penetrate thin surfaces. It has a large magazine
+and a long reload.
+
+Holding primary fire gives full-rate fire with a wider spread. Holding alternate fire gives a slower, much
+tighter stream for longer ranges.
+
+It is good for keeping pressure on an area. Plan your reloads, because the reload leaves you exposed.
+"""
+
+[[weapon]]
+class = "scope_assault_rifle"
+category = "Semi-automatic, scoped"
+description = """
+A semi-automatic rifle with a scope, firing armor-piercing rounds that penetrate thin surfaces. Alternate fire engages the scope.
+"""
+
+[[weapon]]
+class = "shoulder_cannon"
+category = "Explosive, super weapon"
+description = """
+The most destructive weapon on Mars. It fires a single slow shell with an enormous blast radius and must be
+reloaded after every shot. The blast blows large craters in destructible materials.
+
+Like a rocket, the shell's motor burns out after a few seconds and it begins to drop. Fire it at a surface near
+your target rather than straight at a moving player, and never at anything close to you.
+
+In multiplayer it is usually treated as a super weapon.
+"""
+
+# ------------------------------------------------------------------------------------------------------------
+# Vehicles (entity.tbl $Name; the vehicle and turret classes a Vehicle Factory can spawn)
+# ------------------------------------------------------------------------------------------------------------
+
+[[vehicle]]
+class = "sub"
+name = "Submarine"
+category = "Underwater"
+seats = 1
+description = """
+A one-seat mini submarine that can only be boarded and driven in water. It moves in all directions: steer and
+pitch with the mouse, and use the jump and crouch keys to climb and dive. It cannot rise above the surface. On
+dry land it is stranded, and after a short warning it is destroyed.
+
+Primary fire launches torpedoes which explode when their thrust runs out.
+Alternate fire detonates the torpedoes you have in the water, so you can set one off next to a target instead of
+waiting for it to hit.
+"""
+
+[[vehicle]]
+class = "APC"
+category = "Armored transport"
+seats = 6
+description = """
+A heavily armored personnel carrier: slow, very tough, and able to carry a squad. The driver drives and fires
+both weapons. Primary fire is a minigun firing armor-piercing rounds, and alternate fire launches explosive shells
+on an arcing path. The other five seats are for passengers.
+"""
+
+[[vehicle]]
+class = "Jeep01"
+name = "Jeep"
+category = "Light attack vehicle"
+seats = 3
+description = """
+A fast, light, open-topped buggy with three seats: a driver, a gunner on the mounted gun, and a passenger.
+"""
+
+[[vehicle]]
+class = "Fighter01"
+name = "Aesir"
+category = "Aircraft"
+seats = 1
+description = """
+A one-seat Ultor fighter that flies freely. Steer and pitch with the mouse, thrust and strafe with the movement
+keys, and use the jump and crouch keys to climb and descend.
+
+Primary fire is a fast minigun firing armor-piercing rounds. Alternate fire launches rockets. 
+"""
+
+[[vehicle]]
+class = "Driller01"
+name = "Driller"
+category = "Mining vehicle"
+seats = 1
+description = """
+A massive mining vehicle with a rotating drill on the front, and the heaviest vehicle in the game. It is slow but
+extremely durable.
+
+Primary fire runs the drill which bores tunnels through destructible materials. Alternate fire switches the view camera.
+"""
+
+[[vehicle]]
+class = "Stationary Turret_Plain"
+name = "Stationary Turret"
+category = "Turret"
+seats = 1
+description = """
+A stationary gun used by one player. It fires a Vauss machine gun with tracer rounds. Alternate fire toggles a zoomed view.
+"""
+
+# ------------------------------------------------------------------------------------------------------------
+# Gametypes (enum order)
+# ------------------------------------------------------------------------------------------------------------
+
+[[gametype]]
+code = "DM"
+description = """
+Free-for-all. Every player fights for themselves. Each kill adds one point to your score, and each suicide takes
+one away.
+
+The first player to reach the kill limit wins the map immediately. If the time limit runs out first, the player
+with the highest score wins.
+"""
+
+[[gametype]]
+code = "CTF"
+description = """
+Two teams, Red and Blue, each with a flag at its base. Grab the enemy flag and carry it back to your own flag
+stand to score a capture. Your own flag must be at home for the capture to count.
+
+Killing the enemy carrier drops your flag where they died; touch it to send it home. A carrier can also drop the
+flag deliberately with the Drop Flag key.
+
+The first team to reach the capture limit wins. If the time limit runs out first, the team with
+more captures wins.
+"""
+
+[[gametype]]
+code = "TDM"
+description = """
+Two teams, Red and Blue. Every kill against the enemy team adds a point to your team's score.
+
+The first team to reach the kill limit wins. If the time limit runs out first, the team with the higher score
+wins.
+"""
+
+[[gametype]]
+code = "KOTH"
+description = """
+A team mode with a single hill (control point). Stand on it to build capture progress for your team. Progress builds faster
+with more teammates on the hill. Any progress the enemy left on the hill must be cleared first. When both teams
+are on the hill it is contested and progress stops, and an empty hill's progress slowly decays.
+
+While your team owns the hill and holds it uncontested, it earns one point per second.
+
+The first team to reach the score limit wins. If the time limit runs out first, the higher score wins.
+"""
+
+[[gametype]]
+code = "DC"
+description = """
+King of the Hill with several control points. Points are captured the same way as a hill: stand on one to build
+progress, contested points freeze, and empty points slowly decay.
+
+Each point your team owns and holds uncontested earns one point per second, so holding more points scores faster.
+
+The first team to reach the score limit wins. If the time limit runs out first, the higher score wins.
+"""
+
+[[gametype]]
+code = "REV"
+description = """
+Attack and defend. Red attacks and Blue defends. The capture points are grouped into stages that unlock in order,
+and Red can only capture points in the stage that is currently open. Once Red captures a point it is locked for
+good and cannot be retaken. Red's spawn points move forward as stages fall.
+
+Blue cannot capture anything. Standing on a point drains Red's capture progress, and with both teams on it the
+progress freezes.
+
+Red wins by capturing every point before the time limit runs out. Blue wins by holding out until time expires.
+"""
+
+[[gametype]]
+code = "RUN"
+description = """
+An obstacle course mode with no combat. Players cannot damage or collide with each other. Race through the level as fast
+as you can. A run timer counts each life and resets when you respawn.
+
+Saving and loading your position is enabled so you can practise difficult sections. The scoreboard tracks deaths
+and position loads instead of kills.
+
+There is no win condition; the map runs until the time limit expires.
+"""
+
+[[gametype]]
+code = "ESC"
+description = """
+A symmetric tug of war along a lane of five points: Red Base, Red Forward, Center, Blue Forward and Blue Base.
+Smaller maps leave out the forward points for a lane of three. Each team starts owning its own side of the lane,
+and the center starts neutral.
+
+A team can only attack the next point in its path, so it must own the previous point first: take the center, then
+the enemy's forward point, then the enemy base. Points neither team can attack are locked. Each team's spawn
+points follow the front line, and there is no per-second scoring.
+
+A team wins by owning every point, a full push into the enemy base. If the time limit runs out first, the team
+owning more points wins.
+"""
+
+[[gametype]]
+code = "BAG"
+description = """
+Free-for-all around a single bag that spawns at a home spot in the map. Walk over it to pick it up. While you carry
+it you earn one point per second and regenerate health, then armor once your health is full. The carrier glows,
+so everyone can see who has the bag. Kills also score a point each, and
+fights between players who are not carrying the bag do less damage.
+
+Killing the carrier gives the killer a burst of health and armor and drops the bag where the carrier died. A
+dropped bag returns home after a few seconds if nobody picks it up.
+
+The first player to reach the score limit wins. If the time limit runs out first, the highest score wins.
+"""
+
+[[gametype]]
+code = "TBAG"
+description = """
+Bagman played in two teams. The bag rules are the same, but while your team's carrier holds the bag, your team
+earns one point per second, and each kill of an enemy also adds a point to your team. Protect your own carrier and
+hunt theirs.
+
+The first team to reach the score limit wins. If the time limit runs out first, the higher team score wins.
+"""
+
+[[gametype]]
+code = "PIT"
+description = """
+One-on-one duel rounds. Two players fight each round while everyone else waits in a queue as spectators. Duelers
+spawn with 200 health, 200 armor, the Control Baton and an Assault Rifle with unlimited magazines. Only weapon
+pickups stay in the arena.
+
+When one dueler dies, the survivor wins the round, scores a point and stays on as champion. The loser goes to the
+back of the queue and the next challenger steps in. If the round timer runs out, or both die at once, there is no
+winner and both go to the back. The Ready key toggles whether you are in the queue.
+
+The first player to reach the score limit wins the match.
+"""
+
+[[gametype]]
+code = "WO"
+description = """
+Round-based team elimination, best of seven. Everyone spawns with 200 health, 200 armor and a fixed loadout of the
+Control Baton, 12mm Pistol, Assault Rifle, Sniper Rifle, Rocket Launcher and Shotgun with effectively unlimited
+ammunition. There are no pickups.
+
+You can respawn after dying, but every death this round makes your next respawn take longer. A team wins the
+round by wiping out the enemy: every enemy dead or waiting to respawn at the same moment. A simultaneous double
+wipe is a draw.
+
+The first team to win four rounds takes the match.
+"""
+
+[[gametype]]
+code = "GG"
+description = """
+Free-for-all weapon progression. Each kill advances you to the next weapon. The weapons are grouped into tiers that
+always run in the same order, but each player gets their own random order within each tier. After the last tier
+come two one-kill levels, the Control Baton and then the Fusion Rocket Launcher.
+
+There are no item pickups, weapons are never dropped and ammunition is unlimited. You cannot change
+weapons yourself. Every kill restores some health, and reaching a new weapon and passing it in the same life earns a random powerup as a rampage reward.
+
+The first player to score the final kill with the last weapon wins.
+"""
+
+[[gametype]]
+code = "SAL"
+description = """
+A team mode played on capture the flag maps. Instead of two team flags, a single neutral flag spawns near the
+middle of the map shortly after the level starts. Pick it up and carry it to your own team's base to score a
+capture. The flag glows green wherever it is, on the ground or on its carrier's back, so everyone can find it.
+
+A carrier who dies drops the flag where they fell, and anyone can pick it up. Left alone, a dropped flag returns to
+the middle after a short time. After a capture, a new flag appears in the middle a few seconds later.
+
+The first team to reach the capture limit wins. If the time limit runs out first, the team with more captures wins.
+"""
+
+[[gametype]]
+code = "SCAV"
+description = """
+A team scavenger hunt. A cartridge appears at a random spot in the map and a target zone appears somewhere else,
+usually far away. Pick up the cartridge and carry it into the target zone to score a capture for your team. After a
+capture, a new cartridge and target appear elsewhere.
+
+If nobody scores in time, the target moves. If the cartridge has not been picked up yet, the cartridge moves too. A
+carrier who dies drops the cartridge, and it returns after a while if nobody takes it.
+
+Everyone spawns with 200 health, 200 armor and a fixed loadout of the Control Baton, 12mm Pistol, Assault Rifle,
+Sniper Rifle, Rocket Launcher and Shotgun with unlimited magazines. The map has no pickups. The first team to
+reach the capture limit wins. If the time limit runs out first, the team with more captures wins.
+"""
+
+# ------------------------------------------------------------------------------------------------------------
+# Powerups (items.tbl $Class Name, or an Alpine powerup class name)
+# ------------------------------------------------------------------------------------------------------------
+
+[[powerup]]
+class = "Multi Damage Amplifier"
+name = "Damage Amplifier"
+amount = "Duration"
+amount_unit = "s"
+description = """
+While it lasts, the damage you deal in multiplayer is multiplied by 4. You glow purple while you hold it, so
+enemies can see you coming.
+
+It is one of the strongest pickups in the game and has a long respawn time.
+"""
+
+[[powerup]]
+class = "Multi Invulnerability"
+name = "Invulnerability"
+amount = "Duration"
+amount_unit = "s"
+preview_zoom = 4.0
+description = """
+Makes you immune to damage for a short time, and you glow cyan while it lasts. Use it to push into a defended area,
+take an objective or carry a flag through enemy fire.
+"""
+
+[[powerup]]
+class = "Alpine Haste"
+name = "Haste"
+amount = "Duration"
+amount_unit = "s"
+description = """
+For its duration you move, climb and swim 1.3 times faster and jump 1.3 times higher. Your weapons also fire,
+reload and switch 1.3 times faster. You glow gold while it lasts.
+"""
+
+[[powerup]]
+class = "Alpine Vampire"
+name = "Vampire"
+amount = "Duration"
+amount_unit = "s"
+description = """
+For its duration, every point of damage you deal to an enemy player heals you by the same amount. The healing
+fills your health up to its normal maximum first, and any overflow tops up your armor. You glow red while it lasts.
+"""
+
+[[powerup]]
+class = "Alpine Jetpack"
+name = "Jetpack"
+amount = "Duration"
+amount_unit = "s"
+description = """
+Gives you a jetpack with a full tank for its duration. Jump, then hold the jump key in midair to thrust upward.
+The tank drains while you thrust and refills shortly after you stop, and a gauge shows the fuel level and the time
+left.
+"""
+
+[[powerup]]
+class = "Multi Super Health"
+name = "Super Health"
+amount = "Amount"
+amount_unit = "health"
+amount_value = 200
+description = """
+Sets your health to 200, regardless of how much you had when you picked it up.
+"""
+
+[[powerup]]
+class = "Medical Kit"
+amount = "Amount"
+amount_unit = "health"
+description = """
+Restores health, up to 100; and cannot be picked up while your health is already full.
+
+In single player the amount it restores is scaled by the difficulty level.
+"""
+
+[[powerup]]
+class = "First Aid Kit"
+amount = "Amount"
+amount_unit = "health"
+description = """
+A smaller health pickup that otherwise works just like the Medical Kit. It restores health up to 100 and cannot
+be picked up at full health.
+
+In single player the amount it restores is scaled by the difficulty level.
+"""
+
+[[powerup]]
+class = "Alpine Health Shard"
+name = "Health Shard"
+amount = "Amount"
+amount_unit = "health"
+description = """
+A small health pickup that respawns quickly. Unlike the Medical Kit and First Aid Kit, it can push your health past 100,
+up to the 200 that Super Health gives, so shards are worth collecting even at full health.
+"""
+
+[[powerup]]
+class = "Multi Super Armor"
+name = "Super Armor"
+amount = "Amount"
+amount_unit = "armor"
+amount_value = 200
+description = """
+Sets your armor to 200, regardless of how much you had when you picked it up.
+"""
+
+[[powerup]]
+class = "Suit Repair"
+name = "Envirosuit Armor"
+amount = "Amount"
+amount_unit = "armor"
+description = """
+Repairs your envirosuit, restoring armor up to your normal maximum of 100. It cannot be picked up while your armor is
+already full.
+
+In single player the amount it restores is scaled by the difficulty level.
+"""
+
+[[powerup]]
+class = "Miner Envirosuit"
+category = "Armor"
+amount = "Amount"
+amount_unit = "armor"
+amount_value = 100
+description = """
+A complete miner's envirosuit. Picking it up fills your armor to your normal maximum of 100, regardless of how low it was.
+It cannot be picked up while your armor is already full.
+"""
+
+[[powerup]]
+class = "Alpine Armor Shard"
+name = "Armor Shard"
+amount = "Amount"
+amount_unit = "armor"
+description = """
+A small armor pickup that respawns quickly. Unlike the Suit Repair and Miner Envirosuit, it can push your armor past 100,
+up to the 200 that Super Armor gives, so shards are worth collecting even with full armor.
+"""
+
+# ------------------------------------------------------------------------------------------------------------
+# Multiplayer characters (pc_multi.tbl $Name). Stock: enviro_parker, scientist_parker, exec_parker, guard2,
+# env_guard, elite, riot_guard, nurse, female_miner, female_admin, masako, eos, merc_grunt, tech, scientist, medic1,
+# env_scientist1, hendrix, gryphon, fat_admin
+# ------------------------------------------------------------------------------------------------------------
+
+[[mp_character]]
+character = "guard2"
+name = "Guard Commander"
+
+[[mp_character]]
+character = "female_admin"
+name = "Female Admin"
+
+[[mp_character]]
+character = "merc_grunt"
+name = "Mercenary Grunt"
+
+[[mp_character]]
+character = "env_scientist1"
+name = "Envirosuit Scientist"
+
+[[mp_character]]
+character = "fat_admin"
+name = "Davis"

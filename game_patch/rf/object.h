@@ -235,6 +235,7 @@ namespace rf
     };
 #pragma pack(pop)
     static_assert(sizeof(Object) == 0x28C);
+    static_assert(offsetof(Object, vmesh) == 0x80);
     static_assert(offsetof(Object, server_handle) == 0x274);
 
     struct ObjectCreateInfo

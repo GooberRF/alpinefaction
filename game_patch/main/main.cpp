@@ -85,6 +85,7 @@
 
 #include "../multi/bots/bot_main.h"
 #include "../multi/bots/bot_vehicle_nav.h"
+#include "../ui/reference_data.h"
 
 GameConfig g_game_config;
 AlpineCoreConfig g_alpine_system_config;
@@ -140,6 +141,8 @@ CodeInjection after_full_game_init_hook{
         debug_init();
         if (!is_headless_mode()) {
             load_world_hud_assets();
+            // Every table and packfile is in by now, and the lists never change after.
+            reference_data_load();
         }
         execute_startup_scripts();
 

@@ -19,6 +19,8 @@ namespace rf
     // Forward declarations
     struct Player;
     struct Entity;
+    struct EntityInfo;
+    struct Object;
 
     // nw/psnet
 
@@ -419,6 +421,10 @@ namespace rf
     constexpr int MAX_MP_CHARACTERS = 31;
     static auto& mp_characters = addr_as_ref<MpCharacterInfo[MAX_MP_CHARACTERS]>(0x006C75A0);
     static auto& num_multi_characters = addr_as_ref<int>(0x006C9C60);
+    // player_create_entity's (0x004A4130) team-skin builders for a character in the "default" skin.
+    static auto& mp_character_lacks_team_skins =
+        addr_as_ref<bool(MpCharacterInfo* character, EntityInfo* info)>(0x004A4540);
+    static auto& mp_character_add_team_skins = addr_as_ref<void(MpCharacterInfo* character, Object* obj)>(0x004A45A0);
     static auto& simultaneous_ping = addr_as_ref<uint32_t>(0x00599CD8);
     static auto& tracker_addr = addr_as_ref<NetAddr>(0x006FC550);
     static auto& tracker_hostname = addr_as_ref<char[64]>(0x0059F4B4);

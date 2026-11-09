@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -499,6 +500,8 @@ void ui_set_text_color(const UiContext& ctx, bool enabled, bool hovered);
 // ---------------------------------------------------------------------------
 
 std::string ui_fit_middle(std::string_view text, int max_w, int font);
+// Cuts the end off, trailing spaces too, before the ellipsis.
+std::string ui_fit_end(std::string_view text, int max_w, int font);
 std::vector<std::string> ui_wrap_text(std::string_view text, int max_w, int font);
 void ui_draw_wrapped(const UiContext& ctx, const UiRect& r, std::string_view text, int font, int line_h);
 int ui_line_block_height(const std::vector<std::string>& lines, int max_w, int font, int line_h, int max_h);
@@ -541,6 +544,9 @@ UiTextInputResult ui_text_input(UiContext& ctx, const UiRect& r, UiId id, std::s
                                 size_t max_len, UiCharFilter allow_char, const char* hint, int font,
                                 bool enabled = true);
 
+// A focusable widget scrolled out of view: the keyboard focus can still step onto it. True when Enter took it.
+bool ui_offscreen_activatable(UiContext& ctx, UiId id);
+
 // Top-right "X". Returns true on the click; the caller decides what closing means.
 bool ui_close_button(UiContext& ctx, const UiRect& r, int font);
 
@@ -552,6 +558,11 @@ bool ui_close_button(UiContext& ctx, const UiRect& r, int font);
 UiScrollRegion ui_scroll_begin(UiContext& ctx, const UiRect& view, int content_h, float& scroll,
                                int wheel_step, UiId id = 0, bool draggable = false);
 void ui_scroll_end(UiContext& ctx, UiScrollRegion& region);
+// Hit-test pass, after the region: keyboard navigation brings the newly focused widget into view;
+// a focus that merely sits there does not, so the wheel and scrollbar can still move away from it.
+// `scrolled_to` is the caller's record of the focus it last scrolled for.
+void ui_scroll_focus_into_view(const UiContext& ctx, const UiRect& view, const std::optional<UiRect>& focus_rect,
+                               float& scroll, UiId& scrolled_to);
 
 // Where a scroll region's bar sits. ui_scroll_end hit-tests with it, and a skin that paints the
 // bar itself draws with it, so the two always agree.

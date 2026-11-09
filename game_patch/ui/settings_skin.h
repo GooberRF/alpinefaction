@@ -182,6 +182,18 @@ int skin_cycler(UiContext& ctx, const UiRect& r, const char* value, int font, bo
                 bool hot);
 bool skin_dropdown(UiContext& ctx, const UiRect& r, const std::vector<std::string>& items, int& sel,
                    int font, bool enabled, UiId id, bool hot);
+struct SkinCyclerRects
+{
+    UiRect label;
+    UiRect toggle;
+};
+// A labelled cycler right-aligned on `line`, or `centred` on it, its value box `value_w` reference pixels wide.
+SkinCyclerRects skin_header_cycler_rects(const UiContext& ctx, const UiRect& line, const char* text, float value_w,
+                                         int font, bool centred = false);
+// "Label < value >": the label is part of the control, a click on it stepping forward. `lit` / `idle` colour it;
+// disabled, it is dimmed. Returns the step taken: -1, 0 or +1.
+int skin_labeled_cycler(UiContext& ctx, const UiRect& label, const UiRect& toggle, const char* text, const char* value,
+                        int font, bool enabled, UiId id, rf::Color lit, rf::Color idle);
 // A closed dropdown's look for a choice made elsewhere (the picture grids). True when pressed.
 bool skin_select_box(UiContext& ctx, const UiRect& r, const char* text, int font, bool enabled, UiId id,
                      bool hot);
@@ -246,11 +258,40 @@ bool skin_reorder_row(UiContext& ctx, const UiRect& r, const char* label, bool s
 // One picker tile: thumbnail (or a placeholder carrying `caption`), hover highlight, selection
 // glow and index tag. The bitmap is letterboxed into the image area, so non-square portraits keep
 // their aspect. With `caption_line` the tile reserves skin_picker_caption_h at its bottom for the
-// caption; without it the whole rect is image area. True when clicked.
+// caption; without it the whole rect is image area. A caption too long for the tile loses its middle, or with
+// `cut_end` its end. A disabled tile is dimmed and takes nothing. True when clicked.
 bool skin_picker_tile(UiContext& ctx, const UiRect& r, int bitmap, int index, bool selected,
-                      const char* caption, bool caption_line, int font, UiId id);
+                      const char* caption, bool caption_line, int font, UiId id, bool cut_end = false,
+                      bool enabled = true);
 // Height the caption line of a picker tile takes, so the grid layout and the tile agree.
 int skin_picker_caption_h(const UiContext& ctx, int font);
+
+// A scrolling grid of picker tiles, centred in `view`. `max_cols` 0 leaves the count to the width.
+struct SkinPickerGrid
+{
+    int count = 0;
+    int selected = -1;
+    float tile_w = 0.0f;
+    float tile_h = 0.0f; // the image area; a captioned tile adds its caption line
+    int (*bitmap)(int) = nullptr;
+    const char* (*caption)(int) = nullptr;
+    bool caption_line = false;
+    bool cut_end = false;
+    int font = 0;
+    int min_cols = 1;
+    int max_cols = 0;
+    const char* id_name = "";
+    bool enabled = true;
+};
+// Returns the tile picked by click or Enter, else -1.
+int skin_picker_grid(UiContext& ctx, const UiRect& view, const SkinPickerGrid& grid, float& scroll, UiId& scrolled_to);
+
+// Draw space: the bitmap letterboxed into `r`.
+void skin_draw_fitted_bitmap(int bitmap, const UiRect& r);
+// A black well, `image` inside it showing `bitmap` letterboxed, or "No preview" when there is none.
+void skin_preview_well(const UiContext& ctx, const UiRect& well, const UiRect& image, int bitmap, int font);
+// The same, the image filling the well inside its 1 px edge, as MeshPreview::render_in_well sizes it.
+void skin_preview_well(const UiContext& ctx, const UiRect& well, int bitmap, int font);
 
 int skin_badge_width(const UiContext& ctx, const char* text, int font, bool has_marker);
 void skin_badge(const UiContext& ctx, const UiRect& r, const char* text, rf::Color color, int font,

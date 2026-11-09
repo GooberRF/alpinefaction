@@ -114,6 +114,13 @@ bool weapon_reticle_is_customized(int weapon_id, bool bighud) {
     return (mask & (bighud ? 0x2 : 0x1)) != 0;
 }
 
+const char* weapon_third_person_mesh(int weapon_type)
+{
+    return weapon_type >= 0 && weapon_type < rf::num_weapon_types
+        ? rf::weapon_types[weapon_type].third_person_vmesh_filename.c_str()
+        : "";
+}
+
 bool rocket_locked_reticle_is_customized(bool bighud) {
     return bighud ? rocket_locked_custom_reticle.second : rocket_locked_custom_reticle.first;
 }
@@ -363,10 +370,10 @@ bool should_apply_click_limiter() {
 // default fire wait 500ms like pistol and PR in stock weapons.tbl
 int get_semi_auto_fire_wait_override() {
     if (rf::is_multi && get_af_server_info().has_value()) {
-        return get_af_server_info()->semi_auto_cooldown.value_or(90);
+        return get_af_server_info()->semi_auto_cooldown.value_or(default_semi_auto_fire_wait_ms);
     }
     else {
-        return 90;
+        return default_semi_auto_fire_wait_ms;
     }
 }
 

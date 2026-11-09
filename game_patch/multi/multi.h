@@ -236,6 +236,8 @@ bool multi_level_name_matches_any_mp_prefix(const char* filename);
 bool multi_level_name_matches_game_type(std::string_view level_filename, rf::NetGameType game_type);
 std::string normalize_level_filename(std::string_view name); // appends ".rfl" when it is missing
 [[nodiscard]] int multi_num_spawned_players();
+// What a player's stock semi-automatic waits between shots unless the server sets its own.
+inline constexpr int default_semi_auto_fire_wait_ms = 90;
 int get_semi_auto_fire_wait_override();
 void mp_send_handicap_request(bool on_join);
 void print_alpine_dedicated_server_config_info(std::string& output, bool verbose, bool remote = false);

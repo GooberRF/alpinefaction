@@ -20,6 +20,9 @@
 #include "../../rf/os/timestamp.h"
 #include "../../rf/player/player.h"
 
+// The jeep's mounted gun in multiplayer: vehicle_spawn repoints entity_create's jeep_gun.v3d load to it.
+inline constexpr char af_jeep_gun_mesh_filename[] = "af_jeep_gun.v3m";
+
 // Server: the trigger state the firing seat owner last reported; the two triggers are independent.
 struct VehicleFireState
 {

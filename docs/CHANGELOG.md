@@ -31,10 +31,12 @@ Version 1.5.0 (Trillium): Not yet released
   - `af_set` and `af_get` console commands to read and write any setting by name
   - Draw menus from resolution-independent vector artwork
   - Redraw the extras menu in the same style
-  - `Use deprecated legacy menus` launcher option to use the stock options and extras screens instead of the new menus
+  - Redraw the in-game multiplayer menu in the same style, with a `Player` panel for picking your name and character
+  - Add `Use deprecated legacy menus` launcher option to use the stock menus instead
 - Add server-side bots, which run inside the dedicated or listen server process in addition to (or instead of) bot clients
   - `server_bots` ADS option (0-31) sets how many server bots join; they use the `bot_profiles` profiles and follow `ideal_player_count` like bot clients
   - Add `sv_bot_add [profile_index] [red|blue]`, `sv_bot_remove <name|all>` and `sv_bot_list` server console commands, which also work through rcon
+- Add new powerups `Haste`, `Vampire`, `Jetpack`, `Health Shard`, and `Armor Shard`
 - Add new multiplayer game type: Scavenger (`SCAV`)
 
 [@GooberRF](https://github.com/GooberRF) & [@nickalreadyinuse](https://github.com/nickalreadyinuse)
@@ -57,14 +59,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Add `Rope Emitter` object for ropes, cables, power lines, and zip lines that players and bots can ride, with optional decorations
 - Add flames to gib chunks thrown by exploding entities, toggleable with `cl_gibflames`
 - Add `Jetpacks explode` option to the Jetpacks mutator
-- Add multiplayer powerup items that can be placed in the level editor or added with `item_replacements`
-  - `Alpine Jetpack` gives a jetpack with a full tank for 30 seconds, the same as the Jetpacks mutator, and is not spawned while the Jetpacks mutator is on
-  - `Alpine Haste` makes movement, climbing, swimming, firing, reloading and weapon switching 1.3 times faster and jumps 1.3 times higher for 30 seconds
-  - `Alpine Vampire` heals the holder by the health and armor their hits take from enemy players for 30 seconds, filling health before armor
-  - `Alpine Health Shard` and `Alpine Armor Shard` add 10 health or armor, up to the 200 that `Multi Super Health` and `Multi Super Armor` give, respawn after 10 seconds by default, and also work in single player
-  - `Alpine Haste`, `Alpine Vampire` and `Alpine Jetpack` count as super items for Delayed Supers, `drop_amps`, Bagman, the Salvage flag spawn and the generated respawn points; bots go for Haste and Vampire
-  - Levels that use them can only be joined by Alpine Faction 1.5 or newer clients
-- Ignore `item_replacements` entries whose `replacement` names an unknown item class (an empty `replacement` still removes the item)
+- Ignore `item_replacements` entries whose `replacement` names an unknown item
 - Add `Scrapyard mode` option to the Gibbing mutator
 - Add underwater rendering effects — animated caustics, depth-based water fog with a waterline, screen tint/vignette and distortion — with quality levels 0-3 via `r_underwater` (Direct3D 11 renderer only)
 - Extend view distance while submerged at `r_underwater` 2 or higher, up to 4x the liquid visibility, with the extension capped at the normal far clip
@@ -212,6 +207,9 @@ Version 1.5.0 (Trillium): Not yet released
 - Raise minimum `maxfps` from 1 to 10, for both the client and the dedicated server
 - Limit `r_gamma` to 0.7-2.2
 - Allow pasting text with `Ctrl+V` into vote panel text boxes
+- Add `Reference` screen to the extras and in-game multiplayer menus, describing weapons, vehicles, gametypes and powerups
+  - Allow mods to replace its descriptions with their own `af_reference.toml`
+  - Allow `af_reference.toml` to rename multiplayer characters with `[[mp_character]]` records
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color
@@ -371,7 +369,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix waypoint autogeneration placing waypoints on mover brushes set to `No Player Collide`, which players pass through
 - Fix level editor sometimes crashing when moving vertices after using `Weld` in vertex mode
 - Fix some level editor buttons in Face and Vertex modes not working when the mode was entered with a keyboard shortcut
-- Fix a grenade exploding in multiplayer setting off its thrower's placed remote charges for every client
+- Fix exploding grenades setting off their thrower's remote charges on clients in multiplayer
 - Fix players freezing in place in multiplayer for a moment after bumping into another player or mesh
 - Fix possible dedicated server crash when auto-downloading missing vote-allowed levels with `add_installed_to_allowed_levels` enabled
 

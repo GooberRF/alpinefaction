@@ -11,6 +11,7 @@
 #include <vector>
 #include <common/utils/string-utils.h>
 #include "menu_shell.h"
+#include "reference_data.h"
 #include "settings_menu.h"
 #include "settings_skin.h"
 #include "ui_kit.h"
@@ -36,15 +37,7 @@
 namespace
 {
 
-// Button slots down the column, which the panel spans. The categories then BACK fill them from the
-// top and the rest stay empty, as on stock.
-constexpr int column_slots = 11;
-static_assert(static_cast<int>(SettingCategory::_count) + 1 <= column_slots);
-// The panel frame around the dark content area: the left channel and the top and bottom ridges.
-constexpr float frame_left = 34.0f;
-constexpr float frame_edge = 22.0f;
-// Space kept between anything in the content area and the right pillar.
-constexpr float rail_clearance = 16.0f;
+static_assert(static_cast<int>(SettingCategory::_count) + 1 <= menu_panel_slots);
 // Left inset of a row's label and right inset of its controls.
 constexpr float row_inset = 32.0f;
 
@@ -139,23 +132,6 @@ struct GridPicker
     bool caption_line;
 };
 
-int character_count()
-{
-    return std::clamp(rf::num_multi_characters, 0, rf::MAX_MP_CHARACTERS);
-}
-
-const char* character_caption(int index)
-{
-    if (index < 0 || index >= character_count()) {
-        return nullptr;
-    }
-    const rf::MpCharacterInfo& info = rf::mp_characters[index];
-    if (info.screen_name && info.screen_name[0] != '\0') {
-        return info.screen_name;
-    }
-    return info.name[0] != '\0' ? info.name : nullptr;
-}
-
 constexpr GridPicker spray_picker{
     .row_id = "selected_spray_index",
     .title = "SELECT SPRAY",
@@ -174,11 +150,11 @@ constexpr GridPicker character_picker{
     .empty_text = "No multiplayer characters are installed.",
     .tile_w = skin::portrait_tile,
     .tile_h = skin::portrait_tile,
-    .count = character_count,
+    .count = mp_character_count,
     .bitmap = [](int i) {
-        return i >= 0 && i < character_count() ? rf::mp_characters[i].image_handle : -1;
+        return i >= 0 && i < mp_character_count() ? rf::mp_characters[i].image_handle : -1;
     },
-    .caption = character_caption,
+    .caption = mp_character_caption,
     .caption_line = true,
 };
 
@@ -198,6 +174,7 @@ const GridPicker* picker_for_row(const SettingRow& row)
 const SettingRow* g_picker_row = nullptr;
 const GridPicker* g_picker = nullptr;
 float g_picker_scroll = 0.0f;
+UiId g_picker_scrolled_to = 0;
 
 // The colour modal: the row it edits, the value it opened with and the pick in progress. `rgba`
 // is what APPLY writes; `hsva` keeps the hue through greys, where RGB alone would lose it. An
@@ -423,12 +400,6 @@ void write_row(const SettingRow& row, const std::string& value)
 // Text rows
 // ---------------------------------------------------------------------------
 
-bool char_filter_player_name(char c)
-{
-    // player_change_name would substitute both.
-    return c >= 0x20 && c < 0x7F && c != '%' && c != '\\';
-}
-
 struct TextRowConfig
 {
     UiCharFilter filter = ui_char_filter_filename;
@@ -442,16 +413,10 @@ TextRowConfig text_row_config(const SettingRow& row, const std::string& text)
     TextRowConfig cfg;
     const std::string_view id{row.id};
     if (id == "player_name") {
-        cfg.filter = char_filter_player_name;
-        cfg.max_len = 31; // the ini cap; the engine's own commit is stricter, see below
+        cfg.filter = player_name_char_allowed;
+        cfg.max_len = player_name_field_len;
         cfg.hint = "Player";
-        const std::string clean = setting_sanitize_player_name(text);
-        if (clean.empty()) {
-            cfg.warn = "Enter a name";
-        }
-        else if (clean.size() > player_name_max_len) {
-            cfg.warn = "20 characters maximum";
-        }
+        cfg.warn = player_name_warning(text);
     }
     return cfg;
 }
@@ -1343,6 +1308,7 @@ void do_picker_row_widget(UiContext& ctx, const SettingRow& row, const GridPicke
         g_picker = &picker;
         g_picker_row = &row;
         g_picker_scroll = 0.0f;
+        g_picker_scrolled_to = 0;
         g_modal = Modal::GridPicker;
         ui_play_click();
     }
@@ -2355,10 +2321,6 @@ void build_grid_picker_modal(UiContext& ctx, int canvas_x, int canvas_y, const F
     const auto s = [&](float v) { return skin_px(ctx, v); };
     const GridPicker& picker = *g_picker;
     const int count = picker.count();
-    const int tile_w = s(picker.tile_w);
-    const int tile_h = s(picker.tile_h)
-        + (picker.caption_line ? skin_picker_caption_h(ctx, fonts.caption) : 0);
-    const int gap = s(12.0f);
 
     const int dialog_w = s(1000.0f);
     const int dialog_h = s(760.0f);
@@ -2372,11 +2334,6 @@ void build_grid_picker_modal(UiContext& ctx, int canvas_x, int canvas_y, const F
     const UiRect band{dialog.x + edge, dialog.y + edge, dialog.w - 2 * edge, band_h};
     const UiRect grid_view{dialog.x + pad, band.y + band.h + s(12.0f), dialog.w - 2 * pad,
                            dialog.h - edge - band_h - s(12.0f) - footer_h - pad};
-
-    const int cols = std::clamp((grid_view.w + gap) / std::max(1, tile_w + gap), 2, 6);
-    const int rows = count > 0 ? (count + cols - 1) / cols : 0;
-    const int content_h = rows * (tile_h + gap) + gap;
-    const int grid_w = cols * tile_w + (cols - 1) * gap;
 
     if (ctx.draw) {
         draw_modal_dim();
@@ -2392,29 +2349,20 @@ void build_grid_picker_modal(UiContext& ctx, int canvas_x, int canvas_y, const F
     const int selected = g_picker_row
         ? static_cast<int>(std::lround(row_float(*g_picker_row, -1.0f)))
         : -1;
-    int chosen = -1;
-
-    UiScrollRegion region = ui_scroll_begin(ctx, grid_view, content_h, g_picker_scroll, tile_h + gap,
-                                            ui_id("picker_grid"), true);
-    for (int i = 0; i < count; ++i) {
-        const int col = i % cols;
-        const int row = i / cols;
-        const UiRect r{grid_view.x + (grid_view.w - grid_w) / 2 + col * (tile_w + gap),
-                       region.start_y() + gap + row * (tile_h + gap), tile_w, tile_h};
-        if (r.y + tile_h < grid_view.y || r.y > grid_view.y + grid_view.h) {
-            continue;
-        }
-        if (skin_picker_tile(ctx, r, picker.bitmap(i), i, i == selected, picker.caption(i),
-                             picker.caption_line, fonts.caption, ui_id("picker", i))) {
-            chosen = i;
-        }
-    }
-    ui_scroll_end(ctx, region);
-
-    if (ctx.draw) {
-        skin_scrollbar(ctx, grid_view, content_h, g_picker_scroll,
-                       ctx.captured_id() == ui_id("picker_grid"));
-    }
+    const SkinPickerGrid grid{
+        .count = count,
+        .selected = selected,
+        .tile_w = picker.tile_w,
+        .tile_h = picker.tile_h,
+        .bitmap = picker.bitmap,
+        .caption = picker.caption,
+        .caption_line = picker.caption_line,
+        .font = fonts.caption,
+        .min_cols = 2,
+        .max_cols = 6,
+        .id_name = "picker",
+    };
+    const int chosen = skin_picker_grid(ctx, grid_view, grid, g_picker_scroll, g_picker_scrolled_to);
 
     const int btn_h = s(44.0f);
     const UiRect close{dialog.x + dialog.w - pad - s(200.0f), dialog.y + dialog.h - pad - btn_h,
@@ -2641,27 +2589,6 @@ void draw_title_bar(const UiContext& ctx, int x, int right, int clear_r, int can
                            fitted.font);
 }
 
-void draw_panel(const UiContext& ctx, const UiRect& panel, const UiRect& inset)
-{
-    skin_brushed_plate(ctx, panel.x, panel.y, panel.w, panel.h, false);
-    const int margin = skin_px(ctx, 6.0f);
-    skin_brushed_plate(ctx, panel.x + margin, panel.y + margin, skin_px(ctx, 20.0f), panel.h - 2 * margin, true);
-
-    const int t = skin_px(ctx, 1.0f);
-    const int ridge_x = panel.x + skin_px(ctx, 30.0f);
-    const int ridge_w = panel.x + panel.w - ridge_x;
-    for (const float y_ref : {7.0f, 13.0f}) {
-        for (const int y : {panel.y + skin_px(ctx, y_ref), panel.y + panel.h - skin_px(ctx, y_ref + 2.0f)}) {
-            rf::gr::set_color(skin::steel_dark);
-            rf::gr::rect(ridge_x, y, ridge_w, t);
-            rf::gr::set_color(skin::steel_hi);
-            rf::gr::rect(ridge_x, y + t, ridge_w, t);
-        }
-    }
-
-    skin_steel_field(ctx, inset.x, inset.y, inset.w, inset.h);
-}
-
 void build_category_column(UiContext& ctx, const MenuLayout& lay, int col_x, int col_y, const Fonts& fonts)
 {
     constexpr int category_count = static_cast<int>(SettingCategory::_count);
@@ -2699,13 +2626,9 @@ int build_header_controls(UiContext& ctx, const UiRect& line, const Fonts& fonts
 {
     const auto s = [&](float v) { return skin_px(ctx, v); };
     const char* adv_text = "Show advanced";
-    const int adv_text_w = rf::gr::get_string_size(adv_text, fonts.body).first;
     // A short On / Off cycler: the rows' column width does not fit beside the search box.
-    const int adv_w = s(2.0f * (skin::cycler_arrow + skin::cycler_gap) + 80.0f);
-    const UiRect adv_toggle{line.x + line.w - adv_w, line.y + (line.h - s(skin::widget_h)) / 2, adv_w,
-                            s(skin::widget_h)};
-    const UiRect adv_label{adv_toggle.x - s(14.0f) - adv_text_w, line.y, adv_text_w + s(14.0f), line.h};
-    const UiRect search{adv_label.x - s(28.0f) - s(340.0f), line.y + (line.h - s(44.0f)) / 2, s(340.0f), s(44.0f)};
+    const SkinCyclerRects adv = skin_header_cycler_rects(ctx, line, adv_text, 80.0f, fonts.body);
+    const UiRect search{adv.label.x - s(28.0f) - s(340.0f), line.y + (line.h - s(44.0f)) / 2, s(340.0f), s(44.0f)};
 
     if (skin_search_box(ctx, search, ui_id("search"), g_search, fonts.body)) {
         if (!g_search.empty() && !g_search_holds_panel) {
@@ -2722,20 +2645,8 @@ int build_header_controls(UiContext& ctx, const UiRect& line, const Fonts& fonts
     }
 
     const bool show_advanced = g_alpine_game_config.show_advanced_settings;
-    const bool label_hovered = ui_hover(ctx, adv_label);
-    if (ctx.draw) {
-        const bool lit = label_hovered || (ctx.focus_visible() && ctx.focus_id() == ui_id("show_advanced"));
-        rf::gr::set_color(lit ? skin::ink_title : skin::ink_status);
-        rf::gr::string(adv_label.x, line.y + (line.h - rf::gr::get_font_height(fonts.body)) / 2, adv_text,
-                       fonts.body);
-    }
-    bool flip_advanced = skin_cycler(ctx, adv_toggle, show_advanced ? "On" : "Off", fonts.body, true,
-                                     ui_id("show_advanced"), label_hovered) != 0;
-    // The label is part of the control too.
-    if (!ctx.draw && !flip_advanced && ctx.click && label_hovered) {
-        flip_advanced = true;
-    }
-    if (flip_advanced) {
+    if (skin_labeled_cycler(ctx, adv.label, adv.toggle, adv_text, show_advanced ? "On" : "Off", fonts.body, true,
+                            ui_id("show_advanced"), skin::ink_title, skin::ink_status) != 0) {
         // A view preference, not a setting change: its baseline follows it, so it never counts.
         if (const SettingRow* row = settings_find("show_advanced_settings")) {
             setting_set_from_string(*row, show_advanced ? "0" : "1");
@@ -2921,19 +2832,7 @@ void build_content(UiContext& ctx, const UiRect& view, const std::vector<Entry>&
 
     ui_scroll_end(ctx, region);
 
-    // Keyboard navigation brings the newly focused entry into view; a focus that merely sits
-    // there does not, so the wheel and scrollbar can still move away from it.
-    if (!ctx.draw && ctx.focus_id() != g_scrolled_to_focus) {
-        if (ctx.focus_visible() && focus_rect) {
-            if (focus_rect->y < view.y) {
-                g_content_scroll -= static_cast<float>(view.y - focus_rect->y);
-            }
-            else if (focus_rect->y + focus_rect->h > view.y + view.h) {
-                g_content_scroll += static_cast<float>(focus_rect->y + focus_rect->h - (view.y + view.h));
-            }
-        }
-        g_scrolled_to_focus = ctx.focus_id();
-    }
+    ui_scroll_focus_into_view(ctx, view, focus_rect, g_content_scroll, g_scrolled_to_focus);
 
     if (ctx.draw) {
         skin_scrollbar(ctx, view, content_h, g_content_scroll, ctx.captured_id() == ui_id("content"));
@@ -3021,39 +2920,28 @@ void build_panel_footer(UiContext& ctx, const UiRect& line, bool searching, cons
 
 void build_screen(UiContext& ctx, int canvas_y, const Fonts& fonts, bool sync_state)
 {
-    const float scale = ctx.scale();
-    const auto s = [&](float v) { return static_cast<int>(v * scale); };
+    const MenuFrame frame = menu_frame(ctx, g_slide);
+    const MenuLayout& lay = frame.lay;
+    const auto s = [&](float v) { return ctx.scaled(v); };
     const auto cy = [&](float v) { return canvas_y + s(v); };
-    const MenuLayout lay = menu_layout(ctx);
-
-    const int slide_w = rf::gr::clip_width() - lay.panel_x;
-    const int enter_dx = static_cast<int>((1.0f - g_slide) * static_cast<float>(slide_w));
-    const int panel_dx = enter_dx + static_cast<int>(g_switch * static_cast<float>(slide_w));
-    const int col_dx = -static_cast<int>((1.0f - g_slide) * static_cast<float>(lay.column_x + lay.column_w));
-
+    const int panel_dx = frame.enter_dx + static_cast<int>(g_switch * static_cast<float>(frame.slide_w));
     const int button_h = menu_button_h(ctx);
-    const int top = cy(menu_column_y);
-    const int panel_h = column_slots * button_h;
+    const int top = frame.top;
 
     if (ctx.draw) {
-        draw_title_bar(ctx, lay.panel_x + enter_dx, lay.panel_r + enter_dx, lay.rail_right + enter_dx, canvas_y,
-                       fonts);
+        draw_title_bar(ctx, lay.panel_x + frame.enter_dx, lay.panel_r + frame.enter_dx,
+                       lay.rail_right + frame.enter_dx, canvas_y, fonts);
     }
 
-    build_category_column(ctx, lay, lay.column_x + col_dx, top, fonts);
+    build_category_column(ctx, lay, lay.column_x + frame.col_dx, top, fonts);
 
-    const UiRect panel{lay.panel_x + panel_dx, top, lay.panel_r - lay.panel_x, panel_h};
-    const int inset_x = panel.x + s(frame_left);
-    const UiRect inset{inset_x, top + s(frame_edge), lay.rail_right - s(rail_clearance) + panel_dx - inset_x,
-                       panel_h - 2 * s(frame_edge)};
+    const MenuPanel panel = menu_panel(ctx, lay, panel_dx, top, canvas_y);
+    const UiRect& inset = panel.inset;
     if (ctx.draw) {
-        draw_panel(ctx, panel, inset);
+        menu_draw_panel(ctx, panel);
         // Search results belong to no category, so nothing is connected.
         if (g_search.empty()) {
-            const int cw = skin_px(ctx, menu_connector_w);
-            const int ch = skin_px(ctx, 60.0f);
-            const int mid = top + category_slot(g_category) * button_h + button_h / 2;
-            skin_sized_chrome("af_connector", UiRect{panel.x - cw, mid - ch / 2, cw, ch});
+            menu_draw_connector(ctx, panel, top + category_slot(g_category) * button_h + button_h / 2);
         }
     }
     // A panel on its way out is only painted: anything done on it would land on the category
@@ -3062,9 +2950,9 @@ void build_screen(UiContext& ctx, int canvas_y, const Fonts& fonts, bool sync_st
         return;
     }
 
-    const int content_x = inset.x + s(20.0f);
-    const int content_r = inset.x + inset.w - s(16.0f);
-    const UiRect header{content_x, cy(158.0f), content_r - content_x, s(54.0f)};
+    const int content_x = panel.content_x;
+    const int content_r = panel.content_r;
+    const UiRect& header = panel.header;
     const int title_right = build_header_controls(ctx, header, fonts);
     const bool searching = !g_search.empty();
 
@@ -3076,14 +2964,14 @@ void build_screen(UiContext& ctx, int canvas_y, const Fonts& fonts, bool sync_st
 
     if (ctx.draw) {
         draw_header_title(ctx, header, title_right, searching, match_count, fonts);
-        skin_ridge(ctx, inset.x + s(8.0f), header.y + header.h + s(1.0f), inset.w - s(16.0f));
+        menu_draw_panel_ridge(ctx, panel);
     }
 
     // The header line has no room left beside the search box, so Bindings takes a second one.
-    float view_top = 218.0f;
+    float view_top = menu_panel_body_y;
     if (!searching && g_category == SettingCategory::Bindings && bind_context_controls() != nullptr) {
-        build_bindings_header(ctx, UiRect{content_x, cy(218.0f), content_r - content_x, s(36.0f)}, fonts);
-        view_top = 262.0f;
+        build_bindings_header(ctx, UiRect{content_x, cy(menu_panel_body_y), content_r - content_x, s(36.0f)}, fonts);
+        view_top = menu_panel_body_y + 44.0f;
     }
     else if (!ctx.draw) {
         // No strips on screen means no way to see or change what is being edited, so the edit
@@ -3092,7 +2980,7 @@ void build_screen(UiContext& ctx, int canvas_y, const Fonts& fonts, bool sync_st
         g_bind_device = BindDevice::Keyboard;
     }
 
-    const int footer_y = inset.y + inset.h - s(52.0f);
+    const int footer_y = inset.y + inset.h - s(menu_panel_footer_inset);
     const int desc_y = footer_y - s(74.0f);
     // The rows start left of the content edge so a focused row's LED lines up with the headers'.
     const UiRect view{content_x - s(16.0f), cy(view_top), content_r - content_x + s(16.0f),
@@ -3101,7 +2989,8 @@ void build_screen(UiContext& ctx, int canvas_y, const Fonts& fonts, bool sync_st
     if (ctx.draw) {
         draw_description_strip(ctx, UiRect{content_x, desc_y, content_r - content_x, s(66.0f)}, fonts);
     }
-    build_panel_footer(ctx, UiRect{content_x, footer_y, content_r - content_x, s(40.0f)}, searching, fonts);
+    build_panel_footer(ctx, UiRect{content_x, footer_y, content_r - content_x, s(menu_panel_footer_h)}, searching,
+                       fonts);
 }
 
 void settings_menu_build(UiContext& ctx)
@@ -3221,13 +3110,9 @@ void settings_menu_input()
     // The console reads the same key queue a focused box drains, so a box would type into both -
     // and the menu pump skips the key loop entirely while it is open, which would leave a capture
     // listening with nothing able to end it.
-    if (rf::console::console_is_visible()) {
-        if (g_ui.focused_text_id() != 0) {
-            g_ui.release_text_focus(true);
-        }
-        if (g_capture.row >= 0) {
-            g_ui.cancel_key_capture();
-        }
+    menu_drop_text_focus_under_console(g_ui);
+    if (rf::console::console_is_visible() && g_capture.row >= 0) {
+        g_ui.cancel_key_capture();
     }
 
     const int wheel = rf::mouse_dz;
@@ -3311,6 +3196,7 @@ void settings_menu_enter()
     g_picker_row = nullptr;
     g_picker = nullptr;
     g_picker_scroll = 0.0f;
+    g_picker_scrolled_to = 0;
     g_color_pick = ColorPick{};
     g_baseline.clear();
     for (const SettingRow& row : settings_registry_all()) {
@@ -3320,10 +3206,8 @@ void settings_menu_enter()
     g_changed.clear();
     // The context first: reset() releases a text focus, and a stale commit callback would still
     // be holding a pointer into g_row_state.
-    g_ui.reset();
+    menu_ui_reset(g_ui);
     g_row_state.clear();
-    g_ui.style = settings_menu_style();
-    g_ui.set_hover_sound_enabled(true);
 }
 
 void settings_menu_do_frame(bool paused)
@@ -3335,18 +3219,7 @@ void settings_menu_do_frame(bool paused)
         settings_menu_input();
     }
 
-    rf::gr::reset_clip();
-    rf::ui::menu_draw_background();
-
-    int x = 0;
-    int y = 0;
-    int z = 0;
-    rf::mouse_get_pos(x, y, z);
-    g_ui.set_mouse_pos(x, y);
-    g_ui.begin_pass(UiPass::Draw);
-    settings_menu_build(g_ui);
-    g_ui.end_pass();
-    g_ui.draw_overlays();
+    menu_run_draw(g_ui, settings_menu_build);
     g_ui.draw_toasts(menu_font(false, 17.0f, menu_screen_scale()));
     rf::gr::reset_clip();
 }

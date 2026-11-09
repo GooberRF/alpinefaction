@@ -588,6 +588,12 @@ bool file_loaded_from_alpinefaction_vpp(const char* filename)
     return false;
 }
 
+bool file_loaded_from_tc_mod(const char* filename)
+{
+    rf::VPackfileEntry* entry = vpackfile_find_new(filename);
+    return entry && entry->parent->is_mods;
+}
+
 CodeInjection vpackfile_open_check_seek_result_injection{
     0x0052C301,
     [](auto& regs) {

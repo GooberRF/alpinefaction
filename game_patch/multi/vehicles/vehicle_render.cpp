@@ -13,6 +13,7 @@
 #include <patch_common/FunHook.h>
 #include <common/utils/list-utils.h>
 #include <common/utils/string-utils.h>
+#include <common/vehicle_meshes.h>
 #include "vehicle.h"
 #include "vehicle_physics.h"
 #include "vehicle_internal.h"
@@ -23,6 +24,7 @@
 #include "../../rf/file/file.h"
 #include "../../hud/multi_spectate.h"
 #include "../../misc/level.h"
+#include "../../misc/misc.h"
 #include "../../rf/ai.h"
 #include "../../rf/bmpman.h"
 #include "../../rf/entity.h"
@@ -456,12 +458,12 @@ namespace
     // The row's named prop points are the ONLY source: a mesh without them has nothing to draw.
     // af_Jeep01's wheel helpers carry a 90-degree-about-Z quaternion that would lay every tire on
     // its side, so that row takes the position alone; af_Sub_Mini01's screw tags are identity.
-    int vehicle_spinner_placements(int cfg, const rf::Entity* ep, VehicleSpinnerPlacement* out)
+    int vehicle_spinner_placements(int cfg, rf::VMesh* hull, VehicleSpinnerPlacement* out)
     {
-        if (!ep || !ep->vmesh) {
+        if (!hull) {
             return 0;
         }
-        const VehicleSpinnerPropCache& cache = vehicle_spinner_prop_cache(cfg, ep->vmesh);
+        const VehicleSpinnerPropCache& cache = vehicle_spinner_prop_cache(cfg, hull);
         if (!cache.complete) {
             return 0;
         }
@@ -472,8 +474,7 @@ namespace
             rf::Vector3 pos{};
             rf::Matrix3 orient{};
             rf::Vector3 origin{};
-            rf::vmesh_get_prop_point_transform(ep->vmesh, cache.index[i], &rf::identity_matrix,
-                                               &origin, &orient, &pos);
+            rf::vmesh_get_prop_point_transform(hull, cache.index[i], &rf::identity_matrix, &origin, &orient, &pos);
             out[i] = {pos, orient, c.props[i].is_front, c.props[i].is_right};
         }
         return c.num_props;
@@ -536,7 +537,7 @@ namespace
         const VehicleSpinnerConfig& c = vehicle_spinner_configs[cfg];
         VehicleSpinnerPlacement placements[vehicle_spinner_max_props];
         const int n = c.max_rise > 0.0f || c.max_droop > 0.0f
-                          ? vehicle_spinner_placements(cfg, &entity, placements)
+                          ? vehicle_spinner_placements(cfg, entity.vmesh, placements)
                           : 0;
         if (n == 0) {
             spin.has_suspension = false;
@@ -889,7 +890,7 @@ void vehicle_render_jeep_tires(rf::Entity* ep)
         return;
     }
     VehicleSpinnerPlacement placements[vehicle_spinner_max_props];
-    const int n = vehicle_spinner_placements(cfg, ep, placements);
+    const int n = vehicle_spinner_placements(cfg, ep->vmesh, placements);
     if (n == 0) {
         return;
     }
@@ -928,6 +929,67 @@ void vehicle_render_jeep_tires(rf::Entity* ep)
         params.orient = orient;
         rf::vmesh_render(g_spinner_mesh[cfg].mesh, &pos, &orient, &params);
     }
+}
+
+std::vector<VehicleRestAttachment> vehicle_rest_attachments(int entity_type, rf::VMesh* hull)
+{
+    std::vector<VehicleRestAttachment> out;
+    if (!hull || !vehicle_is_vehicle_entity_type(entity_type)) {
+        return out;
+    }
+    const rf::EntityInfo& info = rf::entity_types[entity_type];
+
+    // A stock hull has its wheels baked in; only the Alpine one carries them as separate meshes.
+    const int vdc = vehicle_class_from_type(entity_type);
+    const bool alpine_hull = alpine_vehicle_class_mesh(info.name.c_str()) != nullptr;
+    const int cfg = alpine_hull && vdc >= 0 ? vehicle_spinner_config_for_class(vdc) : -1;
+    if (cfg >= 0) {
+        // The same placement vehicle_render_jeep_tires gives an unsteered, unturned hull at rest.
+        const VehicleSpinnerConfig& c = vehicle_spinner_configs[cfg];
+        VehicleSpinnerPlacement placements[vehicle_spinner_max_props];
+        const int n = vehicle_spinner_placements(cfg, hull, placements);
+        for (int i = 0; i < n; ++i) {
+            VehicleRestAttachment a{c.mesh_filename, placements[i].center, rf::identity_matrix};
+            if (c.use_prop_orient) {
+                a.orient.mul(placements[i].orient);
+            }
+            if (c.yaw_right_180 && placements[i].is_right) {
+                a.orient.mul(vehicle_rotation_about_y(std::numbers::pi_v<float>));
+            }
+            out.push_back(std::move(a));
+        }
+    }
+
+    // Stock places these parts on the hull's tag as it is, so at rest that is the tag's own transform.
+    auto attach_at_tag = [&](const char* mesh_filename, int prop) {
+        VehicleRestAttachment a{mesh_filename, {}, {}};
+        rf::Vector3 origin{};
+        rf::vmesh_get_prop_point_transform(hull, prop, &rf::identity_matrix, &origin, &a.orient, &a.pos);
+        out.push_back(std::move(a));
+    };
+
+    // Stock draws the held weapon's third person mesh on each primary_weapon_N tag (0x00421C40), which is
+    // how a driller shows its bits. The entity keeps the first two tags (0x0042D930).
+    constexpr int max_weapon_tags = 2;
+    const char* weapon_mesh = weapon_third_person_mesh(info.default_primary_weapon);
+    if (*weapon_mesh) {
+        for (int n = 1; n <= max_weapon_tags; ++n) {
+            const int prop = rf::vmesh_lookup_prop_point(hull, ("primary_weapon_" + std::to_string(n)).c_str());
+            if (prop < 0) {
+                break;
+            }
+            attach_at_tag(weapon_mesh, prop);
+        }
+    }
+
+    // A jeep's mounted gun goes on its jeep_gun tag (0x00421EA0), turned to a gunner's aim only while manned.
+    if (vdc == VDC_JEEP) {
+        const int prop = rf::vmesh_lookup_prop_point(hull, "jeep_gun");
+        if (prop >= 0) {
+            attach_at_tag(af_jeep_gun_mesh_filename, prop);
+        }
+    }
+    return out;
 }
 
 void vehicle_tread_runtime_reset()

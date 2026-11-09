@@ -890,6 +890,34 @@ bool skin_icon_button(UiContext& ctx, const UiRect& r, const char* icon, rf::Col
     return hovered && ctx.click;
 }
 
+SkinCyclerRects skin_header_cycler_rects(const UiContext& ctx, const UiRect& line, const char* text, float value_w,
+                                         int font, bool centred)
+{
+    const int text_w = rf::gr::get_string_size(text, font).first;
+    const int toggle_w = skin_px(ctx, 2.0f * (skin::cycler_arrow + skin::cycler_gap) + value_w);
+    const int toggle_h = skin_px(ctx, skin::widget_h);
+    const int gap = skin_px(ctx, 14.0f);
+    const int right = centred ? line.x + (line.w + text_w + gap + toggle_w) / 2 : line.x + line.w;
+    const UiRect toggle{right - toggle_w, line.y + (line.h - toggle_h) / 2, toggle_w, toggle_h};
+    return {UiRect{toggle.x - gap - text_w, line.y, text_w + gap, line.h}, toggle};
+}
+
+int skin_labeled_cycler(UiContext& ctx, const UiRect& label, const UiRect& toggle, const char* text, const char* value,
+                        int font, bool enabled, UiId id, rf::Color lit, rf::Color idle)
+{
+    const bool label_hovered = enabled && ui_hover(ctx, label);
+    if (ctx.draw) {
+        const bool hot = label_hovered || (ctx.focus_visible() && ctx.focus_id() == id);
+        rf::gr::set_color(!enabled ? skin::txt_dim : hot ? lit : idle);
+        rf::gr::string(label.x, label.y + (label.h - font_h(font)) / 2, text, font);
+    }
+    int step = skin_cycler(ctx, toggle, value, font, enabled, id, label_hovered);
+    if (!ctx.draw && step == 0 && ctx.click && label_hovered) {
+        step = 1;
+    }
+    return step;
+}
+
 int skin_cycler(UiContext& ctx, const UiRect& r, const char* value, int font, bool enabled, UiId id, bool hot)
 {
     const auto [left, right, plate] = cycler_parts(ctx, r);
@@ -1781,22 +1809,105 @@ bool skin_reorder_row(UiContext& ctx, const UiRect& r, const char* label, bool s
     return false;
 }
 
+int skin_picker_grid(UiContext& ctx, const UiRect& view, const SkinPickerGrid& grid, float& scroll, UiId& scrolled_to)
+{
+    const int tile_w = skin_px(ctx, grid.tile_w);
+    const int tile_h = skin_px(ctx, grid.tile_h) + (grid.caption_line ? skin_picker_caption_h(ctx, grid.font) : 0);
+    const int gap = skin_px(ctx, 12.0f);
+    const int gutter = std::max(ctx.style.scrollbar_w_min, ctx.scaled(ctx.style.scrollbar_w));
+    // The columns keep clear of the scrollbar; the grid then centres in the whole view.
+    const int fit_cols = (view.w - gutter + gap) / std::max(1, tile_w + gap);
+    const int max_cols = grid.max_cols > 0 ? grid.max_cols : fit_cols;
+    const int cols = std::clamp(fit_cols, grid.min_cols, std::max(grid.min_cols, max_cols));
+    const int rows = grid.count > 0 ? (grid.count + cols - 1) / cols : 0;
+    const int content_h = rows * (tile_h + gap) + gap;
+    const int grid_w = cols * tile_w + (cols - 1) * gap;
+    const UiId grid_id = ui_id(grid.id_name);
+
+    int picked = -1;
+    std::optional<UiRect> focus_rect;
+    UiScrollRegion region = ui_scroll_begin(ctx, view, content_h, scroll, tile_h + gap, grid_id, true);
+    for (int i = 0; i < grid.count; ++i) {
+        const UiRect r{view.x + (view.w - grid_w) / 2 + (i % cols) * (tile_w + gap),
+                       region.start_y() + gap + (i / cols) * (tile_h + gap), tile_w, tile_h};
+        const UiId id = ui_id(grid.id_name, i);
+        if (ctx.focus_id() == id) {
+            focus_rect = r;
+        }
+        if (r.y + r.h < view.y || r.y > view.y + view.h) {
+            if (grid.enabled && ui_offscreen_activatable(ctx, id)) {
+                picked = i;
+            }
+            continue;
+        }
+        if (skin_picker_tile(ctx, r, grid.bitmap(i), i, i == grid.selected, grid.caption(i), grid.caption_line,
+                             grid.font, id, grid.cut_end, grid.enabled)) {
+            picked = i;
+        }
+    }
+    ui_scroll_end(ctx, region);
+    if (ctx.draw) {
+        skin_scrollbar(ctx, view, content_h, scroll, ctx.captured_id() == grid_id);
+    }
+    else {
+        ui_scroll_focus_into_view(ctx, view, focus_rect, scroll, scrolled_to);
+    }
+    return picked;
+}
+
 int skin_picker_caption_h(const UiContext& ctx, int font)
 {
     return font_h(font) + skin_px(ctx, 6.0f);
 }
 
-bool skin_picker_tile(UiContext& ctx, const UiRect& r, int bitmap, int index, bool selected,
-                      const char* caption, bool caption_line, int font, UiId id)
+void skin_draw_fitted_bitmap(int bitmap, const UiRect& r)
 {
-    const bool hovered = ui_hover(ctx, r, id);
+    int bw = 0;
+    int bh = 0;
+    rf::bm::get_dimensions(bitmap, &bw, &bh);
+    int dw = r.w;
+    int dh = r.h;
+    if (bw > 0 && bh > 0) {
+        const float fit = std::min(static_cast<float>(r.w) / static_cast<float>(bw),
+                                   static_cast<float>(r.h) / static_cast<float>(bh));
+        dw = std::max(1, static_cast<int>(static_cast<float>(bw) * fit));
+        dh = std::max(1, static_cast<int>(static_cast<float>(bh) * fit));
+    }
+    rf::gr::set_color(255, 255, 255, 255);
+    rf::gr::bitmap_scaled(bitmap, r.x + (r.w - dw) / 2, r.y + (r.h - dh) / 2, dw, dh, 0, 0, bw, bh, false, false,
+                          rf::gr::bitmap_clamp_mode);
+}
+
+void skin_preview_well(const UiContext& ctx, const UiRect& well, int bitmap, int font)
+{
+    skin_preview_well(ctx, well, UiRect{well.x + 1, well.y + 1, well.w - 2, well.h - 2}, bitmap, font);
+}
+
+void skin_preview_well(const UiContext& ctx, const UiRect& well, const UiRect& image, int bitmap, int font)
+{
+    skin_slot(ctx, well.x, well.y, well.w, well.h);
+    if (bitmap >= 0) {
+        skin_draw_fitted_bitmap(bitmap, image);
+        return;
+    }
+    rf::gr::set_color(skin::txt_hint);
+    rf::gr::string_aligned(rf::gr::ALIGN_CENTER, image.x + image.w / 2, image.y + (image.h - font_h(font)) / 2,
+                           "No preview", font);
+}
+
+bool skin_picker_tile(UiContext& ctx, const UiRect& r, int bitmap, int index, bool selected,
+                      const char* caption, bool caption_line, int font, UiId id, bool cut_end, bool enabled)
+{
+    const bool hovered = enabled && ui_hover(ctx, r, id);
     if (hovered) {
         ctx.note_hovered(id);
     }
-    ctx.register_focusable(id, UiFocusKind::Activate);
+    if (enabled) {
+        ctx.register_focusable(id, UiFocusKind::Activate);
+    }
 
     if (!ctx.draw) {
-        if (ctx.consume_activation(id)) {
+        if (enabled && ctx.consume_activation(id)) {
             return true;
         }
         return hovered && ctx.click;
@@ -1805,38 +1916,27 @@ bool skin_picker_tile(UiContext& ctx, const UiRect& r, int bitmap, int index, bo
     const UiRect d = ui_draw_rect(ctx, r);
     const bool lit = hovered || focus_shown(ctx, id);
     const int cap_h = caption_line ? skin_picker_caption_h(ctx, font) : 0;
+    const auto fitted_caption = [&] {
+        const int max_w = d.w - skin_px(ctx, 8.0f);
+        return cut_end ? ui_fit_end(caption ? caption : "", max_w, font)
+                       : ui_fit_middle(caption ? caption : "", max_w, font);
+    };
     const int img_h = std::max(1, d.h - cap_h);
     fill(d.x, d.y, d.w, d.h, skin::field);
     if (bitmap >= 0) {
-        int bw = 0;
-        int bh = 0;
-        rf::bm::get_dimensions(bitmap, &bw, &bh);
         // Portraits are not square, so the blit is letterboxed inside the image area.
-        int dw = d.w;
-        int dh = img_h;
-        if (bw > 0 && bh > 0) {
-            const float fit = std::min(static_cast<float>(d.w) / static_cast<float>(bw),
-                                       static_cast<float>(img_h) / static_cast<float>(bh));
-            dw = std::max(1, static_cast<int>(static_cast<float>(bw) * fit));
-            dh = std::max(1, static_cast<int>(static_cast<float>(bh) * fit));
-        }
-        rf::gr::set_color(255, 255, 255, 255);
-        rf::gr::bitmap_scaled(bitmap, d.x + (d.w - dw) / 2, d.y + (img_h - dh) / 2, dw, dh, 0, 0, bw,
-                              bh, false, false, rf::gr::bitmap_clamp_mode);
+        skin_draw_fitted_bitmap(bitmap, UiRect{d.x, d.y, d.w, img_h});
     }
     else if (caption && !caption_line) {
         rf::gr::set_color(skin::txt_hint);
         rf::gr::string_aligned(rf::gr::ALIGN_CENTER, d.x + d.w / 2, d.y + (img_h - font_h(font)) / 2,
-                               ui_fit_middle(caption, d.w - skin_px(ctx, 8.0f), font).c_str(), font);
+                               fitted_caption().c_str(), font);
     }
 
     if (caption_line) {
         rf::gr::set_color(selected || lit ? skin::txt_hi : skin::txt);
         rf::gr::string_aligned(rf::gr::ALIGN_CENTER, d.x + d.w / 2,
-                               d.y + img_h + (cap_h - font_h(font)) / 2,
-                               ui_fit_middle(caption ? caption : "", d.w - skin_px(ctx, 8.0f), font)
-                                   .c_str(),
-                               font);
+                               d.y + img_h + (cap_h - font_h(font)) / 2, fitted_caption().c_str(), font);
     }
 
     if (selected) {
@@ -1865,6 +1965,9 @@ bool skin_picker_tile(UiContext& ctx, const UiRect& r, int bitmap, int index, bo
     rf::gr::string_aligned(rf::gr::ALIGN_CENTER,
                            d.x + d.w - skin_px(ctx, 5.0f) - tag_w / 2,
                            d.y + img_h - tag_h - skin_px(ctx, 4.0f), tag.c_str(), font);
+    if (!enabled) {
+        fill(d.x, d.y, d.w, d.h, rf::Color{0, 0, 0, 150});
+    }
     return false;
 }
 

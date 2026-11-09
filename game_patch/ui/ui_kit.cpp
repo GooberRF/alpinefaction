@@ -2,6 +2,7 @@
 #include <cctype>
 #include <cmath>
 #include <format>
+#include <common/utils/string-utils.h>
 #include "ui_kit.h"
 #include "../hud/hud_internal.h"
 #include "../os/os.h"
@@ -157,6 +158,25 @@ std::string ui_fit_middle(std::string_view text, int max_w, int font)
         std::string candidate{text.substr(0, left)};
         candidate += "...";
         candidate += std::string{text.substr(text.size() - right, right)};
+        if (rf::gr::get_string_size(candidate, font).first <= max_w) {
+            return candidate;
+        }
+    }
+    return std::string{"..."};
+}
+
+std::string ui_fit_end(std::string_view text, int max_w, int font)
+{
+    if (text.empty() || rf::gr::get_string_size(text, font).first <= max_w) {
+        return std::string{text};
+    }
+    for (size_t keep = text.size(); keep > 0; --keep) {
+        const std::string_view kept = rtrim(text.substr(0, keep));
+        if (kept.empty()) {
+            continue;
+        }
+        std::string candidate{kept};
+        candidate += "...";
         if (rf::gr::get_string_size(candidate, font).first <= max_w) {
             return candidate;
         }
@@ -1050,6 +1070,12 @@ int ui_listbox(UiContext& ctx, const UiRect& r, const std::vector<std::string>& 
     return -1;
 }
 
+bool ui_offscreen_activatable(UiContext& ctx, UiId id)
+{
+    ctx.register_focusable(id, UiFocusKind::Activate);
+    return !ctx.draw && ctx.consume_activation(id);
+}
+
 UiTextInputResult ui_text_input(UiContext& ctx, const UiRect& r, UiId id, std::string& text,
                                 size_t max_len, UiCharFilter allow_char, const char* hint, int font,
                                 bool enabled)
@@ -1242,6 +1268,23 @@ void ui_scroll_end(UiContext& ctx, UiScrollRegion& region)
         apply_color(thumb);
         rf::gr::rect(bar.gutter.x, bar.thumb_y, bar.gutter.w, bar.thumb_h);
     }
+}
+
+void ui_scroll_focus_into_view(const UiContext& ctx, const UiRect& view, const std::optional<UiRect>& focus_rect,
+                               float& scroll, UiId& scrolled_to)
+{
+    if (ctx.draw || ctx.focus_id() == scrolled_to) {
+        return;
+    }
+    if (ctx.focus_visible() && focus_rect) {
+        if (focus_rect->y < view.y) {
+            scroll -= static_cast<float>(view.y - focus_rect->y);
+        }
+        else if (focus_rect->y + focus_rect->h > view.y + view.h) {
+            scroll += static_cast<float>(focus_rect->y + focus_rect->h - (view.y + view.h));
+        }
+    }
+    scrolled_to = ctx.focus_id();
 }
 
 UiScrollbarGeometry ui_scrollbar_geometry(const UiContext& ctx, const UiRect& view, int content_h, float scroll)

@@ -279,6 +279,9 @@ namespace rf
     static_assert(offsetof(EntityInfo, state_anims) == 0x75C);
     static_assert(offsetof(EntityInfo, squash_sounds_id) == 0x174);
     static_assert(offsetof(EntityInfo, cockpit_vfx_filename) == 0x13CC);
+    static_assert(offsetof(EntityInfo, num_alt_skins) == 0xF7C);
+    static_assert(offsetof(EntityInfo, alt_skins) == 0xF80);
+    static_assert(sizeof(ObjSkinInfo) == 0x6C);
 
     constexpr int MAX_ENTITY_TYPES = 75;
     static auto& num_entity_types = addr_as_ref<int>(0x0062F2D0);
@@ -629,6 +632,9 @@ namespace rf
     static auto& jeep_gunner_min_rel_eye_phb = addr_as_ref<Vector3>(0x007C7618);
     static auto& jeep_gunner_max_rel_eye_phb = addr_as_ref<Vector3>(0x007C75F0);
     static auto& entity_set_skin = addr_as_ref<void(Entity* ep, const char* skin_name)>(0x00428FB0);
+    // What entity_set_skin does to the entity's mesh. Returns the skin's index, -1 when none has that name.
+    static auto& vmesh_set_skin =
+        addr_as_ref<int(VMesh* vmesh, int num_skins, ObjSkinInfo* skins, const char* skin_name)>(0x0048AB90);
     static auto& entity_sim_distance = addr_as_ref<float>(0x00589548);
 
     static auto& entity_list = addr_as_ref<Entity>(0x005CB060);

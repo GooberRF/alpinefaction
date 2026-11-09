@@ -95,13 +95,24 @@ namespace
     constexpr float vehicle_auto_return_pad_radius = 10.0f; // no auto-return this close to its factory
     constexpr float vehicle_auto_return_leave_radius = 12.0f; // hysteresis: the timer restarts only past this
 
+    bool is_vehicle_use_function(int use_function)
+    {
+        return use_function == rf::ENTITY_USE_VEHICLE || use_function == rf::ENTITY_USE_TURRET;
+    }
+
+    bool entity_type_in_range(int entity_type_index)
+    {
+        return entity_type_index >= 0 && entity_type_index < rf::num_entity_types
+            && entity_type_index < rf::MAX_ENTITY_TYPES;
+    }
+
     bool is_synced_use_function(int use_function)
     {
         // A MP level without factories has no synced hulls; its level-placed turrets stay stock props.
         if (rf::is_multi && !vehicle_level_has_factories()) {
             return false;
         }
-        return use_function == rf::ENTITY_USE_VEHICLE || use_function == rf::ENTITY_USE_TURRET;
+        return is_vehicle_use_function(use_function);
     }
 
     // Indexed by VehicleDamageClass; already cased for use after a possessive ("Bob's APC").
@@ -145,7 +156,12 @@ namespace
 
 int vehicle_damage_class_from_type(int entity_type)
 {
-    if (!vehicle_is_synced_entity_type(entity_type)) {
+    return vehicle_is_synced_entity_type(entity_type) ? vehicle_class_from_type(entity_type) : -1;
+}
+
+int vehicle_class_from_type(int entity_type)
+{
+    if (!vehicle_is_vehicle_entity_type(entity_type)) {
         return -1;
     }
     return vehicle_damage_class_from_info(rf::entity_types[entity_type]);
@@ -449,11 +465,14 @@ bool vehicle_is_flyer(rf::Entity* ep)
 
 bool vehicle_is_synced_entity_type(int entity_type_index)
 {
-    if (entity_type_index < 0 || entity_type_index >= rf::num_entity_types
-        || entity_type_index >= rf::MAX_ENTITY_TYPES) {
-        return false;
-    }
-    return is_synced_use_function(rf::entity_types[entity_type_index].use_function);
+    return entity_type_in_range(entity_type_index)
+        && is_synced_use_function(rf::entity_types[entity_type_index].use_function);
+}
+
+bool vehicle_is_vehicle_entity_type(int entity_type_index)
+{
+    return entity_type_in_range(entity_type_index)
+        && is_vehicle_use_function(rf::entity_types[entity_type_index].use_function);
 }
 
 bool vehicle_is_synced_entity_type(const rf::Entity* ep)

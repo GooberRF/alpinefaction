@@ -3,6 +3,8 @@
 #include <cmath>
 #include <cstdint>
 #include <numbers>
+#include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 #include "../../rf/math/vector.h"
@@ -13,6 +15,7 @@ namespace rf
 {
     struct Entity;
     struct Player;
+    struct VMesh;
 }
 
 struct AlpineVehicleFactoryInfo;
@@ -34,13 +37,31 @@ int vehicle_damage_class(const rf::Entity* ep);
 
 // The same row from an entity TYPE index, for a factory record that has no live hull.
 int vehicle_damage_class_from_type(int entity_type);
+// The row of any vehicle or turret type, whether or not the current level syncs it.
+int vehicle_class_from_type(int entity_type);
 
 // Display name of a VehicleDamageClass row; cased for use after a possessive ("Bob's APC").
 const char* vehicle_class_display_name(int vehicle_class);
 
+// The $Life a vehicle level gives `entity_class` in multiplayer, when it overrides entity.tbl's.
+std::optional<float> vehicle_mp_max_life(const char* entity_class);
+
+// A mesh a hull carries at one of its prop points, in hull-local space.
+struct VehicleRestAttachment
+{
+    std::string mesh_filename;
+    rf::Vector3 pos;
+    rf::Matrix3 orient;
+};
+
+// The parts (tires, screws, weapons, a jeep's gun) a hull of this entity type shows at rest, drawn outside a level.
+std::vector<VehicleRestAttachment> vehicle_rest_attachments(int entity_type, rf::VMesh* hull);
+
 // entities.tbl $Use: "vehicle" (1) or "turret" (4).
 bool vehicle_is_synced_entity_type(int entity_type_index);
 bool vehicle_is_synced_entity_type(const rf::Entity* ep);
+// The class is a vehicle or turret, whether or not the current level syncs it.
+bool vehicle_is_vehicle_entity_type(int entity_type_index);
 
 // The synced vehicle hull this rider is aboard, or null - a null rider and host_handle -1 both
 // resolve to null. Says nothing about the rider's own liveness.
