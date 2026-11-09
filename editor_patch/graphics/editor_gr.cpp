@@ -26,8 +26,7 @@ static LRESULT CALLBACK view_subclass_proc(HWND hwnd, UINT msg, WPARAM wparam, L
         return 1;
     }
     if (msg == WM_PAINT) {
-        // Under Wine a present made inside BeginPaint does not reach the area the resize exposed: RED's idle loop
-        // draws the view again outside it
+        // Under Wine a present inside BeginPaint misses what a resize exposed, so RED's idle loop draws the view again
         const LRESULT result = DefSubclassProc(hwnd, msg, wparam, lparam);
         editor_view_mark_repaint(reinterpret_cast<void*>(ref_data));
         return result;
