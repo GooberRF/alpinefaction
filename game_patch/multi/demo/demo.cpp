@@ -11,6 +11,7 @@ void demo_do_patch()
     demo_record_do_patch();
     demo_playback_do_patch();
     demo_powerup_timers_do_patch();
+    demo_controls_ui_do_patch();
     demo_browser_apply_patch();
 }
 

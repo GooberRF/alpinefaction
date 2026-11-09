@@ -48,7 +48,7 @@ namespace gr::d3d11
             float surface_y;
             rf::Color color;
             float dist;
-            int room_uid;
+            const rf::GRoom* room;
         };
     }
 
@@ -57,8 +57,10 @@ namespace gr::d3d11
         std::array<float, 3> bbox_min; float surface_y;
         std::array<float, 3> bbox_max; float room_uid;
         std::array<float, 3> color;    float _pad1;
+        LiquidMaskGPUData mask;
     };
-    static_assert(sizeof(CausticVolumeGPUData) == 48);
+    static_assert(sizeof(CausticVolumeGPUData) == 112);
+    static_assert(offsetof(CausticVolumeGPUData, mask) == 48);
     static_assert(sizeof(CausticVolumeGPUData) % 16 == 0);
 
     struct alignas(16) CausticsBufferData
@@ -68,7 +70,7 @@ namespace gr::d3d11
         float caustic_above_water; float caustic_drift; float caustic_wall_stretch; float _hdr_pad;
         CausticVolumeGPUData volumes[CausticsRenderer::max_caustic_volumes];
     };
-    static_assert(sizeof(CausticsBufferData) == 816);
+    static_assert(sizeof(CausticsBufferData) == 48 + 112 * CausticsRenderer::max_caustic_volumes);
     static_assert(sizeof(CausticsBufferData) % 16 == 0);
     static_assert(offsetof(CausticsBufferData, volumes) == 48);
 
@@ -228,9 +230,9 @@ namespace gr::d3d11
         return true;
     }
 
-    void CausticsRenderer::update(ID3D11DeviceContext* device_context)
+    void CausticsRenderer::update(ID3D11DeviceContext* device_context, const LiquidVolumeMask& mask)
     {
-        if (engine::underwater_fx() < 1 || build_failed_ || !engine::level_solid()) {
+        if (!engine::underwater_caustics() || build_failed_ || !engine::level_solid()) {
             write_disabled(device_context);
             return;
         }
@@ -266,7 +268,7 @@ namespace gr::d3d11
                 room->bbox_min.y + room->liquid_depth,
                 room->liquid_color,
                 dist,
-                room->uid,
+                room,
             };
             num_candidates = std::min(num_candidates + 1, max_caustic_volumes);
         }
@@ -305,7 +307,8 @@ namespace gr::d3d11
             dst.bbox_min = {src.bbox_min.x, src.bbox_min.y, src.bbox_min.z};
             dst.bbox_max = {src.bbox_max.x, src.bbox_max.y, src.bbox_max.z};
             dst.surface_y = src.surface_y;
-            dst.room_uid = static_cast<float>(src.room_uid);
+            dst.room_uid = static_cast<float>(src.room->uid);
+            dst.mask = mask.region(src.room);
             dst.color = {
                 std::max(src.color.red / 255.0f, caustics_min_tint),
                 std::max(src.color.green / 255.0f, caustics_min_tint),

@@ -679,7 +679,7 @@ void powerups_do_frame()
 void powerups_render_hud()
 {
     const rf::Entity* ep = rf::local_player_entity;
-    if (!ep || g_powerups.empty() || is_hud_effectively_hidden()) {
+    if (!ep || g_powerups.empty() || is_hud_effectively_hidden() || !hud_element_visible(HudElement::powerups)) {
         return;
     }
     const float scale = g_alpine_game_config.big_hud ? 2.0f : 1.0f;

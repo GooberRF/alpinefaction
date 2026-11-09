@@ -14,6 +14,7 @@
 #include "LinearMath/btTransformUtil.h"
 #include "ragdoll.h"
 #include "vphys_internal.h"
+#include "../../demo/demo.h"
 #include "../../../misc/alpine_settings.h"
 #include "../../../misc/settings_registry.h"
 #include "../../../os/console.h"
@@ -61,6 +62,7 @@ namespace
     constexpr float ragdoll_min_track_weight = 0.1f;
     constexpr int ragdoll_max_keys_per_anim = 64;
 
+    // Hit and blast times are on the demo clock so playback speed, pause and seeks keep the window right
     constexpr int64_t ragdoll_hit_window_ms = 400;
     constexpr float ragdoll_min_blast_radius = 0.5f;
     constexpr float ragdoll_blast_reach = 1.5f;
@@ -725,7 +727,7 @@ namespace
 
     bool is_instant_death(const Ragdoll& r, const rf::Vector3& pos)
     {
-        const int64_t now_ms = timer::get_i64(1000);
+        const int64_t now_ms = demo_playback_interp_clock_ms();
         const RagdollHit* hit = latest_hit(r.entity_handle, now_ms);
         return nearby_blast(pos, now_ms) || (hit && hit->damage >= ragdoll_big_hit_damage);
     }
@@ -884,7 +886,7 @@ namespace
             r.parts[b].body->setAngularVelocity(angular);
         }
 
-        const int64_t now_ms = timer::get_i64(1000);
+        const int64_t now_ms = demo_playback_interp_clock_ms();
         if (const RagdollBlast* blast = nearby_blast(owner.pos, now_ms)) {
             kick_from_blast(r, *blast);
         }
@@ -1282,7 +1284,8 @@ namespace
             if (ragdolls_wanted() && hit_point && vehicle_vector_is_finite(*hit_point) && weapon_type >= 0
                 && weapon_type < rf::num_weapon_types
                 && rf::weapon_types[weapon_type].damage_radius >= ragdoll_min_blast_radius) {
-                const RagdollBlast blast{*hit_point, rf::weapon_types[weapon_type].damage_radius, timer::get_i64(1000)};
+                const RagdollBlast blast{
+                    *hit_point, rf::weapon_types[weapon_type].damage_radius, demo_playback_interp_clock_ms()};
                 g_ragdoll_blasts[g_ragdoll_next_blast++ % g_ragdoll_blasts.size()] = blast;
                 // The point is on the surface, where a ray from it would stop at once.
                 const bool has_normal = hit_normal && vehicle_vector_is_finite(*hit_normal);
@@ -1335,7 +1338,7 @@ void ragdoll_note_weapon_hit(const rf::Weapon* wp)
         return;
     }
     const RagdollHit hit{
-        handle, wp->p_data.collide_out.hit_point, wp->orient.fvec, weapon_damage(*wp), timer::get_i64(1000)};
+        handle, wp->p_data.collide_out.hit_point, wp->orient.fvec, weapon_damage(*wp), demo_playback_interp_clock_ms()};
     g_ragdoll_hits[g_ragdoll_next_hit++ % g_ragdoll_hits.size()] = hit;
     // A solid body stops the round at its collision spheres, which can be short of the capsules.
     const rf::Object* obj = rf::obj_from_handle(handle);
@@ -1436,6 +1439,9 @@ void ragdoll_destroy_all()
         ragdoll_erase(*g_ragdolls.back());
     }
     g_ragdoll_rigs.clear();
+    // The demo clock the stamps are on restarts with each playback session
+    g_ragdoll_hits.fill({});
+    g_ragdoll_blasts.fill({});
 }
 
 void ragdoll_apply_patches()

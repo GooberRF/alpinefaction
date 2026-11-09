@@ -40,8 +40,10 @@ Commands marked "D3D11 only" only have an effect with the Direct3D 11 renderer.
 
 | Command | Arguments | Description |
 | --- | --- | --- |
+| `cl_ignore_tbl_caustics` | | Toggles ignoring per-level overrides from `<level>_info.tbl` that turn caustics off. Default: off. |
 | `cl_ignore_tbl_lightmap_clamping` | | Toggles ignoring per-level lightmap clamping overrides from `<level>_info.tbl`. Applies on the next level load. Default: off. |
 | `cl_ignore_tbl_pixel_light_overbright` | | Toggles ignoring per-level pixel light overbright overrides from `<level>_info.tbl`. Default: off. |
+| `cl_ignore_tbl_underwater_fog` | | Toggles ignoring per-level overrides from `<level>_info.tbl` that turn underwater fog off. Default: off. |
 | `cl_ignore_tbl_vertex_lighting` | | Toggles ignoring per-level vertex lighting overrides from `<level>_info.tbl`. Default: off. |
 | `d_fullscreen` | | Switches to fullscreen mode. |
 | `d_windowed` | | Switches to windowed mode. |
@@ -71,6 +73,7 @@ Commands marked "D3D11 only" only have an effect with the Direct3D 11 renderer.
 | `r_outlines_color_team_b` | `[RRGGBB\|RRGGBBAA\|clear]` | Sets the outline color for blue team players. D3D11 only. Default: `0096FFFF`. |
 | `r_outlines_color_team_r` | `[RRGGBB\|RRGGBBAA\|clear]` | Sets the outline color for red team players. D3D11 only. Default: `FF3232FF`. |
 | `r_outlines_spectator` | | Toggles player outlines while spectating. D3D11 only. Default: off. |
+| `r_outlines_spectator_xray` | | Toggles showing player outlines through walls while spectating. D3D11 only. Default: on. |
 | `r_outlines_team_xray` | | Toggles showing teammate outlines through walls. D3D11 only. Default: on. |
 | `r_picmip` | `[divisor]` | Sets the global texture resolution divisor (1-256, 1 = full resolution). D3D11 only. Default: 1. |
 | `r_pixellightoverbright` | `[0.0-3.0]` | Sets the overbright range for pixel lighting. A level's `_info.tbl` can override it. D3D11 only. Default: 0.5. |
@@ -82,7 +85,7 @@ Commands marked "D3D11 only" only have an effect with the Direct3D 11 renderer.
 | `r_shadowquality` | `[0-5]` | Sets the shadow quality preset: `0` blob shadows, `1`-`5` shadow maps (Low to Maximum). Default: 3 (High). |
 | `r_shadowupdateinterval` | `[1-30]` | Sets how often shadow maps refresh, in frames (1 = every frame). Default: 1. |
 | `r_trilinearfiltering` | | Stock RF command. Toggles trilinear filtering. |
-| `r_underwater` | `[0-3]` | Underwater effects: `0` stock, `1` caustics, `2` adds fog, tint and vignette, `3` adds distortion. D3D11 only. Default: 3. |
+| `r_underwater` | `[0-3]` | Underwater effects: `0` stock, `1` caustics, `2` adds fog, tint and vignette, `3` adds distortion. A level's `_info.tbl` can turn caustics or fog (with the effects built on it) off. D3D11 only. Default: 0. |
 | `r_weather` | | Toggles rendering of level weather regions. Default: on. |
 | `vli` | | Toggles volumetric lighting (glares). Default: on. |
 
@@ -162,6 +165,7 @@ Commands marked "D3D11 only" only have an effect with the Direct3D 11 renderer.
 | `cl_columnsegments` | `[segments]` | Sets the number of segments of control point light columns (3-256). Default: 8. |
 | `cl_dominationmsgs` | | Toggles dominating and revenge server messages in chat. Default: on. |
 | `cl_hud` | `[bool]` | Shows or hides the HUD. Not saved. |
+| `cl_hudelement` | `[element\|all] [bool]` | Shows or hides one HUD element (`health`, `ammo`, `reticle`, `powerups`, `gauges`, `names`, `killfeed`, `chat`, `timer`, `scores`, `messages`, `minimap`) for this session; an element alone toggles it, `all` alone shows all, no arguments lists them. Not saved. |
 | `cl_locationpings` | | Toggles location pinging (team game types and RUN only). Default: on. |
 | `cl_minimap` | `[bool]` | Shows the multiplayer minimap on levels that provide one. Default: on. |
 | `cl_minimap_labels` | `[bool]` | Shows control point names on the minimap. Default: on. |
@@ -287,6 +291,7 @@ Colors are hex `RRGGBB` or `RRGGBBAA`, or comma-separated `R,G,B[,A]` values in 
 | `demo_seek` | `<mm:ss \| seconds \| +/-seconds>` | Seeks within the playing demo. Seeking backward reloads the level. |
 | `demo_stop` | | Stops demo playback. |
 | `demo_timescale` | `[0.05-10]` | Sets the demo playback speed multiplier. Default: 1.0. |
+| `spectate_minimalbar` | | Toggles the minimal compact demo bar, which shows just the followed player's name. Default: off. |
 | `spectate_playerinfo` | | Toggles player health and armor bars during demo playback. Default: off. |
 | `spectate_powerups` | | Toggles powerup respawn timers during demo playback. Default: on. |
 | `spectate_spawns` | | Toggles respawn point indicators during demo playback. Default: off. |

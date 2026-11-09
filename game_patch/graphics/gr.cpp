@@ -683,10 +683,36 @@ ConsoleCommand2 underwater_fx_cmd{
             "Underwater effects level is {} (Direct3D 11 renderer only, 0 = stock)",
             g_alpine_game_config.underwater_fx
         );
+        if (gr::d3d11::underwater_fx_level() != g_alpine_game_config.underwater_fx
+            || (g_alpine_game_config.underwater_fx >= 1 && !gr::d3d11::underwater_caustics_enabled())) {
+            rf::console::print(
+                "Note: per-map override in mapname_info.tbl is active for this level (effective level {}, caustics {})",
+                gr::d3d11::underwater_fx_level(), gr::d3d11::underwater_caustics_enabled() ? "on" : "off");
+        }
     },
     "Sets the underwater effects level: 0 stock, 1 caustics, 2 + fog/tint/vignette, 3 + distortion "
     "(Direct3D 11 renderer only)",
     "r_underwater <0-3>",
+};
+
+ConsoleCommand2 ignore_tbl_caustics_cmd{
+    "cl_ignore_tbl_caustics",
+    []() {
+        setting_console_set("ignore_tbl_caustics", "toggle");
+        rf::console::print("Ignore TBL caustics override: {}",
+                           g_alpine_game_config.ignore_tbl_caustics ? "enabled" : "disabled");
+    },
+    "Toggle ignoring per-map overrides from mapname_info.tbl that turn caustics off.",
+};
+
+ConsoleCommand2 ignore_tbl_underwater_fog_cmd{
+    "cl_ignore_tbl_underwater_fog",
+    []() {
+        setting_console_set("ignore_tbl_underwater_fog", "toggle");
+        rf::console::print("Ignore TBL underwater fog override: {}",
+                           g_alpine_game_config.ignore_tbl_underwater_fog ? "enabled" : "disabled");
+    },
+    "Toggle ignoring per-map overrides from mapname_info.tbl that turn underwater fog off.",
 };
 
 ConsoleCommand2 scope_glass_cmd{
@@ -988,6 +1014,8 @@ void gr_apply_patch()
     disable_rendering_cmd.register_cmd();
     pow2_tex_cmd.register_cmd();
     underwater_fx_cmd.register_cmd();
+    ignore_tbl_caustics_cmd.register_cmd();
+    ignore_tbl_underwater_fog_cmd.register_cmd();
     scope_glass_cmd.register_cmd();
 
     // Fix `rf::gr::text_2d_mode`.

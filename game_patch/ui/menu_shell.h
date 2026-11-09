@@ -113,8 +113,7 @@ void menu_ui_reset(UiContext& ctx);
 // A frame's hit-test pass: the keys go to `key_callback`, the mouse to the context, then `build` runs. A text box
 // lets go once the keys have opened the console, before they reach it.
 void menu_run_hit_test(UiContext& ctx, void (*key_callback)(int), const std::function<void(UiContext&)>& build);
-// A frame's draw pass over the stock menu background, popups on top. `hide_pointer` lights nothing up, for a pointer
-// over something drawn above the menu.
-void menu_run_draw(UiContext& ctx, const std::function<void(UiContext&)>& build, bool hide_pointer = false);
+// A frame's draw pass over the stock menu background, popups on top.
+void menu_run_draw(UiContext& ctx, const std::function<void(UiContext&)>& build);
 // The console reads the key queue a focused text box drains, so the box lets go while the console is open.
 void menu_drop_text_focus_under_console(UiContext& ctx);

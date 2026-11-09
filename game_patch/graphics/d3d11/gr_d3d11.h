@@ -113,6 +113,7 @@ namespace gr::d3d11
         void release_detail_room_cache(rf::GRoom* room);
         void reset_solid_cache_after_boolean();
         void release_terrain_gpu();
+        void build_liquid_volume_mask();
         bool upload_af_lightmap_atlas(const alpine_lightmap::ReadResult& section,
                                       const std::vector<std::uint8_t>& blocks);
         void release_af_lightmap_atlas();

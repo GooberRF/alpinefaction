@@ -46,6 +46,11 @@ void apply_pixel_light_overbright()
     gr::d3d11::evaluate_pixel_light_overbright(rf::level.filename);
 }
 
+void apply_underwater_fx()
+{
+    gr::d3d11::evaluate_underwater_fx(rf::level.filename);
+}
+
 struct DetailPreset
 {
     int character_detail;
@@ -753,6 +758,32 @@ const SettingRow rows[] = {
         .console_cmd = "cl_ignore_tbl_lightmap_clamping",
     },
     {
+        .id = "ignore_tbl_caustics",
+        .key = "IgnoreTblCaustics",
+        .label = "Ignore map caustics",
+        .tooltip = "Ignore per-map overrides that turn caustics off.",
+        .category = Cat::Graphics,
+        .subcategory = "Expert",
+        .widget = Wid::Toggle,
+        .access = AccBool{&AGS::ignore_tbl_caustics},
+        .flags = SF_D3D11_ONLY | SF_ADVANCED,
+        .apply = apply_underwater_fx,
+        .console_cmd = "cl_ignore_tbl_caustics",
+    },
+    {
+        .id = "ignore_tbl_underwater_fog",
+        .key = "IgnoreTblUnderwaterFog",
+        .label = "Ignore map water fog",
+        .tooltip = "Ignore per-map overrides that turn water fog off.",
+        .category = Cat::Graphics,
+        .subcategory = "Expert",
+        .widget = Wid::Toggle,
+        .access = AccBool{&AGS::ignore_tbl_underwater_fog},
+        .flags = SF_D3D11_ONLY | SF_ADVANCED,
+        .apply = apply_underwater_fx,
+        .console_cmd = "cl_ignore_tbl_underwater_fog",
+    },
+    {
         .id = "fullbright_characters",
         .key = "FullbrightCharacters",
         .label = "Fullbright models",
@@ -868,6 +899,18 @@ const SettingRow rows[] = {
         .access = AccBool{&AGS::outlines_spectator},
         .flags = SF_D3D11_ONLY | SF_MP_ONLY,
         .console_cmd = "r_outlines_spectator",
+    },
+    {
+        .id = "outlines_spectator_xray",
+        .key = "OutlinesSpectatorXray",
+        .label = "Spectator X-ray",
+        .tooltip = "Show player outlines through walls while spectating.",
+        .category = Cat::Graphics,
+        .subcategory = "Outlines",
+        .widget = Wid::Toggle,
+        .access = AccBool{&AGS::outlines_spectator_xray},
+        .flags = SF_D3D11_ONLY | SF_MP_ONLY,
+        .console_cmd = "r_outlines_spectator_xray",
     },
     {
         .id = "outlines_team_xray",

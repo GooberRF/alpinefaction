@@ -78,6 +78,7 @@ namespace gr::d3d11
         per_frame_buffer_{device_},
         texture_scale_cbuffer_{device_},
         gas_region_buffer_{device_},
+        liquid_volume_mask_{device_},
         caustics_renderer_{device_},
         liquid_fx_renderer_{device_},
         dir_lights_buffer_{device_}

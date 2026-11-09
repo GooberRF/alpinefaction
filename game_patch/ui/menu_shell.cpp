@@ -268,7 +268,7 @@ void menu_run_hit_test(UiContext& ctx, void (*key_callback)(int), const std::fun
     ctx.end_pass();
 }
 
-void menu_run_draw(UiContext& ctx, const std::function<void(UiContext&)>& build, bool hide_pointer)
+void menu_run_draw(UiContext& ctx, const std::function<void(UiContext&)>& build)
 {
     rf::gr::reset_clip();
     rf::ui::menu_draw_background();
@@ -276,10 +276,6 @@ void menu_run_draw(UiContext& ctx, const std::function<void(UiContext&)>& build,
     int y = 0;
     int z = 0;
     rf::mouse_get_pos(x, y, z);
-    if (hide_pointer) {
-        x = -1;
-        y = -1;
-    }
     ctx.set_mouse_pos(x, y);
     ctx.begin_pass(UiPass::Draw);
     build(ctx);

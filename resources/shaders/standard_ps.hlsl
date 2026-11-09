@@ -134,11 +134,21 @@ cbuffer GasRegionBuffer : register(b4)
 
 #endif
 
+// Which part of a liquid room's box is the room itself. Layout owned by gr_d3d11_liquid_mask.h.
+struct LiquidMaskRegion
+{
+    float3 origin;       float inv_cell;
+    float3 dims;         float enabled;
+    float3 atlas_offset; float _pad0;
+    float3 atlas_scale;  float _pad1;
+};
+
 struct CausticVolume
 {
     float3 bbox_min;  float surface_y;
     float3 bbox_max;  float room_uid;
     float3 color;     float _cpad1;
+    LiquidMaskRegion mask;
 };
 
 #define MAX_CAUSTIC_VOLUMES 16
@@ -167,6 +177,7 @@ struct LiquidVolume
 {
     float3 bbox_min; float _pad0;
     float3 bbox_max; float _pad1;
+    LiquidMaskRegion mask;
 };
 
 cbuffer LiquidBuffer : register(b6)
@@ -217,6 +228,8 @@ SamplerComparisonState shadow_sampler : register(s2);
 SamplerState shadow_depth_sampler : register(s3);
 Texture2DArray caustic_tex : register(t3);
 SamplerState   caustic_samp : register(s4);
+Texture3D<float> liquid_mask_tex  : register(t35);
+SamplerState     liquid_mask_samp : register(s9);
 // Copy of the scene depth buffer, for the liquid surface pass only.
 Texture2D<float> scene_depth : register(t6);
 // tex0's detail texture (b2 detail_*), and the terrain crater texture's
@@ -389,6 +402,42 @@ float caustic_sample_plane(float2 p, float2 drift, float s0, float s1, float sf,
     float cb = lerp(caustic_tex.SampleGrad(caustic_samp, float3(uv_b, s0), ARRAY_GRAD(gb_x), ARRAY_GRAD(gb_y)).r,
                     caustic_tex.SampleGrad(caustic_samp, float3(uv_b, s1), ARRAY_GRAD(gb_x), ARRAY_GRAD(gb_y)).r, sf);
     return (ca + cb) * 0.5f;
+}
+
+float liquid_mask_at(LiquidMaskRegion m, float3 p)
+{
+    float3 tc = (p - m.origin) * m.inv_cell;
+    if (any(tc < 0.0f) || any(tc > m.dims)) {
+        return 1.0f;
+    }
+    tc = clamp(tc, 0.5f, m.dims - 0.5f);
+    return liquid_mask_tex.SampleLevel(liquid_mask_samp, (tc + m.atlas_offset) * m.atlas_scale, 0.0f);
+}
+
+// How much of the ray between t0 and t1 lies in the room rather than only in its box
+float liquid_mask_length(LiquidMaskRegion m, float3 origin, float3 dir, float3 inv_dir, float t0, float t1,
+                         float jitter)
+{
+    float len = max(t1 - t0, 0.0f);
+    [branch] if (m.enabled > 0.5f && len > 0.0f) {
+        float3 d0 = (m.origin - origin) * inv_dir;
+        float3 d1 = (m.origin + m.dims / m.inv_cell - origin) * inv_dir;
+        float3 lo = min(d0, d1);
+        float3 hi = max(d0, d1);
+        float a = max(max(lo.x, lo.y), max(lo.z, t0));
+        float b = min(min(hi.x, hi.y), min(hi.z, t1));
+        float span = b - a;
+        [branch] if (span > 0.0f) {
+            int steps = (int)clamp(ceil(span * m.inv_cell), 1.0f, 16.0f);
+            float sum = 0.0f;
+            for (int i = 0; i < steps; ++i) {
+                // Half-inside cells border another room and carry no fog
+                sum += saturate(liquid_mask_at(m, origin + dir * (a + span * (i + jitter) / steps)) * 2.0f - 1.0f);
+            }
+            len -= span * (1.0f - sum / steps);
+        }
+    }
+    return len;
 }
 
 // Shown where the base texture is magnified: fully from ~1.4 pixels per texel, not at all from ~1.4 texels per pixel
@@ -633,13 +682,20 @@ float4 finish_fragment(VsOutput input, float4 target, float3 tex0_rgb, float3 li
         float3 wp = input.world_pos_and_depth.xyz;
         float  mask = 0.0f, depth = 0.0f;
         float3 tint = float3(1, 1, 1);
+        float3 mask_dir = norm * rsqrt(max(dot(norm, norm), 1e-8f));
         for (int ci = 0; ci < num_caustic_volumes; ++ci) {
             CausticVolume v = caustic_volumes[ci];
             // A room AABB routinely overshoots into dry neighbours, so prefer matching the
-            // fragment's own room and fall back to the box only when the draw has no room.
-            bool in_volume = draw_room_uid >= 0.0f
-                ? abs(v.room_uid - draw_room_uid) < 0.5f
-                : (all(wp >= v.bbox_min - 0.05f) && all(wp <= v.bbox_max + 0.05f));
+            // fragment's own room. A draw without one asks the mask which room the face looks into.
+            bool in_volume;
+            if (draw_room_uid >= 0.0f) {
+                in_volume = abs(v.room_uid - draw_room_uid) < 0.5f;
+            } else {
+                in_volume = all(wp >= v.bbox_min - 0.05f) && all(wp <= v.bbox_max + 0.05f);
+                [branch] if (in_volume && v.mask.enabled > 0.5f) {
+                    in_volume = liquid_mask_at(v.mask, wp + mask_dir * (0.5f / v.mask.inv_cell)) > 0.25f;
+                }
+            }
             bool inside = in_volume && wp.y < v.surface_y - 0.02f;
             if (inside && mask == 0.0f) { mask = 1.0f; depth = v.surface_y - wp.y; tint = v.color; }
         }
@@ -808,8 +864,9 @@ float4 finish_fragment(VsOutput input, float4 target, float3 tex0_rgb, float3 li
         }
         else {
             // Clip the eye->pixel segment against every nearby liquid room of the camera room's
-            // type, each capped at its own surface plane. Rooms do not overlap, so the segments
-            // add. A single box would end the fogged length at the camera room's walls and step
+            // type, each capped at its own surface plane and masked to the room itself, and add the
+            // segments. Boxes of neighbouring rooms of one liquid still overlap and count twice
+            // there. A single box would end the fogged length at the camera room's walls and step
             // at every boundary; without any box the surface plane would extend level-wide.
             float3 seg_vec = liq_pixel_pos - liq_eye_pos;
             float geo_len = length(seg_vec);
@@ -817,6 +874,7 @@ float4 finish_fragment(VsOutput input, float4 target, float3 tex0_rgb, float3 li
             float3 dir_sign = step(float3(0, 0, 0), seg_dir) * 2.0f - 1.0f;
             float3 safe_dir = dir_sign * max(abs(seg_dir), float3(1e-8f, 1e-8f, 1e-8f));
             float3 inv_dir = 1.0f / safe_dir;
+            float mask_jitter = frac(52.9829189f * frac(dot(input.pos.xy, float2(0.06711056f, 0.00583715f))));
 
             float under_len_geo = 0.0f;
             int vol_count = min((int)liq_num_volumes, MAX_LIQUID_VOLUMES);
@@ -827,7 +885,8 @@ float4 finish_fragment(VsOutput input, float4 target, float3 tex0_rgb, float3 li
                 float3 tmax_v = max(t0, t1);
                 float t_enter = max(max(tmin_v.x, tmin_v.y), max(tmin_v.z, 0.0f));
                 float t_exit = min(min(tmax_v.x, tmax_v.y), min(tmax_v.z, geo_len));
-                under_len_geo += max(t_exit - t_enter, 0.0f);
+                under_len_geo += liquid_mask_length(liq_volumes[vi].mask, liq_eye_pos, seg_dir, inv_dir,
+                                                    t_enter, t_exit, mask_jitter);
             }
             under_len = seg_len * saturate(under_len_geo / max(geo_len, 1e-6f));
 
@@ -855,7 +914,8 @@ float4 finish_fragment(VsOutput input, float4 target, float3 tex0_rgb, float3 li
                     float3 btmax_v = max(bt0, bt1);
                     float bt_enter = max(max(btmin_v.x, btmin_v.y), max(btmin_v.z, geo_len));
                     float bt_exit = min(min(btmax_v.x, btmax_v.y), min(btmax_v.z, geo_end));
-                    float bt_len = max(bt_exit - bt_enter, 0.0f);
+                    float bt_len = liquid_mask_length(liq_volumes[bi].mask, liq_eye_pos, seg_dir, inv_dir,
+                                                      bt_enter, bt_exit, mask_jitter);
                     behind_geo += bt_len;
                     end_geo = max(end_geo, bt_len > 0.0f ? bt_exit : 0.0f);
                 }

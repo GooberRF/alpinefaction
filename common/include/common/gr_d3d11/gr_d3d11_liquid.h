@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <d3d11.h>
 #include <common/ComPtr.h>
+#include "gr_d3d11_liquid_mask.h"
 #include "gr_d3d11_transform.h"
 #include <gr_d3d11_engine.h>
 
@@ -33,8 +34,10 @@ namespace gr::d3d11
     {
         std::array<float, 3> bbox_min; float _pad0;
         std::array<float, 3> bbox_max; float _pad1;
+        LiquidMaskGPUData mask;
     };
-    static_assert(sizeof(LiquidVolumeGPUData) == 32);
+    static_assert(sizeof(LiquidVolumeGPUData) == 96);
+    static_assert(offsetof(LiquidVolumeGPUData, mask) == 32);
 
     struct alignas(16) LiquidBufferData
     {
@@ -50,10 +53,10 @@ namespace gr::d3d11
         LiquidVolumeGPUData volumes[max_liquid_volumes];
         float depth_sz; float depth_tz; float depth_mode; float over_fog_near;
     };
-    static_assert(sizeof(LiquidBufferData) == 160 + 32 * max_liquid_volumes);
+    static_assert(sizeof(LiquidBufferData) == 160 + 96 * max_liquid_volumes);
     static_assert(offsetof(LiquidBufferData, volumes) == 144);
-    static_assert(offsetof(LiquidBufferData, depth_sz) == 144 + 32 * max_liquid_volumes);
-    static_assert(offsetof(LiquidBufferData, over_fog_near) == 156 + 32 * max_liquid_volumes);
+    static_assert(offsetof(LiquidBufferData, depth_sz) == 144 + 96 * max_liquid_volumes);
+    static_assert(offsetof(LiquidBufferData, over_fog_near) == 156 + 96 * max_liquid_volumes);
     static_assert(sizeof(LiquidBufferData) % 16 == 0);
 
     struct LiquidState
@@ -125,7 +128,7 @@ namespace gr::d3d11
         // projection to apply: submerged, the far plane is widened to the engine's cull distance.
         Projection update(ID3D11DeviceContext* device_context, const Projection& projection,
                           const rf::Vector3& eye_pos, const rf::Matrix3& eye_orient,
-                          float scene_depth_mode);
+                          float scene_depth_mode, const LiquidVolumeMask& mask);
 
         // b6 must not stay live while the engine renders from another camera into a texture
         void write_disabled(ID3D11DeviceContext* device_context);

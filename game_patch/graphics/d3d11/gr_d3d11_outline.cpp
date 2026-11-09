@@ -307,7 +307,7 @@ namespace gr::d3d11
             // Determine xray
             bool xray = false;
             if (is_spectating) {
-                xray = true;
+                xray = g_alpine_game_config.outlines_spectator_xray;
             }
             else if (!is_enemy && g_alpine_game_config.try_outlines_team_xray && xray_allowed) {
                 xray = true;

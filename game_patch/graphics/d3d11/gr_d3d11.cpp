@@ -1069,7 +1069,7 @@ namespace gr::d3d11
             // state still holds last frame's answer here, so the frame a liquid room first comes
             // into range runs without the clamp; the buffer is ready from the next one on.
             const LiquidState& prev = render_context_->liquid_state();
-            const bool want_depth = g_alpine_game_config.underwater_fx >= 2
+            const bool want_depth = underwater_fx_level() >= 2
                 && prev.mode != 0 && !prev.eye_under
                 && scene_depth_.ensure(device_, context_, *shader_manager_);
             // The capture gate reads this so it can only run when the frame's uploaded
@@ -1365,7 +1365,7 @@ namespace gr::d3d11
     bool Renderer::liquid_post_pass_pending() const
     {
         // Monitors and the rail/IR scanner render to textures before this point
-        if (render_target_bm_handle_ != -1 || g_alpine_game_config.underwater_fx < 2) {
+        if (render_target_bm_handle_ != -1 || underwater_fx_level() < 2) {
             return false;
         }
         const LiquidState& liquid = render_context_->liquid_state();
@@ -1396,7 +1396,7 @@ namespace gr::d3d11
         const rf::Matrix3& eye_orient = outline_renderer_->scene_eye_orient();
         const float proj_sy = proj.scale_y();
 
-        const bool distort = g_alpine_game_config.underwater_fx >= 3 && ensure_postfx_source();
+        const bool distort = underwater_fx_level() >= 3 && ensure_postfx_source();
 
         SceneFxBufferData data{};
         data.rt_size = {static_cast<float>(rt_width_), static_cast<float>(rt_height_)};
@@ -1509,6 +1509,11 @@ namespace gr::d3d11
     {
         solid_renderer_->release_terrain_gpu();
         decoration_renderer_->release();
+    }
+
+    void Renderer::build_liquid_volume_mask()
+    {
+        render_context_->rebuild_liquid_volume_mask();
     }
 
     bool Renderer::upload_af_lightmap_atlas(const alpine_lightmap::ReadResult& section,

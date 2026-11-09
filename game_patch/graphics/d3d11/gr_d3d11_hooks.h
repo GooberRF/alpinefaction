@@ -25,6 +25,9 @@ namespace gr::d3d11 {
     void evaluate_mesh_lighting(const std::string& level_filename);
     void evaluate_pixel_light_overbright(const std::string& level_filename);
     void evaluate_alpha_test_threshold(const std::string& level_filename);
+    void evaluate_underwater_fx(const std::string& level_filename);
+    int underwater_fx_level();
+    bool underwater_caustics_enabled();
     bool set_render_target(int bm_handle);
     // Uploads rf::gr::relevant_lights and the ambient light as they are now, for code that changed them outside
     // the renderer's own gather, and forgets the mesh bounds the gather set.
@@ -52,6 +55,8 @@ namespace gr::d3d11 {
     void release_detail_room_render_cache(rf::GRoom* room);
     // Frees every terrain's textures, which the next render cache build creates again.
     void release_terrain_gpu();
+    // Builds the liquid volume mask during the load instead of in the first frame.
+    void build_liquid_volume_mask();
     // Replaces the Alpine Lightmaps atlas; false, with none held, when there is no renderer or the
     // upload fails.
     bool upload_af_lightmap_atlas(const alpine_lightmap::ReadResult& section, const std::vector<std::uint8_t>& blocks);

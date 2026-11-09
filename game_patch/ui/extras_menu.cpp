@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <optional>
 #include <string>
 #include <vector>
@@ -38,6 +39,8 @@ UiContext g_ui;
 bool g_closing = false;
 // 0 = fully off canvas, 1 = seated. Rises on entry, falls again once Back/ESC is taken.
 float g_slide = 0.0f;
+// The Demos panel: 0 = off the right edge, 1 = seated. Follows whether the browser is open.
+float g_panel = 0.0f;
 // REFERENCE was taken: the column slides out, then the Reference screen slides in over the same chrome.
 bool g_reference_pending = false;
 // Parallel: what each column button does, and how it reads.
@@ -48,10 +51,16 @@ std::string g_back_label;
 // with the pass half built.
 std::optional<ExtrasAction> g_pending;
 
-void add_button(ExtrasAction action, std::string label, rf::Key hotkey)
+void add_button(ExtrasAction action, std::string label, rf::Key hotkey, bool opens_panel = false)
 {
     g_buttons.push_back({action, hotkey});
-    g_items.push_back(MenuColumnItem{std::move(label), false, false});
+    g_items.push_back(MenuColumnItem{std::move(label), false, opens_panel});
+}
+
+int button_slot(ExtrasAction action)
+{
+    const auto it = std::ranges::find(g_buttons, action, &ExtrasButton::action);
+    return static_cast<int>(it - g_buttons.begin());
 }
 
 void make_buttons()
@@ -64,7 +73,7 @@ void make_buttons()
         add_button(ExtrasAction::SummonerTrailer, menu_stock_label(rf::strings::summoner_trailer), rf::KEY_S);
     }
     add_button(ExtrasAction::GlassHouse, menu_stock_label(rf::strings::glass_house), rf::KEY_G);
-    add_button(ExtrasAction::Demos, "DEMOS", rf::KEY_D);
+    add_button(ExtrasAction::Demos, "DEMOS", rf::KEY_D, true);
     add_button(ExtrasAction::Reference, "REFERENCE", rf::KEY_R);
     g_back_label = menu_stock_label(rf::strings::back);
 }
@@ -91,7 +100,10 @@ void run_action(ExtrasAction action)
             rf::ui::extras_glass_house_click(0, 0);
             break;
         case ExtrasAction::Demos:
-            demo_browser_open();
+            // Picking the open panel's button again leaves it as it is, as Options does.
+            if (!demo_browser_is_open()) {
+                demo_browser_open();
+            }
             break;
         case ExtrasAction::Reference:
             g_reference_pending = true;
@@ -113,10 +125,24 @@ void extras_menu_build(UiContext& ctx)
                             lay.rail_right + frame.enter_dx, frame.canvas_y, rf::strings::extras, frame.fonts.title);
     }
 
+    const int demos_slot = button_slot(ExtrasAction::Demos);
+    g_items[demos_slot].selected = demo_browser_is_open();
     const int clicked = menu_build_column(ctx, lay, lay.column_x + frame.col_dx, frame.top, g_items,
                                           g_back_label.c_str(), frame.fonts.column, "extras");
     if (clicked >= 0 && !ctx.draw) {
         g_pending = clicked < static_cast<int>(g_buttons.size()) ? g_buttons[clicked].action : ExtrasAction::Back;
+    }
+
+    // A panel on its way out is only painted.
+    if (g_panel > 0.0f && (ctx.draw || demo_browser_is_open())) {
+        const int panel_dx = frame.enter_dx + static_cast<int>((1.0f - g_panel) * static_cast<float>(frame.slide_w));
+        const MenuPanel panel = menu_panel(ctx, lay, panel_dx, frame.top, frame.canvas_y);
+        if (ctx.draw) {
+            menu_draw_panel(ctx, panel);
+            const int button_h = menu_button_h(ctx);
+            menu_draw_connector(ctx, panel, frame.top + demos_slot * button_h + button_h / 2);
+        }
+        demo_browser_build_panel(ctx, panel);
     }
 
     // Stock draws its side bars over its menus.
@@ -130,6 +156,11 @@ void __cdecl extras_menu_key_callback(int key)
 {
     const int code = key & rf::KEY_MASK;
     if (code == rf::KEY_ESC) {
+        if (demo_browser_is_open()) {
+            demo_browser_back();
+            ui_play_click();
+            return;
+        }
         g_pending = ExtrasAction::Back;
         return;
     }
@@ -151,14 +182,8 @@ void __cdecl extras_menu_key_callback(int key)
 
 void extras_menu_input()
 {
-    // The browser sits over the menu and takes all of its input while open.
-    if (demo_browser_is_open()) {
-        demo_browser_do_input();
-        return;
-    }
-
     menu_run_hit_test(g_ui, extras_menu_key_callback, extras_menu_build);
-
+    demo_browser_commit_panel();
     if (g_pending) {
         const ExtrasAction action = *g_pending;
         g_pending.reset();
@@ -172,6 +197,7 @@ void extras_menu_enter()
 {
     g_closing = false;
     g_slide = 0.0f;
+    g_panel = 0.0f;
     g_pending.reset();
     g_reference_pending = false;
     reference_menu_release();
@@ -185,14 +211,15 @@ void extras_menu_do_frame(bool paused)
     if (reference_menu_host_frame(g_reference_pending, g_slide, g_closing, paused)) {
         return;
     }
+    const float step = menu_slide_step();
+    g_panel = demo_browser_is_open() ? std::min(1.0f, g_panel + step) : std::max(0.0f, g_panel - step);
 
     // paused = 1 means a stock popup owns input this frame; it renders after us and on top.
     if (!paused && !g_closing && !g_reference_pending) {
         extras_menu_input();
     }
 
-    // Nothing under the demo browser lights up for a pointer that is over the browser.
-    menu_run_draw(g_ui, extras_menu_build, demo_browser_is_open());
+    menu_run_draw(g_ui, extras_menu_build);
 }
 
 bool extras_menu_is_closed()

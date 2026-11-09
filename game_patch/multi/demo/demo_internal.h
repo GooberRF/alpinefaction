@@ -10,6 +10,7 @@ namespace rf
 void demo_record_do_patch();
 void demo_playback_do_patch();
 void demo_powerup_timers_do_patch();
+void demo_controls_ui_do_patch();
 
 // Clears the powerup respawn tracker. Called from playback's reset_ctx - the single
 // funnel for teardown, engine multi_stop and backward-seek session restarts.

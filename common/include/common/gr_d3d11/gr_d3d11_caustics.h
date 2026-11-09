@@ -2,6 +2,7 @@
 
 #include <d3d11.h>
 #include <common/ComPtr.h>
+#include "gr_d3d11_liquid_mask.h"
 
 namespace gr::d3d11
 {
@@ -15,7 +16,7 @@ namespace gr::d3d11
 
         explicit CausticsRenderer(ID3D11Device* device);
 
-        void update(ID3D11DeviceContext* device_context);
+        void update(ID3D11DeviceContext* device_context, const LiquidVolumeMask& mask);
 
         // Volumes were uploaded this frame, so the shader's caustics block can run
         bool active() const

@@ -30,7 +30,7 @@ Version 1.5.0 (Trillium): Not yet released
   - Context-specific bindings for vehicles, spectator, and demo playback
   - `af_set` and `af_get` console commands to read and write any setting by name
   - Draw menus from resolution-independent vector artwork
-  - Redraw the extras menu in the same style
+  - Redraw the extras menu in the same style, with the demo browser as one of its panels
   - Redraw the in-game multiplayer menu in the same style, with a `Player` panel for picking your name and character
   - Add `Use deprecated legacy menus` launcher option to use the stock menus instead
 - Add server-side bots, which run inside the dedicated or listen server process in addition to (or instead of) bot clients
@@ -63,6 +63,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Add `Scrapyard mode` option to the Gibbing mutator
 - Add underwater rendering effects — animated caustics, depth-based water fog with a waterline, screen tint/vignette and distortion — with quality levels 0-3 via `r_underwater` (Direct3D 11 renderer only)
 - Extend view distance while submerged at `r_underwater` 2 or higher, up to 4x the liquid visibility, with the extension capped at the normal far clip
+- Add `$Disable Caustics` and `$Disable Underwater Fog` `mapname_info.tbl` options to turn underwater effects off on a level, and `cl_ignore_tbl_caustics` and `cl_ignore_tbl_underwater_fog` console commands to ignore them
 - Add edge-vignette damage feedback as `cl_damageflash 2` (Direct3D 11 renderer only); `cl_damageflash` is now a level: 0 off, 1 screen flash, 2 vignette
 - Add `Brush` collision mode for Alpine Mesh objects
 - Add `Brush Geo` source selection for Alpine Mesh objects using `Brush` collision, allowing custom collision hulls
@@ -216,6 +217,19 @@ Version 1.5.0 (Trillium): Not yet released
 - Render animated (`.vfx`) meshes on the GPU with per-pixel lighting, and apply their materials' reflection maps (Direct3D 11 renderer only)
 - Load levels with very large face counts or many level sounds much faster
 - Add Discord rich presence (`cl_discord_presence`) showing the server, gametype, map, team scores, match status, player count and time left in multiplayer, and the level, difficulty and mod in single player, with a `Join server` button for public, password-free servers (`cl_discord_join_button`)
+- Add HUD, player outline, and outline x-ray toggles to the spectate options menu
+- Add `cl_hudelement` console command and a spectate options submenu to show or hide individual HUD elements
+- Keep chat visible while the HUD is hidden
+- Add `r_outlines_spectator_xray` console command to show player outlines through walls while spectating
+- Mark kills, awards, objective captures and powerup pickups on the demo playback scrubber
+- Speed up seeking in demos
+- Merge the demo playback controls and the spectate nameplate into one panel
+- Add `spectate_minimalbar` console command to show only the player's name on the compact demo playback panel
+- Add a custom demo playback marker, set with the Quick Save key and jumped to with the Quick Load key
+- Pause demo playback while the Esc menu is open
+- Add playback speed control (0.25x-8x) to the demo playback panel
+- Show the recording server's config during demo playback with the Remote Server Config key
+- Apply demo playback speed to the whole world, including particles, animations and sounds
 
 [@is-this-c](https://github.com/is-this-c)
 - Add `bighud_health` and `bighud_ammo` console variables to disable `bighud` for health and ammo, which is useful for mods incompatible with `bighud`
