@@ -241,6 +241,8 @@ struct SettingRow
     const char* ui_suffix = "";
     // Shown instead of the number when the stored value is 0.
     const char* ui_zero_label = nullptr;
+    // Adjusts the ui_* fields on a copy of the row before a slider is drawn, for a track that depends
+    // on another setting. Only sliders call it; the value is still read and written through the row.
     void (*ui_adjust)(SettingRow&) = nullptr;
 };
 
