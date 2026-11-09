@@ -17,6 +17,7 @@
 #include "../server_internal.h"
 #include "../alpine_packets.h"
 #include "../gametype.h"
+#include "../powerups.h"
 #include "../../fflink/afstats_events.h"
 #include "../../fflink/demo_upload.h"
 #include "../../fflink/fflink_session.h"
@@ -513,6 +514,12 @@ void demo_record_item_pickup(rf::Player* player, const rf::Item* item)
         kind = DemoPickupKind::damage_amp;
     else if (item->info_index == rf::item_lookup_type("Multi Invulnerability"))
         kind = DemoPickupKind::invulnerability;
+    else if (item->info_index == powerup_item_type(AlpinePowerup::haste))
+        kind = DemoPickupKind::haste;
+    else if (item->info_index == powerup_item_type(AlpinePowerup::vampire))
+        kind = DemoPickupKind::vampire;
+    else if (item->info_index == powerup_item_type(AlpinePowerup::jetpack))
+        kind = DemoPickupKind::jetpack;
     else
         return;
     g_state.writer.write_pickup(record_time_ms(), player->net_data->player_id, static_cast<uint8_t>(kind));

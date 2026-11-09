@@ -42,11 +42,6 @@ int text_pad(const UiContext& ctx)
     return std::max(ctx.style.text_pad_min, ctx.scaled(ctx.style.text_pad));
 }
 
-int scrollbar_width(const UiContext& ctx)
-{
-    return std::max(ctx.style.scrollbar_w_min, ctx.scaled(ctx.style.scrollbar_w));
-}
-
 void ui_play_hover()
 {
     rf::snd_play(stock_sound_id::panel_highlight, 0, 0.0f, 1.0f);
@@ -1061,7 +1056,7 @@ int ui_listbox(UiContext& ctx, const UiRect& r, const std::vector<std::string>& 
 
     if (max_scroll > 0.0f) {
         const float ratio = scroll / max_scroll;
-        const int bar_w = scrollbar_width(ctx);
+        const int bar_w = ui_scrollbar_width(ctx);
         const int bar_h = std::max(bar_w, r.h * r.h / std::max(1, total_h));
         const int bar_y = d.y + static_cast<int>(ratio * (r.h - bar_h));
         apply_color(ctx.style.scrollbar);
@@ -1287,10 +1282,15 @@ void ui_scroll_focus_into_view(const UiContext& ctx, const UiRect& view, const s
     scrolled_to = ctx.focus_id();
 }
 
+int ui_scrollbar_width(const UiContext& ctx)
+{
+    return std::max(ctx.style.scrollbar_w_min, ctx.scaled(ctx.style.scrollbar_w));
+}
+
 UiScrollbarGeometry ui_scrollbar_geometry(const UiContext& ctx, const UiRect& view, int content_h, float scroll)
 {
     UiScrollbarGeometry g;
-    const int bar_w = scrollbar_width(ctx);
+    const int bar_w = ui_scrollbar_width(ctx);
     const int cap = std::min(ctx.scaled(ctx.style.scrollbar_cap), view.h / 4);
     g.gutter = UiRect{view.x + view.w - bar_w, view.y, bar_w, view.h};
     g.track = UiRect{g.gutter.x, view.y + cap, bar_w, std::max(0, view.h - 2 * cap)};

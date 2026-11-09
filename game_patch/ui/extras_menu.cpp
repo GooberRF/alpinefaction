@@ -142,7 +142,7 @@ void extras_menu_build(UiContext& ctx)
             const int button_h = menu_button_h(ctx);
             menu_draw_connector(ctx, panel, frame.top + demos_slot * button_h + button_h / 2);
         }
-        demo_browser_build_panel(ctx, panel);
+        demo_browser_build_panel(ctx, panel, frame.fonts);
     }
 
     // Stock draws its side bars over its menus.

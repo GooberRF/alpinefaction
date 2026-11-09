@@ -81,6 +81,9 @@ enum class DemoPickupKind : uint8_t
     damage_amp = 0,
     invulnerability = 1,
     fusion = 2,
+    haste = 3,
+    vampire = 4,
+    jetpack = 5,
 };
 // No-op unless recording and the item is one of the DemoPickupKind powerups
 void demo_record_item_pickup(rf::Player* player, const rf::Item* item);
@@ -197,6 +200,9 @@ enum class DemoMarkerKind : uint8_t
     damage_amp,
     invulnerability,
     fusion,
+    haste,
+    vampire,
+    jetpack,
     award,
     objective_taken,    // CTF's enemy flag, Salvage's flag, Scavenger's cartridge or Bagman's bag
     objective_captured, // CTF, Salvage and Scavenger

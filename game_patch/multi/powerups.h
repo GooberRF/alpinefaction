@@ -54,6 +54,8 @@ float powerup_time_left(const rf::Entity* ep, AlpinePowerup powerup);
 bool powerup_any_active(AlpinePowerup powerup);
 // item_info index of the powerup's item class, -1 when items.tbl left no room for it.
 int powerup_item_type(AlpinePowerup powerup);
+// The powerup's table colour, black where it has none.
+const rf::gr::Color& powerup_color(AlpinePowerup powerup);
 // True for the Jetpack, which bots never fly, so they leave its pickups for players.
 bool item_type_is_bot_unusable_powerup(int item_type);
 bool item_type_is_alpine_shard(int item_type);

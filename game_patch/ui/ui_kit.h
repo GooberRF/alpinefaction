@@ -554,6 +554,7 @@ bool ui_close_button(UiContext& ctx, const UiRect& r, int font);
 // Scroll regions
 // ---------------------------------------------------------------------------
 
+int ui_scrollbar_width(const UiContext& ctx);
 // wheel_step is pixels per notch; draggable = true makes the thumb grabbable.
 UiScrollRegion ui_scroll_begin(UiContext& ctx, const UiRect& view, int content_h, float& scroll,
                                int wheel_step, UiId id = 0, bool draggable = false);

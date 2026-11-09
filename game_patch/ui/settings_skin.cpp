@@ -1809,12 +1809,85 @@ bool skin_reorder_row(UiContext& ctx, const UiRect& r, const char* label, bool s
     return false;
 }
 
+SkinListRow skin_list_row(UiContext& ctx, const UiRect& r, bool selected, UiId id)
+{
+    SkinListRow row;
+    const bool hovered = ui_hover(ctx, r, id);
+    if (hovered) {
+        ctx.note_hovered(id);
+    }
+    ctx.register_focusable(id, UiFocusKind::Activate);
+    row.lit = hovered || selected || focus_shown(ctx, id);
+    row.draw = ui_draw_rect(ctx, r);
+    if (!ctx.draw) {
+        row.activated = ctx.consume_activation(id);
+        row.clicked = hovered && ctx.click;
+        return row;
+    }
+
+    const auto s = [&](float v) { return skin_px(ctx, v); };
+    const UiRect& d = row.draw;
+    rf::gr::set_color(skin::border_dim);
+    rf::gr::rect(d.x + s(8.0f), d.y + d.h - s(1.0f), d.w - s(8.0f), s(1.0f));
+    if (selected) {
+        const int inset = s(2.0f);
+        skin_selection_bar(ctx, d.x, d.y + inset, d.w, d.h - 2 * inset);
+    }
+    return row;
+}
+
+void skin_scroll_list(UiContext& ctx, const UiRect& well, const SkinScrollList& list, float& scroll, UiId& scrolled_to,
+                      const std::function<void(const SkinScrollListRow&)>& build_row)
+{
+    const auto s = [&](float v) { return skin_px(ctx, v); };
+    const UiRect view{well.x + s(4.0f), well.y + s(4.0f), well.w - s(8.0f), well.h - s(8.0f)};
+    const int gutter = ui_scrollbar_width(ctx);
+    const int row_w = view.w - gutter - s(4.0f);
+    if (ctx.draw) {
+        skin_slot(ctx, well.x, well.y, well.w, well.h);
+    }
+
+    const int content_h = list.count * list.row_h;
+    const UiId list_id = ui_id(list.id_name);
+    UiScrollRegion region = ui_scroll_begin(ctx, view, content_h, scroll, list.row_h, list_id, true);
+    std::optional<UiRect> focus_rect;
+    for (int i = 0; i < list.count; ++i) {
+        SkinScrollListRow row{
+            .index = i,
+            .rect = UiRect{view.x, region.start_y() + i * list.row_h, row_w, list.row_h},
+            .id = ui_id(list.row_id_name, i),
+        };
+        if (ctx.focus_id() == row.id) {
+            focus_rect = row.rect;
+        }
+        row.in_view = row.rect.y + row.rect.h >= view.y && row.rect.y <= view.y + view.h;
+        if (!row.in_view) {
+            row.offscreen_activated = ui_offscreen_activatable(ctx, row.id);
+        }
+        build_row(row);
+    }
+    if (ctx.draw && list.empty_text) {
+        const UiRect d = ui_draw_rect(ctx, UiRect{view.x, view.y + list.count * list.row_h, row_w, list.row_h});
+        rf::gr::set_color(skin::txt_hint);
+        rf::gr::string_aligned(rf::gr::ALIGN_CENTER, d.x + d.w / 2, d.y + (d.h - font_h(list.font)) / 2,
+                               list.empty_text, list.font);
+    }
+    ui_scroll_end(ctx, region);
+
+    if (ctx.draw) {
+        skin_scrollbar(ctx, view, content_h, scroll, ctx.captured_id() == list_id);
+    }
+    else {
+        ui_scroll_focus_into_view(ctx, view, focus_rect, scroll, scrolled_to);
+    }
+}
+
 int skin_picker_grid(UiContext& ctx, const UiRect& view, const SkinPickerGrid& grid, float& scroll, UiId& scrolled_to)
 {
     const int tile_w = skin_px(ctx, grid.tile_w);
     const int tile_h = skin_px(ctx, grid.tile_h) + (grid.caption_line ? skin_picker_caption_h(ctx, grid.font) : 0);
     const int gap = skin_px(ctx, 12.0f);
-    const int gutter = std::max(ctx.style.scrollbar_w_min, ctx.scaled(ctx.style.scrollbar_w));
+    const int gutter = ui_scrollbar_width(ctx);
     // The columns keep clear of the scrollbar; the grid then centres in the whole view.
     const int fit_cols = (view.w - gutter + gap) / std::max(1, tile_w + gap);
     const int max_cols = grid.max_cols > 0 ? grid.max_cols : fit_cols;

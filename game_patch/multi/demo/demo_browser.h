@@ -1,6 +1,7 @@
 #pragma once
 
 class UiContext;
+struct MenuFonts;
 struct MenuPanel;
 
 // Demo browser for the Extras menu: a scrollable list of <rf_root>\demos\*.afd files, shown as
@@ -18,6 +19,6 @@ void demo_browser_open();
 // Up one folder, or closed at the root.
 void demo_browser_back();
 // The Demos panel's contents inside the frame the Extras menu drew, for either pass.
-void demo_browser_build_panel(UiContext& ctx, const MenuPanel& panel);
+void demo_browser_build_panel(UiContext& ctx, const MenuPanel& panel, const MenuFonts& fonts);
 // Runs the row or PLAY press the hit-test pass took, once the pass is over.
 void demo_browser_commit_panel();

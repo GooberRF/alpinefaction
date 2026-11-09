@@ -540,6 +540,11 @@ int powerup_item_type(AlpinePowerup powerup)
     return g_powerup_item_types[static_cast<size_t>(powerup)];
 }
 
+const rf::gr::Color& powerup_color(AlpinePowerup powerup)
+{
+    return g_powerup_colors[static_cast<size_t>(powerup)];
+}
+
 bool item_type_is_bot_unusable_powerup(int item_type)
 {
     return powerup_for_item_type(item_type) == AlpinePowerup::jetpack;

@@ -296,7 +296,7 @@ void build_detail(UiContext& ctx, const UiRect& pane, const Fonts& fonts)
     if (view.h <= 0) {
         return;
     }
-    const int gutter = std::max(ctx.style.scrollbar_w_min, ctx.scaled(ctx.style.scrollbar_w)) + s(4.0f);
+    const int gutter = ui_scrollbar_width(ctx) + s(4.0f);
     const int text_x = pane.x + pad;
     const int text_w = std::max(s(80.0f), pane.x + pane.w - pad - gutter - text_x);
     const DetailLayout& lay = layout_detail(ctx, *entry, text_w, fonts);
@@ -333,24 +333,13 @@ void build_detail(UiContext& ctx, const UiRect& pane, const Fonts& fonts)
 // True when the row was clicked, or Enter pressed on it.
 bool list_row(UiContext& ctx, const UiRect& r, const ReferenceEntry& entry, bool selected, const Fonts& fonts, UiId id)
 {
-    const bool hovered = ui_hover(ctx, r, id);
-    if (hovered) {
-        ctx.note_hovered(id);
-    }
-    ctx.register_focusable(id, UiFocusKind::Activate);
+    const SkinListRow row = skin_list_row(ctx, r, selected, id);
     if (!ctx.draw) {
-        return ctx.consume_activation(id) || (hovered && ctx.click);
+        return row.activated || row.clicked;
     }
 
     const auto s = [&](float v) { return skin_px(ctx, v); };
-    const UiRect d = ui_draw_rect(ctx, r);
-    rf::gr::set_color(skin::border_dim);
-    rf::gr::rect(d.x + s(8.0f), d.y + d.h - s(1.0f), d.w - s(8.0f), s(1.0f));
-    if (selected) {
-        const int inset = s(2.0f);
-        skin_selection_bar(ctx, d.x, d.y + inset, d.w, d.h - 2 * inset);
-    }
-    const bool lit = hovered || selected || (ctx.focus_visible() && ctx.focus_id() == id);
+    const UiRect& d = row.draw;
     // Clear of the selection bar's LED.
     const int text_x = d.x + s(24.0f);
     const int text_w = std::max(20, d.x + d.w - s(12.0f) - text_x);
@@ -360,11 +349,11 @@ bool list_row(UiContext& ctx, const UiRect& r, const ReferenceEntry& entry, bool
     const int block_h = two_lines ? body_h + s(2.0f) + caption_h : body_h;
     const int y = d.y + (d.h - block_h) / 2;
     const SkinText name = skin_fit_text(ctx, entry.name, fonts.body, text_w);
-    rf::gr::set_color(lit ? skin::txt_hi : skin::txt);
+    rf::gr::set_color(row.lit ? skin::txt_hi : skin::txt);
     rf::gr::string(text_x, y + (body_h - rf::gr::get_font_height(name.font)) / 2, name.text.c_str(), name.font);
     if (two_lines) {
         const SkinText sub = skin_fit_text(ctx, entry.subtitle, fonts.caption, text_w);
-        rf::gr::set_color(lit ? skin::txt : skin::txt_hint);
+        rf::gr::set_color(row.lit ? skin::txt : skin::txt_hint);
         rf::gr::string(text_x, y + body_h + s(2.0f), sub.text.c_str(), sub.font);
     }
     return false;
@@ -373,58 +362,33 @@ bool list_row(UiContext& ctx, const UiRect& r, const ReferenceEntry& entry, bool
 void build_list(UiContext& ctx, const UiRect& well, const Fonts& fonts)
 {
     const auto s = [&](float v) { return skin_px(ctx, v); };
-    const UiRect view{well.x + s(4.0f), well.y + s(4.0f), well.w - s(8.0f), well.h - s(8.0f)};
-    // The bitmap fonts used below 480 px do not shrink with the scale.
-    const int row_h = std::max(s(58.0f),
-        rf::gr::get_font_height(fonts.body) + rf::gr::get_font_height(fonts.caption) + s(14.0f));
-    const int gutter = std::max(ctx.style.scrollbar_w_min, ctx.scaled(ctx.style.scrollbar_w));
-    const int row_w = view.w - gutter - s(4.0f);
-    if (ctx.draw) {
-        skin_slot(ctx, well.x, well.y, well.w, well.h);
-    }
-
     const std::vector<ReferenceEntry>& entries = current_entries();
     const int count = static_cast<int>(entries.size());
     const int selected = g_selected[area_index(g_area)];
-    float& scroll = g_list_scroll[area_index(g_area)];
-    const int content_h = count * row_h;
-    const UiId list_id = ui_id("reference_list");
-    UiScrollRegion region = ui_scroll_begin(ctx, view, content_h, scroll, row_h, list_id, true);
-    std::optional<UiRect> focus_rect;
-    for (int i = 0; i < count; ++i) {
-        const UiRect rect{view.x, region.start_y() + i * row_h, row_w, row_h};
+    const SkinScrollList list{
+        .count = count,
+        // The bitmap fonts used below 480 px do not shrink with the scale.
+        .row_h = std::max(s(58.0f),
+                          rf::gr::get_font_height(fonts.body) + rf::gr::get_font_height(fonts.caption) + s(14.0f)),
+        .id_name = "reference_list",
         // Per area, so a focus left on a row of the previous area cannot pick a row of this one.
-        const UiId id = ui_id(reference_area_label(g_area), i);
-        if (ctx.focus_id() == id) {
-            focus_rect = rect;
-            // The keyboard picks what it lands on, so stepping through the list shows each entry.
-            if (!ctx.draw && ctx.focus_visible() && i != selected) {
-                g_pending_row = i;
-            }
+        .row_id_name = reference_area_label(g_area),
+        .empty_text = count == 0 ? "Nothing to show" : nullptr,
+        .font = fonts.body,
+    };
+    const auto build_row = [&](const SkinScrollListRow& row) {
+        // The keyboard picks what it lands on, so stepping through the list shows each entry.
+        if (!ctx.draw && ctx.focus_visible() && ctx.focus_id() == row.id && row.index != selected) {
+            g_pending_row = row.index;
         }
-        if (rect.y + rect.h < view.y || rect.y > view.y + view.h) {
-            if (ui_offscreen_activatable(ctx, id)) {
-                g_pending_row = i;
-            }
-            continue;
+        const bool picked = row.in_view
+            ? list_row(ctx, row.rect, entries[row.index], row.index == selected, fonts, row.id)
+            : row.offscreen_activated;
+        if (picked) {
+            g_pending_row = row.index;
         }
-        if (list_row(ctx, rect, entries[i], i == selected, fonts, id)) {
-            g_pending_row = i;
-        }
-    }
-    if (ctx.draw && count == 0) {
-        const UiRect d = ui_draw_rect(ctx, UiRect{view.x, view.y, row_w, row_h});
-        rf::gr::set_color(skin::txt_hint);
-        rf::gr::string_aligned(rf::gr::ALIGN_CENTER, d.x + d.w / 2,
-                               d.y + (d.h - rf::gr::get_font_height(fonts.body)) / 2, "Nothing to show", fonts.body);
-    }
-    ui_scroll_end(ctx, region);
-
-    if (ctx.draw) {
-        skin_scrollbar(ctx, view, content_h, scroll, ctx.captured_id() == list_id);
-        return;
-    }
-    ui_scroll_focus_into_view(ctx, view, focus_rect, scroll, g_list_scrolled_to);
+    };
+    skin_scroll_list(ctx, well, list, g_list_scroll[area_index(g_area)], g_list_scrolled_to, build_row);
 }
 
 // ---------------------------------------------------------------------------

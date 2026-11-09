@@ -2782,7 +2782,7 @@ void build_content(UiContext& ctx, const UiRect& view, const std::vector<Entry>&
     UiScrollRegion region = ui_scroll_begin(ctx, view, content_h, g_content_scroll, row_h * 3,
         ui_id("content"), true);
 
-    const int gutter = std::max(ctx.style.scrollbar_w_min, ctx.scaled(ctx.style.scrollbar_w));
+    const int gutter = ui_scrollbar_width(ctx);
     const int inner_w = view.w - gutter - s(8.0f);
     const int slider_readout_w = panel_slider_readout_w(ctx, entries,
         searching ? std::nullopt : std::optional{g_category}, fonts.body);

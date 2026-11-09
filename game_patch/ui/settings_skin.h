@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -254,6 +255,41 @@ SkinKeyCapResult skin_key_cap(UiContext& ctx, const UiRect& r, const char* text,
 // One row of a reorderable list: 3x2 grip dots, label, stock selection bar. True when clicked.
 bool skin_reorder_row(UiContext& ctx, const UiRect& r, const char* label, bool selected, int font,
                       UiId id);
+
+// One row of a stock list, less its text: hover and keyboard focus, a rule under it and the selection bar when
+// `selected`. The caller draws the text, clear of the bar's LED.
+struct SkinListRow
+{
+    bool activated = false; // Enter pressed on it, hit-test pass only
+    bool clicked = false;   // hit-test pass only
+    bool lit = false;       // hovered, selected or showing the keyboard focus
+    UiRect draw;            // `r` in draw space
+};
+SkinListRow skin_list_row(UiContext& ctx, const UiRect& r, bool selected, UiId id);
+
+// A scrolling list of rows of one height in the black well `well`, each row's id `ui_id(row_id_name, i)`.
+// `empty_text`, when set, is centred in the row after the last.
+struct SkinScrollList
+{
+    int count = 0;
+    int row_h = 0;
+    const char* id_name = "";
+    const char* row_id_name = "";
+    const char* empty_text = nullptr;
+    int font = 0;
+};
+// What a skin_scroll_list row builder is handed, for every row in order. A row out of view is not to be built; the
+// keyboard can still step onto it, and `offscreen_activated` says Enter was pressed on it there.
+struct SkinScrollListRow
+{
+    int index = 0;
+    UiRect rect;
+    UiId id = 0;
+    bool in_view = false;
+    bool offscreen_activated = false;
+};
+void skin_scroll_list(UiContext& ctx, const UiRect& well, const SkinScrollList& list, float& scroll, UiId& scrolled_to,
+                      const std::function<void(const SkinScrollListRow&)>& build_row);
 
 // One picker tile: thumbnail (or a placeholder carrying `caption`), hover highlight, selection
 // glow and index tag. The bitmap is letterboxed into the image area, so non-square portraits keep

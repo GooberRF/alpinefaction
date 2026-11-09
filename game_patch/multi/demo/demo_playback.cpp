@@ -358,6 +358,15 @@ namespace
             case DemoPickupKind::fusion:
                 kind = DemoMarkerKind::fusion;
                 break;
+            case DemoPickupKind::haste:
+                kind = DemoMarkerKind::haste;
+                break;
+            case DemoPickupKind::vampire:
+                kind = DemoMarkerKind::vampire;
+                break;
+            case DemoPickupKind::jetpack:
+                kind = DemoMarkerKind::jetpack;
+                break;
             }
             if (kind)
                 marks.events.push_back({seq, rec.t_ms, rec.payload[0], *kind});
