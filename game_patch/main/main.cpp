@@ -46,6 +46,7 @@
 #include "../multi/vehicles/vehicle_markers.h"
 #include "../multi/vehicles/vehicle_physics.h"
 #include "../multi/vehicles/vehicle_tracers.h"
+#include "../multi/haste_trails.h"
 #include "../multi/server.h"
 #include "../multi/server_internal.h"
 #include "../multi/alpine_packets.h"
@@ -229,6 +230,7 @@ CodeInjection after_level_render_hook{
         alpine_terrain_decorations_render_legacy();
         crits_client_render();
         vehicle_tracers_render();
+        haste_trails_render();
         debug_render();
         waypoints_render_debug();
         client_bot_render_debug();
@@ -436,6 +438,7 @@ FunHook<void(bool)> level_init_post_hook{
                 toggle_chat_menu(ChatMenuType::None);
                 player_multi_level_post_init();
                 multi_hud_level_init();
+                powerups_level_init_post();
                 minimap_level_init_post();
                 // listen server host spawns before this init, so we need to run on_local_spawn for them again
                 if (rf::is_server) {

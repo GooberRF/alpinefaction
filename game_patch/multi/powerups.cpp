@@ -16,11 +16,14 @@
 #include "powerups.h"
 #include "alpine_packets.h"
 #include "bagman.h"
+#include "gametype.h"
+#include "haste_trails.h"
 #include "jetpack.h"
 #include "salvage.h"
 #include "demo/demo.h"
 #include "../hud/hud.h"
 #include "../hud/hud_internal.h"
+#include "../hud/multi_spectate.h"
 #include "../rf/ai.h"
 #include "../rf/bmpman.h"
 #include "../rf/entity.h"
@@ -33,7 +36,10 @@
 #include "../rf/gr/gr_light.h"
 #include "../rf/os/frametime.h"
 #include "../rf/player/player.h"
+#include "../rf/sound/sound.h"
+#include "../rf/weapon.h"
 #include "../misc/alpine_settings.h"
+#include "../sound/sound.h"
 
 namespace
 {
@@ -105,6 +111,13 @@ std::array<int, std::size(super_item_class_names)> g_super_item_types = [] {
 
 bool g_level_has_powerups = false;
 
+constexpr const char* haste_jump_sound_filename = "sweep_out.wav"; // placeholder
+constexpr const char* vampire_drain_sound_filename = "Jolt_05.wav"; // placeholder
+constexpr int vampire_drain_sound_interval_ms = 250;
+int g_haste_jump_sound = -1;
+int g_vampire_drain_sound = -1;
+rf::TimestampRealtime g_vampire_drain_sound_timestamp;
+
 std::optional<AlpinePowerup> powerup_for_item_type(int item_type)
 {
     if (item_type < 0) {
@@ -117,6 +130,14 @@ std::optional<AlpinePowerup> powerup_for_item_type(int item_type)
     return static_cast<AlpinePowerup>(std::distance(g_powerup_item_types.begin(), it));
 }
 
+// A continuous-fire loop keeps to the hasted fire rate.
+void haste_on_powerup_changed(int entity_handle, bool granted)
+{
+    if (const rf::Entity* ep = rf::entity_from_handle(entity_handle)) {
+        snd_instance_set_speed(ep->weapon_loop_sound_handle, granted ? haste_speed_factor : 1.0f);
+    }
+}
+
 void on_powerup_changed(int entity_handle, AlpinePowerup powerup, bool granted)
 {
     switch (powerup) {
@@ -124,6 +145,8 @@ void on_powerup_changed(int entity_handle, AlpinePowerup powerup, bool granted)
             jetpack_on_powerup_changed(entity_handle, granted);
             break;
         case AlpinePowerup::haste:
+            haste_on_powerup_changed(entity_handle, granted);
+            break;
         case AlpinePowerup::vampire:
         case AlpinePowerup::health_shard:
         case AlpinePowerup::armor_shard:
@@ -224,7 +247,10 @@ void append_alpine_powerup_item_classes()
             info.pickup_msg_wa_single = nullptr;
             info.pickup_msg_wa_multi = nullptr;
             info.v3d_type = rf::MESH_TYPE_STATIC;
-            info.pickup_snd = -1;
+            // Stock damage_pickup.wav's range and volume, for a file the sounds table has not registered already.
+            info.pickup_snd = def.pickup_sound_filename
+                ? rf::snd_get_handle(def.pickup_sound_filename, 10.0f, 0.9f, 1.0f)
+                : -1;
             info.count = def.count;
             info.count_single = def.count;
             info.count_multi = def.count;
@@ -244,6 +270,9 @@ FunHook<void()> items_tbl_parse_hook{
     []() {
         items_tbl_parse_hook.call_target();
         append_alpine_powerup_item_classes();
+        // Registered at game init, as the stock pickup sounds are, so the handles outlive every level.
+        g_haste_jump_sound = rf::snd_get_handle(haste_jump_sound_filename, 10.0f, 1.0f, 1.0f);
+        g_vampire_drain_sound = rf::snd_get_handle(vampire_drain_sound_filename, 10.0f, 1.0f, 1.0f);
         for (size_t i = 0; i < std::size(super_item_class_names); ++i) {
             g_super_item_types[i] = rf::item_lookup_type(super_item_class_names[i]);
         }
@@ -392,8 +421,13 @@ FunHook<void(rf::Entity*)> entity_jump_haste_hook{
         // Jump height goes with the square of the launch speed.
         const float jump_velocity = rf::jump_velocity;
         rf::jump_velocity = jump_velocity * std::sqrt(haste_speed_factor);
+        const float vel_y = ep->p_data.vel.y;
         entity_jump_haste_hook.call_target(ep);
         rf::jump_velocity = jump_velocity;
+        // The stock jump sets the vertical velocity only when it jumps, and plays its sound 2D, for the jumper alone.
+        if (ep->p_data.vel.y != vel_y && ep == rf::local_player_entity && g_haste_jump_sound >= 0) {
+            play_local_sound_2d(static_cast<uint16_t>(g_haste_jump_sound), 0, 1.0f);
+        }
     },
 };
 
@@ -429,6 +463,17 @@ CodeInjection entity_turn_weapon_on_haste_injection{
     },
 };
 
+// entity_turn_weapon_on, storing the continuous-fire loop it just started. ESI is the entity, EAX the instance.
+CodeInjection entity_turn_weapon_on_loop_sound_haste_injection{
+    0x0041AA95,
+    [](auto& regs) {
+        rf::Entity* ep = regs.esi;
+        if (powerup_is_active(ep, AlpinePowerup::haste)) {
+            snd_instance_set_speed(regs.eax, haste_speed_factor);
+        }
+    },
+};
+
 FunHook<void(rf::AiInfo*)> ai_fire_bursts_haste_hook{
     0x00409280,
     [](rf::AiInfo* ai) {
@@ -461,8 +506,9 @@ FunHook<bool __cdecl(rf::Entity*, bool, bool)> entity_reload_current_primary_has
     },
 };
 
-// player_fpgun_process runs for the local player and for the spectated one, so its player is found by `is_owner`.
-bool fpgun_owner_is_hasted(const auto& is_owner)
+// Whether the player `is_owner` picks out holds Haste: hooks that see only a mesh or a timer can't assume the local
+// player, as player_fpgun_process also runs for the spectated one.
+bool owner_is_hasted(const auto& is_owner)
 {
     if (!powerup_any_active(AlpinePowerup::haste)) {
         return false;
@@ -479,7 +525,7 @@ bool fpgun_owner_is_hasted(const auto& is_owner)
 CallHook<int __fastcall(rf::Timestamp*, int, int)> player_fpgun_draw_delay_haste_hook{
     0x004AAD67,
     [](rf::Timestamp* timestamp, int edx, int delay_ms) {
-        if (fpgun_owner_is_hasted(
+        if (owner_is_hasted(
                 [timestamp](rf::Player& player) { return &player.fpgun_data.draw_delay_timestamp == timestamp; })) {
             delay_ms = static_cast<int>(delay_ms / haste_speed_factor);
         }
@@ -491,10 +537,24 @@ CallHook<int __fastcall(rf::Timestamp*, int, int)> player_fpgun_draw_delay_haste
 CallHook<void(rf::VMesh*, float, int, rf::Vector3*, rf::Matrix3*, int)> player_fpgun_process_vmesh_haste_hook{
     0x004AACC7,
     [](rf::VMesh* mesh, float frametime, int increment_only, rf::Vector3* pos, rf::Matrix3* orient, int lod_level) {
-        if (fpgun_owner_is_hasted([mesh](rf::Player& player) { return player.weapon_mesh_handle == mesh; })) {
+        if (owner_is_hasted([mesh](rf::Player& player) { return player.weapon_mesh_handle == mesh; })) {
             frametime *= haste_speed_factor;
         }
         player_fpgun_process_vmesh_haste_hook.call_target(mesh, frametime, increment_only, pos, orient, lod_level);
+    },
+};
+
+// entity_process: the third-person character animations everyone sees.
+CallHook<void(rf::VMesh*, float, int, rf::Vector3*, rf::Matrix3*, int)> entity_process_vmesh_haste_hook{
+    0x0041DD41,
+    [](rf::VMesh* mesh, float frametime, int increment_only, rf::Vector3* pos, rf::Matrix3* orient, int lod_level) {
+        if (owner_is_hasted([mesh](rf::Player& player) {
+                const rf::Entity* ep = rf::entity_from_handle(player.entity_handle);
+                return ep && ep->vmesh == mesh;
+            })) {
+            frametime *= haste_speed_factor;
+        }
+        entity_process_vmesh_haste_hook.call_target(mesh, frametime, increment_only, pos, orient, lod_level);
     },
 };
 
@@ -629,14 +689,68 @@ void powerups_send_state_to(rf::Player* player)
     }
 }
 
+void powerups_on_damage_notify(uint8_t victim_player_id)
+{
+    if (g_vampire_drain_sound < 0) {
+        return;
+    }
+    rf::Player* attacker = multi_spectate_is_spectating() ? multi_spectate_get_target_player() : rf::local_player;
+    const rf::Player* victim = rf::multi_find_player_by_id(victim_player_id);
+    // As mutators_on_pvp_damage, which heals the holder.
+    if (!attacker || !victim || attacker == victim
+        || (multi_is_team_game_type() && attacker->team == victim->team)) {
+        return;
+    }
+    rf::Entity* ep = rf::entity_from_handle(attacker->entity_handle);
+    if (!ep || rf::entity_is_dying(ep) || !powerup_is_active(ep, AlpinePowerup::vampire)) {
+        return;
+    }
+    if (g_vampire_drain_sound_timestamp.valid() && !g_vampire_drain_sound_timestamp.elapsed()) {
+        return;
+    }
+    g_vampire_drain_sound_timestamp.set(vampire_drain_sound_interval_ms);
+    play_local_sound_2d(static_cast<uint16_t>(g_vampire_drain_sound), 0, 1.0f);
+}
+
 void powerups_level_init()
 {
     g_powerups.clear();
     g_level_has_powerups = false;
+    haste_trails_clear();
+}
+
+void powerups_level_init_post()
+{
+    if (powerup_item_type(AlpinePowerup::haste) < 0) {
+        return;
+    }
+    for (int type = 0; type < rf::num_weapon_types; ++type) {
+        const rf::WeaponInfo& info = rf::weapon_types[type];
+        // Players also fire the Machine Pistol's alternate mode, which is a weapon of its own.
+        if (!(info.flags & rf::WTF_PLAYER_WEP) && type != rf::machine_pistol_special_weapon_type) {
+            continue;
+        }
+        const std::pair<int, int> loops[] = {
+            {rf::WTF_CONTINUOUS_FIRE, info.launch_foley_id},
+            {rf::WTF_ALT_CONTINUOUS_FIRE, info.alt_launch_foley_id},
+        };
+        for (const auto& [flag, foley_id] : loops) {
+            if (!(info.flags & flag)) {
+                continue;
+            }
+            int handle;
+            for (int i = 0; (handle = rf::foley_get_sound_handle_at(foley_id, i)) >= 0; ++i) {
+                if (handle < rf::g_num_sounds && rf::sounds[handle].is_looping) {
+                    snd_prepare_looping_speed(handle, haste_speed_factor);
+                }
+            }
+        }
+    }
 }
 
 void powerups_do_frame()
 {
+    haste_trails_do_frame();
     if (!rf::is_multi || g_powerups.empty()) {
         return;
     }
@@ -734,8 +848,10 @@ void powerups_do_patch()
     player_fire_primary_weapon_haste_injection.install();
     player_fire_primary_weapon_release_haste_injection.install();
     entity_turn_weapon_on_haste_injection.install();
+    entity_turn_weapon_on_loop_sound_haste_injection.install();
     ai_fire_bursts_haste_hook.install();
     entity_reload_current_primary_haste_hook.install();
     player_fpgun_draw_delay_haste_hook.install();
     player_fpgun_process_vmesh_haste_hook.install();
+    entity_process_vmesh_haste_hook.install();
 }

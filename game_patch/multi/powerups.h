@@ -71,8 +71,12 @@ bool level_has_alpine_powerups();
 
 void powerups_apply_remote_state(uint8_t player_id, uint8_t powerup_id, uint32_t time_left_ms);
 void powerups_send_state_to(rf::Player* player);
+// Client, on a damage notification for a hit on a player: the drain sound for the viewed player's Vampire.
+void powerups_on_damage_notify(uint8_t victim_player_id);
 
 void powerups_level_init();
+// Multiplayer client, after level load: makes the sped-up continuous-fire loops Haste plays, so none is made mid-fight.
+void powerups_level_init_post();
 void powerups_do_frame();
 void powerups_render_hud();
 void powerups_do_patch();

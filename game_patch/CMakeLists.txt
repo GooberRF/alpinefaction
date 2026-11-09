@@ -143,6 +143,8 @@ set(SRCS
     multi/jetpack.cpp
     multi/powerups.h
     multi/powerups.cpp
+    multi/haste_trails.h
+    multi/haste_trails.cpp
     multi/rounds.h
     multi/rounds.cpp
     multi/pit.h

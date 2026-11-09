@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <common/error/d3d-error.h>
 #include <common/utils/list-utils.h>
 #include <common/utils/os-utils.h>
@@ -158,6 +159,42 @@ bool gr_3d_bitmap_oriented_wh(const rf::Vector3* pnt, const rf::Matrix3* M, floa
     return rf::gr::poly(4, verts, rf::gr::TMapperFlags::TMAP_FLAG_TEXTURED, mode, 0, 0.0f);
 }
 
+static void rotate_vertex_rgba(rf::gr::Vertex& v, const rf::Vector3& pos, const rf::gr::Color& color, float alpha)
+{
+    rf::Vector3 p = pos;
+    rf::gr::rotate_vertex(&v, &p);
+    v.r = color.red;
+    v.g = color.green;
+    v.b = color.blue;
+    v.a = static_cast<rf::ubyte>(std::clamp(alpha * color.alpha + 0.5f, 0.0f, 255.0f));
+}
+
+void gr_band_strip(int rows, const rf::Vector3* pos, const rf::Vector3* side, const float* alpha, float band,
+                   const rf::gr::Color& color, rf::gr::Mode mode)
+{
+    const float col_offset[4] = {-1.0f, -band, band, 1.0f};
+    constexpr auto vertex_attributes =
+        static_cast<rf::gr::TMapperFlags>(rf::gr::TMAP_FLAG_RGB | rf::gr::TMAP_FLAG_ALPHA);
+    // Two rows of vertices, each refilled only once both quad rows that share it are drawn.
+    rf::gr::Vertex verts[2][4];
+    for (int row = 0; row < rows; ++row) {
+        rf::gr::Vertex* r1 = verts[row % 2];
+        for (int col = 0; col < 4; ++col) {
+            const bool edge = col == 0 || col == 3;
+            r1[col] = {};
+            rotate_vertex_rgba(r1[col], pos[row] + side[row] * col_offset[col], color, edge ? 0.0f : alpha[row]);
+        }
+        if (row == 0) {
+            continue;
+        }
+        rf::gr::Vertex* r0 = verts[(row - 1) % 2];
+        for (int col = 0; col < 3; ++col) {
+            rf::gr::Vertex* quad[4] = {&r0[col], &r0[col + 1], &r1[col + 1], &r1[col]};
+            rf::gr::poly(4, quad, vertex_attributes, mode, 0, 0.0f);
+        }
+    }
+}
+
 bool gr_project_world_to_screen(const rf::Vector3& world_pos, float& out_sx, float& out_sy)
 {
     rf::gr::Vertex v{};
@@ -171,6 +208,15 @@ bool gr_project_world_to_screen(const rf::Vector3& world_pos, float& out_sx, flo
     out_sx = v.sx;
     out_sy = v.sy;
     return true;
+}
+
+float gr_pixels_per_meter(const rf::Vector3& pos)
+{
+    float px = 0.0f, py = 0.0f, ox = 0.0f, oy = 0.0f;
+    if (gr_project_world_to_screen(pos, px, py) && gr_project_world_to_screen(pos + rf::gr::eye_matrix.rvec, ox, oy)) {
+        return std::hypot(ox - px, oy - py);
+    }
+    return 0.0f;
 }
 
 float gr_scale_fov_hor_plus(float horizontal_fov)
@@ -807,6 +853,17 @@ float fog_far_clip_fade(float distance)
         return 1.0f;
     }
     return std::clamp(4.0f * (1.0f - distance / far_clip), 0.0f, 1.0f);
+}
+
+float gr_fog_fade(float distance)
+{
+    if (!rf::gr::screen.fog_mode) {
+        return 1.0f;
+    }
+    const float fog_near = gr_fog_near_clip();
+    const float fog_far = rf::gr::screen.fog_far;
+    return fog_far > fog_near ? std::clamp((fog_far - distance) / (fog_far - fog_near), 0.0f, 1.0f)
+                              : (distance < fog_far ? 1.0f : 0.0f);
 }
 
 // gameplay_render_frame starts each frame at gr::default_wfar

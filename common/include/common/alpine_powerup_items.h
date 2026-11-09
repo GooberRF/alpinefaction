@@ -18,10 +18,11 @@ struct AlpinePowerupItemClass
     const char* class_name;
     const char* hud_msg_name;
     const char* pickup_msg;
-    const char* v3d_filename;      // static mesh
-    const char* hud_icon_filename; // added to the stock powerup icon row in table order, null for none
-    const char* overlay_filename;  // drawn over the holder's mesh and first-person weapon, null for none
-    uint32_t color;                // 0xRRGGBB holder light and overlay tint, 0 for none
+    const char* v3d_filename;          // static mesh
+    const char* hud_icon_filename;     // added to the stock powerup icon row in table order, null for none
+    const char* overlay_filename;      // drawn over the holder's mesh and first-person weapon, null for none
+    const char* pickup_sound_filename; // null for the generic powerup pickup sound
+    uint32_t color;                    // 0xRRGGBB holder light and overlay tint, 0 for none
     AlpinePowerupEffect effect;
     int count;
     int respawn_time_s;
@@ -35,6 +36,7 @@ inline constexpr AlpinePowerupItemClass alpine_powerup_item_classes[] = {
         .v3d_filename = "af-jetpack1.v3m",
         .hud_icon_filename = nullptr,
         .overlay_filename = nullptr,
+        .pickup_sound_filename = nullptr,
         .color = 0,
         .effect = AlpinePowerupEffect::timed,
         .count = 30,
@@ -47,6 +49,7 @@ inline constexpr AlpinePowerupItemClass alpine_powerup_item_classes[] = {
         .v3d_filename = "powerup_superarmor.V3D",
         .hud_icon_filename = "hud_pow_invuln.tga",
         .overlay_filename = "af_powerup-bag.vbm",
+        .pickup_sound_filename = "JumpPad.wav", // placeholder
         .color = 0xFFD020,
         .effect = AlpinePowerupEffect::timed,
         .count = 30,
@@ -59,6 +62,7 @@ inline constexpr AlpinePowerupItemClass alpine_powerup_item_classes[] = {
         .v3d_filename = "powerup_superhealth.V3D",
         .hud_icon_filename = "hud_pow_damage.tga",
         .overlay_filename = "af_powerup-bag.vbm",
+        .pickup_sound_filename = "death_hit1.wav", // placeholder
         .color = 0xFF2020,
         .effect = AlpinePowerupEffect::timed,
         .count = 30,
@@ -71,6 +75,7 @@ inline constexpr AlpinePowerupItemClass alpine_powerup_item_classes[] = {
         .v3d_filename = "meds.v3d",
         .hud_icon_filename = nullptr,
         .overlay_filename = nullptr,
+        .pickup_sound_filename = nullptr,
         .color = 0,
         .effect = AlpinePowerupEffect::health,
         .count = 10,
@@ -83,6 +88,7 @@ inline constexpr AlpinePowerupItemClass alpine_powerup_item_classes[] = {
         .v3d_filename = "Powerup_RepairPack.V3D",
         .hud_icon_filename = nullptr,
         .overlay_filename = nullptr,
+        .pickup_sound_filename = nullptr,
         .color = 0,
         .effect = AlpinePowerupEffect::armor,
         .count = 10,

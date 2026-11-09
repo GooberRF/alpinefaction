@@ -69,14 +69,7 @@ namespace
         rf::gr::ZBUFFER_TYPE_READ,
         rf::gr::FOG_NOT_ALLOWED,
     };
-    constexpr rf::gr::Mode tracer_core_mode{
-        rf::gr::TEXTURE_SOURCE_NONE,
-        rf::gr::COLOR_SOURCE_VERTEX,
-        rf::gr::ALPHA_SOURCE_VERTEX,
-        rf::gr::ALPHA_BLEND_ALPHA_ADDITIVE,
-        rf::gr::ZBUFFER_TYPE_READ,
-        rf::gr::FOG_NOT_ALLOWED,
-    };
+    constexpr rf::gr::Mode tracer_core_mode = additive_vertex_color_3d;
 
     struct VehicleTracer
     {
@@ -256,16 +249,6 @@ namespace
         return {to_byte(rgb[0]), to_byte(rgb[1]), to_byte(rgb[2]), static_cast<rf::ubyte>(a)};
     }
 
-    void tracer_set_vertex(rf::gr::Vertex& v, const rf::Vector3& pos, const rf::Color& color, float alpha)
-    {
-        rf::Vector3 p = pos;
-        rf::gr::rotate_vertex(&v, &p);
-        v.r = color.red;
-        v.g = color.green;
-        v.b = color.blue;
-        v.a = static_cast<rf::ubyte>(std::clamp(alpha * color.alpha + 0.5f, 0.0f, 255.0f));
-    }
-
     // Rows along the streak - tail, knee, head, then a transparent cap one half-width past the head
     // on screen, so a streak seen end-on reads as a dot rather than a flat dash. Four columns across:
     // transparent edges, an opaque middle band.
@@ -273,28 +256,11 @@ namespace
                        const rf::Vector3& cap, const rf::Color& color, rf::gr::Mode mode)
     {
         constexpr int rows = 4;
-        constexpr float col_offset[4] = {-1.0f, -tracer_band, tracer_band, 1.0f};
         const rf::Vector3 pos[rows] = {row_pos[0], row_pos[1], row_pos[2], row_pos[2] + cap};
+        const rf::Vector3 sides[rows] = {side, side, side, side};
         const float alpha[rows] = {row_alpha[0], row_alpha[1], row_alpha[2], 0.0f};
-        rf::gr::Vertex verts[rows * 4]{};
-        for (int row = 0; row < rows; ++row) {
-            for (int col = 0; col < 4; ++col) {
-                const bool edge = col == 0 || col == 3;
-                tracer_set_vertex(verts[row * 4 + col], pos[row] + side * col_offset[col], color,
-                                  edge ? 0.0f : alpha[row]);
-            }
-        }
-        constexpr auto vertex_attributes =
-            static_cast<rf::gr::TMapperFlags>(rf::gr::TMAP_FLAG_RGB | rf::gr::TMAP_FLAG_ALPHA);
-        for (int row = 0; row + 1 < rows; ++row) {
-            rf::gr::Vertex* r0 = &verts[row * 4];
-            rf::gr::Vertex* r1 = &verts[(row + 1) * 4];
-            for (int col = 0; col < 3; ++col) {
-                // Same winding as the rain streaks: side = dir x (eye - p), tail row first.
-                rf::gr::Vertex* quad[4] = {&r0[col], &r0[col + 1], &r1[col + 1], &r1[col]};
-                rf::gr::poly(4, quad, vertex_attributes, mode, 0, 0.0f);
-            }
-        }
+        // Same winding as the rain streaks: side = dir x (eye - p), tail row first.
+        gr_band_strip(rows, pos, sides, alpha, tracer_band, color, mode);
     }
 
     // A near-white core over a wider halo in the tracer colour: the halo reads against a pale sky, the
@@ -324,12 +290,7 @@ namespace
             axis = rf::gr::eye_matrix.uvec;
         }
 
-        float px_per_m = 0.0f;
-        float mx = 0.0f, my = 0.0f, ox = 0.0f, oy = 0.0f;
-        if (gr_project_world_to_screen(mid, mx, my)
-            && gr_project_world_to_screen(mid + rf::gr::eye_matrix.rvec, ox, oy)) {
-            px_per_m = std::hypot(ox - mx, oy - my);
-        }
+        const float px_per_m = gr_pixels_per_meter(mid);
         const auto half_width = [px_per_m, px_scale](float min_world, float min_px) {
             return px_per_m > 1e-3f ? std::max(min_world, min_px * px_scale / px_per_m) : min_world;
         };
@@ -553,9 +514,6 @@ void vehicle_tracers_render()
         }
     }
     const rf::Vector3 eye = rf::gr::eye_pos;
-    const bool fog = rf::gr::screen.fog_mode;
-    const float fog_near = gr_fog_near_clip();
-    const float fog_far = rf::gr::screen.fog_far;
     const float far_clip = level_projection_far();
     const float px_scale = rf::gr::screen.clip_height / tracer_px_reference_height;
     int draw_count = 0;
@@ -593,11 +551,7 @@ void vehicle_tracers_render()
         if (d >= far_clip) {
             continue;
         }
-        float fade = 1.0f;
-        if (fog) {
-            fade = fog_far > fog_near ? std::clamp((fog_far - d) / (fog_far - fog_near), 0.0f, 1.0f)
-                                      : (d < fog_far ? 1.0f : 0.0f);
-        }
+        const float fade = gr_fog_fade(d);
         if (fade > 0.0f) {
             tracer_build(t, tail, head, draw_tail, draw_head, eye, fade, px_scale, g_tracer_draws[draw_count++]);
         }

@@ -25,6 +25,7 @@
 #include "../awards.h"
 #include "../bagman.h"
 #include "../gametype.h"
+#include "../haste_trails.h"
 #include "../salvage.h"
 #include "../vehicles/vehicle.h"
 #include "../vehicles/vehicle_tracers.h"
@@ -1325,6 +1326,7 @@ namespace
         rf::particle_level_release();
         explosion_flash_lights_destroy_all();
         vehicle_tracers_clear();
+        haste_trails_clear();
         vehicle_fx_clear();
         vehicle_hazard_clear_client_clocks();
         hud_world_seek_reset();

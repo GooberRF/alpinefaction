@@ -117,6 +117,7 @@ namespace
     float g_ds_last_stretch = 1.0f;
     float g_ds_channel_pitch[std::size(rf::ds_channels)];
     float g_ds_channel_stretch[std::size(rf::ds_channels)];
+    float g_ds_channel_speed[std::size(rf::ds_channels)];
     bool g_ds_channel_unscaled[std::size(rf::ds_channels)];
     bool g_ds_channel_looping[std::size(rf::ds_channels)];
     // Set around snd_play_unscaled: nothing the stock play passes down to the hooks tells its sound apart
@@ -136,8 +137,9 @@ namespace
         if (!buffer) {
             return;
         }
-        const float ratio = g_ds_channel_pitch[channel]
-            * (g_ds_channel_unscaled[channel] ? 1.0f : g_ds_rate / g_ds_channel_stretch[channel]);
+        // What the channel's stretch does not make up of its speed and the global rate is pitched
+        const float ratio = g_ds_channel_pitch[channel] * (g_ds_channel_unscaled[channel] ? 1.0f : g_ds_rate)
+            * g_ds_channel_speed[channel] / g_ds_channel_stretch[channel];
         if (ratio == 1.0f) {
             buffer->SetFrequency(DSBFREQUENCY_ORIGINAL);
             return;
@@ -216,29 +218,33 @@ namespace
         return buffer;
     }
 
-    // Stretched copies of sound buffers, made on first play at a stretch. Each holds a reference to its source so the
-    // pointer stays unique while cached; channels playing a copy keep its sound data alive after the cache drops it.
+    // Stretched copies of sound buffers, made on first play at a stretch or ahead of time for a channel speed. Each
+    // holds a reference to its source so the pointer stays unique while cached; channels playing a copy keep its sound
+    // data alive after the cache drops it.
     struct DsStretchedBuffer
     {
         IDirectSoundBuffer* source;
         bool looping;
         float stretch;
         IDirectSoundBuffer* stretched; // null when the sound could not be stretched
+        // Wanted for a channel speed at normal playback: only freed with its sound
+        bool kept;
     };
     std::vector<DsStretchedBuffer> g_ds_stretched_buffers;
 
-    IDirectSoundBuffer* ds_get_stretched_buffer(IDirectSoundBuffer* source, bool looping)
+    IDirectSoundBuffer* ds_get_stretched_buffer(IDirectSoundBuffer* source, bool looping, float stretch, bool keep)
     {
-        for (const auto& entry : g_ds_stretched_buffers) {
-            if (entry.source == source && entry.looping == looping && entry.stretch == g_ds_stretch) {
+        for (auto& entry : g_ds_stretched_buffers) {
+            if (entry.source == source && entry.looping == looping && entry.stretch == stretch) {
+                entry.kept = entry.kept || keep;
                 return entry.stretched;
             }
         }
         IDirectSoundBuffer* stretched = nullptr;
         try {
-            g_ds_stretched_buffers.push_back({source, looping, g_ds_stretch, nullptr});
+            g_ds_stretched_buffers.push_back({source, looping, stretch, nullptr, keep});
             source->AddRef();
-            stretched = ds_create_stretched_buffer(source, g_ds_stretch, looping);
+            stretched = ds_create_stretched_buffer(source, stretch, looping);
             g_ds_stretched_buffers.back().stretched = stretched;
         }
         catch (const std::bad_alloc&) {
@@ -262,15 +268,31 @@ namespace
         });
     }
 
+    float ds_stretch_for_speed(float speed)
+    {
+        return std::clamp(speed, 0.5f, 2.0f);
+    }
+
+    float ds_channel_wanted_stretch(int channel)
+    {
+        return ds_stretch_for_speed(g_ds_channel_speed[channel] * (g_ds_channel_unscaled[channel] ? 1.0f : g_ds_rate));
+    }
+
+    // Moves a looping channel onto its sound's copy at its wanted stretch, or onto the sound itself when there is none.
+    // Only the copy for a channel speed alone (normal playback) is kept; under a global rate copies come and go.
     void ds_restretch_looping_channel(int channel)
     {
+        const float speed = g_ds_channel_speed[channel];
+        const float wanted_stretch = ds_channel_wanted_stretch(channel);
+        const bool keep = speed != 1.0f && wanted_stretch == ds_stretch_for_speed(speed);
         auto& chnl = rf::ds_channels[channel];
         IDirectSoundBuffer* source = rf::ds_buffers[chnl.buf_id].ds_buffer;
-        if (!source) {
+        if (!source || wanted_stretch == g_ds_channel_stretch[channel]) {
             return;
         }
-        IDirectSoundBuffer* target = g_ds_stretch != 1.0f ? ds_get_stretched_buffer(source, true) : nullptr;
-        const float stretch = target ? g_ds_stretch : 1.0f;
+        IDirectSoundBuffer* target =
+            wanted_stretch != 1.0f ? ds_get_stretched_buffer(source, true, wanted_stretch, keep) : nullptr;
+        const float stretch = target ? wanted_stretch : 1.0f;
         if (!target) {
             target = source;
         }
@@ -461,23 +483,20 @@ void snd_ds_set_global_rate(float rate)
         return;
     }
     g_ds_rate = rate;
-    const float stretch = std::clamp(rate, 0.5f, 2.0f);
+    const float stretch = ds_stretch_for_speed(rate);
     if (stretch != 1.0f && stretch != g_ds_last_stretch) {
         const float last_stretch = g_ds_last_stretch;
         ds_release_stretched_buffers([=](const DsStretchedBuffer& entry) {
-            return entry.stretch != last_stretch && entry.stretch != stretch;
+            return !entry.kept && entry.stretch != last_stretch && entry.stretch != stretch;
         });
         g_ds_last_stretch = stretch;
     }
+    g_ds_stretch = stretch;
     const int num_channels = static_cast<int>(std::size(rf::ds_channels));
-    if (stretch != g_ds_stretch) {
-        g_ds_stretch = stretch;
-        // One-shots finish on the buffer they started with, at the rate their pitch makes up
-        for (int i = 0; i < num_channels; ++i) {
-            if (rf::ds_channels[i].pdsb && !g_ds_channel_unscaled[i]
-                && (rf::ds_channels[i].flags & rf::SCHF_LOOPING)) {
-                ds_restretch_looping_channel(i);
-            }
+    // One-shots finish on the buffer they started with, at the rate their pitch makes up
+    for (int i = 0; i < num_channels; ++i) {
+        if (rf::ds_channels[i].pdsb && !g_ds_channel_unscaled[i] && (rf::ds_channels[i].flags & rf::SCHF_LOOPING)) {
+            ds_restretch_looping_channel(i);
         }
     }
     for (int i = 0; i < num_channels; ++i) {
@@ -487,9 +506,33 @@ void snd_ds_set_global_rate(float rate)
     }
 }
 
+void snd_ds_set_channel_speed(int channel, float speed)
+{
+    const auto& chnl = rf::ds_channels[channel];
+    if (!chnl.pdsb || speed <= 0.0f || speed == g_ds_channel_speed[channel] || !(chnl.flags & rf::SCHF_LOOPING)
+        || (chnl.flags & rf::SCHF_MUSIC)) {
+        return;
+    }
+    g_ds_channel_speed[channel] = speed;
+    ds_restretch_looping_channel(channel);
+    ds_apply_channel_pitch(channel);
+}
+
+void snd_ds_prepare_looping_speed(int buf_id, float speed)
+{
+    if (buf_id < 0 || buf_id >= static_cast<int>(std::size(rf::ds_buffers)) || speed <= 0.0f) {
+        return;
+    }
+    IDirectSoundBuffer* source = rf::ds_buffers[buf_id].ds_buffer;
+    const float stretch = ds_stretch_for_speed(speed);
+    if (source && stretch != 1.0f) {
+        ds_get_stretched_buffer(source, true, stretch, true);
+    }
+}
+
 void snd_ds_clear_stretch_cache()
 {
-    ds_release_stretched_buffers([](const DsStretchedBuffer&) { return true; });
+    ds_release_stretched_buffers([](const DsStretchedBuffer& entry) { return !entry.kept; });
     g_ds_last_stretch = 1.0f;
 }
 
@@ -498,7 +541,8 @@ static FunHook<int(IDirectSoundBuffer*, int)> snd_ds_duplicate_sound_buffer_hook
     [](IDirectSoundBuffer* source, int channel) {
         g_ds_channel_stretch[channel] = 1.0f;
         if (g_ds_stretch != 1.0f && !g_ds_new_channel_unscaled && source) {
-            if (IDirectSoundBuffer* stretched = ds_get_stretched_buffer(source, g_ds_channel_looping[channel])) {
+            if (IDirectSoundBuffer* stretched =
+                    ds_get_stretched_buffer(source, g_ds_channel_looping[channel], g_ds_stretch, false)) {
                 source = stretched;
                 g_ds_channel_stretch[channel] = g_ds_stretch;
             }
@@ -526,6 +570,7 @@ static void ds_populate_new_sig(int channel)
     sig_counter = (sig_counter + 1) % 0x10000;
 
     g_ds_channel_pitch[channel] = 1.0f;
+    g_ds_channel_speed[channel] = 1.0f;
     g_ds_channel_unscaled[channel] = g_ds_new_channel_unscaled || (rf::ds_channels[channel].flags & rf::SCHF_MUSIC);
     if (g_ds_rate != 1.0f && !g_ds_channel_unscaled[channel]) {
         ds_apply_channel_pitch(channel);
@@ -794,6 +839,7 @@ void snd_ds_apply_patch()
     snd_ds_duplicate_sound_buffer_hook.install();
     snd_ds_unload_buffer_hook.install();
     std::fill(std::begin(g_ds_channel_stretch), std::end(g_ds_channel_stretch), 1.0f);
+    std::fill(std::begin(g_ds_channel_speed), std::end(g_ds_channel_speed), 1.0f);
 
     // Add support for more formats
     snd_mmio_open_hook.install();

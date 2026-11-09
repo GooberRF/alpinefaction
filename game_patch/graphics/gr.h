@@ -23,8 +23,14 @@ void gr_bitmap_scaled_float(int bitmap_handle, float x, float y, float w, float 
 void gr_poly_2d(int bitmap_handle, int nv, const rf::gr::Vertex* vertices, rf::gr::Mode mode);
 float gr_scale_fov_hor_plus(float horizontal_fov);
 bool gr_3d_bitmap_oriented_wh(const rf::Vector3* pnt, const rf::Matrix3* M, float half_w, float half_h, rf::gr::Mode mode);
+// A strip through `rows` points, row i spanning pos[i] - side[i] to pos[i] + side[i] in four columns: transparent edges
+// around an opaque middle `band` of the half-width, at alpha[i]. It faces the eye where side = direction x (eye - pos).
+void gr_band_strip(int rows, const rf::Vector3* pos, const rf::Vector3* side, const float* alpha, float band,
+                   const rf::gr::Color& color, rf::gr::Mode mode);
 // Current view's screen position of a world point; false when behind the camera or not projected.
 bool gr_project_world_to_screen(const rf::Vector3& world_pos, float& out_sx, float& out_sy);
+// Screen pixels per metre across the view at `pos`, 0 when it does not project
+float gr_pixels_per_meter(const rf::Vector3& pos);
 int gr_fit_string(std::string& text, int max_width, int font_id = -1, std::string_view suffix = "-");
 void explosion_flash_light_create(
     const rf::Vector3& pos, float radius, float intensity, float r, float g, float b, int duration_ms, bool fade_only);
@@ -49,6 +55,9 @@ float level_projection_far();
 // Opacity of an outline or player label `distance` from the camera: full up to 3/4 of the way to the level's fog
 // far clip, none at it, and always full without fog
 float fog_far_clip_fade(float distance);
+// Opacity of an unfogged effect `distance` from the eye: full up to the view's fog near clip, none past its fog far
+// clip, and always full without fog
+float gr_fog_fade(float distance);
 
 bool gr_is_antialiasing_err();
 bool gr_supports_sample_count(uint32_t sample_count);
@@ -87,6 +96,15 @@ inline constexpr rf::gr::Mode no_overdraw_2d_text{
         rf::gr::COLOR_SOURCE_VERTEX,
         rf::gr::ALPHA_SOURCE_VERTEX,
         rf::gr::ALPHA_BLEND_ALPHA,
+        rf::gr::ZBUFFER_TYPE_READ,
+        rf::gr::FOG_NOT_ALLOWED
+    };
+
+inline constexpr rf::gr::Mode additive_vertex_color_3d{
+        rf::gr::TEXTURE_SOURCE_NONE,
+        rf::gr::COLOR_SOURCE_VERTEX,
+        rf::gr::ALPHA_SOURCE_VERTEX,
+        rf::gr::ALPHA_BLEND_ALPHA_ADDITIVE,
         rf::gr::ZBUFFER_TYPE_READ,
         rf::gr::FOG_NOT_ALLOWED
     };

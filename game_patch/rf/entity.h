@@ -478,6 +478,7 @@ namespace rf
     static_assert(offsetof(Entity, interface_points) == 0x8CC);
     static_assert(offsetof(Entity, default_state_anims) == 0xD24);
     static_assert(offsetof(Entity, entity_flags2) == 0x814);
+    static_assert(offsetof(Entity, weapon_loop_sound_handle) == 0x81C);
     static_assert(offsetof(Entity, move_mode) == 0x858);
     static_assert(offsetof(Entity, control_data) == 0x860);
     static_assert(offsetof(Entity, driller_sound_handle) == 0x13D0);
