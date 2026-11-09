@@ -99,10 +99,8 @@
 #define NET_IFINDEX_UNSPECIFIED 0
 #endif
 
-// Client obj_update send rate: fixed at 40, the stock rate, on every server. The deprecated `rate`
-// command no longer changes it.
 static constexpr int client_net_fps = static_cast<int>(AlpineGameSettings::client_net_rate);
-static constexpr int client_send_interval_ms = 1000 / client_net_fps;
+static constexpr int client_send_interval_ms = static_cast<int>(AlpineGameSettings::client_send_interval_ms);
 
 // Popup shown when the user attempts to join a server whose game type this build doesn't recognize.
 static void show_unsupported_game_type_popup()
@@ -2281,7 +2279,7 @@ CodeInjection process_join_accept_injection{
             server_info.version_patch = ext_data.version_patch;
             server_info.version_type = ext_data.version_type;
             xlog::debug("Got AF server info: {} {} {}", ext_data.version_major, ext_data.version_minor,
-                static_cast<int>(ext_data.flags));
+                static_cast<uint32_t>(ext_data.flags));
             server_info.saving_enabled = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::saving_enabled);
             server_info.allow_fb_mesh = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::allow_fb_mesh);
             server_info.allow_lmap = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::allow_lmap);
@@ -3075,12 +3073,8 @@ namespace
         return v.QuadPart;
     }
 
-    // Waits for the deadline, or until a newer packet is handed over: a forced fire-state send must not
-    // queue behind the held one, which then goes out early instead. timer is null under Wine, where (as in
-    // wait_for, os.cpp) the high-resolution timer is a no-op and waits on kernel objects cost wineserver
-    // round trips: it sleeps in-process there and checks for a newer packet every millisecond. No spin: the
-    // keyframe tick is stamped at build time, and the wake granularity (~0.5 ms, 1 ms on the sleep and timeout
-    // paths) is small against the send interval.
+    // Returns early when a newer packet is handed over, so a forced fire-state send never queues behind the
+    // held one. timer is null under Wine, where kernel-object waits cost wineserver round trips.
     void timed_send_wait(TimedSend* s, const WaitableTimer* timer, int64_t deadline_qpc)
     {
         const int64_t per_ms = g_qpc_frequency.QuadPart / 1000;
@@ -3116,8 +3110,7 @@ namespace
 
     void timed_send_worker(TimedSend* s)
     {
-        // At normal priority Windows wakes 8-20% of these waits over 1 ms late (up to ~45 ms) while the game
-        // thread is busy; the thread sleeps almost always, so raising it costs nothing measurable
+        // At normal priority the wakes run late while the game thread is busy; the thread nearly always sleeps
         SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
         const bool on_wine = get_wine_version().has_value();
         const WaitableTimer timer;
@@ -3152,7 +3145,8 @@ namespace
                         continue;
                     }
                 }
-                rf::net_send(addr, buf.data(), len); // psnet_send: select + sendto, safe off the game thread
+                // Races the game thread on the psnet send stats; benign, it only miscounts the netmeter KB/s
+                rf::net_send(addr, buf.data(), len);
             }
         }
     }
@@ -3180,7 +3174,7 @@ namespace
             s = new TimedSend;
             s->handed_over = CreateEventA(nullptr, FALSE, FALSE, nullptr);
             if (!s->handed_over) {
-                xlog::error("Failed to create the obj_update send event ({})", GetLastError());
+                xlog::error("[ObjUpdateSend] Failed to create the send event ({})", GetLastError());
                 delete s;
                 failed = true;
                 return false;
@@ -3190,7 +3184,7 @@ namespace
             return true;
         }
         catch (const std::exception& e) {
-            xlog::error("Failed to start the obj_update send thread: {}", e.what());
+            xlog::error("[ObjUpdateSend] Failed to start the send thread: {}", e.what());
             if (s) {
                 if (s->handed_over) {
                     CloseHandle(s->handed_over);
@@ -3341,11 +3335,8 @@ CodeInjection client_update_rate_injection{
     },
 };
 
-// A frame can only send on a frame boundary, so at 240 fps a 10 ms cadence lands 8.3/12.5 ms
-// apart. Instead: build the packet on the last frame before the deadline (send_obj_update_packet's
-// elapsed() check, extended by one frame of lead) and let a worker put it on the wire at the
-// deadline itself. The keyframe tick and pose are stamped at build time, so the deferral only
-// costs up to one frame of latency and the wire cadence is exact at any frame rate.
+// Build on the last frame before the deadline and let the worker send at the deadline itself, so the
+// wire cadence does not depend on where frame boundaries fall
 CallHook<bool __fastcall(rf::TimestampRealtime*, int)> client_obj_update_due_hook{
     0x0047E5CD,
     [](rf::TimestampRealtime* ts, int edx) FASTCALL_LAMBDA {
@@ -3378,11 +3369,8 @@ CallHook<void(rf::Player*, const void*, int)> client_obj_update_send_hook{
             netmeter_record_out(static_cast<int>(now_us / 1000));
             return;
         }
-        // Wire schedule: one interval after the previous wire time. An early build waits for its slot;
-        // a build on or after the deadline, a forced fire-state send, or a lost slot goes out now and
-        // re-anchors, so the schedule settles just after the latest build phase and never runs ahead of
-        // the engine's deadline clock. client_update_rate_injection re-armed the timestamp more than one
-        // interval out exactly when this build ran early (negative overshoot).
+        // An early build (client_update_rate_injection then re-armed more than one interval out) waits for its
+        // slot; anything else goes out now and re-anchors, so the schedule never runs ahead of the engine
         static int64_t next_send_us = 0;
         constexpr int64_t interval_us = 1000000 / client_net_fps;
         const bool early_build = rf::send_obj_update_packet_timestamp.time_until() > client_send_interval_ms;
@@ -3486,10 +3474,8 @@ FunHook<void __cdecl(int, int)> entity_turn_weapon_off_hook{
     },
 };
 
-// Stock scaled each player's obj_update interval by the bytes/s budget from their `rate` command.
-// Alpine sends every client the sv_bandwidth tier instead, so the rate a client receives is always a
-// whole number of ms. Legacy clients (stock, PF, Dash) simply receive more than they were built for,
-// which is harmless. Runs on join and every 3.5 s (stock refresh); sv_bandwidth also applies it at once.
+// Every client gets the sv_bandwidth tier instead of a rate scaled by its `rate` budget, so the interval
+// is always a whole number of ms; legacy clients just receive more than they were built for
 FunHook<void(rf::Player*)> update_player_rate_hook{
     0x0047E7D0,
     [](rf::Player* pp) {
@@ -3538,15 +3524,8 @@ FunHook<int(rf::Player*, rf::Entity*, void*)> pack_obj_update_data_hook{
             const uint64_t key = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(pp)) << 32
                 | static_cast<uint32_t>(ep->handle);
             auto [it, inserted] = g_sent_obj_update_ticks.try_emplace(key, tick);
-            // The source client's sends and this server's windows are unsynchronized equal-rate
-            // clocks, so a window periodically gets two of its keyframes and the next none.
-            // Forwarding only the newest turned that into a 20 ms hole for every recipient. Send
-            // the older one now and the newest next window instead; the backlog is capped at one
-            // keyframe so clock skew cannot let the delay creep. Only when the server sends at least as
-            // often as clients: on the low tier every window holds two new keyframes, and the backlog
-            // would pin every recipient one keyframe behind. Not for rings this server samples itself (per
-            // recipient window or per frame): an older sample there is a dropped extra, not a missed arrival,
-            // and the backlog would only hold watchers a keyframe behind.
+            // Unsynchronized equal-rate clocks give one window two keyframes and the next none: send the older
+            // one now, a backlog of at most one. Skipped where it only adds delay (low tier, server-sampled rings).
             rf::ObjInterp& interp = *ep->obj_interp;
             const int n = interp.num_frames();
             int idx = n - 1;
@@ -3617,13 +3596,8 @@ void server_apply_net_rate()
 
 void server_set_net_rate(unsigned netfps)
 {
-    const unsigned old_v = g_alpine_game_config.server_netfps;
-    g_alpine_game_config.set_server_netfps(netfps);
-    if (rf::is_server && g_alpine_game_config.server_netfps != old_v) {
-        g_alpine_server_config.printed_cfg.clear();
-        g_alpine_server_config.signal_cfg_changed = true;
-    }
-    server_apply_net_rate();
+    // Snapped here, not by the row's nearest-label rule: anything but an exact tier is high
+    setting_console_set("server_netfps", std::to_string(AlpineGameSettings::net_rate_tier(netfps).netfps));
     // Listen host: the tier lives in alpine_settings.ini (ServerNetFPS). A dedicated server's comes from
     // the `bandwidth` key in its config; a runtime change there lasts until the next load of that config.
     alpine_core_config_save();
@@ -3673,9 +3647,9 @@ ConsoleCommand2 netfps_cmd{
     "Deprecated: use sv_bandwidth",
 };
 
-// Stock `rate` set a bytes/s budget the server scaled obj_update frequency by. Alpine clients send
-// and receive at a fixed 40 net updates/s (the server may send less on the low sv_bandwidth tier),
-// so the command only reports that now. Swallow the stock argument so it cannot throw.
+// Stock `rate` set a bytes/s budget the server scaled obj_update frequency by. Alpine clients send at a fixed
+// rate and receive at the server's sv_bandwidth tier, so the command only reports that now. Swallow the stock
+// argument so it cannot throw.
 FunHook<void()> dcf_rate_hook{
     0x004803E0,
     []() {
@@ -3687,8 +3661,7 @@ FunHook<void()> dcf_rate_hook{
             }
         }
         if (rf::console::run || rf::console::help) {
-            rf::console::print("rate is deprecated; this client sends and receives at {} net updates per second",
-                               AlpineGameSettings::client_net_rate);
+            rf::console::print("rate is deprecated; this client sends {} net updates per second", client_net_fps);
         }
     },
 };

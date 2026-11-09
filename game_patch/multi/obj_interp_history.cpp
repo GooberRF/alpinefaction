@@ -1,12 +1,13 @@
 #include <patch_common/AsmWriter.h>
 #include <patch_common/CallHook.h>
 #include <patch_common/FunHook.h>
+#include <common/rfproto.h>
 #include <common/utils/int-utils.h>
+#include <common/utils/math-utils.h>
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
-#include <numbers>
 #include <unordered_map>
 #include "obj_interp_history.h"
 #include "demo/demo.h"
@@ -14,41 +15,20 @@
 #include "../rf/object.h"
 #include "../rf/multi.h"
 #include "../rf/player/player.h"
-#include "../rf/os/timer.h"
-#include "../os/os.h"
 #include "../rf/math/matrix.h"
 #include "../rf/math/vector.h"
 
-// ObjInterp keeps 20 keyframes (500 ms at 40 netfps, 167 ms at 120). All past-tick evaluation of remote
-// entities goes through entity_interp_pos_at_tick (0x00484010) / entity_interp_orient_at_tick (0x004842E0):
-// the server's hitscan rewind and the client's per-frame interpolation. The hooks below use the ring when
-// it covers the tick and, for per-frame evaluation, a deeper per-entity keyframe history otherwise; server
-// hitscan rewind keeps the ring's reach (older ticks get the live pose, as in stock).
-//
-// The engine's playout clock (ObjInterp::frame_advance 0x00483BE0) stepped whole ms at wall-clock rate,
-// froze when it ran dry and only recovered via set_next_pos_orient's hard re-anchor. The frame_advance
-// hook replaces it with one that slews within +-10% of wall time toward a jitter-derived target, carries
-// a sub-ms fraction and extrapolates up to one interval. The insert-time re-anchor is disabled in
-// obj_interp_history_init (the hook snaps when far behind instead); the initial anchor is kept and moved
-// to the hook's target delay.
+namespace
+{
 
-constexpr int history_frames = 128; // >= 1 s at 120 netfps
+constexpr int history_frames = 128; // 3.2 s at 40 netfps, past the 1 s povcomp cap
 
-constexpr float clock_max_slew = 0.1f;       // playout clock stays within +-10% of wall time
+constexpr float clock_max_slew = 0.1f;       // playout clock stays within +-10% of sender time
 constexpr float headroom_min = 0.3f;         // x interval: floor on the jitter buffer
 constexpr float headroom_per_jitter = 3.0f;  // x measured mean abs arrival deviation
 constexpr float headroom_max = 1.0f;         // x interval: cap on the jitter buffer
 constexpr float reanchor_margin = 2.2f;      // x interval past the target: snap instead of slewing
 constexpr float elapsed_max_ms = 250.0f;     // a hitch longer than this is not played back
-
-float obj_interp_target_delay_ms(float interval_ms, float jitter_ms)
-{
-    float headroom = std::max(headroom_min * interval_ms, headroom_per_jitter * jitter_ms);
-    return interval_ms + std::clamp(headroom, 0.0f, headroom_max * interval_ms);
-}
-
-namespace
-{
 
 struct RingStats
 {
@@ -72,9 +52,8 @@ RingStats ring_stats(const rf::ObjInterp* interp)
     for (int i = first; i < n; ++i)
         dev += std::fabs(static_cast<float>(interp->arrive_time_diff[i]) - arrival);
     float interval = arrival;
-    // Right after a spawn the ring holds a few arrival gaps only, and two keyframes landing in the same
-    // frame read as a ~0 interval (anchor on top of the newest keyframe, then holds). Until the ring fills,
-    // don't go below the sender's keyframe spacing (distinct ticks: stock servers can relay duplicates).
+    // A part-filled ring can read a ~0 interval (two keyframes in one frame); floor it at the sender's
+    // keyframe spacing, counting distinct ticks since stock servers can relay duplicates
     if (n < rf::ObjInterp::max_keyframes) {
         int distinct = 1;
         for (int i = 1; i < n; ++i)
@@ -102,12 +81,7 @@ struct KeyFrame
 rf::Vector3 lerp_phb(const rf::Vector3& a, const rf::Vector3& b, float t)
 {
     rf::Vector3 diff = b - a;
-    // Heading wraps at +-pi
-    constexpr float pi = std::numbers::pi_v<float>;
-    if (diff.y > pi)
-        diff.y -= 2 * pi;
-    else if (diff.y < -pi)
-        diff.y += 2 * pi;
+    diff.y = wrap_pi(diff.y);
     return a + diff * t;
 }
 
@@ -221,13 +195,6 @@ void sweep_dead_entities()
     pushes_since_sweep = 0;
     std::erase_if(g_history, [](const auto& kv) { return rf::entity_from_handle(kv.first) == nullptr; });
 }
-} // namespace
-
-float obj_interp_target_delay_ms(const rf::ObjInterp* interp)
-{
-    const auto [interval, jitter] = ring_stats(interp);
-    return obj_interp_target_delay_ms(interval, jitter);
-}
 
 // ObjInterp::set_next_pos_orient (__thiscall): fed every replicated keyframe on client and server
 FunHook<void __fastcall(rf::ObjInterp*, int, rf::Entity*, rf::Vector3*, rf::Vector3*, rf::Vector3*, rf::Vector3*,
@@ -267,25 +234,27 @@ FunHook<void __fastcall(rf::ObjInterp*, int, rf::Entity*, rf::Vector3*, rf::Vect
     };
 
 // Client only: remote anim-state inputs are deferred to the evaluated tick (server crouch feeds hitboxes)
-static bool defers_anim_state(const rf::Entity* ep)
+bool defers_anim_state(const rf::Entity* ep)
 {
     return !rf::is_server && ep != rf::local_player_entity && ep->obj_interp;
 }
 
 // get_set_entity_state (0x00475930): the replicated state byte is applied on arrival. Record the
-// crouch bit (4) for the keyframe and neutralise it; the other bits stay immediate.
+// crouch bit for the keyframe and neutralise it; the other bits stay immediate.
 FunHook<void(rf::Entity*, uint8_t*, bool)> get_set_entity_state_hook{
     0x00475930,
     [](rf::Entity* ep, uint8_t* state, bool get) {
         if (!get && defers_anim_state(ep)) {
-            g_history[ep->handle].crouch = (*state & 4) != 0;
-            *state = static_cast<uint8_t>((*state & ~4) | (rf::entity_is_crouching(ep) ? 4 : 0));
+            g_history[ep->handle].crouch = (*state & RF_ES_CROUCHING) != 0;
+            *state &= static_cast<uint8_t>(~RF_ES_CROUCHING);
+            if (rf::entity_is_crouching(ep))
+                *state |= RF_ES_CROUCHING;
         }
         get_set_entity_state_hook.call_target(ep, state, get);
     },
 };
 
-static void apply_anim_state(rf::Entity* ep, const KeyFrame& frame)
+void apply_anim_state(rf::Entity* ep, const KeyFrame& frame)
 {
     ep->ai.ci.move = frame.move;
     if (frame.crouch != rf::entity_is_crouching(ep)) {
@@ -300,15 +269,13 @@ static void apply_anim_state(rf::Entity* ep, const KeyFrame& frame)
 FunHook<void __fastcall(rf::ObjInterp*, int, rf::Object*)> obj_interp_frame_advance_hook{
     0x00483BE0,
     [](rf::ObjInterp* self, int, rf::Object* obj) FASTCALL_LAMBDA {
-        const auto now_us = static_cast<uint32_t>(timer::get_i64(1000000));
-        // In keyframe ticks, like ring_stats; 0 while a demo is paused
-        const float time_scale = demo_playback_sim_time_scale();
-        const float elapsed_ms = std::clamp(
-            static_cast<float>(static_cast<int32_t>(now_us - self->frame_time_us)) / 1000.0f, 0.0f, elapsed_max_ms)
-            * time_scale;
+        // The arrival stamps' clock, so elapsed is in keyframe ticks at any demo timescale and holds at demo EOF
+        const auto now_us = static_cast<uint32_t>(demo_playback_interp_clock_us());
+        const float elapsed_ms =
+            std::clamp(static_cast<float>(static_cast<int32_t>(now_us - self->frame_time_us)) / 1000.0f, 0.0f,
+                       elapsed_max_ms * demo_playback_sim_time_scale());
         self->frame_time_us = now_us;
-        // Bit 0: waiting for the next insert to re-anchor
-        if ((self->flags & rf::OIF_REANCHOR) != 0 || self->num_frames() < 2 || time_scale <= 0.0f)
+        if ((self->flags & rf::OIF_REANCHOR) != 0 || self->num_frames() < 2)
             return;
 
         float& frac = g_history[obj->handle].clock_frac;
@@ -340,10 +307,8 @@ FunHook<void __fastcall(rf::ObjInterp*, int, rf::Object*)> obj_interp_frame_adva
     },
 };
 
-// frame_eval: the per-frame evaluation of a remote entity (multi_obj_interp_pos/orient, 0x00484770 /
-// 0x00484650), which plays the sub-ms clock fraction and the deeper history and applies deferred anim
-// state. The other callers are the server's hitscan rewind (0x0046F7xx / 0x0046FDxx).
-static float eval_frac(const rf::Entity* ep, bool frame_eval)
+// frame_eval: the per-frame evaluation of a remote entity, as opposed to the server's hitscan rewind
+float eval_frac(const rf::Entity* ep, bool frame_eval)
 {
     if (!frame_eval)
         return 0.0f;
@@ -352,7 +317,7 @@ static float eval_frac(const rf::Entity* ep, bool frame_eval)
 }
 
 // Pose at tick from the engine ring when it covers the tick, else from the deeper history
-static bool pose_at_tick(const rf::Entity* ep, uint16_t tick, bool frame_eval, KeyFrame& out)
+bool pose_at_tick(const rf::Entity* ep, uint16_t tick, bool frame_eval, KeyFrame& out)
 {
     const rf::ObjInterp* interp = ep->obj_interp;
     if (!interp || interp->num_frames() < 2)
@@ -377,9 +342,9 @@ static bool pose_at_tick(const rf::Entity* ep, uint16_t tick, bool frame_eval, K
     return history && history->lookup(tick, eval_frac(ep, frame_eval), out);
 }
 
-static void pos_at_tick(rf::Entity* ep, uint16_t tick, rf::Vector3* out_pos, rf::Vector3* out_vel, bool frame_eval);
-static void orient_at_tick(rf::Entity* ep, uint16_t tick, rf::Matrix3* out_orient, rf::Vector3* out_phb,
-                           rf::Vector3* out_eye_phb, bool frame_eval);
+void pos_at_tick(rf::Entity* ep, uint16_t tick, rf::Vector3* out_pos, rf::Vector3* out_vel, bool frame_eval);
+void orient_at_tick(rf::Entity* ep, uint16_t tick, rf::Matrix3* out_orient, rf::Vector3* out_phb,
+                    rf::Vector3* out_eye_phb, bool frame_eval);
 
 FunHook<void __stdcall(rf::Entity*, uint16_t, rf::Vector3*, rf::Vector3*)> entity_interp_pos_at_tick_hook{
     0x00484010,
@@ -413,7 +378,7 @@ CallHook<void __stdcall(rf::Entity*, uint16_t, rf::Matrix3*, rf::Vector3*, rf::V
         },
     };
 
-static void pos_at_tick(rf::Entity* ep, uint16_t tick, rf::Vector3* out_pos, rf::Vector3* out_vel, bool frame_eval)
+void pos_at_tick(rf::Entity* ep, uint16_t tick, rf::Vector3* out_pos, rf::Vector3* out_vel, bool frame_eval)
 {
     KeyFrame frame;
     if (pose_at_tick(ep, tick, frame_eval, frame)) {
@@ -426,8 +391,8 @@ static void pos_at_tick(rf::Entity* ep, uint16_t tick, rf::Vector3* out_pos, rf:
     entity_interp_pos_at_tick_hook.call_target(ep, tick, out_pos, out_vel);
 }
 
-static void orient_at_tick(rf::Entity* ep, uint16_t tick, rf::Matrix3* out_orient, rf::Vector3* out_phb,
-                           rf::Vector3* out_eye_phb, bool frame_eval)
+void orient_at_tick(rf::Entity* ep, uint16_t tick, rf::Matrix3* out_orient, rf::Vector3* out_phb,
+                    rf::Vector3* out_eye_phb, bool frame_eval)
 {
     KeyFrame frame;
     if (pose_at_tick(ep, tick, frame_eval, frame)) {
@@ -438,6 +403,20 @@ static void orient_at_tick(rf::Entity* ep, uint16_t tick, rf::Matrix3* out_orien
         return;
     }
     entity_interp_orient_at_tick_hook.call_target(ep, tick, out_orient, out_phb, out_eye_phb);
+}
+
+} // namespace
+
+float obj_interp_target_delay_ms(float interval_ms, float jitter_ms)
+{
+    float headroom = std::max(headroom_min * interval_ms, headroom_per_jitter * jitter_ms);
+    return interval_ms + std::clamp(headroom, 0.0f, headroom_max * interval_ms);
+}
+
+float obj_interp_target_delay_ms(const rf::ObjInterp* interp)
+{
+    const auto [interval, jitter] = ring_stats(interp);
+    return obj_interp_target_delay_ms(interval, jitter);
 }
 
 uint16_t obj_interp_oldest_tick(const rf::Entity* ep)
@@ -454,9 +433,8 @@ uint16_t obj_interp_oldest_tick(const rf::Entity* ep)
 
 void obj_interp_history_init()
 {
-    // Disable set_next_pos_orient's insert-time re-anchor (it compared the pre-advance clock and
-    // tripped every insert at 60 fps); frame_advance re-anchors instead. The skipped JZ lands on the
-    // flags bit 0 test, so the initial anchor still runs and the FPU stack stays balanced either way.
+    // Disable the insert-time re-anchor; frame_advance re-anchors instead. The NOPed JZ falls through to
+    // the bit 0 test, so the initial anchor still runs and the FPU stack stays balanced.
     AsmWriter{0x00483719}.nop(2);
     obj_interp_set_next_pos_orient_hook.install();
     get_set_entity_state_hook.install();

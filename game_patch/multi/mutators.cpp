@@ -2786,11 +2786,9 @@ CritWeaponScope::~CritWeaponScope()
 }
 
 // A crit-tagged projectile announces its own detonation, whether or not it craters, damages
-// anyone, or just hits a wall. Driven from the three player-attributed call sites of
-// explosion_apply_radius_damage - the function itself opens on an x87 instruction and cannot be
-// hooked - all three of which run under CritWeaponScope. Each is the terminal detonation of one
-// weapon (the weapon is flagged dead on the way out), so one blast is one sound. The call-site
-// hooks live in object/weapon.cpp, one per address, shared with projectile lag compensation.
+// anyone, or just hits a wall. Called from weapon.cpp's call-site hooks, all of which run under
+// CritWeaponScope. Each is the terminal detonation of one weapon (the weapon is flagged dead on the
+// way out), so one blast is one sound.
 float crits_on_explosion(const rf::Vector3* pos, float radius)
 {
     // The radius gates it: weapon_hit_level makes this call for bullets too, with no blast.

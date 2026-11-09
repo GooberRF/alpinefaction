@@ -14,10 +14,10 @@ void projectile_lag_comp_record_positions();
 // player's relayed projectile by own half ping + shooter half ping so it lines up with the server's.
 void projectile_lag_comp_advance_weapon(rf::Entity* shooter, rf::Weapon* wp);
 // Rewinds entities to the killer's view if the killer is a player entity; returns true if it did,
-// in which case restore_entities_after_projectile must be called after the damage is applied.
+// in which case projectile_lag_comp_restore_entities must be called after the damage is applied.
 // full_ping: the triggering action was a separate, un-advanced packet (remote charge detonation),
 // so the shooter's view is a full round trip behind the server instead of half.
 bool projectile_lag_comp_rewind_for_killer(int killer_handle, bool full_ping = false);
-void restore_entities_after_projectile();
+void projectile_lag_comp_restore_entities();
 // While rewound: how far this entity was moved from its live position (zero if it was not rewound)
 rf::Vector3 projectile_lag_comp_rewound_offset(int handle);

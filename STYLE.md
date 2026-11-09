@@ -44,7 +44,7 @@ here as closely as possible.
 - Use only `FunHook`, `CallHook`, `CodeInjection`, `AsmWriter` or `write_mem`. No naked asm stubs.
 - Declaration pattern: a forward-declared function, then `FunHook<decltype(fn)> fn_hook{0x..., fn};`,
   then the definition. Example: any hook in `editor_patch/level.cpp`.
-- A lambda-bound `__fastcall` or `__stdcall` hook needs `FASTCALL_LAMBDA`.
+- A lambda-bound `__fastcall` hook needs `FASTCALL_LAMBDA`; a `__stdcall` one needs `STDCALL_LAMBDA`.
 - A hook site must be the start of an instruction, span at least 5 bytes, contain no relative
   `CALL`/`Jcc`, and not be a branch target. Say in a comment why a trampoline-less
   (`false`) injection is safe.

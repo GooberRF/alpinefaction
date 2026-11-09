@@ -614,8 +614,9 @@ struct AlpineGameSettings
             multiplayer_tracker = "rfgt.factionfiles.com";
     }
 
-    // Client obj_update send rate, fixed (the stock `rate` command is deprecated)
+    // Client obj_update send rate on every server (stock sends 20/s)
     static constexpr unsigned client_net_rate = 40u;
+    static constexpr unsigned client_send_interval_ms = 1000u / client_net_rate;
 
     // max_fps default is 120
     // Below this a frame limit only makes the game (and the menu used to undo it) unusable.

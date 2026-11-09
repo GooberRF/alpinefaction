@@ -1437,7 +1437,7 @@ static void apply_known_key_in_order(AlpineServerConfig& cfg, const std::string&
     }
     else if (key == "projectile_lag_comp_max_ms") {
         if (auto v = node.value<int64_t>())
-            cfg.projectile_lag_comp_max_ms = std::clamp(static_cast<int>(*v), 50, 500);
+            cfg.projectile_lag_comp_max_ms = static_cast<int>(std::clamp<int64_t>(*v, 50, 500));
     }
     else if (key == "delta_obj_update") {
         if (auto v = node.value<bool>())

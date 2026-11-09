@@ -205,10 +205,8 @@ ConsoleCommand2 show_enemy_bullets_cmd{
     "Toggles visibility of enemy bullet impacts",
 };
 
-// The three player-attributed apply_radius_damage (0x00488DC0) call sites. The function opens on
-// an x87 instruction and cannot be FunHooked, so each call site has exactly one CallHook here,
-// shared by the Critical Hits mutator (blast scale) and projectile lag compensation (victim
-// rewind). game_do_explosion (0x0043660D) passes killer -1 and needs neither.
+// apply_radius_damage (0x00488DC0) opens on an x87 instruction and cannot be FunHooked, so each of its
+// player-attributed call sites has exactly one CallHook here, shared by Critical Hits and lag comp
 using RadiusDamageHook = CallHook<void(rf::Vector3&, float, float, int, int)>;
 
 // follow_handle: the entity the epicenter is on (direct hit, stuck charge); it moves with that entity's rewind
@@ -227,7 +225,7 @@ static void weapon_apply_radius_damage(RadiusDamageHook& hook, rf::Vector3& epic
     }
     hook.call_target(center, damage, radius * crit_scale, killer_handle, damage_type);
     if (rewound) {
-        restore_entities_after_projectile();
+        projectile_lag_comp_restore_entities();
     }
 }
 
@@ -242,9 +240,8 @@ RadiusDamageHook weapon_hit_wall_obj_apply_radius_damage_hook{
     },
 };
 
-// weapon_hit_obj impact splash: epicenter is wp->p_data.collide_out.hit_point, a point on the directly hit
-// object. Its direct hit was tested where the shooter saw it (projectile_lag_comp.cpp), so the splash rewinds it
-// with everyone else and the epicenter moves with it.
+// weapon_hit_obj impact splash: the epicenter is on the directly hit object, whose direct hit was tested where
+// the shooter saw it, so the epicenter follows that object's rewind
 RadiusDamageHook weapon_hit_obj_apply_radius_damage_hook{
     0x004C62F5,
     [](rf::Vector3& epicenter, float damage, float radius, int killer_handle, int damage_type) {

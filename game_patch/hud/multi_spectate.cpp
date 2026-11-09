@@ -1031,9 +1031,8 @@ static int povcomp_desired_ms()
         return 0;
     int desired = g_povcomp_override_ms;
     if (desired < 0) {
-        // The target's client viewed remote entities ~ping + interp delay in the past. The
-        // server's netfps isn't known client-side; the target's own ring sees the same
-        // cadence and jitter their client observed
+        // The target's client viewed remote entities ~ping + interp delay in the past. The server's netfps may be
+        // stale or unknown, so estimate the delay from our ring of the target (its jitter only approximates theirs)
         float delay_ms = obj_interp_target_delay_ms(25.0f, 0.0f); // fallback: netfps 40
         rf::Entity* target_entity = rf::entity_from_handle(target->entity_handle);
         if (target_entity && target_entity->obj_interp && target_entity->obj_interp->num_frames() >= 2) {
@@ -1064,11 +1063,7 @@ static void povcomp_do_frame()
     }
 }
 
-// Clamp the bias so the biased evaluation time stays within the recorded span: the
-// engine ring's 20 keyframes or AF's deeper obj_interp_history, whichever reaches
-// further back (the engine's tick evaluators read the history for ticks older than
-// the ring). interp_time and ticks are 16-bit server ms ticks, so compare via a
-// signed 16-bit difference. Returns 0 when biasing is unsafe this frame.
+// Clamp the bias to the evaluable span (engine ring or deeper history); 0 when biasing is unsafe this frame
 static uint16_t povcomp_safe_bias(rf::ObjInterp* interp, const rf::Entity* entity, int desired_ms)
 {
     if ((interp->flags & rf::OIF_REANCHOR) != 0 || interp->num < 2)

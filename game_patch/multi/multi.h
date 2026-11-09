@@ -161,7 +161,7 @@ struct AlpineFactionServerInfo
     bool no_exposure_damage = false;
     bool projectile_lag_comp = false;
     int server_netfps = 0; // 0: unknown (older server)
-    int projectile_lag_comp_max_ms = 0; // 0: unknown (older server)
+    int projectile_lag_comp_max_ms = 0;
     bool delta_obj_update = false;
 };
 

@@ -206,8 +206,8 @@ struct AlpineFactionJoinAcceptPacketExt
 
     float max_fov = 0.0f;
     int32_t semi_auto_cooldown = 0;
-    uint16_t server_netfps = 0; // 0: server predates this field, clients then send at 40
-    uint16_t projectile_lag_comp_max_ms = 0; // server's cap on the projectile advance; 0: uncapped (older server)
+    uint16_t server_netfps = 0; // only feeds the client's netmeter; 0: server predates this field
+    uint16_t projectile_lag_comp_max_ms = 0; // server's cap on the projectile advance
 };
 #pragma pack(pop)
 static_assert(sizeof(AlpineFactionJoinAcceptPacketExt) == 24, "unexpected AlpineFactionJoinAcceptPacketExt size");

@@ -373,8 +373,16 @@ bool alpine_player_settings_load(rf::Player* player)
         processed_keys.insert("WorldHUDOverdraw");
         xlog::info("Successfully parsed legacy setting 'WorldHUDOverdraw' from loaded pre-v9 AFS file.");
     }
-    // ServerMaxFPS (dedicated server fps now follows the ServerNetFPS tier)
+    // ServerMaxFPS (dedicated server fps now follows the `bandwidth` config key)
     processed_keys.insert("ServerMaxFPS");
+    // Pre-1.5 ServerNetFPS took any rate: anything that is not exactly a tier is high, not the nearest tier
+    if (auto it = settings.find("ServerNetFPS"); it != settings.end()) {
+        try {
+            it->second = std::to_string(AlpineGameSettings::net_rate_tier(std::stoul(it->second)).netfps);
+        }
+        catch (const std::exception&) {
+        }
+    }
 
     if (settings.count("PlayerName")) {
         const std::string& raw_name = settings["PlayerName"];

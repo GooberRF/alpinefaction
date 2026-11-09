@@ -42,16 +42,16 @@ Version 1.5.0 (Trillium): Not yet released
   - Jeeps, APCs, drillers, fighters, submarines, and stationary turrets, spawned by the new `Vehicle Factory` object
   - Simulate vehicle physics with the Bullet physics engine
   - Multi-seat vehicles with driver, gunner, and passenger seats; `Use` boards the lowest free seat and number keys `1`-`6` switch seats
-
-[@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Overhaul multiplayer netcode
-  - Delta-compress server object updates against client-acknowledged snapshots, sharply reducing server bandwidth, configurable with `delta_obj_update` in the dedicated server config
-  - Replace the remote player interpolation clock with a jitter-adaptive one, and interpolate along replicated velocities
-  - Keep a deeper remote player history (128 keyframes) so spectate and demo POV compensation reach further back
-  - Send client object updates at an exact 40 per second at any frame rate
-  - Add projectile lag compensation: server fast-forwards projectiles by the shooter's latency and tests direct hits and splash damage against victims where the shooter saw them, configurable with `projectile_lag_comp` and `projectile_lag_comp_max_ms` in the dedicated server config
-  - Add `sv_bandwidth [low|high]` server bandwidth tiers (low: 20 updates/s at 40 fps, high: 40 updates/s at 80 fps, matching 1.4), configurable with `bandwidth` in the dedicated server config
-  - Deprecate `sv_netfps` and `rate`; dedicated server `maxfps` now follows `sv_bandwidth`
+  - Delta-compress server object updates, sharply reducing server bandwidth
+  - Smooth remote player movement under network jitter
+  - Let spectate and demo POV compensation reach further back
+  - Send client object updates at a steady rate at any frame rate
+  - Add projectile lag compensation, so projectiles and their splash damage hit players where the shooter saw them
+  - Add `sv_bandwidth` console command to choose between low and high server bandwidth
+  - Deprecate `sv_netfps` console command
+  - Deprecate `rate` console command
+  - Make dedicated server `maxfps` follow `sv_bandwidth`
 
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)
@@ -220,7 +220,6 @@ Version 1.5.0 (Trillium): Not yet released
 - Add `ui_color_console` console command to set the console background color
 - Render animated (`.vfx`) meshes on the GPU with per-pixel lighting, and apply their materials' reflection maps (Direct3D 11 renderer only)
 - Load levels with very large face counts or many level sounds much faster
-- Add `ui_show_netmeter` console command to show network rate, jitter, missed updates, interpolation delay and bandwidth
 - Add Discord rich presence (`cl_discord_presence`) showing the server, gametype, map, team scores, match status, player count and time left in multiplayer, and the level, difficulty and mod in single player, with a `Join server` button for public, password-free servers (`cl_discord_join_button`)
 - Add HUD, player outline, and outline x-ray toggles to the spectate options menu
 - Add `cl_hudelement` console command and a spectate options submenu to show or hide individual HUD elements
@@ -235,6 +234,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Add playback speed control (0.25x-8x) to the demo playback panel
 - Show the recording server's config during demo playback with the Remote Server Config key
 - Apply demo playback speed to the whole world, including particles, animations and sounds
+- Add `ui_show_netmeter` console command to show network statistics
 
 [@is-this-c](https://github.com/is-this-c)
 - Add `bighud_health` and `bighud_ammo` console variables to disable `bighud` for health and ammo, which is useful for mods incompatible with `bighud`

@@ -5,6 +5,7 @@
 #include <numbers>
 #include <utility>
 #include <vector>
+#include <common/utils/math-utils.h>
 #include "../../rf/math/vector.h"
 #include "../../rf/math/matrix.h"
 #include "../../rf/physics.h"
@@ -69,16 +70,6 @@ bool vehicle_hull_obb_overlap(const VehicleHullObb& a, const VehicleHullObb& b, 
 // The one spelling of 2*pi in the vehicle tree.
 inline constexpr float vehicle_two_pi = 2.0f * std::numbers::pi_v<float>;
 inline constexpr float vehicle_deg_to_rad = std::numbers::pi_v<float> / 180.0f;
-
-inline float vehicle_wrap_pi(float a)
-{
-    return std::remainder(a, vehicle_two_pi);
-}
-
-inline bool vehicle_vector_is_finite(const rf::Vector3& v)
-{
-    return v.is_finite();
-}
 
 // Slack allowed on every face of BOTH boxes.
 inline constexpr float vehicle_ram_contact_margin = 0.10f;  // server ram/crush sweep

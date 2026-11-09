@@ -123,13 +123,11 @@ namespace rf
         uint32_t flags; // ObjInterpFlags
         uint16_t interp_time; // evaluation time (16-bit server ms ticks)
         uint8_t pad_52e[2];
-        uint32_t frame_time_us; // wall-clock timer_get(1000000) stamp of the last frame advance
+        uint32_t frame_time_us; // last frame advance, on demo_playback_interp_clock_us
         uint32_t num; // stored keyframes (0-20)
-        uint32_t last_update_time; // wall-clock timer_get(1000) stamp of the newest sample's
-                                   // arrival; -1 = no sample yet (set by Clear)
-        int32_t arrive_time_diff[max_keyframes]; // wall-clock arrival gaps between samples (ms)
-        float arrive_time_avg_diff; // average of arrive_time_diff - drives the spline endpoint
-                                    // dead-reckoning step and the interp_time re-anchor headroom
+        uint32_t last_update_time; // newest sample's arrival, on demo_playback_interp_clock_ms; -1 = none (Clear)
+        int32_t arrive_time_diff[max_keyframes]; // arrival gaps between samples (ms), same clock
+        float arrive_time_avg_diff; // average of arrive_time_diff; drives the spline endpoint dead-reckoning step
         CatmullRomCurve pos_curve; // keyframe positions + one dead-reckoned end point
         CatmullRomCurve unk_curve;
         char lag_comp_data[0x68];

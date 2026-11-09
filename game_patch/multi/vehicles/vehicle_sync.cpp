@@ -246,7 +246,7 @@ namespace
     // through the back still reads as past the stop it crossed.
     float vehicle_rel_heading(float heading, float base, float prev_rel)
     {
-        return prev_rel + vehicle_wrap_pi(heading - base - prev_rel);
+        return prev_rel + wrap_pi(heading - base - prev_rel);
     }
 
     // The rotation that brought the frame back inside the stops, 0 if it was already inside.
@@ -444,7 +444,7 @@ namespace
                     return;
                 }
                 if (ep && pos && vel && vehicle_row_is_client_authored(ep)) {
-                    if (!vehicle_vector_is_finite(*pos) || !vehicle_vector_is_finite(*vel)) {
+                    if (!pos->is_finite() || !vel->is_finite()) {
                         return;
                     }
                     vehicle_clamp_row_velocity(ep, *vel);
@@ -729,9 +729,9 @@ void vehicle_ease_aim_do_frame()
             supp.eased_valid = true;
             continue;
         }
-        const float head_delta = vehicle_wrap_pi(supp.aim_head - supp.eased_aim_head);
+        const float head_delta = wrap_pi(supp.aim_head - supp.eased_aim_head);
         // Folded into [-pi, pi]: an unbounded value loses trig precision over a long session.
-        supp.eased_aim_head = vehicle_wrap_pi(supp.eased_aim_head + head_delta * t);
+        supp.eased_aim_head = wrap_pi(supp.eased_aim_head + head_delta * t);
         supp.eased_aim_pitch += (supp.aim_pitch - supp.eased_aim_pitch) * t;
     }
 }
@@ -808,7 +808,7 @@ namespace
         }
         // interp_rotation lerps phb component-wise, so bank needs a continuous branch across +-pi.
         if (supp.valid) {
-            bank = supp.bank + vehicle_wrap_pi(bank - supp.bank);
+            bank = supp.bank + wrap_pi(bank - supp.bank);
         }
         supp.pitch = pitch;
         supp.bank = bank;
@@ -1812,7 +1812,7 @@ bool vehicle_server_set_turret_aim(rf::Entity* turret, const rf::Entity* gunner,
     // and zeroes them.
     rf::EntityControlData& cd = turret->control_data;
     turret->ai.ci.rot = {};
-    turret->ai.ci.mouse_dh = vehicle_wrap_pi(heading - cd.phb.y);
+    turret->ai.ci.mouse_dh = wrap_pi(heading - cd.phb.y);
     turret->ai.ci.mouse_dp = vehicle_clamp_seat_eye_pitch(turret, pitch) - cd.eye_phb.x;
     return true;
 }

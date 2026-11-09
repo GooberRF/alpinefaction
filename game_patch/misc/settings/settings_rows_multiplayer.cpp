@@ -47,6 +47,13 @@ void apply_server_netfps()
     server_apply_net_rate();
 }
 
+const char* const labels_server_netfps[] = {"Low (20)", "High (40)"};
+const int values_server_netfps[] = {
+    static_cast<int>(AGS::net_rate_tiers[0].netfps),
+    static_cast<int>(AGS::net_rate_tiers[1].netfps),
+};
+static_assert(std::size(labels_server_netfps) == std::size(AGS::net_rate_tiers));
+
 const SettingRow rows[] = {
     {
         .id = "player_name",
@@ -135,20 +142,17 @@ const SettingRow rows[] = {
     {
         .id = "server_netfps",
         .key = "ServerNetFPS",
-        .label = "Server net FPS",
-        .tooltip = "Object updates per second sent when hosting: 20 (low bandwidth) or 40 (high).",
+        .label = "Server bandwidth",
+        .tooltip = "Object updates per second sent when hosting.",
         .category = Cat::Multiplayer,
         .subcategory = "Hosting",
-        .widget = Wid::Stepper,
-        // Unclamped: the setter snaps anything that is not a tier to high
+        .widget = Wid::Enum,
         .access = AccUint{&AGS::server_netfps, &AGS::set_server_netfps},
-        .flags = SF_MP_ONLY | SF_HOST_ONLY | SF_ADVANCED | SF_APPLY_ON_LOAD,
+        .flags = SF_MP_ONLY | SF_HOST_ONLY | SF_ADVANCED,
         .apply = apply_server_netfps,
+        ENUM_LABELS(labels_server_netfps),
+        .enum_values = values_server_netfps,
         .console_cmd = "sv_bandwidth",
-        .ui_min = static_cast<float>(AGS::net_rate_tiers[0].netfps),
-        .ui_max = static_cast<float>(AGS::net_rate_tiers[1].netfps),
-        .ui_step = static_cast<float>(AGS::net_rate_tiers[1].netfps - AGS::net_rate_tiers[0].netfps),
-        .ui_suffix = " Hz",
     },
     {
         .id = "fflink_status",

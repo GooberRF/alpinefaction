@@ -124,7 +124,7 @@ namespace
         DemoRecord pending;
         bool has_pending = false;
         double clock_ms = 0.0;
-        // The interp rings' clock (demo_playback_interp_clock_ms): clock_ms accumulated
+        // The interp rings' clock (demo_playback_interp_clock_ms/us): clock_ms accumulated
         // monotonically, so it follows the timescale and holds while paused
         double interp_clock_ms = 0.0;
         double interp_clock_seen_ms = 0.0; // clock_ms when interp_clock_ms last caught up
@@ -1114,18 +1114,11 @@ namespace
         }
     }
 
-    // obj_interp_frame_advance_hook (0x00483BE0) steps interp_time by the wall-clock delta since
-    // frame_time_us. It runs inside gameplay_sim_frame, which the freeze skips, so on unfreeze the
-    // whole pause would be played back as one (clamped) step; stamp the rings to now instead.
-    // Arrival stamps (last_update_time) are on demo_playback_interp_clock_ms, which holds while paused.
-    void rebase_interp_clocks_after_freeze()
+    double advance_interp_clock_ms()
     {
-        const auto now_us = static_cast<uint32_t>(timer::get_i64(1000000));
-        for (rf::Object* obj = rf::object_list.next_obj; obj != &rf::object_list; obj = obj->next_obj) {
-            if (rf::ObjInterp* interp = obj->obj_interp) {
-                interp->frame_time_us = now_us;
-            }
-        }
+        g_ctx.interp_clock_ms += std::max(g_ctx.clock_ms - g_ctx.interp_clock_seen_ms, 0.0);
+        g_ctx.interp_clock_seen_ms = g_ctx.clock_ms;
+        return g_ctx.interp_clock_ms;
     }
 
     // Esc pushes the main menu over gameplay; menus it opens (options, ...) stack on top
@@ -1182,7 +1175,6 @@ namespace
         else {
             rf::timer::dec_game_paused();
             rf::snd_pause(false);
-            rebase_interp_clocks_after_freeze();
         }
     }
 
@@ -1719,19 +1711,8 @@ namespace
     };
 
     // ---- POV ping compensation ("povcomp") ----
-    //
-    // The demo stream is on the server's timeline: the followed player's aim samples and
-    // their fire/kill events are mutually consistent (both arrived ~ping/2 late), but the
-    // world they were aiming at is displayed ~(ping + their client's interp delay) ahead
-    // of what they actually saw. Realign by evaluating every other entity's interp ring
-    // that far in the past while following a player, so the crosshair lines up with
-    // targets the way the shooter saw them - the same rewind the server's lag
-    // compensation applied when it validated their hits. The ring holds real recorded
-    // history (the engine's 20 keyframes plus AF's deeper obj_interp_history, ~1s+), so
-    // this stays smooth, unlike the considered alternative of extrapolating the POV camera
-    // forward by ping, which predicts beyond the recorded data and jitters exactly where
-    // the viewer is looking. Projectiles/corpses/movers are not biased: tracers must leave
-    // the (un-delayed) POV muzzle, and alignment only matters against players.
+    // The followed player saw the world ~(ping + interp delay) behind the server timeline the demo records;
+    // other players are evaluated that far back so the crosshair lines up the way the shooter saw it.
 
     bool g_povcomp_enabled = true;
     int g_povcomp_override_ms = -1; // >= 0: fixed delay instead of ping-derived
@@ -1739,10 +1720,7 @@ namespace
     constexpr int povcomp_max_ms = 1000; // obj_interp_history depth bounds usable delay anyway
     constexpr float povcomp_slew_ms_per_s = 300.0f;
 
-    // Downstream latency to the followed player + their client's interp buffer: the
-    // recorded client viewed remote entities ~ping + interp delay in the past relative
-    // to the server timeline the demo is recorded on (its jitter is unknown, assume 0).
-
+    // The recorded client's jitter is unknown; assume 0
     int povcomp_desired_ms()
     {
         if (!g_povcomp_enabled || g_ctx.state != PlaybackState::playing || demo_playback_is_seeking())
@@ -2016,9 +1994,15 @@ int64_t demo_playback_interp_clock_ms()
     if (g_ctx.state == PlaybackState::inactive) {
         return timer::get_i64(1000);
     }
-    g_ctx.interp_clock_ms += std::max(g_ctx.clock_ms - g_ctx.interp_clock_seen_ms, 0.0);
-    g_ctx.interp_clock_seen_ms = g_ctx.clock_ms;
-    return static_cast<int64_t>(g_ctx.interp_clock_ms);
+    return static_cast<int64_t>(advance_interp_clock_ms());
+}
+
+int64_t demo_playback_interp_clock_us()
+{
+    if (g_ctx.state == PlaybackState::inactive) {
+        return timer::get_i64(1000000);
+    }
+    return static_cast<int64_t>(advance_interp_clock_ms() * 1000.0);
 }
 
 uint32_t demo_playback_duration_ms()

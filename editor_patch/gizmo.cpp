@@ -12,6 +12,7 @@
 #include <vector>
 #include <patch_common/CallHook.h>
 #include <common/alpine_mesh_scale.h>
+#include <common/utils/math-utils.h>
 #include <xlog/xlog.h>
 #include "alpine_obj.h"
 #include "dialog_tooltips.h"
@@ -209,12 +210,6 @@ struct Quat
         angle = 2.0f * std::atan2(s, w);
     }
 };
-
-// Into [-pi, pi].
-float wrap_angle(float a)
-{
-    return std::remainder(a, two_pi);
-}
 
 struct Pt
 {
@@ -1786,7 +1781,7 @@ bool solve_rotate(Drag& d, Pt pivot_px, Pt cursor, Vector3& axis, float& angle)
     }
     if (distance(cursor, pivot_px) >= min_angle_radius_px) {
         const float a = screen_angle(pivot_px, cursor);
-        d.screen_turn += wrap_angle(a - d.last_screen_angle);
+        d.screen_turn += wrap_pi(a - d.last_screen_angle);
         d.last_screen_angle = a;
     }
     angle = d.rot_sign * d.screen_turn;
@@ -2404,7 +2399,7 @@ void begin_rotate(Drag& d, const Layout& l, Pt cursor)
     if (len > 0.5f) {
         d.tangent_px_dir = {(p1.x - p0.x) / len, (p1.y - p0.y) / len};
         d.tangent_px_per_rad = len / step;
-        const float turn = wrap_angle(screen_angle(l.pivot_px, p1) - screen_angle(l.pivot_px, p0));
+        const float turn = wrap_pi(screen_angle(l.pivot_px, p1) - screen_angle(l.pivot_px, p0));
         d.rot_sign = turn >= 0.0f ? 1.0f : -1.0f;
     }
     else {

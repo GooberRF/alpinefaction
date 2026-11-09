@@ -2129,7 +2129,7 @@ void server_vote_handle_options_request(rf::Player* sender, bool has_cache, uint
 
     // The client told us what it already has. This is the case a plain
     // once-per-generation guard cannot distinguish: a cfg change that does not
-    // affect the vote schema (sv_netfps, maxfps) sets signal_cfg_changed, which
+    // affect the vote schema (sv_bandwidth) sets signal_cfg_changed, which
     // marks every client's cache stale, but leaves the generation alone. Answering
     // with silence is what stops a needless identical re-download.
     if (has_cache && known_generation == generation) {

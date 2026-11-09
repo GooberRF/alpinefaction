@@ -32,7 +32,7 @@ namespace obj_update_delta
         enum Mask : uint8_t
         {
             pos_same = 0,
-            pos_i8 = 1,   // 1/256 m, +-0.5 m per tick (50 m/s at 100 netfps)
+            pos_i8 = 1,   // 1/256 m, +-0.5 m
             pos_i16 = 2,  // 1/256 m
             pos_float = 3,
             pos_mode_mask = 3,
@@ -122,7 +122,7 @@ namespace obj_update_delta
                     bool fits8 = true, fits16 = true, same = true;
                     for (int i = 0; i < 3; ++i) {
                         const float d = (cur.pos[i] - base->pos[i]) * 256.0f;
-                        // lround returns 0 for NaN, inf and out-of-range values: those go as floats
+                        // NaN, inf and out-of-range deltas go as floats; lround is unspecified for them
                         if (!(std::fabs(d) < 32767.0f)) {
                             fits8 = fits16 = same = false;
                             continue;
@@ -204,10 +204,10 @@ namespace obj_update_delta
             if (flags & pos_group) {
                 if (!r.get(out.tick))
                     return false;
+                if ((mask & pos_mode_mask) != pos_float && (!base || !(base->groups & pos_group)))
+                    return false;
                 switch (mask & pos_mode_mask) {
                 case pos_same:
-                    if (!base || !(base->groups & pos_group))
-                        return false;
                     break;
                 case pos_i8:
                     for (float& v : out.pos) {
@@ -353,7 +353,7 @@ namespace obj_update_delta
         uint8_t wire_flags;
         if (!w.ok() || !decode_body(r, base, visible, wire_flags) || r.remaining() != 0) {
             // Encoder/decoder disagree: never ship a record the client cannot mirror
-            ERR_ONCE("obj_update_delta: encode/decode mismatch for handle {:x}", cur.handle);
+            ERR_ONCE("[ObjUpdateDelta] encode/decode mismatch for handle {:x}", cur.handle);
             return 0;
         }
         s.last = visible;

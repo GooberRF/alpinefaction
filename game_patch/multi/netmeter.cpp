@@ -100,7 +100,6 @@ struct NetMeterChannel
         r.jitter = dev_sum / static_cast<float>(num_gaps);
         r.max_gap = static_cast<float>(max_gap);
         if (nominal_ms <= 0) {
-            // Stock or pre-1.5 server: take the median gap as the nominal tick
             std::nth_element(gaps.begin(), gaps.begin() + num_gaps / 2, gaps.begin() + num_gaps);
             nominal_ms = gaps[num_gaps / 2];
             if (snap_to_tier) {
@@ -155,12 +154,11 @@ NetMeterStats netmeter_get_stats()
     const int now = static_cast<int>(timer::get_i64(1000));
     // Nominal tick: inbound is estimated from the flow, snapped to a tier on a 1.5 server (the tier in
     // the join_accept extension goes stale if sv_bandwidth changes mid-session), outbound is the fixed
-    // client send rate; 0 lets the meter estimate it (stock/pre-1.5 server)
+    // client send rate
     const auto& info = get_af_server_info();
     const bool known = info && info->server_netfps;
     const auto in = g_netmeter_in.measure(now, 0, known);
-    constexpr int client_interval_ms = 1000 / static_cast<int>(AlpineGameSettings::client_net_rate);
-    const auto out = g_netmeter_out.measure(now, known ? client_interval_ms : 0);
+    const auto out = g_netmeter_out.measure(now, static_cast<int>(AlpineGameSettings::client_send_interval_ms));
 
     // Interp delay: how far behind the newest keyframe each remote entity is evaluated,
     // averaged over all remote players with interpolation state (16-bit server ms ticks;

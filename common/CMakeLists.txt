@@ -29,6 +29,7 @@ set(SRCS
     include/common/utils/enum-bitwise-operators.h
     include/common/utils/iterable-utils.h
     include/common/utils/list-utils.h
+    include/common/utils/math-utils.h
     include/common/utils/mem-pool.h
     include/common/utils/os-utils.h
     include/common/utils/perf-utils.h
