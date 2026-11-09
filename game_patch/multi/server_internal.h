@@ -1188,6 +1188,7 @@ struct AlpineServerConfig
     bool dynamic_rotation = false;
     bool gaussian_spread = true;
     bool stats_message_enabled = true;
+    bool announce_next_level = false;
     bool allow_fullbright_meshes = false;
     bool allow_lightmaps_only = false;
     bool allow_disable_screenshake = true;

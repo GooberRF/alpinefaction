@@ -217,6 +217,8 @@ Version 1.5.0 (Trillium): Not yet released
 - Add `ui_scoreboard_cursor` and `ui_scoreboard_cursor_hint` console commands to toggle the scoreboard cursor and its hint text
 - Balance scoreboard columns for large player counts
 - Allow match votes on servers whose base game type is not a team type
+- Add `announce_next_level` dedicated server config option to announce the next level and its game type at the end of each level
+- Include the next level's filename in the end-of-level game type switch announcement
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color

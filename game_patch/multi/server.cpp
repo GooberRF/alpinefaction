@@ -6051,10 +6051,12 @@ void server_on_limbo_state_enter()
         }
     }
 
-    if (get_upcoming_game_type() != rf::netgame.type) {
-        std::string gt_swap_notif = std::format("Game type will switch to {} for the next level.",
-            multi_game_type_name_short(get_upcoming_game_type()));
-        af_broadcast_automated_chat_msg(gt_swap_notif);
+    const std::string_view upcoming_gt = multi_game_type_name_short(get_upcoming_game_type());
+    if (g_alpine_server_config.announce_next_level) {
+        af_broadcast_automated_chat_msg(std::format("Next map is {} in {}.", rf::level_filename_to_load, upcoming_gt));
+    } else if (get_upcoming_game_type() != rf::netgame.type) {
+        af_broadcast_automated_chat_msg(std::format("Game type will switch to {} for the next level ({}).",
+            upcoming_gt, rf::level_filename_to_load));
     }
 }
 

@@ -103,6 +103,7 @@ In the tables below, a Number key takes an integer or a decimal value, and an In
 | `require_client_mod` | Boolean | `true` | When the server runs a TC mod (`-mod`), clients must run the same mod. |
 | `gaussian_spread` | Boolean | `true` | Use gaussian (center-weighted) bullet spread. |
 | `send_stats_message` | Boolean | `true` | Send players their stats message at the end of each level. |
+| `announce_next_level` | Boolean | `false` | Announce the next level and its game type at the end of each level (`Next map is ctf01.rfl in CTF.`). When `false`, the next level is only announced when the game type changes. |
 | `allow_fullbright_meshes` | Boolean | `false` | Let clients render character meshes fullbright. |
 | `allow_lightmap_mode` | Boolean | `false` | Let clients use lightmap-only rendering. |
 | `allow_disable_screenshake` | Boolean | `true` | Let clients turn off weapon screenshake. |
