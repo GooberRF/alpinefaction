@@ -415,6 +415,7 @@ namespace rf::gr
     static auto& get_clip = addr_as_ref<void(int* x, int* y, int* w, int* h)>(0x0050CD80);
     static auto& reset_clip = addr_as_ref<void()>(0x0050CDD0);
     static auto& page_in = addr_as_ref<int(int bm_handle)>(0x0050CE00);
+    static auto& flip = addr_as_ref<void()>(0x0050CE20);
     static auto& mark_texture_dirty = addr_as_ref<int(int bm_handle)>(0x0050D080);
     static auto& tcache_add_ref = addr_as_ref<void(int bm_handle)>(0x0050E850);
     static auto& tcache_remove_ref = addr_as_ref<void(int bm_handle)>(0x0050E870);

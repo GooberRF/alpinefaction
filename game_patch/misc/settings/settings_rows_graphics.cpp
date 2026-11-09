@@ -901,6 +901,18 @@ const SettingRow rows[] = {
         .console_cmd = "r_outlines_spectator",
     },
     {
+        .id = "outlines_spectator_xray",
+        .key = "OutlinesSpectatorXray",
+        .label = "Spectator X-ray",
+        .tooltip = "Show player outlines through walls while spectating.",
+        .category = Cat::Graphics,
+        .subcategory = "Outlines",
+        .widget = Wid::Toggle,
+        .access = AccBool{&AGS::outlines_spectator_xray},
+        .flags = SF_D3D11_ONLY | SF_MP_ONLY,
+        .console_cmd = "r_outlines_spectator_xray",
+    },
+    {
         .id = "outlines_team_xray",
         .key = "OutlinesTeamXray",
         .label = "Teammate X-ray",
