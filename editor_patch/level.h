@@ -51,6 +51,7 @@ constexpr int alpine_lightmaps_chunk_id = static_cast<int>(alpine_lightmap::chun
 constexpr int alpine_directional_light_chunk_id = static_cast<int>(alpine_dir_light::chunk_id); // 0x0AFBAE0C
 constexpr int alpine_waypoint_helper_chunk_id = static_cast<int>(alpine_waypoint_helper::chunk_id); // 0x0AFBAE0D
 constexpr int alpine_mover_path_chunk_id = static_cast<int>(mover_path::chunk_id); // 0x0AFBAE0E
+constexpr int alpine_liquid_emission_chunk_id = 0x0AFBAE0F; // editor only: Liquid Room light emission
 
 // Other editors save RFL chunks of their own that Alpine Faction can neither read nor parse.
 // AlpineEditor retains them verbatim on load and re-emits them on save, so the originating

@@ -66,6 +66,7 @@
 #include "mesh_browser.h"
 #include "placement_panel.h"
 #include "mover_path.h"
+#include "liquid_emission.h"
 #include "selection.h"
 #include "viewport_input.h"
 
@@ -735,6 +736,7 @@ CodeInjection CDialog_DoModal_injection{
         auto& hCurrentResourceHandle = regs.ebx;
         auto lpszTemplateName = addr_as_ref<LPCSTR>(regs.esp);
         if (lpszTemplateName == MAKEINTRESOURCE(IDD_TRIGGER_PROPERTIES) ||
+            lpszTemplateName == MAKEINTRESOURCE(IDD_ROOM_EFFECT_PROPERTIES) ||
             lpszTemplateName == MAKEINTRESOURCE(IDD_LEVEL_PROPERTIES) ||
             lpszTemplateName == MAKEINTRESOURCE(IDD_UV_UNWRAP) ||
             lpszTemplateName == MAKEINTRESOURCE(IDD_BRUSH_PROPERTIES) ||
@@ -1547,12 +1549,18 @@ char __fastcall CDedDoc_LoadSaveLevel_new(void* self, int edx, const char* path,
 {
     if (is_load) {
         gizmo_cancel_drag();
+        liquid_emission_level_load_begin();
     }
     const LevelFileOp op = is_load ? LevelFileOp::load : is_autosave ? LevelFileOp::autosave : LevelFileOp::save;
     char result;
     {
         const ScopeGuard restore_op{[outer_op = std::exchange(g_level_file_op, op)] { g_level_file_op = outer_op; }};
         result = CDedDoc_LoadSaveLevel_hook.call_target(self, edx, path, is_load, is_autosave);
+    }
+    if (is_load) {
+        if (CDedLevel* level = CDedLevel::Get()) {
+            liquid_emission_level_load_end(*level);
+        }
     }
     if (is_load && result) {
         gizmo_level_loaded();
@@ -2498,6 +2506,7 @@ extern "C" DWORD AF_DLL_EXPORT Init([[maybe_unused]] void* unused)
     ApplyViewportInputPatches();
     ApplyGizmoPatches();
     ApplyMoverPathPatches();
+    ApplyLiquidEmissionPatches();
     ApplyTextureModePatches();
     ApplyBrushPreviewPatches();
     ApplyTextureLockPatches();
