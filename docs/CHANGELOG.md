@@ -437,7 +437,8 @@ Version 1.5.0 (Trillium): Not yet released
 - [bc7enc_rdo](https://github.com/richgel999/bc7enc_rdo) by Richard Geldreich, Jr.
 - [LunaSVG 3.5.0](https://github.com/sammycage/lunasvg) by Samuel Ugochukwu
 - [PlutoVG 1.3.3](https://github.com/sammycage/plutovg) by Samuel Ugochukwu
-
+- [SDL 3.4.20](https://github.com/libsdl-org/SDL) by Sam Lantinga and many Contributors
+- [GamepadMotionHelpers 10](https://github.com/JibbSmart/GamepadMotionHelpers) by Jibb Smart
 
 Version 1.4.0 (Lupin): Released Aug-25-2026
 --------------------------------
