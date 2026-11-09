@@ -38,7 +38,7 @@
 
 // Custom event support
 constexpr int original_event_count = 89;
-constexpr int new_event_count = 65; // must be 1 higher than actual count
+constexpr int new_event_count = 68; // must be 1 higher than actual count
 constexpr int total_event_count = original_event_count + new_event_count;
 std::unique_ptr<const char*[]> extended_event_names; // array to hold original + additional event names
 
@@ -108,6 +108,9 @@ const char* additional_event_names[new_event_count] = {
     "When_Destroyed",
     "Rope_State",
     "Mesh_Set_Scale",
+    "Payload_Handler",
+    "Payload_Checkpoint",
+    "When_Setup_Ends",
     "_dummy"
 };
 
@@ -645,6 +648,31 @@ std::map<AlpineDedEventID, FieldConfig> eventFieldConfigs = {
         },
         {
             {FIELD_INT2, true}
+        }
+    }},
+    {AlpineDedEventID::Payload_Handler, {
+        {FIELD_STR1, FIELD_INT1, FIELD_FLOAT1, FIELD_INT2, FIELD_BOOL1, FIELD_BOOL2},
+        {
+            {FIELD_STR1, "Name (str1):"},
+            {FIELD_INT1, "Attacking team (int1):"},
+            {FIELD_FLOAT1, "Push radius (float1):"},
+            {FIELD_INT2, "Rollback delay (int2):"},
+            {FIELD_BOOL1, "No healing or ammo (bool1):"},
+            {FIELD_BOOL2, "No finale explosion (bool2):"}
+        },
+        {
+            {FIELD_INT1, {"Blue", "Red"}}
+        },
+        {
+            {FIELD_INT1, true}
+        }
+    }},
+    {AlpineDedEventID::Payload_Checkpoint, {
+        {FIELD_STR1, FIELD_FLOAT1, FIELD_INT1},
+        {
+            {FIELD_STR1, "Name (str1):"},
+            {FIELD_FLOAT1, "Hold seconds (float1):"},
+            {FIELD_INT1, "Time bonus seconds (int1):"}
         }
     }},
     {AlpineDedEventID::Modify_Respawn_Point, {

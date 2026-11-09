@@ -16,6 +16,7 @@
 #include <common/mover_path.h>
 #include <xlog/xlog.h>
 #include "mover.h"
+#include "../multi/payload.h"
 #include "../misc/level.h"
 #include "../misc/misc.h"
 #include "../rf/os/frametime.h"
@@ -262,6 +263,69 @@ static float mover_segment_length(const MoverSegmentPath& path, const rf::MoverK
                                   const rf::MoverKeyframe* kfB)
 {
     return path.curve ? path.curve->length : rf::vec_dist(&kfA->pos, &kfB->pos);
+}
+
+static rf::Vector3 mover_segment_point(const MoverSegmentPath& path, const rf::MoverKeyframe* kfA,
+                                       const rf::MoverKeyframe* kfB, float s)
+{
+    if (path.curve) {
+        const mpath::Vec3 p = mpath::sample(*path.curve, mpath::directed_param(*path.curve, s, path.reversed));
+        return rf::Vector3{p.x, p.y, p.z};
+    }
+    return kfA->pos + (kfB->pos - kfA->pos) * s;
+}
+
+void alpine_mover_path_ensure_init()
+{
+    if (g_mover_path_needs_init) {
+        alpine_mover_do_path_init();
+    }
+}
+
+float alpine_mover_segment_length(const rf::Mover* mp, int from)
+{
+    return mover_segment_length(mover_segment_path(mp, from, from + 1), KF(mp, from), KF(mp, from + 1));
+}
+
+rf::Vector3 alpine_mover_segment_point(const rf::Mover* mp, int from, float fraction)
+{
+    return mover_segment_point(mover_segment_path(mp, from, from + 1), KF(mp, from), KF(mp, from + 1), fraction);
+}
+
+// These modes turn the whole mover about its first keyframe, so its members stay together
+static const mpath::PathFacing* mover_path_facing(const rf::Mover* mp, int from, int to)
+{
+    if (g_mover_orient_entries.empty()) {
+        return nullptr;
+    }
+    const int count = count_keyframes(mp);
+    const auto it = count > 1 ? g_mover_orient_entries.find(KF(mp, 0)->uid) : g_mover_orient_entries.end();
+    if (it == g_mover_orient_entries.end() || from < 0 || from >= count || to >= count) {
+        return nullptr;
+    }
+    return &it->second;
+}
+
+static mpath::Mat3 mover_path_facing_pose(const rf::Mover* mp, const mpath::PathFacing& facing, int from, int to,
+                                          float s)
+{
+    const int count = count_keyframes(mp);
+    const auto type = static_cast<mpath::MoveType>(mp->keyframe_move_type);
+    const mpath::PathSpot spot = mpath::path_spot(from, to, s, count, mpath::has_closing_segment(type, count));
+    return mpath::path_facing_pose(
+        facing, spot, from, to, s, [mp](int i) { return mover_keyframe_orient(KF(mp, i)); },
+        [&](const mpath::PathSpot& at) { return mover_path_direction(mp, at, from, to); });
+}
+
+rf::Vector3 alpine_mover_turned_offset(const rf::Mover* mp, int from, float fraction, const rf::Vector3& offset)
+{
+    const mpath::PathFacing* facing = mover_path_facing(mp, from, from + 1);
+    if (!facing) {
+        return offset;
+    }
+    const mpath::Mat3 pose = mover_path_facing_pose(mp, *facing, from, from + 1, fraction);
+    const mpath::Vec3 turned = mpath::carry(facing->reference, pose, to_vec3(offset));
+    return {turned.x, turned.y, turned.z};
 }
 
 rf::Mover* mover_find_by_mover_brush(const rf::MoverBrush* mover_brush)
@@ -641,14 +705,7 @@ void alpine_mover_process_linear(rf::Mover* mp)
     mpath::apply_ease(mover_keyframe_ease(kfA), s, v_norm);
     mp->dist_travelled = dist * s; // s = path fraction
     mp->cur_vel = dist * v_norm;
-    if (path.curve) {
-        const mpath::Vec3 p = mpath::sample(*path.curve, mpath::directed_param(*path.curve, s, path.reversed));
-        mp->p_data.next_pos = rf::Vector3{p.x, p.y, p.z};
-    }
-    else {
-        const rf::Vector3 pos{kfA->pos.x + delta.x * s, kfA->pos.y + delta.y * s, kfA->pos.z + delta.z * s};
-        mp->p_data.next_pos = pos;
-    }
+    mp->p_data.next_pos = mover_segment_point(path, kfA, kfB, s);
 
     // Did we reach the end of this segment?
     if (mp->travel_time_seconds >= travel - 1e-4f) {
@@ -675,12 +732,58 @@ void alpine_mover_process_linear(rf::Mover* mp)
     }
 }
 
+// The Payload cart goes where the payload puts it: no keyframe timing, pauses, obstruction or arrival. Its direction
+// stays forward when it rolls back, so the segment's owner, and with it the facing, is the same either way.
+static void alpine_mover_process_payload_cart(rf::Mover* mp, const PayloadCartPlacement& at)
+{
+    const int from = at.segment;
+    const int to = from + 1;
+    mp->mover_flags = static_cast<rf::MoverFlags>(
+        (mp->mover_flags | rf::MoverFlags::MF_PROCESSED_THIS_FRAME | rf::MoverFlags::MF_UNK_4000
+         | rf::MoverFlags::MF_DIR_FORWARD)
+        & ~rf::MoverFlags::MF_PAUSED_AT_KEYFRAME);
+    mp->obj_flags = mp->obj_flags | rf::OF_WAS_TELEPORTED;
+    mp->start_at_keyframe = from;
+    mp->stop_at_keyframe = to;
+    mp->stop_completely_at_keyframe = -1;
+
+    const bool was_moving = mp->cur_vel != 0.0f;
+    const bool moving = at.speed != 0.0f;
+    if (moving && !was_moving) {
+        rf::mover_play_start_sound(mp);
+    }
+    else if (!moving && was_moving) {
+        rf::mover_play_stop_sound(mp);
+    }
+    const int loop_instance = mp->sound_instances[1];
+    if (loop_instance != -1) {
+        rf::snd_change_3d(loop_instance, mp->pos, rf::zero_vector, 1.0f);
+    }
+
+    const rf::MoverKeyframe* kfA = KF(mp, from);
+    const rf::MoverKeyframe* kfB = KF(mp, to);
+    const MoverSegmentPath path = mover_segment_path(mp, from, to);
+    const float dist = mover_segment_length(path, kfA, kfB);
+    const bool time_is_velocity = (mp->mover_flags & rf::MoverFlags::MF_USE_TRAV_TIME_AS_SPD) != 0;
+    // Kept consistent for stock readers of the clock; the pose never comes from it
+    mp->travel_time_seconds =
+        at.fraction * mpath::travel_seconds(kfA->forward_time_seconds, dist, time_is_velocity);
+    mp->dist_travelled = dist * at.fraction;
+    mp->cur_vel = std::abs(at.speed);
+    mp->p_data.next_pos = mover_segment_point(path, kfA, kfB, at.fraction);
+}
+
 static void alpine_mover_process_pre(rf::Mover* mp)
 {
     if (!mp)
         return;
 
     mp->p_data.vel = rf::Vector3{0.0f, 0.0f, 0.0f};
+
+    if (const auto cart = payload_cart_placement(mp)) {
+        alpine_mover_process_payload_cart(mp, *cart);
+        return;
+    }
 
     if (rf::mover_rotates_in_place(mp)) {
         rf::mover_rotating_process_pre(mp);
@@ -869,28 +972,27 @@ CodeInjection mover_rotating_process_pre_ping_pong_patch{
     }
 };
 
-// These modes turn the whole mover about its first keyframe, so its members stay together.
 CodeInjection mover_interpolate_objects_path_orient_patch{
     0x0046BF2E,
     [](auto& regs) {
-        if (g_mover_orient_entries.empty()) {
-            return;
-        }
         rf::Mover* mp = regs.esi;
         rf::Object* child = regs.edi;
-        const int count = count_keyframes(mp);
-        const auto it = count > 1 ? g_mover_orient_entries.find(KF(mp, 0)->uid) : g_mover_orient_entries.end();
         const int from = mp->start_at_keyframe;
         const int to = mp->stop_at_keyframe;
-        if (it == g_mover_orient_entries.end() || from < 0 || from >= count || to >= count) {
+        const mpath::PathFacing* facing = mover_path_facing(mp, from, to);
+        if (!facing) {
             return;
         }
 
-        const mpath::PathFacing& entry = it->second;
-        const MoverSegmentPath path = to >= 0 ? mover_segment_path(mp, from, to) : MoverSegmentPath{};
-        // From the clock, as a segment between coincident keyframes has no distance to measure
+        const mpath::PathFacing& entry = *facing;
+        // From the clock, as a segment between coincident keyframes has no distance to measure. The Payload cart
+        // has no clock of its own.
         float s = 0.0f;
-        if (to >= 0) {
+        if (const auto cart = payload_cart_placement(mp)) {
+            s = cart->fraction;
+        }
+        else if (to >= 0) {
+            const MoverSegmentPath path = mover_segment_path(mp, from, to);
             const rf::MoverKeyframe* kfA = KF(mp, from);
             const bool time_is_velocity = (mp->mover_flags & rf::MoverFlags::MF_USE_TRAV_TIME_AS_SPD) != 0;
             const float travel_param = mover_forward(mp) ? kfA->forward_time_seconds : kfA->reverse_time_seconds;
@@ -902,11 +1004,7 @@ CodeInjection mover_interpolate_objects_path_orient_patch{
             s = mpath::segment_progress(mp->travel_time_seconds, travel, accel, decel, mover_keyframe_ease(kfA));
         }
 
-        const auto type = static_cast<mpath::MoveType>(mp->keyframe_move_type);
-        const mpath::PathSpot spot = mpath::path_spot(from, to, s, count, mpath::has_closing_segment(type, count));
-        const mpath::Mat3 pose = mpath::path_facing_pose(
-            entry, spot, from, to, s, [mp](int i) { return mover_keyframe_orient(KF(mp, i)); },
-            [&](const mpath::PathSpot& at) { return mover_path_direction(mp, at, from, to); });
+        const mpath::Mat3 pose = mover_path_facing_pose(mp, entry, from, to, s);
 
         const rf::Vector3& kf0_pos = KF(mp, 0)->pos;
         const mpath::Vec3 rest{child->start_pos.x - kf0_pos.x, child->start_pos.y - kf0_pos.y,
@@ -1027,6 +1125,17 @@ CodeInjection mover_interpolate_objects_force_orient_rot_patch{
     }
 };
 
+// The Payload cart starts and stops only as its pushers move it
+FunHook<void(int, int, int)> mover_activate_from_trigger_hook{
+    0x0046ABA0,
+    [](int mover_handle, int trigger_handle, int activator_handle) {
+        if (payload_is_cart(mover_handle)) {
+            return;
+        }
+        mover_activate_from_trigger_hook.call_target(mover_handle, trigger_handle, activator_handle);
+    },
+};
+
 // Stock mover_process_pre: after mover_is_door() returns false at 0x00469B99,
 // also check alpine_mover_holds_open() to allow bounce-back for Hold Open movers.
 // Stock code: CALL mover_is_door; TEST AL,AL; JZ skip_bounce
@@ -1105,4 +1214,6 @@ void mover_do_patch()
 
     // Hold Open: play close sound when closing, just like doors
     mover_stock_start_sound_hold_open_patch.install();
+
+    mover_activate_from_trigger_hook.install();
 }

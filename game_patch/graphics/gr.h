@@ -31,6 +31,8 @@ void gr_band_strip(int rows, const rf::Vector3* pos, const rf::Vector3* side, co
 bool gr_project_world_to_screen(const rf::Vector3& world_pos, float& out_sx, float& out_sy);
 // Screen pixels per metre across the view at `pos`, 0 when it does not project
 float gr_pixels_per_meter(const rf::Vector3& pos);
+// Rotates a world point into `v` with the colour's RGB; `alpha` (0-1) scales the colour's own alpha
+void gr_set_colored_vertex(rf::gr::Vertex& v, const rf::Vector3& pos, const rf::Color& color, float alpha);
 int gr_fit_string(std::string& text, int max_width, int font_id = -1, std::string_view suffix = "-");
 void explosion_flash_light_create(
     const rf::Vector3& pos, float radius, float intensity, float r, float g, float b, int duration_ms, bool fade_only);

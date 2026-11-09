@@ -11,6 +11,7 @@ Version 1.5.0 (Trillium): Not yet released
   - Add `Meshes block light` level property to make Alpine Mesh objects cast baked shadows
   - Add `Alpha-tested light occlusion` level property so see-through faces, meshes and terrain decorations block baked light only where their textures are opaque
   - Add `No shadow cast` checkbox to Alpine Mesh object properties to exclude individual objects
+  - Add `Emits light` to `Liquid Room` room effects to bake light from liquid surfaces such as lava
 - Add global per-level directional sunlight and individual `Directional Light` objects with bounded ranges
   - `Casts shadows (lightmaps)` bakes the sun into the level's lightmaps with ray traced shadows
   - `Affects mesh lighting` lights meshes and entities per pixel from the sun direction, with `Scale mesh sunlight by lightmaps` to keep sunlight out of unlit interiors
@@ -37,7 +38,9 @@ Version 1.5.0 (Trillium): Not yet released
   - `server_bots` ADS option (0-31) sets how many server bots join; they use the `bot_profiles` profiles and follow `ideal_player_count` like bot clients
   - Add `sv_bot_add [profile_index] [red|blue]`, `sv_bot_remove <name|all>` and `sv_bot_list` server console commands, which also work through rcon
 - Add new powerups `Haste`, `Vampire`, `Jetpack`, `Health Shard`, and `Armor Shard`
-- Add new multiplayer game type: Scavenger (`SCAV`)
+- Add new multiplayer game types:
+  - Scavenger (`SCAV`)
+  - Payload (`PAY`)
 
 [@GooberRF](https://github.com/GooberRF) & [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add multiplayer vehicles and turrets
@@ -49,6 +52,7 @@ Version 1.5.0 (Trillium): Not yet released
 [@GooberRF](https://github.com/GooberRF)
 - Notify players in a server that is recording demos
 - Add `level_message` dedicated server config section to broadcast a message to all players when a level loads, set globally or per level (`$LEVEL` is replaced with the level name)
+- Add `wave_respawns` option to the `spawn_delay` dedicated server config section to respawn each team together in waves
 - Restore cut first person weapon aim sway, toggleable with `cl_weaponsway`
 - Add `cl_freelookslide` to scale the acceleration and deceleration slide of the freelook camera
 - Add terms of use and notices document to installer
@@ -211,6 +215,17 @@ Version 1.5.0 (Trillium): Not yet released
 - Add `Reference` screen to the extras and in-game multiplayer menus, describing weapons, vehicles, gametypes and powerups
   - Allow mods to replace its descriptions with their own `af_reference.toml`
   - Allow `af_reference.toml` to rename multiplayer characters with `[[mp_character]]` records
+- Show control points as spinning team medallions with a notched capture progress ring
+- Add `cl_wh_tethers`, `cl_wh_pushzone`, and `cl_wh_cartstatus` commands to toggle the world HUD beams from the players pushing or blocking the cart in Payload, the ring around it that shows where to push, and the status text over it
+- Add a scoreboard cursor to scroll long player lists and view player details
+- Add mute and rcon admin buttons to the scoreboard player popout
+- Add `sv_swap_team`, `sv_force_spectate`, `sv_force_unspectate` and `sv_toggle_ready` commands, usable over rcon
+- Add `sv_mute_chat` command to mute a player's chat for the whole server, usable over rcon
+- Add `ui_scoreboard_cursor` and `ui_scoreboard_cursor_hint` console commands to toggle the scoreboard cursor and its hint text
+- Balance scoreboard columns for large player counts
+- Allow match votes on servers whose base game type is not a team type
+- Add `announce_next_level` dedicated server config option to announce the next level and its game type at the end of each level
+- Include the next level's filename in the end-of-level game type switch announcement
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color
@@ -241,6 +256,9 @@ Version 1.5.0 (Trillium): Not yet released
 
 [@GooberRF](https://github.com/GooberRF) & [@is-this-c](https://github.com/is-this-c)
 - Add lens distortion, chromatic aberration and vignetting to the sniper and precision rifle scope views, with levels 0-2 via `r_scopeglass`: 0 off, 1 light, 2 heavy (Direct3D 11 renderer only)
+
+[@AL2009man](https://github.com/AL2009man)
+- Use a 0-10 range for the `Mouse sensitivity` slider when `ms_scale` is Modern
 
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
@@ -400,6 +418,8 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix lighting for pistol silencer and remote charge detonator
 - Fix third-person crouch animations on remote players flickering and snapping
 - Fix the multiplayer camera sitting above the eyes other players see on Parker and Ultor guard characters, which made other players look shorter than you
+- Fix level editor viewports flashing white or leaving black areas when resized under Wine/Proton
+- Fix occasional crash on startup with the Direct3D 11 renderer in MinGW builds
 
 [@GooberRF](https://github.com/GooberRF) & [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Fix severe frame rate drops when looking over heavily geomodded areas

@@ -31,9 +31,9 @@ std::string_view waypoint_type_name(WaypointType type);
 bool waypoint_type_is_standard(WaypointType type);
 // Types seeded from level objects, which generation links and builds around.
 bool waypoint_type_is_special(WaypointType type);
-// Where generation seeds the flood under each control point: on the floor under its trigger, where the flood could
-// put a node too.
-std::vector<rf::Vector3> generation_control_point_seed_positions();
+// Where generation seeds the flood under each control point and along a payload cart's track: on the floor, where the
+// flood could put a node too.
+std::vector<rf::Vector3> generation_objective_seed_positions();
 std::string_view waypoint_zone_type_name(WaypointZoneType type);
 std::string_view waypoint_target_type_name(WaypointTargetType type);
 WaypointZoneSource resolve_waypoint_zone_source(const WaypointZoneDefinition& zone);

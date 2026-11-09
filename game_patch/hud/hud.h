@@ -104,6 +104,8 @@ void set_local_pit_roster_entry(uint8_t player_id, uint8_t role, uint8_t order);
 int pit_scoreboard_role_for(const rf::Player* player); // 0=dueler,1=queued,2=not_queued,-1=unknown
 int pit_scoreboard_order_for(const rf::Player* player); // 1-based queue position, 0 if unknown/not-queued
 void hud_pit_queue_auto_spectate();
+void hud_request_forced_spectate(bool enter);
+void hud_forced_spectate_do_frame();
 
 void set_local_gungame_order(const af_gungame_order_entry* entries, uint8_t count);
 void reset_local_gungame_order();

@@ -12,6 +12,7 @@
 #include <common/alpine_waypoint_helper.h>
 #include <common/alpine_camera_far_clip.h>
 #include <common/mover_path.h>
+#include <common/payload.h>
 #include <common/lightmap/alpine_lightmap.h>
 #include <common/terrain/alpine_terrain.h>
 #include "../rf/geometry.h"
@@ -106,6 +107,7 @@ struct AlpineLevelProperties
     float minimap_cut_height = 0.0f; // editor-side bake parameter, no effect in game
     bool require_d3d11 = false; // refuse the level on the other renderers
     float camera_far_clip = 0.0f; // 0 = the stock far clip (fog far clip, else gr::default_wfar)
+    payload::LevelRules payload_rules;
 
     // should match SanitizeSunProperties in editor_patch\level.h
     // A level file can carry anything; these floats end up in the lights constant buffer and in the
@@ -427,6 +429,16 @@ struct AlpineLevelProperties
             if (!(camera_far_clip == far_clip)) {
                 xlog::warn("[AlpineLevelProps] Camera far clip {} corrected to {}", far_clip, camera_far_clip);
             }
+            // alpha_tested_occlusion is editor-only
+            if (!reader.read_bytes(&u8, sizeof(u8)))
+                return;
+            payload::LevelRules rules;
+            for (float* field : payload::LevelRules::file_fields(rules)) {
+                if (!reader.read_bytes(field, sizeof(*field)))
+                    return;
+            }
+            rules.sanitize();
+            payload_rules = rules;
         }
     }
 };

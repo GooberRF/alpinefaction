@@ -179,6 +179,7 @@ enum RF_GameType
     RF_GT_GG = 0x0C,
     RF_GT_SAL = 0x0D,
     RF_GT_SCAV = 0x0E,
+    RF_GT_PAY = 0x0F,
     // Sentinel: must always be the last entry. Keep in sync with rf::NetGameType.
     RF_GT_UNK
 };

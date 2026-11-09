@@ -90,7 +90,8 @@ bool bot_personality_manager_is_ctf_mode()
 
 bool bot_personality_manager_is_control_point_mode()
 {
-    return rf::is_multi && multi_is_game_type_with_hills();
+    // Payload checkpoints are taken by the cart, not by standing on them.
+    return rf::is_multi && multi_is_game_type_with_hills() && !gt_is_payload();
 }
 
 float bot_personality_manager_compute_combat_readiness_threshold()

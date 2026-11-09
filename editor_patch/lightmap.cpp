@@ -1,11 +1,13 @@
 #include <windows.h>
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <memory>
 #include <cstdint>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <format>
 #include <map>
 #include <numbers>
 #include <unordered_map>
@@ -27,6 +29,7 @@
 #include <common/alpine_dir_light.h>
 #include "dir_light.h"
 #include "level.h"
+#include "liquid_emission.h"
 #include "lightmap_mesh_occluders.h"
 #include "lightmap_alpha_masks.h"
 #include "alpine_lightmaps.h"
@@ -1505,11 +1508,22 @@ struct ShadeFrame
         const Vector3 p = orient * Vector3{x, y, z} + pos;
         return {p.x, p.y, p.z};
     }
+
+    Vec3f local_dir(const Vector3& d) const
+    {
+        if (!local) {
+            return {d.x, d.y, d.z};
+        }
+        return {dot(orient.rvec, d), dot(orient.uvec, d), dot(orient.fvec, d)};
+    }
 };
+
+struct BakeLiquidEmitter;
 
 // How one light's shadow rays are cast from a receiving point.
 struct LightRays
 {
+    const BakeLiquidEmitter* emitter = nullptr;
     int type = 0;
     const float* vec = nullptr;
     const float* vec_end = nullptr;
@@ -1548,17 +1562,149 @@ int g_dir_light_count = 0;
 int g_dir_light_slot[max_scene_lights];
 bool g_dir_lights_bounded = false;
 
+// -1 for a pointer outside the scene light pool.
+int scene_light_handle(const void* light)
+{
+    const auto off = reinterpret_cast<uintptr_t>(light) - reinterpret_cast<uintptr_t>(light_pool);
+    if (!light || off >= sizeof(light_pool) || off % light_entry_size != 0) {
+        return -1;
+    }
+    return static_cast<int>(off / light_entry_size);
+}
+
 const BakeDirLight* bake_dir_light(const void* light)
 {
-    if (g_dir_light_count == 0 || !light) {
-        return nullptr;
-    }
-    const auto off = reinterpret_cast<uintptr_t>(light) - reinterpret_cast<uintptr_t>(light_pool);
-    if (off >= sizeof(light_pool) || off % light_entry_size != 0) {
-        return nullptr;
-    }
-    const int slot = g_dir_light_slot[off / light_entry_size];
+    const int handle = g_dir_light_count == 0 ? -1 : scene_light_handle(light);
+    const int slot = handle < 0 ? 0 : g_dir_light_slot[handle];
     return slot > 0 ? &g_dir_lights[slot - 1] : nullptr;
+}
+
+// A stand-in point light gets the emitter gathered for each surface in reach.
+struct BakeLiquidEmitter
+{
+    int handle = -1;
+    bool below = false; // also lights what is below the surface
+    float distance = 0.0f;
+    LiquidSurface surface;
+};
+
+std::vector<BakeLiquidEmitter> g_liquid_emitters;
+// Per scene light handle: its g_liquid_emitters index + 1, 0 for any other light.
+int g_liquid_emitter_slot[max_scene_lights];
+
+const BakeLiquidEmitter* bake_liquid_emitter(const void* light)
+{
+    const int handle = g_liquid_emitters.empty() ? -1 : scene_light_handle(light);
+    const int slot = handle < 0 ? 0 : g_liquid_emitter_slot[handle];
+    return slot > 0 ? &g_liquid_emitters[slot - 1] : nullptr;
+}
+
+// 1 on the surface, falling linearly to 0 at the emitter's distance from it, as stock's default light falloff
+// does; 0 on a side it does not light. `p` is in world space.
+float liquid_emitter_falloff(const BakeLiquidEmitter& e, const Vector3& p)
+{
+    const LiquidSurface& s = e.surface;
+    const float dy = p.y - s.height();
+    if ((dy <= 0.0f && !e.below) || std::abs(dy) >= e.distance || p.x <= s.min_x() - e.distance ||
+        p.x >= s.max_x() + e.distance || p.z <= s.min_z() - e.distance || p.z >= s.max_z() + e.distance) {
+        return 0.0f;
+    }
+    const float d = s.distance(p);
+    return d < e.distance ? 1.0f - d / e.distance : 0.0f;
+}
+
+constexpr int liquid_visibility_rays = 32;
+
+// Cosine weighted directions over the hemisphere around +y (a Hammersley set), which each receiving point turns
+// by its own angle so neighbouring texels sample the surface differently.
+const std::array<Vec3f, liquid_visibility_rays>& liquid_ray_pattern()
+{
+    static const auto pattern = [] {
+        std::array<Vec3f, liquid_visibility_rays> dirs{};
+        for (int i = 0; i < liquid_visibility_rays; i++) {
+            std::uint32_t bits = static_cast<std::uint32_t>(i);
+            bits = (bits << 16) | (bits >> 16);
+            bits = ((bits & 0x55555555u) << 1) | ((bits & 0xAAAAAAAAu) >> 1);
+            bits = ((bits & 0x33333333u) << 2) | ((bits & 0xCCCCCCCCu) >> 2);
+            bits = ((bits & 0x0F0F0F0Fu) << 4) | ((bits & 0xF0F0F0F0u) >> 4);
+            bits = ((bits & 0x00FF00FFu) << 8) | ((bits & 0xFF00FF00u) >> 8);
+            const float u = (static_cast<float>(i) + 0.5f) / liquid_visibility_rays;
+            const float phi = static_cast<float>(bits) * 2.3283064e-10f * 2.0f * std::numbers::pi_v<float>;
+            const float r = std::sqrt(u);
+            dirs[i] = {r * std::cos(phi), std::sqrt(1.0f - u), r * std::sin(phi)};
+        }
+        return dirs;
+    }();
+    return pattern;
+}
+
+float liquid_ray_pattern_turn(const Vector3& p)
+{
+    std::uint32_t h = std::bit_cast<std::uint32_t>(p.x) * 0x9E3779B1u
+                      ^ std::bit_cast<std::uint32_t>(p.y) * 0x85EBCA77u
+                      ^ std::bit_cast<std::uint32_t>(p.z) * 0xC2B2AE3Du;
+    h ^= h >> 15;
+    h *= 0x2C1B3C6Du;
+    h ^= h >> 12;
+    h *= 0x297A2D39u;
+    h ^= h >> 15;
+    return static_cast<float>(h >> 8) * (2.0f * std::numbers::pi_v<float> / 16777216.0f);
+}
+
+// The share of the rays from the receiver to the liquid surface that reach it: q is set up as for any other light,
+// its origin already lifted off the receiver, whose normal is `ns`.
+std::uint8_t liquid_emitter_visibility(const OccluderTree& tree, const LightRays& lr, OccQuery q, const Vec3f& ns)
+{
+    const BakeLiquidEmitter& e = *lr.emitter;
+    const auto wo = lr.frame.world_point(q.origin.x, q.origin.y, q.origin.z);
+    const Vector3 origin{wo.x, wo.y, wo.z};
+    // the accumulator weighs the glow 0 here, so the mask value is never read
+    if (liquid_emitter_falloff(e, origin) <= 0.0f) {
+        return 0;
+    }
+    const auto wn = lr.frame.world_dir(ns.x, ns.y, ns.z);
+    const Vector3 n{wn.x, wn.y, wn.z};
+    const Vector3 t = any_perpendicular(n);
+    const Vector3 b = cross(n, t);
+    const float turn = liquid_ray_pattern_turn(origin);
+    const float cs = std::cos(turn);
+    const float sn = std::sin(turn);
+    const float dy = origin.y - e.surface.height();
+
+    float lit = 0.0f;
+    int taken = 0;
+    auto trace = [&](const Vector3& dir, float dist) {
+        q.dir = lr.frame.local_dir(dir);
+        q.nd = vdot(ns, q.dir);
+        q.tmax = dist - lm_ray_eps;
+        q.converge = 1.0f / dist;
+        taken++;
+        lit += q.tmax > q.tmin ? tree.transmittance(q) : 1.0f;
+    };
+    for (const Vec3f& p : liquid_ray_pattern()) {
+        const float x = p.x * cs - p.z * sn;
+        const float z = p.x * sn + p.z * cs;
+        const Vector3 dir = t * x + n * p.y + b * z;
+        if (!(dir.y * dy < 0.0f)) {
+            continue;
+        }
+        const float dist = -dy / dir.y;
+        const Vector3 hit = origin + dir * dist;
+        if (e.surface.contains(hit.x, hit.z)) {
+            trace(dir, dist);
+        }
+    }
+    // a receiver that sees the surface at too small an angle for the pattern to land on it
+    if (taken == 0) {
+        const Vector3 to = e.surface.nearest_point(origin) - origin;
+        const float dist = length(to);
+        if (!(dist > 1e-4f)) {
+            return 0xffu;
+        }
+        trace(to * (1.0f / dist), dist);
+    }
+    const int lit255 = static_cast<int>(std::lround(lit * 255.0f));
+    return static_cast<std::uint8_t>((lit255 + taken / 2) / taken);
 }
 
 constexpr float deg_to_rad = 3.14159265358979f / 180.0f;
@@ -1731,6 +1877,7 @@ static bool light_rays_setup(uintptr_t light, LightRays& lr)
 {
     const auto* l = reinterpret_cast<const GrLight*>(light);
     lr.type = l->type;
+    lr.emitter = bake_liquid_emitter(reinterpret_cast<const void*>(light));
     lr.frame = ShadeFrame::current();
     // while a mover transform is pushed the engine keeps the light in the solid's own space
     const bool local = lr.frame.local;
@@ -1786,6 +1933,9 @@ static std::uint8_t light_rays_visibility(const OccluderTree& tree, const LightR
     q.skip_flags = lr.skip_flags;
     q.oneside_flags = lr.oneside_flags;
     q.footprint = std::isfinite(footprint) && footprint > 0.0f ? footprint : 0.0f;
+    if (lr.emitter) {
+        return liquid_emitter_visibility(tree, lr, q, ns);
+    }
     if (lr.type == LT_DIRECTIONAL) {
         q.tmax = 1.0e6f;
         const alpine_dir_light::Vec3 world_origin =
@@ -1999,6 +2149,81 @@ static void dir_lights_create()
     }
 }
 
+static void liquid_emitters_destroy()
+{
+    for (const BakeLiquidEmitter& e : g_liquid_emitters) {
+        light_free(e.handle, 0);
+        g_liquid_emitter_slot[e.handle] = 0;
+    }
+    g_liquid_emitters.clear();
+}
+
+// Only a fixed pipeline bake traces the masks the glow needs.
+static void liquid_emitters_create()
+{
+    liquid_emitters_destroy();
+    auto* level = CDedLevel::Get();
+    if (!bake_fixes_active() || !level || !level->solid) {
+        return;
+    }
+    const auto& effects = level->room_effects;
+    // reserved so nothing between creating a scene light and registering it can throw; BakeScope frees registered ones
+    std::vector<const GRoom*> lit_rooms;
+    lit_rooms.reserve(effects.size);
+    g_liquid_emitters.reserve(effects.size);
+    auto warn = [](const DedRoomEffect& effect, const char* problem) {
+        editor_report(EditorReportLevel::warn, "Lightmap",
+                      std::format("Liquid Room {} emits light but {}", effect.uid, problem), true);
+    };
+    for (int i = 0; i < effects.size; i++) {
+        const auto* effect = static_cast<const DedRoomEffect*>(effects.data_ptr[i]);
+        if (!effect || effect->effect_type != static_cast<int>(DedRoomEffectType::Liquid)) {
+            continue;
+        }
+        const LiquidEmission em = liquid_emission_of(*effect);
+        if (em.mode == LiquidEmitMode::off || !(em.intensity > 0.0f) || !(em.distance > 0.0f) ||
+            (em.color_r | em.color_g | em.color_b) == 0) {
+            continue;
+        }
+        // the room the effect gives its liquid to (FUN_0040ab80)
+        const GRoom* room = level->solid->room_at(&effect->pos);
+        if (!room || !room->contains_liquid) {
+            warn(*effect, "is not in a liquid room; run Build Geometry");
+            continue;
+        }
+        if (std::find(lit_rooms.begin(), lit_rooms.end(), room) != lit_rooms.end()) {
+            warn(*effect, "another Liquid Room already lights its room, so it is left out");
+            continue;
+        }
+        BakeLiquidEmitter e;
+        if (!e.surface.build(*level->solid, *room)) {
+            warn(*effect, "its room has no liquid surface; run Build Geometry");
+            continue;
+        }
+        e.below = em.mode == LiquidEmitMode::up_and_down;
+        e.distance = em.distance;
+        // the stand-in's sphere holds every point within the distance of the surface
+        const float half_x = (e.surface.max_x() - e.surface.min_x()) * 0.5f;
+        const float half_z = (e.surface.max_z() - e.surface.min_z()) * 0.5f;
+        const Vector3 centre{e.surface.min_x() + half_x, e.surface.height(), e.surface.min_z() + half_z};
+        const float radius = std::sqrt(half_x * half_x + half_z * half_z) + em.distance;
+        constexpr float inv255 = 1.0f / 255.0f;
+        const int handle = light_create_point(&centre, radius, em.intensity, em.color_r * inv255,
+                                              em.color_g * inv255, em.color_b * inv255, 0, 1, 0);
+        if (handle < 0 || handle >= max_scene_lights) {
+            xlog::error("Lightmap: failed to allocate a scene light for Liquid Room {}", effect->uid);
+            continue;
+        }
+        e.handle = handle;
+        lit_rooms.push_back(room);
+        g_liquid_emitters.push_back(std::move(e));
+        g_liquid_emitter_slot[handle] = static_cast<int>(g_liquid_emitters.size());
+        const LiquidSurface& surface = g_liquid_emitters.back().surface;
+        xlog::info("Lightmap: Liquid Room {} emits light from {} liquid face(s) at height {}", effect->uid,
+                   surface.polygon_count(), surface.height());
+    }
+}
+
 // Brackets one Calculate Lighting command: the scene light, the caches and the reporting all
 // belong to it and none of them may survive it, including when the bake below unwinds.
 class BakeScope
@@ -2007,6 +2232,13 @@ public:
     BakeScope()
     {
         dir_lights_create();
+        try {
+            liquid_emitters_create();
+        }
+        catch (...) {
+            liquid_emitters_destroy();
+            xlog::error("Lightmap: out of memory preparing the liquid surfaces, they emit no light");
+        }
         lightmap_release_occluders();
         g_no_shadow_cast_dropped.clear();
         g_occluder_tree_built = false;
@@ -2027,6 +2259,7 @@ public:
         try {
             lightmap_release_occluders();
             dir_lights_destroy();
+            liquid_emitters_destroy();
         }
         catch (...) {
         }
@@ -2426,11 +2659,14 @@ CodeInjection dir_light_face_light_dedup_injection{
     [](auto& regs) {
         int index = regs.eax;
         bool duplicate = false;
-        const BakeDirLight* dl =
-            index >= 0 && index < max_scene_lights ? bake_dir_light(face_light_list[index]) : nullptr;
+        const void* light = index >= 0 && index < max_scene_lights ? face_light_list[index] : nullptr;
+        const BakeDirLight* dl = bake_dir_light(light);
         if (dl) {
             duplicate = dir_light_misses_box(*dl, reinterpret_cast<const Vector3*>(static_cast<uintptr_t>(regs.ebp)),
                                              reinterpret_cast<const Vector3*>(static_cast<uintptr_t>(regs.edi)));
+        }
+        // a liquid emitter's stand-in is gathered once per room too; keep one entry
+        if (dl || bake_liquid_emitter(light)) {
             for (int i = 0; i < index && !duplicate; i++) {
                 duplicate = face_light_list[i] == face_light_list[index];
             }
@@ -2481,6 +2717,22 @@ static void __cdecl shadow_mask_new(uintptr_t solid, uintptr_t surface, uintptr_
     // projector: the tracer's caches are only meaningful for as long as the command that built them
     if (g_bake_active && (bake_fixes_active() || dl) &&
         lightmap_raycast_mask(solid, surface, light, mask)) {
+        return;
+    }
+    // The stand-in light's position means nothing to the stock projector. A solid with nothing to occlude (an
+    // all-glass or No shadow cast mover) gets the whole glow; a surface that could not be traced gets none.
+    if (bake_liquid_emitter(reinterpret_cast<const void*>(light))) {
+        const SolidCache* cache = lightmap_solid_cache(solid);
+        const bool unoccluded = cache && cache->tree_built && cache->tree.empty();
+        static bool warned = false;
+        if (!unoccluded && !warned) {
+            warned = true;
+            xlog::warn("Lightmap: a liquid surface's light could not be traced for at least one surface, which "
+                       "gets none of it");
+        }
+        const auto* surf = reinterpret_cast<const GSurface*>(surface);
+        std::memset(mask, unoccluded ? 0xff : 0,
+                    static_cast<std::size_t>(std::max(surf->width, 0)) * std::max(surf->height, 0));
         return;
     }
     if (!dl) {
@@ -2608,17 +2860,19 @@ static Vector3 smooth_lumel_weight_point(const GSurface& surface, const Vector3&
 
 // Every bake path reaches this accumulator. The volume weight scales the light's colour for the one call,
 // not its mask byte, which would quantise feathered edges to 1/255 of a bright light's output. Stock still
-// shades at pos; only the volume weight moves, for a smooth lumel_surface.
+// shades at pos; only the volume weight and the liquid glow move, for a smooth lumel_surface. A liquid
+// emitter's stand-in light is masked out of the stock call and its glow added after it.
 static void light_accum_volume_weighted(float* r, float* g, float* b, const Vector3* pos, const Vector3* normal,
                                         void* masks, int texel_index, const void* smooth,
                                         const GSurface* lumel_surface)
 {
+    const bool alpine_lights = g_dir_lights_bounded || !g_liquid_emitters.empty();
     const int count =
-        g_bake_active && g_dir_lights_bounded && pos ? std::clamp(face_light_count, 0, max_scene_lights) : 0;
+        g_bake_active && alpine_lights && pos ? std::clamp(face_light_count, 0, max_scene_lights) : 0;
     int first = count;
     for (int i = 0; i < count; i++) {
         const BakeDirLight* dl = bake_dir_light(face_light_list[i]);
-        if (dl && dl->bounded()) {
+        if ((dl && dl->bounded()) || bake_liquid_emitter(face_light_list[i])) {
             first = i;
             break;
         }
@@ -2634,14 +2888,22 @@ static void light_accum_volume_weighted(float* r, float* g, float* b, const Vect
         GrLight* light;
         float r, g, b;
     };
+    struct Glow
+    {
+        const BakeLiquidEmitter* emitter;
+        const GrLight* light;
+        float visibility;
+    };
     static std::uint8_t bytes[max_scene_lights];
     static const std::uint8_t* views[max_scene_lights];
     static Scaled scaled[max_scene_lights];
+    static Glow glows[max_scene_lights];
     int num_scaled = 0;
+    int num_glows = 0;
     const auto* in = static_cast<const std::uint8_t* const*>(masks);
     const Vector3 weight_point = lumel_surface ? smooth_lumel_weight_point(*lumel_surface, *pos, texel_index) : *pos;
-    const alpine_dir_light::Vec3 world =
-        ShadeFrame::current().world_point(weight_point.x, weight_point.y, weight_point.z);
+    const ShadeFrame frame = ShadeFrame::current();
+    const alpine_dir_light::Vec3 world = frame.world_point(weight_point.x, weight_point.y, weight_point.z);
     for (int i = 0; i < count; i++) {
         std::uint8_t m = in ? in[i][texel_index] : 0xffu;
         const BakeDirLight* dl = i < first ? nullptr : bake_dir_light(face_light_list[i]);
@@ -2658,6 +2920,12 @@ static void light_accum_volume_weighted(float* r, float* g, float* b, const Vect
                 light->b *= w;
             }
         }
+        else if (const BakeLiquidEmitter* le = i < first ? nullptr : bake_liquid_emitter(face_light_list[i])) {
+            if (m != 0) {
+                glows[num_glows++] = {le, reinterpret_cast<const GrLight*>(face_light_list[i]), m / 255.0f};
+            }
+            m = 0;
+        }
         bytes[i] = m;
         views[i] = &bytes[i];
     }
@@ -2666,6 +2934,28 @@ static void light_accum_volume_weighted(float* r, float* g, float* b, const Vect
         scaled[i].light->r = scaled[i].r;
         scaled[i].light->g = scaled[i].g;
         scaled[i].light->b = scaled[i].b;
+    }
+    if (num_glows == 0) {
+        return;
+    }
+    const Vector3 p{world.x, world.y, world.z};
+    Vector3 n{};
+    if (normal) {
+        const alpine_dir_light::Vec3 wn = frame.world_dir(normal->x, normal->y, normal->z);
+        n = normalized({wn.x, wn.y, wn.z});
+    }
+    for (int i = 0; i < num_glows; i++) {
+        const Glow& glow = glows[i];
+        const float falloff = liquid_emitter_falloff(*glow.emitter, p);
+        if (!(falloff > 0.0f)) {
+            continue;
+        }
+        // without a normal the receiver faces the surface, as stock's point light term has it face the light
+        const Vector3 facing = normal ? n : Vector3{0.0f, p.y > glow.emitter->surface.height() ? -1.0f : 1.0f, 0.0f};
+        const float k = glow.visibility * falloff * glow.emitter->surface.form_factor(p, facing);
+        *r += glow.light->r * k;
+        *g += glow.light->g * k;
+        *b += glow.light->b * k;
     }
 }
 

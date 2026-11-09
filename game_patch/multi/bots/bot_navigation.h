@@ -25,6 +25,8 @@ bool bot_nav_find_crater_fire_waypoint(
 // A crater target the bot could not find a place to fire from is left alone for a while.
 void bot_nav_note_failed_crater_target(int target_uid, int cooldown_ms);
 bool bot_nav_crater_target_failed_recently(int target_uid);
+// A Payload hold-ahead spot sits at the cart's centre height.
+bool bot_nav_payload_hold_ahead_reached(const rf::Vector3& pos, const rf::Vector3& spot);
 // The waypoint nearest pos that the bot can walk to from where it stands.
 bool bot_nav_find_reachable_waypoint_near(
     const rf::Entity& local_entity, const rf::Vector3& pos, int preferred_waypoint, int& out_waypoint,

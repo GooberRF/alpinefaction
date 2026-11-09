@@ -5,6 +5,7 @@
 #include "bot_personality_manager.h"
 #include "bot_state.h"
 #include "../gametype.h"
+#include "../payload.h"
 #include <algorithm>
 #include <cmath>
 
@@ -43,8 +44,13 @@ BotFsmState bot_fsm_manager_select_state(
         bot_state_clear_recovery_reroute();
     }
 
+    // A pusher healed in the push zone holds it rather than retreat out of it and stop the cart.
+    const bool pushing_healed =
+        bot_state().active_goal == BotGoalType::pay_push && payload_heals_now()
+        && payload_player_in_push_zone(local_player);
     const bool retreat_now =
         enemy_target
+        && !pushing_healed
         && bot_personality_manager_should_retreat_state(local_entity, enemy_has_los);
     const bool needs_weapon =
         bot_personality_manager_should_seek_weapon_state(local_player, local_entity);
@@ -110,6 +116,20 @@ BotFsmState bot_fsm_manager_select_state(
                 return BotFsmState::replenish_health_armor;
             }
             if (needs_weapon) {
+                return BotFsmState::seek_weapon;
+            }
+        }
+        return BotFsmState::ctf_objective;
+    }
+    if (bot_goal_is_payload_objective(bot_state().active_goal)) {
+        // Pushers are healed in the push zone where the level allows it, and one already pushing does not leave the
+        // cart for a weapon. Defenders never break off: a spawn's empty armour alone asks for a top-up, and the cart
+        // is pushed on while they fetch one. A hurt defender still takes a health pickup as a goal.
+        if (!keep_pressure_on_enemy && bot_state().active_goal == BotGoalType::pay_push) {
+            if (needs_replenish && !payload_heals_now()) {
+                return BotFsmState::replenish_health_armor;
+            }
+            if (needs_weapon && !payload_player_in_push_zone(local_player)) {
                 return BotFsmState::seek_weapon;
             }
         }

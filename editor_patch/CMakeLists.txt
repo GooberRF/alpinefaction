@@ -74,6 +74,8 @@ set(SRCS
     waypoint_helper.h
     mover_path.cpp
     mover_path.h
+    liquid_emission.cpp
+    liquid_emission.h
     terrain.cpp
     terrain.h
     terrain_build.cpp

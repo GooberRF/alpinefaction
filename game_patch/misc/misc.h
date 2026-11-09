@@ -43,3 +43,4 @@ bool rocket_locked_reticle_is_customized(bool bighud);
 bool gameseq_is_stacked(rf::GameState state);
 bool gameseq_is_deep_stacked(rf::GameState state);
 bool gameseq_is_visible();
+int letterbox_clip_height();

@@ -43,7 +43,14 @@ struct WorldHUDAssets
     int sal_wait;
     int sal_base_red;
     int sal_base_blue;
+    int medallion_red;
+    int medallion_blue;
+    int medallion_neutral;
+    int medallion_lock;
 };
+
+// The medallion face with `team`'s emblem, or the plain one for -1
+int world_hud_medallion_face(int team);
 
 struct KothHudTuning
 {

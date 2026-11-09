@@ -159,16 +159,6 @@ bool gr_3d_bitmap_oriented_wh(const rf::Vector3* pnt, const rf::Matrix3* M, floa
     return rf::gr::poly(4, verts, rf::gr::TMapperFlags::TMAP_FLAG_TEXTURED, mode, 0, 0.0f);
 }
 
-static void rotate_vertex_rgba(rf::gr::Vertex& v, const rf::Vector3& pos, const rf::gr::Color& color, float alpha)
-{
-    rf::Vector3 p = pos;
-    rf::gr::rotate_vertex(&v, &p);
-    v.r = color.red;
-    v.g = color.green;
-    v.b = color.blue;
-    v.a = static_cast<rf::ubyte>(std::clamp(alpha * color.alpha + 0.5f, 0.0f, 255.0f));
-}
-
 void gr_band_strip(int rows, const rf::Vector3* pos, const rf::Vector3* side, const float* alpha, float band,
                    const rf::gr::Color& color, rf::gr::Mode mode)
 {
@@ -182,7 +172,7 @@ void gr_band_strip(int rows, const rf::Vector3* pos, const rf::Vector3* side, co
         for (int col = 0; col < 4; ++col) {
             const bool edge = col == 0 || col == 3;
             r1[col] = {};
-            rotate_vertex_rgba(r1[col], pos[row] + side[row] * col_offset[col], color, edge ? 0.0f : alpha[row]);
+            gr_set_colored_vertex(r1[col], pos[row] + side[row] * col_offset[col], color, edge ? 0.0f : alpha[row]);
         }
         if (row == 0) {
             continue;
@@ -217,6 +207,16 @@ float gr_pixels_per_meter(const rf::Vector3& pos)
         return std::hypot(ox - px, oy - py);
     }
     return 0.0f;
+}
+
+void gr_set_colored_vertex(rf::gr::Vertex& v, const rf::Vector3& pos, const rf::Color& color, float alpha)
+{
+    rf::Vector3 p = pos;
+    rf::gr::rotate_vertex(&v, &p);
+    v.r = color.red;
+    v.g = color.green;
+    v.b = color.blue;
+    v.a = static_cast<rf::ubyte>(std::clamp(alpha * color.alpha + 0.5f, 0.0f, 255.0f));
 }
 
 float gr_scale_fov_hor_plus(float horizontal_fov)

@@ -880,11 +880,6 @@ struct VoteMatch : public Vote
             return false;
         }
 
-        if (!multi_game_type_is_team_type(g_alpine_server_config.base_rules.game_type)) {
-            send_vote_reject_msg("Cannot start vote: server base game type is not a team game type.", source);
-            return false;
-        }
-
         // The match must end up on a team game type — evaluated against what will
         // actually apply, not the base rules.
         if (!multi_game_type_is_team_type(effective_game_type)) {
@@ -1916,14 +1911,7 @@ static uint32_t build_enabled_vote_mask()
     uint32_t mask = 0;
     if (cfg.vote_kick.enabled) mask |= bit(AfVoteType::Kick);
     if (cfg.vote_level.enabled) mask |= bit(AfVoteType::Level);
-    // VoteMatch::validate refuses every match on a server whose base game type is
-    // not a team type, so Match is not advertised there rather than being offered
-    // and always rejected. CancelMatch stays advertised: a live match can outlast a
-    // config change to a non-team base type, and the vote panel is its only caller.
-    if (cfg.vote_match.enabled) {
-        if (multi_game_type_is_team_type(cfg.base_rules.game_type)) mask |= bit(AfVoteType::Match);
-        mask |= bit(AfVoteType::CancelMatch);
-    }
+    if (cfg.vote_match.enabled) mask |= bit(AfVoteType::Match) | bit(AfVoteType::CancelMatch);
     if (cfg.vote_extend.enabled) mask |= bit(AfVoteType::Extend);
     if (cfg.vote_restart.enabled) mask |= bit(AfVoteType::Restart);
     if (cfg.vote_next.enabled) mask |= bit(AfVoteType::Next);
@@ -2262,7 +2250,7 @@ static bool resolve_vote_gametype(uint8_t wire_value, rf::Player* sender, std::o
         out = std::nullopt;
         return true;
     }
-    if (wire_value > static_cast<uint8_t>(rf::NG_TYPE_SCAV)) {
+    if (wire_value > static_cast<uint8_t>(rf::NG_TYPE_PAY)) {
         send_vote_reject_msg("Cannot start vote: this server does not support that game type.", sender);
         return false;
     }

@@ -393,7 +393,10 @@ namespace rf
         Climbing_Region_State,
         When_Destroyed,
         Rope_State,
-        Mesh_Set_Scale
+        Mesh_Set_Scale,
+        Payload_Handler,
+        Payload_Checkpoint,
+        When_Setup_Ends
     };
 
     std::vector<rf::Event*> find_all_events_by_type(rf::EventType event_type);

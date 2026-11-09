@@ -16,6 +16,7 @@
 #include "alpine_terrain_decorations.h"
 #include "misc.h"
 #include "player.h"
+#include "../multi/payload.h"
 #include "../multi/server.h"
 #include "../multi/vehicles/vehicle_physics.h"
 #include "../object/alpine_corona.h"
@@ -164,6 +165,7 @@ void level_shutdown()
     alpine_mesh_free_collision_proxies();
     vehicle_physics_level_reset(); // the Bullet world keys on GRoom*, so it goes before the rooms
     snd_level_looping_reset(); // the stock close that follows stops every channel, so nothing still plays the loop
+    payload_level_close();
 }
 
 // Reached from quit-to-menu and leaving for the multiplayer menu (via game_shutdown), the

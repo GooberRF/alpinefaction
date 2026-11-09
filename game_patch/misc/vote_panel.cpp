@@ -17,6 +17,7 @@
 #include "player.h"
 #include "saved_votes.h"
 #include "../hud/hud_internal.h"
+#include "../hud/multi_scoreboard.h"
 #include "../hud/remote_server_cfg_ui.h"
 #include "../input/control_input_filter.h"
 #include "../multi/alpine_packets.h"
@@ -274,6 +275,7 @@ const char* gametype_short_name(uint8_t id)
         case rf::NG_TYPE_GG: return "GG";
         case rf::NG_TYPE_SAL: return "SAL";
         case rf::NG_TYPE_SCAV: return "SCAV";
+        case rf::NG_TYPE_PAY: return "PAY";
         default: return nullptr; // unknown to this build
     }
 }
@@ -1030,15 +1032,15 @@ int gametype_index_in(const std::vector<const VoteGametypeInfo*>& gametypes, uin
     return -1;
 }
 
-// Cycler index of `game_type`; when this vote does not offer it, TeamDM for DM, else
-// `current_index` held rather than moved under a player who did not ask.
-int gametype_cycler_index(const std::vector<const VoteGametypeInfo*>& gametypes, uint8_t game_type,
-                          int current_index)
+// Cycler index of `game_type`; when this vote does not offer it, TeamDM for a match vote
+// or for DM, else `current_index` held rather than moved under a player who did not ask.
+int gametype_cycler_index(const std::vector<const VoteGametypeInfo*>& gametypes, bool team_only,
+                          uint8_t game_type, int current_index)
 {
     if (const int index = gametype_index_in(gametypes, game_type); index >= 0) {
         return index;
     }
-    if (game_type == static_cast<uint8_t>(rf::NG_TYPE_DM)) {
+    if (team_only || game_type == static_cast<uint8_t>(rf::NG_TYPE_DM)) {
         const int team_dm = gametype_index_in(gametypes, static_cast<uint8_t>(rf::NG_TYPE_TEAMDM));
         if (team_dm >= 0) {
             return team_dm;
@@ -1050,7 +1052,7 @@ int gametype_cycler_index(const std::vector<const VoteGametypeInfo*>& gametypes,
 
 int gametype_cycler_index(const VoteOptionsData& options, bool team_only, uint8_t game_type, int current_index)
 {
-    return gametype_cycler_index(selectable_gametypes(options, team_only), game_type, current_index);
+    return gametype_cycler_index(selectable_gametypes(options, team_only), team_only, game_type, current_index);
 }
 
 int gametype_cycler_width(const std::vector<const VoteGametypeInfo*>& gametypes, int font, int max_w)
@@ -2686,7 +2688,7 @@ void do_form(UiContext& ui, const Layout& lo, const VoteOptionsData& options,
         // Back to the level's own game type, re-armed so it follows the level again.
         const Rect reset{right_col.x + right_col.w - reset_w, ry, reset_w, lo.row_h};
         if (ui_button(ui, reset, "Reset", lo.font, gametype_count > 0) && gametype_count > 0) {
-            g_form.gametype_index = gametype_cycler_index(gametypes,
+            g_form.gametype_index = gametype_cycler_index(gametypes, is_match,
                 form_default_gametype(options, is_match, selected_level()),
                 g_form.gametype_index);
             g_form.gametype_touched = false;
@@ -3022,7 +3024,13 @@ CallHook<rf::GameState()> gameseq_process_hook{
         vote_panel_decay_attack_swallow();
         vote_panel_gameplay_input();
         demo_controls_ui_input();
-        return gameseq_process_hook.call_target();
+        multi_scoreboard_input();
+        const rf::GameState state = gameseq_process_hook.call_target();
+        // gameseq_process re-hides the cursor in gameplay and limbo.
+        if (multi_scoreboard_cursor_active()) {
+            rf::mouse_set_visible(true);
+        }
+        return state;
     },
 };
 
@@ -3124,8 +3132,8 @@ FunHook<void(int, int)> gameseq_state_do_frame_hook{
 } // namespace
 
 // Shared by every gameplay overlay that needs a free cursor (vote panel, demo
-// controls popup); the overlays are mutually exclusive, so sharing the save/restore
-// state below is safe.
+// controls popup, scoreboard cursor); only one owns it at a time, so sharing the
+// save/restore state below is safe.
 void gameplay_overlay_apply_mouse(bool active)
 {
     rf::Player* const player = rf::local_player;
@@ -3162,6 +3170,11 @@ void gameplay_overlay_apply_mouse(bool active)
         rf::mouse_keep_centered_enable();
         rf::mouse_set_visible(false);
     }
+}
+
+bool gameplay_overlay_mouse_is_overridden()
+{
+    return g_gameplay_mouse_overridden;
 }
 
 void vote_panel_close()

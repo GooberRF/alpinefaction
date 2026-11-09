@@ -4,13 +4,16 @@
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <format>
 #include <string>
 #include <utility>
 #include <patch_common/CallHook.h>
 #include <patch_common/CodeInjection.h>
+#include <common/payload.h>
 #include <common/rfl_chunk_reader.h>
 #include <xlog/xlog.h>
 #include "alpine_obj.h"
+#include "event.h"
 #include "gizmo.h"
 #include "level.h"
 #include "mover_path.h"
@@ -746,6 +749,127 @@ void __fastcall keyframe_dialog_destroy(void* dialog, int edx)
     }
 }
 
+// ─── Payload ────────────────────────────────────────────────────────────────
+
+const DedObject* object_by_uid(const CDedLevel& level, int uid)
+{
+    const auto& objects = level.master_objects;
+    for (int i = 0; i < objects.size; i++) {
+        const DedObject* obj = objects.data_ptr[i];
+        if (obj && obj->uid == uid) return obj;
+    }
+    return nullptr;
+}
+
+bool is_event_type(const DedObject* obj, AlpineDedEventID type)
+{
+    return obj && obj->type == DedObjectType::DED_EVENT
+        && static_cast<const DedEvent*>(obj)->event_type == af_ded_event_to_int(type);
+}
+
+std::vector<const DedEvent*> payload_handlers(const CDedLevel& level)
+{
+    std::vector<const DedEvent*> handlers;
+    const auto& objects = level.master_objects;
+    for (int i = 0; i < objects.size; i++) {
+        if (is_event_type(objects.data_ptr[i], AlpineDedEventID::Payload_Handler)) {
+            handlers.push_back(static_cast<const DedEvent*>(objects.data_ptr[i]));
+        }
+    }
+    return handlers;
+}
+
+// A link to any of a group's keyframes links its mover
+std::vector<GroupEntry*> linked_movers(const CDedLevel& level, const DedEvent& handler)
+{
+    std::vector<GroupEntry*> groups;
+    for (int i = 0; i < handler.links.size; i++) {
+        const DedObject* obj = object_by_uid(level, handler.links.data_ptr[i]);
+        GroupEntry* group = obj && obj->type == DedObjectType::DED_KEYFRAME ? moving_group_of(level, obj) : nullptr;
+        if (group && std::find(groups.begin(), groups.end(), group) == groups.end()) {
+            groups.push_back(group);
+        }
+    }
+    return groups;
+}
+
+// As the game picks it: the first Payload_Handler's first linked mover
+const GroupEntry* payload_cart(const CDedLevel& level)
+{
+    const std::vector<const DedEvent*> handlers = payload_handlers(level);
+    if (handlers.empty()) return nullptr;
+    const std::vector<GroupEntry*> movers = linked_movers(level, *handlers.front());
+    return movers.empty() ? nullptr : movers.front();
+}
+
+// The game's cart rules. A cart with no members or a zero-length track is left to the save check.
+bool cart_is_usable(CDedLevel& level, const GroupEntry& group)
+{
+    if (!group_has_paths(level.GetAlpineLevelProperties(), group)
+        || static_cast<mp::MoveType>(group.keyframes->movement_type) != mp::MoveType::one_way) {
+        return false;
+    }
+    const auto& objects = group.keyframes->objects;
+    int keyframes = 0;
+    for (int i = 0; i < objects.size && keyframes < 2; i++) {
+        const auto* kf = static_cast<const DedKeyframe*>(objects.data_ptr[i]);
+        if (kf && kf->active) {
+            keyframes++;
+        }
+    }
+    return keyframes >= 2;
+}
+
+bool is_payload_cart(CDedLevel& level, const GroupEntry& group)
+{
+    return payload_cart(level) == &group && cart_is_usable(level, group);
+}
+
+const DedEvent* checkpoint_of(const CDedLevel& level, const DedKeyframe& kf)
+{
+    const DedObject* obj = object_by_uid(level, kf.event_uid);
+    return is_event_type(obj, AlpineDedEventID::Payload_Checkpoint) ? static_cast<const DedEvent*>(obj) : nullptr;
+}
+
+// Without a closing segment, as the game measures the cart's track
+float payload_track_length(const AlpineLevelProperties& props, const GroupEntry& group, const GroupPath& path)
+{
+    const bool curves = group_has_paths(props, group);
+    float length = 0.0f;
+    for (int i = 0; i + 1 < path.count(); i++) {
+        length += curves && path.segment_curved(i) ? mp::make_segment_curve(path.keys, i).length
+                                                   : mp::length(path.keys[i + 1].pos - path.keys[i].pos);
+    }
+    return length;
+}
+
+// Empty unless the group is a Payload cart
+std::string payload_push_times(CDedLevel& level, const GroupEntry& group, const GroupPath& path)
+{
+    if (!is_payload_cart(level, group)) return {};
+    const AlpineLevelProperties& props = level.GetAlpineLevelProperties();
+    const float length = payload_track_length(props, group, path);
+    // The cart waits out every hold but the one at the end of the track
+    float holds = 0.0f;
+    std::vector<const DedEvent*> counted;
+    for (int i = 1; i + 1 < path.count(); i++) {
+        const DedEvent* checkpoint = checkpoint_of(level, *path.keyframes[i]);
+        if (checkpoint && std::find(counted.begin(), counted.end(), checkpoint) == counted.end()) {
+            counted.push_back(checkpoint);
+            holds += payload::checkpoint_hold(checkpoint->float1);
+        }
+    }
+    std::string text = "Payload push time:";
+    std::string counts;
+    for (int pushers = 1; pushers <= payload::max_useful_pushers; pushers++) {
+        const float speed = props.payload_rules.push_speed * payload::push_multiplier(pushers);
+        const long seconds = std::lround(length / speed + holds);
+        text += std::format("{} {}:{:02}", pushers > 1 ? " /" : "", seconds / 60, seconds % 60);
+        counts += std::format("{}{}", pushers > 1 ? " / " : "", pushers);
+    }
+    return text + " at " + counts + " pushers";
+}
+
 // ─── Playback preview ───────────────────────────────────────────────────────
 
 struct Sim
@@ -928,11 +1052,15 @@ struct Preview
     float run_time = 0.0f;
     float run_length = 0.0f;
     LARGE_INTEGER last_tick{};
+    std::string payload_text; // what the panel's payload line shows, hidden while empty
+    LONGLONG payload_refresh_at = 0; // performance counter value
 };
 Preview g_preview;
 
 constexpr UINT_PTR preview_timer_id = 1;
 constexpr UINT preview_timer_ms = 16;
+// Finding the cart scans the whole level, so the payload line refreshes at editing speed rather than every tick
+constexpr LONGLONG payload_refresh_ms = 250;
 constexpr int preview_slider_steps = 1000;
 
 // The group may have been deleted, or its keyframes changed, since the last frame.
@@ -970,6 +1098,24 @@ void preview_start_run(const GroupPath& path)
     g_preview.run_start = g_preview.sim;
     g_preview.run_time = 0.0f;
     g_preview.run_length = measure_run(*g_preview.group, path, g_preview.sim);
+}
+
+void update_payload_readout(CDedLevel& level, const GroupPath& path)
+{
+    LARGE_INTEGER now{};
+    LARGE_INTEGER freq{};
+    QueryPerformanceCounter(&now);
+    QueryPerformanceFrequency(&freq);
+    g_preview.payload_refresh_at = now.QuadPart + freq.QuadPart * payload_refresh_ms / 1000;
+    // The legacy line shares the payload line's row; refreshing both from one setting keeps them from overlapping
+    ShowWindow(GetDlgItem(g_preview.panel, IDC_MOVER_PREVIEW_LEGACY),
+               level.GetAlpineLevelProperties().legacy_movers ? SW_SHOW : SW_HIDE);
+    std::string text = payload_push_times(level, *g_preview.group, path);
+    if (text == g_preview.payload_text) return;
+    g_preview.payload_text = std::move(text);
+    const HWND label = GetDlgItem(g_preview.panel, IDC_MOVER_PREVIEW_PAYLOAD);
+    SetWindowTextA(label, g_preview.payload_text.c_str());
+    ShowWindow(label, g_preview.payload_text.empty() ? SW_HIDE : SW_SHOW);
 }
 
 void update_preview_panel()
@@ -1010,6 +1156,9 @@ void preview_tick()
     if (!preview_valid(*level, &path)) {
         mover_path_preview_close();
         return;
+    }
+    if (now.QuadPart >= g_preview.payload_refresh_at) {
+        update_payload_readout(*level, path);
     }
     if (!g_preview.playing) return;
 
@@ -1490,6 +1639,12 @@ void mover_path_dialog_init(HWND hdlg)
         CheckDlgButton(hdlg, id, on < 0 ? BST_INDETERMINATE : on ? BST_CHECKED : BST_UNCHECKED);
     }
     update_dialog_enables(hdlg);
+    const GroupEntry* cart_group = payload_cart(*level);
+    const bool cart = cart_group && cart_is_usable(*level, *cart_group)
+        && std::any_of(keyframes.begin(), keyframes.end(), [&](const DedKeyframe* kf) {
+               return moving_group_of(*level, kf) == cart_group;
+           });
+    ShowWindow(GetDlgItem(hdlg, IDC_KF_PAYLOAD_NOTE), cart ? SW_SHOW : SW_HIDE);
 }
 
 void mover_path_dialog_command(HWND hdlg, int id, HWND ctrl)
@@ -1750,7 +1905,7 @@ void mover_path_preview_open()
     }
     const std::string title = std::string{"Mover Preview: "} + group->name.c_str();
     SetWindowTextA(g_preview.panel, title.c_str());
-    ShowWindow(GetDlgItem(g_preview.panel, IDC_MOVER_PREVIEW_LEGACY), props.legacy_movers ? SW_SHOW : SW_HIDE);
+    update_payload_readout(*level, path);
     ShowWindow(g_preview.panel, SW_SHOW);
     SetForegroundWindow(g_preview.panel);
     update_preview_panel();
@@ -1764,6 +1919,7 @@ void mover_path_preview_close()
     g_preview.group = nullptr;
     g_preview.panel = nullptr;
     g_preview.playing = false;
+    g_preview.payload_text.clear();
     if (panel) {
         KillTimer(panel, preview_timer_id);
         DestroyWindow(panel);
@@ -1782,6 +1938,95 @@ bool mover_path_preview_hides(const BrushNode& brush)
 {
     const CDedLevel* level = CDedLevel::Get();
     return level && preview_valid(*level, nullptr) && group_has_brush(*g_preview.group, &brush);
+}
+
+void mover_path_check_payload(CDedLevel& level)
+{
+    try {
+        const auto warn = [](const std::string& msg) { editor_report(EditorReportLevel::warn, "Payload", msg, true); };
+        const std::vector<const DedEvent*> handlers = payload_handlers(level);
+        if (handlers.size() > 1) {
+            warn(std::format("The level has {} Payload_Handler events; Payload uses only one.", handlers.size()));
+        }
+        const AlpineLevelProperties& props = level.GetAlpineLevelProperties();
+        for (const DedEvent* handler : handlers) {
+            const std::vector<GroupEntry*> movers = linked_movers(level, *handler);
+            if (movers.empty()) {
+                warn(std::format("Payload_Handler UID {} links no mover; link it to the cart's keyframe.",
+                                 handler->uid));
+                continue;
+            }
+            if (movers.size() > 1) {
+                warn(std::format("Payload_Handler UID {} links {} movers; the game uses the first.", handler->uid,
+                                 movers.size()));
+            }
+            const GroupEntry& cart = *movers[0];
+            const std::string name = std::format("Payload cart \"{}\"", cart.name.c_str());
+            if (group_move_type(cart) != mp::MoveType::one_way) {
+                warn(name + " is not One Way.");
+            }
+            if (cart.keyframes->rotate_in_place) {
+                warn(name + " uses Rotate in Place.");
+            }
+            if (props.legacy_movers) {
+                warn(name + " needs Legacy movers turned off in Level Properties.");
+            }
+            if (cart.brushes.size == 0 && cart.objects.size == 0) {
+                warn(name + " has no brushes or objects, so the game has no cart.");
+            }
+            const GroupPath path = group_path(props, cart);
+            if (path.count() < 2) {
+                warn(name + " needs at least 2 keyframes.");
+                continue;
+            }
+            if (!(payload_track_length(props, cart, path) > 0.0f)) {
+                warn(name + " has no track: all of its keyframes are in one place.");
+                continue;
+            }
+            if (checkpoint_of(level, *path.keyframes[0])) {
+                warn(name + " has a checkpoint on its first keyframe, where the cart starts; the game ignores it.");
+            }
+            std::vector<const DedEvent*> checkpoints;
+            for (int i = 0; i < path.count(); i++) {
+                const DedKeyframe& kf = *path.keyframes[i];
+                if (is_event_type(object_by_uid(level, kf.event_uid), AlpineDedEventID::Capture_Point_Handler)) {
+                    warn(std::format("{} names Capture_Point_Handler UID {} on keyframe UID {}; the game ignores it. "
+                                     "Payload checkpoints are Payload_Checkpoint events.",
+                                     name, kf.event_uid, kf.uid));
+                }
+                const DedEvent* checkpoint = i > 0 ? checkpoint_of(level, kf) : nullptr;
+                if (!checkpoint) continue;
+                if (std::find(checkpoints.begin(), checkpoints.end(), checkpoint) != checkpoints.end()) {
+                    warn(std::format("{} names Payload_Checkpoint UID {} on more than one keyframe; the game "
+                                     "ignores it on keyframe UID {}.",
+                                     name, checkpoint->uid, kf.uid));
+                    continue;
+                }
+                checkpoints.push_back(checkpoint);
+            }
+            if (checkpoints.empty()) {
+                warn(name + " has no checkpoint: no keyframe after the first has a Payload_Checkpoint event.");
+            }
+            else if (!checkpoint_of(level, *path.keyframes.back())) {
+                warn(name + " does not end on a checkpoint: its last keyframe's event should be a "
+                            "Payload_Checkpoint.");
+            }
+            // Mover Facing replaces Force Orient, which aims along the chord
+            if (cart.keyframes->force_orient && group_has_paths(props, cart)
+                && group_orient_mode(props, cart) == static_cast<uint8_t>(mp::OrientMode::none)) {
+                for (int i = 0; i + 1 < path.count(); i++) {
+                    if (path.segment_curved(i)) {
+                        warn(name + " uses Force Orient on a curved track and will face the wrong way; set Mover "
+                                    "Facing to Follow Path instead.");
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    catch (const std::exception& e) {
+        xlog::error("[MoverPath] {}", e.what());
+    }
 }
 
 void mover_path_render(CDedLevel* level)

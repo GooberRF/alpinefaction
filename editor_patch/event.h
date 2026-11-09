@@ -94,7 +94,10 @@ enum class AlpineDedEventID : int
     Climbing_Region_State,
     When_Destroyed,
     Rope_State,
-    Mesh_Set_Scale
+    Mesh_Set_Scale,
+    Payload_Handler,
+    Payload_Checkpoint,
+    When_Setup_Ends
 };
 
 constexpr int af_ded_event_to_int(AlpineDedEventID event_id) noexcept

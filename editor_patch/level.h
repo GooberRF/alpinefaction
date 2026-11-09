@@ -19,6 +19,7 @@
 #include <common/lighting/alpine_lighting.h>
 #include <common/lightmap/alpine_lightmap.h>
 #include <common/mover_path.h>
+#include <common/payload.h>
 #include "vtypes.h"
 #include "mfc_types.h"
 #include "resources.h"
@@ -50,6 +51,7 @@ constexpr int alpine_lightmaps_chunk_id = static_cast<int>(alpine_lightmap::chun
 constexpr int alpine_directional_light_chunk_id = static_cast<int>(alpine_dir_light::chunk_id); // 0x0AFBAE0C
 constexpr int alpine_waypoint_helper_chunk_id = static_cast<int>(alpine_waypoint_helper::chunk_id); // 0x0AFBAE0D
 constexpr int alpine_mover_path_chunk_id = static_cast<int>(mover_path::chunk_id); // 0x0AFBAE0E
+constexpr int alpine_liquid_emission_chunk_id = 0x0AFBAE0F; // editor only: Liquid Room light emission
 
 // Other editors save RFL chunks of their own that Alpine Faction can neither read nor parse.
 // AlpineEditor retains them verbatim on load and re-emits them on save, so the originating
@@ -1010,6 +1012,7 @@ struct AlpineLevelProperties
     bool require_d3d11 = false; // the mapper's "Require Direct3D 11" setting
     float camera_far_clip = 0.0f; // 0 = the stock far clip (fog far clip, else 275)
     bool alpha_tested_occlusion = false; // see-through faces and alpha mesh triangles occlude by texel alpha
+    payload::LevelRules payload_rules;
 
     // Alpine mesh objects (stored separately from stock object VArrays)
     std::vector<DedMesh*> mesh_objects;
@@ -1177,6 +1180,7 @@ struct AlpineLevelProperties
         require_d3d11 = false;
         camera_far_clip = 0.0f;
         alpha_tested_occlusion = false;
+        payload_rules = {};
         for (auto* m : mesh_objects) {
             DestroyDedMesh(m);
         }
@@ -1321,6 +1325,9 @@ struct AlpineLevelProperties
                                                            (require_d3d11 ? require_d3d11_setting : 0u)));
         file.write<float>(camera_far_clip);
         file.write<std::uint8_t>(alpha_tested_occlusion ? 1u : 0u);
+        for (const float* field : payload::LevelRules::file_fields(payload_rules)) {
+            file.write<float>(*field);
+        }
     }
 
     void Deserialize(rf::File& file, std::size_t chunk_len)
@@ -1593,6 +1600,13 @@ struct AlpineLevelProperties
             if (!read_bytes(&u8, sizeof(u8)))
                 return;
             alpha_tested_occlusion = (u8 != 0);
+            payload::LevelRules rules;
+            for (float* field : payload::LevelRules::file_fields(rules)) {
+                if (!read_bytes(field, sizeof(*field)))
+                    return;
+            }
+            rules.sanitize();
+            payload_rules = rules;
         }
     }
 };

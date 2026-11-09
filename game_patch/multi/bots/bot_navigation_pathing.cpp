@@ -2291,6 +2291,7 @@ bool update_waypoint_target_towards(
             || bot_goal_is_ctf_objective(bot_state().active_goal)
             || bot_goal_is_bagman_objective(bot_state().active_goal)
             || bot_goal_is_salvage_objective(bot_state().active_goal)
+            || bot_goal_is_payload_objective(bot_state().active_goal)
             || bot_state().active_goal == BotGoalType::activate_bridge
             || bot_state().active_goal == BotGoalType::create_crater
             || bot_state().active_goal == BotGoalType::shatter_glass)) {
@@ -2493,6 +2494,7 @@ bool update_waypoint_target_towards(
             || bot_goal_is_ctf_objective(bot_state().active_goal)
             || bot_goal_is_bagman_objective(bot_state().active_goal)
             || bot_goal_is_salvage_objective(bot_state().active_goal)
+            || bot_goal_is_payload_objective(bot_state().active_goal)
             || bot_state().active_goal == BotGoalType::activate_bridge
             || bot_state().active_goal == BotGoalType::create_crater
             || bot_state().active_goal == BotGoalType::shatter_glass;
