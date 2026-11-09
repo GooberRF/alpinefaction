@@ -173,6 +173,16 @@ bool gr_project_world_to_screen(const rf::Vector3& world_pos, float& out_sx, flo
     return true;
 }
 
+void gr_set_colored_vertex(rf::gr::Vertex& v, const rf::Vector3& pos, const rf::Color& color, float alpha)
+{
+    rf::Vector3 p = pos;
+    rf::gr::rotate_vertex(&v, &p);
+    v.r = color.red;
+    v.g = color.green;
+    v.b = color.blue;
+    v.a = static_cast<rf::ubyte>(std::clamp(alpha * color.alpha + 0.5f, 0.0f, 255.0f));
+}
+
 float gr_scale_fov_hor_plus(float horizontal_fov)
 {
     // Use Hor+ FOV scaling method to improve user experience for wide screens

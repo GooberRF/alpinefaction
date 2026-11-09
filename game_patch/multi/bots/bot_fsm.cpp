@@ -156,6 +156,12 @@ const char* bot_goal_type_to_string(const BotGoalType goal)
             return "vehicle_gun";
         case BotGoalType::vehicle_hunt:
             return "vehicle_hunt";
+        case BotGoalType::pay_push:
+            return "pay_push";
+        case BotGoalType::pay_block:
+            return "pay_block";
+        case BotGoalType::pay_hold_ahead:
+            return "pay_hold_ahead";
         default:
             return "unknown";
     }
