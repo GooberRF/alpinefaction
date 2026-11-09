@@ -11,6 +11,8 @@ void evaluate_pow2tex(const rf::String& level_filename);
 void evaluate_lightmaps_only();
 int gr_font_get_default();
 void gr_font_set_default(int font_id);
+int ui_ttf_font(bool bold, int pixel_size);
+bool ui_ttf_font_info(int font, bool& bold, int& pixel_size);
 bool gr_set_render_target(int bm_handle);
 void gr_invalidate_texture_cache();
 int gr_render_target_generation();

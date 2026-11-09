@@ -35,6 +35,7 @@
 #include "../graphics/gr.h"
 #include "../main/main.h"
 #include "../os/console.h"
+#include "settings_registry.h"
 
 static std::vector<int> g_fpgun_sounds;
 static rf::Player* g_fpgun_main_player = nullptr;
@@ -327,7 +328,7 @@ static FunHook<void(rf::Player*)> player_fpgun_process_hook{
 ConsoleCommand2 weapon_sway_cmd{
     "cl_weaponsway",
     []() {
-        g_alpine_game_config.weapon_sway = !g_alpine_game_config.weapon_sway;
+        setting_console_set("weapon_sway", "toggle");
         rf::console::print("Weapon aim sway: {}",
             g_alpine_game_config.weapon_sway ? "enabled" : "disabled");
     },
@@ -337,7 +338,7 @@ ConsoleCommand2 weapon_sway_cmd{
 ConsoleCommand2 legacy_bob_cmd{
     "cl_legacy_bob",
     []() {
-        g_alpine_game_config.legacy_bob = !g_alpine_game_config.legacy_bob;
+        setting_console_set("legacy_bob", "toggle");
         rf::console::print("Legacy weapon bob: {}",
             g_alpine_game_config.legacy_bob ? "enabled" : "disabled");
     },
@@ -422,7 +423,7 @@ ConsoleCommand2 fpgun_fov_scale_cmd{
     "r_fpgunfov",
     [](std::optional<float> scale_opt) {
         if (scale_opt) {
-            g_alpine_game_config.set_fpgun_fov_scale(scale_opt.value());
+            setting_console_set("fpgun_fov_scale", std::to_string(scale_opt.value()));
         }
         rf::console::print("Fpgun FOV scale: {:.4f}", g_alpine_game_config.fpgun_fov_scale);
     },

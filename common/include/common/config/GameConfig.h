@@ -48,6 +48,7 @@ struct GameConfig
     CfgVar<Renderer> renderer = Renderer::d3d11;
 
     // Graphics
+    // Seeds alpine_settings.ini AnisotropicFiltering when the ini lacks the key.
     CfgVar<bool> anisotropic_filtering = true;
 
     CfgVar<bool> high_scanner_res = true;
@@ -74,8 +75,9 @@ struct GameConfig
     CfgVar<bool> fast_start = true;
     CfgVar<bool> allow_overwrite_game_files = false;
     CfgVar<bool> keep_launcher_open = true;
-    CfgVar<bool> reduced_speed_in_background = false;
+    CfgVar<bool> reduced_speed_in_background = false; // seeds alpine_settings.ini, as above
     CfgVar<bool> autoplay_af_demos = false;
+    CfgVar<bool> legacy_menus = false;
     CfgVar<bool> editor_large_address_aware = false;
 
     // Internal

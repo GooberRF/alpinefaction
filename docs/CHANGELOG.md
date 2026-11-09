@@ -26,6 +26,12 @@ Version 1.5.0 (Trillium): Not yet released
   - Mirror `Terrain Tools` brush strokes across the terrain's X and/or Z axis, with movable mirror lines
   - Up to 4 detail overlays (leaves, debris) and 8 mesh decoration layers per terrain (grass, rocks, bushes)
   - `Geoable` terrains are carved by RF2-style geomod craters, with their own underside and crater textures
+- Replace the stock options screens with a fully new options menu
+  - Context-specific bindings for vehicles, spectator, and demo playback
+  - `af_set` and `af_get` console commands to read and write any setting by name
+  - Draw menus from resolution-independent vector artwork
+  - Redraw the extras menu in the same style, with the demo browser as one of its panels
+  - `Use deprecated legacy menus` launcher option to use the stock options and extras screens instead of the new menus
 - Add server-side bots, which run inside the dedicated or listen server process in addition to (or instead of) bot clients
   - `server_bots` ADS option (0-31) sets how many server bots join; they use the `bot_profiles` profiles and follow `ideal_player_count` like bot clients
   - Add `sv_bot_add [profile_index] [red|blue]`, `sv_bot_remove <name|all>` and `sv_bot_list` server console commands, which also work through rcon
@@ -51,7 +57,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Bump RFL version to 306
 - Add `Display_Projection` event and `Projection Camera` object for rendering live camera views onto ATX textures (Direct3D 11 renderer only)
 - Add `Rope_State` event to switch `Rope Emitter` objects on and off at runtime
-- Add `Rope Emitter` object for ropes, cables, and power lines, with optional decorations
+- Add `Rope Emitter` object for ropes, cables, power lines, and zip lines that players and bots can ride, with optional decorations
 - Add flames to gib chunks thrown by exploding entities, toggleable with `cl_gibflames`
 - Add `Jetpacks explode` option to the Jetpacks mutator
 - Add `Scrapyard mode` option to the Gibbing mutator
@@ -195,6 +201,12 @@ Version 1.5.0 (Trillium): Not yet released
 - Make level editor draw ticks at equal steps of time along mover paths
 - Make level editor draw the closing link of a looping mover with three or more keyframes
 - Add `Mover Preview` on the level editor `View` menu plays and scrubs a mover in the viewports without changing the level
+- Save `ShowHUD`, `ShowCrosshair`, `PlayGlobalRadioMsgs`, and `PlayTeamRadioMsgs` in `alpine_settings.ini`
+- Move anisotropic filtering and reduced speed in background from the launcher to the settings menu (`alpine_settings.ini`); both now apply without a restart
+- Add `exposure_damage` dedicated server rule and make `sp_exposuredamage` apply only in single player
+- Raise minimum `maxfps` from 1 to 10, for both the client and the dedicated server
+- Limit `r_gamma` to 0.7-2.2
+- Allow pasting text with `Ctrl+V` into vote panel text boxes
 - Show control points as spinning team medallions with a notched capture progress ring
 - Add `cl_wh_tethers`, `cl_wh_pushzone`, and `cl_wh_cartstatus` commands to toggle the world HUD beams from the players pushing or blocking the cart in Payload, the ring around it that shows where to push, and the status text over it
 
@@ -203,6 +215,19 @@ Version 1.5.0 (Trillium): Not yet released
 - Render animated (`.vfx`) meshes on the GPU with per-pixel lighting, and apply their materials' reflection maps (Direct3D 11 renderer only)
 - Load levels with very large face counts or many level sounds much faster
 - Add Discord rich presence (`cl_discord_presence`) showing the server, gametype, map, team scores, match status, player count and time left in multiplayer, and the level, difficulty and mod in single player, with a `Join server` button for public, password-free servers (`cl_discord_join_button`)
+- Add HUD, player outline, and outline x-ray toggles to the spectate options menu
+- Add `cl_hudelement` console command and a spectate options submenu to show or hide individual HUD elements
+- Keep chat visible while the HUD is hidden
+- Add `r_outlines_spectator_xray` console command to show player outlines through walls while spectating
+- Mark kills, awards, objective captures and powerup pickups on the demo playback scrubber
+- Speed up seeking in demos
+- Merge the demo playback controls and the spectate nameplate into one panel
+- Add `spectate_minimalbar` console command to show only the player's name on the compact demo playback panel
+- Add a custom demo playback marker, set with the Quick Save key and jumped to with the Quick Load key
+- Pause demo playback while the Esc menu is open
+- Add playback speed control (0.25x-8x) to the demo playback panel
+- Show the recording server's config during demo playback with the Remote Server Config key
+- Apply demo playback speed to the whole world, including particles, animations and sounds
 
 [@is-this-c](https://github.com/is-this-c)
 - Add `bighud_health` and `bighud_ammo` console variables to disable `bighud` for health and ammo, which is useful for mods incompatible with `bighud`
@@ -357,6 +382,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix level editor sometimes crashing when moving vertices after using `Weld` in vertex mode
 - Fix some level editor buttons in Face and Vertex modes not working when the mode was entered with a keyboard shortcut
 - Fix players freezing in place in multiplayer for a moment after bumping into another player or mesh
+- Fix possible dedicated server crash when auto-downloading missing vote-allowed levels with `add_installed_to_allowed_levels` enabled
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize
@@ -376,6 +402,8 @@ Version 1.5.0 (Trillium): Not yet released
 ### Imported libraries
 - [Bullet Physics 3.25](https://github.com/bulletphysics/bullet3) by Erwin Coumans
 - [bc7enc_rdo](https://github.com/richgel999/bc7enc_rdo) by Richard Geldreich, Jr.
+- [LunaSVG 3.5.0](https://github.com/sammycage/lunasvg) by Samuel Ugochukwu
+- [PlutoVG 1.3.3](https://github.com/sammycage/plutovg) by Samuel Ugochukwu
 
 Version 1.4.0 (Lupin): Released Aug-25-2026
 --------------------------------

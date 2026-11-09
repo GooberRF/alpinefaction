@@ -818,7 +818,7 @@ bool solve_carrier_flag_transform(rf::Entity* ep, rf::Item* item,
 bool flag_hidden_for_local_view()
 {
     if (g_salvage_info.state != SalFlagState::Carried || !g_salvage_info.carrier) return false;
-    return multi_spectate_view_is_player_eyes(*g_salvage_info.carrier);
+    return multi_spectate_view_is_first_person_of(rf::entity_from_handle(g_salvage_info.carrier->entity_handle));
 }
 
 } // namespace

@@ -26,6 +26,7 @@
 #include "mutators.h"
 #include "alpine_packets.h"
 #include "server_internal.h"
+#include "demo/demo.h"
 #include "../fflink/afstats_events.h"
 #include "../hud/hud_internal.h"
 #include "../hud/multi_spectate.h"
@@ -38,6 +39,7 @@
 #include "../rf/localize.h"
 #include "../rf/v3d.h"
 #include "../rf/vmesh.h"
+#include "../object/zipline.h"
 
 static char* const* g_af_gametype_names[rf::NG_TYPE_UNK + 1];
 
@@ -1982,13 +1984,17 @@ void koth_do_frame() // fires every frame on both server and client
         }
     }
 
-    // client prediction tick
+    // client prediction tick, on demo time during playback so it follows the pause and timescale.
+    // That clock restarts below the last reading when playback starts or restarts, so a step
+    // back re-anchors instead of stalling the tick until it catches up.
     if (!rf::is_server && !rf::is_dedicated_server) {
-        static int64_t last_cli = timer::get_i64(1000);
-        const int64_t now_cli = timer::get_i64(1000);
+        static int64_t last_cli = demo_playback_interp_clock_ms();
+        const int64_t now_cli = demo_playback_interp_clock_ms();
         const int64_t dt_cli = now_cli - last_cli;
-        if (dt_cli > 0) {
+        if (dt_cli != 0) {
             last_cli = now_cli;
+        }
+        if (dt_cli > 0) {
             const int dt_ms = static_cast<int>(std::min(dt_cli, 250LL));
             koth_client_predict_tick(dt_ms);
         }
@@ -2454,12 +2460,13 @@ CodeInjection carrier_attachment_render_patch{
         auto* ep = reinterpret_cast<rf::Entity*>(regs.esi.value);
         if (!ep) return;
 
-        // Shared entity_render attachment point for jetpacks. Deliberately ahead
+        // Shared entity_render attachment point for jetpacks and zip line trolleys. Deliberately ahead
         // of the bagman gates below and not gated on rf::is_multi: the Jetpacks
         // mutator applies to every gametype, and the single player `jetpack`
         // command uses this same hook. jetpack_render_attachment() does its own
         // active/first-person checks and yields to the bag on the carrier.
         jetpack_render_attachment(ep);
+        zipline_render_attachment(ep);
 
         // Same attachment point: AF's jeep hull carries no tires, so they are drawn right after it.
         vehicle_render_jeep_tires(ep);

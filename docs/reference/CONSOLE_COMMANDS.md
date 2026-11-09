@@ -11,6 +11,8 @@ Argument notation: `<x>` is required, `[x]` is optional. A `[bool]` argument acc
 | Command | Arguments | Description |
 | --- | --- | --- |
 | `.` | `<query>` | Lists commands whose name or description contains the query. |
+| `af_get` | `<key>` | Prints a setting's current value and whether it differs from the default. `key` is the setting's ID or its `alpine_settings.ini` key (case-insensitive); an unknown key lists up to five settings whose name contains it. |
+| `af_set` | `<key> <value>` | Sets any setting the settings menu can change, with `key` as for `af_get`. Out-of-range numbers are clamped, choice values snap to the nearest option, and text values keep their case. Keybinds, list orderings and launcher settings cannot be set here. Without a value, prints the accepted values and the current one. |
 | `afstats_status` | | Shows the status of this session's FactionFiles player stats link (stats-enabled server, session state, signed-in account). |
 | `autodl_blur_background` | | Toggles the blurred background on the level download screen. Default: on. |
 | `autodl_download_awps` | | Toggles downloading AWP waypoint files along with levels from the autodownloader. Default: off. |
@@ -25,7 +27,7 @@ Argument notation: `<x>` is required, `[x]` is optional. A `[bool]` argument acc
 | `level_info` (`map_info`) | | Shows information about the current level: file, name, author, RFL version, Alpine and Dash level properties, `_info.tbl` overrides and mesh replacements. |
 | `levelm` (`mapm`) | `<filename>` | Starts a new local multiplayer game on the level. Not available on dedicated servers. |
 | `map` | `<filename>` | Alias of the stock `level` command, which Alpine also allows outside multiplayer. Allowed via rcon. |
-| `maxfps` | `[limit]` | Sets the frame rate limit (1-100000, default 240). In multiplayer it is capped at 240 unless you are hosting or the server allows unlimited FPS. On a dedicated server it sets the server limit (default 80). Allowed via rcon. |
+| `maxfps` | `[limit]` | Sets the frame rate limit (10-100000, default 240). In multiplayer it is capped at 240 unless you are hosting or the server allows unlimited FPS. On a dedicated server it sets the server limit (default 80). Allowed via rcon. |
 | `save_commands` | | Stock RF command. Prints all console commands to `console_commands.txt`. |
 | `screenshot` | | Saves a screenshot and prints its file name. |
 | `script` | `<scriptfilename>` | Stock RF command. Runs a console script file from the game directory. |
@@ -55,7 +57,7 @@ Commands marked "D3D11 only" only have an effect with the Direct3D 11 renderer.
 | `r_fpgunfov` | `[scale]` | Sets the FOV scale for first person weapon models (0.1-1.5). Default: 1.0. |
 | `r_fullbright` | | Toggles fullbright character meshes. In multiplayer, only applies if the server allows it. Default: off. |
 | `r_fullrangelighting` | | Toggles full range lighting. Applies on the next level load. Default: on. |
-| `r_gamma` | `[value]` | Sets gamma. |
+| `r_gamma` | `[value]` | Sets gamma (0.7-2.2, the stock slider range). Default: 1.0. |
 | `r_lightmaps` | | Toggles rendering only lightmaps (no textures) on level geometry. In multiplayer, only applies if the server allows it. Default: off. |
 | `r_lodscale` | `[scale]` | Sets the LOD distance scale (0.1-1000). Default: 10. |
 | `r_meshlighting` | `[0-2]` | Mesh lighting: `0` ambient only, `1` vertex (legacy), `2` pixel (D3D11). A level's `_info.tbl` can force vertex lighting. Default: 2. |
@@ -69,6 +71,7 @@ Commands marked "D3D11 only" only have an effect with the Direct3D 11 renderer.
 | `r_outlines_color_team_b` | `[RRGGBB\|RRGGBBAA\|clear]` | Sets the outline color for blue team players. D3D11 only. Default: `0096FFFF`. |
 | `r_outlines_color_team_r` | `[RRGGBB\|RRGGBBAA\|clear]` | Sets the outline color for red team players. D3D11 only. Default: `FF3232FF`. |
 | `r_outlines_spectator` | | Toggles player outlines while spectating. D3D11 only. Default: off. |
+| `r_outlines_spectator_xray` | | Toggles showing player outlines through walls while spectating. D3D11 only. Default: on. |
 | `r_outlines_team_xray` | | Toggles showing teammate outlines through walls. D3D11 only. Default: on. |
 | `r_picmip` | `[divisor]` | Sets the global texture resolution divisor (1-256, 1 = full resolution). D3D11 only. Default: 1. |
 | `r_pixellightoverbright` | `[0.0-3.0]` | Sets the overbright range for pixel lighting. A level's `_info.tbl` can override it. D3D11 only. Default: 0.5. |
@@ -160,6 +163,7 @@ Commands marked "D3D11 only" only have an effect with the Direct3D 11 renderer.
 | `cl_columnsegments` | `[segments]` | Sets the number of segments of control point light columns (3-256). Default: 8. |
 | `cl_dominationmsgs` | | Toggles dominating and revenge server messages in chat. Default: on. |
 | `cl_hud` | `[bool]` | Shows or hides the HUD. Not saved. |
+| `cl_hudelement` | `[element\|all] [bool]` | Shows or hides one HUD element (`health`, `ammo`, `reticle`, `powerups`, `gauges`, `names`, `killfeed`, `chat`, `timer`, `scores`, `messages`, `minimap`) for this session; an element alone toggles it, `all` alone shows all, no arguments lists them. Not saved. |
 | `cl_locationpings` | | Toggles location pinging (team game types and RUN only). Default: on. |
 | `cl_minimap` | `[bool]` | Shows the multiplayer minimap on levels that provide one. Default: on. |
 | `cl_minimap_labels` | `[bool]` | Shows control point names on the minimap. Default: on. |
@@ -290,6 +294,7 @@ Colors are hex `RRGGBB` or `RRGGBBAA`, or comma-separated `R,G,B[,A]` values in 
 | `demo_seek` | `<mm:ss \| seconds \| +/-seconds>` | Seeks within the playing demo. Seeking backward reloads the level. |
 | `demo_stop` | | Stops demo playback. |
 | `demo_timescale` | `[0.05-10]` | Sets the demo playback speed multiplier. Default: 1.0. |
+| `spectate_minimalbar` | | Toggles the minimal compact demo bar, which shows just the followed player's name. Default: off. |
 | `spectate_playerinfo` | | Toggles player health and armor bars during demo playback. Default: off. |
 | `spectate_powerups` | | Toggles powerup respawn timers during demo playback. Default: on. |
 | `spectate_spawns` | | Toggles respawn point indicators during demo playback. Default: off. |
@@ -385,7 +390,7 @@ Zone types (or their numeric id): `control_point` (`cp`), `damaging_liquid_room`
 | `sp_camerashake` | | Toggles forcing off all camera shake in single player. Default: off. |
 | `sp_climbfix` | | Toggles the fix for getting stuck climbing after leaving a climbing region while crouched. Default: on. |
 | `sp_difficulty` | `<easy\|medium\|hard\|impossible>` | Stock RF command. Sets the game difficulty. |
-| `sp_exposuredamage` | | Toggles exposure damage when outside without armor. Default: on. |
+| `sp_exposuredamage` | | Toggles exposure damage when outside without armor in single player. In multiplayer the server's `exposure_damage` rule applies. Default: on. |
 | `sp_geochunkphysics` | | Toggles isolated geomod chunks falling as physics objects instead of disappearing. Default: on. |
 | `sp_levelhardness` | `[0-100]` | Stock RF command. Sets the default hardness for geomods. Not in multiplayer. |
 | `sp_spreadmode` | | Toggles bullet spread between the gaussian method and the legacy uniform method. Default: legacy (uniform). |

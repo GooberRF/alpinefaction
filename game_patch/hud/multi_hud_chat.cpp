@@ -15,6 +15,7 @@
 #include "../misc/vote_panel.h"
 #include <patch_common/CallHook.h>
 #include "../multi/alpine_packets.h"
+#include "../misc/settings_registry.h"
 
 bool g_big_chatbox = false;
 bool g_all_players_muted = false;
@@ -72,7 +73,7 @@ void multi_hud_render_chat()
     }
 
     if (g_remote_server_cfg_popup.is_active() || vote_panel_is_gameplay_overlay_active()
-        || g_alpine_game_config.hide_chat) {
+        || !hud_element_visible(HudElement::chat)) {
         return;
     }
 
@@ -236,7 +237,7 @@ CodeInjection process_chat_line_packet_injection{
 ConsoleCommand2 hide_chat_cmd{
     "cl_chat",
     []() {
-        g_alpine_game_config.hide_chat = !g_alpine_game_config.hide_chat;
+        setting_console_set("show_chat", "toggle");
         rf::console::print("Chat display is {}", g_alpine_game_config.hide_chat ? "hidden" : "visible");
     },
     "Toggle MP chat display",

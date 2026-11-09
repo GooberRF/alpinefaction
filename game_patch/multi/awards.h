@@ -134,4 +134,6 @@ void awards_client_on_award_received(uint8_t award_id, uint8_t victim_player_id)
 // Drains the display queue, one award at a time. Ticked from the client frame.
 void awards_client_do_frame();
 void awards_client_reset();
+// Short title of an award ("Hat Trick"), or null for an id this build does not know.
+const char* award_name(uint8_t award_id);
 bool awards_is_domination_chat_msg(std::string_view msg);

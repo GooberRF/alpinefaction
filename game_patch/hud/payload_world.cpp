@@ -197,7 +197,7 @@ std::optional<rf::Vector3> tether_start(const rf::Player& pl)
     if (!ep || rf::entity_is_dying(ep)) {
         return std::nullopt;
     }
-    if (multi_spectate_view_is_player_eyes(pl)) {
+    if (multi_spectate_view_is_first_person_of(ep)) {
         return rf::gr::eye_pos + rf::gr::eye_matrix.fvec * tether_self_forward
             - rf::gr::eye_matrix.uvec * tether_self_down;
     }

@@ -49,7 +49,7 @@ FunHook<void(rf::Trigger*, int32_t, bool)> trigger_activate_hook{
         // Check team
         rf::Player* player = rf::player_from_entity_handle(h_entity);
         const char* trigger_name = trigger->name.c_str();
-        if (player && trigger->trigger_team != 0xFF && trigger->trigger_team != player->team) {
+        if (player && trigger->trigger_team != rf::trigger_team_any && trigger->trigger_team != player->team) {
             // rf::console::print("Trigger team does not match: {} vs {} ({})", trigger->team, Player->blue_team,
             // trigger_name);
             return;

@@ -13,6 +13,23 @@ namespace gr::d3d11
     struct GpuTransformedVertex;
     class RenderContext;
 
+    // ui_ps.hlsl mirrors these as SDF_SHAPE_*.
+    enum class UiSdfShape
+    {
+        rounded_rect = 0,
+        capsule = 1,
+    };
+
+    struct UiSdfDraw
+    {
+        float pos_x[4];
+        float pos_y[4];
+        float uv_x[4];
+        float uv_y[4];
+        float params[4];
+        UiSdfShape type;
+    };
+
     class DynamicGeometryRenderer
     {
     public:
@@ -22,6 +39,7 @@ namespace gr::d3d11
         void line_3d(const rf::gr::Vertex& v0, const rf::gr::Vertex& v1, rf::gr::Mode mode);
         void line_2d(float x1, float y1, float x2, float y2, rf::gr::Mode mode);
         void bitmap(int bm_handle, float x, float y, float w, float h, float sx, float sy, float sw, float sh, bool flip_x, bool flip_y, rf::gr::Mode mode);
+        void sdf_shape(const UiSdfDraw& draw, rf::gr::Mode mode);
         void poly_2d(int bm_handle, int nv, const rf::gr::Vertex* vertices, rf::gr::Mode mode);
         void set_pre_flush_callback(std::function<void()> callback);
         void set_cull_mode(D3D11_CULL_MODE cull_mode);
@@ -76,6 +94,8 @@ namespace gr::d3d11
         ComPtr<ID3D11PixelShader> std_pixel_shader_;
         ComPtr<ID3D11PixelShader> std_pixel_shader_no_gas_;
         ComPtr<ID3D11PixelShader> ui_pixel_shader_;
+        ComPtr<ID3D11PixelShader> ui_sdf_pixel_shader_;
+        ComPtr<ID3D11Buffer> ui_sdf_cbuffer_;
         State state_;
         std::function<void()> pre_flush_callback_;
     };

@@ -61,6 +61,8 @@
 #include "../multi/bots/bot_main.h"
 #include "../multi/mutators.h"
 #include "multi_spectate.h"
+#include "../misc/settings_registry.h"
+#include "../object/zipline.h"
 
 static bool g_big_team_scores_hud = false;
 constexpr bool g_debug_team_scores_hud = false;
@@ -106,19 +108,20 @@ static void hud_big_notification_clear()
     hud_notification_clear_slot(g_hud_big_notification);
 }
 
-// Third slot, under the reticle: the vehicle Use prompt. It is local-only and re-asserted every
-// frame it applies, so it carries no HudNotificationType and never competes for the two slots above.
+// Third slot, under the reticle: the vehicle Use prompt or the zip line hint. It is local-only and
+// re-asserted every frame it applies, so it carries no HudNotificationType and never competes for the
+// two slots above.
 static struct {
     bool active = false;
     std::string text;
     rf::Timestamp fade_start; // invalid while not fading
-} g_hud_vehicle_prompt;
+} g_hud_reticle_prompt;
 
-static void hud_vehicle_prompt_clear()
+void hud_reticle_prompt_clear()
 {
-    g_hud_vehicle_prompt.active = false;
-    g_hud_vehicle_prompt.text.clear();
-    g_hud_vehicle_prompt.fade_start.invalidate();
+    g_hud_reticle_prompt.active = false;
+    g_hud_reticle_prompt.text.clear();
+    g_hud_reticle_prompt.fade_start.invalidate();
 }
 
 // Latest Pit duel-queue state pushed by the server (af_sreq_pit_queue_state).
@@ -496,9 +499,74 @@ static const ChatMenuList spectate_menu{
         {false, ChatMenuListName::Null, ChatMenuListType::Basic, "Follow killer", "spectate_followkiller"},
         {false, ChatMenuListName::Null, ChatMenuListType::Basic, "Minimal UI", "spectate_minui"},
         {false, ChatMenuListName::Null, ChatMenuListType::Basic, "Player labels", "spectate_playerlabels"},
+        {true, ChatMenuListName::SpectateOutlines, ChatMenuListType::Basic, "Outlines"},
+        {false, ChatMenuListName::Null, ChatMenuListType::Basic, "HUD", "cl_hud"},
+        {true, ChatMenuListName::SpectateHudElements, ChatMenuListType::Basic, "HUD elements"},
+        {true, ChatMenuListName::SpectateDemoOverlays, ChatMenuListType::DemoPlayback, "Demo overlays"},
+    }
+};
+
+// Spectate HUD elements: more toggles than one menu holds, so split in two
+static const ChatMenuList spectate_hud_elements_menu{
+    .display_string = "HUD ELEMENTS",
+    .type = ChatMenuListType::Basic,
+    .elements = {
+        {true, ChatMenuListName::SpectatePlayerHud, ChatMenuListType::Basic, "Player HUD"},
+        {true, ChatMenuListName::SpectateMatchHud, ChatMenuListType::Basic, "Match HUD"},
+        {false, ChatMenuListName::Null, ChatMenuListType::Basic, "Show all", "cl_hudelement all"},
+    }
+};
+
+static ChatMenuElement hud_element_menu_item(HudElement element)
+{
+    return {false, ChatMenuListName::Null, ChatMenuListType::Basic, hud_element_label(element), "", element};
+}
+
+static const ChatMenuList spectate_player_hud_menu{
+    .display_string = "PLAYER HUD",
+    .type = ChatMenuListType::Basic,
+    .elements = {
+        hud_element_menu_item(HudElement::health),
+        hud_element_menu_item(HudElement::ammo),
+        hud_element_menu_item(HudElement::reticle),
+        hud_element_menu_item(HudElement::powerups),
+        hud_element_menu_item(HudElement::gauges),
+        hud_element_menu_item(HudElement::target_names),
+    }
+};
+
+static const ChatMenuList spectate_match_hud_menu{
+    .display_string = "MATCH HUD",
+    .type = ChatMenuListType::Basic,
+    .elements = {
+        hud_element_menu_item(HudElement::killfeed),
+        hud_element_menu_item(HudElement::chat),
+        hud_element_menu_item(HudElement::timer),
+        hud_element_menu_item(HudElement::scores),
+        hud_element_menu_item(HudElement::messages),
+        hud_element_menu_item(HudElement::minimap),
+    }
+};
+
+// Spectate outlines
+static const ChatMenuList spectate_outlines_menu{
+    .display_string = "OUTLINES",
+    .type = ChatMenuListType::Basic,
+    .elements = {
+        {false, ChatMenuListName::Null, ChatMenuListType::Basic, "Player outlines", "r_outlines_spectator"},
+        {false, ChatMenuListName::Null, ChatMenuListType::Basic, "Outline x-ray", "r_outlines_spectator_xray"},
+    }
+};
+
+// Spectate demo overlays
+static const ChatMenuList spectate_demo_overlays_menu{
+    .display_string = "DEMO OVERLAYS",
+    .type = ChatMenuListType::DemoPlayback,
+    .elements = {
         {false, ChatMenuListName::Null, ChatMenuListType::DemoPlayback, "Player healthbars", "spectate_playerinfo"},
         {false, ChatMenuListName::Null, ChatMenuListType::DemoPlayback, "Powerup timers", "spectate_powerups"},
         {false, ChatMenuListName::Null, ChatMenuListType::DemoPlayback, "Spawn points", "spectate_spawns"},
+        {false, ChatMenuListName::Null, ChatMenuListType::DemoPlayback, "Minimal compact bar", "spectate_minimalbar"},
     }
 };
 
@@ -1133,6 +1201,9 @@ static int hud_salvage_miniflag_bmh()
 
 void multi_hud_render_team_scores()
 {
+    if (!hud_element_visible(HudElement::scores)) {
+        return;
+    }
     int clip_h = rf::gr::clip_height();
     rf::gr::set_color(0, 0, 0, 150);
 
@@ -1580,6 +1651,9 @@ static void hud_render_notification()
         alpha = static_cast<int>(225.0f * (1.0f - t));
     }
 
+    // Hidden, it still expires above
+    if (!hud_element_visible(HudElement::messages)) return;
+
     rf::gr::set_color(255, 255, 255, alpha);
     const int center_x = rf::gr::screen_width() / 2;
     const int font = hud_get_default_font();
@@ -1641,6 +1715,9 @@ static void hud_render_big_notification()
         alpha = static_cast<int>(225.0f * (1.0f - t));
     }
 
+    // Hidden, it still expires above: the award queue waits on this slot
+    if (!hud_element_visible(HudElement::messages)) return;
+
     const int big_font = hud_get_large_font(); // bold variant under big_hud
     const int big_font_h = rf::gr::get_font_height(big_font);
     const int std_y = hud_standard_notification_y();
@@ -1666,40 +1743,44 @@ static void hud_render_big_notification()
                            g_hud_big_notification.text.c_str(), big_font);
 }
 
-// Keep the under-reticle vehicle prompt alive while the local player is looking at a vehicle he
-// could act on; the render pass fades it out once this stops asserting it.
-static void hud_vehicle_prompt_ensure()
+// The vehicle prompt wins the line, as it wins the Use press; otherwise the zip line hint. The slot
+// fades out once neither asserts it.
+static void hud_reticle_prompt_ensure()
 {
-    if (rf::is_dedicated_server) return;
-
-    const std::string& text = vehicle_use_prompt_text();
+    const std::string& vehicle_text = vehicle_use_prompt_text();
+    const std::string& text = vehicle_text.empty() ? zipline_hint_text() : vehicle_text;
     if (text.empty()) {
-        if (g_hud_vehicle_prompt.active && !g_hud_vehicle_prompt.fade_start.valid()) {
-            g_hud_vehicle_prompt.fade_start.set(0);
+        if (g_hud_reticle_prompt.active && !g_hud_reticle_prompt.fade_start.valid()) {
+            g_hud_reticle_prompt.fade_start.set(0);
         }
         return;
     }
-    if (g_hud_vehicle_prompt.text != text) {
-        g_hud_vehicle_prompt.text = text;
+    if (g_hud_reticle_prompt.text != text) {
+        g_hud_reticle_prompt.text = text;
     }
-    g_hud_vehicle_prompt.active = true;
-    g_hud_vehicle_prompt.fade_start.invalidate();
+    g_hud_reticle_prompt.active = true;
+    g_hud_reticle_prompt.fade_start.invalidate();
 }
 
 // Under-reticle slot: the big slot's fade and shadow-then-main draw, placed below screen centre.
-static void hud_vehicle_prompt_render()
+void hud_render_reticle_prompt()
 {
-    if (!g_hud_vehicle_prompt.active) return;
+    if (rf::is_dedicated_server) return;
+    hud_reticle_prompt_ensure();
+    if (!g_hud_reticle_prompt.active) return;
 
     int alpha = 225;
-    if (g_hud_vehicle_prompt.fade_start.valid()) {
-        const int elapsed = g_hud_vehicle_prompt.fade_start.time_since();
+    if (g_hud_reticle_prompt.fade_start.valid()) {
+        const int elapsed = g_hud_reticle_prompt.fade_start.time_since();
         if (elapsed >= kHudNotificationFadeMs) {
-            hud_vehicle_prompt_clear();
+            hud_reticle_prompt_clear();
             return;
         }
         const float t = static_cast<float>(elapsed) / static_cast<float>(kHudNotificationFadeMs);
         alpha = static_cast<int>(225.0f * (1.0f - t));
+    }
+    if (!hud_element_visible(HudElement::messages)) {
+        return;
     }
 
     const int font = hud_get_default_font();
@@ -1717,10 +1798,10 @@ static void hud_vehicle_prompt_render()
     const int center_x = rf::gr::clip_width() / 2;
     rf::gr::set_color(0, 0, 0, alpha / 2);
     rf::gr::string_aligned(rf::gr::ALIGN_CENTER, center_x + 2, y + 2,
-                           g_hud_vehicle_prompt.text.c_str(), font);
+                           g_hud_reticle_prompt.text.c_str(), font);
     rf::gr::set_color(255, 255, 255, alpha);
     rf::gr::string_aligned(rf::gr::ALIGN_CENTER, center_x, y,
-                           g_hud_vehicle_prompt.text.c_str(), font);
+                           g_hud_reticle_prompt.text.c_str(), font);
 }
 
 void draw_hud_ready_notification(bool draw)
@@ -2288,7 +2369,8 @@ CallHook<void(int *dx, int *dy, int *dz)> control_config_get_mouse_delta_hook{
 FunHook<void()> hud_msg_render_hook{
     0x004382D0,
     [] {
-        if (!g_remote_server_cfg_popup.is_active() && !vote_panel_is_gameplay_overlay_active()) {
+        if (!g_remote_server_cfg_popup.is_active() && !vote_panel_is_gameplay_overlay_active()
+            && hud_element_visible(HudElement::messages)) {
             hud_msg_render_hook.call_target();
         }
     },
@@ -2307,7 +2389,7 @@ CodeInjection multi_hud_render_patch{
 
         multi_hud_render_local_player_spectators();
 
-        if (g_draw_vote_notification) {
+        if (g_draw_vote_notification && hud_element_visible(HudElement::messages)) {
             hud_render_vote_notification();
         }
 
@@ -2315,25 +2397,20 @@ CodeInjection multi_hud_render_patch{
         hud_pit_queue_ensure();
         hud_salvage_carrier_ensure();
         hud_bag_carrier_ensure();
-        hud_vehicle_prompt_ensure();
         hud_render_notification();
         hud_render_big_notification();
-        hud_vehicle_prompt_render();
+        hud_render_reticle_prompt();
 
         if (g_draw_respawn_timer_notification) {
             hud_render_respawn_timer_notification();
         }
 
-        if (g_chat_menu_active != ChatMenuType::None) {
-            hud_render_draw_chat_menu();
-
-            if (!g_chat_menu_timer.valid() || g_chat_menu_timer.elapsed()) {
-                toggle_chat_menu(ChatMenuType::None);
-            }
-        }
+        multi_hud_render_chat_menu();
 
         jetpack_render_hud();
-        crits_client_render_reticle_flash();
+        if (hud_element_visible(HudElement::reticle)) {
+            crits_client_render_reticle_flash();
+        }
     }
 };
 
@@ -2345,7 +2422,7 @@ void multi_hud_level_init() {
     g_run_timer_fade_active = false;
     hud_notification_clear();
     hud_big_notification_clear();
-    hud_vehicle_prompt_clear();
+    hud_reticle_prompt_clear();
     reset_local_pit_queue_state();
     reset_local_pit_roster();
     reset_local_gungame_order();
@@ -2422,7 +2499,11 @@ void draw_chat_menu_text(const int x, int y, const int w) {
         const std::string_view display_name = element.display_string.empty()
             ? element.long_string
             : element.display_string;
-        std::string line = std::format("{}: {}", display_index, display_name);
+        std::string line = element.hud_element
+            ? std::format("{}: {} [{}]", display_index, display_name,
+                hud_element_hidden_by_cl_chat(*element.hud_element) ? "OFF: cl_chat"
+                    : hud_element_visible(*element.hud_element) ? "ON" : "OFF")
+            : std::format("{}: {}", display_index, display_name);
         gr_fit_string(line, w - 8 * 2, font_id);
         rf::gr::string_aligned(
             rf::gr::ALIGN_LEFT,
@@ -2460,6 +2541,16 @@ void hud_render_draw_chat_menu() {
     draw_chat_menu_text(x, y, w);
 }
 
+void multi_hud_render_chat_menu() {
+    if (g_chat_menu_active != ChatMenuType::None) {
+        hud_render_draw_chat_menu();
+
+        if (!g_chat_menu_timer.valid() || g_chat_menu_timer.elapsed()) {
+            toggle_chat_menu(ChatMenuType::None);
+        }
+    }
+}
+
 void set_chat_menu_state(ChatMenuType state) {
     g_chat_menu_active = state;
 
@@ -2479,6 +2570,9 @@ void chat_menu_go_back()
         // if expanded in the future to have more third depth levels, this will need to be handled differently
         if (g_active_menu == &general_menu) {
             g_previous_menu = &radio_messages_menu;
+        }
+        else if (g_active_menu == &spectate_hud_elements_menu) {
+            g_previous_menu = &spectate_menu;
         }
         else {
             g_previous_menu = nullptr;
@@ -2572,8 +2666,19 @@ void chat_menu_action_handler(rf::Key key) {
             case ChatMenuListName::Casual: g_active_menu = &casual_menu; break;
             case ChatMenuListName::RandomFunny: g_active_menu = &random_funny_menu; break;
 
+            // Spectate menu
+            case ChatMenuListName::SpectateOutlines: g_active_menu = &spectate_outlines_menu; break;
+            case ChatMenuListName::SpectateDemoOverlays: g_active_menu = &spectate_demo_overlays_menu; break;
+            case ChatMenuListName::SpectateHudElements: g_active_menu = &spectate_hud_elements_menu; break;
+            case ChatMenuListName::SpectatePlayerHud: g_active_menu = &spectate_player_hud_menu; break;
+            case ChatMenuListName::SpectateMatchHud: g_active_menu = &spectate_match_hud_menu; break;
+
             default: break;
         }
+    } else if (selected_element.hud_element) {
+        // Toggles keep the menu open so several can be flipped in a row
+        const HudElement element = *selected_element.hud_element;
+        hud_element_set_visible(element, !hud_element_visible(element));
     } else {
         // Determine chat behavior based on menu type
         if (g_chat_menu_active == ChatMenuType::Taunts) {
@@ -2653,7 +2758,7 @@ static bool g_target_player_is_bot = false;
 CallHook<void(int, int, const char*, int, rf::gr::Mode)> multi_hud_render_target_player_name_hook{
     0x00478140,
     [] (int x, int y, const char* s, int font_num, rf::gr::Mode mode) {
-        if (!g_alpine_game_config.display_target_player_names) {
+        if (!g_alpine_game_config.display_target_player_names || !hud_element_visible(HudElement::target_names)) {
             return;
         }
         multi_hud_render_target_player_name_hook.call_target(x, y, s, font_num, mode);
@@ -2685,7 +2790,7 @@ CodeInjection multi_hud_update_target_player_patch_2{
 ConsoleCommand2 ui_playernames_cmd{
     "ui_playernames",
     []() {
-        g_alpine_game_config.display_target_player_names = !g_alpine_game_config.display_target_player_names;
+        setting_console_set("display_target_player_names", "toggle");
         rf::console::print("Display of names of targeted players is {}", g_alpine_game_config.display_target_player_names ? "enabled" : "disabled");
     },
     "Toggle displaying names of targeted players",
@@ -2695,6 +2800,9 @@ ConsoleCommand2 ui_playernames_cmd{
 FunHook<void()> multi_hud_render_time_left_hook{
     0x004770A0,
     []() {
+        if (!hud_element_visible(HudElement::timer)) {
+            return;
+        }
         if (!rf::time_left_visible || rf::time_left_seconds < 0 || rf::time_left_minutes < 0 || rf::time_left_hours < 0) {
         return;
     }
@@ -2774,8 +2882,7 @@ void build_time_left_string_format() {
 ConsoleCommand2 ui_verbosetimer_cmd{
     "ui_verbosetimer",
     []() {
-        g_alpine_game_config.verbose_time_left_display = !g_alpine_game_config.verbose_time_left_display;
-        build_time_left_string_format();
+        setting_console_set("verbose_time_left_display", "toggle");
         rf::console::print("Verbose in-game timer display is {}", g_alpine_game_config.verbose_time_left_display ? "enabled" : "disabled");
     },
     "Control whether the in-game timer displays the 'Time Left:' text",
@@ -2785,7 +2892,7 @@ ConsoleCommand2 ui_verbosetimer_cmd{
 ConsoleCommand2 ui_runtimer_cmd{
     "ui_runtimer",
     [] {
-        g_alpine_game_config.show_run_timer = !g_alpine_game_config.show_run_timer;
+        setting_console_set("show_run_timer", "toggle");
         rf::console::print("RUN game type timer display is {}", g_alpine_game_config.show_run_timer ? "enabled" : "disabled"
         );
     },
@@ -2796,8 +2903,7 @@ ConsoleCommand2 ui_runtimer_cmd{
 ConsoleCommand2 cl_vehiclemarkers_cmd{
     "cl_vehiclemarkers",
     [](std::optional<bool> enabled) {
-        g_alpine_game_config.vehicle_respawn_markers =
-            enabled.value_or(!g_alpine_game_config.vehicle_respawn_markers);
+        setting_console_set_bool("vehicle_respawn_markers", enabled);
         rf::console::print("Vehicle factory respawn markers are {}",
             g_alpine_game_config.vehicle_respawn_markers ? "enabled" : "disabled");
     },
@@ -2808,7 +2914,7 @@ ConsoleCommand2 cl_vehiclemarkers_cmd{
 ConsoleCommand2 cl_vehiclehealthbars_cmd{
     "cl_vehiclehealthbars",
     [](std::optional<bool> enabled) {
-        g_alpine_game_config.vehicle_health_bars = enabled.value_or(!g_alpine_game_config.vehicle_health_bars);
+        setting_console_set_bool("vehicle_health_bars", enabled);
         rf::console::print("Vehicle health bars are {}",
             g_alpine_game_config.vehicle_health_bars ? "enabled" : "disabled");
     },
@@ -2819,7 +2925,7 @@ ConsoleCommand2 cl_vehiclehealthbars_cmd{
 ConsoleCommand2 cl_vehiclehints_cmd{
     "cl_vehiclehints",
     [](std::optional<bool> enabled) {
-        g_alpine_game_config.vehicle_control_hints = enabled.value_or(!g_alpine_game_config.vehicle_control_hints);
+        setting_console_set_bool("vehicle_control_hints", enabled);
         rf::console::print("Vehicle control hints are {}",
             g_alpine_game_config.vehicle_control_hints ? "enabled" : "disabled");
     },
@@ -2830,7 +2936,7 @@ ConsoleCommand2 cl_vehiclehints_cmd{
 ConsoleCommand2 ui_gametype_help_cmd{
     "ui_gametype_help",
     [] {
-        g_alpine_game_config.show_gametype_help = !g_alpine_game_config.show_gametype_help;
+        setting_console_set("show_gametype_help", "toggle");
         rf::console::print("Gametype help notification is {}", g_alpine_game_config.show_gametype_help ? "enabled" : "disabled");
     },
     "Toggle the gametype help notification shown when spawning on a server",
@@ -2840,7 +2946,7 @@ ConsoleCommand2 ui_gametype_help_cmd{
 ConsoleCommand2 ui_miniscoreboard_cmd{
     "ui_minisb_dm",
     [] {
-        g_alpine_game_config.show_mini_scoreboard_dm = !g_alpine_game_config.show_mini_scoreboard_dm;
+        setting_console_set("show_mini_scoreboard_dm", "toggle");
         rf::console::print("Mini scoreboard HUD element in DM is {}",
             g_alpine_game_config.show_mini_scoreboard_dm ? "enabled" : "disabled");
     },
@@ -2851,7 +2957,7 @@ ConsoleCommand2 ui_miniscoreboard_cmd{
 ConsoleCommand2 ui_always_show_specators_cmd{
     "ui_always_show_specators",
     [] {
-        g_alpine_game_config.always_show_spectators = !g_alpine_game_config.always_show_spectators;
+        setting_console_set("always_show_spectators", "toggle");
         rf::console::print(
             "Always show spectators is {}",
             g_alpine_game_config.always_show_spectators ? "enabled" : "disabled"
@@ -2864,7 +2970,7 @@ ConsoleCommand2 ui_always_show_specators_cmd{
 ConsoleCommand2 ui_gamefeed_cmd{
     "ui_gamefeed",
     [] {
-        g_alpine_game_config.killfeed_enabled = !g_alpine_game_config.killfeed_enabled;
+        setting_console_set("killfeed_enabled", "toggle");
         rf::console::print("Game feed is {}", g_alpine_game_config.killfeed_enabled ? "enabled" : "disabled");
     },
     "Toggle game event messages in a dedicated feed instead of chat",
@@ -2874,8 +2980,7 @@ ConsoleCommand2 ui_gamefeed_cmd{
 ConsoleCommand2 ui_simple_server_chat_messages_cmd{
     "ui_simple_server_chat_messages",
     [] {
-        g_alpine_game_config.simple_server_chat_msgs =
-            !g_alpine_game_config.simple_server_chat_msgs;
+        setting_console_set("simple_server_chat_msgs", "toggle");
         rf::console::print(
             "Simple server chat messages is {}",
             g_alpine_game_config.simple_server_chat_msgs ? "enabled" : "disabled"

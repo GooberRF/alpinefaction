@@ -43,6 +43,7 @@
 #include "../rf/localize.h"
 #include "../os/console.h"
 #include <cmath>
+#include "../misc/settings_registry.h"
 
 WorldHUDAssets g_world_hud_assets;
 static KothHudTuning g_koth_hud_tuning{};
@@ -1746,6 +1747,20 @@ void populate_fullscreen_overlay_events()
     }
 }
 
+// Demo seek: the burst feeds minutes of packets in a few wall seconds, and these all
+// age on wall clock - damage numbers pile up and a map-start fullscreen image outlives
+// the jump. Drop them; a finite overlay is transient, an infinite one is level state.
+void hud_world_seek_reset()
+{
+    ephemeral_world_hud_strings.clear();
+    ephemeral_world_hud_sprites.clear();
+    for (auto* overlay : fullscreen_overlay_events) {
+        if (overlay->duration > 0.0f || overlay->fading_out_early) {
+            overlay->active = false;
+        }
+    }
+}
+
 void hud_world_level_unload()
 {
     world_hud_sprite_events.clear();
@@ -1858,7 +1873,7 @@ void add_damage_notify_world_hud_string(rf::Vector3 pos, uint8_t damaged_player_
 ConsoleCommand2 worldhudaltdmgindicators_cmd{
     "cl_wh_altdmgindicators",
     []() {
-        g_alpine_game_config.world_hud_alt_damage_indicators = !g_alpine_game_config.world_hud_alt_damage_indicators;
+        setting_console_set("world_hud_alt_damage_indicators", "toggle");
         rf::console::print("Individual world HUD damage indicators are {}", g_alpine_game_config.world_hud_alt_damage_indicators ? "enabled" : "disabled");
     },
     "Toggle individual vs. cumulative (default) world HUD damage indicator strings",
@@ -1868,7 +1883,7 @@ ConsoleCommand2 worldhudaltdmgindicators_cmd{
 ConsoleCommand2 worldhudctf_cmd{
     "cl_wh_ctf",
     []() {
-        g_alpine_game_config.world_hud_ctf_icons = !g_alpine_game_config.world_hud_ctf_icons;
+        setting_console_set("world_hud_ctf_icons", "toggle");
         rf::console::print("CTF world HUD is {}", g_alpine_game_config.world_hud_ctf_icons ? "enabled" : "disabled");
     },
     "Toggle drawing of world HUD indicators for CTF flags",
@@ -1878,7 +1893,7 @@ ConsoleCommand2 worldhudctf_cmd{
 ConsoleCommand2 worldhudflagoverdraw_cmd{
     "cl_wh_flagoverdraw",
     []() {
-        g_alpine_game_config.world_hud_flag_overdraw = !g_alpine_game_config.world_hud_flag_overdraw;
+        setting_console_set("world_hud_flag_overdraw", "toggle");
         rf::console::print(
             "World HUD overdraw for CTF flag sprites is {}",
             g_alpine_game_config.world_hud_flag_overdraw ? "enabled" : "disabled"
@@ -1891,7 +1906,7 @@ ConsoleCommand2 worldhudflagoverdraw_cmd{
 ConsoleCommand2 worldhudhilloverdraw_cmd{
     "cl_wh_cpoverdraw",
     []() {
-        g_alpine_game_config.world_hud_hill_overdraw = !g_alpine_game_config.world_hud_hill_overdraw;
+        setting_console_set("world_hud_hill_overdraw", "toggle");
         rf::console::print(
             "World HUD overdraw for control point sprites or medallions and the Payload cart medallion is {}",
             g_alpine_game_config.world_hud_hill_overdraw ? "enabled" : "disabled"
@@ -1904,7 +1919,7 @@ ConsoleCommand2 worldhudhilloverdraw_cmd{
 ConsoleCommand2 worldhudcpmedallions_cmd{
     "cl_wh_cpmedallions",
     []() {
-        g_alpine_game_config.world_hud_cp_medallions = !g_alpine_game_config.world_hud_cp_medallions;
+        setting_console_set("world_hud_cp_medallions", "toggle");
         rf::console::print("World HUD control point medallions are {}",
                            g_alpine_game_config.world_hud_cp_medallions ? "enabled" : "disabled");
     },
@@ -1915,7 +1930,7 @@ ConsoleCommand2 worldhudcpmedallions_cmd{
 ConsoleCommand2 worldhudcproletext_cmd{
     "cl_wh_cproletext",
     []() {
-        g_alpine_game_config.world_hud_cp_role_text = !g_alpine_game_config.world_hud_cp_role_text;
+        setting_console_set("world_hud_cp_role_text", "toggle");
         rf::console::print("World HUD control point Attack/Defend text is {}",
                            g_alpine_game_config.world_hud_cp_role_text ? "enabled" : "disabled");
     },
@@ -1926,7 +1941,7 @@ ConsoleCommand2 worldhudcproletext_cmd{
 ConsoleCommand2 worldhuddamagenumbers_cmd{
     "cl_wh_hitnumbers",
     []() {
-        g_alpine_game_config.world_hud_damage_numbers = !g_alpine_game_config.world_hud_damage_numbers;
+        setting_console_set("world_hud_damage_numbers", "toggle");
         rf::console::print("World HUD damage indicator numbers are {}", g_alpine_game_config.world_hud_damage_numbers ? "enabled" : "disabled");
     },
     "Toggle whether to display numeric damage indicators when you hit players in multiplayer (if enabled by an Alpine Faction server)",
@@ -1936,7 +1951,7 @@ ConsoleCommand2 worldhuddamagenumbers_cmd{
 ConsoleCommand2 worldhudpayloadtethers_cmd{
     "cl_wh_tethers",
     []() {
-        g_alpine_game_config.world_hud_payload_tethers = !g_alpine_game_config.world_hud_payload_tethers;
+        setting_console_set("world_hud_payload_tethers", "toggle");
         rf::console::print("World HUD Payload tethers are {}",
                            g_alpine_game_config.world_hud_payload_tethers ? "enabled" : "disabled");
     },
@@ -1947,7 +1962,7 @@ ConsoleCommand2 worldhudpayloadtethers_cmd{
 ConsoleCommand2 worldhudpayloadpushzone_cmd{
     "cl_wh_pushzone",
     []() {
-        g_alpine_game_config.world_hud_payload_push_zone = !g_alpine_game_config.world_hud_payload_push_zone;
+        setting_console_set("world_hud_payload_push_zone", "toggle");
         rf::console::print("World HUD Payload push zone ring is {}",
                            g_alpine_game_config.world_hud_payload_push_zone ? "enabled" : "disabled");
     },
@@ -1958,7 +1973,7 @@ ConsoleCommand2 worldhudpayloadpushzone_cmd{
 ConsoleCommand2 worldhudpayloadcartstatus_cmd{
     "cl_wh_cartstatus",
     []() {
-        g_alpine_game_config.world_hud_payload_cart_status = !g_alpine_game_config.world_hud_payload_cart_status;
+        setting_console_set("world_hud_payload_cart_status", "toggle");
         rf::console::print("World HUD Payload cart status text is {}",
                            g_alpine_game_config.world_hud_payload_cart_status ? "enabled" : "disabled");
     },
@@ -1969,7 +1984,7 @@ ConsoleCommand2 worldhudpayloadcartstatus_cmd{
 ConsoleCommand2 worldhudspectateplayerlabels_cmd{
     "spectate_playerlabels",
     []() {
-        g_alpine_game_config.world_hud_spectate_player_labels = !g_alpine_game_config.world_hud_spectate_player_labels;
+        setting_console_set("world_hud_spectate_player_labels", "toggle");
         rf::console::print("World HUD spectate mode player labels are {}", g_alpine_game_config.world_hud_spectate_player_labels ? "enabled" : "disabled");
     },
     "Toggle whether to display player name labels in spectate mode",
@@ -1979,7 +1994,7 @@ ConsoleCommand2 worldhudspectateplayerlabels_cmd{
 ConsoleCommand2 worldhuddemoplayerinfo_cmd{
     "spectate_playerinfo",
     []() {
-        g_alpine_game_config.world_hud_demo_player_info = !g_alpine_game_config.world_hud_demo_player_info;
+        setting_console_set("world_hud_demo_player_info", "toggle");
         rf::console::print("Demo playback player healthbars are {}",
                            g_alpine_game_config.world_hud_demo_player_info ? "enabled" : "disabled");
     },
@@ -1990,7 +2005,7 @@ ConsoleCommand2 worldhuddemoplayerinfo_cmd{
 ConsoleCommand2 worldhuddemospawns_cmd{
     "spectate_spawns",
     []() {
-        g_alpine_game_config.world_hud_demo_spawns = !g_alpine_game_config.world_hud_demo_spawns;
+        setting_console_set("world_hud_demo_spawns", "toggle");
         rf::console::print("Demo playback respawn point indicators are {}",
                            g_alpine_game_config.world_hud_demo_spawns ? "enabled" : "disabled");
     },
@@ -2001,7 +2016,7 @@ ConsoleCommand2 worldhuddemospawns_cmd{
 ConsoleCommand2 worldhudteamplayerlabels_cmd{
     "cl_wh_teamplayerlabels",
     []() {
-        g_alpine_game_config.world_hud_team_player_labels = !g_alpine_game_config.world_hud_team_player_labels;
+        setting_console_set("world_hud_team_player_labels", "toggle");
         rf::console::print("World HUD team player labels are {}", g_alpine_game_config.world_hud_team_player_labels ? "enabled" : "disabled");
     },
     "Toggle whether to display player name labels for your teammates",
@@ -2027,7 +2042,7 @@ ConsoleCommand2 set_cp_outline_height_cmd{
     "cl_outlineheightscale",
     [](std::optional<float> new_height) {
         if (new_height) {
-            g_alpine_game_config.set_control_point_outline_height_scale(new_height.value());
+            setting_console_set("control_point_outline_height_scale", std::to_string(new_height.value()));
         }
         rf::console::print("Control point outline height scale is {:.2f}.", g_alpine_game_config.control_point_outline_height_scale);
     },
@@ -2039,7 +2054,7 @@ ConsoleCommand2 set_cp_outline_segments_cmd{
     "cl_outlinesegments",
     [](std::optional<int> new_segments) {
         if (new_segments) {
-            g_alpine_game_config.set_control_point_outline_segments(new_segments.value());
+            setting_console_set("control_point_outline_segments", std::to_string(new_segments.value()));
         }
         rf::console::print("Control point outline ring segments is set to {}.", g_alpine_game_config.control_point_outline_segments);
     },
@@ -2051,7 +2066,7 @@ ConsoleCommand2 set_cp_column_segments_cmd{
     "cl_columnsegments",
     [](std::optional<int> new_segments) {
         if (new_segments) {
-            g_alpine_game_config.set_control_point_column_segments(new_segments.value());
+            setting_console_set("control_point_column_segments", std::to_string(new_segments.value()));
         }
         rf::console::print("Control point column ring segments is set to {}.", g_alpine_game_config.control_point_column_segments);
     },
@@ -2063,7 +2078,7 @@ ConsoleCommand2 set_cp_column_height_scale_cmd{
     "cl_columnheightscale",
     [](std::optional<float> new_height) {
         if (new_height) {
-            g_alpine_game_config.set_control_point_column_height_scale(new_height.value());
+            setting_console_set("control_point_column_height_scale", std::to_string(new_height.value()));
         }
         rf::console::print("Control point light column height scale is {:.2f}.", g_alpine_game_config.control_point_column_height_scale);
     },

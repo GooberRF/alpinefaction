@@ -39,13 +39,16 @@
 #include "../multi/multi.h"
 #include "../multi/mutators.h"
 #include "../multi/server.h"
+#include "../misc/settings_registry.h"
 #include "../multi/bots/server_bots.h"
+#include "object.h"
+#include "zipline.h"
 
 rf::Timestamp g_player_jump_timestamp;
 // Server bots are simulated at this machine's frame rate.
 static std::unordered_map<int, rf::Timestamp> g_server_bot_jump_timestamps;
 
-static void skip_land_handling_after_jump(rf::Entity* entity)
+void entity_skip_land_handling_after_jump(rf::Entity* entity)
 {
     if (entity->local_player) {
         g_player_jump_timestamp.set(64);
@@ -78,7 +81,7 @@ CodeInjection stuck_to_ground_when_jumping_fix{
     0x0042891E,
     [](auto& regs) {
         // Skip land handling code for next 64 ms (like in PF)
-        skip_land_handling_after_jump(regs.esi);
+        entity_skip_land_handling_after_jump(regs.esi);
     },
 };
 
@@ -86,14 +89,18 @@ CodeInjection stuck_to_ground_when_using_jump_pad_fix{
     0x00486B60,
     [](auto& regs) {
         // Skip land handling code for next 64 ms
-        skip_land_handling_after_jump(regs.esi);
+        entity_skip_land_handling_after_jump(regs.esi);
     },
 };
 
 CodeInjection stuck_to_ground_fix{
     0x00487F82,
     [](auto& regs) {
-        if (entity_skips_land_handling(regs.esi)) {
+        rf::Entity* entity = regs.esi;
+        // A rider is held off the ground only while still falling, so swim or climb mode taken
+        // this frame is not overwritten and ends the ride.
+        const bool riding = zipline_entity_simulates_ride(entity) && rf::entity_is_falling(entity);
+        if (riding || entity_skips_land_handling(entity)) {
             // Jump to jump handling code that sets entity to falling movement mode
             regs.eip = 0x00487F7B;
         }
@@ -112,10 +119,24 @@ CodeInjection entity_water_decelerate_fix{
     },
 };
 
+// Clients also run exposure damage on player entities (predicted life loss and damage feedback),
+// so they follow the server's rule to stay consistent with it. Non-Alpine servers keep stock behaviour.
+static bool exposure_damage_enabled()
+{
+    if (!rf::is_multi) {
+        return g_alpine_game_config.apply_exposure_damage;
+    }
+    if (rf::is_server) {
+        return server_exposure_damage();
+    }
+    const auto& server_info = get_af_server_info();
+    return !server_info.has_value() || !server_info->no_exposure_damage;
+}
+
 FunHook<void(rf::Entity*)> entity_maybe_apply_exposure_damage_hook{
     0x00421170,
     [](rf::Entity* ep) {
-        if (g_alpine_game_config.apply_exposure_damage) {
+        if (exposure_damage_enabled()) {
             entity_maybe_apply_exposure_damage_hook.call_target(ep);
         }
     },
@@ -124,7 +145,7 @@ FunHook<void(rf::Entity*)> entity_maybe_apply_exposure_damage_hook{
 CodeInjection player_exposure_damage_sound_patch{
     0x004A2A95,
     [](auto& regs) {
-        if (!g_alpine_game_config.apply_exposure_damage) {
+        if (!exposure_damage_enabled()) {
             regs.eip = 0x004A2AC2;
         }
     },
@@ -133,10 +154,10 @@ CodeInjection player_exposure_damage_sound_patch{
 ConsoleCommand2 sp_exposuredamage_cmd{
     "sp_exposuredamage",
     []() {
-        g_alpine_game_config.apply_exposure_damage = !g_alpine_game_config.apply_exposure_damage;
+        setting_console_set("apply_exposure_damage", "toggle");
         rf::console::print("Exposure damage is {}", g_alpine_game_config.apply_exposure_damage ? "enabled" : "disabled");
     },
-    "Toggle exposure damage when outside without armor",
+    "Toggle SP exposure damage when outside without armor",
     "sp_exposuredamage"
 };
 
@@ -170,7 +191,7 @@ CallHook<bool(rf::Entity*)> entity_make_run_uncrouch_hook{
 ConsoleCommand2 sp_climbfix_cmd{
     "sp_climbfix",
     []() {
-        g_alpine_game_config.climb_fix = !g_alpine_game_config.climb_fix;
+        setting_console_set("climb_fix", "toggle");
         rf::console::print("Climb region crouch fix is {}", g_alpine_game_config.climb_fix ? "enabled" : "disabled");
     },
     "Toggle SP fix for getting stuck climbing after leaving a climb region while crouched",
@@ -256,7 +277,13 @@ CodeInjection entity_collision_push_rate_limit{
     0x0049DDBB,
     [](auto& regs) {
         rf::Entity* ep = regs.esi;
-        if (!rf::is_multi || !rf::entity_from_handle(ep->p_data.collide_out.obj_handle)) {
+        rf::Entity* other = rf::entity_from_handle(ep->p_data.collide_out.obj_handle);
+        // A zip line rider carries up to 70 m/s of ride speed; brushing past one is not a hit.
+        if (other && zipline_entity_is_riding(other)) {
+            addr_as_ref<float>(regs.esp + 4) = 0.0f;
+            return;
+        }
+        if (!rf::is_multi || !other) {
             return;
         }
         const int64_t now = timer::get_i64(1000);
@@ -703,7 +730,7 @@ ConsoleCommand2 cl_gorelevel_cmd{
     [](std::optional<int> gore_setting) {
         if (gore_setting) {
             if (*gore_setting >= 0 && *gore_setting <= 2) {
-                rf::game_set_gore_level(*gore_setting);
+                setting_console_set("gore_level", std::to_string(*gore_setting));
                 rf::console::print("Set gore level to {}", rf::game_get_gore_level());
             }
             else {
@@ -722,7 +749,7 @@ ConsoleCommand2 cl_gibchunks_cmd{
     "cl_gibchunks",
     [](std::optional<int> count) {
         if (count) {
-            g_alpine_game_config.set_gib_chunk_count(*count);
+            setting_console_set("gib_chunk_count", std::to_string(*count));
             rf::console::print("Gib chunk count is {}", g_alpine_game_config.gib_chunk_count);
         }
         else {
@@ -737,7 +764,7 @@ ConsoleCommand2 cl_gibvelocityscale_cmd{
     "cl_gibvelocityscale",
     [](std::optional<float> scale) {
         if (scale) {
-            g_alpine_game_config.set_gib_velocity_scale(*scale);
+            setting_console_set("gib_velocity_scale", std::to_string(*scale));
         }
         rf::console::print("Gib velocity scale is {}", g_alpine_game_config.gib_velocity_scale);
     },
@@ -749,7 +776,7 @@ ConsoleCommand2 cl_giblifetimems_cmd{
     "cl_giblifetimems",
     [](std::optional<int> lifetime_ms) {
         if (lifetime_ms) {
-            g_alpine_game_config.set_gib_lifetime_ms(*lifetime_ms);
+            setting_console_set("gib_lifetime_ms", std::to_string(*lifetime_ms));
         }
         rf::console::print("Gib lifetime is {} ms", g_alpine_game_config.gib_lifetime_ms);
     },
@@ -760,7 +787,7 @@ ConsoleCommand2 cl_giblifetimems_cmd{
 ConsoleCommand2 cl_gibflames_cmd{
     "cl_gibflames",
     []() {
-        g_alpine_game_config.gib_flames = !g_alpine_game_config.gib_flames;
+        setting_console_set("gib_flames", "toggle");
         rf::console::print("Flaming gib chunks are {}",
             g_alpine_game_config.gib_flames ? "enabled" : "disabled");
     },
@@ -847,7 +874,7 @@ FunHook<void(rf::Entity*, rf::WeaponInfo*)> entity_eject_magazine_hook{
 ConsoleCommand2 cl_shellcasings_cmd{
     "cl_shellcasings",
     [](std::optional<bool> enabled) {
-        g_alpine_game_config.shell_casings = enabled.value_or(!g_alpine_game_config.shell_casings);
+        setting_console_set_bool("shell_casings", enabled);
         rf::console::print("Ejected shell casings are {}",
             g_alpine_game_config.shell_casings ? "enabled" : "disabled");
     },
@@ -858,7 +885,7 @@ ConsoleCommand2 cl_shellcasings_cmd{
 ConsoleCommand2 cl_shellcollide_cmd{
     "cl_shellcollide",
     [](std::optional<bool> enabled) {
-        g_alpine_game_config.shell_casings_collide = enabled.value_or(!g_alpine_game_config.shell_casings_collide);
+        setting_console_set_bool("shell_casings_collide", enabled);
         rf::console::print("Shell casings colliding with the level is {}",
             g_alpine_game_config.shell_casings_collide ? "enabled" : "disabled");
     },
@@ -872,7 +899,7 @@ ConsoleCommand2 cl_shelllifetime_cmd{
         if (lifetime_s && std::isfinite(*lifetime_s)) {
             const float clamped_s = std::clamp(*lifetime_s, AlpineGameSettings::min_shell_casing_lifetime_ms / 1000.0f,
                                                AlpineGameSettings::max_shell_casing_lifetime_ms / 1000.0f);
-            g_alpine_game_config.set_shell_casing_lifetime_ms(static_cast<int>(std::lround(clamped_s * 1000.0f)));
+            setting_console_set("shell_casing_lifetime_ms", std::to_string(std::lround(clamped_s * 1000.0f)));
         }
         rf::console::print("Shell casing lifetime is {:.1f} s",
             g_alpine_game_config.shell_casing_lifetime_ms / 1000.0f);
@@ -884,7 +911,7 @@ ConsoleCommand2 cl_shelllifetime_cmd{
 ConsoleCommand2 cl_magazines_cmd{
     "cl_magazines",
     [](std::optional<bool> enabled) {
-        g_alpine_game_config.ejected_magazines = enabled.value_or(!g_alpine_game_config.ejected_magazines);
+        setting_console_set_bool("ejected_magazines", enabled);
         rf::console::print("Ejected magazines are {}", g_alpine_game_config.ejected_magazines ? "enabled" : "disabled");
     },
     "Toggle magazines ejected when you reload",
@@ -982,8 +1009,7 @@ void evaluate_footsteps()
 ConsoleCommand2 cl_footsteps_cmd{
     "cl_footsteps",
     []() {
-        g_alpine_game_config.footsteps = !g_alpine_game_config.footsteps;
-        evaluate_footsteps();
+        setting_console_set("footsteps", "toggle");
         rf::console::print("Footsteps: {} (active: {})",
             g_alpine_game_config.footsteps ? "enabled" : "disabled",
             g_footsteps_active ? "yes" : "no");
@@ -1033,7 +1059,7 @@ FunHook<void(rf::Entity*, float)> entity_maybe_play_pain_sound_hook{
 ConsoleCommand2 cl_painsounds_cmd{
     "cl_painsounds",
     []() {
-        g_alpine_game_config.entity_pain_sounds = !g_alpine_game_config.entity_pain_sounds;
+        setting_console_set("entity_pain_sounds", "toggle");
         rf::console::print("Entity pain sounds are {}", g_alpine_game_config.entity_pain_sounds ? "enabled" : "disabled");
     },
     "Toggle pain sounds",

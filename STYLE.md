@@ -98,5 +98,21 @@ here as closely as possible.
 - New vendored libraries follow the existing pattern: a plain directory, `add_subdirectory`, a
   `LICENSE` file, an entry in `resources/licensing-info.txt`, and the CHANGELOG `Imported libraries`
   section.
-- A CHANGELOG line names the user-visible effect under the author. Changes to features that haven't
-  been released yet get no line.
+
+## Changelog
+- One line per change, in the version's `Major features`, `Minor features, changes, and enhancements`
+  or `Bug fixes` section, under the author's `[@name](https://github.com/name)` line. For joint work,
+  join the authors' links with `&`.
+- Start with a verb in the imperative: `Add`, `Make`, `Allow`, `Speed up`, `Remove`. A bug fix starts
+  with `Fix`. No trailing full stop.
+- Name the user-visible effect, not how it was done. Keep it to one short sentence. Leave out
+  exhaustive lists, edge cases, defaults and ranges; those belong in the docs in `docs/reference`.
+- Put console commands, options, settings, events and file names in backticks, spelled exactly as
+  the player or mapper sees them. Say `level editor` for changes to RED.
+- Mark a change limited to one renderer with `(Direct3D 11 renderer only)` at the end.
+- Indent sub-bullets two spaces, and use them only for the parts of a major feature, not to qualify a
+  line.
+- Changes to features that haven't been released yet get no line.
+- Examples:
+  "- Add `ui_color_console` console command to set the console background color"
+  "- Fix lighting for pistol silencer and remote charge detonator"

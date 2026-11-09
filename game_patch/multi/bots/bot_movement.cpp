@@ -514,7 +514,8 @@ bool is_significant_downward_link(const int from_waypoint, const int to_waypoint
     if (from_waypoint <= 0 || to_waypoint <= 0) {
         return false;
     }
-    if (!waypoints_has_direct_link(from_waypoint, to_waypoint)) {
+    if (!waypoints_has_direct_link(from_waypoint, to_waypoint)
+        || waypoints_get_zipline_ride(from_waypoint, to_waypoint, nullptr, nullptr, nullptr)) {
         return false;
     }
     rf::Vector3 from_pos{};
@@ -1014,7 +1015,10 @@ void bot_process_movement(
         // Roam should always keep moving through waypoints, never stop near them.
         stop_distance = bot_state().has_waypoint_target ? 0.65f : 0.10f;
     }
-    if (active_to_is_jump_pad) {
+    // A zip line is only grabbed from close to its entrance, well inside the usual stop distance.
+    const bool next_link_is_zipline_ride = has_next_link
+        && waypoints_get_zipline_ride(next_from_waypoint, next_to_waypoint, nullptr, nullptr, nullptr);
+    if (active_to_is_jump_pad || next_link_is_zipline_ride) {
         stop_distance = kJumpPadFinalApproachStopDistance;
     }
 

@@ -3,6 +3,7 @@
 #include <cmath>
 #include <memory>
 #include <optional>
+#include <string>
 #include <unordered_map>
 #include <vector>
 #include <patch_common/CallHook.h>
@@ -13,7 +14,9 @@
 #include "LinearMath/btTransformUtil.h"
 #include "ragdoll.h"
 #include "vphys_internal.h"
+#include "../../demo/demo.h"
 #include "../../../misc/alpine_settings.h"
+#include "../../../misc/settings_registry.h"
 #include "../../../os/console.h"
 #include "../../../os/os.h"
 #include "../../../rf/character.h"
@@ -59,6 +62,7 @@ namespace
     constexpr float ragdoll_min_track_weight = 0.1f;
     constexpr int ragdoll_max_keys_per_anim = 64;
 
+    // Hit and blast times are on the demo clock so playback speed, pause and seeks keep the window right
     constexpr int64_t ragdoll_hit_window_ms = 400;
     constexpr float ragdoll_min_blast_radius = 0.5f;
     constexpr float ragdoll_blast_reach = 1.5f;
@@ -723,7 +727,7 @@ namespace
 
     bool is_instant_death(const Ragdoll& r, const rf::Vector3& pos)
     {
-        const int64_t now_ms = timer::get_i64(1000);
+        const int64_t now_ms = demo_playback_interp_clock_ms();
         const RagdollHit* hit = latest_hit(r.entity_handle, now_ms);
         return nearby_blast(pos, now_ms) || (hit && hit->damage >= ragdoll_big_hit_damage);
     }
@@ -882,7 +886,7 @@ namespace
             r.parts[b].body->setAngularVelocity(angular);
         }
 
-        const int64_t now_ms = timer::get_i64(1000);
+        const int64_t now_ms = demo_playback_interp_clock_ms();
         if (const RagdollBlast* blast = nearby_blast(owner.pos, now_ms)) {
             kick_from_blast(r, *blast);
         }
@@ -1280,7 +1284,8 @@ namespace
             if (ragdolls_wanted() && hit_point && vehicle_vector_is_finite(*hit_point) && weapon_type >= 0
                 && weapon_type < rf::num_weapon_types
                 && rf::weapon_types[weapon_type].damage_radius >= ragdoll_min_blast_radius) {
-                const RagdollBlast blast{*hit_point, rf::weapon_types[weapon_type].damage_radius, timer::get_i64(1000)};
+                const RagdollBlast blast{
+                    *hit_point, rf::weapon_types[weapon_type].damage_radius, demo_playback_interp_clock_ms()};
                 g_ragdoll_blasts[g_ragdoll_next_blast++ % g_ragdoll_blasts.size()] = blast;
                 // The point is on the surface, where a ray from it would stop at once.
                 const bool has_normal = hit_normal && vehicle_vector_is_finite(*hit_normal);
@@ -1294,7 +1299,7 @@ namespace
     ConsoleCommand2 cl_ragdolls_cmd{
         "cl_ragdolls",
         [](std::optional<bool> enabled) {
-            g_alpine_game_config.ragdolls = enabled.value_or(!g_alpine_game_config.ragdolls);
+            setting_console_set_bool("ragdolls", enabled);
             rf::console::print("Ragdoll deaths are {}", g_alpine_game_config.ragdolls ? "enabled" : "disabled");
         },
         "Toggle client-side ragdoll deaths",
@@ -1305,7 +1310,7 @@ namespace
         "cl_ragdolls_max",
         [](std::optional<int> value) {
             if (value) {
-                g_alpine_game_config.set_ragdolls_max(*value);
+                setting_console_set("ragdolls_max", std::to_string(*value));
             }
             rf::console::print("Ragdoll limit is {}", g_alpine_game_config.ragdolls_max);
         },
@@ -1333,7 +1338,7 @@ void ragdoll_note_weapon_hit(const rf::Weapon* wp)
         return;
     }
     const RagdollHit hit{
-        handle, wp->p_data.collide_out.hit_point, wp->orient.fvec, weapon_damage(*wp), timer::get_i64(1000)};
+        handle, wp->p_data.collide_out.hit_point, wp->orient.fvec, weapon_damage(*wp), demo_playback_interp_clock_ms()};
     g_ragdoll_hits[g_ragdoll_next_hit++ % g_ragdoll_hits.size()] = hit;
     // A solid body stops the round at its collision spheres, which can be short of the capsules.
     const rf::Object* obj = rf::obj_from_handle(handle);
@@ -1434,6 +1439,9 @@ void ragdoll_destroy_all()
         ragdoll_erase(*g_ragdolls.back());
     }
     g_ragdoll_rigs.clear();
+    // The demo clock the stamps are on restarts with each playback session
+    g_ragdoll_hits.fill({});
+    g_ragdoll_blasts.fill({});
 }
 
 void ragdoll_apply_patches()
