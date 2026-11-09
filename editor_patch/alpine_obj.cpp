@@ -43,6 +43,7 @@
 #include "brush_preview.h"
 #include "graphics/editor_gr.h"
 #include "mover_path.h"
+#include "liquid_emission.h"
 #include "tbl.h"
 
 // ─── Utilities ──────────────────────────────────────────────────────────────
@@ -2945,6 +2946,7 @@ CodeInjection alpine_group_save_clear_hook{
         g_group_save_waypoint_helpers.clear();
         g_group_save_brush_uids.clear();
         mover_path_group_save_begin();
+        liquid_emission_group_save_begin();
     },
 };
 
@@ -3173,6 +3175,7 @@ CodeInjection alpine_group_save_hook{
         }
 
         mover_path_group_serialize_chunk(*level, *file);
+        liquid_emission_group_serialize_chunk(*file);
 
         xlog::info("[AlpineObj] Saved {} meshes, {} notes, {} coronas, {} bags, {} weather regions, "
             "{} vehicle factories, {} projection cameras, {} rope emitters, {} terrains, "
@@ -3213,6 +3216,7 @@ CodeInjection alpine_group_pre_load_hook{
     [](auto& regs) {
         auto* level = reinterpret_cast<CDedLevel*>(static_cast<uintptr_t>(regs.esi) + 0x60);
         g_moving_groups_size_before_load = level->moving_groups.size;
+        liquid_emission_group_load_begin();
     },
 };
 
@@ -3346,6 +3350,9 @@ CodeInjection alpine_group_load_hook{
             }
             else if (chunk_id == alpine_mover_path_chunk_id) {
                 mover_path_group_deserialize_chunk(*level, *file, chunk_size, g_moving_groups_size_before_load);
+            }
+            else if (chunk_id == alpine_liquid_emission_chunk_id) {
+                liquid_emission_group_deserialize_chunk(*file, chunk_size);
             }
             else if (chunk_id == alpine_brush_group_chunk_id) {
                 // Read brush metadata chunk, tracking remaining bytes to stay within chunk bounds

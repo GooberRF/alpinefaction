@@ -42,6 +42,7 @@
 #include "terrain_build.h"
 #include "terrain_decorations.h"
 #include "dir_light.h"
+#include "liquid_emission.h"
 #include "alpine_lightmaps.h"
 #include "overflow_charts.h"
 #include "headless_bake.h"
@@ -335,6 +336,10 @@ CodeInjection CDedLevel_LoadLevel_patch2{
                 }
                 if (chunk_id == alpine_mover_path_chunk_id) {
                     mover_path_deserialize_chunk(level, file, chunk_size);
+                    regs.eip = 0x0043090C;
+                }
+                if (chunk_id == alpine_liquid_emission_chunk_id) {
+                    liquid_emission_deserialize_chunk(file, chunk_size);
                     regs.eip = 0x0043090C;
                 }
             }
@@ -1243,6 +1248,8 @@ CodeInjection CDedLevel_SaveLevel_patch{
         waypoint_helper_serialize_chunk(level, file);
 
         mover_path_serialize_chunk(level, file);
+
+        liquid_emission_serialize_chunk(level, file);
 
         // Re-write any foreign-editor chunks
         retained_chunks_serialize(level, file);

@@ -11,6 +11,7 @@ Version 1.5.0 (Trillium): Not yet released
   - Add `Meshes block light` level property to make Alpine Mesh objects cast baked shadows
   - Add `Alpha-tested light occlusion` level property so see-through faces, meshes and terrain decorations block baked light only where their textures are opaque
   - Add `No shadow cast` checkbox to Alpine Mesh object properties to exclude individual objects
+  - Add `Emits light` to `Liquid Room` room effects to bake light from liquid surfaces such as lava
 - Add global per-level directional sunlight and individual `Directional Light` objects with bounded ranges
   - `Casts shadows (lightmaps)` bakes the sun into the level's lightmaps with ray traced shadows
   - `Affects mesh lighting` lights meshes and entities per pixel from the sun direction, with `Scale mesh sunlight by lightmaps` to keep sunlight out of unlit interiors
