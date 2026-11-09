@@ -39,6 +39,7 @@
 #include "pit.h"
 #include "salvage.h"
 #include "scavenger.h"
+#include "payload.h"
 #include "vehicles/vehicle.h"
 #include "vote_client.h"
 #include "../misc/player.h"
@@ -174,6 +175,10 @@ bool af_process_packet(
         }
         case af_packet_type::af_salvage_state: {
             af_process_salvage_state_packet(data, static_cast<size_t>(len), addr);
+            return true;
+        }
+        case af_packet_type::af_payload_state: {
+            af_process_payload_state_packet(data, static_cast<size_t>(len), addr);
             return true;
         }
         case af_packet_type::af_scavenger_state: {
@@ -1003,6 +1008,14 @@ void serialize_payload(const AwardPayload& payload, std::byte* buf, size_t& offs
 {
     buf[offset++] = static_cast<std::byte>(payload.award_id);
     buf[offset++] = static_cast<std::byte>(payload.victim_player_id);
+}
+
+// af_sreq_reserve_ammo
+void serialize_payload(const ReserveAmmoPayload& payload, std::byte* buf, size_t& offset)
+{
+    buf[offset++] = static_cast<std::byte>(payload.weapon_type);
+    std::memcpy(buf + offset, &payload.reserve, sizeof(payload.reserve));
+    offset += sizeof(payload.reserve);
 }
 
 // af_sreq_teleport_entity
@@ -2318,6 +2331,30 @@ void af_send_award(rf::Player* player, uint8_t award_id, uint8_t victim_player_i
     af_send_server_req_packet(packet, player);
 }
 
+void af_send_reserve_ammo(rf::Player* player, int weapon_type, int reserve)
+{
+    // The listen-server host's entity is the server's
+    if (!rf::is_server || !player || player == rf::local_player || !player->net_data || player->is_bot
+        || player->is_browser) {
+        return;
+    }
+    if (!is_player_minimum_af_client_version(player, 1, 5, 0)) {
+        return;
+    }
+    if (weapon_type < 0 || weapon_type >= rf::num_weapon_types) {
+        return;
+    }
+
+    af_server_req_packet packet{};
+    packet.header.type = static_cast<uint8_t>(af_packet_type::af_server_req);
+    packet.header.size = sizeof(uint8_t) + sizeof(ReserveAmmoPayload);
+    packet.req_type = af_server_req_type::af_sreq_reserve_ammo;
+    packet.payload = ReserveAmmoPayload{static_cast<uint8_t>(weapon_type),
+                                        static_cast<uint16_t>(std::clamp(reserve, 0, 0xFFFF))};
+
+    af_send_server_req_packet(packet, player);
+}
+
 void af_send_award_for_demo(rf::Player* recorder, uint8_t award_id, uint8_t victim_player_id, uint8_t earner_id)
 {
     if (!rf::is_server || !recorder) {
@@ -3274,6 +3311,25 @@ static void af_process_server_req_packet(const void* data, size_t len, const rf:
             }
             break;
         }
+        case af_server_req_type::af_sreq_reserve_ammo: {
+            if (remaining < sizeof(ReserveAmmoPayload)) {
+                xlog::warn("af_process_server_req_packet: ReserveAmmo payload too short");
+                return;
+            }
+            ReserveAmmoPayload payload{};
+            payload.weapon_type = static_cast<uint8_t>(bytes[offset]);
+            std::memcpy(&payload.reserve, bytes + offset + sizeof(payload.weapon_type), sizeof(payload.reserve));
+
+            rf::Entity* entity = rf::local_player_entity;
+            if (!entity || payload.weapon_type >= rf::num_weapon_types) {
+                return;
+            }
+            const int ammo_type = rf::weapon_types[payload.weapon_type].ammo_type;
+            if (ammo_type >= 0 && ammo_type < static_cast<int>(std::size(entity->ai.ammo))) {
+                entity->ai.ammo[ammo_type] = payload.reserve;
+            }
+            break;
+        }
         case af_server_req_type::af_sreq_award: {
             if (remaining < sizeof(AwardPayload)) {
                 xlog::warn("af_process_server_req_packet: Award payload too short");
@@ -4048,6 +4104,146 @@ void af_process_scavenger_state_packet(const void* data, size_t len, const rf::N
     const bool captured = prev_state == SalFlagState::Carried && salvage_get_state() == SalFlagState::Delayed;
     scavenger_apply_zone_from_packet(rf::Vector3{pkt.zone_x, pkt.zone_y, pkt.zone_z}, pkt.zone_radius,
         pkt.zone_floor_y, pkt.zone_time_left_ms, captured);
+}
+
+// Returns the wire size, or 0 if the state does not fit
+static size_t build_af_payload_state_packet(std::byte (&buf)[rf::max_packet_size])
+{
+    const PayloadNetState net = payload_build_net_state();
+    const size_t num_pushers = std::min<size_t>(net.pushers.size(), af_payload_state_max_ids);
+    const size_t num_blockers = std::min<size_t>(net.blockers.size(), af_payload_state_max_ids);
+    const size_t wire_size = sizeof(af_payload_state_packet) + num_pushers + 1 + num_blockers;
+    if (wire_size > rf::max_packet_size) {
+        xlog::error("af_payload_state: packet too large ({} > {})", wire_size, rf::max_packet_size);
+        return 0;
+    }
+
+    af_payload_state_packet pkt{};
+    pkt.header.type = static_cast<uint8_t>(af_packet_type::af_payload_state);
+    pkt.header.size = static_cast<uint16_t>(wire_size - sizeof(RF_GamePacketHeader));
+    pkt.sequence = net.sequence;
+    pkt.state = static_cast<uint8_t>(net.state);
+    pkt.flags = static_cast<uint8_t>((net.overtime ? af_payload_state_flag_overtime : 0)
+                                     | (net.heals ? af_payload_state_flag_heals : 0)
+                                     | (net.setup ? af_payload_state_flag_setup : 0));
+    pkt.heal_serial = net.heal_serial;
+    pkt.next_checkpoint = net.next_checkpoint;
+    pkt.countdown_ds = net.countdown_seconds
+        ? static_cast<uint16_t>(std::clamp(std::lround(*net.countdown_seconds * 10.0f), 0L, 0xFFFEL))
+        : af_payload_state_no_countdown;
+    pkt.distance = net.distance;
+    pkt.speed = net.speed;
+    pkt.num_pushers = static_cast<uint8_t>(num_pushers);
+
+    size_t off = 0;
+    std::memcpy(buf + off, &pkt, sizeof(pkt));
+    off += sizeof(pkt);
+    if (num_pushers) {
+        std::memcpy(buf + off, net.pushers.data(), num_pushers);
+        off += num_pushers;
+    }
+    buf[off++] = static_cast<std::byte>(num_blockers);
+    if (num_blockers) {
+        std::memcpy(buf + off, net.blockers.data(), num_blockers);
+        off += num_blockers;
+    }
+    return off;
+}
+
+void af_send_payload_state_packet(rf::Player* player)
+{
+    // server -> single client
+    if (!rf::is_server) {
+        return;
+    }
+    if (!player) {
+        xlog::error("af_payload_state_packet: Attempted to send to an invalid player");
+        return;
+    }
+
+    std::byte buf[rf::max_packet_size];
+    if (const size_t len = build_af_payload_state_packet(buf)) {
+        af_send_packet(player, buf, static_cast<int>(len), true);
+    }
+}
+
+void af_send_payload_state_packet_to_all(bool reliable)
+{
+    // server -> all clients
+    if (!rf::is_server)
+        return;
+
+    std::byte buf[rf::max_packet_size];
+    const size_t len = build_af_payload_state_packet(buf);
+    if (!len)
+        return;
+
+    SinglyLinkedList<rf::Player> players{rf::player_list};
+    for (auto& p : players) {
+        // The listen-server host runs the cart itself
+        if (!p.net_data || &p == rf::local_player)
+            continue;
+        af_send_packet(&p, buf, static_cast<int>(len), reliable);
+    }
+}
+
+void af_process_payload_state_packet(const void* data, size_t len, const rf::NetAddr&)
+{
+    // Receive: client <- server
+    if (!rf::is_multi || rf::is_server)
+        return;
+    if (len < sizeof(RF_GamePacketHeader))
+        return;
+
+    RF_GamePacketHeader hdr{};
+    std::memcpy(&hdr, data, sizeof(hdr));
+    const size_t wire_size = sizeof(RF_GamePacketHeader) + hdr.size;
+    if (wire_size > len) {
+        xlog::warn("payload_state: truncated (declared={}, len={})", hdr.size, len);
+        return;
+    }
+    if (wire_size < sizeof(af_payload_state_packet) + 1) {
+        xlog::warn("payload_state: short packet ({})", wire_size);
+        return;
+    }
+
+    af_payload_state_packet pkt{};
+    std::memcpy(&pkt, data, sizeof(pkt));
+
+    const auto* bytes = static_cast<const uint8_t*>(data);
+    size_t off = sizeof(pkt);
+    if (off + pkt.num_pushers + 1 > wire_size) {
+        xlog::warn("payload_state: bad pusher count {}", pkt.num_pushers);
+        return;
+    }
+    PayloadNetState net;
+    net.pushers.assign(bytes + off, bytes + off + pkt.num_pushers);
+    off += pkt.num_pushers;
+    const uint8_t num_blockers = bytes[off++];
+    if (off + num_blockers != wire_size) {
+        xlog::warn("payload_state: bad blocker count {}", num_blockers);
+        return;
+    }
+    net.blockers.assign(bytes + off, bytes + off + num_blockers);
+
+    if (pkt.state > static_cast<uint8_t>(PayloadCartState::held) || !std::isfinite(pkt.distance)
+        || !std::isfinite(pkt.speed)) {
+        xlog::warn("payload_state: rejecting state {} distance {} speed {}", pkt.state, pkt.distance, pkt.speed);
+        return;
+    }
+    net.sequence = pkt.sequence;
+    net.state = static_cast<PayloadCartState>(pkt.state);
+    net.overtime = (pkt.flags & af_payload_state_flag_overtime) != 0;
+    net.heals = (pkt.flags & af_payload_state_flag_heals) != 0;
+    net.setup = (pkt.flags & af_payload_state_flag_setup) != 0;
+    net.heal_serial = pkt.heal_serial;
+    net.next_checkpoint = pkt.next_checkpoint;
+    if (pkt.countdown_ds != af_payload_state_no_countdown) {
+        net.countdown_seconds = static_cast<float>(pkt.countdown_ds) / 10.0f;
+    }
+    net.distance = pkt.distance;
+    net.speed = pkt.speed;
+    payload_apply_net_state(net);
 }
 
 // server -> every AF 1.5+ client, optionally skipping one
@@ -4832,6 +5028,7 @@ static void build_af_server_info_packet(af_server_info_packet& pkt)
         case rf::NetGameType::NG_TYPE_RUN:
         case rf::NetGameType::NG_TYPE_REV:
         case rf::NetGameType::NG_TYPE_ESC:
+        case rf::NetGameType::NG_TYPE_PAY:
             pkt.win_condition = static_cast<uint32_t>(0); // no wincon necessary
             break;
         default:
@@ -4991,6 +5188,7 @@ static void af_process_server_info_packet(const void* data, size_t len, const rf
             case rf::NetGameType::NG_TYPE_RUN:
             case rf::NetGameType::NG_TYPE_REV:
             case rf::NetGameType::NG_TYPE_ESC:
+            case rf::NetGameType::NG_TYPE_PAY:
                 break; // no wincon necessary
             default:
                 rf::netgame.max_kills = static_cast<int>(pkt.win_condition);
@@ -5224,7 +5422,19 @@ void af_send_server_cfg(rf::Player* player) {
         g_alpine_server_config.printed_cfg_generation = rules_generation;
     }
 
-    const auto send_msg = [player] (const std::string_view msg) {
+    // The demo recorder gets the config written into its demo (playback shows it in this
+    // popup). Its sends are captured synchronously by the demo taps, and its fake reliable
+    // socket must stay out of the deferred queue (see demo_record_reliable_socket).
+    const bool to_demo = player->is_observer();
+    const auto send_packet = [player, to_demo] (const uint8_t* const data, const size_t len) {
+        if (to_demo) {
+            rf::multi_io_send_reliable(player, data, static_cast<int>(len), false);
+        } else {
+            send_queues_rel_add_packet(player->net_data->reliable_socket, data, len);
+        }
+    };
+
+    const auto send_msg = [&send_packet] (const std::string_view msg) {
         constexpr size_t max_chunk_len = rf::max_packet_size - sizeof(af_server_msg_packet);
         const size_t len = std::clamp(msg.size(), 0uz, max_chunk_len);
 
@@ -5242,11 +5452,7 @@ void af_send_server_cfg(rf::Player* player) {
         uint8_t* ptr = buf.data() + sizeof(server_msg_packet);
         std::memcpy(ptr, msg.data(), len);
 
-        send_queues_rel_add_packet(
-            player->net_data->reliable_socket,
-            buf.data(),
-            server_msg_packet.header.size + sizeof(server_msg_packet.header)
-        );
+        send_packet(buf.data(), server_msg_packet.header.size + sizeof(server_msg_packet.header));
 
         return len;
     };
@@ -5260,7 +5466,9 @@ void af_send_server_cfg(rf::Player* player) {
     // never finished receiving). Too rare to be worth solving here.
     // A future streamed feature should tag its queued packets and clear by
     // tag rather than widening this clear.
-    send_queues_rel_clear_packets(player->net_data->reliable_socket);
+    if (!to_demo) {
+        send_queues_rel_clear_packets(player->net_data->reliable_socket);
+    }
 
     constexpr int chunk_size = rf::max_packet_size - sizeof(af_server_msg_packet);
     for (const auto chunk : g_alpine_server_config.printed_cfg
@@ -5282,8 +5490,7 @@ void af_send_server_cfg(rf::Player* player) {
     // queue is FIFO per socket, so queuing puts the sentinel behind the chunks.
     // No payload follows the sentinel, so the packet struct is the whole wire
     // buffer and the chunk lambda's separate buffer is unnecessary here.
-    send_queues_rel_add_packet(
-        player->net_data->reliable_socket,
+    send_packet(
         reinterpret_cast<const uint8_t*>(&server_msg_packet),
         server_msg_packet.header.size + sizeof(server_msg_packet.header)
     );
@@ -5691,11 +5898,21 @@ void af_process_server_msg_packet(
 
     if (msg_packet.type == static_cast<uint8_t>(AF_SERVER_MSG_TYPE_REMOTE_SERVER_CFG)) {
         const char* ptr = static_cast<const char*>(data) + sizeof(msg_packet);
-        g_remote_server_cfg_popup.add_content(
-            std::string_view{ptr, len - sizeof(msg_packet)}
-        );
+        const std::string_view content{ptr, len - sizeof(msg_packet)};
+        // A demo's config arrives unrequested at segment start and on every change, so
+        // playback keeps it for the popup to fill from when opened
+        if (demo_playback_active()) {
+            demo_playback_on_server_cfg_chunk(content);
+        } else {
+            g_remote_server_cfg_popup.add_content(content);
+        }
     } else if (msg_packet.type == static_cast<uint8_t>(AF_SERVER_MSG_TYPE_REMOTE_SERVER_CFG_EOF)) {
-        g_remote_server_cfg_popup.finalize();
+        if (demo_playback_active()) {
+            demo_playback_on_server_cfg_eof();
+            g_remote_server_cfg_popup.set_cfg_changed();
+        } else {
+            g_remote_server_cfg_popup.finalize();
+        }
     } else if (msg_packet.type == static_cast<uint8_t>(AF_SERVER_MSG_TYPE_AUTOMATED_CHAT)) {
         const char* ptr = static_cast<const char*>(data) + sizeof(msg_packet);
         const std::string_view msg_sv{ptr, len - sizeof(msg_packet)};

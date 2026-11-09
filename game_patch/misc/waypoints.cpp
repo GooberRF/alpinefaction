@@ -11,6 +11,7 @@
 #include "../main/main.h"
 #include "../multi/gametype.h"
 #include "../multi/multi.h"
+#include "../multi/payload.h"
 #include "../multi/salvage.h"
 #include "../multi/scavenger.h"
 #include "../multi/vehicles/vehicle.h"
@@ -2942,7 +2943,7 @@ void GenerationCoarseFlood::collect_points_of_interest(const WaypointTerrainLatt
         }
     }
     if (existing_graph_) {
-        for (const rf::Vector3& pos : generation_control_point_seed_positions()) {
+        for (const rf::Vector3& pos : generation_objective_seed_positions()) {
             add_point(pos);
         }
     }
@@ -3085,7 +3086,8 @@ bool WaypointGenerationContext::timed_out() const
 
 bool get_mover_lift_path_delta(const rf::Mover& mover, rf::Vector3& out_delta);
 
-int find_lift_uid_below_waypoint(const rf::Vector3& pos)
+// The mover whose brush is the walkable floor under pos, if any.
+static rf::Mover* find_mover_below_waypoint(const rf::Vector3& pos)
 {
     constexpr float kLiftTraceDistance = 4.0f;
     rf::Vector3 p0 = pos;
@@ -3094,16 +3096,26 @@ int find_lift_uid_below_waypoint(const rf::Vector3& pos)
     collision.obj_handle = -1;
     const bool hit = collide_linesegment_walkable_world(p0, p1, collision);
     if (!hit || collision.obj_handle < 0) {
-        return -1;
+        return nullptr;
     }
     rf::Object* hit_obj = rf::obj_from_handle(collision.obj_handle);
     if (!hit_obj || hit_obj->type != rf::OT_MOVER_BRUSH) {
-        return -1;
+        return nullptr;
     }
+    return mover_find_by_mover_brush(static_cast<rf::MoverBrush*>(hit_obj));
+}
 
-    auto* mover_brush = static_cast<rf::MoverBrush*>(hit_obj);
-    rf::Mover* mover = mover_find_by_mover_brush(mover_brush);
-    if (!mover) {
+// A payload cart runs along its track, so it is no lift, and a node on it would be left in the air.
+static bool waypoint_stands_on_payload_cart(const rf::Vector3& pos)
+{
+    const rf::Mover* mover = find_mover_below_waypoint(pos);
+    return mover && payload_is_cart(mover->handle);
+}
+
+// The uid of the mover under a node (from find_mover_below_waypoint) if it is a lift, or -1.
+static int lift_uid_of_mover_below(const rf::Mover* mover)
+{
+    if (!mover || payload_is_cart(mover->handle)) {
         return -1;
     }
 
@@ -5702,12 +5714,50 @@ const WaterRoomInfo* find_water_room_at_point(
 }
 
 constexpr float kControlPointSeedMaxReach = kWaypointLinkRadius * 8.0f;
+constexpr float kPayloadTrackSeedSpacing = kWaypointLinkRadius * 0.75f;
+constexpr float kPayloadTrackSeedMaxDrop = kWaypointLinkRadius * 2.0f;
+
+static bool generation_seed_spot_excluded(const rf::Vector3& seed_pos, const std::vector<WaterRoomInfo>& water_rooms)
+{
+    rf::Vector3 climb_query = seed_pos;
+    return does_radius_overlap_instant_death_zone(seed_pos, kWaypointRadius)
+        || find_water_room_at_point(seed_pos, water_rooms)
+        || rf::level_point_in_climb_region(&climb_query);
+}
+
+// The cart crosses its whole track, so the floor along it seeds the flood too: a stretch of track reached only past
+// the cart is still connected. Under the cart's brushes there is no headroom, so no seed goes there.
+static void append_payload_track_seed_positions(
+    std::vector<rf::Vector3>& positions,
+    const std::vector<WaterRoomInfo>& water_rooms)
+{
+    if (!payload_active()) {
+        return;
+    }
+    const float total = payload_total_length();
+    const int samples = static_cast<int>(std::ceil(total / kPayloadTrackSeedSpacing));
+    for (int i = 0; i <= samples; ++i) {
+        const rf::Vector3 track_pos = payload_track_point(total * static_cast<float>(i) / std::max(samples, 1));
+        rf::Vector3 floor_pos{};
+        if (!trace_ground_below_point(track_pos, kPayloadTrackSeedMaxDrop, &floor_pos)
+            || trace_upward_clearance_from_floor_hit(floor_pos, kWaypointGenerateStandingHeadroom)
+                <= kWaypointGenerateMinHeadroom) {
+            continue;
+        }
+        const rf::Vector3 seed_pos = floor_pos + rf::Vector3{0.0f, kWaypointGenerateGroundOffset, 0.0f};
+        if (waypoint_stands_on_payload_cart(seed_pos) || generation_seed_spot_excluded(seed_pos, water_rooms)) {
+            continue;
+        }
+        positions.push_back(seed_pos);
+    }
+}
 
 // A control point may be reachable from no other seed, so the floor under each one seeds the flood too.
-std::vector<rf::Vector3> generation_control_point_seed_positions()
+std::vector<rf::Vector3> generation_objective_seed_positions()
 {
     std::vector<rf::Vector3> positions{};
     const auto water_rooms = collect_swimmable_water_rooms();
+    append_payload_track_seed_positions(positions, water_rooms);
     for (const auto& zone : g_waypoint_zones) {
         if (zone.type != WaypointZoneType::control_point
             || resolve_waypoint_zone_source(zone) != WaypointZoneSource::trigger_uid) {
@@ -5727,13 +5777,10 @@ std::vector<rf::Vector3> generation_control_point_seed_positions()
         }
         const rf::Vector3 seed_pos = floor_pos + rf::Vector3{0.0f, kWaypointGenerateGroundOffset, 0.0f};
         // The trace can land below the hill (a pit, a lower room), or where the flood would never put a node.
-        rf::Vector3 climb_query = seed_pos;
         const rf::Vector3 floor_point = floor_pos + rf::Vector3{0.0f, 0.1f, 0.0f};
         if ((!waypoint_zone_contains_point(zone, seed_pos, nullptr)
              && !waypoint_zone_contains_point(zone, floor_point, nullptr))
-            || does_radius_overlap_instant_death_zone(seed_pos, kWaypointRadius)
-            || find_water_room_at_point(seed_pos, water_rooms)
-            || rf::level_point_in_climb_region(&climb_query)) {
+            || generation_seed_spot_excluded(seed_pos, water_rooms)) {
             continue;
         }
         positions.push_back(seed_pos);
@@ -5743,7 +5790,7 @@ std::vector<rf::Vector3> generation_control_point_seed_positions()
 
 static void seed_control_point_waypoints_for_autogen(std::vector<int>& seed_indices)
 {
-    for (const rf::Vector3& seed_pos : generation_control_point_seed_positions()) {
+    for (const rf::Vector3& seed_pos : generation_objective_seed_positions()) {
         if (const int existing = closest_waypoint(seed_pos, kWaypointRadius); existing > 0) {
             seed_indices.push_back(existing);
             continue;
@@ -6554,7 +6601,11 @@ int generate_waypoints_from_seed_probes(WaypointGenerationContext& ctx, const st
             if (upward_clearance < kWaypointGenerateStandingHeadroom) {
                 generated_movement_subtype = static_cast<int>(WaypointDroppedSubtype::crouch_needed);
             }
-            if (const int lift_uid_below = find_lift_uid_below_waypoint(candidate_pos); lift_uid_below >= 0) {
+            const rf::Mover* const mover_below = find_mover_below_waypoint(candidate_pos);
+            if (mover_below && payload_is_cart(mover_below->handle)) {
+                continue;
+            }
+            if (const int lift_uid_below = lift_uid_of_mover_below(mover_below); lift_uid_below >= 0) {
                 generated_type = WaypointType::lift_entrance;
                 generated_identifier = lift_uid_below;
                 generated_movement_subtype = static_cast<int>(WaypointDroppedSubtype::normal);
@@ -9992,7 +10043,14 @@ void navigate_entity(int entity_handle, rf::Entity& entity, bool allow_drop)
             last_lift_uid = -1;
         }
         else {
-            const int lift_uid_below = find_lift_uid_below_waypoint(pos);
+            const rf::Mover* const mover_below = find_mover_below_waypoint(pos);
+            if (mover_below && payload_is_cart(mover_below->handle)) {
+                // No node on the cart, and no link across the stretch it carried its rider.
+                last_drop_waypoint = 0;
+                last_lift_uid = -1;
+                return;
+            }
+            const int lift_uid_below = lift_uid_of_mover_below(mover_below);
             if (lift_uid_below >= 0) {
                 drop_type = (last_lift_uid == lift_uid_below) ? WaypointType::lift_body : WaypointType::lift_entrance;
                 identifier = lift_uid_below;

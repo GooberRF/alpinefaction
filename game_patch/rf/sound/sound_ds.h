@@ -91,6 +91,10 @@ namespace rf
     static auto snd_ds_set_volume = addr_as_ref<void(int sig, float volume)>(0x00522D30);
     static auto snd_ds_play = addr_as_ref<int(int buf_id, float volume, float pan, bool is_looping, float unused)>(0x005226B0);
 
+    // 0 on success; fails and nulls *buffer_3d for a buffer without DSBCAPS_CTRL3D
+    static auto snd_ds_get_3d_buffer =
+        addr_as_ref<int(IDirectSoundBuffer* buffer, IDirectSound3DBuffer** buffer_3d)>(0x00521F10);
+
     // Seeks the stream's file back to the start of its data, 0 on success
     static auto snd_ds_stream_rewind = addr_as_ref<int(int stream)>(0x0054EBF0);
 

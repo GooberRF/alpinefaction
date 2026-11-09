@@ -276,7 +276,7 @@ FunHook<void(rf::GameState, rf::GameState)> rf_init_state_hook{
         }
 
         // Same close-and-advance machinery as the server-list jump above, but landing
-        // on the Extras menu with the demo browser overlay open (demo playback exit)
+        // on the Extras menu with the demo browser open (demo playback exit)
         if (g_jump_to_demo_browser) {
             if (state == rf::GS_MAIN_MENU) {
                 set_sound_enabled(false);
@@ -713,6 +713,7 @@ CallHook level_init_pre_console_output_hook{
                             break;
                         case rf::NetGameType::NG_TYPE_ESC:
                         case rf::NetGameType::NG_TYPE_REV:
+                        case rf::NetGameType::NG_TYPE_PAY:
                             break;
                         case rf::NetGameType::NG_TYPE_RUN:
                             break;

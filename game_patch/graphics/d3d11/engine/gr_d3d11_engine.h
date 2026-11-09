@@ -44,6 +44,13 @@
 
 #include <common/gr_d3d11/gr_d3d11_bindings.h>
 
+namespace gr::d3d11
+{
+    // From gr_d3d11_hooks.h, which includes this header through gr_d3d11_weather.h
+    int underwater_fx_level();
+    bool underwater_caustics_enabled();
+}
+
 namespace gr::d3d11::engine
 {
     inline int colorblind_mode()
@@ -63,7 +70,12 @@ namespace gr::d3d11::engine
 
     inline int underwater_fx()
     {
-        return g_alpine_game_config.underwater_fx;
+        return underwater_fx_level();
+    }
+
+    inline bool underwater_caustics()
+    {
+        return underwater_caustics_enabled();
     }
 
     inline bool nearest_texture_filtering()

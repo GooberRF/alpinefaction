@@ -3,11 +3,18 @@
 #include <patch_common/MemUtils.h>
 #include <patch_common/AsmWriter.h>
 #include <algorithm>
+#include <array>
 #include <format>
+#include <initializer_list>
+#include <optional>
 #include <unordered_set>
+#include <common/payload.h>
 #include "hud_internal.h"
 #include "hud_world.h"
 #include "multi_spectate.h"
+#include "payload_world.h"
+#include "world_medallion.h"
+#include "zone_marker.h"
 #include "../graphics/gr.h"
 #include "../object/event_alpine.h"
 #include "../multi/server.h"
@@ -15,6 +22,7 @@
 #include "../multi/bagman.h"
 #include "../multi/salvage.h"
 #include "../multi/scavenger.h"
+#include "../multi/payload.h"
 #include "scavenger_zone.h"
 #include "../misc/alpine_settings.h"
 #include "../sound/sound.h"
@@ -28,6 +36,7 @@
 #include "../rf/multi.h"
 #include "../rf/gameseq.h"
 #include "../rf/level.h"
+#include "../rf/mover.h"
 #include "../rf/os/timer.h"
 #include "../rf/gr/gr.h"
 #include "../rf/gr/gr_font.h"
@@ -39,6 +48,8 @@
 WorldHUDAssets g_world_hud_assets;
 static KothHudTuning g_koth_hud_tuning{};
 static std::unordered_map<int, NameLabelTex> g_koth_name_labels;
+static std::array<NameLabelTex, 2> g_hill_role_labels; // attack, defend
+static NameLabelTex g_payload_cart_status_label;
 bool draw_mp_spawn_world_hud = false;
 std::unordered_set<EventWorldHUDSprite*> world_hud_sprite_events;
 std::unordered_set<EventFullscreenOverlayBase*> fullscreen_overlay_events;
@@ -77,6 +88,10 @@ void load_world_hud_assets() {
     g_world_hud_assets.sal_wait = rf::bm::load("af_wh_sal_wait.tga", -1, true);
     g_world_hud_assets.sal_base_red = rf::bm::load("af_wh_sal_base_red.tga", -1, true);
     g_world_hud_assets.sal_base_blue = rf::bm::load("af_wh_sal_base_blue.tga", -1, true);
+    g_world_hud_assets.medallion_red = rf::bm::load("af_wh_medallion_red.tga", -1, true);
+    g_world_hud_assets.medallion_blue = rf::bm::load("af_wh_medallion_blue.tga", -1, true);
+    g_world_hud_assets.medallion_neutral = rf::bm::load("af_wh_medallion_neutral.tga", -1, true);
+    g_world_hud_assets.medallion_lock = rf::bm::load("af_wh_medallion_lock.tga", -1, true);
 }
 
 static rf::gr::Mode bitmap_mode_from(WorldHUDRenderMode render_mode)
@@ -255,8 +270,11 @@ rf::Vector3 koth_hill_icon_pos(const HillInfo& h)
 {
     rf::Vector3 p{0.f, 0.f, 0.f};
 
-    // prefer handler position
-    if (h.handler) {
+    // prefer handler position, but a payload checkpoint is where the cart stands to capture it
+    if (const auto checkpoint_pos = payload_checkpoint_pos(h)) {
+        p = *checkpoint_pos;
+    }
+    else if (h.handler) {
         p = h.handler->pos;
     }
     else if (h.trigger) {
@@ -421,6 +439,10 @@ void clear_koth_name_textures()
         world_hud_release_text_label(kv.second);
     }
     g_koth_name_labels.clear();
+    for (NameLabelTex& lbl : g_hill_role_labels) {
+        world_hud_release_text_label(lbl);
+    }
+    world_hud_release_text_label(g_payload_cart_status_label);
 }
 
 void world_hud_release_text_label(NameLabelTex& slot)
@@ -572,10 +594,117 @@ int get_world_hud_label_bitmap_font()
     return font_id;
 }
 
+// The local player's role at a hill, where it has one: true to attack, false to defend
+static std::optional<bool> hill_local_role_is_attack(const HillInfo& h, bool contested, bool locked)
+{
+    if (contested || locked || multi_spectate_is_spectating() || !rf::local_player)
+        return std::nullopt;
+    if (gt_is_esc()) {
+        return h.ownership == HillOwner::HO_Neutral
+            || esc_team_can_attack_hill(h, team_hill_owner(rf::local_player->team));
+    }
+    if (gt_is_rev() && h.ownership == HillOwner::HO_Neutral)
+        return rf::local_player->team == rf::TEAM_RED;
+    return std::nullopt;
+}
+
+namespace
+{
+constexpr float medallion_track_brightness = 0.35f;
+constexpr double medallion_pulse_period_ms = 1000.0;
+// Times the sprites' label scale
+constexpr float medallion_name_height = 0.55f;
+constexpr float medallion_role_height = 0.4f;
+
+struct MedallionLabel
+{
+    const NameLabelTex* tex = nullptr;
+    float height = 0.0f;
+};
+} // namespace
+
+int world_hud_medallion_face(int team)
+{
+    if (team == rf::TEAM_RED)
+        return g_world_hud_assets.medallion_red;
+    if (team == rf::TEAM_BLUE)
+        return g_world_hud_assets.medallion_blue;
+    return g_world_hud_assets.medallion_neutral;
+}
+
+static void render_world_hud_medallion(const rf::Vector3& pos, int face_bm, const rf::Color& color,
+                                       const WorldMedallionRing& ring, WorldHUDRenderMode rm, int64_t now_ms,
+                                       std::initializer_list<MedallionLabel> labels)
+{
+    constexpr float label_gap = 0.1f;
+
+    // Pulled in front of the fog's far clip as the sprites are, and shrunk to keep its true size on screen
+    const WorldHUDView view = make_world_hud_view(pos, true);
+    const rf::Vector3& center = view.pos;
+    const float pos_dist = (pos - rf::gr::eye_pos).len();
+    const float scale = pos_dist > 0.0f ? std::min(1.0f, (center - rf::gr::eye_pos).len() / pos_dist) : 1.0f;
+    world_medallion_draw(center, scale, face_bm, color, now_ms, rm == WorldHUDRenderMode::overdraw, ring);
+
+    // The labels keep the sprites' readable size, stacked above the ring from the first
+    const float label_scale = std::clamp(g_koth_hud_tuning.icon_base_scale * view.dist_factor,
+                                         WorldHUDRender::min_scale, WorldHUDRender::max_scale);
+    const rf::Vector3 up = camera_up();
+    float label_bottom = (world_medallion_ring_reach() + label_gap) * scale;
+    for (const MedallionLabel& label : labels) {
+        const NameLabelTex* lbl = label.tex;
+        if (!lbl || lbl->bm == -1 || lbl->w_px <= 0 || lbl->h_px <= 0)
+            continue;
+        const float text_h = label_scale * label.height;
+        const float text_w = text_h * static_cast<float>(lbl->w_px) / static_cast<float>(lbl->h_px);
+        rf::Vector3 text_pos = center + up * (label_bottom + 0.5f * text_h);
+        rf::gr::set_color(255, 255, 255, 255);
+        rf::gr::set_texture(lbl->bm, -1);
+        rf::gr::bitmap_3d_angle_wh(&text_pos, 0.0f, text_w, text_h, bitmap_mode_from(rm));
+        label_bottom += text_h;
+    }
+}
+
+static void render_koth_medallion_for_hill(const HillInfo& h, WorldHUDRenderMode rm)
+{
+    constexpr float locked_brightness = 0.4f;
+
+    const bool contested = hill_vis_contested(const_cast<HillInfo&>(h));
+    const bool locked = h.lock_status != HillLockStatus::HLS_Available;
+    const int owner = hill_owner_team(h.ownership);
+    const int face_bm = locked ? g_world_hud_assets.medallion_lock : world_hud_medallion_face(owner);
+    const rf::Color owner_color = hud_team_color(owner);
+    const float brightness = locked ? locked_brightness : 1.0f;
+    const int64_t now_ms = timer::get_i64(1000);
+
+    WorldMedallionRing ring{0.0f, zone_marker_scaled_color(owner_color, medallion_track_brightness * brightness), {}};
+    if (contested) {
+        const float pulse = zone_marker_pulse_at(now_ms, medallion_pulse_period_ms);
+        ring.progress = std::clamp(h.capture_progress, (uint8_t)0, (uint8_t)100) / 100.0f;
+        ring.track_color = zone_marker_scaled_color(owner_color, medallion_track_brightness * pulse);
+        ring.fill_color = zone_marker_scaled_color(hud_team_color(hill_owner_team(h.steal_dir)), pulse);
+    }
+    const int font = get_world_hud_label_bitmap_font();
+    const NameLabelTex* role = nullptr;
+    if (g_alpine_game_config.world_hud_cp_role_text) {
+        if (const auto attack = hill_local_role_is_attack(h, contested, locked)) {
+            NameLabelTex& lbl = g_hill_role_labels[*attack ? 0 : 1];
+            world_hud_ensure_text_label(lbl, *attack ? "Attack" : "Defend", font);
+            role = &lbl;
+        }
+    }
+    render_world_hud_medallion(koth_hill_icon_pos(h), face_bm, zone_marker_scaled_color(owner_color, brightness), ring,
+        rm, now_ms, {{role, medallion_role_height}, {&ensure_hill_name_tex(h, font), medallion_name_height}});
+}
+
 static void render_koth_icon_for_hill(const HillInfo& h, WorldHUDRenderMode rm)
 {
     if (!h.trigger)
         return;
+
+    if (g_alpine_game_config.world_hud_cp_medallions) {
+        render_koth_medallion_for_hill(h, rm);
+        return;
+    }
 
     const rf::Vector3 world_pos = koth_hill_icon_pos(h);
     const WorldHUDView view = make_world_hud_view(world_pos, true);
@@ -706,6 +835,68 @@ static void build_koth_hill_icons()
 
         render_koth_icon_for_hill(h, render_mode);
     }
+}
+
+static std::string payload_cart_status()
+{
+    switch (payload_state()) {
+    case PayloadCartState::pushing:
+        return std::format("x{}", payload_useful_pushers());
+    case PayloadCartState::blocked:
+        return "Blocked";
+    case PayloadCartState::rolling_back:
+        return "Rolling back";
+    case PayloadCartState::finale:
+        return "Delivered";
+    case PayloadCartState::held: {
+        const int seconds = payload_countdown_whole_seconds().value_or(1);
+        return payload_in_setup() ? std::to_string(seconds) : std::format("Moving in {}", seconds);
+    }
+    default:
+        return payload_cart_name();
+    }
+}
+
+static void render_payload_cart_medallion()
+{
+    constexpr float idle_brightness = 0.5f;
+
+    const rf::Mover* cart = payload_cart_mover();
+    const auto cart_center = payload_cart_center();
+    if (!cart || !cart_center)
+        return;
+
+    const PayloadCartState state = payload_state();
+    const int64_t now_ms = timer::get_i64(1000);
+    float brightness = idle_brightness;
+    if (state == PayloadCartState::pushing || state == PayloadCartState::rolling_back
+        || state == PayloadCartState::finale) {
+        brightness = 1.0f;
+    }
+    else if (state == PayloadCartState::blocked) {
+        brightness = zone_marker_pulse_at(now_ms, medallion_pulse_period_ms);
+    }
+
+    // The fill is the attackers' way to the next checkpoint. The rest is neutral, so the fill reads against it, or the
+    // defenders' while they hold the cart.
+    const rf::Color attackers = hud_team_color(payload_attacking_team());
+    const rf::Color track = hud_team_color(payload_defenders_have_cart() ? payload_defending_team() : -1);
+    const WorldMedallionRing ring{payload_next_checkpoint_progress(),
+        zone_marker_scaled_color(track, medallion_track_brightness * brightness),
+        zone_marker_scaled_color(attackers, brightness)};
+
+    const NameLabelTex* status = nullptr;
+    if (g_alpine_game_config.world_hud_payload_cart_status) {
+        world_hud_ensure_text_label(g_payload_cart_status_label, payload_cart_status(),
+            get_world_hud_label_bitmap_font());
+        status = &g_payload_cart_status_label;
+    }
+    const auto rm = g_alpine_game_config.world_hud_hill_overdraw ? WorldHUDRenderMode::overdraw
+                                                                 : WorldHUDRenderMode::no_overdraw;
+    // Where the checkpoint holograms are, so it takes one's place as the cart arrives
+    render_world_hud_medallion(payload_medallion_center(*cart_center),
+        world_hud_medallion_face(payload_attacking_team()), zone_marker_scaled_color(attackers, brightness), ring, rm,
+        now_ms, {{status, medallion_name_height}});
 }
 
 // Health/armor bar plate drawn above a player's name label during demo playback.
@@ -1493,9 +1684,13 @@ void hud_world_do_frame() {
     if (rf::is_multi && gt_is_bagman_any()) {
         build_bag_icon();
     }
+    payload_world_render();
     if (rf::is_multi && multi_is_game_type_with_hills()) {
         build_koth_hill_icons();
         build_koth_hill_outlines();
+    }
+    if (payload_active()) {
+        render_payload_cart_medallion();
     }
     if (g_pre_match_active || (draw_mp_spawn_world_hud && (!rf::is_multi || rf::is_server)) ||
         (demo_playback_active() && g_alpine_game_config.world_hud_demo_spawns)) {
@@ -1552,10 +1747,25 @@ void populate_fullscreen_overlay_events()
     }
 }
 
+// Demo seek: the burst feeds minutes of packets in a few wall seconds, and these all
+// age on wall clock - damage numbers pile up and a map-start fullscreen image outlives
+// the jump. Drop them; a finite overlay is transient, an infinite one is level state.
+void hud_world_seek_reset()
+{
+    ephemeral_world_hud_strings.clear();
+    ephemeral_world_hud_sprites.clear();
+    for (auto* overlay : fullscreen_overlay_events) {
+        if (overlay->duration > 0.0f || overlay->fading_out_early) {
+            overlay->active = false;
+        }
+    }
+}
+
 void hud_world_level_unload()
 {
     world_hud_sprite_events.clear();
     fullscreen_overlay_events.clear();
+    payload_world_level_unload();
 }
 
 void fullscreen_overlay_do_frame()
@@ -1698,12 +1908,34 @@ ConsoleCommand2 worldhudhilloverdraw_cmd{
     []() {
         setting_console_set("world_hud_hill_overdraw", "toggle");
         rf::console::print(
-            "World HUD overdraw for control point sprites is {}",
+            "World HUD overdraw for control point sprites or medallions and the Payload cart medallion is {}",
             g_alpine_game_config.world_hud_hill_overdraw ? "enabled" : "disabled"
         );
     },
-    "Toggle whether world HUD sprites for control points are drawn on top of everything else",
+    "Toggle whether control point sprites or medallions and the Payload cart medallion draw on top of everything",
     "cl_wh_cpoverdraw",
+};
+
+ConsoleCommand2 worldhudcpmedallions_cmd{
+    "cl_wh_cpmedallions",
+    []() {
+        setting_console_set("world_hud_cp_medallions", "toggle");
+        rf::console::print("World HUD control point medallions are {}",
+                           g_alpine_game_config.world_hud_cp_medallions ? "enabled" : "disabled");
+    },
+    "Toggle whether control points show spinning medallions instead of sprites",
+    "cl_wh_cpmedallions",
+};
+
+ConsoleCommand2 worldhudcproletext_cmd{
+    "cl_wh_cproletext",
+    []() {
+        setting_console_set("world_hud_cp_role_text", "toggle");
+        rf::console::print("World HUD control point Attack/Defend text is {}",
+                           g_alpine_game_config.world_hud_cp_role_text ? "enabled" : "disabled");
+    },
+    "Toggle the Attack/Defend text over control point medallions in Revolution and Escalation",
+    "cl_wh_cproletext",
 };
 
 ConsoleCommand2 worldhuddamagenumbers_cmd{
@@ -1714,6 +1946,39 @@ ConsoleCommand2 worldhuddamagenumbers_cmd{
     },
     "Toggle whether to display numeric damage indicators when you hit players in multiplayer (if enabled by an Alpine Faction server)",
     "cl_wh_hitnumbers",
+};
+
+ConsoleCommand2 worldhudpayloadtethers_cmd{
+    "cl_wh_tethers",
+    []() {
+        setting_console_set("world_hud_payload_tethers", "toggle");
+        rf::console::print("World HUD Payload tethers are {}",
+                           g_alpine_game_config.world_hud_payload_tethers ? "enabled" : "disabled");
+    },
+    "Toggle whether to draw Payload beams from the players pushing or blocking the cart",
+    "cl_wh_tethers",
+};
+
+ConsoleCommand2 worldhudpayloadpushzone_cmd{
+    "cl_wh_pushzone",
+    []() {
+        setting_console_set("world_hud_payload_push_zone", "toggle");
+        rf::console::print("World HUD Payload push zone ring is {}",
+                           g_alpine_game_config.world_hud_payload_push_zone ? "enabled" : "disabled");
+    },
+    "Toggle the ring on the ground around the Payload cart that shows where players push it",
+    "cl_wh_pushzone",
+};
+
+ConsoleCommand2 worldhudpayloadcartstatus_cmd{
+    "cl_wh_cartstatus",
+    []() {
+        setting_console_set("world_hud_payload_cart_status", "toggle");
+        rf::console::print("World HUD Payload cart status text is {}",
+                           g_alpine_game_config.world_hud_payload_cart_status ? "enabled" : "disabled");
+    },
+    "Toggle the Payload cart's status text over its medallion, such as its pushers or countdown",
+    "cl_wh_cartstatus",
 };
 
 ConsoleCommand2 worldhudspectateplayerlabels_cmd{
@@ -1828,7 +2093,12 @@ void hud_world_apply_patch()
     worldhudctf_cmd.register_cmd();
     worldhudflagoverdraw_cmd.register_cmd();
     worldhudhilloverdraw_cmd.register_cmd();
+    worldhudcpmedallions_cmd.register_cmd();
+    worldhudcproletext_cmd.register_cmd();
     worldhuddamagenumbers_cmd.register_cmd();
+    worldhudpayloadtethers_cmd.register_cmd();
+    worldhudpayloadpushzone_cmd.register_cmd();
+    worldhudpayloadcartstatus_cmd.register_cmd();
     worldhudspectateplayerlabels_cmd.register_cmd();
     worldhuddemoplayerinfo_cmd.register_cmd();
     worldhuddemospawns_cmd.register_cmd();

@@ -89,6 +89,7 @@ add_packfile(alpinefaction.vpp
     tables/dm-RFU4-GraveyardRM_info.tbl
     tables/dm_Galileo2Starliner1-2_info.tbl
     tables/dm_Galileo2StarlinerNS_info.tbl
+    tables/DMDarkrunII_info.tbl
 
     sounds/af_achievement1.wav
     sounds/af_pinglocation1.wav
@@ -188,6 +189,10 @@ add_packfile(alpinefaction.vpp
     images/af_wh_sal_take.tga
     images/af_wh_sal_base_blue.tga
     images/af_wh_sal_base_red.tga
+    images/af_wh_medallion_red.tga
+    images/af_wh_medallion_blue.tga
+    images/af_wh_medallion_neutral.tga
+    images/af_wh_medallion_lock.tga
     images/afsbi_spawned.tga
     images/afsbi_spawned_1.tga
     images/afsbi_dead.tga

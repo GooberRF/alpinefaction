@@ -56,12 +56,14 @@ Version 1.5.0 (Trillium): Not yet released
   - Context-specific bindings for vehicles, spectator, and demo playback
   - `af_set` and `af_get` console commands to read and write any setting by name
   - Draw menus from resolution-independent vector artwork
-  - Redraw the extras menu in the same style
+  - Redraw the extras menu in the same style, with the demo browser as one of its panels
   - `Use deprecated legacy menus` launcher option to use the stock options and extras screens instead of the new menus
 - Add server-side bots, which run inside the dedicated or listen server process in addition to (or instead of) bot clients
   - `server_bots` ADS option (0-31) sets how many server bots join; they use the `bot_profiles` profiles and follow `ideal_player_count` like bot clients
   - Add `sv_bot_add [profile_index] [red|blue]`, `sv_bot_remove <name|all>` and `sv_bot_list` server console commands, which also work through rcon
-- Add new multiplayer game type: Scavenger (`SCAV`)
+- Add new multiplayer game types:
+  - Scavenger (`SCAV`)
+  - Payload (`PAY`)
 
 [@GooberRF](https://github.com/GooberRF) & [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add multiplayer vehicles and turrets
@@ -73,6 +75,7 @@ Version 1.5.0 (Trillium): Not yet released
 [@GooberRF](https://github.com/GooberRF)
 - Notify players in a server that is recording demos
 - Add `level_message` dedicated server config section to broadcast a message to all players when a level loads, set globally or per level (`$LEVEL` is replaced with the level name)
+- Add `wave_respawns` option to the `spawn_delay` dedicated server config section to respawn each team together in waves
 - Restore cut first person weapon aim sway, toggleable with `cl_weaponsway`
 - Add `cl_freelookslide` to scale the acceleration and deceleration slide of the freelook camera
 - Add terms of use and notices document to installer
@@ -86,6 +89,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Add `Scrapyard mode` option to the Gibbing mutator
 - Add underwater rendering effects — animated caustics, depth-based water fog with a waterline, screen tint/vignette and distortion — with quality levels 0-3 via `r_underwater` (Direct3D 11 renderer only)
 - Extend view distance while submerged at `r_underwater` 2 or higher, up to 4x the liquid visibility, with the extension capped at the normal far clip
+- Add `$Disable Caustics` and `$Disable Underwater Fog` `mapname_info.tbl` options to turn underwater effects off on a level, and `cl_ignore_tbl_caustics` and `cl_ignore_tbl_underwater_fog` console commands to ignore them
 - Add edge-vignette damage feedback as `cl_damageflash 2` (Direct3D 11 renderer only); `cl_damageflash` is now a level: 0 off, 1 screen flash, 2 vignette
 - Add `Brush` collision mode for Alpine Mesh objects
 - Add `Brush Geo` source selection for Alpine Mesh objects using `Brush` collision, allowing custom collision hulls
@@ -230,12 +234,27 @@ Version 1.5.0 (Trillium): Not yet released
 - Raise minimum `maxfps` from 1 to 10, for both the client and the dedicated server
 - Limit `r_gamma` to 0.7-2.2
 - Allow pasting text with `Ctrl+V` into vote panel text boxes
+- Show control points as spinning team medallions with a notched capture progress ring
+- Add `cl_wh_tethers`, `cl_wh_pushzone`, and `cl_wh_cartstatus` commands to toggle the world HUD beams from the players pushing or blocking the cart in Payload, the ring around it that shows where to push, and the status text over it
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color
 - Render animated (`.vfx`) meshes on the GPU with per-pixel lighting, and apply their materials' reflection maps (Direct3D 11 renderer only)
 - Load levels with very large face counts or many level sounds much faster
 - Add Discord rich presence (`cl_discord_presence`) showing the server, gametype, map, team scores, match status, player count and time left in multiplayer, and the level, difficulty and mod in single player, with a `Join server` button for public, password-free servers (`cl_discord_join_button`)
+- Add HUD, player outline, and outline x-ray toggles to the spectate options menu
+- Add `cl_hudelement` console command and a spectate options submenu to show or hide individual HUD elements
+- Keep chat visible while the HUD is hidden
+- Add `r_outlines_spectator_xray` console command to show player outlines through walls while spectating
+- Mark kills, awards, objective captures and powerup pickups on the demo playback scrubber
+- Speed up seeking in demos
+- Merge the demo playback controls and the spectate nameplate into one panel
+- Add `spectate_minimalbar` console command to show only the player's name on the compact demo playback panel
+- Add a custom demo playback marker, set with the Quick Save key and jumped to with the Quick Load key
+- Pause demo playback while the Esc menu is open
+- Add playback speed control (0.25x-8x) to the demo playback panel
+- Show the recording server's config during demo playback with the Remote Server Config key
+- Apply demo playback speed to the whole world, including particles, animations and sounds
 
 [@is-this-c](https://github.com/is-this-c)
 - Add `bighud_health` and `bighud_ammo` console variables to disable `bighud` for health and ammo, which is useful for mods incompatible with `bighud`
@@ -250,6 +269,7 @@ Version 1.5.0 (Trillium): Not yet released
 
 [@AL2009man](https://github.com/AL2009man)
 - Add `GamepadRawInput` option (via `alpine_settings.ini`) to enable RawInput driver for better handling of XInput controllers, while allowing Trigger Rumble/Impulse Trigger support.
+- Use a 0-10 range for the `Mouse sensitivity` slider when `ms_scale` is Modern
 
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
@@ -406,6 +426,8 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix lighting for pistol silencer and remote charge detonator
 - Fix third-person crouch animations on remote players flickering and snapping
 - Fix the multiplayer camera sitting above the eyes other players see on Parker and Ultor guard characters, which made other players look shorter than you
+- Fix level editor viewports flashing white or leaving black areas when resized under Wine/Proton
+- Fix occasional crash on startup with the Direct3D 11 renderer in MinGW builds
 
 [@GooberRF](https://github.com/GooberRF) & [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Fix severe frame rate drops when looking over heavily geomodded areas

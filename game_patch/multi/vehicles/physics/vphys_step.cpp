@@ -110,7 +110,7 @@ namespace
         return vehicle;
     }
 
-    // The PREVIOUS frame's rf::frametime: movers_update_all runs ahead of obj_move_all.
+    // The PREVIOUS frame's sim frametime: movers_update_all runs ahead of obj_move_all.
     float g_vphys_prev_frame_dt = 0.0f;
 
     // How hard the cushion pushes (u/s^2) and the separation speed it stops pushing at (u/s).
@@ -717,7 +717,8 @@ namespace
     {
         vphys_reconcile();
         // This runs outside the sim frame, so a paused game or demo still reaches it.
-        const float dt = rf::game_paused ? 0.0f : rf::frametime * demo_playback_sim_time_scale();
+        const float sim_time_scale = demo_playback_sim_time_scale();
+        const float dt = rf::game_paused ? 0.0f : rf::frametime * sim_time_scale;
         ragdoll_pre_step(dt);
         // Ahead of the empty-world return, so the step_will_run answer below is exact.
         std::vector<VehicleSimBody*> stale;
@@ -739,7 +740,8 @@ namespace
         // m_localTime accumulator, re-derived.
         const float step_time = step_will_run ? vphys_frame_step_time(dt) : 0.0f;
         const float moved_dt = g_vphys_prev_frame_dt;
-        g_vphys_prev_frame_dt = rf::frametime;
+        // Movers advance in the sim frame, which demo playback runs at its timescale (capped like the sim step)
+        g_vphys_prev_frame_dt = sim_time_scale == 1.0f ? rf::frametime : std::min(dt, 0.25f);
         // Every frame the world exists, not just the ones that step.
         if (g_vphys.world) {
             movers_update_all(step_will_run, step_time, moved_dt);

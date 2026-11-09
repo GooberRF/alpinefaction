@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -552,6 +553,11 @@ bool ui_close_button(UiContext& ctx, const UiRect& r, int font);
 UiScrollRegion ui_scroll_begin(UiContext& ctx, const UiRect& view, int content_h, float& scroll,
                                int wheel_step, UiId id = 0, bool draggable = false);
 void ui_scroll_end(UiContext& ctx, UiScrollRegion& region);
+// Hit-test pass, after the region: keyboard navigation brings the newly focused widget into view;
+// a focus that merely sits there does not, so the wheel and scrollbar can still move away from it.
+// `scrolled_to` is the caller's record of the focus it last scrolled for.
+void ui_scroll_focus_into_view(const UiContext& ctx, const UiRect& view, const std::optional<UiRect>& focus_rect,
+                               float& scroll, UiId& scrolled_to);
 
 // Where a scroll region's bar sits. ui_scroll_end hit-tests with it, and a skin that paints the
 // bar itself draws with it, so the two always agree.

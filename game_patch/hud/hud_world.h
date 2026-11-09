@@ -43,7 +43,14 @@ struct WorldHUDAssets
     int sal_wait;
     int sal_base_red;
     int sal_base_blue;
+    int medallion_red;
+    int medallion_blue;
+    int medallion_neutral;
+    int medallion_lock;
 };
+
+// The medallion face with `team`'s emblem, or the plain one for -1
+int world_hud_medallion_face(int team);
 
 struct KothHudTuning
 {
@@ -126,6 +133,7 @@ void populate_world_hud_sprite_events();
 void populate_fullscreen_overlay_events();
 void fullscreen_overlay_do_frame();
 void hud_world_level_unload();
+void hud_world_seek_reset();
 void add_location_ping_world_hud_sprite(rf::Vector3 pos, std::string player_name, int player_id);
 // Hits on one victim within this window add up into one damage number.
 inline constexpr int damage_number_merge_ms = 1000;

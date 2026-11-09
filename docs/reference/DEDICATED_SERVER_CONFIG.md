@@ -221,7 +221,7 @@ If neither the rotation nor `allowed_levels` names a level, `glass_house.rfl` is
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `time_limit` | Number | `600` | Level time limit in seconds (minimum 10). |
+| `time_limit` | Number | `600` (PAY: `300`) | Level time limit in seconds (minimum 10). |
 | `individual_kill_limit` | Integer | `30` | DM frag limit, 1-32767. |
 | `team_kill_limit` | Integer | `100` | TDM team score limit, 1-65535. |
 | `cap_limit` | Integer | `5` | CTF capture limit, 1-65535. |
@@ -251,6 +251,16 @@ If neither the rotation nor `allowed_levels` names a level, `glass_house.rfl` is
 | `scav_cartridge_return_time` | Number | `30` | Seconds before a dropped SCAV cartridge returns, 1-60. |
 | `scav_target_timeout` | Number | `120` | Seconds before the SCAV target moves, 10-600. |
 | `scav_target_radius` | Number | `1.5` | Radius of the SCAV target in meters, 1-10. |
+| `pay_setup_time` | Number | `20` | Seconds the PAY cart stays put at the start of a round, without healing attackers, so the teams can take their places, 0-60. It counts against the time limit, as the BAG and SAL spawn delays do. The level's `When_Setup_Ends` events fire when it ends. |
+| `pay_checkpoint_time_bonus` | Number | Unset | Overrides the seconds added to the PAY time limit when the cart captures a checkpoint, 0-3600. Unset uses the level's value (a checkpoint's own bonus, else the level property). When set, it applies to every checkpoint. |
+| `pay_overtime_grace` | Number | Unset | Overrides the seconds of PAY overtime with no attacker at the cart before the defenders win, 0-60. Unset uses the level's value. |
+| `pay_heal_per_tick` | Number | Unset | Overrides the effective health given each second to every PAY attacker at the cart, 0-500. Unset uses the level's value. A level can turn healing off. Each heal tick also adds a quarter of a magazine to the reserve of the attacker's held weapon, up to its maximum (a 1-round magazine gets a round every fourth tick), so 0 turns that off too, as does a level turning healing off. |
+| `pay_attacker_respawn_extra` | Number | Unset | Overrides the seconds added to the PAY attackers' respawn delay, -60 to 60. Unset uses the level's value (default 0). The respawn extras apply only with `spawn_delay` enabled, and a team's total delay stays within 0.25-60 seconds. |
+| `pay_attacker_respawn_per_checkpoint` | Number | Unset | Overrides the seconds added to the PAY attackers' respawn delay for each checkpoint the cart has passed, -60 to 60. Unset uses the level's value (default 0). |
+| `pay_attacker_respawn_final_stretch` | Number | Unset | Overrides the seconds added to the PAY attackers' respawn delay once the cart has reached the final stretch (the last tenth of the track, or its last 10 meters if that is shorter), -60 to 60. It stays added if the cart rolls back. Unset uses the level's value (default 0). |
+| `pay_defender_respawn_extra` | Number | Unset | As `pay_attacker_respawn_extra`, for the defenders. Unset uses the level's value (default 1). |
+| `pay_defender_respawn_per_checkpoint` | Number | Unset | As `pay_attacker_respawn_per_checkpoint`, for the defenders. Unset uses the level's value (default 0.5). |
+| `pay_defender_respawn_final_stretch` | Number | Unset | As `pay_attacker_respawn_final_stretch`, for the defenders. Unset uses the level's value (default 1). |
 
 ### Gameplay flags
 
@@ -271,7 +281,7 @@ If neither the rotation nor `allowed_levels` names a level, `glass_house.rfl` is
 | `drop_amps` | Boolean | `false` | Players drop damage amplifiers when they die. |
 | `drop_weapons` | Boolean | `true` | Players drop their weapon when they die. Off in PIT, GG, WO and SCAV. |
 | `no_player_collide` | Boolean | game type | Players pass through each other. On by default only in RUN. |
-| `location_pinging` | Boolean | game type | Allow location pings. On by default in KOTH, DC, REV, RUN, ESC, TBAG, SAL, WO and SCAV. |
+| `location_pinging` | Boolean | game type | Allow location pings. On by default in KOTH, DC, REV, RUN, ESC, TBAG, SAL, WO, SCAV and PAY. |
 | `geo_chunk_physics` | Boolean | `true` | Geomod chunks that are cut loose fall down. |
 | `clear_stale_movement_input` | Boolean | `false` | Clients clear their movement and look input whenever they leave gameplay (for example by opening a menu), so a held key cannot keep moving them. |
 | `weapon_pickups_give_full_ammo` | Boolean | `false` | Weapon pickups fill the weapon's ammo. |
@@ -352,7 +362,8 @@ Only used by round-based game types (PIT and WO); ignored elsewhere.
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
 | `enabled` | Boolean | game type | Make players wait before respawning. |
-| `base_seconds` | Number | `5` (game type) | Respawn delay in seconds, 0.25-60. Read only when `enabled` is true. In WO the delay is multiplied by the player's deaths this round. |
+| `base_seconds` | Number | `5` (game type) | Respawn delay in seconds, 0.25-60. Read only when `enabled` is true. In WO the delay is multiplied by the player's deaths this round. PAY adds each team's respawn extras (see `pay_attacker_respawn_extra` and the rest). |
+| `wave_respawns` | Boolean | `false` (PAY: `true`) | Respawn each team in waves: each team's waves come at a fixed interval of its delay, and a player respawns at the first wave at least their delay after death, so up to one more team delay after that (at most 60 seconds). Players who die close together come back together. Read only when `enabled` is true. |
 
 ### `spawn_protection`
 
@@ -499,8 +510,9 @@ A mutator declared more than once in the same table uses its last declaration. A
 | `GG`, `GUNGAME` | Gun Game: frags advance you to a new weapon | `gg_score_limit` | 1 second spawn delay. No weapon or amp drops. +50 effective health per kill. |
 | `SAL`, `SALVAGE` | Salvage: steal the flag and take it to your base | `sal_cap_limit` | Spawn weapon 12mm handgun. 1 second spawn delay. Location pinging. |
 | `SCAV`, `SCAVENGER` | Scavenger: find the cartridge and take it to the target | `scav_cap_limit` | Same fixed loadout, health, armor, reload and drop settings as WO. 2 second spawn delay. Location pinging. |
+| `PAY`, `PAYLOAD` | Payload: push the cart to the end of its track, or stop the attackers pushing it there | none (the cart reaching the end) | 300 second time limit. Spawn weapon Machine Pistol, plus Remote Charge (3). 2 second spawn delay. Location pinging. |
 
-Team game types are TDM, CTF, KOTH, DC, REV, ESC, TBAG, WO, SAL and SCAV.
+Team game types are TDM, CTF, KOTH, DC, REV, ESC, TBAG, WO, SAL, SCAV and PAY.
 
 ## Bot profile files
 

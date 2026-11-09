@@ -274,6 +274,7 @@ const char* gametype_short_name(uint8_t id)
         case rf::NG_TYPE_GG: return "GG";
         case rf::NG_TYPE_SAL: return "SAL";
         case rf::NG_TYPE_SCAV: return "SCAV";
+        case rf::NG_TYPE_PAY: return "PAY";
         default: return nullptr; // unknown to this build
     }
 }
@@ -3040,14 +3041,14 @@ FunHook<void(int)> gameplay_key_callback_hook{
 };
 
 // ESC during gameplay pushes GS_MAIN_MENU; while the overlay is up that is swallowed
-// and read as "close the modal". A focused text box never reaches here.
+// and read as "close the modal". A focused text box never reaches here. The demo
+// controls panel is no modal (it is expanded by default and re-expands once gameplay
+// resumes), so it compacts and the Esc menu still opens.
 FunHook<void(rf::GameState, bool, bool)> gameseq_push_state_hook{
     0x00434410,
     [](rf::GameState state, bool transparent, bool pause_beneath) {
         if (state == rf::GS_MAIN_MENU && demo_controls_ui_is_open()) {
             demo_controls_ui_close();
-            play_click_sound();
-            return;
         }
         if (state == rf::GS_MAIN_MENU && g_open) {
             vote_panel_close();

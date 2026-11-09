@@ -136,11 +136,17 @@ struct AlpineGameSettings
     bool world_hud_alt_damage_indicators = false;
     bool world_hud_flag_overdraw = true;
     bool world_hud_hill_overdraw = true;
+    bool world_hud_cp_medallions = true;
+    bool world_hud_cp_role_text = true;
     bool world_hud_damage_numbers = true;
+    bool world_hud_payload_tethers = true;
+    bool world_hud_payload_push_zone = true;
+    bool world_hud_payload_cart_status = true;
     bool world_hud_spectate_player_labels = false;
     bool world_hud_demo_player_info = false;
     bool world_hud_demo_spawns = false;
     bool demo_powerup_timers = true;
+    bool demo_minimal_compact_bar = false;
     bool world_hud_team_player_labels = false;
     bool show_location_pings = true;
     bool play_hit_sounds = true;
@@ -325,7 +331,7 @@ struct AlpineGameSettings
     // 0=stock, 1=caustics, 2=+fog/waterline/tint/vignette, 3=+screen distortion (d3d11 only)
     static constexpr int min_underwater_fx = 0;
     static constexpr int max_underwater_fx = 3;
-    int underwater_fx = 3;
+    int underwater_fx = 0;
     void set_underwater_fx(int value)
     {
         underwater_fx = std::clamp(value, min_underwater_fx, max_underwater_fx);
@@ -459,6 +465,8 @@ struct AlpineGameSettings
     bool ignore_tbl_vertex_lighting = false;
     bool ignore_tbl_pixel_light_overbright = false;
     bool ignore_tbl_lightmap_clamping = false;
+    bool ignore_tbl_caustics = false;
+    bool ignore_tbl_underwater_fog = false;
     bool static_bomb_code = false;
     bool entity_pain_sounds = true;
     bool footsteps = true;
@@ -643,6 +651,7 @@ struct AlpineGameSettings
     // outline rendering (d3d11 multiplayer)
     bool try_outlines = false;
     bool outlines_spectator = false;
+    bool outlines_spectator_xray = true;
     bool try_outlines_team_xray = true;
 
     uint32_t outlines_color = 0xFF3232FF;         // red, opaque (RRGGBBAA)

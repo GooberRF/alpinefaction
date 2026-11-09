@@ -280,6 +280,11 @@ namespace gr::d3d11::engine
         return 0;
     }
 
+    inline bool underwater_caustics()
+    {
+        return false;
+    }
+
     inline bool nearest_texture_filtering()
     {
         return false;

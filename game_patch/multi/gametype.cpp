@@ -6,6 +6,7 @@
 #include <patch_common/AsmWriter.h>
 #include <common/utils/list-utils.h>
 #include <common/version/version.h>
+#include <common/payload.h>
 #include "gametype.h"
 #include "awards.h"
 #include "bagman.h"
@@ -16,6 +17,7 @@
 #include "gungame.h"
 #include "salvage.h"
 #include "scavenger.h"
+#include "payload.h"
 #include "vehicles/vehicle.h"
 #include "vehicles/vehicle_render.h"
 #include "vehicles/vehicle_markers.h"
@@ -24,6 +26,7 @@
 #include "mutators.h"
 #include "alpine_packets.h"
 #include "server_internal.h"
+#include "demo/demo.h"
 #include "../fflink/afstats_events.h"
 #include "../hud/hud_internal.h"
 #include "../hud/multi_spectate.h"
@@ -64,6 +67,8 @@ static char sal_name[] = "SAL";
 static char* sal_slot = sal_name;
 static char scav_name[] = "SCAV";
 static char* scav_slot = scav_name;
+static char pay_name[] = "PAY";
+static char* pay_slot = pay_name;
 // UNK is the sentinel; new game types must be added above
 static char unk_name[] = "UNK";
 static char* unk_slot = unk_name;
@@ -110,6 +115,7 @@ void populate_gametype_table() {
     g_af_gametype_names[rf::NG_TYPE_GG]     = &gg_slot;
     g_af_gametype_names[rf::NG_TYPE_SAL]    = &sal_slot;
     g_af_gametype_names[rf::NG_TYPE_SCAV]   = &scav_slot;
+    g_af_gametype_names[rf::NG_TYPE_PAY]    = &pay_slot;
     g_af_gametype_names[rf::NG_TYPE_UNK]    = &unk_slot;
 
     for (int i = 0; i < 5; ++i) {
@@ -161,6 +167,7 @@ bool multi_game_type_is_team_type(rf::NetGameType game_type)
         case rf::NG_TYPE_WO:
         case rf::NG_TYPE_SAL:
         case rf::NG_TYPE_SCAV:
+        case rf::NG_TYPE_PAY:
             return true;
         default:
             return false;
@@ -174,6 +181,7 @@ bool multi_game_type_has_hills(rf::NetGameType game_type)
         case rf::NG_TYPE_DC:
         case rf::NG_TYPE_REV:
         case rf::NG_TYPE_ESC:
+        case rf::NG_TYPE_PAY:
             return true;
         default:
             return false;
@@ -217,6 +225,7 @@ void multi_get_team_scores(rf::NetGameType type, int& red, int& blue)
         case rf::NG_TYPE_DC:
         case rf::NG_TYPE_REV:
         case rf::NG_TYPE_ESC:
+        case rf::NG_TYPE_PAY:
             red = multi_koth_get_red_team_score();
             blue = multi_koth_get_blue_team_score();
             break;
@@ -333,6 +342,11 @@ bool gt_is_scavenger()
     return rf::multi_get_game_type() == rf::NetGameType::NG_TYPE_SCAV;
 }
 
+bool gt_is_payload()
+{
+    return rf::multi_get_game_type() == rf::NetGameType::NG_TYPE_PAY;
+}
+
 const char* multi_gametype_help_text(rf::NetGameType game_type)
 {
     switch (game_type) {
@@ -366,6 +380,8 @@ const char* multi_gametype_help_text(rf::NetGameType game_type)
             return "Salvage: Steal the flag and take it to your base";
         case rf::NG_TYPE_SCAV:
             return "Scavenger: Find the cartridge and take it to the target";
+        case rf::NG_TYPE_PAY:
+            return "Payload: Push the cart to the end of the track, or stop the attackers pushing it there";
         default:
             return nullptr;
     }
@@ -643,11 +659,7 @@ static int players_on_team(const Presence& pres, HillOwner team)
 
 static float rate_bonus_for_players(int player_count)
 {
-    if (player_count <= 1)
-        return 1.0f;
-    if (player_count == 2)
-        return 1.5f;
-    return 2.0f; // 3 or more
+    return payload::push_multiplier(std::max(player_count, 1));
 }
 
 static int scaled_capture_rate(const HillInfo& h, int base_rate, int player_count)
@@ -680,7 +692,9 @@ static std::vector<uint8_t> on_capture_collect_player_ids_on_hill_for_team(const
         if ((team == HillOwner::HO_Red && pl.team != 0) || (team == HillOwner::HO_Blue && pl.team != 1))
             continue;
 
-        if (!player_inside_hill_trigger(h, pl))
+        const bool on_point =
+            gt_is_payload() ? payload_player_credited_for_capture(pl) : player_inside_hill_trigger(h, pl);
+        if (!on_point)
             continue;
         if (pl.net_data) {
             ids.push_back(pl.net_data->player_id);
@@ -862,11 +876,13 @@ static bool hill_has_spawn_uid(const HillInfo& hill, int rp_uid)
 
 static bool rev_should_enable_respawn_point(int rp_uid)
 {
-    return std::any_of(g_koth_info.hills.begin(), g_koth_info.hills.end(), [rp_uid](const HillInfo& hill) {
-        if (hill.lock_status != HillLockStatus::HLS_Available)
-            return false;
-
-        return std::find(hill.mp_spawn_uids.begin(), hill.mp_spawn_uids.end(), rp_uid) != hill.mp_spawn_uids.end();
+    const auto& hills = g_koth_info.hills;
+    if (gt_is_payload() && !hills.empty() && hills.back().lock_status == HillLockStatus::HLS_Permalocked) {
+        // The cart can have track left past its last checkpoint, so that stage's spawns stay on
+        return hill_has_spawn_uid(hills.back(), rp_uid);
+    }
+    return std::any_of(hills.begin(), hills.end(), [rp_uid](const HillInfo& hill) {
+        return hill.lock_status == HillLockStatus::HLS_Available && hill_has_spawn_uid(hill, rp_uid);
     });
 }
 
@@ -955,6 +971,18 @@ static bool esc_should_enable_respawn_point_for_team(int rp_uid, HillOwner team)
     return false;
 }
 
+// REV and PAY take their points in stage order, by one attacking team, for good
+static std::optional<HillOwner> staged_attacker()
+{
+    if (gt_is_rev()) {
+        return HillOwner::HO_Red;
+    }
+    if (gt_is_payload()) {
+        return team_hill_owner(payload_attacking_team());
+    }
+    return std::nullopt;
+}
+
 static void koth_update_respawn_points(HillInfo* h) {
     if (!h || h->mp_spawn_uids.empty())
         return;
@@ -964,8 +992,8 @@ static void koth_update_respawn_points(HillInfo* h) {
     for (int rp_uid : h->mp_spawn_uids) {
         if (auto* rp = get_alpine_respawn_point_by_uid(rp_uid)) {
 
-            if (gt_is_rev()) { 
-                // REV: enable spawns when any linked hill is available
+            if (staged_attacker()) {
+                // REV/PAY: see rev_should_enable_respawn_point
                 set_alpine_respawn_point_enabled(rp, rev_should_enable_respawn_point(rp_uid));
             }
             else if (gt_is_esc()) {
@@ -1006,7 +1034,8 @@ static void esc_update_all_respawn_points()
 
 static void rev_recalculate_stage_locks()
 {
-    if (!gt_is_rev())
+    const auto attacker = staged_attacker();
+    if (!attacker)
         return;
 
     if (g_koth_info.hills.empty())
@@ -1032,7 +1061,7 @@ static void rev_recalculate_stage_locks()
             if (hill.stage != stage)
                 continue;
 
-            if (hill.ownership != HillOwner::HO_Red) {
+            if (hill.ownership != *attacker) {
                 stage_complete = false;
                 break;
             }
@@ -1284,15 +1313,10 @@ static void koth_maybe_grant_lockdown(const HillInfo& captured, HillOwner new_ow
     }
 }
 
-// HO_Neutral 0 / HO_Red 1 / HO_Blue 2 maps onto a Vehicle Factory's -1 none / 0 red / 1 blue.
-static int hill_owner_factory_team(HillOwner owner)
-{
-    return static_cast<int>(owner) - 1;
-}
-
 static void koth_apply_ownership(HillInfo& h, HillOwner new_owner, bool announce = true, HillOwner scoring_team = HillOwner::HO_Neutral)
 {
-    if (gt_is_rev() && new_owner == HillOwner::HO_Blue)
+    const auto attacker = staged_attacker();
+    if (attacker && new_owner == opposite(*attacker))
         return;
 
     if (h.ownership == new_owner)
@@ -1311,12 +1335,12 @@ static void koth_apply_ownership(HillInfo& h, HillOwner new_owner, bool announce
     //xlog::warn("[KOTH] {}: OWNER {} -> {}", h.name.c_str(), to_string(old_owner), to_string(new_owner));
 
     if (rf::is_server) {
-        if (gt_is_rev() && new_owner == HillOwner::HO_Red) {
+        if (attacker && new_owner == *attacker) {
             h.lock_status = HillLockStatus::HLS_Permalocked; // permalock captured point
         }
 
-        if (gt_is_rev()) {
-            // REV: update respawns on per-point basis, then recalculate stage locks
+        if (attacker) {
+            // REV/PAY: update respawns on per-point basis, then recalculate stage locks
             koth_update_respawn_points(&h);
             rev_recalculate_stage_locks();
         }
@@ -1332,7 +1356,7 @@ static void koth_apply_ownership(HillInfo& h, HillOwner new_owner, bool announce
 
         // Linked Vehicle Factories follow the point's owner.
         for (int factory_index : h.vehicle_factories) {
-            vehicle_factory_set_team(factory_index, hill_owner_factory_team(new_owner));
+            vehicle_factory_set_team(factory_index, hill_owner_team(new_owner));
         }
 
         if (new_owner == HillOwner::HO_Red || new_owner == HillOwner::HO_Blue) {
@@ -1377,7 +1401,8 @@ bool koth_set_capture_point_owner(EventCapturePointHandler* handler, int owner, 
 
     if (hill->ownership == owner_enum) {
         bool adjusted = false;
-        if (gt_is_rev() && owner_enum == HillOwner::HO_Red && hill->lock_status != HillLockStatus::HLS_Permalocked) {
+        const auto attacker = staged_attacker();
+        if (attacker && owner_enum == *attacker && hill->lock_status != HillLockStatus::HLS_Permalocked) {
             hill->lock_status = HillLockStatus::HLS_Permalocked;
             koth_update_respawn_points(hill);
             rev_recalculate_stage_locks();
@@ -1860,8 +1885,8 @@ static void update_hill_client_predict_rev(HillInfo& h, int dt_ms)
 
 static void koth_client_predict_tick(int dt_ms)
 {
-    // client-only; server is authoritative
-    if (!rf::is_multi || rf::is_server)
+    // client-only; server is authoritative. Payload checkpoints change only by the server's cart.
+    if (!rf::is_multi || rf::is_server || gt_is_payload())
         return;
 
     // score prediction in KOTH/DC
@@ -1942,8 +1967,8 @@ void koth_do_frame() // fires every frame on both server and client
             const int dt_ms = static_cast<int>(std::min(dt_srv, 250LL));
 
             for (auto& h : g_koth_info.hills) {
-                // Only need to update hills if they are available
-                if (h.lock_status == HillLockStatus::HLS_Available) {
+                // Only need to update hills if they are available. Payload's cart captures its checkpoints.
+                if (h.lock_status == HillLockStatus::HLS_Available && !gt_is_payload()) {
                     if (gt_is_rev()) {
                         update_hill_server_rev(h, dt_ms);
                     }
@@ -1959,13 +1984,17 @@ void koth_do_frame() // fires every frame on both server and client
         }
     }
 
-    // client prediction tick
+    // client prediction tick, on demo time during playback so it follows the pause and timescale.
+    // That clock restarts below the last reading when playback starts or restarts, so a step
+    // back re-anchors instead of stalling the tick until it catches up.
     if (!rf::is_server && !rf::is_dedicated_server) {
-        static int64_t last_cli = timer::get_i64(1000);
-        const int64_t now_cli = timer::get_i64(1000);
+        static int64_t last_cli = demo_playback_interp_clock_ms();
+        const int64_t now_cli = demo_playback_interp_clock_ms();
         const int64_t dt_cli = now_cli - last_cli;
-        if (dt_cli > 0) {
+        if (dt_cli != 0) {
             last_cli = now_cli;
+        }
+        if (dt_cli > 0) {
             const int dt_ms = static_cast<int>(std::min(dt_cli, 250LL));
             koth_client_predict_tick(dt_ms);
         }
@@ -2050,9 +2079,12 @@ static int build_hills_from_capture_point_events()
         return int(g_koth_info.hills.size());
 
     int game_type_max_hills =
-        gt == rf::NetGameType::NG_TYPE_KOTH ? 1 : 32;
+        gt == rf::NetGameType::NG_TYPE_KOTH ? 1 : max_hills;
 
-    auto events = find_all_events_by_type(rf::EventType::Capture_Point_Handler);
+    // Payload's checkpoints are the handlers its cart's keyframes name, in track order, and have no trigger
+    const bool is_payload = gt == rf::NetGameType::NG_TYPE_PAY;
+    auto events = is_payload ? payload_checkpoint_handlers()
+                             : find_all_events_by_type(rf::EventType::Capture_Point_Handler);
     std::unordered_set<int> seen_uids;
 
     int idx = 0;
@@ -2062,24 +2094,37 @@ static int build_hills_from_capture_point_events()
 
         auto* cp = static_cast<EventCapturePointHandler*>(e);
 
-        rf::Trigger* trig = koth_capture_point_handler_trigger(*e);
-        if (!trig) {
-            xlog::warn("KOTH: Capture point '{}' has invalid trigger UID {}, skipping", cp->name.c_str(), cp->trigger_uid);
-            continue;
-        }
-        cp->trigger_uid = trig->uid;
+        rf::Trigger* trig = nullptr;
+        if (!is_payload) {
+            trig = koth_capture_point_handler_trigger(*e);
+            if (!trig) {
+                xlog::warn("KOTH: Capture point '{}' has invalid trigger UID {}, skipping", cp->name.c_str(),
+                           cp->trigger_uid);
+                continue;
+            }
+            cp->trigger_uid = trig->uid;
 
-        // fix a case where a mapper specified the same trigger for multiple capture point handlers
-        if (!seen_uids.insert(cp->trigger_uid).second) {
-            xlog::warn("KOTH: Duplicate capture point for trigger UID {}, ignoring subsequent entries", cp->trigger_uid);
-            continue;
+            // fix a case where a mapper specified the same trigger for multiple capture point handlers
+            if (!seen_uids.insert(cp->trigger_uid).second) {
+                xlog::warn("KOTH: Duplicate capture point for trigger UID {}, ignoring subsequent entries",
+                           cp->trigger_uid);
+                continue;
+            }
         }
 
         HillInfo h{};
         h.hill_uid = ++idx;
         // use name if set by mapper, if not name it "Hill" if only one, or "Control Point X" if multiple
-        h.name = cp->name.empty() ? (events.size() <= 1 ? "Hill" : std::format("Point {}", idx)) : cp->name;
-        h.trigger_uid = cp->trigger_uid;
+        if (!cp->name.empty()) {
+            h.name = cp->name;
+        }
+        else if (is_payload) {
+            h.name = std::format("Checkpoint {}", idx);
+        }
+        else {
+            h.name = events.size() <= 1 ? "Hill" : std::format("Point {}", idx);
+        }
+        h.trigger_uid = trig ? cp->trigger_uid : -1;
         h.trigger = trig;
         h.outline_offset = cp->outline_offset;
         h.capture_rate = cp->capture_rate;
@@ -2087,7 +2132,7 @@ static int build_hills_from_capture_point_events()
             && cp->position <= static_cast<int>(HillRole::HR_BlueForward)) {
             h.role = static_cast<HillRole>(cp->position);
         }
-        h.stage = cp->stage;
+        h.stage = is_payload ? idx : cp->stage;
         h.handler = cp;
         h.ownership = HillOwner::HO_Neutral;
         h.state = HillState::HS_Idle;
@@ -2191,13 +2236,14 @@ static void hill_mode_apply_linked_factory_teams()
             continue; // a neutral hill leaves the factory's authored team alone
 
         for (int factory_index : hill.vehicle_factories) {
-            vehicle_factory_set_team(factory_index, hill_owner_factory_team(hill.ownership), false);
+            vehicle_factory_set_team(factory_index, hill_owner_team(hill.ownership), false);
         }
     }
 }
 
 void multi_level_init_post_gametypes()
 {
+    payload_level_init_post(); // before the hills, which are built from its checkpoints
     hill_mode_level_init_post();
     bagman_level_init_post();
     salvage_level_init_post();
@@ -2243,6 +2289,7 @@ CodeInjection multi_level_init_gametypes_injection{
         jetpack_level_init();
         salvage_level_init();
         scavenger_level_init();
+        payload_level_init();
         pit_level_init();
         wipeout_level_init();
         gungame_level_init();
@@ -2296,6 +2343,12 @@ CodeInjection send_team_score_state_info_patch{
             }
         }
 
+        if (gt_is_payload()) {
+            if (rf::Player* pp = regs.edi) {
+                payload_force_state_sync_to(pp);
+            }
+        }
+
         // replay occupied vehicle and turret seats on join
         if (rf::Player* pp = regs.edi) {
             vehicle_send_seat_states_to(pp);
@@ -2338,7 +2391,7 @@ CodeInjection send_team_score_change_level_patch{
 CodeInjection send_team_score_patch{
     0x00472151,
     [](auto& regs) {
-        if (gt_is_koth() || gt_is_dc()) {
+        if (gt_is_koth() || gt_is_dc() || gt_is_payload()) {
             // both uint16_t on the wire
             const uint16_t red_score = (uint16_t)std::clamp(multi_koth_get_red_team_score(), 0, 0xFFFF);
             const uint16_t blue_score = (uint16_t)std::clamp(multi_koth_get_blue_team_score(), 0, 0xFFFF);
@@ -2374,7 +2427,7 @@ CodeInjection send_team_score_patch{
 CodeInjection process_team_score_patch{
     0x0047221D,
     [](auto& regs) {
-        if (gt_is_koth() || gt_is_dc()) {
+        if (gt_is_koth() || gt_is_dc() || gt_is_payload()) {
             int red_score = static_cast<uint16_t>(regs.si.value);
             int blue_score = static_cast<uint16_t>(regs.di.value);
             multi_koth_set_red_team_score(red_score);

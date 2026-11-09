@@ -39,6 +39,7 @@
 #include "../multi/gametype.h"
 #include "../multi/mutators.h"
 #include "../multi/bagman.h"
+#include "../multi/payload.h"
 #include "../multi/jetpack.h"
 #include "../multi/salvage.h"
 #include "../multi/vehicles/vehicle.h"
@@ -187,7 +188,8 @@ FunHook<int()> rf_do_frame_hook{
         riot_shield_do_frame();
         client_bot_do_frame();
         koth_do_frame();
-        gamepad_do_frame();
+        payload_do_frame(); // before the stock frame moves the cart
+        gamepad_do_frame(); // Gamepad support
         bagman_do_frame();
         jetpack_do_frame();
         salvage_client_do_frame();      // client-side Salvage carried-flag attachment
@@ -319,6 +321,28 @@ FunHook<int(rf::String&, rf::String&, char*)> level_load_hook{
                 }
             }
 
+            gr::d3d11::evaluate_underwater_fx(level_filename);
+            auto print_underwater_override = [&](AlpineLevelInfoID id, bool ignored, const char* effect,
+                                                 const char* ignore_cmd) {
+                if (!g_alpine_level_info_config.is_option_loaded(level_filename, id)
+                    || !get_level_info_value<bool>(id)) {
+                    return;
+                }
+                if (ignored) {
+                    rf::console::print("Ignoring {} override in mapname_info.tbl for {} ({} is enabled)", effect,
+                                       level_filename, ignore_cmd);
+                }
+                else {
+                    rf::console::print("Disabling {} for {} (per override present in mapname_info.tbl)", effect,
+                                       level_filename);
+                }
+            };
+            print_underwater_override(AlpineLevelInfoID::DisableCaustics, g_alpine_game_config.ignore_tbl_caustics,
+                                      "caustics", "cl_ignore_tbl_caustics");
+            print_underwater_override(AlpineLevelInfoID::DisableUnderwaterFog,
+                                      g_alpine_game_config.ignore_tbl_underwater_fog, "underwater fog",
+                                      "cl_ignore_tbl_underwater_fog");
+
             gr::d3d11::evaluate_alpha_test_threshold(level_filename);
             if (is_stock_alpha_test_level(level_filename)) {
                 rf::console::print("Applying stock alpha test threshold to known affected level {}", level_filename);
@@ -404,6 +428,7 @@ FunHook<void(bool)> level_init_post_hook{
         if (!rf::is_dedicated_server && !is_headless_mode()) {
             alpine_terrain_decorations_level_init();
             explosion_flash_lights_level_init();
+            gr::d3d11::build_liquid_volume_mask();
             evaluate_fullbright_meshes();
             set_levelmod_autotexture_ppm();
             if (!rf::is_multi) {
@@ -417,6 +442,7 @@ FunHook<void(bool)> level_init_post_hook{
                 minimap_level_init_post();
                 // listen server host spawns before this init, so we need to run on_local_spawn for them again
                 if (rf::is_server) {
+                    payload_greet_listen_host();
                     multi_hud_on_local_spawn();
                 }
             }
