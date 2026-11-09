@@ -124,9 +124,9 @@ bool vote_level_allows_default_gametype(const VoteLevelInfo& level);
 uint8_t vote_default_gametype_for_level(const VoteOptionsData& options, std::string_view level_string);
 
 // The game type a Match vote on the CURRENT level resolves to: what the session is
-// running, put through the match game type cycler's team-only remap (DM becomes
-// TeamDM when the server offers it, otherwise the first team type offered; none when
-// it offers no team type at all). The single answer for both the panel's "Current
+// running, put through the match game type cycler's team-only remap (a type it does
+// not offer becomes TeamDM, otherwise the first team type offered; none when it
+// offers no team type at all). The single answer for both the panel's "Current
 // level" row and a saved Match record with no level, so both send the same byte.
 uint8_t vote_match_current_level_gametype(const VoteOptionsData& options);
 

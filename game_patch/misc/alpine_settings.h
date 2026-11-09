@@ -384,6 +384,8 @@ struct AlpineGameSettings
     bool reduced_speed_in_background = false;
     bool direct_input = true;
     bool scoreboard_anim = true;
+    bool scoreboard_cursor = true;
+    bool scoreboard_cursor_hint = true;
     bool legacy_bob = false;
     bool weapon_sway = false;
     bool rail_beam_fix = true;

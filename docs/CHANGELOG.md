@@ -210,6 +210,13 @@ Version 1.5.0 (Trillium): Not yet released
 - Allow pasting text with `Ctrl+V` into vote panel text boxes
 - Show control points as spinning team medallions with a notched capture progress ring
 - Add `cl_wh_tethers`, `cl_wh_pushzone`, and `cl_wh_cartstatus` commands to toggle the world HUD beams from the players pushing or blocking the cart in Payload, the ring around it that shows where to push, and the status text over it
+- Add a scoreboard cursor to scroll long player lists and view player details
+- Add mute and rcon admin buttons to the scoreboard player popout
+- Add `sv_swap_team`, `sv_force_spectate`, `sv_force_unspectate` and `sv_toggle_ready` commands, usable over rcon
+- Add `sv_mute_chat` command to mute a player's chat for the whole server, usable over rcon
+- Add `ui_scoreboard_cursor` and `ui_scoreboard_cursor_hint` console commands to toggle the scoreboard cursor and its hint text
+- Balance scoreboard columns for large player counts
+- Allow match votes on servers whose base game type is not a team type
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color

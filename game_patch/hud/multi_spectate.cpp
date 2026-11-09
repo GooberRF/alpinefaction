@@ -204,6 +204,7 @@ static void spectate_init_orbit(rf::Camera* camera);
 static void spectate_populate_default_binds();
 static void spectate_save_afl();
 static void spectate_delete_current_dropped_camera();
+static void spectate_exit_static();
 
 static void set_camera_target(rf::Player* player)
 {
@@ -348,6 +349,7 @@ void multi_spectate_set_target_player(rf::Player* player)
     bool entering_player_spectate = (player != rf::local_player);
 
     if (entering_player_spectate) {
+        spectate_exit_static();
         g_local_queued_delayed_spawn = false;
         stop_draw_respawn_timer_notification();
     }
@@ -1213,6 +1215,9 @@ void multi_spectate_consume_look_deltas(float& dpitch, float& dyaw)
     rf::mouse_get_delta(mdx, mdy, mdz);
     dpitch = 0.0f;
     dyaw = 0.0f;
+    if (!rf::keep_mouse_centered) {
+        return; // a free cursor belongs to an overlay, not the view
+    }
     consume_raw_mouse_deltas(dpitch, dyaw, false);
     if (dpitch == 0.0f && dyaw == 0.0f && (mdx != 0 || mdy != 0)) {
         const float sens = rf::local_player->settings.controls.mouse_sensitivity;
@@ -1850,7 +1855,7 @@ void multi_spectate_process_bind_input()
     // is a pure read (the engine refreshes the per-frame button snapshot itself), so this is one
     // toggle per physical click.
     const bool mmb_pressed = rf::mouse_was_button_pressed(2) > 0;
-    if (mmb_pressed && !typing && g_spectate_mode_enabled
+    if (mmb_pressed && !typing && !multi_scoreboard_cursor_active() && g_spectate_mode_enabled
         && g_spectate_view_mode == SpectateViewMode::third_person) {
         g_spectate_third_person_orbit = !g_spectate_third_person_orbit;
         spectate_apply_player_view_mode();

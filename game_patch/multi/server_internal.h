@@ -1349,6 +1349,7 @@ enum class UpcomingGameTypeSelection {
 
 rf::NetGameType get_upcoming_game_type();
 UpcomingGameTypeSelection get_upcoming_game_type_selection();
+extern const std::vector<std::string> g_rcon_cmd_masterlist;
 bool is_rcon_command_masterlisted(std::string_view command);
 bool set_upcoming_game_type(rf::NetGameType gt, UpcomingGameTypeSelection selection = UpcomingGameTypeSelection::Rotation);
 void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigRules& rules);
@@ -1427,6 +1428,17 @@ void server_vote_on_player_leave(rf::Player* player);
 void server_vote_on_limbo_state_enter();
 void process_delayed_kicks();
 void kick_player_delayed(const rf::Player* player);
+bool server_kick_player(rf::Player* player);
+bool server_ban_player(rf::Player* player);
+// The player actions return the reason they were refused.
+std::optional<std::string> server_run_player_action(rf::Player* player, uint8_t action);
+std::optional<std::string> server_swap_player_team(rf::Player* player);
+std::optional<std::string> server_force_player_spectate(rf::Player* player);
+std::optional<std::string> server_force_player_unspectate(rf::Player* player);
+std::optional<std::string> server_toggle_player_ready(rf::Player* player);
+std::optional<std::string> server_toggle_player_chat_mute(rf::Player* player);
+bool server_player_chat_muted(const rf::Player* player);
+std::string run_player_admin_rcon_command(std::string_view command, std::string_view target);
 bool ends_with(const rf::String& str, const std::string& suffix);
 const AlpineServerConfig& server_get_alpine_config();
 bool server_is_modded();

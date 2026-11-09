@@ -193,6 +193,7 @@ FunHook<int()> rf_do_frame_hook{
         vehicle_client_do_frame();      // vehicle trigger state of the local firing seat owner
         vehicle_physics_do_frame();     // Bullet vehicle sim: body lifecycle (the step runs after the input read)
         hud_pit_queue_auto_spectate();  // client-side Pit auto-spectate
+        hud_forced_spectate_do_frame();
         gungame_client_do_frame();      // client-side Gun Game level-up notification watcher
         alpine_mesh_do_frame();
         alpine_rope_do_frame();
