@@ -50,7 +50,8 @@ Version 1.5.0 (Trillium): Not yet released
   - Add projectile lag compensation, so projectiles and their splash damage hit players where the shooter saw them
   - Add `sv_bandwidth` console command to choose between low and high server bandwidth
   - Deprecate `sv_netfps` console command
-  - Deprecate `rate` console command
+  - Make the `rate` console command apply only on servers older than Alpine Faction 1.5
+  - Move the client rate option from the launcher to the settings menu (`alpine_settings.ini`) as `Client rate for legacy servers`
   - Make dedicated server `maxfps` follow `sv_bandwidth`
 
 ### Minor features, changes, and enhancements

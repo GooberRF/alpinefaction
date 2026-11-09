@@ -241,7 +241,7 @@ Colors are hex `RRGGBB` or `RRGGBBAA`, or comma-separated `R,G,B[,A]` values in 
 | `mp_playercount` | | Prints the number of players. Multiplayer only. |
 | `mute_all_players` | | Toggles muting all players in chat. Not saved. |
 | `mute_player` | `<player_name>` | Toggles muting one player in chat. Not saved. |
-| `rate` | `[rate]` | Deprecated: clients always send 40 updates per second, and the server sets the rate it sends. Ignores its argument and prints the send rate. |
+| `rate` | `[modem\|isdn\|cable\|t1\|lan\|<bytes/s>\|?]` | Sets the connection rate in bytes/s that servers older than Alpine Faction 1.5 scale how often they send you updates by; Alpine Faction 1.5 servers ignore it and send every client the `sv_bandwidth` rate. `rate ?` prints the current rate. Saved as the `Client rate for legacy servers` setting. |
 | `spray` | `[id]` | Selects the spray to use; without an id, also lists the available sprays. Default: 0. |
 
 ## Vehicles

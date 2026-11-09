@@ -614,6 +614,9 @@ struct AlpineGameSettings
             multiplayer_tracker = "rfgt.factionfiles.com";
     }
 
+    // Bytes/s budget pre-1.5 servers scale their send rate to this client by (the `rate` command)
+    unsigned client_rate = 200000u;
+
     // Client obj_update send rate on every server (stock sends 20/s)
     static constexpr unsigned client_net_rate = 40u;
     static constexpr unsigned client_send_interval_ms = 1000u / client_net_rate;

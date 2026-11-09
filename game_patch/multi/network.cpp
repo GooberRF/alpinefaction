@@ -3647,21 +3647,57 @@ ConsoleCommand2 netfps_cmd{
     "Deprecated: use sv_bandwidth",
 };
 
-// Stock `rate` set a bytes/s budget the server scaled obj_update frequency by. Alpine clients send at a fixed
-// rate and receive at the server's sv_bandwidth tier, so the command only reports that now. Swallow the stock
-// argument so it cannot throw.
+void apply_client_rate()
+{
+    rf::client_rate = static_cast<int>(g_alpine_game_config.client_rate);
+    if (rf::local_player && rf::local_player->net_data) {
+        rf::local_player->net_data->max_update_rate = rf::client_rate;
+        if (rf::is_multi && !rf::is_server) {
+            rf::send_rate_packet(rf::local_player->net_data->player_id, rf::client_rate);
+        }
+    }
+}
+
+// multi_init's registry read of UpdateRate; the ini holds it now
+FunHook<void()> multi_load_client_rate_hook{
+    0x004806B0,
+    []() {
+        apply_client_rate();
+    },
+};
+
+// Stock refuses the multiplayer menu and dedicated server start until UpdateRate is in the registry
+FunHook<int()> multi_rate_configured_hook{
+    0x0046F090,
+    []() {
+        return 1;
+    },
+};
+
+// The `rate` command's registry write of UpdateRate
+CallHook<void(const char*, const char*, int)> rate_cmd_save_hook{
+    0x0048062A,
+    [](const char*, const char*, int rate) {
+        g_alpine_game_config.client_rate = static_cast<unsigned>(std::clamp(rate, 1000, 1000000));
+    },
+};
+
+// The rate packet carries 16 bits, so stock `rate t1` and `rate lan` (200000) arrived as 3392
+FunHook<void(int, int)> send_rate_packet_hook{
+    0x00480700,
+    [](int player_id, int rate) {
+        send_rate_packet_hook.call_target(player_id, std::min(rate, 0xFFFF));
+    },
+};
+
+// Stock `rate` sets the bytes/s budget a server scales its obj_update frequency by. 1.5 servers send the
+// sv_bandwidth tier to every client instead (update_player_rate_hook).
 FunHook<void()> dcf_rate_hook{
     0x004803E0,
     []() {
-        if (rf::console::run) {
-            try {
-                console_read_arg<std::optional<std::string>>();
-            }
-            catch (...) {
-            }
-        }
+        dcf_rate_hook.call_target();
         if (rf::console::run || rf::console::help) {
-            rf::console::print("rate is deprecated; this client sends {} net updates per second", client_net_fps);
+            rf::console::print("Note: rate applies only on servers older than Alpine Faction 1.5");
         }
     },
 };
@@ -4565,6 +4601,11 @@ void network_init()
     sv_bandwidth_cmd.register_cmd();
     netfps_cmd.register_cmd();
     dcf_rate_hook.install();
+    multi_load_client_rate_hook.install();
+    multi_rate_configured_hook.install();
+    rate_cmd_save_hook.install();
+    send_rate_packet_hook.install();
+    write_mem_ptr(0x004803C6, "Sets multiplayer update rate (bytes per second), only used by servers older than Alpine Faction 1.5");
 
     // ui_show_netmeter
     netmeter_apply_patches();

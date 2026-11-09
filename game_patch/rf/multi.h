@@ -391,6 +391,9 @@ namespace rf
     static auto& multi_alloc_player_id = addr_as_ref<uint8_t()>(0x0046EF00);
     static auto& multi_player_left_game = addr_as_ref<void(Player* player)>(0x0046E9D0);
     static auto& update_player_rate = addr_as_ref<void(Player* player)>(0x0047E7D0);
+    // `rate` command value in bytes/s; seeds each player's net_data->max_update_rate
+    static auto& client_rate = addr_as_ref<int>(0x0059EFF8);
+    static auto& send_rate_packet = addr_as_ref<void(int player_id, int rate)>(0x00480700); // client -> server
     // Announces p to every other connected player (packet 0x05, carries net_data->flags).
     static auto& send_new_player_packet = addr_as_ref<void __cdecl(Player* p)>(0x0047A460);
     static auto& send_left_game_packet = addr_as_ref<void __cdecl(uint8_t player_id, uint8_t reason)>(0x0047BAE0);

@@ -899,6 +899,7 @@ enum af_server_info_flags : uint32_t {
     SIF_DODGING = 1u << 27,
     SIF_SCRAPYARD_GIBS = 1u << 28,
     SIF_NO_EXPOSURE_DAMAGE = 1u << 29,
+    SIF_PROJECTILE_LAG_COMP = 1u << 30,
 };
 
 // Subset of `rf::NetGameFlags`.

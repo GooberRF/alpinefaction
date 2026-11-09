@@ -324,3 +324,4 @@ void clear_rcon_state_for_addr(const rf::NetAddr& addr);
 void multi_disconnect_from_server();
 void server_apply_net_rate();
 void server_set_net_rate(unsigned netfps);
+void apply_client_rate();

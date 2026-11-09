@@ -4664,6 +4664,8 @@ uint32_t af_compute_server_info_flags()
         af |= af_server_info_flags::SIF_POGO;
     if (g_alpine_server_config_active_rules.gibbing.scrapyard)
         af |= af_server_info_flags::SIF_SCRAPYARD_GIBS;
+    if (g_alpine_server_config.projectile_lag_comp)
+        af |= af_server_info_flags::SIF_PROJECTILE_LAG_COMP;
     return af;
 }
 
@@ -4802,6 +4804,7 @@ static void decode_af_server_info_flags(const af_server_info_packet& pkt, Alpine
     server_info.pogo = (pkt.af_flags & af_server_info_flags::SIF_POGO) != 0;
     server_info.scrapyard_gibs = (pkt.af_flags & af_server_info_flags::SIF_SCRAPYARD_GIBS) != 0;
     server_info.no_exposure_damage = (pkt.af_flags & af_server_info_flags::SIF_NO_EXPOSURE_DAMAGE) != 0;
+    server_info.projectile_lag_comp = (pkt.af_flags & af_server_info_flags::SIF_PROJECTILE_LAG_COMP) != 0;
 }
 
 // Apply af_server_info_packet flags to the local server info (for listen server host)
