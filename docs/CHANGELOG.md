@@ -223,7 +223,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Add lens distortion, chromatic aberration and vignetting to the sniper and precision rifle scope views, with levels 0-2 via `r_scopeglass`: 0 off, 1 light, 2 heavy (Direct3D 11 renderer only)
 
 [@AL2009man](https://github.com/AL2009man)
-- when `mousescale` is set to Modern, the Mouse Sensitivity UI uses "0.00 - 10.00" format instead of integer values of Classic/Raw
+- Use a 0-10 range for the `Mouse sensitivity` slider when `ms_scale` is Modern
 
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
