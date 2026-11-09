@@ -1324,12 +1324,9 @@ struct AlpineLevelProperties
                                                            (require_d3d11 ? require_d3d11_setting : 0u)));
         file.write<float>(camera_far_clip);
         file.write<std::uint8_t>(alpha_tested_occlusion ? 1u : 0u);
-        file.write<float>(payload_rules.push_speed);
-        file.write<float>(payload_rules.rollback_speed);
-        file.write<float>(payload_rules.cart_accel);
-        file.write<float>(payload_rules.checkpoint_time_bonus);
-        file.write<float>(payload_rules.heal_per_second);
-        file.write<float>(payload_rules.overtime_grace);
+        for (const float* field : payload::LevelRules::file_fields(payload_rules)) {
+            file.write<float>(*field);
+        }
     }
 
     void Deserialize(rf::File& file, std::size_t chunk_len)
@@ -1603,8 +1600,7 @@ struct AlpineLevelProperties
                 return;
             alpha_tested_occlusion = (u8 != 0);
             payload::LevelRules rules;
-            for (float* field : {&rules.push_speed, &rules.rollback_speed, &rules.cart_accel,
-                                 &rules.checkpoint_time_bonus, &rules.heal_per_second, &rules.overtime_grace}) {
+            for (float* field : payload::LevelRules::file_fields(rules)) {
                 if (!read_bytes(field, sizeof(*field)))
                     return;
             }

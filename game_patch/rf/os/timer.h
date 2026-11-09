@@ -12,6 +12,8 @@ namespace rf::timer {
     // game_start_time. Calls must be balanced.
     static const auto& inc_game_paused = addr_as_ref<void()>(0x004FA320);
     static const auto& dec_game_paused = addr_as_ref<void()>(0x004FA330);
+    // g_InGameTimeMs, the clock every rf::Timestamp runs on
+    static auto& game_time_ms = addr_as_ref<int>(0x005A3ED8);
 
     static auto& base = addr_as_ref<int64_t>(0x01751BF8);
     static auto& last_value = addr_as_ref<int64_t>(0x01751BD0);

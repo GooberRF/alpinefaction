@@ -243,6 +243,23 @@ struct PayloadConfig
     std::optional<float> overtime_grace;
     std::optional<float> heal_per_tick; // per second
 
+    struct RespawnExtrasOverride
+    {
+        std::optional<float> base;
+        std::optional<float> per_checkpoint;
+        std::optional<float> final_stretch;
+
+        payload::RespawnExtras applied_to(payload::RespawnExtras extras) const
+        {
+            extras.base = base.value_or(extras.base);
+            extras.per_checkpoint = per_checkpoint.value_or(extras.per_checkpoint);
+            extras.final_stretch = final_stretch.value_or(extras.final_stretch);
+            return extras;
+        }
+    };
+    RespawnExtrasOverride attacker_respawn;
+    RespawnExtrasOverride defender_respawn;
+
     // Non-finite input keeps the current value
     static void set_clamped(std::optional<float>& out, float in, float lo, float hi)
     {
@@ -269,6 +286,11 @@ struct PayloadConfig
     void set_setup_time(float in_seconds)
     {
         setup_time = payload::clamp_rule(in_seconds, 0.0f, max_setup_time, setup_time);
+    }
+
+    static void set_respawn_extra(std::optional<float>& out, float in_seconds)
+    {
+        set_clamped(out, in_seconds, -payload::max_respawn_extra, payload::max_respawn_extra);
     }
 };
 
@@ -512,15 +534,19 @@ struct SpawnLifeConfig
 
 struct SpawnDelayConfig
 {
+    static constexpr int min_delay_ms = 250;
+    static constexpr int max_delay_ms = 60000;
     bool enabled = false;
     int base_value = 5000;
+    // Each team respawns together, on multiples of its delay since the level began
+    bool wave_respawns = false;
 
     // =============================================
 
     void set_base_value(float in_value)
     {
         int value_int = static_cast<int>(in_value * 1000);
-        base_value = std::clamp(value_int, 250, 60000);
+        base_value = std::clamp(value_int, min_delay_ms, max_delay_ms);
     }
 };
 

@@ -1537,6 +1537,18 @@ constexpr LevelTabControl level_tab_controls[] = {
     {IDC_PAYLOAD_HEAL, LevelTab::gameplay},
     {IDC_PAYLOAD_OVERTIME_GRACE_LABEL, LevelTab::gameplay},
     {IDC_PAYLOAD_OVERTIME_GRACE, LevelTab::gameplay},
+    {IDC_PAYLOAD_RESPAWN_HEADING, LevelTab::gameplay},
+    {IDC_PAYLOAD_RESPAWN_BASE_LABEL, LevelTab::gameplay},
+    {IDC_PAYLOAD_RESPAWN_PER_CHECKPOINT_LABEL, LevelTab::gameplay},
+    {IDC_PAYLOAD_RESPAWN_FINAL_STRETCH_LABEL, LevelTab::gameplay},
+    {IDC_PAYLOAD_RESPAWN_ATTACKER_LABEL, LevelTab::gameplay},
+    {IDC_PAYLOAD_RESPAWN_ATTACKER_BASE, LevelTab::gameplay},
+    {IDC_PAYLOAD_RESPAWN_ATTACKER_PER_CHECKPOINT, LevelTab::gameplay},
+    {IDC_PAYLOAD_RESPAWN_ATTACKER_FINAL_STRETCH, LevelTab::gameplay},
+    {IDC_PAYLOAD_RESPAWN_DEFENDER_LABEL, LevelTab::gameplay},
+    {IDC_PAYLOAD_RESPAWN_DEFENDER_BASE, LevelTab::gameplay},
+    {IDC_PAYLOAD_RESPAWN_DEFENDER_PER_CHECKPOINT, LevelTab::gameplay},
+    {IDC_PAYLOAD_RESPAWN_DEFENDER_FINAL_STRETCH, LevelTab::gameplay},
     {IDC_LEGACY_CYCLIC_TIMERS, LevelTab::compatibility},
     {IDC_LEGACY_MOVERS, LevelTab::compatibility},
     {IDC_LEGACY_LIGHTING, LevelTab::compatibility},
@@ -2213,6 +2225,41 @@ static LRESULT CALLBACK LevelDialogSubclassProc(HWND hwnd, UINT msg, WPARAM wpar
     return CallWindowProcA(orig, hwnd, msg, wparam, lparam);
 }
 
+namespace
+{
+
+// One team's row of the Payload respawn extras
+struct PayloadRespawnRow
+{
+    int base;
+    int per_checkpoint;
+    int final_stretch;
+};
+
+} // namespace
+
+constexpr PayloadRespawnRow payload_attacker_respawn_row{IDC_PAYLOAD_RESPAWN_ATTACKER_BASE,
+                                                         IDC_PAYLOAD_RESPAWN_ATTACKER_PER_CHECKPOINT,
+                                                         IDC_PAYLOAD_RESPAWN_ATTACKER_FINAL_STRETCH};
+constexpr PayloadRespawnRow payload_defender_respawn_row{IDC_PAYLOAD_RESPAWN_DEFENDER_BASE,
+                                                         IDC_PAYLOAD_RESPAWN_DEFENDER_PER_CHECKPOINT,
+                                                         IDC_PAYLOAD_RESPAWN_DEFENDER_FINAL_STRETCH};
+
+static void set_payload_respawn_row(HWND hdlg, const PayloadRespawnRow& row, const payload::RespawnExtras& extras)
+{
+    alpine_dlg_set_float_field_exact(hdlg, row.base, extras.base);
+    alpine_dlg_set_float_field_exact(hdlg, row.per_checkpoint, extras.per_checkpoint);
+    alpine_dlg_set_float_field_exact(hdlg, row.final_stretch, extras.final_stretch);
+}
+
+static void read_payload_respawn_row(HWND hdlg, const PayloadRespawnRow& row, payload::RespawnExtras& extras)
+{
+    constexpr float limit = payload::max_respawn_extra;
+    read_dlg_float(hdlg, row.base, extras.base, -limit, limit);
+    read_dlg_float(hdlg, row.per_checkpoint, extras.per_checkpoint, -limit, limit);
+    read_dlg_float(hdlg, row.final_stretch, extras.final_stretch, -limit, limit);
+}
+
 // load AlpineLevelProperties settings when opening level properties dialog
 CodeInjection CLevelDialog_OnInitDialog_patch{
     0x004676C0,
@@ -2243,6 +2290,8 @@ CodeInjection CLevelDialog_OnInitDialog_patch{
         alpine_dlg_set_float_field_exact(hdlg, IDC_PAYLOAD_TIME_BONUS, payload_rules.checkpoint_time_bonus);
         alpine_dlg_set_float_field_exact(hdlg, IDC_PAYLOAD_HEAL, payload_rules.heal_per_second);
         alpine_dlg_set_float_field_exact(hdlg, IDC_PAYLOAD_OVERTIME_GRACE, payload_rules.overtime_grace);
+        set_payload_respawn_row(hdlg, payload_attacker_respawn_row, payload_rules.attacker_respawn);
+        set_payload_respawn_row(hdlg, payload_defender_respawn_row, payload_rules.defender_respawn);
         CheckDlgButton(hdlg, IDC_LEGACY_LIGHTING, alpine_level_props.legacy_lighting ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hdlg, IDC_HIGHRES_LIGHTMAPS, alpine_level_props.highres_lightmaps ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hdlg, IDC_INVISIBLE_FACES_OCCLUDE, alpine_level_props.invisible_faces_occlude ? BST_CHECKED : BST_UNCHECKED);
@@ -2322,6 +2371,8 @@ CodeInjection CLevelDialog_OnOK_patch{
         read_dlg_float(hdlg, IDC_PAYLOAD_HEAL, payload_rules.heal_per_second, 0.0f, payload::max_heal_per_second);
         read_dlg_float(hdlg, IDC_PAYLOAD_OVERTIME_GRACE, payload_rules.overtime_grace, 0.0f,
                        payload::max_overtime_grace);
+        read_payload_respawn_row(hdlg, payload_attacker_respawn_row, payload_rules.attacker_respawn);
+        read_payload_respawn_row(hdlg, payload_defender_respawn_row, payload_rules.defender_respawn);
         alpine_level_props.legacy_lighting = IsDlgButtonChecked(hdlg, IDC_LEGACY_LIGHTING) == BST_CHECKED;
         alpine_level_props.highres_lightmaps = IsDlgButtonChecked(hdlg, IDC_HIGHRES_LIGHTMAPS) == BST_CHECKED;
         alpine_level_props.invisible_faces_occlude = IsDlgButtonChecked(hdlg, IDC_INVISIBLE_FACES_OCCLUDE) == BST_CHECKED;

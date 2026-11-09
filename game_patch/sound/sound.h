@@ -68,9 +68,11 @@ namespace stock_sound_id
     constexpr int panel_button_click   = 43;   // panel_button_click.wav
     constexpr int checkbox_on          = 44;   // checkbox_on.wav
     constexpr int checkbox_off         = 45;   // checkbox_off.wav
+    constexpr int bomb_tick            = 55;   // bomb_tick.wav
     constexpr int flag_capture         = 63;   // Flag_Capture.wav
     constexpr int flag_pickup          = 64;   // Flag_Pickup.wav
     constexpr int flag_respawn         = 65;   // Flag_Respawn.wav
+    constexpr int ann_one              = 68;   // MP_ANN-01.wav, followed by "two" to "ten"
     constexpr int ann_game_over        = 78;   // MP_ANN-GO.wav
     constexpr int ann_winner           = 80;   // MP_ANN_ALLYOURBASE.wav
 }

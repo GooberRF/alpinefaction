@@ -4,6 +4,7 @@
 // zero-fills a new event, so every event field reads 0, false or empty as its default.
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 
 namespace payload
@@ -35,12 +36,31 @@ inline constexpr float default_heal_per_second = 10.0f;
 inline constexpr float max_heal_per_second = 500.0f;
 inline constexpr float default_overtime_grace = 5.0f;
 inline constexpr float max_overtime_grace = 60.0f;
+inline constexpr float max_respawn_extra = 60.0f;
 
 // A level file can carry anything, so a value that isn't finite takes the default
 inline float clamp_rule(float value, float lo, float hi, float fallback)
 {
     return std::isfinite(value) ? std::clamp(value, lo, hi) : fallback;
 }
+
+// Seconds added to a team's respawn delay, on top of the server's
+struct RespawnExtras
+{
+    float base = 0.0f;
+    float per_checkpoint = 0.0f; // for each checkpoint the cart has passed
+    float final_stretch = 0.0f; // once the cart has reached the final stretch
+
+    void sanitize(const RespawnExtras& fallback)
+    {
+        base = clamp_rule(base, -max_respawn_extra, max_respawn_extra, fallback.base);
+        per_checkpoint = clamp_rule(per_checkpoint, -max_respawn_extra, max_respawn_extra, fallback.per_checkpoint);
+        final_stretch = clamp_rule(final_stretch, -max_respawn_extra, max_respawn_extra, fallback.final_stretch);
+    }
+};
+
+inline constexpr RespawnExtras default_attacker_respawn{};
+inline constexpr RespawnExtras default_defender_respawn{1.0f, 0.5f, 1.0f};
 
 // The Payload group of Level Properties
 struct LevelRules
@@ -51,6 +71,8 @@ struct LevelRules
     float checkpoint_time_bonus = default_checkpoint_time_bonus; // s
     float heal_per_second = default_heal_per_second;
     float overtime_grace = default_overtime_grace; // s
+    RespawnExtras attacker_respawn = default_attacker_respawn;
+    RespawnExtras defender_respawn = default_defender_respawn;
 
     void sanitize()
     {
@@ -61,6 +83,18 @@ struct LevelRules
             clamp_rule(checkpoint_time_bonus, 0.0f, max_checkpoint_time_bonus, default_checkpoint_time_bonus);
         heal_per_second = clamp_rule(heal_per_second, 0.0f, max_heal_per_second, default_heal_per_second);
         overtime_grace = clamp_rule(overtime_grace, 0.0f, max_overtime_grace, default_overtime_grace);
+        attacker_respawn.sanitize(default_attacker_respawn);
+        defender_respawn.sanitize(default_defender_respawn);
+    }
+
+    // In the level file's order; const rules give const pointers
+    template<typename Rules>
+    static auto file_fields(Rules& r)
+    {
+        return std::array{&r.push_speed, &r.rollback_speed, &r.cart_accel, &r.checkpoint_time_bonus, &r.heal_per_second,
+                          &r.overtime_grace, &r.attacker_respawn.base, &r.attacker_respawn.per_checkpoint,
+                          &r.attacker_respawn.final_stretch, &r.defender_respawn.base,
+                          &r.defender_respawn.per_checkpoint, &r.defender_respawn.final_stretch};
     }
 };
 

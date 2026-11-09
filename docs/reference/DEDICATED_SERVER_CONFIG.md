@@ -255,6 +255,12 @@ If neither the rotation nor `allowed_levels` names a level, `glass_house.rfl` is
 | `pay_checkpoint_time_bonus` | Number | Unset | Overrides the seconds added to the PAY time limit when the cart captures a checkpoint, 0-3600. Unset uses the level's value (a checkpoint's own bonus, else the level property). When set, it applies to every checkpoint. |
 | `pay_overtime_grace` | Number | Unset | Overrides the seconds of PAY overtime with no attacker at the cart before the defenders win, 0-60. Unset uses the level's value. |
 | `pay_heal_per_tick` | Number | Unset | Overrides the effective health given each second to every PAY attacker at the cart, 0-500. Unset uses the level's value. A level can turn healing off. Each heal tick also adds a quarter of a magazine to the reserve of the attacker's held weapon, up to its maximum (a 1-round magazine gets a round every fourth tick), so 0 turns that off too, as does a level turning healing off. |
+| `pay_attacker_respawn_extra` | Number | Unset | Overrides the seconds added to the PAY attackers' respawn delay, -60 to 60. Unset uses the level's value (default 0). The respawn extras apply only with `spawn_delay` enabled, and a team's total delay stays within 0.25-60 seconds. |
+| `pay_attacker_respawn_per_checkpoint` | Number | Unset | Overrides the seconds added to the PAY attackers' respawn delay for each checkpoint the cart has passed, -60 to 60. Unset uses the level's value (default 0). |
+| `pay_attacker_respawn_final_stretch` | Number | Unset | Overrides the seconds added to the PAY attackers' respawn delay once the cart has reached the final stretch (the last tenth of the track, or its last 10 meters if that is shorter), -60 to 60. It stays added if the cart rolls back. Unset uses the level's value (default 0). |
+| `pay_defender_respawn_extra` | Number | Unset | As `pay_attacker_respawn_extra`, for the defenders. Unset uses the level's value (default 1). |
+| `pay_defender_respawn_per_checkpoint` | Number | Unset | As `pay_attacker_respawn_per_checkpoint`, for the defenders. Unset uses the level's value (default 0.5). |
+| `pay_defender_respawn_final_stretch` | Number | Unset | As `pay_attacker_respawn_final_stretch`, for the defenders. Unset uses the level's value (default 1). |
 
 ### Gameplay flags
 
@@ -355,7 +361,8 @@ Only used by round-based game types (PIT and WO); ignored elsewhere.
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
 | `enabled` | Boolean | game type | Make players wait before respawning. |
-| `base_seconds` | Number | `5` (game type) | Respawn delay in seconds, 0.25-60. Read only when `enabled` is true. In WO the delay is multiplied by the player's deaths this round. |
+| `base_seconds` | Number | `5` (game type) | Respawn delay in seconds, 0.25-60. Read only when `enabled` is true. In WO the delay is multiplied by the player's deaths this round. PAY adds each team's respawn extras (see `pay_attacker_respawn_extra` and the rest). |
+| `wave_respawns` | Boolean | `false` (PAY: `true`) | Respawn each team in waves: each team's waves come at a fixed interval of its delay, and a player respawns at the first wave at least their delay after death, so up to one more team delay after that (at most 60 seconds). Players who die close together come back together. Read only when `enabled` is true. |
 
 ### `spawn_protection`
 

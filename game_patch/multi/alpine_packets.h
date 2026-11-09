@@ -393,7 +393,7 @@ enum class af_server_req_type : uint8_t
     af_sreq_award = 0xB,               // Alpine 1.4 (2 bytes: award_id, victim_player_id; 0xFF = no victim)
     af_sreq_active_mutators = 0xC,     // Alpine 1.4 (variable: one declaration set, see blob_declaration_set)
     af_sreq_match_state = 0xD,         // Alpine 1.5 (1 byte: af_match_state_flags)
-    af_sreq_reserve_ammo = 0xE,        // Alpine 1.5 (3 bytes: weapon_type, reserve)
+    af_sreq_reserve_ammo = 0x10,       // Alpine 1.5 (3 bytes: weapon_type, reserve)
 };
 
 struct ShouldGibPayload

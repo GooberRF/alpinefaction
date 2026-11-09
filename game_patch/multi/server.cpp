@@ -5361,8 +5361,12 @@ CodeInjection entity_maybe_die_patch{
         rf::Player* player = rf::player_from_entity_handle(ep->handle);
 
         const bool is_wipeout = gt_is_wipeout();
-        if (player && (g_alpine_server_config_active_rules.spawn_delay.enabled || is_wipeout)) {
-            int spawn_delay_ms = g_alpine_server_config_active_rules.spawn_delay.base_value;
+        const SpawnDelayConfig& spawn_delay = g_alpine_server_config_active_rules.spawn_delay;
+        if (player && (spawn_delay.enabled || is_wipeout)) {
+            const int team_delay_ms =
+                std::clamp(spawn_delay.base_value + payload_respawn_extra_ms(player->team),
+                           SpawnDelayConfig::min_delay_ms, SpawnDelayConfig::max_delay_ms);
+            int spawn_delay_ms = team_delay_ms;
 
             // Wipeout: the respawn delay escalates by the base value on each
             // death this round (5s, 10s, 15s...), resetting at round start. The
@@ -5370,7 +5374,17 @@ CodeInjection entity_maybe_die_patch{
             if (is_wipeout) {
                 ++player->wipeout_round_deaths;
                 spawn_delay_ms *= player->wipeout_round_deaths;
-                spawn_delay_ms = std::min(spawn_delay_ms, 60000); // max 1 min
+                spawn_delay_ms = std::min(spawn_delay_ms, SpawnDelayConfig::max_delay_ms);
+            }
+
+            // Waves fall on multiples of the team's delay, so players who die close together come back together.
+            // They run on the respawn timer's own clock, so the wave they aim for is exact.
+            if (spawn_delay.enabled && spawn_delay.wave_respawns) {
+                const int past_wave_ms = (rf::timer::game_time_ms + spawn_delay_ms) % team_delay_ms;
+                if (past_wave_ms > 0) {
+                    spawn_delay_ms =
+                        std::min(spawn_delay_ms + team_delay_ms - past_wave_ms, SpawnDelayConfig::max_delay_ms);
+                }
             }
 
             player->respawn_timer.set(spawn_delay_ms);

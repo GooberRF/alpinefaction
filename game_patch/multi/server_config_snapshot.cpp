@@ -82,6 +82,13 @@ std::vector<std::pair<std::string, SettingValue>> build_gametype_settings(rf::Ne
             out.emplace_back("overtime_grace_s", SettingValue{static_cast<double>(pay.overtime_grace)});
             out.emplace_back("heal_per_tick", SettingValue{static_cast<double>(pay.heal_per_second)});
             out.emplace_back("setup_time_s", SettingValue{static_cast<double>(rules.payload.setup_time)});
+            for (const auto& [prefix, extras] :
+                 {std::pair{"attacker", &pay.attacker_respawn}, std::pair{"defender", &pay.defender_respawn}}) {
+                const std::string key = std::string{prefix} + "_respawn_";
+                out.emplace_back(key + "extra_s", SettingValue{static_cast<double>(extras->base)});
+                out.emplace_back(key + "per_checkpoint_s", SettingValue{static_cast<double>(extras->per_checkpoint)});
+                out.emplace_back(key + "final_stretch_s", SettingValue{static_cast<double>(extras->final_stretch)});
+            }
             break;
         }
         case rf::NG_TYPE_CTF:

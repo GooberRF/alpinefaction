@@ -14,10 +14,12 @@
 #include "gametype.h"
 #include "server_internal.h"
 #include "../hud/hud.h"
+#include "../hud/multi_spectate.h"
 #include "../misc/level.h"
 #include "../misc/misc.h"
 #include "../object/event_alpine.h"
 #include "../object/mover.h"
+#include "../sound/sound.h"
 #include "../rf/entity.h"
 #include "../rf/event.h"
 #include "../rf/gameseq.h"
@@ -29,6 +31,7 @@
 #include "../rf/os/frametime.h"
 #include "../rf/os/timestamp.h"
 #include "../rf/player/player.h"
+#include "../rf/sound/sound.h"
 #include "../rf/vmesh.h"
 #include "../rf/weapon.h"
 
@@ -57,9 +60,31 @@ constexpr float finale_vclip_radius = 6.0f;
 constexpr const char* finale_vclip = "shoulder_cannon_explode";
 // From the cart reaching the end of its track to the level ending
 constexpr int finale_delay_ms = 5000;
-constexpr float nearly_there_fraction = 0.9f;
+// The final stretch is the last tenth of the track, or its last 10 m if that is shorter
+constexpr float final_stretch_fraction = 0.1f;
+constexpr float final_stretch_max_length = 10.0f;
 // Of the held weapon's magazine, on each heal tick
 constexpr float resupply_magazine_share = 0.25f;
+constexpr int setup_count_from = 5;
+constexpr int final_stretch_alarm_ms = 950; // as KOTH's alarm for a point being taken
+constexpr int overtime_tick_ms = 1000;
+constexpr const char* setup_end_sound_file = "Alarm_04.wav";
+constexpr const char* rollback_sound_file = "Beep06.wav";
+constexpr const char* final_stretch_sound_file = "Alarm_02.wav";
+
+// Sound cues, worked out on every machine that plays sound from its own view of the state
+struct PayloadCues
+{
+    bool seeded = false;
+    PayloadCartState state = PayloadCartState::idle;
+    bool setup = true;
+    std::optional<int> setup_count;
+    rf::Timestamp final_stretch_alarm;
+    rf::Timestamp overtime_tick;
+    int setup_end_sound = -1;
+    int rollback_sound = -1;
+    int final_stretch_sound = -1;
+};
 
 // What a pusher's resupply has yet to hand over, so a small magazine still gets its share across ticks
 struct ResupplyOwed
@@ -123,7 +148,7 @@ struct PayloadInfo
     rf::Timestamp moving_refresh;
     rf::Timestamp list_resend;
     bool rollback_announced = false;
-    bool nearly_announced = false;
+    bool final_stretch_reached = false;
     bool end_announced = false;
     // Unreliable sends may be lost, so changes are judged against the last reliable one
     std::optional<PayloadNetState> last_reliable;
@@ -136,6 +161,8 @@ struct PayloadInfo
     float net_speed = 0.0f;
     float net_age = 0.0f;
     bool net_setup = true;
+
+    PayloadCues cues;
 };
 
 PayloadInfo g_payload;
@@ -161,6 +188,12 @@ HillInfo* checkpoint_hill(const PayloadCheckpoint& checkpoint)
 rf::Mover* cart()
 {
     return g_payload.active ? rf::mover_from_handle(g_payload.cart_handle) : nullptr;
+}
+
+float final_stretch_start()
+{
+    return g_payload.total_length
+        - std::min(g_payload.total_length * final_stretch_fraction, final_stretch_max_length);
 }
 
 float rollback_floor()
@@ -659,9 +692,9 @@ void server_tick(float dt)
         capture_checkpoint(cp, cp.distance >= g_payload.total_length);
     }
 
-    if (!g_payload.nearly_announced && g_payload.distance >= nearly_there_fraction * g_payload.total_length
+    if (!g_payload.final_stretch_reached && g_payload.distance >= final_stretch_start()
         && g_payload.distance < g_payload.total_length) {
-        g_payload.nearly_announced = true;
+        g_payload.final_stretch_reached = true;
         notify_all("The cart is nearly there!", 3, HudNotificationType::Generic);
     }
 
@@ -709,6 +742,68 @@ void client_tick(float dt)
     }
     if (g_payload.setup && !g_payload.net_setup) {
         end_setup();
+    }
+}
+
+void load_cue_sounds()
+{
+    PayloadCues& cues = g_payload.cues;
+    cues.setup_end_sound = rf::snd_get_handle(setup_end_sound_file, 10.0f, 1.0f, 1.0f);
+    cues.rollback_sound = rf::snd_get_handle(rollback_sound_file, 10.0f, 1.0f, 1.0f);
+    cues.final_stretch_sound = rf::snd_get_handle(final_stretch_sound_file, 10.0f, 1.0f, 1.0f);
+}
+
+void play_cue(int sound)
+{
+    if (sound >= 0) {
+        rf::snd_play(sound, 0, 0.0f, 1.0f);
+    }
+}
+
+// Changes are judged against the last frame, so a late joiner's first state plays nothing
+void play_cues()
+{
+    if (!rf::local_player || (!rf::is_server && !g_payload.net_seeded)) {
+        return;
+    }
+    PayloadCues& cues = g_payload.cues;
+    const PayloadCartState state = g_payload.state;
+    const std::optional<int> setup_count = g_payload.setup ? payload_countdown_whole_seconds() : std::nullopt;
+    // Only a lower count is new, as a late state can wind the count back up by a fraction of a second
+    const bool new_setup_count = setup_count && (!cues.setup_count || *setup_count < *cues.setup_count);
+    if (cues.seeded) {
+        if (new_setup_count && *setup_count <= setup_count_from) {
+            play_cue(stock_sound_id::ann_one + *setup_count - 1);
+        }
+        if (cues.setup && !g_payload.setup) {
+            play_cue(cues.setup_end_sound);
+        }
+
+        // Team cues follow the local player's own team, so a spectator gets none
+        const bool on_team = !multi_spectate_is_spectating();
+        const bool attacker = rf::local_player->team == g_payload.attacking_team;
+        if (on_team && attacker && state == PayloadCartState::rolling_back && cues.state != state) {
+            play_cue(cues.rollback_sound);
+        }
+        const bool final_push = on_team && !attacker && state == PayloadCartState::pushing
+            && g_payload.distance >= final_stretch_start();
+        if (final_push && timer_due(cues.final_stretch_alarm)) {
+            play_cue(cues.final_stretch_sound);
+            cues.final_stretch_alarm.set(final_stretch_alarm_ms);
+        }
+        // Overtime ends once its grace runs out with no attacker at the cart
+        const bool overtime_running_out = g_payload.overtime && g_payload.pushers.empty()
+            && state != PayloadCartState::held && state != PayloadCartState::finale;
+        if (overtime_running_out && timer_due(cues.overtime_tick)) {
+            play_cue(stock_sound_id::bomb_tick);
+            cues.overtime_tick.set(overtime_tick_ms);
+        }
+    }
+    cues.seeded = true;
+    cues.state = state;
+    cues.setup = g_payload.setup;
+    if (new_setup_count || !setup_count) {
+        cues.setup_count = setup_count;
     }
 }
 
@@ -959,6 +1054,9 @@ void payload_level_init_post()
         return;
     }
     g_payload.active = true;
+    if (!rf::is_dedicated_server) {
+        load_cue_sounds();
+    }
     if (rf::is_server) {
         // Held as a checkpoint holds it, so the teams can take their places
         g_payload.hold_left = g_alpine_server_config_active_rules.payload.setup_time;
@@ -981,6 +1079,9 @@ void payload_do_frame()
         client_tick(dt);
     }
     fire_pass_events();
+    if (!rf::is_dedicated_server) {
+        play_cues();
+    }
 }
 
 bool payload_round_over(bool time_up)
@@ -1141,6 +1242,23 @@ payload::LevelRules payload_rules()
         rules.checkpoint_time_bonus = cfg.checkpoint_time_bonus.value_or(rules.checkpoint_time_bonus);
         rules.heal_per_second = cfg.heal_per_tick.value_or(rules.heal_per_second);
         rules.overtime_grace = cfg.overtime_grace.value_or(rules.overtime_grace);
+        rules.attacker_respawn = cfg.attacker_respawn.applied_to(rules.attacker_respawn);
+        rules.defender_respawn = cfg.defender_respawn.applied_to(rules.defender_respawn);
     }
     return rules;
+}
+
+int payload_respawn_extra_ms(int team)
+{
+    if (!payload_active()) {
+        return 0;
+    }
+    const payload::LevelRules rules = payload_rules();
+    const payload::RespawnExtras& extras =
+        team == g_payload.attacking_team ? rules.attacker_respawn : rules.defender_respawn;
+    float seconds = extras.base + extras.per_checkpoint * static_cast<float>(g_payload.next_checkpoint);
+    if (g_payload.final_stretch_reached) {
+        seconds += extras.final_stretch;
+    }
+    return static_cast<int>(std::lround(seconds * 1000.0f));
 }

@@ -135,3 +135,5 @@ PayloadNetState payload_build_net_state();
 void payload_apply_net_state(const PayloadNetState& net);
 // The level's rules, with the server's overrides on a server
 payload::LevelRules payload_rules();
+// Server: what the team's respawn extras add to its respawn delay now, in ms; 0 outside Payload
+int payload_respawn_extra_ms(int team);

@@ -43,6 +43,7 @@ Version 1.5.0 (Trillium): Not yet released
 [@GooberRF](https://github.com/GooberRF)
 - Notify players in a server that is recording demos
 - Add `level_message` dedicated server config section to broadcast a message to all players when a level loads, set globally or per level (`$LEVEL` is replaced with the level name)
+- Add `wave_respawns` option to the `spawn_delay` dedicated server config section to respawn each team together in waves
 - Restore cut first person weapon aim sway, toggleable with `cl_weaponsway`
 - Add `cl_freelookslide` to scale the acceleration and deceleration slide of the freelook camera
 - Add terms of use and notices document to installer

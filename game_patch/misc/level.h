@@ -433,8 +433,7 @@ struct AlpineLevelProperties
             if (!reader.read_bytes(&u8, sizeof(u8)))
                 return;
             payload::LevelRules rules;
-            for (float* field : {&rules.push_speed, &rules.rollback_speed, &rules.cart_accel,
-                                 &rules.checkpoint_time_bonus, &rules.heal_per_second, &rules.overtime_grace}) {
+            for (float* field : payload::LevelRules::file_fields(rules)) {
                 if (!reader.read_bytes(field, sizeof(*field)))
                     return;
             }

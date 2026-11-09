@@ -19,6 +19,8 @@
 #include <numeric>
 #include <string_view>
 #include <thread>
+#include <tuple>
+#include <utility>
 #include <vector>
 #include <windows.h>
 #include <winsock2.h>
@@ -200,6 +202,8 @@ static SpawnDelayConfig parse_spawn_delay_config(const toml::table& t, SpawnDela
     if (c.enabled) {
         if (auto v = t["base_seconds"].value<float>())
             c.set_base_value(*v);
+        if (auto x = t["wave_respawns"].value<bool>())
+            c.wave_respawns = *x;
     }
 
     return c;
@@ -384,6 +388,7 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
     rules.no_player_collide = false;
     rules.location_pinging = false;
     rules.saving_enabled = false;
+    rules.spawn_delay.wave_respawns = false;
 
     switch (game_type) {
         case rf::NetGameType::NG_TYPE_KOTH: {
@@ -483,6 +488,7 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
         case rf::NetGameType::NG_TYPE_PAY: {
             rules.spawn_delay.enabled = true;
             rules.spawn_delay.set_base_value(2.0f);
+            rules.spawn_delay.wave_respawns = true;
             rules.location_pinging = true;
             // Checkpoints add time, so the round starts short
             rules.set_time_limit(300.0f);
@@ -646,6 +652,17 @@ static void apply_rules_keys_from_toml(const toml::table& t, AlpineServerConfigR
         o.payload.set_heal_per_tick(*v);
     if (auto v = t["pay_setup_time"].value<float>())
         o.payload.set_setup_time(*v);
+    for (const auto& [key, field] : {
+             std::pair{"pay_attacker_respawn_extra", &o.payload.attacker_respawn.base},
+             std::pair{"pay_attacker_respawn_per_checkpoint", &o.payload.attacker_respawn.per_checkpoint},
+             std::pair{"pay_attacker_respawn_final_stretch", &o.payload.attacker_respawn.final_stretch},
+             std::pair{"pay_defender_respawn_extra", &o.payload.defender_respawn.base},
+             std::pair{"pay_defender_respawn_per_checkpoint", &o.payload.defender_respawn.per_checkpoint},
+             std::pair{"pay_defender_respawn_final_stretch", &o.payload.defender_respawn.final_stretch},
+         }) {
+        if (auto v = t[key].value<float>())
+            PayloadConfig::set_respawn_extra(*field, *v);
+    }
     if (auto v = t["geo_limit"].value<int>())
         o.set_geo_limit(*v);
     if (auto v = t["rf2_geo_limit"].value<int>())
@@ -1953,6 +1970,23 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
     if (base || rules.payload.heal_per_tick != b.payload.heal_per_tick)
         std::format_to(iter, "  PAY pusher healing:                    {}\n",
                        payload_override(rules.payload.heal_per_tick, "per sec"));
+    for (const auto& [label, value, base_value] : {
+             std::tuple{"PAY attacker respawn extra:", &rules.payload.attacker_respawn.base,
+                        &b.payload.attacker_respawn.base},
+             std::tuple{"PAY attacker respawn per cp:", &rules.payload.attacker_respawn.per_checkpoint,
+                        &b.payload.attacker_respawn.per_checkpoint},
+             std::tuple{"PAY attacker respawn final:", &rules.payload.attacker_respawn.final_stretch,
+                        &b.payload.attacker_respawn.final_stretch},
+             std::tuple{"PAY defender respawn extra:", &rules.payload.defender_respawn.base,
+                        &b.payload.defender_respawn.base},
+             std::tuple{"PAY defender respawn per cp:", &rules.payload.defender_respawn.per_checkpoint,
+                        &b.payload.defender_respawn.per_checkpoint},
+             std::tuple{"PAY defender respawn final:", &rules.payload.defender_respawn.final_stretch,
+                        &b.payload.defender_respawn.final_stretch},
+         }) {
+        if (base || *value != *base_value)
+            std::format_to(iter, "  {:<39}{}\n", label, payload_override(*value, "sec"));
+    }
     if (base || rules.flag_dropping != b.flag_dropping)
         std::format_to(iter, "  CTF flag dropping:                     {}\n", rules.flag_dropping);
     if (base || rules.flag_captures_while_stolen != b.flag_captures_while_stolen)
@@ -2043,10 +2077,12 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
 
     // spawn delay
     if (base || rules.spawn_delay.enabled != b.spawn_delay.enabled ||
-        (rules.spawn_delay.enabled && rules.spawn_delay.base_value != b.spawn_delay.base_value)) {
+        (rules.spawn_delay.enabled && (rules.spawn_delay.base_value != b.spawn_delay.base_value ||
+                                       rules.spawn_delay.wave_respawns != b.spawn_delay.wave_respawns))) {
         std::format_to(iter, "  Spawn delay:                           {}\n", rules.spawn_delay.enabled);
         if (rules.spawn_delay.enabled) {
             std::format_to(iter, "    Base seconds:                        {} sec\n", rules.spawn_delay.base_value / 1000.0f);
+            std::format_to(iter, "    Wave respawns:                       {}\n", rules.spawn_delay.wave_respawns);
         }
     }
 
