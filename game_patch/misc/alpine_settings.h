@@ -300,7 +300,7 @@ struct AlpineGameSettings
     // 0=stock, 1=caustics, 2=+fog/waterline/tint/vignette, 3=+screen distortion (d3d11 only)
     static constexpr int min_underwater_fx = 0;
     static constexpr int max_underwater_fx = 3;
-    int underwater_fx = 3;
+    int underwater_fx = 0;
     void set_underwater_fx(int value)
     {
         underwater_fx = std::clamp(value, min_underwater_fx, max_underwater_fx);
