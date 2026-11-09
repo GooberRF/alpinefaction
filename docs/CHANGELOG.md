@@ -60,6 +60,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Add `Scrapyard mode` option to the Gibbing mutator
 - Add underwater rendering effects — animated caustics, depth-based water fog with a waterline, screen tint/vignette and distortion — with quality levels 0-3 via `r_underwater` (Direct3D 11 renderer only)
 - Extend view distance while submerged at `r_underwater` 2 or higher, up to 4x the liquid visibility, with the extension capped at the normal far clip
+- Add `$Disable Caustics` and `$Disable Underwater Fog` `mapname_info.tbl` options to turn underwater effects off on a level, and `cl_ignore_tbl_caustics` and `cl_ignore_tbl_underwater_fog` console commands to ignore them
 - Add edge-vignette damage feedback as `cl_damageflash 2` (Direct3D 11 renderer only); `cl_damageflash` is now a level: 0 off, 1 screen flash, 2 vignette
 - Add `Brush` collision mode for Alpine Mesh objects
 - Add `Brush Geo` source selection for Alpine Mesh objects using `Brush` collision, allowing custom collision hulls

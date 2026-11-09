@@ -316,6 +316,28 @@ FunHook<int(rf::String&, rf::String&, char*)> level_load_hook{
                 }
             }
 
+            gr::d3d11::evaluate_underwater_fx(level_filename);
+            auto print_underwater_override = [&](AlpineLevelInfoID id, bool ignored, const char* effect,
+                                                 const char* ignore_cmd) {
+                if (!g_alpine_level_info_config.is_option_loaded(level_filename, id)
+                    || !get_level_info_value<bool>(id)) {
+                    return;
+                }
+                if (ignored) {
+                    rf::console::print("Ignoring {} override in mapname_info.tbl for {} ({} is enabled)", effect,
+                                       level_filename, ignore_cmd);
+                }
+                else {
+                    rf::console::print("Disabling {} for {} (per override present in mapname_info.tbl)", effect,
+                                       level_filename);
+                }
+            };
+            print_underwater_override(AlpineLevelInfoID::DisableCaustics, g_alpine_game_config.ignore_tbl_caustics,
+                                      "caustics", "cl_ignore_tbl_caustics");
+            print_underwater_override(AlpineLevelInfoID::DisableUnderwaterFog,
+                                      g_alpine_game_config.ignore_tbl_underwater_fog, "underwater fog",
+                                      "cl_ignore_tbl_underwater_fog");
+
             gr::d3d11::evaluate_alpha_test_threshold(level_filename);
             if (is_stock_alpha_test_level(level_filename)) {
                 rf::console::print("Applying stock alpha test threshold to known affected level {}", level_filename);
@@ -398,6 +420,7 @@ FunHook<void(bool)> level_init_post_hook{
         if (!rf::is_dedicated_server && !is_headless_mode()) {
             alpine_terrain_decorations_level_init();
             explosion_flash_lights_level_init();
+            gr::d3d11::build_liquid_volume_mask();
             evaluate_fullbright_meshes();
             set_levelmod_autotexture_ppm();
             if (!rf::is_multi) {

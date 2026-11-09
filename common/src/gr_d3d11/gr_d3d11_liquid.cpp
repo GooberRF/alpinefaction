@@ -286,7 +286,7 @@ namespace gr::d3d11
 
     Projection LiquidFxRenderer::update(ID3D11DeviceContext* device_context, const Projection& projection,
                                         const rf::Vector3& eye_pos, const rf::Matrix3& eye_orient,
-                                        float scene_depth_mode)
+                                        float scene_depth_mode, const LiquidVolumeMask& mask)
     {
         const int prev_mode = state_.mode;
         eye_pos_ = eye_pos;
@@ -497,6 +497,7 @@ namespace gr::d3d11
                 std::min(room_surface_y, room->bbox_max.y) - liquid_surface_epsilon,
                 room->bbox_max.z + liquid_box_epsilon,
             };
+            dst.mask = mask.region(room);
         }
         data.num_volumes = static_cast<float>(num_volumes);
         data.depth_sz = out_projection.scale_z();

@@ -711,6 +711,33 @@ namespace gr::d3d11
         }
     }
 
+    static bool g_level_caustics_off = false;
+    static bool g_level_underwater_fog_off = false;
+
+    void evaluate_underwater_fx(const std::string& level_filename)
+    {
+        auto forced_off = [&](AlpineLevelInfoID id, bool ignored) {
+            return !ignored && g_alpine_level_info_config.is_option_loaded(level_filename, id)
+                && get_level_info_value<bool>(id);
+        };
+        g_level_caustics_off = forced_off(AlpineLevelInfoID::DisableCaustics, g_alpine_game_config.ignore_tbl_caustics);
+        g_level_underwater_fog_off =
+            forced_off(AlpineLevelInfoID::DisableUnderwaterFog, g_alpine_game_config.ignore_tbl_underwater_fog);
+    }
+
+    int underwater_fx_level()
+    {
+        // Tint, vignette and distortion build on the fog, so a level without it stops at caustics
+        const int level = g_level_underwater_fog_off
+            ? std::min(g_alpine_game_config.underwater_fx, 1) : g_alpine_game_config.underwater_fx;
+        return level == 1 && g_level_caustics_off ? 0 : level;
+    }
+
+    bool underwater_caustics_enabled()
+    {
+        return underwater_fx_level() >= 1 && !g_level_caustics_off;
+    }
+
     ConsoleCommand2 vfx_gpu_cmd{
         "dbg_vfxgpu",
         []() {
@@ -831,6 +858,13 @@ namespace gr::d3d11
     {
         if (renderer) {
             renderer->release_terrain_gpu();
+        }
+    }
+
+    void build_liquid_volume_mask()
+    {
+        if (renderer) {
+            renderer->build_liquid_volume_mask();
         }
     }
 
@@ -966,7 +1000,7 @@ namespace gr::d3d11
     static CallHook<void(float)> gameplay_render_frame_liquid_far_clip_hook{
         0x00431D3F,
         [](float far_clip) {
-            if (g_alpine_game_config.underwater_fx >= 2) {
+            if (underwater_fx_level() >= 2) {
                 far_clip = liquid_far_clip(far_clip);
             }
             gameplay_render_frame_liquid_far_clip_hook.call_target(far_clip);
@@ -979,7 +1013,7 @@ namespace gr::d3d11
     static CallHook<void(int, int, int, int, float, float)> gameplay_render_frame_liquid_fog_hook{
         0x00431D6A,
         [](int enabled, int r, int g, int b, float fog_near, float fog_far) {
-            if (g_alpine_game_config.underwater_fx >= 2) {
+            if (underwater_fx_level() >= 2) {
                 fog_far = liquid_far_clip(fog_far);
             }
             gameplay_render_frame_liquid_fog_hook.call_target(enabled, r, g, b, fog_near, fog_far);
@@ -992,7 +1026,7 @@ namespace gr::d3d11
         0x00431D8F,
         [](int r, int g, int b, int a) {
             rf::Vector3 col;
-            if (g_alpine_game_config.underwater_fx >= 2 && renderer && renderer->liquid_background_color(col)) {
+            if (underwater_fx_level() >= 2 && renderer && renderer->liquid_background_color(col)) {
                 // Clamp before scaling: the cast is UB outside int range, and !(x > 0) also
                 // catches NaN.
                 auto to_byte = [](float x) {
