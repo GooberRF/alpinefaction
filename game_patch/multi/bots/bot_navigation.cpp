@@ -1217,7 +1217,6 @@ bool try_apply_named_replenish_profile(
 }
 
 bool resolve_replenish_item_profile(
-    const rf::Item& item,
     const rf::ItemInfo& item_info,
     ReplenishItemProfile& out_profile)
 {
@@ -1227,8 +1226,7 @@ bool resolve_replenish_item_profile(
             && try_apply_named_replenish_profile(raw_name, out_profile);
     };
 
-    if (try_name(item.name.c_str())
-        || try_name(item_info.hud_msg_name)
+    if (try_name(item_info.hud_msg_name)
         || try_name(item_info.cls_name.c_str())) {
         return true;
     }
@@ -1336,7 +1334,7 @@ bool find_best_contextual_item_goal(
         }
         else {
             ReplenishItemProfile profile{};
-            if (!resolve_replenish_item_profile(*item, *item_info, profile)) {
+            if (!resolve_replenish_item_profile(*item_info, profile)) {
                 continue;
             }
             if (!profile.is_super) {
@@ -1440,7 +1438,7 @@ bool update_contextual_item_goal(
             }
             else {
                 ReplenishItemProfile profile{};
-                if (!resolve_replenish_item_profile(*goal_item, *goal_info, profile)) {
+                if (!resolve_replenish_item_profile(*goal_info, profile)) {
                     need_refresh = true;
                 }
             }

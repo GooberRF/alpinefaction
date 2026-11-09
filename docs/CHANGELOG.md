@@ -386,6 +386,8 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix exploding grenades setting off their thrower's remote charges on clients in multiplayer
 - Fix players freezing in place in multiplayer for a moment after bumping into another player or mesh
 - Fix possible dedicated server crash when auto-downloading missing vote-allowed levels with `add_installed_to_allowed_levels` enabled
+- Fix items swapped to or from stock powerups by `item_replacements`, or renamed in the level editor, giving the wrong powerup or refusing pickup
+- Fix items swapped in by `item_replacements` keeping the original item's respawn time, per-item server settings and bot handling
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize

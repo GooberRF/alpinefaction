@@ -353,6 +353,8 @@ namespace rf
     static auto& multi_powerup_has_player = addr_as_ref<bool(Player* pp, int powerup_type)>(0x004802B0);
     static auto& multi_powerup_get_time_until = addr_as_ref<int(Player* pp, int powerup_type)>(0x004802D0);
     static auto& multi_powerup_add = addr_as_ref<void(Player* pp, int powerup_type, int time_ms)>(0x00480050);
+    // The stock powerup an item class name gives, -1 for none
+    static auto& multi_powerup_type_from_name = addr_as_ref<int(const String* name)>(0x00480010);
     static auto& multi_powerup_remove = addr_as_ref<void(Player* pp, int powerup_type)>(0x004801F0);
     static auto& multi_powerup_remove_all_for_player = addr_as_ref<void(Player* pp)>(0x00480310);
     static auto& send_reload_packet = addr_as_ref<void(Entity* ep, int weapon_type, int ammo, int clip_ammo)>(0x00485B50);

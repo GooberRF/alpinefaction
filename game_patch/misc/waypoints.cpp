@@ -5271,7 +5271,7 @@ void seed_waypoints_from_objects()
                 continue;
             }
 
-            const std::string_view item_name = item->name.c_str();
+            const std::string_view item_name = item->info ? item->info->cls_name.c_str() : item->name.c_str();
 
             if (auto ctf_subtype = get_default_grid_ctf_flag_subtype(item_name); ctf_subtype) {
                 const int waypoint_index = add_waypoint(

@@ -1637,7 +1637,8 @@ bool item_matches_super_item_hoarder_target(const rf::Item& item, const rf::Item
         }
     }
 
-    const char* item_name = item.name.c_str();
+    // The class, not the script name, which still names the original class after an item replacement.
+    const char* item_name = item_info ? item_info->cls_name.c_str() : nullptr;
     return contains_case_insensitive(item_name ? item_name : "", "rail_gun")
         || contains_case_insensitive(item_name ? item_name : "", "shoulder_cannon");
 }

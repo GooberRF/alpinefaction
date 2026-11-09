@@ -5173,9 +5173,16 @@ CallHook<rf::Item*(int, const char*, int, int, const rf::Vector3*, rf::Matrix3*,
     0x00465175,
     [](int type, const char* name, int count, int parent_handle, const rf::Vector3* pos, rf::Matrix3* orient,
        int respawn_time, bool permanent, bool from_packet) {
+        // `name` is the level's script name, which the level editor sets to the placed class. A replaced or redirected
+        // item keeps it, along with the respawn time the editor copied from that class's default.
+        if (const int placed_type = rf::item_lookup_type(name);
+            placed_type >= 0 && placed_type != type && respawn_time == rf::item_info[placed_type].respawn_time_millis) {
+            respawn_time = rf::item_info[type].respawn_time_millis;
+        }
+        const char* const cls_name = rf::item_info[type].cls_name.c_str();
 
         // when creating it, check if a spawn time override is configured for this item
-        if (auto it = g_alpine_server_config_active_rules.item_respawn_time_overrides.find(name);
+        if (auto it = g_alpine_server_config_active_rules.item_respawn_time_overrides.find(cls_name);
             it != g_alpine_server_config_active_rules.item_respawn_time_overrides.end()) {
             respawn_time = it->second;
         }
@@ -5184,13 +5191,13 @@ CallHook<rf::Item*(int, const char*, int, int, const rf::Vector3*, rf::Matrix3*,
         if (rf::is_dedicated_server && logic.dynamic_respawns) {
             // look up this item in the vector
             auto itcfg = std::find_if(logic.dynamic_respawn_items.begin(), logic.dynamic_respawn_items.end(),
-                                      [&](auto const& cfg) { return cfg.item_name == name; });
+                                      [&](auto const& cfg) { return cfg.item_name == cls_name; });
 
             if (itcfg != logic.dynamic_respawn_items.end()) {
                 int threshold = itcfg->min_respawn_points;
                 // queue if no threshold or we're under it
                 if (threshold == 0 || threshold > static_cast<int>(g_alpine_respawn_points.size())) {
-                    queued_item_spawn_points.emplace_back(std::string{name}, *pos, *orient);
+                    queued_item_spawn_points.emplace_back(std::string{cls_name}, *pos, *orient);
                 }
             }
 
@@ -5210,7 +5217,7 @@ CallHook<rf::Item*(int, const char*, int, int, const rf::Vector3*, rf::Matrix3*,
         if (item
             && item->respawn_time_ms > 0
             && rf::is_server
-            && g_alpine_server_config_active_rules.delayed_items.contains(name))
+            && g_alpine_server_config_active_rules.delayed_items.contains(cls_name))
         {
             rf::obj_hide(item);
             item->respawn_next.set(item->respawn_time_ms);
