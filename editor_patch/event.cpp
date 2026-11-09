@@ -655,8 +655,8 @@ std::map<AlpineDedEventID, FieldConfig> eventFieldConfigs = {
         {
             {FIELD_STR1, "Name (str1):"},
             {FIELD_INT1, "Attacking team (int1):"},
-            {FIELD_FLOAT1, "Push radius (0 = 3 m) (float1):"},
-            {FIELD_INT2, "Rollback (0 = 30 s, <0 never) (int2):"},
+            {FIELD_FLOAT1, "Push radius (float1):"},
+            {FIELD_INT2, "Rollback delay (int2):"},
             {FIELD_BOOL1, "No healing or ammo (bool1):"},
             {FIELD_BOOL2, "No finale explosion (bool2):"}
         },
@@ -671,8 +671,8 @@ std::map<AlpineDedEventID, FieldConfig> eventFieldConfigs = {
         {FIELD_STR1, FIELD_FLOAT1, FIELD_INT1},
         {
             {FIELD_STR1, "Name (str1):"},
-            {FIELD_FLOAT1, "Hold time, s (0 = none) (float1):"},
-            {FIELD_INT1, "Time bonus, s (0 = level's, <0 none) (int1):"}
+            {FIELD_FLOAT1, "Hold seconds (float1):"},
+            {FIELD_INT1, "Time bonus seconds (int1):"}
         }
     }},
     {AlpineDedEventID::Modify_Respawn_Point, {
