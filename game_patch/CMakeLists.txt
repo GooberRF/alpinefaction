@@ -221,6 +221,8 @@ set(SRCS
     multi/saved_info.cpp
     multi/saved_info.h
     multi/level_download.cpp
+    multi/map_thumbnails.h
+    multi/map_thumbnails.cpp
     multi/server.h
     multi/server.cpp
     multi/votes.cpp
@@ -440,6 +442,8 @@ set(SRCS
     sound/sound_ds.cpp
     sound/sound_foley.cpp
     sound/sound_foley.h
+    sound/sound_stretch.cpp
+    sound/sound_stretch.h
     res/resources.rc
     purefaction/pf.cpp
     purefaction/pf.h

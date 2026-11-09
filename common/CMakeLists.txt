@@ -10,6 +10,7 @@ set(SRCS
     include/common/alpine_waypoint_helper.h
     include/common/ComPtr.h
     include/common/afd_format.h
+    include/common/cache_pack.h
     include/common/rfa_format.h
     include/common/rfl_chunk_reader.h
     include/common/tlv.h
@@ -51,6 +52,7 @@ set(SRCS
     include/common/atx/parse.h
     include/common/version/version.h
     src/HttpRequest.cpp
+    src/cache_pack.cpp
     src/config/GameConfig.cpp
     src/config/AlpineCoreConfig.cpp
     src/error/d3d-error.cpp
@@ -68,6 +70,7 @@ enable_warnings(Common)
 target_include_directories(Common PRIVATE
     include/common
     ${CMAKE_SOURCE_DIR}/vendor/d3d8
+    ${CMAKE_SOURCE_DIR}/vendor/zlib
 )
 
 # Make sure Windows min/max macro don't conflict with std::min/std::max
@@ -84,6 +87,7 @@ target_link_libraries(Common
     wininet
     version
     Xlog
+    zlib
 )
 
 # Shared Direct3D 11 renderer core. Each consumer compiles these sources against its own

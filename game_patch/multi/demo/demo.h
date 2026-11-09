@@ -3,16 +3,21 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <string_view>
+#include <vector>
 
 // Alpine Demos ("Alpine Demos" / .afd): server-side demo recording via a virtual
 // spectator player + client-side playback through the engine's own join flow.
 
 namespace rf
 {
+    struct Item;
     struct Player;
     struct NetAddr;
     struct Entity;
     struct Vector3;
+    struct Matrix3;
+    struct VMesh;
 }
 
 struct AfDamageNotifyHull;
@@ -70,6 +75,15 @@ void demo_record_crit_shot(unsigned char shooter_id, unsigned char weapon_type);
 // the spectated player. Called from grant_award next to the live award sends; no-op unless
 // recording.
 void demo_record_award(unsigned char award_id, unsigned char victim_player_id, unsigned char earner_id);
+// Values of the demo file's pickup record: append only
+enum class DemoPickupKind : uint8_t
+{
+    damage_amp = 0,
+    invulnerability = 1,
+    fusion = 2,
+};
+// No-op unless recording and the item is one of the DemoPickupKind powerups
+void demo_record_item_pickup(rf::Player* player, const rf::Item* item);
 // Reliable-socket slot of the recorder's virtual player, or -1. Used to keep the
 // deferred reliable queue (send_queues_rel_add_packet) away from the fabricated slot -
 // its drain path sends via net_rel_send for real, bypassing the capture taps.
@@ -119,6 +133,9 @@ bool demo_playback_is_seeking();
 bool demo_playback_in_seek_burst();
 // Current playback position (>= 0). Only meaningful while playback is active.
 double demo_playback_clock_ms();
+// The ObjInterp rings' clock: demo time while playback is active, since their keyframes are
+// stamped in it; timer::get_i64(1000) otherwise
+int64_t demo_playback_interp_clock_ms();
 // Total demo length, or 0 when unknown (footerless file - grows as records stream in).
 uint32_t demo_playback_duration_ms();
 bool demo_playback_paused();
@@ -127,8 +144,19 @@ bool demo_playback_paused();
 bool demo_playback_sim_frozen();
 // Multiplier that turns rf::frametime (wall clock, unaffected by the pause freeze) into
 // demo simulation time: 0 while frozen, the playback timescale while playing, 1 when no
-// demo is being played back. For viewer-side estimates that tick outside the sim frame.
+// demo is being played back. For viewer-side estimates that tick outside the sim frame
+// (inside it, rf::frametime is already demo time).
 float demo_playback_sim_time_scale();
+// Playback speed multiplier (same value the demo_timescale command sets), clamped to [0.05, 10].
+float demo_playback_timescale();
+void demo_playback_set_timescale(float scale);
+// vmesh_process without the playback timescale, for catching an animation up by demo time
+void demo_playback_vmesh_catch_up(rf::VMesh* vmesh, float delta_secs, rf::Vector3* pos, rf::Matrix3* orient);
+// The remote-safe server config text 1.5+ servers record, fed from af_process_server_msg_packet
+void demo_playback_on_server_cfg_chunk(std::string_view chunk);
+void demo_playback_on_server_cfg_eof();
+// The server config as of the playback position, or null when the demo has none (yet)
+const std::string* demo_playback_server_cfg();
 // True once the demo reached its end (a seek can restart the session).
 bool demo_playback_finished();
 // Toggles pause; no-op unless playback is in the playing state.
@@ -139,6 +167,8 @@ void demo_playback_toggle_pause();
 void demo_playback_stop();
 // True when a seek can be requested (playing or finished).
 bool demo_playback_can_seek();
+// Gameplay or the match-end limbo scoreboard a demo file ends on (gameseq_in_gameplay excludes limbo)
+bool demo_playback_in_level_view();
 // True while a backward-seek session restart is queued but has not re-entered
 // playback yet (the window in which demo_playback_active() reads false).
 bool demo_playback_restart_pending();
@@ -156,9 +186,32 @@ void demo_powerup_timers_render();
 // Called after every processed item_update packet, the only channel through which a
 // spectator learns about level-item pickups/respawns.
 void demo_powerup_timers_on_item_update();
-// Full-screen "SEEKING..." overlay with progress; called from after_frame_render_hook
-// (the world render - including the HUD - is skipped while seeking).
+// Full-screen "SEEKING..." overlay with progress over the frame frozen when the seek was
+// requested; called from after_frame_render_hook (the world render - including the HUD - is
+// skipped while seeking).
 void demo_playback_render_seek_overlay();
+// Seek bar markers for a player's moments.
+enum class DemoMarkerKind : uint8_t
+{
+    kill,
+    damage_amp,
+    invulnerability,
+    fusion,
+    award,
+    objective_taken,    // CTF's enemy flag, Salvage's flag, Scavenger's cartridge or Bagman's bag
+    objective_captured, // CTF, Salvage and Scavenger
+    point_captured,     // a KOTH hill or DC/Revolt/Escalation control point, one per player credited
+    custom,             // the viewer's own marker; never in demo_playback_player_markers
+};
+struct DemoPlayerMarker
+{
+    uint32_t t_ms;
+    DemoMarkerKind kind;
+    uint8_t detail; // award markers: the AwardId earned; point captures: the hill uid
+};
+// The player's markers over the whole stream, limited to their current stay (a later joiner may
+// reuse the id). Empty unless playback is active.
+std::vector<DemoPlayerMarker> demo_playback_player_markers(int player_id);
 // Records a player as recently active (killer/attacker) for auto-follow target
 // selection. No-op unless playback is active.
 void demo_playback_note_player_activity(rf::Player* player);

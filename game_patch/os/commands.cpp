@@ -678,6 +678,18 @@ ConsoleCommand2 r_outlines_spectator_cmd{
     "r_outlines_spectator",
 };
 
+ConsoleCommand2 r_outlines_spectator_xray_cmd{
+    "r_outlines_spectator_xray",
+    []() {
+        setting_console_set("outlines_spectator_xray", "toggle");
+        rf::console::print("Spectator outline x-ray {}.",
+            g_alpine_game_config.outlines_spectator_xray ? "enabled" : "disabled");
+        warn_if_not_d3d11();
+    },
+    "Toggle showing player outlines through walls while spectating (Direct3D 11 renderer only).",
+    "r_outlines_spectator_xray",
+};
+
 ConsoleCommand2 r_outlines_team_xray_cmd{
     "r_outlines_team_xray",
     []() {
@@ -805,6 +817,7 @@ void console_commands_init()
     autosave_cmd.register_cmd();
     r_outlines_cmd.register_cmd();
     r_outlines_spectator_cmd.register_cmd();
+    r_outlines_spectator_xray_cmd.register_cmd();
     r_outlines_team_xray_cmd.register_cmd();
 
     // Hooks for builtin commands
