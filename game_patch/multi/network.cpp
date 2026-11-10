@@ -3794,20 +3794,6 @@ ConsoleCommand2 sv_bandwidth_cmd{
     "sv_bandwidth [low|high]",
 };
 
-ConsoleCommand2 netfps_cmd{
-    "sv_netfps",
-    [] (std::optional<int> update_rate) {
-        rf::console::print("sv_netfps is deprecated, use sv_bandwidth [low|high]");
-        if (update_rate) {
-            server_set_net_rate(std::max(*update_rate, 0)); // anything but exactly 20 or 40 becomes high
-        }
-        else {
-            rf::console::print("Server netfps: {}", g_alpine_game_config.server_netfps);
-        }
-    },
-    "Deprecated: use sv_bandwidth",
-};
-
 void apply_client_rate()
 {
     rf::client_rate = static_cast<int>(g_alpine_game_config.client_rate);
@@ -4760,7 +4746,6 @@ void network_init()
     client_obj_update_send_hook.install();
     update_player_rate_hook.install();
     sv_bandwidth_cmd.register_cmd();
-    netfps_cmd.register_cmd();
     dcf_rate_hook.install();
     multi_load_client_rate_hook.install();
     multi_rate_configured_hook.install();

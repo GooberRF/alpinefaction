@@ -335,7 +335,6 @@ Colors are hex `RRGGBB` or `RRGGBBAA`, or comma-separated `R,G,B[,A]` values in 
 | `sv_loadconfig` | `[config]` | Loads a server config, or reloads the launch config, and applies it to the current level. Not between levels. ADS only. Allowed via rcon for full-admin rcon profiles only. |
 | `sv_loadpackfiles` | | Loads packfiles added to `user_maps\` since the server started. Dedicated only. Allowed via rcon for full-admin rcon profiles only. |
 | `sv_mute_chat` | `<player>` | Toggles a server-wide chat mute on a player, held by IP until they are unmuted or the server restarts. Server only. Allowed via rcon. |
-| `sv_netfps` | `[rate]` | Deprecated: use `sv_bandwidth`. A rate of exactly 20 sets the low tier; any other rate sets the high tier. Without a rate, prints the current rate. Allowed via rcon. |
 | `sv_pass` | `[password]` | Sets the server password, or removes it when run without one. Server only. Allowed via rcon. |
 | `sv_printconfig` | | Prints the current server configuration. ADS only. |
 | `sv_printrules` | `[filename]` | Prints the rules for a level in the rotation, or the active rules for the current level. ADS only. |

@@ -96,7 +96,6 @@ const std::vector<std::string> g_rcon_cmd_masterlist = {
     "sv_caplimit",
     "sv_fraglimit",
     "sv_gametype",
-    "sv_netfps",
     "sv_bandwidth",
     "gt",
     "sv_geolimit",
