@@ -220,6 +220,8 @@ Version 1.5.0 (Trillium): Not yet released
 - Allow match votes on servers whose base game type is not a team type
 - Add `announce_next_level` dedicated server config option to announce the next level and its game type at the end of each level
 - Include the next level's filename in the end-of-level game type switch announcement
+- Add full_admin profile rcon access to `sv_loadpackfiles` command
+- Remove the 240 FPS cap in multiplayer, and the `allow_unlimited_fps` dedicated server config option (clients older than 1.5 always keep the cap on 1.5 servers)
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color

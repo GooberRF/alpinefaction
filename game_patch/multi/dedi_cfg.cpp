@@ -1455,10 +1455,6 @@ static void apply_known_key_in_order(AlpineServerConfig& cfg, const std::string&
         if (auto v = node.value<bool>())
             cfg.allow_disable_muzzle_flash = *v;
     }
-    else if (key == "allow_unlimited_fps") {
-        if (auto v = node.value<bool>())
-            cfg.allow_unlimited_fps = *v;
-    }
     else if (key == "allow_footsteps") {
         if (auto v = node.value<bool>())
             cfg.allow_footsteps = *v;
@@ -2498,7 +2494,6 @@ void print_alpine_dedicated_server_config_info(std::string& output, bool verbose
     std::format_to(iter, "  Allow disable screenshake:             {}\n", cfg.allow_disable_screenshake);
     std::format_to(iter, "  Allow lightmap only mode:              {}\n", cfg.allow_lightmaps_only);
     std::format_to(iter, "  Allow disable muzzle flash:            {}\n", cfg.allow_disable_muzzle_flash);
-    std::format_to(iter, "  Allow disable 240 FPS cap:             {}\n", cfg.allow_unlimited_fps);
     std::format_to(iter, "  Allow footsteps:                       {}\n", cfg.allow_footsteps);
     std::format_to(iter, "  SP-style damage calculation:           {}\n", cfg.use_sp_damage_calculation);
     std::format_to(iter, "  Allow outlines:                        {}\n", cfg.allow_outlines);

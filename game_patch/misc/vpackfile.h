@@ -15,7 +15,8 @@ GameLang get_installed_game_lang();
 bool is_modded_game();
 void vpackfile_find_matching_files(const StringMatcher& query, std::function<void(const char*)> result_consumer);
 void vpackfile_disable_overriding();
-int vpackfile_load_user_maps_packfiles();
+// Returns a status message for the console or rcon holder
+std::string vpackfile_load_user_maps_packfiles();
 
 // suppress unnecessary missing asset warnings for asset files referenced by but missing
 // from the stock game

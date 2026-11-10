@@ -623,7 +623,6 @@ struct AlpineGameSettings
     // Below this a frame limit only makes the game (and the menu used to undo it) unusable.
     static constexpr unsigned min_fps_limit = 10u;
     static constexpr unsigned max_fps_limit = 100000u;
-    static constexpr unsigned max_fps_limit_mp = 240u;
     unsigned max_fps = 240u;
     void set_max_fps(unsigned fps_value)
     {

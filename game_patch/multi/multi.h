@@ -147,7 +147,6 @@ struct AlpineFactionServerInfo
     bool allow_no_mf = false;
     bool click_limit = false;
     std::optional<int> semi_auto_cooldown;
-    bool unlimited_fps = false;
     bool gaussian_spread = false;
     bool geo_chunk_physics = false;
     bool location_pinging = false;

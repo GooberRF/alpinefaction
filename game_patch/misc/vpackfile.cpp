@@ -864,7 +864,7 @@ void vpackfile_disable_overriding()
     g_is_overriding_disabled = true;
 }
 
-int vpackfile_load_user_maps_packfiles()
+std::string vpackfile_load_user_maps_packfiles()
 {
     rf::vpackfile_set_loading_user_maps(true);
     int loaded = 0;
@@ -872,5 +872,8 @@ int vpackfile_load_user_maps_packfiles()
     loaded += load_vpp_files_from_directory("user_maps\\single\\*.vpp", "user_maps\\single\\");
     loaded += load_vpp_files_from_directory("user_maps\\multi\\*.vpp", "user_maps\\multi\\");
     rf::vpackfile_set_loading_user_maps(false);
-    return loaded;
+    if (loaded == 0) {
+        return "No new packfiles found in user_maps\\";
+    }
+    return std::format("Loaded {} new packfile(s) from user_maps\\", loaded);
 }

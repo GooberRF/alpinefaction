@@ -100,6 +100,7 @@ const std::vector<std::string> g_rcon_cmd_masterlist = {
     "sv_timelimit",
     "download_level",
     "sv_loadconfig",
+    "sv_loadpackfiles",
     "sv_afstats_events_status",
     "sv_afstats_events_reset",
     "sv_afstats_trace",
@@ -6138,11 +6139,6 @@ bool server_allow_disable_muzzle_flash()
 bool server_apply_click_limiter()
 {
     return g_alpine_server_config.click_limiter_config.enabled;
-}
-
-bool server_allow_unlimited_fps()
-{
-    return g_alpine_server_config.allow_unlimited_fps;
 }
 
 bool server_allow_outlines()
