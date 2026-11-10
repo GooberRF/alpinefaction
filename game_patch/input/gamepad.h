@@ -76,5 +76,5 @@ int  gamepad_bind_action(int action_idx, int slot, int code);
 // conflicts itself.
 void gamepad_set_action_code(int action_idx, int slot, int code);
 
-// Returns and clears any pending scroll delta produced by the right-stick menu scroll tick (+1=up, -1=down, 0=none)
-int gamepad_consume_menu_scroll();
+// Right-stick menu scroll direction and magnitude (-1=up, +1=down).
+float gamepad_consume_menu_scroll();

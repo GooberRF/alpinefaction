@@ -29,6 +29,7 @@
 #include "../rf/level.h"
 #include "../rf/multi.h"
 #include "../rf/os/console.h"
+#include "../rf/os/frametime.h"
 #include "../rf/player/control_config.h"
 #include "../rf/player/player.h"
 #include "../rf/ui.h"
@@ -3522,8 +3523,7 @@ void settings_menu_input()
         }
     }
 
-    const int gamepad_wheel = gamepad_consume_menu_scroll();
-    const int wheel = rf::mouse_dz != 0 ? rf::mouse_dz : gamepad_wheel;
+    const int wheel = rf::mouse_dz;
     int x = 0;
     int y = 0;
     int z = 0;
@@ -3537,6 +3537,11 @@ void settings_menu_input()
     g_ui.begin_frame(x, y, capturing ? 0 : wheel, !capturing && rf::mouse_button_is_down(0),
         !capturing && rf::mouse_was_button_pressed(0) != 0,
         !capturing && rf::mouse_was_button_pressed(1) != 0);
+    if (!capturing && !g_ui.lmb_down && !rf::console::console_is_visible()) {
+        constexpr float scroll_speed = 880.0f;
+        g_ui.analog_scroll = gamepad_consume_menu_scroll() * scroll_speed * menu_screen_scale()
+            * std::max(0.0f, rf::frametime);
+    }
     g_ui.begin_pass(UiPass::HitTest);
     settings_menu_build(g_ui);
     g_ui.end_pass();

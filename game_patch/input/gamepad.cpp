@@ -75,7 +75,6 @@ static bool g_action_curr[k_action_count] = {};
 static int g_action_pad[k_action_count][2];
 
 static float g_message_log_close_cooldown = 0.0f;
-static int g_pending_scroll_delta = 0;
 static float g_menu_cursor_accum_x = 0.0f;
 static float g_menu_cursor_accum_y = 0.0f;
 static bool g_gyro_menu_cursor_active = false;
@@ -436,7 +435,6 @@ static void reset_gamepad_input_state()
     g_menu_cursor_accum_y = 0.0f;
     g_gyro_menu_cursor_active = false;
     input_clear_recent_gamepad();
-    g_pending_scroll_delta = 0;
 }
 
 static float gamepad_get_axis(SDL_Gamepad* gp, SDL_GamepadAxis axis)
@@ -1208,6 +1206,10 @@ static void menu_nav_tick_dpad_repeat()
 
 static void menu_nav_tick_scroll()
 {
+    if (rf::gameseq_get_state() == rf::GS_OPTIONS_MENU && !legacy_menus_enabled()) {
+        g_menu_nav.scroll_timer = 0.0f;
+        return;
+    }
     constexpr float k_scroll_deadzone = 0.24f;
     float ry = get_axis(SDL_GAMEPAD_AXIS_RIGHTY, k_scroll_deadzone);
     if (ry == 0.0f) {
@@ -1217,7 +1219,6 @@ static void menu_nav_tick_scroll()
     g_menu_nav.scroll_timer -= rf::frametime;
     if (g_menu_nav.scroll_timer > 0.0f) return;
     rf::mouse_dz = (ry < 0.0f) ? 1 : -1;
-    g_pending_scroll_delta = rf::mouse_dz;
     if (rf::gameseq_get_state() == rf::GS_MESSAGE_LOG) {
         if (ry < 0.0f)
             rf::ui::message_log_up_on_click(-1, -1);
@@ -1227,11 +1228,14 @@ static void menu_nav_tick_scroll()
     g_menu_nav.scroll_timer = 0.12f;
 }
 
-int gamepad_consume_menu_scroll()
+float gamepad_consume_menu_scroll()
 {
-    int v = g_pending_scroll_delta;
-    g_pending_scroll_delta = 0;
-    return v;
+    if (g_message_log_close_cooldown > 0.0f || !is_gamepad_input_active()
+        || !is_gamepad_menu_navigation_state()) {
+        return 0.0f;
+    }
+    constexpr float k_scroll_deadzone = 0.24f;
+    return std::clamp(get_axis(SDL_GAMEPAD_AXIS_RIGHTY, k_scroll_deadzone), -1.0f, 1.0f);
 }
 
 static void gamepad_do_menu_frame()

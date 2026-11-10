@@ -233,6 +233,7 @@ public:
     bool click = false;
     bool rclick = false;
     int wheel = 0;
+    float analog_scroll = 0.0f;
     bool lmb_down = false;
 
     // Active scroll viewport. Widgets lay out in absolute screen space; inside a region the draw
