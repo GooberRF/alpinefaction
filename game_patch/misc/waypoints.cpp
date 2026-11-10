@@ -4839,6 +4839,36 @@ void update_scavenger_zone_temporary_waypoint()
     }
 }
 
+// The link survives sanitize_waypoint_links_against_geometry: it clears the level, or is a jump pad's launch or a
+// one-way drop of 2 m or more, which are kept even where the level blocks them
+static bool waypoints_link_passes_geometry(const int from, const int to)
+{
+    const int waypoint_total = static_cast<int>(g_waypoints.size());
+    if (from <= 0 || from >= waypoint_total || !g_waypoints[from].valid) {
+        return false;
+    }
+    if (can_link_waypoint_indices(from, to)) {
+        return true;
+    }
+    // Preserve links that intentionally pass through geometry:
+    // - Jump pad outbound links (trajectory-based, parabolic path)
+    // - Downward drop links (bot walks off a ledge and falls)
+    const auto& node = g_waypoints[from];
+    const bool is_jump_pad_link = node.type == WaypointType::jump_pad;
+    const bool is_drop_link = to > 0
+        && to < waypoint_total
+        && g_waypoints[to].valid
+        && (node.pos.y - g_waypoints[to].pos.y) >= 2.0f
+        && !waypoint_has_link_to(to, from);
+    return is_jump_pad_link || is_drop_link;
+}
+
+bool waypoints_prune_blocked_link(const int from, const int to)
+{
+    return waypoints_loaded_for_route_arrows_only() && !waypoints_link_passes_geometry(from, to)
+        && remove_waypoint_links_from_to(from, to) > 0;
+}
+
 void sanitize_waypoint_links_against_geometry()
 {
     int removed_links = 0;
@@ -4853,20 +4883,9 @@ void sanitize_waypoint_links_against_geometry()
         int write_index = 0;
         for (int read_index = 0; read_index < node.num_links; ++read_index) {
             const int link = node.links[read_index];
-            if (!can_link_waypoint_indices(index, link)) {
-                // Preserve links that intentionally pass through geometry:
-                // - Jump pad outbound links (trajectory-based, parabolic path)
-                // - Downward drop links (bot walks off a ledge and falls)
-                const bool is_jump_pad_link = node.type == WaypointType::jump_pad;
-                const bool is_drop_link = link > 0
-                    && link < waypoint_total
-                    && g_waypoints[link].valid
-                    && (node.pos.y - g_waypoints[link].pos.y) >= 2.0f
-                    && !waypoint_has_link_to(link, index);
-                if (!is_jump_pad_link && !is_drop_link) {
-                    ++removed_links;
-                    continue;
-                }
+            if (!waypoints_link_passes_geometry(index, link)) {
+                ++removed_links;
+                continue;
             }
 
             bool duplicate = false;
@@ -9509,7 +9528,8 @@ bool save_waypoints()
     return true;
 }
 
-bool load_waypoints(bool include_std_new_waypoints = true)
+// Without `sanitize`, blocked links stay in the graph for whoever reads it to test, as the route arrows do
+bool load_waypoints(bool include_std_new_waypoints = true, bool sanitize = true)
 {
     clear_waypoints();
     auto disk_path = get_waypoint_filename();
@@ -9840,7 +9860,9 @@ bool load_waypoints(bool include_std_new_waypoints = true)
         remap_waypoints();
     }
     normalize_all_zone_bridge_waypoint_refs();
-    sanitize_waypoint_links_against_geometry();
+    if (sanitize) {
+        sanitize_waypoint_links_against_geometry();
+    }
     ensure_vehicle_factory_waypoints();
     waypoints_vehicle_on_awp_loaded(load_vehicle_layer(root));
     g_has_loaded_wpt = true;
@@ -10269,6 +10291,14 @@ ConsoleCommand2 waypoint_edit_cmd{
         }
 
         if (request_enable && !g_alpine_game_config.waypoints_edit_mode) {
+            // The route arrows load without sanitize; the editor works on a graph like any other load's, which is no
+            // longer the arrows' alone, so their download won't reload over the edits
+            if (waypoints_loaded_for_route_arrows_only()) {
+                sanitize_waypoint_links_against_geometry();
+                g_waypoints_for_route_arrows = false;
+                g_awp_load_retries_remaining = 0;
+                g_awp_load_retry_timer.invalidate();
+            }
             g_alpine_game_config.waypoints_edit_mode = true;
             waypoint_log("Waypoint editing enabled");
         }
@@ -11315,7 +11345,7 @@ void waypoints_level_init()
         // Nothing is seeded for the arrows, so a level without an AWP gets none. A local AWP loads now, without
         // waiting for the download, which reloads it only with a newer revision.
         g_waypoints_for_route_arrows = true;
-        g_has_loaded_wpt = load_waypoints(true);
+        g_has_loaded_wpt = load_waypoints(true, false);
     }
     else {
         clear_waypoints();
@@ -11394,7 +11424,7 @@ void waypoints_on_awp_download_resolved()
         return;
     }
     if (is_waypoint_bot_mode_active() || waypoints_loaded_for_route_arrows_only()) {
-        g_has_loaded_wpt = load_waypoints(true);
+        g_has_loaded_wpt = load_waypoints(true, is_waypoint_bot_mode_active());
         if (!g_has_loaded_wpt) {
             // If load failed but the AWP file exists on disk (e.g., another process is
             // mid-rename), schedule frame-based retries instead of blocking the main thread.
@@ -11457,7 +11487,7 @@ void waypoints_do_frame()
     if (g_awp_load_retries_remaining > 0 && g_awp_load_retry_timer.valid() && g_awp_load_retry_timer.elapsed()
         && (is_waypoint_bot_mode_active() || waypoints_loaded_for_route_arrows_only())) {
         g_awp_load_retries_remaining--;
-        g_has_loaded_wpt = load_waypoints(true);
+        g_has_loaded_wpt = load_waypoints(true, is_waypoint_bot_mode_active());
         if (g_has_loaded_wpt) {
             g_awp_load_retries_remaining = 0;
             g_awp_load_retry_timer.invalidate();

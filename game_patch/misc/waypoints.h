@@ -326,6 +326,9 @@ int waypoints_get_persistent_links(int index, std::array<int, kMaxWaypointLinks>
 void waypoints_get_temporary_overlay(std::vector<int>& out_temporary, std::vector<int>& out_linking_persistent);
 bool waypoints_has_direct_link(int from, int to);
 bool waypoints_link_is_clear(int from, int to);
+// On a graph loaded for the route arrows alone, which skips sanitize_waypoint_links_against_geometry, removes the link
+// if that sanitize would have; true when it did
+bool waypoints_prune_blocked_link(int from, int to);
 void sanitize_waypoint_links_against_geometry();
 
 int add_waypoint(

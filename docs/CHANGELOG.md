@@ -216,8 +216,8 @@ Version 1.5.0 (Trillium): Not yet released
   - Allow mods to replace its descriptions with their own `af_reference.toml`
   - Allow `af_reference.toml` to rename multiplayer characters with `[[mp_character]]` records
 - Show control points as spinning team medallions with a notched capture progress ring
-- Add `cl_wh_tethers`, `cl_wh_pushzone`, `cl_wh_cartstatus`, and `cl_wh_trackpulse` commands to toggle the world HUD beams from the players pushing or blocking the cart in Payload, the ring around it that shows where to push, the status text over it, and the pulses along its track
-- Add world HUD arrows that lead from your spawn toward the objective in objective game types, and a `cl_wh_routearrows` command to toggle them
+- Add `cl_wh_tethers`, `cl_wh_pushzone`, `cl_wh_cartstatus`, and `cl_wh_trackpulse` commands to toggle the world HUD beams from the players pushing the cart in Payload, the ring around it that shows where to push, the status text over it, and the pulses along its track
+- Add world HUD arrows that lead from your spawn toward the objective in objective game types, with `cl_wh_routearrows` to toggle them and `cl_wh_routearrows_time` to set how long they stay
 - Add a scoreboard cursor to scroll long player lists and view player details
 - Add mute and rcon admin buttons to the scoreboard player popout
 - Add `sv_swap_team`, `sv_force_spectate`, `sv_force_unspectate` and `sv_toggle_ready` commands, usable over rcon

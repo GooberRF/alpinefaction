@@ -19,12 +19,14 @@
 #include "powerups.h"
 #include "server_internal.h"
 #include "alpine_packets.h"
+#include "demo/demo.h"
 #include "../fflink/afstats_events.h"
 #include "../fflink/fflink_session.h"
 #include "../hud/multi_spectate.h"
 #include "../misc/waypoints.h"
 #include "../rf/entity.h"
 #include "../rf/file/file.h"
+#include "../rf/gameseq.h"
 #include "../rf/gr/gr_light.h"
 #include "../rf/item.h"
 #include "../rf/level.h"
@@ -1161,7 +1163,7 @@ float salvage_advance_pickup_light_pulse(float& pulse_phase)
     const float sine_base      = addr_as_ref<float>(0x00594798);
     if (pulse_period <= 0.0f) return -1.0f;
 
-    pulse_phase = std::fmod(pulse_phase + rf::frametime, pulse_period);
+    pulse_phase = std::fmod(pulse_phase + (rf::game_paused ? 0.0f : cosmetic_frame_dt()), pulse_period);
 
     constexpr float kTwoPi = 6.28318530718f;
     return sine_base + sine_amplitude * std::sin(kTwoPi * pulse_phase / pulse_period);

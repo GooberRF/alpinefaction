@@ -1976,7 +1976,7 @@ ConsoleCommand2 worldhudpayloadtethers_cmd{
         rf::console::print("World HUD Payload tethers are {}",
                            g_alpine_game_config.world_hud_payload_tethers ? "enabled" : "disabled");
     },
-    "Toggle whether to draw Payload beams from the players pushing or blocking the cart",
+    "Toggle whether to draw Payload beams from the players pushing the cart",
     "cl_wh_tethers",
 };
 
@@ -2022,6 +2022,20 @@ ConsoleCommand2 worldhudroutearrows_cmd{
     },
     "Toggle the arrows laid from your spawn toward the objective in Payload, KOTH, DC, REV and ESC",
     "cl_wh_routearrows",
+};
+
+ConsoleCommand2 worldhudroutearrowtime_cmd{
+    "cl_wh_routearrows_time",
+    [](std::optional<float> value) {
+        if (value) {
+            setting_console_set("world_hud_route_arrow_time", std::to_string(*value));
+        }
+        rf::console::print("World HUD spawn route arrows stay {:.1f} s (default {:.1f})",
+                           g_alpine_game_config.world_hud_route_arrow_time,
+                           AlpineGameSettings::default_world_hud_route_arrow_time);
+    },
+    "Set how long each spawn route arrow stays before it is reeled in, in seconds",
+    "cl_wh_routearrows_time [1.0-30.0]",
 };
 
 ConsoleCommand2 worldhudspectateplayerlabels_cmd{
@@ -2144,6 +2158,7 @@ void hud_world_apply_patch()
     worldhudpayloadcartstatus_cmd.register_cmd();
     worldhudpayloadtrackpulse_cmd.register_cmd();
     worldhudroutearrows_cmd.register_cmd();
+    worldhudroutearrowtime_cmd.register_cmd();
     worldhudspectateplayerlabels_cmd.register_cmd();
     worldhuddemoplayerinfo_cmd.register_cmd();
     worldhuddemospawns_cmd.register_cmd();

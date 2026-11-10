@@ -354,24 +354,17 @@ void render_tethers(int64_t now_ms)
         pulse_t = 1.0f - static_cast<float>(now_ms - *last) / heal_pulse_ms;
     }
 
-    const auto draw_from = [&](const std::vector<uint8_t>& ids, const rf::Color& color, float alpha,
-                               std::optional<float> pulse) {
-        for (const uint8_t id : ids) {
-            const rf::Player* pl = rf::multi_find_player_by_id(id);
-            if (!pl) {
-                continue;
-            }
-            if (const auto from = tether_start(*pl)) {
-                draw_tether(*from, *center, color, alpha, pulse);
-            }
-        }
-    };
-
+    const rf::Color color = hud_team_color(payload_attacking_team());
+    const float alpha = blocked ? tether_blocked_attacker_alpha : tether_alpha;
     rf::gr::set_texture(-1, -1);
-    draw_from(payload_pusher_ids(), hud_team_color(payload_attacking_team()),
-        blocked ? tether_blocked_attacker_alpha : tether_alpha, pulse_t);
-    if (blocked) {
-        draw_from(payload_blocker_ids(), hud_team_color(payload_defending_team()), tether_alpha, std::nullopt);
+    for (const uint8_t id : payload_pusher_ids()) {
+        const rf::Player* pl = rf::multi_find_player_by_id(id);
+        if (!pl) {
+            continue;
+        }
+        if (const auto from = tether_start(*pl)) {
+            draw_tether(*from, *center, color, alpha, pulse_t);
+        }
     }
 }
 

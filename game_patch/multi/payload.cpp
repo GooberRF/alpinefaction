@@ -13,6 +13,7 @@
 #include "kill.h"
 #include "gametype.h"
 #include "server_internal.h"
+#include "demo/demo.h"
 #include "../hud/hud.h"
 #include "../hud/multi_spectate.h"
 #include "../misc/level.h"
@@ -989,11 +990,6 @@ int payload_useful_pushers()
     return std::min(static_cast<int>(g_payload.pushers.size()), payload::max_useful_pushers);
 }
 
-const std::vector<uint8_t>& payload_blocker_ids()
-{
-    return g_payload.blockers;
-}
-
 rf::Vector3 payload_track_point(float distance)
 {
     rf::Mover* mover = payload_cart_mover();
@@ -1096,7 +1092,8 @@ void payload_do_frame()
         server_tick(dt);
     }
     else {
-        client_tick(dt);
+        // A demo feeds the cart's updates in its own time, which pauses and runs at the playback speed
+        client_tick(dt * demo_playback_sim_time_scale());
     }
     fire_pass_events();
     if (!rf::is_dedicated_server) {

@@ -103,11 +103,10 @@ float payload_next_checkpoint_progress();
 bool payload_checkpoint_captured(const PayloadCheckpoint& checkpoint);
 // The world position of a payload checkpoint hill (it has no trigger), or nullopt for any other hill
 std::optional<rf::Vector3> payload_checkpoint_pos(const HillInfo& hill);
-// The server's lists: attackers and defenders in the push zone
+// The server's list of attackers in the push zone
 const std::vector<uint8_t>& payload_pusher_ids();
 // The pushers up to the most that speed the cart up
 int payload_useful_pushers();
-const std::vector<uint8_t>& payload_blocker_ids();
 // Where the cart's centre is at `distance` along the track
 rf::Vector3 payload_track_point(float distance);
 // The attackers once the cart reaches the end, else the defenders; -1 outside Payload or with no usable cart

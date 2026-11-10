@@ -184,8 +184,9 @@ Commands marked "D3D11 only" only have an effect with the Direct3D 11 renderer.
 | `cl_wh_hitnumbers` | | Toggles damage numbers when you hit players in multiplayer, if the Alpine Faction server enables them. Default: on. |
 | `cl_wh_pushzone` | | Toggles the ring on the ground around the Payload cart that shows where players push it. Default: on. |
 | `cl_wh_routearrows` | | Toggles the arrows laid from where you spawn toward the objective: the cart in Payload, the hill in King of the Hill, the current point in Revolt, the frontier point in Escalation (the neutral center until it is taken), and in Damage Control the nearest point you need to visit (the enemy's, a neutral one, or yours while it is contested). Where there is room, the trail first runs a few meters the way you face, turning back in a U-turn if the route lies behind you. They follow the level's bot waypoints: in those game types the map's AWP is checked for on FactionFiles at level load. The trail breaks at ladders, jump pads, teleporters, lifts, zip lines, water and jumps. Default: on. |
+| `cl_wh_routearrows_time` | `[1.0-30.0]` | Sets how long each spawn route arrow stays, in seconds, before it is reeled in. Default: 6.5. |
 | `cl_wh_teamplayerlabels` | | Toggles name labels over teammates. Default: off. |
-| `cl_wh_tethers` | | Toggles the Payload beams linking the players pushing or blocking the cart to it. Default: on. |
+| `cl_wh_tethers` | | Toggles the Payload beams linking the players pushing the cart to it. Default: on. |
 | `cl_wh_trackpulse` | | Toggles the glowing pulses that run along the Payload track from the cart to its end. Default: on. |
 | `kill_messages` | | Toggles kill messages in the chat box and console. Default: on. Not saved. |
 | `mp_crit_flash` | | Toggles the reticle flash when you land a critical hit. Default: on. |

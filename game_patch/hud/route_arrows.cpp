@@ -42,8 +42,7 @@ constexpr float turn_back_window = 3.0f;
 constexpr float u_turn_radius = 1.4f;
 // The lead-in and the U-turn are checked for floor and clearance this often
 constexpr float u_turn_sample_step = 0.75f;
-constexpr float lay_arrows_per_s = 15.0f;
-constexpr float arrow_hold_s = 5.5f;
+constexpr float lay_arrows_per_s = 11.25f;
 constexpr float arrow_drop_s = 0.15f;
 constexpr float arrow_drop_height = 0.5f;
 // Headings are taken over this much route either side, so the arrows don't snap round where the waypoints wiggle.
@@ -57,7 +56,7 @@ constexpr float max_corner_cut = 0.5f;
 constexpr float arrow_half_width = 0.75f;
 constexpr float arrow_half_length = 0.5f;
 constexpr float arrow_bar_width = 0.25f;
-constexpr float arrow_depth = 0.25f;
+constexpr float arrow_depth = 0.1875f;
 constexpr float arrow_floor_gap = 0.1f;
 constexpr float arrow_brightness = 0.8f;
 // As the medallion rim
@@ -73,14 +72,21 @@ constexpr float goal_waypoint_radius = 8.0f;
 constexpr int max_skipped_start_waypoints = 2;
 // Of the waypoints within start_waypoint_radius, the nearest this many are tried for a clear line
 constexpr int max_visible_start_candidates = 4;
+// Times a spawn prunes the blocked links on its planned route, from a graph loaded for the arrows alone, and plans
+// again: once for the route it found, and once more should the new route meet others
+constexpr int max_route_prune_passes = 2;
+// Corner cutting shortens the route the arrows are laid on, so the links tested for blocking run this much further
+constexpr float prune_length_factor = 1.5f;
 // ground_arrow probes from this far over the route point, about 1.5 m over the floor as waypoints sit about
 // kWaypointGenerateGroundOffset over it, so the probe stays under low ceilings
 constexpr float floor_probe_above = 0.5f;
-// The furthest under the lower end of an arrow's link, or under the spawn, that a floor is taken: a step under the
-// floor the route expects there
+// The furthest under the lower end of an arrow's link that a floor is taken: a step under the floor the route expects
+// there
 constexpr float floor_probe_below = kWaypointGenerateGroundOffset + kWalkDirectMaxStep;
 // Lead-in and U-turn probes start this far over the highest floor a sample may step to
 constexpr float floor_probe_margin = 0.1f;
+// Spawn points can float a few meters over their floor
+constexpr float spawn_floor_probe_below = 5.0f;
 static_assert(kWalkDirectMaxStep + floor_probe_margin < kWaypointGenerateMinHeadroom,
               "the floor probe must start under the lowest ceiling a waypoint allows");
 static_assert(u_turn_sample_step * kWaypointGenerateMaxInclineRise <= kWalkDirectMaxStep,
@@ -112,7 +118,7 @@ struct RoutePlan
 
 struct RouteLayout
 {
-    float length = 0.0f; // of the route so far, its special steps included
+    float length = 0.0f; // walked along the route so far, its special steps left out
     float next_arrow = first_arrow_offset;
 
     bool done(const RouteArrowsState& state) const
@@ -159,6 +165,34 @@ struct RouteTarget
     rf::Vector3 pos{};
     const HillInfo* hill = nullptr; // null for the Payload cart
 };
+
+// A player at the route point `p` spans its floor up to about there, so a thin box on the floor counts too
+bool route_point_in_hill(const HillInfo& hill, const rf::Vector3& p)
+{
+    return point_inside_hill_trigger(hill, p)
+        || point_inside_hill_trigger(hill, {p.x, p.y - kWaypointGenerateGroundOffset + arrow_floor_gap, p.z});
+}
+
+// The waypoint inside the hill nearest its trigger's centre, as its icon can float nearer another floor's; 0 with none
+int hill_goal_waypoint(const HillInfo& hill)
+{
+    int best = 0;
+    float best_dist_sq = std::numeric_limits<float>::max();
+    for (int i = 1; i < waypoints_count(); ++i) {
+        rf::Vector3 pos{};
+        bool temporary = false;
+        if (!waypoints_get_pos(i, pos) || !waypoints_get_temporary(i, temporary) || temporary
+            || !route_point_in_hill(hill, pos)) {
+            continue;
+        }
+        const float dist_sq = (pos - hill.trigger->pos).len_sq();
+        if (dist_sq < best_dist_sq) {
+            best = i;
+            best_dist_sq = dist_sq;
+        }
+    }
+    return best;
+}
 
 // Where `team` heads from `from`, chosen once per spawn
 std::optional<RouteTarget> route_target(int team, const rf::Vector3& from)
@@ -428,7 +462,7 @@ bool plan_lead_in(const rf::Entity& ep, const rf::Vector3& target, float length,
     facing.normalize();
     // Sampled from the floor under the spawn, so a pit or wall on the way fails it, not only one at its end
     rf::Vector3 spawn_floor{};
-    if (!trace_ground_below_point(ep.pos, floor_probe_below, &spawn_floor, true)) {
+    if (!trace_ground_below_point(ep.pos, spawn_floor_probe_below, &spawn_floor, true)) {
         return false;
     }
     std::vector<rf::Vector3> leg{{ep.pos.x, spawn_floor.y + kWaypointGenerateGroundOffset, ep.pos.z}};
@@ -437,7 +471,6 @@ bool plan_lead_in(const rf::Entity& ep, const rf::Vector3& target, float length,
         return false;
     }
     const rf::Vector3 end = leg.back();
-    leg.front() = ep.pos;
     std::vector<int> path;
     const int start = visible_start_waypoint(end);
     if (start <= 0 || !path_from(start, path)) {
@@ -496,7 +529,6 @@ void build_route(const rf::Vector3& spawn, const RoutePlan& plan, RouteArrowsSta
         if (run.size() > 1) {
             lay_run(run, layout, out);
         }
-        layout.length += (nodes[i + 1] - nodes[i]).len();
         run.assign(1, nodes[i + 1]);
     }
     if (run.size() > 1 && !layout.done(out)) {
@@ -536,15 +568,10 @@ void end_short_of_objective(RouteArrowsState& state, const RouteTarget& target)
         });
         return;
     }
-    // A player there spans the floor to about the route's height, so a thin box on the floor is reached too. Tested at
-    // the arrow and at its tip plus the clearance.
-    const HillInfo& hill = *target.hill;
-    const auto spans_into_hill = [&](const rf::Vector3& p) {
-        return point_inside_hill_trigger(hill, p)
-            || point_inside_hill_trigger(hill, {p.x, p.y - kWaypointGenerateGroundOffset + arrow_floor_gap, p.z});
-    };
+    // At the arrow and at its tip plus the clearance
     end_short_of_target(state, [&](const RouteArrow& arrow) {
-        return spans_into_hill(arrow.pos) || spans_into_hill(arrow.pos + arrow.dir * margin);
+        return route_point_in_hill(*target.hill, arrow.pos)
+            || route_point_in_hill(*target.hill, arrow.pos + arrow.dir * margin);
     });
 }
 
@@ -606,6 +633,77 @@ void draw_arrow(int white_bm, const rf::Vector3& base, const rf::Vector3& dir, f
     }
 }
 
+// The route from `start` toward the target, with a lead-in where one fits; false without one
+bool plan_route(const rf::Entity& ep, const RouteTarget& target, int hill_goal, int start, RoutePlan& plan)
+{
+    // Every start below walks the goal's shared field, so a spawn costs at most one search for a goal not seen since
+    // the graph last changed
+    int goal = hill_goal > 0 ? hill_goal : waypoints_closest(target.pos, goal_waypoint_radius);
+    if (goal <= 0 || !bot_waypoint_destination_path(start, goal, plan.path)) {
+        // Short of the objective, the route ends at the reachable waypoint nearest it, measured from the hill's own
+        // floor rather than its icon
+        rf::Vector3 aim = target.hill ? target.hill->trigger->pos : target.pos;
+        if (hill_goal > 0) {
+            waypoints_get_pos(hill_goal, aim);
+        }
+        bot_waypoint_compute_distance_field(start, {}, g_route_field);
+        const std::vector<float>& dist = g_route_field.dist;
+        goal = 0;
+        float best_dist_sq = std::numeric_limits<float>::max();
+        for (int i = 1; i < static_cast<int>(dist.size()); ++i) {
+            rf::Vector3 pos{};
+            if (!std::isfinite(dist[i]) || !waypoints_get_pos(i, pos)) {
+                continue;
+            }
+            const float dist_sq = (pos - aim).len_sq();
+            if (dist_sq < best_dist_sq) {
+                goal = i;
+                best_dist_sq = dist_sq;
+            }
+        }
+        if (!bot_waypoint_distance_field_path(g_route_field, goal, plan.path)) {
+            return false;
+        }
+    }
+    const std::vector<int> spawn_path = plan.path;
+    const auto path_from = [&](int from, std::vector<int>& path) {
+        if (from == start) {
+            path = spawn_path;
+            return true;
+        }
+        return bot_waypoint_destination_path(from, goal, path);
+    };
+    for (const float length : {lead_in_length, short_lead_in_length}) {
+        if (plan_lead_in(ep, target.pos, length, path_from, plan)) {
+            break;
+        }
+    }
+    return true;
+}
+
+// On a graph loaded for the arrows alone, which skipped sanitize, prunes every link sanitize would drop on the stretch
+// of the planned route the arrows can reach. Returns the count pruned; any at all means the route must be planned
+// again.
+int prune_blocked_route_links(const RoutePlan& plan)
+{
+    int pruned = 0;
+    float walked = 0.0f;
+    for (std::size_t i = 0; i + 1 < plan.path.size() && walked <= route_max_length * prune_length_factor; ++i) {
+        const int from = plan.path[i];
+        const int to = plan.path[i + 1];
+        if (waypoints_prune_blocked_link(from, to)) {
+            ++pruned;
+            continue;
+        }
+        rf::Vector3 from_pos{};
+        rf::Vector3 to_pos{};
+        if (route_link_is_walk(from, to) && waypoints_get_pos(from, from_pos) && waypoints_get_pos(to, to_pos)) {
+            walked += (to_pos - from_pos).len();
+        }
+    }
+    return pruned;
+}
+
 } // namespace
 
 bool route_arrows_wanted_for_level()
@@ -632,41 +730,16 @@ void route_arrows_on_local_spawn()
         return;
     }
 
-    // Every start below walks the goal's shared field, so a spawn costs at most one search for a goal not seen since
-    // the graph last changed
-    int goal = waypoints_closest(target->pos, goal_waypoint_radius);
+    // A prune changes links, never positions, so the hill's goal holds; the route and the fields it came from are
+    // planned afresh
+    const int hill_goal = target->hill ? hill_goal_waypoint(*target->hill) : 0;
     RoutePlan plan;
-    if (goal <= 0 || !bot_waypoint_destination_path(start, goal, plan.path)) {
-        // Short of the objective, the route ends at the reachable waypoint nearest it
-        bot_waypoint_compute_distance_field(start, {}, g_route_field);
-        const std::vector<float>& dist = g_route_field.dist;
-        goal = 0;
-        float best_dist_sq = std::numeric_limits<float>::max();
-        for (int i = 1; i < static_cast<int>(dist.size()); ++i) {
-            rf::Vector3 pos{};
-            if (!std::isfinite(dist[i]) || !waypoints_get_pos(i, pos)) {
-                continue;
-            }
-            const float dist_sq = (pos - target->pos).len_sq();
-            if (dist_sq < best_dist_sq) {
-                goal = i;
-                best_dist_sq = dist_sq;
-            }
-        }
-        if (!bot_waypoint_distance_field_path(g_route_field, goal, plan.path)) {
+    for (int pass = 0;; ++pass) {
+        plan = {};
+        if (!plan_route(*ep, *target, hill_goal, start, plan)) {
             return;
         }
-    }
-    const std::vector<int> spawn_path = plan.path;
-    const auto path_from = [&](int from, std::vector<int>& path) {
-        if (from == start) {
-            path = spawn_path;
-            return true;
-        }
-        return bot_waypoint_destination_path(from, goal, path);
-    };
-    for (const float length : {lead_in_length, short_lead_in_length}) {
-        if (plan_lead_in(*ep, target->pos, length, path_from, plan)) {
+        if (pass == max_route_prune_passes || prune_blocked_route_links(plan) == 0) {
             break;
         }
     }
@@ -687,7 +760,8 @@ void route_arrows_render()
     const rf::Player* const player = rf::local_player;
     rf::Entity* const ep = player ? rf::entity_from_handle(player->entity_handle) : nullptr;
     const float clock = static_cast<float>(world_hud_clock_ms() - state.spawn_ms) / 1000.0f;
-    const float last_gone = (state.count - 1) / lay_arrows_per_s + 2.0f * arrow_drop_s + arrow_hold_s;
+    const float hold = g_alpine_game_config.world_hud_route_arrow_time;
+    const float last_gone = (state.count - 1) / lay_arrows_per_s + 2.0f * arrow_drop_s + hold;
     // Death, the next spawn or spectating takes the whole trail at once
     if (!rf::is_multi || !g_alpine_game_config.world_hud_route_arrows || !ep || ep->handle != state.entity_handle
         || rf::entity_is_dying(ep) || multi_spectate_is_spectating() || clock >= last_gone) {
@@ -713,7 +787,7 @@ void route_arrows_render()
         }
         // Dropped in, held, then reeled back in the order they landed
         const float landed = smoothstep01(since_start / arrow_drop_s);
-        const float reeled = smoothstep01((since_start - arrow_drop_s - arrow_hold_s) / arrow_drop_s);
+        const float reeled = smoothstep01((since_start - arrow_drop_s - hold) / arrow_drop_s);
         const float presence = landed * (1.0f - reeled);
         if (!(presence > 0.01f)) {
             continue;
