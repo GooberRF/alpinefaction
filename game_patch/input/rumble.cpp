@@ -204,7 +204,8 @@ static void rumble_weapon_do_frame()
 
 void rumble_do_frame()
 {
-    if (g_alpine_game_config.gamepad_rumble_intensity <= 0.0f)
+    if (g_alpine_game_config.gamepad_rumble_intensity <= 0.0f
+        && g_alpine_game_config.gamepad_trigger_rumble_intensity <= 0.0f)
         return;
     rumble_weapon_do_frame();
 }

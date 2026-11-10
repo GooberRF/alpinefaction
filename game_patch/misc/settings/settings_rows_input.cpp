@@ -17,12 +17,12 @@ const char* const labels_rumble_filter[] = {"Off", "Auto", "On"};
 
 const char* needs_motion_sensors()
 {
-    return gamepad_is_motionsensors_supported() ? nullptr : "this controller has no motion sensors";
+    return gamepad_is_motionsensors_supported() ? nullptr : "controller doesn't detect motion sensors";
 }
 
 const char* needs_touchpad()
 {
-    return gamepad_is_touchpad_supported() ? nullptr : "this controller has no touchpad";
+    return gamepad_is_touchpad_supported() ? nullptr : "controller doesn't detect touchpad";
 }
 
 bool gyro_ratcheting_offered(int value)
@@ -40,7 +40,19 @@ const char* needs_gyro_enabled()
 
 const char* needs_trigger_rumble()
 {
-    return gamepad_is_trigger_rumble_supported() ? nullptr : "this controller has no trigger rumble";
+    return gamepad_is_trigger_rumble_supported() ? nullptr : " controller doesn't detect trigger rumble";
+}
+
+const char* needs_body_rumble()
+{
+    return g_alpine_game_config.gamepad_rumble_intensity > 0.0f ? nullptr : "turn on Rumble intensity first";
+}
+
+const char* needs_weapon_rumble_output()
+{
+    return g_alpine_game_config.gamepad_rumble_intensity > 0.0f
+        || (g_alpine_game_config.gamepad_trigger_rumble_intensity > 0.0f && gamepad_is_trigger_rumble_supported())
+        ? nullptr : "turn on Rumble or Trigger Rumble intensity first";
 }
 
 const char* needs_flick_stick()
@@ -787,6 +799,7 @@ const SettingRow rows[] = {
         .access = AccInt{&AGS::gamepad_rumble_vibration_filter, nullptr, 0, 2},
         ENUM_LABELS(labels_rumble_filter),
         .console_cmd = "joy_rumble_vibration_filter",
+        .unavailable_reason = needs_body_rumble,
     },
     {
         .id = "gamepad_weapon_rumble_enabled",
@@ -798,6 +811,7 @@ const SettingRow rows[] = {
         .widget = Wid::Toggle,
         .access = AccBool{&AGS::gamepad_weapon_rumble_enabled},
         .console_cmd = "joy_rumble_weapon",
+        .unavailable_reason = needs_weapon_rumble_output,
     },
     {
         .id = "gamepad_environmental_rumble_enabled",
@@ -809,6 +823,7 @@ const SettingRow rows[] = {
         .widget = Wid::Toggle,
         .access = AccBool{&AGS::gamepad_environmental_rumble_enabled},
         .console_cmd = "joy_rumble_environmental",
+        .unavailable_reason = needs_body_rumble,
     },
     {
         .id = "gamepad_rumble_when_primary",
@@ -820,12 +835,13 @@ const SettingRow rows[] = {
         .widget = Wid::Toggle,
         .access = AccBool{&AGS::gamepad_rumble_when_primary},
         .console_cmd = "joy_rumble_when_primary",
+        .unavailable_reason = needs_body_rumble,
     },
     {
         .id = "gamepad_lightbar_effects",
         .key = "GamepadLightbarEffect",
-        .label = "Controller light effects",
-        .tooltip = "[EXPERIMENTAL] Show health status on the controller's light bar.",
+        .label = "Controller lightbar effects",
+        .tooltip = "[EXPERIMENTAL] Show health status on the controller's lightbar.",
         .category = Cat::Input,
         .subcategory = "Controller - Effects",
         .widget = Wid::Toggle,

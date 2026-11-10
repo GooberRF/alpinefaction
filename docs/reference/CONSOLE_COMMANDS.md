@@ -195,7 +195,7 @@ Commands marked "D3D11 only" only have an effect with the Direct3D 11 renderer.
 | `joy_rumble` | `[0.0-1.0]` | Sets controller rumble intensity. Default: 1.0. |
 | `joy_rumble_environmental` | `[0\|1]` | Enables environmental rumble. Default: on. |
 | `joy_rumble_weapon` | `[0\|1]` | Enables weapon rumble. Default: on. |
-| `joy_rumble_triggers` | `[0.0-1.0]` | Sets trigger rumble intensity when supported by the controller. Default: 0.5. |
+| `joy_rumble_triggers` | `[0.0-1.0]` | Sets controller trigger rumble intensity (if supported by the controller). Only applies to Weapons. Setting to 0.0 will turn off Trigger Rumbles and all Weapon haptic effects moves to `joy_rumble` instead. Default: 0.5. |
 | `joy_rumble_vibration_filter` | `[0-2]` | Enables low-frequency rumble filter. Default: 1. |
 | `joy_rumble_when_primary` | `[0\|1]` | Restricts rumble to when the controller is the primary input device. Default: on. |
 | `joy_reset` | | Reset controller state entirely. |
