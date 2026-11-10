@@ -288,6 +288,24 @@ std::string read_clipboard_text(std::size_t max_len)
     return out;
 }
 
+void write_clipboard_text(std::string_view text)
+{
+    if (!OpenClipboard(nullptr)) {
+        return;
+    }
+    EmptyClipboard();
+    if (HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, text.size() + 1)) {
+        auto* dst = static_cast<char*>(GlobalLock(mem));
+        std::memcpy(dst, text.data(), text.size());
+        dst[text.size()] = 0;
+        GlobalUnlock(mem);
+        if (!SetClipboardData(CF_TEXT, mem)) {
+            GlobalFree(mem);
+        }
+    }
+    CloseClipboard();
+}
+
 static FunHook<void()> os_close_hook{
     0x00525240,
     []() {

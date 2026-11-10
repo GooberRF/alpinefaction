@@ -376,6 +376,21 @@ struct AlpineGameSettings
     bool save_console_history = false; // checked before config loaded, must be false here
     static constexpr uint32_t default_console_color = 0x274E69C0; // RRGGBBAA
     uint32_t console_color = default_console_color;
+    static constexpr int min_console_font_size = 8;
+    static constexpr int max_console_font_size = 32;
+    int console_font_size = 14;
+    void set_console_font_size(int px)
+    {
+        console_font_size = std::clamp(px, min_console_font_size, max_console_font_size);
+    }
+    static constexpr int min_console_height_pct = 20;
+    static constexpr int max_console_height_pct = 100;
+    int console_height_pct = 50;
+    bool console_statusline = true;
+    void set_console_height_pct(int pct)
+    {
+        console_height_pct = std::clamp(pct, min_console_height_pct, max_console_height_pct);
+    }
     bool screen_shake_force_off = false;
     bool display_target_player_names = true;
     bool verbose_time_left_display = true;

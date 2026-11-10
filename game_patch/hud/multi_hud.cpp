@@ -2376,7 +2376,7 @@ CallHook<void(int *dx, int *dy, int *dz)> control_config_get_mouse_delta_hook{
 
         // A gameplay overlay with a free cursor owns aiming while it is up.
         if (vote_panel_is_gameplay_overlay_active() || demo_controls_ui_is_open()
-            || multi_scoreboard_cursor_active()) {
+            || multi_scoreboard_cursor_active() || console_ui_cursor_active()) {
             if (dx) {
                 *dx = 0;
             }
@@ -2387,7 +2387,8 @@ CallHook<void(int *dx, int *dy, int *dz)> control_config_get_mouse_delta_hook{
 
         // If active, do not use mouse wheel scroll delta.
         if ((g_remote_server_cfg_popup.is_active() || vote_panel_is_gameplay_overlay_active()
-             || demo_controls_ui_is_open() || multi_scoreboard_cursor_active())
+             || demo_controls_ui_is_open() || multi_scoreboard_cursor_active()
+             || rf::console::console_is_visible())
             && dz) {
             *dz = 0;
         }

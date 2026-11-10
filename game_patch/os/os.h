@@ -5,6 +5,7 @@
 #include <optional>
 #include <algorithm>
 #include <string>
+#include <string_view>
 #include <windows.h>
 #include <xlog/xlog.h>
 
@@ -26,6 +27,7 @@ bool headless_requested_from_raw_cmdline();
 void wnd_set_flash(HWND hwnd);
 // Not rf::os_get_clipboard_text: it leaves the clipboard open when it holds no text.
 std::string read_clipboard_text(std::size_t max_len);
+void write_clipboard_text(std::string_view text);
 
 struct WaitableTimer {
     HANDLE handle;

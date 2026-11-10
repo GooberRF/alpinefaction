@@ -1079,6 +1079,41 @@ ConsoleCommand2 shadow_distance_cmd{
     "r_shadowdistance <0-5>",
 };
 
+ConsoleCommand2 console_font_size_cmd{
+    "ui_console_fontsize",
+    [](std::optional<int> value_opt) {
+        if (value_opt) {
+            setting_console_set("console_font_size", std::to_string(value_opt.value()));
+        }
+        rf::console::print("Console font size: {} px [{}-{}]", g_alpine_game_config.console_font_size,
+            AlpineGameSettings::min_console_font_size, AlpineGameSettings::max_console_font_size);
+    },
+    "Set console font size in pixels",
+    "ui_console_fontsize <8-32>",
+};
+
+ConsoleCommand2 console_height_cmd{
+    "ui_console_height",
+    [](std::optional<int> value_opt) {
+        if (value_opt) {
+            setting_console_set("console_height_pct", std::to_string(value_opt.value()));
+        }
+        rf::console::print("Console height: {}% [{}-{}]", g_alpine_game_config.console_height_pct,
+            AlpineGameSettings::min_console_height_pct, AlpineGameSettings::max_console_height_pct);
+    },
+    "Set console height as a percentage of the screen",
+    "ui_console_height <20-100>",
+};
+
+ConsoleCommand2 console_statusline_cmd{
+    "ui_console_statusline",
+    []() {
+        setting_console_set("console_statusline", "toggle");
+        rf::console::print("Console statusline is {}", g_alpine_game_config.console_statusline ? "enabled" : "disabled");
+    },
+    "Toggle the console statusline",
+};
+
 ConsoleCommand2 shadow_quality_cmd{
     "r_shadowquality",
     [](std::optional<int> value_opt) {
@@ -1158,6 +1193,9 @@ void alpine_settings_apply_patch()
     shadow_corpses_cmd.register_cmd();
     shadow_items_cmd.register_cmd();
     shadow_distance_cmd.register_cmd();
+    console_font_size_cmd.register_cmd();
+    console_height_cmd.register_cmd();
+    console_statusline_cmd.register_cmd();
     shadow_quality_cmd.register_cmd();
     shadow_frame_lag_cmd.register_cmd();
     dbg_shadows_cmd.register_cmd();

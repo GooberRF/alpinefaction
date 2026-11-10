@@ -222,6 +222,15 @@ Version 1.5.0 (Trillium): Not yet released
 - Include the next level's filename in the end-of-level game type switch announcement
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
+- Revamp the in-game console
+  - Render with a new TrueType font, color-code output by type, and highlight command names and chat senders
+  - Mirror chat and kill messages into the console
+  - Move the cursor within the input line and use readline-style editing keys (`Ctrl+Backspace`/`Ctrl+Delete`, `Ctrl+U`/`Ctrl+K`)
+  - Suggest matching commands inline as you type
+  - Scroll with the mouse wheel and `Page Up`/`Page Down`, select and copy output with the mouse and `Ctrl+C`, and click a listed command to put it on the input line
+  - Filter output with `Ctrl+F`
+  - Add a statusline showing player, level, server, player count, time left and FactionFiles link status
+  - Add `ui_console_fontsize`, `ui_console_height` and `ui_console_statusline` console commands and matching options menu settings
 - Add `ui_color_console` console command to set the console background color
 - Render animated (`.vfx`) meshes on the GPU with per-pixel lighting, and apply their materials' reflection maps (Direct3D 11 renderer only)
 - Load levels with very large face counts or many level sounds much faster
