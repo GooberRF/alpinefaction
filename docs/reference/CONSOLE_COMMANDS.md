@@ -27,7 +27,7 @@ Argument notation: `<x>` is required, `[x]` is optional. A `[bool]` argument acc
 | `level_info` (`map_info`) | | Shows information about the current level: file, name, author, RFL version, Alpine and Dash level properties, `_info.tbl` overrides and mesh replacements. |
 | `levelm` (`mapm`) | `<filename>` | Starts a new local multiplayer game on the level. Not available on dedicated servers. |
 | `map` | `<filename>` | Alias of the stock `level` command, which Alpine also allows outside multiplayer. Allowed via rcon. |
-| `maxfps` | `[limit]` | Sets the frame rate limit (10-100000, default 240). In multiplayer it is capped at 240 unless you are hosting or the server allows unlimited FPS. On a dedicated server the limit follows `sv_bandwidth` and cannot be set. Allowed via rcon. |
+| `maxfps` | `[limit]` | Sets the frame rate limit (10-100000, default 240). On a dedicated server the limit follows `sv_bandwidth` and cannot be set. Allowed via rcon. |
 | `save_commands` | | Stock RF command. Prints all console commands to `console_commands.txt`. |
 | `screenshot` | | Saves a screenshot and prints its file name. |
 | `script` | `<scriptfilename>` | Stock RF command. Runs a console script file from the game directory. |
@@ -333,7 +333,7 @@ Colors are hex `RRGGBB` or `RRGGBBAA`, or comma-separated `R,G,B[,A]` values in 
 | `sv_geolimit` | `<geomods>` | Stock RF command. Sets the geomod limit. Server only. Allowed via rcon. |
 | `sv_kickall` | | Stock RF command. Kicks all clients. Server only. |
 | `sv_loadconfig` | `[config]` | Loads a server config, or reloads the launch config, and applies it to the current level. Not between levels. ADS only. Allowed via rcon for full-admin rcon profiles only. |
-| `sv_loadpackfiles` | | Loads packfiles added to `user_maps\` since the server started. Dedicated only. |
+| `sv_loadpackfiles` | | Loads packfiles added to `user_maps\` since the server started. Dedicated only. Allowed via rcon for full-admin rcon profiles only. |
 | `sv_mute_chat` | `<player>` | Toggles a server-wide chat mute on a player, held by IP until they are unmuted or the server restarts. Server only. Allowed via rcon. |
 | `sv_netfps` | `[rate]` | Deprecated: use `sv_bandwidth`. A rate of exactly 20 sets the low tier; any other rate sets the high tier. Without a rate, prints the current rate. Allowed via rcon. |
 | `sv_pass` | `[password]` | Sets the server password, or removes it when run without one. Server only. Allowed via rcon. |

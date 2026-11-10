@@ -58,6 +58,7 @@
 #include "bots/server_bots.h"
 #include "../main/main.h"
 #include "../misc/discord_presence.h"
+#include "../misc/vpackfile.h"
 #include "../os/os.h"
 #include "../hud/hud.h"
 #include "../hud/multi_spectate.h"
@@ -544,7 +545,7 @@ void server_player_roles_do_frame()
 static bool is_full_admin_only_rcon_command(std::string_view command)
 {
     // Commands powerful enough that delegating them to a non-full_admin profile would allow privilege escalation.
-    return string_iequals(command, "sv_loadconfig");
+    return string_iequals(command, "sv_loadconfig") || string_iequals(command, "sv_loadpackfiles");
 }
 
 static bool is_rcon_command_allowed_for_profile(const AlpineRconProfile& profile, std::string_view command)
@@ -1563,6 +1564,9 @@ CodeInjection process_rcon_packet_injection{
                         else if (cmd_lower == "sv_bot_add" || cmd_lower == "sv_bot_remove") {
                             send_rcon_feedback(*addr, run_server_bot_rcon_command(cmd_lower, remainder));
                         }
+                        else if (cmd_lower == "sv_loadpackfiles" && rf::is_dedicated_server) {
+                            send_rcon_feedback(*addr, vpackfile_load_user_maps_packfiles());
+                        }
                         // otherwise just execute it on the server
                         else {
                             rf::console::do_command(payload_str.c_str());
@@ -2178,9 +2182,6 @@ CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_join_accept_packet_ho
             ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::click_limit;
             ext_data.semi_auto_cooldown = server_get_alpine_config().click_limiter_config.cooldown;
         }
-        if (server_allow_unlimited_fps()) {
-            ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::unlimited_fps;
-        }
         if (server_gaussian_spread()) {
             ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::gaussian_spread;
         }
@@ -2445,7 +2446,6 @@ CodeInjection process_join_accept_injection{
             server_info.no_player_collide = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::no_player_collide);
             server_info.allow_no_mf = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::allow_no_mf);
             server_info.click_limit = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::click_limit);
-            server_info.unlimited_fps = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::unlimited_fps);
             server_info.gaussian_spread = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::gaussian_spread);
             server_info.location_pinging = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::location_pinging);
             server_info.delayed_spawns = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::delayed_spawns);

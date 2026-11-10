@@ -1435,6 +1435,10 @@ static void apply_known_key_in_order(AlpineServerConfig& cfg, const std::string&
         if (auto v = node.value<bool>())
             cfg.stats_message_enabled = *v;
     }
+    else if (key == "announce_next_level") {
+        if (auto v = node.value<bool>())
+            cfg.announce_next_level = *v;
+    }
     else if (key == "allow_fullbright_meshes") {
         if (auto v = node.value<bool>())
             cfg.allow_fullbright_meshes = *v;
@@ -1450,10 +1454,6 @@ static void apply_known_key_in_order(AlpineServerConfig& cfg, const std::string&
     else if (key == "allow_disable_muzzle_flash") {
         if (auto v = node.value<bool>())
             cfg.allow_disable_muzzle_flash = *v;
-    }
-    else if (key == "allow_unlimited_fps") {
-        if (auto v = node.value<bool>())
-            cfg.allow_unlimited_fps = *v;
     }
     else if (key == "allow_footsteps") {
         if (auto v = node.value<bool>())
@@ -2512,11 +2512,11 @@ void print_alpine_dedicated_server_config_info(std::string& output, bool verbose
 
     std::format_to(iter, "  Gaussian bullet spread:                {}\n", cfg.gaussian_spread);
     std::format_to(iter, "  End of round stats message:            {}\n", cfg.stats_message_enabled);
+    std::format_to(iter, "  Announce next level:                   {}\n", cfg.announce_next_level);
     std::format_to(iter, "  Allow fullbright meshes:               {}\n", cfg.allow_fullbright_meshes);
     std::format_to(iter, "  Allow disable screenshake:             {}\n", cfg.allow_disable_screenshake);
     std::format_to(iter, "  Allow lightmap only mode:              {}\n", cfg.allow_lightmaps_only);
     std::format_to(iter, "  Allow disable muzzle flash:            {}\n", cfg.allow_disable_muzzle_flash);
-    std::format_to(iter, "  Allow disable 240 FPS cap:             {}\n", cfg.allow_unlimited_fps);
     std::format_to(iter, "  Allow footsteps:                       {}\n", cfg.allow_footsteps);
     std::format_to(iter, "  SP-style damage calculation:           {}\n", cfg.use_sp_damage_calculation);
     std::format_to(iter, "  Allow outlines:                        {}\n", cfg.allow_outlines);

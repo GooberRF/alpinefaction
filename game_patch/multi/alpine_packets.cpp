@@ -4953,8 +4953,6 @@ uint32_t af_compute_server_info_flags()
         af |= af_server_info_flags::SIF_ALLOW_NO_MUZZLE_FLASH_LIGHT;
     if (g_alpine_server_config.click_limiter_config.enabled)
         af |= af_server_info_flags::SIF_CLICK_LIMITER;
-    if (g_alpine_server_config.allow_unlimited_fps)
-        af |= af_server_info_flags::SIF_ALLOW_UNLIMITED_FPS;
     if (g_alpine_server_config.gaussian_spread)
         af |= af_server_info_flags::SIF_GAUSSIAN_SPREAD;
     if (g_alpine_server_config_active_rules.geo_chunk_physics)
@@ -5115,7 +5113,6 @@ static void decode_af_server_info_flags(const af_server_info_packet& pkt, Alpine
     server_info.allow_no_mf = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_NO_MUZZLE_FLASH_LIGHT) != 0;
     server_info.click_limit = (pkt.af_flags & af_server_info_flags::SIF_CLICK_LIMITER) != 0;
     server_info.semi_auto_cooldown = static_cast<int>(pkt.semi_auto_cooldown);
-    server_info.unlimited_fps = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_UNLIMITED_FPS) != 0;
     server_info.gaussian_spread = (pkt.af_flags & af_server_info_flags::SIF_GAUSSIAN_SPREAD) != 0;
     server_info.location_pinging = (pkt.af_flags & af_server_info_flags::SIF_LOCATION_PINGING) != 0;
     server_info.delayed_spawns = (pkt.af_flags & af_server_info_flags::SIF_DELAYED_SPAWNS) != 0;

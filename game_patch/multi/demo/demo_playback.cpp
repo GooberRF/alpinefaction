@@ -1517,7 +1517,6 @@ namespace
         info->allow_lmap = true;
         info->allow_no_ss = true;
         info->allow_no_mf = true;
-        info->unlimited_fps = true;
         info->allow_footsteps = true;
         info->allow_outlines = true;
         info->allow_outlines_xray = true;
