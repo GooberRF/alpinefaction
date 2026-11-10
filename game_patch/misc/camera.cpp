@@ -27,6 +27,7 @@
 #include "../rf/os/console.h"
 #include "../rf/os/frametime.h"
 #include "player.h"
+#include "../hud/multi_scoreboard.h"
 #include "../hud/multi_spectate.h"
 #include "../hud/remote_server_cfg_ui.h"
 #include "../misc/settings_registry.h"
@@ -178,7 +179,7 @@ CodeInjection camera_create_for_player_freelook_camera_patch{
 static bool freelook_wheel_captured_by_overlay()
 {
     return vote_panel_is_gameplay_overlay_active() || spray_picker_is_open() ||
-        g_remote_server_cfg_popup.is_active();
+        g_remote_server_cfg_popup.is_active() || multi_scoreboard_cursor_active();
 }
 
 CodeInjection free_camera_do_frame_patch{

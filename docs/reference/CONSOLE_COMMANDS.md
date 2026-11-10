@@ -175,11 +175,16 @@ Commands marked "D3D11 only" only have an effect with the Direct3D 11 renderer.
 | `cl_outlineheightscale` | `[scale]` | Sets the control point outline height scale (0-1000). Default: 5.0. |
 | `cl_outlinesegments` | `[segments]` | Sets the number of segments of control point outline rings (3-256). Default: 32. |
 | `cl_wh_altdmgindicators` | | Toggles individual instead of cumulative world HUD damage numbers. Default: off. |
-| `cl_wh_cpoverdraw` | | Toggles drawing control point world HUD sprites on top of everything. Default: on. |
+| `cl_wh_cartstatus` | | Toggles the Payload cart's status text over its medallion, such as its pushers or countdown. The Payload panel of the HUD always shows the cart's state. Default: on. |
+| `cl_wh_cpmedallions` | | Toggles spinning medallions with a capture progress ring for control points, instead of sprites. Default: on. |
+| `cl_wh_cpoverdraw` | | Toggles drawing control point world HUD sprites or medallions and the Payload cart medallion on top of everything. Default: on. |
+| `cl_wh_cproletext` | | Toggles the Attack/Defend text over control point medallions in Revolution and Escalation. Default: on. |
 | `cl_wh_ctf` | | Toggles world HUD indicators for CTF flags. Default: on. |
 | `cl_wh_flagoverdraw` | | Toggles drawing CTF flag world HUD sprites on top of everything. Default: on. |
 | `cl_wh_hitnumbers` | | Toggles damage numbers when you hit players in multiplayer, if the Alpine Faction server enables them. Default: on. |
+| `cl_wh_pushzone` | | Toggles the ring on the ground around the Payload cart that shows where players push it. Default: on. |
 | `cl_wh_teamplayerlabels` | | Toggles name labels over teammates. Default: off. |
+| `cl_wh_tethers` | | Toggles the Payload beams linking the players pushing or blocking the cart to it. Default: on. |
 | `kill_messages` | | Toggles kill messages in the chat box and console. Default: on. Not saved. |
 | `mp_crit_flash` | | Toggles the reticle flash when you land a critical hit. Default: on. |
 | `mp_deathbars` | | Toggles red bars at the top and bottom of the screen while dead. Default: on. |
@@ -194,6 +199,8 @@ Commands marked "D3D11 only" only have an effect with the Direct3D 11 renderer.
 | `ui_playernames` | | Toggles names of targeted players. Default: on. |
 | `ui_realarmor` | | Toggles showing armor as real values (1:1 with effective health) instead of classic (2:1). Default: off. |
 | `ui_runtimer` | | Toggles the RUN game type timer. Default: on. |
+| `ui_scoreboard_cursor` | | Toggles the scoreboard cursor, used to hover over players and scroll the player list. Default: on. |
+| `ui_scoreboard_cursor_hint` | | Toggles the scoreboard cursor hint text. Default: on. |
 | `ui_scoreboard_simplesplit` | | Toggles whether each scoreboard group is shown individually. Default: on. |
 | `ui_scoreboard_split_bots` | | Toggles grouping bots separately on the scoreboard. Default: off. |
 | `ui_scoreboard_split_browsers` | | Toggles grouping browsers separately on the scoreboard. Default: on. |
@@ -319,12 +326,15 @@ Colors are hex `RRGGBB` or `RRGGBBAA`, or comma-separated `R,G,B[,A]` values in 
 | `sv_countclients` | | Stock RF command. Shows the number of connected clients. |
 | `sv_fflink_resync` | | Forces a new FactionFiles session key exchange. Allowed via rcon. |
 | `sv_fflink_status` | | Shows the FactionFiles server session link status. Allowed via rcon. |
+| `sv_force_spectate` | `<player>` | Kills a player and puts them in spectate mode. Server only. Allowed via rcon. |
+| `sv_force_unspectate` | `<player>` | Takes a player out of spectate mode. Server only. Allowed via rcon. |
 | `sv_fraglimit` | `<kills>` | Stock RF command. Sets the kill limit. Server only. Allowed via rcon. |
-| `sv_gametype` (`gt`) | `[type] [level]` | Changes the game type: `dm`, `tdm`, `ctf`, `koth`, `dc`, `rev`, `run`, `esc`, `bag`, `tbag`, `pit`, `wo`, `gg`, `sal` or `scav`. See the note below. Allowed via rcon. |
+| `sv_gametype` (`gt`) | `[type] [level]` | Changes the game type: `dm`, `tdm`, `ctf`, `koth`, `dc`, `rev`, `run`, `esc`, `bag`, `tbag`, `pit`, `wo`, `gg`, `sal`, `scav` or `pay`. See the note below. Allowed via rcon. |
 | `sv_geolimit` | `<geomods>` | Stock RF command. Sets the geomod limit. Server only. Allowed via rcon. |
 | `sv_kickall` | | Stock RF command. Kicks all clients. Server only. |
 | `sv_loadconfig` | `[config]` | Loads a server config, or reloads the launch config, and applies it to the current level. Not between levels. ADS only. Allowed via rcon for full-admin rcon profiles only. |
 | `sv_loadpackfiles` | | Loads packfiles added to `user_maps\` since the server started. Dedicated only. |
+| `sv_mute_chat` | `<player>` | Toggles a server-wide chat mute on a player, held by IP until they are unmuted or the server restarts. Server only. Allowed via rcon. |
 | `sv_netfps` | `[rate]` | Deprecated: use `sv_bandwidth`. A rate of exactly 20 sets the low tier; any other rate sets the high tier. Without a rate, prints the current rate. Allowed via rcon. |
 | `sv_pass` | `[password]` | Sets the server password, or removes it when run without one. Server only. Allowed via rcon. |
 | `sv_printconfig` | | Prints the current server configuration. ADS only. |
@@ -332,7 +342,9 @@ Colors are hex `RRGGBB` or `RRGGBBAA`, or comma-separated `R,G,B[,A]` values in 
 | `sv_rconpass` | `[password]` | Sets the rcon password (up to 16 characters), or removes it when run without one. Dedicated only. |
 | `sv_record` | | Starts or stops server-side demo recording for the current level. Server only. |
 | `sv_restrict_status` | | Shows the current Alpine restriction checks and expected join verdicts. Server only. |
+| `sv_swap_team` | `<player>` | Moves a player to the other team. Server only. Allowed via rcon. |
 | `sv_timelimit` | `<minutes>` | Stock RF command. Sets the time limit. Server only. Allowed via rcon. |
+| `sv_toggle_ready` | `<player>` | Toggles a player's ready status during match ready-up. Server only. Allowed via rcon. |
 | `unban_last` | | Unbans the last banned player. Server only. Allowed via rcon. |
 
 `sv_gametype`: on an ADS dedicated server, `sv_gametype <type> <level>` loads the level on that game type, `sv_gametype <type>` restarts the current level on it, and `sv_gametype` alone prints the current game type. It cannot run between levels. On a client that is not connected (or is playing a demo), both arguments are required and it starts a local game like `levelm`. While connected to a server, use `rcon sv_gametype` instead. On other dedicated servers it is refused.

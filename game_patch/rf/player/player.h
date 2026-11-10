@@ -125,6 +125,8 @@ struct PlayerAdditionalData {
     // Client-side variables.
     std::optional<pf_pure_status> received_pf_status{};
     bool is_muted = false;
+    // A client only learns a remote player's character from their entity_create.
+    bool multi_character_known = false;
 
     // Smoothed view angular velocity feeding fpgun aim sway, in rad/s.
     float sway_pitch_vel = 0.0f;

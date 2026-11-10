@@ -39,6 +39,7 @@
 #include "../multi/gametype.h"
 #include "../multi/mutators.h"
 #include "../multi/bagman.h"
+#include "../multi/payload.h"
 #include "../multi/jetpack.h"
 #include "../multi/salvage.h"
 #include "../multi/vehicles/vehicle.h"
@@ -185,12 +186,14 @@ FunHook<int()> rf_do_frame_hook{
         riot_shield_do_frame();
         client_bot_do_frame();
         koth_do_frame();
+        payload_do_frame(); // before the stock frame moves the cart
         bagman_do_frame();
         jetpack_do_frame();
         salvage_client_do_frame();      // client-side Salvage carried-flag attachment
         vehicle_client_do_frame();      // vehicle trigger state of the local firing seat owner
         vehicle_physics_do_frame();     // Bullet vehicle sim: body lifecycle (the step runs after the input read)
         hud_pit_queue_auto_spectate();  // client-side Pit auto-spectate
+        hud_forced_spectate_do_frame();
         gungame_client_do_frame();      // client-side Gun Game level-up notification watcher
         alpine_mesh_do_frame();
         alpine_rope_do_frame();
@@ -434,6 +437,7 @@ FunHook<void(bool)> level_init_post_hook{
                 minimap_level_init_post();
                 // listen server host spawns before this init, so we need to run on_local_spawn for them again
                 if (rf::is_server) {
+                    payload_greet_listen_host();
                     multi_hud_on_local_spawn();
                 }
             }

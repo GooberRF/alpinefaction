@@ -5,10 +5,12 @@
 #include <format>
 #include <cstdint>
 #include <random>
+#include <cmath>
 #include <patch_common/CodeInjection.h>
 #include <patch_common/AsmWriter.h>
 #include <patch_common/FunHook.h>
 #include <patch_common/CallHook.h>
+#include <common/payload.h>
 #include <common/utils/list-utils.h>
 #include <common/utils/string-utils.h>
 #include <xlog/xlog.h>
@@ -17,6 +19,7 @@
 #include "../multi/demo/demo_ui.h"
 #include "../multi/gametype.h"
 #include "../multi/bagman.h"
+#include "../multi/payload.h"
 #include "../multi/jetpack.h"
 #include "../multi/vehicles/vehicle_seats.h"
 #include "../multi/salvage.h"
@@ -774,8 +777,165 @@ static void hud_draw_cp_row_fullwidth(int x, int y, int w, int h, const HillInfo
     }
 }
 
+static void hud_draw_payload_row_text(int x, int y, int h, const std::string& text, int font_id)
+{
+    const auto [tw, th] = rf::gr::get_string_size(text, font_id);
+    rf::gr::set_color(0, 0, 0, 220);
+    rf::gr::string(x + 1, y + (h - th) / 2 + 1, text.c_str(), font_id); // shadow
+    rf::gr::set_color(255, 255, 255, 255);
+    rf::gr::string(x, y + (h - th) / 2, text.c_str(), font_id); // main
+}
+
+static void hud_draw_payload_state_row(int x, int y, int w, int h, int font_id)
+{
+    const HillOwner attackers = team_hill_owner(payload_attacking_team());
+    const HillOwner defenders = team_hill_owner(payload_defending_team());
+    HillOwner fill = HillOwner::HO_Neutral;
+    std::string label;
+    std::string value;
+    switch (payload_state()) {
+        case PayloadCartState::pushing:
+            fill = attackers;
+            label = "Pushing";
+            value = std::format("x{}", payload_useful_pushers());
+            break;
+        case PayloadCartState::blocked:
+            fill = defenders;
+            label = "Blocked";
+            break;
+        case PayloadCartState::rolling_back:
+            fill = defenders;
+            label = "Rolling back";
+            break;
+        case PayloadCartState::finale:
+            fill = attackers;
+            label = "Delivered";
+            break;
+        case PayloadCartState::held:
+            fill = attackers;
+            label = payload_in_setup() ? "Setup" : "Moving in";
+            value = std::to_string(payload_countdown_whole_seconds().value_or(1));
+            break;
+        default:
+            if (const auto left = payload_countdown_whole_seconds()) {
+                label = "Rollback in";
+                value = std::to_string(*left);
+            }
+            else {
+                label = "Stopped";
+            }
+            break;
+    }
+    if (payload_in_overtime()) {
+        label = "OVERTIME: " + label;
+    }
+
+    rf::gr::set_color(0, 0, 0, 150);
+    rf::gr::rect(x, y, w, h);
+    rf::ubyte fr, fg, fb, fa;
+    cp_owner_color(fill, fr, fg, fb, fa);
+    rf::gr::set_color(fr, fg, fb, 130);
+    rf::gr::rect(x + 1, y + 1, w - 2, h - 2);
+    if (payload_in_overtime()) {
+        rf::gr::set_color(255, 220, 64, 220);
+    }
+    else {
+        rf::gr::set_color(150, 150, 150, 170);
+    }
+    rf::gr::rect_border(x, y, w, h);
+
+    const int pad = 6;
+    int value_room = 0;
+    if (!value.empty()) {
+        const auto [vw, vh] = rf::gr::get_string_size(value, font_id);
+        value_room = vw + pad;
+        hud_draw_payload_row_text(x + w - pad - vw, y, h, value, font_id);
+    }
+    const std::string fit_label = hud_fit_string(label, w - 2 * pad - value_room, nullptr, font_id);
+    hud_draw_payload_row_text(x + pad, y, h, fit_label, font_id);
+}
+
+static void hud_draw_payload_track_row(int x, int y, int w, int h)
+{
+    rf::gr::set_color(0, 0, 0, 150);
+    rf::gr::rect(x, y, w, h);
+
+    rf::ubyte ar, ag, ab, aa;
+    cp_steal_color(team_hill_owner(payload_attacking_team()), ar, ag, ab, aa);
+    rf::ubyte dr, dg, db, da;
+    cp_owner_color(team_hill_owner(payload_defending_team()), dr, dg, db, da);
+
+    const int tick = std::max(6, h / 2);
+    const int pad = tick / 2 + 3;
+    const int track_x = x + pad;
+    const int track_w = w - 2 * pad;
+    const int track_h = std::max(4, h / 4);
+    const int track_y = y + (h - track_h) / 2;
+    const float total = payload_total_length();
+    const auto x_at = [&](float distance) {
+        const float f = total > 0.0f ? std::clamp(distance / total, 0.0f, 1.0f) : 0.0f;
+        return track_x + static_cast<int>(std::lround(f * track_w));
+    };
+
+    const int cart_x = x_at(payload_distance());
+    rf::gr::set_color(dr, dg, db, 160);
+    rf::gr::rect(track_x, track_y, track_w, track_h);
+    if (cart_x > track_x) {
+        rf::gr::set_color(ar, ag, ab, aa);
+        rf::gr::rect(track_x, track_y, cart_x - track_x, track_h);
+    }
+
+    const auto& checkpoints = payload_checkpoints();
+    const int next = payload_next_checkpoint_index();
+    for (int i = 0; i < static_cast<int>(checkpoints.size()); ++i) {
+        const int tick_x = x_at(checkpoints[i].distance) - tick / 2;
+        const int tick_y = y + (h - tick) / 2;
+        if (payload_checkpoint_captured(checkpoints[i])) {
+            rf::gr::set_color(ar, ag, ab, 255);
+        }
+        else {
+            rf::gr::set_color(dr, dg, db, 255);
+        }
+        rf::gr::rect(tick_x, tick_y, tick, tick);
+        rf::gr::set_color(255, 255, 255, i == next ? 255 : 150);
+        rf::gr::rect_border(tick_x, tick_y, tick, tick);
+    }
+
+    const int cart_w = std::max(4, h / 5);
+    rf::gr::set_color(0, 0, 0, 220);
+    rf::gr::rect(cart_x - cart_w / 2 - 1, y + 2, cart_w + 2, h - 4);
+    rf::gr::set_color(255, 255, 255, 255);
+    rf::gr::rect(cart_x - cart_w / 2, y + 3, cart_w, h - 6);
+
+    rf::gr::set_color(150, 150, 150, 170);
+    rf::gr::rect_border(x, y, w, h);
+}
+
+// The cart is Payload's only objective, so its state and track take the capture point rows' place
+static void hud_render_payload_bar(int anchor_x, int anchor_y, int anchor_w)
+{
+    if (!payload_active()) {
+        g_multi_hud_cp_strip_y = anchor_y;
+        return;
+    }
+
+    const int row_h = g_big_team_scores_hud ? 28 : 22;
+    const int gap_y = 4;
+    const int margin = 6; // margin above team scores box
+    const int track_y = anchor_y - margin - row_h;
+    const int state_y = track_y - gap_y - row_h;
+    g_multi_hud_cp_strip_y = state_y;
+
+    hud_draw_payload_state_row(anchor_x, state_y, anchor_w, row_h, hud_get_default_font());
+    hud_draw_payload_track_row(anchor_x, track_y, anchor_w, row_h);
+}
+
 static void hud_render_cp_strip_koth_dc_fullwidth(int anchor_x, int anchor_y, int anchor_w)
 {
+    if (gt_is_payload()) {
+        hud_render_payload_bar(anchor_x, anchor_y, anchor_w);
+        return;
+    }
     if (!multi_is_game_type_with_hills())
         return;
 
@@ -1051,12 +1211,13 @@ void multi_hud_render_team_scores()
     const bool is_koth_dc = game_type == rf::NG_TYPE_KOTH || game_type == rf::NG_TYPE_DC;
     const bool is_esc = game_type == rf::NG_TYPE_ESC;
     const bool is_rev = game_type == rf::NG_TYPE_REV;
+    const bool is_pay = game_type == rf::NG_TYPE_PAY;
     const bool is_run = game_type == rf::NG_TYPE_RUN;
     const bool is_ffa_with_list = game_type == rf::NG_TYPE_DM
         || game_type == rf::NG_TYPE_BAG
         || game_type == rf::NG_TYPE_PIT
         || game_type == rf::NG_TYPE_GG;
-    const bool is_hill_score = is_koth_dc || is_rev || is_esc;
+    const bool is_hill_score = is_koth_dc || is_rev || is_esc || is_pay;
     const bool is_neutral_flag = salvage_framework_active();
     const bool show_run_timer = g_alpine_game_config.show_run_timer;
 
@@ -1068,7 +1229,7 @@ void multi_hud_render_team_scores()
     if (is_koth_dc || is_run) {
         box_w = g_big_team_scores_hud ? 240 : 185;
         box_h = g_big_team_scores_hud ? 60  : 40;
-    } else if (is_rev || is_esc) {
+    } else if (is_rev || is_esc || is_pay) {
         box_w = g_big_team_scores_hud ? 240 : 185;
     } else if (is_ffa_with_list) {
         box_w = g_big_team_scores_hud ? 280 : 240;
@@ -1295,7 +1456,7 @@ void multi_hud_render_team_scores()
             row_y += row_h;
         }
     }
-    else if (!is_rev && !is_esc) {
+    else if (!is_rev && !is_esc && !is_pay) {
         auto [str_w, str_h] = rf::gr::get_string_size(red_score_str, font_id);
         const int red_score_x = box_x + box_w - 5 - str_w;
         rf::gr::string(red_score_x, red_miniflag_label_y, red_score_str.c_str(), font_id);
@@ -1344,6 +1505,7 @@ CodeInjection multi_hud_render_team_scores_new_gamemodes_patch {
             gt_is_esc() ||
             gt_is_tbag() ||
             gt_is_wipeout() ||
+            gt_is_payload() ||
             salvage_framework_active() ||
             is_ffa_with_list) {
             regs.eip = 0x00476E06; // multi_hud_render_team_scores
@@ -1935,6 +2097,33 @@ static void hud_bag_carrier_ensure() {
     hud_notification_show(text, -1, HudNotificationType::BagCarrier, false);
 }
 
+static bool g_forced_spectate_pending = false;
+
+void hud_request_forced_spectate(bool enter)
+{
+    g_forced_spectate_pending = enter;
+    if (!enter && multi_spectate_is_spectating()) {
+        multi_spectate_leave();
+    }
+}
+
+// The entity outlives the kill until its death sequence ends, and freelook needs it gone.
+void hud_forced_spectate_do_frame()
+{
+    if (!g_forced_spectate_pending) {
+        return;
+    }
+    rf::Entity* const entity = rf::local_player ? rf::entity_from_handle(rf::local_player->entity_handle) : nullptr;
+    const bool respawned = entity && !rf::entity_is_dying(entity) && entity->life > 0.0f;
+    if (!rf::is_multi || multi_spectate_is_spectating() || respawned) {
+        g_forced_spectate_pending = false;
+    }
+    else if (rf::gameseq_get_state() == rf::GS_GAMEPLAY && rf::local_player && rf::player_is_dead(rf::local_player)) {
+        g_forced_spectate_pending = false;
+        multi_spectate_enter_freelook();
+    }
+}
+
 // Drop a queued player into freelook spectate when the server has flagged it.
 void hud_pit_queue_auto_spectate() {
     if (rf::is_server) return;
@@ -2132,8 +2321,9 @@ void multi_hud_render_local_player_spectators() {
             || game_type == rf::NG_TYPE_DC;
         const bool is_rev = game_type == rf::NG_TYPE_REV;
         const bool is_esc = game_type == rf::NG_TYPE_ESC;
+        const bool is_pay = game_type == rf::NG_TYPE_PAY;
         const int ctf_box_w = rf::gr::clip_width() <= 1280 ? 350 : 370;
-        const int box_w = is_koth_or_dc || is_rev || is_esc
+        const int box_w = is_koth_or_dc || is_rev || is_esc || is_pay
             ? g_alpine_game_config.big_hud ? 240 : 185
             : g_alpine_game_config.big_hud ? ctf_box_w : 185;
         constexpr int box_x = 10;
@@ -2184,8 +2374,9 @@ CallHook<void(int *dx, int *dy, int *dz)> control_config_get_mouse_delta_hook{
             }
         }
 
-        // The vote panel / demo controls popup owns aiming while it is up.
-        if (vote_panel_is_gameplay_overlay_active() || demo_controls_ui_is_open()) {
+        // A gameplay overlay with a free cursor owns aiming while it is up.
+        if (vote_panel_is_gameplay_overlay_active() || demo_controls_ui_is_open()
+            || multi_scoreboard_cursor_active()) {
             if (dx) {
                 *dx = 0;
             }
@@ -2196,7 +2387,7 @@ CallHook<void(int *dx, int *dy, int *dz)> control_config_get_mouse_delta_hook{
 
         // If active, do not use mouse wheel scroll delta.
         if ((g_remote_server_cfg_popup.is_active() || vote_panel_is_gameplay_overlay_active()
-             || demo_controls_ui_is_open())
+             || demo_controls_ui_is_open() || multi_scoreboard_cursor_active())
             && dz) {
             *dz = 0;
         }

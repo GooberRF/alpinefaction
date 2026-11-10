@@ -112,7 +112,12 @@ struct AlpineGameSettings
     bool world_hud_alt_damage_indicators = false;
     bool world_hud_flag_overdraw = true;
     bool world_hud_hill_overdraw = true;
+    bool world_hud_cp_medallions = true;
+    bool world_hud_cp_role_text = true;
     bool world_hud_damage_numbers = true;
+    bool world_hud_payload_tethers = true;
+    bool world_hud_payload_push_zone = true;
+    bool world_hud_payload_cart_status = true;
     bool world_hud_spectate_player_labels = false;
     bool world_hud_demo_player_info = false;
     bool world_hud_demo_spawns = false;
@@ -381,6 +386,8 @@ struct AlpineGameSettings
     bool reduced_speed_in_background = false;
     bool direct_input = true;
     bool scoreboard_anim = true;
+    bool scoreboard_cursor = true;
+    bool scoreboard_cursor_hint = true;
     bool legacy_bob = false;
     bool weapon_sway = false;
     bool rail_beam_fix = true;

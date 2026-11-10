@@ -179,17 +179,6 @@ void announce(std::string_view msg)
     af_broadcast_automated_chat_msg(msg);
 }
 
-void apply_effective_health_reward(rf::Player* player, float amount)
-{
-    if (!player || amount <= 0.0f) return;
-    rf::Entity* ep = rf::entity_from_handle(player->entity_handle);
-    if (!ep || ep->life <= 0.0f) return;
-
-    const float max_life_cap = std::max(ep->life, ep->info->max_life);
-    const float max_armor_cap = std::max(ep->armor, ep->info->max_armor);
-    distribute_effective_health(ep, amount, max_life_cap, max_armor_cap);
-}
-
 // Create amp (bag) item at an explicit position.
 void spawn_bag_item(const rf::Vector3& pos, rf::Matrix3& orient)
 {

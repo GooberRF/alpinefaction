@@ -169,6 +169,7 @@ namespace rf
         NG_TYPE_GG = 12, // Gun Game, as of AF v1.4
         NG_TYPE_SAL = 13,   // Salvage, as of AF v1.4
         NG_TYPE_SCAV = 14,  // Scavenger, as of AF v1.5
+        NG_TYPE_PAY = 15,   // Payload, as of AF v1.5
         // Sentinel: UNK must always be the last entry.
         NG_TYPE_UNK
     };
@@ -303,6 +304,8 @@ namespace rf
     static auto& multi_io_send_reliable_to_all =
         addr_as_ref<void(const void *data, int len, bool require_in_game)>(0x004795A0);
     static auto& multi_io_send_buffered_reliable_packets = addr_as_ref<void(Player *pp)>(0x004796C0);
+    // Reliable; a null player sends to every in-game client
+    static auto& send_team_scores_packet = addr_as_ref<void(Player* player)>(0x00472130);
     static auto& multi_find_player_by_addr = addr_as_ref<Player*(const NetAddr& addr)>(0x00484850);
     static auto& multi_find_player_by_id = addr_as_ref<Player*(uint8_t id)>(0x00484890);
     static auto& multi_time_limit = addr_as_ref<float>(0x0064EC4C);

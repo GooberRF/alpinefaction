@@ -189,6 +189,10 @@ add_packfile(alpinefaction.vpp
     images/af_wh_sal_take.tga
     images/af_wh_sal_base_blue.tga
     images/af_wh_sal_base_red.tga
+    images/af_wh_medallion_red.tga
+    images/af_wh_medallion_blue.tga
+    images/af_wh_medallion_neutral.tga
+    images/af_wh_medallion_lock.tga
     images/afsbi_spawned.tga
     images/afsbi_spawned_1.tga
     images/afsbi_dead.tga
@@ -199,6 +203,12 @@ add_packfile(alpinefaction.vpp
     images/afsbi_brow_1.tga
     images/afsbi_idle.tga
     images/afsbi_idle_1.tga
+    images/afsbi_btn_mute.tga
+    images/afsbi_btn_kick.tga
+    images/afsbi_btn_ban.tga
+    images/afsbi_btn_swap.tga
+    images/afsbi_btn_spec.tga
+    images/afsbi_btn_ready.tga
     images/scope_zoom_corner256_red.tga
     images/128blackcircle.tga
     images/ass2_scope_circle.tga

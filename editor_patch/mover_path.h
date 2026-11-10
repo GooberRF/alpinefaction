@@ -54,3 +54,6 @@ void mover_path_preview_close();
 bool mover_path_preview_shown();
 bool mover_path_preview_hides(const BrushNode& brush);
 void mover_path_render(CDedLevel* level);
+
+// Warns in RED's log about a Payload_Handler setup the game would reject or play wrongly.
+void mover_path_check_payload(CDedLevel& level);

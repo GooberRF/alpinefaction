@@ -14,6 +14,7 @@
 #include <sstream>
 #include <numeric>
 #include <unordered_set>
+#include <set>
 #include <array>
 #include <utility>
 #include <windows.h>
@@ -37,6 +38,7 @@
 #include "gungame.h"
 #include "salvage.h"
 #include "scavenger.h"
+#include "payload.h"
 #include "vehicles/vehicle.h"
 #include "vehicles/vehicle_tracers.h"
 #include "bots/server_bots.h"
@@ -110,6 +112,11 @@ const std::vector<std::string> g_rcon_cmd_masterlist = {
     "sv_bot_add",
     "sv_bot_remove",
     "sv_bot_list",
+    "sv_swap_team",
+    "sv_force_spectate",
+    "sv_toggle_ready",
+    "sv_force_unspectate",
+    "sv_mute_chat",
 };
 
 std::vector<rf::AlpineRespawnPoint> g_alpine_respawn_points;
@@ -945,6 +952,10 @@ std::optional<rf::NetGameType> resolve_gametype_from_name(std::string_view gamet
         string_iequals(gametype_name, "scavenger")) {
         return rf::NetGameType::NG_TYPE_SCAV;
     }
+    if (string_iequals(gametype_name, "pay") ||
+        string_iequals(gametype_name, "payload")) {
+        return rf::NetGameType::NG_TYPE_PAY;
+    }
 
     return std::nullopt;
 }
@@ -1268,6 +1279,11 @@ bool handle_server_chat_command(std::string_view server_command, rf::Player* sen
         handle_drop_flag_request(sender);
     }
     else if (cmd_name == "coinflip") {
+        // The result goes to everyone, so it would let a muted player talk.
+        if (server_player_chat_muted(sender)) {
+            af_send_automated_chat_msg("You are muted on this server.", sender);
+            return true;
+        }
         std::uniform_int_distribution<int> dist(0, 1);
         const char* result = dist(g_rng) == 0 ? "HEADS" : "TAILS";
         af_broadcast_automated_chat_msg(std::format("Server is flipping a coin... the result is {}", result));
@@ -2393,6 +2409,9 @@ FunHook<bool (const char*, int)> multi_is_level_matching_game_type_hook{
         else if (ng_type == rf::NetGameType::NG_TYPE_ESC) {
             return string_istarts_with(filename, "esc");
         }
+        else if (ng_type == rf::NetGameType::NG_TYPE_PAY) {
+            return string_istarts_with(filename, "pay");
+        }
         // Gametypes that can reasonably be played on essentially any MP level.
         else if (multi_game_type_uses_any_level(static_cast<rf::NetGameType>(ng_type))) {
             return multi_level_name_matches_any_mp_prefix(filename);
@@ -2888,28 +2907,43 @@ static bool fill_match_with_join_bots()
     return true;
 }
 
+namespace
+{
+struct ReadyRefusal
+{
+    std::string_view to_player;
+    std::string_view to_admin;
+};
+
+std::optional<ReadyRefusal> ready_player_refusal(rf::Player* player)
+{
+    const auto& team_ready_list =
+        (player->team == 0) ? g_match_info.ready_players_red : g_match_info.ready_players_blue;
+    if (team_ready_list.contains(player)) {
+        return ReadyRefusal{"You are already ready.", "that player is already ready"};
+    }
+    if (team_ready_list.size() >= static_cast<size_t>(g_match_info.team_size)) {
+        return ReadyRefusal{"Your team is full.", "their team is full"};
+    }
+    if (match_human_slots_full()) {
+        return ReadyRefusal{"The match is full.", "the match is full"};
+    }
+    return std::nullopt;
+}
+} // namespace
+
 void add_ready_player(rf::Player* player)
 {
     auto& team_ready_list = (player->team == 0) ? g_match_info.ready_players_red : g_match_info.ready_players_blue;
     const std::string_view team_name = (player->team == 0) ? "RED" : "BLUE";
 
-    if (team_ready_list.contains(player)) {
-        af_send_automated_chat_msg("You are already ready.", player);
+    if (const auto refusal = ready_player_refusal(player)) {
+        af_send_automated_chat_msg(refusal->to_player, player);
         return;
     }
 
     const auto match_team_size = static_cast<size_t>(g_match_info.team_size);
-
-    if (team_ready_list.size() >= match_team_size) {
-        af_send_automated_chat_msg("Your team is full.", player);
-        return;
-    }
-
     const int join_bots = match_join_bots();
-    if (match_human_slots_full()) {
-        af_send_automated_chat_msg("The match is full.", player);
-        return;
-    }
 
     team_ready_list.insert(player);
     // Ready players are never idle, so a warning given before readying up must not kick
@@ -3419,6 +3453,136 @@ bool humans_vs_bots_active()
         && g_alpine_server_config_active_rules.mutators.humans_vs_bots_enabled;
 }
 
+static std::optional<std::string> player_move_refusal(rf::Player* player)
+{
+    if (player == rf::local_player) {
+        return "that player is the listen server host";
+    }
+    if (player->is_non_participant()) {
+        return "that player is not participating";
+    }
+    if (is_player_ready(player)) {
+        return "that player is ready for a match";
+    }
+    if (is_player_in_match(player)) {
+        return "that player is in a match";
+    }
+    // A kill during an active round is an elimination.
+    rf::Entity* const entity = rf::entity_from_handle(player->entity_handle);
+    if (rounds_is_active() && entity && !rf::entity_is_dying(entity)) {
+        return "that player is alive in an active round";
+    }
+    return std::nullopt;
+}
+
+static void kill_player_for_move(rf::Player* player)
+{
+    if (rf::Entity* const entity = rf::entity_from_handle(player->entity_handle)) {
+        // obj_kill carries the victim's life: if positive, a client plays a pain sound and reads them as alive.
+        entity->life = -1000.0f;
+        rounds_kill_entity_silent(entity);
+    }
+}
+
+std::optional<std::string> server_swap_player_team(rf::Player* player)
+{
+    if (!multi_is_team_game_type()) {
+        return "this is not a team game";
+    }
+    if (humans_vs_bots_active()) {
+        return "Humans vs. Bots sets the teams";
+    }
+    if (auto refusal = player_move_refusal(player)) {
+        return refusal;
+    }
+    // Before the kill: dying can itself trigger an auto balance swap.
+    const rf::ubyte new_team = player->team == rf::TEAM_RED ? rf::TEAM_BLUE : rf::TEAM_RED;
+    kill_player_for_move(player);
+    assign_player_to_team(player, new_team);
+    return std::nullopt;
+}
+
+std::optional<std::string> server_force_player_spectate(rf::Player* player)
+{
+    if (player->is_bot) {
+        return "that player cannot spectate";
+    }
+    if (player->is_spectator) {
+        return "that player is already spectating";
+    }
+    if (!is_player_minimum_af_client_version(player, 1, 5, 0)) {
+        return "that player's client is too old";
+    }
+    if (auto refusal = player_move_refusal(player)) {
+        return refusal;
+    }
+    // Marked here so the spawn gate turns down a Force Respawn request sent the frame the player dies.
+    af_set_player_spectatee(player, nullptr, true);
+    kill_player_for_move(player);
+    af_send_force_spectate(player, true);
+    return std::nullopt;
+}
+
+std::optional<std::string> server_force_player_unspectate(rf::Player* player)
+{
+    if (!player->is_spectator) {
+        return "that player is not spectating";
+    }
+    if (gt_is_pit()) {
+        return "Pit puts queued players back in spectate";
+    }
+    if (!is_player_minimum_af_client_version(player, 1, 5, 0)) {
+        return "that player's client is too old";
+    }
+    update_player_active_status(player);
+    af_set_player_spectatee(player, nullptr, false);
+    af_send_force_spectate(player, false);
+    return std::nullopt;
+}
+
+std::optional<std::string> server_toggle_player_ready(rf::Player* player)
+{
+    if (!g_match_info.pre_match_active) {
+        return "no match is in ready-up";
+    }
+    if (player->is_bot || player->is_spectator || player->is_non_participant() || player == rf::local_player
+        || player->version_info.software != ClientSoftware::AlpineFaction) {
+        return "that player cannot ready for matches";
+    }
+    // Checked here so the refusal reaches the admin rather than the target.
+    if (!get_ready_status(player)) {
+        if (const auto refusal = ready_player_refusal(player)) {
+            return std::string{refusal->to_admin};
+        }
+    }
+    toggle_ready_status(player);
+    return std::nullopt;
+}
+
+// Held by IP so it survives reconnects, until unmuted or the server restarts.
+static std::set<rf::IpAddr> g_chat_muted;
+
+bool server_player_chat_muted(const rf::Player* player)
+{
+    // Server bots share 127.0.0.1 with local clients.
+    return !player->is_bot && player->net_data && g_chat_muted.contains(player->net_data->addr.ip_addr);
+}
+
+std::optional<std::string> server_toggle_player_chat_mute(rf::Player* player)
+{
+    if (player->is_bot || !player->net_data || player == rf::local_player) {
+        return "that player cannot be muted";
+    }
+    const rf::IpAddr ip = player->net_data->addr.ip_addr;
+    const bool mute = g_chat_muted.insert(ip).second;
+    if (!mute) {
+        g_chat_muted.erase(ip);
+    }
+    af_send_automated_chat_msg(
+        std::format("Your chat has been {} on this server.", mute ? "muted" : "unmuted"), player);
+    return std::nullopt;
+}
+
 // Browsers are neither human nor bot, so they must never reach this.
 static rf::ubyte hvb_team_for_player(const rf::Player* player)
 {
@@ -3831,6 +3995,8 @@ void server_resend_client_bot_personalities()
 
 void server_reliable_socket_ready(rf::Player* player)
 {
+    send_player_roles_to(player);
+
     // Send bot config once the reliable connection is ready.
     if (player->is_bot) {
         // Refuse to give a profile if there are already enough bots for the ideal player count
@@ -3997,6 +4163,7 @@ static int pick_weaker_team(const bool for_bot)
         break;
     case rf::NG_TYPE_DC:
     case rf::NG_TYPE_KOTH:
+    case rf::NG_TYPE_PAY:
         red_score = multi_koth_get_red_team_score();
         blue_score = multi_koth_get_blue_team_score();
         break;
@@ -4591,6 +4758,10 @@ bool round_is_tied(rf::NetGameType game_type)
     case rf::NG_TYPE_TBAG: {
         return bagman_get_red_team_score() == bagman_get_blue_team_score();
     }
+    case rf::NG_TYPE_PAY: {
+        // Payload overtime is its own rule, kept by payload_round_over
+        return false;
+    }
     case rf::NG_TYPE_SAL:
     case rf::NG_TYPE_SCAV: {
         const int red_score = salvage_get_red_team_score();
@@ -4712,6 +4883,12 @@ FunHook<void()> multi_check_for_round_end_hook{
                 if (esc_all_points_owned_by_one_team()) {
                     round_over = true;
                 }
+                break;
+            }
+            case rf::NG_TYPE_PAY: {
+                round_over = payload_round_over(time_up);
+                // A finale in payload overtime is the attackers' win, not a time limit end
+                time_up = time_up && !payload_finale_reached();
                 break;
             }
             case rf::NG_TYPE_BAG: {
@@ -5361,8 +5538,12 @@ CodeInjection entity_maybe_die_patch{
         rf::Player* player = rf::player_from_entity_handle(ep->handle);
 
         const bool is_wipeout = gt_is_wipeout();
-        if (player && (g_alpine_server_config_active_rules.spawn_delay.enabled || is_wipeout)) {
-            int spawn_delay_ms = g_alpine_server_config_active_rules.spawn_delay.base_value;
+        const SpawnDelayConfig& spawn_delay = g_alpine_server_config_active_rules.spawn_delay;
+        if (player && (spawn_delay.enabled || is_wipeout)) {
+            const int team_delay_ms =
+                std::clamp(spawn_delay.base_value + payload_respawn_extra_ms(player->team),
+                           SpawnDelayConfig::min_delay_ms, SpawnDelayConfig::max_delay_ms);
+            int spawn_delay_ms = team_delay_ms;
 
             // Wipeout: the respawn delay escalates by the base value on each
             // death this round (5s, 10s, 15s...), resetting at round start. The
@@ -5370,7 +5551,17 @@ CodeInjection entity_maybe_die_patch{
             if (is_wipeout) {
                 ++player->wipeout_round_deaths;
                 spawn_delay_ms *= player->wipeout_round_deaths;
-                spawn_delay_ms = std::min(spawn_delay_ms, 60000); // max 1 min
+                spawn_delay_ms = std::min(spawn_delay_ms, SpawnDelayConfig::max_delay_ms);
+            }
+
+            // Waves fall on multiples of the team's delay, so players who die close together come back together.
+            // They run on the respawn timer's own clock, so the wave they aim for is exact.
+            if (spawn_delay.enabled && spawn_delay.wave_respawns) {
+                const int past_wave_ms = (rf::timer::game_time_ms + spawn_delay_ms) % team_delay_ms;
+                if (past_wave_ms > 0) {
+                    spawn_delay_ms =
+                        std::min(spawn_delay_ms + team_delay_ms - past_wave_ms, SpawnDelayConfig::max_delay_ms);
+                }
             }
 
             player->respawn_timer.set(spawn_delay_ms);
@@ -5830,6 +6021,7 @@ void server_do_frame()
     match_do_frame();
     sync_match_state_to_clients();
     process_delayed_kicks();
+    server_player_roles_do_frame();
     pit_do_frame();
     wipeout_do_frame();
     gungame_do_frame();
@@ -6017,6 +6209,10 @@ int server_spray_cooldown_ms()
     return g_alpine_server_config.spray_config.cooldown_ms;
 }
 
+// Lets dev builds spawn, play and vote on a match mode server.
+#define MATCH_MODE_ALLOW_DEV_BUILDS 0
+static_assert(!MATCH_MODE_ALLOW_DEV_BUILDS || VERSION_TYPE != VERSION_TYPE_RELEASE);
+
 std::tuple<bool, int, bool, bool> server_features_require_alpine_client()
 {
     bool requires_alpine = false; // alpine required to spawn
@@ -6030,7 +6226,7 @@ std::tuple<bool, int, bool, bool> server_features_require_alpine_client()
 
     if (g_alpine_server_config.vote_match.enabled) {
         requires_alpine = true;
-        require_release_version = true;
+        require_release_version = !MATCH_MODE_ALLOW_DEV_BUILDS;
         min_minor_version = std::max(min_minor_version, match_mode_minimum_trusted_minor_version);
     }
 
@@ -6073,7 +6269,7 @@ std::tuple<bool, int, bool, bool> server_features_require_alpine_client()
         min_minor_version = std::max(min_minor_version, 4);
     }
 
-    if (g_alpine_server_config_active_rules.game_type == rf::NG_TYPE_SCAV) {
+    if (static_cast<int>(g_alpine_server_config_active_rules.game_type) >= rf::NG_TYPE_SCAV) {
         requires_alpine = true;
         hard_reject = true;
         min_minor_version = std::max(min_minor_version, 5);

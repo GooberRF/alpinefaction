@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <unordered_map>
 #include <unordered_set>
+#include <common/payload.h>
 #include "../rf/math/vector.h"
 #include "../rf/math/matrix.h"
 #include "../rf/os/string.h"
@@ -230,6 +231,66 @@ struct ScavengerConfig
         if (std::isfinite(in_meters)) {
             zone_radius = std::clamp(in_meters, 1.0f, 10.0f);
         }
+    }
+};
+
+// The server's Payload settings. The optionals override the level's rules, unset meaning the level's value.
+struct PayloadConfig
+{
+    static constexpr float max_setup_time = 60.0f;
+    float setup_time = 20.0f; // the cart stays put this long at the round's start
+    std::optional<float> checkpoint_time_bonus; // also wins over a checkpoint's own bonus
+    std::optional<float> overtime_grace;
+    std::optional<float> heal_per_tick; // per second
+
+    struct RespawnExtrasOverride
+    {
+        std::optional<float> base;
+        std::optional<float> per_checkpoint;
+        std::optional<float> final_stretch;
+
+        payload::RespawnExtras applied_to(payload::RespawnExtras extras) const
+        {
+            extras.base = base.value_or(extras.base);
+            extras.per_checkpoint = per_checkpoint.value_or(extras.per_checkpoint);
+            extras.final_stretch = final_stretch.value_or(extras.final_stretch);
+            return extras;
+        }
+    };
+    RespawnExtrasOverride attacker_respawn;
+    RespawnExtrasOverride defender_respawn;
+
+    // Non-finite input keeps the current value
+    static void set_clamped(std::optional<float>& out, float in, float lo, float hi)
+    {
+        if (std::isfinite(in)) {
+            out = std::clamp(in, lo, hi);
+        }
+    }
+
+    void set_checkpoint_time_bonus(float in_seconds)
+    {
+        set_clamped(checkpoint_time_bonus, in_seconds, 0.0f, payload::max_checkpoint_time_bonus);
+    }
+
+    void set_overtime_grace(float in_seconds)
+    {
+        set_clamped(overtime_grace, in_seconds, 0.0f, payload::max_overtime_grace);
+    }
+
+    void set_heal_per_tick(float in_amount)
+    {
+        set_clamped(heal_per_tick, in_amount, 0.0f, payload::max_heal_per_second);
+    }
+
+    void set_setup_time(float in_seconds)
+    {
+        setup_time = payload::clamp_rule(in_seconds, 0.0f, max_setup_time, setup_time);
+    }
+
+    static void set_respawn_extra(std::optional<float>& out, float in_seconds)
+    {
+        set_clamped(out, in_seconds, -payload::max_respawn_extra, payload::max_respawn_extra);
     }
 };
 
@@ -473,15 +534,19 @@ struct SpawnLifeConfig
 
 struct SpawnDelayConfig
 {
+    static constexpr int min_delay_ms = 250;
+    static constexpr int max_delay_ms = 60000;
     bool enabled = false;
     int base_value = 5000;
+    // Each team respawns together, on multiples of its delay since the level began
+    bool wave_respawns = false;
 
     // =============================================
 
     void set_base_value(float in_value)
     {
         int value_int = static_cast<int>(in_value * 1000);
-        base_value = std::clamp(value_int, 250, 60000);
+        base_value = std::clamp(value_int, min_delay_ms, max_delay_ms);
     }
 };
 
@@ -864,6 +929,7 @@ struct AlpineServerConfigRules
     BagmanConfig bagman;
     SalvageConfig salvage;
     ScavengerConfig scavenger;
+    PayloadConfig payload;
     std::map<std::string, std::string> item_replacements;
     std::map<std::string, int> item_respawn_time_overrides;
     DelayedItemsConfig delayed_items;
@@ -997,7 +1063,8 @@ struct AlpineServerConfigRules
             case rf::NetGameType::NG_TYPE_WO:      return rounds.wins_to_take_match();
             case rf::NetGameType::NG_TYPE_RUN:
             case rf::NetGameType::NG_TYPE_REV:
-            case rf::NetGameType::NG_TYPE_ESC:     return std::nullopt;
+            case rf::NetGameType::NG_TYPE_ESC:
+            case rf::NetGameType::NG_TYPE_PAY:     return std::nullopt;
             default:                               return individual_kill_limit;
         }
     }
@@ -1021,7 +1088,8 @@ struct AlpineServerConfigRules
             case rf::NetGameType::NG_TYPE_WO:      rounds.set_wins_to_take_match(count); return true;
             case rf::NetGameType::NG_TYPE_RUN:
             case rf::NetGameType::NG_TYPE_REV:
-            case rf::NetGameType::NG_TYPE_ESC:     return false;
+            case rf::NetGameType::NG_TYPE_ESC:
+            case rf::NetGameType::NG_TYPE_PAY:     return false;
             default:                               set_individual_kill_limit(count); return true;
         }
     }
@@ -1285,6 +1353,7 @@ enum class UpcomingGameTypeSelection {
 
 rf::NetGameType get_upcoming_game_type();
 UpcomingGameTypeSelection get_upcoming_game_type_selection();
+extern const std::vector<std::string> g_rcon_cmd_masterlist;
 bool is_rcon_command_masterlisted(std::string_view command);
 bool set_upcoming_game_type(rf::NetGameType gt, UpcomingGameTypeSelection selection = UpcomingGameTypeSelection::Rotation);
 void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigRules& rules);
@@ -1363,6 +1432,17 @@ void server_vote_on_player_leave(rf::Player* player);
 void server_vote_on_limbo_state_enter();
 void process_delayed_kicks();
 void kick_player_delayed(const rf::Player* player);
+bool server_kick_player(rf::Player* player);
+bool server_ban_player(rf::Player* player);
+// The player actions return the reason they were refused.
+std::optional<std::string> server_run_player_action(rf::Player* player, uint8_t action);
+std::optional<std::string> server_swap_player_team(rf::Player* player);
+std::optional<std::string> server_force_player_spectate(rf::Player* player);
+std::optional<std::string> server_force_player_unspectate(rf::Player* player);
+std::optional<std::string> server_toggle_player_ready(rf::Player* player);
+std::optional<std::string> server_toggle_player_chat_mute(rf::Player* player);
+bool server_player_chat_muted(const rf::Player* player);
+std::string run_player_admin_rcon_command(std::string_view command, std::string_view target);
 bool ends_with(const rf::String& str, const std::string& suffix);
 const AlpineServerConfig& server_get_alpine_config();
 bool server_is_modded();

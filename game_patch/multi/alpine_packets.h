@@ -1,10 +1,12 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <variant>
 #include <vector>
 #include <common/rfproto.h>
@@ -52,8 +54,9 @@ enum class af_packet_type : uint8_t
     af_vehicle_orient = 0x68,           // Alpine 1.5
     af_vehicle_factory_state = 0x69,    // Alpine 1.5
     af_scavenger_state = 0x6A,          // Alpine 1.5
-    af_obj_update_delta = 0x6B,         // Alpine 1.5, server -> client, see multi/obj_update_delta.h
-    af_obj_update_ack = 0x6C,           // Alpine 1.5, client -> server
+    af_payload_state = 0x6B,            // Alpine 1.5
+    af_obj_update_delta = 0x6C,         // Alpine 1.5, server -> client, see multi/obj_update_delta.h
+    af_obj_update_ack = 0x6D,           // Alpine 1.5, client -> server
 };
 
 struct af_obj_update_ack_packet
@@ -148,6 +151,7 @@ enum class af_client_req_type : uint8_t
     af_req_vehicle_use = 0xC,   // Alpine 1.5 (5 bytes: vehicle server handle + seat index)
     af_req_vehicle_crush = 0xD, // Alpine 1.5 (13 bytes: VehicleCrushReqPayload)
     af_req_zipline_state = 0xE, // Alpine 1.5 (6 bytes: rope_uid, riding, dir)
+    af_req_rcon_player_action = 0xF, // Alpine 1.5 (2 bytes: RconPlayerActionReqPayload)
 };
 
 // Frozen wire constants, values can NEVER be reordered or changed.
@@ -384,11 +388,84 @@ struct VehicleCrushReqPayload
 };
 static_assert(sizeof(VehicleCrushReqPayload) == 13);
 
+// RconPlayerActionReqPayload::action. FROZEN wire constants.
+enum af_rcon_player_action : uint8_t
+{
+    AF_RCON_PLAYER_KICK = 0,
+    AF_RCON_PLAYER_BAN = 1,
+    AF_RCON_PLAYER_SWAP_TEAM = 2,
+    AF_RCON_PLAYER_FORCE_SPECTATE = 3,
+    AF_RCON_PLAYER_TOGGLE_READY = 4,
+    AF_RCON_PLAYER_FORCE_UNSPECTATE = 5,
+    AF_RCON_PLAYER_MUTE_CHAT = 6,
+};
+
+// The rcon command each action is permission-checked and reported as.
+struct AfRconPlayerActionCommand
+{
+    af_rcon_player_action action;
+    std::string_view command;
+};
+
+inline constexpr std::array<AfRconPlayerActionCommand, 7> af_rcon_player_action_commands{{
+    {AF_RCON_PLAYER_KICK, "kick"},
+    {AF_RCON_PLAYER_BAN, "ban"},
+    {AF_RCON_PLAYER_SWAP_TEAM, "sv_swap_team"},
+    {AF_RCON_PLAYER_FORCE_SPECTATE, "sv_force_spectate"},
+    {AF_RCON_PLAYER_TOGGLE_READY, "sv_toggle_ready"},
+    {AF_RCON_PLAYER_FORCE_UNSPECTATE, "sv_force_unspectate"},
+    {AF_RCON_PLAYER_MUTE_CHAT, "sv_mute_chat"},
+}};
+static_assert(af_rcon_player_action_commands.size() == AF_RCON_PLAYER_MUTE_CHAT + 1);
+static_assert([] {
+    for (size_t i = 0; i < af_rcon_player_action_commands.size(); ++i) {
+        if (static_cast<size_t>(af_rcon_player_action_commands[i].action) != i) {
+            return false;
+        }
+    }
+    return true;
+}(), "af_rcon_player_action_commands must be indexed by action");
+
+constexpr std::optional<std::string_view> af_rcon_player_action_command(uint8_t action)
+{
+    if (action >= af_rcon_player_action_commands.size()) {
+        return std::nullopt;
+    }
+    return af_rcon_player_action_commands[action].command;
+}
+
+constexpr std::optional<af_rcon_player_action> af_rcon_player_action_from_command(std::string_view command)
+{
+    for (const AfRconPlayerActionCommand& entry : af_rcon_player_action_commands) {
+        if (entry.command == command) {
+            return entry.action;
+        }
+    }
+    return std::nullopt;
+}
+
+// af_sreq_player_roles per-player flags. FROZEN wire constants.
+enum af_player_role_flags : uint8_t
+{
+    AF_PLAYER_ROLE_RCON_HOLDER = 1 << 0,
+    AF_PLAYER_ROLE_SERVER_HOST = 1 << 1,
+    AF_PLAYER_ROLE_READY = 1 << 2,
+    AF_PLAYER_ROLE_CHAT_MUTED = 1 << 3,
+};
+
+struct RconPlayerActionReqPayload
+{
+    uint8_t target_player_id = 0;
+    uint8_t action = AF_RCON_PLAYER_KICK;
+};
+static_assert(sizeof(RconPlayerActionReqPayload) == 2);
+
 using af_client_payload = std::variant<HandicapPayload, SprayReqPayload, CharacterPayload,
                                        ReadyReqPayload, PitQueueReqPayload, VoteCastReqPayload,
                                        VoteOptionsReqPayload, JetpackStateReqPayload,
                                        StatsPsskPayload, VehicleUseReqPayload,
-                                       VehicleCrushReqPayload, ZiplineStateReqPayload, std::monostate>;
+                                       VehicleCrushReqPayload, ZiplineStateReqPayload,
+                                       RconPlayerActionReqPayload, std::monostate>;
 
 struct af_client_req_packet
 {
@@ -415,6 +492,10 @@ enum class af_server_req_type : uint8_t
     af_sreq_match_state = 0xD,         // Alpine 1.5 (1 byte: af_match_state_flags)
     af_sreq_zipline_state = 0xE,       // Alpine 1.5 (7 bytes: player_id, riding, dir, rope_uid)
     af_sreq_rope_states = 0xF,         // Alpine 1.5 (variable: u16 count, count x {i32 rope_uid, u8 on})
+    af_sreq_reserve_ammo = 0x10,       // Alpine 1.5 (3 bytes: weapon_type, reserve)
+    af_sreq_rcon_state = 0x11,         // Alpine 1.5 (variable: is_holder, command count, commands)
+    af_sreq_force_spectate = 0x12,     // Alpine 1.5 (1 byte: 1 = enter spectate, 0 = leave)
+    af_sreq_player_roles = 0x13,       // Alpine 1.5 (variable: count, {player_id, af_player_role_flags})
 };
 
 struct ShouldGibPayload
@@ -554,10 +635,19 @@ struct AwardPayload
 };
 static_assert(sizeof(AwardPayload) == 2);
 
+// The server topped up the reserve of the recipient's weapon, which its client would not otherwise learn until it
+// reloads; the Payload cart's resupply sends it
+struct ReserveAmmoPayload
+{
+    uint8_t weapon_type = 0;
+    uint16_t reserve = 0;
+};
+static_assert(sizeof(ReserveAmmoPayload) == 3);
+
 using af_server_req_payload = std::variant<ShouldGibPayload, TeleportEntityPayload, SprayPayload,
                                            ReadyPromptPayload, PitQueueStatePayload, EntityOnFirePayload,
                                            EntityJetpackPayload, RiotShieldStatePayload, AwardPayload,
-                                           MatchStatePayload, ZiplineStatePayload>;
+                                           MatchStatePayload, ZiplineStatePayload, ReserveAmmoPayload>;
 
 struct af_server_req_packet
 {
@@ -683,6 +773,29 @@ struct af_scavenger_state_packet
 };
 static_assert(sizeof(af_scavenger_state_packet) == 59);
 static_assert(offsetof(af_scavenger_state_packet, zone_x) == sizeof(af_salvage_state_packet));
+
+// The Payload cart, server -> client. Sent reliably on every change (pusher lists at most every 100 ms) and
+// unreliably while the cart moves or after a heal tick, so the client extrapolates distance with speed in between.
+constexpr uint8_t af_payload_state_flag_overtime = 0x1;
+constexpr uint8_t af_payload_state_flag_heals = 0x2;
+constexpr uint8_t af_payload_state_flag_setup = 0x4;
+constexpr uint16_t af_payload_state_no_countdown = 0xFFFF;
+constexpr uint8_t af_payload_state_max_ids = 64;
+struct af_payload_state_packet
+{
+    RF_GamePacketHeader header;
+    uint8_t sequence;          // wraps; a client ignores a packet older than the last it applied
+    uint8_t state;             // PayloadCartState
+    uint8_t flags;             // af_payload_state_flag_*
+    uint8_t heal_serial;       // wraps; changes on each heal tick with a live pusher
+    uint8_t next_checkpoint;   // checkpoints the cart has passed
+    uint16_t countdown_ds;     // payload_countdown_seconds, or af_payload_state_no_countdown
+    float distance;            // along the track
+    float speed;               // signed, m/s
+    uint8_t num_pushers;
+    // uint8_t pusher_ids[num_pushers], uint8_t num_blockers, uint8_t blocker_ids[num_blockers] appended on the wire
+};
+static_assert(sizeof(af_payload_state_packet) == sizeof(RF_GamePacketHeader) + 16);
 
 // Seat occupancy, server -> client. Handles are server handles. The packet states the hull's FULL
 // occupancy rather than an enter/exit event, so a receiver converges on it with no event history.
@@ -1142,6 +1255,7 @@ void af_send_zipline_state(uint8_t player_id, int32_t rope_uid, bool riding, int
 void af_send_rope_states_to(rf::Player* player, bool ziplines_only);
 void af_send_riot_shield_state(uint32_t obj_handle, float life, const rf::Vector3& impact_pos);
 void af_send_award(rf::Player* player, uint8_t award_id, uint8_t victim_player_id);
+void af_send_reserve_ammo(rf::Player* player, int weapon_type, int reserve);
 void af_send_award_for_demo(rf::Player* recorder, uint8_t award_id, uint8_t victim_player_id, uint8_t earner_id);
 void af_send_teleport_entity_req(uint32_t obj_handle, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::Vector3& vel);
 void af_send_spray_to_player(uint8_t player_id, uint16_t texture_id, const rf::Vector3& pos, const rf::Vector3& normal, uint8_t flags, rf::Player* player);
@@ -1166,6 +1280,9 @@ void af_process_salvage_state_packet(const void* data, size_t len, const rf::Net
 void af_send_scavenger_state_packet(rf::Player* player);
 void af_send_scavenger_state_packet_to_all();
 void af_process_scavenger_state_packet(const void* data, size_t len, const rf::NetAddr&);
+void af_send_payload_state_packet(rf::Player* player);
+void af_send_payload_state_packet_to_all(bool reliable);
+void af_process_payload_state_packet(const void* data, size_t len, const rf::NetAddr&);
 void af_send_vehicle_state_packet(rf::Player* player, int vehicle_handle, const int32_t* seat_rider,
                                   uint8_t seat_count, uint8_t changed_seat,
                                   const af_vehicle_state_attrs& attrs);
@@ -1238,6 +1355,7 @@ void af_send_server_cfg_request();
 void af_send_spray_request(uint16_t texture_id, const rf::Vector3& pos, const rf::Vector3& normal);
 void af_send_ready_request(uint8_t action);      // 0 = unready, 1 = ready, 2 = toggle
 void af_send_pit_queue_request(uint8_t action);  // 0 = leave, 1 = join, 2 = toggle
+void af_send_rcon_player_action(uint8_t target_player_id, af_rcon_player_action action);
 void af_send_stats_pssk(const std::string& pssk);
 // vehicle_handle -1 = exit request
 void af_send_vehicle_use_request(int vehicle_handle, uint8_t seat_index);
@@ -1272,6 +1390,10 @@ void af_send_active_mutators_to_all();
 void af_send_ready_prompt(rf::Player* player, uint8_t state); // 0/1/2 (see ReadyPromptPayload)
 void af_send_pit_queue_state(rf::Player* player, uint8_t flags, uint8_t pos, uint8_t total);
 void af_send_match_state(rf::Player* player, uint8_t flags); // af_match_state_flags
+void af_send_rcon_state(rf::Player* player, bool is_holder, const std::vector<std::string>& commands);
+void af_send_force_spectate(rf::Player* player, bool enter);
+void af_set_player_spectatee(rf::Player* spectator, rf::Player* new_target, bool in_spectate);
+void af_send_player_roles(rf::Player* player, const std::vector<std::pair<uint8_t, uint8_t>>& roles);
 
 // server bot control
 void af_send_bot_control_simple(rf::Player* player, af_bot_control_type subtype);

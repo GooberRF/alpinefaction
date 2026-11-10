@@ -35,7 +35,9 @@ Version 1.5.0 (Trillium): Not yet released
 - Add server-side bots, which run inside the dedicated or listen server process in addition to (or instead of) bot clients
   - `server_bots` ADS option (0-31) sets how many server bots join; they use the `bot_profiles` profiles and follow `ideal_player_count` like bot clients
   - Add `sv_bot_add [profile_index] [red|blue]`, `sv_bot_remove <name|all>` and `sv_bot_list` server console commands, which also work through rcon
-- Add new multiplayer game type: Scavenger (`SCAV`)
+- Add new multiplayer game types:
+  - Scavenger (`SCAV`)
+  - Payload (`PAY`)
 
 [@GooberRF](https://github.com/GooberRF) & [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add multiplayer vehicles and turrets
@@ -58,6 +60,7 @@ Version 1.5.0 (Trillium): Not yet released
 [@GooberRF](https://github.com/GooberRF)
 - Notify players in a server that is recording demos
 - Add `level_message` dedicated server config section to broadcast a message to all players when a level loads, set globally or per level (`$LEVEL` is replaced with the level name)
+- Add `wave_respawns` option to the `spawn_delay` dedicated server config section to respawn each team together in waves
 - Restore cut first person weapon aim sway, toggleable with `cl_weaponsway`
 - Add `cl_freelookslide` to scale the acceleration and deceleration slide of the freelook camera
 - Add terms of use and notices document to installer
@@ -216,6 +219,15 @@ Version 1.5.0 (Trillium): Not yet released
 - Raise minimum `maxfps` from 1 to 10, for both the client and the dedicated server
 - Limit `r_gamma` to 0.7-2.2
 - Allow pasting text with `Ctrl+V` into vote panel text boxes
+- Show control points as spinning team medallions with a notched capture progress ring
+- Add `cl_wh_tethers`, `cl_wh_pushzone`, and `cl_wh_cartstatus` commands to toggle the world HUD beams from the players pushing or blocking the cart in Payload, the ring around it that shows where to push, and the status text over it
+- Add a scoreboard cursor to scroll long player lists and view player details
+- Add mute and rcon admin buttons to the scoreboard player popout
+- Add `sv_swap_team`, `sv_force_spectate`, `sv_force_unspectate` and `sv_toggle_ready` commands, usable over rcon
+- Add `sv_mute_chat` command to mute a player's chat for the whole server, usable over rcon
+- Add `ui_scoreboard_cursor` and `ui_scoreboard_cursor_hint` console commands to toggle the scoreboard cursor and its hint text
+- Balance scoreboard columns for large player counts
+- Allow match votes on servers whose base game type is not a team type
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color

@@ -107,6 +107,12 @@ set(SRCS
     hud/hud_world.h
     hud/scavenger_zone.h
     hud/scavenger_zone.cpp
+    hud/zone_marker.h
+    hud/zone_marker.cpp
+    hud/payload_world.h
+    hud/payload_world.cpp
+    hud/world_medallion.h
+    hud/world_medallion.cpp
     hud/minimap.cpp
     hud/minimap.h
     hud/remote_server_cfg_ui.cpp
@@ -151,6 +157,8 @@ set(SRCS
     multi/salvage.cpp
     multi/scavenger.h
     multi/scavenger.cpp
+    multi/payload.h
+    multi/payload.cpp
     multi/vehicles/vehicle.h
     multi/vehicles/vehicle.cpp
     multi/vehicles/vehicle_internal.h

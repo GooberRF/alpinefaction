@@ -69,6 +69,10 @@ inline constexpr int kWaypointRecoveryRepathMs = 125;
 inline constexpr int kWaypointRecoveryDetourAttempts = 24;
 inline constexpr int kSalvageStageMaxRouteFails = 3;
 inline constexpr float kSalvageHoldRadius = kWaypointReachRadius * 2.0f;
+// How far up the track from an unpushed cart defenders wait.
+inline constexpr float kPayloadHoldAheadDistance = 10.0f;
+// Tight, so a defender waiting up the track does not stop on it.
+inline constexpr float kPayloadHoldAheadArrivalRadius = kWaypointReachRadius * 0.5f;
 inline constexpr int kPursuitRouteFailureLimit = 4;
 inline constexpr int kCollectRouteFailureLimit = 4;
 inline constexpr int kCollectRecoveryRepathMs = 650;
@@ -186,6 +190,9 @@ enum class BotGoalType
     vehicle_turret = 26,
     vehicle_gun = 27,
     vehicle_hunt = 28,
+    pay_push = 29,
+    pay_block = 30,
+    pay_hold_ahead = 31,
 };
 
 inline constexpr bool bot_goal_is_item_collection(const BotGoalType goal)
@@ -260,6 +267,18 @@ inline constexpr bool bot_goal_is_control_point_objective(const BotGoalType goal
     return goal == BotGoalType::control_point_objective;
 }
 
+inline constexpr bool bot_goal_is_payload_objective(const BotGoalType goal)
+{
+    switch (goal) {
+        case BotGoalType::pay_push:
+        case BotGoalType::pay_block:
+        case BotGoalType::pay_hold_ahead:
+            return true;
+        default:
+            return false;
+    }
+}
+
 // Goals whose route goal node follows a moving entity.
 inline constexpr bool bot_goal_chases_moving_target(const BotGoalType goal, const int goal_target_handle)
 {
@@ -268,6 +287,8 @@ inline constexpr bool bot_goal_chases_moving_target(const BotGoalType goal, cons
         case BotGoalType::bag_chase_carrier:
         case BotGoalType::sal_chase_carrier:
         case BotGoalType::sal_escort_carrier:
+        case BotGoalType::pay_push:
+        case BotGoalType::pay_block:
             return true;
         case BotGoalType::ctf_return_flag:
             return goal_target_handle >= 0;
@@ -289,6 +310,7 @@ inline constexpr bool bot_goal_routes_to_fixed_objective(const BotGoalType goal,
         case BotGoalType::sal_stage_at_spawn:
         case BotGoalType::sal_hold_zone:
         case BotGoalType::control_point_objective:
+        case BotGoalType::pay_hold_ahead:
             return true;
         case BotGoalType::ctf_return_flag:
             return goal_target_handle < 0;
@@ -333,10 +355,13 @@ inline constexpr BotGoalTier bot_goal_tier(const BotGoalType goal)
         case BotGoalType::sal_deliver_flag:
         case BotGoalType::sal_chase_carrier:
         case BotGoalType::control_point_objective:
+        case BotGoalType::pay_push:
+        case BotGoalType::pay_block:
             return BotGoalTier::tier1_objective;
         case BotGoalType::sal_stage_at_spawn:
         case BotGoalType::sal_hold_zone:
         case BotGoalType::sal_escort_carrier:
+        case BotGoalType::pay_hold_ahead:
         case BotGoalType::vehicle_acquire:
         case BotGoalType::vehicle_turret:
         case BotGoalType::vehicle_gun:
@@ -981,6 +1006,20 @@ struct BotState
     bool scav_role_primary = false;
     rf::Timestamp scav_role_timer{};
     uint32_t scav_zone_serial = 0;
+    // The side of the payload track the bot holds: 1 or -1, 0 until picked. Kept a while so it does not cross the cart.
+    int payload_hold_side = 0;
+    rf::Timestamp payload_hold_side_timer{};
+    rf::Timestamp payload_hold_progress_timer{};
+    float payload_hold_best_dist_sq = 0.0f;
+    // The hold spot as last worked out: where it sits from the cart, and for which goal and cart distance
+    rf::Timestamp payload_spot_refresh{};
+    rf::Vector3 payload_spot_from_cart{};
+    float payload_spot_cart_distance = 0.0f;
+    BotGoalType payload_spot_goal = BotGoalType::none;
+    int payload_spot_waypoint = 0;
+    bool payload_spot_direct = false;
+    // Runs on a moment after the last attacker leaves the push zone, so defenders do not flip goals at its edge.
+    rf::Timestamp payload_pushed_grace_timer{};
     BotCombatFiringState firing{};
 
     rf::Timestamp jump_timer{};

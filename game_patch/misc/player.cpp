@@ -311,8 +311,7 @@ FunHook<void(rf::Player*)> player_destroy_hook{
         // Before the engine frees this player, drop any dangling spectatee
         // back-reference other players hold to it. The engine frees net_data
         // without nulling these, so a stale spectatee pointer would be a
-        // use-after-free (e.g. Pit's clear_spectator_fields notify, or
-        // af_process_spectate_start_packet's old_target notify).
+        // use-after-free (e.g. af_set_player_spectatee's old_target notify).
         for (rf::Player& other : SinglyLinkedList{rf::player_list}) {
             if (&other == player) continue;
             if (other.spectatee.value_or(nullptr) == player) {
@@ -629,6 +628,11 @@ static bool player_is_dying_and_not_spectating(rf::Player* player)
 CallHook player_is_dying_red_bars_hook{0x00432A5F, player_is_dying_and_not_spectating};
 CallHook player_is_dying_scoreboard_hook{0x00437C01, player_is_dying_and_not_spectating};
 CallHook player_is_dying_scoreboard2_hook{0x00437C36, player_is_dying_and_not_spectating};
+
+bool player_death_bars_visible(rf::Player* player)
+{
+    return player_is_dead_and_not_spectating(player) || player_is_dying_and_not_spectating(player);
+}
 
 // Report our locally-selected mp character to the server whenever it changes,
 // so server-driven spawns (round modes) and the first post-join spawn use it

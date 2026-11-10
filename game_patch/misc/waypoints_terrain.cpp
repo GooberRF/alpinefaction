@@ -552,7 +552,7 @@ bool WaypointTerrainLattice::mark_occupied(const bool mark_all_nodes, const OutO
         }
     }
     if (!mark_all_nodes) {
-        for (const rf::Vector3& pos : generation_control_point_seed_positions()) {
+        for (const rf::Vector3& pos : generation_objective_seed_positions()) {
             mark_seed(pos);
         }
     }

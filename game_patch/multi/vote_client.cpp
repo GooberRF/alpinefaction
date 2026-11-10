@@ -572,7 +572,7 @@ uint8_t vote_match_current_level_gametype(const VoteOptionsData& options)
         }
     }
 
-    if (running == static_cast<uint8_t>(rf::NG_TYPE_DM) && offers_team_dm) {
+    if (offers_team_dm) {
         return team_dm;
     }
     // Nothing offered at all leaves it to the server, exactly as an empty cycler

@@ -23,6 +23,7 @@
 #include "gametype.h"
 #include "rounds.h"
 #include "salvage.h"
+#include "payload.h"
 #include "vehicles/vehicle.h"
 #include "vehicles/vehicle_physics.h"
 #include "mutators.h"
@@ -434,6 +435,12 @@ FunHook<void()> multi_limbo_init{
             case rf::NG_TYPE_REV: {
                 red = static_cast<int>(rev_all_points_permalocked());
                 blue = static_cast<int>(!rev_all_points_permalocked());
+                break;
+            }
+            case rf::NG_TYPE_PAY: {
+                const int winner = payload_winning_team();
+                red = static_cast<int>(winner == 0);
+                blue = static_cast<int>(winner == 1);
                 break;
             }
             case rf::NG_TYPE_ESC: {
@@ -1046,6 +1053,8 @@ std::string_view multi_game_type_name(const rf::NetGameType game_type) {
         return std::string_view{"Salvage"};
     } else if (game_type == rf::NG_TYPE_SCAV) {
         return std::string_view{"Scavenger"};
+    } else if (game_type == rf::NG_TYPE_PAY) {
+        return std::string_view{"Payload"};
     } else if (game_type == rf::NG_TYPE_UNK) {
         return std::string_view{"Unknown"};
     } else {
@@ -1085,6 +1094,8 @@ std::string_view multi_game_type_name_upper(const rf::NetGameType game_type) {
         return std::string_view{"SALVAGE"};
     } else if (game_type == rf::NG_TYPE_SCAV) {
         return std::string_view{"SCAVENGER"};
+    } else if (game_type == rf::NG_TYPE_PAY) {
+        return std::string_view{"PAYLOAD"};
     } else if (game_type == rf::NG_TYPE_UNK) {
         return std::string_view{"UNKNOWN"};
     } else {
@@ -1124,6 +1135,8 @@ std::string_view multi_game_type_name_short(const rf::NetGameType game_type) {
         return std::string_view{"SAL"};
     } else if (game_type == rf::NG_TYPE_SCAV) {
         return std::string_view{"SCAV"};
+    } else if (game_type == rf::NG_TYPE_PAY) {
+        return std::string_view{"PAY"};
     } else if (game_type == rf::NG_TYPE_UNK) {
         return std::string_view{"UNK"};
     } else {
@@ -1165,6 +1178,8 @@ std::string_view multi_game_type_prefix(const rf::NetGameType game_type) {
         return std::string_view{"ctf"};
     } else if (game_type == rf::NG_TYPE_SCAV) {
         return std::string_view{"scav"};
+    } else if (game_type == rf::NG_TYPE_PAY) {
+        return std::string_view{"pay"};
     } else if (game_type == rf::NG_TYPE_UNK) {
         // No real level-name prefix for unknown game types; "dm" is the safest fallback.
         return std::string_view{"dm"};
@@ -1321,6 +1336,7 @@ void start_level_in_multi(std::string filename, std::optional<rf::NetGameType> g
             : string_istarts_with(filename, "rev") ? rf::NetGameType::NG_TYPE_REV
             : string_istarts_with(filename, "run") ? rf::NetGameType::NG_TYPE_RUN
             : string_istarts_with(filename, "esc") ? rf::NetGameType::NG_TYPE_ESC
+            : string_istarts_with(filename, "pay") ? rf::NetGameType::NG_TYPE_PAY
             : rf::NetGameType::NG_TYPE_DM;
         rf::netgame.name = "Alpine Faction Test Server";
         rf::netgame.password = "password";

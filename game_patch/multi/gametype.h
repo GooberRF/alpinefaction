@@ -25,7 +25,8 @@ static const char* const multi_rfl_prefixes[] = {
     "dc",
     "rev",
     "run",
-    "esc"};
+    "esc",
+    "pay"};
 
 enum class HillOwner : int
 {
@@ -149,6 +150,20 @@ inline HillOwner opposite(HillOwner o)
                                        : HillOwner::HO_Neutral;
 }
 
+// KOTH has one; the other hill modes and Payload's checkpoints at most this
+inline constexpr int max_hills = 32;
+
+inline HillOwner team_hill_owner(int team)
+{
+    return team == 0 ? HillOwner::HO_Red : HillOwner::HO_Blue;
+}
+
+// -1 for neutral
+inline int hill_owner_team(HillOwner owner)
+{
+    return owner == HillOwner::HO_Red ? 0 : owner == HillOwner::HO_Blue ? 1 : -1;
+}
+
 static inline int rate_to_step(int rate_per_sec, int dt_ms)
 {
     // clamp so we dont skip past boundaries on long frames
@@ -194,6 +209,7 @@ bool gt_is_wipeout();
 bool gt_is_gungame();
 bool gt_is_salvage();
 bool gt_is_scavenger();
+bool gt_is_payload();
 const char* multi_gametype_help_text(rf::NetGameType game_type);
 
 // Score is driven by gametype-specific logic rather than directly by frags.
