@@ -260,7 +260,7 @@ Commands marked "D3D11 only" only have an effect with the Direct3D 11 renderer.
 | `ui_show_speed` | | Toggles the speed meter. Default: off. |
 | `ui_simple_server_chat_messages` | | Toggles simple server chat messages. Default: on. |
 | `ui_verbosetimer` | | Toggles the "Time Left:" text on the in-game timer. Default: on. |
-| `input_prompts` | `[0-2]` | Sets input prompts to either detect last input method, or force between Controller or Keyboard/Mouse glyphs. Default: `0`. |
+| `input_prompts` | `[0-2]` | Sets input prompts to detect the last input method. You can force either Controller or Keyboard/Mouse glyphs. Default: `0`. |
 | `gamepad_prompts` | `[0-9]` | Sets gamepad button icon style for various controllers types. Default: `0`. |
 
 ## HUD colors and scale

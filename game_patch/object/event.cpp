@@ -576,6 +576,46 @@ static void __fastcall event_play_sound_turn_off(rf::PlaySoundEvent* event)
     }
 }
 
+static std::string hud_gamepad_binding_names(int action_index)
+{
+    std::string result;
+    for (int slot = 0; slot < 2; ++slot) {
+        const int code = gamepad_get_action_code(action_index, slot);
+        if (code < 0)
+            continue;
+        if (!result.empty())
+            result += ", ";
+        result += gamepad_get_scan_code_name(code);
+    }
+    return result;
+}
+
+static std::string hud_keyboard_mouse_binding_names(const rf::ControlConfigItem& binding)
+{
+    std::string result;
+
+    if (binding.scan_codes[0] >= 0) {
+        rf::String key_name;
+        rf::control_config_get_key_name(&key_name, binding.scan_codes[0]);
+        result = std::string(key_name.c_str());
+    }
+
+    rf::String mouse_name;
+    if (binding.mouse_btn_id >= 0) {
+        rf::control_config_get_mouse_button_name(&mouse_name, binding.mouse_btn_id);
+    }
+    else if (ctrl_is_extra_mouse_scan(binding.scan_codes[1])) {
+        rf::control_config_get_key_name(&mouse_name, binding.scan_codes[1]);
+    }
+    if (!mouse_name.empty()) {
+        if (!result.empty())
+            result += ", ";
+        result += std::string(mouse_name.c_str());
+    }
+
+    return result.empty() ? "UNBOUND" : result;
+}
+
 FunHook<char*(char*)> hud_translate_special_character_token_hook{
     0x004385C0,
     [](char* token) {
@@ -589,34 +629,14 @@ FunHook<char*(char*)> hud_translate_special_character_token_hook{
             if (action_index < 0)
                 return "UNBOUND";
 
-            if (input_last_gamepad_active()) {
-                if (const char* name = gamepad_get_action_bind_name(action_index))
-                    return name;
+            if (input_prompt_device() == InputDevice::Gamepad) {
+                std::string gamepad_names = hud_gamepad_binding_names(action_index);
+                if (!gamepad_names.empty())
+                    return gamepad_names;
             }
 
             const auto& binding = rf::local_player->settings.controls.bindings[action_index];
-            std::string result;
-
-            if (binding.scan_codes[0] >= 0) {
-                rf::String key_name;
-                rf::control_config_get_key_name(&key_name, binding.scan_codes[0]);
-                result = std::string(key_name.c_str());
-            }
-
-            rf::String mouse_name;
-            if (binding.mouse_btn_id >= 0) {
-                rf::control_config_get_mouse_button_name(&mouse_name, binding.mouse_btn_id);
-            }
-            else if (ctrl_is_extra_mouse_scan(binding.scan_codes[1])) {
-                rf::control_config_get_key_name(&mouse_name, binding.scan_codes[1]);
-            }
-            if (!mouse_name.empty()) {
-                if (!result.empty())
-                    result += ", ";
-                result += std::string(mouse_name.c_str());
-            }
-
-            return result.empty() ? "UNBOUND" : result;
+            return hud_keyboard_mouse_binding_names(binding);
         };
 
         // Match known HUD tokens
@@ -684,7 +704,8 @@ void hud_mark_bindings_dirty()
 void hud_refresh_action_tokens()
 {
     if (!g_hud_msg_template.empty() && g_hud_msg_expire.valid() && !g_hud_msg_expire.elapsed()) {
-        rf::hud_msg(g_hud_msg_template.c_str(), 0, std::max(1, g_hud_msg_expire.time_until()), nullptr);
+        const std::string text = g_hud_msg_template;
+        rf::hud_msg(text.c_str(), 0, std::max(1, g_hud_msg_expire.time_until()), nullptr);
     }
 }
 
@@ -743,10 +764,9 @@ FunHook<void(rf::Player*)> hud_do_frame_input_sync_hook{
     0x00437B80,
     [](rf::Player* player) {
         hud_do_frame_input_sync_hook.call_target(player);
-        if (!g_hud_msg_template.empty() && g_hud_msg_expire.valid() && !g_hud_msg_expire.elapsed()
-            && g_hud_bindings_dirty) {
+        if (g_hud_bindings_dirty) {
             g_hud_bindings_dirty = false;
-            rf::hud_msg(g_hud_msg_template.c_str(), 0, std::max(1, g_hud_msg_expire.time_until()), nullptr);
+            hud_refresh_action_tokens();
         }
     },
 };

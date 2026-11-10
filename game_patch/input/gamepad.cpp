@@ -139,7 +139,7 @@ SDL_Gamepad* gamepad_get_slot(int idx)
 // Returns the gamepad that most recently produced input, falling back to primary.
 SDL_Gamepad* gamepad_get_last_active()
 {
-    SDL_JoystickID last_id = input_get_last_active_gamepad_id();
+    SDL_JoystickID last_id = input_recent_gamepad_id();
     if (last_id != 0) {
         for (auto* gp : g_gamepads)
             if (gp && SDL_GetGamepadID(gp) == last_id)
@@ -253,7 +253,7 @@ void gamepad_rumble(uint16_t low_freq, uint16_t high_freq, uint32_t duration_ms,
 {
     if (!gamepad_any_open() || !g_rumble_supported)
         return;
-    if (g_alpine_game_config.gamepad_rumble_when_primary && !input_last_gamepad_active())
+    if (g_alpine_game_config.gamepad_rumble_when_primary && input_active_device() != InputDevice::Gamepad)
         return;
     if (g_alpine_game_config.gamepad_rumble_intensity <= 0.0f)
         return;
@@ -435,7 +435,7 @@ static void reset_gamepad_input_state()
     g_menu_cursor_accum_x = 0.0f;
     g_menu_cursor_accum_y = 0.0f;
     g_gyro_menu_cursor_active = false;
-    input_reset_last_active_gamepad_id();
+    input_clear_recent_gamepad();
     g_pending_scroll_delta = 0;
 }
 
@@ -617,7 +617,7 @@ static void menu_nav_apply_cursor_delta(float dx, float dy)
     if (ix == 0 && iy == 0) return;
     menu_nav_move_cursor(ix, iy);
     g_menu_nav.last_nav_was_dpad = false;
-    input_active_gamepad();
+    input_record_activity(InputDevice::Gamepad);
 }
 
 static int dpad_btn_to_navkey(int btn)
@@ -653,7 +653,7 @@ static void handle_trigger_down(int trigger_idx, SDL_JoystickID which)
     if (trigger_idx == 0) g_lt_was_down = true;
     else g_rt_was_down = true;
 
-    input_active_gamepad(which);
+    input_record_activity(InputDevice::Gamepad, which);
     if (g_message_log_close_cooldown > 0.0f) return;
 
     int16_t gp_sc = (trigger_idx == 0) ? static_cast<int16_t>(CTRL_GAMEPAD_LEFT_TRIGGER)
@@ -948,7 +948,7 @@ static void handle_gamepad_button_down(const SDL_GamepadButtonEvent& ev)
     if (g_message_log_close_cooldown > 0.0f) return;
     if (!is_gamepad_input_active() || !is_open_gamepad_id(ev.which)) return;
 
-    input_active_gamepad(ev.which);
+    input_record_activity(InputDevice::Gamepad, ev.which);
 
     if (g_bind_capture_active) {
         if (ev.button == SDL_GAMEPAD_BUTTON_START || ev.button == SDL_GAMEPAD_BUTTON_GUIDE) {
@@ -1021,12 +1021,12 @@ static void handle_gamepad_axis_motion(const SDL_GamepadAxisEvent& ev)
     case SDL_GAMEPAD_AXIS_LEFTX:
     case SDL_GAMEPAD_AXIS_LEFTY:
         if (g_message_log_close_cooldown <= 0.0f && std::abs(v) > g_alpine_game_config.gamepad_move_deadzone)
-            input_active_gamepad(ev.which);
+            input_record_activity(InputDevice::Gamepad, ev.which);
         break;
     case SDL_GAMEPAD_AXIS_RIGHTX:
     case SDL_GAMEPAD_AXIS_RIGHTY:
         if (g_message_log_close_cooldown <= 0.0f && std::abs(v) > g_alpine_game_config.gamepad_look_deadzone)
-            input_active_gamepad(ev.which);
+            input_record_activity(InputDevice::Gamepad, ev.which);
         break;
     case SDL_GAMEPAD_AXIS_LEFT_TRIGGER:
         if ((v > 0.5f) != g_lt_was_down)
@@ -1059,7 +1059,7 @@ static void handle_gamepad_touchpad_down(const SDL_GamepadTouchpadEvent& ev)
     g_touchpad.last_y = ev.y;
     g_menu_cursor_accum_x = 0.0f;
     g_menu_cursor_accum_y = 0.0f;
-    input_active_gamepad(ev.which);
+    input_record_activity(InputDevice::Gamepad, ev.which);
 }
 
 static void handle_gamepad_touchpad_motion(const SDL_GamepadTouchpadEvent& ev)
@@ -1238,7 +1238,7 @@ static void gamepad_do_menu_frame()
 {
     if (g_menu_nav.deferred_btn_down != -1) {
         if (menu_nav_on_button_down(g_menu_nav.deferred_btn_down))
-            input_active_gamepad();
+            input_record_activity(InputDevice::Gamepad);
         g_menu_nav.deferred_btn_down = -1;
     }
     if (g_menu_nav.deferred_btn_up != -1) {

@@ -31,9 +31,13 @@ void gamepad_do_frame();
 void sdl_input_poll();
 void control_input_filter_apply_patch();
 
-// Glyph Detection
-void input_active_gamepad(SDL_JoystickID which = 0);
-void input_active_keyboard_mouse();
-bool input_last_gamepad_active();
-SDL_JoystickID input_get_last_active_gamepad_id();
-void input_reset_last_active_gamepad_id();
+enum class InputDevice {
+    KeyboardMouse,
+    Gamepad,
+};
+
+void input_record_activity(InputDevice device, SDL_JoystickID gamepad_id = 0);
+InputDevice input_active_device();
+InputDevice input_prompt_device();
+SDL_JoystickID input_recent_gamepad_id();
+void input_clear_recent_gamepad();
