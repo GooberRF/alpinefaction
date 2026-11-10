@@ -1008,7 +1008,7 @@ static void spectate_delete_current_dropped_camera()
 // other player entity's interp ring that far in the past, so the crosshair lines up with
 // targets the way the shooter saw them - the same rewind the server's lag compensation
 // applied when it validated their hits. The ring holds real received history (the
-// engine's 20 keyframes plus AF's deeper obj_interp_history, ~1s+), so this stays
+// engine's 20 keyframes plus AF's deeper obj_interp_history, ~3s), so this stays
 // smooth. Projectiles/corpses/movers are not biased: tracers must leave the (un-delayed)
 // POV muzzle, and alignment only matters against players.
 //

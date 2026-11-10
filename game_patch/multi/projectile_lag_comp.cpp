@@ -1,9 +1,7 @@
 #include <patch_common/CallHook.h>
-#include <patch_common/FunHook.h>
 #include <common/utils/list-utils.h>
 #include <xlog/xlog.h>
 #include <algorithm>
-#include <cmath>
 #include <unordered_map>
 #include <vector>
 #include "projectile_lag_comp.h"
@@ -27,7 +25,6 @@
 namespace
 {
 
-// Hard cap on the client-side advance
 constexpr float client_max_advance_ms = 500.0f;
 
 // ─── Weapon classification ───

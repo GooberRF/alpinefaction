@@ -3784,7 +3784,6 @@ ConsoleCommand2 sv_bandwidth_cmd{
             next = it;
         }
         else {
-            // Cycle to the next tier
             const auto* it = &g_alpine_game_config.server_net_rate_tier();
             next = it + 1 == std::end(tiers) ? std::begin(tiers) : it + 1;
         }
@@ -4769,7 +4768,6 @@ void network_init()
     send_rate_packet_hook.install();
     write_mem_ptr(0x004803C6, "Sets multiplayer update rate (bytes per second), only used by servers older than Alpine Faction 1.5");
 
-    // ui_show_netmeter
     netmeter_apply_patches();
 
     // Make average obj_update send rate framerate-independent (deadline-based rescheduling)

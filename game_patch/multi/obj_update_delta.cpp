@@ -139,7 +139,7 @@ namespace obj_update_delta
                     mask |= has_state;
                 if (std::memcmp(cur.vel, base->vel, 3) != 0)
                     mask |= has_vel;
-                if (cur.has_ammo && !ammo_equal(cur, *base))
+                if (cur.has_ammo && (!ammo_equal(cur, *base) || cur.weapon != base->weapon))
                     mask |= has_ammo;
             }
             else {
@@ -252,6 +252,9 @@ namespace obj_update_delta
                     return false;
                 out.has_ammo = true;
             }
+            else if (base && out.weapon != base->weapon) {
+                out.has_ammo = false; // the inherited counts belong to the previous weapon
+            }
             wire_flags = flags;
             return true;
         }
@@ -286,7 +289,6 @@ namespace obj_update_delta
             return nullptr;
         }
 
-        // Client state
         Ring g_rx;
         uint16_t g_newest_seq = 0;
         bool g_any_received = false;
@@ -418,7 +420,7 @@ namespace obj_update_delta
         static uint8_t expanded[rf::max_packet_size * 12];
         ByteWriter w{expanded, sizeof(expanded)};
         w.u8(RF_GPT_OBJECT_UPDATE);
-        w.u16(0); // size, filled in below
+        w.u16(0);
         static std::vector<Entry> entries; // reuses the storage Ring::store hands back
         entries.clear();
         bool complete = true;

@@ -1,7 +1,7 @@
 #pragma once
 
 // Acked-baseline delta compression of the server -> client obj_update stream (af_obj_update_delta
-// 0x6B / af_obj_update_ack 0x6C). Record wire format: encode() / decode_body() in obj_update_delta.cpp.
+// 0x6C / af_obj_update_ack 0x6D). Record wire format: encode() / decode_body() in obj_update_delta.cpp.
 // Kept free of game headers so rf/player/player.h can embed Sender by value.
 
 #include <array>

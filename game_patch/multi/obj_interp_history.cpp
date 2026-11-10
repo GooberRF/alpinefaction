@@ -123,7 +123,14 @@ bool eval_frames(FrameAt&& frame_at, CrouchOf&& crouch_of, int n, uint16_t tick,
     const float into = static_cast<float>(wrapped_diff16(tick, older.tick)) + frac;
     const float t = span > 0.0f ? std::clamp(into / span, 0.0f, 1.0f) : 0.0f;
     const float span_s = span / 1000.0f;
-    out.pos = hermite(older.pos, older.vel * span_s, newer.pos, newer.vel * span_s, t);
+    const rf::Vector3 m0 = older.vel * span_s;
+    const rf::Vector3 m1 = newer.vel * span_s;
+    // Sent velocity omits mover carry (and is coarse): shift both tangents so their mean matches the
+    // keyframe chord. Constant-acceleration arcs already match and are unchanged.
+    rf::Vector3 bias = (newer.pos - older.pos) - (m0 + m1) * 0.5f;
+    if (!bias.is_finite())
+        bias = {}; // crafted far-apart positions overflow the chord
+    out.pos = hermite(older.pos, m0 + bias, newer.pos, m1 + bias, t);
     out.vel = older.vel + (newer.vel - older.vel) * t;
     out.phb = lerp_phb(older.phb, newer.phb, t);
     out.eye_phb = lerp_phb(older.eye_phb, newer.eye_phb, t);
