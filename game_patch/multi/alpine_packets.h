@@ -63,7 +63,7 @@ struct af_obj_update_ack_packet
 {
     RF_GamePacketHeader header;
     uint16_t newest_seq;
-    uint32_t bits; // bit i: seq newest_seq - 1 - i was received
+    uint64_t bits; // bit i: seq newest_seq - 1 - i was received
 };
 
 struct af_ping_location_req_packet

@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <unordered_map>
 #include "obj_interp_history.h"
+#include "server.h"
 #include "demo/demo.h"
 #include "../rf/entity.h"
 #include "../rf/object.h"
@@ -329,6 +330,13 @@ bool pose_at_tick(const rf::Entity* ep, uint16_t tick, bool frame_eval, KeyFrame
     const rf::ObjInterp* interp = ep->obj_interp;
     if (!interp || interp->num_frames() < 2)
         return false;
+    // Server hitscan rewind (tick reported by the shooter): no further back than the configured cap
+    if (rf::is_server && !frame_eval) {
+        const int max_ms = server_hitscan_lag_comp_max_ms();
+        const uint16_t newest = interp->newest_frame_time();
+        if (wrapped_diff16(newest, tick) > max_ms)
+            tick = static_cast<uint16_t>(newest - max_ms);
+    }
     auto it = g_history.find(ep->handle);
     const KeyFrameHistory* history = it != g_history.end() ? &it->second : nullptr;
     if (wrapped_diff16(tick, interp->time_array[0]) >= 0) {
@@ -343,9 +351,6 @@ bool pose_at_tick(const rf::Entity* ep, uint16_t tick, bool frame_eval, KeyFrame
         return eval_frames(ring_frame, ring_crouch, interp->num_frames(), tick, eval_frac(ep, frame_eval),
                            ring_stats(interp).interval, out);
     }
-    // Server hitscan rewind (ticks reported by the shooter) keeps the ring's reach, like stock
-    if (rf::is_server && !frame_eval)
-        return false;
     return history && history->lookup(tick, eval_frac(ep, frame_eval), out);
 }
 

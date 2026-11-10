@@ -38,6 +38,7 @@ bool server_apply_click_limiter();
 bool server_allow_outlines();
 bool server_allow_outlines_xray();
 bool server_gaussian_spread();
+int server_hitscan_lag_comp_max_ms();
 bool server_geo_chunk_physics();
 bool server_clear_stale_movement_input();
 bool server_allow_footsteps();

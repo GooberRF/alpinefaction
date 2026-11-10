@@ -19,8 +19,8 @@ namespace rf
 
 namespace obj_update_delta
 {
-    constexpr int max_age = 32;   // baselines older than the ack bitfield are unprovable
-    constexpr int ring_size = 64; // > max_age so a stale slot never aliases a live seq
+    constexpr int max_age = 64;   // baselines older than the ack bitfield are unprovable
+    constexpr int ring_size = 128;// > max_age so a stale slot never aliases a live seq
 
     // Client-visible state of one entity as of one packet. Groups a record did not carry are
     // inherited from its baseline, so an entry is always complete.
@@ -77,11 +77,11 @@ namespace obj_update_delta
     // Server: replaces multi_io_send of a finished stock packet. `final` distinguishes the
     // post-loop send (the last packed record is in the buffer) from a mid-loop flush (it is not).
     void server_send(rf::Player* pp, const uint8_t* packet, int len, bool final);
-    void server_on_ack(rf::Player* pp, uint16_t newest_seq, uint32_t bits);
+    void server_on_ack(rf::Player* pp, uint16_t newest_seq, uint64_t bits);
 
     // Client
     void client_receive(const uint8_t* payload, size_t len, const rf::NetAddr& addr);
-    bool client_build_ack(uint16_t& newest_seq, uint32_t& bits);
+    bool client_build_ack(uint16_t& newest_seq, uint64_t& bits);
     void client_reset();
 
     void on_level_init(); // both sides: handles are reused across levels

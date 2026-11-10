@@ -1199,6 +1199,7 @@ struct AlpineServerConfig
     bool use_sp_damage_calculation = false;
     bool projectile_lag_comp = true;
     int projectile_lag_comp_max_ms = 250;
+    int hitscan_lag_comp_max_ms = 1000;
     bool delta_obj_update = true; // offer af_obj_update_delta to clients that ask; read per join
     unsigned server_netfps = 40u; // `bandwidth` key: the sv_bandwidth tier applied on every config load
     AlpineRestrictConfig alpine_restricted_config;

@@ -1479,6 +1479,10 @@ static void apply_known_key_in_order(AlpineServerConfig& cfg, const std::string&
         if (auto v = node.value<int64_t>())
             cfg.projectile_lag_comp_max_ms = static_cast<int>(std::clamp<int64_t>(*v, 50, 500));
     }
+    else if (key == "hitscan_lag_comp_max_ms") {
+        if (auto v = node.value<int64_t>())
+            cfg.hitscan_lag_comp_max_ms = static_cast<int>(std::clamp<int64_t>(*v, 50, 3000));
+    }
     else if (key == "delta_obj_update") {
         if (auto v = node.value<bool>())
             cfg.delta_obj_update = *v;
@@ -2525,6 +2529,7 @@ void print_alpine_dedicated_server_config_info(std::string& output, bool verbose
     if (cfg.projectile_lag_comp) {
         std::format_to(iter, "    Max compensation:                    {}ms\n", cfg.projectile_lag_comp_max_ms);
     }
+    std::format_to(iter, "  Hitscan lag compensation max:          {}ms\n", cfg.hitscan_lag_comp_max_ms);
     std::format_to(iter, "  Delta object updates:                  {}\n", cfg.delta_obj_update);
 
     // inactivity

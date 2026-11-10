@@ -391,15 +391,15 @@ namespace obj_update_delta
         ++s.next_seq;
     }
 
-    void server_on_ack(rf::Player* pp, uint16_t newest_seq, uint32_t bits)
+    void server_on_ack(rf::Player* pp, uint16_t newest_seq, uint64_t bits)
     {
         Sender& s = pp->delta_sender;
         if (wrapped_diff16(s.next_seq, newest_seq) <= 0)
             return; // not something we sent
         if (Snapshot* snap = s.ring.find(newest_seq))
             snap->acked = true;
-        for (int i = 0; i < 32; ++i) {
-            if (!(bits & (1u << i)))
+        for (int i = 0; i < max_age; ++i) {
+            if (!(bits & (1ull << i)))
                 continue;
             if (Snapshot* snap = s.ring.find(static_cast<uint16_t>(newest_seq - 1 - i)))
                 snap->acked = true;
@@ -495,15 +495,15 @@ namespace obj_update_delta
         g_any_received = true;
     }
 
-    bool client_build_ack(uint16_t& newest_seq, uint32_t& bits)
+    bool client_build_ack(uint16_t& newest_seq, uint64_t& bits)
     {
         if (!g_any_received)
             return false;
         newest_seq = g_newest_seq;
         bits = 0;
-        for (int i = 0; i < 32; ++i) {
+        for (int i = 0; i < max_age; ++i) {
             if (g_rx.find(static_cast<uint16_t>(g_newest_seq - 1 - i)))
-                bits |= 1u << i;
+                bits |= 1ull << i;
         }
         return true;
     }

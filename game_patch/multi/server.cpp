@@ -6181,6 +6181,11 @@ bool server_gaussian_spread()
     return g_alpine_server_config.gaussian_spread;
 }
 
+int server_hitscan_lag_comp_max_ms()
+{
+    return g_alpine_server_config.hitscan_lag_comp_max_ms;
+}
+
 bool server_geo_chunk_physics()
 {
     return g_alpine_server_config_active_rules.geo_chunk_physics;

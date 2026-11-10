@@ -51,6 +51,7 @@ Version 1.5.0 (Trillium): Not yet released
   - Let spectate and demo POV compensation reach further back
   - Send client object updates at a steady rate at any frame rate
   - Add projectile lag compensation, so projectiles and their splash damage hit players where the shooter saw them
+  - Extend hitscan lag compensation to shooters with higher ping, up to the new `hitscan_lag_comp_max_ms` dedicated server config option (default 1000)
   - Add `sv_bandwidth` console command to choose between low and high server bandwidth
   - Remove `sv_netfps` console command, replaced by `sv_bandwidth`
   - Make the `rate` console command apply only on servers older than Alpine Faction 1.5
