@@ -1,7 +1,7 @@
 ⚙️⛏ Alpine Faction Changelog ⛏⚙️
 ===================================
 
-Version 1.5.0 (Trillium): Not yet released
+Version 1.6.0: Not yet released
 --------------------------------
 ### Major features
 [@AL2009man](https://github.com/AL2009man) & [@nickalreadyinuse](https://github.com/nickalreadyinuse)
@@ -11,10 +11,10 @@ Version 1.5.0 (Trillium): Not yet released
   - Full controller support via SDL3 Gamepad API
   - Glyph support for Xbox, PlayStation, Nintendo, and Steam Hardware (Steam Controller 2015, Steam Deck, Steam Controller 2026)
   - Dual-Analog support for movement and camera controls
-  - Cursor Menu navigation support for either Gyro (Press `Left Stick Click` to toggle Gyro Cursor, off by default) or Swiping and Clicking via PlayStation's Touchpad Input
+  - Cursor Menu navigation support for either Gyro (Press `Left Stick Click` to toggle Gyro Cursor, off by default), Trackpad and Joystick Inputs
   - Initial Rumble support
     - only covers all Weapon Fire and select Environmental effects
-    - Trigger Rumble/Impulse Triggers are also supported (requires enabling `GamepadRawInput` in `alpine_settings.ini`)
+    - Trigger Rumble/Impulse Triggers are also supported
     - Vibration Filtering system to reduce low-frequency rumble.
       - Enabled by default whenever Gyro Aiming is active. 
   - Motion Sensor / Gyro Aiming support
@@ -29,7 +29,15 @@ Version 1.5.0 (Trillium): Not yet released
   - Simultaneous Controller+Keyboard/Mouse / Mixed Input support
     - if using SteamInput's supported Input Camera styles: We recommend selecting `ms_scale`'s Modern (`2`) and change the mouse sensitivity to `2.50`. If it's set to ``6545px`` (default slider on SteamInput): this will skip "[Input] Angles/Degrees to Mouse Pixels" slider.
   - Partial controller menu navigation support (Cursor and Scrollbar are handled by Joystick. If supported: Gyro and Touchpad Cursors are included)
-- 
+
+  ### Imported libraries
+- [SDL 3.4.20](https://github.com/libsdl-org/SDL) by Sam Lantinga and many Contributors
+- [GamepadMotionHelpers Version 10](https://github.com/JibbSmart/GamepadMotionHelpers) by Jibb Smart
+
+
+Version 1.5.0 (Trillium): Not yet released
+--------------------------------
+
 [@GooberRF](https://github.com/GooberRF)
 - Add ray cast lightmap baking to level editor
   - Add `Invisible faces block light` and `Alpha-textured faces block light` level properties to control whether those faces occlude baked light
@@ -268,7 +276,6 @@ Version 1.5.0 (Trillium): Not yet released
 - Add lens distortion, chromatic aberration and vignetting to the sniper and precision rifle scope views, with levels 0-2 via `r_scopeglass`: 0 off, 1 light, 2 heavy (Direct3D 11 renderer only)
 
 [@AL2009man](https://github.com/AL2009man)
-- Add `GamepadRawInput` option (via `alpine_settings.ini`) to enable RawInput driver for better handling of XInput controllers, while allowing Trigger Rumble/Impulse Trigger support.
 - Use a 0-10 range for the `Mouse sensitivity` slider when `ms_scale` is Modern
 
 ### Bug fixes

@@ -411,6 +411,9 @@ struct AlpineGameSettings
     float gamepad_joy_sensitivity = 2.5f;
     float gamepad_move_deadzone = 0.14f;
     float gamepad_look_deadzone = 0.33f;
+    bool gamepad_joy_invert_x = false;
+    bool gamepad_joy_invert_y = false;
+    bool gamepad_swap_sticks = false;
     bool gamepad_gyro_enabled = false;
     float gamepad_gyro_sensitivity = 2.5f;
     bool gamepad_gyro_vehicle_camera = false;
@@ -422,9 +425,6 @@ struct AlpineGameSettings
     float gamepad_gyro_tightening = 8.0f;
     float gamepad_gyro_smoothing = 7.0f;
     int gamepad_gyro_vh_mixer = 0;  // -100 = reduce vertical, 0 = 1:1, +100 = reduce horizontal
-    float gamepad_gyro_menu_cursor_sensitivity = 2.0f; // 0 = disabled
-    float gamepad_touchpad_menu_cursor_sensitivity = 1.0f;
-    float gamepad_joy_menu_cursor_sensitivity = 1.0f;
     bool gamepad_joy_camera = false;
     bool gamepad_flickstick_allow_scoped = true;
     float gamepad_flickstick_sweep = 1.0f;    
@@ -432,11 +432,6 @@ struct AlpineGameSettings
     float gamepad_flickstick_release_deadzone = 0.70f;
     float gamepad_flickstick_smoothing = 0.75f;    
     bool gamepad_flickstick_invert = false;
-    int gamepad_icon_override = 0; // 0=Auto, 1=Generic, 2=Xbox360, 3=XboxOne, 4=DS3, 5=DS4, 6=DualSense, 7=NintendoSwitch, 8=NintendoGameCube, 9=Steam
-    int input_prompt_override = 0; // 0=Auto, 1=Controller, 2=Keyboard
-    bool gamepad_joy_invert_x = false;
-    bool gamepad_joy_invert_y = false;
-    bool gamepad_swap_sticks = false;
     float gamepad_rumble_intensity = 1.0f;
     bool gamepad_weapon_rumble_enabled = true;
     bool gamepad_environmental_rumble_enabled = true;
@@ -444,6 +439,11 @@ struct AlpineGameSettings
     int gamepad_rumble_vibration_filter = 1; // 0=Off, 1=Auto (reduce low-freq when gyro is active), 2=On (always reduce low-freq)
     bool gamepad_rumble_when_primary = true; // disable rumble when keyboard/mouse was last used
     bool gamepad_lightbar_effects = false; // health-indicator LED (green/orange/red/bleedout-white), if supported
+    float gamepad_gyro_menu_cursor_sensitivity = 2.0f; // 0 = disabled
+    float gamepad_touchpad_menu_cursor_sensitivity = 1.0f;
+    float gamepad_joy_menu_cursor_sensitivity = 1.0f;
+    int gamepad_icon_override = 0; // 0=Auto, 1=Generic, 2=Xbox360, 3=XboxOne, 4=DS3, 5=DS4, 6=DualSense, 7=NintendoSwitch, 8=NintendoGameCube, 9=Steam
+    int input_prompt_override = 0; // 0=Auto, 1=Controller, 2=Keyboard
     bool scoreboard_anim = true;
     bool legacy_bob = false;
     bool weapon_sway = false;
