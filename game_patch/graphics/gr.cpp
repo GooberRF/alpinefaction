@@ -179,9 +179,38 @@ void gr_band_strip(int rows, const rf::Vector3* pos, const rf::Vector3* side, co
         }
         rf::gr::Vertex* r0 = verts[(row - 1) % 2];
         for (int col = 0; col < 3; ++col) {
+            if (col == 1 && band <= 0.0f) {
+                continue;
+            }
             rf::gr::Vertex* quad[4] = {&r0[col], &r0[col + 1], &r1[col + 1], &r1[col]};
             rf::gr::poly(4, quad, vertex_attributes, mode, 0, 0.0f);
         }
+    }
+}
+
+void gr_camera_facing_sides(int rows, const rf::Vector3* pos, float half_width, rf::Vector3* out_side)
+{
+    const rf::Vector3& eye = rf::gr::eye_pos;
+    rf::Vector3 prev_tangent{0.0f, 0.0f, 1.0f};
+    rf::Vector3 prev_side{};
+    for (int i = 0; i < rows; ++i) {
+        rf::Vector3 tangent = pos[std::min(i + 1, rows - 1)] - pos[std::max(i - 1, 0)];
+        if (tangent.len_sq() < 1e-8f) {
+            tangent = prev_tangent;
+        }
+        tangent.normalize_safe();
+        prev_tangent = tangent;
+        rf::Vector3 side = tangent.cross(eye - pos[i]);
+        if (side.len_sq() < 1e-8f) {
+            side = rf::gr::eye_matrix.rvec;
+        }
+        side.normalize_safe();
+        // A tangent that turns toward the eye would flip the side and bowtie the strip.
+        if (i > 0 && side.dot_prod(prev_side) < 0.0f) {
+            side *= -1.0f;
+        }
+        prev_side = side;
+        out_side[i] = side * half_width;
     }
 }
 
@@ -207,6 +236,15 @@ float gr_pixels_per_meter(const rf::Vector3& pos)
         return std::hypot(ox - px, oy - py);
     }
     return 0.0f;
+}
+
+float gr_floored_half_width(float px_per_m, float min_half_width, float min_half_px)
+{
+    constexpr float reference_height = 1080.0f;
+    if (!(px_per_m > 1e-3f)) {
+        return min_half_width;
+    }
+    return std::max(min_half_width, min_half_px * (rf::gr::screen.clip_height / reference_height) / px_per_m);
 }
 
 void gr_set_colored_vertex(rf::gr::Vertex& v, const rf::Vector3& pos, const rf::Color& color, float alpha)

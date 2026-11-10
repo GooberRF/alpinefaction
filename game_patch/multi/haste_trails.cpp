@@ -13,7 +13,6 @@
 #include "../rf/gameseq.h"
 #include "../rf/multi.h"
 #include "../rf/object.h"
-#include "../rf/os/frametime.h"
 #include "../rf/player/player.h"
 #include "../rf/gr/gr.h"
 
@@ -27,11 +26,8 @@ constexpr float trail_teleport_dist = 3.0f;
 constexpr float trail_ankle_height = 0.15f;
 constexpr float trail_side_offset = 0.18f;
 constexpr float trail_alpha = 0.5f;
-constexpr float trail_max_frame_delta = 0.1f;
-// The pixel floor is for 1080 lines and scales with the render height.
 constexpr float trail_min_half_width = 0.02f;
 constexpr float trail_min_half_px = 1.0f;
-constexpr float trail_px_reference_height = 1080.0f;
 constexpr float trail_band = 0.5f; // opaque share of the ribbon's half-width
 // Of the multiplayer run speed: a hasted crouch run is barely faster than it.
 constexpr float trail_min_speed_factor = 1.1f;
@@ -162,30 +158,9 @@ void trail_update(HasteTrail& trail, rf::Entity* ep, float dt)
 }
 
 // A camera-facing ribbon along the first n stroke points.
-void trail_ribbon(int n, float half_width, const rf::Vector3& eye, const rf::gr::Color& color)
+void trail_ribbon(int n, float half_width, const rf::gr::Color& color)
 {
-    rf::Vector3 prev_tangent{0.0f, 0.0f, 1.0f};
-    rf::Vector3 prev_side{};
-    for (int i = 0; i < n; ++i) {
-        const rf::Vector3& p = g_stroke_pos[i];
-        rf::Vector3 tangent = g_stroke_pos[std::min(i + 1, n - 1)] - g_stroke_pos[std::max(i - 1, 0)];
-        if (tangent.len_sq() < 1e-8f) {
-            tangent = prev_tangent;
-        }
-        tangent.normalize_safe();
-        prev_tangent = tangent;
-        rf::Vector3 side = tangent.cross(eye - p);
-        if (side.len_sq() < 1e-8f) {
-            side = rf::gr::eye_matrix.rvec;
-        }
-        side.normalize_safe();
-        // A tangent that turns toward the eye would flip the side and bowtie the ribbon.
-        if (i > 0 && side.dot_prod(prev_side) < 0.0f) {
-            side *= -1.0f;
-        }
-        prev_side = side;
-        g_stroke_side[i] = side * half_width;
-    }
+    gr_camera_facing_sides(n, g_stroke_pos.data(), half_width, g_stroke_side.data());
     gr_band_strip(n, g_stroke_pos.data(), g_stroke_side.data(), g_stroke_alpha.data(), trail_band, color,
                   additive_vertex_color_3d);
 }
@@ -210,7 +185,7 @@ void haste_trails_do_frame()
     if (rf::game_paused || demo_playback_is_seeking()) {
         return;
     }
-    const float dt = std::clamp(rf::frametime, 0.0f, trail_max_frame_delta) * demo_playback_sim_time_scale();
+    const float dt = cosmetic_frame_dt();
     if (!(dt > 0.0f)) {
         return;
     }
@@ -252,7 +227,6 @@ void haste_trails_render()
     }
     const rf::Vector3 eye = rf::gr::eye_pos;
     const float far_clip = level_projection_far();
-    const float px_scale = rf::gr::screen.clip_height / trail_px_reference_height;
     const rf::gr::Color& color = powerup_color(AlpinePowerup::haste);
     bool texture_cleared = false;
     for (const HasteTrail& trail : g_trails) {
@@ -271,10 +245,8 @@ void haste_trails_render()
         if (!(fade > 0.0f)) {
             continue;
         }
-        const float px_per_m = gr_pixels_per_meter(anchor);
-        const float half_width = px_per_m > 1e-3f
-            ? std::max(trail_min_half_width, trail_min_half_px * px_scale / px_per_m)
-            : trail_min_half_width;
+        const float half_width =
+            gr_floored_half_width(gr_pixels_per_meter(anchor), trail_min_half_width, trail_min_half_px);
         if (!texture_cleared) {
             rf::gr::set_texture(-1, -1);
             texture_cleared = true;
@@ -285,7 +257,7 @@ void haste_trails_render()
             for (int i = 0; i < trail.count; ++i) {
                 const TrailSample& s = trail.sample(i);
                 if (!s.joins_previous && n > 1) {
-                    trail_ribbon(n, half_width, eye, color);
+                    trail_ribbon(n, half_width, color);
                 }
                 if (!s.joins_previous) {
                     n = 0;
@@ -303,7 +275,7 @@ void haste_trails_render()
                 ++n;
             }
             if (n > 1) {
-                trail_ribbon(n, half_width, eye, color);
+                trail_ribbon(n, half_width, color);
             }
         }
     }

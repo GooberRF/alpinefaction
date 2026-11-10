@@ -62,6 +62,7 @@
 #include "../multi/bots/bot_main.h"
 #include "../multi/mutators.h"
 #include "multi_spectate.h"
+#include "route_arrows.h"
 #include "../misc/settings_registry.h"
 #include "../object/zipline.h"
 
@@ -3116,6 +3117,8 @@ void multi_hud_on_local_spawn()
         g_gungame_last_score = score;
         g_gungame_score_synced = true;
     }
+
+    route_arrows_on_local_spawn();
 }
 
 void multi_hud_reset_gametype_help()

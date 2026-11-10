@@ -113,6 +113,8 @@ set(SRCS
     hud/zone_marker.cpp
     hud/payload_world.h
     hud/payload_world.cpp
+    hud/route_arrows.h
+    hud/route_arrows.cpp
     hud/world_medallion.h
     hud/world_medallion.cpp
     hud/minimap.cpp

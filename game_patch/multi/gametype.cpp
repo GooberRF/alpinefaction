@@ -31,6 +31,7 @@
 #include "../fflink/afstats_events.h"
 #include "../hud/hud_internal.h"
 #include "../hud/multi_spectate.h"
+#include "../misc/waypoints.h"
 #include "../sound/sound.h"
 #include "../rf/os/timestamp.h"
 #include "../object/object.h"
@@ -526,14 +527,14 @@ bool koth_capture_point_handler_uses_cylinder(int handler_uid, int trigger_uid)
     return false;
 }
 
-static inline bool trigger_oriented_cylinder_check_if_activated(const rf::Trigger* tp, const rf::Object* objp, float radius,
-    float half_height, const rf::Vector3& axis, const rf::Vector3& rvec, const rf::Vector3& fvec
+static inline bool trigger_oriented_cylinder_check_if_activated(const rf::Trigger* tp, const rf::Vector3& pos,
+    float radius, float half_height, const rf::Vector3& axis, const rf::Vector3& rvec, const rf::Vector3& fvec
 )
 {
-    if (!tp || !objp)
+    if (!tp)
         return false;
 
-    const rf::Vector3 d = objp->pos - tp->pos;
+    const rf::Vector3 d = pos - tp->pos;
     const float y = d.dot_prod(axis);
     if (y < -half_height || y > half_height)
         return false;
@@ -544,10 +545,11 @@ static inline bool trigger_oriented_cylinder_check_if_activated(const rf::Trigge
     return (x * x + z * z) <= (radius * radius);
 }
 
-static inline bool trigger_sphere_as_full_cylinder_check_if_activated(const rf::Trigger* tp, const rf::Object* objp, bool use_trigger_up
+static inline bool trigger_sphere_as_full_cylinder_check_if_activated(const rf::Trigger* tp, const rf::Vector3& pos,
+    bool use_trigger_up
 )
 {
-    if (!tp || !objp)
+    if (!tp)
         return false;
 
     const float r = tp->radius;
@@ -558,7 +560,7 @@ static inline bool trigger_sphere_as_full_cylinder_check_if_activated(const rf::
     axis.normalize_safe();
 
     // d projected onto axis gives height from center
-    const rf::Vector3 d = objp->pos - tp->pos;
+    const rf::Vector3 d = pos - tp->pos;
     const float y = d.dot_prod(axis);
     if (y < -r || y > r)
         return false;
@@ -592,28 +594,48 @@ bool obj_inside_uid_area(int check_uid, const rf::Object* o)
     return false;
 }
 
+// A hill whose handler sets sphere_to_cylinder: its sphere or box trigger read as a cylinder. Nullopt for the others.
+static std::optional<bool> point_inside_hill_cylinder(const HillInfo& h, const rf::Vector3& pos)
+{
+    const rf::Trigger* t = h.trigger;
+    if (t->type == 0 && h.handler->sphere_to_cylinder) {
+        return trigger_sphere_as_full_cylinder_check_if_activated(t, pos, g_koth_info.rules.cyl_use_trigger_up);
+    }
+
+    if (t->type == 1 && h.handler->sphere_to_cylinder) {
+        const float radius = koth_box_cylinder_radius(t);
+        const float half_h = 0.5f * std::fabs(t->box_size.y);
+        const rf::Vector3 u = t->orient.uvec;
+        const rf::Vector3 r = t->orient.rvec;
+        const rf::Vector3 f = t->orient.fvec;
+        return trigger_oriented_cylinder_check_if_activated(t, pos, radius, half_h, u, r, f);
+    }
+    return std::nullopt;
+}
+
 bool player_inside_hill_trigger(const HillInfo& h, const rf::Player& p)
 {
     auto ent = rf::entity_from_handle(p.entity_handle);
     if (!ent || !h.trigger)
         return false;
 
-    if (h.trigger->type == 0 && h.handler->sphere_to_cylinder) {
-        return trigger_sphere_as_full_cylinder_check_if_activated(h.trigger, ent, g_koth_info.rules.cyl_use_trigger_up);
-    }
-
-    if (h.trigger->type == 1 && h.handler->sphere_to_cylinder) {
-        const rf::Trigger* t = h.trigger;
-        const float radius = koth_box_cylinder_radius(t);
-        const float half_h = 0.5f * std::fabs(t->box_size.y);
-        const rf::Vector3 u = t->orient.uvec;
-        const rf::Vector3 r = t->orient.rvec;
-        const rf::Vector3 f = t->orient.fvec;
-        return trigger_oriented_cylinder_check_if_activated(t, ent, radius, half_h, u, r, f);
+    if (const auto inside = point_inside_hill_cylinder(h, ent->pos)) {
+        return *inside;
     }
 
     // fallback to stock checks
     return obj_inside_trigger(h.trigger, ent);
+}
+
+bool point_inside_hill_trigger(const HillInfo& h, const rf::Vector3& pos)
+{
+    if (!h.trigger || !h.handler) {
+        return false;
+    }
+    if (const auto inside = point_inside_hill_cylinder(h, pos)) {
+        return *inside;
+    }
+    return point_inside_trigger_zone(*h.trigger, pos);
 }
 
 bool player_is_countable(rf::Player& p)
@@ -1147,6 +1169,26 @@ bool esc_team_can_attack_hill(const HillInfo& hill, HillOwner team)
         return false;
 
     return esc_team_can_attack_role(hill.role, team);
+}
+
+bool control_point_team_can_capture_hill(const HillInfo& hill, const HillOwner team)
+{
+    if (team != HillOwner::HO_Red && team != HillOwner::HO_Blue) {
+        return false;
+    }
+    if (hill.lock_status != HillLockStatus::HLS_Available) {
+        return false;
+    }
+    if (hill.ownership == team) {
+        return false;
+    }
+    if (gt_is_esc()) {
+        return esc_team_can_attack_hill(hill, team);
+    }
+    if (gt_is_rev() && team != HillOwner::HO_Red) {
+        return false;
+    }
+    return true;
 }
 
 static void esc_apply_initial_ownerships()

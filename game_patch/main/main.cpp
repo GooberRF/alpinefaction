@@ -214,6 +214,7 @@ FunHook<int()> rf_do_frame_hook{
         multi_level_download_update();
         poll_awp_download();
         waypoints_do_frame();
+        world_hud_clock_do_frame();
         discord_presence_do_frame();
         return result;
     },
@@ -396,15 +397,16 @@ FunHook<void(bool)> level_init_post_hook{
         alpine_rope_level_init();
         zipline_level_init();
 
-        // Flow 2A: bots start their AWP download before the waypoints load
+        // Flow 2A: bots and the spawn route arrows start their AWP download before the waypoints load
         waypoints_level_init_with_awp_download();
         if (is_waypoint_bot_mode_active()) {
             bot_vehicle_nav_level_init();
         }
 
-        // Flow 2B: Normal clients with autodl_download_awps — fire-and-forget AWP download
+        // Flow 2B: Normal clients with autodl_download_awps — fire-and-forget AWP download, unless the route arrows
+        // already started one
         if (rf::is_multi && !is_waypoint_bot_mode_active() && !rf::is_dedicated_server
-            && g_alpine_game_config.autodl_download_awps) {
+            && g_alpine_game_config.autodl_download_awps && !waypoints_awp_download_pending()) {
             start_awp_download_for_installed_map(std::string{rf::level.filename.c_str()}, 1);
         }
 

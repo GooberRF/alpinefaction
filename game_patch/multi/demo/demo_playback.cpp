@@ -2040,6 +2040,11 @@ float demo_playback_sim_time_scale()
     return g_ctx.pause_fx_applied ? 0.0f : g_ctx.timescale;
 }
 
+float cosmetic_frame_dt()
+{
+    return std::clamp(rf::frametime, 0.0f, cosmetic_max_frame_delta) * demo_playback_sim_time_scale();
+}
+
 float demo_playback_timescale()
 {
     return g_ctx.timescale;

@@ -25,12 +25,18 @@ float gr_scale_fov_hor_plus(float horizontal_fov);
 bool gr_3d_bitmap_oriented_wh(const rf::Vector3* pnt, const rf::Matrix3* M, float half_w, float half_h, rf::gr::Mode mode);
 // A strip through `rows` points, row i spanning pos[i] - side[i] to pos[i] + side[i] in four columns: transparent edges
 // around an opaque middle `band` of the half-width, at alpha[i]. It faces the eye where side = direction x (eye - pos).
+// A zero `band` peaks along the line itself.
 void gr_band_strip(int rows, const rf::Vector3* pos, const rf::Vector3* side, const float* alpha, float band,
                    const rf::gr::Color& color, rf::gr::Mode mode);
+// gr_band_strip's sides, `half_width` long, for a strip along the polyline `pos` that faces the eye
+void gr_camera_facing_sides(int rows, const rf::Vector3* pos, float half_width, rf::Vector3* out_side);
 // Current view's screen position of a world point; false when behind the camera or not projected.
 bool gr_project_world_to_screen(const rf::Vector3& world_pos, float& out_sx, float& out_sy);
 // Screen pixels per metre across the view at `pos`, 0 when it does not project
 float gr_pixels_per_meter(const rf::Vector3& pos);
+// The larger of `min_half_width` and `min_half_px` pixels at gr_pixels_per_meter's `px_per_m`, or `min_half_width`
+// where that is 0. The pixel floor is for 1080 lines and scales with the render height.
+float gr_floored_half_width(float px_per_m, float min_half_width, float min_half_px);
 // Rotates a world point into `v` with the colour's RGB; `alpha` (0-1) scales the colour's own alpha
 void gr_set_colored_vertex(rf::gr::Vertex& v, const rf::Vector3& pos, const rf::Color& color, float alpha);
 int gr_fit_string(std::string& text, int max_width, int font_id = -1, std::string_view suffix = "-");

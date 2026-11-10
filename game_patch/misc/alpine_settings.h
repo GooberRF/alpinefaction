@@ -117,6 +117,8 @@ struct AlpineGameSettings
     bool world_hud_payload_tethers = true;
     bool world_hud_payload_push_zone = true;
     bool world_hud_payload_cart_status = true;
+    bool world_hud_payload_track_pulse = true;
+    bool world_hud_route_arrows = true;
     bool world_hud_spectate_player_labels = false;
     bool world_hud_demo_player_info = false;
     bool world_hud_demo_spawns = false;

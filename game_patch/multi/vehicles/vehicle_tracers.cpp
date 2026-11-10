@@ -25,7 +25,6 @@
 #include "../../rf/multi.h"
 #include "../../rf/object.h"
 #include "../../rf/os/console.h"
-#include "../../rf/os/frametime.h"
 #include "../../rf/player/player.h"
 #include "../../rf/weapon.h"
 
@@ -37,19 +36,16 @@ namespace
     constexpr float tracer_fade_in_dist = 3.0f;
     constexpr float tracer_muzzle_max_dist = 3.0f;
     constexpr float tracer_range = 2000.0f;
-    constexpr float tracer_max_frame_delta = 0.1f;
     // Past twice the frame-delta clamp, tracers would crawl and pile up rather than fly.
-    constexpr int64_t tracer_render_stale_ms = static_cast<int64_t>(2.0f * tracer_max_frame_delta * 1000.0f);
+    constexpr int64_t tracer_render_stale_ms = static_cast<int64_t>(2.0f * cosmetic_max_frame_delta * 1000.0f);
     int64_t g_tracer_last_render_ms = 0;
     constexpr int tracer_trace_passes = 6;
     constexpr float tracer_team_tint = 0.3f;
     // Screen-space floors keep a streak visible at any range; the world floors govern up close.
-    // The pixel floors are for 1080 lines and scale with the render height.
     constexpr float tracer_core_min_half_width = 0.01f;
     constexpr float tracer_core_min_half_px = 0.75f;
     constexpr float tracer_glow_min_half_width = 0.03f;
     constexpr float tracer_glow_min_half_px = 2.25f;
-    constexpr float tracer_px_reference_height = 1080.0f;
     constexpr float tracer_glow_alpha = 0.6f;
     constexpr float tracer_glow_darken = 0.85f;
     constexpr float tracer_core_whiten = 0.65f;
@@ -266,7 +262,7 @@ namespace
     // A near-white core over a wider halo in the tracer colour: the halo reads against a pale sky, the
     // core against the ground. Alpha ramps up from the tail, so the streak dims into its end point.
     void tracer_build(const VehicleTracer& t, float tail, float head, float draw_tail, float draw_head,
-                      const rf::Vector3& eye, float fade, float px_scale, TracerDraw& out)
+                      const rf::Vector3& eye, float fade, TracerDraw& out)
     {
         const rf::Vector3 p_tail = t.origin + t.dir * draw_tail;
         const rf::Vector3 p_head = t.origin + t.dir * draw_head;
@@ -291,9 +287,6 @@ namespace
         }
 
         const float px_per_m = gr_pixels_per_meter(mid);
-        const auto half_width = [px_per_m, px_scale](float min_world, float min_px) {
-            return px_per_m > 1e-3f ? std::max(min_world, min_px * px_scale / px_per_m) : min_world;
-        };
 
         const float draw_mid = draw_tail + (draw_head - draw_tail) * tracer_knee;
         const auto along = [&](float d) {
@@ -312,8 +305,8 @@ namespace
         out.row_alpha[2] = along(draw_head);
         out.side = side;
         out.axis = axis;
-        out.glow_half = half_width(tracer_glow_min_half_width, tracer_glow_min_half_px);
-        out.core_half = half_width(tracer_core_min_half_width, tracer_core_min_half_px);
+        out.glow_half = gr_floored_half_width(px_per_m, tracer_glow_min_half_width, tracer_glow_min_half_px);
+        out.core_half = gr_floored_half_width(px_per_m, tracer_core_min_half_width, tracer_core_min_half_px);
 
         const auto whiten = [](rf::ubyte c) {
             return static_cast<rf::ubyte>(c + (255 - c) * tracer_core_whiten);
@@ -508,14 +501,13 @@ void vehicle_tracers_render()
     }
     float dt = 0.0f;
     if (!rf::game_paused) {
-        dt = std::clamp(rf::frametime, 0.0f, tracer_max_frame_delta) * demo_playback_sim_time_scale();
+        dt = cosmetic_frame_dt();
         if (!(dt >= 0.0f)) {
             dt = 0.0f;
         }
     }
     const rf::Vector3 eye = rf::gr::eye_pos;
     const float far_clip = level_projection_far();
-    const float px_scale = rf::gr::screen.clip_height / tracer_px_reference_height;
     int draw_count = 0;
     for (VehicleTracer& t : g_tracers) {
         if (!t.active) {
@@ -553,7 +545,7 @@ void vehicle_tracers_render()
         }
         const float fade = gr_fog_fade(d);
         if (fade > 0.0f) {
-            tracer_build(t, tail, head, draw_tail, draw_head, eye, fade, px_scale, g_tracer_draws[draw_count++]);
+            tracer_build(t, tail, head, draw_tail, draw_head, eye, fade, g_tracer_draws[draw_count++]);
         }
     }
     if (draw_count > 0) {

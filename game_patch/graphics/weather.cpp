@@ -39,7 +39,6 @@ namespace
 {
 
 constexpr float two_pi = 6.2831855f;
-constexpr float max_frame_delta = 0.1f;
 constexpr float liquid_surface_margin = 0.1f;
 
 constexpr int plankton_reseed_gap_ms = 250;
@@ -1409,7 +1408,7 @@ void weather_render()
     }
 
     const rf::Matrix3 camera_orient = rf::camera_get_orient(camera);
-    const float dt = std::clamp(rf::frametime, 0.0f, max_frame_delta) * demo_playback_sim_time_scale();
+    const float dt = cosmetic_frame_dt();
     g_weather_clock += dt;
     int trace_budget = weather_column_trace_budget;
     const bool gpu = weather_gpu_ready();

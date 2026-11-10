@@ -13,7 +13,6 @@
 #include "../graphics/gr.h"
 #include "../misc/alpine_settings.h"
 #include "../multi/payload.h"
-#include "../os/os.h"
 #include "../rf/entity.h"
 #include "../rf/gr/gr.h"
 #include "../rf/multi.h"
@@ -37,6 +36,23 @@ constexpr float push_zone_active_brightness = 0.8f;
 constexpr float push_zone_idle_brightness = 0.5f;
 constexpr double push_zone_blocked_pulse_period_ms = 1000.0;
 
+constexpr double track_pulse_period_ms = 3000.0;
+constexpr float track_pulse_speed = 20.0f;
+constexpr float track_pulse_length = 3.0f;
+constexpr float track_pulse_row_spacing = 0.5f;
+constexpr int track_pulse_steps = static_cast<int>(track_pulse_length / track_pulse_row_spacing);
+// The rows on the spacing, the peak, and the two ends where the cart or the track's end cuts the pulse
+constexpr int track_pulse_max_rows = track_pulse_steps + 2;
+constexpr float track_pulse_lift = 0.05f;
+// Where the alpha peaks, as a share of the way from the tail to the head
+constexpr float track_pulse_peak = 0.8f;
+// The head fades out over this much track before the end
+constexpr float track_pulse_end_fade = 0.5f;
+constexpr float track_pulse_alpha = 0.6f;
+constexpr float track_pulse_half_width = 0.3f;
+constexpr float track_pulse_band = 0.4f;
+constexpr float track_pulse_min_half_px = 1.5f;
+
 constexpr int tether_rows = 16;
 constexpr float tether_slack = 0.01f;
 constexpr float tether_min_span = 0.1f;
@@ -53,15 +69,6 @@ constexpr float tether_self_down = 0.4f;
 constexpr int heal_pulse_ms = 400;
 constexpr float heal_pulse_half_length = 0.15f;
 constexpr float heal_pulse_alpha = 0.8f;
-
-constexpr rf::gr::Mode tether_mode{
-    rf::gr::TEXTURE_SOURCE_NONE,
-    rf::gr::COLOR_SOURCE_VERTEX,
-    rf::gr::ALPHA_SOURCE_VERTEX,
-    rf::gr::ALPHA_BLEND_ALPHA_ADDITIVE,
-    rf::gr::ZBUFFER_TYPE_READ,
-    rf::gr::FOG_NOT_ALLOWED,
-};
 
 struct CheckpointVisual
 {
@@ -181,6 +188,102 @@ void render_push_zone(int64_t now_ms)
     zone_marker_draw_floor(*center, floor_y, radius, now_ms, color);
 }
 
+// The box around the points, grown by `margin`, is wholly out of view
+bool points_culled(const rf::Vector3* points, int count, float margin)
+{
+    rf::Vector3 lo = points[0];
+    rf::Vector3 hi = points[0];
+    for (int i = 1; i < count; ++i) {
+        const rf::Vector3& p = points[i];
+        lo = {std::min(lo.x, p.x), std::min(lo.y, p.y), std::min(lo.z, p.z)};
+        hi = {std::max(hi.x, p.x), std::max(hi.y, p.y), std::max(hi.z, p.z)};
+    }
+    const rf::Vector3 reach{margin, margin, margin};
+    return rf::gr::cull_bounding_box(lo - reach, hi + reach);
+}
+
+// The part of the pulse from `tail` on that lies between the cart and the end of the track
+void draw_track_pulse(float tail, float cart_distance, float total, const rf::Color& color)
+{
+    const float from = std::max(tail, cart_distance);
+    const float to = std::min(tail + track_pulse_length, total);
+    if (!(to - from > 0.05f)) {
+        return;
+    }
+    // Fixed along the pulse, so its shape holds as the cart or the track's end cuts into it
+    std::array<float, track_pulse_max_rows> along{};
+    int rows = 0;
+    // A row next to an end would leave a near-zero-length segment there
+    constexpr float min_row_gap = 0.01f;
+    const auto add_inside = [&](float d) {
+        if (d > from + min_row_gap && d < to - min_row_gap) {
+            along[rows++] = d;
+        }
+    };
+    along[rows++] = from;
+    for (int k = 1; k < track_pulse_steps; ++k) {
+        add_inside(tail + track_pulse_row_spacing * static_cast<float>(k));
+    }
+    add_inside(tail + track_pulse_length * track_pulse_peak);
+    along[rows++] = to;
+    std::sort(along.begin(), along.begin() + rows);
+
+    const float floor_offset = payload_cart_half_height() - track_pulse_lift;
+    std::array<rf::Vector3, track_pulse_max_rows> points{};
+    std::array<rf::Vector3, track_pulse_max_rows> sides{};
+    std::array<float, track_pulse_max_rows> alphas{};
+    for (int i = 0; i < rows; ++i) {
+        const float d = along[i];
+        points[i] = payload_track_point(d);
+        points[i].y -= floor_offset;
+        const float u = (d - tail) / track_pulse_length;
+        alphas[i] = (u < track_pulse_peak ? u / track_pulse_peak : (1.0f - u) / (1.0f - track_pulse_peak))
+            * std::clamp((total - d) / track_pulse_end_fade, 0.0f, 1.0f);
+    }
+
+    // Not fogged, so faded by hand, and dropped past the far plane, where it would depth-test against the cleared sky
+    const rf::Vector3& mid = points[rows / 2];
+    const float dist = (mid - rf::gr::eye_pos).len();
+    if (dist >= level_projection_far()) {
+        return;
+    }
+    const float fade = gr_fog_fade(dist);
+    if (!(fade > 0.0f)) {
+        return;
+    }
+    const float half_width =
+        gr_floored_half_width(gr_pixels_per_meter(mid), track_pulse_half_width, track_pulse_min_half_px);
+    if (points_culled(points.data(), rows, half_width)) {
+        return;
+    }
+
+    for (int i = 0; i < rows; ++i) {
+        alphas[i] *= track_pulse_alpha * fade;
+    }
+    gr_camera_facing_sides(rows, points.data(), half_width, sides.data());
+    gr_band_strip(rows, points.data(), sides.data(), alphas.data(), track_pulse_band, color, additive_vertex_color_3d);
+}
+
+// Pulses leave the cart on a fixed beat and run to the end of the track, so they follow the cart without state
+void render_track_pulses(int64_t now_ms)
+{
+    const float total = payload_total_length();
+    const float cart_distance = payload_distance();
+    if (!payload_cart_center() || !(total > cart_distance)) {
+        return;
+    }
+    const rf::Color color = hud_team_color(payload_attacking_team());
+    rf::gr::set_texture(-1, -1);
+    const double newest_age_ms = std::fmod(static_cast<double>(now_ms), track_pulse_period_ms);
+    for (double age_ms = newest_age_ms;; age_ms += track_pulse_period_ms) {
+        const float tail = cart_distance + track_pulse_speed * static_cast<float>(age_ms / 1000.0) - track_pulse_length;
+        if (tail >= total) {
+            break;
+        }
+        draw_track_pulse(tail, cart_distance, total, color);
+    }
+}
+
 rope_curve::Vec3 to_curve(const rf::Vector3& v)
 {
     return {v.x, v.y, v.z};
@@ -214,52 +317,28 @@ void draw_tether(const rf::Vector3& from, const rf::Vector3& to, const rf::Color
     }
     const rope_curve::Curve curve = rope_curve::solve(to_curve(from), to_curve(to), span * (1.0f + tether_slack));
     std::array<rf::Vector3, tether_rows> points{};
-    rf::Vector3 lo = from;
-    rf::Vector3 hi = from;
     for (int i = 0; i < tether_rows; ++i) {
-        const rf::Vector3 p = from_curve(rope_curve::sample(curve, static_cast<float>(i) / (tether_rows - 1)));
-        points[i] = p;
-        lo = {std::min(lo.x, p.x), std::min(lo.y, p.y), std::min(lo.z, p.z)};
-        hi = {std::max(hi.x, p.x), std::max(hi.y, p.y), std::max(hi.z, p.z)};
+        points[i] = from_curve(rope_curve::sample(curve, static_cast<float>(i) / (tether_rows - 1)));
     }
-    if (rf::gr::cull_bounding_box(lo, hi)) {
+    if (points_culled(points.data(), tether_rows, 0.0f)) {
         return;
     }
 
-    const rf::Vector3 eye = rf::gr::eye_pos;
-    std::array<rf::gr::Vertex, tether_rows * 3> verts{};
+    std::array<rf::Vector3, tether_rows> sides{};
+    std::array<float, tether_rows> alphas{};
+    gr_camera_facing_sides(tether_rows, points.data(), 1.0f, sides.data());
     for (int i = 0; i < tether_rows; ++i) {
-        const rf::Vector3& p = points[i];
-        rf::Vector3 tangent = points[std::min(i + 1, tether_rows - 1)] - points[std::max(i - 1, 0)];
-        tangent.normalize_safe();
-        const rf::Vector3 to_point = p - eye;
-        const float dist = to_point.len();
-        rf::Vector3 side = tangent.cross(to_point);
-        side.normalize_safe();
-        side *= std::max(tether_half_width, tether_half_width_per_meter * dist);
+        const float dist = (points[i] - rf::gr::eye_pos).len();
+        sides[i] *= std::max(tether_half_width, tether_half_width_per_meter * dist);
 
         const float t = static_cast<float>(i) / (tether_rows - 1);
         float a = alpha;
         if (pulse_t) {
             a += heal_pulse_alpha * std::max(0.0f, 1.0f - std::abs(t - *pulse_t) / heal_pulse_half_length);
         }
-        a *= std::clamp((dist - tether_fade_near) / tether_fade_length, 0.0f, 1.0f);
-
-        gr_set_colored_vertex(verts[i * 3], p + side, color, 0.0f);
-        gr_set_colored_vertex(verts[i * 3 + 1], p, color, a);
-        gr_set_colored_vertex(verts[i * 3 + 2], p - side, color, 0.0f);
+        alphas[i] = a * std::clamp((dist - tether_fade_near) / tether_fade_length, 0.0f, 1.0f);
     }
-
-    constexpr auto attributes = static_cast<rf::gr::TMapperFlags>(rf::gr::TMAP_FLAG_RGB | rf::gr::TMAP_FLAG_ALPHA);
-    for (int i = 0; i + 1 < tether_rows; ++i) {
-        rf::gr::Vertex* r0 = &verts[i * 3];
-        rf::gr::Vertex* r1 = &verts[(i + 1) * 3];
-        for (int col = 0; col < 2; ++col) {
-            // The rope ribbon's winding: +side to -side on this row, back along the next
-            rf::gr::Vertex* quad[4] = {&r0[col], &r0[col + 1], &r1[col + 1], &r1[col]};
-            rf::gr::poly(4, quad, attributes, tether_mode, false, 0.0f);
-        }
-    }
+    gr_band_strip(tether_rows, points.data(), sides.data(), alphas.data(), 0.0f, color, additive_vertex_color_3d);
 }
 
 void render_tethers(int64_t now_ms)
@@ -310,12 +389,15 @@ void payload_world_render()
     if (!payload_active()) {
         return;
     }
-    const int64_t now_ms = timer::get_i64(1000);
+    const int64_t now_ms = world_hud_clock_ms();
     track_captures(now_ms);
     track_heal_ticks(now_ms);
     render_checkpoint_markers(now_ms);
     if (g_alpine_game_config.world_hud_payload_push_zone) {
         render_push_zone(now_ms);
+    }
+    if (g_alpine_game_config.world_hud_payload_track_pulse) {
+        render_track_pulses(now_ms);
     }
     if (g_alpine_game_config.world_hud_payload_tethers) {
         render_tethers(now_ms);

@@ -1566,6 +1566,11 @@ bool bot_nav_link_climbs_ledge(const int from_waypoint, const int to_waypoint)
     return climbs_ledge;
 }
 
+void bot_nav_clear_ledge_link_cache()
+{
+    g_ledge_link_cache.clear();
+}
+
 bool bot_nav_path_has_unclimbable_upward_links(const std::vector<int>& path)
 {
     if (path.size() < 2) {

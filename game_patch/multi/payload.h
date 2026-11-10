@@ -68,6 +68,8 @@ bool payload_active();
 int payload_attacking_team(); // 0 red, 1 blue
 int payload_defending_team();
 rf::Mover* payload_cart_mover();
+// The world box around the cart's brushes now; false with no cart or no brushes
+bool payload_cart_bounds(rf::Vector3& lo, rf::Vector3& hi);
 std::optional<rf::Vector3> payload_cart_center();
 // The Payload_Handler's name, or the default one
 const std::string& payload_cart_name();
