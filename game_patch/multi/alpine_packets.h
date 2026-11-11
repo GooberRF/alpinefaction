@@ -55,8 +55,8 @@ enum class af_packet_type : uint8_t
     af_vehicle_factory_state = 0x69,    // Alpine 1.5
     af_scavenger_state = 0x6A,          // Alpine 1.5
     af_payload_state = 0x6B,            // Alpine 1.5
-    af_obj_update_delta = 0x6C,         // Alpine 1.5, server -> client, see multi/obj_update_delta.h
-    af_obj_update_ack = 0x6D,           // Alpine 1.5, client -> server
+    af_obj_update_delta = 0x6C,         // Alpine 1.5
+    af_obj_update_ack = 0x6D,           // Alpine 1.5
 };
 
 struct af_obj_update_ack_packet

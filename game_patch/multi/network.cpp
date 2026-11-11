@@ -2800,9 +2800,12 @@ JoiningClientKind get_joining_client_kind()
 FunHook<void(int, rf::NetAddr*)> process_join_req_packet_hook{
     0x0047AC60,
     [](int pPacket, rf::NetAddr* addr) {
+        // The engine denies a request from a connected address and keeps that player, so it is no join
+        const bool already_joined = rf::multi_find_player_by_addr(*addr) != nullptr;
         process_join_req_packet_hook.call_target(pPacket, addr);
 
-        if (rf::Player* valid_player = rf::multi_find_player_by_addr(*addr)) { // player successfully joined
+        rf::Player* valid_player = already_joined ? nullptr : rf::multi_find_player_by_addr(*addr);
+        if (valid_player) { // player successfully joined
             if (g_joining_client_version == ClientSoftware::AlpineFaction ||
                 g_joining_client_version == ClientSoftware::DashFaction ||
                 g_joining_client_version == ClientSoftware::Browser) {
