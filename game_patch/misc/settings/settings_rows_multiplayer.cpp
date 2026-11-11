@@ -2,6 +2,7 @@
 #include <stdexcept>
 #include "../../main/main.h"
 #include "../../multi/multi.h"
+#include "../../multi/network.h"
 #include "../../multi/server_internal.h"
 #include "../../multi/sprays.h"
 #include "../../os/os.h"
@@ -43,15 +44,12 @@ void apply_server_netfps()
     if (rf::is_server) {
         signal_server_cfg_changed();
     }
+    server_apply_net_rate();
 }
 
-void apply_server_max_fps()
-{
-    apply_maximum_fps();
-    if (rf::is_dedicated_server) {
-        signal_server_cfg_changed();
-    }
-}
+const char* const labels_server_netfps[] = {"Low (20)", "Medium (40)", "High (100)"};
+static_assert(std::size(labels_server_netfps) == std::size(AGS::net_rate_tiers));
+static_assert(AGS::default_net_rate_tier == 1); // the row's default_str
 
 const SettingRow rows[] = {
     {
@@ -139,31 +137,21 @@ const SettingRow rows[] = {
         .console_cmd = "cl_sprays",
     },
     {
-        .id = "server_netfps",
-        .key = "ServerNetFPS",
-        .label = "Server net FPS",
+        .id = "server_bandwidth",
+        .key = "ServerBandwidth",
+        .label = "Server bandwidth",
         .tooltip = "Object updates per second sent when hosting.",
         .category = Cat::Multiplayer,
         .subcategory = "Hosting",
-        .widget = Wid::Stepper,
-        .access = AccUint{&AGS::server_netfps, &AGS::set_server_netfps, AGS::min_server_netfps, AGS::max_server_netfps},
+        .widget = Wid::Enum,
+        .access = AccFnInt{[](rf::Player*) { return g_alpine_game_config.server_net_rate_tier_index(); },
+                           [](rf::Player*, int v) { g_alpine_game_config.set_server_net_rate_tier_index(v); },
+                           0, static_cast<int>(std::size(AGS::net_rate_tiers)) - 1},
         .flags = SF_MP_ONLY | SF_HOST_ONLY | SF_ADVANCED,
         .apply = apply_server_netfps,
-        .console_cmd = "sv_netfps",
-        .ui_suffix = " Hz",
-    },
-    {
-        .id = "server_max_fps",
-        .key = "ServerMaxFPS",
-        .label = "Server max FPS",
-        .tooltip = "Frame cap used by the dedicated server.",
-        .category = Cat::Multiplayer,
-        .subcategory = "Hosting",
-        .widget = Wid::Stepper,
-        .access = AccUint{&AGS::server_max_fps, &AGS::set_server_max_fps, AGS::min_fps_limit, AGS::max_fps_limit},
-        .flags = SF_DEDICATED_ONLY | SF_HIDDEN | SF_APPLY_ON_LOAD,
-        .apply = apply_server_max_fps,
-        .console_cmd = "maxfps",
+        ENUM_LABELS(labels_server_netfps),
+        .console_cmd = "sv_bandwidth",
+        .default_str = "1",
     },
     {
         .id = "fflink_status",
@@ -190,6 +178,20 @@ const SettingRow rows[] = {
         .widget = Wid::Text,
         .access = AccString{&AGS::multiplayer_tracker, &AGS::set_multiplayer_tracker},
         .flags = SF_HIDDEN | SF_RESTART_REQUIRED | SF_NOT_WHILE_IN_GAME,
+    },
+    {
+        .id = "client_rate",
+        .key = "ClientRate",
+        .label = "Client rate for legacy servers",
+        .tooltip = "Connection speed in bytes/s. Servers older than Alpine Faction 1.5 set how often they send you updates by it.",
+        .category = Cat::Multiplayer,
+        .subcategory = "Network",
+        .widget = Wid::Stepper,
+        .access = AccUint{&AGS::client_rate, nullptr, 1000u, 1000000u},
+        .flags = SF_ADVANCED | SF_APPLY_ON_LOAD,
+        .apply = apply_client_rate,
+        .ui_step = 1000.0f,
+        .ui_suffix = " B/s",
     },
     {
         .id = "dbg_bot",

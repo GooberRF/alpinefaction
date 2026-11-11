@@ -511,13 +511,7 @@ ConsoleCommand2 server_load_user_maps_cmd{
             return;
         }
 
-        int loaded = vpackfile_load_user_maps_packfiles();
-        if (loaded == 0) {
-            rf::console::print("No new packfiles found in user_maps\\");
-            return;
-        }
-
-        rf::console::print("Loaded {} new packfile(s) from user_maps\\", loaded);
+        rf::console::print("{}", vpackfile_load_user_maps_packfiles());
     },
     "Load any packfiles newly added to user_maps\\ since the server was launched",
     "sv_loadpackfiles",

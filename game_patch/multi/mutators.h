@@ -204,8 +204,7 @@ void crits_on_weapon_created(rf::Weapon* wp, int parent_handle);
 void crits_on_deferred_created(rf::Weapon* wp, int parent_handle);
 void crits_on_object_dead(rf::Object* objp);
 // The crit detonation sound; returns the blast-radius scale the caller must apply to the
-// explosion. Called from every player-attributed explosion_apply_radius_damage call site: two
-// are hooked here, the third is driven by weapon.cpp.
+// explosion. Called from weapon.cpp's apply_radius_damage call-site hooks.
 float crits_on_explosion(const rf::Vector3* pos, float radius);
 // Continuous fire (flamethrower stream, taser, drill): the engine re-enters the fire path on its
 // own instead of once per shot, so these roll on a cadence and stamp a crit window. `weapon_on`

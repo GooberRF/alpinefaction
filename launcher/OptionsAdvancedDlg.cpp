@@ -12,6 +12,11 @@ BOOL OptionsAdvancedDlg::OnInitDialog()
     InitToolTip();
 
     SetDlgItemInt(IDC_RENDERING_CACHE_EDIT, m_conf.geometry_cache_size, false);
+    CheckDlgButton(IDC_FORCE_PORT_CHECK, m_conf.force_port != 0);
+    if (m_conf.force_port)
+        SetDlgItemInt(IDC_PORT_EDIT, m_conf.force_port, false);
+    else
+        GetDlgItem(IDC_PORT_EDIT).EnableWindow(FALSE);
     CheckDlgButton(IDC_ALLOW_OVERWRITE_GAME_CHECK, m_conf.allow_overwrite_game_files ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(IDC_EDITOR_LAA_CHECK, m_conf.editor_large_address_aware ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(IDC_AUTOPLAY_AF_DEMOS_CHECK, m_conf.autoplay_af_demos ? BST_CHECKED : BST_UNCHECKED);
@@ -26,6 +31,7 @@ void OptionsAdvancedDlg::InitToolTip()
     m_tool_tip.SetMaxTipWidth(512);
     m_tool_tip.AddTool(GetDlgItem(IDC_RENDERER_COMBO), "Graphics API used for rendering.\nWarning: Direct3D 8 and 9 do not support certain features used by Alpine Faction");
     m_tool_tip.AddTool(GetDlgItem(IDC_RENDERING_CACHE_EDIT), "RAM allocated for level geometry rendering, which must be 32 MB or less");
+    m_tool_tip.AddTool(GetDlgItem(IDC_FORCE_PORT_CHECK), "If not checked, port is randomly selected");
     m_tool_tip.AddTool(GetDlgItem(IDC_ALLOW_OVERWRITE_GAME_CHECK), "Allows files in custom level folders to override core game files. Recommended to keep disabled (client_mods should be used for this instead)");
     m_tool_tip.AddTool(GetDlgItem(IDC_EDITOR_LAA_CHECK), "Start the level editor from a large address aware copy of RED.exe (RED_laa.exe), so it can use up to 4 GB of memory instead of 2 GB");
     m_tool_tip.AddTool(GetDlgItem(IDC_AUTOPLAY_AF_DEMOS_CHECK), "Skip the confirmation window when opening af://demo links and start playback immediately");
@@ -39,12 +45,18 @@ BOOL OptionsAdvancedDlg::OnCommand(WPARAM wparam, LPARAM lparam)
         m_display_dlg.SendMessage(WM_COMMAND, wparam, lparam);
         return TRUE;
     }
+    if (id == IDC_FORCE_PORT_CHECK) {
+        GetDlgItem(IDC_PORT_EDIT).EnableWindow(IsDlgButtonChecked(IDC_FORCE_PORT_CHECK) == BST_CHECKED);
+        return TRUE;
+    }
     return FALSE;
 }
 
 void OptionsAdvancedDlg::OnSave()
 {
     m_conf.geometry_cache_size = GetDlgItemInt(IDC_RENDERING_CACHE_EDIT, false);
+    bool force_port = IsDlgButtonChecked(IDC_FORCE_PORT_CHECK) == BST_CHECKED;
+    m_conf.force_port = force_port ? GetDlgItemInt(IDC_PORT_EDIT, false) : 0;
     m_conf.allow_overwrite_game_files = (IsDlgButtonChecked(IDC_ALLOW_OVERWRITE_GAME_CHECK) == BST_CHECKED);
     m_conf.editor_large_address_aware = (IsDlgButtonChecked(IDC_EDITOR_LAA_CHECK) == BST_CHECKED);
     m_conf.autoplay_af_demos = (IsDlgButtonChecked(IDC_AUTOPLAY_AF_DEMOS_CHECK) == BST_CHECKED);

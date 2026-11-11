@@ -231,8 +231,7 @@ inline rf::Matrix3 from_bt(const btMatrix3x3& m)
 
 inline bool vphys_matrix_is_finite(const rf::Matrix3& m)
 {
-    return vehicle_vector_is_finite(m.rvec) && vehicle_vector_is_finite(m.uvec)
-        && vehicle_vector_is_finite(m.fvec);
+    return m.rvec.is_finite() && m.uvec.is_finite() && m.fvec.is_finite();
 }
 
 // Half extents plus the CENTRE they are measured about - not the hull origin for a land vehicle.

@@ -913,7 +913,7 @@ namespace
     float vehicle_pose_extent(const rf::Vector3& from_pos, float from_heading, const rf::Vector3& to_pos,
                               float to_heading, float reach)
     {
-        const float turn = std::remainder(to_heading - from_heading, vehicle_two_pi);
+        const float turn = wrap_pi(to_heading - from_heading);
         return std::max((to_pos - from_pos).len(), std::fabs(turn) * reach);
     }
 
@@ -969,7 +969,7 @@ namespace
                 return {};
             }
             const float span_s = static_cast<float>(span_ms) * 0.001f;
-            const float turn = std::remainder(s.newest_heading - s.bucket_heading[i], vehicle_two_pi);
+            const float turn = wrap_pi(s.newest_heading - s.bucket_heading[i]);
             return {(s.newest_pos - s.bucket_pos[i]).len() / span_s, std::fabs(turn) / span_s, s.reach};
         }
         return {};
@@ -1136,7 +1136,7 @@ void vehicle_scrape_contact(rf::Entity* vehicle, const rf::Vector3& vel, float w
                             float step_time)
 {
     if (!rf::is_multi || !vehicle || vehicle->life <= 0.0f || rf::entity_is_dying(vehicle)
-        || !vehicle_vector_is_finite(vel) || !std::isfinite(wall_slide) || !std::isfinite(ground_slide)
+        || !vel.is_finite() || !std::isfinite(wall_slide) || !std::isfinite(ground_slide)
         || !(step_time > 0.0f)) {
         return;
     }
@@ -1254,7 +1254,7 @@ void vehicle_note_observed_speed(int vehicle_handle, float speed)
 
 void vehicle_note_observed_pose(int vehicle_handle, const rf::Vector3& pos, float heading)
 {
-    if (!rf::is_multi || !vehicle_vector_is_finite(pos) || !std::isfinite(heading)) {
+    if (!rf::is_multi || !pos.is_finite() || !std::isfinite(heading)) {
         return;
     }
     VehicleObservedSpeed& s = g_vehicle_state.observed_speed[vehicle_handle];

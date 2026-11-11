@@ -4,6 +4,7 @@
 #include <patch_common/AsmWriter.h>
 #include <common/config/BuildConfig.h>
 #include <common/utils/list-utils.h>
+#include <common/utils/math-utils.h>
 #include <common/utils/string-utils.h>
 #include <algorithm>
 #include <array>
@@ -303,7 +304,7 @@ static FunHook<void(rf::Player*)> player_fpgun_process_hook{
         auto yaw_of = [](const rf::Vector3& fvec) { return std::atan2(fvec.x, fvec.z); };
         auto pitch_of = [](const rf::Vector3& fvec) { return std::asin(std::clamp(-fvec.y, -1.0f, 1.0f)); };
         auto ang_vel = [dt](float cur, float prev) {
-            return std::remainder(cur - prev, 2.0f * std::numbers::pi_v<float>) / dt;
+            return wrap_pi(cur - prev) / dt;
         };
 
         const rf::Vector3& old_fvec = fpgun_data.old_cam_orient.fvec;

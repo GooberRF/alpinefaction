@@ -33,8 +33,6 @@ set(SRCS
     OptionsDisplayDlg.h
     OptionsMiscDlg.cpp
     OptionsMiscDlg.h
-    OptionsMultiplayerDlg.cpp
-    OptionsMultiplayerDlg.h
     res
     resource.h
     stdafx.cpp

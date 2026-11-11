@@ -27,7 +27,7 @@ Other switches that affect an ADS server:
 | `-port <port>` | Stock switch: UDP port to host on (7755 when not given). |
 | `-mod <name>` | Stock switch: run a TC mod. See `require_client_mod`. |
 
-The server log is written to `logs\AlpineFaction-dedicated-<config name>.log`. Target FPS and network FPS are not part of this file: they come from `ServerMaxFPS` and `ServerNetFPS` in `alpine_settings.ini`.
+The server log is written to `logs\AlpineFaction-dedicated-<config name>.log`. The server's frame rate and network update rate both follow the `bandwidth` key. A dedicated server does not read `alpine_settings.ini`.
 
 ## Console commands
 
@@ -108,11 +108,15 @@ In the tables below, a Number key takes an integer or a decimal value, and an In
 | `allow_lightmap_mode` | Boolean | `false` | Let clients use lightmap-only rendering. |
 | `allow_disable_screenshake` | Boolean | `true` | Let clients turn off weapon screenshake. |
 | `allow_disable_muzzle_flash` | Boolean | `true` | Let clients turn off muzzle flash lights. |
-| `allow_unlimited_fps` | Boolean | `false` | Let clients lift the 240 FPS cap. |
 | `allow_footsteps` | Boolean | `true` | Let clients hear other players' footsteps. |
 | `use_sp_damage_calculation` | Boolean | `false` | Use single-player damage calculation, where armor does not fully protect health. |
 | `allow_outlines` | Boolean | `false` | Let clients draw player outlines. |
 | `allow_outlines_xray` | Boolean | `true` | Let outlines show through walls (only matters when `allow_outlines` is on). |
+| `bandwidth` | String | `"medium"` | Server bandwidth tier, case-insensitive. `low` sends 20 object updates per second and runs the server at 40 FPS; `medium` sends 40 per second at 80 FPS, as in Alpine Faction 1.4; `high` sends 100 per second at 200 FPS. Any other value prints a warning and is ignored. Alpine Faction 1.5 clients send 100 updates per second to the server (once per frame below 100 FPS); older clients send fewer. `sv_bandwidth` changes the tier until the config is next loaded. |
+| `projectile_lag_comp` | Boolean | `true` | Fast-forward projectiles by the shooter's latency, and test direct hits and splash damage against victims where the shooter saw them. |
+| `projectile_lag_comp_max_ms` | Integer | `250` | Most milliseconds of projectile lag compensation, clamped to 50-500. Only matters when `projectile_lag_comp` is on. |
+| `hitscan_lag_comp_max_ms` | Integer | `1000` | Most milliseconds a hitscan shot can rewind a victim to where the shooter saw them, clamped to 50-1000. Shooters with more latency are compensated up to this much. |
+| `delta_obj_update` | Boolean | `true` | Delta-compress object updates for clients that support it, which sharply reduces server bandwidth. A change applies to players who join afterwards. |
 
 ## `[[rcon_profiles]]`
 
@@ -124,7 +128,7 @@ Each entry is one rcon login. Logging in with a profile's password grants that p
 | `password` | String | required | Profile password, truncated to 15 characters. Entries without one are skipped. |
 | `full_admin` | Boolean | `false` | Allow every rcon-capable command. |
 | `allow_multiple` | Boolean | `false` | Let several players hold this profile at once. When false, a new login removes the previous holder. |
-| `allowed_commands` | Array of strings | `[]` | Commands this profile may run (ignored for `full_admin`). Only these are accepted: `info`, `say`, `kick`, `ban`, `ban_ip`, `unban_last`, `level`, `map`, `map_ext`, `map_rest`, `map_next`, `map_rand`, `map_prev`, `maxfps`, `sv_caplimit`, `sv_fraglimit`, `sv_gametype`, `sv_netfps`, `gt`, `sv_geolimit`, `sv_pass`, `sv_timelimit`, `download_level`, `sv_afstats_events_status`, `sv_afstats_events_reset`, `sv_afstats_trace`, `sv_fflink_status`, `sv_fflink_resync`, `sv_bot_add`, `sv_bot_remove`, `sv_bot_list`, `sv_swap_team`, `sv_force_spectate`, `sv_toggle_ready`, `sv_force_unspectate`, `sv_mute_chat`. `sv_loadconfig` is accepted in the list but only ever runs for `full_admin` profiles. |
+| `allowed_commands` | Array of strings | `[]` | Commands this profile may run (ignored for `full_admin`). Only these are accepted: `info`, `say`, `kick`, `ban`, `ban_ip`, `unban_last`, `level`, `map`, `map_ext`, `map_rest`, `map_next`, `map_rand`, `map_prev`, `maxfps`, `sv_caplimit`, `sv_fraglimit`, `sv_gametype`, `sv_bandwidth`, `gt`, `sv_geolimit`, `sv_pass`, `sv_timelimit`, `download_level`, `sv_afstats_events_status`, `sv_afstats_events_reset`, `sv_afstats_trace`, `sv_fflink_status`, `sv_fflink_resync`, `sv_bot_add`, `sv_bot_remove`, `sv_bot_list`, `sv_swap_team`, `sv_force_spectate`, `sv_toggle_ready`, `sv_force_unspectate`, `sv_mute_chat`. `sv_loadconfig` and `sv_loadpackfiles` are accepted in the list but only ever run for `full_admin` profiles. |
 
 ## `[inactivity]`
 

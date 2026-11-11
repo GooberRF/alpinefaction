@@ -23,12 +23,6 @@ bool GameConfig::load() try
         game_executable_path = fallback_executable_path;
     }
 
-    if (update_rate == 0) {
-        // Update Rate is set to "None" - this would prevent Multi menu from working - fix it
-        update_rate = GameConfig::DEFAULT_UPDATE_RATE;
-        result = false;
-    }
-
     return result;
 }
 catch (...) {
@@ -145,7 +139,6 @@ bool GameConfig::visit_vars(T&& visitor, bool is_save)
     result &= visitor(red_faction_key, "Selected Video Card", selected_video_card);
     result &= visitor(red_faction_key, "Vsync", vsync);
     result &= visitor(red_faction_key, "Geometry Cache Size", geometry_cache_size);
-    result &= visitor(red_faction_key, "UpdateRate", update_rate);
     result &= visitor(red_faction_key, "EAX", eax_sound);
     result &= visitor(red_faction_key, "ForcePort", force_port);
 

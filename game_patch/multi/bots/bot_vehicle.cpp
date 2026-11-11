@@ -456,7 +456,7 @@ void step_seated_aim(BotContext& ctx, rf::Entity& rider, rf::Entity& hull, const
         }
         else {
             ctx.state.mouse_delta_override_active = true;
-            ctx.state.mouse_dh_input = normalize_angle(yaw - hull.control_data.phb.y);
+            ctx.state.mouse_dh_input = wrap_pi(yaw - hull.control_data.phb.y);
             ctx.state.mouse_dp_input = pitch - hull.control_data.eye_phb.x;
         }
         return;
