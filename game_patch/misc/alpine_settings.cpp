@@ -1109,9 +1109,29 @@ ConsoleCommand2 console_statusline_cmd{
     "ui_console_statusline",
     []() {
         setting_console_set("console_statusline", "toggle");
-        rf::console::print("Console statusline is {}", g_alpine_game_config.console_statusline ? "enabled" : "disabled");
+        rf::console::print("Console status line is {}",
+            g_alpine_game_config.console_statusline ? "enabled" : "disabled");
     },
-    "Toggle the console statusline",
+    "Toggle the console status line",
+};
+
+ConsoleCommand2 console_sounds_cmd{
+    "ui_console_sounds",
+    []() {
+        setting_console_set("console_sounds", "toggle");
+        rf::console::print("Console sounds are {}", g_alpine_game_config.console_sounds ? "enabled" : "disabled");
+    },
+    "Toggle console interface sounds",
+};
+
+ConsoleCommand2 console_mouse_wheel_cmd{
+    "ui_console_mousewheel",
+    []() {
+        setting_console_set("console_mouse_wheel", "toggle");
+        rf::console::print("Console mouse wheel scrolling is {}",
+            g_alpine_game_config.console_mouse_wheel ? "enabled" : "disabled");
+    },
+    "Toggle scrolling the console with the mouse wheel",
 };
 
 ConsoleCommand2 shadow_quality_cmd{
@@ -1196,6 +1216,8 @@ void alpine_settings_apply_patch()
     console_font_size_cmd.register_cmd();
     console_height_cmd.register_cmd();
     console_statusline_cmd.register_cmd();
+    console_sounds_cmd.register_cmd();
+    console_mouse_wheel_cmd.register_cmd();
     shadow_quality_cmd.register_cmd();
     shadow_frame_lag_cmd.register_cmd();
     dbg_shadows_cmd.register_cmd();

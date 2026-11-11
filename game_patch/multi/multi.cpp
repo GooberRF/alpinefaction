@@ -27,6 +27,7 @@
 #include "vehicles/vehicle.h"
 #include "vehicles/vehicle_physics.h"
 #include "mutators.h"
+#include "vote_client.h"
 #include "bots/bot_chat_manager.h"
 #include "bots/bot_context_fwd.h"
 #include "bots/bot_vehicle_nav.h"
@@ -1269,6 +1270,43 @@ int multi_num_spawned_players() {
     return std::ranges::count_if(SinglyLinkedList{rf::player_list}, [] (const auto& p) {
         return !rf::player_is_dead(&p) && !rf::player_is_dying(&p);
     });
+}
+
+bool multi_local_player_is_spectating()
+{
+    // The listen-server host runs the match itself and gets no match state packets.
+    return multi_spectate_is_spectating() || (!rf::is_server && vote_client_spectating_match());
+}
+
+int multi_count_participants(int* num_bots)
+{
+    int count = 0;
+    int bots = 0;
+    for (const rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if (!player.is_non_participant()) {
+            ++count;
+            bots += player.is_bot;
+        }
+    }
+    if (num_bots) {
+        *num_bots = bots;
+    }
+    return count;
+}
+
+std::optional<float> multi_time_left()
+{
+    const float time_left = rf::multi_time_limit - rf::level.time;
+    if ((rf::level.flags & rf::LEVEL_LOADED) && rf::multi_time_limit > 0.0f && time_left > 0.0f && !gt_uses_rounds()) {
+        return time_left;
+    }
+    return std::nullopt;
+}
+
+std::string_view level_display_name()
+{
+    const char* const name = rf::level.name.c_str();
+    return name[0] ? std::string_view{name} : std::string_view{rf::level.filename.c_str()};
 }
 
 void configure_custom_gametype_listen_server_settings() {

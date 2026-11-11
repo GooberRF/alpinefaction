@@ -386,11 +386,13 @@ struct AlpineGameSettings
     static constexpr int min_console_height_pct = 20;
     static constexpr int max_console_height_pct = 100;
     int console_height_pct = 50;
-    bool console_statusline = true;
     void set_console_height_pct(int pct)
     {
         console_height_pct = std::clamp(pct, min_console_height_pct, max_console_height_pct);
     }
+    bool console_statusline = true;
+    bool console_sounds = true;
+    bool console_mouse_wheel = true;
     bool screen_shake_force_off = false;
     bool display_target_player_names = true;
     bool verbose_time_left_display = true;

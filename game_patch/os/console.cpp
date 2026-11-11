@@ -30,6 +30,8 @@ rf::console::Command* g_commands_buffer[CMD_LIMIT];
 
 static std::ofstream g_console_log;
 static std::string g_console_log_path;
+// Latched once, like legacy_menus_enabled(): the launcher config is reloaded mid-session.
+static bool g_legacy_console = false;
 
 void console_run_script(const char* filename)
 {
@@ -235,7 +237,7 @@ static FunHook<void(const char*, const rf::Color*)> console_output_hook{
                 out_text = clamped.c_str();
             }
             console_output_hook.call_target(out_text, color);
-            if (text) {
+            if (text && !g_legacy_console) {
                 console_ui_add_output(text, color);
             }
         }
@@ -267,10 +269,12 @@ static FunHook<void()> console_draw_client_hook{
         // Fixes console rendering in endgame state
         rf::gr::reset_clip();
 
-        // Original now only steps the open/close animation (drawing is skipped, see apply_patches).
+        // With the new console, the original only steps the open/close animation (see apply_patches).
         if (gameseq_is_visible()) {
             console_draw_client_hook.call_target();
-            console_ui_render();
+            if (!g_legacy_console) {
+                console_ui_render();
+            }
         }
     },
 };
@@ -294,6 +298,21 @@ void console_clear_input()
     rf::console::cmd_line_len = 0;
     rf::console::history_current_index = 0;
 }
+
+bool legacy_console_enabled()
+{
+    return g_legacy_console;
+}
+
+static CodeInjection console_handle_input_injection{
+    0x00509FAF,
+    [](auto& regs) {
+        rf::Key key = regs.eax;
+        if (key == (rf::KEY_C | rf::KEY_CTRLED)) {
+            console_clear_input();
+        }
+    },
+};
 
 static CodeInjection console_handle_input_history_injection{
     0x0050A09B,
@@ -380,16 +399,24 @@ void console_apply_patches()
     console_draw_server_hook.install();
     console_put_char_new_line_hook.install();
 
-    // Line editing, scrolling, search (also handles Ctrl+C clear)
-    console_ui_apply_patches();
+    g_legacy_console = g_game_config.legacy_console;
+
+    // Additional key handling
+    console_handle_input_injection.install();
+    if (!g_legacy_console) {
+        console_ui_apply_patches();
+    }
 
     // Improve history handling
     console_handle_input_history_injection.install();
 
-    // Replacement console renderer (console_ui.cpp). Stock draw keeps its animation step, then
-    // jumps to its epilogue before drawing anything (no registers pushed yet at 0x0050AC6B).
+    // Reset clip window before rendering console
     console_draw_client_hook.install();
-    AsmWriter(0x0050AC6B).jmp(0x0050AE47);
+    if (!g_legacy_console) {
+        // Replacement console renderer (console_ui.cpp). Stock draw keeps its animation step, then
+        // jumps to its epilogue before drawing anything (no registers pushed yet at 0x0050AC6B).
+        AsmWriter(0x0050AC6B).jmp(0x0050AE47);
+    }
 
     apply_console_history_setting();
     console_commands_apply_patches();

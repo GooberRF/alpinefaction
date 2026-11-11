@@ -220,6 +220,7 @@ BEGIN
     AUTOCHECKBOX    "Run level editor with 4 GB address space",IDC_EDITOR_LAA_CHECK,0,40,150,10
     AUTOCHECKBOX    "Auto play demos via af:// protocol",IDC_AUTOPLAY_AF_DEMOS_CHECK,0,50,150,10
     AUTOCHECKBOX    "Use deprecated legacy menus",IDC_LEGACY_MENUS_CHECK,0,60,150,10
+    AUTOCHECKBOX    "Use deprecated legacy console",IDC_LEGACY_CONSOLE_CHECK,0,70,150,10
 END
 
 IDD_OPTIONS_MULTIPLAYER DIALOGEX 0, 0, 120, 30

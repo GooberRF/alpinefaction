@@ -1,18 +1,16 @@
 // Replacement renderer and line editor for the in-game (~) console.
 // Stock keeps owning visibility, the open/close animation, command dispatch, history and Tab
 // completion. We mirror output into our own scrollback, draw it with consolefont.ttf, and take
-// over cursor editing, scrolling and search. See research/functions/console.md.
+// over cursor editing, scrolling and search.
 #include "console.h"
 #include "os.h"
+#include "win32_console.h"
 #include "../main/main.h"
 #include "../misc/alpine_settings.h"
-#include "../hud/multi_scoreboard.h"
 #include "../input/control_input_filter.h"
-#include "../hud/multi_spectate.h"
 #include "../misc/vote_panel.h"
-#include "../multi/demo/demo_ui.h"
 #include "../multi/gametype.h"
-#include "../multi/vote_client.h"
+#include "../multi/multi.h"
 #include "../rf/gr/gr.h"
 #include "../rf/gameseq.h"
 #include "../rf/gr/gr_font.h"
@@ -23,7 +21,7 @@
 #include "../rf/sound/sound.h"
 #include "../sound/sound.h"
 #include <common/config/GameConfig.h>
-#include <common/utils/list-utils.h>
+#include <common/utils/string-utils.h>
 #include <patch_common/CallHook.h>
 #include <patch_common/FunHook.h>
 #include <patch_common/MemUtils.h>
@@ -33,15 +31,15 @@
 #include <cstring>
 #include <deque>
 #include <format>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 #include <windows.h>
 
 namespace
 {
-// Stock console state (see console_draw_client_console @ 0x0050ABE0).
-auto& stock_height = addr_as_ref<int>(0x0177569C);           // animates -11 (closed) .. 192 (open)
-auto& stock_default_color = addr_as_ref<rf::Color>(0x01775678); // used by the stock writer for null colors
+// Range of rf::console::client_height while it animates.
 constexpr int stock_height_closed = -11;
 constexpr int stock_height_open = 192;
 
@@ -51,6 +49,7 @@ struct Line
     rf::Color color;
     size_t prefix_len = 0; // leading chars drawn in prefix_color (chat sender names)
     rf::Color prefix_color{};
+    bool match = true; // contains g_filter; only meaningful while filter_active()
 };
 
 // Default colors per kind of output. All are >= 4.5:1 contrast against the default console
@@ -99,7 +98,7 @@ struct TextPos
     auto operator<=>(const TextPos&) const = default;
 };
 uint32_t g_first_id = 0;
-bool g_cursor_on = false; // Mouse2-toggled cursor (gameplay only; menus already have one)
+bool g_cursor_on = false; // toggled cursor (gameplay only; menus already have one)
 bool g_swallow_attack = false; // after the cursor closes, keep attacks blocked until buttons are released
 bool g_selecting = false;
 TextPos g_sel_a{};
@@ -111,10 +110,13 @@ size_t g_copied_chars = 0;
 // The console reads the real state through call_target.
 bool console_eats_mouse()
 {
+    if (!rf::console::console_is_visible()) {
+        return false;
+    }
     if (g_selecting) {
         return true;
     }
-    if (g_console_bottom <= 0 || !rf::console::console_is_visible() || rf::gameseq_get_state() == rf::GS_GAMEPLAY) {
+    if (g_console_bottom <= 0 || rf::gameseq_get_state() == rf::GS_GAMEPLAY) {
         return false;
     }
     int mx = 0;
@@ -124,19 +126,19 @@ bool console_eats_mouse()
     return my < g_console_bottom;
 }
 
-FunHook<int(int)> mouse_was_button_pressed_hook{
-    0x0051E5D0,
-    [](int btn) { return console_eats_mouse() ? 0 : mouse_was_button_pressed_hook.call_target(btn); },
+FunHook<bool(int)> mouse_was_button_pressed_hook{
+    &rf::mouse_was_button_pressed,
+    [](int btn) { return !console_eats_mouse() && mouse_was_button_pressed_hook.call_target(btn); },
 };
 
 FunHook<bool(int)> mouse_button_is_down_hook{
-    0x0051E530,
+    &rf::mouse_button_is_down,
     [](int btn) { return !console_eats_mouse() && mouse_button_is_down_hook.call_target(btn); },
 };
 
 bool mouse_pressed(int btn)
 {
-    return mouse_was_button_pressed_hook.call_target(btn) != 0;
+    return mouse_was_button_pressed_hook.call_target(btn);
 }
 
 bool mouse_down(int btn)
@@ -144,27 +146,51 @@ bool mouse_down(int btn)
     return mouse_button_is_down_hook.call_target(btn);
 }
 
+void play_console_sound(int sound_id)
+{
+    if (g_alpine_game_config.console_sounds) {
+        rf::snd_play(sound_id, 0, 0.0f, 1.0f);
+    }
+}
+
+// Saturating, because Ctrl+Home parks g_scroll at INT_MAX until the next render clamps it.
+void scroll_by(int rows)
+{
+    g_scroll = rows > 0 && g_scroll > INT_MAX - rows ? INT_MAX : g_scroll + rows;
+}
+
 int rows_for(const std::string& s)
 {
     return std::max(1, (static_cast<int>(s.size()) + g_cols - 1) / g_cols);
 }
 
-bool icontains_at(const std::string& s, size_t pos, const std::string& needle)
+bool filter_active()
 {
-    return _strnicmp(s.c_str() + pos, needle.c_str(), needle.size()) == 0;
+    return g_filter_mode && !g_filter.empty();
 }
 
-bool line_matches(const std::string& s)
+bool line_matches(const Line& line)
 {
-    if (!g_filter_mode || g_filter.empty()) {
-        return true;
+    return !filter_active() || line.match;
+}
+
+void exit_filter()
+{
+    if (filter_active()) {
+        g_scroll = 0; // it counted rows of the filtered view
     }
-    for (size_t i = 0; i + g_filter.size() <= s.size(); ++i) {
-        if (icontains_at(s, i, g_filter)) {
-            return true;
-        }
+    g_filter_mode = false;
+    g_filter.clear();
+}
+
+void refilter()
+{
+    if (!filter_active()) {
+        return;
     }
-    return false;
+    for (Line& line : g_lines) {
+        line.match = string_icontains(line.text, g_filter);
+    }
 }
 
 int cursor()
@@ -188,10 +214,11 @@ rf::console::Command* ghost_suggestion()
     if (len == 0 || cursor() != len || std::strchr(rf::console::cmd_line, ' ')) {
         return nullptr;
     }
+    const std::string_view typed{rf::console::cmd_line, static_cast<size_t>(len)};
     rf::console::Command* best = nullptr;
     for (int i = 0; i < rf::console::num_commands; ++i) {
         rf::console::Command* cmd = g_commands_buffer[i];
-        if (_strnicmp(cmd->name, rf::console::cmd_line, len) == 0 && cmd->name[len]
+        if (std::strlen(cmd->name) > typed.size() && string_istarts_with(cmd->name, typed)
             && (!best || std::strlen(cmd->name) < std::strlen(best->name))) {
             best = cmd;
         }
@@ -211,10 +238,11 @@ void copy_selection()
     std::string out;
     bool first = true;
     for (uint32_t id = std::max(lo.id, g_first_id); id <= hi.id && id - g_first_id < g_lines.size(); ++id) {
-        const std::string& text = g_lines[id - g_first_id].text;
-        if (!line_matches(text)) {
+        const Line& line = g_lines[id - g_first_id];
+        if (!line_matches(line)) {
             continue; // in search mode, copy only what's shown
         }
+        const std::string& text = line.text;
         const size_t s = id == lo.id ? std::min(lo.off, text.size()) : 0;
         const size_t e = id == hi.id ? std::min(hi.off, text.size()) : text.size();
         if (!first) {
@@ -226,7 +254,18 @@ void copy_selection()
     write_clipboard_text(out);
     g_copied_chars = out.size();
     g_copied_until = GetTickCount() + 1500;
-    rf::snd_play(stock_sound_id::panel_button_click, 0, 0.0f, 1.0f);
+    play_console_sound(stock_sound_id::panel_button_click);
+}
+
+// Ctrl+C with a selection. Dropping it afterwards lets the next Ctrl+C clear the input line again.
+bool copy_and_drop_selection()
+{
+    if (!has_selection()) {
+        return false;
+    }
+    copy_selection();
+    g_sel_b = g_sel_a;
+    return true;
 }
 
 // Plain click (no drag) on a command name in the scrollback, e.g. from `help` or a Tab listing:
@@ -245,16 +284,20 @@ void prefill_clicked_command()
         --s;
         --e;
     }
-    while (s > 0 && is_name_char(text[s - 1])) --s;
-    while (e < text.size() && is_name_char(text[e])) ++e;
+    while (s > 0 && is_name_char(text[s - 1])) {
+        --s;
+    }
+    while (e < text.size() && is_name_char(text[e])) {
+        ++e;
+    }
     if (s == e) {
         return;
     }
-    const std::string word = text.substr(s, e - s);
+    const std::string_view word{text.data() + s, e - s};
     for (int i = 0; i < rf::console::num_commands; ++i) {
-        if (_stricmp(g_commands_buffer[i]->name, word.c_str()) == 0) {
+        if (string_iequals(g_commands_buffer[i]->name, word)) {
             set_cmd_line((std::string{g_commands_buffer[i]->name} + ' ').c_str());
-            rf::snd_play(stock_sound_id::menu_select, 0, 0.0f, 1.0f);
+            play_console_sound(stock_sound_id::menu_select);
             return;
         }
     }
@@ -267,10 +310,24 @@ void release_cursor()
     }
     g_cursor_on = false;
     g_swallow_attack = true;
-    // The mouse override is shared with other overlays; leave it if one of them still needs it.
-    if (!vote_panel_is_gameplay_overlay_active() && !demo_controls_ui_is_open() && !multi_scoreboard_cursor_active()) {
-        gameplay_overlay_apply_mouse(false);
+    gameplay_overlay_release_mouse();
+}
+
+bool console_open_in_gameplay()
+{
+    return rf::console::console_is_visible() && rf::gameseq_get_state() == rf::GS_GAMEPLAY;
+}
+
+// Same toggle as the scoreboard cursor. The binding is vetoed while the console is open in
+// gameplay, so the toggling click never fires (see console_cursor_blocks_action).
+bool cursor_toggle_pressed()
+{
+    bool pressed = false;
+    if (rf::local_player) {
+        control_input_filter_check_pressed_unfiltered(
+            &rf::local_player->settings.controls, rf::CC_ACTION_SECONDARY_ATTACK, &pressed);
     }
+    return pressed;
 }
 
 bool is_word_char(char c)
@@ -289,15 +346,12 @@ bool handle_edit_key(int key)
     int cur = cursor();
 
     if (ctrl && base == rf::KEY_C) {
-        if (has_selection()) {
-            copy_selection();
-            return true;
+        if (!copy_and_drop_selection()) {
+            console_clear_input();
+            g_cursor = 0;
         }
-        console_clear_input();
-        g_cursor = 0;
         return true;
     }
-    // Ctrl+U / Ctrl+K: delete to line start / end (readline).
     if (ctrl && (base == rf::KEY_U || base == rf::KEY_K)) {
         const int from = base == rf::KEY_U ? 0 : cur;
         const int to = base == rf::KEY_U ? cur : len;
@@ -309,8 +363,12 @@ bool handle_edit_key(int key)
     switch (base) {
         case rf::KEY_LEFT:
             if (ctrl) {
-                while (cur > 0 && !is_word_char(line[cur - 1])) --cur;
-                while (cur > 0 && is_word_char(line[cur - 1])) --cur;
+                while (cur > 0 && !is_word_char(line[cur - 1])) {
+                    --cur;
+                }
+                while (cur > 0 && is_word_char(line[cur - 1])) {
+                    --cur;
+                }
             }
             else if (cur > 0) {
                 --cur;
@@ -323,8 +381,12 @@ bool handle_edit_key(int key)
                 return true;
             }
             if (ctrl) {
-                while (cur < len && is_word_char(line[cur])) ++cur;
-                while (cur < len && !is_word_char(line[cur])) ++cur;
+                while (cur < len && is_word_char(line[cur])) {
+                    ++cur;
+                }
+                while (cur < len && !is_word_char(line[cur])) {
+                    ++cur;
+                }
             }
             else if (cur < len) {
                 ++cur;
@@ -343,10 +405,14 @@ bool handle_edit_key(int key)
             return true;
         case rf::KEY_DELETE: {
             int end = cur < len ? cur + 1 : cur;
-            if (ctrl) { // delete to the start of the next word
+            if (ctrl) {
                 end = cur;
-                while (end < len && is_word_char(line[end])) ++end;
-                while (end < len && !is_word_char(line[end])) ++end;
+                while (end < len && is_word_char(line[end])) {
+                    ++end;
+                }
+                while (end < len && !is_word_char(line[end])) {
+                    ++end;
+                }
             }
             std::memmove(line + cur, line + end, len - end + 1); // includes NUL
             len -= end - cur;
@@ -354,10 +420,14 @@ bool handle_edit_key(int key)
         }
         case rf::KEY_BACKSP: {
             int start = cur > 0 ? cur - 1 : 0;
-            if (ctrl) { // delete the word before the cursor
+            if (ctrl) {
                 start = cur;
-                while (start > 0 && !is_word_char(line[start - 1])) --start;
-                while (start > 0 && is_word_char(line[start - 1])) --start;
+                while (start > 0 && !is_word_char(line[start - 1])) {
+                    --start;
+                }
+                while (start > 0 && is_word_char(line[start - 1])) {
+                    --start;
+                }
             }
             std::memmove(line + start, line + cur, len - cur + 1);
             len -= cur - start;
@@ -388,14 +458,19 @@ bool handle_filter_key(int key)
 {
     const int base = key & rf::KEY_MASK;
     if (base == rf::KEY_ESC || base == rf::KEY_ENTER || base == rf::KEY_PADENTER) {
-        g_filter_mode = false;
-        g_filter.clear();
+        exit_filter();
         return true;
     }
     if (base == rf::KEY_BACKSP) {
         if (!g_filter.empty()) {
             g_filter.pop_back();
+            refilter();
         }
+        return true;
+    }
+    // Consumed even without a selection: console.cpp's Ctrl+C clear would wipe the hidden input line.
+    if ((key & rf::KEY_CTRLED) && base == rf::KEY_C) {
+        copy_and_drop_selection();
         return true;
     }
     if ((key & (rf::KEY_CTRLED | rf::KEY_ALTED)) || base == rf::KEY_LAPOSTRO_DBG) {
@@ -406,6 +481,7 @@ bool handle_filter_key(int key)
         return false;
     }
     g_filter.push_back(static_cast<char>(c));
+    refilter();
     g_scroll = 0;
     return true;
 }
@@ -416,6 +492,10 @@ CallHook<int()> console_handle_input_key_get_hook{
     0x00509F96,
     []() {
         const int raw = console_handle_input_key_get_hook.call_target();
+        // Server consoles show none of this UI, and the Win32 one echoes commands itself.
+        if (win32_console_is_enabled() || rf::is_dedicated_server) {
+            return raw;
+        }
         const int key = raw & 0x7FFF; // stock strips the same bit right after this call
         if (key <= 0) {
             return raw;
@@ -430,7 +510,7 @@ CallHook<int()> console_handle_input_key_get_hook{
             return 0;
         }
         if (base == rf::KEY_PAGEUP || base == rf::KEY_PAGEDOWN) {
-            g_scroll += base == rf::KEY_PAGEUP ? g_page_rows : -g_page_rows;
+            scroll_by(base == rf::KEY_PAGEUP ? g_page_rows : -g_page_rows);
             g_user_scrolled = true;
             return 0;
         }
@@ -461,37 +541,27 @@ std::string format_time_left(int secs)
 std::string build_statusline()
 {
     std::vector<std::string> parts;
-    const bool level_loaded = rf::level.flags & rf::LEVEL_LOADED;
     if (rf::is_multi && rf::local_player) {
         parts.emplace_back(rf::local_player->name.c_str());
-        // Same spectating test as discord_presence.cpp.
-        if (multi_spectate_is_spectating() || (!rf::is_server && vote_client_spectating_match())) {
+        if (multi_local_player_is_spectating()) {
             parts.emplace_back("Spectating");
         }
         else if (multi_game_type_is_team_type(rf::multi_get_game_type())) {
             parts.emplace_back(rf::local_player->team == rf::TEAM_RED ? "Team Red" : "Team Blue");
         }
     }
-    if (level_loaded) {
-        const char* name = rf::level.name.c_str();
-        parts.emplace_back(name[0] ? name : rf::level.filename.c_str());
+    if (rf::level.flags & rf::LEVEL_LOADED) {
+        parts.emplace_back(level_display_name());
     }
     if (rf::is_multi) {
         parts.push_back(rf::is_server ? std::format("hosting {}", rf::netgame.name.c_str())
                                       : std::string{rf::netgame.name.c_str()});
-        int players = 0;
         int bots = 0;
-        for (const rf::Player& p : SinglyLinkedList{rf::player_list}) {
-            if (!p.is_non_participant()) {
-                ++players;
-                bots += p.is_bot;
-            }
-        }
+        const int players = multi_count_participants(&bots);
         parts.push_back(bots ? std::format("{}/{} players ({} bots)", players, rf::netgame.max_players, bots)
                              : std::format("{}/{} players", players, rf::netgame.max_players));
-        const float time_left = rf::multi_time_limit - rf::level.time;
-        if (level_loaded && rf::multi_time_limit > 0.0f && time_left > 0.0f && !gt_uses_rounds()) {
-            parts.push_back(format_time_left(static_cast<int>(time_left)) + " left");
+        if (const std::optional<float> time_left = multi_time_left()) {
+            parts.push_back(format_time_left(static_cast<int>(*time_left)) + " left");
         }
     }
     const std::string ff_user = g_game_config.fflink_username.value();
@@ -511,7 +581,7 @@ void ensure_font()
 {
     const int px = g_alpine_game_config.console_font_size;
     if (px != g_font_px) {
-        // ponytail: each size builds a font atlas that is never freed; bounded by the setting's clamp
+        // Each size builds a font atlas that is never freed; the setting's clamp bounds how many.
         g_font = rf::gr::load_font(std::format("consolefont.ttf:{}", px).c_str());
         g_font_bold = rf::gr::load_font(std::format("consolefont-bold.ttf:{}", px).c_str());
         g_font_px = px;
@@ -560,7 +630,7 @@ void update_mouse(const std::vector<Row>& rows, int area_top, int area_h, int te
     if (!visible || !in_gameplay) {
         release_cursor();
     }
-    else if (mouse_pressed(1)) {
+    else if (cursor_toggle_pressed()) {
         if (g_cursor_on) {
             release_cursor();
         }
@@ -597,44 +667,86 @@ void update_mouse(const std::vector<Row>& rows, int area_top, int area_h, int te
         }
     }
 }
+
+// Clicks on the console must not fire weapons.
+bool console_cursor_blocks_action(rf::ControlConfig* ccp, rf::ControlConfigAction action)
+{
+    if (!rf::local_player || ccp != &rf::local_player->settings.controls
+        || (action != rf::CC_ACTION_PRIMARY_ATTACK && action != rf::CC_ACTION_SECONDARY_ATTACK)) {
+        return false;
+    }
+    if (g_swallow_attack && !mouse_down(0) && !mouse_down(1)) {
+        g_swallow_attack = false;
+    }
+    if (action == rf::CC_ACTION_SECONDARY_ATTACK && console_open_in_gameplay()) {
+        return true;
+    }
+    return g_cursor_on || g_swallow_attack;
+}
+
+// Turns everything a failed command printed into an error.
+FunHook<int(const char*)> console_do_command_hook{
+    &rf::console::do_command,
+    [](const char* text) {
+        const uint32_t start_id = g_first_id + static_cast<uint32_t>(g_lines.size());
+        const int result = console_do_command_hook.call_target(text);
+        if (result != 0) {
+            for (uint32_t id = std::max(start_id, g_first_id); id - g_first_id < g_lines.size(); ++id) {
+                g_lines[id - g_first_id].color = palette::error;
+            }
+        }
+        return result;
+    },
+};
 } // namespace
 
 void console_ui_add_output(const char* text, const rf::Color* color)
 {
     // Mirror the stock writer: split on '\n', no extra line for a trailing newline.
-    rf::Color c = color ? *color : stock_default_color;
+    rf::Color c = color ? *color : rf::console::default_text_color;
     rf::Color prefix_color{};
     size_t prefix_len = 0;
     if (g_chat_color >= 0) {
         const bool named = !g_chat_prefix.empty();
         c = palette::chat;
         switch (static_cast<rf::ChatMsgColor>(g_chat_color)) {
-            case rf::ChatMsgColor::red_white: prefix_color = palette::red_team; break;
-            case rf::ChatMsgColor::blue_white: prefix_color = palette::blue_team; break;
-            case rf::ChatMsgColor::red_red: c = prefix_color = palette::red_team; break;
-            case rf::ChatMsgColor::blue_blue: c = prefix_color = palette::blue_team; break;
-            case rf::ChatMsgColor::gold_white: prefix_color = palette::server; break;
+            case rf::ChatMsgColor::red_white:
+                prefix_color = palette::red_team;
+                break;
+            case rf::ChatMsgColor::blue_white:
+                prefix_color = palette::blue_team;
+                break;
+            case rf::ChatMsgColor::red_red:
+                c = prefix_color = palette::red_team;
+                break;
+            case rf::ChatMsgColor::blue_blue:
+                c = prefix_color = palette::blue_team;
+                break;
+            case rf::ChatMsgColor::gold_white:
+                prefix_color = palette::server;
+                break;
             case rf::ChatMsgColor::white_white:
                 if (named) {
                     prefix_color = palette::chat_name;
                     break;
                 }
                 [[fallthrough]];
-            default: c = prefix_color = palette::event; break;
+            default:
+                c = prefix_color = palette::event;
+                break;
         }
         if (named && std::strncmp(text, g_chat_prefix.c_str(), g_chat_prefix.size()) == 0) {
             prefix_len = g_chat_prefix.size();
         }
     }
     else if (!color) {
-        // Command listings (help, Tab): "name - description" or a bare name. Stock `help`
-        // (console_print_cmd_list, fmt " %s - %s\n" @ 0x005A41A0) indents by one space; drop it so
-        // both listings look the same.
+        // Command listings (help, Tab): "name - description" or a bare name. Stock `help` indents
+        // its listing by one space; drop it so both listings look the same.
         const char* t = text[0] == ' ' ? text + 1 : text;
         for (int i = 0; i < rf::console::num_commands; ++i) {
             const char* name = g_commands_buffer[i]->name;
             const size_t n = std::strlen(name);
-            if (_strnicmp(t, name, n) == 0
+            if (string_istarts_with(t, name)
                 && (t[n] == '\0' || t[n] == '\n' || std::strncmp(t + n, " - ", 3) == 0)) {
                 prefix_color = palette::command;
                 prefix_len = n;
@@ -650,12 +762,13 @@ void console_ui_add_output(const char* text, const rf::Color* color)
         const char* nl = std::find(p, end, '\n');
         std::string s{p, nl};
         std::erase(s, '\r');
-        if (g_scroll > 0) {
+        const bool match = !filter_active() || string_icontains(s, g_filter);
+        if (g_scroll > 0 && match) {
             // Keep the view anchored while the user reads back.
-            g_scroll += rows_for(s);
+            scroll_by(rows_for(s));
             ++g_unseen;
         }
-        g_lines.push_back({std::move(s), c, prefix_len, prefix_color});
+        g_lines.push_back({std::move(s), c, prefix_len, prefix_color, match});
         prefix_len = 0; // only the first line starts with the sender
         if (g_lines.size() > max_lines) {
             g_lines.pop_front();
@@ -667,13 +780,17 @@ void console_ui_add_output(const char* text, const rf::Color* color)
 
 void console_ui_render()
 {
-    const float open = std::clamp(static_cast<float>(stock_height - stock_height_closed)
+    const float open = std::clamp(static_cast<float>(rf::console::client_height - stock_height_closed)
                                       / static_cast<float>(stock_height_open - stock_height_closed), 0.0f, 1.0f);
     const int sw = rf::gr::screen_width();
     const int full_h = rf::gr::screen_height() * g_alpine_game_config.console_height_pct / 100;
     const int h = static_cast<int>(static_cast<float>(full_h) * open);
     g_console_bottom = std::max(h, 0);
     if (h <= 0) {
+        // Also covers a long frame that finished the close animation before update_mouse saw it.
+        release_cursor();
+        g_selecting = false;
+        exit_filter();
         return;
     }
     ensure_font();
@@ -697,22 +814,23 @@ void console_ui_render()
     g_page_rows = std::max(1, vis_rows - 1);
 
     // Mouse wheel (positive = away from the user = back in history).
-    if (rf::mouse_dz != 0) {
-        g_scroll += rf::mouse_dz > 0 ? wheel_rows : -wheel_rows;
+    if (console_ui_takes_mouse_wheel() && rf::mouse_dz != 0) {
+        scroll_by(rf::mouse_dz > 0 ? wheel_rows : -wheel_rows);
         g_user_scrolled = true;
     }
 
     int total_rows = 0;
     int matches = 0;
     for (const Line& l : g_lines) {
-        if (line_matches(l.text)) {
+        if (line_matches(l)) {
             total_rows += rows_for(l.text);
             ++matches;
         }
     }
     g_scroll = std::clamp(g_scroll, 0, std::max(0, total_rows - vis_rows));
     if (g_user_scrolled && g_scroll != g_shown_scroll) {
-        rf::snd_play(g_scroll > g_shown_scroll ? stock_sound_id::list_scroll_up : stock_sound_id::list_scroll_down, 0, 0.0f, 1.0f);
+        play_console_sound(g_scroll > g_shown_scroll ? stock_sound_id::list_scroll_up
+                                                     : stock_sound_id::list_scroll_down);
     }
     g_user_scrolled = false;
     g_shown_scroll = g_scroll;
@@ -720,14 +838,13 @@ void console_ui_render()
         g_unseen = 0;
     }
 
-    // Collect visible rows from the bottom, skipping g_scroll rows.
     std::vector<Row> rows;
     int skip = g_scroll;
     uint32_t id = g_first_id + static_cast<uint32_t>(g_lines.size());
     int row_y = area_top + area_h - lh;
     for (auto it = g_lines.rbegin(); it != g_lines.rend() && static_cast<int>(rows.size()) < vis_rows; ++it) {
         --id;
-        if (!line_matches(it->text)) {
+        if (!line_matches(*it)) {
             continue;
         }
         const int n = rows_for(it->text);
@@ -758,15 +875,17 @@ void console_ui_render()
                 rf::gr::rect(pad + static_cast<int>(s - row.start) * cw, y, static_cast<int>(e - s) * cw, lh);
             }
         }
-        if (g_filter_mode && !g_filter.empty()) {
+        if (filter_active()) {
             rf::gr::set_color(255, 200, 0, 90);
+            const std::string_view seg_view{seg};
             for (size_t i = 0; i + g_filter.size() <= seg.size(); ++i) {
-                if (icontains_at(seg, i, g_filter)) {
+                if (string_istarts_with(seg_view.substr(i), g_filter)) {
                     rf::gr::rect(pad + static_cast<int>(i) * cw, y, static_cast<int>(g_filter.size()) * cw, lh);
                 }
             }
         }
-        const size_t pre = row.start < row.line->prefix_len ? std::min(row.line->prefix_len - row.start, seg.size()) : 0;
+        const size_t pre =
+            row.start < row.line->prefix_len ? std::min(row.line->prefix_len - row.start, seg.size()) : 0;
         if (pre > 0) {
             // Prefix = command name or chat sender. Inconsolata Bold has the same 500-unit advance as Regular,
             // so the column math (cw) still holds.
@@ -775,19 +894,20 @@ void console_ui_render()
         draw_text(pad + static_cast<int>(pre) * cw, y, seg.substr(pre), row.line->color);
     }
 
-    // Scrollbar + scrolled-up indicator.
     if (total_rows > vis_rows) {
         const int track_x = sw - pad - scrollbar_w;
         const int thumb_h = std::max(lh / 2, area_h * vis_rows / total_rows);
-        const int thumb_y = area_top + (area_h - thumb_h) * (total_rows - vis_rows - g_scroll) / (total_rows - vis_rows);
+        const int thumb_y =
+            area_top + (area_h - thumb_h) * (total_rows - vis_rows - g_scroll) / (total_rows - vis_rows);
         rf::gr::set_color(255, 255, 255, 40);
         rf::gr::rect(track_x, area_top, scrollbar_w, area_h);
         rf::gr::set_color(255, 255, 255, 150);
         rf::gr::rect(track_x, thumb_y, scrollbar_w, thumb_h);
     }
     if (g_scroll > 0) {
-        const std::string msg = g_unseen > 0 ? std::format("-- {} new line{} below (Ctrl+End) --", g_unseen, g_unseen == 1 ? "" : "s")
-                                             : std::string{"-- scrolled up (Ctrl+End) --"};
+        const std::string msg = g_unseen > 0
+            ? std::format("-- {} new line{} below (Ctrl+End) --", g_unseen, g_unseen == 1 ? "" : "s")
+            : std::string{"-- scrolled up (Ctrl+End) --"};
         const int w = static_cast<int>(msg.size()) * cw;
         const int x = sw - pad * 3 - scrollbar_w - w;
         const int iy = area_top + area_h - lh;
@@ -811,8 +931,7 @@ void console_ui_render()
         draw_text(pad, status_y, status, {170, 200, 230, 255});
     }
 
-    // Input line.
-    const rf::Color text_color = stock_default_color;
+    const rf::Color text_color = rf::console::default_text_color;
     const std::string prompt = g_filter_mode ? "find: " : "] ";
     const std::string input = g_filter_mode ? g_filter : std::string{rf::console::cmd_line};
     const int input_x = pad + static_cast<int>(prompt.size()) * cw;
@@ -840,17 +959,10 @@ bool console_ui_cursor_active()
     return g_cursor_on;
 }
 
-// Clicks on the console must not fire weapons.
-static bool console_cursor_blocks_action(rf::ControlConfig* ccp, rf::ControlConfigAction action)
+bool console_ui_takes_mouse_wheel()
 {
-    if (!rf::local_player || ccp != &rf::local_player->settings.controls
-        || (action != rf::CC_ACTION_PRIMARY_ATTACK && action != rf::CC_ACTION_SECONDARY_ATTACK)) {
-        return false;
-    }
-    if (g_swallow_attack && !mouse_down(0) && !mouse_down(1)) {
-        g_swallow_attack = false;
-    }
-    return g_cursor_on || g_swallow_attack;
+    return !legacy_console_enabled() && g_alpine_game_config.console_mouse_wheel
+        && rf::console::console_is_visible();
 }
 
 void console_ui_begin_chat(int color, const char* prefix)
@@ -863,21 +975,6 @@ void console_ui_end_chat()
 {
     g_chat_color = -1;
 }
-
-// Turns everything a failed command printed into an error.
-static FunHook<int(const char*)> console_do_command_hook{
-    0x00509B00,
-    [](const char* text) {
-        const uint32_t start_id = g_first_id + static_cast<uint32_t>(g_lines.size());
-        const int result = console_do_command_hook.call_target(text);
-        if (result != 0) {
-            for (uint32_t id = std::max(start_id, g_first_id); id - g_first_id < g_lines.size(); ++id) {
-                g_lines[id - g_first_id].color = palette::error;
-            }
-        }
-        return result;
-    },
-};
 
 void console_ui_apply_patches()
 {

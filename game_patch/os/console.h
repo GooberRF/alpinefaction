@@ -243,3 +243,7 @@ void console_ui_begin_chat(int color, const char* prefix);
 void console_ui_end_chat();
 void console_ui_apply_patches();
 bool console_ui_cursor_active();
+// True while the open console scrolls with the wheel (console_mouse_wheel), so gameplay doesn't get it.
+bool console_ui_takes_mouse_wheel();
+// The launcher's "Use deprecated legacy console", as it was when the game started.
+bool legacy_console_enabled();

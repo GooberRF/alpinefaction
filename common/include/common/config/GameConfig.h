@@ -78,6 +78,7 @@ struct GameConfig
     CfgVar<bool> reduced_speed_in_background = false; // seeds alpine_settings.ini, as above
     CfgVar<bool> autoplay_af_demos = false;
     CfgVar<bool> legacy_menus = false;
+    CfgVar<bool> legacy_console = false;
     CfgVar<bool> editor_large_address_aware = false;
 
     // Internal

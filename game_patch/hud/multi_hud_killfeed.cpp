@@ -99,6 +99,9 @@ static void killfeed_add_message(const char* text, rf::ChatMsgColor color_id)
 
 void killfeed_print_to_console(const char* text, int color_id)
 {
+    if (legacy_console_enabled()) {
+        return;
+    }
     console_ui_begin_chat(color_id, nullptr);
     rf::console::output(text, nullptr);
     console_ui_end_chat();

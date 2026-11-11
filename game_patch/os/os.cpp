@@ -290,16 +290,21 @@ std::string read_clipboard_text(std::size_t max_len)
 
 void write_clipboard_text(std::string_view text)
 {
-    if (!OpenClipboard(nullptr)) {
+    // EmptyClipboard makes the opening window the owner; with no window, SetClipboardData fails.
+    if (!OpenClipboard(rf::main_wnd)) {
         return;
     }
     EmptyClipboard();
     if (HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, text.size() + 1)) {
-        auto* dst = static_cast<char*>(GlobalLock(mem));
-        std::memcpy(dst, text.data(), text.size());
-        dst[text.size()] = 0;
-        GlobalUnlock(mem);
-        if (!SetClipboardData(CF_TEXT, mem)) {
+        if (auto* dst = static_cast<char*>(GlobalLock(mem))) {
+            std::memcpy(dst, text.data(), text.size());
+            dst[text.size()] = 0;
+            GlobalUnlock(mem);
+            if (SetClipboardData(CF_TEXT, mem)) {
+                mem = nullptr;
+            }
+        }
+        if (mem) {
             GlobalFree(mem);
         }
     }

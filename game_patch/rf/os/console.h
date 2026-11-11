@@ -96,4 +96,6 @@ namespace rf::console
     static auto& console_is_visible = addr_as_ref<bool()>(0x0050B520);
     static auto& console_keep_history = addr_as_ref<bool>(0x005A402C);
     static auto& background_color = addr_as_ref<Color>(0x017751DC);
+    static auto& default_text_color = addr_as_ref<Color>(0x01775678);
+    static auto& client_height = addr_as_ref<int>(0x0177569C);
 }

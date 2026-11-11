@@ -1854,7 +1854,7 @@ void multi_spectate_process_bind_input()
     // Middle mouse toggles third-person orbit (attached third person only). mouse_was_button_pressed
     // is a pure read (the engine refreshes the per-frame button snapshot itself), so this is one
     // toggle per physical click.
-    const bool mmb_pressed = rf::mouse_was_button_pressed(2) > 0;
+    const bool mmb_pressed = rf::mouse_was_button_pressed(2);
     if (mmb_pressed && !typing && !multi_scoreboard_cursor_active() && g_spectate_mode_enabled
         && g_spectate_view_mode == SpectateViewMode::third_person) {
         g_spectate_third_person_orbit = !g_spectate_third_person_orbit;
