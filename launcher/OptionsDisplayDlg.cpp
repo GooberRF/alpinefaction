@@ -22,7 +22,7 @@ BOOL OptionsDisplayDlg::OnInitDialog()
 
     // Attach controls
     m_renderer_combo.AttachDlgItem(IDC_RENDERER_COMBO, m_advanced_dlg);
-    AttachItem(IDC_ADAPTER_COMBO, m_adapter_combo);
+    AttachItem(IDC_DISPLAY_COMBO, m_display_combo);
     AttachItem(IDC_RESOLUTIONS_COMBO, m_res_combo);
     m_color_depth_combo.AttachDlgItem(IDC_COLOR_DEPTH_COMBO, m_advanced_dlg);
     AttachItem(IDC_WND_MODE_COMBO, m_wnd_mode_combo);
@@ -38,7 +38,7 @@ BOOL OptionsDisplayDlg::OnInitDialog()
 
     // Display
     m_renderer_combo.SetCurSel(static_cast<int>(m_conf.renderer.value()));
-    UpdateAdapterCombo();
+    UpdateDisplayCombo();
     UpdateColorDepthCombo(); // should be before resolution
     UpdateResolutionCombo();
     m_wnd_mode_combo.SetCurSel(static_cast<int>(m_conf.wnd_mode));
@@ -54,34 +54,45 @@ void OptionsDisplayDlg::InitToolTip()
 {
     m_tool_tip.Create(*this);
     m_tool_tip.SetMaxTipWidth(512);
-    m_tool_tip.AddTool(GetDlgItem(IDC_ADAPTER_COMBO), "Graphics adapter used for rendering");
+    m_tool_tip.AddTool(GetDlgItem(IDC_DISPLAY_COMBO), "Monitor the game opens on");
     m_tool_tip.AddTool(GetDlgItem(IDC_RESOLUTIONS_COMBO), "Select resolution from provided drop-down list, or type a resolution manually");
     m_tool_tip.AddTool(GetDlgItem(IDC_HIGH_SCANNER_RES_CHECK), "Increase scanner resolution (used by Rail Driver, Rocket Launcher, and Fusion Launcher)");
     m_tool_tip.AddTool(GetDlgItem(IDC_TRUE_COLOR_TEXTURES_CHECK), "Increase texture color depth, especially visible for lightmaps and shadows");
 }
 
-void OptionsDisplayDlg::UpdateAdapterCombo()
+void OptionsDisplayDlg::UpdateDisplayCombo()
 {
-    m_adapter_combo.ResetContent();
-    if (!m_video_info) {
-        return;
+    m_displays = enumerate_displays();
+    m_display_combo.ResetContent();
+    int selected_idx = m_display_combo.AddString("Primary display");
+    for (size_t i = 0; i < m_displays.size(); ++i) {
+        const auto& display = m_displays[i];
+        auto label = std::format(
+            "{}: {} ({}x{}){}",
+            i + 1,
+            display.friendly_name,
+            display.monitor_rect.right - display.monitor_rect.left,
+            display.monitor_rect.bottom - display.monitor_rect.top,
+            display.primary ? " - primary" : ""
+        );
+        int idx = m_display_combo.AddString(label.c_str());
+        if (!m_conf.display_device.value().empty() && display.device_path == m_conf.display_device.value())
+            selected_idx = idx;
     }
-    int selected_idx = -1;
-    try {
-        auto adapters = m_video_info->get_adapters();
-        for (const auto &adapter : adapters) {
-            int idx = m_adapter_combo.AddString(adapter.c_str());
-            if (idx < 0)
-                throw std::runtime_error("failed to add string to combo box");
-            if (m_conf.selected_video_card == static_cast<unsigned>(idx))
-                selected_idx = idx;
-        }
-    }
-    catch (std::exception &e) {
-        xlog::error("Cannot get video adapters: {}", e.what());
-    }
-    if (selected_idx != -1)
-        m_adapter_combo.SetCurSel(selected_idx);
+    m_display_combo.SetCurSel(selected_idx);
+}
+
+std::string OptionsDisplayDlg::GetSelectedDisplayDevice()
+{
+    int sel = m_display_combo.GetCurSel();
+    if (sel <= 0 || static_cast<size_t>(sel) > m_displays.size())
+        return "";
+    return m_displays[sel - 1].device_path;
+}
+
+DisplayInfo OptionsDisplayDlg::GetDisplay()
+{
+    return resolve_display(m_conf.display_device.value()).value_or(DisplayInfo{});
 }
 
 void OptionsDisplayDlg::UpdateResolutionCombo()
@@ -94,7 +105,7 @@ void OptionsDisplayDlg::UpdateResolutionCombo()
     }
     try {
         auto format = m_video_info->get_format_from_bpp(m_conf.res_bpp);
-        auto resolutions = m_video_info->get_resolutions(m_conf.selected_video_card, format);
+        auto resolutions = m_video_info->get_resolutions(GetDisplay(), format);
         for (const auto &res : resolutions) {
             buf.Format("%dx%d", res.width, res.height);
             int pos = m_res_combo.AddString(buf);
@@ -120,10 +131,11 @@ void OptionsDisplayDlg::UpdateColorDepthCombo()
     if (!m_video_info) {
         return;
     }
+    auto display = GetDisplay();
     auto format_32 = m_video_info->get_format_from_bpp(32);
     auto format_16 = m_video_info->get_format_from_bpp(16);
-    bool has_16bpp_modes = !m_video_info->get_resolutions(m_conf.selected_video_card, format_16).empty();
-    bool has_32bpp_modes = !m_video_info->get_resolutions(m_conf.selected_video_card, format_32).empty();
+    bool has_16bpp_modes = !m_video_info->get_resolutions(display, format_16).empty();
+    bool has_32bpp_modes = !m_video_info->get_resolutions(display, format_32).empty();
 
     if (!has_16bpp_modes) {
         m_conf.res_bpp = 32;
@@ -151,8 +163,8 @@ BOOL OptionsDisplayDlg::OnCommand(WPARAM wparam, [[ maybe_unused ]] LPARAM lpara
             case IDC_RENDERER_COMBO:
                 OnRendererChange();
                 break;
-            case IDC_ADAPTER_COMBO:
-                OnAdapterChange();
+            case IDC_DISPLAY_COMBO:
+                OnDisplayChange();
                 break;
             case IDC_WND_MODE_COMBO:
                 OnWindowModeChange();
@@ -168,8 +180,6 @@ BOOL OptionsDisplayDlg::OnCommand(WPARAM wparam, [[ maybe_unused ]] LPARAM lpara
 void OptionsDisplayDlg::OnSave()
 {
     m_conf.renderer = static_cast<GameConfig::Renderer>(m_renderer_combo.GetCurSel());
-    m_conf.selected_video_card = m_adapter_combo.GetCurSel();
-
     CString resolution_str = GetDlgItemTextA(IDC_RESOLUTIONS_COMBO);
     char *ptr = const_cast<char*>(resolution_str.c_str());
     const char *width_str = strtok(ptr, "x");
@@ -201,14 +211,13 @@ void OptionsDisplayDlg::OnRendererChange()
     if (m_video_info) {
         m_conf.res_backbuffer_format = m_video_info->get_format_from_bpp(m_conf.res_bpp);
     }
-    UpdateAdapterCombo();
     UpdateResolutionCombo();
     UpdateColorDepthCombo();
 }
 
-void OptionsDisplayDlg::OnAdapterChange()
+void OptionsDisplayDlg::OnDisplayChange()
 {
-    m_conf.selected_video_card = m_adapter_combo.GetCurSel();
+    m_conf.display_device = GetSelectedDisplayDevice();
     UpdateResolutionCombo();
     UpdateColorDepthCombo();
 }

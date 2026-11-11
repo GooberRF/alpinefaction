@@ -236,6 +236,8 @@ Version 1.5.0 (Trillium): Not yet released
 - Add full_admin profile rcon access to `sv_loadpackfiles` command
 - Make the riot stick alt fire zap four times as often in multiplayer
 - Remove the 240 FPS cap in multiplayer, and the `allow_unlimited_fps` dedicated server config option (clients older than 1.5 always keep the cap on 1.5 servers)
+- Replace the launcher `Adapter` option with a `Display` option to choose the monitor the game opens on
+- Prefer the high-performance GPU on systems with more than one, unless `D3D11_PreferHighPerformanceGPU` is off in `alpine_system.ini` (Direct3D 11 renderer only)
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color

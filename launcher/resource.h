@@ -60,7 +60,7 @@
 #define IDC_LICENSE_LINK                1041
 #define IDC_SRC_LINK                    1042
 // #define IDC_RATE_EDIT                   1043
-#define IDC_ADAPTER_COMBO               1044
+#define IDC_DISPLAY_COMBO               1044
 // #define IDC_BIG_HUD_CHECK               1045
 // #define IDC_SWAP_ASSAULT_RIFLE_CONTROLS 1046
 // #define IDC_SWAP_GRENADE_CONTROLS       1047

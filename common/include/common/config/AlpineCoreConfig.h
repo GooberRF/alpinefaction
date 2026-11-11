@@ -12,6 +12,7 @@ class AlpineCoreConfig
 public:
     // Configurable fields
     bool vsync = false;
+    bool prefer_high_performance_gpu = true;
 
     // Experimental settings
     bool low_frame_latency = false;

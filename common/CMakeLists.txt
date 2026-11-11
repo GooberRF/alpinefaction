@@ -32,6 +32,7 @@ set(SRCS
     include/common/utils/list-utils.h
     include/common/utils/math-utils.h
     include/common/utils/mem-pool.h
+    include/common/utils/display-utils.h
     include/common/utils/os-utils.h
     include/common/utils/perf-utils.h
     include/common/utils/string-utils.h
@@ -60,6 +61,7 @@ set(SRCS
     src/config/GameConfig.cpp
     src/config/AlpineCoreConfig.cpp
     src/error/d3d-error.cpp
+    src/utils/display-utils.cpp
     src/utils/os-utils.cpp
 )
 

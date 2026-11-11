@@ -5,8 +5,13 @@
 #include "../rf/os/frametime.h"
 #include "../rf/os/string.h"
 #include <common/lighting/alpine_sun_state.h>
+#include <optional>
+
+struct DisplayInfo;
 
 void gr_apply_patch();
+// The display the game opens on; nullopt keeps stock placement on the primary display
+const std::optional<DisplayInfo>& gr_get_display();
 void evaluate_pow2tex(const rf::String& level_filename);
 void evaluate_lightmaps_only();
 int gr_font_get_default();
