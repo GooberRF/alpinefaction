@@ -1292,7 +1292,6 @@ void configure_custom_gametype_listen_server_settings() {
     // Always allow these visual options on listen servers
     g_alpine_server_config.allow_fullbright_meshes = true;
     g_alpine_server_config.allow_lightmaps_only = true;
-    g_alpine_server_config.allow_unlimited_fps = true;
     g_alpine_server_config.allow_outlines = true;
 }
 

@@ -109,6 +109,75 @@ FONT 8, "MS Sans Serif", 0, 0, 1
 }
 
 LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
+IDD_ROOM_EFFECT_PROPERTIES DIALOGEX 0, 0, 277, 411
+STYLE DS_MODALFRAME | DS_SETFONT | WS_CAPTION | WS_VISIBLE | WS_POPUP | WS_SYSMENU
+EXSTYLE WS_EX_CONTROLPARENT
+CAPTION "Room Effect Properties"
+FONT 8, "MS Sans Serif", 0, 0, 1
+{
+    CONTROL         "Script Name:", -1, "Static", 0x50020000, 7, 9, 42, 8, 0x00000000
+    CONTROL         "", 1042, "Edit", 0x50810080, 57, 7, 96, 14, 0x00000000
+    CONTROL         "Effect Type:", -1, "Static", 0x50020000, 7, 27, 40, 8, 0x00000000
+    CONTROL         "", 1457, "ComboBox", 0x50210002, 57, 25, 74, 64, 0x00000000
+    CONTROL         "Liquid Properties", -1, "Button", 0x50000007, 7, 44, 263, 302, 0x00000000
+    CONTROL         "Surface Bitmap", -1, "Button", 0x50000007, 14, 59, 247, 67, 0x00000000
+    CONTROL         "", 1484, "Static", 0x50000012, 21, 71, 49, 49, 0x00000000
+    CONTROL         "Static", 1043, "Static", 0x50020000, 76, 74, 137, 8, 0x00000000
+    CONTROL         "Browse...", 1538, "Button", 0x50010000, 75, 106, 65, 14, 0x00000000
+    CONTROL         "Liquid Type:", -1, "Static", 0x50020000, 17, 133, 40, 8, 0x00000000
+    CONTROL         "", 1459, "ComboBox", 0x50210002, 62, 131, 74, 64, 0x00000000
+    CONTROL         "Waveform:", -1, "Static", 0x50020000, 147, 133, 36, 8, 0x00000000
+    CONTROL         "", 1458, "ComboBox", 0x50210002, 188, 131, 74, 64, 0x00000000
+    CONTROL         "Surface Texture Pixels Per Meter", -1, "Button", 0x50000007, 17, 148, 126, 32, 0x00000000
+    CONTROL         "U:", -1, "Static", 0x50020000, 24, 162, 8, 8, 0x00000000
+    CONTROL         "Static", 1577, "Static", 0x50020000, 36, 160, 36, 14, 0x00000200
+    CONTROL         "V:", -1, "Static", 0x50020000, 86, 162, 8, 8, 0x00000000
+    CONTROL         "Static", 1578, "Static", 0x50020000, 98, 160, 36, 14, 0x00000200
+    CONTROL         "Texture Angle:", -1, "Static", 0x50020000, 158, 161, 47, 8, 0x00000000
+    CONTROL         "", 1555, "Static", 0x50020000, 210, 158, 50, 14, 0x00000200
+    CONTROL         "Surface Texture Scroll Rate", -1, "Button", 0x50000007, 17, 185, 243, 33, 0x00000000
+    CONTROL         "U:", -1, "Static", 0x50020000, 23, 201, 8, 8, 0x00000000
+    CONTROL         "Static", 1605, "Static", 0x50020000, 36, 198, 36, 14, 0x00000200
+    CONTROL         "Times/Second", -1, "Static", 0x50020000, 76, 201, 48, 8, 0x00000000
+    CONTROL         "V:", -1, "Static", 0x50020000, 141, 201, 8, 8, 0x00000000
+    CONTROL         "Static", 1606, "Static", 0x50020000, 154, 198, 36, 14, 0x00000200
+    CONTROL         "Times/Second", -1, "Static", 0x50020000, 194, 200, 48, 8, 0x00000000
+    CONTROL         "Depth:", -1, "Static", 0x50020000, 38, 227, 22, 8, 0x00000000
+    CONTROL         "", 1607, "Static", 0x50020000, 65, 224, 50, 14, 0x00000200
+    CONTROL         "Visibility:", -1, "Static", 0x50020000, 179, 227, 27, 8, 0x00000000
+    CONTROL         "", 1554, "Static", 0x50020000, 209, 224, 50, 14, 0x00000200
+    CONTROL         "Liquid Color:", -1, "Static", 0x50020000, 21, 246, 40, 8, 0x00000000
+    CONTROL         "List1", 1088, "SysListView32", 0x50812000, 65, 243, 40, 14, 0x00020000
+    CONTROL         "Change Color", 1086, "Button", 0x50010000, 109, 243, 50, 14, 0x00000000
+    CONTROL         "Alpha:", -1, "Static", 0x50020000, 183, 246, 21, 8, 0x00000000
+    CONTROL         "", 1590, "Static", 0x50020000, 209, 243, 50, 14, 0x00000200
+    CONTROL         "Contains Plankton", 1217, "Button", 0x50010006, 21, 263, 73, 10, 0x00000000
+    GROUPBOX        "Baked Light Emission", IDC_LIQUID_EMIT_GROUP, 14, 277, 247, 64
+    LTEXT           "Emits light:", IDC_LIQUID_EMIT_MODE_LABEL, 21, 292, 40, 8
+    COMBOBOX        IDC_LIQUID_EMIT_MODE, 64, 290, 80, 64, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "Color:", IDC_LIQUID_EMIT_COLOR_LABEL, 21, 309, 40, 8
+    CONTROL         "List1", IDC_LIQUID_EMIT_COLOR_SWATCH, WC_LISTVIEW, WS_BORDER | LVS_NOSCROLL | LVS_ICON, 64, 306, 32, 14, WS_EX_STATICEDGE
+    PUSHBUTTON      "Change Color", IDC_LIQUID_EMIT_COLOR_CHANGE, 100, 306, 52, 14
+    EDITTEXT        IDC_LIQUID_EMIT_COLOR_VALUE, 156, 306, 58, 14, ES_AUTOHSCROLL
+    LTEXT           "Intensity:", IDC_LIQUID_EMIT_INTENSITY_LABEL, 21, 325, 40, 8
+    EDITTEXT        IDC_LIQUID_EMIT_INTENSITY, 64, 322, 40, 14, ES_AUTOHSCROLL
+    CONTROL         "Spin1", IDC_LIQUID_EMIT_INTENSITY_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 104, 322, 11, 14
+    LTEXT           "Distance:", IDC_LIQUID_EMIT_DISTANCE_LABEL, 130, 325, 32, 8
+    EDITTEXT        IDC_LIQUID_EMIT_DISTANCE, 164, 322, 40, 14, ES_AUTOHSCROLL
+    CONTROL         "Spin1", IDC_LIQUID_EMIT_DISTANCE_SPIN, UPDOWN_CLASS, UDS_ARROWKEYS, 204, 322, 11, 14
+    LTEXT           "(Meters)", IDC_LIQUID_EMIT_DISTANCE_UNITS, 219, 325, 30, 8
+    CONTROL         "Ambient Light Properties", -1, "Button", 0x50000007, 7, 351, 263, 33, 0x00000000
+    CONTROL         "Light Color:", -1, "Static", 0x50020000, 17, 367, 36, 8, 0x00000000
+    CONTROL         "List1", 1089, "SysListView32", 0x50812000, 62, 364, 40, 14, 0x00020000
+    CONTROL         "Change Color", 1087, "Button", 0x50010000, 107, 364, 50, 14, 0x00000000
+    CONTROL         "Room Is Cold", 1214, "Button", 0x50010006, 7, 389, 58, 10, 0x00000000
+    CONTROL         "Room Is Outside", 1215, "Button", 0x50010006, 70, 389, 68, 10, 0x00000000
+    CONTROL         "Room Is Air Lock", 1216, "Button", 0x50010006, 147, 389, 70, 10, 0x00000000
+    CONTROL         "OK", 1, "Button", 0x50010001, 220, 7, 50, 14, 0x00000000
+    CONTROL         "Cancel", 2, "Button", 0x50010000, 220, 25, 50, 14, 0x00000000
+}
+
+LANGUAGE LANG_ENGLISH, SUBLANG_DEFAULT
 IDD_LEVEL_PROPERTIES DIALOGEX 0, 0, 298, 339
 STYLE DS_MODALFRAME | DS_SETFONT | WS_CAPTION | WS_VISIBLE | WS_POPUP | WS_SYSMENU
 CAPTION "Level Properties"

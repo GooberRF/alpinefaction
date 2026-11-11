@@ -241,6 +241,7 @@ namespace
         // For playback's server config popup
         af_send_server_cfg(recorder);
         recorder->remote_server_cfg_sent = true;
+        send_player_roles_to(recorder);
         // Current scores/pings so playback has a sane scoreboard from the start.
         rf::send_netgame_update_packet(recorder);
     }

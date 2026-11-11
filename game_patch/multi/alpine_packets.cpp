@@ -935,6 +935,13 @@ void serialize_payload(const ZiplineStatePayload& payload, std::byte* buf, size_
     offset += sizeof(payload.rope_uid);
 }
 
+// af_req_rcon_player_action
+void serialize_payload(const RconPlayerActionReqPayload& payload, std::byte* buf, size_t& offset)
+{
+    buf[offset++] = static_cast<std::byte>(payload.target_player_id);
+    buf[offset++] = static_cast<std::byte>(payload.action);
+}
+
 // af_req_stats_pssk
 void serialize_payload(const StatsPsskPayload& payload, std::byte* buf, size_t& offset)
 {
@@ -1213,6 +1220,31 @@ void af_send_pit_queue_request(uint8_t action)
     packet.payload = PitQueueReqPayload{action};
 
     af_send_client_req_packet(packet, true); // reliable
+}
+
+void af_send_rcon_player_action(uint8_t target_player_id, af_rcon_player_action action)
+{
+    if (!rf::is_multi) {
+        return;
+    }
+
+    if (rf::is_server) {
+        // A listen host needs no rcon session to act on its own server.
+        if (rf::Player* const target = rf::multi_find_player_by_id(target_player_id)) {
+            if (const auto failure = server_run_player_action(target, action)) {
+                rf::console::print("{}", *failure);
+            }
+        }
+        return;
+    }
+
+    af_client_req_packet packet{};
+    packet.header.type = static_cast<uint8_t>(af_packet_type::af_client_req);
+    packet.header.size = sizeof(uint8_t) + sizeof(RconPlayerActionReqPayload);
+    packet.req_type = af_client_req_type::af_req_rcon_player_action;
+    packet.payload = RconPlayerActionReqPayload{target_player_id, action};
+
+    af_send_client_req_packet(packet, true);
 }
 
 // ============================================================================
@@ -1624,12 +1656,13 @@ void af_send_vote_options_request(bool has_cache, uint32_t known_generation)
     af_send_client_req_packet(packet, true); // reliable
 }
 
-// Shared tail for the three af_sreq_vote_state events: `w` already holds the
-// header, req_type and event byte plus the event-specific fields.
-static void af_finish_vote_state_packet(rf::Player* player, std::byte* buf, VoteWriter& w)
+// Shared tail for a variable-length af_server_req: `w` already holds the
+// header space, req_type and the payload.
+static void af_finish_server_req_packet(rf::Player* player, std::byte* buf, const VoteWriter& w,
+                                        std::string_view sender)
 {
     if (!w.ok) {
-        xlog::warn("af_send_vote_state: payload too large");
+        xlog::warn("{}: payload too large", sender);
         return;
     }
 
@@ -1640,11 +1673,18 @@ static void af_finish_vote_state_packet(rf::Player* player, std::byte* buf, Vote
     af_send_packet(player, buf, static_cast<int>(w.off), true);
 }
 
+// Is this a remote recipient whose client knows a server req added in the given version?
+static bool af_server_req_recipient_supports(rf::Player* player, int version_major, int version_minor,
+                                             int version_patch)
+{
+    return player && player != rf::local_player && player->net_data
+        && is_player_minimum_af_client_version(player, version_major, version_minor, version_patch);
+}
+
 // Can this recipient receive the structured vote events at all?
 static bool af_vote_recipient_is_structured(rf::Player* player)
 {
-    return player && player != rf::local_player && player->net_data
-        && is_player_minimum_af_client_version(player, 1, 4, 0);
+    return af_server_req_recipient_supports(player, 1, 4, 0);
 }
 
 void af_send_vote_state_start(rf::Player* player, AfVoteType type, uint16_t time_remaining_sec,
@@ -1688,7 +1728,7 @@ void af_send_vote_state_start(rf::Player* player, AfVoteType type, uint16_t time
     w.u8(flags);
     w.str(initiator_name.substr(0, name_len));
     w.str(title.substr(0, title_len));
-    af_finish_vote_state_packet(player, buf, w);
+    af_finish_server_req_packet(player, buf, w, "af_send_vote_state");
 }
 
 void af_send_vote_state_update(rf::Player* player, uint8_t yes, uint8_t no, uint8_t remaining)
@@ -1704,7 +1744,7 @@ void af_send_vote_state_update(rf::Player* player, uint8_t yes, uint8_t no, uint
     w.u8(yes);
     w.u8(no);
     w.u8(remaining);
-    af_finish_vote_state_packet(player, buf, w);
+    af_finish_server_req_packet(player, buf, w, "af_send_vote_state");
 }
 
 void af_send_vote_state_end(rf::Player* player, AfVoteResult result, bool passed,
@@ -1729,7 +1769,7 @@ void af_send_vote_state_end(rf::Player* player, AfVoteResult result, bool passed
     w.u8(static_cast<uint8_t>(result));
     w.u8(passed ? AF_VOTE_END_FLAG_PASSED : uint8_t{0});
     w.str(detail.substr(0, detail_len));
-    af_finish_vote_state_packet(player, buf, w);
+    af_finish_server_req_packet(player, buf, w, "af_send_vote_state");
 }
 
 // The mutator set the session is running, which is what the vote panel pre-selects.
@@ -2028,6 +2068,14 @@ static void af_process_client_req_packet(const void* data, size_t len, const rf:
             if (gt_is_pit()) {
                 pit_handle_queue_request(player, action);
             }
+            break;
+        }
+        case af_client_req_type::af_req_rcon_player_action: {
+            if (remaining < sizeof(RconPlayerActionReqPayload)) {
+                xlog::warn("af_process_client_req_packet: RconPlayerAction payload too short");
+                return;
+            }
+            handle_rcon_player_action(addr, bytes[offset], bytes[offset + 1]);
             break;
         }
         case af_client_req_type::af_req_vehicle_use: {
@@ -2735,6 +2783,53 @@ void af_send_match_state(rf::Player* player, uint8_t flags)
     af_send_server_req_packet(packet, player);
 }
 
+void af_send_rcon_state(rf::Player* player, bool is_holder, const std::vector<std::string>& commands)
+{
+    if (!rf::is_server || !af_server_req_recipient_supports(player, 1, 5, 0)) {
+        return;
+    }
+
+    std::byte buf[rf::max_packet_size];
+    VoteWriter w{buf, sizeof(buf), sizeof(RF_GamePacketHeader)};
+    w.u8(static_cast<uint8_t>(af_server_req_type::af_sreq_rcon_state));
+    w.u8(is_holder ? 1 : 0);
+    w.u8(static_cast<uint8_t>(commands.size()));
+    for (const std::string& command : commands) {
+        w.str(command);
+    }
+    af_finish_server_req_packet(player, buf, w, "af_send_rcon_state");
+}
+
+void af_send_force_spectate(rf::Player* player, bool enter)
+{
+    if (!rf::is_server || !af_server_req_recipient_supports(player, 1, 5, 0)) {
+        return;
+    }
+
+    std::byte buf[sizeof(RF_GamePacketHeader) + 2];
+    VoteWriter w{buf, sizeof(buf), sizeof(RF_GamePacketHeader)};
+    w.u8(static_cast<uint8_t>(af_server_req_type::af_sreq_force_spectate));
+    w.u8(enter ? 1 : 0);
+    af_finish_server_req_packet(player, buf, w, "af_send_force_spectate");
+}
+
+void af_send_player_roles(rf::Player* player, const std::vector<std::pair<uint8_t, uint8_t>>& roles)
+{
+    if (!rf::is_server || !af_server_req_recipient_supports(player, 1, 5, 0)) {
+        return;
+    }
+
+    std::byte buf[rf::max_packet_size];
+    VoteWriter w{buf, sizeof(buf), sizeof(RF_GamePacketHeader)};
+    w.u8(static_cast<uint8_t>(af_server_req_type::af_sreq_player_roles));
+    w.u8(static_cast<uint8_t>(roles.size()));
+    for (const auto& [player_id, flags] : roles) {
+        w.u8(player_id);
+        w.u8(flags);
+    }
+    af_finish_server_req_packet(player, buf, w, "af_send_player_roles");
+}
+
 // Apply a Pit queue-state update on the local client.
 static void apply_local_pit_queue_state(uint8_t flags, uint8_t pos, uint8_t total)
 {
@@ -3134,6 +3229,45 @@ static void af_process_server_req_packet(const void* data, size_t len, const rf:
                 return;
             }
             vote_client_on_match_state(static_cast<uint8_t>(bytes[offset]));
+            break;
+        }
+        case af_server_req_type::af_sreq_rcon_state: {
+            VoteReader r{bytes + offset, remaining};
+            const bool is_holder = r.u8() != 0;
+            const uint8_t count = r.u8();
+            std::vector<std::string> commands;
+            for (uint8_t i = 0; i < count && r.ok; ++i) {
+                commands.push_back(r.str());
+            }
+            if (!r.ok) {
+                xlog::warn("af_process_server_req_packet: truncated RconState");
+                return;
+            }
+            set_local_rcon_commands(is_holder ? std::move(commands) : std::vector<std::string>{});
+            break;
+        }
+        case af_server_req_type::af_sreq_force_spectate: {
+            if (remaining < sizeof(uint8_t)) {
+                xlog::warn("af_process_server_req_packet: ForceSpectate payload too short");
+                return;
+            }
+            hud_request_forced_spectate(bytes[offset] != 0);
+            break;
+        }
+        case af_server_req_type::af_sreq_player_roles: {
+            VoteReader r{bytes + offset, remaining};
+            const uint8_t count = r.u8();
+            std::vector<std::pair<uint8_t, uint8_t>> roles;
+            for (uint8_t i = 0; i < count && r.ok; ++i) {
+                const uint8_t player_id = r.u8();
+                const uint8_t flags = r.u8();
+                roles.emplace_back(player_id, flags);
+            }
+            if (!r.ok) {
+                xlog::warn("af_process_server_req_packet: truncated PlayerRoles");
+                return;
+            }
+            set_local_player_roles(std::move(roles));
             break;
         }
         case af_server_req_type::af_sreq_pit_queue_state: {
@@ -4916,8 +5050,6 @@ uint32_t af_compute_server_info_flags()
         af |= af_server_info_flags::SIF_ALLOW_NO_MUZZLE_FLASH_LIGHT;
     if (g_alpine_server_config.click_limiter_config.enabled)
         af |= af_server_info_flags::SIF_CLICK_LIMITER;
-    if (g_alpine_server_config.allow_unlimited_fps)
-        af |= af_server_info_flags::SIF_ALLOW_UNLIMITED_FPS;
     if (g_alpine_server_config.gaussian_spread)
         af |= af_server_info_flags::SIF_GAUSSIAN_SPREAD;
     if (g_alpine_server_config_active_rules.geo_chunk_physics)
@@ -5076,7 +5208,6 @@ static void decode_af_server_info_flags(const af_server_info_packet& pkt, Alpine
     server_info.allow_no_mf = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_NO_MUZZLE_FLASH_LIGHT) != 0;
     server_info.click_limit = (pkt.af_flags & af_server_info_flags::SIF_CLICK_LIMITER) != 0;
     server_info.semi_auto_cooldown = static_cast<int>(pkt.semi_auto_cooldown);
-    server_info.unlimited_fps = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_UNLIMITED_FPS) != 0;
     server_info.gaussian_spread = (pkt.af_flags & af_server_info_flags::SIF_GAUSSIAN_SPREAD) != 0;
     server_info.location_pinging = (pkt.af_flags & af_server_info_flags::SIF_LOCATION_PINGING) != 0;
     server_info.delayed_spawns = (pkt.af_flags & af_server_info_flags::SIF_DELAYED_SPAWNS) != 0;
@@ -5306,7 +5437,11 @@ void af_process_spectate_start_packet(
 
     update_player_active_status(spectator);
 
-    const bool in_spectate = spectator != new_target;
+    af_set_player_spectatee(spectator, new_target, spectator != new_target);
+}
+
+void af_set_player_spectatee(rf::Player* const spectator, rf::Player* const new_target, const bool in_spectate)
+{
     rf::Player* const old_target = spectator->spectatee.value_or(nullptr);
     const bool target_changed = old_target != new_target;
 

@@ -51,6 +51,7 @@
 #include "bots/server_bots.h"
 #include "../main/main.h"
 #include "../misc/discord_presence.h"
+#include "../misc/vpackfile.h"
 #include "../os/os.h"
 #include "../hud/hud.h"
 #include "../hud/multi_spectate.h"
@@ -453,10 +454,84 @@ static void send_rcon_feedback(const rf::NetAddr& addr, std::string_view msg)
     }
 }
 
+static void send_rcon_revoked(const rf::NetAddr& addr)
+{
+    af_send_rcon_state(rf::multi_find_player_by_addr(addr), false, {});
+}
+
+static std::vector<std::pair<uint8_t, uint8_t>> g_local_player_roles;
+
+uint8_t player_role_flags(const rf::Player* player)
+{
+    if (!player->net_data) {
+        return 0;
+    }
+    if (!rf::is_server) {
+        for (const auto& [player_id, flags] : g_local_player_roles) {
+            if (player_id == player->net_data->player_id) {
+                return flags;
+            }
+        }
+        return 0;
+    }
+    uint8_t flags = 0;
+    if (player->net_data->flags & rf::NetPlayerFlags::NPF_RCON_HOLDER) {
+        flags |= AF_PLAYER_ROLE_RCON_HOLDER;
+    }
+    if (player == rf::local_player) {
+        flags |= AF_PLAYER_ROLE_SERVER_HOST;
+    }
+    if (get_ready_status(player)) {
+        flags |= AF_PLAYER_ROLE_READY;
+    }
+    if (server_player_chat_muted(player)) {
+        flags |= AF_PLAYER_ROLE_CHAT_MUTED;
+    }
+    return flags;
+}
+
+void set_local_player_roles(std::vector<std::pair<uint8_t, uint8_t>> roles)
+{
+    g_local_player_roles = std::move(roles);
+}
+
+static std::vector<std::pair<uint8_t, uint8_t>> collect_player_roles()
+{
+    std::vector<std::pair<uint8_t, uint8_t>> roles;
+    for (const rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if (const uint8_t flags = player_role_flags(&player); flags != 0) {
+            roles.emplace_back(player.net_data->player_id, flags);
+        }
+    }
+    return roles;
+}
+
+void send_player_roles_to(rf::Player* player)
+{
+    af_send_player_roles(player, collect_player_roles());
+}
+
+// Diffed per frame because ready state changes in many places, match start among them.
+void server_player_roles_do_frame()
+{
+    if (!rf::is_multi || !rf::is_server) {
+        return;
+    }
+    static std::vector<std::pair<uint8_t, uint8_t>> sent_roles;
+    auto roles = collect_player_roles();
+    if (roles == sent_roles) {
+        return;
+    }
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        af_send_player_roles(&player, roles);
+    }
+    sent_roles = std::move(roles);
+}
+
 static bool is_full_admin_only_rcon_command(std::string_view command)
 {
     // Commands powerful enough that delegating them to a non-full_admin profile would allow privilege escalation.
-    return string_iequals(command, "sv_loadconfig");
+    return string_iequals(command, "sv_loadconfig") || string_iequals(command, "sv_loadpackfiles");
 }
 
 static bool is_rcon_command_allowed_for_profile(const AlpineRconProfile& profile, std::string_view command)
@@ -503,6 +578,7 @@ void clear_rcon_profile_sessions()
 {
     for (const auto& [key, entry] : g_rcon_access_by_addr) {
         set_rcon_holder_flag(addr_from_key(key), false);
+        send_rcon_revoked(addr_from_key(key));
     }
     g_rcon_access_by_addr.clear();
     g_rcon_failed_attempts_by_addr.clear();
@@ -616,6 +692,7 @@ static void handle_rcon_request_packet(const uint8_t* pkt, size_t len, const rf:
             for (auto it = g_rcon_access_by_addr.begin(); it != g_rcon_access_by_addr.end();) {
                 if (it->second.profile_index == *lookup.profile_index) {
                     set_rcon_holder_flag(addr_from_key(it->first), false);
+                    send_rcon_revoked(addr_from_key(it->first));
                     it = g_rcon_access_by_addr.erase(it);
                 } else {
                     ++it;
@@ -626,9 +703,84 @@ static void handle_rcon_request_packet(const uint8_t* pkt, size_t len, const rf:
         g_rcon_access_by_addr[key] = RconAccessEntry{*lookup.profile_index};
         set_rcon_holder_flag(addr, true);
         send_rcon_feedback(addr, std::format("Rcon access granted with profile '{}'.", profile.name));
+        std::vector<std::string> commands;
+        for (const std::string& command : g_rcon_cmd_masterlist) {
+            if (is_rcon_command_allowed_for_profile(profile, command)) {
+                commands.push_back(command);
+            }
+        }
+        af_send_rcon_state(rf::multi_find_player_by_addr(addr), true, commands);
         std::string broadcast_msg = std::format("{} was granted rcon with profile '{}'", rcon_player_name(addr), profile.name);
         af_broadcast_automated_chat_msg(broadcast_msg);
     }
+}
+
+static void report_rcon_denied(const rf::NetAddr& addr, std::string_view cmd, RconCommandCheckResult check_result)
+{
+    std::string_view reason = "not allowed";
+
+    if (check_result == RconCommandCheckResult::NotHolder) {
+        reason = "not an rcon holder";
+    }
+    else if (check_result == RconCommandCheckResult::ProfileDenied) {
+        reason = "not allowed by rcon profile";
+    }
+
+    rf::console::print("{} issued command '{}' via rcon, DENIED because {}", rcon_player_name(addr), cmd, reason);
+    send_rcon_feedback(addr, std::format("Rcon command '{}' denied: {}.", cmd, reason));
+}
+
+void handle_rcon_player_action(const rf::NetAddr& addr, uint8_t target_player_id, uint8_t action)
+{
+    if (g_alpine_server_config.rcon_profiles.empty()) {
+        return;
+    }
+    const auto action_cmd = af_rcon_player_action_command(action);
+    if (!action_cmd) {
+        return;
+    }
+
+    const std::string_view cmd = *action_cmd;
+    const auto check_result = check_rcon_command_for_addr(addr, cmd);
+    if (check_result != RconCommandCheckResult::Allowed) {
+        report_rcon_denied(addr, cmd, check_result);
+        return;
+    }
+
+    rf::Player* const target = rf::multi_find_player_by_id(target_player_id);
+    if (!target || !target->net_data || target->is_observer()) {
+        send_rcon_feedback(addr, std::format("Rcon command '{}' failed: that player is no longer connected.", cmd));
+        return;
+    }
+    if (target == rf::multi_find_player_by_addr(addr)) {
+        send_rcon_feedback(addr, std::format("Rcon command '{}' failed: you cannot target yourself.", cmd));
+        return;
+    }
+
+    const std::string target_name = target->name.c_str();
+    const std::string issued = std::format("{} {}", cmd, target_name);
+    if (const auto failure = server_run_player_action(target, action)) {
+        send_rcon_feedback(addr, std::format("Rcon command '{}' failed: {}.", issued, *failure));
+    }
+    else {
+        rf::console::print("{} issued command '{}' via rcon, successfully executed", rcon_player_name(addr), issued);
+        send_rcon_feedback(addr, std::format("Rcon command '{}' executed successfully.", issued));
+    }
+}
+
+static std::vector<std::string> g_local_rcon_commands;
+
+void set_local_rcon_commands(std::vector<std::string> commands)
+{
+    g_local_rcon_commands = std::move(commands);
+}
+
+bool local_rcon_command_available(std::string_view command)
+{
+    return rf::is_server
+        || std::ranges::any_of(g_local_rcon_commands, [&](const std::string& available) {
+               return string_iequals(available, command);
+           });
 }
 
 std::vector<uint8_t> af_game_info_ext_v2::serialize_to_wire() const
@@ -1021,15 +1173,21 @@ FunHook<MultiIoPacketHandler> process_chat_line_packet_hook{
             }
 
             const uint8_t team_msg = static_cast<uint8_t>(data[1]);
-            if (team_msg && rf::is_dedicated_server) {
+            // The engine relays only team byte 1 as team chat.
+            const bool is_team_chat = team_msg == 1;
+            const bool chat_muted = server_player_chat_muted(src_player);
+            if (team_msg && rf::is_dedicated_server && !chat_muted) {
                 rf::multi_chat_add_msg(src_player, msg, true);
             }
 
             if (check_server_chat_command(msg, src_player)) {
                 return;
             }
-            // The engine relays only team byte 1 as team chat.
-            const bool is_team_chat = team_msg == 1;
+            if (chat_muted) {
+                rf::console::print("{}{} (MUTED): {}", src_player->name, is_team_chat ? rf::strings::team : "", msg);
+                af_send_automated_chat_msg("You are muted on this server.", src_player);
+                return;
+            }
             server_bots_on_chat_message(*src_player, msg, is_team_chat);
 
             if (is_team_chat && demo_record_active()) {
@@ -1367,6 +1525,15 @@ CodeInjection process_rcon_packet_injection{
 
                     if (check_result == RconCommandCheckResult::Allowed) {
                         std::string payload_str{payload.value()};
+                        // Stock kick and ban run through do_command below.
+                        const auto player_action = af_rcon_player_action_from_command(cmd_lower);
+                        if (player_action && player_action != AF_RCON_PLAYER_KICK
+                            && player_action != AF_RCON_PLAYER_BAN) {
+                            send_rcon_feedback(*addr, run_player_admin_rcon_command(cmd_lower, remainder));
+                            rf::console::print(
+                                "{} issued command '{}' via rcon", rcon_player_name(*addr), payload.value());
+                            return;
+                        }
                         // special handling for status commands, so rcon holder gets server output
                         if (cmd_lower == "info") {
                             send_rcon_feedback(*addr, build_info_command_output());
@@ -1383,6 +1550,9 @@ CodeInjection process_rcon_packet_injection{
                         else if (cmd_lower == "sv_bot_add" || cmd_lower == "sv_bot_remove") {
                             send_rcon_feedback(*addr, run_server_bot_rcon_command(cmd_lower, remainder));
                         }
+                        else if (cmd_lower == "sv_loadpackfiles" && rf::is_dedicated_server) {
+                            send_rcon_feedback(*addr, vpackfile_load_user_maps_packfiles());
+                        }
                         // otherwise just execute it on the server
                         else {
                             rf::console::do_command(payload_str.c_str());
@@ -1391,17 +1561,7 @@ CodeInjection process_rcon_packet_injection{
                         send_rcon_feedback(*addr, std::format("Rcon command '{}' executed successfully.", payload.value()));
                     }
                     else {
-                        std::string_view reason = "not allowed";
-
-                        if (check_result == RconCommandCheckResult::NotHolder) {
-                            reason = "not an rcon holder";
-                        }
-                        else if (check_result == RconCommandCheckResult::ProfileDenied) {
-                            reason = "not allowed by rcon profile";
-                        }
-
-                        rf::console::print("{} issued command '{}' via rcon, DENIED because {}", rcon_player_name(*addr), cmd, reason);
-                        send_rcon_feedback(*addr, std::format("Rcon command '{}' denied: {}.", cmd, reason));
+                        report_rcon_denied(*addr, cmd, check_result);
                     }
                 }
             }
@@ -2007,9 +2167,6 @@ CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_join_accept_packet_ho
             ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::click_limit;
             ext_data.semi_auto_cooldown = server_get_alpine_config().click_limiter_config.cooldown;
         }
-        if (server_allow_unlimited_fps()) {
-            ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::unlimited_fps;
-        }
         if (server_gaussian_spread()) {
             ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::gaussian_spread;
         }
@@ -2265,7 +2422,6 @@ CodeInjection process_join_accept_injection{
             server_info.no_player_collide = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::no_player_collide);
             server_info.allow_no_mf = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::allow_no_mf);
             server_info.click_limit = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::click_limit);
-            server_info.unlimited_fps = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::unlimited_fps);
             server_info.gaussian_spread = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::gaussian_spread);
             server_info.location_pinging = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::location_pinging);
             server_info.delayed_spawns = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::delayed_spawns);
@@ -2809,6 +2965,8 @@ CodeInjection process_entity_create_packet_injection{
         rf::Player* player = regs.ebx;
         int mp_character = regs.edx;
 
+        player->multi_character_known = true;
+
         // save my current character if the server forced me to spawn with a different one
         if (player == rf::local_player && player->settings.multi_character != mp_character) {
             g_desired_multiplayer_character = player->settings.multi_character;
@@ -3033,6 +3191,8 @@ FunHook<void()> multi_stop_hook{
         demo_record_on_multi_stop();   // finalize the demo segment + remove the virtual player
         demo_playback_on_multi_stop(); // engine-initiated stop during playback resets the session
         g_af_server_info.reset(); // Clear server info when leaving
+        g_local_rcon_commands.clear();
+        g_local_player_roles.clear();
         mutators_set_no_clip_weapon(-1); // restore any server weapon-table overrides
         vote_client_reset(); // drop the cached vote options and active vote state
         vote_panel_reset(); // drop the vote form, which describes the server being left

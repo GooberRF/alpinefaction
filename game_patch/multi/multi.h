@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -32,6 +33,8 @@ struct PlayerStatsNew : rf::PlayerLevelStats
     // would compare a flame-inclusive numerator with a flame-exclusive denominator.
     float efficiency_dealt;
     float damage_potential;
+    // Clients count no shots for other players, so calc_accuracy() is only meaningful on the server.
+    uint8_t reported_accuracy;
 
     void inc_kills()
     {
@@ -93,6 +96,13 @@ struct PlayerStatsNew : rf::PlayerLevelStats
         return 0;
     }
 
+    // Clamped: converting an out-of-range float to an unsigned type is undefined, and
+    // accuracy is a ratio of two independently maintained counters.
+    [[nodiscard]] uint8_t calc_accuracy_percent() const
+    {
+        return static_cast<uint8_t>(std::clamp(calc_accuracy(), 0.0f, 1.0f) * 100.f);
+    }
+
     // Not clamped: over 100% is legitimate. One rocket's potential is its damage value, but its
     // blast can deal that much to several players at once.
     [[nodiscard]] float calc_efficiency() const
@@ -112,6 +122,7 @@ struct PlayerStatsNew : rf::PlayerLevelStats
         num_shots_fired = 0.0f;
         efficiency_dealt = 0.0f;
         damage_potential = 0.0f;
+        reported_accuracy = 0;
         current_streak = 0;
         max_streak = 0;
         damage_received = 0;
@@ -136,7 +147,6 @@ struct AlpineFactionServerInfo
     bool allow_no_mf = false;
     bool click_limit = false;
     std::optional<int> semi_auto_cooldown;
-    bool unlimited_fps = false;
     bool gaussian_spread = false;
     bool geo_chunk_physics = false;
     bool location_pinging = false;

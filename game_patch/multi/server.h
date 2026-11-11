@@ -35,7 +35,6 @@ bool server_location_pinging();
 bool server_delayed_spawns();
 bool server_allow_disable_muzzle_flash();
 bool server_apply_click_limiter();
-bool server_allow_unlimited_fps();
 bool server_allow_outlines();
 bool server_allow_outlines_xray();
 bool server_gaussian_spread();

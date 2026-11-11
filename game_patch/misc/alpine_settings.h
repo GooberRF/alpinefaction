@@ -445,6 +445,8 @@ struct AlpineGameSettings
     int gamepad_icon_override = 0; // 0=Auto, 1=Generic, 2=Xbox360, 3=XboxOne, 4=DS3, 5=DS4, 6=DualSense, 7=NintendoSwitch, 8=NintendoGameCube, 9=Steam
     int input_prompt_override = 0; // 0=Auto, 1=Controller, 2=Keyboard
     bool scoreboard_anim = true;
+    bool scoreboard_cursor = true;
+    bool scoreboard_cursor_hint = true;
     bool legacy_bob = false;
     bool weapon_sway = false;
     bool rail_beam_fix = true;
@@ -683,7 +685,6 @@ struct AlpineGameSettings
     // Below this a frame limit only makes the game (and the menu used to undo it) unusable.
     static constexpr unsigned min_fps_limit = 10u;
     static constexpr unsigned max_fps_limit = 100000u;
-    static constexpr unsigned max_fps_limit_mp = 240u;
     unsigned max_fps = 240u;
     void set_max_fps(unsigned fps_value)
     {

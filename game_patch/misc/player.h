@@ -71,4 +71,5 @@ void player_fpgun_collect_override_arm_bitmaps(std::unordered_set<int>& bitmaps)
 
 void set_headlamp_toggle_enabled(bool enabled);
 bool player_is_idle(const rf::Player* player);
+bool player_death_bars_visible(rf::Player* player);
 void player_damage_feedback();

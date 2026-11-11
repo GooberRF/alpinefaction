@@ -1311,6 +1311,10 @@ static_assert(offsetof(GrLight, local_vec2) == 0x68);
 static auto& light_create_directional =
     addr_as_ref<int __cdecl(const Vector3* dir, float intensity, float r, float g, float b,
                             int is_dynamic, int shadow_condition, int atten_algo)>(0x00487950);
+// Type 2 (point) scene light, its colour scaled by intensity; returns the light handle.
+static auto& light_create_point =
+    addr_as_ref<int __cdecl(const Vector3* pos, float radius, float intensity, float r, float g, float b,
+                            int is_dynamic, int shadow_condition, int atten_algo)>(0x00487AE0);
 static auto& light_free = addr_as_ref<void __cdecl(int light_handle, int unk)>(0x00487D40);
 // Stock per-lumel accumulator: adds every scene light's contribution to the already seeded r/g/b.
 static auto& light_accum_at_texel =

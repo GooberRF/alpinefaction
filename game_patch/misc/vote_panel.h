@@ -16,10 +16,12 @@ bool vote_panel_is_capturing_text();
 // Drop the whole form (leaving a server).
 void vote_panel_reset();
 
-// Cursor/mouse-look switch shared by mutually-exclusive gameplay overlays (vote
-// panel, demo controls popup): true frees the cursor and disables mouse-look, false
-// restores the player's saved mouse-look and re-grabs the cursor when still in
-// gameplay. Safe to call every frame while an overlay is open.
+// Cursor/mouse-look switch shared by gameplay overlays (vote panel, demo controls
+// popup, scoreboard cursor), only one of which owns it at a time: true frees the
+// cursor and disables mouse-look, false restores the player's saved mouse-look and
+// re-grabs the cursor when still in gameplay. Safe to call every frame while an
+// overlay is open.
 void gameplay_overlay_apply_mouse(bool active);
+bool gameplay_overlay_mouse_is_overridden();
 
 void vote_panel_apply_patch();

@@ -4,6 +4,7 @@
 #include <patch_common/CodeInjection.h>
 #include <patch_common/ShortTypes.h>
 #include <patch_common/AsmWriter.h>
+#include <common/utils/string-utils.h>
 #include <regex>
 #include "player.h"
 #include "alpine_settings.h"
@@ -29,6 +30,7 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <stdexcept>
 #include <unordered_map>
 #include <unordered_set>
@@ -78,14 +80,8 @@ std::string trim(const std::string& str, bool remove_quotes = false)
         return "";
     }        
 
-    std::string trimmed = str.substr(start, end - start + 1);
-
-    // extract quoted value
-    if (remove_quotes && trimmed.size() >= 2 && trimmed.front() == '"' && trimmed.back() == '"') {
-        trimmed = trimmed.substr(1, trimmed.size() - 2);
-    }
-
-    return trimmed;
+    const std::string_view trimmed = std::string_view{str}.substr(start, end - start + 1);
+    return std::string{remove_quotes ? unquote(trimmed) : trimmed};
 }
 
 // ===== Parsers for AlpineOptions =====

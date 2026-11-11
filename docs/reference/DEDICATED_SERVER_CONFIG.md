@@ -103,11 +103,11 @@ In the tables below, a Number key takes an integer or a decimal value, and an In
 | `require_client_mod` | Boolean | `true` | When the server runs a TC mod (`-mod`), clients must run the same mod. |
 | `gaussian_spread` | Boolean | `true` | Use gaussian (center-weighted) bullet spread. |
 | `send_stats_message` | Boolean | `true` | Send players their stats message at the end of each level. |
+| `announce_next_level` | Boolean | `false` | Announce the next level and its game type at the end of each level (`Next map is ctf01.rfl in CTF.`). When `false`, the next level is only announced when the game type changes. |
 | `allow_fullbright_meshes` | Boolean | `false` | Let clients render character meshes fullbright. |
 | `allow_lightmap_mode` | Boolean | `false` | Let clients use lightmap-only rendering. |
 | `allow_disable_screenshake` | Boolean | `true` | Let clients turn off weapon screenshake. |
 | `allow_disable_muzzle_flash` | Boolean | `true` | Let clients turn off muzzle flash lights. |
-| `allow_unlimited_fps` | Boolean | `false` | Let clients lift the 240 FPS cap. |
 | `allow_footsteps` | Boolean | `true` | Let clients hear other players' footsteps. |
 | `use_sp_damage_calculation` | Boolean | `false` | Use single-player damage calculation, where armor does not fully protect health. |
 | `allow_outlines` | Boolean | `false` | Let clients draw player outlines. |
@@ -123,7 +123,7 @@ Each entry is one rcon login. Logging in with a profile's password grants that p
 | `password` | String | required | Profile password, truncated to 15 characters. Entries without one are skipped. |
 | `full_admin` | Boolean | `false` | Allow every rcon-capable command. |
 | `allow_multiple` | Boolean | `false` | Let several players hold this profile at once. When false, a new login removes the previous holder. |
-| `allowed_commands` | Array of strings | `[]` | Commands this profile may run (ignored for `full_admin`). Only these are accepted: `info`, `say`, `kick`, `ban`, `ban_ip`, `unban_last`, `level`, `map`, `map_ext`, `map_rest`, `map_next`, `map_rand`, `map_prev`, `maxfps`, `sv_caplimit`, `sv_fraglimit`, `sv_gametype`, `sv_netfps`, `gt`, `sv_geolimit`, `sv_pass`, `sv_timelimit`, `download_level`, `sv_afstats_events_status`, `sv_afstats_events_reset`, `sv_afstats_trace`, `sv_fflink_status`, `sv_fflink_resync`, `sv_bot_add`, `sv_bot_remove`, `sv_bot_list`. `sv_loadconfig` is accepted in the list but only ever runs for `full_admin` profiles. |
+| `allowed_commands` | Array of strings | `[]` | Commands this profile may run (ignored for `full_admin`). Only these are accepted: `info`, `say`, `kick`, `ban`, `ban_ip`, `unban_last`, `level`, `map`, `map_ext`, `map_rest`, `map_next`, `map_rand`, `map_prev`, `maxfps`, `sv_caplimit`, `sv_fraglimit`, `sv_gametype`, `sv_netfps`, `gt`, `sv_geolimit`, `sv_pass`, `sv_timelimit`, `download_level`, `sv_afstats_events_status`, `sv_afstats_events_reset`, `sv_afstats_trace`, `sv_fflink_status`, `sv_fflink_resync`, `sv_bot_add`, `sv_bot_remove`, `sv_bot_list`, `sv_swap_team`, `sv_force_spectate`, `sv_toggle_ready`, `sv_force_unspectate`, `sv_mute_chat`. `sv_loadconfig` and `sv_loadpackfiles` are accepted in the list but only ever run for `full_admin` profiles. |
 
 ## `[inactivity]`
 

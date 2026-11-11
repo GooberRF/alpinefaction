@@ -27,7 +27,7 @@ Argument notation: `<x>` is required, `[x]` is optional. A `[bool]` argument acc
 | `level_info` (`map_info`) | | Shows information about the current level: file, name, author, RFL version, Alpine and Dash level properties, `_info.tbl` overrides and mesh replacements. |
 | `levelm` (`mapm`) | `<filename>` | Starts a new local multiplayer game on the level. Not available on dedicated servers. |
 | `map` | `<filename>` | Alias of the stock `level` command, which Alpine also allows outside multiplayer. Allowed via rcon. |
-| `maxfps` | `[limit]` | Sets the frame rate limit (10-100000, default 240). In multiplayer it is capped at 240 unless you are hosting or the server allows unlimited FPS. On a dedicated server it sets the server limit (default 80). Allowed via rcon. |
+| `maxfps` | `[limit]` | Sets the frame rate limit (10-100000, default 240). On a dedicated server it sets the server limit (default 80). Allowed via rcon. |
 | `save_commands` | | Stock RF command. Prints all console commands to `console_commands.txt`. |
 | `screenshot` | | Saves a screenshot and prints its file name. |
 | `script` | `<scriptfilename>` | Stock RF command. Runs a console script file from the game directory. |
@@ -250,6 +250,8 @@ Commands marked "D3D11 only" only have an effect with the Direct3D 11 renderer.
 | `ui_playernames` | | Toggles names of targeted players. Default: on. |
 | `ui_realarmor` | | Toggles showing armor as real values (1:1 with effective health) instead of classic (2:1). Default: off. |
 | `ui_runtimer` | | Toggles the RUN game type timer. Default: on. |
+| `ui_scoreboard_cursor` | | Toggles the scoreboard cursor, used to hover over players and scroll the player list. Default: on. |
+| `ui_scoreboard_cursor_hint` | | Toggles the scoreboard cursor hint text. Default: on. |
 | `ui_scoreboard_simplesplit` | | Toggles whether each scoreboard group is shown individually. Default: on. |
 | `ui_scoreboard_split_bots` | | Toggles grouping bots separately on the scoreboard. Default: off. |
 | `ui_scoreboard_split_browsers` | | Toggles grouping browsers separately on the scoreboard. Default: on. |
@@ -374,12 +376,15 @@ Colors are hex `RRGGBB` or `RRGGBBAA`, or comma-separated `R,G,B[,A]` values in 
 | `sv_countclients` | | Stock RF command. Shows the number of connected clients. |
 | `sv_fflink_resync` | | Forces a new FactionFiles session key exchange. Allowed via rcon. |
 | `sv_fflink_status` | | Shows the FactionFiles server session link status. Allowed via rcon. |
+| `sv_force_spectate` | `<player>` | Kills a player and puts them in spectate mode. Server only. Allowed via rcon. |
+| `sv_force_unspectate` | `<player>` | Takes a player out of spectate mode. Server only. Allowed via rcon. |
 | `sv_fraglimit` | `<kills>` | Stock RF command. Sets the kill limit. Server only. Allowed via rcon. |
 | `sv_gametype` (`gt`) | `[type] [level]` | Changes the game type: `dm`, `tdm`, `ctf`, `koth`, `dc`, `rev`, `run`, `esc`, `bag`, `tbag`, `pit`, `wo`, `gg`, `sal`, `scav` or `pay`. See the note below. Allowed via rcon. |
 | `sv_geolimit` | `<geomods>` | Stock RF command. Sets the geomod limit. Server only. Allowed via rcon. |
 | `sv_kickall` | | Stock RF command. Kicks all clients. Server only. |
 | `sv_loadconfig` | `[config]` | Loads a server config, or reloads the launch config, and applies it to the current level. Not between levels. ADS only. Allowed via rcon for full-admin rcon profiles only. |
-| `sv_loadpackfiles` | | Loads packfiles added to `user_maps\` since the server started. Dedicated only. |
+| `sv_loadpackfiles` | | Loads packfiles added to `user_maps\` since the server started. Dedicated only. Allowed via rcon for full-admin rcon profiles only. |
+| `sv_mute_chat` | `<player>` | Toggles a server-wide chat mute on a player, held by IP until they are unmuted or the server restarts. Server only. Allowed via rcon. |
 | `sv_netfps` | `[rate]` | Sets how many updates per second the server sends to clients (12-300). Default: 40. Allowed via rcon. |
 | `sv_pass` | `[password]` | Sets the server password, or removes it when run without one. Server only. Allowed via rcon. |
 | `sv_printconfig` | | Prints the current server configuration. ADS only. |
@@ -387,7 +392,9 @@ Colors are hex `RRGGBB` or `RRGGBBAA`, or comma-separated `R,G,B[,A]` values in 
 | `sv_rconpass` | `[password]` | Sets the rcon password (up to 16 characters), or removes it when run without one. Dedicated only. |
 | `sv_record` | | Starts or stops server-side demo recording for the current level. Server only. |
 | `sv_restrict_status` | | Shows the current Alpine restriction checks and expected join verdicts. Server only. |
+| `sv_swap_team` | `<player>` | Moves a player to the other team. Server only. Allowed via rcon. |
 | `sv_timelimit` | `<minutes>` | Stock RF command. Sets the time limit. Server only. Allowed via rcon. |
+| `sv_toggle_ready` | `<player>` | Toggles a player's ready status during match ready-up. Server only. Allowed via rcon. |
 | `unban_last` | | Unbans the last banned player. Server only. Allowed via rcon. |
 
 `sv_gametype`: on an ADS dedicated server, `sv_gametype <type> <level>` loads the level on that game type, `sv_gametype <type>` restarts the current level on it, and `sv_gametype` alone prints the current game type. It cannot run between levels. On a client that is not connected (or is playing a demo), both arguments are required and it starts a local game like `levelm`. While connected to a server, use `rcon sv_gametype` instead. On other dedicated servers it is refused.

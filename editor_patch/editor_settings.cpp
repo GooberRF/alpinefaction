@@ -309,12 +309,11 @@ std::optional<SettingValues> read_red_cfg(const std::string& path)
         const std::string_view text = trim(line);
         const auto colon = text.find(':');
         if (!text.starts_with('$') || colon == std::string_view::npos) continue;
-        std::string value{trim(text.substr(colon + 1))};
+        const std::string_view raw_value = trim(text.substr(colon + 1));
+        std::string value{unquote(raw_value)};
+        const bool quoted = value.size() != raw_value.size();
         int r = 0, g = 0, b = 0;
-        if (value.size() >= 2 && value.front() == '"' && value.back() == '"') {
-            value = value.substr(1, value.size() - 2);
-        }
-        else if (std::sscanf(value.c_str(), "{%d , %d , %d}", &r, &g, &b) == 3) {
+        if (!quoted && std::sscanf(value.c_str(), "{%d , %d , %d}", &r, &g, &b) == 3) {
             if (r < 0 || r > 255 || g < 0 || g > 255 || b < 0 || b > 255) continue;
             value = alpine_color_format_hex(RGB(r, g, b));
         }

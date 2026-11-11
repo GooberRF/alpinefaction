@@ -45,6 +45,7 @@ Version 1.5.0 (Trillium): Not yet released
   - Add `Meshes block light` level property to make Alpine Mesh objects cast baked shadows
   - Add `Alpha-tested light occlusion` level property so see-through faces, meshes and terrain decorations block baked light only where their textures are opaque
   - Add `No shadow cast` checkbox to Alpine Mesh object properties to exclude individual objects
+  - Add `Emits light` to `Liquid Room` room effects to bake light from liquid surfaces such as lava
 - Add global per-level directional sunlight and individual `Directional Light` objects with bounded ranges
   - `Casts shadows (lightmaps)` bakes the sun into the level's lightmaps with ray traced shadows
   - `Affects mesh lighting` lights meshes and entities per pixel from the sun direction, with `Scale mesh sunlight by lightmaps` to keep sunlight out of unlit interiors
@@ -244,6 +245,17 @@ Version 1.5.0 (Trillium): Not yet released
 - Allow pasting text with `Ctrl+V` into vote panel text boxes
 - Show control points as spinning team medallions with a notched capture progress ring
 - Add `cl_wh_tethers`, `cl_wh_pushzone`, and `cl_wh_cartstatus` commands to toggle the world HUD beams from the players pushing or blocking the cart in Payload, the ring around it that shows where to push, and the status text over it
+- Add a scoreboard cursor to scroll long player lists and view player details
+- Add mute and rcon admin buttons to the scoreboard player popout
+- Add `sv_swap_team`, `sv_force_spectate`, `sv_force_unspectate` and `sv_toggle_ready` commands, usable over rcon
+- Add `sv_mute_chat` command to mute a player's chat for the whole server, usable over rcon
+- Add `ui_scoreboard_cursor` and `ui_scoreboard_cursor_hint` console commands to toggle the scoreboard cursor and its hint text
+- Balance scoreboard columns for large player counts
+- Allow match votes on servers whose base game type is not a team type
+- Add `announce_next_level` dedicated server config option to announce the next level and its game type at the end of each level
+- Include the next level's filename in the end-of-level game type switch announcement
+- Add full_admin profile rcon access to `sv_loadpackfiles` command
+- Remove the 240 FPS cap in multiplayer, and the `allow_unlimited_fps` dedicated server config option (clients older than 1.5 always keep the cap on 1.5 servers)
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Add `ui_color_console` console command to set the console background color

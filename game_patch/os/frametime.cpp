@@ -296,15 +296,6 @@ void apply_maximum_fps()
     if (rf::is_dedicated_server) {
         max_fps = g_alpine_game_config.server_max_fps;
     }
-    else if (rf::is_multi) {
-        const auto& server_info_opt = get_af_server_info();
-        if (rf::is_server || (server_info_opt && server_info_opt->unlimited_fps)) {
-            max_fps = g_alpine_game_config.max_fps;
-        }
-        else {
-            max_fps = std::clamp(g_alpine_game_config.max_fps, g_alpine_game_config.min_fps_limit, g_alpine_game_config.max_fps_limit_mp);
-        }
-    }
     else {
         max_fps = g_alpine_game_config.max_fps;
     }
