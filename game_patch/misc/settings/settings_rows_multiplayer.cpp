@@ -48,12 +48,8 @@ void apply_server_netfps()
 }
 
 const char* const labels_server_netfps[] = {"Low (20)", "Medium (40)", "High (100)"};
-const int values_server_netfps[] = {
-    static_cast<int>(AGS::net_rate_tiers[0].netfps),
-    static_cast<int>(AGS::net_rate_tiers[1].netfps),
-    static_cast<int>(AGS::net_rate_tiers[2].netfps),
-};
 static_assert(std::size(labels_server_netfps) == std::size(AGS::net_rate_tiers));
+static_assert(AGS::default_net_rate_tier == 1); // the row's default_str
 
 const SettingRow rows[] = {
     {
@@ -141,19 +137,21 @@ const SettingRow rows[] = {
         .console_cmd = "cl_sprays",
     },
     {
-        .id = "server_netfps",
-        .key = "ServerNetFPS",
+        .id = "server_bandwidth",
+        .key = "ServerBandwidth",
         .label = "Server bandwidth",
         .tooltip = "Object updates per second sent when hosting.",
         .category = Cat::Multiplayer,
         .subcategory = "Hosting",
         .widget = Wid::Enum,
-        .access = AccUint{&AGS::server_netfps, &AGS::set_server_netfps},
+        .access = AccFnInt{[](rf::Player*) { return g_alpine_game_config.server_net_rate_tier_index(); },
+                           [](rf::Player*, int v) { g_alpine_game_config.set_server_net_rate_tier_index(v); },
+                           0, static_cast<int>(std::size(AGS::net_rate_tiers)) - 1},
         .flags = SF_MP_ONLY | SF_HOST_ONLY | SF_ADVANCED,
         .apply = apply_server_netfps,
         ENUM_LABELS(labels_server_netfps),
-        .enum_values = values_server_netfps,
         .console_cmd = "sv_bandwidth",
+        .default_str = "1",
     },
     {
         .id = "fflink_status",

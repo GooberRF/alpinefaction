@@ -3782,9 +3782,10 @@ void server_apply_net_rate()
 
 void server_set_net_rate(unsigned netfps)
 {
-    // Snapped here, not by the row's nearest-label rule: anything but an exact tier is medium
-    setting_console_set("server_netfps", std::to_string(AlpineGameSettings::net_rate_tier(netfps).netfps));
-    // Listen host: the tier lives in alpine_settings.ini (ServerNetFPS). A dedicated server's comes from
+    // Snapped here: anything but an exact tier is medium
+    const auto& tier = AlpineGameSettings::net_rate_tier(netfps);
+    setting_console_set("server_bandwidth", std::to_string(&tier - AlpineGameSettings::net_rate_tiers));
+    // Listen host: the tier lives in alpine_settings.ini (ServerBandwidth). A dedicated server's comes from
     // the `bandwidth` key in its config; a runtime change there lasts until the next load of that config.
     alpine_core_config_save();
     rf::console::print("Server bandwidth: {} ({} netfps, {} fps)",

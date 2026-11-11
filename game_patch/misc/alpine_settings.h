@@ -650,7 +650,7 @@ struct AlpineGameSettings
     };
     static constexpr NetRateTier net_rate_tiers[] = {{"low", 20u, 40u}, {"medium", 40u, 80u}, {"high", 100u, 200u}};
     static constexpr size_t default_net_rate_tier = 1; // medium
-    // Anything that is not exactly a tier (a pre-1.5 ServerNetFPS of 60, 50, ...) is medium, the 1.4 rate
+    // Anything that is not exactly a tier is medium, the 1.4 rate
     static const NetRateTier& net_rate_tier(unsigned netfps)
     {
         const auto it = std::find_if(std::begin(net_rate_tiers), std::end(net_rate_tiers),
@@ -659,14 +659,19 @@ struct AlpineGameSettings
     }
 
     // Server send rate, always one of net_rate_tiers
-    unsigned server_netfps = 40u;
-    void set_server_netfps(unsigned netfps_value)
-    {
-        server_netfps = net_rate_tier(netfps_value).netfps;
-    }
+    unsigned server_netfps = net_rate_tiers[default_net_rate_tier].netfps;
     const NetRateTier& server_net_rate_tier() const
     {
         return net_rate_tier(server_netfps);
+    }
+    // alpine_settings.ini stores the tier index (ServerBandwidth)
+    int server_net_rate_tier_index() const
+    {
+        return static_cast<int>(&server_net_rate_tier() - net_rate_tiers);
+    }
+    void set_server_net_rate_tier_index(int index)
+    {
+        server_netfps = net_rate_tiers[std::clamp(index, 0, static_cast<int>(std::size(net_rate_tiers)) - 1)].netfps;
     }
 
     static constexpr int min_desired_handicap = 0;
