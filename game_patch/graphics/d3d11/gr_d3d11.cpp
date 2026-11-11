@@ -2,6 +2,7 @@
 #include <cassert>
 #include <dxgi1_4.h>
 #include <dxgi1_5.h>
+#include <dxgi1_6.h>
 #include <xlog/xlog.h>
 #include "../../rf/gr/gr.h"
 #include "../../rf/v3d.h"
@@ -173,6 +174,34 @@ namespace gr::d3d11
         render_context_->set_render_target(default_render_target_view_, depth_stencil_view_);
     }
 
+    // The GPU Windows prefers for performance, so hybrid laptops render on the dedicated one.
+    // nullptr leaves the choice to Windows.
+    static ComPtr<IDXGIAdapter1> get_high_performance_adapter()
+    {
+        DynamicLinkLibrary dxgi_lib{L"dxgi.dll"};
+        const auto pfCreateDXGIFactory1 =
+            dxgi_lib.get_proc_address<decltype(CreateDXGIFactory1)*>("CreateDXGIFactory1");
+        ComPtr<IDXGIFactory1> factory;
+        // IDXGIFactory6 needs Windows 10 1803
+        ComPtr<IDXGIFactory6> factory6;
+        if (!pfCreateDXGIFactory1
+            || FAILED(pfCreateDXGIFactory1(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(&factory)))
+            || FAILED(factory->QueryInterface(&factory6))) {
+            return {};
+        }
+        ComPtr<IDXGIAdapter1> adapter;
+        DXGI_ADAPTER_DESC1 desc;
+        constexpr UINT microsoft_vendor_id = 0x1414;
+        if (FAILED(factory6->EnumAdapterByGpuPreference(
+                0, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, __uuidof(IDXGIAdapter1), reinterpret_cast<void**>(&adapter)))
+            || FAILED(adapter->GetDesc1(&desc))
+            || (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)
+            || desc.VendorId == microsoft_vendor_id) {
+            return {};
+        }
+        return adapter;
+    }
+
     void Renderer::init_device()
     {
         const PFN_D3D11_CREATE_DEVICE pfD3D11CreateDevice =
@@ -196,11 +225,16 @@ namespace gr::d3d11
             ? D3D11_CREATE_DEVICE_DEBUG
             : 0;
 
+        ComPtr<IDXGIAdapter1> adapter;
+        if (g_alpine_system_config.prefer_high_performance_gpu) {
+            adapter = get_high_performance_adapter();
+        }
+
     CREATE_DEVICE:
         D3D_FEATURE_LEVEL feature_level_supported{};
         const HRESULT hr = pfD3D11CreateDevice(
-            nullptr,
-            D3D_DRIVER_TYPE_HARDWARE,
+            adapter,
+            adapter ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE,
             nullptr,
             flags,
             feature_levels,
@@ -217,11 +251,29 @@ namespace gr::d3d11
             flags &= ~D3D11_CREATE_DEVICE_DEBUG;
             goto CREATE_DEVICE;
         }
+        if (FAILED(hr) && adapter) {
+            xlog::warn(
+                "[D3D11] Device creation failed on the high-performance adapter (0x{:08x}), using the default one",
+                static_cast<unsigned>(hr));
+            adapter = nullptr;
+            goto CREATE_DEVICE;
+        }
 
         check_hr(hr, [] { xlog::error("`D3D11CreateDevice` failed"); });
 
         init_error(device_);
 
+        ComPtr<IDXGIDevice> dxgi_device;
+        ComPtr<IDXGIAdapter> dxgi_adapter;
+        DXGI_ADAPTER_DESC desc;
+        if (SUCCEEDED(device_->QueryInterface(&dxgi_device))
+            && SUCCEEDED(dxgi_device->GetAdapter(&dxgi_adapter))
+            && SUCCEEDED(dxgi_adapter->GetDesc(&desc))) {
+            char description[std::size(desc.Description)];
+            WideCharToMultiByte(CP_ACP, 0, desc.Description, -1, description, sizeof(description), nullptr, nullptr);
+            xlog::info(
+                "[D3D11] Adapter: {} ({})", description, adapter ? "high-performance preference" : "Windows default");
+        }
         xlog::info("D3D11 feature level: 0x{:x}", static_cast<int>(feature_level_supported));
     }
 
