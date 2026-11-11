@@ -391,7 +391,7 @@ void vehicle_factory_load_chunk(rf::File& file, std::size_t chunk_len)
     // Untrusted input reaching a server-side Bullet body: a non-finite value is UB and a
     // non-rotation basis shears every derived box.
     auto pose_is_sane = [](const AlpineVehicleFactoryInfo& info) {
-        if (!vehicle_vector_is_finite(info.pos)) {
+        if (!info.pos.is_finite()) {
             return false;
         }
         if (!alpine_orient_is_sane(info.orient)) {

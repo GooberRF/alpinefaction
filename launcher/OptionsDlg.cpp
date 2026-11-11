@@ -16,7 +16,6 @@ OptionsDlg::OptionsDlg() :
     CDialog(IDD_OPTIONS),
     m_display_dlg(m_conf, m_advanced_dlg),
     m_misc_dlg(m_conf),
-    m_multiplayer_dlg(m_conf),
     m_advanced_dlg(m_conf, m_display_dlg)
 {
 }
@@ -36,7 +35,6 @@ BOOL OptionsDlg::OnInitDialog()
     InitNestedDialog(m_advanced_dlg, IDC_ADVANCED_OPTIONS_BOX);
     InitNestedDialog(m_display_dlg, IDC_DISPLAY_OPTIONS_BOX);
     InitNestedDialog(m_misc_dlg, IDC_MISC_OPTIONS_BOX);
-    InitNestedDialog(m_multiplayer_dlg, IDC_MULTIPLAYER_OPTIONS_BOX);
     ShowAdvancedOptions(false);
     CenterWindow();
 
@@ -91,7 +89,6 @@ void OptionsDlg::OnBnClickedOk()
     
     // Nested dialogs
     m_display_dlg.OnSave();
-    m_multiplayer_dlg.OnSave();
     m_misc_dlg.OnSave();
     m_advanced_dlg.OnSave();
 

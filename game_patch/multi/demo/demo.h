@@ -136,6 +136,8 @@ double demo_playback_clock_ms();
 // The ObjInterp rings' clock: demo time while playback is active, since their keyframes are
 // stamped in it; timer::get_i64(1000) otherwise
 int64_t demo_playback_interp_clock_ms();
+// The same clock in microseconds (timer::get_i64(1000000) otherwise), for ObjInterp::frame_time_us
+int64_t demo_playback_interp_clock_us();
 // Total demo length, or 0 when unknown (footerless file - grows as records stream in).
 uint32_t demo_playback_duration_ms();
 bool demo_playback_paused();

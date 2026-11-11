@@ -12,6 +12,7 @@
 #include <string_view>
 #include <unordered_map>
 #include <common/utils/bool-utils.h>
+#include <common/utils/byte-io.h>
 #include <common/utils/list-utils.h>
 #include <common/rfproto.h>
 #include <xlog/xlog.h>
@@ -28,6 +29,7 @@
 #include "server.h"
 #include "../hud/hud_world.h"
 #include "alpine_packets.h"
+#include "obj_update_delta.h"
 #include "awards.h"
 #include "sprays.h"
 #include "kill.h"
@@ -207,6 +209,14 @@ bool af_process_packet(
         }
         case af_packet_type::af_vehicle_factory_state: {
             af_process_vehicle_factory_state_packet(data, static_cast<size_t>(len), addr);
+            return true;
+        }
+        case af_packet_type::af_obj_update_delta: {
+            af_process_obj_update_delta_packet(data, static_cast<size_t>(len), addr);
+            return true;
+        }
+        case af_packet_type::af_obj_update_ack: {
+            af_process_obj_update_ack_packet(data, static_cast<size_t>(len), addr);
             return true;
         }
         default:
@@ -674,25 +684,16 @@ void af_send_obj_update_packet(rf::Player* player)
                 continue; // player entity is dying (dying entities have invalid info in ai)
             }
 
+            const auto ammo = af_gather_remote_ammo(entity);
+            if (!ammo) {
+                continue;
+            }
             af_obj_update obj_update{};
             obj_update.obj_handle = entity->handle;
-
-            uint8_t current_primary_weapon = static_cast<uint8_t>(entity->ai.current_primary_weapon);
-            if (current_primary_weapon > 63) {
-                xlog::debug("obj_update packet tried to process an invalid weapon type: {}", current_primary_weapon);
-                continue; // reported weapon type is out of valid range
-            }
-            obj_update.current_primary_weapon = current_primary_weapon;
-
-            uint8_t ammo_type = static_cast<uint8_t>(rf::weapon_types[current_primary_weapon].ammo_type);
-            if (ammo_type > 31) {
-                xlog::debug("obj_update packet tried to process an invalid ammo type: {}", ammo_type); // todo: figure out why this happens sometimes on specific maps???
-                continue; // reported ammo type is out of valid range
-            }
-            obj_update.ammo_type = ammo_type;
-
-            obj_update.clip_ammo = static_cast<uint16_t>(entity->ai.clip_ammo[current_primary_weapon]);
-            obj_update.reserve_ammo = static_cast<uint16_t>(entity->ai.ammo[ammo_type]);
+            obj_update.current_primary_weapon = ammo->weapon;
+            obj_update.ammo_type = ammo->ammo_type;
+            obj_update.clip_ammo = ammo->clip;
+            obj_update.reserve_ammo = ammo->reserve;
 
             /*xlog::warn("Adding player {}, weap {}, ammo {}, clip {}, reserve {}",
                        entity->name, obj_update.current_primary_weapon, obj_update.ammo_type,
@@ -802,24 +803,94 @@ static void af_process_obj_update_packet(const void* data, size_t len, const rf:
             continue;
         }
 
-        // Only update ammo if the player's weapon matches the packet
-        if (entity->ai.current_primary_weapon == obj_update.current_primary_weapon) {
-            // Bounds-check the wire-supplied indices before writing into the fixed AiInfo
-            // arrays (clip_ammo[64], ammo[32]).
-            if (obj_update.current_primary_weapon < std::ssize(entity->ai.clip_ammo)) {
-                entity->ai.clip_ammo[obj_update.current_primary_weapon] = obj_update.clip_ammo;
-            }
-            if (obj_update.ammo_type < std::ssize(entity->ai.ammo)) {
-                entity->ai.ammo[obj_update.ammo_type] = obj_update.reserve_ammo;
-            }
-
-            /* xlog::warn("Updated player {}, weapon {}, ammo type {}, clip {}, reserve {}", 
-                        entity->name, obj_update.current_primary_weapon, obj_update.ammo_type, 
-                        obj_update.clip_ammo, obj_update.reserve_ammo);*/
-        } else {
-            //xlog::warn("Did not update player {} because packet weapon {}, their weapon {}", entity->name, obj_update.current_primary_weapon, entity->ai.current_primary_weapon);
-        }
+        af_apply_remote_ammo(entity, obj_update.current_primary_weapon, obj_update.ammo_type, obj_update.clip_ammo,
+                             obj_update.reserve_ammo);
     }
+}
+
+std::optional<AfRemoteAmmo> af_gather_remote_ammo(rf::Entity* entity)
+{
+    if (!entity || rf::entity_is_dying(entity)) {
+        return {}; // dying entities have invalid info in ai
+    }
+    const int weapon = entity->ai.current_primary_weapon;
+    if (weapon < 0 || weapon >= std::ssize(entity->ai.clip_ammo)) {
+        xlog::debug("obj_update packet tried to process an invalid weapon type: {}", weapon);
+        return {};
+    }
+    const int ammo_type = rf::weapon_types[weapon].ammo_type;
+    if (ammo_type < 0 || ammo_type >= std::ssize(entity->ai.ammo)) {
+        // todo: figure out why this happens sometimes on specific maps???
+        xlog::debug("obj_update packet tried to process an invalid ammo type: {}", ammo_type);
+        return {};
+    }
+    return AfRemoteAmmo{static_cast<uint8_t>(weapon), static_cast<uint8_t>(ammo_type),
+                        static_cast<uint16_t>(entity->ai.clip_ammo[weapon]),
+                        static_cast<uint16_t>(entity->ai.ammo[ammo_type])};
+}
+
+void af_apply_remote_ammo(rf::Entity* entity, uint8_t weapon, uint8_t ammo_type, uint16_t clip, uint16_t reserve)
+{
+    // Only update ammo if the player's weapon matches the packet
+    if (entity->ai.current_primary_weapon != weapon) {
+        return;
+    }
+    // Bounds-check the wire-supplied indices before writing into the fixed AiInfo
+    // arrays (clip_ammo[64], ammo[32]).
+    if (weapon < std::ssize(entity->ai.clip_ammo)) {
+        entity->ai.clip_ammo[weapon] = clip;
+    }
+    if (ammo_type < std::ssize(entity->ai.ammo)) {
+        entity->ai.ammo[ammo_type] = reserve;
+    }
+}
+
+// Delta-compressed obj_update stream: codec and rings live in obj_update_delta.cpp
+static void af_process_obj_update_delta_packet(const void* data, size_t len, const rf::NetAddr& addr)
+{
+    // Receive: client <- server
+    if (!rf::is_multi || rf::is_server || len < sizeof(RF_GamePacketHeader)) {
+        return;
+    }
+    RF_GamePacketHeader header;
+    std::memcpy(&header, data, sizeof(header));
+    if (len != sizeof(header) + header.size) {
+        xlog::warn("af_obj_update_delta packet has unexpected size! Expected {}, got {}", sizeof(header) + header.size,
+                   len);
+        return;
+    }
+    obj_update_delta::client_receive(static_cast<const uint8_t*>(data) + sizeof(header), header.size, addr);
+}
+
+bool af_build_obj_update_ack_packet(af_obj_update_ack_packet& packet)
+{
+    // Send: client -> server, once per own obj_update and in the same datagram (network.cpp send hook)
+    const auto& info = get_af_server_info();
+    if (!rf::is_multi || rf::is_server || !info || !info->delta_obj_update) {
+        return false;
+    }
+    if (!obj_update_delta::client_build_ack(packet.newest_seq, packet.bits)) {
+        return false;
+    }
+    packet.header.type = static_cast<uint8_t>(af_packet_type::af_obj_update_ack);
+    packet.header.size = sizeof(packet) - sizeof(packet.header);
+    return true;
+}
+
+static void af_process_obj_update_ack_packet(const void* data, size_t len, const rf::NetAddr& addr)
+{
+    // Receive: server <- client
+    // Longer is fine: a newer client may append fields
+    if (!rf::is_server || len < sizeof(af_obj_update_ack_packet)) {
+        return;
+    }
+    rf::Player* player = rf::multi_find_player_by_addr(addr);
+    if (!player || !player->delta_obj_update) {
+        return;
+    }
+    af_obj_update_ack_packet packet;
+    std::memcpy(&packet, data, sizeof(packet));
+    obj_update_delta::server_on_ack(player, packet.newest_seq, packet.bits);
 }
 
 // client requests
@@ -1254,181 +1325,13 @@ void af_send_rcon_player_action(uint8_t target_player_id, af_rcon_player_action 
 namespace
 {
 
-// Bounds-checked little-endian writers/readers for the variable-length vote
-// payloads. Everything is written into a fixed packet buffer, so a payload that
-// would overflow simply marks the writer failed and the caller drops the packet.
-struct VoteWriter
-{
-    std::byte* buf;
-    size_t cap;
-    size_t off;
-    bool ok = true;
-
-    void u8(uint8_t v)
-    {
-        if (!ok || 1 > cap - off) {
-            ok = false;
-            return;
-        }
-        buf[off++] = static_cast<std::byte>(v);
-    }
-
-    void u16(uint16_t v)
-    {
-        if (!ok || sizeof(v) > cap - off) {
-            ok = false;
-            return;
-        }
-        std::memcpy(buf + off, &v, sizeof(v));
-        off += sizeof(v);
-    }
-
-    void u32(uint32_t v)
-    {
-        if (!ok || sizeof(v) > cap - off) {
-            ok = false;
-            return;
-        }
-        std::memcpy(buf + off, &v, sizeof(v));
-        off += sizeof(v);
-    }
-
-    void i32(int32_t v)
-    {
-        if (!ok || sizeof(v) > cap - off) {
-            ok = false;
-            return;
-        }
-        std::memcpy(buf + off, &v, sizeof(v));
-        off += sizeof(v);
-    }
-
-    void f32(float v)
-    {
-        if (!ok || sizeof(v) > cap - off) {
-            ok = false;
-            return;
-        }
-        std::memcpy(buf + off, &v, sizeof(v));
-        off += sizeof(v);
-    }
-
-    void str(std::string_view s)
-    {
-        const size_t n = std::min<size_t>(s.size(), 255);
-        u8(static_cast<uint8_t>(n));
-        if (!ok || n > cap - off) {
-            ok = false;
-            return;
-        }
-        if (n) {
-            std::memcpy(buf + off, s.data(), n); // an empty string_view's data() may be null
-        }
-        off += n;
-    }
-
-    void bytes(const void* src, size_t n)
-    {
-        if (!ok || n > cap - off) {
-            ok = false;
-            return;
-        }
-        if (n) {
-            std::memcpy(buf + off, src, n); // an empty vector's data() may be null
-        }
-        off += n;
-    }
-};
-
-struct VoteReader
-{
-    const uint8_t* data;
-    size_t len;
-    size_t pos = 0;
-    bool ok = true;
-
-    [[nodiscard]] size_t remaining() const
-    {
-        return ok ? len - pos : 0;
-    }
-
-    uint8_t u8()
-    {
-        if (!ok || 1 > len - pos) {
-            ok = false;
-            return 0;
-        }
-        return data[pos++];
-    }
-
-    uint16_t u16()
-    {
-        uint16_t v = 0;
-        if (!ok || sizeof(v) > len - pos) {
-            ok = false;
-            return 0;
-        }
-        std::memcpy(&v, data + pos, sizeof(v));
-        pos += sizeof(v);
-        return v;
-    }
-
-    uint32_t u32()
-    {
-        uint32_t v = 0;
-        if (!ok || sizeof(v) > len - pos) {
-            ok = false;
-            return 0;
-        }
-        std::memcpy(&v, data + pos, sizeof(v));
-        pos += sizeof(v);
-        return v;
-    }
-
-    int32_t i32()
-    {
-        int32_t v = 0;
-        if (!ok || sizeof(v) > len - pos) {
-            ok = false;
-            return 0;
-        }
-        std::memcpy(&v, data + pos, sizeof(v));
-        pos += sizeof(v);
-        return v;
-    }
-
-    float f32()
-    {
-        float v = 0.0f;
-        if (!ok || sizeof(v) > len - pos) {
-            ok = false;
-            return 0.0f;
-        }
-        std::memcpy(&v, data + pos, sizeof(v));
-        pos += sizeof(v);
-        return v;
-    }
-
-    std::string str()
-    {
-        const uint8_t n = u8();
-        if (!ok || n > len - pos) {
-            ok = false;
-            return {};
-        }
-        std::string v(reinterpret_cast<const char*>(data + pos), n);
-        pos += n;
-        return v;
-    }
-};
-
 // The protocol's only limits on a vote call are the u8 count encoding and
-// rf::max_packet_size (enforced by VoteWriter) — there is no separate policy cap.
+// rf::max_packet_size (enforced by ByteWriter) — there is no separate policy cap.
 //
 // Returns false if the selection cannot be encoded. Never truncates or wraps:
 // silently dropping part of a player's mutator selection would start a vote that
 // isn't the one they asked for.
-bool write_vote_mutators(VoteWriter& w, const std::vector<VoteMutatorInput>& mutators)
+bool write_vote_mutators(ByteWriter& w, const std::vector<VoteMutatorInput>& mutators)
 {
     constexpr size_t u8_max = std::numeric_limits<uint8_t>::max();
 
@@ -1472,7 +1375,7 @@ bool write_vote_mutators(VoteWriter& w, const std::vector<VoteMutatorInput>& mut
                 default:
                     xlog::warn("af_send_vote_call: mutator {} option {} has unknown type {}",
                                mutator.mutator_id, opt.option_id, static_cast<int>(opt.type));
-                    w.ok = false;
+                    w.fail();
                     return false;
             }
         }
@@ -1480,13 +1383,13 @@ bool write_vote_mutators(VoteWriter& w, const std::vector<VoteMutatorInput>& mut
     return true;
 }
 
-bool read_vote_mutators(VoteReader& r, std::vector<VoteMutatorInput>& out)
+bool read_vote_mutators(ByteReader& r, std::vector<VoteMutatorInput>& out)
 {
     // Both counts are u8 reads, so they are inherently <= 255 and every reserve()
     // below is bounded by the encoding itself. The real bound on a hostile
     // payload is the reader's length check against the declared packet size.
     const uint8_t count = r.u8();
-    if (!r.ok) {
+    if (!r.ok()) {
         return false;
     }
     out.reserve(count);
@@ -1494,7 +1397,7 @@ bool read_vote_mutators(VoteReader& r, std::vector<VoteMutatorInput>& out)
         VoteMutatorInput mutator;
         mutator.mutator_id = r.u8();
         const uint8_t option_count = r.u8();
-        if (!r.ok) {
+        if (!r.ok()) {
             return false;
         }
         mutator.options.reserve(option_count);
@@ -1502,7 +1405,7 @@ bool read_vote_mutators(VoteReader& r, std::vector<VoteMutatorInput>& out)
             VoteMutatorOptionInput opt;
             opt.option_id = r.u8();
             const uint8_t type_raw = r.u8();
-            if (!r.ok) {
+            if (!r.ok()) {
                 return false;
             }
             opt.type = static_cast<MutatorOptionType>(type_raw);
@@ -1529,14 +1432,14 @@ bool read_vote_mutators(VoteReader& r, std::vector<VoteMutatorInput>& out)
                                mutator.mutator_id, opt.option_id, type_raw);
                     return false;
             }
-            if (!r.ok) {
+            if (!r.ok()) {
                 return false;
             }
             mutator.options.push_back(std::move(opt));
         }
         out.push_back(std::move(mutator));
     }
-    return r.ok;
+    return r.ok();
 }
 
 } // namespace
@@ -1552,7 +1455,7 @@ void af_send_vote_call(const AfVoteCallParams& params)
     RF_GamePacketHeader header{};
     header.type = static_cast<uint8_t>(af_packet_type::af_client_req);
 
-    VoteWriter w{buf, sizeof(buf), 0};
+    ByteWriter w{buf, sizeof(buf)};
     w.bytes(&header, sizeof(header));
     w.u8(static_cast<uint8_t>(af_client_req_type::af_req_vote_call));
     w.u8(static_cast<uint8_t>(params.type));
@@ -1594,7 +1497,7 @@ void af_send_vote_call(const AfVoteCallParams& params)
         return; // write_vote_mutators already logged why
     }
 
-    if (!w.ok) {
+    if (!w.ok()) {
         // Would have overflowed the packet buffer. Dropping the send is the only
         // safe option, but never do it silently.
         xlog::warn("af_send_vote_call: vote type {} payload exceeds the {} byte packet buffer; not sent",
@@ -1602,9 +1505,9 @@ void af_send_vote_call(const AfVoteCallParams& params)
         return;
     }
 
-    header.size = static_cast<uint16_t>(w.off - sizeof(header));
+    header.size = static_cast<uint16_t>(w.size() - sizeof(header));
     std::memcpy(buf, &header, sizeof(header));
-    af_send_packet(rf::local_player, buf, static_cast<int>(w.off), true);
+    af_send_packet(rf::local_player, buf, static_cast<int>(w.size()), true);
 }
 
 void af_send_vote_cast(bool is_yes_vote)
@@ -1658,19 +1561,19 @@ void af_send_vote_options_request(bool has_cache, uint32_t known_generation)
 
 // Shared tail for a variable-length af_server_req: `w` already holds the
 // header space, req_type and the payload.
-static void af_finish_server_req_packet(rf::Player* player, std::byte* buf, const VoteWriter& w,
+static void af_finish_server_req_packet(rf::Player* player, std::byte* buf, const ByteWriter& w,
                                         std::string_view sender)
 {
-    if (!w.ok) {
+    if (!w.ok()) {
         xlog::warn("{}: payload too large", sender);
         return;
     }
 
     RF_GamePacketHeader header{};
     header.type = static_cast<uint8_t>(af_packet_type::af_server_req);
-    header.size = static_cast<uint16_t>(w.off - sizeof(header));
+    header.size = static_cast<uint16_t>(w.size() - sizeof(header));
     std::memcpy(buf, &header, sizeof(header));
-    af_send_packet(player, buf, static_cast<int>(w.off), true);
+    af_send_packet(player, buf, static_cast<int>(w.size()), true);
 }
 
 // Is this a remote recipient whose client knows a server req added in the given version?
@@ -1717,7 +1620,7 @@ void af_send_vote_state_start(rf::Player* player, AfVoteType type, uint16_t time
     }
 
     std::byte buf[rf::max_packet_size];
-    VoteWriter w{buf, sizeof(buf), sizeof(RF_GamePacketHeader)};
+    ByteWriter w{buf, sizeof(buf), sizeof(RF_GamePacketHeader)};
     w.u8(static_cast<uint8_t>(af_server_req_type::af_sreq_vote_state));
     w.u8(static_cast<uint8_t>(AfVoteStateEvent::Start));
     w.u8(static_cast<uint8_t>(type));
@@ -1738,7 +1641,7 @@ void af_send_vote_state_update(rf::Player* player, uint8_t yes, uint8_t no, uint
     }
 
     std::byte buf[rf::max_packet_size];
-    VoteWriter w{buf, sizeof(buf), sizeof(RF_GamePacketHeader)};
+    ByteWriter w{buf, sizeof(buf), sizeof(RF_GamePacketHeader)};
     w.u8(static_cast<uint8_t>(af_server_req_type::af_sreq_vote_state));
     w.u8(static_cast<uint8_t>(AfVoteStateEvent::Update));
     w.u8(yes);
@@ -1763,7 +1666,7 @@ void af_send_vote_state_end(rf::Player* player, AfVoteResult result, bool passed
     const size_t detail_len = std::min<size_t>({detail.size(), 255, rf::max_packet_size - fixed_len});
 
     std::byte buf[rf::max_packet_size];
-    VoteWriter w{buf, sizeof(buf), sizeof(RF_GamePacketHeader)};
+    ByteWriter w{buf, sizeof(buf), sizeof(RF_GamePacketHeader)};
     w.u8(static_cast<uint8_t>(af_server_req_type::af_sreq_vote_state));
     w.u8(static_cast<uint8_t>(AfVoteStateEvent::End));
     w.u8(static_cast<uint8_t>(result));
@@ -1793,18 +1696,18 @@ static void af_send_active_mutators_blob(rf::Player* player, const std::vector<u
     }
 
     std::byte buf[rf::max_packet_size];
-    VoteWriter w{buf, sizeof(buf), sizeof(RF_GamePacketHeader)};
+    ByteWriter w{buf, sizeof(buf), sizeof(RF_GamePacketHeader)};
     w.u8(static_cast<uint8_t>(af_server_req_type::af_sreq_active_mutators));
     w.bytes(decls.data(), decls.size());
-    if (!w.ok) {
+    if (!w.ok()) {
         return; // size already reported by af_active_mutators_blob_fits
     }
 
     RF_GamePacketHeader header{};
     header.type = static_cast<uint8_t>(af_packet_type::af_server_req);
-    header.size = static_cast<uint16_t>(w.off - sizeof(header));
+    header.size = static_cast<uint16_t>(w.size() - sizeof(header));
     std::memcpy(buf, &header, sizeof(header));
-    af_send_packet(player, buf, static_cast<int>(w.off), true);
+    af_send_packet(player, buf, static_cast<int>(w.size()), true);
 }
 
 void af_send_active_mutators(rf::Player* player)
@@ -1873,7 +1776,7 @@ void af_send_vote_options_data(rf::Player* player)
     const auto queue_frame = [&](AfVoteOptionsStream event, const uint8_t* data, size_t len,
                                  std::optional<uint32_t> extra) {
         std::byte buf[rf::max_packet_size];
-        VoteWriter w{buf, sizeof(buf), sizeof(RF_GamePacketHeader)};
+        ByteWriter w{buf, sizeof(buf), sizeof(RF_GamePacketHeader)};
         w.u8(static_cast<uint8_t>(af_server_req_type::af_sreq_vote_options_data));
         w.u8(static_cast<uint8_t>(event));
         w.u32(generation);
@@ -1883,17 +1786,17 @@ void af_send_vote_options_data(rf::Player* player)
         if (len) {
             w.bytes(data, len);
         }
-        if (!w.ok) {
+        if (!w.ok()) {
             xlog::error("af_send_vote_options_data: frame overflow (event {})", static_cast<int>(event));
             return false;
         }
 
         RF_GamePacketHeader header{};
         header.type = static_cast<uint8_t>(af_packet_type::af_server_req);
-        header.size = static_cast<uint16_t>(w.off - sizeof(header));
+        header.size = static_cast<uint16_t>(w.size() - sizeof(header));
         std::memcpy(buf, &header, sizeof(header));
 
-        send_queues_rel_add_packet(socket, reinterpret_cast<const uint8_t*>(buf), w.off);
+        send_queues_rel_add_packet(socket, reinterpret_cast<const uint8_t*>(buf), w.size());
         return true;
     };
 
@@ -2193,11 +2096,11 @@ static void af_process_client_req_packet(const void* data, size_t len, const rf:
             break;
         }
         case af_client_req_type::af_req_vote_call: {
-            VoteReader r{bytes + offset, remaining};
+            ByteReader r{bytes + offset, remaining};
 
             AfVoteCallParams params{};
             const uint8_t type_raw = r.u8();
-            if (!r.ok || type_raw >= af_vote_type_count) {
+            if (!r.ok() || type_raw >= af_vote_type_count) {
                 xlog::warn("af_process_client_req_packet: bad vote type {}", type_raw);
                 return;
             }
@@ -2249,7 +2152,7 @@ static void af_process_client_req_packet(const void* data, size_t len, const rf:
                     : !params.mutators.empty();
             }
 
-            if (!r.ok) {
+            if (!r.ok()) {
                 xlog::warn("af_process_client_req_packet: truncated vote call payload");
                 return;
             }
@@ -2790,7 +2693,7 @@ void af_send_rcon_state(rf::Player* player, bool is_holder, const std::vector<st
     }
 
     std::byte buf[rf::max_packet_size];
-    VoteWriter w{buf, sizeof(buf), sizeof(RF_GamePacketHeader)};
+    ByteWriter w{buf, sizeof(buf), sizeof(RF_GamePacketHeader)};
     w.u8(static_cast<uint8_t>(af_server_req_type::af_sreq_rcon_state));
     w.u8(is_holder ? 1 : 0);
     w.u8(static_cast<uint8_t>(commands.size()));
@@ -2807,7 +2710,7 @@ void af_send_force_spectate(rf::Player* player, bool enter)
     }
 
     std::byte buf[sizeof(RF_GamePacketHeader) + 2];
-    VoteWriter w{buf, sizeof(buf), sizeof(RF_GamePacketHeader)};
+    ByteWriter w{buf, sizeof(buf), sizeof(RF_GamePacketHeader)};
     w.u8(static_cast<uint8_t>(af_server_req_type::af_sreq_force_spectate));
     w.u8(enter ? 1 : 0);
     af_finish_server_req_packet(player, buf, w, "af_send_force_spectate");
@@ -2820,7 +2723,7 @@ void af_send_player_roles(rf::Player* player, const std::vector<std::pair<uint8_
     }
 
     std::byte buf[rf::max_packet_size];
-    VoteWriter w{buf, sizeof(buf), sizeof(RF_GamePacketHeader)};
+    ByteWriter w{buf, sizeof(buf), sizeof(RF_GamePacketHeader)};
     w.u8(static_cast<uint8_t>(af_server_req_type::af_sreq_player_roles));
     w.u8(static_cast<uint8_t>(roles.size()));
     for (const auto& [player_id, flags] : roles) {
@@ -3232,14 +3135,14 @@ static void af_process_server_req_packet(const void* data, size_t len, const rf:
             break;
         }
         case af_server_req_type::af_sreq_rcon_state: {
-            VoteReader r{bytes + offset, remaining};
+            ByteReader r{bytes + offset, remaining};
             const bool is_holder = r.u8() != 0;
             const uint8_t count = r.u8();
             std::vector<std::string> commands;
-            for (uint8_t i = 0; i < count && r.ok; ++i) {
+            for (uint8_t i = 0; i < count && r.ok(); ++i) {
                 commands.push_back(r.str());
             }
-            if (!r.ok) {
+            if (!r.ok()) {
                 xlog::warn("af_process_server_req_packet: truncated RconState");
                 return;
             }
@@ -3255,15 +3158,15 @@ static void af_process_server_req_packet(const void* data, size_t len, const rf:
             break;
         }
         case af_server_req_type::af_sreq_player_roles: {
-            VoteReader r{bytes + offset, remaining};
+            ByteReader r{bytes + offset, remaining};
             const uint8_t count = r.u8();
             std::vector<std::pair<uint8_t, uint8_t>> roles;
-            for (uint8_t i = 0; i < count && r.ok; ++i) {
+            for (uint8_t i = 0; i < count && r.ok(); ++i) {
                 const uint8_t player_id = r.u8();
                 const uint8_t flags = r.u8();
                 roles.emplace_back(player_id, flags);
             }
-            if (!r.ok) {
+            if (!r.ok()) {
                 xlog::warn("af_process_server_req_packet: truncated PlayerRoles");
                 return;
             }
@@ -3493,9 +3396,9 @@ static void af_process_server_req_packet(const void* data, size_t len, const rf:
             break;
         }
         case af_server_req_type::af_sreq_vote_state: {
-            VoteReader r{bytes + offset, remaining};
+            ByteReader r{bytes + offset, remaining};
             const uint8_t event = r.u8();
-            if (!r.ok) {
+            if (!r.ok()) {
                 xlog::warn("af_process_server_req_packet: VoteState payload too short");
                 return;
             }
@@ -3516,7 +3419,7 @@ static void af_process_server_req_packet(const void* data, size_t len, const rf:
                     // tally and no idea a vote is running while the server still
                     // counts it as an eligible voter. Only a malformed packet is
                     // rejected.
-                    if (!r.ok) {
+                    if (!r.ok()) {
                         xlog::warn("af_process_server_req_packet: bad VoteState start");
                         return;
                     }
@@ -3530,7 +3433,7 @@ static void af_process_server_req_packet(const void* data, size_t len, const rf:
                     const uint8_t yes = r.u8();
                     const uint8_t no = r.u8();
                     const uint8_t voters_left = r.u8();
-                    if (!r.ok) {
+                    if (!r.ok()) {
                         xlog::warn("af_process_server_req_packet: bad VoteState update");
                         return;
                     }
@@ -3541,7 +3444,7 @@ static void af_process_server_req_packet(const void* data, size_t len, const rf:
                     const uint8_t result = r.u8();
                     const uint8_t flags = r.u8();
                     std::string detail = r.str();
-                    if (!r.ok) {
+                    if (!r.ok()) {
                         xlog::warn("af_process_server_req_packet: bad VoteState end");
                         return;
                     }
@@ -3560,17 +3463,17 @@ static void af_process_server_req_packet(const void* data, size_t len, const rf:
             break;
         }
         case af_server_req_type::af_sreq_vote_options_data: {
-            VoteReader r{bytes + offset, remaining};
+            ByteReader r{bytes + offset, remaining};
             const uint8_t event = r.u8();
             const uint32_t generation = r.u32();
-            if (!r.ok) {
+            if (!r.ok()) {
                 xlog::warn("af_process_server_req_packet: truncated VoteOptionsData frame");
                 return;
             }
             switch (static_cast<AfVoteOptionsStream>(event)) {
                 case AfVoteOptionsStream::Begin: {
                     const uint32_t total_bytes = r.u32();
-                    if (!r.ok) {
+                    if (!r.ok()) {
                         xlog::warn("af_process_server_req_packet: truncated VoteOptionsData begin");
                         return;
                     }
@@ -3580,7 +3483,7 @@ static void af_process_server_req_packet(const void* data, size_t len, const rf:
                 case AfVoteOptionsStream::Data:
                     // The chunk is whatever is left in the packet: its length comes
                     // from the packet header, not from a length byte.
-                    vote_options_stream_data(generation, r.data + r.pos, r.len - r.pos);
+                    vote_options_stream_data(generation, r.cur(), r.remaining());
                     break;
                 case AfVoteOptionsStream::End:
                     vote_options_stream_end(generation);
@@ -5050,8 +4953,6 @@ uint32_t af_compute_server_info_flags()
         af |= af_server_info_flags::SIF_ALLOW_NO_MUZZLE_FLASH_LIGHT;
     if (g_alpine_server_config.click_limiter_config.enabled)
         af |= af_server_info_flags::SIF_CLICK_LIMITER;
-    if (g_alpine_server_config.allow_unlimited_fps)
-        af |= af_server_info_flags::SIF_ALLOW_UNLIMITED_FPS;
     if (g_alpine_server_config.gaussian_spread)
         af |= af_server_info_flags::SIF_GAUSSIAN_SPREAD;
     if (g_alpine_server_config_active_rules.geo_chunk_physics)
@@ -5091,6 +4992,8 @@ uint32_t af_compute_server_info_flags()
         af |= af_server_info_flags::SIF_POGO;
     if (g_alpine_server_config_active_rules.gibbing.scrapyard)
         af |= af_server_info_flags::SIF_SCRAPYARD_GIBS;
+    if (g_alpine_server_config.projectile_lag_comp)
+        af |= af_server_info_flags::SIF_PROJECTILE_LAG_COMP;
     return af;
 }
 
@@ -5210,7 +5113,6 @@ static void decode_af_server_info_flags(const af_server_info_packet& pkt, Alpine
     server_info.allow_no_mf = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_NO_MUZZLE_FLASH_LIGHT) != 0;
     server_info.click_limit = (pkt.af_flags & af_server_info_flags::SIF_CLICK_LIMITER) != 0;
     server_info.semi_auto_cooldown = static_cast<int>(pkt.semi_auto_cooldown);
-    server_info.unlimited_fps = (pkt.af_flags & af_server_info_flags::SIF_ALLOW_UNLIMITED_FPS) != 0;
     server_info.gaussian_spread = (pkt.af_flags & af_server_info_flags::SIF_GAUSSIAN_SPREAD) != 0;
     server_info.location_pinging = (pkt.af_flags & af_server_info_flags::SIF_LOCATION_PINGING) != 0;
     server_info.delayed_spawns = (pkt.af_flags & af_server_info_flags::SIF_DELAYED_SPAWNS) != 0;
@@ -5230,6 +5132,7 @@ static void decode_af_server_info_flags(const af_server_info_packet& pkt, Alpine
     server_info.pogo = (pkt.af_flags & af_server_info_flags::SIF_POGO) != 0;
     server_info.scrapyard_gibs = (pkt.af_flags & af_server_info_flags::SIF_SCRAPYARD_GIBS) != 0;
     server_info.no_exposure_damage = (pkt.af_flags & af_server_info_flags::SIF_NO_EXPOSURE_DAMAGE) != 0;
+    server_info.projectile_lag_comp = (pkt.af_flags & af_server_info_flags::SIF_PROJECTILE_LAG_COMP) != 0;
 }
 
 // Apply af_server_info_packet flags to the local server info (for listen server host)

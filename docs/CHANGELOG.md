@@ -45,6 +45,19 @@ Version 1.5.0 (Trillium): Not yet released
   - Jeeps, APCs, drillers, fighters, submarines, and stationary turrets, spawned by the new `Vehicle Factory` object
   - Simulate vehicle physics with the Bullet physics engine
   - Multi-seat vehicles with driver, gunner, and passenger seats; `Use` boards the lowest free seat and number keys `1`-`6` switch seats
+- Overhaul multiplayer netcode
+  - Delta-compress server object updates, sharply reducing server bandwidth (`delta_obj_update` dedicated server config option)
+  - Smooth remote player movement under network jitter
+  - Let spectate and demo POV compensation reach further back
+  - Send client object updates at a steady rate, 100 per second to Alpine Faction 1.5 servers (once per frame below 100 FPS) and 40 per second to older servers
+  - Add projectile lag compensation, so projectiles and their splash damage hit players where the shooter saw them (`projectile_lag_comp` and `projectile_lag_comp_max_ms` dedicated server config options)
+  - Extend hitscan lag compensation to shooters with higher ping, up to the new `hitscan_lag_comp_max_ms` dedicated server config option (default 1000)
+  - Add `sv_bandwidth` console command and `bandwidth` dedicated server config option to choose between low, medium and high server bandwidth
+  - Remove `sv_netfps` console command, replaced by `sv_bandwidth`
+  - Replace the `ServerNetFPS` and `ServerMaxFPS` settings in `alpine_settings.ini` with a single `Server bandwidth` setting, which starts at medium
+  - Make the `rate` console command apply only on servers older than Alpine Faction 1.5
+  - Move the client rate option from the launcher to the settings menu (`alpine_settings.ini`) as `Client rate for legacy servers`
+  - Make dedicated server `maxfps` follow `sv_bandwidth`
 
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)
@@ -220,6 +233,9 @@ Version 1.5.0 (Trillium): Not yet released
 - Allow match votes on servers whose base game type is not a team type
 - Add `announce_next_level` dedicated server config option to announce the next level and its game type at the end of each level
 - Include the next level's filename in the end-of-level game type switch announcement
+- Add full_admin profile rcon access to `sv_loadpackfiles` command
+- Make the riot stick alt fire zap four times as often in multiplayer
+- Remove the 240 FPS cap in multiplayer, and the `allow_unlimited_fps` dedicated server config option (clients older than 1.5 always keep the cap on 1.5 servers)
 - Add `Use deprecated legacy console` launcher option to use the stock console instead of the new one
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
@@ -243,6 +259,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Add playback speed control (0.25x-8x) to the demo playback panel
 - Show the recording server's config during demo playback with the Remote Server Config key
 - Apply demo playback speed to the whole world, including particles, animations and sounds
+- Add `ui_show_netmeter` console command to show network statistics
 
 [@is-this-c](https://github.com/is-this-c)
 - Add `bighud_health` and `bighud_ammo` console variables to disable `bighud` for health and ammo, which is useful for mods incompatible with `bighud`
@@ -401,13 +418,16 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix some level editor buttons in Face and Vertex modes not working when the mode was entered with a keyboard shortcut
 - Fix players freezing in place in multiplayer for a moment after bumping into another player or mesh
 - Fix possible dedicated server crash when auto-downloading missing vote-allowed levels with `add_installed_to_allowed_levels` enabled
+- Improve handling of repeated join requests from connected players
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize
+  - Ignored while `Caps Lock` is bound to a control, unless `Bound Caps Lock capitalizes` is enabled
 - Fix floating damage numbers not swaying in the wind
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Cap FPS-dependent launch velocity when head jumping
+- Fix riot stick alt fire zap rate depending on the server frame rate and client send rate in multiplayer
 - Fix landing sound spam on ramps and jump pads at high FPS
 - Fix reload animation playing in third person for other players when client tries to reload with a full clip/magazine
 - Fix lighting for pistol silencer and remote charge detonator

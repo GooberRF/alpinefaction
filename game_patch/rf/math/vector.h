@@ -192,6 +192,11 @@ namespace rf
             return x * x + y * y + z * z;
         }
 
+        [[nodiscard]] bool is_finite() const
+        {
+            return std::isfinite(x) && std::isfinite(y) && std::isfinite(z);
+        }
+
         float distance_to(const Vector3& other) const
         {
             float dx = other.x - x;

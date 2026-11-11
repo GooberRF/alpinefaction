@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iterator>
 #include <optional>
 #include <common/utils/color-utils.h>
 #include "../rf/os/timestamp.h"
@@ -370,6 +371,7 @@ struct AlpineGameSettings
         minimap_zoom = std::clamp(value, min_minimap_zoom, max_minimap_zoom);
     }
     bool ping_display = true;
+    bool netmeter_display = false;
     bool spectate_mode_minimal_ui = false;
     bool spectate_show_camera_meshes = true; // draw camera meshes in free look
     bool spectate_povcomp = true; // delay other players to match what the spectated player saw
@@ -485,6 +487,7 @@ struct AlpineGameSettings
         RemoteServerCfgPopup::DISPLAY_MODE_ALIGN_RIGHT_HIGHLIGHT_BOX;
     bool simple_server_chat_msgs = true;
     bool quick_exit = false;
+    bool bound_caps_lock_capitalizes = false;
     uint32_t bot_shared_secret = 0;
     std::string bot_personality_preset = "balanced";
     std::string bot_skill_preset = "average";
@@ -636,31 +639,57 @@ struct AlpineGameSettings
             multiplayer_tracker = "rfgt.factionfiles.com";
     }
 
+    // Bytes/s budget pre-1.5 servers scale their send rate to this client by (the `rate` command)
+    unsigned client_rate = 200000u;
+
+    // Client obj_update send rate on Alpine 1.5+ servers, and the 1.4 rate kept for older and stock servers
+    // (stock sends 20/s). client_obj_update_send_interval_ms() picks one.
+    static constexpr unsigned client_net_rate = 100u;
+    static constexpr unsigned legacy_client_net_rate = 40u;
+
     // max_fps default is 120
     // Below this a frame limit only makes the game (and the menu used to undo it) unusable.
     static constexpr unsigned min_fps_limit = 10u;
     static constexpr unsigned max_fps_limit = 100000u;
-    static constexpr unsigned max_fps_limit_mp = 240u;
     unsigned max_fps = 240u;
     void set_max_fps(unsigned fps_value)
     {
         max_fps = std::clamp(fps_value, min_fps_limit, max_fps_limit);
     }
 
-    // server_max_fps default is 80
-    unsigned server_max_fps = 80u;
-    void set_server_max_fps(unsigned fps_value)
+    // Net rate tiers. Each tier's send interval is a whole number of ms that divides the server
+    // frame at that tier's fps, so ticks are never truncated or bunched. sv_bandwidth cycles
+    // through them; medium matches 1.4 (40 net updates/s at 80 fps).
+    struct NetRateTier
     {
-        server_max_fps = std::clamp(fps_value, min_fps_limit, max_fps_limit);
+        const char* name;
+        unsigned netfps;
+        unsigned server_fps; // dedicated server fps: the send interval is two frames either way
+    };
+    static constexpr NetRateTier net_rate_tiers[] = {{"low", 20u, 40u}, {"medium", 40u, 80u}, {"high", 100u, 200u}};
+    static constexpr size_t default_net_rate_tier = 1; // medium
+    // Anything that is not exactly a tier is medium, the 1.4 rate
+    static const NetRateTier& net_rate_tier(unsigned netfps)
+    {
+        const auto it = std::find_if(std::begin(net_rate_tiers), std::end(net_rate_tiers),
+                                     [netfps](const NetRateTier& tier) { return tier.netfps == netfps; });
+        return it != std::end(net_rate_tiers) ? *it : net_rate_tiers[default_net_rate_tier];
     }
 
-    // server netfps default is 1/0.085 ~= 12
-    static constexpr unsigned min_server_netfps = 12u;
-    static constexpr unsigned max_server_netfps = 300u;
-    unsigned server_netfps = 40u;
-    void set_server_netfps(unsigned netfps_value)
+    // Server send rate, always one of net_rate_tiers
+    unsigned server_netfps = net_rate_tiers[default_net_rate_tier].netfps;
+    const NetRateTier& server_net_rate_tier() const
     {
-        server_netfps = std::clamp(netfps_value, min_server_netfps, max_server_netfps);
+        return net_rate_tier(server_netfps);
+    }
+    // alpine_settings.ini stores the tier index (ServerBandwidth)
+    int server_net_rate_tier_index() const
+    {
+        return static_cast<int>(&server_net_rate_tier() - net_rate_tiers);
+    }
+    void set_server_net_rate_tier_index(int index)
+    {
+        server_netfps = net_rate_tiers[std::clamp(index, 0, static_cast<int>(std::size(net_rate_tiers)) - 1)].netfps;
     }
 
     static constexpr int min_desired_handicap = 0;

@@ -12,6 +12,7 @@
 #include <patch_common/CodeInjection.h>
 #include <patch_common/FunHook.h>
 #include <patch_common/MemUtils.h>
+#include <common/utils/int-utils.h>
 #include <common/utils/list-utils.h>
 #include "vehicle.h"
 #include "vehicle_physics.h"
@@ -52,8 +53,8 @@ namespace
     // A trigger held on a loaded gun pushes the refill due time on every frame; drift under this is not resent.
     constexpr int64_t vehicle_refill_due_resend_ms = 250;
 
-    // One supplement per obj_update sample (CLIENT_NET_FPS 40, 25 ms); only a faster client is capped.
-    constexpr int vehicle_orient_relay_min_ms = 15;
+    // One supplement per obj_update sample (client_net_rate: 100/s, 10 ms); only a faster client is capped.
+    constexpr int vehicle_orient_relay_min_ms = 8;
     constexpr int vehicle_orient_keepalive_ms = 5000;
     // Past half the 16-bit tick range a tick comparison is meaningless; a record this old accepts anything.
     constexpr int64_t vehicle_orient_stale_ms = 30000;
@@ -245,7 +246,7 @@ namespace
     // through the back still reads as past the stop it crossed.
     float vehicle_rel_heading(float heading, float base, float prev_rel)
     {
-        return prev_rel + vehicle_wrap_pi(heading - base - prev_rel);
+        return prev_rel + wrap_pi(heading - base - prev_rel);
     }
 
     // The rotation that brought the frame back inside the stops, 0 if it was already inside.
@@ -381,7 +382,7 @@ void vehicle_decorate_interp_orient(rf::Entity* vehicle)
     const int num = interp->num_frames();
     for (int i = 0; i < num; ++i) {
         // 16-bit tick subtraction: everything at or after this sample, nothing older.
-        if (static_cast<int16_t>(interp->time_array[i] - supp.tick) >= 0) {
+        if (wrapped_diff16(interp->time_array[i], supp.tick) >= 0) {
             interp->phb_array[i].x = supp.pitch;
             interp->phb_array[i].z = supp.bank;
         }
@@ -410,8 +411,8 @@ namespace
     // Above any live stream's arrival gap; a parked hull's next row always exceeds it.
     constexpr uint32_t vehicle_interp_rest_gap_ms = 500;
 
-    // The insert logs a rest as one arrival gap, whose 20-sample average x2.2 (0x00483702) is the
-    // re-anchor headroom: interp_time would then trail the row by up to the whole rest.
+    // The insert logs a rest as one arrival gap, which the playout delay (obj_interp_history) derives from:
+    // interp_time would then trail the row by up to the whole rest.
     void vehicle_interp_absorb_rest_gap(rf::ObjInterp* interp)
     {
         if (interp->num_frames() == 0 || interp->last_update_time == static_cast<uint32_t>(-1)) {
@@ -443,7 +444,7 @@ namespace
                     return;
                 }
                 if (ep && pos && vel && vehicle_row_is_client_authored(ep)) {
-                    if (!vehicle_vector_is_finite(*pos) || !vehicle_vector_is_finite(*vel)) {
+                    if (!pos->is_finite() || !vel->is_finite()) {
                         return;
                     }
                     vehicle_clamp_row_velocity(ep, *vel);
@@ -622,7 +623,7 @@ void vehicle_server_body_do_frame(rf::Entity* ep)
         // Strictly after the ring's newest in 16-bit order, or no row is inserted at all.
         const rf::ObjInterp* ring = ep->obj_interp;
         if (ring && ring->num_frames() > 0
-            && static_cast<int16_t>(*coast_tick - ring->newest_frame_time()) <= 0) {
+            && wrapped_diff16(*coast_tick, ring->newest_frame_time()) <= 0) {
             base_tick = static_cast<uint16_t>(ring->newest_frame_time() + 1);
             base_time_ms = now_ms;
             coast_tick = base_tick;
@@ -728,9 +729,9 @@ void vehicle_ease_aim_do_frame()
             supp.eased_valid = true;
             continue;
         }
-        const float head_delta = vehicle_wrap_pi(supp.aim_head - supp.eased_aim_head);
+        const float head_delta = wrap_pi(supp.aim_head - supp.eased_aim_head);
         // Folded into [-pi, pi]: an unbounded value loses trig precision over a long session.
-        supp.eased_aim_head = vehicle_wrap_pi(supp.eased_aim_head + head_delta * t);
+        supp.eased_aim_head = wrap_pi(supp.eased_aim_head + head_delta * t);
         supp.eased_aim_pitch += (supp.aim_pitch - supp.eased_aim_pitch) * t;
     }
 }
@@ -802,12 +803,12 @@ namespace
         // Out-of-order arrivals must not undo a newer sample.
         const int64_t now_ms = timer::get_i64(1000);
         if (supp.valid && now_ms - supp.stored_ms < vehicle_orient_stale_ms
-            && static_cast<int16_t>(tick - supp.tick) < 0) {
+            && wrapped_diff16(tick, supp.tick) < 0) {
             return;
         }
         // interp_rotation lerps phb component-wise, so bank needs a continuous branch across +-pi.
         if (supp.valid) {
-            bank = supp.bank + vehicle_wrap_pi(bank - supp.bank);
+            bank = supp.bank + wrap_pi(bank - supp.bank);
         }
         supp.pitch = pitch;
         supp.bank = bank;
@@ -1154,7 +1155,7 @@ namespace
         }
         // 16-bit tick arithmetic: strictly positive means keyframe still ahead of the evaluation
         // clock. Also the bound - once the server stops authoring, the hull may sleep again.
-        return static_cast<int16_t>(ring->newest_frame_time() - ring->interp_time) > 0;
+        return wrapped_diff16(ring->newest_frame_time(), ring->interp_time) > 0;
     }
 
     // A force-sim returns 1 without running the stock body and so skips the drill-contact halt. On
@@ -1414,9 +1415,6 @@ namespace
     // Cap on how many occupants one lag-comp trace may hide and re-trace through.
     constexpr int vehicle_max_masked_occupants = 8;
 
-    // The engine's entity test for a lag-compensated shot is a human-sized pillar at the origin, not
-    // the mesh, so vehicles are re-tested against their own mesh and merged by distance.
-
     // Distance from p0 at which the ray enters this vehicle's collision mesh, or -1 for a miss.
     float vehicle_lag_comp_mesh_hit(rf::Entity* ep, const rf::Vector3& p0, const rf::Vector3& p1,
                                     float collision_radius, rf::Vector3& hit_point_out)
@@ -1545,32 +1543,11 @@ namespace
 
             // The segment is taken as the callee left it: *p1 is already clipped to the face the
             // world collide stopped on.
+            // A piercing shot walks the loop with only ONE ignore slot, so a hull it entered two passes
+            // ago is a legal target again; stock damages a pierced thing once.
             if (use_mesh_collide == 0) {
-                for (int handle : g_vehicle_state.synced_handles) {
-                    rf::Entity* veh = rf::entity_from_handle(handle);
-                    if (!veh || !veh->vmesh || static_cast<rf::Object*>(veh) == shooter
-                        || static_cast<rf::Object*>(veh) == ignore2) {
-                        continue;
-                    }
-                    if ((veh->obj_flags & (rf::OF_DELAYED_DELETE | rf::OF_HIDDEN))
-                        || rf::entity_is_dying(veh)) {
-                        continue;
-                    }
-                    // A piercing shot walks the loop with only ONE ignore slot, so a hull it entered
-                    // two passes ago is a legal target again; stock damages a pierced thing once.
-                    if (g_lag_comp_shot.hull_already_hit(veh->handle)) {
-                        continue;
-                    }
-                    rf::Vector3 hit_point;
-                    const float dist =
-                        vehicle_lag_comp_mesh_hit(veh, *p0, *p1, collision_radius, hit_point);
-                    if (dist < 0.0f || dist >= out->distance) {
-                        continue;
-                    }
-                    out->distance = dist;
-                    out->obj_handle = veh->handle;
-                    out->hit_point = hit_point;
-                    out->face = nullptr;
+                const auto already_hit = [](int handle) { return g_lag_comp_shot.hull_already_hit(handle); };
+                if (vehicle_collide_segment_hulls(*p0, *p1, shooter, ignore2, collision_radius, *out, already_hit)) {
                     hit = 1;
                 }
             }
@@ -1729,6 +1706,42 @@ namespace
     }
 } // namespace
 
+bool vehicle_server_samples_rows(const rf::Entity* ep)
+{
+    return rf::is_server && vehicle_is_synced_entity_type(ep) && !vehicle_row_is_client_authored(ep);
+}
+
+bool vehicle_collide_segment_hulls(const rf::Vector3& p0, const rf::Vector3& p1, const rf::Object* ignore1,
+                                   const rf::Object* ignore2, float collision_radius, rf::LevelCollisionOut& out,
+                                   bool (*skip_hull)(int handle))
+{
+    bool hit = false;
+    for (int handle : g_vehicle_state.synced_handles) {
+        rf::Entity* veh = rf::entity_from_handle(handle);
+        if (!veh || !veh->vmesh || static_cast<rf::Object*>(veh) == ignore1
+            || static_cast<rf::Object*>(veh) == ignore2) {
+            continue;
+        }
+        if ((veh->obj_flags & (rf::OF_DELAYED_DELETE | rf::OF_HIDDEN)) || rf::entity_is_dying(veh)) {
+            continue;
+        }
+        if (skip_hull && skip_hull(handle)) {
+            continue;
+        }
+        rf::Vector3 hit_point;
+        const float dist = vehicle_lag_comp_mesh_hit(veh, p0, p1, collision_radius, hit_point);
+        if (dist < 0.0f || dist >= out.distance) {
+            continue;
+        }
+        out.distance = dist;
+        out.obj_handle = veh->handle;
+        out.hit_point = hit_point;
+        out.face = nullptr;
+        hit = true;
+    }
+    return hit;
+}
+
 void vehicle_send_seat_states_to(rf::Player* pp)
 {
     if (!rf::is_server || !pp) {
@@ -1799,7 +1812,7 @@ bool vehicle_server_set_turret_aim(rf::Entity* turret, const rf::Entity* gunner,
     // and zeroes them.
     rf::EntityControlData& cd = turret->control_data;
     turret->ai.ci.rot = {};
-    turret->ai.ci.mouse_dh = vehicle_wrap_pi(heading - cd.phb.y);
+    turret->ai.ci.mouse_dh = wrap_pi(heading - cd.phb.y);
     turret->ai.ci.mouse_dp = vehicle_clamp_seat_eye_pitch(turret, pitch) - cd.eye_phb.x;
     return true;
 }
@@ -2086,7 +2099,7 @@ void vehicle_server_handle_orient_report(rf::Player* pp, int vehicle_handle, uin
     // place. Peeked, not inserted, so the first report for a hull is always relayed.
     const VehicleOrientSupplement* supp = vehicle_orient_supplement(vehicle->handle);
     if (supp && timer::get_i64(1000) - supp->stored_ms < vehicle_orient_stale_ms
-        && static_cast<int16_t>(tick - supp->tick) <= 0) {
+        && wrapped_diff16(tick, supp->tick) <= 0) {
         return;
     }
     // Stored before the relay bound: the server mints this hull's shots and rebuilds its lag-comp

@@ -37,6 +37,10 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 if(MSVC)
     add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
     add_compile_options(/arch:SSE2)
+    # MSBuild compiles a project's sources serially without /MP. Ninja already parallelizes per file.
+    if(CMAKE_GENERATOR MATCHES "Visual Studio")
+        add_compile_options(/MP)
+    endif()
     # Statically link Microsoft's CRT.
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 else()

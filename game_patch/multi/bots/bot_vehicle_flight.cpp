@@ -712,7 +712,7 @@ void log_aim(BotVehicleFlightState& flight, const rf::Player& pp, const rf::Enti
     const bool on_aim = flight.face_aim && flight.aim_valid;
     const rf::Vector3 face = on_aim ? flight.aim_dir : flight.point - hull.pos;
     const rf::Vector3& fwd = hull.orient.fvec;
-    const float yaw_error = normalize_angle(std::atan2(face.x, face.z) - std::atan2(fwd.x, fwd.z));
+    const float yaw_error = wrap_pi(std::atan2(face.x, face.z) - std::atan2(fwd.x, fwd.z));
     constexpr float deg = 180.0f / std::numbers::pi_v<float>;
     xlog::info("[BotVeh] {} aims pitch {:.0f}/{:.0f} deg, yaw err {:.0f} deg, aim {} ({}, {:.0f} u over), aligned {}",
                pp.name, aim_pitch_target(flight) * deg, std::asin(std::clamp(fwd.y, -1.0f, 1.0f)) * deg,
@@ -1172,7 +1172,7 @@ void bot_vehicle_flight_step(BotVehicleState& vehicle, const rf::Entity& hull, c
     const rf::Vector3 face_flat = flat_vector(face);
     float yaw_error = 0.0f;
     if (face_flat.len_sq() > 1e-4f) {
-        yaw_error = normalize_angle(std::atan2(face_flat.x, face_flat.z) - std::atan2(fwd.x, fwd.z));
+        yaw_error = wrap_pi(std::atan2(face_flat.x, face_flat.z) - std::atan2(fwd.x, fwd.z));
     }
     const float pitch_target = aim_pitch_target(flight);
 

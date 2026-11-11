@@ -1264,7 +1264,9 @@ static void build_scavenger_zone_icon(WorldHUDRenderMode render_mode)
 // Draw Salvage's flag sprites.
 void build_salvage_icons()
 {
-    const auto render_mode = g_alpine_game_config.world_hud_flag_overdraw ? WorldHUDRenderMode::overdraw : WorldHUDRenderMode::no_overdraw;
+    // Scavenger always overdraws, like Bagman.
+    const auto render_mode = (gt_is_scavenger() || g_alpine_game_config.world_hud_flag_overdraw)
+        ? WorldHUDRenderMode::overdraw : WorldHUDRenderMode::no_overdraw;
     const SalFlagState state = salvage_get_state();
 
     // Both capture bases are marked in every flag state.
@@ -1677,7 +1679,8 @@ void hud_world_do_frame() {
     scavenger_zone_render();
     if (rf::is_multi && salvage_framework_active()) {
         salvage_update_dynamic_light();
-        if (g_alpine_game_config.world_hud_ctf_icons) {
+        // The flag marker toggles cover Salvage only.
+        if (gt_is_scavenger() || g_alpine_game_config.world_hud_ctf_icons) {
             build_salvage_icons();
         }
     }
