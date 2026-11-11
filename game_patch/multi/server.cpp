@@ -3803,11 +3803,11 @@ CallHook<rf::Weapon*(int, int, rf::Vector3*, rf::Matrix3*, int, int)>
                 // alt_fire is a literal 0 at 0x0040956B but a runtime dword at 0x004A28FA - a
                 // byte flag written into a reused parameter slot (0x004A28AC/0x004A28B7) whose
                 // upper bytes are the caller's stack residue, exactly the hazard documented
-                // above - so it is not read: weapon_is_on, the same thing that identifies the
-                // zap, is what selects the alt damage value. Swing projectiles take no potential
-                // here; their swing paid for it at the packet site.
+                // above - so it is not read. A zap deals primary damage anyway: entity hits never
+                // ask for alt damage (0x004C59F0). Swing projectiles take no potential here; their
+                // swing paid for it at the packet site.
                 afstats::on_weapon_fired(pp, weapon_type, 1, afstats::CountScope::bucket_only,
-                                         weapon_potential_damage(weapon_type, true));
+                                         weapon_potential_damage(weapon_type, false));
                 awards_on_weapon_fired(pp, weapon_type);
             }
         }

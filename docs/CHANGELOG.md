@@ -419,7 +419,7 @@ Version 1.5.0 (Trillium): Not yet released
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Cap FPS-dependent launch velocity when head jumping
-- Fix riot stick alt fire zap rate depending on the server frame rate and client send rate in multiplayer
+- Fix riot stick alt fire zap rate depending on the server frame rate and client send rate in multiplayer, and zap four times as often (every 0.125 s) to make up the damage
 - Fix landing sound spam on ramps and jump pads at high FPS
 - Fix reload animation playing in third person for other players when client tries to reload with a full clip/magazine
 - Fix lighting for pistol silencer and remote charge detonator

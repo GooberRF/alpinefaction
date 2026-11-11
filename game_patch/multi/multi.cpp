@@ -810,6 +810,22 @@ CodeInjection entity_turn_weapon_on_riot_stick_fire_wait_injection{
     },
 };
 
+// The taser zaps four times as often as its table alt fire wait, making up the damage it lost when the zap rate
+// stopped following the net rate. Older servers keep the table rate, so clients only mirror it on 1.5 servers.
+constexpr int riot_stick_zap_rate_scale = 4;
+
+FunHook<int(int, bool)> weapon_get_fire_wait_ms_hook{
+    0x004C8710,
+    [](int weapon_type, bool alt_fire) {
+        const int wait_ms = weapon_get_fire_wait_ms_hook.call_target(weapon_type, alt_fire);
+        if (rf::is_multi && alt_fire && rf::weapon_is_riot_stick(weapon_type)
+            && (rf::is_server || af_server_is_1_5_or_newer())) {
+            return wait_ms / riot_stick_zap_rate_scale;
+        }
+        return wait_ms;
+    },
+};
+
 void multi_turn_weapon_off(rf::Entity* ep)
 {
     auto current_primary_weapon = ep->ai.current_primary_weapon;
@@ -990,7 +1006,7 @@ FunHook<void(rf::Entity*, int, rf::Vector3&, rf::Matrix3&, bool)> multi_process_
         if (rf::is_server && rf::weapon_is_melee(weapon_type)) {
             if (rf::Player* pp = rf::player_from_entity_handle(ep->handle)) {
                 // A swing's potential is the weapon's primary damage; the taser's zaps accrue
-                // their own alt-damage potential at the deferred creation site instead.
+                // their own potential at the deferred creation site instead.
                 const float potential = kill_attribution_is_valid_weapon_type(weapon_type)
                     ? rf::weapon_types[weapon_type].damage_multi
                     : 0.0f;
@@ -1613,6 +1629,7 @@ void multi_do_patch()
     // Set custom listen server settings based on gametype
     multi_customize_listen_server_settings_patch.install();
     entity_turn_weapon_on_riot_stick_fire_wait_injection.install();
+    weapon_get_fire_wait_ms_hook.install();
 
     multi_kill_do_patch();
     kill_attribution_do_patch();

@@ -100,13 +100,17 @@
 #define NET_IFINDEX_UNSPECIFIED 0
 #endif
 
+bool af_server_is_1_5_or_newer()
+{
+    const auto& info = get_af_server_info();
+    return info && !version_is_older(info->version_major, info->version_minor, 1, 5);
+}
+
 int client_obj_update_send_interval_ms()
 {
     // Older and stock servers only rewind within the engine ring, which the 1.4 rate fills over 500 ms
-    const auto& info = get_af_server_info();
-    const bool af_1_5 = info && !version_is_older(info->version_major, info->version_minor, 1, 5);
-    return static_cast<int>(
-        1000u / (af_1_5 ? AlpineGameSettings::client_net_rate : AlpineGameSettings::legacy_client_net_rate));
+    return static_cast<int>(1000u / (af_server_is_1_5_or_newer() ? AlpineGameSettings::client_net_rate
+                                                                  : AlpineGameSettings::legacy_client_net_rate));
 }
 
 // Send rate of the client whose keyframes fill a ring on this server

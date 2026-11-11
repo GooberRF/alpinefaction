@@ -211,6 +211,7 @@ bool multi_is_selecting_weapon(rf::Player* pp);
 std::vector<std::byte> build_chat_line_packet(uint8_t player_id, bool is_team_msg, std::string_view msg);
 void send_chat_line_packet(std::string_view msg, rf::Player* target, rf::Player* sender = nullptr, bool is_team_msg = false);
 const std::optional<AlpineFactionServerInfo>& get_af_server_info();
+bool af_server_is_1_5_or_newer();
 int client_obj_update_send_interval_ms();
 std::optional<AlpineFactionServerInfo>& get_af_server_info_mutable();
 void multi_limbo_just_joined_do_frame();
