@@ -22,7 +22,7 @@
 namespace
 {
 
-constexpr int history_frames = 128; // 3.2 s at 40 netfps, past the 1 s povcomp cap
+constexpr int history_frames = 128; // 1.28 s at 100 netfps, past the 1 s povcomp and hitscan_lag_comp_max_ms caps
 
 constexpr float clock_max_slew = 0.1f;       // playout clock stays within +-10% of sender time
 constexpr float headroom_min = 0.3f;         // x interval: floor on the jitter buffer
@@ -30,6 +30,13 @@ constexpr float headroom_per_jitter = 3.0f;  // x measured mean abs arrival devi
 constexpr float headroom_max = 1.0f;         // x interval: cap on the jitter buffer
 constexpr float reanchor_margin = 2.2f;      // x interval past the target: snap instead of slewing
 constexpr float elapsed_max_ms = 250.0f;     // a hitch longer than this is not played back
+constexpr float tolerance_floor_ms = 25.0f;  // the 40 netfps interval: no tier absorbs less jitter than medium
+
+// Interval the jitter buffer cap, extrapolation limit and snap margin scale with
+float tolerance_interval(float interval_ms)
+{
+    return std::max(interval_ms, tolerance_floor_ms);
+}
 
 struct RingStats
 {
@@ -300,14 +307,15 @@ FunHook<void __fastcall(rf::ObjInterp*, int, rf::Object*)> obj_interp_frame_adva
         self->interp_time += static_cast<uint16_t>(static_cast<int>(whole));
 
         depth = static_cast<float>(wrapped_diff16(newest, self->interp_time)) - frac;
-        if (depth < -interval) {
+        const float tolerance = tolerance_interval(interval);
+        if (depth < -tolerance) {
             // The feed stopped: hold at the extrapolation limit
-            self->interp_time = static_cast<uint16_t>(newest + static_cast<int>(interval));
+            self->interp_time = static_cast<uint16_t>(newest + static_cast<int>(tolerance));
             frac = 0.0f;
             if (rf::Player* pp = rf::player_from_entity_handle(obj->handle); pp && pp->net_data)
                 ++pp->net_data->stats.obj_update_too_fast;
         }
-        else if (depth > target + reanchor_margin * interval) {
+        else if (depth > target + reanchor_margin * tolerance) {
             // Far behind (post-stall burst): snap instead of slewing for seconds
             self->interp_time = static_cast<uint16_t>(newest - static_cast<int>(target));
             frac = 0.0f;
@@ -349,7 +357,7 @@ bool pose_at_tick(const rf::Entity* ep, uint16_t tick, bool frame_eval, KeyFrame
             return history && history->crouch_at(frame.tick);
         };
         return eval_frames(ring_frame, ring_crouch, interp->num_frames(), tick, eval_frac(ep, frame_eval),
-                           ring_stats(interp).interval, out);
+                           tolerance_interval(ring_stats(interp).interval), out);
     }
     return history && history->lookup(tick, eval_frac(ep, frame_eval), out);
 }
@@ -422,7 +430,7 @@ void orient_at_tick(rf::Entity* ep, uint16_t tick, rf::Matrix3* out_orient, rf::
 float obj_interp_target_delay_ms(float interval_ms, float jitter_ms)
 {
     float headroom = std::max(headroom_min * interval_ms, headroom_per_jitter * jitter_ms);
-    return interval_ms + std::clamp(headroom, 0.0f, headroom_max * interval_ms);
+    return interval_ms + std::clamp(headroom, 0.0f, headroom_max * tolerance_interval(interval_ms));
 }
 
 float obj_interp_target_delay_ms(const rf::ObjInterp* interp)

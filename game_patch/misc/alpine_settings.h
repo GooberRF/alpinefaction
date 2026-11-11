@@ -624,9 +624,10 @@ struct AlpineGameSettings
     // Bytes/s budget pre-1.5 servers scale their send rate to this client by (the `rate` command)
     unsigned client_rate = 200000u;
 
-    // Client obj_update send rate on every server (stock sends 20/s)
-    static constexpr unsigned client_net_rate = 40u;
-    static constexpr unsigned client_send_interval_ms = 1000u / client_net_rate;
+    // Client obj_update send rate on Alpine 1.5+ servers, and the 1.4 rate kept for older and stock servers
+    // (stock sends 20/s). client_obj_update_send_interval_ms() picks one.
+    static constexpr unsigned client_net_rate = 100u;
+    static constexpr unsigned legacy_client_net_rate = 40u;
 
     // max_fps default is 120
     // Below this a frame limit only makes the game (and the menu used to undo it) unusable.
@@ -639,22 +640,22 @@ struct AlpineGameSettings
     }
 
     // Net rate tiers. Each tier's send interval is a whole number of ms that divides the server
-    // frame at that tier's fps, so ticks are never truncated or bunched. sv_bandwidth toggles
-    // between them; high matches 1.4 (40 net updates/s at 80 fps).
+    // frame at that tier's fps, so ticks are never truncated or bunched. sv_bandwidth cycles
+    // through them; medium matches 1.4 (40 net updates/s at 80 fps).
     struct NetRateTier
     {
         const char* name;
         unsigned netfps;
         unsigned server_fps; // dedicated server fps: the send interval is two frames either way
     };
-    static constexpr NetRateTier net_rate_tiers[] = {{"low", 20u, 40u}, {"high", 40u, 80u}};
-    // Anything that is not exactly a tier (a pre-1.5 ServerNetFPS of 60, 100, ...) is high:
-    // operators should start there and only step down if the host cannot keep up
+    static constexpr NetRateTier net_rate_tiers[] = {{"low", 20u, 40u}, {"medium", 40u, 80u}, {"high", 100u, 200u}};
+    static constexpr size_t default_net_rate_tier = 1; // medium
+    // Anything that is not exactly a tier (a pre-1.5 ServerNetFPS of 60, 50, ...) is medium, the 1.4 rate
     static const NetRateTier& net_rate_tier(unsigned netfps)
     {
         const auto it = std::find_if(std::begin(net_rate_tiers), std::end(net_rate_tiers),
                                      [netfps](const NetRateTier& tier) { return tier.netfps == netfps; });
-        return it != std::end(net_rate_tiers) ? *it : net_rate_tiers[std::size(net_rate_tiers) - 1];
+        return it != std::end(net_rate_tiers) ? *it : net_rate_tiers[default_net_rate_tier];
     }
 
     // Server send rate, always one of net_rate_tiers

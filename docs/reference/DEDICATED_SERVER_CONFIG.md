@@ -112,10 +112,10 @@ In the tables below, a Number key takes an integer or a decimal value, and an In
 | `use_sp_damage_calculation` | Boolean | `false` | Use single-player damage calculation, where armor does not fully protect health. |
 | `allow_outlines` | Boolean | `false` | Let clients draw player outlines. |
 | `allow_outlines_xray` | Boolean | `true` | Let outlines show through walls (only matters when `allow_outlines` is on). |
-| `bandwidth` | String | `"high"` | Server bandwidth tier, case-insensitive. `low` sends 20 object updates per second and runs the server at 40 FPS; `high` sends 40 per second at 80 FPS, as in Alpine Faction 1.4. Any other value prints a warning and is ignored. Clients always send 40 updates per second. `sv_bandwidth` changes the tier until the config is next loaded. |
+| `bandwidth` | String | `"medium"` | Server bandwidth tier, case-insensitive. `low` sends 20 object updates per second and runs the server at 40 FPS; `medium` sends 40 per second at 80 FPS, as in Alpine Faction 1.4; `high` sends 100 per second at 200 FPS. Any other value prints a warning and is ignored. Alpine Faction 1.5 clients send 100 updates per second to the server (once per frame below 100 FPS); older clients send fewer. `sv_bandwidth` changes the tier until the config is next loaded. |
 | `projectile_lag_comp` | Boolean | `true` | Fast-forward projectiles by the shooter's latency, and test direct hits and splash damage against victims where the shooter saw them. |
 | `projectile_lag_comp_max_ms` | Integer | `250` | Most milliseconds of projectile lag compensation, clamped to 50-500. Only matters when `projectile_lag_comp` is on. |
-| `hitscan_lag_comp_max_ms` | Integer | `1000` | Most milliseconds a hitscan shot can rewind a victim to where the shooter saw them, clamped to 50-3000. Shooters with more latency are compensated up to this much. |
+| `hitscan_lag_comp_max_ms` | Integer | `1000` | Most milliseconds a hitscan shot can rewind a victim to where the shooter saw them, clamped to 50-1000. Shooters with more latency are compensated up to this much. |
 | `delta_obj_update` | Boolean | `true` | Delta-compress object updates for clients that support it, which sharply reduces server bandwidth. A change applies to players who join afterwards. |
 
 ## `[[rcon_profiles]]`

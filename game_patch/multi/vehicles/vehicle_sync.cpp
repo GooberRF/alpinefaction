@@ -53,8 +53,8 @@ namespace
     // A trigger held on a loaded gun pushes the refill due time on every frame; drift under this is not resent.
     constexpr int64_t vehicle_refill_due_resend_ms = 250;
 
-    // One supplement per obj_update sample (client_net_rate: 40/s, 25 ms); only a faster client is capped.
-    constexpr int vehicle_orient_relay_min_ms = 15;
+    // One supplement per obj_update sample (client_net_rate: 100/s, 10 ms); only a faster client is capped.
+    constexpr int vehicle_orient_relay_min_ms = 8;
     constexpr int vehicle_orient_keepalive_ms = 5000;
     // Past half the 16-bit tick range a tick comparison is meaningless; a record this old accepts anything.
     constexpr int64_t vehicle_orient_stale_ms = 30000;

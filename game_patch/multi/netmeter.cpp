@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdlib>
 #include <common/utils/int-utils.h>
 #include <common/utils/list-utils.h>
@@ -12,6 +13,7 @@
 #include "../rf/entity.h"
 #include "../rf/multi.h"
 #include "../rf/os/console.h"
+#include "../rf/os/frametime.h"
 #include "../os/os.h"
 #include "../rf/player/player.h"
 
@@ -153,12 +155,15 @@ NetMeterStats netmeter_get_stats()
 
     const int now = static_cast<int>(timer::get_i64(1000));
     // Nominal tick: inbound is estimated from the flow, snapped to a tier on a 1.5 server (the tier in
-    // the join_accept extension goes stale if sv_bandwidth changes mid-session), outbound is the fixed
-    // client send rate
+    // the join_accept extension goes stale if sv_bandwidth changes mid-session), outbound is the client
+    // send rate for this server
     const auto& info = get_af_server_info();
     const bool known = info && info->server_netfps;
     const auto in = g_netmeter_in.measure(now, 0, known);
-    const auto out = g_netmeter_out.measure(now, static_cast<int>(AlpineGameSettings::client_send_interval_ms));
+    // A client below the send rate sends once per frame
+    const int out_nominal_ms =
+        std::max(client_obj_update_send_interval_ms(), static_cast<int>(std::lround(rf::frametime * 1000.0f)));
+    const auto out = g_netmeter_out.measure(now, out_nominal_ms);
 
     // Interp delay: how far behind the newest keyframe each remote entity is evaluated,
     // averaged over all remote players with interpolation state (16-bit server ms ticks;

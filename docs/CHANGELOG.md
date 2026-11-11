@@ -49,10 +49,10 @@ Version 1.5.0 (Trillium): Not yet released
   - Delta-compress server object updates, sharply reducing server bandwidth
   - Smooth remote player movement under network jitter
   - Let spectate and demo POV compensation reach further back
-  - Send client object updates at a steady rate at any frame rate
+  - Send client object updates at a steady rate, 100 per second to Alpine Faction 1.5 servers (once per frame below 100 FPS) and 40 per second to older servers
   - Add projectile lag compensation, so projectiles and their splash damage hit players where the shooter saw them
   - Extend hitscan lag compensation to shooters with higher ping, up to the new `hitscan_lag_comp_max_ms` dedicated server config option (default 1000)
-  - Add `sv_bandwidth` console command to choose between low and high server bandwidth
+  - Add `sv_bandwidth` console command to choose between low, medium and high server bandwidth
   - Remove `sv_netfps` console command, replaced by `sv_bandwidth`
   - Make the `rate` console command apply only on servers older than Alpine Faction 1.5
   - Move the client rate option from the launcher to the settings menu (`alpine_settings.ini`) as `Client rate for legacy servers`

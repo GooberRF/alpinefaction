@@ -1481,7 +1481,7 @@ static void apply_known_key_in_order(AlpineServerConfig& cfg, const std::string&
     }
     else if (key == "hitscan_lag_comp_max_ms") {
         if (auto v = node.value<int64_t>())
-            cfg.hitscan_lag_comp_max_ms = static_cast<int>(std::clamp<int64_t>(*v, 50, 3000));
+            cfg.hitscan_lag_comp_max_ms = static_cast<int>(std::clamp<int64_t>(*v, 50, 1000));
     }
     else if (key == "delta_obj_update") {
         if (auto v = node.value<bool>())
@@ -1495,7 +1495,7 @@ static void apply_known_key_in_order(AlpineServerConfig& cfg, const std::string&
             if (it != std::end(tiers))
                 cfg.server_netfps = it->netfps;
             else
-                rf::console::print("  [WARN] bandwidth '{}' is not low or high; ignoring it.\n", *v);
+                rf::console::print("  [WARN] bandwidth '{}' is not low, medium or high; ignoring it.\n", *v);
         }
     }
 }

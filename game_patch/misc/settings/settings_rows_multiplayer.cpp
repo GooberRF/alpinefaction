@@ -47,10 +47,11 @@ void apply_server_netfps()
     server_apply_net_rate();
 }
 
-const char* const labels_server_netfps[] = {"Low (20)", "High (40)"};
+const char* const labels_server_netfps[] = {"Low (20)", "Medium (40)", "High (100)"};
 const int values_server_netfps[] = {
     static_cast<int>(AGS::net_rate_tiers[0].netfps),
     static_cast<int>(AGS::net_rate_tiers[1].netfps),
+    static_cast<int>(AGS::net_rate_tiers[2].netfps),
 };
 static_assert(std::size(labels_server_netfps) == std::size(AGS::net_rate_tiers));
 

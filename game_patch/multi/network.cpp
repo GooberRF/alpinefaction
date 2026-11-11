@@ -100,8 +100,26 @@
 #define NET_IFINDEX_UNSPECIFIED 0
 #endif
 
-static constexpr int client_net_fps = static_cast<int>(AlpineGameSettings::client_net_rate);
-static constexpr int client_send_interval_ms = static_cast<int>(AlpineGameSettings::client_send_interval_ms);
+int client_obj_update_send_interval_ms()
+{
+    // Older and stock servers only rewind within the engine ring, which the 1.4 rate fills over 500 ms
+    const auto& info = get_af_server_info();
+    const bool af_1_5 = info && !version_is_older(info->version_major, info->version_minor, 1, 5);
+    return static_cast<int>(
+        1000u / (af_1_5 ? AlpineGameSettings::client_net_rate : AlpineGameSettings::legacy_client_net_rate));
+}
+
+// Send rate of the client whose keyframes fill a ring on this server
+static int source_client_net_fps(const rf::Entity* ep)
+{
+    // Vehicles are new in 1.5, so a client-driven hull's rows always come from a 1.5 driver
+    if (vehicle_is_synced_entity_type(ep))
+        return static_cast<int>(AlpineGameSettings::client_net_rate);
+    const rf::Player* src = rf::player_from_entity_handle(ep->handle);
+    const bool af_1_5 = src && src->version_info.software == ClientSoftware::AlpineFaction
+        && !version_is_older(src->version_info.major, src->version_info.minor, 1, 5);
+    return static_cast<int>(af_1_5 ? AlpineGameSettings::client_net_rate : AlpineGameSettings::legacy_client_net_rate);
+}
 
 // Popup shown when the user attempts to join a server whose game type this build doesn't recognize.
 static void show_unsupported_game_type_popup()
@@ -3489,7 +3507,7 @@ void send_chat_line_packet(const std::string_view msg, rf::Player* target, rf::P
 CodeInjection client_update_rate_injection{
     0x0047E5D8,
     [] (auto& regs) {
-        constexpr int interval = client_send_interval_ms;
+        const int interval = client_obj_update_send_interval_ms();
         int overshoot = rf::send_obj_update_packet_timestamp.time_since();
         int& send_obj_update_interval = addr_as_ref<int>(regs.esp);
         send_obj_update_interval =
@@ -3505,7 +3523,7 @@ CallHook<bool __fastcall(rf::TimestampRealtime*, int)> client_obj_update_due_hoo
         if (client_obj_update_due_hook.call_target(ts, edx)) {
             return true;
         }
-        constexpr int interval = client_send_interval_ms;
+        const int interval = client_obj_update_send_interval_ms();
         const int lead = std::clamp(static_cast<int>(std::ceil(rf::frametime * 1000.0f)), 1, interval - 1);
         return ts->time_until() <= lead; // huge for an invalid timestamp, so still false then
     },
@@ -3534,8 +3552,9 @@ CallHook<void(rf::Player*, const void*, int)> client_obj_update_send_hook{
         // An early build (client_update_rate_injection then re-armed more than one interval out) waits for its
         // slot; anything else goes out now and re-anchors, so the schedule never runs ahead of the engine
         static int64_t next_send_us = 0;
-        constexpr int64_t interval_us = 1000000 / client_net_fps;
-        const bool early_build = rf::send_obj_update_packet_timestamp.time_until() > client_send_interval_ms;
+        const int interval_ms = client_obj_update_send_interval_ms();
+        const int64_t interval_us = 1000 * static_cast<int64_t>(interval_ms);
+        const bool early_build = rf::send_obj_update_packet_timestamp.time_until() > interval_ms;
         int64_t target_us = now_us;
         if (early_build && next_send_us > now_us && next_send_us <= now_us + interval_us) {
             target_us = next_send_us;
@@ -3593,7 +3612,7 @@ static void multi_force_fire_state_send()
         // Rate-cap forced sends; a suppressed transition rides the next scheduled send
         static int64_t last_forced_send_ms = 0;
         const int64_t now_ms = timer::get_i64(1000);
-        if (now_ms - last_forced_send_ms < client_send_interval_ms) {
+        if (now_ms - last_forced_send_ms < client_obj_update_send_interval_ms()) {
             return;
         }
         last_forced_send_ms = now_ms;
@@ -3687,13 +3706,14 @@ FunHook<int(rf::Player*, rf::Entity*, void*)> pack_obj_update_data_hook{
                 | static_cast<uint32_t>(ep->handle);
             auto [it, inserted] = g_sent_obj_update_ticks.try_emplace(key, tick);
             // Unsynchronized equal-rate clocks give one window two keyframes and the next none: send the older
-            // one now, a backlog of at most one. Skipped where it only adds delay (low tier, server-sampled rings).
+            // one now, a backlog of at most one. Skipped where it only adds delay (a source sending faster than this
+            // server, server-sampled rings).
             rf::ObjInterp& interp = *ep->obj_interp;
             const int n = interp.num_frames();
             int idx = n - 1;
             if (!inserted) {
-                if (static_cast<int>(g_alpine_game_config.server_netfps) >= client_net_fps && n >= 2
-                    && wrapped_diff16(interp.time_array[n - 2], it->second) > 0
+                if (n >= 2 && wrapped_diff16(interp.time_array[n - 2], it->second) > 0
+                    && static_cast<int>(g_alpine_game_config.server_netfps) >= source_client_net_fps(ep)
                     && !vehicle_server_samples_rows(ep) && !server_bot_from_entity(ep)) {
                     idx = n - 2;
                 }
@@ -3758,7 +3778,7 @@ void server_apply_net_rate()
 
 void server_set_net_rate(unsigned netfps)
 {
-    // Snapped here, not by the row's nearest-label rule: anything but an exact tier is high
+    // Snapped here, not by the row's nearest-label rule: anything but an exact tier is medium
     setting_console_set("server_netfps", std::to_string(AlpineGameSettings::net_rate_tier(netfps).netfps));
     // Listen host: the tier lives in alpine_settings.ini (ServerNetFPS). A dedicated server's comes from
     // the `bandwidth` key in its config; a runtime change there lasts until the next load of that config.
@@ -3778,7 +3798,7 @@ ConsoleCommand2 sv_bandwidth_cmd{
             const auto it = std::find_if(std::begin(tiers), std::end(tiers),
                                          [&](const auto& t) { return string_iequals(*tier, t.name); });
             if (it == std::end(tiers)) {
-                rf::console::print("Usage: sv_bandwidth [low|high]");
+                rf::console::print("Usage: sv_bandwidth [low|medium|high]");
                 return;
             }
             next = it;
@@ -3789,9 +3809,9 @@ ConsoleCommand2 sv_bandwidth_cmd{
         }
         server_set_net_rate(next->netfps);
     },
-    "Toggle or set the server bandwidth tier: low (20 net updates/s at 40 fps) or high (40 at 80 fps, "
-    "matching 1.4). Clients always send at 40; both tiers keep exact ms intervals.",
-    "sv_bandwidth [low|high]",
+    "Cycle or set the server bandwidth tier: low (20 net updates/s at 40 fps), medium (40 at 80 fps, "
+    "matching 1.4) or high (100 at 200 fps).",
+    "sv_bandwidth [low|medium|high]",
 };
 
 void apply_client_rate()
