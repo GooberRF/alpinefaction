@@ -373,6 +373,9 @@ bool alpine_player_settings_load(rf::Player* player)
         processed_keys.insert("WorldHUDOverdraw");
         xlog::info("Successfully parsed legacy setting 'WorldHUDOverdraw' from loaded pre-v9 AFS file.");
     }
+    // ServerMaxFPS and ServerNetFPS (pre-1.5; the listen server tier is now ServerBandwidth, medium by default)
+    processed_keys.insert("ServerMaxFPS");
+    processed_keys.insert("ServerNetFPS");
 
     if (settings.count("PlayerName")) {
         const std::string& raw_name = settings["PlayerName"];

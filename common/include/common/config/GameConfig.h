@@ -58,9 +58,6 @@ struct GameConfig
     CfgVar<bool> eax_sound = true;
 
     // Multiplayer
-    static constexpr unsigned int DEFAULT_UPDATE_RATE = 200000; // T1/LAN in stock launcher
-    CfgVar<unsigned int> update_rate = DEFAULT_UPDATE_RATE;
-
     CfgVar<unsigned int> force_port{
         0,
         [] (const auto val) {

@@ -1197,6 +1197,11 @@ struct AlpineServerConfig
     bool allow_outlines = false;
     bool allow_outlines_xray = true;
     bool use_sp_damage_calculation = false;
+    bool projectile_lag_comp = true;
+    int projectile_lag_comp_max_ms = 250;
+    int hitscan_lag_comp_max_ms = 1000;
+    bool delta_obj_update = true; // offer af_obj_update_delta to clients that ask; read per join
+    unsigned server_netfps = 40u; // `bandwidth` key: the sv_bandwidth tier applied on every config load
     AlpineRestrictConfig alpine_restricted_config;
     InactivityConfig inactivity_config;
     DamageNotificationConfig damage_notification_config;

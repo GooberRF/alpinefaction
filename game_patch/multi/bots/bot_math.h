@@ -3,29 +3,16 @@
 #include "../../rf/entity.h"
 #include <algorithm>
 #include <cmath>
-
-inline float normalize_angle(const float angle)
-{
-    constexpr float pi = 3.14159265358979323846f;
-    constexpr float two_pi = 2.0f * pi;
-    float value = angle;
-    while (value > pi) {
-        value -= two_pi;
-    }
-    while (value < -pi) {
-        value += two_pi;
-    }
-    return value;
-}
+#include <common/utils/math-utils.h>
 
 inline float approach_angle(const float current, const float target, const float max_step)
 {
     const float delta = std::clamp(
-        normalize_angle(target - current),
+        wrap_pi(target - current),
         -max_step,
         max_step
     );
-    return normalize_angle(current + delta);
+    return wrap_pi(current + delta);
 }
 
 inline rf::Vector3 flat_vector(rf::Vector3 v)

@@ -30,12 +30,15 @@ set(SRCS
     include/common/utils/enum-bitwise-operators.h
     include/common/utils/iterable-utils.h
     include/common/utils/list-utils.h
+    include/common/utils/math-utils.h
     include/common/utils/mem-pool.h
     include/common/utils/os-utils.h
     include/common/utils/perf-utils.h
     include/common/utils/string-utils.h
     include/common/utils/bool-utils.h
+    include/common/utils/byte-io.h
     include/common/utils/color-utils.h
+    include/common/utils/int-utils.h
     include/common/bitmap/formats.h
     include/common/bitmap/tga.h
     include/common/lightmap/alpine_lightmap.h

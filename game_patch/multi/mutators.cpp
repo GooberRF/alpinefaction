@@ -39,7 +39,6 @@
 #include "../rf/os/timestamp.h"
 #include "../rf/physics.h"
 #include "../rf/gr/gr.h"
-#include "../object/alpine_rope.h"
 #include "../object/zipline.h"
 #include "../rf/sound/sound.h"
 #include "../os/console.h"
@@ -2787,10 +2786,9 @@ CritWeaponScope::~CritWeaponScope()
 }
 
 // A crit-tagged projectile announces its own detonation, whether or not it craters, damages
-// anyone, or just hits a wall. Driven from the three player-attributed call sites of
-// explosion_apply_radius_damage - the function itself opens on an x87 instruction and cannot be
-// hooked - all three of which run under CritWeaponScope. Each is the terminal detonation of one
-// weapon (the weapon is flagged dead on the way out), so one blast is one sound.
+// anyone, or just hits a wall. Called from weapon.cpp's call-site hooks, all of which run under
+// CritWeaponScope. Each is the terminal detonation of one weapon (the weapon is flagged dead on the
+// way out), so one blast is one sound.
 float crits_on_explosion(const rf::Vector3* pos, float radius)
 {
     // The radius gates it: weapon_hit_level makes this call for bullets too, with no blast.
@@ -2799,23 +2797,6 @@ float crits_on_explosion(const rf::Vector3* pos, float radius)
     broadcast_sound_packet_3d(*pos, stock_sound_id::jolt_01);
     return crit_radius_scale();
 }
-
-// The third site, 0x004C53A8 in weapon_hit_level, is already taken by weapon.cpp's
-// weapon_hit_wall_obj_apply_radius_damage_hook - two CallHooks on one address would fight over
-// it - so that one calls crits_on_explosion directly instead.
-CallHook<void(rf::Vector3*, float, float, int, int)> crits_explosion_hook{
-    {
-        0x004C62F5, // weapon_hit_obj, impact splash
-        0x004C6C94, // weapon_move_one, fuse / detonator / lifetime expiry
-    },
-    [](rf::Vector3* pos, float damage, float radius, int killer_handle, int damage_type) {
-        const float scale = crits_on_explosion(pos, radius);
-        if (pos) {
-            alpine_rope_apply_explosion(*pos, radius * scale, damage);
-        }
-        crits_explosion_hook.call_target(pos, damage, radius * scale, killer_handle, damage_type);
-    },
-};
 
 // Only the weapons whose projectile flies long enough to be worth telegraphing: rockets,
 // grenades, remote charges, fusion. Bullets are covered by the impact/victim layer instead -
@@ -3476,7 +3457,6 @@ void mutators_do_patch()
 
     // Critical Hits
     entity_fire_weapon_hook.install();
-    crits_explosion_hook.install();
 
     // Flaming Enemies
     entity_fire_destroy_hook.install();

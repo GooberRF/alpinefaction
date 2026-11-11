@@ -1471,6 +1471,33 @@ static void apply_known_key_in_order(AlpineServerConfig& cfg, const std::string&
         if (auto v = node.value<bool>())
             cfg.allow_outlines_xray = *v;
     }
+    else if (key == "projectile_lag_comp") {
+        if (auto v = node.value<bool>())
+            cfg.projectile_lag_comp = *v;
+    }
+    else if (key == "projectile_lag_comp_max_ms") {
+        if (auto v = node.value<int64_t>())
+            cfg.projectile_lag_comp_max_ms = static_cast<int>(std::clamp<int64_t>(*v, 50, 500));
+    }
+    else if (key == "hitscan_lag_comp_max_ms") {
+        if (auto v = node.value<int64_t>())
+            cfg.hitscan_lag_comp_max_ms = static_cast<int>(std::clamp<int64_t>(*v, 50, 1000));
+    }
+    else if (key == "delta_obj_update") {
+        if (auto v = node.value<bool>())
+            cfg.delta_obj_update = *v;
+    }
+    else if (key == "bandwidth") {
+        if (auto v = node.value<std::string>()) {
+            const auto& tiers = AlpineGameSettings::net_rate_tiers;
+            const auto it = std::find_if(std::begin(tiers), std::end(tiers),
+                                         [&](const auto& tier) { return string_iequals(*v, tier.name); });
+            if (it != std::end(tiers))
+                cfg.server_netfps = it->netfps;
+            else
+                rf::console::print("  [WARN] bandwidth '{}' is not low, medium or high; ignoring it.\n", *v);
+        }
+    }
 }
 
 // apply base config toml tables
@@ -2434,10 +2461,10 @@ void print_alpine_dedicated_server_config_info(std::string& output, bool verbose
     } else {
         std::format_to(iter, "  Uptime:                                {}\n", g_process_startup_time);
     }
-    if (rf::is_dedicated_server) {
-        std::format_to(iter, "  Target FPS:                            {}\n", g_alpine_game_config.server_max_fps);
-    }
-    std::format_to(iter, "  Net FPS:                               {}\n", g_alpine_game_config.server_netfps);
+    std::format_to(iter, "  Bandwidth:                             {} ({} netfps, {} fps)\n",
+                   g_alpine_game_config.server_net_rate_tier().name,
+                   g_alpine_game_config.server_netfps,
+                   g_alpine_game_config.server_net_rate_tier().server_fps);
     std::format_to(iter, "  Max players:                           {}\n", netgame.max_players);
     std::format_to(iter, "  Server bots:                           {}\n", cfg.server_bots);
     std::format_to(iter, "  Levels in rotation:                    {}\n", cfg.levels.size());
@@ -2498,6 +2525,12 @@ void print_alpine_dedicated_server_config_info(std::string& output, bool verbose
     std::format_to(iter, "  SP-style damage calculation:           {}\n", cfg.use_sp_damage_calculation);
     std::format_to(iter, "  Allow outlines:                        {}\n", cfg.allow_outlines);
     std::format_to(iter, "  Allow outlines xray:                   {}\n", cfg.allow_outlines_xray);
+    std::format_to(iter, "  Projectile lag compensation:           {}\n", cfg.projectile_lag_comp);
+    if (cfg.projectile_lag_comp) {
+        std::format_to(iter, "    Max compensation:                    {}ms\n", cfg.projectile_lag_comp_max_ms);
+    }
+    std::format_to(iter, "  Hitscan lag compensation max:          {}ms\n", cfg.hitscan_lag_comp_max_ms);
+    std::format_to(iter, "  Delta object updates:                  {}\n", cfg.delta_obj_update);
 
     // inactivity
     std::format_to(iter, "  Identify inactive players:             {}\n", cfg.inactivity_config.enabled);
@@ -2607,6 +2640,8 @@ void initialize_core_alpine_dedicated_server_settings(rf::NetGameInfo& netgame, 
     rf::rcon_password[sizeof(rf::rcon_password) - 1] = '\0'; // null terminator
     
     netgame.max_players = cfg.max_players;
+
+    server_set_net_rate(cfg.server_netfps);
 
     // other core settings are referenced directly in the structure and do not need to be initialized here
 }

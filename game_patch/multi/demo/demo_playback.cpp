@@ -19,6 +19,7 @@
 #include "demo_file.h"
 #include "demo_internal.h"
 #include "../network.h"
+#include "../obj_interp_history.h"
 #include "../multi.h"
 #include "../jetpack.h"
 #include "../alpine_packets.h"
@@ -123,7 +124,7 @@ namespace
         DemoRecord pending;
         bool has_pending = false;
         double clock_ms = 0.0;
-        // The interp rings' clock (demo_playback_interp_clock_ms): clock_ms accumulated
+        // The interp rings' clock (demo_playback_interp_clock_ms/us): clock_ms accumulated
         // monotonically, so it follows the timescale and holds while paused
         double interp_clock_ms = 0.0;
         double interp_clock_seen_ms = 0.0; // clock_ms when interp_clock_ms last caught up
@@ -614,7 +615,8 @@ namespace
         // post-seek suppression (overlay + mute) can end this frame
         if (!fast_forward && g_ctx.seek_settle
             && (packet_type == RF_GPT_OBJECT_UPDATE
-                || packet_type == static_cast<uint8_t>(af_packet_type::af_obj_update))) {
+                || packet_type == static_cast<uint8_t>(af_packet_type::af_obj_update)
+                || packet_type == static_cast<uint8_t>(af_packet_type::af_obj_update_delta))) {
             g_ctx.seek_obj_update_seen = true;
         }
         // Craters carve over several frames and the engine drops the oldest waiting one past its queue
@@ -848,6 +850,7 @@ namespace
                 obj->obj_interp->Clear();
             }
         }
+        obj_interp_history_clear_all(); // the deeper keyframe history would otherwise span the jump
     }
 
     void seek_restore_audio()
@@ -1109,6 +1112,13 @@ namespace
         for (auto& corpse : DoublyLinkedList{rf::corpse_list}) {
             rf::obj_flag_dead(&corpse);
         }
+    }
+
+    double advance_interp_clock_ms()
+    {
+        g_ctx.interp_clock_ms += std::max(g_ctx.clock_ms - g_ctx.interp_clock_seen_ms, 0.0);
+        g_ctx.interp_clock_seen_ms = g_ctx.clock_ms;
+        return g_ctx.interp_clock_ms;
     }
 
     // Esc pushes the main menu over gameplay; menus it opens (options, ...) stack on top
@@ -1700,33 +1710,16 @@ namespace
     };
 
     // ---- POV ping compensation ("povcomp") ----
-    //
-    // The demo stream is on the server's timeline: the followed player's aim samples and
-    // their fire/kill events are mutually consistent (both arrived ~ping/2 late), but the
-    // world they were aiming at is displayed ~(ping + their client's interp delay) ahead
-    // of what they actually saw. Realign by evaluating every other entity's interp ring
-    // that far in the past while following a player, so the crosshair lines up with
-    // targets the way the shooter saw them - the same rewind the server's lag
-    // compensation applied when it validated their hits. The ring holds real recorded
-    // history (20 keyframes, ~633ms at 30 netfps), so this stays smooth, unlike the
-    // considered alternative of extrapolating the POV camera forward by ping, which
-    // predicts beyond the recorded data and jitters exactly where the viewer is looking.
-    // Projectiles/corpses/movers are not biased: tracers must leave the (un-delayed) POV
-    // muzzle, and alignment only matters against players.
+    // The followed player saw the world ~(ping + interp delay) behind the server timeline the demo records;
+    // other players are evaluated that far back so the crosshair lines up the way the shooter saw it.
 
     bool g_povcomp_enabled = true;
     int g_povcomp_override_ms = -1; // >= 0: fixed delay instead of ping-derived
 
-    constexpr int povcomp_max_ms = 450; // interp ring depth bounds usable delay anyway
+    constexpr int povcomp_max_ms = 1000; // obj_interp_history depth bounds usable delay anyway
     constexpr float povcomp_slew_ms_per_s = 300.0f;
 
-    // Downstream latency to the followed player + their client's interp buffer.
-    // ObjInterp::set_next_pos_orient anchors interp_time at 2.2x the average
-    // sample-arrival interval behind the newest keyframe (flt_59F50C), so the
-    // recorded client viewed remote entities ~ping + 2.2 * update interval in
-    // the past relative to the server timeline the demo is recorded on.
-    constexpr float povcomp_interp_headroom = 2.2f;
-
+    // The recorded client's jitter is unknown; assume 0
     int povcomp_desired_ms()
     {
         if (!g_povcomp_enabled || g_ctx.state != PlaybackState::playing || demo_playback_is_seeking())
@@ -1740,7 +1733,7 @@ namespace
         if (desired < 0) {
             const uint32_t netfps = std::max(g_ctx.reader.header().server_netfps, 1u);
             const float interval_ms = 1000.0f / static_cast<float>(netfps);
-            desired = target->net_data->ping + static_cast<int>(povcomp_interp_headroom * interval_ms);
+            desired = target->net_data->ping + static_cast<int>(obj_interp_target_delay_ms(interval_ms, 0.0f));
         }
         return std::clamp(desired, 0, povcomp_max_ms);
     }
@@ -2000,9 +1993,15 @@ int64_t demo_playback_interp_clock_ms()
     if (g_ctx.state == PlaybackState::inactive) {
         return timer::get_i64(1000);
     }
-    g_ctx.interp_clock_ms += std::max(g_ctx.clock_ms - g_ctx.interp_clock_seen_ms, 0.0);
-    g_ctx.interp_clock_seen_ms = g_ctx.clock_ms;
-    return static_cast<int64_t>(g_ctx.interp_clock_ms);
+    return static_cast<int64_t>(advance_interp_clock_ms());
+}
+
+int64_t demo_playback_interp_clock_us()
+{
+    if (g_ctx.state == PlaybackState::inactive) {
+        return timer::get_i64(1000000);
+    }
+    return static_cast<int64_t>(advance_interp_clock_ms() * 1000.0);
 }
 
 uint32_t demo_playback_duration_ms()

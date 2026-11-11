@@ -977,8 +977,8 @@ namespace
     {
         for (rf::Weapon& wp : DoublyLinkedList{rf::weapon_list}) {
             if ((wp.info->flags & rf::WTF_MELEE) || wp.info->damage_radius >= ragdoll_min_blast_radius
-                || wp.lifeleft_seconds >= wp.info->lifetime_seconds || !vehicle_vector_is_finite(wp.pos)
-                || !vehicle_vector_is_finite(wp.last_pos)) {
+                || wp.lifeleft_seconds >= wp.info->lifetime_seconds || !wp.pos.is_finite()
+                || !wp.last_pos.is_finite()) {
                 continue;
             }
             const btVector3 from = to_bt(wp.last_pos);
@@ -1281,14 +1281,14 @@ namespace
         0x004C8A10,
         [](int weapon_type, int room, void* src_pos, rf::Vector3* hit_point, rf::Vector3* hit_normal, int parent) {
             weapon_create_impact_vclip_hook.call_target(weapon_type, room, src_pos, hit_point, hit_normal, parent);
-            if (ragdolls_wanted() && hit_point && vehicle_vector_is_finite(*hit_point) && weapon_type >= 0
+            if (ragdolls_wanted() && hit_point && hit_point->is_finite() && weapon_type >= 0
                 && weapon_type < rf::num_weapon_types
                 && rf::weapon_types[weapon_type].damage_radius >= ragdoll_min_blast_radius) {
                 const RagdollBlast blast{
                     *hit_point, rf::weapon_types[weapon_type].damage_radius, demo_playback_interp_clock_ms()};
                 g_ragdoll_blasts[g_ragdoll_next_blast++ % g_ragdoll_blasts.size()] = blast;
                 // The point is on the surface, where a ray from it would stop at once.
-                const bool has_normal = hit_normal && vehicle_vector_is_finite(*hit_normal);
+                const bool has_normal = hit_normal && hit_normal->is_finite();
                 const btVector3 lift = has_normal ? to_bt(*hit_normal) * ragdoll_blast_surface_lift
                                                   : btVector3{0.0f, ragdoll_blast_surface_lift, 0.0f};
                 push_from_blast(blast, to_bt(blast.pos) + lift);
@@ -1333,8 +1333,8 @@ bool ragdoll_is_ghost(const rf::Object* obj)
 void ragdoll_note_weapon_hit(const rf::Weapon* wp)
 {
     const int handle = wp->p_data.collide_out.obj_handle;
-    if (!ragdolls_wanted() || handle == -1 || !vehicle_vector_is_finite(wp->p_data.collide_out.hit_point)
-        || !vehicle_vector_is_finite(wp->orient.fvec)) {
+    if (!ragdolls_wanted() || handle == -1 || !wp->p_data.collide_out.hit_point.is_finite()
+        || !wp->orient.fvec.is_finite()) {
         return;
     }
     const RagdollHit hit{
