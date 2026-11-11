@@ -418,6 +418,7 @@ Version 1.5.0 (Trillium): Not yet released
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize
+  - Ignored while `Caps Lock` is bound to a control, unless `Bound Caps Lock capitalizes` is enabled
 - Fix floating damage numbers not swaying in the wind
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)

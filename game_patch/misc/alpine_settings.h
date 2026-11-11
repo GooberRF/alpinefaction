@@ -470,6 +470,7 @@ struct AlpineGameSettings
         RemoteServerCfgPopup::DISPLAY_MODE_ALIGN_RIGHT_HIGHLIGHT_BOX;
     bool simple_server_chat_msgs = true;
     bool quick_exit = false;
+    bool bound_caps_lock_capitalizes = false;
     uint32_t bot_shared_secret = 0;
     std::string bot_personality_preset = "balanced";
     std::string bot_skill_preset = "average";
