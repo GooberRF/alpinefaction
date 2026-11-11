@@ -125,6 +125,15 @@ F.M.Audio:
 Quaternius:
 * af_scavpumap1.dds and af-scavpumap1.v3m (CC0: https://opengameart.org/content/sci-fi-essentials-kit/)
 
+Jerimee:
+* af_haste_pickup1.wav (CC0: https://freesound.org/s/571129/)
+
+TechspiredMinds:
+* af_vampire_pickup1.wav (CC-BY 4.0: https://freesound.org/s/729195/)
+
+Sadiquecat:
+* af_haste_jump1.wav (CC0: https://freesound.org/s/814916/)
+
 ###############################################################################
 ## stb_image, stb_vorbis, stb_truetype, stb_image_write
 ###############################################################################

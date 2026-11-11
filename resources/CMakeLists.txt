@@ -101,6 +101,9 @@ add_packfile(alpinefaction.vpp
     sounds/af_fighter_scrape_loop.wav
     sounds/af_zipline_loop1.wav
     sounds/af_killsound1.wav
+    sounds/af_haste_pickup1.wav
+    sounds/af_haste_jump1.wav
+    sounds/af_vampire_pickup1.wav
     sounds/af_radmsg_000.ogg
     sounds/af_radmsg_001.ogg
     sounds/af_radmsg_002.ogg

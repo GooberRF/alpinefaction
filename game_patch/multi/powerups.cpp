@@ -16,14 +16,12 @@
 #include "powerups.h"
 #include "alpine_packets.h"
 #include "bagman.h"
-#include "gametype.h"
 #include "haste_trails.h"
 #include "jetpack.h"
 #include "salvage.h"
 #include "demo/demo.h"
 #include "../hud/hud.h"
 #include "../hud/hud_internal.h"
-#include "../hud/multi_spectate.h"
 #include "../rf/ai.h"
 #include "../rf/bmpman.h"
 #include "../rf/entity.h"
@@ -111,12 +109,8 @@ std::array<int, std::size(super_item_class_names)> g_super_item_types = [] {
 
 bool g_level_has_powerups = false;
 
-constexpr const char* haste_jump_sound_filename = "sweep_out.wav"; // placeholder
-constexpr const char* vampire_drain_sound_filename = "Jolt_05.wav"; // placeholder
-constexpr int vampire_drain_sound_interval_ms = 250;
+constexpr const char* haste_jump_sound_filename = "af_haste_jump1.wav";
 int g_haste_jump_sound = -1;
-int g_vampire_drain_sound = -1;
-rf::TimestampRealtime g_vampire_drain_sound_timestamp;
 
 std::optional<AlpinePowerup> powerup_for_item_type(int item_type)
 {
@@ -272,7 +266,6 @@ FunHook<void()> items_tbl_parse_hook{
         append_alpine_powerup_item_classes();
         // Registered at game init, as the stock pickup sounds are, so the handles outlive every level.
         g_haste_jump_sound = rf::snd_get_handle(haste_jump_sound_filename, 10.0f, 1.0f, 1.0f);
-        g_vampire_drain_sound = rf::snd_get_handle(vampire_drain_sound_filename, 10.0f, 1.0f, 1.0f);
         for (size_t i = 0; i < std::size(super_item_class_names); ++i) {
             g_super_item_types[i] = rf::item_lookup_type(super_item_class_names[i]);
         }
@@ -687,29 +680,6 @@ void powerups_send_state_to(rf::Player* player)
             }
         }
     }
-}
-
-void powerups_on_damage_notify(uint8_t victim_player_id)
-{
-    if (g_vampire_drain_sound < 0) {
-        return;
-    }
-    rf::Player* attacker = multi_spectate_is_spectating() ? multi_spectate_get_target_player() : rf::local_player;
-    const rf::Player* victim = rf::multi_find_player_by_id(victim_player_id);
-    // As mutators_on_pvp_damage, which heals the holder.
-    if (!attacker || !victim || attacker == victim
-        || (multi_is_team_game_type() && attacker->team == victim->team)) {
-        return;
-    }
-    rf::Entity* ep = rf::entity_from_handle(attacker->entity_handle);
-    if (!ep || rf::entity_is_dying(ep) || !powerup_is_active(ep, AlpinePowerup::vampire)) {
-        return;
-    }
-    if (g_vampire_drain_sound_timestamp.valid() && !g_vampire_drain_sound_timestamp.elapsed()) {
-        return;
-    }
-    g_vampire_drain_sound_timestamp.set(vampire_drain_sound_interval_ms);
-    play_local_sound_2d(static_cast<uint16_t>(g_vampire_drain_sound), 0, 1.0f);
 }
 
 void powerups_level_init()
