@@ -84,9 +84,9 @@ struct MenuNavState {
     int   deferred_btn_up    = -1;   // SDL button queued from poll for button-up
     int   repeat_btn         = -1;   // D-pad button held for auto-repeat, -1 = none
     float repeat_timer       = 0.0f; // seconds until next repeat tick
-    float scroll_timer       = 0.0f; // cooldown between right-stick scroll ticks
+    float scroll_timer       = 0.0f; // cooldown between stick scroll ticks
     bool  lclick_held        = false; // WM_LBUTTONDOWN sent, WM_LBUTTONUP awaiting release
-    bool  last_nav_was_dpad  = true;  // true = D-pad drove focus; false = left stick moved cursor
+    bool  last_nav_was_dpad  = true;  // true = D-pad drove focus; false = cursor moved
 };
 static MenuNavState g_menu_nav;
 
@@ -726,7 +726,9 @@ static bool menu_nav_on_button_down(int btn)
         menu_nav_handle_cancel();
         return true;
     }
-    if (btn == SDL_GAMEPAD_BUTTON_LEFT_STICK) {
+    const SDL_GamepadButton gyro_cursor_btn = g_alpine_game_config.gamepad_swap_sticks
+        ? SDL_GAMEPAD_BUTTON_RIGHT_STICK : SDL_GAMEPAD_BUTTON_LEFT_STICK;
+    if (btn == gyro_cursor_btn) {
         if (g_motion_sensors_supported && g_alpine_game_config.gamepad_gyro_menu_cursor_sensitivity > 0.0f)
             g_gyro_menu_cursor_active = !g_gyro_menu_cursor_active;
         return true;
@@ -1184,8 +1186,11 @@ static void menu_nav_handle_cursor_frame()
 {
     constexpr float k_menu_stick_deadzone = 0.24f;
     constexpr float k_base_speed          = 1000.0f;
+    SDL_GamepadAxis stick_x, stick_y;
+    float stick_deadzone;
+    get_stick_axes(false, stick_x, stick_y, stick_deadzone);
     float sx, sy;
-    get_axis_circular(SDL_GAMEPAD_AXIS_LEFTX, SDL_GAMEPAD_AXIS_LEFTY, k_menu_stick_deadzone, sx, sy);
+    get_axis_circular(stick_x, stick_y, k_menu_stick_deadzone, sx, sy);
     if (sx == 0.0f && sy == 0.0f) return;
     float speed = k_base_speed * (static_cast<float>(rf::gr::screen_height()) / 600.0f)
         * g_alpine_game_config.gamepad_joy_menu_cursor_sensitivity;
@@ -1204,14 +1209,22 @@ static void menu_nav_tick_dpad_repeat()
     }
 }
 
+static float menu_nav_scroll_axis()
+{
+    SDL_GamepadAxis stick_x, stick_y;
+    float stick_deadzone;
+    get_stick_axes(true, stick_x, stick_y, stick_deadzone);
+    constexpr float k_scroll_deadzone = 0.24f;
+    return get_axis(stick_y, k_scroll_deadzone);
+}
+
 static void menu_nav_tick_scroll()
 {
     if (rf::gameseq_get_state() == rf::GS_OPTIONS_MENU && !legacy_menus_enabled()) {
         g_menu_nav.scroll_timer = 0.0f;
         return;
     }
-    constexpr float k_scroll_deadzone = 0.24f;
-    float ry = get_axis(SDL_GAMEPAD_AXIS_RIGHTY, k_scroll_deadzone);
+    float ry = menu_nav_scroll_axis();
     if (ry == 0.0f) {
         g_menu_nav.scroll_timer = 0.0f;
         return;
@@ -1234,8 +1247,7 @@ float gamepad_consume_menu_scroll()
         || !is_gamepad_menu_navigation_state()) {
         return 0.0f;
     }
-    constexpr float k_scroll_deadzone = 0.24f;
-    return std::clamp(get_axis(SDL_GAMEPAD_AXIS_RIGHTY, k_scroll_deadzone), -1.0f, 1.0f);
+    return std::clamp(menu_nav_scroll_axis(), -1.0f, 1.0f);
 }
 
 static void gamepad_do_menu_frame()

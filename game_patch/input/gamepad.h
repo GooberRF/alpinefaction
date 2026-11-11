@@ -76,5 +76,5 @@ int  gamepad_bind_action(int action_idx, int slot, int code);
 // conflicts itself.
 void gamepad_set_action_code(int action_idx, int slot, int code);
 
-// Right-stick menu scroll direction and magnitude (-1=up, +1=down).
+// Menu scroll direction and magnitude (-1=up, +1=down).
 float gamepad_consume_menu_scroll();

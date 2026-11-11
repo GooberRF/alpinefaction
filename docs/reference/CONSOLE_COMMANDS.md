@@ -166,7 +166,7 @@ Commands marked "D3D11 only" only have an effect with the Direct3D 11 renderer.
 | `joy_sens` | `[value]` | Sets controller look sensitivity (minimum 0). Default: 2.5. |
 | `joy_scanner_sens` | `[value]` | Sets the controller scanner sensitivity modifier (0.01-10). Default: 0.25. |
 | `joy_scope_sens` | `[value]` | Sets the controller scope sensitivity modifier (0.01-10). Default: 0.25. |
-| `joy_swap_sticks` | `[0\|1]` | Swaps the left and right analog sticks. Default: off. |
+| `joy_swap_sticks` | `[0\|1]` | Swaps the left and right analog sticks for gameplay and menu cursor/scrolling. The gyro menu cursor toggle follows the menu cursor stick click. Default: off. |
 | `joy_move_deadzone` | `[0.0-0.9]` | Sets the movement stick deadzone. Default: 0.14. |
 | `joy_camera_deadzone` | `[0.0-0.9]` | Sets the camera stick deadzone. Default: 0.33. |
 | `joy_camera_invert_x` | `[0\|1]` | Inverts the camera stick X-axis. Default: off. |

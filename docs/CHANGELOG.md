@@ -11,7 +11,7 @@ Version 1.6.0: Not yet released
   - Full controller support via SDL3 Gamepad API
   - Glyph support for Xbox, PlayStation, Nintendo, and Steam Hardware (Steam Controller 2015, Steam Deck, Steam Controller 2026)
   - Dual-Analog support for movement and camera controls
-  - Cursor Menu navigation support for either Gyro (Press `Left Stick Click` to toggle Gyro Cursor, off by default), Trackpad and Joystick Inputs
+  - Cursor Menu navigation support for either Gyro (press ` Stick Click`, to toggle Gyro Cursor, off by default), Trackpad and Joystick Inputs
   - Initial Rumble support
     - only covers all Weapon Fire and select Environmental effects
     - Trigger Rumble/Impulse Triggers are also supported
