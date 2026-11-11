@@ -2510,13 +2510,6 @@ void gamepad_sdl_init()
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
     SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS3, "1");
     SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI_PS3_SIXAXIS_DRIVER, "1");
-    if (g_alpine_system_config.gamepad_rawinput_enabled) {
-        SDL_SetHint(SDL_HINT_JOYSTICK_RAWINPUT, "1");
-        SDL_SetHint(SDL_HINT_JOYSTICK_RAWINPUT_CORRELATE_XINPUT, "1");
-    } else {
-        SDL_SetHint(SDL_HINT_JOYSTICK_RAWINPUT, "0");
-        SDL_SetHint(SDL_HINT_JOYSTICK_RAWINPUT_CORRELATE_XINPUT, "0");
-    }
 
     if (!SDL_InitSubSystem(SDL_INIT_GAMEPAD)) {
         xlog::error("Failed to initialize SDL gamepad subsystem: {}", SDL_GetError());
