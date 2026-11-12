@@ -179,6 +179,18 @@ const SettingRow rows[] = {
         .console_cmd = "ui_show_ping",
     },
     {
+        .id = "netmeter_display",
+        .key = "ShowNetMeter",
+        .label = "Net meter",
+        .tooltip = "Show network stats: update rates, jitter, missed updates, interpolation delay and bandwidth.",
+        .category = Cat::Hud,
+        .subcategory = "Core",
+        .widget = Wid::Toggle,
+        .access = AccBool{&AGS::netmeter_display},
+        .flags = SF_MP_ONLY | SF_ADVANCED,
+        .console_cmd = "ui_show_netmeter",
+    },
+    {
         .id = "real_armor_values",
         .key = "RealArmorValues",
         .label = "Real armor values",

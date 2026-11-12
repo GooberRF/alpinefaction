@@ -22,7 +22,6 @@ struct GameConfig
     };
     CfgVar<unsigned int> res_bpp = 32;
     CfgVar<unsigned int> res_backbuffer_format = 22; // D3DFMT_X8R8G8B8
-    CfgVar<unsigned int> selected_video_card = 0;
 
     enum WndMode
     {
@@ -32,6 +31,8 @@ struct GameConfig
     };
 
     CfgVar<WndMode> wnd_mode = FULLSCREEN;
+    // Monitor device path; empty for the primary display
+    CfgVar<std::string> display_device{""};
     CfgVar<bool> vsync = false;
     CfgVar<unsigned int> geometry_cache_size{
         32,
@@ -58,9 +59,6 @@ struct GameConfig
     CfgVar<bool> eax_sound = true;
 
     // Multiplayer
-    static constexpr unsigned int DEFAULT_UPDATE_RATE = 200000; // T1/LAN in stock launcher
-    CfgVar<unsigned int> update_rate = DEFAULT_UPDATE_RATE;
-
     CfgVar<unsigned int> force_port{
         0,
         [] (const auto val) {

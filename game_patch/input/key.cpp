@@ -5,6 +5,7 @@
 #include <patch_common/AsmWriter.h>
 #include <xlog/xlog.h>
 #include <SDL3/SDL.h>
+#include "bind_context.h"
 #include "../hud/multi_spectate.h"
 #include "../hud/hud.h"
 #include "../misc/player.h"
@@ -86,6 +87,21 @@ int alpine_control_start_index()
     return starting_alpine_control_index;
 }
 
+// A bound Caps Lock is toggled by gameplay presses, so its state says nothing about the text being typed.
+static bool caps_lock_is_bound()
+{
+    const int count = bind_context_binding_count();
+    for (int c = 0; c < static_cast<int>(BindContextId::_count); ++c) {
+        for (int i = 0; i < count; ++i) {
+            const BindOverride bind = bind_context_effective(static_cast<BindContextId>(c), i);
+            if (bind.scan_codes[0] == rf::KEY_CAPSLOCK || bind.scan_codes[1] == rf::KEY_CAPSLOCK) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 FunHook<int(int16_t)> key_to_ascii_hook{
     0x0051EFC0,
     [] (int16_t key) {
@@ -128,7 +144,10 @@ FunHook<int(int16_t)> key_to_ascii_hook{
             key_state[VK_CONTROL] = 0x80;
         }
         // HACKFIX.  Must be set for `ToUnicode` to produce capitalized letters.
-        key_state[VK_CAPITAL] = GetKeyState(VK_CAPITAL) & 1;
+        if ((GetKeyState(VK_CAPITAL) & 1)
+            && (g_alpine_game_config.bound_caps_lock_capitalizes || !caps_lock_is_bound())) {
+            key_state[VK_CAPITAL] = 1;
+        }
         int scan_code = key & 0x7F;
         auto vk = MapVirtualKeyA(scan_code, MAPVK_VSC_TO_VK);
         WCHAR unicode_chars[3];

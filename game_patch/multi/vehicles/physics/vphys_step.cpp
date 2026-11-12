@@ -643,7 +643,7 @@ namespace
         const rf::Matrix3 orient = from_bt(interp.getBasis());
 
         // The one place a non-finite solve can leave the world: the entity pose is broadcast from it.
-        if (!vehicle_vector_is_finite(pos) || !vehicle_vector_is_finite(vel) || !vphys_matrix_is_finite(orient)) {
+        if (!pos.is_finite() || !vel.is_finite() || !vphys_matrix_is_finite(orient)) {
             vphys_impact_window_close(b);
             body_seed_from_entity(b, ep);
             body->setLinearVelocity(btVector3(0.0f, 0.0f, 0.0f));
@@ -1269,7 +1269,7 @@ float vehicle_physics_type_corridor_radius(int entity_type)
 int vehicle_physics_sphere_contacts(const rf::Vector3& center, float radius, VehiclePhysicsContact* out,
                                     int max_contacts)
 {
-    if (!g_vphys.world || !(radius > 0.0f) || max_contacts <= 0 || !vehicle_vector_is_finite(center)) {
+    if (!g_vphys.world || !(radius > 0.0f) || max_contacts <= 0 || !center.is_finite()) {
         return 0;
     }
     struct SphereContactCallback : btCollisionWorld::ContactResultCallback
@@ -1340,7 +1340,7 @@ float vehicle_physics_class_bounce_gain(int vdc_class)
 void vehicle_physics_clamp_class_velocity(int vdc_class, rf::Vector3& vel)
 {
     const int cls = vphys_class_from_vdc(vdc_class);
-    if (cls < 0 || vphys_class_speed_cap(cls) <= 0.0f || !vehicle_vector_is_finite(vel)) {
+    if (cls < 0 || vphys_class_speed_cap(cls) <= 0.0f || !vel.is_finite()) {
         vel = rf::Vector3{};
         return;
     }

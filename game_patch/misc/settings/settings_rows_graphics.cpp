@@ -222,6 +222,18 @@ const SettingRow rows[] = {
         .console_cmd = "r_colorblind",
     },
     {
+        .id = "prefer_high_performance_gpu",
+        .key = "D3D11_PreferHighPerformanceGPU",
+        .label = "Prefer high-performance GPU",
+        .tooltip = "Render on the high-performance GPU instead of the one Windows picks (restart required).",
+        .category = Cat::Graphics,
+        .subcategory = "Display",
+        .widget = Wid::Toggle,
+        .access = AccCoreBool{&ASC::prefer_high_performance_gpu},
+        .flags = SF_D3D11_ONLY | SF_HIDDEN | SF_RESTART_REQUIRED,
+        .persistence = Pers::Afcc,
+    },
+    {
         .id = "low_frame_latency",
         .key = "D3D11_LowFrameLatency",
         .label = "Low-latency swap chain",

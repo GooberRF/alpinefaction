@@ -307,6 +307,17 @@ const SettingRow rows[] = {
         .console_cmd = "key_quick_exit",
     },
     {
+        .id = "bound_caps_lock_capitalizes",
+        .key = "BoundCapsLockCapitalizes",
+        .label = "Bound Caps Lock capitalizes",
+        .tooltip = "Let Caps Lock capitalize typed text even while it is bound to a control.",
+        .category = Cat::Input,
+        .subcategory = "Keyboard",
+        .widget = Wid::Toggle,
+        .access = AccBool{&AGS::bound_caps_lock_capitalizes},
+        .flags = SF_ADVANCED,
+    },
+    {
         .id = "mouse_look",
         .label = "Mouse look",
         .tooltip = "Turn the view with the mouse.",

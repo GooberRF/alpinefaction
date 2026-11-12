@@ -6,6 +6,8 @@
 #include <format>
 #include <functional>
 #include <thread>
+#include <mutex>
+#include <cmath>
 #include <utility>
 #include <vector>
 #include <deque>
@@ -14,11 +16,14 @@
 #include <iphlpapi.h>
 #include <ws2ipdef.h>
 #include <natupnp.h>
+#include <timeapi.h>
 #include <common/config/BuildConfig.h>
 #include <common/rfproto.h>
 #include <common/version/version.h>
 #include <common/utils/enum-bitwise-operators.h>
+#include <common/utils/int-utils.h>
 #include <common/utils/list-utils.h>
+#include <common/utils/os-utils.h>
 #include <common/utils/string-utils.h>
 #include <common/ComPtr.h>
 #include <common/tlv.h>
@@ -35,6 +40,8 @@
 #include "demo/demo.h"
 #include "mutators.h"
 #include "alpine_packets.h"
+#include "obj_update_delta.h"
+#include "netmeter.h"
 #include "server.h"
 #include "server_internal.h"
 #include "salvage.h"
@@ -66,6 +73,8 @@
 #include "../rf/os/console.h"
 #include "../rf/os/os.h"
 #include "../rf/os/timer.h"
+#include "../rf/os/frametime.h"
+#include "../rf/os/timestamp.h"
 #include "../rf/geometry.h"
 #include "../rf/level.h"
 #include "../rf/ui.h"
@@ -91,7 +100,30 @@
 #define NET_IFINDEX_UNSPECIFIED 0
 #endif
 
-static constexpr int CLIENT_NET_FPS = 40;
+bool af_server_is_1_5_or_newer()
+{
+    const auto& info = get_af_server_info();
+    return info && !version_is_older(info->version_major, info->version_minor, 1, 5);
+}
+
+int client_obj_update_send_interval_ms()
+{
+    // Older and stock servers only rewind within the engine ring, which the 1.4 rate fills over 500 ms
+    return static_cast<int>(1000u / (af_server_is_1_5_or_newer() ? AlpineGameSettings::client_net_rate
+                                                                  : AlpineGameSettings::legacy_client_net_rate));
+}
+
+// Send rate of the client whose keyframes fill a ring on this server
+static int source_client_net_fps(const rf::Entity* ep)
+{
+    // Vehicles are new in 1.5, so a client-driven hull's rows always come from a 1.5 driver
+    if (vehicle_is_synced_entity_type(ep))
+        return static_cast<int>(AlpineGameSettings::client_net_rate);
+    const rf::Player* src = rf::player_from_entity_handle(ep->handle);
+    const bool af_1_5 = src && src->version_info.software == ClientSoftware::AlpineFaction
+        && !version_is_older(src->version_info.major, src->version_info.minor, 1, 5);
+    return static_cast<int>(af_1_5 ? AlpineGameSettings::client_net_rate : AlpineGameSettings::legacy_client_net_rate);
+}
 
 // Popup shown when the user attempts to join a server whose game type this build doesn't recognize.
 static void show_unsupported_game_type_popup()
@@ -143,7 +175,7 @@ static std::unordered_map<uint64_t, AFGameInfoExtra> g_server_browser_extra;
 
 std::optional<int> g_desired_multiplayer_character; // caches local mp character when forced by server
 
-using MultiIoPacketHandler = void(char* data, const rf::NetAddr& addr);
+using rf::MultiIoPacketHandler;
 
 class BufferOverflowPatch
 {
@@ -309,7 +341,9 @@ enum packet_type : uint8_t {
     af_vehicle_orient      = 0x68,
     af_vehicle_factory_state = 0x69,
     af_scavenger_state     = 0x6A,
-    af_payload_state       = 0x6B
+    af_payload_state       = 0x6B,
+    af_obj_update_delta    = 0x6C,
+    af_obj_update_ack      = 0x6D
 };
 
 // client -> server
@@ -338,7 +372,8 @@ std::array g_server_side_packet_whitelist{
     af_client_req,
     af_spectate_start,
     af_vehicle_fire,
-    af_vehicle_orient
+    af_vehicle_orient,
+    af_obj_update_ack
 };
 
 // server -> client
@@ -388,6 +423,7 @@ std::array g_client_side_packet_whitelist{
     af_ping_location,
     af_damage_notify,
     af_obj_update,
+    af_obj_update_delta,
     af_just_spawned_info,
     af_koth_hill_state,
     af_koth_hill_captured,
@@ -2048,6 +2084,7 @@ CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_join_req_packet_hook{
         if (is_d3d11()) {
             ext_data.flags |= static_cast<uint32_t>(AlpineFactionJoinReqPacketExt::Flags::client_d3d11);
         }
+        ext_data.flags |= static_cast<uint32_t>(AlpineFactionJoinReqPacketExt::Flags::client_delta_obj_update);
 
         std::vector<uint8_t> tlvs{};
         tlvs.reserve(32);
@@ -2187,6 +2224,15 @@ CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_join_accept_packet_ho
         }
         if (server_allow_outlines_xray()) {
             ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::allow_outlines_xray;
+        }
+        // Clients fast-forward relayed projectiles to match the server's advanced copies
+        if (g_alpine_server_config.projectile_lag_comp) {
+            ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::projectile_lag_comp;
+        }
+        ext_data.server_netfps = static_cast<uint16_t>(g_alpine_game_config.server_netfps);
+        ext_data.projectile_lag_comp_max_ms = static_cast<uint16_t>(g_alpine_server_config.projectile_lag_comp_max_ms);
+        if (g_alpine_server_config.delta_obj_update) {
+            ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::delta_obj_update;
         }
         if (server_clear_stale_movement_input()) {
             ext_data.flags |= AlpineFactionJoinAcceptPacketExt::Flags::clear_stale_movement_input;
@@ -2414,7 +2460,7 @@ CodeInjection process_join_accept_injection{
             server_info.version_patch = ext_data.version_patch;
             server_info.version_type = ext_data.version_type;
             xlog::debug("Got AF server info: {} {} {}", ext_data.version_major, ext_data.version_minor,
-                static_cast<int>(ext_data.flags));
+                static_cast<uint32_t>(ext_data.flags));
             server_info.saving_enabled = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::saving_enabled);
             server_info.allow_fb_mesh = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::allow_fb_mesh);
             server_info.allow_lmap = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::allow_lmap);
@@ -2441,6 +2487,12 @@ CodeInjection process_join_accept_injection{
             server_info.pogo = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::pogo);
             server_info.scrapyard_gibs = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::scrapyard_gibs);
             server_info.no_exposure_damage = !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::no_exposure_damage);
+            server_info.projectile_lag_comp =
+                !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::projectile_lag_comp);
+            server_info.server_netfps = ext_data.server_netfps;
+            server_info.projectile_lag_comp_max_ms = ext_data.projectile_lag_comp_max_ms;
+            server_info.delta_obj_update =
+                !!(ext_data.flags & AlpineFactionJoinAcceptPacketExt::Flags::delta_obj_update);
             // featured_no_clip is intentionally not stored here, it's consumed inline below via mutators_set_no_clip_weapon.
 
             // parsed_full is the only state reaching this branch, so the stats flag was
@@ -2748,9 +2800,12 @@ JoiningClientKind get_joining_client_kind()
 FunHook<void(int, rf::NetAddr*)> process_join_req_packet_hook{
     0x0047AC60,
     [](int pPacket, rf::NetAddr* addr) {
+        // The engine denies a request from a connected address and keeps that player, so it is no join
+        const bool already_joined = rf::multi_find_player_by_addr(*addr) != nullptr;
         process_join_req_packet_hook.call_target(pPacket, addr);
 
-        if (rf::Player* valid_player = rf::multi_find_player_by_addr(*addr)) { // player successfully joined
+        rf::Player* valid_player = already_joined ? nullptr : rf::multi_find_player_by_addr(*addr);
+        if (valid_player) { // player successfully joined
             if (g_joining_client_version == ClientSoftware::AlpineFaction ||
                 g_joining_client_version == ClientSoftware::DashFaction ||
                 g_joining_client_version == ClientSoftware::Browser) {
@@ -2765,6 +2820,9 @@ FunHook<void(int, rf::NetAddr*)> process_join_req_packet_hook{
                         & AlpineFactionJoinReqPacketExt::Flags::client_d3d11)
                         != AlpineFactionJoinReqPacketExt::Flags::none,
                 };
+                valid_player->delta_obj_update = g_alpine_server_config.delta_obj_update
+                    && (g_joining_player_info.flags & AlpineFactionJoinReqPacketExt::Flags::client_delta_obj_update)
+                        != AlpineFactionJoinReqPacketExt::Flags::none;
 
                 const bool bot_mode_requested =
                     (g_joining_player_info.flags
@@ -3178,6 +3236,152 @@ FunHook<int(int*, bool)> psnet_rel_close_socket_hook{
 // Newest interp tick already sent per (recipient player, entity handle)
 static std::unordered_map<uint64_t, uint16_t> g_sent_obj_update_ticks;
 
+namespace
+{
+    struct TimedSend
+    {
+        std::mutex mutex;
+        HANDLE handed_over = nullptr; // auto-reset event, signalled with each new pending packet
+        std::array<uint8_t, rf::max_packet_size> buf{};
+        int len = 0;
+        rf::NetAddr addr{};
+        int64_t send_at_qpc = 0;
+        bool pending = false;
+        unsigned cancel_epoch = 0; // bumped by timed_send_cancel so a packet the worker already holds is dropped
+    };
+    TimedSend* g_timed_send = nullptr; // leaked on purpose: the worker outlives static destruction
+
+    int64_t qpc_now()
+    {
+        LARGE_INTEGER v;
+        QueryPerformanceCounter(&v);
+        return v.QuadPart;
+    }
+
+    // Returns early when a newer packet is handed over, so a forced fire-state send never queues behind the
+    // held one. timer is null under Wine, where kernel-object waits cost wineserver round trips.
+    void timed_send_wait(TimedSend* s, const WaitableTimer* timer, int64_t deadline_qpc)
+    {
+        const int64_t per_ms = g_qpc_frequency.QuadPart / 1000;
+        if (!timer) {
+            while (qpc_now() < deadline_qpc) {
+                Sleep(1);
+                std::lock_guard lock{s->mutex};
+                if (s->pending) {
+                    return;
+                }
+            }
+            return;
+        }
+        for (int64_t left = deadline_qpc - qpc_now(); left > 0; left = deadline_qpc - qpc_now()) {
+            LARGE_INTEGER due{.QuadPart = -left * 10'000 / per_ms}; // relative, 100 ns units
+            DWORD result;
+            if (timer->handle && SetWaitableTimer(timer->handle, &due, 0, nullptr, nullptr, FALSE)) {
+                const HANDLE handles[] = {s->handed_over, timer->handle};
+                result = WaitForMultipleObjects(2, handles, FALSE, INFINITE);
+            }
+            else {
+                // Never 0, so a sub-ms remainder still blocks instead of spinning
+                result = WaitForSingleObject(s->handed_over, static_cast<DWORD>(std::max<int64_t>(1, left / per_ms)));
+            }
+            if (result == WAIT_OBJECT_0) {
+                std::lock_guard lock{s->mutex};
+                if (s->pending) {
+                    return; // else stale: signalled for the packet being held
+                }
+            }
+        }
+    }
+
+    void timed_send_worker(TimedSend* s)
+    {
+        // At normal priority the wakes run late while the game thread is busy; the thread nearly always sleeps
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+        const bool on_wine = get_wine_version().has_value();
+        const WaitableTimer timer;
+        const WaitableTimer* wait_timer = on_wine ? nullptr : &timer;
+        if (!wait_timer || !timer.handle) {
+            timeBeginPeriod(1); // the sleep and event-timeout paths need 1 ms granularity
+        }
+        for (;;) {
+            WaitForSingleObject(s->handed_over, INFINITE);
+            for (;;) {
+                std::array<uint8_t, rf::max_packet_size> buf;
+                int len;
+                rf::NetAddr addr;
+                int64_t send_at;
+                unsigned epoch;
+                {
+                    std::lock_guard lock{s->mutex};
+                    if (!s->pending) {
+                        break;
+                    }
+                    buf = s->buf;
+                    len = s->len;
+                    addr = s->addr;
+                    send_at = s->send_at_qpc;
+                    epoch = s->cancel_epoch;
+                    s->pending = false;
+                }
+                timed_send_wait(s, wait_timer, send_at);
+                {
+                    std::lock_guard lock{s->mutex};
+                    if (s->cancel_epoch != epoch) {
+                        continue;
+                    }
+                }
+                // Races the game thread on the psnet send stats; benign, it only miscounts the netmeter KB/s
+                rf::net_send(addr, buf.data(), len);
+            }
+        }
+    }
+
+    void timed_send_cancel()
+    {
+        if (TimedSend* s = g_timed_send) {
+            std::lock_guard lock{s->mutex};
+            s->pending = false;
+            ++s->cancel_epoch;
+        }
+    }
+
+    bool timed_send_start()
+    {
+        if (g_timed_send) {
+            return true;
+        }
+        static bool failed = false;
+        if (failed) {
+            return false;
+        }
+        TimedSend* s = nullptr;
+        try {
+            s = new TimedSend;
+            s->handed_over = CreateEventA(nullptr, FALSE, FALSE, nullptr);
+            if (!s->handed_over) {
+                xlog::error("[ObjUpdateSend] Failed to create the send event ({})", GetLastError());
+                delete s;
+                failed = true;
+                return false;
+            }
+            std::thread{timed_send_worker, s}.detach();
+            g_timed_send = s;
+            return true;
+        }
+        catch (const std::exception& e) {
+            xlog::error("[ObjUpdateSend] Failed to start the send thread: {}", e.what());
+            if (s) {
+                if (s->handed_over) {
+                    CloseHandle(s->handed_over);
+                }
+                delete s;
+            }
+            failed = true;
+            return false;
+        }
+    }
+}
+
 FunHook<void()> multi_stop_hook{
     0x0046E2C0,
     [] {
@@ -3217,7 +3421,9 @@ FunHook<void()> multi_stop_hook{
         entity_rate_limit_clear(); // drop per-entity rate limit and jump state
         afstats::on_shutdown(); // best-effort final flush of the stats event stream
         fflink::afstats_client_reset(); // a stats session key is only ever valid for the join it was minted for
-        g_sent_obj_update_ticks.clear(); // drop per-recipient obj_update keyframe-dedup state from the session being left
+        g_sent_obj_update_ticks.clear(); // per-recipient keyframe-dedup state of the session being left
+        obj_update_delta::client_reset();
+        timed_send_cancel(); // an obj_update still held for its deadline must not reach the old server
         server_bots_on_multi_stop();
         if (rf::local_player) {
             PlayerAdditionalData* const player_add_data =
@@ -3301,14 +3507,105 @@ void send_chat_line_packet(const std::string_view msg, rf::Player* target, rf::P
     }
 }
 
+// Deadline-based rescheduling: the next deadline is one interval after the previous one, not after
+// the send, so the average rate is exact at any frame rate above it. The due check below can
+// fire up to one frame early (negative overshoot), and a late frame within the interval keeps
+// the anchor too. Only a frame longer than the interval re-anchors to now.
 CodeInjection client_update_rate_injection{
     0x0047E5D8,
     [] (auto& regs) {
-        constexpr int interval = 1000 / CLIENT_NET_FPS;
+        const int interval = client_obj_update_send_interval_ms();
         int overshoot = rf::send_obj_update_packet_timestamp.time_since();
         int& send_obj_update_interval = addr_as_ref<int>(regs.esp);
         send_obj_update_interval =
-            (overshoot > 0 && overshoot < interval) ? interval - overshoot : interval;
+            (overshoot > -interval && overshoot < interval) ? interval - overshoot : interval;
+    },
+};
+
+// Build on the last frame before the deadline and let the worker send at the deadline itself, so the
+// wire cadence does not depend on where frame boundaries fall
+CallHook<bool __fastcall(rf::TimestampRealtime*, int)> client_obj_update_due_hook{
+    0x0047E5CD,
+    [](rf::TimestampRealtime* ts, int edx) FASTCALL_LAMBDA {
+        if (client_obj_update_due_hook.call_target(ts, edx)) {
+            return true;
+        }
+        const int interval = client_obj_update_send_interval_ms();
+        const int lead = std::clamp(static_cast<int>(std::ceil(rf::frametime * 1000.0f)), 1, interval - 1);
+        return ts->time_until() <= lead; // huge for an invalid timestamp, so still false then
+    },
+};
+
+// The multi_io_send call in send_obj_update_packet (client -> server), reached only on calls that
+// actually send. Stock appends to the per-frame unreliable buffer, flushed at the end of the frame;
+// this hands the record to the worker for the deadline instead. The delta-stream ack rides in the
+// same datagram.
+CallHook<void(rf::Player*, const void*, int)> client_obj_update_send_hook{
+    0x0047E621,
+    [](rf::Player* pp, const void* packet, int len) {
+        const int64_t now_us = timer::get_i64(1000000);
+        af_obj_update_ack_packet ack;
+        const bool has_ack = af_build_obj_update_ack_packet(ack);
+        const rf::NetAddr addr = rf::multi_server_addr;
+        if (rf::is_server || addr.port == 0 || len <= 0 || len > static_cast<int>(rf::max_packet_size)
+            || !timed_send_start()) {
+            client_obj_update_send_hook.call_target(pp, packet, len);
+            if (has_ack) {
+                af_send_packet(pp, &ack, sizeof(ack), false); // same coalesced buffer
+            }
+            netmeter_record_out(static_cast<int>(now_us / 1000));
+            return;
+        }
+        // An early build (client_update_rate_injection then re-armed more than one interval out) waits for its
+        // slot; anything else goes out now and re-anchors, so the schedule never runs ahead of the engine
+        static int64_t next_send_us = 0;
+        const int interval_ms = client_obj_update_send_interval_ms();
+        const int64_t interval_us = 1000 * static_cast<int64_t>(interval_ms);
+        const bool early_build = rf::send_obj_update_packet_timestamp.time_until() > interval_ms;
+        int64_t target_us = now_us;
+        if (early_build && next_send_us > now_us && next_send_us <= now_us + interval_us) {
+            target_us = next_send_us;
+        }
+        next_send_us = target_us + interval_us;
+        netmeter_record_out(static_cast<int>(target_us / 1000));
+
+        TimedSend* s = g_timed_send;
+        const bool ack_fits = has_ack && static_cast<size_t>(len) + sizeof(ack) <= s->buf.size();
+        if (has_ack && !ack_fits) {
+            af_send_packet(pp, &ack, sizeof(ack), false);
+        }
+        {
+            // The worker has not picked up the previous hand-over yet: send it now, ahead of this one,
+            // rather than drop it
+            std::array<uint8_t, rf::max_packet_size> unsent;
+            int unsent_len = 0;
+            rf::NetAddr unsent_addr;
+            {
+                std::lock_guard lock{s->mutex};
+                if (s->pending) {
+                    unsent = s->buf;
+                    unsent_len = s->len;
+                    unsent_addr = s->addr;
+                    s->pending = false;
+                }
+            }
+            if (unsent_len > 0) {
+                rf::net_send(unsent_addr, unsent.data(), unsent_len);
+            }
+        }
+        {
+            std::lock_guard lock{s->mutex};
+            std::memcpy(s->buf.data(), packet, static_cast<size_t>(len));
+            s->len = len;
+            if (ack_fits) {
+                std::memcpy(s->buf.data() + len, &ack, sizeof(ack));
+                s->len += static_cast<int>(sizeof(ack));
+            }
+            s->addr = addr;
+            s->send_at_qpc = qpc_now() + (target_us - now_us) * (g_qpc_frequency.QuadPart / 1000) / 1000;
+            s->pending = true;
+        }
+        SetEvent(s->handed_over);
     },
 };
 
@@ -3322,7 +3619,7 @@ static void multi_force_fire_state_send()
         // Rate-cap forced sends; a suppressed transition rides the next scheduled send
         static int64_t last_forced_send_ms = 0;
         const int64_t now_ms = timer::get_i64(1000);
-        if (now_ms - last_forced_send_ms < 1000 / CLIENT_NET_FPS) {
+        if (now_ms - last_forced_send_ms < client_obj_update_send_interval_ms()) {
             return;
         }
         last_forced_send_ms = now_ms;
@@ -3365,11 +3662,14 @@ FunHook<void __cdecl(int, int)> entity_turn_weapon_off_hook{
     },
 };
 
-CodeInjection server_update_rate_injection{
-    0x0047E891,
-    [] (auto& regs) {
-        int& min_send_obj_update_interval = addr_as_ref<int>(regs.esp);
-        min_send_obj_update_interval = 1000 / g_alpine_game_config.server_netfps;
+// Every client gets the sv_bandwidth tier instead of a rate scaled by its `rate` budget, so the interval
+// is always a whole number of ms; legacy clients just receive more than they were built for
+FunHook<void(rf::Player*)> update_player_rate_hook{
+    0x0047E7D0,
+    [](rf::Player* pp) {
+        if (!pp || !pp->net_data)
+            return;
+        pp->net_data->obj_update_interval = static_cast<int>(1000 / g_alpine_game_config.server_netfps);
     },
 };
 
@@ -3379,17 +3679,16 @@ CodeInjection server_obj_update_schedule_injection{
         rf::PlayerNetData* pnd = regs.eax;
         int overshoot = pnd->obj_update_timestamp.time_since();
         int interval = regs.ecx;
-        if (overshoot > 0 && overshoot < interval) {
-            regs.ecx = interval - overshoot;
-        }
+        // See client_update_rate_injection
+        regs.ecx = (overshoot >= 0 && overshoot < interval) ? interval - overshoot : interval;
     },
 };
 
 // A remote entity's obj_update record carries a (pos, tick) movement keyframe echoed from the
 // source client (get_entity_data 0x0047D9A0) plus its health/armor, weapon, and fire state. When
-// sv_netfps exceeds a client's send rate the server re-sends the same keyframe; receivers append
-// the duplicates, which halves ObjInterp's average arrival interval and with it the interpolation
-// delay window (2.2x that average), causing jitter. Skip the whole record when its keyframe tick
+// the server's send rate exceeds a client's the server re-sends the same keyframe; receivers append
+// the duplicates, which halves ObjInterp's average arrival interval and with it the playout delay
+// derived from it, causing jitter. Skip the whole record when its keyframe tick
 // is unchanged for this recipient; this defers the non-authoritative health/armor/weapon/fire
 // fields by at most one client send interval. The recipient's own record carries no keyframe
 // (health/armor/weapon only), so it is exempt and stays at full rate.
@@ -3400,6 +3699,8 @@ FunHook<int(rf::Player*, rf::Entity*, void*)> pack_obj_update_data_hook{
         if (rf::is_server && pp->net_data && pp->net_data->reliable_socket == static_cast<rf::uint>(-1)) {
             return 0;
         }
+        rf::ObjInterp* exposed = nullptr; // ring whose num is lowered to expose an older keyframe
+        uint32_t exposed_num = 0;
         if (rf::is_server && ep != rf::local_player_entity && pp->entity_handle != ep->handle
             && ep->obj_interp && ep->obj_interp->num_frames() > 0) {
             const uint16_t tick = ep->obj_interp->newest_frame_time();
@@ -3411,55 +3712,173 @@ FunHook<int(rf::Player*, rf::Entity*, void*)> pack_obj_update_data_hook{
             const uint64_t key = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(pp)) << 32
                 | static_cast<uint32_t>(ep->handle);
             auto [it, inserted] = g_sent_obj_update_ticks.try_emplace(key, tick);
+            // Unsynchronized equal-rate clocks give one window two keyframes and the next none: send the older
+            // one now, a backlog of at most one. Skipped where it only adds delay (a source sending faster than this
+            // server, server-sampled rings).
+            rf::ObjInterp& interp = *ep->obj_interp;
+            const int n = interp.num_frames();
+            int idx = n - 1;
             if (!inserted) {
-                if (it->second == tick) {
+                if (n >= 2 && wrapped_diff16(interp.time_array[n - 2], it->second) > 0
+                    && static_cast<int>(g_alpine_game_config.server_netfps) >= source_client_net_fps(ep)
+                    && !vehicle_server_samples_rows(ep) && !server_bot_from_entity(ep)) {
+                    idx = n - 2;
+                }
+                if (it->second == interp.time_array[idx]) {
                     return 0; // no new keyframe since the last send to this player
                 }
-                it->second = tick;
+                it->second = interp.time_array[idx];
+            }
+            if (idx != n - 1) {
+                // get_entity_data packs slot num-1; expose the older slot for this call only
+                exposed = &interp;
+                exposed_num = interp.num;
+                interp.num = static_cast<uint32_t>(idx + 1);
             }
         }
-        return pack_obj_update_data_hook.call_target(pp, ep, data);
+        const int len = pack_obj_update_data_hook.call_target(pp, ep, data);
+        if (exposed) {
+            exposed->num = exposed_num;
+        }
+        if (rf::is_server && pp->delta_obj_update && len > 0) {
+            // Rewrite the stock record in place as a delta against the newest snapshot this client acked
+            return obj_update_delta::server_pack(pp, ep, static_cast<uint8_t*>(data), len);
+        }
+        return len;
     },
 };
 
-ConsoleCommand2 netfps_cmd{
-    "sv_netfps",
-    [] (std::optional<int> update_rate) {
-        if (update_rate) {
-            setting_console_set("server_netfps", std::to_string(*update_rate));
-        }
-        rf::console::print("Server netfps: {}", g_alpine_game_config.server_netfps);
-    },
-    "Set number of updates sent from server to clients per second",
-};
-
-CodeInjection obj_interp_rotation_fix{
-    0x0048443C,
-    [](auto& regs) {
-        auto& phb_diff = addr_as_ref<rf::Vector3>(regs.ecx);
-        constexpr float pi = 3.141592f;
-        if (phb_diff.y > pi) {
-            phb_diff.y -= 2 * pi;
-        }
-        else if (phb_diff.y < -pi) {
-            phb_diff.y += 2 * pi;
-        }
+// send_players_obj_update_packets builds a stock 0x26 packet per recipient; for delta recipients the
+// records inside are already delta-encoded, so re-frame the packet as af_obj_update_delta with a seq.
+// The mid-loop flush (buffer full) runs before the just-packed record is copied in; the final send after
+// the loop includes it.
+CallHook<void(rf::Player*, const void*, int)> obj_update_flush_send_hook{
+    0x0047E73E,
+    [](rf::Player* pp, const void* packet, int len) {
+        if (pp->delta_obj_update)
+            obj_update_delta::server_send(pp, static_cast<const uint8_t*>(packet), len, false);
+        else
+            obj_update_flush_send_hook.call_target(pp, packet, len);
     },
 };
 
-CodeInjection obj_interp_too_fast_fix{
-    0x00483C3B,
-    [] (auto& regs) {
-        // Make all calculations on milliseconds instead of using microseconds and rounding them up
-        const int now = static_cast<int>(demo_playback_interp_clock_ms());
-        const int frame_time_us = regs.ebp;
-        regs.eax = now - frame_time_us;
-        regs.edi = now;
+CallHook<void(rf::Player*, const void*, int)> obj_update_final_send_hook{
+    0x0047E7A1,
+    [](rf::Player* pp, const void* packet, int len) {
+        if (pp->delta_obj_update)
+            obj_update_delta::server_send(pp, static_cast<const uint8_t*>(packet), len, true);
+        else
+            obj_update_final_send_hook.call_target(pp, packet, len);
+    },
+};
+
+void server_apply_net_rate()
+{
+    apply_maximum_fps(); // dedicated fps follows the tier
+    // Connected clients follow the new tier now rather than at the next 3.5 s stock refresh
+    if (rf::is_server) {
+        for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+            rf::update_player_rate(&player);
+        }
+    }
+}
+
+void server_set_net_rate(unsigned netfps)
+{
+    // Snapped here: anything but an exact tier is medium
+    const auto& tier = AlpineGameSettings::net_rate_tier(netfps);
+    setting_console_set("server_bandwidth", std::to_string(&tier - AlpineGameSettings::net_rate_tiers));
+    // Listen host: the tier lives in alpine_settings.ini (ServerBandwidth). A dedicated server's comes from
+    // the `bandwidth` key in its config; a runtime change there lasts until the next load of that config.
+    alpine_core_config_save();
+    rf::console::print("Server bandwidth: {} ({} netfps, {} fps)",
+                       g_alpine_game_config.server_net_rate_tier().name,
+                       g_alpine_game_config.server_netfps,
+                       g_alpine_game_config.server_net_rate_tier().server_fps);
+}
+
+ConsoleCommand2 sv_bandwidth_cmd{
+    "sv_bandwidth",
+    [] (std::optional<std::string> tier) {
+        const auto& tiers = AlpineGameSettings::net_rate_tiers;
+        const AlpineGameSettings::NetRateTier* next = nullptr;
+        if (tier) {
+            const auto it = std::find_if(std::begin(tiers), std::end(tiers),
+                                         [&](const auto& t) { return string_iequals(*tier, t.name); });
+            if (it == std::end(tiers)) {
+                rf::console::print("Usage: sv_bandwidth [low|medium|high]");
+                return;
+            }
+            next = it;
+        }
+        else {
+            const auto* it = &g_alpine_game_config.server_net_rate_tier();
+            next = it + 1 == std::end(tiers) ? std::begin(tiers) : it + 1;
+        }
+        server_set_net_rate(next->netfps);
+    },
+    "Cycle or set the server bandwidth tier: low (20 net updates/s at 40 fps), medium (40 at 80 fps, "
+    "matching 1.4) or high (100 at 200 fps).",
+    "sv_bandwidth [low|medium|high]",
+};
+
+void apply_client_rate()
+{
+    rf::client_rate = static_cast<int>(g_alpine_game_config.client_rate);
+    if (rf::local_player && rf::local_player->net_data) {
+        rf::local_player->net_data->max_update_rate = rf::client_rate;
+        if (rf::is_multi && !rf::is_server) {
+            rf::send_rate_packet(rf::local_player->net_data->player_id, rf::client_rate);
+        }
+    }
+}
+
+// multi_init's registry read of UpdateRate; the ini holds it now
+FunHook<void()> multi_load_client_rate_hook{
+    0x004806B0,
+    []() {
+        apply_client_rate();
+    },
+};
+
+// Stock refuses the multiplayer menu and dedicated server start until UpdateRate is in the registry
+FunHook<int()> multi_rate_configured_hook{
+    0x0046F090,
+    []() {
+        return 1;
+    },
+};
+
+// The `rate` command's registry write of UpdateRate
+CallHook<void(const char*, const char*, int)> rate_cmd_save_hook{
+    0x0048062A,
+    [](const char*, const char*, int rate) {
+        g_alpine_game_config.client_rate = static_cast<unsigned>(std::clamp(rate, 1000, 1000000));
+    },
+};
+
+// The rate packet carries 16 bits, so stock `rate t1` and `rate lan` (200000) arrived as 3392
+FunHook<void(int, int)> send_rate_packet_hook{
+    0x00480700,
+    [](int player_id, int rate) {
+        send_rate_packet_hook.call_target(player_id, std::min(rate, 0xFFFF));
+    },
+};
+
+// Stock `rate` sets the bytes/s budget a server scales its obj_update frequency by. 1.5 servers send the
+// sv_bandwidth tier to every client instead (update_player_rate_hook).
+FunHook<void()> dcf_rate_hook{
+    0x004803E0,
+    []() {
+        dcf_rate_hook.call_target();
+        if (rf::console::run || rf::console::help) {
+            rf::console::print("Note: rate applies only on servers older than Alpine Faction 1.5");
+        }
     },
 };
 
 // set_next_pos_orient stamps each sample's arrival (last_update_time) and logs the gap into
-// arrive_time_diff on the clock frame_advance runs on
+// arrive_time_diff on the demo interp clock, which follows the timescale and holds while paused
 CallHook<int(int)> obj_interp_arrival_timer_get_hook{
     {0x0048339C, 0x004833B5},
     [](int) {
@@ -4018,8 +4437,8 @@ CodeInjection send_players_obj_update_packets_injection{
     0x0047E787,
     [](auto& regs) {
         rf::Player* player = regs.esi;
-        // use new packet for clients that can process it (Alpine 1.1+)
-        if (player) {
+        // use new packet for clients that can process it (Alpine 1.1+); delta recipients get ammo in-stream
+        if (player && !player->delta_obj_update) {
             if (is_player_minimum_af_client_version(player, 1, 1, 0)) {
                 af_send_obj_update_packet(player);
             }
@@ -4207,6 +4626,13 @@ void network_init()
     // Support af_obj_update packet
     send_players_obj_update_packets_injection.install();
 
+    // Delta-compressed obj_update stream (af_obj_update_delta / af_obj_update_ack)
+    obj_update_flush_send_hook.install();
+    obj_update_final_send_hook.install();
+    // The re-framed packet carries a 2-byte seq: lower the loop's 0x1FC flush threshold to match so
+    // it never exceeds the 512-byte unreliable send buffer
+    write_mem<i32>(0x0047E71E, 0x1FA);
+
     // Improve simultaneous ping
     rf::simultaneous_ping = 32;
 
@@ -4344,8 +4770,18 @@ void network_init()
 
     // Allow changing client and server update rate
     client_update_rate_injection.install();
-    server_update_rate_injection.install();
-    netfps_cmd.register_cmd();
+    client_obj_update_due_hook.install();
+    client_obj_update_send_hook.install();
+    update_player_rate_hook.install();
+    sv_bandwidth_cmd.register_cmd();
+    dcf_rate_hook.install();
+    multi_load_client_rate_hook.install();
+    multi_rate_configured_hook.install();
+    rate_cmd_save_hook.install();
+    send_rate_packet_hook.install();
+    write_mem_ptr(0x004803C6, "Sets multiplayer update rate (bytes per second), only used by servers older than Alpine Faction 1.5");
+
+    netmeter_apply_patches();
 
     // Make average obj_update send rate framerate-independent (deadline-based rescheduling)
     server_obj_update_schedule_injection.install();
@@ -4354,15 +4790,11 @@ void network_init()
     entity_turn_weapon_on_hook.install();
     entity_turn_weapon_off_hook.install();
 
-    // Skip obj_update records that carry no new keyframe, so sv_netfps above the client send
-    // rate doesn't flood receivers with duplicate keyframes that degrade interpolation
+    // Skip obj_update records that carry no new keyframe, so a server sending faster than its
+    // clients doesn't flood receivers with duplicate keyframes that degrade interpolation
     pack_obj_update_data_hook.install();
 
-    // Fix rotation interpolation (Y axis) when it goes from 360 to 0 degrees
-    obj_interp_rotation_fix.install();
-
-    // Fix object interpolation playing too fast causing a possible jitter
-    obj_interp_too_fast_fix.install();
+    // Stamp interp sample arrivals on the demo interp clock
     obj_interp_arrival_timer_get_hook.install();
 
     // Send trigger_activate packets for late joiners

@@ -13,7 +13,7 @@
 // #define IDD_OPTIONS_GRAPHICS            106
 #define IDD_OPTIONS_MISC                107
 // #define IDD_OPTIONS_AUDIO               108
-#define IDD_OPTIONS_MULTIPLAYER         109
+// #define IDD_OPTIONS_MULTIPLAYER         109
 // #define IDD_OPTIONS_INPUT               110
 // #define IDD_OPTIONS_INTERFACE           111
 #define IDD_OPTIONS_ADVANCED            112
@@ -59,8 +59,8 @@
 #define IDC_APP_VERSION                 1040
 #define IDC_LICENSE_LINK                1041
 #define IDC_SRC_LINK                    1042
-#define IDC_RATE_EDIT                   1043
-#define IDC_ADAPTER_COMBO               1044
+// #define IDC_RATE_EDIT                   1043
+#define IDC_DISPLAY_COMBO               1044
 // #define IDC_BIG_HUD_CHECK               1045
 // #define IDC_SWAP_ASSAULT_RIFLE_CONTROLS 1046
 // #define IDC_SWAP_GRENADE_CONTROLS       1047
@@ -71,7 +71,7 @@
 #define IDC_DISPLAY_OPTIONS_BOX         1052
 #define IDC_MISC_OPTIONS_BOX            1053
 // #define IDC_AUDIO_OPTIONS_BOX           1054
-#define IDC_MULTIPLAYER_OPTIONS_BOX     1055
+// #define IDC_MULTIPLAYER_OPTIONS_BOX     1055
 // #define IDC_INPUT_OPTIONS_BOX           1056
 // #define IDC_INTERFACE_OPTIONS_BOX       1057
 #define IDC_RENDERER_COMBO              1058

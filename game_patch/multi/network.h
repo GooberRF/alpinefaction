@@ -202,14 +202,17 @@ struct AlpineFactionJoinAcceptPacketExt
         stats_enabled       = 1u << 27,
         scrapyard_gibs      = 1u << 28,
         no_exposure_damage  = 1u << 29,
+        projectile_lag_comp = 1u << 30,
+        delta_obj_update    = 1u << 31, // server sends af_obj_update_delta to clients that asked
     } flags = Flags::none;
 
     float max_fov = 0.0f;
     int32_t semi_auto_cooldown = 0;
-
+    uint16_t server_netfps = 0; // only feeds the client's netmeter; 0: server predates this field
+    uint16_t projectile_lag_comp_max_ms = 0; // server's cap on the projectile advance
 };
 #pragma pack(pop)
-static_assert(sizeof(AlpineFactionJoinAcceptPacketExt) == 20, "unexpected AlpineFactionJoinAcceptPacketExt size");
+static_assert(sizeof(AlpineFactionJoinAcceptPacketExt) == 24, "unexpected AlpineFactionJoinAcceptPacketExt size");
 template<>
 struct EnableEnumBitwiseOperators<AlpineFactionJoinAcceptPacketExt::Flags> : std::true_type {};
 
@@ -252,6 +255,7 @@ struct AlpineFactionJoinReqPacketExt // used for stashed data during join proces
         none = 0,
         client_bot = 1u << 0,
         client_d3d11 = 1u << 1,
+        client_delta_obj_update = 1u << 2,
     };
 
     uint32_t af_signature = 0u;
@@ -327,3 +331,6 @@ void set_local_player_roles(std::vector<std::pair<uint8_t, uint8_t>> roles);
 void send_player_roles_to(rf::Player* player);
 void server_player_roles_do_frame();
 void multi_disconnect_from_server();
+void server_apply_net_rate();
+void server_set_net_rate(unsigned netfps);
+void apply_client_rate();

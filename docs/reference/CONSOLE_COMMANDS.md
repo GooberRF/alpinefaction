@@ -27,7 +27,7 @@ Argument notation: `<x>` is required, `[x]` is optional. A `[bool]` argument acc
 | `level_info` (`map_info`) | | Shows information about the current level: file, name, author, RFL version, Alpine and Dash level properties, `_info.tbl` overrides and mesh replacements. |
 | `levelm` (`mapm`) | `<filename>` | Starts a new local multiplayer game on the level. Not available on dedicated servers. |
 | `map` | `<filename>` | Alias of the stock `level` command, which Alpine also allows outside multiplayer. Allowed via rcon. |
-| `maxfps` | `[limit]` | Sets the frame rate limit (10-100000, default 240). On a dedicated server it sets the server limit (default 80). Allowed via rcon. |
+| `maxfps` | `[limit]` | Sets the frame rate limit (10-100000, default 240). On a dedicated server the limit follows `sv_bandwidth` and cannot be set. Allowed via rcon. |
 | `save_commands` | | Stock RF command. Prints all console commands to `console_commands.txt`. |
 | `screenshot` | | Saves a screenshot and prints its file name. |
 | `script` | `<scriptfilename>` | Stock RF command. Runs a console script file from the game directory. |
@@ -258,6 +258,7 @@ Commands marked "D3D11 only" only have an effect with the Direct3D 11 renderer.
 | `ui_scoreboard_split_idle` | | Toggles grouping idle players separately on the scoreboard. Default: off. |
 | `ui_scoreboard_split_spectators` | | Toggles grouping spectators separately on the scoreboard. Default: on. |
 | `ui_show_fps` | | Toggles the FPS counter. Default: on. |
+| `ui_show_netmeter` | | Toggles the network meter: update rates, jitter, missed updates, interpolation delay and bandwidth. Default: off. |
 | `ui_show_ping` | | Toggles the ping counter. Default: on. |
 | `ui_show_speed` | | Toggles the speed meter. Default: off. |
 | `ui_simple_server_chat_messages` | | Toggles simple server chat messages. Default: on. |
@@ -300,6 +301,7 @@ Colors are hex `RRGGBB` or `RRGGBBAA`, or comma-separated `R,G,B[,A]` values in 
 | `mp_playercount` | | Prints the number of players. Multiplayer only. |
 | `mute_all_players` | | Toggles muting all players in chat. Not saved. |
 | `mute_player` | `<player_name>` | Toggles muting one player in chat. Not saved. |
+| `rate` | `[modem\|isdn\|cable\|t1\|lan\|<bytes/s>\|?]` | Sets the connection rate in bytes/s that servers older than Alpine Faction 1.5 scale how often they send you updates by; Alpine Faction 1.5 servers ignore it and send every client the `sv_bandwidth` rate. `rate ?` prints the current rate. Saved as the `Client rate for legacy servers` setting. |
 | `spray` | `[id]` | Selects the spray to use; without an id, also lists the available sprays. Default: 0. |
 
 ## Vehicles
@@ -371,6 +373,7 @@ Colors are hex `RRGGBB` or `RRGGBBAA`, or comma-separated `R,G,B[,A]` values in 
 | `sv_afstats_events_reset` | | Clears a stuck send and resumes the FactionFiles stats event stream without discarding queued events. Allowed via rcon. |
 | `sv_afstats_events_status` | | Shows the status of the FactionFiles stats event stream. Allowed via rcon. |
 | `sv_afstats_trace` | `[0\|1]` | Logs the full JSON of every built stats batch. Allowed via rcon. |
+| `sv_bandwidth` | `[low\|medium\|high]` | Sets the server bandwidth tier, or moves to the next one when run without one. `low` sends clients 20 updates per second and runs a dedicated server at 40 FPS; `medium` sends 40 per second at 80 FPS; `high` sends 100 per second at 200 FPS. Alpine Faction 1.5 clients send 100 updates per second to Alpine Faction 1.5 servers (once per frame below 100 FPS) and 40 to older servers. On a dedicated server the change lasts until the config is next loaded (see `bandwidth` in the dedicated server config). Default: medium. Allowed via rcon. |
 | `sv_caplimit` | `<captures>` | Stock RF command. Sets the capture limit. Server only. Allowed via rcon. |
 | `sv_checkmaps` | | Checks whether any level in the rotation or vote-allowed list is unavailable for autodownload from FactionFiles. Dedicated only. |
 | `sv_countclients` | | Stock RF command. Shows the number of connected clients. |
@@ -385,7 +388,6 @@ Colors are hex `RRGGBB` or `RRGGBBAA`, or comma-separated `R,G,B[,A]` values in 
 | `sv_loadconfig` | `[config]` | Loads a server config, or reloads the launch config, and applies it to the current level. Not between levels. ADS only. Allowed via rcon for full-admin rcon profiles only. |
 | `sv_loadpackfiles` | | Loads packfiles added to `user_maps\` since the server started. Dedicated only. Allowed via rcon for full-admin rcon profiles only. |
 | `sv_mute_chat` | `<player>` | Toggles a server-wide chat mute on a player, held by IP until they are unmuted or the server restarts. Server only. Allowed via rcon. |
-| `sv_netfps` | `[rate]` | Sets how many updates per second the server sends to clients (12-300). Default: 40. Allowed via rcon. |
 | `sv_pass` | `[password]` | Sets the server password, or removes it when run without one. Server only. Allowed via rcon. |
 | `sv_printconfig` | | Prints the current server configuration. ADS only. |
 | `sv_printrules` | `[filename]` | Prints the rules for a level in the rotation, or the active rules for the current level. ADS only. |
