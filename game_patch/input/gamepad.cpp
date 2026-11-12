@@ -10,6 +10,7 @@
 #include "../multi/vehicles/vehicle_view.h"
 #include <algorithm>
 #include <cmath>
+#include <format>
 #include <optional>
 #include <patch_common/FunHook.h>
 #include <patch_common/CodeInjection.h>
@@ -30,6 +31,9 @@
 #include "../misc/settings_registry.h"
 #include "../misc/misc.h"
 #include "../main/main.h"
+#include "../ui/menu_shell.h"
+#include "../ui/settings_menu.h"
+#include "../ui/settings_skin.h"
 #include <common/utils/os-utils.h>
 #include <SDL3/SDL.h>
 #include "../rf/os/os.h"
@@ -78,6 +82,7 @@ static float g_message_log_close_cooldown = 0.0f;
 static float g_menu_cursor_accum_x = 0.0f;
 static float g_menu_cursor_accum_y = 0.0f;
 static bool g_gyro_menu_cursor_active = false;
+static UiContext g_gyro_cursor_toasts;
 
 struct MenuNavState {
     int   deferred_btn_down  = -1;   // SDL button queued from poll for button-down
@@ -434,6 +439,7 @@ static void reset_gamepad_input_state()
     g_menu_cursor_accum_x = 0.0f;
     g_menu_cursor_accum_y = 0.0f;
     g_gyro_menu_cursor_active = false;
+    g_gyro_cursor_toasts.reset();
     input_clear_recent_gamepad();
 }
 
@@ -729,8 +735,17 @@ static bool menu_nav_on_button_down(int btn)
     const SDL_GamepadButton gyro_cursor_btn = g_alpine_game_config.gamepad_swap_sticks
         ? SDL_GAMEPAD_BUTTON_RIGHT_STICK : SDL_GAMEPAD_BUTTON_LEFT_STICK;
     if (btn == gyro_cursor_btn) {
-        if (g_motion_sensors_supported && g_alpine_game_config.gamepad_gyro_menu_cursor_sensitivity > 0.0f)
+        if (g_motion_sensors_supported && g_alpine_game_config.gamepad_gyro_menu_cursor_sensitivity > 0.0f) {
             g_gyro_menu_cursor_active = !g_gyro_menu_cursor_active;
+            const std::string text = g_gyro_menu_cursor_active
+                ? std::format("Gyro Cursor is enabled. Press {} to disable Gyro Cursor.",
+                    gamepad_get_scan_code_name(CTRL_GAMEPAD_SCAN_BASE + static_cast<int>(gyro_cursor_btn)))
+                : "Gyro Cursor is disabled.";
+            if (rf::gameseq_get_state() == rf::GS_OPTIONS_MENU && !legacy_menus_enabled())
+                settings_menu_push_toast(text.c_str());
+            else
+                g_gyro_cursor_toasts.push_toast(text);
+        }
         return true;
     }
     switch (btn) {
@@ -1248,6 +1263,24 @@ float gamepad_consume_menu_scroll()
         return 0.0f;
     }
     return std::clamp(menu_nav_scroll_axis(), -1.0f, 1.0f);
+}
+
+void gamepad_draw_menu_toasts()
+{
+    if (!is_gamepad_menu_navigation_state()
+        || (rf::gameseq_get_state() == rf::GS_OPTIONS_MENU && !legacy_menus_enabled())) {
+        g_gyro_cursor_toasts.reset();
+        return;
+    }
+    if (!g_gyro_cursor_toasts.has_toasts())
+        return;
+
+    g_gyro_cursor_toasts.begin_pass(UiPass::Draw);
+    g_gyro_cursor_toasts.style = settings_menu_style();
+    const float scale = menu_screen_scale();
+    g_gyro_cursor_toasts.set_scale(scale);
+    g_gyro_cursor_toasts.draw_toasts(menu_font(false, 17.0f, scale));
+    rf::gr::reset_clip();
 }
 
 static void gamepad_do_menu_frame()

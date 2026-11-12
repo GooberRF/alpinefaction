@@ -23,6 +23,7 @@ void gamepad_play_rumble(const RumbleEffect& effect, bool is_alt_fire = false);
 void gamepad_stop_rumble(); // immediately silence all rumble motors
 
 void gamepad_do_frame();
+void gamepad_draw_menu_toasts();
 void consume_raw_gamepad_deltas(float& pitch_delta, float& yaw_delta);
 void consume_vehicle_orbit_gamepad_deltas(float& pitch_delta, float& yaw_delta);
 void flush_freelook_gamepad_deltas();

@@ -20,6 +20,7 @@
 #include "../hud/multi_scoreboard.h"
 #include "../hud/remote_server_cfg_ui.h"
 #include "../input/control_input_filter.h"
+#include "../input/gamepad.h"
 #include "../multi/alpine_packets.h"
 #include "../multi/demo/demo_ui.h"
 #include "../multi/multi.h"
@@ -3125,6 +3126,7 @@ FunHook<void(int, int)> gameseq_state_do_frame_hook{
         if (depth.is_outermost()) {
             vote_panel_gameplay_render();
             demo_controls_ui_render();
+            gamepad_draw_menu_toasts();
         }
     },
 };

@@ -3624,6 +3624,11 @@ void settings_menu_enter()
     g_ui.set_hover_sound_enabled(true);
 }
 
+void settings_menu_push_toast(const char* text)
+{
+    g_ui.push_toast(text);
+}
+
 void settings_menu_do_frame(bool paused)
 {
     advance_animation();

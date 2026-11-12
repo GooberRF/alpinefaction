@@ -379,6 +379,7 @@ public:
 
     // -------- toasts --------
     void push_toast(std::string text);
+    [[nodiscard]] bool has_toasts() const { return !toasts_.empty(); }
     void draw_toasts(int font);
 
     // -------- description pane state --------
