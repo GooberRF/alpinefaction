@@ -1568,9 +1568,9 @@ void consume_raw_gamepad_deltas(float& pitch_delta, float& yaw_delta)
         gamepad_apply_joystick(cam_x, cam_y, cam_dz, gamepad_zoom_sens, yaw_delta, pitch_delta);
     }
 
-    // Single-player vehicles keep their gyro opt-in; in multiplayer this is never the vehicle camera,
-    // so a turret's aim follows normal gyro.
-    const bool sp_vehicle = !rf::is_multi && has_player_entity && rf::entity_in_vehicle(rf::local_player_entity);
+    // A jeep gunners keeps the camera, turret aim also follows gyro camera.
+    const bool sp_vehicle = !rf::is_multi && has_player_entity && rf::entity_in_vehicle(rf::local_player_entity)
+        && !rf::entity_is_jeep_gunner(rf::local_player_entity);
     if (!freelook_camera_active && gyro_look_allowed(sp_vehicle))
         gamepad_apply_gyro(has_player_entity, yaw_delta, pitch_delta);
 
