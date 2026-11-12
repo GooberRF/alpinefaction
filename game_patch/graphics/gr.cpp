@@ -2,6 +2,7 @@
 #include <cctype>
 #include <common/error/d3d-error.h>
 #include <common/utils/list-utils.h>
+#include <common/utils/display-utils.h>
 #include <common/utils/os-utils.h>
 #include <common/config/BuildConfig.h>
 #include <common/lighting/alpine_lighting.h>
@@ -60,16 +61,56 @@ bool should_bypass_graphics_init_for_headless_bot()
     return is_headless_mode() || headless_requested_from_raw_cmdline();
 }
 
+const std::optional<DisplayInfo>& gr_get_display()
+{
+    static const auto display = [] {
+        auto display = resolve_display(g_game_config.display_device.value());
+        if (display) {
+            xlog::info("[Display] {} ({})", display->friendly_name, display->device_path);
+        }
+        return display;
+    }();
+    return display;
+}
+
+// Stock gr_init places the window on the primary display
+static void gr_init_move_window_to_display()
+{
+    const auto& display = gr_get_display();
+    if (!display || display->primary || g_game_config.wnd_mode == GameConfig::STRETCHED) {
+        return;
+    }
+    if (rf::gr::screen.window_mode == rf::gr::WINDOWED) {
+        RECT rect;
+        if (!GetWindowRect(rf::main_wnd, &rect)) {
+            return;
+        }
+        // Like stock: centered horizontally at the top of the work area
+        const RECT& work = display->work_rect;
+        const int x = std::max(work.left + (work.right - work.left - (rect.right - rect.left)) / 2, work.left);
+        SetWindowPos(rf::main_wnd, nullptr, x, work.top, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    else if (rf::gr::screen.window_mode == rf::gr::FULLSCREEN) {
+        // D3D11 goes fullscreen on the output holding most of the window, and stock sizes it to the primary display
+        const RECT& mon = display->monitor_rect;
+        SetWindowPos(rf::main_wnd, nullptr, mon.left, mon.top, mon.right - mon.left, mon.bottom - mon.top,
+            SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+}
+
 CodeInjection gr_init_stretched_window_injection{
     0x0050C464,
     [](auto& regs) {
         if (g_game_config.wnd_mode == GameConfig::STRETCHED) {
             // Make sure stretched window is always full screen
-            auto cx = GetSystemMetrics(SM_CXSCREEN);
-            auto cy = GetSystemMetrics(SM_CYSCREEN);
+            RECT rect{0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)};
+            if (const auto& display = gr_get_display()) {
+                rect = display->monitor_rect;
+            }
             SetWindowLongA(rf::main_wnd, GWL_STYLE, WS_POPUP | WS_SYSMENU);
             SetWindowLongA(rf::main_wnd, GWL_EXSTYLE, 0);
-            SetWindowPos(rf::main_wnd, HWND_NOTOPMOST, 0, 0, cx, cy, SWP_SHOWWINDOW);
+            SetWindowPos(rf::main_wnd, HWND_NOTOPMOST, rect.left, rect.top, rect.right - rect.left,
+                rect.bottom - rect.top, SWP_SHOWWINDOW);
             regs.eip = 0x0050C551;
         }
     },
@@ -87,6 +128,7 @@ CodeInjection gr_init_headless_skip_backend_injection{
     0x0050C551,
     [](auto& regs) {
         if (!should_bypass_graphics_init_for_headless_bot()) {
+            gr_init_move_window_to_display();
             return;
         }
 

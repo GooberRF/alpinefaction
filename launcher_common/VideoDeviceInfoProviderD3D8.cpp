@@ -12,9 +12,8 @@ class VideoDeviceInfoProviderD3D8 : public VideoDeviceInfoProvider
 public:
     VideoDeviceInfoProviderD3D8();
     ~VideoDeviceInfoProviderD3D8() override = default;
-    std::vector<std::string> get_adapters() override;
-    std::set<Resolution> get_resolutions(unsigned adapter, unsigned format) override;
-    std::set<uint32_t> get_multisample_types(uint32_t adapter, uint32_t format, bool windowed) override;
+    std::set<Resolution> get_resolutions(const DisplayInfo& display, unsigned format) override;
+    std::set<uint32_t> get_multisample_types(const DisplayInfo& display, uint32_t format, bool windowed) override;
 
     unsigned get_format_from_bpp(unsigned bpp) override
     {
@@ -25,6 +24,8 @@ public:
     }
 
 private:
+    unsigned get_adapter(const DisplayInfo& display);
+
     DynamicLinkLibrary m_lib;
     ComPtr<IDirect3D8> m_d3d;
 };
@@ -44,25 +45,17 @@ VideoDeviceInfoProviderD3D8::VideoDeviceInfoProviderD3D8() :
         THROW_EXCEPTION("Direct3DCreate8 failed");
 }
 
-std::vector<std::string> VideoDeviceInfoProviderD3D8::get_adapters()
+unsigned VideoDeviceInfoProviderD3D8::get_adapter(const DisplayInfo& display)
 {
-    std::vector<std::string> adapters;
-    auto count = m_d3d->GetAdapterCount();
-    for (unsigned i = 0; i < count; ++i) {
-        D3DADAPTER_IDENTIFIER8 adapter_identifier;
-        auto hr = m_d3d->GetAdapterIdentifier(i, 0, &adapter_identifier);
-        if (SUCCEEDED(hr)) {
-            adapters.emplace_back(adapter_identifier.Description);
-        }
-        else {
-            xlog::error("GetAdapterIdentifier failed {:x}", hr);
-        }
-    }
-    return adapters;
+    auto adapter = find_adapter_for_display(display, m_d3d->GetAdapterCount(), [this](unsigned i) {
+        return m_d3d->GetAdapterMonitor(i);
+    });
+    return adapter.value_or(D3DADAPTER_DEFAULT);
 }
 
-std::set<VideoDeviceInfoProvider::Resolution> VideoDeviceInfoProviderD3D8::get_resolutions(unsigned adapter, unsigned format)
+std::set<VideoDeviceInfoProvider::Resolution> VideoDeviceInfoProviderD3D8::get_resolutions(const DisplayInfo& display, unsigned format)
 {
+    const unsigned adapter = get_adapter(display);
     std::set<Resolution> result;
     unsigned mode_idx = 0;
     while (true) {
@@ -83,10 +76,11 @@ std::set<VideoDeviceInfoProvider::Resolution> VideoDeviceInfoProviderD3D8::get_r
 }
 
 std::set<uint32_t> VideoDeviceInfoProviderD3D8::get_multisample_types(
-    const uint32_t adapter,
+    const DisplayInfo& display,
     const uint32_t format,
     const bool windowed)
 {
+    const unsigned adapter = get_adapter(display);
     std::set<uint32_t> result{};
     for (uint32_t i = 2; i <= 16; ++i) {
         const HRESULT hr = m_d3d->CheckDeviceMultiSampleType(

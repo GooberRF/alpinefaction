@@ -136,7 +136,6 @@ bool GameConfig::visit_vars(T&& visitor, bool is_save)
     result &= visitor(red_faction_key, "Resolution Height", res_height);
     result &= visitor(red_faction_key, "Resolution Bit Depth", res_bpp);
     result &= visitor(red_faction_key, "Resolution Backbuffer Format", res_backbuffer_format);
-    result &= visitor(red_faction_key, "Selected Video Card", selected_video_card);
     result &= visitor(red_faction_key, "Vsync", vsync);
     result &= visitor(red_faction_key, "Geometry Cache Size", geometry_cache_size);
     result &= visitor(red_faction_key, "EAX", eax_sound);
@@ -145,6 +144,7 @@ bool GameConfig::visit_vars(T&& visitor, bool is_save)
     RegKey alpine_faction_key(red_faction_key, af_subkey_name, is_save ? KEY_WRITE : KEY_READ, is_save);
     result &= alpine_faction_key.is_open();
     result &= visitor(alpine_faction_key, "Window Mode", wnd_mode);
+    result &= visitor(alpine_faction_key, "Display", display_device);
     result &= visitor(alpine_faction_key, "Anisotropic Filtering", anisotropic_filtering);
     result &= visitor(alpine_faction_key, "High Scanner Resolution", high_scanner_res);
     result &= visitor(alpine_faction_key, "True Color Textures", true_color_textures);
