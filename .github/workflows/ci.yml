@@ -108,12 +108,12 @@ jobs:
           -Arch x86 `
           -SkipAutomaticLocation `
           -DevCmdArguments '-vcvars_ver=14.44'
+        # CMAKE_MSVC_DEBUG_INFORMATION_FORMAT is set in order to use /Z7 for sccache compatibility.
         cmake .. `
           -G Ninja `
           -D CMAKE_C_COMPILER_LAUNCHER=sccache `
           -D CMAKE_CXX_COMPILER_LAUNCHER=sccache `
-          # Use /Z7 for sccache compatibility.
-          -D 'CMAKE_MSVC_DEBUG_INFORMATION_FORMAT=$<$<CONFIG:Debug,RelWithDebInfo>:Embedded>' `
+          -D CMAKE_MSVC_DEBUG_INFORMATION_FORMAT=$<$<CONFIG:Debug,RelWithDebInfo>:Embedded> `
           -D CMAKE_BUILD_TYPE="$env:BUILD_TYPE"
 
     - name: Build
