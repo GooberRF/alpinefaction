@@ -851,7 +851,7 @@ void open_ff_link_info_and_close_game()
 
 // defaults if alpine_settings.ini isn't loaded
 void set_alpine_config_defaults() {
-    rf::game_set_gore_level(2);
+    rf::game_set_gore_level(1);
     rf::g_fast_animations = false;
     g_alpine_game_config.save_console_history = true; // must be set here because evaluated before config loaded
     build_time_left_string_format();
