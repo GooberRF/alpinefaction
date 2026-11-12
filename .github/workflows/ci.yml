@@ -24,7 +24,7 @@ jobs:
 
     steps:
     - uses: actions/checkout@v6
-    - uses: mozilla-actions/sccache-action@v0.0.10
+    - uses: mozilla-actions/sccache-action@v0.0.11
 
     - name: Install packages
       run: |
@@ -87,7 +87,7 @@ jobs:
 
     steps:
     - uses: actions/checkout@v6
-    - uses: mozilla-actions/sccache-action@v0.0.10
+    - uses: mozilla-actions/sccache-action@v0.0.11
 
     - name: Add VS_INSTALL and VS_TOOLS to GITHUB_ENV
       run: |
@@ -112,6 +112,8 @@ jobs:
           -G Ninja `
           -D CMAKE_C_COMPILER_LAUNCHER=sccache `
           -D CMAKE_CXX_COMPILER_LAUNCHER=sccache `
+          # Use /Z7 for sccache compatibility.
+          -D 'CMAKE_MSVC_DEBUG_INFORMATION_FORMAT=$<$<CONFIG:Debug,RelWithDebInfo>:Embedded>' `
           -D CMAKE_BUILD_TYPE="$env:BUILD_TYPE"
 
     - name: Build
