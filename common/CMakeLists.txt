@@ -40,6 +40,7 @@ set(SRCS
     include/common/utils/byte-io.h
     include/common/utils/color-utils.h
     include/common/utils/int-utils.h
+    include/common/utils/build-utils.h
     include/common/bitmap/formats.h
     include/common/bitmap/tga.h
     include/common/lightmap/alpine_lightmap.h
@@ -63,6 +64,7 @@ set(SRCS
     src/error/d3d-error.cpp
     src/utils/display-utils.cpp
     src/utils/os-utils.cpp
+    src/utils/build-utils.cpp
 )
 
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${SRCS})
