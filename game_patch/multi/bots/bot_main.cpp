@@ -25,6 +25,7 @@
 #include "bot_vehicle.h"
 #include "bot_waypoint_route.h"
 #include "../gametype.h"
+#include "../item_repickup.h"
 #include "../multi.h"
 #include "../network.h"
 #include "../payload.h"
@@ -1669,7 +1670,7 @@ bool item_matches_super_item_hoarder_target(const rf::Item& item, const rf::Item
 
 bool item_is_currently_available(const rf::Item& item)
 {
-    return (item.obj_flags & rf::OF_HIDDEN) == 0;
+    return (item.obj_flags & rf::OF_HIDDEN) == 0 && !item_repickup_blocks(bot_ctx().player, &item);
 }
 
 float get_weapon_ammo_fill_ratio(const rf::Entity& local_entity, const int weapon_type)
@@ -1683,10 +1684,7 @@ bool weapon_stay_exempts(const int weapon_type)
     if (!bot_ctx().is_server_bot) {
         return weapon_type == rf::shoulder_cannon_weapon_type;
     }
-    const auto& exemptions = g_alpine_server_config_active_rules.weapon_stay_exemptions.exemptions;
-    return std::any_of(exemptions.begin(), exemptions.end(), [&](const WeaponStayExemptionEntry& entry) {
-        return entry.exemption_enabled && entry.index == weapon_type;
-    });
+    return weapon_stay_is_exempt(weapon_type);
 }
 
 bool item_gives_owned_weapon_ammo(const rf::Entity& local_entity, const rf::ItemInfo& item_info)
@@ -1695,7 +1693,8 @@ bool item_gives_owned_weapon_ammo(const rf::Entity& local_entity, const rf::Item
     return weapon_type >= 0
         && weapon_type < rf::num_weapon_types
         && local_entity.ai.has_weapon[weapon_type]
-        && (!(rf::netgame.flags & rf::NG_FLAG_WEAPON_STAY) || weapon_stay_exempts(weapon_type));
+        && (!(rf::netgame.flags & rf::NG_FLAG_WEAPON_STAY) || weapon_stay_exempts(weapon_type)
+            || (bot_ctx().is_server_bot && g_alpine_server_config_active_rules.allow_repickup));
 }
 
 int item_ammo_weapon_type(const rf::ItemInfo& item_info)

@@ -2,6 +2,7 @@
 
 #include "bot_combat.h"
 #include "bot_context.h"
+#include "../item_repickup.h"
 #include "bot_decision_eval.h"
 #include "bot_fsm.h"
 #include "bot_goal_runtime.h"
@@ -1116,7 +1117,7 @@ int resolve_item_type_index(const rf::Item& item, const rf::ItemInfo* item_info)
 
 bool item_is_currently_available(const rf::Item& item)
 {
-    return (item.obj_flags & rf::OF_HIDDEN) == 0;
+    return (item.obj_flags & rf::OF_HIDDEN) == 0 && !item_repickup_blocks(bot_ctx().player, &item);
 }
 
 bool item_info_contains_token(const rf::ItemInfo& item_info, std::string_view token)

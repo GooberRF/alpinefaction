@@ -897,6 +897,8 @@ struct AlpineServerConfigRules
     bool fall_damage = false;
     bool exposure_damage = true;
     bool weapons_stay = false;
+    bool allow_repickup = false;
+    int repickup_timeout_ms = 0; // 0 = each item's own respawn time
     bool force_respawn = false;
     bool balance_teams = false;
     bool auto_team_balance = false;
@@ -1096,6 +1098,10 @@ struct AlpineServerConfigRules
     void set_flag_return_time(float in_time)
     {
         ctf_flag_return_time_ms = static_cast<int>(std::max(in_time * 1000.0f, 1000.0f));
+    }
+    void set_repickup_timeout(float in_seconds)
+    {
+        repickup_timeout_ms = static_cast<int>(std::clamp(in_seconds, 0.0f, 3600.0f) * 1000.0f);
     }
     void set_pvp_damage_modifier(float modifier)
     {

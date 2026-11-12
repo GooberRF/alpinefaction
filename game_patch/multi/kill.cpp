@@ -31,6 +31,7 @@
 #include "awards.h"
 #include "sprays.h"
 #include "gungame.h"
+#include "item_repickup.h"
 #include "bagman.h"
 #include "../misc/player.h"
 #include "../misc/misc.h"
@@ -121,6 +122,7 @@ FunHook<void()> multi_level_init_hook{
         }
 
         multi_level_init_hook.call_target();
+        item_repickup_level_init();
 
         // Clear all sprays on both client and server when a new level loads.
         sprays_level_init();
@@ -492,6 +494,7 @@ void on_player_kill(rf::Player* killed_player, rf::Player* killer_player)
     if (rf::is_server) {
         killed_player->death_time.emplace(std::chrono::steady_clock::now());
     }
+    item_repickup_on_player_killed(killed_player);
 
     auto* killed_stats = static_cast<PlayerStatsNew*>(killed_player->stats);
     killed_stats->inc_deaths();
