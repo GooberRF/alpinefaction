@@ -108,12 +108,14 @@ jobs:
           -Arch x86 `
           -SkipAutomaticLocation `
           -DevCmdArguments '-vcvars_ver=14.44'
-        # CMAKE_MSVC_DEBUG_INFORMATION_FORMAT is set in order to use /Z7 for sccache compatibility.
+        # CMAKE_MSVC_DEBUG_INFORMATION_FORMAT is set in order to use /Z7 for sccache.
+        # CMAKE_POLICY_DEFAULT_CMP0141 is set, because we set a minimum version of 3.20.
         cmake .. `
           -G Ninja `
           -D CMAKE_C_COMPILER_LAUNCHER=sccache `
           -D CMAKE_CXX_COMPILER_LAUNCHER=sccache `
           -D CMAKE_MSVC_DEBUG_INFORMATION_FORMAT=$<$<CONFIG:Debug,RelWithDebInfo>:Embedded> `
+          -D CMAKE_POLICY_DEFAULT_CMP0141=NEW `
           -D CMAKE_BUILD_TYPE="$env:BUILD_TYPE"
 
     - name: Build
