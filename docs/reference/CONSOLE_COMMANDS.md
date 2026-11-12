@@ -268,8 +268,11 @@ Colors are hex `RRGGBB` or `RRGGBBAA`, or comma-separated `R,G,B[,A]` values in 
 | `cl_vehiclecam_pitch_smooth` | `[0.0-3.0]` | Sets how slowly the vehicle camera follows the vehicle's pitch, in seconds. Default: 0.9. |
 | `cl_vehiclecam_recenter` | `[bool]` | Eases an idle vehicle camera back behind the vehicle while it drives forward. Default: on. |
 | `cl_vehiclecam_velocity` | `[0.0-1.0]` | Sets how far the vehicle camera turns toward a land vehicle's direction of travel at speed. Default: 1.0. |
-| `cl_vehiclefx` | `[bool]` | Shows dust, sparks, spray, smoke and fire effects, with their sounds and lights, for vehicles in multiplayer. Default: on. |
+| `cl_vehicledebris` | `[bool]` | Breaks destroyed vehicles into pieces of wreckage in multiplayer. Default: on. |
+| `cl_vehicledebrisflames` | `[bool]` | Sets some of the wreckage of destroyed vehicles on fire in multiplayer. Default: on. |
+| `cl_vehiclefx` | `[bool]` | Shows dust, sparks, spray, smoke and fire effects, with their sounds and lights, and wingtip trails, for vehicles in multiplayer. Default: on. |
 | `cl_vehiclehealthbars` | `[bool]` | Shows health bars over damaged vehicles and turrets. Default: on. |
+| `cl_vehiclehitflash` | `[bool]` | Flashes a vehicle red when it takes damage in multiplayer. Default: on. |
 | `cl_vehiclehints` | `[bool]` | Shows the list of vehicle controls while riding a vehicle or turret. Default: on. |
 | `cl_vehiclehorns` | `[bool]` | Plays other players' jeep horns in multiplayer; your own always plays. Default: on. |
 | `cl_vehiclemarkers` | `[bool]` | Shows vehicle factory respawn markers and their spawn cues. Default: on. |

@@ -233,6 +233,9 @@ struct AlpineGameSettings
 
     bool vehicle_tracers = true;
     bool vehicle_effects = true;
+    bool vehicle_hit_flash = true;
+    bool vehicle_debris = true;
+    bool vehicle_debris_flames = true;
     static constexpr int default_vehicle_tracer_frequency = 1;
     static constexpr int min_vehicle_tracer_frequency = 1;
     static constexpr int max_vehicle_tracer_frequency = 10;

@@ -31,6 +31,9 @@
 #include "../vehicles/vehicle.h"
 #include "../vehicles/vehicle_tracers.h"
 #include "../vehicles/vehicle_fx.h"
+#include "../vehicles/vehicle_trails.h"
+#include "../vehicles/vehicle_render.h"
+#include "../vehicles/vehicle_debris.h"
 #include "../../misc/misc.h"
 #include "../../misc/alpine_settings.h"
 #include "../../hud/multi_spectate.h"
@@ -1338,6 +1341,9 @@ namespace
         vehicle_tracers_clear();
         haste_trails_clear();
         vehicle_fx_clear();
+        vehicle_trails_clear();
+        vehicle_hit_flash_clear();
+        vehicle_debris_clear();
         vehicle_hazard_clear_client_clocks();
         hud_world_seek_reset();
         // A delay armed during the burst before the tail would fire long after its recorded time

@@ -330,10 +330,11 @@ void vehicle_apply_orient_from_packet(int vehicle_handle, uint16_t tick, int16_t
                                       int8_t steer_q);
 
 // Client: store an af_vehicle_health update, and the values the HUD shows for a vehicle. A scrape_only drop
-// gives the riders no damage flash.
+// gives the riders no damage flash; a packet flagged hurt flashes the hull here, scrape or not.
 void vehicle_store_health_from_packet(int vehicle_handle, float life, float max_life, int primary_ammo,
                                       int secondary_ammo, uint16_t primary_refill_ms, uint16_t secondary_refill_ms,
-                                      const rf::Vector3* hit_dir = nullptr, bool scrape_only = false);
+                                      const rf::Vector3* hit_dir = nullptr, bool scrape_only = false,
+                                      bool hurt = false);
 // Total ammo (clip + reserve) for one weapon type, or -1 for a weapon with no ammo pool at all.
 // Only an exact 0 means EMPTY, so a caller gating on emptiness must test == 0, never <= 0.
 int vehicle_weapon_ammo(const rf::Entity* vehicle, int weapon_type);

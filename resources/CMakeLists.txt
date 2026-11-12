@@ -408,6 +408,12 @@ add_packfile(alpinefaction.vpp
     meshes/af_Fighter01m.v3m
     meshes/af_Sub_Mini01.v3m
     meshes/af_Sub_Mini01T.v3m
+    meshes/af_Jeep01_debris.v3m
+    meshes/af_APC_debris.v3m
+    meshes/af_Driller01_debris.v3m
+    meshes/af_Fighter01_debris.v3m
+    meshes/af_turret_plain_debris.v3m
+    meshes/af_sub_debris.v3m
     meshes/af_zipline1.v3m
 
     animations/af_female_jeep_driver.rfa

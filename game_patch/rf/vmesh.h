@@ -153,8 +153,11 @@ namespace rf
     static auto& vmesh_free = addr_as_ref<void(VMesh* vmesh)>(0x00502B10);
     // Returns prop-point index, or -1 if not found.
     static auto& vmesh_lookup_prop_point = addr_as_ref<int(VMesh* vmesh, const char* name)>(0x00503220);
-    // Number of prop points on the mesh.
-    static auto& vmesh_get_num_prop_points = addr_as_ref<int(VMesh* vmesh)>(0x005034A0);
+    // Number of submeshes (V3d::num_meshes for a static mesh).
+    static auto& vmesh_get_num_submeshes = addr_as_ref<int(VMesh* vmesh)>(0x005034A0);
+    // A static submesh's offset in the mesh and its bounding radius.
+    static auto& vmesh_get_submesh_bound =
+        addr_as_ref<void(VMesh* vmesh, int submesh, Vector3* out_offset, float* out_radius)>(0x005032F0);
     static auto& vmesh_get_prop_point_transform =
         addr_as_ref<void(VMesh* vmesh, int prop_idx, Matrix3* entity_orient, Vector3* entity_pos,
                          Matrix3* out_orient, Vector3* out_pos)>(0x005034F0);

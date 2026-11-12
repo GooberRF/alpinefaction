@@ -5,6 +5,7 @@
 
 namespace rf
 {
+    struct Debris;
     struct Object;
     struct Player;
     struct Entity;
@@ -40,6 +41,8 @@ void entity_set_gib_flag(rf::Entity* ep);
 // For the local entity or a server bot: the ground snap leaves it alone for the next 64 ms, as after a jump.
 void entity_skip_land_handling_after_jump(rf::Entity* entity);
 void gib_flames_level_init();
+// A client-side flame on a debris chunk, spawning for `burn_ms` and then left to fade; dropped past the flame cap.
+void gib_flame_attach(rf::Debris* gib, int burn_ms);
 void shell_casings_level_init();
 void riot_shield_apply_remote_state(rf::Entity* ep, float life, const rf::Vector3& impact_pos);
 void riot_shield_do_frame();

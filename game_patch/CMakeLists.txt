@@ -73,6 +73,8 @@ set(SRCS
     graphics/scene_capture.h
     graphics/mesh_preview.cpp
     graphics/mesh_preview.h
+    graphics/ribbon_trail.cpp
+    graphics/ribbon_trail.h
     graphics/legacy/gr_d3d.cpp
     graphics/legacy/gr_d3d_texture.cpp
     graphics/legacy/gr_d3d_capture.cpp
@@ -189,6 +191,10 @@ set(SRCS
     multi/vehicles/vehicle_tracers.cpp
     multi/vehicles/vehicle_fx.cpp
     multi/vehicles/vehicle_fx.h
+    multi/vehicles/vehicle_trails.cpp
+    multi/vehicles/vehicle_trails.h
+    multi/vehicles/vehicle_debris.cpp
+    multi/vehicles/vehicle_debris.h
     multi/vehicles/vehicle_horn.h
     multi/vehicles/vehicle_horn.cpp
     multi/vehicles/vehicle_physics.h

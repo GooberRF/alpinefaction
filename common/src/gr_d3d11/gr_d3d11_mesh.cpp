@@ -1155,6 +1155,23 @@ namespace gr::d3d11
                 }
             }
         }
+        if (const rf::Color& flash = ScopedMeshFlash::current(); flash.alpha > 0 && !ir_scanner) {
+            rf::gr::Mode flash_mode{
+                rf::gr::TEXTURE_SOURCE_NONE,
+                rf::gr::COLOR_SOURCE_VERTEX,
+                rf::gr::ALPHA_SOURCE_VERTEX,
+                rf::gr::ALPHA_BLEND_ALPHA,
+                rf::gr::ZBUFFER_TYPE_READ,
+                rf::gr::FOG_NOT_ALLOWED,
+            };
+            // Emissive, so the colour is flat whatever lights the mesh
+            render_context_.set_mode(flash_mode, flash, false, false, 0.0f, false, true);
+            render_context_.set_textures(-1, -1);
+            for (auto& b : batches) {
+                render_context_.set_cull_mode(b.double_sided ? D3D11_CULL_NONE : D3D11_CULL_BACK);
+                render_context_.draw_indexed(b.num_indices, b.start_index, b.base_vertex);
+            }
+        }
         if (g_ghost_fill.active) {
             render_context_.set_ghost_fill(0.0f, 0.0f);
         }

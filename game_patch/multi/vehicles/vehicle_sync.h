@@ -20,7 +20,8 @@ void vehicle_ease_aim_do_frame();
 rf::Entity* vehicle_local_firing_vehicle();
 void vehicle_server_apply_fire(rf::Entity* vehicle, const VehicleFireState& state);
 void vehicle_server_stop_fire(rf::Entity* vehicle);
-void vehicle_broadcast_health(rf::Entity* vehicle, bool is_reliable, const rf::Vector3* hit_dir = nullptr);
+void vehicle_broadcast_health(rf::Entity* vehicle, bool is_reliable, const rf::Vector3* hit_dir = nullptr,
+                              bool hurt = false);
 void vehicle_server_sync_health(rf::Entity* vehicle);
 void vehicle_tick_ammo_refill_mirrors();
 void vehicle_rider_damage_feedback(int vehicle_handle, const rf::Vector3* hit_dir);

@@ -18,6 +18,7 @@
 #include "vehicle_sync.h"
 #include "vehicle_damage.h"
 #include "vehicle_crash_tuning.h"
+#include "vehicle_debris.h"
 #include "../alpine_packets.h"
 #include "../gametype.h"
 #include "../kill_attribution.h"
@@ -2146,7 +2147,11 @@ int vehicle_occupied_damage_class(const rf::Entity* rider)
 
 void vehicle_before_entity_die(rf::Entity* ep)
 {
-    if (!rf::is_multi || !rf::is_server || !vehicle_is_synced_entity_type(ep)) {
+    if (!rf::is_multi || !vehicle_is_synced_entity_type(ep)) {
+        return;
+    }
+    vehicle_debris_spawn(ep);
+    if (!rf::is_server) {
         return;
     }
     // entity_die frees seats with entity_detach_leech, not entity_detach_from_host, so the detach

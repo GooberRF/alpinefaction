@@ -21,6 +21,7 @@
 #include "vehicle_damage.h"
 #include "vehicle_horn.h"
 #include "vehicle_view.h"
+#include "vehicle_render.h"
 #include "physics/ragdoll.h"
 #include "../alpine_packets.h"
 #include "../multi.h"
@@ -1018,7 +1019,7 @@ void vehicle_server_stop_fire(rf::Entity* vehicle)
 
 // Everyone, not just the occupants: a spectator's HUD draws the bar for the man he is watching, and
 // the demo recorder is a virtual observer player.
-void vehicle_broadcast_health(rf::Entity* vehicle, bool is_reliable, const rf::Vector3* hit_dir)
+void vehicle_broadcast_health(rf::Entity* vehicle, bool is_reliable, const rf::Vector3* hit_dir, bool hurt)
 {
     // Every send takes the blows noted since the last one. A settle keeps a scrape-only stream's word: it carries
     // the scrape residue the stream's 1-life floor held back, or a lost streamed drop.
@@ -1027,7 +1028,7 @@ void vehicle_broadcast_health(rf::Entity* vehicle, bool is_reliable, const rf::V
     sync.scraped = false;
     sync.hurt_unscraped = false;
     sync.last_streamed_scrape_only = !is_reliable && scrape_only;
-    const uint8_t flags = scrape_only ? AF_VEHICLE_HEALTH_SCRAPE_ONLY : 0;
+    const uint8_t flags = (scrape_only ? AF_VEHICLE_HEALTH_SCRAPE_ONLY : 0) | (hurt ? AF_VEHICLE_HEALTH_HURT : 0);
 
     uint16_t refill_ms[2];
     vehicle_wire_refill_ms(vehicle, timer::get_i64(1000), refill_ms);
@@ -1068,6 +1069,11 @@ void vehicle_server_sync_health(rf::Entity* vehicle)
         if (!refill_landed(0) && !refill_landed(1) && sync.next_send.valid() && !sync.next_send.elapsed()) {
             return; // the rate floor; the change goes out next window
         }
+        // Any loss, a scrape or a drain too: every machine flashes the hull for it. A listen host is sent no 0x67.
+        const bool hurt = vehicle->life < sync.last_sent_life;
+        if (hurt && !rf::is_dedicated_server) {
+            vehicle_hit_flash_start(vehicle->handle);
+        }
         sync.last_sent_life = vehicle->life;
         sync.last_sent_primary_ammo = primary;
         sync.last_sent_secondary_ammo = secondary;
@@ -1078,7 +1084,7 @@ void vehicle_server_sync_health(rf::Entity* vehicle)
         sync.settled_sent = false;
         const bool hit_is_recent = sync.hit_ms >= 0 && now - sync.hit_ms <= vehicle_hit_dir_max_age_ms;
         sync.hit_ms = -1;
-        vehicle_broadcast_health(vehicle, false, hit_is_recent ? &sync.hit_dir : nullptr);
+        vehicle_broadcast_health(vehicle, false, hit_is_recent ? &sync.hit_dir : nullptr, hurt);
         return;
     }
 
@@ -2166,7 +2172,7 @@ void vehicle_rider_damage_feedback(int vehicle_handle, const rf::Vector3* hit_di
 
 void vehicle_store_health_from_packet(int vehicle_handle, float life, float max_life, int primary_ammo,
                                       int secondary_ammo, uint16_t primary_refill_ms, uint16_t secondary_refill_ms,
-                                      const rf::Vector3* hit_dir, bool scrape_only)
+                                      const rf::Vector3* hit_dir, bool scrape_only, bool hurt)
 {
     rf::Object* obj = rf::obj_from_remote_handle(vehicle_handle);
     if (!obj) {
@@ -2180,6 +2186,9 @@ void vehicle_store_health_from_packet(int vehicle_handle, float life, float max_
     const auto prev = g_vehicle_state.health.find(obj->handle);
     const bool hull_hurt = prev != g_vehicle_state.health.end() && life < prev->second.life;
     g_vehicle_state.health[obj->handle] = VehicleHealth{life, max_life};
+    if (hurt) {
+        vehicle_hit_flash_start(obj->handle);
+    }
     // A scrape says so with its scrape effects and the gauge, not a flash every quarter second.
     if (hull_hurt && !scrape_only) {
         vehicle_rider_damage_feedback(obj->handle, hit_dir);

@@ -4674,7 +4674,8 @@ void af_process_vehicle_health_packet(const void* data, size_t len, const rf::Ne
     vehicle_store_health_from_packet(pkt.vehicle_handle, pkt.life, pkt.max_life, pkt.primary_ammo,
                                     pkt.secondary_ammo, pkt.refill_ms[0], pkt.refill_ms[1],
                                     has_hit_dir ? &hit_dir : nullptr,
-                                    (pkt.flags & AF_VEHICLE_HEALTH_SCRAPE_ONLY) != 0);
+                                    (pkt.flags & AF_VEHICLE_HEALTH_SCRAPE_ONLY) != 0,
+                                    (pkt.flags & AF_VEHICLE_HEALTH_HURT) != 0);
 }
 
 static void build_af_vehicle_factory_state_packet(af_vehicle_factory_state_packet& pkt,

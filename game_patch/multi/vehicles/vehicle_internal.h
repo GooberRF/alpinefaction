@@ -23,6 +23,9 @@
 // The jeep's mounted gun in multiplayer: vehicle_spawn repoints entity_create's jeep_gun.v3d load to it.
 inline constexpr char af_jeep_gun_mesh_filename[] = "af_jeep_gun.v3m";
 
+// Client cosmetics: a random float in [lo, hi) from the shared g_rng.
+float fx_rand(float lo, float hi);
+
 // Server: the trigger state the firing seat owner last reported; the two triggers are independent.
 struct VehicleFireState
 {
@@ -485,6 +488,8 @@ rf::Player* vehicle_seat_occupant_player(const rf::Entity* vehicle, int seat);
 
 // Server: the factory slot whose live hull this is, or null.
 VehicleSpawnSlot* vehicle_slot_for_hull(int vehicle_handle);
+// The hull's centre is under a liquid surface.
+bool vehicle_hull_in_liquid(const rf::Entity* vehicle);
 // Any seat the occupancy packet can state holds a rider.
 bool vehicle_hull_occupied(const rf::Entity* vehicle);
 bool vehicle_hazard_on_clock(int vehicle_handle);

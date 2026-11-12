@@ -109,6 +109,26 @@ namespace gr::d3d11
         static inline const Tints* tints_ = nullptr;
     };
 
+    // RAII guard: while one of these with a nonzero alpha is alive, mesh draws are covered by a flat, unlit film of
+    // its colour, alpha-blended over the whole mesh after any powerup overlays.
+    class [[nodiscard]] ScopedMeshFlash
+    {
+    public:
+        explicit ScopedMeshFlash(const rf::Color& color) noexcept : prev_{color_}
+        {
+            color_ = color;
+        }
+        ~ScopedMeshFlash() noexcept { color_ = prev_; }
+        ScopedMeshFlash(const ScopedMeshFlash&) = delete;
+        ScopedMeshFlash& operator=(const ScopedMeshFlash&) = delete;
+
+        static const rf::Color& current() noexcept { return color_; }
+
+    private:
+        rf::Color prev_;
+        static inline rf::Color color_{0, 0, 0, 0};
+    };
+
     struct BoundingBox
     {
         rf::Vector3 min{};

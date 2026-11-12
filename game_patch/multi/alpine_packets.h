@@ -896,6 +896,8 @@ enum af_vehicle_health_flags : uint8_t
 {
     // Every blow noted on the hull since the last packet was scrape damage: the riders get no damage flash.
     AF_VEHICLE_HEALTH_SCRAPE_ONLY = 0x1,
+    // The hull lost life, to anything, since the last streamed packet: it flashes.
+    AF_VEHICLE_HEALTH_HURT = 0x2,
 };
 
 // Hull angles the stock obj_update row has no slot for; tick keys them to the matching ObjInterp keyframe.

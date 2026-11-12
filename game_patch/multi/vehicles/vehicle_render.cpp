@@ -1,11 +1,14 @@
 #include <algorithm>
+#include <cstddef>
 #include <cmath>
 #include <iterator>
 #include <map>
 #include <numbers>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <unordered_map>
 #include <vector>
 #include <xlog/xlog.h>
 #include <patch_common/CallHook.h>
@@ -13,18 +16,24 @@
 #include <patch_common/FunHook.h>
 #include <common/utils/list-utils.h>
 #include <common/utils/string-utils.h>
+#include <common/gr_d3d11/gr_d3d11_mesh.h>
 #include <common/vehicle_meshes.h>
 #include "vehicle.h"
 #include "vehicle_physics.h"
 #include "vehicle_internal.h"
 #include "vehicle_render.h"
+#include "vehicle_debris.h"
 #include "../alpine_packets.h"
 #include "../bagman.h"
 #include "../gametype.h"
+#include "../demo/demo.h"
 #include "../../rf/file/file.h"
 #include "../../hud/multi_spectate.h"
+#include "../../misc/alpine_settings.h"
 #include "../../misc/level.h"
 #include "../../misc/misc.h"
+#include "../../misc/settings_registry.h"
+#include "../../os/console.h"
 #include "../../rf/ai.h"
 #include "../../rf/bmpman.h"
 #include "../../rf/entity.h"
@@ -34,6 +43,7 @@
 #include "../../rf/level.h"
 #include "../../rf/multi.h"
 #include "../../rf/object.h"
+#include "../../rf/os/console.h"
 #include "../../rf/os/frametime.h"
 #include "../../rf/physics.h"
 #include "../../rf/player/camera.h"
@@ -135,6 +145,9 @@ namespace
         [](rf::Entity* ep) {
             rf::Entity* prev = g_rendering_entity;
             g_rendering_entity = ep;
+            // Over everything the hull draws: its own mesh, tires, mounted gun and weapon tags. A nested entity
+            // opens its own, clear for anything not hit.
+            gr::d3d11::ScopedMeshFlash flash{vehicle_hit_flash_color(ep)};
             entity_render_hook.call_target(ep);
             g_rendering_entity = prev;
         },
@@ -312,6 +325,31 @@ namespace
             VehicleTeamTexSet* set = team >= 0 && mesh ? vehicle_team_tex_set(mesh, team) : nullptr;
             // Every sub-mesh must be assigned, not just coloured ones.
             params->alt_tex = set ? set->handles.data() : caller_alt_tex;
+        },
+    };
+
+    // debris_render's (0x00412D90) draw of its one piece, given the debris object's own pos (ESI + 0x3C). A single
+    // sub-mesh skips the loop the patch above serves, so a vehicle's wreckage gets its hull's team art here.
+    CallHook<void(rf::VMesh*, int, rf::Vector3*, rf::Matrix3*, rf::MeshRenderParams*)> debris_render_team_tex_hook{
+        0x00412E5B,
+        [](rf::VMesh* vmesh, int submesh, rf::Vector3* pos, rf::Matrix3* orient, rf::MeshRenderParams* params) {
+            const auto* debris =
+                reinterpret_cast<const rf::Object*>(reinterpret_cast<std::byte*>(pos) - offsetof(rf::Object, pos));
+            const int team = rf::is_multi ? vehicle_debris_team(debris->handle) : -1;
+            const auto* v3d = team >= 0 && vmesh->type == rf::MESH_TYPE_STATIC && !vmesh->use_replacement_materials
+                ? static_cast<const rf::V3d*>(vmesh->instance)
+                : nullptr;
+            VehicleTeamTexSet* set = v3d && submesh >= 0 && submesh < v3d->num_meshes
+                ? vehicle_team_tex_set(&v3d->meshes[submesh], team)
+                : nullptr;
+            if (!set) {
+                debris_render_team_tex_hook.call_target(vmesh, submesh, pos, orient, params);
+                return;
+            }
+            int* const caller_alt_tex = params->alt_tex;
+            params->alt_tex = set->handles.data();
+            debris_render_team_tex_hook.call_target(vmesh, submesh, pos, orient, params);
+            params->alt_tex = caller_alt_tex;
         },
     };
 
@@ -645,6 +683,18 @@ namespace
 rf::Entity* vehicle_rendering_entity()
 {
     return g_rendering_entity;
+}
+
+int vehicle_render_team(rf::Entity* vehicle)
+{
+    return vehicle_effective_team(vehicle);
+}
+
+bool vehicle_is_spinner_mesh_filename(const char* filename)
+{
+    return std::ranges::any_of(vehicle_spinner_configs, [filename](const VehicleSpinnerConfig& c) {
+        return string_iequals(c.mesh_filename, filename);
+    });
 }
 
 rf::Entity* vehicle_outline_occupant(rf::Entity* vehicle)
@@ -999,11 +1049,70 @@ void vehicle_tread_runtime_reset()
     }
 }
 
+namespace
+{
+    constexpr float hit_flash_s = 0.15f;
+    constexpr float hit_flash_alpha = 0.45f;
+    constexpr rf::gr::Color hit_flash_color{255, 32, 32, 255};
+
+    // Hull handle -> seconds of its flash left.
+    std::unordered_map<int, float> g_hit_flash_left;
+
+    ConsoleCommand2 vehiclehitflash_cmd{
+        "cl_vehiclehitflash",
+        [](std::optional<bool> enabled) {
+            setting_console_set_bool("vehicle_hit_flash", enabled);
+            rf::console::print("Vehicle hull damage flash is {}",
+                               g_alpine_game_config.vehicle_hit_flash ? "enabled" : "disabled");
+        },
+        "Flash a vehicle red when it takes damage in multiplayer",
+        "cl_vehiclehitflash [bool]",
+    };
+} // namespace
+
+void vehicle_hit_flash_start(int vehicle_handle)
+{
+    if (g_alpine_game_config.vehicle_hit_flash) {
+        g_hit_flash_left[vehicle_handle] = hit_flash_s;
+    }
+}
+
+void vehicle_hit_flash_do_frame()
+{
+    // Sim time, so a paused demo holds the flash and its timescale stretches it.
+    const float dt = rf::frametime * demo_playback_sim_time_scale();
+    if (!(dt > 0.0f)) {
+        return;
+    }
+    std::erase_if(g_hit_flash_left, [dt](auto& entry) { return (entry.second -= dt) <= 0.0f; });
+}
+
+void vehicle_hit_flash_clear()
+{
+    g_hit_flash_left.clear();
+}
+
+rf::gr::Color vehicle_hit_flash_color(const rf::Entity* ep)
+{
+    rf::gr::Color color = hit_flash_color;
+    color.alpha = 0;
+    if (!ep || g_hit_flash_left.empty() || !g_alpine_game_config.vehicle_hit_flash) {
+        return color;
+    }
+    if (const auto it = g_hit_flash_left.find(ep->handle); it != g_hit_flash_left.end()) {
+        color.alpha =
+            static_cast<rf::ubyte>(255.0f * hit_flash_alpha * std::clamp(it->second / hit_flash_s, 0.0f, 1.0f));
+    }
+    return color;
+}
+
 void vehicle_render_install()
 {
+    vehiclehitflash_cmd.register_cmd();
     obj_clear_render_flags_hook.install();
     obj_render_room_gate_hook.install();
     obj_mark_room_driller_route_hook.install();
     entity_render_hook.install();
     vmesh_render_static_team_tex_patch.install();
+    debris_render_team_tex_hook.install();
 }
