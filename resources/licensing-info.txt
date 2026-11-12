@@ -498,7 +498,7 @@ Portions of this software are copyright © 2024 The FreeType
 Project (www.freetype.org).  All rights reserved.
 
 ###############################################################################
-## Fonts
+## OPTIEdgar
 ###############################################################################
 
 This project uses highly modified versions of fonts:
@@ -506,16 +506,20 @@ This project uses highly modified versions of fonts:
 * OPTIEdgarBold-Extended
 Copyright Copr. Castcraft Software, Inc. 1990-1991.
 
-Console fonts (fonts/consolefont.ttf, fonts/consolefont-bold.ttf) are
-Inconsolata Regular and Bold, distributed unmodified under the SIL Open Font License, Version 1.1.
-Source: https://github.com/googlefonts/Inconsolata
+###############################################################################
+## Inconsolata
+###############################################################################
+
+Source code: https://github.com/googlefonts/Inconsolata
+
+Used unmodified as the console fonts (fonts/consolefont.ttf,
+fonts/consolefont-bold.ttf).
 
 Copyright 2006 The Inconsolata Project Authors (https://github.com/cyrealtype/Inconsolata)
 
 This Font Software is licensed under the SIL Open Font License, Version 1.1.
 This license is copied below, and is also available with a FAQ at:
 https://scripts.sil.org/OFL
-
 
 -----------------------------------------------------------
 SIL OPEN FONT LICENSE Version 1.1 - 26 February 2007
