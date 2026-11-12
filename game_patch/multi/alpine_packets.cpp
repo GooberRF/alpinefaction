@@ -6044,8 +6044,13 @@ void af_process_server_msg_packet(
         }
         af_item_repickup_payload payload{};
         std::memcpy(&payload, static_cast<const char*>(data) + sizeof(msg_packet), sizeof(payload));
+        // The wire carries the server's handle; ghosts are keyed by the local one.
+        rf::Object* item_obj = rf::obj_from_remote_handle(payload.item_handle);
+        if (!item_obj || item_obj->type != rf::OT_ITEM) {
+            return;
+        }
         // The sender is untrusted: bound the cooldown to what the rule itself allows.
-        item_repickup_client_on_taken(payload.item_handle,
+        item_repickup_client_on_taken(item_obj->handle,
             static_cast<int>(std::min<uint32_t>(payload.remaining_ms, item_repickup_max_timeout_ms)));
     }
 }
