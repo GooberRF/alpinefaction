@@ -157,8 +157,8 @@ set(SRCS
     multi/salvage.cpp
     multi/scavenger.h
     multi/scavenger.cpp
-    multi/item_repickup.h
-    multi/item_repickup.cpp
+    multi/per_player_respawn.h
+    multi/per_player_respawn.cpp
     multi/payload.h
     multi/payload.cpp
     multi/vehicles/vehicle.h

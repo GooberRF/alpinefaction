@@ -1054,7 +1054,7 @@ enum af_server_msg_type : uint8_t {
     AF_SERVER_MSG_TYPE_HUD_NOTIFICATION = 0x5, // Alpine 1.4 ( text follows after the fixed prefix)
     AF_SERVER_MSG_TYPE_ROUND_COUNTDOWN = 0x6,  // Alpine 1.4
     AF_SERVER_MSG_TYPE_PLAY_CUSTOM_SOUND = 0x7, // Alpine 1.4
-    AF_SERVER_MSG_TYPE_ITEM_REPICKUP = 0x8, // Alpine 1.5
+    AF_SERVER_MSG_TYPE_PER_PLAYER_RESPAWN = 0x8, // Alpine 1.5
 };
 
 #pragma pack(push, 1)
@@ -1074,12 +1074,12 @@ static_assert(sizeof(af_play_custom_sound_payload) == 2);
 
 // The receiving player took this item and may not take it again for remaining_ms.
 #pragma pack(push, 1)
-struct af_item_repickup_payload {
+struct af_per_player_respawn_payload {
     int32_t item_handle;
     uint32_t remaining_ms;
 };
 #pragma pack(pop)
-static_assert(sizeof(af_item_repickup_payload) == 8);
+static_assert(sizeof(af_per_player_respawn_payload) == 8);
 
 // Text follows immediately after this struct.
 // Keep in sync with HudNotificationType in hud.h.
@@ -1357,7 +1357,7 @@ void af_broadcast_round_countdown(int duration_seconds);
 
 void af_broadcast_play_custom_sound(int custom_sound_id);
 void af_send_play_custom_sound(int custom_sound_id, rf::Player* player);
-void af_send_item_repickup(rf::Player* player, int item_handle, int remaining_ms);
+void af_send_per_player_respawn(rf::Player* player, int item_handle, int remaining_ms);
 void af_send_server_console_msg(std::string_view msg, rf::Player* player, bool tell_server = false);
 
 // client requests

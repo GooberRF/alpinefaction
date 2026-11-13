@@ -2,7 +2,7 @@
 #include <map>
 #include <common/utils/list-utils.h>
 #include <patch_common/CodeInjection.h>
-#include "item_repickup.h"
+#include "per_player_respawn.h"
 #include "alpine_packets.h"
 #include "server_internal.h"
 #include "../graphics/gr_ghost_mesh.h"
@@ -27,10 +27,10 @@ namespace
     // Client: item handle -> the local player's cooldown on that copy.
     std::map<int, ItemGhost> g_ghosts;
 
-    int repickup_cooldown_ms(const rf::Item* item)
+    int respawn_ms_for(const rf::Item* item)
     {
-        const auto& timeout_ms = g_alpine_server_config_active_rules.repickup_timeout_ms;
-        return std::min(timeout_ms.value_or(item->respawn_time_ms), item_repickup_max_timeout_ms);
+        const auto& timeout_ms = g_alpine_server_config_active_rules.per_player_respawn_time_ms;
+        return std::min(timeout_ms.value_or(item->respawn_time_ms), per_player_respawn_max_ms);
     }
 
     // A detail room is drawn inside the room it hangs off, so that is the pass its ghost joins.
@@ -51,9 +51,9 @@ bool weapon_stay_is_exempt(int weapon_type)
     });
 }
 
-bool item_repickup_applies(const rf::Item* item)
+bool per_player_respawn_applies(const rf::Item* item)
 {
-    if (!rf::is_server || !g_alpine_server_config_active_rules.allow_repickup
+    if (!rf::is_server || g_alpine_server_config_active_rules.weapons_stay != WeaponStayMode::PerPlayer
         || !(rf::netgame.flags & rf::NG_FLAG_WEAPON_STAY) || !item || !item->info) {
         return false;
     }
@@ -61,65 +61,65 @@ bool item_repickup_applies(const rf::Item* item)
     return weapon_type >= 0 && !(item->item_flags & rf::IF_DROPPED) && !weapon_stay_is_exempt(weapon_type);
 }
 
-bool item_repickup_is_blocked(rf::Player* player, const rf::Item* item)
+bool per_player_respawn_is_blocked(rf::Player* player, const rf::Item* item)
 {
-    auto it = player->repickup_cooldowns.find(item->handle);
-    if (it == player->repickup_cooldowns.end()) {
+    auto it = player->item_respawn_cooldowns.find(item->handle);
+    if (it == player->item_respawn_cooldowns.end()) {
         return false;
     }
     if (it->second.elapsed()) {
-        player->repickup_cooldowns.erase(it);
+        player->item_respawn_cooldowns.erase(it);
         return false;
     }
     return true;
 }
 
-bool item_repickup_blocks(rf::Player* player, const rf::Item* item)
+bool per_player_respawn_blocks(rf::Player* player, const rf::Item* item)
 {
     if (!player || !item) {
         return false;
     }
     if (rf::is_server) {
-        return item_repickup_is_blocked(player, item);
+        return per_player_respawn_is_blocked(player, item);
     }
-    return player == rf::local_player && item_repickup_is_ghosted(item);
+    return player == rf::local_player && per_player_respawn_is_ghosted(item);
 }
 
-void item_repickup_on_picked_up(rf::Player* player, rf::Item* item)
+void per_player_respawn_on_picked_up(rf::Player* player, rf::Item* item)
 {
-    if (!player || !item_repickup_applies(item)) {
+    if (!player || !per_player_respawn_applies(item)) {
         return;
     }
-    const int cooldown_ms = repickup_cooldown_ms(item);
+    const int cooldown_ms = respawn_ms_for(item);
     if (cooldown_ms <= 0) {
         return;
     }
-    player->repickup_cooldowns[item->handle].set(cooldown_ms);
-    af_send_item_repickup(player, item->handle, cooldown_ms);
+    player->item_respawn_cooldowns[item->handle].set(cooldown_ms);
+    af_send_per_player_respawn(player, item->handle, cooldown_ms);
 }
 
-void item_repickup_on_player_killed(rf::Player* player)
+void per_player_respawn_on_player_killed(rf::Player* player)
 {
     if (!player) {
         return;
     }
     if (rf::is_server) {
-        player->repickup_cooldowns.clear();
+        player->item_respawn_cooldowns.clear();
     }
     if (player == rf::local_player) {
         g_ghosts.clear();
     }
 }
 
-void item_repickup_level_init()
+void per_player_respawn_level_init()
 {
     for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
-        player.repickup_cooldowns.clear();
+        player.item_respawn_cooldowns.clear();
     }
     g_ghosts.clear();
 }
 
-void item_repickup_client_on_taken(int item_handle, int remaining_ms)
+void per_player_respawn_client_on_taken(int item_handle, int remaining_ms)
 {
     if (remaining_ms <= 0 || !rf::item_from_handle(item_handle)) {
         return;
@@ -129,7 +129,7 @@ void item_repickup_client_on_taken(int item_handle, int remaining_ms)
     ghost.duration_ms = remaining_ms;
 }
 
-bool item_repickup_is_ghosted(const rf::Item* item)
+bool per_player_respawn_is_ghosted(const rf::Item* item)
 {
     if (g_ghosts.empty() || !item) {
         return false;
@@ -138,7 +138,7 @@ bool item_repickup_is_ghosted(const rf::Item* item)
     return it != g_ghosts.end() && !it->second.until.elapsed();
 }
 
-void item_repickup_render_pass(rf::GRoom* room_filter)
+void per_player_respawn_render_pass(rf::GRoom* room_filter)
 {
     if (g_ghosts.empty() || !rf::is_multi || rf::is_dedicated_server || rf::monitor_render_in_progress) {
         return;
@@ -181,13 +181,13 @@ CodeInjection item_render_skip_ghosted_patch{
     0x00458FA2,
     [](auto& regs) {
         rf::Item* item = regs.esi;
-        if (item_repickup_is_ghosted(item)) {
+        if (per_player_respawn_is_ghosted(item)) {
             regs.eip = 0x004590F6;
         }
     },
 };
 
-void item_repickup_apply_patch()
+void per_player_respawn_apply_patch()
 {
     item_render_skip_ghosted_patch.install();
 }

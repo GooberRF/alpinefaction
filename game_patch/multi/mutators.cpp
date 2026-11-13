@@ -175,7 +175,7 @@ static void apply_rails(AlpineServerConfigRules& r, const toml::table& opts)
     resolve_featured_items(r.mutators);
 
     // Weapon stay by default.
-    r.weapons_stay = true;
+    r.weapons_stay = WeaponStayMode::Stock;
 
     // Keep weapon + ammo pickups (which get redirected), hide everything else.
     r.mutators.pickup_policy = PickupPolicy::WeaponsAndAmmoOnly;

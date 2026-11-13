@@ -16,7 +16,7 @@
 #include "vehicle_markers.h"
 #include "../alpine_packets.h"
 #include "../multi.h"
-#include "../item_repickup.h"
+#include "../per_player_respawn.h"
 #include "../../graphics/gr.h"
 #include "../../graphics/gr_ghost_mesh.h"
 #include "../../hud/hud_internal.h"
@@ -647,7 +647,7 @@ static CodeInjection before_room_liquid_render_hook{
         rf::GRoom* room = regs.edi;
         if (!is_headless_mode() && room) {
             vehicle_markers_render_pass(room);
-            item_repickup_render_pass(room);
+            per_player_respawn_render_pass(room);
         }
     },
 };

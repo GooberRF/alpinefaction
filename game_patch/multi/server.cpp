@@ -39,7 +39,7 @@
 #include "salvage.h"
 #include "scavenger.h"
 #include "payload.h"
-#include "item_repickup.h"
+#include "per_player_respawn.h"
 #include "vehicles/vehicle.h"
 #include "vehicles/vehicle_tracers.h"
 #include "bots/server_bots.h"
@@ -271,7 +271,7 @@ CodeInjection weapon_stay_remove_instance_injection{
     }
 };
 
-// Weapon stay exemption part 2, and re-pickup: past the stock per-type marker unless this
+// Weapon stay exemption part 2, and per-player respawn: past the stock per-type marker unless this
 // player is still cooling down on this copy (0x0045995C is the function's common return).
 CodeInjection weapon_stay_allow_pickup_injection{
     0x004596B4,
@@ -282,8 +282,8 @@ CodeInjection weapon_stay_allow_pickup_injection{
         }
         rf::Item* item = regs.esi;
         rf::Player* player = regs.ebp;
-        if (item_repickup_applies(item)) {
-            regs.eip = item_repickup_is_blocked(player, item) ? 0x0045995C : 0x004596CD;
+        if (per_player_respawn_applies(item)) {
+            regs.eip = per_player_respawn_is_blocked(player, item) ? 0x0045995C : 0x004596CD;
         }
     }
 };
@@ -5772,7 +5772,7 @@ void server_init()
     // handle weapon stay exemptions
     weapon_stay_remove_instance_injection.install();
     weapon_stay_allow_pickup_injection.install();
-    item_repickup_apply_patch();
+    per_player_respawn_apply_patch();
 
     // Apply customized spawn protection duration
     spawn_protection_duration_patch.install();
