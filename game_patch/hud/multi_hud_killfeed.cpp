@@ -9,6 +9,7 @@
 #include "../rf/os/string.h"
 #include "../rf/os/timestamp.h"
 #include "../misc/alpine_settings.h"
+#include "../os/console.h"
 #include "hud_internal.h"
 #include "hud.h"
 
@@ -96,6 +97,16 @@ static void killfeed_add_message(const char* text, rf::ChatMsgColor color_id)
     add_segment(msg, text, color_for_color_id(color_id));
 }
 
+void killfeed_print_to_console(const char* text, int color_id)
+{
+    if (legacy_console_enabled()) {
+        return;
+    }
+    console_ui_begin_chat(color_id, nullptr);
+    rf::console::output(text, nullptr);
+    console_ui_end_chat();
+}
+
 void killfeed_route_next_message()
 {
     g_killfeed_route_next = true;
@@ -152,10 +163,13 @@ FunHook<void(rf::String::Pod, rf::ChatMsgColor, rf::String::Pod)> multi_chat_pri
         if (should_route && g_alpine_game_config.killfeed_enabled) {
             rf::String text{text_pod};
             killfeed_add_message(text.c_str(), color);
+            killfeed_print_to_console(text.c_str(), static_cast<int>(color));
             return;
         }
 
+        console_ui_begin_chat(static_cast<int>(color), prefix_pod.buf);
         multi_chat_print_hook.call_target(text_pod, color, prefix_pod);
+        console_ui_end_chat();
     },
 };
 

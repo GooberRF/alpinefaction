@@ -2,6 +2,8 @@
 
 Open the console with `~`. Press Tab to complete a command name; with a name and a space typed, Tab completes level names (`level`, `map`, `levelm`, `mapm`, `sv_gametype`, `gt`), player names (`kick`, `ban`), demo files (`demo_play`, `demo_info`) and command names (`rcon`, `help`), or prints the command's usage. `help <command>` prints usage, and `. <text>` lists every command whose name or description contains the text. Most settings changed here are saved to `alpine_settings.ini` (`alpine_settings_<mod>.ini` when a TC mod is loaded, or the file given with `-afs`); commands marked "not saved" only last for the session.
 
+While typing, Right arrow accepts the suggested command name, and `Ctrl+Left`/`Ctrl+Right`, `Ctrl+Backspace`/`Ctrl+Delete` and `Ctrl+U`/`Ctrl+K` move or delete by word or to the line start/end. `Ctrl+C` copies the selected output, or clears the line when nothing is selected. Page Up/Page Down and the mouse wheel (unless `ui_console_mousewheel` is off) scroll the output, `Ctrl+Home`/`Ctrl+End` jump to its start/end, and `Ctrl+F` filters it. Drag across the output to select and copy it, or click a command name to put it on the input line; in gameplay, first press the mouse button bound to Secondary Attack to show the cursor.
+
 This page lists the commands Alpine Faction adds, including those inherited from Dash Faction and stock Red Faction commands that the retail PC build leaves unregistered (marked "Stock RF command"; their arguments are listed where known). Other stock commands are not listed.
 
 Argument notation: `<x>` is required, `[x]` is optional. A `[bool]` argument accepts `true`, `on` or a non-zero number to enable and `false`, `off` or `0` to disable; leaving it out toggles. Value commands print the current value when run without an argument. Defaults are the values used when a setting is not in the settings file.
@@ -192,6 +194,11 @@ Commands marked "D3D11 only" only have an effect with the Direct3D 11 renderer.
 | `ui_always_show_specators` | | Toggles always showing spectators on your HUD. Default: off. |
 | `ui_assist_highlight` | | Toggles highlighting kill messages for kills you assisted. Default: on. |
 | `ui_assist_names` | | Toggles including assists in kill messages. Default: on. |
+| `ui_console_fontsize` | `[px]` | Sets the console font size (8-32 px). Default: 14. |
+| `ui_console_height` | `[percent]` | Sets how much of the screen the open console covers (20-100%). Default: 25. |
+| `ui_console_mousewheel` | | Toggles scrolling the open console with the mouse wheel. When off, the wheel keeps its usual bindings while the console is open. Default: on. |
+| `ui_console_sounds` | | Toggles the console's own interface sounds (scrolling, copying, clicking a command name). Default: on. |
+| `ui_console_statusline` | | Toggles the console status line (player, level, server, player count, time left and FactionFiles link status). Default: on. |
 | `ui_fpsavg` | `[milliseconds]` | Sets the FPS counter averaging window (0-60000 ms, 0 = update every frame). Default: 100. |
 | `ui_gamefeed` | | Toggles showing game event messages in a separate feed instead of chat. Default: off. |
 | `ui_gametype_help` | | Toggles the game type help notification shown when spawning on a server. Default: on. |

@@ -339,6 +339,7 @@ set(SRCS
     os/console.h
     os/commands.cpp
     os/autocomplete.cpp
+    os/console_ui.cpp
     os/frametime.cpp
     os/timer.cpp
     os/win32_console.cpp

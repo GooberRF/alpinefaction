@@ -913,7 +913,7 @@ void demo_controls_ui_close()
     g_open = false;
     g_dragging = false;
     g_opened_in_mouse_look = false;
-    gameplay_overlay_apply_mouse(false);
+    gameplay_overlay_release_mouse();
     // Rest of this frame plus at least one whole frame, extended while held.
     g_swallow_attack_frames = 2;
 }

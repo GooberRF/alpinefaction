@@ -52,6 +52,7 @@
 #include "../multi/bots/server_bots.h"
 #include "../multi/awards.h"
 #include "../fflink/fflink.h"
+#include "../fflink/fflink_utils.h"
 #include "../misc/misc.h"
 #include "../misc/achievements.h"
 #include "../misc/discord_presence.h"
@@ -90,6 +91,7 @@ GameConfig g_game_config;
 AlpineCoreConfig g_alpine_system_config;
 HMODULE g_hmodule;
 std::time_t g_process_startup_time;
+static DWORD g_main_thread_id = 0;
 
 std::mt19937 g_rng;
 
@@ -102,6 +104,7 @@ void initialize_random_generator() {
 CallHook<void()> rf_init_hook{
     0x004B27CD,
     [] {
+        g_main_thread_id = GetCurrentThreadId();
         const uint64_t start_ticks = GetTickCount64();
         xlog::info("Initializing game...");
         initialize_alpine_core_config();
@@ -483,9 +486,13 @@ protected:
     {
         static auto& console_inited = addr_as_ref<bool>(0x01775680);
         if (console_inited) {
-            flush_startup_buf();
-
             rf::Color color = color_from_level(level);
+            // Worker threads log too, and the console scrollback is not thread-safe.
+            if (g_main_thread_id && GetCurrentThreadId() != g_main_thread_id) {
+                fflink::enqueue_main_thread_task([str, color] { rf::console::output(str.c_str(), &color); });
+                return;
+            }
+            flush_startup_buf();
             rf::console::output(str.c_str(), &color);
         }
         else {

@@ -80,6 +80,8 @@ namespace stock_sound_id
     constexpr int panel_button_click   = 43;   // panel_button_click.wav
     constexpr int checkbox_on          = 44;   // checkbox_on.wav
     constexpr int checkbox_off         = 45;   // checkbox_off.wav
+    constexpr int list_scroll_up       = 46;   // stock list up arrow (Create Game map list)
+    constexpr int list_scroll_down     = 47;   // stock list down arrow
     constexpr int menu_slide_in        = 49;   // stock Extras menu slide-in
     constexpr int bomb_tick            = 55;   // bomb_tick.wav
     constexpr int flag_capture         = 63;   // Flag_Capture.wav
