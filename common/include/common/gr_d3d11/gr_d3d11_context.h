@@ -671,10 +671,10 @@ namespace gr::d3d11
             render_mode_cbuffer_.set_draw_room_uid(room_uid, device_context_);
         }
 
-        // Marks the liquid surface pass, which the shader gives its own distance opacity.
+        // Marks the liquid surface pass, which the shader gives its own distance opacity and no caustics.
         void set_liquid_surface(bool liquid_surface)
         {
-            if (liquid_surface && engine::underwater_fx() < 2) {
+            if (liquid_surface && engine::underwater_fx() < 2 && !caustics_renderer_.active()) {
                 return;
             }
             render_mode_cbuffer_.set_liquid_surface(liquid_surface, device_context_);

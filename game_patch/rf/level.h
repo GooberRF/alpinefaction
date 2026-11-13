@@ -137,6 +137,18 @@ namespace rf
         LEVEL_LOADED = 1,
     };
 
+    struct LiquidDepthUpdate
+    {
+        GRoom* room;
+        float start_depth;
+        float cur_depth;
+        float target_depth;
+        float duration;
+        float elapsed;
+    };
+    static_assert(sizeof(LiquidDepthUpdate) == 0x18);
+
+    static auto& liquid_depth_updates = addr_as_ref<VArray<LiquidDepthUpdate*>>(0x00645FC8);
     static auto& add_liquid_depth_update =
         addr_as_ref<void(GRoom* room, float target_liquid_depth, float duration)>(0x0045E640);
     static auto& level_room_from_uid = addr_as_ref<GRoom*(int uid)>(0x0045E7C0);

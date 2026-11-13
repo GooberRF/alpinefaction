@@ -9,6 +9,7 @@ namespace rf
     struct Player;
     struct Entity;
     struct Vector3;
+    struct GRoom;
 
     struct AlpineRespawnPoint
     {
@@ -49,6 +50,7 @@ void riot_shield_on_multi_level_init();
 void entity_rate_limit_on_entity_delete(int handle);
 void entity_rate_limit_clear();
 bool level_allows_extra_items();
+float liquid_depth_update_surface_y(const rf::GRoom* room);
 
 constexpr size_t old_obj_limit = 1024;
 constexpr size_t obj_limit = 65536;

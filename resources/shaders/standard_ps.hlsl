@@ -678,7 +678,7 @@ float4 finish_fragment(VsOutput input, float4 target, float3 tex0_rgb, float3 li
     }
 
     if (num_caustic_volumes > 0 && emissive_override < 0.5f && disable_textures < 0.5f
-        && sky_room < 0.5f && dot(input.norm, input.norm) > 0.0f) {
+        && sky_room < 0.5f && liquid_surface < 0.5f && dot(input.norm, input.norm) > 0.0f) {
         float3 wp = input.world_pos_and_depth.xyz;
         float  mask = 0.0f, depth = 0.0f;
         float3 tint = float3(1, 1, 1);

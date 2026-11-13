@@ -337,6 +337,13 @@ struct AlpineGameSettings
     {
         particle_sim_rate = std::clamp(hz, min_particle_sim_rate, max_particle_sim_rate);
     }
+    static constexpr int min_liquid_surface_quality = 0;
+    static constexpr int max_liquid_surface_quality = 3;
+    int liquid_surface_quality = 2;
+    void set_liquid_surface_quality(int value)
+    {
+        liquid_surface_quality = std::clamp(value, min_liquid_surface_quality, max_liquid_surface_quality);
+    }
     bool show_enemy_bullets = true;
     bool fps_counter = true;
     static constexpr int min_fps_counter_average_ms = 0;

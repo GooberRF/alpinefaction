@@ -147,6 +147,11 @@ namespace gr::d3d11::engine
         return ::level_dry_far_clip();
     }
 
+    inline float liquid_surface_y(const rf::GRoom* room)
+    {
+        return liquid_depth_update_surface_y(room);
+    }
+
     inline DistanceFog level_distance_fog()
     {
         if (rf::level.distance_fog_far_clip > 0.0f) {
