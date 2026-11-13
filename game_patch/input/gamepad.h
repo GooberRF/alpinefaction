@@ -57,6 +57,8 @@ static constexpr int CTRL_GAMEPAD_MENU_BASE    = 0x75; // SCAN_BASE + 28
 
 // Returns true if an action index should live in g_menu_button_map
 bool gamepad_is_menu_only_action(int action_idx);
+// Returns true if an action index should live in the multiplayer-only gamepad maps.
+bool gamepad_is_multiplayer_action(int action_idx);
 
 // Per-input setters for legacy config keys.
 void gamepad_set_button_binding(int button_idx, int action_idx);

@@ -62,6 +62,16 @@ static int g_trigger_action[2] = {rf::CC_ACTION_CROUCH, rf::CC_ACTION_SECONDARY_
 static int g_menu_button_map[SDL_GAMEPAD_BUTTON_COUNT];
 static int g_menu_trigger_action[2] = {-1, -1};
 
+// Multiplayer-only actions take priority over gameplay bindings while in multiplayer.
+static int g_multiplayer_button_map[SDL_GAMEPAD_BUTTON_COUNT];
+static int g_multiplayer_trigger_action[2] = {-1, -1};
+static std::array<int, SDL_GAMEPAD_BUTTON_COUNT> g_button_action_on_press = [] {
+    std::array<int, SDL_GAMEPAD_BUTTON_COUNT> actions{};
+    actions.fill(-1);
+    return actions;
+}();
+static int g_trigger_action_on_press[2] = {-1, -1};
+
 // Set while the settings menu waits for a controller input to bind. The next button or trigger
 // press is held in g_bind_capture_code instead of acting, and ends the wait.
 static bool g_bind_capture_active = false;
@@ -379,6 +389,13 @@ static bool is_menu_only_action(int action_idx)
         || action_idx == static_cast<int>(get_af_control(AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE));
 }
 
+static bool is_multiplayer_actions(int action_idx)
+{
+    if (action_idx < 0) return false;
+    return action_idx == static_cast<int>(
+        get_af_control(rf::AlpineControlConfigAction::AF_ACTION_BIG_MAP));
+}
+
 static bool is_gamepad_menu_state()
 {
     if (!rf::gameseq_in_gameplay()) return true;
@@ -672,7 +689,10 @@ static void handle_trigger_down(int trigger_idx, SDL_JoystickID which)
         return;
     }
 
-    int action = g_trigger_action[trigger_idx];
+    int action = rf::is_multi && g_multiplayer_trigger_action[trigger_idx] >= 0
+        ? g_multiplayer_trigger_action[trigger_idx]
+        : g_trigger_action[trigger_idx];
+    g_trigger_action_on_press[trigger_idx] = action;
     inject_action_key(action, true);
     if (action >= 0 && action < k_action_count)
         g_action_curr[action] = true;
@@ -693,10 +713,11 @@ static void handle_trigger_up(int trigger_idx)
 
     int16_t gp_sc = (trigger_idx == 0) ? static_cast<int16_t>(CTRL_GAMEPAD_LEFT_TRIGGER)
                                         : static_cast<int16_t>(CTRL_GAMEPAD_RIGHT_TRIGGER);
-    int action = g_trigger_action[trigger_idx];
+    int action = g_trigger_action_on_press[trigger_idx];
     force_release_action_key(action);
     if (action >= 0 && action < k_action_count)
         g_action_curr[action] = false;
+    g_trigger_action_on_press[trigger_idx] = -1;
     int menu_action = g_menu_trigger_action[trigger_idx];
     if (menu_action >= 0 && menu_action < k_action_count)
         g_action_curr[menu_action] = false;
@@ -780,13 +801,14 @@ static bool is_action_held_by_button(int action_idx)
 {
     for (auto* gp : g_gamepads) {
         if (!gp) continue;
-        for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT; ++b)
-            if (g_button_map[b] == action_idx
+        for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT; ++b) {
+            if (g_button_action_on_press[b] == action_idx
                 && SDL_GetGamepadButton(gp, static_cast<SDL_GamepadButton>(b)))
                 return true;
+        }
     }
-    if (g_trigger_action[0] == action_idx && g_lt_was_down) return true;
-    if (g_trigger_action[1] == action_idx && g_rt_was_down) return true;
+    if (g_trigger_action_on_press[0] == action_idx && g_lt_was_down) return true;
+    if (g_trigger_action_on_press[1] == action_idx && g_rt_was_down) return true;
     return false;
 }
 
@@ -887,10 +909,13 @@ static void update_stick_movement()
 static void release_all_gamepad_inputs()
 {
     release_movement_keys();
-    for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT; ++b)
-        inject_action_key(g_button_map[b], false);
-    inject_action_key(g_trigger_action[0], false);
-    inject_action_key(g_trigger_action[1], false);
+    for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT; ++b) {
+        inject_action_key(g_button_action_on_press[b], false);
+        g_button_action_on_press[b] = -1;
+    }
+    inject_action_key(g_trigger_action_on_press[0], false);
+    inject_action_key(g_trigger_action_on_press[1], false);
+    g_trigger_action_on_press[0] = g_trigger_action_on_press[1] = -1;
     menu_nav_release_click();
     g_touchpad = {};
     g_sensor_last_gyro_ts  = 0;
@@ -993,7 +1018,10 @@ static void handle_gamepad_button_down(const SDL_GamepadButtonEvent& ev)
             || ev.button == SDL_GAMEPAD_BUTTON_TOUCHPAD);
 
     if (!is_menu_nav_button && ev.button < SDL_GAMEPAD_BUTTON_COUNT) {
-        int mapped = g_button_map[ev.button];
+        int mapped = rf::is_multi && g_multiplayer_button_map[ev.button] >= 0
+            ? g_multiplayer_button_map[ev.button]
+            : g_button_map[ev.button];
+        g_button_action_on_press[ev.button] = mapped;
         if (mapped >= 0) {
             inject_action_key(mapped, true);
             g_action_curr[mapped] = true;
@@ -1014,11 +1042,12 @@ static void handle_gamepad_button_up(const SDL_GamepadButtonEvent& ev)
         g_menu_nav.deferred_btn_up = ev.button;
 
     if (ev.button < SDL_GAMEPAD_BUTTON_COUNT) {
-        int mapped = g_button_map[ev.button];
+        int mapped = g_button_action_on_press[ev.button];
         if (mapped >= 0) {
             force_release_action_key(mapped);
             g_action_curr[mapped] = false;
         }
+        g_button_action_on_press[ev.button] = -1;
         int menu_mapped = g_menu_button_map[ev.button];
         if (menu_mapped >= 0)
             g_action_curr[menu_mapped] = false;
@@ -2227,18 +2256,26 @@ bool gamepad_is_menu_only_action(int action_idx)
     return is_menu_only_action(action_idx);
 }
 
+bool gamepad_is_multiplayer_action(int action_idx)
+{
+    return is_multiplayer_actions(action_idx);
+}
+
 int gamepad_get_button_for_action(int action_idx)
 {
     for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT; ++b)
-        if (g_button_map[b] == action_idx || g_menu_button_map[b] == action_idx)
+        if (g_button_map[b] == action_idx || g_menu_button_map[b] == action_idx
+            || g_multiplayer_button_map[b] == action_idx)
             return b;
     return -1;
 }
 
 int gamepad_get_trigger_for_action(int action_idx)
 {
-    if (g_trigger_action[0] == action_idx || g_menu_trigger_action[0] == action_idx) return 0;
-    if (g_trigger_action[1] == action_idx || g_menu_trigger_action[1] == action_idx) return 1;
+    if (g_trigger_action[0] == action_idx || g_menu_trigger_action[0] == action_idx
+        || g_multiplayer_trigger_action[0] == action_idx) return 0;
+    if (g_trigger_action[1] == action_idx || g_menu_trigger_action[1] == action_idx
+        || g_multiplayer_trigger_action[1] == action_idx) return 1;
     return -1;
 }
 
@@ -2311,13 +2348,18 @@ static void rebuild_pad_tables()
 {
     memset(g_button_map, -1, sizeof(g_button_map));
     memset(g_menu_button_map, -1, sizeof(g_menu_button_map));
+    memset(g_multiplayer_button_map, -1, sizeof(g_multiplayer_button_map));
     g_trigger_action[0] = g_trigger_action[1] = -1;
     g_menu_trigger_action[0] = g_menu_trigger_action[1] = -1;
+    g_multiplayer_trigger_action[0] = g_multiplayer_trigger_action[1] = -1;
 
     for (int a = 0; a < k_action_count; ++a) {
         const bool menu_only = is_menu_only_action(a);
-        int* buttons = menu_only ? g_menu_button_map : g_button_map;
-        int* triggers = menu_only ? g_menu_trigger_action : g_trigger_action;
+        const bool multiplayer_only = is_multiplayer_actions(a);
+        int* buttons = menu_only ? g_menu_button_map
+            : multiplayer_only ? g_multiplayer_button_map : g_button_map;
+        int* triggers = menu_only ? g_menu_trigger_action
+            : multiplayer_only ? g_multiplayer_trigger_action : g_trigger_action;
         for (const int code : g_action_pad[a]) {
             if (code == CTRL_GAMEPAD_LEFT_TRIGGER)
                 triggers[0] = a;
@@ -2343,14 +2385,15 @@ int gamepad_bind_action(int action_idx, int slot, int code)
     if (code >= 0 && !is_bindable_gamepad_code(code))
         return -1;
 
-    // An input serves one action per table. Gameplay and menu-only actions live in separate
-    // tables, so only actions of the same kind compete. The action's own other slot loses it
-    // silently.
+    // An input serves one action per table. Gameplay, menu-only, and multiplayer-only actions
+    // use separate tables, so only actions in the same table compete.
     int displaced = -1;
     if (code >= 0) {
         const bool menu_only = is_menu_only_action(action_idx);
+        const bool multiplayer_only = is_multiplayer_actions(action_idx);
         for (int a = 0; a < k_action_count; ++a) {
-            if (is_menu_only_action(a) != menu_only)
+            if (is_menu_only_action(a) != menu_only
+                || is_multiplayer_actions(a) != multiplayer_only)
                 continue;
             for (int s = 0; s < 2; ++s) {
                 if (g_action_pad[a][s] != code || (a == action_idx && s == slot))
@@ -2474,6 +2517,7 @@ void gamepad_reset_to_defaults(const rf::ControlConfig* new_profile_controls)
 
     // Multiplayer mode toggle
     bind_default(SDL_GAMEPAD_BUTTON_WEST, static_cast<int>(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE)));
+    bind_default(SDL_GAMEPAD_BUTTON_BACK, static_cast<int>(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_BIG_MAP)));
 
     // Trigger defaults (gameplay action)
     bind_default_code(CTRL_GAMEPAD_LEFT_TRIGGER, rf::CC_ACTION_SECONDARY_ATTACK);

@@ -883,13 +883,14 @@ void bind_clear(int index, bool mouse)
     bind_note_changed();
 }
 
-// Controller bindings are one table for every context, and an input serves one action.
+// Controller bindings use separate gameplay, menu, and multiplayer tables.
 // Exclusive assignment inside a non-Global context, as for keys: the conflicting action gets an
 // override of its own that unbinds the slot here, leaving its Global binding untouched.
 void bind_pad_assign_context(UiContext& ctx, int index, int slot, int code)
 {
     const int total = bind_context_binding_count();
     const bool menu_only = gamepad_is_menu_only_action(index);
+    const bool multiplayer_only = gamepad_is_multiplayer_action(index);
     BindOverride self = bind_override_or_inherit(index);
     if (bind_effective(index).pad_codes[1 - slot] == code) {
         self.pad_codes[1 - slot] = -1;
@@ -898,8 +899,9 @@ void bind_pad_assign_context(UiContext& ctx, int index, int slot, int code)
 
     std::vector<std::string> cleared;
     for (int i = 0; i < total; ++i) {
-        // Gameplay and menu-only actions read separate tables, so they never compete.
-        if (i == index || gamepad_is_menu_only_action(i) != menu_only) {
+        // Actions in separate tables may use the same controller input.
+        if (i == index || gamepad_is_menu_only_action(i) != menu_only
+            || gamepad_is_multiplayer_action(i) != multiplayer_only) {
             continue;
         }
         const BindOverride effective = bind_effective(i);

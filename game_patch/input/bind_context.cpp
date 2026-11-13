@@ -348,11 +348,13 @@ bool bind_context_dedupe_against_global()
                 value->mouse_btn_id = -1;
                 changed = true;
             }
-            // Controller inputs compete only with actions of the same kind (gameplay or menu).
+            // Controller inputs compete only within their gameplay, menu, or multiplayer table.
             const bool menu_only = gamepad_is_menu_only_action(i);
+            const bool multiplayer_only = gamepad_is_multiplayer_action(i);
             const auto pad_taken_by_other = [&](int16_t code) {
                 for (int k = 0; k < total; ++k) {
-                    if (k == i || gamepad_is_menu_only_action(k) != menu_only) {
+                    if (k == i || gamepad_is_menu_only_action(k) != menu_only
+                        || gamepad_is_multiplayer_action(k) != multiplayer_only) {
                         continue;
                     }
                     const BindOverride other = bind_context_effective(ctx, k);
