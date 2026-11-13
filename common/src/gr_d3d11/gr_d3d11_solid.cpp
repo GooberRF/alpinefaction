@@ -1373,6 +1373,7 @@ namespace gr::d3d11
         before_render(out_sky_transform_pos, out_sky_transform_orient);
         render_room_faces(engine::level_solid(), room, FaceRenderType::opaque);
         render_room_faces(engine::level_solid(), room, FaceRenderType::alpha);
+        render_room_faces(engine::level_solid(), room, FaceRenderType::liquid);
 
         // Render mover brushes that are in the sky room being projected
         if (rf::MoverBrush* const mover_brush_list = engine::mover_brush_list()) {
