@@ -29,8 +29,8 @@ namespace
 
     int repickup_cooldown_ms(const rf::Item* item)
     {
-        const int timeout_ms = g_alpine_server_config_active_rules.repickup_timeout_ms;
-        return std::min(timeout_ms > 0 ? timeout_ms : item->respawn_time_ms, item_repickup_max_timeout_ms);
+        const auto& timeout_ms = g_alpine_server_config_active_rules.repickup_timeout_ms;
+        return std::min(timeout_ms.value_or(item->respawn_time_ms), item_repickup_max_timeout_ms);
     }
 
     // A detail room is drawn inside the room it hangs off, so that is the pass its ghost joins.

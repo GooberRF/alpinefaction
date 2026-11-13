@@ -1967,8 +1967,8 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         std::format_to(iter, "  Weapon re-pickup:                      {}\n", rules.allow_repickup);
     if (base || rules.repickup_timeout_ms != b.repickup_timeout_ms)
         std::format_to(iter, "  Weapon re-pickup timeout:              {}\n",
-            rules.repickup_timeout_ms > 0 ? std::format("{} sec", rules.repickup_timeout_ms / 1000.0f)
-                                          : std::string{"item respawn time"});
+            rules.repickup_timeout_ms ? std::format("{} sec", *rules.repickup_timeout_ms / 1000.0f)
+                                      : std::string{"item respawn time"});
     if (base || rules.force_respawn != b.force_respawn)
         std::format_to(iter, "  Force respawn:                         {}\n", rules.force_respawn);
     if (base || rules.balance_teams != b.balance_teams)
