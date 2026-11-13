@@ -197,7 +197,7 @@ const SettingRow rows[] = {
             [](rf::Player*, int v) { rf::game_set_gore_level(v); }},
         ENUM_LABELS(labels_gore),
         .console_cmd = "cl_gorelevel",
-        .default_str = "2",
+        .default_str = "1",
     },
     {
         .id = "gib_chunk_count",
