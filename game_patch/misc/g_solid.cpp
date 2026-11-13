@@ -2,6 +2,8 @@
 #include <cmath>
 #include <unordered_map>
 #include <new>
+#include <type_traits>
+#include <vector>
 #include <patch_common/FunHook.h>
 #include <patch_common/CallHook.h>
 #include <patch_common/CodeInjection.h>
@@ -753,6 +755,78 @@ CodeInjection g_decal_orient_room_faces_injection{
     },
 };
 
+// g_decal_clip_to_face (0x004D6240) copies and clips the face in two 25-vertex stack buffers with no bound, so a long
+// edge loop overruns its return address. Clip in heap buffers instead, and skip a clipped polygon the stock buffer or
+// the decal poly can't hold. No trampoline: every path sets eip past the replaced copy and clip.
+CodeInjection g_decal_clip_to_face_clip_injection{
+    0x004D634F,
+    [](auto& regs) {
+        rf::GFace* face = regs.edi;
+        rf::GDecal* decal = regs.ebx;
+        constexpr int max_poly_verts = std::extent_v<decltype(rf::DecalPoly::verts)>;
+        static std::vector<rf::Vector3> verts;
+        static std::vector<rf::Vector3> clipped;
+        verts.clear();
+        for (rf::GFaceVertex* fvert = face->edge_loop;
+             fvert && static_cast<int>(verts.size()) <= rf::max_face_vertices;) {
+            verts.push_back(fvert->vertex->pos);
+            fvert = fvert->next;
+            if (fvert == face->edge_loop) {
+                break;
+            }
+        }
+        const int num_face_verts = static_cast<int>(verts.size());
+        // A longer edge loop than any face has is corrupt
+        if (num_face_verts < 3 || num_face_verts > rf::max_face_vertices) {
+            regs.eip = 0x004D67C2;
+            return;
+        }
+        int num_verts = num_face_verts;
+        for (const rf::Plane& plane : decal->decal_poly_planes) {
+            clipped.resize(2 * num_verts);
+            num_verts = rf::g_clip_poly_to_plane(num_verts, verts.data(), clipped.data(), &plane);
+            if (num_verts < 3) {
+                regs.eip = 0x004D67C2;
+                return;
+            }
+            verts.swap(clipped);
+        }
+        // A level decal's poly takes a UV per face vertex and never reads the clipped polygon. For a face with more
+        // vertices than it holds, g_decal_clip_to_face_level_uvs_injection leaves them to the Direct3D 11 renderer.
+        const bool level_decal = decal->flags & rf::DF_LEVEL_DECAL;
+        if (!level_decal && num_verts > max_poly_verts) {
+            regs.eip = 0x004D67C2;
+            return;
+        }
+        if (level_decal && num_face_verts > max_poly_verts && !is_d3d11()) {
+            xlog::warn("[Decal] Skipping a level decal on a face with {} vertices (a decal poly holds {})",
+                num_face_verts, max_poly_verts);
+            regs.eip = 0x004D67C2;
+            return;
+        }
+        auto* result = &addr_as_ref<rf::Vector3>(regs.esp + 0x24); // stock's first clip buffer
+        if (!level_decal) {
+            std::copy_n(verts.data(), num_verts, result);
+        }
+        regs.esi = result;
+        regs.ebp = num_verts;
+        regs.eip = 0x004D63DB;
+    },
+    false,
+};
+
+// The level-decal branch of g_decal_clip_to_face writes a UV per face vertex into the poly's 25 with no bound. For a
+// longer face it writes none, and the Direct3D 11 renderer derives them (gr_d3d11_solid.cpp).
+CodeInjection g_decal_clip_to_face_level_uvs_injection{
+    0x004D66AA,
+    [](auto& regs) {
+        rf::GFace* face = regs.edx;
+        if (face->vertex_count() > static_cast<int>(std::extent_v<decltype(rf::DecalPoly::uvs)>)) {
+            regs.eip = 0x004D6715; // past the UV loop and its tiling shift (0x004D67D0)
+        }
+    },
+};
+
 void decal_patch_limit(int max_decals)
 {
     unsigned decal_farray_get_addresses[] = {
@@ -1495,6 +1569,8 @@ void g_solid_do_patch()
     g_decal_add_internal_cmp_global_weak_limit_injection.install();
     g_decal_clip_to_geometry_hook.install();
     g_decal_orient_room_faces_injection.install();
+    g_decal_clip_to_face_clip_injection.install();
+    g_decal_clip_to_face_level_uvs_injection.install();
 
     // When rendering semi-transparent objects do not group objects that are behind a detail room.
     // Grouping breaks sorting in many cases because orientation and sizes of detail rooms and objects

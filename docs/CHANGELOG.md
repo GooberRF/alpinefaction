@@ -352,6 +352,8 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix RF2-style geomod giving up on geoable rooms with more than 5000 faces
 - Fix RF2-style geomod craters sometimes leaving stray faces and holes where geoable geometry meets neighboring geometry
 - Fix crash when a decal is created in a room containing a very large number of detail brushes
+- Fix game and level editor crashing when a decal lies on a face with many vertices
+- Fix decals on faces with many vertices showing only partly (Direct3D 11 renderer only)
 - Fix Direct3D 8/9 renderer geometry cache overflowing with more than 256 rooms or detail rooms in view
 - Fix Direct3D 8/9 renderer rebuilding every room's render cache each frame while a room with more than 8000 vertices is in view
 - Fix level editor memory use growing with every `Build Geometry` and `Calculate Lighting` because the Direct3D textures of discarded lightmaps were never released
