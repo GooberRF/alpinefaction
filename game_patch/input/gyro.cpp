@@ -262,7 +262,7 @@ ConsoleCommand2 gyro_ratcheting_cmd{
         static const char* mode_names[] = {"Always", "Hold Off", "Hold On", "Toggle", "Touch On", "Touch Off"};
         rf::console::print("Gyro ratcheting mode: {} ({})", mode_names[mode], mode);
     },
-    "Set gyro ratcheting mode",
+    "Set gyro ratcheting modes",
     "gyro_ratcheting <0|1|2|3|4|5> (valid values: 0=Always, 1=Hold Off, 2=Hold On, 3=Toggle, 4=Touch On, 5=Touch Off)",
 };
 
@@ -289,7 +289,7 @@ ConsoleCommand2 gyro_autocalibration_cmd{
 
         rf::console::print("Gyro autocalibration mode: {} ({})", mode_name, mode);
     },
-    "Set gyro auto-calibration mode",
+    "Set gyro auto-calibration modes",
     "gyro_autocalibration <0|1|2> (valid values: 0=Off, 1=Only in Menu, 2=Always)",
 };
 
@@ -335,7 +335,7 @@ ConsoleCommand2 gyro_space_cmd{
         int s = g_alpine_game_config.gamepad_gyro_space;
         rf::console::print("Gyro space: {} ({})", s, gyro_space_names[s]);
     },
-    "Set gyro camera space",
+    "Set Gyro turning axis styles (aka Gyro Space)",
     "gyro_space <0-4> (valid values: 0=Yaw 1=Roll 2=Local 3=Player 4=World)",
 };
 
@@ -387,7 +387,7 @@ ConsoleCommand2 gyro_vh_cmd{
         if (val) g_alpine_game_config.gamepad_gyro_vh_mixer = std::clamp(val.value(), -100, 100);
         rf::console::print("Gyro V/H output mixer: {}", g_alpine_game_config.gamepad_gyro_vh_mixer);
     },
-    "Set gyro V/H output mixer (-100 = reduce vertical, 0 = 1:1, 100 = reduce horizontal)",
+    "Set gyro vertical horizontal output mixer (-100 = reduce vertical, 0 = 1:1, 100 = reduce horizontal)",
     "gyro_vh_mixer <-100 to 100>",
 };
 

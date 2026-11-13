@@ -1932,7 +1932,7 @@ ConsoleCommand2 joy_flickstick_cmd{
         if (val) g_alpine_game_config.gamepad_joy_camera = val.value() != 0;
         rf::console::print("Joy flick-stick: {}", g_alpine_game_config.gamepad_joy_camera ? "enabled" : "disabled");
     },
-    "Enable/disable flick-stick mode",
+    "Enable/disable flick stick for on-foot camera",
     "joy_flickstick <0|1>",
 };
 
@@ -1942,7 +1942,7 @@ ConsoleCommand2 joy_flickstick_sweep_cmd{
         if (val) g_alpine_game_config.gamepad_flickstick_sweep = std::clamp(val.value(), 0.01f, 6.0f);
         rf::console::print("Gamepad flickstick sweep: {:.2f}", g_alpine_game_config.gamepad_flickstick_sweep);
     },
-    "Set flick-stick sweep sensitivity",
+    "Set flick stick sweep sensitivity",
     "joy_flickstick_sweep <value> (valid range: 0.01 - 6.0)",
 };
 
@@ -2077,7 +2077,7 @@ ConsoleCommand2 joy_led_cmd{
         if (val && !g_alpine_game_config.gamepad_lightbar_effects)
             rf::console::print("Restart game or use \"joy_reset\" cmd to take effect");
     },
-    "Enable/disable the gamepad lightbar health indicator",
+    "[experimental] Enable/disable the gamepad lightbar health indicator",
     "joy_led <0|1>",
 };
 
@@ -2171,7 +2171,7 @@ ConsoleCommand2 input_prompts_cmd{
         static const char* modes[] = {"Auto", "Controller", "Keyboard/Mouse"};
         rf::console::print("Input prompts: {} ({})", modes[g_alpine_game_config.input_prompt_override], g_alpine_game_config.input_prompt_override);
     },
-    "Set input prompt display",
+    "Set input prompts displayed within the hud",
     "input_prompts <0|1|2> (valid values: 0=Auto, 1=Controller, 2=Keyboard/Mouse)",
 };
 
@@ -2191,7 +2191,7 @@ ConsoleCommand2 gamepad_prompts_cmd{
             icon_names[g_alpine_game_config.gamepad_icon_override],
             g_alpine_game_config.gamepad_icon_override);
     },
-    "Set gamepad button icon style",
+    "Set gamepad button icon style within the hud",
     "gamepad_prompts <0-9> (valid values: 0=Auto, 1=Generic, 2=Xbox 360, 3=Xbox One/Series, 4=DualShock 3, 5=DualShock 4, 6=DualSense, 7=Nintendo Switch, 8=Nintendo GameCube, 9=Steam)",
 };
 
