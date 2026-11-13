@@ -20,6 +20,7 @@
 #include "../misc/misc.h"
 #include "../multi/bagman.h"
 #include "../multi/gametype.h"
+#include "../multi/per_player_respawn.h"
 #include "../multi/mutators.h"
 #include "../multi/salvage.h"
 #include "../multi/server.h"
@@ -160,6 +161,7 @@ static void on_item_picked_up(rf::Item* item, rf::Entity* entity)
             rf::Player* player = rf::player_from_entity_handle(entity->handle);
             afstats::on_item_pickup(player, item->info_index, item->pos, item->respawn_time_ms);
             demo_record_item_pickup(player, item);
+            per_player_respawn_on_picked_up(player, item);
         }
     }
 }

@@ -172,6 +172,9 @@ struct PlayerAdditionalData {
     // Requires `spawn_delay` to be enabled.
     rf::Timestamp respawn_timer{};
 
+    // Requires `weapons_stay = "per_player"`: item handle -> when this player may take that copy again.
+    std::map<int, rf::Timestamp> item_respawn_cooldowns{};
+
     // Percentile.
     uint8_t damage_handicap = 0;
 

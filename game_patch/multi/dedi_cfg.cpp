@@ -675,7 +675,19 @@ static void apply_rules_keys_from_toml(const toml::table& t, AlpineServerConfigR
     if (auto v = t["exposure_damage"].value<bool>())
         o.exposure_damage = *v;
     if (auto v = t["weapons_stay"].value<bool>())
-        o.weapons_stay  = *v;
+        o.weapons_stay = *v ? WeaponStayMode::Stock : WeaponStayMode::Off;
+    else if (auto mode = t["weapons_stay"].value<std::string>()) {
+        if (*mode == "off")
+            o.weapons_stay = WeaponStayMode::Off;
+        else if (*mode == "stock")
+            o.weapons_stay = WeaponStayMode::Stock;
+        else if (*mode == "per_player")
+            o.weapons_stay = WeaponStayMode::PerPlayer;
+        else
+            rf::console::print("  [WARN] weapons_stay mode '{}' is not off, stock or per_player; ignored.\n", *mode);
+    }
+    if (auto v = t["per_player_respawn_time"].value<float>())
+        o.set_per_player_respawn_time(*v);
     if (auto v = t["force_respawn"].value<bool>())
         o.force_respawn = *v;
     if (auto v = t["balance_teams"].value<bool>())
@@ -1958,7 +1970,14 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
     if (base || rules.exposure_damage != b.exposure_damage)
         std::format_to(iter, "  Exposure damage:                       {}\n", rules.exposure_damage);
     if (base || rules.weapons_stay != b.weapons_stay)
-        std::format_to(iter, "  Weapon stay:                           {}\n", rules.weapons_stay);
+        std::format_to(iter, "  Weapon stay:                           {}\n",
+            rules.weapons_stay == WeaponStayMode::PerPlayer ? "per player"
+            : rules.weapons_stay == WeaponStayMode::Stock   ? "stock"
+                                                            : "off");
+    if (base || rules.per_player_respawn_time_ms != b.per_player_respawn_time_ms)
+        std::format_to(iter, "  Per-player weapon respawn time:        {}\n",
+            rules.per_player_respawn_time_ms ? std::format("{} sec", *rules.per_player_respawn_time_ms / 1000.0f)
+                                             : std::string{"item respawn time"});
     if (base || rules.force_respawn != b.force_respawn)
         std::format_to(iter, "  Force respawn:                         {}\n", rules.force_respawn);
     if (base || rules.balance_teams != b.balance_teams)
@@ -2681,7 +2700,7 @@ void apply_alpine_dedicated_server_rules(rf::NetGameInfo& netgame, const AlpineS
 
     if (r.team_damage)   netgame.flags |= rf::NG_FLAG_TEAM_DAMAGE;
     if (r.fall_damage)   netgame.flags |= rf::NG_FLAG_FALL_DAMAGE;
-    if (r.weapons_stay)  netgame.flags |= rf::NG_FLAG_WEAPON_STAY;
+    if (r.weapons_stay != WeaponStayMode::Off) netgame.flags |= rf::NG_FLAG_WEAPON_STAY;
     if (r.force_respawn) netgame.flags |= rf::NG_FLAG_FORCE_RESPAWN;
     if (r.balance_teams) netgame.flags |= rf::NG_FLAG_BALANCE_TEAMS;
 
