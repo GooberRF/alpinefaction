@@ -898,7 +898,7 @@ struct AlpineServerConfigRules
     bool exposure_damage = true;
     bool weapons_stay = false;
     bool allow_repickup = false;
-    int repickup_timeout_ms = 0; // 0 = each item's own respawn time
+    std::optional<int> repickup_timeout_ms{}; // none = each item's own respawn time
     bool force_respawn = false;
     bool balance_teams = false;
     bool auto_team_balance = false;
