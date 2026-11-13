@@ -1,7 +1,11 @@
 #pragma once
 
+#include <SDL3/SDL.h>
 #include <string>
 #include "../rf/player/control_config.h"
+
+// Sentinel scan code injected into Input Rebind UI, allowing additional input bindings.
+static constexpr int CTRL_REBIND_SENTINEL = 0x58; // KEY_F12
 
 // Custom scan codes for extra mouse buttons (Mouse 4 and above). Placed in the extended
 // range (0x80 | scan) at slots no physical keyboard emits, so they cannot collide with
@@ -22,4 +26,18 @@ rf::String get_action_bind_name(int action);
 std::string get_action_bind_name_or(int action, const char* fallback);
 void mouse_apply_patch();
 void key_apply_patch();
+void gamepad_apply_patch();
+void gamepad_do_frame();
+void sdl_input_poll();
 void control_input_filter_apply_patch();
+
+enum class InputDevice {
+    KeyboardMouse,
+    Gamepad,
+};
+
+void input_record_activity(InputDevice device, SDL_JoystickID gamepad_id = 0);
+InputDevice input_active_device();
+InputDevice input_prompt_device();
+SDL_JoystickID input_recent_gamepad_id();
+void input_clear_recent_gamepad();

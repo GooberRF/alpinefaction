@@ -233,6 +233,7 @@ public:
     bool click = false;
     bool rclick = false;
     int wheel = 0;
+    float analog_scroll = 0.0f;
     bool lmb_down = false;
 
     // Active scroll viewport. Widgets lay out in absolute screen space; inside a region the draw
@@ -378,6 +379,7 @@ public:
 
     // -------- toasts --------
     void push_toast(std::string text);
+    [[nodiscard]] bool has_toasts() const { return !toasts_.empty(); }
     void draw_toasts(int font);
 
     // -------- description pane state --------

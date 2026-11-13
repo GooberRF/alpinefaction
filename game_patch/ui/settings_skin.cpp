@@ -984,6 +984,9 @@ bool skin_dropdown(UiContext& ctx, const UiRect& r, const std::vector<std::strin
         if (open && ctx.wheel != 0 && ui_point_in(ctx.mx, ctx.my, list)) {
             list_scroll += ctx.wheel > 0 ? -1.0f : 1.0f;
         }
+        if (open) {
+            list_scroll += ctx.analog_scroll / static_cast<float>(std::max(1, row_h));
+        }
         if (ctx.consume_activation(id)) {
             if (open) {
                 ctx.close_popup();

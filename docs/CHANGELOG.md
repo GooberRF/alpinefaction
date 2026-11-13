@@ -1,9 +1,43 @@
 ⚙️⛏ Alpine Faction Changelog ⛏⚙️
 ===================================
 
-Version 1.5.0 (Trillium): Not yet released
+Version 1.6.0: Not yet released
 --------------------------------
 ### Major features
+[@AL2009man](https://github.com/AL2009man) & [@nickalreadyinuse](https://github.com/nickalreadyinuse)
+- Controller Support
+> [!WARNING]
+> When using Steam Input or Steam Hardware Inputs (Steam Deck, Steam Controller 2026, Steam Controller 2015): change the controller configuration to one of the many `Gamepad` templates to enable controller support.
+  - Full controller support via SDL3 Gamepad API
+  - Glyph support for Xbox, PlayStation, Nintendo, and Steam Hardware (Steam Controller 2015, Steam Deck, Steam Controller 2026)
+  - Dual-Analog support for movement and camera controls
+  - Cursor Menu navigation support for either Gyro (press ` Stick Click`, to toggle Gyro Cursor, off by default), Trackpad and Joystick Inputs
+  - Initial Rumble support
+    - only covers all Weapon Fire and select Environmental effects
+    - Trigger Rumble/Impulse Triggers are also supported
+    - Vibration Filtering system to reduce low-frequency rumble.
+      - Enabled by default whenever Gyro Aiming is active. 
+  - Motion Sensor / Gyro Aiming support
+    - Natural Sensitivity Scale / Real World Sensitivity support 
+    - Gyro Space orientation support
+      - Yaw, Roll, Local Space, Player Space, World Space
+    - Gyro Autocalibration system 
+    - Gyro Ratcheting support 
+      - most modes requires `Gyro Ratcheting` action to be bound
+  - Flick Stick support
+    - Best paired with Gyro Aiming or Mixed Input
+  - Simultaneous Controller+Keyboard/Mouse / Mixed Input support
+    - if using SteamInput's supported Input Camera styles: We recommend selecting `ms_scale`'s Modern (`2`) and change the mouse sensitivity to `2.50`. If it's set to ``6545px`` (default slider on SteamInput): this will skip "[Input] Angles/Degrees to Mouse Pixels" slider.
+  - Partial controller menu navigation support (Cursor and Scrollbar are handled by Joystick. If supported: Gyro and Touchpad Cursors are included)
+
+  ### Imported libraries
+- [SDL 3.4.20](https://github.com/libsdl-org/SDL) by Sam Lantinga and many Contributors
+- [GamepadMotionHelpers Version 10](https://github.com/JibbSmart/GamepadMotionHelpers) by Jibb Smart
+
+
+Version 1.5.0 (Trillium): Not yet released
+--------------------------------
+
 [@GooberRF](https://github.com/GooberRF)
 - Add ray cast lightmap baking to level editor
   - Add `Invisible faces block light` and `Alpha-textured faces block light` level properties to control whether those faces occlude baked light
@@ -446,6 +480,8 @@ Version 1.5.0 (Trillium): Not yet released
 - [bc7enc_rdo](https://github.com/richgel999/bc7enc_rdo) by Richard Geldreich, Jr.
 - [LunaSVG 3.5.0](https://github.com/sammycage/lunasvg) by Samuel Ugochukwu
 - [PlutoVG 1.3.3](https://github.com/sammycage/plutovg) by Samuel Ugochukwu
+- [SDL 3.4.20](https://github.com/libsdl-org/SDL) by Sam Lantinga and many Contributors
+- [GamepadMotionHelpers 10](https://github.com/JibbSmart/GamepadMotionHelpers) by Jibb Smart
 
 Version 1.4.0 (Lupin): Released Aug-25-2026
 --------------------------------

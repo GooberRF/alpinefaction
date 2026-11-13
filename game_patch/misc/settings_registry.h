@@ -241,6 +241,11 @@ struct SettingRow
     const char* ui_suffix = "";
     // Shown instead of the number when the stored value is 0.
     const char* ui_zero_label = nullptr;
+    // Availability gate for state the flags cannot express (controller hardware, a related
+    // toggle). Returns why the row is unavailable, or nullptr when it is available. Read by
+    // setting_disabled_reason, so the menu greys the row and the console refuses the edit.
+    const char* (*unavailable_reason)() = nullptr;
+    void (*describe)(std::string& text) = nullptr;
     // Adjusts the ui_* fields on a copy of the row before a slider is drawn, for a track that depends
     // on another setting. Only sliders call it; the value is still read and written through the row.
     void (*ui_adjust)(SettingRow&) = nullptr;

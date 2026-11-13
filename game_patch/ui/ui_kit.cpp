@@ -298,6 +298,7 @@ void UiContext::begin_frame(int mouse_x, int mouse_y, int wheel_delta, bool lmb_
     mx = mouse_x;
     my = mouse_y;
     wheel = wheel_delta;
+    analog_scroll = 0.0f;
     lmb_down = lmb_is_down;
     click = lmb_was_pressed;
     rclick = rmb_was_pressed;
@@ -330,6 +331,7 @@ void UiContext::begin_pass(UiPass pass_kind)
         click = false;
         rclick = false;
         wheel = 0;
+        analog_scroll = 0.0f;
         return;
     }
 
@@ -1159,6 +1161,9 @@ UiScrollRegion ui_scroll_begin(UiContext& ctx, const UiRect& view, int content_h
     if (!ctx.draw && region.max_scroll > 0.0f && ctx.wheel != 0 && ctx.popup_id() == 0
         && ui_point_in(ctx.mx, ctx.my, view)) {
         scroll += (ctx.wheel > 0 ? -1.0f : 1.0f) * static_cast<float>(wheel_step);
+    }
+    if (!ctx.draw && ctx.popup_id() == 0) {
+        scroll += ctx.analog_scroll;
     }
     // Also clamps after the content shrinks.
     scroll = std::clamp(scroll, 0.0f, region.max_scroll);

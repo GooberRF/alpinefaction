@@ -41,3 +41,5 @@ bool gameseq_is_stacked(rf::GameState state);
 bool gameseq_is_deep_stacked(rf::GameState state);
 bool gameseq_is_visible();
 int letterbox_clip_height();
+void hud_refresh_action_tokens(); // Redraw currently active HUD token message after input icon/settings change
+void hud_mark_bindings_dirty(); // Redraw currently active HUD token message after input icon/settings change

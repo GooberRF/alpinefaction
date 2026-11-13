@@ -1,5 +1,6 @@
 #include "../../hud/hud.h"
 #include "../../rf/hud.h"
+#include "../misc.h"
 #include "settings_rows.h"
 
 namespace
@@ -21,6 +22,9 @@ bool damage_flash_offered(const int value)
 
 const char* const labels_damage_flash[] = {"Off", "Screen flash", "Edge vignette"};
 const char* const labels_scope_glass[] = {"Off", "Light", "Heavy"};
+const char* const labels_gamepad_icons[] = {"Auto", "Generic", "Xbox 360", "Xbox One", "DualShock 3", "DualShock 4",
+                                            "DualSense", "Nintendo Switch", "GameCube", "Steam"};
+const char* const labels_input_prompts[] = {"Auto", "Controller", "Keyboard / Mouse"};
 
 const SettingRow rows[] = {
     {
@@ -258,6 +262,32 @@ const SettingRow rows[] = {
         .access = AccBool{&AGS::show_gametype_help},
         .flags = SF_MP_ONLY | SF_ADVANCED,
         .console_cmd = "ui_gametype_help",
+    },
+    {
+        .id = "input_prompt_override",
+        .key = "InputPromptMode",
+        .label = "Input prompts",
+        .tooltip = "Whether prompts show controller or keyboard/mouse glyphs on-screen. Auto detects the last device used.",
+        .category = Cat::Hud,
+        .subcategory = "Input Prompts",
+        .widget = Wid::Enum,
+        .access = AccInt{&AGS::input_prompt_override, nullptr, 0, 2},
+        .apply = hud_mark_bindings_dirty,
+        ENUM_LABELS(labels_input_prompts),
+        .console_cmd = "input_prompts",
+    },
+    {
+        .id = "gamepad_icon_override",
+        .key = "GamepadIconOverride",
+        .label = "Controller glyphs",
+        .tooltip = "What type of Controller glyph styles should be shown on-screen.",
+        .category = Cat::Hud,
+        .subcategory = "Input Prompts",
+        .widget = Wid::Enum,
+        .access = AccInt{&AGS::gamepad_icon_override, nullptr, 0, 9},
+        .apply = hud_mark_bindings_dirty,
+        ENUM_LABELS(labels_gamepad_icons),
+        .console_cmd = "gamepad_prompts",
     },
     {
         .id = "verbose_time_left_display",

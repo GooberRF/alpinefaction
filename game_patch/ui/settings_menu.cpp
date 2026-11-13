@@ -16,6 +16,7 @@
 #include "ui_kit.h"
 #include "../graphics/ui_draw.h"
 #include "../input/bind_context.h"
+#include "../input/gamepad.h"
 #include "../input/input.h"
 #include "../main/main.h"
 #include "../misc/alpine_settings.h"
@@ -28,6 +29,7 @@
 #include "../rf/level.h"
 #include "../rf/multi.h"
 #include "../rf/os/console.h"
+#include "../rf/os/frametime.h"
 #include "../rf/player/control_config.h"
 #include "../rf/player/player.h"
 #include "../rf/ui.h"
@@ -478,8 +480,8 @@ const char* bind_context_description(BindContextId ctx)
     }
 }
 
-// The device the columns describe. Only the keyboard/mouse pair has a runtime; the other two
-// are selectable but every cap is inert.
+// The device the columns describe. The keyboard/mouse pair and the controller have a runtime; VR
+// is selectable but every cap is inert.
 enum class BindDevice
 {
     Keyboard,
@@ -493,7 +495,7 @@ BindDevice g_bind_device = BindDevice::Keyboard;
 const char* bind_device_description(BindDevice device)
 {
     switch (device) {
-        case BindDevice::Controller: return "Controller support is not available in this build.";
+        case BindDevice::Controller: return "Controller bindings.";
         case BindDevice::VR: return "VR support is not available in this build.";
         default: return "Keyboard and mouse bindings.";
     }
@@ -504,11 +506,33 @@ bool bind_device_live()
     return g_bind_device == BindDevice::Keyboard;
 }
 
-// A row carries the OVERRIDE badge when the edited context holds its own values for it.
+bool bind_pad_live()
+{
+    return g_bind_device == BindDevice::Controller;
+}
+
+// True when the action rows can be edited on the current device.
+bool bind_rows_live()
+{
+    return bind_device_live() || bind_pad_live();
+}
+
+// A row carries the OVERRIDE badge when the edited context holds its own values for the shown
+// device. Each device has its own fields, so overriding keys leaves the controller alone.
 bool bind_is_override(int index)
 {
-    return bind_device_live() && g_bind_context != BindContextId::Global
-        && bind_context_override(g_bind_context, index) != nullptr;
+    if (g_bind_context == BindContextId::Global || !bind_rows_live()) {
+        return false;
+    }
+    const BindOverride* value = bind_context_override(g_bind_context, index);
+    if (!value) {
+        return false;
+    }
+    if (bind_pad_live()) {
+        return value->pad_codes[0] != bind_inherit || value->pad_codes[1] != bind_inherit;
+    }
+    return value->scan_codes[0] != bind_inherit || value->scan_codes[1] != bind_inherit
+        || value->mouse_btn_id != bind_inherit;
 }
 
 std::string bind_key_name(int scan)
@@ -590,6 +614,9 @@ struct BindCapture
 {
     int row = -1;
     bool mouse = false;
+    // True while the row waits for a controller button or trigger instead of a key or mouse input.
+    bool pad = false;
+    int pad_slot = 0; // which controller cap listens: 0 = BUTTON, 1 = ALT
     // False for the frame the capture opened: the click or Enter that started it is still visible
     // to the mouse press counters, and must not become the new binding.
     bool armed = false;
@@ -615,6 +642,8 @@ void bind_suspend_contexts()
 
 void bind_resume_contexts()
 {
+    // A controller capture must not outlive the menu, whichever way it closes.
+    gamepad_bind_capture_end();
     if (g_bind_suspended) {
         g_bind_suspended = false;
         bind_context_resume();
@@ -628,11 +657,18 @@ bool bindings_at_baseline()
     if (!cc || total != static_cast<int>(g_bind_baseline.global.size())) {
         return false;
     }
+    const auto same_binding = [](const BindOverride& lhs, const BindOverride& rhs) {
+        return lhs.scan_codes[0] == rhs.scan_codes[0] && lhs.scan_codes[1] == rhs.scan_codes[1]
+            && lhs.mouse_btn_id == rhs.mouse_btn_id && lhs.pad_codes[0] == rhs.pad_codes[0]
+            && lhs.pad_codes[1] == rhs.pad_codes[1];
+    };
     for (int i = 0; i < total; ++i) {
         const rf::ControlConfigItem& item = cc->bindings[i];
         const BindOverride& then = g_bind_baseline.global[i];
-        if (item.scan_codes[0] != then.scan_codes[0] || item.scan_codes[1] != then.scan_codes[1]
-            || item.mouse_btn_id != then.mouse_btn_id || item.aux_btn_id != g_bind_baseline.global_aux[i]) {
+        const BindOverride global = bind_context_global_binding(i);
+        const BindOverride now{{item.scan_codes[0], item.scan_codes[1]}, item.mouse_btn_id,
+                               {global.pad_codes[0], global.pad_codes[1]}};
+        if (!same_binding(now, then) || item.aux_btn_id != g_bind_baseline.global_aux[i]) {
             return false;
         }
     }
@@ -641,14 +677,7 @@ bool bindings_at_baseline()
         for (int i = 0; i < static_cast<int>(overrides.size()); ++i) {
             const BindOverride* now = bind_context_override(static_cast<BindContextId>(c), i);
             const std::optional<BindOverride>& then = overrides[i];
-            if (!now || !then) {
-                if (now || then) {
-                    return false;
-                }
-                continue;
-            }
-            if (now->scan_codes[0] != then->scan_codes[0] || now->scan_codes[1] != then->scan_codes[1]
-                || now->mouse_btn_id != then->mouse_btn_id) {
+            if ((now != nullptr) != then.has_value() || (now && !same_binding(*now, *then))) {
                 return false;
             }
         }
@@ -685,7 +714,7 @@ BindOverride bind_override_or_inherit(int index)
     if (const BindOverride* value = bind_context_override(g_bind_context, index)) {
         return *value;
     }
-    return BindOverride{{bind_inherit, bind_inherit}, bind_inherit};
+    return BindOverride{{bind_inherit, bind_inherit}, bind_inherit, {bind_inherit, bind_inherit}};
 }
 
 // Exclusive assignment inside a non-Global context: the conflicting action gets an override of
@@ -854,6 +883,86 @@ void bind_clear(int index, bool mouse)
     bind_note_changed();
 }
 
+// Controller bindings use separate gameplay, menu, and multiplayer tables.
+// Exclusive assignment inside a non-Global context, as for keys: the conflicting action gets an
+// override of its own that unbinds the slot here, leaving its Global binding untouched.
+void bind_pad_assign_context(UiContext& ctx, int index, int slot, int code)
+{
+    const int total = bind_context_binding_count();
+    const bool menu_only = gamepad_is_menu_only_action(index);
+    const bool multiplayer_only = gamepad_is_multiplayer_action(index);
+    BindOverride self = bind_override_or_inherit(index);
+    if (bind_effective(index).pad_codes[1 - slot] == code) {
+        self.pad_codes[1 - slot] = -1;
+    }
+    self.pad_codes[slot] = static_cast<int16_t>(code);
+
+    std::vector<std::string> cleared;
+    for (int i = 0; i < total; ++i) {
+        // Actions in separate tables may use the same controller input.
+        if (i == index || gamepad_is_menu_only_action(i) != menu_only
+            || gamepad_is_multiplayer_action(i) != multiplayer_only) {
+            continue;
+        }
+        const BindOverride effective = bind_effective(i);
+        BindOverride other = bind_override_or_inherit(i);
+        bool changed = false;
+        for (int j = 0; j < 2; ++j) {
+            if (effective.pad_codes[j] == code) {
+                other.pad_codes[j] = -1;
+                changed = true;
+            }
+        }
+        if (changed) {
+            bind_context_set_override(g_bind_context, i, other);
+            cleared.push_back(std::string{bind_action_name(i)});
+        }
+    }
+    bind_context_set_override(g_bind_context, index, self);
+    bind_note_changed();
+    bind_toast_unbound(ctx, cleared);
+}
+
+void bind_pad_assign(UiContext& ctx, int index, int slot, int code)
+{
+    if (!bind_pad_live() || index < 0 || index >= bind_context_binding_count()) {
+        return;
+    }
+    if (g_bind_context != BindContextId::Global) {
+        bind_pad_assign_context(ctx, index, slot, code);
+        return;
+    }
+    std::vector<std::string> cleared;
+    const int displaced = gamepad_bind_action(index, slot, code);
+    if (displaced >= 0) {
+        cleared.push_back(std::string{bind_action_name(displaced)});
+    }
+    // The newest Global assignment stays exclusive inside every context too.
+    const bool ctx_unbound = bind_context_dedupe_against_global();
+    bind_note_changed();
+    bind_toast_unbound(ctx, cleared);
+    if (ctx_unbound) {
+        ctx.push_toast("CONTEXT OVERRIDES UNBOUND");
+    }
+}
+
+void bind_pad_clear(int index, int slot)
+{
+    if (!bind_pad_live() || index < 0 || index >= bind_context_binding_count()) {
+        return;
+    }
+    if (g_bind_context != BindContextId::Global) {
+        // Clearing an inherited cap is itself an override: "explicitly unbound here".
+        BindOverride value = bind_override_or_inherit(index);
+        value.pad_codes[slot] = -1;
+        bind_context_set_override(g_bind_context, index, value);
+    }
+    else {
+        gamepad_bind_action(index, slot, -1);
+    }
+    bind_note_changed();
+}
+
 // Not stock's reset, which leaves scan_codes[1] alone and cannot restore the Alpine rows.
 void bindings_reset_defaults(UiContext& ctx)
 {
@@ -881,16 +990,24 @@ void bindings_reset_defaults(UiContext& ctx)
 
 void bind_end_capture()
 {
+    if (g_capture.pad) {
+        gamepad_bind_capture_end();
+    }
     g_capture = BindCapture{};
 }
 
-void bind_begin_capture(UiContext& ctx, int index, bool mouse, UiId id)
+void bind_begin_capture(UiContext& ctx, int index, bool mouse, UiId id, bool pad = false, int pad_slot = 0)
 {
     g_capture.row = index;
     g_capture.mouse = mouse;
+    g_capture.pad = pad;
+    g_capture.pad_slot = pad_slot;
     g_capture.armed = false;
     g_capture.id = id;
     ctx.begin_key_capture(id);
+    if (pad) {
+        gamepad_bind_capture_begin();
+    }
     // Anything already held - the Enter that activated the cap, a key held from gameplay - has
     // its press counted. Draining every counter makes the next real press the first one seen,
     // and leaves autorepeat words (which never bump the counter) at zero.
@@ -909,9 +1026,20 @@ void bind_poll_capture(UiContext& ctx)
     int scan = -1;
     int mouse = -1;
     bool cancelled = false;
+    if (g_capture.pad && g_capture.armed) {
+        int pad_code = -1;
+        if (gamepad_bind_capture_take(pad_code)) {
+            ctx.feed_capture(pad_code, -1);
+        }
+    }
     if (ctx.take_key_capture(g_capture.id, scan, mouse, cancelled)) {
         if (!cancelled) {
-            bind_assign(ctx, g_capture.row, scan, mouse);
+            if (g_capture.pad) {
+                bind_pad_assign(ctx, g_capture.row, g_capture.pad_slot, scan);
+            }
+            else {
+                bind_assign(ctx, g_capture.row, scan, mouse);
+            }
         }
         bind_end_capture();
     }
@@ -931,6 +1059,9 @@ bool bind_handle_capture_key(int key)
     if (code == rf::KEY_ESC) {
         g_ui.cancel_key_capture();
         return true;
+    }
+    if (g_capture.pad) {
+        return true; // a controller capture ignores the keyboard
     }
     if (!g_capture.armed) {
         return true;
@@ -1249,7 +1380,7 @@ std::vector<Entry> build_search_entries(std::string_view query, std::vector<std:
         }
     }
     // Actions are searchable by name too, editable right in the results.
-    if (bind_device_live()) {
+    if (bind_rows_live()) {
         bool captioned = false;
         const int total = bind_context_binding_count();
         for (int i = 0; i < total; ++i) {
@@ -1259,7 +1390,9 @@ std::vector<Entry> build_search_entries(std::string_view query, std::vector<std:
                 continue;
             }
             if (!captioned) {
-                entries.push_back(Entry{EntryKind::SubHeader, "Key bindings", nullptr, nullptr, -1, sub_header_ref_h});
+                entries.push_back(Entry{EntryKind::SubHeader,
+                                        g_bind_device == BindDevice::Controller ? "Controller bindings" : "Key bindings",
+                                        nullptr, nullptr, -1, sub_header_ref_h});
                 captioned = true;
             }
             entries.push_back(Entry{EntryKind::Bind, nullptr, nullptr, nullptr, i, skin::bind_row_h});
@@ -1394,8 +1527,13 @@ void do_action_choice_widget(UiContext& ctx, const SettingRow& row, const UiRect
     }
 }
 
-// Enums with at most this many offered values cycle in place; longer ones get the dropdown list.
+// Most enums with at most this many offered values cycle in place.
 constexpr int cycler_max_options = 4;
+
+bool is_controller_debug_action(std::string_view action)
+{
+    return action == "gyro_reset_partial" || action == "gyro_reset_full" || action == "joy_reset";
+}
 
 void do_row_widget(UiContext& ctx, const SettingRow& row, const UiRect& row_rect, int ctl_right,
                    const Fonts& fonts, int slider_readout_w, bool enabled, bool sync_pass, bool hot)
@@ -1496,14 +1634,16 @@ void do_row_widget(UiContext& ctx, const SettingRow& row, const UiRect& row_rect
             const int count = static_cast<int>(offered.size());
             const int value = static_cast<int>(std::lround(row_float(row,
                 static_cast<float>(setting_enum_value(row, offered[0])))));
-            int pos = 0;
+            int pos = -1;
             for (int i = 0; i < count; ++i) {
                 if (setting_enum_value(row, offered[i]) == value) {
                     pos = i;
                     break;
                 }
             }
-            if (count <= cycler_max_options) {
+            if (count <= cycler_max_options && pos >= 0
+                && std::string_view{row.id} != "gamepad_gyro_autocalibration"
+                && std::string_view{row.id} != "gamepad_gyro_ratcheting") {
                 const UiRect r = right_rect(ctx, ctl_right, row_rect, skin::control_w, skin::widget_h);
                 const int delta = skin_cycler(ctx, r, row.enum_labels[offered[pos]], font, enabled, id, hot);
                 if (delta != 0 && enabled) {
@@ -1599,8 +1739,23 @@ void do_row_widget(UiContext& ctx, const SettingRow& row, const UiRect& row_rect
                 const int h = skin_px(ctx, 44.0f);
                 const UiRect r{ctl_right - w, row_rect.y + (row_rect.h - h) / 2, w, h};
                 if (skin_button(ctx, r, "RESET BINDINGS", fonts.body_bold, SkinButton::Danger,
-                                enabled && bind_device_live(), id)) {
+                                enabled && bind_rows_live(), id)) {
                     g_modal = Modal::ResetBindings;
+                    ui_play_click();
+                }
+            }
+            else if (is_controller_debug_action(action)) {
+                const UiRect r = right_rect(ctx, ctl_right, row_rect, skin::control_w, 44.0f);
+                if (skin_button(ctx, r, "RESET", fonts.body_bold, SkinButton::Secondary, enabled, id)) {
+                    if (action == "gyro_reset_partial") {
+                        rf::console::do_command("gyro_reset partial");
+                    }
+                    else if (action == "gyro_reset_full") {
+                        rf::console::do_command("gyro_reset full");
+                    }
+                    else {
+                        rf::console::do_command("joy_reset");
+                    }
                     ui_play_click();
                 }
             }
@@ -1877,10 +2032,132 @@ void draw_sub_header(const UiContext& ctx, const UiRect& r, const char* header, 
                    string_to_upper(header ? header : "").c_str(), fonts.body_bold);
 }
 
+// Context override affordance: gold chip plus the revert arrow, which drops the override of the
+// shown device and puts the row back on its Global binding.
+void do_bind_override_badge(UiContext& ctx, const UiRect& r, int key_x, int index, const Fonts& fonts)
+{
+    if (!bind_is_override(index)) {
+        return;
+    }
+    const int badge_h = skin_px(ctx, skin::badge_h);
+    const int badge_w = skin_badge_width(ctx, "OVERRIDE", fonts.caption, false);
+    const int icon = skin_px(ctx, skin::icon_size);
+    const UiRect badge{key_x - badge_w - icon - skin_px(ctx, 20.0f),
+                       r.y + (r.h - badge_h) / 2, badge_w, badge_h};
+    skin_badge(ctx, badge, "OVERRIDE", skin::badge_override, fonts.caption, nullptr, false);
+    const UiRect revert{badge.x + badge_w + skin_px(ctx, 6.0f), r.y + (r.h - icon) / 2, icon, icon};
+    if (skin_icon_button(ctx, revert, "af_revert_icon", skin::amber, skin::ink_title,
+                         ui_id("bindrevert", index))) {
+        // An all-inherit value drops the override, so only the other device's fields can survive.
+        BindOverride value = bind_override_or_inherit(index);
+        if (bind_pad_live()) {
+            value.pad_codes[0] = value.pad_codes[1] = bind_inherit;
+        }
+        else {
+            value.scan_codes[0] = value.scan_codes[1] = value.mouse_btn_id = bind_inherit;
+        }
+        bind_context_set_override(g_bind_context, index, value);
+        bind_note_changed();
+        ui_play_click();
+    }
+}
+
+// A controller row: BUTTON and ALT each hold one button or trigger.
+void do_pad_bind_row(UiContext& ctx, const UiRect& r, int index, const Fonts& fonts)
+{
+    const int inset = skin_px(ctx, row_inset);
+    int key_x = 0;
+    int mouse_x = 0;
+    int col_w = 0;
+    bind_columns(ctx, r, key_x, mouse_x, col_w);
+    const int cap_w = skin_px(ctx, skin::keycap_w);
+    const int cap_h = skin_px(ctx, skin::keycap_h);
+    const int cap_y = r.y + (r.h - cap_h) / 2;
+
+    const bool live = bind_pad_live();
+    const bool capturing_main = live && g_capture.row == index && g_capture.pad && g_capture.pad_slot == 0;
+    const bool capturing_alt = live && g_capture.row == index && g_capture.pad && g_capture.pad_slot == 1;
+    // While one row listens, no other cap may start a second capture.
+    const bool enabled = live && (g_capture.row < 0 || g_capture.row == index);
+
+    const bool hovered = ui_hover(ctx, r);
+    const bool focused = ctx.focus_visible()
+        && (ctx.focus_id() == ui_id("bindkey", index) || ctx.focus_id() == ui_id("bindmouse", index));
+    if (!ctx.draw && hovered) {
+        g_desc_custom = std::format(
+            "Click a cap, then press a controller button or trigger. ESC Key or {} Button cancels.",
+            gamepad_get_scan_code_name(CTRL_GAMEPAD_SCAN_BASE + SDL_GAMEPAD_BUTTON_START));
+    }
+
+    if (ctx.draw) {
+        const UiRect d = ui_draw_rect(ctx, r);
+        draw_row_backing(ctx, d, focused);
+        rf::gr::set_color(row_label_color(true, hovered, focused));
+        const int label_w = std::max(0, (key_x - r.x) - inset - skin_px(ctx, 12.0f));
+        rf::gr::string(d.x + inset, d.y + (d.h - rf::gr::get_font_height(fonts.body)) / 2,
+                       ui_fit_middle(bind_action_name(index), label_w, fonts.body).c_str(), fonts.body);
+    }
+
+    do_bind_override_badge(ctx, r, key_x, index, fonts);
+
+    // A cap the context does not override shows the Global value dimmed; inheritance is per cap.
+    const BindOverride* override_value = g_bind_context != BindContextId::Global
+        ? bind_context_override(g_bind_context, index) : nullptr;
+    const BindOverride values = bind_effective(index);
+    std::string texts[2];
+    bool bound[2];
+    bool inherited[2];
+    for (int slot = 0; slot < 2; ++slot) {
+        const int code = values.pad_codes[slot];
+        const std::string name = code >= 0 ? std::string{gamepad_get_scan_code_name(code)} : std::string{};
+        bound[slot] = !name.empty();
+        inherited[slot] = g_bind_context != BindContextId::Global
+            && (!override_value || override_value->pad_codes[slot] == bind_inherit);
+        const std::string shown = name.empty() ? std::string{"-"} : name;
+        texts[slot] = inherited[slot] ? std::format("Global: {}", shown) : shown;
+    }
+    // A listening cap takes both columns and the sibling stands down.
+    const int span_w = mouse_x + col_w - key_x;
+
+    if (!capturing_alt) {
+        const UiRect key_rect{key_x, cap_y, capturing_main ? span_w : cap_w, cap_h};
+        const SkinKeyCapResult key_cap = skin_key_cap(ctx, key_rect,
+            capturing_main ? "PRESS A BUTTON..." : texts[0].c_str(), bound[0], capturing_main, enabled,
+            ui_id("bindkey", index), fonts.body, inherited[0]);
+        if (key_cap.activated) {
+            bind_begin_capture(ctx, index, false, ui_id("bindkey", index), true, 0);
+            ui_play_click();
+        }
+        else if (key_cap.cleared) {
+            bind_pad_clear(index, 0);
+            ui_play_click();
+        }
+    }
+
+    if (!capturing_main) {
+        const UiRect alt_rect{capturing_alt ? key_x : mouse_x, cap_y, capturing_alt ? span_w : cap_w, cap_h};
+        const SkinKeyCapResult alt_cap = skin_key_cap(ctx, alt_rect,
+            capturing_alt ? "PRESS A BUTTON..." : texts[1].c_str(), bound[1], capturing_alt, enabled,
+            ui_id("bindmouse", index), fonts.body, inherited[1]);
+        if (alt_cap.activated) {
+            bind_begin_capture(ctx, index, false, ui_id("bindmouse", index), true, 1);
+            ui_play_click();
+        }
+        else if (alt_cap.cleared) {
+            bind_pad_clear(index, 1);
+            ui_play_click();
+        }
+    }
+}
+
 void do_bind_row(UiContext& ctx, const UiRect& r, int index, const Fonts& fonts)
 {
     rf::ControlConfig* cc = bind_context_controls();
     if (!cc || index < 0 || index >= bind_context_binding_count()) {
+        return;
+    }
+    if (g_bind_device == BindDevice::Controller) {
+        do_pad_bind_row(ctx, r, index, fonts);
         return;
     }
     const int pad = skin_px(ctx, row_inset);
@@ -1919,21 +2196,7 @@ void do_bind_row(UiContext& ctx, const UiRect& r, int index, const Fonts& fonts)
 
     // Context override affordance: gold chip plus the revert arrow, which drops the override and
     // puts the row back on its Global binding.
-    if (bind_is_override(index)) {
-        const int badge_h = skin_px(ctx, skin::badge_h);
-        const int badge_w = skin_badge_width(ctx, "OVERRIDE", fonts.caption, false);
-        const int icon = skin_px(ctx, skin::icon_size);
-        const UiRect badge{key_x - badge_w - icon - skin_px(ctx, 20.0f),
-                           r.y + (r.h - badge_h) / 2, badge_w, badge_h};
-        skin_badge(ctx, badge, "OVERRIDE", skin::badge_override, fonts.caption, nullptr, false);
-        const UiRect revert{badge.x + badge_w + skin_px(ctx, 6.0f), r.y + (r.h - icon) / 2, icon, icon};
-        if (skin_icon_button(ctx, revert, "af_revert_icon", skin::amber, skin::ink_title,
-                             ui_id("bindrevert", index))) {
-            bind_context_clear_override(g_bind_context, index);
-            bind_note_changed();
-            ui_play_click();
-        }
-    }
+    do_bind_override_badge(ctx, r, key_x, index, fonts);
 
     // A cap the context does not override shows the Global value dimmed; the non-keyboard devices
     // have nothing to show at all. Inheritance is per field, so one cap can be overridden while the
@@ -2097,8 +2360,8 @@ const char* category_summary(SettingCategory category)
             return "Heads-up display, crosshair, scopes, minimap, world markers, spectating and demos.";
         case SettingCategory::Interface: return "Menus, notifications, downloads and the console.";
         case SettingCategory::Audio: return "Volumes, voice messages and audio feedback.";
-        case SettingCategory::Bindings: return "Key and mouse bindings for every action.";
-        case SettingCategory::Input: return "Mouse, keyboard and scope behavior.";
+        case SettingCategory::Bindings: return "Keyboard, mouse and controller binding for every action.";
+        case SettingCategory::Input: return "Mouse, keyboard, controller and scope behavior.";
         case SettingCategory::Gameplay: return "Single-player options, view, autoswitch, gore, weapons and vehicles.";
         case SettingCategory::Multiplayer: return "Identity, handicap, sprays, hosting and FactionFiles account.";
         default: return "";
@@ -2169,6 +2432,25 @@ ModalCopy modal_copy()
 {
     switch (g_modal) {
         case Modal::ResetBindings:
+            if (g_bind_device == BindDevice::Controller) {
+                if (g_bind_context != BindContextId::Global) {
+                    if (g_bind_context == BindContextId::Vehicles) {
+                        return ModalCopy{"RESET BINDINGS",
+                                         std::string{"Restore vehicle controller bindings to their defaults?"},
+                                         std::string{"Change View uses D-Pad Left; other controller overrides are cleared."},
+                                         "RESET BINDINGS"};
+                    }
+                    return ModalCopy{"RESET BINDINGS",
+                                     std::format("Remove every controller override in the {} context?",
+                                                 bind_context_label(g_bind_context)),
+                                     std::string{"Every action here falls back to its global controller binding."},
+                                     "RESET OVERRIDES"};
+                }
+                return ModalCopy{"RESET BINDINGS",
+                                 std::string{"Restore every controller binding to its default?"},
+                                 std::string{"Keyboard and mouse bindings are not touched."},
+                                 "RESET BINDINGS"};
+            }
             if (g_bind_context != BindContextId::Global) {
                 return ModalCopy{"RESET BINDINGS",
                                  std::format("Remove every override in the {} context?",
@@ -2232,6 +2514,8 @@ void revert_session(UiContext& ctx)
                 cc->bindings[i].scan_codes[1] = value.scan_codes[1];
                 cc->bindings[i].mouse_btn_id = value.mouse_btn_id;
                 cc->bindings[i].aux_btn_id = g_bind_baseline.global_aux[i];
+                gamepad_set_action_code(i, 0, value.pad_codes[0]);
+                gamepad_set_action_code(i, 1, value.pad_codes[1]);
             }
             for (int c = 1; c < static_cast<int>(g_bind_baseline.overrides.size()); ++c) {
                 const auto context = static_cast<BindContextId>(c);
@@ -2275,7 +2559,46 @@ void modal_confirmed(UiContext& ctx)
 {
     switch (g_modal) {
         case Modal::ResetBindings:
-            if (g_bind_context != BindContextId::Global) {
+            if (g_bind_device == BindDevice::Controller) {
+                if (g_bind_context != BindContextId::Global) {
+                    // Only the controller fields go; a keyboard override in the same row stays.
+                    for (int i = 0; i < bind_context_binding_count(); ++i) {
+                        if (const BindOverride* stored = bind_context_override(g_bind_context, i)) {
+                            BindOverride value = *stored;
+                            value.pad_codes[0] = value.pad_codes[1] = bind_inherit;
+                            bind_context_set_override(g_bind_context, i, value);
+                        }
+                    }
+                    if (g_bind_context == BindContextId::Vehicles) {
+                        const int index = static_cast<int>(get_af_control(rf::AF_ACTION_SPECTATE_CHANGE_VIEW));
+                        if (alpine_control_start_index() >= 0 && index < bind_context_binding_count()) {
+                            bind_pad_assign_context(ctx, index, 0, gamepad_vehicle_change_view_default_code());
+                        }
+                        else {
+                            ctx.push_toast("CHANGE VIEW BINDING UNAVAILABLE");
+                        }
+                    }
+                    else if (g_bind_context == BindContextId::Spectator) {
+                        for (const auto& [action, code] : gamepad_spectator_default_bindings()) {
+                            if (alpine_control_start_index() >= 0 && action >= 0
+                                && action < bind_context_binding_count()) {
+                                bind_pad_assign_context(ctx, action, 0, code);
+                            }
+                            else {
+                                ctx.push_toast("SPECTATOR BINDING UNAVAILABLE");
+                            }
+                        }
+                    }
+                }
+                else {
+                    gamepad_reset_to_defaults();
+                    if (bind_context_dedupe_against_global()) {
+                        ctx.push_toast("CONTEXT OVERRIDES UNBOUND");
+                    }
+                }
+                bind_note_changed();
+            }
+            else if (g_bind_context != BindContextId::Global) {
                 bind_context_clear_all(g_bind_context);
                 bind_note_changed();
             }
@@ -2609,13 +2932,13 @@ bool entry_owns_focus(const Entry& entry, UiId focus)
 
 void register_offscreen_focus(UiContext& ctx, const Entry& entry)
 {
-    // Action buttons carry enable conditions of their own; a stand-in for a button that then
-    // refuses focus would drop the cursor back to the top.
+    // Other action buttons can have extra enable conditions the row alone does not capture.
     if (entry.kind == EntryKind::Row
-        && (!row_widget_enabled(*entry.row) || entry.row->widget == SettingWidget::Action)) {
+        && (!row_widget_enabled(*entry.row)
+            || (entry.row->widget == SettingWidget::Action && !is_controller_debug_action(entry.row->id)))) {
         return;
     }
-    if (entry.kind == EntryKind::Bind && (!bind_device_live() || g_capture.row >= 0)) {
+    if (entry.kind == EntryKind::Bind && (!bind_rows_live() || g_capture.row >= 0)) {
         return;
     }
     const bool adjustable = entry.kind == EntryKind::Row
@@ -2927,6 +3250,9 @@ void draw_description_strip(UiContext& ctx, const UiRect& desc, const Fonts& fon
     }
     else if (desc_row) {
         text = desc_row->tooltip ? desc_row->tooltip : "";
+        if (desc_row->describe) {
+            desc_row->describe(text);
+        }
         // A row can be both locked out and blocked by the server; saying only the first
         // reason hides the one the player would act on.
         const char* reason = setting_disabled_reason(*desc_row);
@@ -2969,7 +3295,7 @@ void build_panel_footer(UiContext& ctx, const UiRect& line, bool searching, cons
     // Bindings has its own reset (the current context's overrides, or the factory bindings).
     const bool bindings = g_category == SettingCategory::Bindings;
     if (skin_button(ctx, reset_cat, "RESET CATEGORY", fonts.body_bold, SkinButton::Secondary,
-                    !searching && (bindings ? bind_device_live() : category_has_resettable_rows(g_category)),
+                    !searching && (bindings ? bind_rows_live() : category_has_resettable_rows(g_category)),
                     ui_id("reset_category"))) {
         g_modal = bindings ? Modal::ResetBindings : Modal::ResetCategory;
         ui_play_click();
@@ -3213,6 +3539,11 @@ void settings_menu_input()
     g_ui.begin_frame(x, y, capturing ? 0 : wheel, !capturing && rf::mouse_button_is_down(0),
         !capturing && rf::mouse_was_button_pressed(0) != 0,
         !capturing && rf::mouse_was_button_pressed(1) != 0);
+    if (!capturing && !g_ui.lmb_down && !rf::console::console_is_visible()) {
+        constexpr float scroll_speed = 880.0f;
+        g_ui.analog_scroll = gamepad_consume_menu_scroll() * scroll_speed * menu_screen_scale()
+            * std::max(0.0f, rf::frametime);
+    }
     g_ui.begin_pass(UiPass::HitTest);
     settings_menu_build(g_ui);
     g_ui.end_pass();
@@ -3293,6 +3624,11 @@ void settings_menu_enter()
     g_row_state.clear();
     g_ui.style = settings_menu_style();
     g_ui.set_hover_sound_enabled(true);
+}
+
+void settings_menu_push_toast(const char* text)
+{
+    g_ui.push_toast(text);
 }
 
 void settings_menu_do_frame(bool paused)
