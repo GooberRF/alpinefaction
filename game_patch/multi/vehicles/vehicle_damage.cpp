@@ -247,7 +247,7 @@ namespace
     bool vehicle_repair_allowed(const rf::Entity* vehicle, int killer_handle)
     {
         if (killer_handle == -1) {
-            return false; // player_from_entity_handle does not validate, and -1 matches a live row
+            return false;
         }
         const rf::Player* repairer = rf::player_from_entity_handle(killer_handle);
         if (!repairer) {
@@ -1630,16 +1630,9 @@ namespace
         }
 
         if (killer_handle != -1) {
-            rf::Entity* killer = vehicle_synced_entity(killer_handle);
-            if (killer) {
-                // A vehicle handle is never a valid killer for the scoreboard.
-                rf::Entity* occupant = vehicle_firing_seat_occupant(killer);
-                if (!occupant) {
-                    occupant = vehicle_driver_entity(killer);
-                }
-                if (occupant) {
-                    return occupant->handle;
-                }
+            // A vehicle handle is never a valid killer for the scoreboard.
+            if (rf::Entity* occupant = vehicle_shot_occupant(killer_handle)) {
+                return occupant->handle;
             }
             return killer_handle;
         }
@@ -1676,9 +1669,8 @@ namespace
                          it != g_vehicle_state.last_damager.end()) {
                     credit = it->second;
                 }
-                // The stock friendly-fire gate at 0x0048939F resolves its killer with
-                // player_from_entity_handle, which does not validate -1 and so matches the first player
-                // with no entity. Crediting the occupant makes the gate a no-op (killer == victim).
+                // Crediting the occupant makes the stock friendly-fire gate at 0x0048939F a no-op
+                // (killer == victim).
                 rf::Player* occupant = rf::player_from_entity_handle(victim->handle);
                 if (vehicle_team_damage_blocked(rf::player_from_entity_handle(credit), occupant)) {
                     return victim->handle;
@@ -1915,9 +1907,12 @@ void vehicle_note_hull_damage(rf::Entity* vehicle, float life_before, int killer
             if (lethal.vehicle_class < 0) {
                 lethal.vehicle_class = vehicle_occupied_damage_class(killer);
             }
-            if (lethal.vehicle_class < 0 && kill_attribution_is_valid_weapon_type(weapon_type)) {
-                lethal.weapon_type = weapon_type;
-                lethal.splash = splash;
+            if (kill_attribution_is_valid_weapon_type(weapon_type)) {
+                lethal.stats_weapon_type = weapon_type;
+                if (lethal.vehicle_class < 0) {
+                    lethal.weapon_type = weapon_type;
+                    lethal.splash = splash;
+                }
             }
         }
         return lethal;
@@ -1928,6 +1923,11 @@ void vehicle_note_hull_damage(rf::Entity* vehicle, float life_before, int killer
             vehicle_note_hazard_destroyer(vehicle, vehicle_hit_credit_s);
         }
         g_vehicle_state.lethal_killer.try_emplace(vehicle->handle, blow());
+        VehicleState* st = vehicle_hull_state(vehicle->handle);
+        if (st && !st->stats.end_cause) {
+            st->stats.end_cause = vehicle_crush_damage_is_mint(vehicle->handle) ? afstats::VehicleEndCause::crash
+                                                                                : afstats::VehicleEndCause::weapon;
+        }
     }
     else if (real_damage > 0.0f) {
         const bool stock_indicated = splash || (kill_attribution_in_projectile_impact() && weapon_type >= 0);
@@ -1939,7 +1939,7 @@ void vehicle_note_hull_damage(rf::Entity* vehicle, float life_before, int killer
         }
     }
     if (killer_handle == -1 || real_damage <= 0.0f) {
-        return; // player_from_entity_handle does not validate -1
+        return;
     }
     rf::Player* attacker = rf::player_from_entity_handle(killer_handle);
     if (!attacker || !attacker->net_data
@@ -2155,6 +2155,27 @@ void vehicle_before_entity_die(rf::Entity* ep)
     g_vehicle_state.horn.erase(ep->handle);
     // The occupancy entity_die is about to leave behind - a null hull states "nobody is aboard it".
     vehicle_broadcast_seat_occupancy(ep->handle, nullptr, -1);
+
+    // Ahead of the occupant blast, so the riders' kills follow it.
+    const VehicleState* st = vehicle_hull_state(ep->handle);
+    if (!st || st->stats.id == 0) {
+        return;
+    }
+    const afstats::VehicleEndCause cause = st->stats.end_cause.value_or(afstats::VehicleEndCause::weapon);
+    auto it = g_vehicle_state.lethal_killer.find(ep->handle);
+    const VehicleLethalKiller* lethal = it != g_vehicle_state.lethal_killer.end() && it->second.entity_handle != -1
+        ? &it->second : nullptr;
+    rf::Player* destroyer = lethal && lethal->player_id != 0xFF ? rf::multi_find_player_by_id(lethal->player_id)
+                                                                : nullptr;
+    // A scuttle is the hull going back to its factory unless a recent blow is credited with it.
+    const bool scuttled = cause == afstats::VehicleEndCause::hazard || cause == afstats::VehicleEndCause::void_fall
+        || cause == afstats::VehicleEndCause::idle_return;
+    if (scuttled && !destroyer) {
+        vehicle_stats_hull_event(ep->handle, afstats::VehicleEventKind::returned, nullptr, -1, cause);
+        return;
+    }
+    vehicle_stats_hull_event(ep->handle, afstats::VehicleEventKind::destroyed, destroyer,
+                             destroyer ? lethal->stats_weapon_type : -1, cause);
 }
 
 void vehicle_after_entity_die(rf::Entity* ep)
@@ -2163,6 +2184,8 @@ void vehicle_after_entity_die(rf::Entity* ep)
     if (!rf::is_multi || !vehicle_is_synced_entity_type(ep)) {
         return;
     }
+    // entity_die has freed the seats of the riders it blasted, after their kills.
+    vehicle_stats_sync_seats(ep->handle, afstats::VehicleSeatReason::hull_destroyed);
     vehicle_drop_combat_state(ep->handle);
     // On the EX-DRIVER's own machine nothing put PF_NET_PLAYER back on the wreck. Every machine,
     // because that one is not necessarily the server.

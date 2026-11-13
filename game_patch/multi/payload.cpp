@@ -13,6 +13,7 @@
 #include "kill.h"
 #include "gametype.h"
 #include "server_internal.h"
+#include "../fflink/afstats_events.h"
 #include "../hud/hud.h"
 #include "../hud/multi_spectate.h"
 #include "../misc/level.h"
@@ -151,6 +152,8 @@ struct PayloadInfo
     bool rollback_announced = false;
     bool final_stretch_reached = false;
     bool end_announced = false;
+    bool had_overtime = false; // a capture bonus can end overtime, but game_end still reports it
+    bool finale_blast = false; // the finale explosion is dealing its damage
     // Unreliable sends may be lost, so changes are judged against the last reliable one
     std::optional<PayloadNetState> last_reliable;
     std::unordered_map<const rf::Player*, ResupplyOwed> resupply_owed;
@@ -396,6 +399,8 @@ void play_finale_effect()
 
 void damage_near_finale(rf::Vector3 center)
 {
+    // The kill path runs inside obj_damage, so it can tag these deaths
+    g_payload.finale_blast = true;
     for (rf::Player& pl : SinglyLinkedList{rf::player_list}) {
         if (!player_is_countable(pl)) {
             continue;
@@ -410,6 +415,7 @@ void damage_near_finale(rf::Vector3 center)
             : 1.0f - (dist - finale_full_damage_radius) / (finale_damage_radius - finale_full_damage_radius);
         rf::obj_damage(ep->handle, finale_max_damage * falloff, -1, -1, rf::DT_EXPLOSIVE, &center, -1, 0);
     }
+    g_payload.finale_blast = false;
 }
 
 void fire_pass_events()
@@ -440,8 +446,7 @@ void capture_checkpoint(const PayloadCheckpoint& cp, bool at_end)
     }
     g_payload.hold_left = std::max(g_payload.hold_left, cp.hold_seconds);
 
-    const auto& server_bonus = g_alpine_server_config_active_rules.payload.checkpoint_time_bonus;
-    const float bonus = server_bonus ? *server_bonus : cp.time_bonus;
+    const float bonus = payload_checkpoint_time_bonus(cp);
     std::string added;
     if (rf::multi_time_limit > 0.0f && bonus > 0.0f) {
         if (!g_time_bonus || g_time_bonus->limit != rf::multi_time_limit) {
@@ -459,6 +464,17 @@ void capture_checkpoint(const PayloadCheckpoint& cp, bool at_end)
                  HudNotificationType::Generic);
 }
 
+void report(afstats::PayloadEventKind kind, int push_time_ms = -1)
+{
+    std::vector<rf::Player*> pushers;
+    for (const uint8_t id : g_payload.pushers) {
+        if (rf::Player* pl = rf::multi_find_player_by_id(id)) {
+            pushers.push_back(pl);
+        }
+    }
+    afstats::on_payload_event(kind, g_payload.distance, pushers, push_time_ms);
+}
+
 // Each side fires it for its own world, as movers aren't synced. A late joiner fires it on its first state, so the
 // doors it opens are open for the joiner too.
 void end_setup()
@@ -466,6 +482,9 @@ void end_setup()
     g_payload.setup = false;
     g_payload.setup_end_time = rf::level.time;
     rf::activate_all_events_of_type(rf::EventType::When_Setup_Ends, -1, -1, true);
+    if (rf::is_server) {
+        report(afstats::PayloadEventKind::setup_end);
+    }
 }
 
 void begin_finale()
@@ -474,6 +493,9 @@ void begin_finale()
     g_payload.distance = g_payload.total_length;
     g_payload.speed = 0.0f;
     g_payload.countdown.reset();
+    const float push_time = std::max(rf::level.time - g_payload.setup_end_time, 0.0f);
+    // Ahead of the finale's own deaths
+    report(afstats::PayloadEventKind::finale, static_cast<int>(std::lround(push_time * 1000.0f)));
     if (g_payload.finale) {
         if (const auto center = payload_cart_center()) {
             damage_near_finale(*center);
@@ -483,7 +505,7 @@ void begin_finale()
         }
     }
     g_payload.finale_end.set(finale_delay_ms);
-    const int seconds = static_cast<int>(std::lround(std::max(rf::level.time - g_payload.setup_end_time, 0.0f)));
+    const int seconds = static_cast<int>(std::lround(push_time));
     const std::string text = std::format("The cart reached the end in {:02}:{:02}! {} wins!", seconds / 60,
                                          seconds % 60, team_name(g_payload.attacking_team));
     notify_all(text, 5, HudNotificationType::GenericBig);
@@ -665,6 +687,7 @@ void server_tick(float dt)
             if (!g_payload.rollback_announced) {
                 g_payload.rollback_announced = true;
                 notify_all("The cart is rolling back!", 3, HudNotificationType::Generic);
+                report(afstats::PayloadEventKind::rollback_start);
             }
         }
         else {
@@ -673,6 +696,12 @@ void server_tick(float dt)
                 g_payload.countdown = static_cast<float>(g_payload.rollback_delay) - g_payload.unpushed_seconds;
             }
         }
+    }
+    if (g_payload.state == PayloadCartState::pushing) {
+        afstats::on_payload_zone_time(attackers, false, dt);
+    }
+    else if (g_payload.state == PayloadCartState::blocked) {
+        afstats::on_payload_zone_time(defenders, true, dt);
     }
 
     // Eased so riders and client prediction never see a jump in speed
@@ -700,12 +729,14 @@ void server_tick(float dt)
         && g_payload.distance < g_payload.total_length) {
         g_payload.final_stretch_reached = true;
         notify_all("The cart is nearly there!", 3, HudNotificationType::Generic);
+        report(afstats::PayloadEventKind::final_stretch);
     }
 
     if (g_payload.overtime) {
         const bool time_up = rf::multi_time_limit > 0.0f && rf::level.time >= rf::multi_time_limit;
         if (!time_up) {
             g_payload.overtime = false;
+            report(afstats::PayloadEventKind::overtime_cleared);
         }
         // A held cart keeps overtime going as a pushed one does: the attackers can't push it
         g_payload.overtime_unpushed_seconds =
@@ -855,6 +886,16 @@ float payload_push_radius()
     return g_payload.push_radius;
 }
 
+int payload_rollback_delay()
+{
+    return g_payload.rollback_delay;
+}
+
+bool payload_has_finale()
+{
+    return g_payload.finale;
+}
+
 float payload_cart_half_height()
 {
     return g_payload.cart_half_height;
@@ -919,6 +960,16 @@ bool payload_in_overtime()
     return g_payload.overtime;
 }
 
+bool payload_had_overtime()
+{
+    return g_payload.had_overtime;
+}
+
+bool payload_finale_blast_active()
+{
+    return g_payload.finale_blast;
+}
+
 std::optional<float> payload_countdown_seconds()
 {
     return g_payload.countdown;
@@ -949,6 +1000,11 @@ bool payload_checkpoint_captured(const PayloadCheckpoint& checkpoint)
 {
     const HillInfo* hill = checkpoint_hill(checkpoint);
     return hill && hill->ownership == team_hill_owner(g_payload.attacking_team);
+}
+
+float payload_checkpoint_time_bonus(const PayloadCheckpoint& checkpoint)
+{
+    return g_alpine_server_config_active_rules.payload.checkpoint_time_bonus.value_or(checkpoint.time_bonus);
 }
 
 std::optional<rf::Vector3> payload_checkpoint_pos(const HillInfo& hill)
@@ -1105,8 +1161,10 @@ bool payload_round_over(bool time_up)
     const bool pushed = g_payload.hold_left > 0.0f || !g_payload.pushers.empty();
     if (!g_payload.overtime && pushed) {
         g_payload.overtime = true;
+        g_payload.had_overtime = true;
         g_payload.overtime_unpushed_seconds = 0.0f;
         notify_teams("OVERTIME: keep pushing!", "OVERTIME: stop the cart!", 4, HudNotificationType::GenericBig);
+        report(afstats::PayloadEventKind::overtime_start);
         return false;
     }
     if (g_payload.overtime && (pushed || g_payload.overtime_unpushed_seconds < payload_rules().overtime_grace)) {
@@ -1116,6 +1174,7 @@ bool payload_round_over(bool time_up)
         g_payload.end_announced = true;
         const std::string text = std::format("The cart was stopped! {} wins!", team_name(payload_defending_team()));
         notify_all(text, 5, HudNotificationType::GenericBig);
+        report(afstats::PayloadEventKind::stopped);
     }
     return true;
 }

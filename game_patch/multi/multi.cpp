@@ -23,7 +23,6 @@
 #include "gametype.h"
 #include "rounds.h"
 #include "salvage.h"
-#include "payload.h"
 #include "vehicles/vehicle.h"
 #include "vehicles/vehicle_physics.h"
 #include "mutators.h"
@@ -410,50 +409,17 @@ FunHook<void()> multi_limbo_init{
         else if (gt != rf::NG_TYPE_RUN) { // no winner in run
             int red = 0, blue = 0;
             switch (gt) {
-            case rf::NG_TYPE_CTF: {
-                red = rf::multi_ctf_get_red_team_score();
-                blue = rf::multi_ctf_get_blue_team_score();
-                break;
-            }
-            case rf::NG_TYPE_TEAMDM: {
-                red = rf::multi_tdm_get_red_team_score();
-                blue = rf::multi_tdm_get_blue_team_score();
-                break;
-            }
+            case rf::NG_TYPE_CTF:
+            case rf::NG_TYPE_TEAMDM:
             case rf::NG_TYPE_DC:
-            case rf::NG_TYPE_KOTH: {
-                red = multi_koth_get_red_team_score();
-                blue = multi_koth_get_blue_team_score();
-                break;
-            }
+            case rf::NG_TYPE_KOTH:
             case rf::NG_TYPE_SAL:
-            case rf::NG_TYPE_SCAV: {
-                red = salvage_get_red_team_score();
-                blue = salvage_get_blue_team_score();
+            case rf::NG_TYPE_SCAV:
+            case rf::NG_TYPE_REV:
+            case rf::NG_TYPE_PAY:
+            case rf::NG_TYPE_ESC:
+                multi_get_winner_scores(gt, red, blue);
                 break;
-            }
-            case rf::NG_TYPE_REV: {
-                red = static_cast<int>(rev_all_points_permalocked());
-                blue = static_cast<int>(!rev_all_points_permalocked());
-                break;
-            }
-            case rf::NG_TYPE_PAY: {
-                const int winner = payload_winning_team();
-                red = static_cast<int>(winner == 0);
-                blue = static_cast<int>(winner == 1);
-                break;
-            }
-            case rf::NG_TYPE_ESC: {
-                for (const auto& hill : g_koth_info.hills) {
-                    if (hill.ownership == HillOwner::HO_Red) {
-                        red++;
-                    }
-                    else if (hill.ownership == HillOwner::HO_Blue) {
-                        blue++;
-                    }
-                }
-                break;
-            }
             default:
                 break;
             }

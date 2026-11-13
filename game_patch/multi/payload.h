@@ -72,6 +72,9 @@ std::optional<rf::Vector3> payload_cart_center();
 // The Payload_Handler's name, or the default one
 const std::string& payload_cart_name();
 float payload_push_radius();
+// Seconds before an unpushed cart rolls back, or a negative value if it never does
+int payload_rollback_delay();
+bool payload_has_finale();
 // Half the height of the cart's bounds, so its centre less this is the floor it rides on
 float payload_cart_half_height();
 // The level allows it and the server heals a nonzero amount
@@ -88,6 +91,10 @@ bool payload_defenders_have_cart();
 // The cart's held at the round's start, or a client hasn't heard otherwise yet
 bool payload_in_setup();
 bool payload_in_overtime();
+// Server: payload overtime started at least once this level
+bool payload_had_overtime();
+// Server: the finale explosion is dealing its damage, so a death now is one of its kills
+bool payload_finale_blast_active();
 // Held: seconds until the hold ends. Idle: seconds until the cart starts rolling back. Else nullopt.
 std::optional<float> payload_countdown_seconds();
 // Rounded up and never below 1, as a client's countdown reaches 0 before the server's state change does
@@ -99,6 +106,8 @@ int payload_next_checkpoint_index();
 // 0-1 from the last captured checkpoint, or the track's start, to the next one, or to the track's end after the last
 float payload_next_checkpoint_progress();
 bool payload_checkpoint_captured(const PayloadCheckpoint& checkpoint);
+// Server: the seconds its capture adds to the time limit, if the game has one
+float payload_checkpoint_time_bonus(const PayloadCheckpoint& checkpoint);
 // The world position of a payload checkpoint hill (it has no trigger), or nullopt for any other hill
 std::optional<rf::Vector3> payload_checkpoint_pos(const HillInfo& hill);
 // The server's lists: attackers and defenders in the push zone

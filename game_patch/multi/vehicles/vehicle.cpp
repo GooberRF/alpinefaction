@@ -358,8 +358,6 @@ rf::Entity* vehicle_driver_entity(const rf::Entity* vehicle)
 
 rf::Player* vehicle_seat_occupant_player(const rf::Entity* vehicle, int seat)
 {
-    // The entity hop is load bearing: player_from_entity_handle does not validate, so a stale seat
-    // handle fed to it straight would match a live row.
     rf::Entity* occupant = rf::entity_from_handle(vehicle_seat_leech(vehicle, seat));
     return occupant ? rf::player_from_entity_handle(occupant->handle) : nullptr;
 }
@@ -707,7 +705,7 @@ namespace
 
     // The Bullet body is released first so nothing fights the death animation. The blow is unattributed: it
     // goes to a hit from the last vehicle_hit_credit_s, or one a drown or strand scuttle named first.
-    void vehicle_server_scuttle(rf::Entity* ep, float damage)
+    void vehicle_server_scuttle(rf::Entity* ep, float damage, afstats::VehicleEndCause cause)
     {
         const int handle = ep->handle;
         g_vehicle_state.kinematics.erase(handle);
@@ -715,7 +713,17 @@ namespace
         g_vehicle_state.void_timer.erase(handle);
         g_vehicle_state.coast_memory.erase(handle);
         vehicle_physics_server_release(handle);
+        // Ahead of the blow, which settles the cause of a hull it kills.
+        VehicleState* st = vehicle_hull_state(handle);
+        if (st) {
+            st->stats.end_cause = cause;
+        }
         rf::obj_damage(handle, damage, -1, -1, rf::DT_ENERGY, nullptr, -1, 0);
+        // A blow that did not kill must not name a later death.
+        const rf::Entity* survivor = rf::entity_from_handle(handle);
+        if (st && survivor && survivor->life > 0.0f) {
+            st->stats.end_cause.reset();
+        }
     }
 } // namespace
 
@@ -923,7 +931,7 @@ void vehicle_do_frame()
             if (leech_handle == -1 || rf::entity_from_handle(leech_handle)) {
                 continue;
             }
-            vehicle_server_free_seat(ep, i, leech_handle);
+            vehicle_server_free_seat(ep, i, leech_handle, afstats::VehicleSeatReason::orphan_release);
         }
 
         // Only the current driver's machine ever clears the flag.
@@ -957,7 +965,7 @@ void vehicle_do_frame()
             ep->life = std::max(ep->life - drain, last_life);
             if (ep->life <= last_life || drained_s >= 2.0f * vehicle_hazard_drain_s) {
                 vehicle_note_hazard_destroyer(ep, hazard_s + vehicle_hit_credit_s);
-                vehicle_server_scuttle(ep, vehicle_scuttle_lethal_damage(ep));
+                vehicle_server_scuttle(ep, vehicle_scuttle_lethal_damage(ep), afstats::VehicleEndCause::hazard);
                 continue;
             }
         }
@@ -976,7 +984,7 @@ void vehicle_do_frame()
             held = nothing_below ? held + rf::frametime : 0.0f;
             if (held >= vehicle_void_time) {
                 // The flat amount, not the victim-sized one: a void fall has no rider left to free.
-                vehicle_server_scuttle(ep, vehicle_drown_damage);
+                vehicle_server_scuttle(ep, vehicle_drown_damage, afstats::VehicleEndCause::void_fall);
                 continue;
             }
         }
@@ -1012,7 +1020,7 @@ void vehicle_do_frame()
             else if (now - hull_state->unoccupied_since_ms
                      >= static_cast<int64_t>(vehicle_unoccupied_destroy_s) * 1000) {
                 // The drown kill, so the factory respawn follows by the same route.
-                vehicle_server_scuttle(ep, vehicle_scuttle_lethal_damage(ep));
+                vehicle_server_scuttle(ep, vehicle_scuttle_lethal_damage(ep), afstats::VehicleEndCause::idle_return);
                 continue;
             }
         }

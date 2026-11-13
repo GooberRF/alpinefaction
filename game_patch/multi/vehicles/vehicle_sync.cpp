@@ -1862,6 +1862,16 @@ rf::Entity* vehicle_firing_seat_occupant(rf::Entity* vehicle)
     return rf::entity_from_handle(vehicle_seat_leech(vehicle, vehicle_firing_seat_index(vehicle)));
 }
 
+rf::Entity* vehicle_shot_occupant(int vehicle_handle)
+{
+    rf::Entity* vehicle = vehicle_synced_entity(vehicle_handle);
+    if (!vehicle) {
+        return nullptr;
+    }
+    rf::Entity* occupant = vehicle_firing_seat_occupant(vehicle);
+    return occupant ? occupant : vehicle_driver_entity(vehicle);
+}
+
 bool vehicle_local_owns_firing_seat(rf::Entity* ep)
 {
     rf::Entity* rider = rf::local_player_entity;

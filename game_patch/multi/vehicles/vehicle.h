@@ -286,7 +286,14 @@ bool vehicle_is_driver_obj_update_row(const rf::Player* pp, const rf::Entity* ep
 
 // The occupant that owns the vehicle's weapon: the jeep gunner, the driver otherwise.
 rf::Entity* vehicle_firing_seat_occupant(rf::Entity* vehicle);
+// Who a shot or blow parented to this vehicle is credited to: the firing seat's occupant, else the
+// driver. Null when `vehicle_handle` is no synced vehicle or both of those seats are empty.
+rf::Entity* vehicle_shot_occupant(int vehicle_handle);
+// Any seat the occupancy packet can state holds a rider.
+bool vehicle_hull_occupied(const rf::Entity* vehicle);
 int vehicle_firing_seat_index(const rf::Entity* vehicle);
+// The seat of its synced hull this rider sits in, or -1.
+int vehicle_rider_seat_index(const rf::Entity* rider);
 bool vehicle_local_owns_firing_seat(rf::Entity* ep);
 
 bool vehicle_suppress_local_fire(const rf::Player* pp);
@@ -427,6 +434,8 @@ bool vehicle_cockpit_view_pose(rf::Vector3* out_pos, rf::Matrix3* out_orient);
 // load_assets is false when leaving multiplayer: nothing will draw what it would load.
 void vehicle_level_init(bool load_assets = true);
 void vehicle_level_init_post();
+// Server: report the hulls the level spawned with to the stats stream, once its game_start has gone out.
+void vehicle_report_level_hulls();
 void vehicle_do_frame();
 void vehicle_on_multi_shutdown();
 void vehicle_tbl_overrides_level_init_post();

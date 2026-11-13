@@ -2,6 +2,7 @@
 #include "bot_chat_manager.h"
 #include "bot_combat.h"
 #include "bot_context.h"
+#include "bot_personality.h"
 #include "bot_utils.h"
 #include "bot_vehicle.h"
 #include "../gametype.h"
@@ -68,6 +69,7 @@ struct ServerBot
 
     BotContext ctx;
     int roster_id = 0;
+    afstats::BotSource source = afstats::BotSource::config;
     float think_wait = 0.0f;
     PendingThrow pending_throw;
     WeaponHold fire_anim;
@@ -90,6 +92,7 @@ struct ServerBotRosterEntry
     bool join_bot = false;
     std::string skill; // Join Bots only: the preset that replaces the profile's skill
     std::string personality; // Join Bots only: the preset that replaces the profile's personality
+    bool from_command = false; // sv_bot_add rather than the config's server_bots
 };
 
 std::vector<std::unique_ptr<ServerBot>> g_server_bots;
@@ -473,7 +476,7 @@ void server_bots_process_removals()
             rf::multi_ctf_drop_flag(player);
         }
         rf::multi_powerup_remove_all_for_player(player);
-        afstats::note_leave_reason(player, afstats::LeaveReason::quit);
+        afstats::note_leave_reason(player, afstats::LeaveReason::bot_removed);
         rf::send_left_game_packet(player_id, RF_LR_NORMAL);
         rf::multi_player_left_game(player);
     }
@@ -495,10 +498,11 @@ bool server_bot_roster_has_entry(const int roster_id)
 }
 
 void server_bot_roster_add(const int profile_index, const int team, const bool join_bot = false,
-                           const std::string& skill = {}, const std::string& personality = {})
+                           const std::string& skill = {}, const std::string& personality = {},
+                           const bool from_command = false)
 {
     g_server_bot_roster.push_back(
-        {profile_index, team, g_next_server_bot_roster_id++, join_bot, skill, personality});
+        {profile_index, team, g_next_server_bot_roster_id++, join_bot, skill, personality, from_command});
 }
 
 const ServerBotRosterEntry* server_bot_roster_entry(const int roster_id)
@@ -632,6 +636,10 @@ void server_bot_create(const ServerBotRosterEntry& entry)
     bot->ctx.player = pp;
     bot->ctx.is_server_bot = true;
     bot->roster_id = entry.id;
+    // Kept on the bot, as its roster entry can be erased while it is still in the game.
+    bot->source = entry.join_bot ? afstats::BotSource::join_bots
+        : entry.from_command ? afstats::BotSource::command
+        : afstats::BotSource::config;
     // Bots created together think on different frames.
     bot->think_wait = k_server_bot_think_interval * std::fmod(static_cast<float>(entry.id) * 0.618034f, 1.0f);
     server_bot_apply_config(bot->ctx, config, entry.skill, entry.personality);
@@ -762,7 +770,7 @@ bool server_bots_add_to_roster(const int profile_index, const int team)
         return false;
     }
     const bool was_configured = server_bots_configured();
-    server_bot_roster_add(profile_index, team);
+    server_bot_roster_add(profile_index, team, false, {}, {}, true);
     server_bot_roster_on_changed(was_configured);
     return true;
 }
@@ -903,6 +911,19 @@ ServerBot* server_bot_from_player(const rf::Player* player)
         return bot->ctx.player == player;
     });
     return it != g_server_bots.end() ? it->get() : nullptr;
+}
+
+std::optional<ServerBotStatsInfo> server_bot_stats_info(const rf::Player* player)
+{
+    ServerBot* const bot = server_bot_from_player(player);
+    if (!bot) {
+        return std::nullopt;
+    }
+    return ServerBotStatsInfo{
+        .source = bot->source,
+        .personality = bot_personality_get(bot->ctx).name,
+        .skill = bot_skill_profile_get(bot->ctx).name,
+    };
 }
 
 ServerBot* server_bot_from_entity(const rf::Entity* entity)

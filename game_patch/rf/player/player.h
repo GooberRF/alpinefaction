@@ -72,6 +72,11 @@ struct AfstatsGameCounters {
     int64_t time_played_ms = 0;
     int64_t time_spectating_ms = 0;
     int64_t time_idle_ms = 0;
+    // Summed from frame times, so kept fractional until reported
+    double payload_push_ms = 0.0;
+    double payload_block_ms = 0.0;
+    // Vampire mutator, in effective health
+    float lifesteal_healed = 0.0f;
     int64_t ping_sum = 0;
     uint32_t ping_samples = 0;
     // The same, but only over the current player_pings window: sampled every frame and

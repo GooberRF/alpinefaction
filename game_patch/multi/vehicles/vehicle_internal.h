@@ -13,6 +13,7 @@
 #include "vehicle.h"
 #include "../alpine_packets.h"
 #include "../server_internal.h"
+#include "../../fflink/afstats_events.h"
 #include "../../misc/level.h"
 #include "../../rf/entity.h"
 #include "../../rf/math/matrix.h"
@@ -150,6 +151,19 @@ struct VehicleKinematics
     bool tick_seeded = false; // base_tick/base_time_ms are valid (the ring had a driver keyframe)
 };
 
+// Server: a factory hull as the stats stream knows it.
+struct VehicleStatsHull
+{
+    uint32_t id = 0; // per game, from 1
+    int vehicle_class = -1;
+    // Set by a scuttle ahead of its blow, else by the lethal blow itself.
+    std::optional<afstats::VehicleEndCause> end_cause;
+    // The riders last reported, by net player id; 0xFF = empty.
+    uint8_t seat_player_id[af_vehicle_state_max_seats] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+    // An unlisted seat would start as 0, a real player id.
+    static_assert(af_vehicle_state_max_seats == 6, "list one 0xFF per seat above");
+};
+
 // The replicated per-hull attributes: authored on the server, mirrored on clients from
 // af_vehicle_state. team/lock_to_team/entered_once exist on both sides so either can answer
 // vehicle_hull_entry_allowed; the two timestamps are one-sided, as marked.
@@ -166,6 +180,7 @@ struct VehicleState
     uint8_t yaw_limit_deg = 0;
     int16_t yaw_base = 0;
     float yaw_rel = 0.0f; // the heading off yaw_base last clamped, for telling which stop it crossed
+    VehicleStatsHull stats;
 };
 
 // int16 across [-pi, pi], finer than the stock row's own angle slots.
@@ -273,6 +288,8 @@ struct VehicleLethalKiller
     int weapon_type = -1;
     bool splash = false;
     int vehicle_class = -1;
+    // The blow's weapon even when a hull fired it, for the stats stream.
+    int stats_weapon_type = -1;
 };
 
 // In fixed time buckets: server, the fastest |vel| a client-driven hull's received rows carried;
@@ -387,6 +404,8 @@ struct VehicleModuleState
     std::unordered_map<int, VehicleCoastMemory> coast_memory;
     std::map<VehicleRamKey, VehicleRamPair> ram_pairs;
     std::vector<VehicleSpawnSlot> factories;
+    // Server: the last per-game stats id a factory hull was given.
+    uint32_t last_stats_id = 0;
     // Client: one entry per g_vehicle_factories record, sized by vehicle_level_init_post.
     std::vector<VehicleFactoryUi> factory_ui;
     std::unordered_map<int, VehicleWheelSpin> wheel_spin;
@@ -482,8 +501,6 @@ rf::Player* vehicle_seat_occupant_player(const rf::Entity* vehicle, int seat);
 
 // Server: the factory slot whose live hull this is, or null.
 VehicleSpawnSlot* vehicle_slot_for_hull(int vehicle_handle);
-// Any seat the occupancy packet can state holds a rider.
-bool vehicle_hull_occupied(const rf::Entity* vehicle);
 bool vehicle_hazard_on_clock(int vehicle_handle);
 void vehicle_hazard_client_do_frame();
 // A torpedo arms after vehicle_torpedo_arm_s of flight on the server. The server's copy can be a little younger than
@@ -502,3 +519,10 @@ void vehicle_slot_announce_for_hull(int vehicle_handle);
 void vehicle_on_hull_boarded(rf::Entity* vehicle, const rf::Entity* rider);
 // THE af_vehicle_state attribute derivation, shared by both senders; reads the hull's own state.
 af_vehicle_state_attrs vehicle_build_hull_attrs(int vehicle_handle);
+// Server: a factory hull's vehicle_event, at its current position and team. A hull without a stats id (a
+// dbg_vehicle_spawn one) reports nothing.
+void vehicle_stats_hull_event(int vehicle_handle, afstats::VehicleEventKind kind, const rf::Player* player = nullptr,
+                              int weapon_type = -1, afstats::VehicleEndCause cause = afstats::VehicleEndCause::weapon);
+// Server: reports how the hull's seats changed since the last call, so a change that passes several call sites
+// is reported once. `reason` is for the riders who left; boarding and changing seats are voluntary.
+void vehicle_stats_sync_seats(int vehicle_handle, afstats::VehicleSeatReason reason);

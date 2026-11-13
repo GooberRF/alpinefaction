@@ -605,6 +605,18 @@ FunHook<bool(rf::Player*)> player_is_local_hook{
     }
 };
 
+// A dead player's entity_handle is -1, so the stock lookup resolves the "no killer" handle that
+// environmental damage passes to the first dead player, who is then credited with the kill.
+FunHook<rf::Player*(int)> player_from_entity_handle_hook{
+    0x004A3740,
+    [](int entity_handle) -> rf::Player* {
+        if (entity_handle == -1) {
+            return nullptr;
+        }
+        return player_from_entity_handle_hook.call_target(entity_handle);
+    }
+};
+
 bool player_is_dead_and_not_spectating(rf::Player* player)
 {
     if (multi_spectate_is_spectating() || !g_alpine_game_config.death_bars) {
@@ -1160,6 +1172,7 @@ void player_do_patch()
     player_execute_action_hook.install();
     player_create_entity_hook.install();
     player_is_local_hook.install();
+    player_from_entity_handle_hook.install();
 
     player_is_dying_red_bars_hook.install();
     player_is_dying_scoreboard_hook.install();

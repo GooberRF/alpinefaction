@@ -24,6 +24,7 @@ public:
 private:
     std::optional<int> prev_;
     bool prev_hit_counted_ = false;
+    int prev_vehicle_shot_class_ = -1;
     bool active_ = false;
 };
 
@@ -74,6 +75,9 @@ bool kill_attribution_in_splash_scope();
 // Consume-once within the current SplashWeaponScope, so one detonation scores at most one accuracy
 // hit however many players it damages. Fails closed when no scope is open.
 bool kill_attribution_splash_hit_consume();
+
+// The VehicleDamageClass of the vehicle that fired the current SplashWeaponScope's projectile, or -1.
+int kill_attribution_vehicle_shot_class();
 
 
 // True when `weapon_type` is safe to use as an index into rf::weapon_types. Matters because

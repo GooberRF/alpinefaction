@@ -332,6 +332,7 @@ namespace
         // Before the announcement: it is what carries the boarder's team and the cleared auto-return.
         vehicle_on_hull_boarded(vehicle, rider);
         vehicle_broadcast_seat_occupancy(vehicle->handle, vehicle, seat_index);
+        vehicle_stats_sync_seats(vehicle->handle, afstats::VehicleSeatReason::voluntary);
         vehicle_broadcast_health(vehicle, true);
         // Dropped rather than seeded, so the next server frame repeats the value: a boarding
         // announcement that raced the create packet would otherwise never be resent.
@@ -507,6 +508,7 @@ namespace
                 rider->host_handle = -1;
                 rider->host_tag_handle = -1;
                 vehicle_broadcast_seat_occupancy(vehicle->handle, vehicle, exit_seat);
+                vehicle_stats_sync_seats(vehicle->handle, afstats::VehicleSeatReason::voluntary);
                 vehicle_update_interp_ownership(vehicle);
                 return;
             }
@@ -629,6 +631,7 @@ namespace
         // ONE announcement naming the new seat: the occupancy already shows the old seat empty and
         // the new one his, so a receiver makes the identical atomic move with no exit machinery.
         vehicle_broadcast_seat_occupancy(vehicle->handle, vehicle, static_cast<int>(seat_index));
+        vehicle_stats_sync_seats(vehicle->handle, afstats::VehicleSeatReason::voluntary);
     }
 
     // The is_multi gate is load bearing: vehicle_is_synced_entity_type asks only about use_function,
@@ -785,6 +788,9 @@ namespace
                         vehicle_server_stop_fire(vehicle);
                     }
                     vehicle_broadcast_seat_occupancy(vehicle->handle, vehicle, seat_index);
+                    // entity_die detaches a rider killed in his seat.
+                    vehicle_stats_sync_seats(vehicle->handle, rf::entity_is_dying(ep)
+                        ? afstats::VehicleSeatReason::rider_died : afstats::VehicleSeatReason::voluntary);
                 }
                 if (ep == rf::local_player_entity) {
                     vehicle_clear_local_enclosed_flag();
@@ -1099,6 +1105,11 @@ bool vehicle_hull_occupied(const rf::Entity* vehicle)
     return false;
 }
 
+int vehicle_rider_seat_index(const rf::Entity* rider)
+{
+    return vehicle_seat_of_rider(vehicle_ridden_hull(rider), rider);
+}
+
 void vehicle_broadcast_seat_occupancy(int vehicle_handle, const rf::Entity* vehicle,
                                       int changed_seat)
 {
@@ -1109,6 +1120,46 @@ void vehicle_broadcast_seat_occupancy(int vehicle_handle, const rf::Entity* vehi
                                         vehicle_build_hull_attrs(vehicle_handle));
     // A turret factory's READY/IN USE line is its hull's occupancy, so it changes with this packet.
     vehicle_slot_announce_for_hull(vehicle_handle);
+}
+
+void vehicle_stats_sync_seats(int vehicle_handle, afstats::VehicleSeatReason reason)
+{
+    VehicleState* st = rf::is_server ? vehicle_hull_state(vehicle_handle) : nullptr;
+    if (!st || st->stats.id == 0) {
+        return;
+    }
+    VehicleStatsHull& stats = st->stats;
+    // By net id: a rider whose entity is already gone is still somebody to report.
+    uint8_t seated[af_vehicle_state_max_seats];
+    std::fill(std::begin(seated), std::end(seated), uint8_t{0xFF});
+    const rf::Entity* vehicle = vehicle_synced_entity(vehicle_handle);
+    for (int i = 0; i < vehicle_seat_count(vehicle); ++i) {
+        const rf::Player* pp = vehicle_seat_occupant_player(vehicle, i);
+        if (pp && pp->net_data) {
+            seated[i] = pp->net_data->player_id;
+        }
+    }
+    const auto seat_of = [](const uint8_t (&ids)[af_vehicle_state_max_seats], uint8_t id) {
+        const auto it = std::find(std::begin(ids), std::end(ids), id);
+        return it == std::end(ids) ? -1 : static_cast<int>(std::distance(std::begin(ids), it));
+    };
+    for (int i = 0; i < af_vehicle_state_max_seats; ++i) {
+        const uint8_t id = stats.seat_player_id[i];
+        if (id == 0xFF || seated[i] == id) {
+            continue;
+        }
+        const int to_seat = seat_of(seated, id);
+        afstats::on_vehicle_seat(rf::multi_find_player_by_id(id), stats.id, stats.vehicle_class, i, to_seat,
+                                 to_seat >= 0 ? afstats::VehicleSeatReason::voluntary : reason);
+    }
+    for (int i = 0; i < af_vehicle_state_max_seats; ++i) {
+        const uint8_t id = seated[i];
+        if (id != 0xFF && seat_of(stats.seat_player_id, id) < 0) {
+            afstats::on_vehicle_seat(rf::multi_find_player_by_id(id), stats.id, stats.vehicle_class, -1, i,
+                                     afstats::VehicleSeatReason::voluntary);
+        }
+    }
+    std::copy(std::begin(seated), std::end(seated), std::begin(stats.seat_player_id));
 }
 
 void vehicle_send_seat_occupancy_to(rf::Player* pp, const rf::Entity* vehicle, int changed_seat)
@@ -1207,10 +1258,13 @@ void vehicle_release_orphaned_riders()
             rf::entity_detach_leech(host, rider->handle, false);
         }
         vehicle_broadcast_seat_occupancy(host_handle, host, seat);
+        vehicle_stats_sync_seats(host_handle, host && rf::entity_is_dying(host)
+            ? afstats::VehicleSeatReason::hull_destroyed : afstats::VehicleSeatReason::orphan_release);
     }
 }
 
-void vehicle_server_free_seat(rf::Entity* vehicle, int seat_index, int rider_handle)
+void vehicle_server_free_seat(rf::Entity* vehicle, int seat_index, int rider_handle,
+                              afstats::VehicleSeatReason reason)
 {
     if (!vehicle || seat_index < 0) {
         return;
@@ -1224,6 +1278,7 @@ void vehicle_server_free_seat(rf::Entity* vehicle, int seat_index, int rider_han
     }
     rf::entity_detach_leech(vehicle, rider_handle, false);
     vehicle_broadcast_seat_occupancy(vehicle->handle, vehicle, seat_index);
+    vehicle_stats_sync_seats(vehicle->handle, reason);
     vehicle_update_interp_ownership(vehicle);
     if (!freeing_driver) {
         return;
@@ -1268,7 +1323,7 @@ void vehicle_on_player_disconnect(rf::Player* pp)
     if (seat < 0) {
         return; // host_handle says aboard but no seat holds him: the frame reconcile owns that
     }
-    vehicle_server_free_seat(vehicle, seat, rider->handle);
+    vehicle_server_free_seat(vehicle, seat, rider->handle, afstats::VehicleSeatReason::disconnect);
     rider->host_handle = -1;
     rider->host_tag_handle = -1;
 }

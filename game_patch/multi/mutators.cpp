@@ -49,6 +49,7 @@
 #include "../misc/alpine_options.h"
 #include "../misc/alpine_settings.h"
 #include "../misc/settings_registry.h"
+#include "../fflink/afstats_events.h"
 
 // Spawn reserve for a no-clip "infinite ammo" weapon. Firing draws from reserve,
 // but we suppress the per-shot decrement, so this is purely the (constant) number
@@ -2085,7 +2086,13 @@ void mutators_on_pvp_damage(rf::Player* attacker, rf::Player* victim, float effe
     const float max_armor_limit = std::max(ep->armor, ep->info->max_armor);
 
     // Same logic effective health kill reward uses.
+    const float effective_before = ep->life + ep->armor * 2.0f;
     distribute_effective_health(ep, effective_damage * m.vampire_heal_ratio, max_life_limit, max_armor_limit);
+    // Measured rather than computed: the caps cut the heal short near full health and armor
+    const float healed = ep->life + ep->armor * 2.0f - effective_before;
+    if (healed > 0.0f) {
+        afstats::on_lifesteal(attacker, healed);
+    }
 }
 
 // Super Drain tick: one global timer drains every alive player's health and

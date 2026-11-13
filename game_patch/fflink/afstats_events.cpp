@@ -35,8 +35,10 @@
 
 #include "../misc/player.h"
 #include "../multi/alpine_packets.h"
+#include "../multi/bots/server_bots.h"
 #include "../multi/gametype.h"
 #include "../multi/multi.h"
+#include "../multi/payload.h"
 #include "../multi/server_config_snapshot.h"
 #include "../multi/server_internal.h"
 #include "../multi/vehicles/vehicle.h"
@@ -164,6 +166,11 @@ struct RosterEntry
     int64_t time_spectating_ms = 0;
     int64_t time_idle_ms = 0;
     int avg_ping = 0;
+    bool has_payload_times = false;
+    int64_t push_ms = 0;
+    int64_t block_ms = 0;
+    bool has_lifesteal = false;
+    float lifesteal_healed = 0.0f;
 };
 
 // Config data model, sanitizer, and the byte cap for external strings live in the shared
@@ -196,6 +203,10 @@ struct EvPlayerJoin
     std::string name;
     uint8_t kind = k_join_kind_human;
     std::string client;
+    // Bots only. Empty presets are null: a bot client's presets never reach the server.
+    uint8_t bot_source = 0;
+    std::string bot_personality;
+    std::string bot_skill_preset;
 };
 
 struct EvPlayerRemediate
@@ -233,6 +244,7 @@ struct EvGameStart
     bool crits_enabled = false;
     std::vector<MutatorRecord> mutators;
     std::vector<std::pair<std::string, SettingValue>> gametype_settings;
+    std::vector<server_config::PayloadCheckpointRecord> payload_checkpoints;
     server_config::ServerSettingsRecord server_settings;
     std::vector<RosterEntry> roster;
     nlohmann::json tbl_overrides;
@@ -245,6 +257,8 @@ struct EvGameEnd
     bool overtime = false;
     int red_score = 0;
     int blue_score = 0;
+    uint8_t winner_team = team_none;
+    std::string winner_player; // empty = null
     std::vector<RosterEntry> players;
 };
 
@@ -260,6 +274,11 @@ struct EvKill
     bool has_killer_pos = false;
     Vec3 killer_pos;
     int vehicle = -1; // VehicleDamageClass; negative = not a vehicle kill, reported as null
+    int victim_vehicle = -1; // VehicleDamageClass the victim rode; negative = null
+    int killer_seat = -1;    // negative = null
+    bool has_crit = false;
+    bool crit = false;
+    uint8_t cause = 0; // KillCause; none is not sent
 };
 
 // The kill event's `vehicle` ids are part of the FactionFiles contract.
@@ -287,6 +306,9 @@ struct EvDamage
     uint8_t damage_type = 0;
     float amount = 0.0f;
     uint32_t hits = 0;
+    int vehicle = -1; // VehicleDamageClass, reported as null when negative
+    bool has_crits = false;
+    uint32_t crits = 0;
 };
 
 struct EvAccuracy
@@ -300,6 +322,7 @@ struct EvAccuracy
     uint32_t hit_legs = 0;
     float damage_dealt = 0.0f;
     float damage_potential = 0.0f;
+    int vehicle = -1; // VehicleDamageClass, reported as null when negative
 };
 
 struct EvStatus
@@ -351,6 +374,46 @@ struct EvGgLevelup
     int weapon = -1;
 };
 
+struct EvPayloadEvent
+{
+    uint8_t kind = 0;
+    float distance = 0.0f;
+    std::vector<std::string> players;
+    int time_left_ms = -1; // negative = null
+    int push_time_ms = -1; // negative = null
+};
+
+struct EvScavZone
+{
+    Vec3 pos;
+    float radius = 0.0f;
+    uint32_t timeout_ms = 0;
+    uint8_t cause = 0;
+};
+
+struct EvVehicleEvent
+{
+    uint8_t kind = 0;
+    uint32_t vehicle = 0;
+    uint8_t vehicle_class = 0;
+    uint8_t team = team_none;
+    std::string player; // empty = null
+    int weapon = -1;    // negative = null
+    bool has_cause = false;
+    uint8_t cause = 0;
+    Vec3 pos;
+};
+
+struct EvVehicleSeat
+{
+    std::string player;
+    uint32_t vehicle = 0;
+    uint8_t vehicle_class = 0;
+    int from_seat = -1;
+    int to_seat = -1;
+    uint8_t reason = 0;
+};
+
 struct EvMatchStart
 {
     uint32_t team_size = 0;
@@ -378,6 +441,8 @@ struct EvRoundEnd
     uint8_t winner_team = team_none;
     std::string winner_player; // empty = null
     uint64_t duration_ms = 0;
+    bool has_survivors = false;
+    std::vector<std::string> survivors;
 };
 
 struct EvVoteCalled
@@ -468,7 +533,7 @@ using EventPayload =
                  EvItemPickup, EvFlagEvent, EvPointEvent, EvBagmanEvent, EvGgLevelup, EvMatchStart,
                  EvMatchEnd, EvRoundStart, EvRoundEnd, EvVoteCalled, EvVoteEnded, EvGeomod,
                  EvClutterDestroyed, EvDetailBrushDestroyed, EvAward, EvPlayerScoreChange,
-                 EvTeamScoreChange, EvPlayerPings>;
+                 EvTeamScoreChange, EvPlayerPings, EvPayloadEvent, EvScavZone, EvVehicleEvent, EvVehicleSeat>;
 
 struct Event
 {
@@ -521,6 +586,8 @@ uint32_t g_round_index = 0;
 bool g_round_open = false;
 int64_t g_round_start_ms = 0;
 std::optional<GameEndType> g_pending_end_type;
+// Survivors noted for the round's end; the round that wasn't given any reports none.
+std::optional<std::vector<std::string>> g_pending_round_survivors;
 // When the next player_pings report is due. Armed at game start and disarmed at game
 // end, so the report never runs in the limbo gap between two games.
 std::optional<std::chrono::steady_clock::time_point> g_next_player_pings;
@@ -530,13 +597,15 @@ std::deque<PendingBatch> g_pending;
 
 // Windowed aggregates. Per-hit volume would dominate the stream, so
 // these accumulate beside the queue and only materialize at batch build time.
-using DamageKey = std::tuple<std::string, std::string, int, uint8_t>; // attacker, victim, weapon, dt
-using AccuracyKey = std::pair<std::string, int>;                      // player, weapon
+using DamageKey = std::tuple<std::string, std::string, int, uint8_t, int>; // attacker, victim, weapon, dt, vehicle
+using AccuracyKey = std::tuple<std::string, int, int>;                     // player, weapon, vehicle
 
 struct DamageAccum
 {
     float amount = 0.0f;
     uint32_t hits = 0;
+    bool has_crits = false; // the Crits mutator was on
+    uint32_t crits = 0;
 };
 
 struct AccuracyAccum
@@ -562,12 +631,14 @@ struct DamageKeyView
     std::string_view victim;
     int weapon = -1;
     uint8_t damage_type = 0;
+    int vehicle = -1;
 };
 
 struct AccuracyKeyView
 {
     std::string_view player;
     int weapon = -1;
+    int vehicle = -1;
 };
 
 // Written out elementwise rather than leaning on heterogeneous tuple/pair comparison,
@@ -578,7 +649,7 @@ struct DamageKeyLess
 
     static DamageKeyView view(const DamageKey& k)
     {
-        return DamageKeyView{std::get<0>(k), std::get<1>(k), std::get<2>(k), std::get<3>(k)};
+        return DamageKeyView{std::get<0>(k), std::get<1>(k), std::get<2>(k), std::get<3>(k), std::get<4>(k)};
     }
     static bool less(const DamageKeyView& a, const DamageKeyView& b)
     {
@@ -591,7 +662,10 @@ struct DamageKeyLess
         if (a.weapon != b.weapon) {
             return a.weapon < b.weapon;
         }
-        return a.damage_type < b.damage_type;
+        if (a.damage_type != b.damage_type) {
+            return a.damage_type < b.damage_type;
+        }
+        return a.vehicle < b.vehicle;
     }
     bool operator()(const DamageKey& a, const DamageKey& b) const { return less(view(a), view(b)); }
     bool operator()(const DamageKey& a, const DamageKeyView& b) const { return less(view(a), b); }
@@ -604,14 +678,17 @@ struct AccuracyKeyLess
 
     static AccuracyKeyView view(const AccuracyKey& k)
     {
-        return AccuracyKeyView{k.first, k.second};
+        return AccuracyKeyView{std::get<0>(k), std::get<1>(k), std::get<2>(k)};
     }
     static bool less(const AccuracyKeyView& a, const AccuracyKeyView& b)
     {
         if (a.player != b.player) {
             return a.player < b.player;
         }
-        return a.weapon < b.weapon;
+        if (a.weapon != b.weapon) {
+            return a.weapon < b.weapon;
+        }
+        return a.vehicle < b.vehicle;
     }
     bool operator()(const AccuracyKey& a, const AccuracyKey& b) const { return less(view(a), view(b)); }
     bool operator()(const AccuracyKey& a, const AccuracyKeyView& b) const { return less(view(a), b); }
@@ -621,10 +698,11 @@ struct AccuracyKeyLess
 std::map<DamageKey, DamageAccum, DamageKeyLess> g_damage_accum;
 std::map<AccuracyKey, AccuracyAccum, AccuracyKeyLess> g_accuracy_accum;
 
-// Verification only: cumulative per-(player, weapon) totals behind the accuracy tripwire. A single
-// flush window is not a valid comparison - a projectile's fired and its hit routinely land in
+// Verification only: cumulative per-(player, weapon, vehicle) totals behind the accuracy tripwire. A
+// single flush window is not a valid comparison - a projectile's fired and its hit routinely land in
 // different batches (a rocket in flight across a flush, a melee impact delay, the flame grace
-// tail), so per-batch hit-without-fired is legitimate. Only the running totals must hold.
+// tail), so per-batch hit-without-fired is legitimate. Only the running totals must hold, except
+// when a vehicle seat changes hands while its projectile is in flight: the hit follows the seat.
 struct AccuracyTotals
 {
     uint64_t fired = 0;
@@ -637,26 +715,26 @@ std::map<AccuracyKey, AccuracyTotals, AccuracyKeyLess> g_accuracy_totals;
 
 static void verify_accuracy_totals(const EvAccuracy& ev)
 {
-    AccuracyTotals& totals = g_accuracy_totals[AccuracyKey{ev.player, ev.weapon}];
+    AccuracyTotals& totals = g_accuracy_totals[AccuracyKey{ev.player, ev.weapon, ev.vehicle}];
     totals.fired += ev.fired;
     totals.hit += ev.hit;
     totals.hit_head += ev.hit_head;
     totals.hit_torso += ev.hit_torso;
     totals.hit_legs += ev.hit_legs;
     if (totals.hit > totals.fired) {
-        xlog::warn("[afstats-inv] cumulative accuracy hit > fired for weapon {}: {} hit vs {} fired",
-                   ev.weapon, totals.hit, totals.fired);
+        xlog::warn("[afstats-inv] cumulative accuracy hit > fired for weapon {} vehicle {}: {} hit vs {} fired",
+                   ev.weapon, ev.vehicle, totals.hit, totals.fired);
     }
     if (totals.hit_head > totals.hit) {
-        xlog::warn("[afstats-inv] cumulative headshots > hits for weapon {}: {} vs {}",
-                   ev.weapon, totals.hit_head, totals.hit);
+        xlog::warn("[afstats-inv] cumulative headshots > hits for weapon {} vehicle {}: {} vs {}",
+                   ev.weapon, ev.vehicle, totals.hit_head, totals.hit);
     }
     // A hit carries at most one region, so the regions can only ever sum to less than the hits
     // (splash, flame, taser and melee hits carry none) - never more.
     const uint64_t regions = totals.hit_head + totals.hit_torso + totals.hit_legs;
     if (regions > totals.hit) {
-        xlog::warn("[afstats-inv] cumulative region hits > hits for weapon {}: {} vs {}",
-                   ev.weapon, regions, totals.hit);
+        xlog::warn("[afstats-inv] cumulative region hits > hits for weapon {} vehicle {}: {} vs {}",
+                   ev.weapon, ev.vehicle, regions, totals.hit);
     }
 }
 
@@ -669,7 +747,7 @@ DamageAccum& damage_bucket(const DamageKeyView& k)
         return it->second;
     }
     return g_damage_accum
-        .emplace(DamageKey{std::string{k.attacker}, std::string{k.victim}, k.weapon, k.damage_type},
+        .emplace(DamageKey{std::string{k.attacker}, std::string{k.victim}, k.weapon, k.damage_type, k.vehicle},
                  DamageAccum{})
         .first->second;
 }
@@ -680,7 +758,7 @@ AccuracyAccum& accuracy_bucket(const AccuracyKeyView& k)
     if (it != g_accuracy_accum.end()) {
         return it->second;
     }
-    return g_accuracy_accum.emplace(AccuracyKey{std::string{k.player}, k.weapon}, AccuracyAccum{})
+    return g_accuracy_accum.emplace(AccuracyKey{std::string{k.player}, k.weapon, k.vehicle}, AccuracyAccum{})
         .first->second;
 }
 
@@ -972,16 +1050,20 @@ void flush_accumulators()
         ev.victim = std::move(std::get<1>(key));
         ev.weapon = std::get<2>(key);
         ev.damage_type = std::get<3>(key);
+        ev.vehicle = std::get<4>(key);
         ev.amount = node.mapped().amount;
         ev.hits = node.mapped().hits;
+        ev.has_crits = node.mapped().has_crits;
+        ev.crits = node.mapped().crits;
         push_event(std::move(ev));
     }
 
     while (!g_accuracy_accum.empty()) {
         auto node = g_accuracy_accum.extract(g_accuracy_accum.begin());
         EvAccuracy ev;
-        ev.player = std::move(node.key().first);
-        ev.weapon = node.key().second;
+        ev.player = std::move(std::get<0>(node.key()));
+        ev.weapon = std::get<1>(node.key());
+        ev.vehicle = std::get<2>(node.key());
         ev.fired = node.mapped().fired;
         ev.hit = node.mapped().hit;
         ev.hit_head = node.mapped().hit_head;
@@ -1137,6 +1219,15 @@ RosterEntry build_roster_entry(rf::Player* player, bool with_summary)
     // 0 until the first ~10s ping sample lands, so short-lived connections report 0
     // rather than a spuriously precise value; this is definitional, not a defect.
     e.avg_ping = c.ping_samples > 0 ? static_cast<int>(c.ping_sum / c.ping_samples) : 0;
+    if (rf::multi_get_game_type() == rf::NG_TYPE_PAY) {
+        e.has_payload_times = true;
+        e.push_ms = std::llround(c.payload_push_ms);
+        e.block_ms = std::llround(c.payload_block_ms);
+    }
+    if (g_alpine_server_config_active_rules.mutators.vampire_enabled) {
+        e.has_lifesteal = true;
+        e.lifesteal_healed = c.lifesteal_healed;
+    }
     return e;
 }
 
@@ -1234,6 +1325,13 @@ nlohmann::json roster_entry_to_json(const RosterEntry& e)
     j["time_spectating_ms"] = e.time_spectating_ms;
     j["time_idle_ms"] = e.time_idle_ms;
     j["avg_ping"] = e.avg_ping;
+    if (e.has_payload_times) {
+        j["push_ms"] = e.push_ms;
+        j["block_ms"] = e.block_ms;
+    }
+    if (e.has_lifesteal) {
+        j["lifesteal_healed"] = e.lifesteal_healed;
+    }
     return j;
 }
 
@@ -1268,6 +1366,13 @@ nlohmann::json event_to_json(const Event& e)
                 j["name"] = p.name;
                 j["kind"] = p.kind;
                 j["client"] = p.client;
+                if (p.kind == k_join_kind_bot) {
+                    j["bot_source"] = p.bot_source;
+                    j["bot_personality"] =
+                        p.bot_personality.empty() ? nlohmann::json(nullptr) : nlohmann::json(p.bot_personality);
+                    j["bot_skill_preset"] =
+                        p.bot_skill_preset.empty() ? nlohmann::json(nullptr) : nlohmann::json(p.bot_skill_preset);
+                }
             }
             else if constexpr (std::is_same_v<T, EvPlayerRemediate>) {
                 j["type"] = "player_remediate";
@@ -1321,6 +1426,14 @@ nlohmann::json event_to_json(const Event& e)
                 for (const auto& [key, value] : p.gametype_settings) {
                     gametype_settings[key] = setting_to_json(value);
                 }
+                if (p.gametype == rf::NG_TYPE_PAY) {
+                    auto checkpoints = nlohmann::json::array();
+                    for (const auto& cp : p.payload_checkpoints) {
+                        checkpoints.push_back(nlohmann::json{
+                            {"distance", cp.distance}, {"hold_s", cp.hold_s}, {"time_bonus_s", cp.time_bonus_s}});
+                    }
+                    gametype_settings["checkpoints"] = std::move(checkpoints);
+                }
                 j["gametype_settings"] = std::move(gametype_settings);
 
                 auto dynamic_respawn_items = nlohmann::json::object();
@@ -1346,6 +1459,11 @@ nlohmann::json event_to_json(const Event& e)
                 force_character["character_index"] = p.server_settings.force_character_index;
                 force_character["character"] = p.server_settings.force_character_name;
 
+                nlohmann::json spawn_delay;
+                spawn_delay["enabled"] = p.server_settings.spawn_delay_enabled;
+                spawn_delay["base_ms"] = p.server_settings.spawn_delay_base_ms;
+                spawn_delay["wave_respawns"] = p.server_settings.spawn_delay_wave_respawns;
+
                 nlohmann::json server_settings;
                 server_settings["pvp_damage_modifier"] = p.server_settings.pvp_damage_modifier;
                 server_settings["click_limiter_cooldown_ms"] = p.server_settings.click_limiter_cooldown_ms;
@@ -1359,6 +1477,12 @@ nlohmann::json event_to_json(const Event& e)
                 server_settings["spawn_logic"] = std::move(spawn_logic);
                 server_settings["spawn_protection"] = std::move(spawn_protection);
                 server_settings["force_character"] = std::move(force_character);
+                server_settings["spawn_delay"] = std::move(spawn_delay);
+                server_settings["exposure_damage"] = p.server_settings.exposure_damage;
+                server_settings["server_bots"] = p.server_settings.server_bots;
+                server_settings["ideal_player_count"] = p.server_settings.ideal_player_count;
+                server_settings["bots_use_vehicles"] = p.server_settings.bots_use_vehicles;
+                server_settings["bot_max_drivers"] = p.server_settings.bot_max_drivers;
                 j["server_settings"] = std::move(server_settings);
 
                 auto roster = nlohmann::json::array();
@@ -1374,6 +1498,9 @@ nlohmann::json event_to_json(const Event& e)
                 j["overtime"] = p.overtime;
                 j["red_score"] = p.red_score;
                 j["blue_score"] = p.blue_score;
+                j["winner_team"] = p.winner_team;
+                j["winner_player"] =
+                    p.winner_player.empty() ? nlohmann::json(nullptr) : nlohmann::json(p.winner_player);
                 auto players = nlohmann::json::array();
                 for (const auto& entry : p.players) {
                     players.push_back(roster_entry_to_json(entry));
@@ -1391,6 +1518,15 @@ nlohmann::json event_to_json(const Event& e)
                 j["victim_pos"] = pos_to_json(p.victim_pos);
                 j["killer_pos"] = p.has_killer_pos ? pos_to_json(p.killer_pos) : nlohmann::json(nullptr);
                 j["vehicle"] = p.vehicle < 0 ? nlohmann::json(nullptr) : nlohmann::json(p.vehicle);
+                j["victim_vehicle"] =
+                    p.victim_vehicle < 0 ? nlohmann::json(nullptr) : nlohmann::json(p.victim_vehicle);
+                j["killer_seat"] = p.killer_seat < 0 ? nlohmann::json(nullptr) : nlohmann::json(p.killer_seat);
+                if (p.has_crit) {
+                    j["crit"] = p.crit;
+                }
+                if (p.cause != 0) {
+                    j["cause"] = p.cause;
+                }
             }
             else if constexpr (std::is_same_v<T, EvAward>) {
                 j["type"] = "award";
@@ -1411,6 +1547,10 @@ nlohmann::json event_to_json(const Event& e)
                 j["damage_type"] = p.damage_type;
                 j["amount"] = p.amount;
                 j["hits"] = p.hits;
+                j["vehicle"] = p.vehicle < 0 ? nlohmann::json(nullptr) : nlohmann::json(p.vehicle);
+                if (p.has_crits) {
+                    j["crits"] = p.crits;
+                }
             }
             else if constexpr (std::is_same_v<T, EvAccuracy>) {
                 j["type"] = "accuracy";
@@ -1423,6 +1563,7 @@ nlohmann::json event_to_json(const Event& e)
                 j["hit_legs"] = p.hit_legs;
                 j["damage_dealt"] = p.damage_dealt;
                 j["damage_potential"] = p.damage_potential;
+                j["vehicle"] = p.vehicle < 0 ? nlohmann::json(nullptr) : nlohmann::json(p.vehicle);
             }
             else if constexpr (std::is_same_v<T, EvStatus>) {
                 j["type"] = "status";
@@ -1469,6 +1610,43 @@ nlohmann::json event_to_json(const Event& e)
                 j["level"] = p.level;
                 j["weapon"] = p.weapon < 0 ? nlohmann::json(nullptr) : nlohmann::json(p.weapon);
             }
+            else if constexpr (std::is_same_v<T, EvPayloadEvent>) {
+                j["type"] = "payload_event";
+                j["kind"] = p.kind;
+                j["distance"] = p.distance;
+                j["players"] = p.players;
+                j["time_left_ms"] = p.time_left_ms < 0 ? nlohmann::json(nullptr) : nlohmann::json(p.time_left_ms);
+                j["push_time_ms"] = p.push_time_ms < 0 ? nlohmann::json(nullptr) : nlohmann::json(p.push_time_ms);
+            }
+            else if constexpr (std::is_same_v<T, EvScavZone>) {
+                j["type"] = "scav_zone";
+                j["pos"] = pos_to_json(p.pos);
+                j["radius"] = p.radius;
+                j["timeout_ms"] = p.timeout_ms;
+                j["cause"] = p.cause;
+            }
+            else if constexpr (std::is_same_v<T, EvVehicleEvent>) {
+                j["type"] = "vehicle_event";
+                j["kind"] = p.kind;
+                j["vehicle"] = p.vehicle;
+                j["class"] = p.vehicle_class;
+                j["team"] = p.team;
+                j["player"] = p.player.empty() ? nlohmann::json(nullptr) : nlohmann::json(p.player);
+                j["weapon"] = p.weapon < 0 ? nlohmann::json(nullptr) : nlohmann::json(p.weapon);
+                if (p.has_cause) {
+                    j["cause"] = p.cause;
+                }
+                j["pos"] = pos_to_json(p.pos);
+            }
+            else if constexpr (std::is_same_v<T, EvVehicleSeat>) {
+                j["type"] = "vehicle_seat";
+                j["player"] = p.player;
+                j["vehicle"] = p.vehicle;
+                j["class"] = p.vehicle_class;
+                j["from_seat"] = p.from_seat;
+                j["to_seat"] = p.to_seat;
+                j["reason"] = p.reason;
+            }
             else if constexpr (std::is_same_v<T, EvMatchStart>) {
                 j["type"] = "match_start";
                 j["team_size"] = p.team_size;
@@ -1495,6 +1673,9 @@ nlohmann::json event_to_json(const Event& e)
                 j["winner_player"] =
                     p.winner_player.empty() ? nlohmann::json(nullptr) : nlohmann::json(p.winner_player);
                 j["duration_ms"] = p.duration_ms;
+                if (p.has_survivors) {
+                    j["survivors"] = p.survivors;
+                }
             }
             else if constexpr (std::is_same_v<T, EvVoteCalled>) {
                 j["type"] = "vote_called";
@@ -1610,7 +1791,7 @@ void redact_credentials(nlohmann::json& node)
         "initiator", "target", "upssk", "pssk",         "winner_player"};
     // Fields whose value is an array of key strings (game_end.players is an array of
     // roster objects instead, so it is handled by the recursion below, not here).
-    static constexpr std::string_view key_list_fields[] = {"assists", "participants"};
+    static constexpr std::string_view key_list_fields[] = {"assists", "participants", "survivors"};
 
     if (node.is_object()) {
         for (auto it = node.begin(); it != node.end(); ++it) {
@@ -2247,18 +2428,20 @@ void sample_team_scores()
     }
 }
 
-// The match system stores no winner, so it is derived the same way the endgame HUD
-// does: team scores in team types, top score otherwise. A tie reports no winner.
+// Neither a game nor the match system stores its winner. A tie reports no winner.
 void derive_winner(uint8_t& winner_team, rf::Player*& winner_player)
 {
     winner_team = team_none;
     winner_player = nullptr;
 
     const auto game_type = rf::multi_get_game_type();
+    if (game_type == rf::NG_TYPE_RUN) {
+        return;
+    }
     if (multi_is_team_game_type()) {
         int red = 0;
         int blue = 0;
-        multi_get_team_scores(game_type, red, blue);
+        multi_get_winner_scores(game_type, red, blue);
         if (red > blue) {
             winner_team = team_red;
         }
@@ -2321,8 +2504,13 @@ void emit_game_end(GameEndType end_type)
     EvGameEnd ev;
     ev.end_type = static_cast<uint8_t>(end_type);
     ev.duration_ms = static_cast<uint64_t>(std::max(rf::level.time, 0.0f) * 1000.0f);
-    ev.overtime = g_is_overtime;
+    ev.overtime = g_is_overtime || payload_had_overtime();
     multi_get_team_scores(game_type, ev.red_score, ev.blue_score);
+    rf::Player* winner_player = nullptr;
+    derive_winner(ev.winner_team, winner_player);
+    if (winner_player) {
+        ev.winner_player = winner_player->afstats_key;
+    }
     ev.players = build_roster(true);
 
     if constexpr (AFSTATS_VERIFICATION_LOGGING) {
@@ -2429,6 +2617,14 @@ void on_player_join(rf::Player* player)
     ev.name = sanitize_string(player->name.c_str(), k_max_name_len);
     ev.kind = player->is_bot ? k_join_kind_bot : k_join_kind_human;
     ev.client = client_string(player);
+    if (player->is_bot) {
+        ev.bot_source = static_cast<uint8_t>(BotSource::client);
+        if (const auto server_bot = server_bot_stats_info(player)) {
+            ev.bot_source = static_cast<uint8_t>(server_bot->source);
+            ev.bot_personality = server_bot->personality;
+            ev.bot_skill_preset = server_bot->skill;
+        }
+    }
 
     if constexpr (AFSTATS_VERIFICATION_LOGGING) {
         // VERIFICATION PHASE ONLY: logs the session key verbatim, by explicit request.
@@ -2622,6 +2818,9 @@ void on_game_start()
     ev.match_state = config.match_state;
     ev.mutators = std::move(config.mutators);
     ev.gametype_settings = std::move(config.gametype_settings);
+    if (game_type == rf::NG_TYPE_PAY) {
+        ev.payload_checkpoints = server_config::capture_payload_checkpoints();
+    }
     ev.server_settings = server_config::capture_server_settings();
     // Resolved, not declared: the mutators list above is what the config asked for; crits
     // rescale damage, so what FF needs is what the damage path itself reads.
@@ -2656,7 +2855,8 @@ void on_game_end()
 
 void on_kill(rf::Player* victim, rf::Player* killer, int weapon_type, int damage_type, uint8_t kill_flags,
              const std::vector<uint8_t>& assist_player_ids, const rf::Vector3& victim_pos,
-             const rf::Vector3* killer_pos, int vehicle_class)
+             const rf::Vector3* killer_pos, int vehicle_class, int victim_vehicle_class, int killer_seat, bool crit,
+             KillCause cause)
 {
     if (!victim || !ensure_session() || victim->afstats_key.empty()) {
         return;
@@ -2678,6 +2878,11 @@ void on_kill(rf::Player* victim, rf::Player* killer, int weapon_type, int damage
         ev.killer_pos = Vec3{killer_pos->x, killer_pos->y, killer_pos->z};
     }
     ev.vehicle = vehicle_class;
+    ev.victim_vehicle = victim_vehicle_class;
+    ev.killer_seat = killer_seat;
+    ev.has_crit = g_alpine_server_config_active_rules.mutators.crits_enabled;
+    ev.crit = crit;
+    ev.cause = static_cast<uint8_t>(cause);
 
     for (uint8_t assist_id : assist_player_ids) {
         rf::Player* assister = rf::multi_find_player_by_id(assist_id);
@@ -2725,8 +2930,33 @@ void on_spawn(rf::Player* player, const rf::Vector3& pos)
     push_event(std::move(ev));
 }
 
+// The hit side of the `accuracy` aggregate. `attacker` must have a stats key.
+static void count_accuracy_hit(rf::Player* attacker, int weapon_type, int vehicle_class, int region,
+                               CountScope hit_scope)
+{
+    AccuracyAccum& shots = accuracy_bucket(AccuracyKeyView{attacker->afstats_key, weapon_type, vehicle_class});
+    ++shots.hit;
+    // A hit carries at most one region, and only here: a hit that was not classified (-1, or
+    // anything outside the three known regions) increments nothing, which is why the region
+    // counters can only ever sum to at most `hit`.
+    if (region == 0) {
+        ++shots.hit_legs;
+    }
+    else if (region == 1) {
+        ++shots.hit_torso;
+    }
+    else if (region == 2) {
+        ++shots.hit_head;
+    }
+    // The per-weapon bucket always gets the hit; the overall summary only for scopes whose
+    // shots are discrete, so window-counted modes never distort it.
+    if (hit_scope == CountScope::full) {
+        ++attacker->afstats_game.shots_hit;
+    }
+}
+
 void on_damage(rf::Player* attacker, rf::Player* victim, int weapon_type, int damage_type, float amount,
-               bool accuracy_hit, int region, CountScope hit_scope)
+               bool accuracy_hit, int region, CountScope hit_scope, int vehicle_class, bool crit)
 {
     if (!victim || amount <= 0.0f || !ensure_session() || victim->afstats_key.empty()) {
         return;
@@ -2741,9 +2971,13 @@ void on_damage(rf::Player* attacker, rf::Player* victim, int weapon_type, int da
     const uint8_t dt = (damage_type >= 0 && damage_type <= 0xFF) ? static_cast<uint8_t>(damage_type) : 0;
 
     DamageAccum& acc =
-        damage_bucket(DamageKeyView{attacker_key, victim->afstats_key, weapon_type, dt});
+        damage_bucket(DamageKeyView{attacker_key, victim->afstats_key, weapon_type, dt, vehicle_class});
     acc.amount += amount;
     ++acc.hits;
+    if (g_alpine_server_config_active_rules.mutators.crits_enabled) {
+        acc.has_crits = true;
+        acc.crits += crit ? 1 : 0;
+    }
 
     victim->afstats_game.damage_taken += amount;
     // Count self-splash toward damage_dealt too: the stream emits a damage
@@ -2760,36 +2994,26 @@ void on_damage(rf::Player* attacker, rf::Player* victim, int weapon_type, int da
     // windows included - and this block only applies that decision, which is why it is not the
     // same condition as the `damage` aggregate above.
     if (accuracy_hit && weapon_type >= 0 && !attacker_key.empty()) {
-        AccuracyAccum& shots = accuracy_bucket(AccuracyKeyView{attacker_key, weapon_type});
-        ++shots.hit;
-        // A hit carries at most one region, and only here: a hit that was not classified (-1, or
-        // anything outside the three known regions) increments nothing, which is why the region
-        // counters can only ever sum to at most `hit`.
-        if (region == 0) {
-            ++shots.hit_legs;
-        }
-        else if (region == 1) {
-            ++shots.hit_torso;
-        }
-        else if (region == 2) {
-            ++shots.hit_head;
-        }
-        // The per-weapon bucket always gets the hit; the overall summary only for scopes whose
-        // shots are discrete, so window-counted modes never distort it.
-        if (hit_scope == CountScope::full) {
-            ++attacker->afstats_game.shots_hit;
-        }
+        count_accuracy_hit(attacker, weapon_type, vehicle_class, region, hit_scope);
     }
 }
 
+void on_hull_hit(rf::Player* attacker, int weapon_type, CountScope hit_scope, int vehicle_class)
+{
+    if (!attacker || weapon_type < 0 || !ensure_session() || attacker->afstats_key.empty()) {
+        return;
+    }
+    count_accuracy_hit(attacker, weapon_type, vehicle_class, -1, hit_scope);
+}
+
 void on_weapon_fired(rf::Player* player, int weapon_type, uint32_t projectiles, CountScope scope,
-                     float potential_damage)
+                     float potential_damage, int vehicle_class)
 {
     if (!player || weapon_type < 0 || projectiles == 0 || !ensure_session()
         || player->afstats_key.empty()) {
         return;
     }
-    AccuracyAccum& bucket = accuracy_bucket(AccuracyKeyView{player->afstats_key, weapon_type});
+    AccuracyAccum& bucket = accuracy_bucket(AccuracyKeyView{player->afstats_key, weapon_type, vehicle_class});
     bucket.fired += projectiles;
     if (potential_damage > 0.0f) {
         bucket.potential += potential_damage;
@@ -2802,13 +3026,13 @@ void on_weapon_fired(rf::Player* player, int weapon_type, uint32_t projectiles, 
     }
 }
 
-void on_damage_dealt(rf::Player* attacker, int weapon_type, float amount, CountScope scope)
+void on_damage_dealt(rf::Player* attacker, int weapon_type, float amount, CountScope scope, int vehicle_class)
 {
     if (!attacker || weapon_type < 0 || amount <= 0.0f || !ensure_session()
         || attacker->afstats_key.empty()) {
         return;
     }
-    accuracy_bucket(AccuracyKeyView{attacker->afstats_key, weapon_type}).dealt += amount;
+    accuracy_bucket(AccuracyKeyView{attacker->afstats_key, weapon_type, vehicle_class}).dealt += amount;
     if (scope == CountScope::full) {
         attacker->afstats_game.efficiency_dealt += amount;
     }
@@ -2950,6 +3174,115 @@ void on_gg_levelup(rf::Player* player, int level, int weapon_type)
     push_event(std::move(ev));
 }
 
+void on_payload_event(PayloadEventKind kind, float distance, const std::vector<rf::Player*>& players,
+                      int push_time_ms)
+{
+    if (!ensure_session()) {
+        return;
+    }
+    EvPayloadEvent ev;
+    ev.kind = static_cast<uint8_t>(kind);
+    ev.distance = distance;
+    for (rf::Player* player : players) {
+        if (player && !player->afstats_key.empty()) {
+            ev.players.push_back(player->afstats_key);
+        }
+    }
+    const bool timed = kind == PayloadEventKind::final_stretch || kind == PayloadEventKind::overtime_start
+        || kind == PayloadEventKind::overtime_cleared || kind == PayloadEventKind::finale;
+    if (timed && rf::multi_time_limit > 0.0f) {
+        const float time_left = std::max(rf::multi_time_limit - rf::level.time, 0.0f);
+        ev.time_left_ms = static_cast<int>(std::lround(time_left * 1000.0f));
+    }
+    ev.push_time_ms = push_time_ms;
+    if (g_trace) {
+        xlog::warn("[afstats-ev] payload_event kind {} at {:.1f}", ev.kind, ev.distance);
+    }
+    push_event(std::move(ev));
+}
+
+void on_payload_zone_time(const std::vector<rf::Player*>& players, bool blocking, float dt)
+{
+    if (!ensure_session()) {
+        return;
+    }
+    for (rf::Player* player : players) {
+        auto& c = player->afstats_game;
+        (blocking ? c.payload_block_ms : c.payload_push_ms) += static_cast<double>(dt) * 1000.0;
+    }
+}
+
+void on_lifesteal(rf::Player* player, float healed)
+{
+    if (!player || !ensure_session()) {
+        return;
+    }
+    player->afstats_game.lifesteal_healed += healed;
+}
+
+void on_scav_zone(ScavZoneCause cause, const rf::Vector3& pos, float radius, int timeout_ms)
+{
+    if (!ensure_session()) {
+        return;
+    }
+    EvScavZone ev;
+    ev.pos = Vec3{pos.x, pos.y, pos.z};
+    ev.radius = radius;
+    ev.timeout_ms = static_cast<uint32_t>(std::max(timeout_ms, 0));
+    ev.cause = static_cast<uint8_t>(cause);
+    if (g_trace) {
+        xlog::warn("[afstats-ev] scav_zone cause {}", ev.cause);
+    }
+    push_event(std::move(ev));
+}
+
+void on_vehicle_event(VehicleEventKind kind, uint32_t vehicle_id, int vehicle_class, int team,
+                      const rf::Player* player, int weapon_type, VehicleEndCause cause, const rf::Vector3& pos)
+{
+    // game_end closes every hull and seat, so nothing after it (a limbo disconnect) may reopen one.
+    if (vehicle_class < 0 || !ensure_session() || !g_game_open) {
+        return;
+    }
+    EvVehicleEvent ev;
+    ev.kind = static_cast<uint8_t>(kind);
+    ev.vehicle = vehicle_id;
+    ev.vehicle_class = static_cast<uint8_t>(vehicle_class);
+    if (multi_is_team_game_type() && (team == rf::TEAM_RED || team == rf::TEAM_BLUE)) {
+        ev.team = team == rf::TEAM_BLUE ? team_blue : team_red;
+    }
+    if (player && !player->afstats_key.empty()) {
+        ev.player = player->afstats_key;
+    }
+    ev.weapon = weapon_type;
+    ev.has_cause = kind == VehicleEventKind::destroyed || kind == VehicleEventKind::returned;
+    ev.cause = static_cast<uint8_t>(cause);
+    ev.pos = Vec3{pos.x, pos.y, pos.z};
+    if (g_trace) {
+        xlog::warn("[afstats-ev] vehicle_event kind {} vehicle {}", ev.kind, ev.vehicle);
+    }
+    push_event(std::move(ev));
+}
+
+void on_vehicle_seat(const rf::Player* player, uint32_t vehicle_id, int vehicle_class, int from_seat, int to_seat,
+                     VehicleSeatReason reason)
+{
+    if (!player || vehicle_class < 0 || !ensure_session() || !g_game_open || player->afstats_key.empty()) {
+        return;
+    }
+    EvVehicleSeat ev;
+    ev.player = player->afstats_key;
+    ev.vehicle = vehicle_id;
+    ev.vehicle_class = static_cast<uint8_t>(vehicle_class);
+    ev.from_seat = from_seat;
+    ev.to_seat = to_seat;
+    ev.reason = static_cast<uint8_t>(reason);
+    if (g_trace) {
+        xlog::warn("[afstats-ev] vehicle_seat {} vehicle {} {} -> {}", player->name, ev.vehicle, ev.from_seat,
+                   ev.to_seat);
+    }
+    push_event(std::move(ev));
+}
+
 void on_match_start(int team_size, const std::vector<rf::Player*>& participants)
 {
     if (!ensure_session()) {
@@ -3030,6 +3363,8 @@ void on_round_start(const std::vector<rf::Player*>& participants)
     g_round_start_ms = static_cast<int64_t>(uptime_ms());
     g_round_open = true;
 
+    g_pending_round_survivors.reset();
+
     EvRoundStart ev;
     ev.index = g_round_index;
     // Reuse the same source game_start stamps, so a round's state matches its game.
@@ -3046,8 +3381,24 @@ void on_round_start(const std::vector<rf::Player*>& participants)
     push_event(std::move(ev));
 }
 
+void note_round_survivors(const std::vector<rf::Player*>& survivors)
+{
+    if (!emitting_enabled()) {
+        return;
+    }
+    std::vector<std::string> keys;
+    for (rf::Player* player : survivors) {
+        if (player && !player->afstats_key.empty()) {
+            keys.push_back(player->afstats_key);
+        }
+    }
+    g_pending_round_survivors = std::move(keys);
+}
+
 void on_round_end(RoundResult result, uint8_t winner_team, rf::Player* winner_player)
 {
+    // Taken even by an end that reports nothing, so it can't reach a later round.
+    std::optional<std::vector<std::string>> survivors = std::exchange(g_pending_round_survivors, std::nullopt);
     if (!ensure_session() || !g_round_open) {
         return; // no open round: an end with no start (abandoned pairing) stays silent
     }
@@ -3062,6 +3413,11 @@ void on_round_end(RoundResult result, uint8_t winner_team, rf::Player* winner_pl
     }
     const int64_t now = static_cast<int64_t>(uptime_ms());
     ev.duration_ms = static_cast<uint64_t>(std::max<int64_t>(0, now - g_round_start_ms));
+    // Survivors noted on the frame the level ended belong to a round that never finished.
+    if (survivors && result != RoundResult::canceled) {
+        ev.has_survivors = true;
+        ev.survivors = std::move(*survivors);
+    }
     if (g_trace) {
         xlog::warn("[afstats-ev] round_end {} result {} winner_team {}", ev.index, ev.result,
                    ev.winner_team);

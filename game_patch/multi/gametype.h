@@ -222,6 +222,8 @@ bool esc_team_can_attack_hill(const HillInfo& hill, HillOwner team);
 int multi_koth_get_red_team_score();
 int multi_koth_get_blue_team_score();
 void multi_get_team_scores(rf::NetGameType type, int& red, int& blue);
+// Team type's red/blue standing for deciding its winner: the higher side won, equal is a tie.
+void multi_get_winner_scores(rf::NetGameType type, int& red, int& blue);
 void multi_koth_set_red_team_score(int score);
 void multi_koth_set_blue_team_score(int score);
 int koth_get_hill_handler_uid(const HillInfo& hill);
