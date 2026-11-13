@@ -424,6 +424,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix possible dedicated server crash when auto-downloading missing vote-allowed levels with `add_installed_to_allowed_levels` enabled
 - Fix items swapped to or from stock powerups by `item_replacements`, or renamed in the level editor, giving the wrong powerup or refusing pickup
 - Fix items swapped in by `item_replacements` keeping the original item's respawn time, per-item server settings and bot handling
+- Fix `Corona` objects in a moving group staying behind instead of moving with the mover
 - Improve handling of repeated join requests from connected players
 
 [@is-this-c](https://github.com/is-this-c)
