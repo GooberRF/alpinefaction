@@ -23,12 +23,6 @@ bool GameConfig::load() try
         game_executable_path = fallback_executable_path;
     }
 
-    if (update_rate == 0) {
-        // Update Rate is set to "None" - this would prevent Multi menu from working - fix it
-        update_rate = GameConfig::default_update_rate;
-        result = false;
-    }
-
     return result;
 }
 catch (...) {
@@ -142,18 +136,16 @@ bool GameConfig::visit_vars(T&& visitor, bool is_save)
     result &= visitor(red_faction_key, "Resolution Height", res_height);
     result &= visitor(red_faction_key, "Resolution Bit Depth", res_bpp);
     result &= visitor(red_faction_key, "Resolution Backbuffer Format", res_backbuffer_format);
-    result &= visitor(red_faction_key, "Selected Video Card", selected_video_card);
     result &= visitor(red_faction_key, "Vsync", vsync);
     result &= visitor(red_faction_key, "Geometry Cache Size", geometry_cache_size);
-    result &= visitor(red_faction_key, "UpdateRate", update_rate);
     result &= visitor(red_faction_key, "EAX", eax_sound);
     result &= visitor(red_faction_key, "ForcePort", force_port);
 
     RegKey alpine_faction_key(red_faction_key, af_subkey_name, is_save ? KEY_WRITE : KEY_READ, is_save);
     result &= alpine_faction_key.is_open();
     result &= visitor(alpine_faction_key, "Window Mode", wnd_mode);
+    result &= visitor(alpine_faction_key, "Display", display_device);
     result &= visitor(alpine_faction_key, "Anisotropic Filtering", anisotropic_filtering);
-    result &= visitor(alpine_faction_key, "MSAA", msaa);
     result &= visitor(alpine_faction_key, "High Scanner Resolution", high_scanner_res);
     result &= visitor(alpine_faction_key, "True Color Textures", true_color_textures);
     result &= visitor(alpine_faction_key, "Renderer", renderer);
@@ -164,8 +156,12 @@ bool GameConfig::visit_vars(T&& visitor, bool is_save)
     result &= visitor(alpine_faction_key, "Keep Launcher Open", keep_launcher_open);
     result &= visitor(alpine_faction_key, "Language", language);
     result &= visitor(alpine_faction_key, "Reduced Speed In Background", reduced_speed_in_background);
+    result &= visitor(alpine_faction_key, "Autoplay AF Demos", autoplay_af_demos);
+    result &= visitor(alpine_faction_key, "Legacy Menus", legacy_menus);
+    result &= visitor(alpine_faction_key, "Editor Large Address Aware", editor_large_address_aware);
     result &= visitor(alpine_faction_key, "FFLink Token", fflink_token);
     result &= visitor(alpine_faction_key, "FFLink Username", fflink_username);
+    result &= visitor(alpine_faction_key, "AF Stats PSK", afstats_psk);
     result &= visitor(alpine_faction_key, "Already Saw First Launch Window", suppress_first_launch_window);
     result &= visitor(alpine_faction_key, "Already Saw FF Link Prompt", suppress_ff_link_prompt);
 

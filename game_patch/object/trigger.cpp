@@ -4,6 +4,7 @@
 #include <xlog/xlog.h>
 #include "../misc/misc.h"
 #include "../misc/achievements.h"
+#include "../misc/waypoints.h"
 #include "../rf/player/player.h"
 #include "../rf/level.h"
 #include "../rf/trigger.h"
@@ -48,7 +49,7 @@ FunHook<void(rf::Trigger*, int32_t, bool)> trigger_activate_hook{
         // Check team
         rf::Player* player = rf::player_from_entity_handle(h_entity);
         const char* trigger_name = trigger->name.c_str();
-        if (player && trigger->trigger_team != 0xFF && trigger->trigger_team != player->team) {
+        if (player && trigger->trigger_team != rf::trigger_team_any && trigger->trigger_team != player->team) {
             // rf::console::print("Trigger team does not match: {} vs {} ({})", trigger->team, Player->blue_team,
             // trigger_name);
             return;
@@ -94,6 +95,7 @@ FunHook<void(rf::Trigger*, int32_t, bool)> trigger_activate_hook{
         // Normal activation
         // rf::console::print("trigger normal activation {} {}", trigger_name, ext_flags);
         trigger_activate_hook.call_target(trigger, h_entity, skip_movers);
+        waypoints_on_trigger_activated(trigger->uid);
         g_trigger_solo_player = nullptr;
     },
 };

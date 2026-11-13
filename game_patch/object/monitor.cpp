@@ -14,6 +14,18 @@
 #include "../bmpman/bmpman.h"
 #include "../misc/alpine_settings.h"
 
+bool is_monitor_screen_bitmap(int bitmap_handle)
+{
+    // Check the live monitor list directly. This is called per-batch during rendering,
+    // but the monitor list is typically very small (~10 entries) so iteration is cheap.
+    for (auto& mon : DoublyLinkedList{rf::monitor_list}) {
+        if (mon.user_bitmap == bitmap_handle) {
+            return true;
+        }
+    }
+    return false;
+}
+
 FunHook<char(int, int, int, int, char)> monitor_create_hook{
     0x00412470,
     [](int clutter_handle, int always_minus_1, int w, int h, char always_1) {
@@ -126,6 +138,14 @@ FunHook<void(rf::Monitor&)> monitor_update_static_hook{
 };
 #endif
 
+FunHook<void(rf::Monitor&)> monitor_update_from_camera_hook{
+    0x00412820,
+    [](rf::Monitor& mon) {
+        FrametimeGuard frametime_guard;
+        monitor_update_from_camera_hook.call_target(mon);
+    },
+};
+
 CodeInjection monitor_update_from_camera_begin_render_to_texture{
     0x00412860,
     [](auto& regs) {
@@ -168,6 +188,9 @@ void monitor_do_patch()
     bm_create_user_bitmap_monitor_hook.install();
     monitor_update_off_hook.install();
     monitor_update_static_hook.install();
+
+    // Stop the monitor camera pass from advancing render-side state a second time
+    monitor_update_from_camera_hook.install();
 
     // Use render to texture approach for monitors
     monitor_update_from_camera_begin_render_to_texture.install();

@@ -11,7 +11,7 @@ class OptionsGraphicsDlg;
 class OptionsDisplayDlg : public CDialog
 {
 public:
-	OptionsDisplayDlg(GameConfig& conf);
+	OptionsDisplayDlg(GameConfig& conf, CDialog& advanced_dlg);
     void OnSave();
 
 protected:
@@ -21,23 +21,24 @@ protected:
 private:
     void InitToolTip();
     void OnRendererChange();
-    void OnAdapterChange();
+    void OnDisplayChange();
     void OnColorDepthChange();
     void OnWindowModeChange();
-    void UpdateAdapterCombo();
+    void UpdateDisplayCombo();
     void UpdateResolutionCombo();
     void UpdateColorDepthCombo();
-    void UpdateMsaaCombo();
-    void UpdateAnisotropyCheckbox();
+    std::string GetSelectedDisplayDevice();
+    DisplayInfo GetDisplay();
 
     GameConfig& m_conf;
+    // Hosts the renderer and color depth combos
+    CDialog& m_advanced_dlg;
     std::unique_ptr<VideoDeviceInfoProvider> m_video_info;
-    std::vector<unsigned> m_multi_sample_types;
+    std::vector<DisplayInfo> m_displays;
     CToolTip m_tool_tip;
     CComboBox m_renderer_combo;
-    CComboBox m_adapter_combo;
+    CComboBox m_display_combo;
     CComboBox m_res_combo;
     CComboBox m_color_depth_combo;
     CComboBox m_wnd_mode_combo;
-    CComboBox m_msaa_combo;
 };

@@ -1,0 +1,3732 @@
+#include "bot_main.h"
+#include "bot_chat_manager.h"
+#include "bot_combat.h"
+#include "bot_combat_manager.h"
+#include "bot_context.h"
+#include "bot_decision_eval.h"
+#include "bot_fsm.h"
+#include "bot_fsm_manager.h"
+#include "bot_goal_memory.h"
+#include "bot_goal_manager.h"
+#include "bot_goals.h"
+#include "bot_internal.h"
+#include "bot_math.h"
+#include "bot_memory_manager.h"
+#include "bot_movement.h"
+#include "bot_navigation.h"
+#include "bot_navigation_manager.h"
+#include "bot_navigation_pathing.h"
+#include "bot_navigation_routes.h"
+#include "bot_perception_manager.h"
+#include "bot_personality_manager.h"
+#include "bot_state.h"
+#include "bot_weapon_profiles.h"
+#include "bot_utils.h"
+#include "bot_vehicle.h"
+#include "bot_waypoint_route.h"
+#include "../gametype.h"
+#include "../multi.h"
+#include "../network.h"
+#include "../payload.h"
+#include "../server_internal.h"
+#include "../vehicles/vehicle.h"
+#include "../vehicles/vehicle_sync.h"
+#include <patch_common/FunHook.h>
+#include "../../main/main.h"
+#include "../../graphics/gr.h"
+#include "../../input/control_input_filter.h"
+#include "../../misc/alpine_settings.h"
+#include "../../misc/waypoints.h"
+#include "../../object/zipline.h"
+#include "../../rf/ai.h"
+#include "../../rf/collide.h"
+#include "../../rf/entity.h"
+#include "../../rf/gameseq.h"
+#include "../../rf/gr/gr_font.h"
+#include "../../rf/hud.h"
+#include "../../rf/item.h"
+#include "../../rf/multi.h"
+#include "../../rf/os/frametime.h"
+#include "../../rf/player/player.h"
+#include "../../rf/weapon.h"
+#include <xlog/xlog.h>
+#include <array>
+#include <algorithm>
+#include <cctype>
+#include <cmath>
+#include <cstdio>
+#include <cstring>
+#include <deque>
+#include <limits>
+#include <random>
+#include <string_view>
+#include <unordered_set>
+#include <vector>
+
+namespace
+{
+bool g_bot_input_hook_installed = false;
+constexpr int kBotRespawnRetryMs = 100;
+constexpr int kBotNavProbeTraceFlags = rf::CF_ANY_HIT | rf::CF_PROCESS_INVISIBLE_FACES;
+constexpr int kBotConfusionAbortMs = 2000;
+constexpr float kBotConfusionStillDistance = 0.20f;
+constexpr float kBotConfusionAimDotThreshold = 0.9985f;
+constexpr int kBotGoalStuckWatchdogMs = 2000;
+constexpr int kBotGoalStuckRetryWindowMs = 60000;
+constexpr float kBotGoalStuckStillDistance = 1.0f;
+constexpr int kPositionStallWatchdogMs = 2000;
+constexpr int kPositionStallRetryWindowMs = 14000;
+constexpr int kPositionStallRetryLimit = 3;
+constexpr float kPositionStallWatchdogStillDistance = 0.9f;
+constexpr float kPositionStallRetryResetDistance = 2.5f;
+constexpr int kNoMoveTargetWatchdogMs = 900;
+constexpr int kNoMoveTargetWatchdogRetryLimit = 3;
+constexpr int kObjectiveProgressWatchdogMs = 2800;
+constexpr int kObjectiveProgressRetryWindowMs = 45000;
+constexpr int kObjectiveProgressRetryLimit = 3;
+constexpr float kObjectiveProgressMinImprovement = 1.0f;
+constexpr float kObjectiveProgressNearGoalDistance = 4.0f;
+constexpr int kGlobalFailsafeWatchdogMs = 3000;
+constexpr int kGlobalFailsafeRetryWindowMs = 20000;
+constexpr int kGlobalFailsafeRetryLimit = 2;
+constexpr float kGlobalFailsafeStillDistance = 0.5f;
+constexpr float kGlobalFailsafeAimDotThreshold = 0.9992f;
+constexpr int kIdleEscalationMs = 150;
+constexpr int kIdleEscalationRepeatMs = 1000;
+constexpr int kCombatLockWatchdogOverrideMs = 6000;
+constexpr int kPositionStallWatchdogRecoveryMs = 1200;
+
+void reset_goal_stuck_watchdog(bool full_reset);
+void reset_no_move_target_watchdog();
+void reset_position_stall_watchdog();
+void reset_objective_progress_watchdog(bool full_reset);
+void reset_global_failsafe_watchdog(bool full_reset);
+bool bot_is_holding_objective_spot(const rf::Entity& entity);
+
+void update_bot_spawn_state(const rf::Player& player)
+{
+    // Server bots think only while the world is live (server_bots_do_frame), menus included.
+    const bool in_gameplay = bot_ctx().is_server_bot || rf::gameseq_in_gameplay();
+    const bool is_dying = rf::player_is_dying(&player);
+    const bool is_dead = rf::player_is_dead(&player);
+    const bool is_alive = !player.is_spectator && !is_dead && !is_dying;
+
+    // Server-side spawn permission will eventually drive this flag.
+    bot_ctx().info.can_spawn =
+        bot_ctx().info.spawn_allowed_by_server
+        && !waypoints_missing_awp_from_level_init()
+        && !waypoints_awp_download_pending()
+        && !waypoints_awp_load_retry_pending()
+        && in_gameplay
+        && !player.is_spawn_disabled
+        && !is_alive
+        && !is_dying;
+}
+
+void reset_confusion_abort_tracking()
+{
+    bot_state().confusion_abort_timer.invalidate();
+    bot_state().confusion_abort_pos = {};
+    bot_state().confusion_abort_aim_dir = {};
+    bot_state().confusion_abort_last_fired_timestamp = -1;
+}
+
+void clear_bot_crouch_jump_link_state()
+{
+    bot_state().combat_crouch_timer.invalidate();
+    bot_state().traversal_crouch_active = false;
+    bot_state().traversal_crouch_toggled_on = false;
+    bot_state().jump_target_link_from_waypoint = 0;
+    bot_state().jump_target_link_to_waypoint = 0;
+}
+
+void force_uncrouch_after_respawn(rf::Player& local_player, rf::Entity& local_entity)
+{
+    clear_bot_crouch_jump_link_state();
+    bot_state().respawn_uncrouch_retry_timer.invalidate();
+    if (rf::entity_is_crouching(&local_entity)) {
+        bot_backend_crouch(local_player);
+        bot_state().respawn_uncrouch_retry_timer.set(180);
+    }
+}
+
+void maintain_uncrouched_after_respawn(rf::Player& local_player, rf::Entity& local_entity)
+{
+    const bool within_respawn_window =
+        bot_state().respawn_gearup_timer.valid()
+        && !bot_state().respawn_gearup_timer.elapsed();
+    if (!within_respawn_window) {
+        bot_state().respawn_uncrouch_retry_timer.invalidate();
+        return;
+    }
+
+    if (!rf::entity_is_crouching(&local_entity)) {
+        return;
+    }
+
+    if (!bot_state().respawn_uncrouch_retry_timer.valid()
+        || bot_state().respawn_uncrouch_retry_timer.elapsed()) {
+        bot_backend_crouch(local_player);
+        bot_state().respawn_uncrouch_retry_timer.set(180);
+    }
+}
+
+bool has_confusion_abort_context()
+{
+    if (bot_state().recovery_pending_reroute
+        || bot_state().fsm_state == BotFsmState::recover_navigation
+        || bot_state().active_goal == BotGoalType::none
+        || bot_state().active_goal == BotGoalType::roam) {
+        return false;
+    }
+
+    return bot_state().active_goal != BotGoalType::none
+        || bot_state().has_waypoint_target
+        || !bot_state().waypoint_path.empty();
+}
+
+bool should_abort_for_confusion(const rf::Entity& entity, const rf::Vector3& aim_dir)
+{
+    if (!has_confusion_abort_context() || bot_vehicle_is_boarding(entity)) {
+        reset_confusion_abort_tracking();
+        return false;
+    }
+
+    const int fired_timestamp = entity.last_fired_timestamp.value;
+    if (!bot_state().confusion_abort_timer.valid()) {
+        bot_state().confusion_abort_pos = entity.pos;
+        bot_state().confusion_abort_aim_dir = aim_dir;
+        bot_state().confusion_abort_last_fired_timestamp = fired_timestamp;
+        bot_state().confusion_abort_timer.set(kBotConfusionAbortMs);
+        return false;
+    }
+
+    if (fired_timestamp != bot_state().confusion_abort_last_fired_timestamp) {
+        bot_state().confusion_abort_pos = entity.pos;
+        bot_state().confusion_abort_aim_dir = aim_dir;
+        bot_state().confusion_abort_last_fired_timestamp = fired_timestamp;
+        bot_state().confusion_abort_timer.set(kBotConfusionAbortMs);
+        return false;
+    }
+
+    const rf::Vector3 delta_pos = entity.pos - bot_state().confusion_abort_pos;
+    const bool stayed_still =
+        delta_pos.len_sq() <= kBotConfusionStillDistance * kBotConfusionStillDistance;
+    const float aim_dot = std::clamp(
+        aim_dir.dot_prod(bot_state().confusion_abort_aim_dir),
+        -1.0f,
+        1.0f
+    );
+    const bool stayed_aimed = aim_dot >= kBotConfusionAimDotThreshold;
+
+    if (!stayed_still || !stayed_aimed) {
+        bot_state().confusion_abort_pos = entity.pos;
+        bot_state().confusion_abort_aim_dir = aim_dir;
+        bot_state().confusion_abort_timer.set(kBotConfusionAbortMs);
+        return false;
+    }
+
+    if (!bot_state().confusion_abort_timer.elapsed()) {
+        return false;
+    }
+
+    bot_state().confusion_abort_pos = entity.pos;
+    bot_state().confusion_abort_aim_dir = aim_dir;
+    bot_state().confusion_abort_timer.set(kBotConfusionAbortMs);
+    return true;
+}
+
+void abort_goal_and_fsm_for_confusion(rf::Entity& entity, const char* reason)
+{
+    const BotGoalType aborted_goal = bot_state().active_goal;
+    const int aborted_goal_handle = bot_state().goal_target_handle;
+
+    if (g_alpine_game_config.dbg_bot) {
+        xlog::warn(
+            "Bot confusion failsafe: aborting goal={} fsm={} target_handle={} target_id={}",
+            static_cast<int>(bot_state().active_goal),
+            static_cast<int>(bot_state().fsm_state),
+            bot_state().goal_target_handle,
+            bot_state().goal_target_identifier
+        );
+    }
+
+    bot_vehicle_note_goal_abandoned(reason);
+    bot_memory_manager_note_failed_goal_target(
+        aborted_goal,
+        aborted_goal_handle,
+        kFailedItemGoalCooldownMs
+    );
+
+    bot_state().firing.reset();
+
+    if (entity.ai.current_primary_weapon >= 0) {
+        rf::entity_turn_weapon_off(entity.handle, entity.ai.current_primary_weapon);
+    }
+
+    bot_state_clear_waypoint_route(false, true, false);
+    clear_synthetic_movement_controls();
+    bot_state().pursuit_recovery_timer.invalidate();
+    bot_state().pursuit_route_failures = 0;
+    bot_state_clear_contextual_goal_tracking();
+
+    bot_state_set_roam_fallback_goal(180);
+    bot_state().eliminate_target_reacquire_timer.invalidate();
+    bot_state().bridge.reset();
+    bot_state().vehicle.reset();
+    bot_state().crater_goal_abort_timer.invalidate();
+    bot_state().crater_standoff_abort_timer.invalidate();
+    bot_state().crater_goal_timeout_timer.invalidate();
+    bot_state().shatter_goal_abort_timer.invalidate();
+    bot_state().shatter_goal_timeout_timer.invalidate();
+
+    bot_state_reset_fsm(BotFsmState::idle);
+    bot_perception_manager_reset_tracking();
+
+    reset_goal_stuck_watchdog(true);
+    reset_no_move_target_watchdog();
+    reset_position_stall_watchdog();
+    reset_objective_progress_watchdog(true);
+    reset_global_failsafe_watchdog(true);
+    reset_confusion_abort_tracking();
+}
+
+enum class GoalStuckWatchdogAction
+{
+    none,
+    reroute_same_goal,
+    abandon_goal,
+};
+
+enum class PositionStallWatchdogAction
+{
+    none,
+    reroute_same_goal,
+    abandon_goal,
+};
+
+enum class ObjectiveProgressWatchdogAction
+{
+    none,
+    reroute_same_goal,
+    abandon_goal,
+};
+
+enum class GlobalFailsafeWatchdogAction
+{
+    none,
+    recovery_triggered,
+};
+
+void reset_goal_stuck_watchdog(bool full_reset)
+{
+    if (full_reset) {
+        bot_state().goal_stuck_wd.reset();
+        return;
+    }
+
+    bot_state().goal_stuck_wd.timer.invalidate();
+    bot_state().goal_stuck_wd.origin = {};
+}
+
+void reset_no_move_target_watchdog()
+{
+    bot_state().no_move_target_watchdog_timer.invalidate();
+    bot_state().no_move_target_watchdog_retries = 0;
+}
+
+void reset_position_stall_watchdog()
+{
+    bot_state().position_stall_wd.reset();
+}
+
+void reset_objective_progress_watchdog(bool full_reset)
+{
+    bot_state().objective_progress_watchdog_timer.invalidate();
+    if (!full_reset) {
+        return;
+    }
+
+    bot_state().objective_progress_retry_window_timer.invalidate();
+    bot_state().objective_progress_watchdog_goal = BotGoalType::none;
+    bot_state().objective_progress_watchdog_fsm = BotFsmState::inactive;
+    bot_state().objective_progress_watchdog_handle = -1;
+    bot_state().objective_progress_watchdog_identifier = -1;
+    bot_state().objective_progress_watchdog_waypoint = 0;
+    bot_state().objective_progress_watchdog_reached_waypoint = 0;
+    bot_state().objective_progress_watchdog_best_dist_sq = std::numeric_limits<float>::infinity();
+    bot_state().objective_progress_watchdog_retry_count = 0;
+}
+
+void reset_global_failsafe_watchdog(bool full_reset)
+{
+    if (full_reset) {
+        bot_state().global_failsafe_wd.reset();
+        return;
+    }
+
+    bot_state().global_failsafe_wd.timer.invalidate();
+    bot_state().global_failsafe_wd.origin = {};
+    bot_state().global_failsafe_wd.aim_dir = {};
+}
+
+int get_route_current_waypoint()
+{
+    const int route_len = static_cast<int>(bot_state().waypoint_path.size());
+    const int next_index = bot_state().waypoint_next_index;
+    if (next_index > 0 && next_index - 1 < route_len) {
+        return bot_state().waypoint_path[next_index - 1];
+    }
+    if (next_index >= 0 && next_index < route_len) {
+        return bot_state().waypoint_path[next_index];
+    }
+    return 0;
+}
+
+int last_reached_waypoint()
+{
+    const auto& visits = bot_state().recent_waypoint_visits;
+    return visits.empty() ? 0 : visits.back();
+}
+
+int get_route_next_waypoint()
+{
+    const int route_len = static_cast<int>(bot_state().waypoint_path.size());
+    const int next_index = bot_state().waypoint_next_index;
+    if (next_index >= 0 && next_index < route_len) {
+        return bot_state().waypoint_path[next_index];
+    }
+    return 0;
+}
+
+bool resolve_objective_progress_focus(
+    const rf::Entity& entity,
+    rf::Vector3& out_focus_pos,
+    int& out_focus_waypoint,
+    float& out_dist_sq)
+{
+    out_focus_waypoint = 0;
+
+    if (bot_state().goal_target_waypoint > 0
+        && waypoints_get_pos(bot_state().goal_target_waypoint, out_focus_pos)) {
+        out_focus_waypoint = bot_state().goal_target_waypoint;
+    }
+    else if (bot_state().goal_target_pos.len_sq() > 0.0001f) {
+        out_focus_pos = bot_state().goal_target_pos;
+    }
+    else if (bot_state().waypoint_goal > 0
+             && waypoints_get_pos(bot_state().waypoint_goal, out_focus_pos)) {
+        out_focus_waypoint = bot_state().waypoint_goal;
+    }
+    else if (bot_state().has_waypoint_target) {
+        out_focus_pos = bot_state().waypoint_target_pos;
+        out_focus_waypoint = get_route_next_waypoint();
+    }
+    else {
+        return false;
+    }
+
+    out_dist_sq = rf::vec_dist_squared(&entity.pos, &out_focus_pos);
+    return true;
+}
+
+void capture_objective_progress_watchdog_snapshot(
+    const int focus_waypoint,
+    const float dist_sq)
+{
+    bot_state().objective_progress_watchdog_goal = bot_state().active_goal;
+    bot_state().objective_progress_watchdog_fsm = bot_state().fsm_state;
+    bot_state().objective_progress_watchdog_handle = bot_state().goal_target_handle;
+    bot_state().objective_progress_watchdog_identifier = bot_state().goal_target_identifier;
+    bot_state().objective_progress_watchdog_waypoint = focus_waypoint;
+    bot_state().objective_progress_watchdog_reached_waypoint = last_reached_waypoint();
+    bot_state().objective_progress_watchdog_best_dist_sq = dist_sq;
+    bot_state().objective_progress_watchdog_timer.set(kObjectiveProgressWatchdogMs);
+}
+
+ObjectiveProgressWatchdogAction update_objective_progress_watchdog(
+    rf::Entity& entity,
+    const rf::Entity* enemy_target,
+    const bool enemy_has_los,
+    const bool pursuing_enemy_goal,
+    const bool combat_lock_expired)
+{
+    if (bot_state().active_goal == BotGoalType::none
+        || bot_state().active_goal == BotGoalType::eliminate_target
+        || bot_goal_is_salvage_positioning(bot_state().active_goal)
+        || bot_is_holding_objective_spot(entity)) {
+        reset_objective_progress_watchdog(true);
+        return ObjectiveProgressWatchdogAction::none;
+    }
+
+    const bool active_combat_lock =
+        enemy_target
+        && pursuing_enemy_goal
+        && enemy_has_los
+        && (bot_state().firing.wants_fire
+            || bot_state().firing.synthetic_primary_fire_down
+            || bot_state().firing.synthetic_secondary_fire_down);
+    if (active_combat_lock && !combat_lock_expired) {
+        reset_objective_progress_watchdog(true);
+        return ObjectiveProgressWatchdogAction::none;
+    }
+
+    rf::Vector3 focus_pos{};
+    int focus_waypoint = 0;
+    float dist_sq = 0.0f;
+    if (!resolve_objective_progress_focus(entity, focus_pos, focus_waypoint, dist_sq)) {
+        reset_objective_progress_watchdog(true);
+        return ObjectiveProgressWatchdogAction::none;
+    }
+
+    const float near_goal_dist_sq =
+        kObjectiveProgressNearGoalDistance * kObjectiveProgressNearGoalDistance;
+    if (dist_sq <= near_goal_dist_sq) {
+        reset_objective_progress_watchdog(true);
+        return ObjectiveProgressWatchdogAction::none;
+    }
+
+    const bool same_goal_key =
+        bot_state().active_goal == bot_state().objective_progress_watchdog_goal
+        && bot_state().fsm_state == bot_state().objective_progress_watchdog_fsm
+        && bot_state().goal_target_handle == bot_state().objective_progress_watchdog_handle
+        && bot_state().goal_target_identifier
+            == bot_state().objective_progress_watchdog_identifier
+        && focus_waypoint == bot_state().objective_progress_watchdog_waypoint;
+    if (!same_goal_key || !bot_state().objective_progress_watchdog_timer.valid()) {
+        bot_state().objective_progress_watchdog_retry_count = 0;
+        bot_state().objective_progress_retry_window_timer.set(kObjectiveProgressRetryWindowMs);
+        capture_objective_progress_watchdog_snapshot(focus_waypoint, dist_sq);
+        return ObjectiveProgressWatchdogAction::none;
+    }
+
+    const int route_waypoint = get_route_next_waypoint();
+    // Only reaching a waypoint counts: a reroute swaps the route without bringing the bot any closer.
+    const int reached_waypoint = last_reached_waypoint();
+    const bool route_progressed =
+        reached_waypoint > 0 && reached_waypoint != bot_state().objective_progress_watchdog_reached_waypoint;
+    bot_state().objective_progress_watchdog_reached_waypoint = reached_waypoint;
+
+    if (!std::isfinite(bot_state().objective_progress_watchdog_best_dist_sq)) {
+        bot_state().objective_progress_watchdog_best_dist_sq = dist_sq;
+    }
+    const float improvement =
+        bot_state().objective_progress_watchdog_best_dist_sq - dist_sq;
+    const float min_improvement_sq =
+        kObjectiveProgressMinImprovement * kObjectiveProgressMinImprovement;
+    const bool objective_progressed = improvement >= min_improvement_sq;
+
+    if (objective_progressed) {
+        bot_state().objective_progress_watchdog_best_dist_sq = dist_sq;
+    }
+
+    if (route_progressed || objective_progressed) {
+        bot_state().objective_progress_watchdog_timer.set(kObjectiveProgressWatchdogMs);
+        return ObjectiveProgressWatchdogAction::none;
+    }
+
+    if (!bot_state().objective_progress_watchdog_timer.elapsed()) {
+        return ObjectiveProgressWatchdogAction::none;
+    }
+
+    if (!bot_state().objective_progress_retry_window_timer.valid()
+        || bot_state().objective_progress_retry_window_timer.elapsed()) {
+        bot_state().objective_progress_watchdog_retry_count = 0;
+        bot_state().objective_progress_retry_window_timer.set(
+            kObjectiveProgressRetryWindowMs
+        );
+    }
+
+    ++bot_state().objective_progress_watchdog_retry_count;
+    const int preferred_avoid_waypoint =
+        route_waypoint > 0
+            ? route_waypoint
+            : (focus_waypoint > 0
+                ? focus_waypoint
+                : (bot_state().goal_target_waypoint > 0
+                    ? bot_state().goal_target_waypoint
+                    : bot_state().waypoint_goal));
+    const int blacklist_waypoint =
+        bot_nav_choose_blacklist_waypoint_for_failed_link(0, preferred_avoid_waypoint);
+    if (blacklist_waypoint > 0) {
+        bot_nav_blacklist_waypoint_temporarily(
+            blacklist_waypoint,
+            kFailedWaypointBlacklistMs
+        );
+    }
+    const int avoid_waypoint =
+        blacklist_waypoint > 0
+            ? blacklist_waypoint
+            : preferred_avoid_waypoint;
+
+    if (bot_state().objective_progress_watchdog_retry_count >= kObjectiveProgressRetryLimit) {
+        if (g_alpine_game_config.dbg_bot) {
+            xlog::warn(
+                "Bot objective-progress watchdog: abandoning goal={} fsm={} retries={}/{} handle={} id={} waypoint={} dist={:.2f}",
+                static_cast<int>(bot_state().active_goal),
+                static_cast<int>(bot_state().fsm_state),
+                bot_state().objective_progress_watchdog_retry_count,
+                kObjectiveProgressRetryLimit,
+                bot_state().goal_target_handle,
+                bot_state().goal_target_identifier,
+                avoid_waypoint,
+                std::sqrt(std::max(dist_sq, 0.0f))
+            );
+        }
+
+        const BotGoalType stalled_goal = bot_state().active_goal;
+        const int stalled_handle = bot_state().goal_target_handle;
+        bot_vehicle_note_goal_abandoned("objective-progress watchdog");
+        bot_memory_manager_note_failed_goal_target(
+            stalled_goal,
+            stalled_handle,
+            kFailedItemGoalCooldownMs
+        );
+
+        bot_state_set_roam_fallback_goal(220);
+        bot_state().eliminate_target_reacquire_timer.invalidate();
+        bot_state_clear_waypoint_route(true, true, false);
+        bot_internal_set_last_heading_change_reason("objective_progress_abandon");
+        reset_objective_progress_watchdog(true);
+        return ObjectiveProgressWatchdogAction::abandon_goal;
+    }
+
+    if (g_alpine_game_config.dbg_bot) {
+        xlog::warn(
+            "Bot objective-progress watchdog: rerouting goal={} fsm={} retry={}/{} handle={} id={} waypoint={} dist={:.2f}",
+            static_cast<int>(bot_state().active_goal),
+            static_cast<int>(bot_state().fsm_state),
+            bot_state().objective_progress_watchdog_retry_count,
+            kObjectiveProgressRetryLimit,
+            bot_state().goal_target_handle,
+            bot_state().goal_target_identifier,
+            avoid_waypoint,
+            std::sqrt(std::max(dist_sq, 0.0f))
+        );
+    }
+
+    bot_internal_start_recovery_anchor_reroute(entity, avoid_waypoint);
+    bot_internal_set_last_heading_change_reason("objective_progress_reroute");
+    bot_state().objective_progress_watchdog_timer.set(kObjectiveProgressWatchdogMs);
+    return ObjectiveProgressWatchdogAction::reroute_same_goal;
+}
+
+void capture_global_failsafe_watchdog_snapshot(const rf::Entity& entity)
+{
+    rf::Vector3 aim_dir = entity.eye_orient.fvec;
+    if (aim_dir.len_sq() < 0.0001f) {
+        aim_dir = entity.orient.fvec;
+    }
+    aim_dir.normalize_safe();
+
+    bot_state().global_failsafe_wd.origin = entity.pos;
+    bot_state().global_failsafe_wd.aim_dir = aim_dir;
+    bot_state().global_failsafe_wd.goal = bot_state().active_goal;
+    bot_state().global_failsafe_wd.fsm = bot_state().fsm_state;
+    bot_state().global_failsafe_wd.handle = bot_state().goal_target_handle;
+    bot_state().global_failsafe_wd.identifier = bot_state().goal_target_identifier;
+    bot_state().global_failsafe_wd.last_fired_timestamp = entity.last_fired_timestamp.value;
+    bot_state().global_failsafe_wd.timer.set(kGlobalFailsafeWatchdogMs);
+}
+
+// A bot holding a spot is meant to stay put, so standing still there is not a stall.
+bool bot_is_holding_position(const rf::Entity& entity)
+{
+    const int next_index = bot_state().waypoint_next_index;
+    const rf::Timestamp& hold_refresh = bot_state().zipline_hold_refresh_timer;
+    if (bot_state().zipline_entrance > 0 && hold_refresh.valid() && !hold_refresh.elapsed() && next_index >= 0
+        && next_index < static_cast<int>(bot_state().waypoint_path.size())
+        && bot_state().waypoint_path[next_index] == bot_state().zipline_entrance) {
+        return true;
+    }
+    if (bot_goal_is_vehicle(bot_state().active_goal)) {
+        return bot_vehicle_is_boarding(entity);
+    }
+    float hold_radius = 0.0f;
+    switch (bot_state().active_goal) {
+        case BotGoalType::bag_camp:
+            hold_radius = kWaypointReachRadius;
+            break;
+        case BotGoalType::sal_stage_at_spawn:
+            hold_radius = kWaypointReachRadius * 3.0f;
+            break;
+        case BotGoalType::sal_hold_zone:
+        case BotGoalType::sal_escort_carrier:
+            hold_radius = kSalvageHoldRadius;
+            break;
+        case BotGoalType::pay_hold_ahead:
+            return bot_state().goal_target_pos.len_sq() > 0.0001f
+                && bot_nav_payload_hold_ahead_reached(entity.pos, bot_state().goal_target_pos);
+        case BotGoalType::pay_push:
+        case BotGoalType::pay_block:
+            return bot_player() && payload_player_in_push_zone(*bot_player());
+        default:
+            return false;
+    }
+    return bot_state().goal_target_pos.len_sq() > 0.0001f
+        && rf::vec_dist_squared(&entity.pos, &bot_state().goal_target_pos) <= hold_radius * hold_radius;
+}
+
+// A blocked side step at a held spot is no reason to reroute.
+bool bot_is_holding_objective_spot(const rf::Entity& entity)
+{
+    return (bot_state().active_goal == BotGoalType::sal_hold_zone
+            || bot_state().active_goal == BotGoalType::sal_escort_carrier
+            || bot_goal_is_payload_objective(bot_state().active_goal))
+        && bot_is_holding_position(entity);
+}
+
+bool has_global_failsafe_context(
+    const bool has_move_target,
+    const bool pursuing_enemy_goal,
+    const bool enemy_has_los)
+{
+    if (bot_state().active_goal != BotGoalType::none
+        || bot_state().fsm_state != BotFsmState::idle
+        || bot_state().has_waypoint_target
+        || !bot_state().waypoint_path.empty()
+        || bot_state().recovery_pending_reroute
+        || has_move_target) {
+        return true;
+    }
+
+    return bot_fsm_state_should_have_move_target(
+        bot_state().fsm_state,
+        pursuing_enemy_goal,
+        enemy_has_los
+    );
+}
+
+GlobalFailsafeWatchdogAction update_global_failsafe_watchdog(
+    rf::Entity& entity,
+    const rf::Entity* enemy_target,
+    const bool enemy_has_los,
+    const bool pursuing_enemy_goal,
+    const bool has_move_target,
+    const rf::Vector3& aim_dir,
+    const bool combat_lock_expired)
+{
+    if (!has_global_failsafe_context(has_move_target, pursuing_enemy_goal, enemy_has_los)
+        || bot_is_holding_position(entity)) {
+        reset_global_failsafe_watchdog(true);
+        return GlobalFailsafeWatchdogAction::none;
+    }
+
+    if (!bot_state().global_failsafe_wd.timer.valid()) {
+        capture_global_failsafe_watchdog_snapshot(entity);
+        return GlobalFailsafeWatchdogAction::none;
+    }
+
+    const bool active_combat_lock =
+        enemy_target
+        && pursuing_enemy_goal
+        && enemy_has_los
+        && (bot_state().firing.wants_fire
+            || bot_state().firing.synthetic_primary_fire_down
+            || bot_state().firing.synthetic_secondary_fire_down);
+    if (active_combat_lock && !combat_lock_expired) {
+        capture_global_failsafe_watchdog_snapshot(entity);
+        bot_state().global_failsafe_wd.retry_window_timer.invalidate();
+        bot_state().global_failsafe_wd.retry_count = 0;
+        return GlobalFailsafeWatchdogAction::none;
+    }
+
+    const rf::Vector3 delta_pos = entity.pos - bot_state().global_failsafe_wd.origin;
+    const bool moved =
+        delta_pos.len_sq() > kGlobalFailsafeStillDistance * kGlobalFailsafeStillDistance;
+    const float aim_dot = std::clamp(
+        aim_dir.dot_prod(bot_state().global_failsafe_wd.aim_dir),
+        -1.0f,
+        1.0f
+    );
+    const bool reaimed = aim_dot < kGlobalFailsafeAimDotThreshold;
+    const bool goal_or_fsm_changed =
+        bot_state().active_goal != bot_state().global_failsafe_wd.goal
+        || bot_state().fsm_state != bot_state().global_failsafe_wd.fsm
+        || bot_state().goal_target_handle != bot_state().global_failsafe_wd.handle
+        || bot_state().goal_target_identifier != bot_state().global_failsafe_wd.identifier;
+    const bool fired_weapon =
+        entity.last_fired_timestamp.value
+        != bot_state().global_failsafe_wd.last_fired_timestamp;
+
+    if (moved || reaimed || goal_or_fsm_changed || fired_weapon) {
+        capture_global_failsafe_watchdog_snapshot(entity);
+        bot_state().global_failsafe_wd.retry_window_timer.invalidate();
+        bot_state().global_failsafe_wd.retry_count = 0;
+        return GlobalFailsafeWatchdogAction::none;
+    }
+
+    if (!bot_state().global_failsafe_wd.timer.elapsed()) {
+        return GlobalFailsafeWatchdogAction::none;
+    }
+
+    if (!bot_state().global_failsafe_wd.retry_window_timer.valid()
+        || bot_state().global_failsafe_wd.retry_window_timer.elapsed()) {
+        bot_state().global_failsafe_wd.retry_count = 0;
+        bot_state().global_failsafe_wd.retry_window_timer.set(kGlobalFailsafeRetryWindowMs);
+    }
+    ++bot_state().global_failsafe_wd.retry_count;
+
+    const int route_waypoint = get_route_current_waypoint();
+    const int preferred_avoid_waypoint =
+        route_waypoint > 0
+            ? route_waypoint
+            : (bot_state().goal_target_waypoint > 0
+                ? bot_state().goal_target_waypoint
+                : bot_state().waypoint_goal);
+    const int blacklist_waypoint =
+        bot_nav_choose_blacklist_waypoint_for_failed_link(0, preferred_avoid_waypoint);
+    if (blacklist_waypoint > 0) {
+        bot_nav_blacklist_waypoint_temporarily(
+            blacklist_waypoint,
+            kFailedWaypointBlacklistMs
+        );
+    }
+    const int avoid_waypoint =
+        blacklist_waypoint > 0
+            ? blacklist_waypoint
+            : preferred_avoid_waypoint;
+
+    if (bot_state().global_failsafe_wd.retry_count >= kGlobalFailsafeRetryLimit) {
+        if (g_alpine_game_config.dbg_bot) {
+            xlog::warn(
+                "Bot global-failsafe watchdog: forcing goal reset goal={} fsm={} retries={}/{} handle={} id={} waypoint={}",
+                static_cast<int>(bot_state().active_goal),
+                static_cast<int>(bot_state().fsm_state),
+                bot_state().global_failsafe_wd.retry_count,
+                kGlobalFailsafeRetryLimit,
+                bot_state().goal_target_handle,
+                bot_state().goal_target_identifier,
+                avoid_waypoint
+            );
+        }
+        abort_goal_and_fsm_for_confusion(entity, "global failsafe");
+        bot_internal_set_last_heading_change_reason("global_failsafe_goal_reset");
+        bot_state().global_failsafe_wd.retry_window_timer.invalidate();
+        bot_state().global_failsafe_wd.retry_count = 0;
+    }
+    else {
+        if (g_alpine_game_config.dbg_bot) {
+            xlog::warn(
+                "Bot global-failsafe watchdog: forcing reroute goal={} fsm={} retry={}/{} handle={} id={} waypoint={}",
+                static_cast<int>(bot_state().active_goal),
+                static_cast<int>(bot_state().fsm_state),
+                bot_state().global_failsafe_wd.retry_count,
+                kGlobalFailsafeRetryLimit,
+                bot_state().goal_target_handle,
+                bot_state().goal_target_identifier,
+                avoid_waypoint
+            );
+        }
+        bot_internal_start_recovery_anchor_reroute(entity, avoid_waypoint);
+        bot_internal_set_last_heading_change_reason("global_failsafe_reroute");
+    }
+
+    capture_global_failsafe_watchdog_snapshot(entity);
+    return GlobalFailsafeWatchdogAction::recovery_triggered;
+}
+
+PositionStallWatchdogAction update_position_stall_watchdog(
+    const rf::Entity& entity,
+    const bool has_move_target,
+    const bool pursuing_enemy_goal,
+    const bool enemy_has_los)
+{
+    const bool movement_expected =
+        has_move_target
+        && bot_fsm_state_should_have_move_target(
+            bot_state().fsm_state,
+            pursuing_enemy_goal,
+            enemy_has_los
+        );
+    if (bot_state().active_goal == BotGoalType::none || bot_is_holding_objective_spot(entity)) {
+        reset_position_stall_watchdog();
+        return PositionStallWatchdogAction::none;
+    }
+    if (!movement_expected) {
+        // Preserve retry budget across brief no-target/no-move frames so we do
+        // not keep bouncing at retry=1 when the bot is jittering in recovery.
+        bot_state().position_stall_wd.timer.invalidate();
+        bot_state().position_stall_wd.origin = {};
+        bot_state().position_stall_wd.waypoint = 0;
+        return PositionStallWatchdogAction::none;
+    }
+
+    const BotGoalType goal = bot_state().active_goal;
+    const BotFsmState fsm = bot_state().fsm_state;
+    const int handle = bot_state().goal_target_handle;
+    const int identifier = bot_state().goal_target_identifier;
+    const bool same_goal_key =
+        goal == bot_state().position_stall_wd.goal
+        && handle == bot_state().position_stall_wd.handle
+        && identifier == bot_state().position_stall_wd.identifier;
+    if (!same_goal_key) {
+        bot_state().position_stall_wd.goal = goal;
+        bot_state().position_stall_wd.handle = handle;
+        bot_state().position_stall_wd.identifier = identifier;
+        bot_state().position_stall_wd.retry_window_timer.invalidate();
+        bot_state().position_stall_wd.retry_count = 0;
+    }
+
+    const bool in_recovery =
+        bot_state().fsm_state == BotFsmState::recover_navigation
+        || bot_state().recovery_pending_reroute;
+    const int stall_ms = in_recovery ? kPositionStallWatchdogRecoveryMs : kPositionStallWatchdogMs;
+
+    const int current_waypoint = get_route_current_waypoint();
+    if (!bot_state().position_stall_wd.timer.valid()) {
+        bot_state().position_stall_wd.origin = entity.pos;
+        bot_state().position_stall_wd.waypoint = current_waypoint;
+        bot_state().position_stall_wd.timer.set(stall_ms);
+        return PositionStallWatchdogAction::none;
+    }
+
+    const rf::Vector3 delta = entity.pos - bot_state().position_stall_wd.origin;
+    const float moved_sq = delta.len_sq();
+    if (moved_sq
+        > kPositionStallWatchdogStillDistance * kPositionStallWatchdogStillDistance) {
+        const bool route_waypoint_progressed =
+            current_waypoint > 0
+            && current_waypoint != bot_state().position_stall_wd.waypoint;
+        const bool moved_far_enough_to_clear_retry_budget =
+            moved_sq > kPositionStallRetryResetDistance * kPositionStallRetryResetDistance;
+        bot_state().position_stall_wd.origin = entity.pos;
+        bot_state().position_stall_wd.waypoint = current_waypoint;
+        bot_state().position_stall_wd.timer.set(stall_ms);
+        if (route_waypoint_progressed || moved_far_enough_to_clear_retry_budget) {
+            bot_state().position_stall_wd.retry_window_timer.invalidate();
+            bot_state().position_stall_wd.retry_count = 0;
+        }
+        return PositionStallWatchdogAction::none;
+    }
+
+    if (!bot_state().position_stall_wd.timer.elapsed()) {
+        return PositionStallWatchdogAction::none;
+    }
+
+    int stalled_waypoint = bot_state().position_stall_wd.waypoint;
+    if (stalled_waypoint <= 0) {
+        stalled_waypoint = current_waypoint;
+    }
+
+    const int blacklist_waypoint =
+        bot_nav_choose_blacklist_waypoint_for_failed_link(0, stalled_waypoint);
+    if (blacklist_waypoint > 0) {
+        bot_nav_blacklist_waypoint_temporarily(
+            blacklist_waypoint,
+            kFailedWaypointBlacklistMs
+        );
+    }
+
+    const int avoid_waypoint =
+        blacklist_waypoint > 0
+            ? blacklist_waypoint
+            : (stalled_waypoint > 0
+                ? stalled_waypoint
+                : (bot_state().goal_target_waypoint > 0
+                    ? bot_state().goal_target_waypoint
+                    : bot_state().waypoint_goal));
+
+    if (!bot_state().position_stall_wd.retry_window_timer.valid()
+        || bot_state().position_stall_wd.retry_window_timer.elapsed()) {
+        bot_state().position_stall_wd.retry_count = 0;
+        bot_state().position_stall_wd.retry_window_timer.set(kPositionStallRetryWindowMs);
+    }
+    ++bot_state().position_stall_wd.retry_count;
+
+    int retry_limit = kPositionStallRetryLimit;
+    if (goal == BotGoalType::eliminate_target
+        && (fsm == BotFsmState::recover_navigation
+            || bot_state().recovery_pending_reroute)) {
+        retry_limit = 2;
+    }
+    retry_limit = std::max(retry_limit, 1);
+
+    if (bot_state().position_stall_wd.retry_count >= retry_limit) {
+        if (g_alpine_game_config.dbg_bot) {
+            xlog::warn(
+                "Bot position-stall watchdog: abandoning goal={} fsm={} retries={}/{} handle={} id={} waypoint={}",
+                static_cast<int>(goal),
+                static_cast<int>(fsm),
+                bot_state().position_stall_wd.retry_count,
+                retry_limit,
+                handle,
+                identifier,
+                avoid_waypoint
+            );
+        }
+
+        const BotGoalType stalled_goal = bot_state().active_goal;
+        const int stalled_handle = bot_state().goal_target_handle;
+        bot_vehicle_note_goal_abandoned("position-stall watchdog");
+        bot_memory_manager_note_failed_goal_target(
+            stalled_goal,
+            stalled_handle,
+            kFailedItemGoalCooldownMs
+        );
+
+        bot_state_set_roam_fallback_goal(220);
+        bot_state().eliminate_target_reacquire_timer.invalidate();
+        bot_state_clear_waypoint_route(true, true, false);
+        bot_internal_set_last_heading_change_reason("position_stall_abandon");
+        reset_position_stall_watchdog();
+        return PositionStallWatchdogAction::abandon_goal;
+    }
+
+    if (g_alpine_game_config.dbg_bot) {
+        xlog::warn(
+            "Bot position-stall watchdog: rerouting goal={} fsm={} retry={}/{} avoid_wp={} route_wp={} goal_wp={}",
+            static_cast<int>(bot_state().active_goal),
+            static_cast<int>(bot_state().fsm_state),
+            bot_state().position_stall_wd.retry_count,
+            retry_limit,
+            avoid_waypoint,
+            stalled_waypoint,
+            bot_state().goal_target_waypoint
+        );
+    }
+
+    bot_internal_start_recovery_anchor_reroute(entity, avoid_waypoint);
+    bot_internal_set_last_heading_change_reason("position_stall_reroute");
+    bot_state().position_stall_wd.origin = entity.pos;
+    bot_state().position_stall_wd.waypoint = get_route_current_waypoint();
+    bot_state().position_stall_wd.timer.set(stall_ms);
+    return PositionStallWatchdogAction::reroute_same_goal;
+}
+
+GoalStuckWatchdogAction update_goal_stuck_watchdog(rf::Entity& entity)
+{
+    if (bot_state().active_goal == BotGoalType::none) {
+        reset_goal_stuck_watchdog(true);
+        reset_no_move_target_watchdog();
+        reset_position_stall_watchdog();
+        reset_objective_progress_watchdog(true);
+        return GoalStuckWatchdogAction::none;
+    }
+    if (bot_is_holding_objective_spot(entity) || bot_vehicle_is_boarding(entity)) {
+        reset_goal_stuck_watchdog(true);
+        return GoalStuckWatchdogAction::none;
+    }
+
+    const BotGoalType goal = bot_state().active_goal;
+    const BotFsmState fsm = bot_state().fsm_state;
+    const int handle = bot_state().goal_target_handle;
+    const int identifier = bot_state().goal_target_identifier;
+    const int waypoint = bot_state().goal_target_waypoint;
+    const int route_len = static_cast<int>(bot_state().waypoint_path.size());
+    const int route_next_index = bot_state().waypoint_next_index;
+    const int route_waypoint =
+        (route_next_index >= 0 && route_next_index < route_len)
+            ? bot_state().waypoint_path[route_next_index]
+            : 0;
+
+    int watchdog_ms = kBotGoalStuckWatchdogMs;
+    if (bot_goal_is_control_point_objective(goal) || fsm == BotFsmState::control_point_objective) {
+        watchdog_ms = std::max(watchdog_ms, 3200);
+    }
+    if (fsm == BotFsmState::recover_navigation || bot_state().recovery_pending_reroute) {
+        watchdog_ms = std::max(watchdog_ms, 3500);
+    }
+
+    const bool same_goal_key =
+        goal == bot_state().goal_stuck_wd.goal
+        && handle == bot_state().goal_stuck_wd.handle
+        && identifier == bot_state().goal_stuck_wd.identifier;
+    if (!same_goal_key) {
+        bot_state().goal_stuck_wd.goal = goal;
+        bot_state().goal_stuck_wd.fsm = fsm;
+        bot_state().goal_stuck_wd.handle = handle;
+        bot_state().goal_stuck_wd.identifier = identifier;
+        bot_state().goal_stuck_wd.waypoint = waypoint;
+        bot_state().goal_stuck_wd.route_waypoint = route_waypoint;
+        bot_state().goal_stuck_wd.route_next_index = route_next_index;
+        bot_state().goal_stuck_wd.recovery_anchor =
+            bot_state().recovery_anchor_waypoint;
+        bot_state().goal_stuck_wd.retry_count = 0;
+        bot_state().goal_stuck_wd.retry_window_timer.set(kBotGoalStuckRetryWindowMs);
+        bot_state().goal_stuck_wd.origin = entity.pos;
+        bot_state().goal_stuck_wd.timer.set(watchdog_ms);
+        return GoalStuckWatchdogAction::none;
+    }
+
+    if (!bot_state().goal_stuck_wd.retry_window_timer.valid()
+        || bot_state().goal_stuck_wd.retry_window_timer.elapsed()) {
+        bot_state().goal_stuck_wd.retry_count = 0;
+        bot_state().goal_stuck_wd.retry_window_timer.set(kBotGoalStuckRetryWindowMs);
+    }
+    bot_state().goal_stuck_wd.waypoint = waypoint;
+
+    const bool route_progressed =
+        (route_waypoint > 0
+            && route_waypoint != bot_state().goal_stuck_wd.route_waypoint)
+        || (route_next_index > bot_state().goal_stuck_wd.route_next_index)
+        || (bot_state().recovery_anchor_waypoint > 0
+            && bot_state().recovery_anchor_waypoint
+                != bot_state().goal_stuck_wd.recovery_anchor);
+    bot_state().goal_stuck_wd.route_waypoint = route_waypoint;
+    bot_state().goal_stuck_wd.route_next_index = route_next_index;
+    bot_state().goal_stuck_wd.recovery_anchor =
+        bot_state().recovery_anchor_waypoint;
+    if (route_progressed) {
+        bot_state().goal_stuck_wd.origin = entity.pos;
+        bot_state().goal_stuck_wd.timer.set(watchdog_ms);
+        return GoalStuckWatchdogAction::none;
+    }
+
+    if (fsm != bot_state().goal_stuck_wd.fsm) {
+        bot_state().goal_stuck_wd.fsm = fsm;
+        bot_state().goal_stuck_wd.origin = entity.pos;
+        bot_state().goal_stuck_wd.timer.set(watchdog_ms);
+        return GoalStuckWatchdogAction::none;
+    }
+
+    if (!bot_state().goal_stuck_wd.timer.valid()) {
+        bot_state().goal_stuck_wd.origin = entity.pos;
+        bot_state().goal_stuck_wd.timer.set(watchdog_ms);
+        return GoalStuckWatchdogAction::none;
+    }
+    if (!bot_state().goal_stuck_wd.timer.elapsed()) {
+        return GoalStuckWatchdogAction::none;
+    }
+
+    rf::Vector3 moved = entity.pos - bot_state().goal_stuck_wd.origin;
+    moved.y = 0.0f;
+    if (moved.len_sq() > kBotGoalStuckStillDistance * kBotGoalStuckStillDistance) {
+        bot_state().goal_stuck_wd.origin = entity.pos;
+        bot_state().goal_stuck_wd.timer.set(watchdog_ms);
+        return GoalStuckWatchdogAction::none;
+    }
+
+    const int retry_limit = std::clamp(
+        get_active_bot_personality().stuck_goal_retry_limit,
+        1,
+        16
+    );
+    ++bot_state().goal_stuck_wd.retry_count;
+    bot_state().goal_stuck_wd.origin = entity.pos;
+    bot_state().goal_stuck_wd.timer.set(watchdog_ms);
+
+    if (bot_state().goal_stuck_wd.retry_count >= retry_limit) {
+        if (g_alpine_game_config.dbg_bot) {
+            xlog::warn(
+                "Bot stuck-goal watchdog: abandoning goal={} fsm={} retries={}/{} handle={} id={} waypoint={}",
+                static_cast<int>(goal),
+                static_cast<int>(fsm),
+                bot_state().goal_stuck_wd.retry_count,
+                retry_limit,
+                handle,
+                identifier,
+                waypoint
+            );
+        }
+
+        bot_vehicle_note_goal_abandoned("stuck-goal watchdog");
+        bot_memory_manager_note_failed_goal_target(
+            goal,
+            handle,
+            kFailedItemGoalCooldownMs
+        );
+
+        bot_state_set_roam_fallback_goal(220);
+        bot_state().eliminate_target_reacquire_timer.invalidate();
+        bot_state_clear_waypoint_route(true, true, false);
+        bot_internal_set_last_heading_change_reason("stuck_goal_abandon");
+        reset_goal_stuck_watchdog(true);
+        reset_no_move_target_watchdog();
+        reset_position_stall_watchdog();
+        return GoalStuckWatchdogAction::abandon_goal;
+    }
+
+    const int avoid_waypoint = bot_state().goal_target_waypoint > 0
+        ? bot_state().goal_target_waypoint
+        : bot_state().waypoint_goal;
+    if (g_alpine_game_config.dbg_bot) {
+        xlog::warn(
+            "Bot stuck-goal watchdog: rerouting goal={} fsm={} retry={}/{} handle={} id={} waypoint={}",
+            static_cast<int>(goal),
+            static_cast<int>(fsm),
+            bot_state().goal_stuck_wd.retry_count,
+            retry_limit,
+            handle,
+            identifier,
+            avoid_waypoint
+        );
+    }
+
+    bot_internal_start_recovery_anchor_reroute(entity, avoid_waypoint);
+    bot_internal_set_last_heading_change_reason("stuck_goal_reroute");
+    return GoalStuckWatchdogAction::reroute_same_goal;
+}
+
+void update_retaliation_context(const rf::Player& local_player, const rf::Entity& local_entity)
+{
+    bot_memory_manager_update_context(local_player, local_entity);
+}
+
+bool find_nearest_other_waypoint_pos(
+    const int origin_waypoint,
+    const rf::Vector3& pos,
+    rf::Vector3& out_pos)
+{
+    const int waypoint_total = waypoints_count();
+    float best_dist_sq = std::numeric_limits<float>::max();
+    bool found = false;
+    rf::Vector3 candidate_pos{};
+
+    for (int waypoint = 1; waypoint < waypoint_total; ++waypoint) {
+        if (waypoint == origin_waypoint) {
+            continue;
+        }
+        if (!waypoints_get_pos(waypoint, candidate_pos)) {
+            continue;
+        }
+
+        const float dist_sq = rf::vec_dist_squared(&pos, &candidate_pos);
+        if (dist_sq < best_dist_sq) {
+            best_dist_sq = dist_sq;
+            out_pos = candidate_pos;
+            found = true;
+        }
+    }
+
+    return found;
+}
+
+bool is_probe_direction_blocked(
+    const rf::Entity& entity,
+    const rf::Vector3& origin,
+    const rf::Vector3& direction,
+    const float distance)
+{
+    (void)entity;
+
+    if (distance <= 0.0f || direction.len_sq() < 0.0001f) {
+        return false;
+    }
+
+    rf::Vector3 dir = direction;
+    dir.normalize_safe();
+    const rf::Vector3 endpoint = origin + dir * distance;
+    rf::Vector3 p0 = origin;
+    rf::Vector3 p1 = endpoint;
+    rf::GCollisionOutput collision{};
+    return rf::collide_linesegment_level_solid(
+        p0,
+        p1,
+        kBotNavProbeTraceFlags,
+        &collision);
+}
+
+bool waypoint_can_directly_approach_item_pos(const int waypoint_uid, const rf::Vector3& item_pos)
+{
+    if (waypoint_uid <= 0) {
+        return false;
+    }
+
+    rf::Vector3 waypoint_pos{};
+    if (!waypoints_get_pos(waypoint_uid, waypoint_pos)) {
+        return false;
+    }
+
+    constexpr float kItemApproachMaxDist = kWaypointLinkRadius * 1.35f;
+    const float dist_sq = rf::vec_dist_squared(&waypoint_pos, &item_pos);
+    if (dist_sq > kItemApproachMaxDist * kItemApproachMaxDist) {
+        return false;
+    }
+
+    rf::Vector3 p0 = waypoint_pos;
+    rf::Vector3 p1 = item_pos;
+    rf::GCollisionOutput collision{};
+    const bool blocked = rf::collide_linesegment_level_solid(
+        p0,
+        p1,
+        kBotNavProbeTraceFlags,
+        &collision
+    );
+    return !blocked;
+}
+
+bool find_item_goal_waypoint_internal(const rf::Vector3& item_pos, int& out_waypoint)
+{
+    out_waypoint = 0;
+
+    const int nearest_waypoint = bot_find_closest_waypoint_with_fallback(item_pos);
+    if (nearest_waypoint <= 0) {
+        return false;
+    }
+
+    if (waypoint_can_directly_approach_item_pos(nearest_waypoint, item_pos)) {
+        out_waypoint = nearest_waypoint;
+        return true;
+    }
+
+    std::array<int, kMaxWaypointLinks> links{};
+    const int link_count = waypoints_get_links(nearest_waypoint, links);
+    int best_waypoint = 0;
+    float best_dist_sq = std::numeric_limits<float>::max();
+    for (int i = 0; i < link_count; ++i) {
+        const int link_waypoint = links[i];
+        if (link_waypoint <= 0 || link_waypoint == nearest_waypoint) {
+            continue;
+        }
+        if (!waypoint_can_directly_approach_item_pos(link_waypoint, item_pos)) {
+            continue;
+        }
+
+        rf::Vector3 link_pos{};
+        if (!waypoints_get_pos(link_waypoint, link_pos)) {
+            continue;
+        }
+
+        const float dist_sq = rf::vec_dist_squared(&link_pos, &item_pos);
+        if (dist_sq < best_dist_sq) {
+            best_dist_sq = dist_sq;
+            best_waypoint = link_waypoint;
+        }
+    }
+
+    if (best_waypoint > 0) {
+        out_waypoint = best_waypoint;
+        return true;
+    }
+
+    return false;
+}
+
+// find_closest_waypoint_with_los_fallback is defined in bot_utils.cpp
+
+float get_entity_health_ratio(const rf::Entity& entity)
+{
+    return bot_decision_get_entity_health_ratio(entity);
+}
+
+float get_entity_armor_ratio(const rf::Entity& entity)
+{
+    return bot_decision_get_entity_armor_ratio(entity);
+}
+
+float apply_aggression_to_threshold(const float threshold, const float aggression_bias)
+{
+    return bot_decision_apply_aggression_to_threshold(threshold, aggression_bias);
+}
+
+BotWeaponRangeBand classify_combat_distance_band(const float distance)
+{
+    return bot_decision_classify_combat_distance_band(distance);
+}
+
+float compute_weapon_readiness_score_for_type(
+    const rf::Entity& local_entity,
+    const rf::Entity* enemy_target,
+    const int weapon_type)
+{
+    return bot_decision_compute_weapon_readiness_score_for_type(
+        local_entity,
+        enemy_target,
+        weapon_type);
+}
+
+float compute_weapon_readiness_score(
+    const rf::Entity& local_entity,
+    const rf::Entity* enemy_target)
+{
+    return bot_decision_compute_weapon_readiness_score(local_entity, enemy_target);
+}
+
+// resolve_weapon_type_cached and entity_has_weapon_type are defined in bot_utils.cpp
+
+float compute_waypoint_path_length(const std::vector<int>& path)
+{
+    if (path.size() < 2) {
+        return 0.0f;
+    }
+
+    rf::Vector3 prev_pos{};
+    if (!waypoints_get_pos(path[0], prev_pos)) {
+        return std::numeric_limits<float>::infinity();
+    }
+
+    float total_length = 0.0f;
+    for (size_t index = 1; index < path.size(); ++index) {
+        rf::Vector3 waypoint_pos{};
+        if (!waypoints_get_pos(path[index], waypoint_pos)) {
+            return std::numeric_limits<float>::infinity();
+        }
+        total_length += (waypoint_pos - prev_pos).len();
+        prev_pos = waypoint_pos;
+    }
+    return total_length;
+}
+
+float get_waypoint_item_value(const int waypoint_index)
+{
+    int type = 0;
+    int subtype = 0;
+    if (!waypoints_get_type_subtype(waypoint_index, type, subtype) || type != 2) {
+        return 0.0f;
+    }
+
+    if (subtype < 0 || subtype >= rf::num_item_types) {
+        return 0.0f;
+    }
+
+    const rf::ItemInfo& item = rf::item_info[subtype];
+    if (item.flags & rf::IIF_NO_PICKUP) {
+        return 0.0f;
+    }
+
+    float value = bot_get_item_weight(subtype);
+    if (item.gives_weapon_id >= 0) {
+        value += 2.8f
+            * bot_get_weapon_pickup_weight(item.gives_weapon_id)
+            * bot_get_weapon_preference_weight(item.gives_weapon_id);
+    }
+    if (item.ammo_for_weapon_id >= 0) {
+        value += 1.4f * bot_get_weapon_pickup_weight(item.ammo_for_weapon_id);
+    }
+
+    const int count = std::max(item.count_multi, item.count);
+    value += std::clamp(static_cast<float>(count) * 0.06f, 0.0f, 2.2f);
+
+    const float respawn_seconds =
+        std::max(static_cast<float>(item.respawn_time_millis), 0.0f) / 1000.0f;
+    value += std::clamp(respawn_seconds * 0.05f, 0.0f, 1.8f);
+    return value;
+}
+
+float compute_waypoint_path_item_value(const std::vector<int>& path)
+{
+    if (path.size() < 2) {
+        return 0.0f;
+    }
+
+    float total_item_value = 0.0f;
+    std::unordered_set<int> visited;
+    visited.reserve(path.size());
+    for (size_t index = 1; index < path.size(); ++index) {
+        const int waypoint = path[index];
+        if (!visited.insert(waypoint).second) {
+            continue;
+        }
+        total_item_value += get_waypoint_item_value(waypoint);
+    }
+    return total_item_value;
+}
+
+float compute_route_score(
+    const std::vector<int>& path,
+    const float target_distance = 0.0f)
+{
+    return bot_nav_compute_route_score(path, target_distance);
+}
+
+int choose_weighted_top_rank(const int candidate_count)
+{
+    if (candidate_count <= 1) {
+        return 0;
+    }
+
+    float total_weight = 0.0f;
+    for (int rank = 0; rank < candidate_count; ++rank) {
+        total_weight += 1.0f / static_cast<float>(rank + 1);
+    }
+
+    std::uniform_real_distribution<float> roll_dist(0.0f, total_weight);
+    const float roll = roll_dist(g_rng);
+    float accumulated = 0.0f;
+    for (int rank = 0; rank < candidate_count; ++rank) {
+        accumulated += 1.0f / static_cast<float>(rank + 1);
+        if (roll <= accumulated) {
+            return rank;
+        }
+    }
+
+    return candidate_count - 1;
+}
+
+void reset_blind_progress_tracking()
+{
+    bot_state().blind_progress_timer.invalidate();
+    bot_state().blind_progress_origin = {};
+    bot_state().blind_progress_max_dist_sq = 0.0f;
+}
+
+bool is_long_route_escape_active()
+{
+    if (bot_state().long_route_escape_timer.valid()
+        && bot_state().long_route_escape_timer.elapsed()) {
+        bot_state().long_route_escape_timer.invalidate();
+    }
+    return bot_state().long_route_escape_timer.valid();
+}
+
+void update_blind_escape_state(
+    const rf::Entity& local_entity,
+    const rf::Entity* enemy_target,
+    const bool enemy_has_los)
+{
+    if (!enemy_target || enemy_has_los) {
+        reset_blind_progress_tracking();
+        bot_state().long_route_escape_timer.invalidate();
+        return;
+    }
+
+    if (!bot_state().blind_progress_timer.valid()) {
+        bot_state().blind_progress_timer.set(kBlindProgressWindowMs);
+        bot_state().blind_progress_origin = local_entity.pos;
+        bot_state().blind_progress_max_dist_sq = 0.0f;
+    }
+
+    rf::Vector3 displacement = local_entity.pos - bot_state().blind_progress_origin;
+    displacement.y = 0.0f;
+    bot_state().blind_progress_max_dist_sq = std::max(
+        bot_state().blind_progress_max_dist_sq,
+        displacement.len_sq()
+    );
+
+    if (!bot_state().blind_progress_timer.elapsed()) {
+        return;
+    }
+
+    const float dist_threshold_sq =
+        kBlindProgressDistanceThreshold * kBlindProgressDistanceThreshold;
+    if (bot_state().blind_progress_max_dist_sq < dist_threshold_sq) {
+        std::uniform_int_distribution<int> long_route_dist(
+            kLongRouteEscapeMinMs,
+            kLongRouteEscapeMaxMs
+        );
+        bot_state().long_route_escape_timer.set(long_route_dist(g_rng));
+        clear_waypoint_route();
+    }
+
+    bot_state().blind_progress_timer.set(kBlindProgressWindowMs);
+    bot_state().blind_progress_origin = local_entity.pos;
+    bot_state().blind_progress_max_dist_sq = 0.0f;
+}
+
+void trigger_loop_escape_mode()
+{
+    std::uniform_int_distribution<int> long_route_dist(kLoopEscapeMinMs, kLoopEscapeMaxMs);
+    bot_state().long_route_escape_timer.set(long_route_dist(g_rng));
+    bot_state().repath_timer.invalidate();
+}
+
+bool path_contains_waypoint(const std::vector<int>& path, const int waypoint)
+{
+    return waypoint > 0 && std::find(path.begin(), path.end(), waypoint) != path.end();
+}
+
+void prune_failed_edge_cooldowns()
+{
+    bot_nav_prune_failed_edge_cooldowns();
+}
+
+void register_failed_edge_cooldown(
+    const int from_waypoint,
+    const int to_waypoint,
+    const int cooldown_ms)
+{
+    bot_nav_register_failed_edge_cooldown(from_waypoint, to_waypoint, cooldown_ms);
+}
+
+void register_failed_edge_cooldown_bidirectional(
+    const int waypoint_a,
+    const int waypoint_b,
+    const int cooldown_ms)
+{
+    bot_nav_register_failed_edge_cooldown_bidirectional(
+        waypoint_a,
+        waypoint_b,
+        cooldown_ms
+    );
+}
+
+bool is_failed_edge_cooldown_active_no_prune(const int from_waypoint, const int to_waypoint)
+{
+    return bot_nav_is_failed_edge_cooldown_active_no_prune(from_waypoint, to_waypoint);
+}
+
+bool path_contains_failed_edge_cooldown(const std::vector<int>& path)
+{
+    return bot_nav_path_contains_failed_edge_cooldown(path);
+}
+
+bool is_super_pickup_name(const char* name)
+{
+    if (!name || !name[0]) {
+        return false;
+    }
+
+    return std::strcmp(name, "Multi Damage Amplifier") == 0
+        || std::strcmp(name, "Multi Invulnerability") == 0
+        || std::strcmp(name, "Multi Super Armor") == 0
+        || std::strcmp(name, "Multi Super Health") == 0;
+}
+
+bool contains_case_insensitive(std::string_view haystack, std::string_view needle)
+{
+    if (needle.empty() || haystack.empty() || needle.size() > haystack.size()) {
+        return false;
+    }
+
+    for (size_t i = 0; i + needle.size() <= haystack.size(); ++i) {
+        bool match = true;
+        for (size_t j = 0; j < needle.size(); ++j) {
+            const char a = static_cast<char>(std::tolower(static_cast<unsigned char>(haystack[i + j])));
+            const char b = static_cast<char>(std::tolower(static_cast<unsigned char>(needle[j])));
+            if (a != b) {
+                match = false;
+                break;
+            }
+        }
+        if (match) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool item_info_contains_token(const rf::ItemInfo& item_info, std::string_view token)
+{
+    return contains_case_insensitive(item_info.cls_name.c_str(), token)
+        || (item_info.hud_msg_name
+            && contains_case_insensitive(item_info.hud_msg_name, token));
+}
+
+bool item_info_is_health_pickup(const rf::ItemInfo& item_info)
+{
+    return item_info_contains_token(item_info, "health")
+        || item_info_contains_token(item_info, "med")
+        || item_info_contains_token(item_info, "kit");
+}
+
+bool item_info_is_armor_pickup(const rf::ItemInfo& item_info)
+{
+    return item_info_contains_token(item_info, "armor");
+}
+
+const rf::ItemInfo* resolve_item_info(const rf::Item& item)
+{
+    if (item.info) {
+        return item.info;
+    }
+    if (item.info_index >= 0 && item.info_index < rf::num_item_types) {
+        return &rf::item_info[item.info_index];
+    }
+    return nullptr;
+}
+
+int resolve_item_type_index(const rf::Item& item)
+{
+    if (item.info_index >= 0 && item.info_index < rf::num_item_types) {
+        return item.info_index;
+    }
+    if (!item.info || rf::num_item_types <= 0) {
+        return -1;
+    }
+
+    const rf::ItemInfo* first = &rf::item_info[0];
+    const rf::ItemInfo* last = first + rf::num_item_types;
+    if (item.info >= first && item.info < last) {
+        return static_cast<int>(item.info - first);
+    }
+    return -1;
+}
+
+bool item_matches_super_pickup(const rf::Item& item, const rf::ItemInfo* item_info)
+{
+    if (is_super_pickup_name(item.name.c_str())) {
+        return true;
+    }
+    if (item_info) {
+        return is_super_pickup_name(item_info->hud_msg_name)
+            || is_super_pickup_name(item_info->cls_name.c_str());
+    }
+    return false;
+}
+
+bool item_matches_super_item_hoarder_target(const rf::Item& item, const rf::ItemInfo* item_info)
+{
+    if (item_matches_super_pickup(item, item_info)) {
+        return true;
+    }
+
+    const int railgun_type = bot_resolve_weapon_type_cached("rail_gun");
+    const int shoulder_cannon_type = bot_resolve_weapon_type_cached("shoulder_cannon");
+    if (item_info) {
+        const bool gives_super_weapon =
+            item_info->gives_weapon_id == railgun_type
+            || item_info->gives_weapon_id == shoulder_cannon_type;
+        if (gives_super_weapon) {
+            return true;
+        }
+    }
+
+    const char* item_name = item.name.c_str();
+    return contains_case_insensitive(item_name ? item_name : "", "rail_gun")
+        || contains_case_insensitive(item_name ? item_name : "", "shoulder_cannon");
+}
+
+bool item_is_currently_available(const rf::Item& item)
+{
+    return (item.obj_flags & rf::OF_HIDDEN) == 0;
+}
+
+float get_weapon_ammo_fill_ratio(const rf::Entity& local_entity, const int weapon_type)
+{
+    return bot_decision_get_weapon_ammo_fill_ratio(local_entity, weapon_type);
+}
+
+// Client bots cannot see the server's rules and assume the default exemption (the fusion launcher).
+bool weapon_stay_exempts(const int weapon_type)
+{
+    if (!bot_ctx().is_server_bot) {
+        return weapon_type == rf::shoulder_cannon_weapon_type;
+    }
+    const auto& exemptions = g_alpine_server_config_active_rules.weapon_stay_exemptions.exemptions;
+    return std::any_of(exemptions.begin(), exemptions.end(), [&](const WeaponStayExemptionEntry& entry) {
+        return entry.exemption_enabled && entry.index == weapon_type;
+    });
+}
+
+bool item_gives_owned_weapon_ammo(const rf::Entity& local_entity, const rf::ItemInfo& item_info)
+{
+    const int weapon_type = item_info.gives_weapon_id;
+    return weapon_type >= 0
+        && weapon_type < rf::num_weapon_types
+        && local_entity.ai.has_weapon[weapon_type]
+        && (!(rf::netgame.flags & rf::NG_FLAG_WEAPON_STAY) || weapon_stay_exempts(weapon_type));
+}
+
+int item_ammo_weapon_type(const rf::ItemInfo& item_info)
+{
+    return item_info.ammo_for_weapon_id >= 0 ? item_info.ammo_for_weapon_id : item_info.gives_weapon_id;
+}
+
+BotGoalType classify_collect_goal_for_item(
+    const rf::Entity& local_entity,
+    const rf::Item& item,
+    const rf::ItemInfo& item_info)
+{
+    if (item_matches_super_pickup(item, &item_info)) {
+        return BotGoalType::collect_super_item;
+    }
+    if (item_info.gives_weapon_id >= 0) {
+        return item_gives_owned_weapon_ammo(local_entity, item_info)
+            ? BotGoalType::collect_ammo
+            : BotGoalType::collect_weapon;
+    }
+    if (item_info.ammo_for_weapon_id >= 0) {
+        return BotGoalType::collect_ammo;
+    }
+    if (item_info_is_health_pickup(item_info)) {
+        return BotGoalType::collect_health;
+    }
+    if (item_info_is_armor_pickup(item_info)) {
+        return BotGoalType::collect_armor;
+    }
+    return BotGoalType::none;
+}
+
+bool is_item_goal_satisfied(
+    const rf::Entity& local_entity,
+    const BotGoalType goal_type,
+    const rf::Item& item)
+{
+    if (!bot_goal_is_item_collection(goal_type)) {
+        return false;
+    }
+
+    const rf::ItemInfo* item_info = resolve_item_info(item);
+    if (!item_info || (item_info->flags & rf::IIF_NO_PICKUP)) {
+        // Invalid/disabled item data should not keep an item-collection goal alive.
+        return true;
+    }
+
+    const int gives_weapon = item_info->gives_weapon_id;
+    const bool has_given_weapon =
+        gives_weapon >= 0
+        && gives_weapon < rf::num_weapon_types
+        && local_entity.ai.has_weapon[gives_weapon];
+
+    switch (goal_type) {
+        case BotGoalType::collect_weapon:
+            // Weapon collection is complete once we own the weapon, even if
+            // the pickup remains visible in weapon-stay modes.
+            return has_given_weapon;
+
+        case BotGoalType::collect_ammo: {
+            const int ammo_weapon = item_ammo_weapon_type(*item_info);
+            if (ammo_weapon < 0) {
+                return false;
+            }
+            if (ammo_weapon >= rf::num_weapon_types) {
+                return true;
+            }
+            if (!local_entity.ai.has_weapon[ammo_weapon]) {
+                return false;
+            }
+            return get_weapon_ammo_fill_ratio(local_entity, ammo_weapon) >= 0.96f;
+        }
+
+        case BotGoalType::collect_health:
+            return item_info_is_health_pickup(*item_info)
+                && get_entity_health_ratio(local_entity) >= 0.98f;
+
+        case BotGoalType::collect_armor:
+            return item_info_is_armor_pickup(*item_info)
+                && get_entity_armor_ratio(local_entity) >= 0.98f;
+
+        case BotGoalType::collect_super_item:
+            if (has_given_weapon) {
+                return true;
+            }
+            if (item_info_is_health_pickup(*item_info)
+                && get_entity_health_ratio(local_entity) >= 0.98f) {
+                return true;
+            }
+            if (item_info_is_armor_pickup(*item_info)
+                && get_entity_armor_ratio(local_entity) >= 0.98f) {
+                return true;
+            }
+            return false;
+
+        default:
+            return false;
+    }
+}
+
+struct ItemGoalWeaponContext
+{
+    int preferred_weapon_type = -1;
+    float preferred_weapon_score = 0.0f;
+    float preferred_weapon_ammo_fill = 1.0f;
+    bool has_satisfactory_weapon = false;
+    bool needs_preferred_weapon_ammo = false;
+};
+
+ItemGoalWeaponContext build_item_goal_weapon_context(
+    const rf::Entity& local_entity,
+    const rf::Entity* enemy_target)
+{
+    ItemGoalWeaponContext context{};
+    const BotPersonality& personality = get_active_bot_personality();
+    for (int weapon_type = 0; weapon_type < rf::num_weapon_types; ++weapon_type) {
+        const float score = compute_weapon_readiness_score_for_type(
+            local_entity,
+            enemy_target,
+            weapon_type
+        );
+        if (score <= context.preferred_weapon_score) {
+            continue;
+        }
+        context.preferred_weapon_score = score;
+        context.preferred_weapon_type = weapon_type;
+    }
+
+    const float satisfactory_weapon_threshold = std::clamp(
+        personality.satisfactory_weapon_threshold,
+        0.20f,
+        0.98f
+    );
+    context.has_satisfactory_weapon =
+        context.preferred_weapon_type >= 0
+        && context.preferred_weapon_score >= satisfactory_weapon_threshold;
+
+    if (context.preferred_weapon_type >= 0
+        && !rf::weapon_is_melee(context.preferred_weapon_type)
+        && !rf::weapon_is_detonator(context.preferred_weapon_type)) {
+        context.preferred_weapon_ammo_fill = get_weapon_ammo_fill_ratio(
+            local_entity,
+            context.preferred_weapon_type
+        );
+    }
+
+    const float ammo_fill_threshold = std::clamp(
+        personality.preferred_weapon_ammo_fill_threshold,
+        0.05f,
+        0.95f
+    );
+    context.needs_preferred_weapon_ammo =
+        context.has_satisfactory_weapon
+        && context.preferred_weapon_type >= 0
+        && !rf::weapon_is_melee(context.preferred_weapon_type)
+        && !rf::weapon_is_detonator(context.preferred_weapon_type)
+        && context.preferred_weapon_ammo_fill < ammo_fill_threshold;
+    return context;
+}
+
+float compute_collectible_item_goal_value(
+    const rf::Entity& local_entity,
+    const rf::Entity* enemy_target,
+    const rf::Item& item,
+    const ItemGoalWeaponContext& weapon_context)
+{
+    const rf::ItemInfo* item_info = resolve_item_info(item);
+    if (!item_info || (item_info->flags & rf::IIF_NO_PICKUP)) {
+        return 0.0f;
+    }
+
+    const BotPersonality& personality = get_active_bot_personality();
+    const float replenish_bias = std::clamp(personality.replenish_bias, 0.0f, 2.5f);
+    const bool super_item_hoarder =
+        bot_personality_has_quirk(BotPersonalityQuirk::super_item_hoarder);
+    const bool is_super_pickup = item_matches_super_pickup(item, item_info);
+    const bool is_super_item_hoarder_target =
+        item_matches_super_item_hoarder_target(item, item_info);
+    const bool gives_owned_weapon_ammo = item_gives_owned_weapon_ammo(local_entity, *item_info);
+    const bool is_weapon_pickup = item_info->gives_weapon_id >= 0 && !gives_owned_weapon_ammo;
+    const bool is_ammo_pickup = item_info->ammo_for_weapon_id >= 0 || gives_owned_weapon_ammo;
+
+    if (weapon_context.has_satisfactory_weapon
+        && !is_super_pickup
+        && !is_super_item_hoarder_target) {
+        if (is_weapon_pickup) {
+            return 0.0f;
+        }
+        if (is_ammo_pickup) {
+            const int weapon_type = item_ammo_weapon_type(*item_info);
+            const bool supports_preferred_ammo_need =
+                weapon_context.needs_preferred_weapon_ammo
+                && weapon_type == weapon_context.preferred_weapon_type;
+            if (!supports_preferred_ammo_need) {
+                return 0.0f;
+            }
+        }
+    }
+
+    const float health_ratio = get_entity_health_ratio(local_entity);
+    const float armor_ratio = get_entity_armor_ratio(local_entity);
+    const bool is_health_pickup = item_info_is_health_pickup(*item_info);
+    const bool is_armor_pickup = item_info_is_armor_pickup(*item_info);
+    if (!is_super_pickup) {
+        if (is_health_pickup && health_ratio >= 1.0f) {
+            return 0.0f;
+        }
+        if (is_armor_pickup && armor_ratio >= 1.0f) {
+            return 0.0f;
+        }
+    }
+    const int item_type = resolve_item_type_index(item);
+
+    float value = is_super_pickup ? 32.0f : 0.0f;
+    if (item_type >= 0) {
+        value += bot_get_item_weight(item_type) * 14.0f;
+    }
+    else {
+        value += 8.0f;
+    }
+
+    if (is_weapon_pickup) {
+        const int weapon_type = item_info->gives_weapon_id;
+        if (weapon_type >= 0 && weapon_type < rf::num_weapon_types && local_entity.ai.has_weapon[weapon_type]) {
+            return 0.0f;
+        }
+        const float pickup_weight = bot_get_weapon_pickup_weight(weapon_type);
+        const float preference_weight = bot_get_weapon_preference_weight(weapon_type);
+        float contextual_range_bonus = 0.0f;
+        if (const BotWeaponProfile* profile = bot_weapon_profile_for_weapon_type(weapon_type)) {
+            float desired_distance = std::max(
+                1.0f,
+                0.5f * (
+                    personality.preferred_engagement_near
+                    + personality.preferred_engagement_far
+                )
+            );
+            if (enemy_target) {
+                desired_distance = std::sqrt(std::max(
+                    rf::vec_dist_squared(&local_entity.pos, &enemy_target->pos),
+                    0.0f
+                ));
+            }
+            const BotWeaponRangeBand desired_band = classify_combat_distance_band(desired_distance);
+            contextual_range_bonus = bot_weapon_profile_supports_range(*profile, desired_band)
+                ? 8.0f
+                : -4.0f;
+        }
+
+        value += 22.0f * pickup_weight * preference_weight + contextual_range_bonus;
+    }
+
+    if (is_ammo_pickup) {
+        const int weapon_type = item_ammo_weapon_type(*item_info);
+        const bool has_weapon =
+            weapon_type >= 0
+            && weapon_type < rf::num_weapon_types
+            && local_entity.ai.has_weapon[weapon_type];
+        if (!has_weapon && !is_super_item_hoarder_target) {
+            return 0.0f;
+        }
+        const float pickup_weight = bot_get_weapon_pickup_weight(weapon_type);
+        const float preference_weight = bot_get_weapon_preference_weight(weapon_type);
+        if (has_weapon) {
+            const float ammo_fill = get_weapon_ammo_fill_ratio(local_entity, weapon_type);
+            const float ammo_need = std::clamp(1.0f - ammo_fill, 0.0f, 1.0f);
+            value += std::lerp(2.0f, 24.0f, ammo_need)
+                * pickup_weight
+                * std::lerp(0.75f, 1.60f, std::clamp(preference_weight / 2.5f, 0.0f, 1.0f));
+        }
+        else {
+            value += 2.0f * pickup_weight;
+        }
+    }
+
+    if (super_item_hoarder && is_super_item_hoarder_target) {
+        value += is_super_pickup ? 165.0f : 115.0f;
+    }
+
+    if (is_health_pickup) {
+        const float need = std::clamp(1.0f - health_ratio, 0.0f, 1.0f);
+        value += need * 36.0f * replenish_bias;
+    }
+
+    if (is_armor_pickup) {
+        const float need = std::clamp(1.0f - armor_ratio, 0.0f, 1.0f);
+        value += need * 30.0f * replenish_bias;
+    }
+
+    const int count = std::max(item_info->count_multi, item_info->count);
+    value += std::clamp(static_cast<float>(count) * 0.08f, 0.0f, 2.0f);
+    const float respawn_seconds =
+        std::max(static_cast<float>(item_info->respawn_time_millis), 0.0f) / 1000.0f;
+    value += std::clamp(respawn_seconds * 0.04f, 0.0f, 1.5f);
+    return value;
+}
+
+bool is_collectible_goal_item(const rf::Item& item)
+{
+    if (!item_is_currently_available(item)) {
+        return false;
+    }
+
+    const rf::ItemInfo* item_info = resolve_item_info(item);
+    if (!item_info || (item_info->flags & rf::IIF_NO_PICKUP)) {
+        return false;
+    }
+
+    const int item_type = resolve_item_type_index(item);
+    if (item_type >= 0 && bot_get_item_weight(item_type) <= 0.05f) {
+        return false;
+    }
+
+    return true;
+}
+
+bool find_best_item_goal(
+    const rf::Entity& local_entity,
+    const rf::Entity* enemy_target,
+    ItemGoalCandidate& out_candidate)
+{
+    out_candidate = {};
+    const BotPersonality& personality = get_active_bot_personality();
+    const ItemGoalWeaponContext weapon_context = build_item_goal_weapon_context(
+        local_entity,
+        enemy_target
+    );
+    const int start_waypoint = bot_find_closest_waypoint_with_los_fallback(local_entity);
+    if (start_waypoint <= 0) {
+        return false;
+    }
+
+    bot_goal_memory_prune_failed_item_goal_cooldowns();
+
+    struct ScoredItem
+    {
+        const rf::Item* item;
+        BotGoalType goal_type;
+        int goal_waypoint;
+        float item_value;
+        float recent_penalty;
+        float repeat_penalty;
+        float enemy_adjustment;
+        float score_upper_bound;
+        int order;
+        std::vector<int> route;
+    };
+    const auto finish_score = [&](float route_score, const ScoredItem& scored) {
+        route_score = route_score
+            + scored.item_value
+            + kGoalItemBaseBonus * personality.opportunism_bias;
+        route_score -= scored.recent_penalty;
+        route_score -= scored.repeat_penalty;
+        route_score += scored.enemy_adjustment;
+        return route_score;
+    };
+
+    std::vector<ScoredItem> scored_items;
+    // Built at the first candidate that needs a route, so an evaluation without one costs no search.
+    const BotWaypointDistanceField* distance_field = nullptr;
+    std::vector<int> route;
+    rf::Object* obj = rf::object_list.next_obj;
+    while (obj != &rf::object_list) {
+        if (obj->type == rf::OT_ITEM) {
+            const rf::Item* item = static_cast<const rf::Item*>(obj);
+            if (item
+                && bot_goal_memory_is_failed_item_goal_cooldown_active_no_prune(item->handle)) {
+                obj = obj->next_obj;
+                continue;
+            }
+            if (item && is_collectible_goal_item(*item)) {
+                const float item_value = compute_collectible_item_goal_value(
+                    local_entity,
+                    enemy_target,
+                    *item,
+                    weapon_context
+                );
+                if (item_value <= 0.0f) {
+                    obj = obj->next_obj;
+                    continue;
+                }
+                const rf::ItemInfo* item_info = resolve_item_info(*item);
+                if (!item_info) {
+                    obj = obj->next_obj;
+                    continue;
+                }
+                const BotGoalType item_goal_type =
+                    classify_collect_goal_for_item(local_entity, *item, *item_info);
+                // A satisfied goal is dropped on the next think, so offering it only makes the goal flip.
+                if (item_goal_type == BotGoalType::none
+                    || is_item_goal_satisfied(local_entity, item_goal_type, *item)) {
+                    obj = obj->next_obj;
+                    continue;
+                }
+                int goal_waypoint = 0;
+                if (!find_item_goal_waypoint_internal(item->pos, goal_waypoint)) {
+                    obj = obj->next_obj;
+                    continue;
+                }
+                if (goal_waypoint > 0
+                    && goal_waypoint != start_waypoint
+                    && !bot_waypoint_same_component(start_waypoint, goal_waypoint)) {
+                    obj = obj->next_obj;
+                    continue;
+                }
+                if (goal_waypoint > 0) {
+                    if (start_waypoint == goal_waypoint) {
+                        route.assign({start_waypoint, goal_waypoint});
+                    }
+                    else {
+                        if (!distance_field) {
+                            distance_field = &bot_waypoint_distance_field(start_waypoint);
+                        }
+                        if (!bot_waypoint_distance_field_path(*distance_field, goal_waypoint, route)) {
+                            obj = obj->next_obj;
+                            continue;
+                        }
+                    }
+
+                    if (route.size() < 2) {
+                        obj = obj->next_obj;
+                        continue;
+                    }
+
+                    ScoredItem scored{item, item_goal_type, goal_waypoint, item_value};
+                    scored.recent_penalty =
+                        bot_goal_memory_get_recent_item_goal_penalty(item->handle, item_goal_type);
+                    scored.repeat_penalty =
+                        bot_goal_memory_get_secondary_goal_repeat_penalty(item_goal_type);
+                    scored.enemy_adjustment = 0.0f;
+                    if (enemy_target) {
+                        const float enemy_dist = std::sqrt(
+                            std::max(
+                                rf::vec_dist_squared(&enemy_target->pos, &local_entity.pos),
+                                0.0f
+                            )
+                        );
+                        const float pickup_dist = std::sqrt(
+                            std::max(
+                                rf::vec_dist_squared(&item->pos, &local_entity.pos),
+                                0.0f
+                            )
+                        );
+                        scored.enemy_adjustment = std::clamp(
+                            (enemy_dist - pickup_dist) * 0.35f,
+                            -18.0f,
+                            20.0f
+                        );
+                    }
+                    scored.score_upper_bound =
+                        finish_score(bot_nav_compute_route_score_upper_bound(route), scored) + 0.01f;
+                    scored.order = static_cast<int>(scored_items.size());
+                    scored.route = route;
+                    scored_items.push_back(std::move(scored));
+                }
+            }
+        }
+        obj = obj->next_obj;
+    }
+
+    std::sort(scored_items.begin(), scored_items.end(), [](const ScoredItem& lhs, const ScoredItem& rhs) {
+        return lhs.score_upper_bound > rhs.score_upper_bound;
+    });
+    const ScoredItem* best = nullptr;
+    for (const ScoredItem& scored : scored_items) {
+        if (scored.score_upper_bound < out_candidate.score) {
+            break;
+        }
+        if (path_contains_failed_edge_cooldown(scored.route)) {
+            continue;
+        }
+        const float route_score = finish_score(compute_route_score(scored.route), scored);
+        const bool wins = route_score > out_candidate.score
+            || (best && route_score == out_candidate.score && scored.order < best->order);
+        if (!wins) {
+            continue;
+        }
+        best = &scored;
+        out_candidate.item_handle = scored.item->handle;
+        out_candidate.item_uid = scored.item->uid;
+        out_candidate.goal_type = scored.goal_type;
+        out_candidate.goal_waypoint = scored.goal_waypoint;
+        out_candidate.item_pos = scored.item->pos;
+        out_candidate.score = route_score;
+    }
+
+    return out_candidate.item_handle >= 0;
+}
+
+float compute_enemy_goal_score(const rf::Entity& local_entity, const rf::Entity& enemy_target, const bool enemy_has_los)
+{
+    return bot_decision_compute_enemy_goal_score(local_entity, enemy_target, enemy_has_los);
+}
+
+void record_waypoint_visit(const int waypoint)
+{
+    bot_nav_record_waypoint_visit(waypoint);
+}
+
+bool detect_recent_waypoint_ping_pong_loop(int& out_waypoint_a, int& out_waypoint_b)
+{
+    return bot_nav_detect_recent_waypoint_ping_pong_loop(
+        out_waypoint_a,
+        out_waypoint_b
+    );
+}
+
+bool pick_waypoint_route_to_goal_randomized_after_stuck(
+    const int start_waypoint,
+    const int goal_waypoint,
+    const int avoid_waypoint,
+    const int repath_ms)
+{
+    return bot_nav_pick_waypoint_route_to_goal_randomized_after_stuck(
+        start_waypoint,
+        goal_waypoint,
+        avoid_waypoint,
+        repath_ms
+    );
+}
+
+bool pick_waypoint_route_to_goal_long_detour(
+    const int start_waypoint,
+    const int goal_waypoint,
+    const int repath_ms)
+{
+    return bot_nav_pick_waypoint_route_to_goal_long_detour(
+        start_waypoint,
+        goal_waypoint,
+        repath_ms
+    );
+}
+
+const char* waypoint_type_to_string(const WaypointType type)
+{
+    switch (type) {
+        case WaypointType::std:
+            return "std";
+        case WaypointType::std_new:
+            return "std_new";
+        case WaypointType::item:
+            return "item";
+        case WaypointType::respawn:
+            return "respawn";
+        case WaypointType::jump_pad:
+            return "jump_pad";
+        case WaypointType::lift_body:
+            return "lift_body";
+        case WaypointType::lift_entrance:
+            return "lift_entrance";
+        case WaypointType::lift_exit:
+            return "lift_exit";
+        case WaypointType::ladder:
+            return "ladder";
+        case WaypointType::ctf_flag:
+            return "ctf_flag";
+        case WaypointType::crater:
+            return "crater";
+        case WaypointType::tele_entrance:
+            return "tele_entrance";
+        case WaypointType::tele_exit:
+            return "tele_exit";
+        case WaypointType::water:
+            return "water";
+        case WaypointType::salvage_flag:
+            return "salvage_flag";
+        case WaypointType::vehicle_factory:
+            return "vehicle_factory";
+        case WaypointType::zipline_entrance:
+            return "zipline_entrance";
+        case WaypointType::zipline_exit:
+            return "zipline_exit";
+        default:
+            return "unknown";
+    }
+}
+
+rf::Color waypoint_debug_color(const WaypointType type)
+{
+    switch (type) {
+        case WaypointType::std:
+            return {255, 255, 255, 150};
+        case WaypointType::std_new:
+            return {255, 255, 255, 75};
+        case WaypointType::item:
+            return {255, 220, 0, 150};
+        case WaypointType::respawn:
+            return {0, 220, 255, 150};
+        case WaypointType::jump_pad:
+            return {0, 255, 120, 150};
+        case WaypointType::lift_body:
+            return {110, 150, 255, 150};
+        case WaypointType::lift_entrance:
+            return {140, 180, 255, 150};
+        case WaypointType::lift_exit:
+            return {80, 120, 255, 150};
+        case WaypointType::ladder:
+            return {255, 170, 70, 150};
+        case WaypointType::ctf_flag:
+            return {255, 70, 70, 150};
+        case WaypointType::crater:
+            return {200, 70, 255, 150};
+        case WaypointType::tele_entrance:
+            return {255, 140, 60, 150};
+        case WaypointType::tele_exit:
+            return {255, 80, 220, 150};
+        case WaypointType::water:
+            return {60, 140, 255, 150};
+        case WaypointType::salvage_flag:
+            return {255, 235, 120, 150};
+        case WaypointType::vehicle_factory:
+            return {120, 255, 220, 150};
+        case WaypointType::zipline_entrance:
+            return {255, 200, 140, 150};
+        case WaypointType::zipline_exit:
+            return {200, 140, 255, 150};
+        default:
+            return {200, 200, 200, 150};
+    }
+}
+
+float waypoint_debug_sphere_scale(const WaypointType type)
+{
+    if (type == WaypointType::std || type == WaypointType::std_new) {
+        return 0.125f;
+    }
+    return 0.25f;
+}
+
+void draw_centered_debug_label(float sx, float sy, const char* text, const rf::Color& color)
+{
+    const auto [text_w, text_h] = rf::gr::get_string_size(text, -1);
+    const int x = static_cast<int>(sx) - (text_w / 2);
+    const int y = static_cast<int>(sy) - (text_h / 2);
+    rf::gr::set_color(color.red, color.green, color.blue, 255);
+    rf::gr::string(x, y, text, -1, no_overdraw_2d_text);
+}
+
+void update_bot_status_hud(BotContext& ctx)
+{
+    if (ctx.state.hud_status_timer.valid()
+        && !ctx.state.hud_status_timer.elapsed()) {
+        return;
+    }
+
+    // Build a short description of the current goal's target.
+    char target_label[40] = "-";
+    if (ctx.state.active_goal == BotGoalType::eliminate_target) {
+        if (ctx.state.goal_target_handle >= 0) {
+            rf::Player* target_player =
+                rf::player_from_entity_handle(ctx.state.goal_target_handle);
+            if (target_player && !target_player->name.empty()) {
+                // rf::hud_msg treats '$' as the start of a $TOKEN$ substitution and fatal-errors
+                // on an unterminated token, so neutralize any '$' in the player name first.
+                std::snprintf(target_label, sizeof(target_label), "%.22s", target_player->name.c_str());
+                for (char& c : target_label) {
+                    if (c == '\0') break;
+                    if (c == '$') c = '_';
+                }
+            }
+            else {
+                std::snprintf(target_label, sizeof(target_label), "uid%d", ctx.state.goal_target_identifier);
+            }
+        }
+        else {
+            std::strncpy(target_label, "hunt", sizeof(target_label) - 1);
+        }
+    }
+    else if (ctx.state.active_goal != BotGoalType::roam
+        && ctx.state.active_goal != BotGoalType::none) {
+        std::snprintf(target_label, sizeof(target_label), "id%d", ctx.state.goal_target_identifier);
+    }
+
+    // Format the top-3 candidates from the most recent goal evaluation pass.
+    // These reflect raw scores before hysteresis; top3[0] may differ from active_goal
+    // when commitment/switch-lock held the previous goal.
+    char eval1[48] = "none", eval2[48] = "none", eval3[48] = "none";
+    const auto fmt_eval_entry = [](const BotTopGoalEntry& e, char* buf, const int len) {
+        if (e.goal != BotGoalType::none && std::isfinite(e.score)) {
+            std::snprintf(buf, len, "%s(%.0f)", bot_goal_type_to_string(e.goal), e.score);
+        }
+    };
+    fmt_eval_entry(ctx.state.last_eval_top3[0], eval1, sizeof(eval1));
+    fmt_eval_entry(ctx.state.last_eval_top3[1], eval2, sizeof(eval2));
+    fmt_eval_entry(ctx.state.last_eval_top3[2], eval3, sizeof(eval3));
+
+    char status_text[320]{};
+    std::snprintf(
+        status_text,
+        sizeof(status_text),
+        "FSM:%s Goal:%s->%s | Eval: %s, %s, %s",
+        bot_fsm_state_to_string(ctx.state.fsm_state),
+        bot_goal_type_to_string(ctx.state.active_goal),
+        target_label,
+        eval1,
+        eval2,
+        eval3
+    );
+    rf::hud_msg(status_text, 0, 650, nullptr);
+    ctx.state.hud_status_timer.set(500);
+}
+
+void update_bot_status_console(
+    BotContext& ctx,
+    const rf::Entity& local_entity,
+    const rf::Entity* enemy_target,
+    const bool enemy_has_los,
+    const bool pursuing_enemy_goal,
+    const bool has_move_target,
+    const rf::Vector3& move_target)
+{
+    if (ctx.state.console_status_timer.valid()
+        && !ctx.state.console_status_timer.elapsed()) {
+        return;
+    }
+    if (!g_alpine_game_config.dbg_bot) {
+        return;
+    }
+
+    const float health_ratio = get_entity_health_ratio(local_entity);
+    const float armor_ratio = get_entity_armor_ratio(local_entity);
+    const float maintenance_bias = std::clamp(
+        bot_skill_profile_get(ctx).survivability_maintenance_bias,
+        0.0f,
+        2.5f
+    );
+    const float maintenance_norm = std::clamp(
+        (maintenance_bias - 0.25f) / 2.25f,
+        0.0f,
+        1.0f
+    );
+    const float health_need = std::clamp(1.0f - health_ratio, 0.0f, 1.0f);
+    const float armor_need = std::clamp(1.0f - armor_ratio, 0.0f, 1.0f);
+    const float survivability_need = std::clamp(
+        std::max(health_need, armor_need * 0.95f),
+        0.0f,
+        1.0f
+    );
+    float maintenance_pressure = survivability_need * maintenance_norm;
+    if (health_ratio > 0.75f && armor_ratio < 0.60f) {
+        maintenance_pressure += 0.18f * maintenance_norm;
+    }
+    maintenance_pressure = std::clamp(maintenance_pressure, 0.0f, 1.0f);
+
+    const rf::Entity* readiness_enemy = nullptr;
+    if (ctx.state.active_goal == BotGoalType::eliminate_target
+        && ctx.state.goal_target_handle >= 0) {
+        readiness_enemy = rf::entity_from_handle(ctx.state.goal_target_handle);
+    }
+    const float combat_readiness = bot_personality_manager_compute_combat_readiness(
+        local_entity,
+        readiness_enemy
+    );
+    const float combat_readiness_threshold =
+        bot_personality_manager_compute_combat_readiness_threshold();
+
+    const int route_len = static_cast<int>(ctx.state.waypoint_path.size());
+    const int next_idx = ctx.state.waypoint_next_index;
+    const int current_wp = (next_idx > 0 && next_idx - 1 < route_len)
+        ? ctx.state.waypoint_path[next_idx - 1]
+        : 0;
+    const int next_wp = (next_idx >= 0 && next_idx < route_len)
+        ? ctx.state.waypoint_path[next_idx]
+        : 0;
+    const int end_wp = route_len > 0 ? ctx.state.waypoint_path.back() : 0;
+    const int enemy_handle = enemy_target ? enemy_target->handle : -1;
+
+    xlog::warn(
+        "BotBehavior FSM={} Goal={} GoalID={} GoalWP={} GoalHandle={} EnemyHandle={} EnemyLOS={} Pursuit={} MoveTarget={} RouteLen={} NextIdx={} Bot={}",
+        bot_fsm_state_to_string(ctx.state.fsm_state),
+        bot_goal_type_to_string(ctx.state.active_goal),
+        ctx.state.goal_target_identifier,
+        ctx.state.goal_target_waypoint,
+        ctx.state.goal_target_handle,
+        enemy_handle,
+        enemy_has_los,
+        pursuing_enemy_goal,
+        has_move_target,
+        route_len,
+        next_idx,
+        ctx.player ? ctx.player->name.c_str() : ""
+    );
+
+    xlog::warn(
+        "BotConsider HP={:.1f} AP={:.1f} HR={:.2f} AR={:.2f} Maint={:.2f} Ready={:.2f}/{:.2f} Replenish={} DM={} CTF={} CP={} ThreatHandle={} ThreatVisible={}",
+        local_entity.life,
+        local_entity.armor,
+        health_ratio,
+        armor_ratio,
+        maintenance_pressure,
+        combat_readiness,
+        combat_readiness_threshold,
+        bot_personality_manager_should_replenish_state(local_entity),
+        bot_personality_manager_is_deathmatch_mode(),
+        bot_personality_manager_is_ctf_mode(),
+        bot_personality_manager_is_control_point_mode(),
+        ctx.state.ctf_threat_handle,
+        ctx.state.ctf_threat_visible
+    );
+
+    xlog::warn(
+        "BotEval CurrentWP={} NextWP={} EndWP={} WaypointGoal={} HasWaypointTarget={} RecoveryPending={} AvoidWP={} AnchorWP={} RepathTimer={} MoveTargetPos=({:.2f},{:.2f},{:.2f}) DropLock={} Bot={}",
+        current_wp,
+        next_wp,
+        end_wp,
+        ctx.state.waypoint_goal,
+        ctx.state.has_waypoint_target,
+        ctx.state.recovery_pending_reroute,
+        ctx.state.recovery_avoid_waypoint,
+        ctx.state.recovery_anchor_waypoint,
+        ctx.state.repath_timer.valid(),
+        move_target.x,
+        move_target.y,
+        move_target.z,
+        ctx.state.drop_link_route_locked,
+        ctx.player ? ctx.player->name.c_str() : ""
+    );
+
+    ctx.state.console_status_timer.set(5000);
+}
+
+void draw_bot_route_debug(const BotContext& ctx)
+{
+    if (!is_client_bot_active() || !rf::gameseq_in_gameplay()) {
+        return;
+    }
+    if (ctx.state.waypoint_path.empty()) {
+        return;
+    }
+
+    const auto& path = ctx.state.waypoint_path;
+    const int path_size = static_cast<int>(path.size());
+    if (path_size <= 0) {
+        return;
+    }
+
+    const int draw_start = std::clamp(ctx.state.waypoint_next_index - 1, 0, path_size - 1);
+    rf::Vector3 prev_pos{};
+    bool have_prev = false;
+    for (int index = draw_start; index < path_size; ++index) {
+        const int waypoint_uid = path[index];
+        rf::Vector3 waypoint_pos{};
+        int type_raw = 0;
+        int subtype = 0;
+        if (!waypoints_get_pos(waypoint_uid, waypoint_pos)
+            || !waypoints_get_type_subtype(waypoint_uid, type_raw, subtype)) {
+            continue;
+        }
+
+        (void)subtype;
+        const auto waypoint_type = static_cast<WaypointType>(type_raw);
+        const rf::Color waypoint_color = waypoint_debug_color(waypoint_type);
+        rf::gr::set_color(waypoint_color);
+
+        float link_radius = kWaypointLinkRadius;
+        (void)waypoints_get_link_radius(waypoint_uid, link_radius);
+        const float sphere_radius = std::max(
+            0.05f,
+            link_radius * waypoint_debug_sphere_scale(waypoint_type)
+        );
+        rf::gr::sphere(waypoint_pos, sphere_radius, no_overdraw_2d_line);
+
+        if (have_prev) {
+            rf::gr::line_arrow(
+                prev_pos.x,
+                prev_pos.y,
+                prev_pos.z,
+                waypoint_pos.x,
+                waypoint_pos.y,
+                waypoint_pos.z,
+                0,
+                255,
+                0
+            );
+        }
+
+        prev_pos = waypoint_pos;
+        have_prev = true;
+    }
+
+    int destination_waypoint = ctx.state.waypoint_goal;
+    if (destination_waypoint <= 0 && path_size > 0) {
+        destination_waypoint = path.back();
+    }
+
+    rf::Vector3 destination_pos{};
+    int destination_type_raw = 0;
+    int destination_subtype = 0;
+    if (destination_waypoint <= 0
+        || !waypoints_get_pos(destination_waypoint, destination_pos)
+        || !waypoints_get_type_subtype(destination_waypoint, destination_type_raw, destination_subtype)) {
+        return;
+    }
+
+    int destination_identifier = -1;
+    (void)waypoints_get_identifier(destination_waypoint, destination_identifier);
+
+    const auto destination_type = static_cast<WaypointType>(destination_type_raw);
+    char label[96]{};
+    if (destination_identifier >= 0) {
+        std::snprintf(
+            label,
+            sizeof(label),
+            "%s (%d : %d : %d)",
+            waypoint_type_to_string(destination_type),
+            destination_waypoint,
+            destination_subtype,
+            destination_identifier
+        );
+    }
+    else {
+        std::snprintf(
+            label,
+            sizeof(label),
+            "%s (%d : %d)",
+            waypoint_type_to_string(destination_type),
+            destination_waypoint,
+            destination_subtype
+        );
+    }
+
+    rf::Vector3 label_pos = destination_pos;
+    label_pos.y += 0.3f;
+    rf::gr::Vertex dest{};
+    if (!rf::gr::rotate_vertex(&dest, &label_pos)) {
+        rf::gr::project_vertex(&dest);
+        if (dest.flags & 1) {
+            draw_centered_debug_label(dest.sx, dest.sy, label, rf::Color{255, 255, 255, 255});
+        }
+    }
+}
+
+FunHook<void(rf::Player*, rf::ControlConfig*, rf::ControlInfo*, int, int)> controls_read_internal2_hook{
+    0x004307A0,
+    [](rf::Player* pp, rf::ControlConfig* ccp, rf::ControlInfo* cip, int a4, int a5) {
+        (void)ccp;
+        (void)a4;
+        (void)a5;
+        controls_read_internal2_hook.call_target(pp, ccp, cip, a4, a5);
+        const BotState& state = client_bot_context().state;
+        if (!pp
+            || !cip
+            || pp != rf::local_player
+            || !is_client_bot_active()) {
+            return;
+        }
+
+        if (state.movement_override_active) {
+            cip->move.x = state.move_input_x;
+            cip->move.y = state.move_input_y;
+            cip->move.z = state.move_input_z;
+        }
+        // A non-headless bot's own mouse must not add to either look channel.
+        if (state.rot_override_active || state.mouse_delta_override_active) {
+            cip->rot = {};
+            cip->mouse_dh = 0.0f;
+            cip->mouse_dp = 0.0f;
+        }
+        if (state.rot_override_active) {
+            cip->rot.x = state.rot_input_x;
+            cip->rot.y = state.rot_input_y;
+        }
+        if (state.mouse_delta_override_active) {
+            cip->mouse_dh = state.mouse_dh_input;
+            cip->mouse_dp = state.mouse_dp_input;
+        }
+    },
+};
+
+// The bot's fire policy, laid over the engine's reading of the attack binds by
+// control_input_filter.
+ControlInputInjection bot_synthetic_fire_injection(rf::ControlConfig* ccp, rf::ControlConfigAction action)
+{
+    if (!is_client_bot_active()
+        || !rf::gameseq_in_gameplay()
+        || !rf::local_player
+        || ccp != &rf::local_player->settings.controls) {
+        return {};
+    }
+
+    const BotCombatFiringState& firing = client_bot_context().state.firing;
+    if (action == rf::CC_ACTION_PRIMARY_ATTACK) {
+        return {
+            firing.synthetic_primary_fire_down,
+            firing.synthetic_primary_fire_just_pressed,
+        };
+    }
+    if (action == rf::CC_ACTION_SECONDARY_ATTACK) {
+        return {
+            firing.synthetic_secondary_fire_down,
+            firing.synthetic_secondary_fire_just_pressed,
+        };
+    }
+    return {};
+}
+
+// Vehicle triggers are polled as held controls, which the press injection above never reaches.
+bool bot_vehicle_fire_down(rf::ControlConfig* ccp, rf::ControlConfigAction action)
+{
+    if (!is_client_bot_active()
+        || !rf::gameseq_in_gameplay()
+        || !rf::local_player
+        || ccp != &rf::local_player->settings.controls
+        || !vehicle_local_firing_vehicle()) {
+        return false;
+    }
+
+    const BotCombatFiringState& firing = client_bot_context().state.firing;
+    if (action == rf::CC_ACTION_PRIMARY_ATTACK) {
+        return firing.synthetic_primary_fire_down;
+    }
+    if (action == rf::CC_ACTION_SECONDARY_ATTACK) {
+        return firing.synthetic_secondary_fire_down;
+    }
+    return false;
+}
+
+void ensure_bot_input_hook_installed()
+{
+    if (!client_bot_launch_enabled()) {
+        return;
+    }
+
+    if (!g_bot_input_hook_installed) {
+        controls_read_internal2_hook.install();
+        control_input_filter_add_press_injection(&bot_synthetic_fire_injection);
+        control_input_filter_add_down_injection(&bot_vehicle_fire_down);
+        g_bot_input_hook_installed = true;
+    }
+}
+
+void reset_bot_frame_scratch(BotContext& ctx)
+{
+    BotActiveScope scope{ctx};
+    clear_synthetic_movement_controls();
+    ctx.info.can_spawn = false;
+    ctx.state.goal_refreshed_this_frame = false;
+    ctx.state.forced_goal_refresh_this_frame = false;
+    ctx.state.weapon_readiness_cached = false;
+}
+
+void reset_foot_watchdogs_keeping_route()
+{
+    reset_goal_stuck_watchdog(true);
+    reset_no_move_target_watchdog();
+    reset_position_stall_watchdog();
+    reset_objective_progress_watchdog(true);
+    reset_global_failsafe_watchdog(true);
+    reset_confusion_abort_tracking();
+}
+
+// While a zip line carries the bot it only fights: the line steers, and the foot watchdogs would take the
+// ride for being stuck.
+void run_zipline_riding_frame(BotContext& ctx, rf::Player& player, rf::Entity& entity)
+{
+    ctx.state.zipline_riding = true;
+    reset_foot_watchdogs_keeping_route();
+    update_retaliation_context(player, entity);
+
+    bot_combat_manager_prepare_frame(player, entity);
+    rf::Entity* const enemy_target = bot_perception_manager_select_enemy_target(player, entity);
+    const bool enemy_has_los = enemy_target && bot_perception_manager_get_enemy_los_cached(entity, *enemy_target);
+    if (!enemy_target) {
+        bot_perception_manager_reset_tracking();
+        clear_enemy_aim_error_state();
+        clear_semi_auto_click_state();
+    }
+    bot_combat_manager_process_frame(player, entity, enemy_target, enemy_has_los, bot_get_skill_factor(), false, {});
+}
+
+// A ride carried to the end comes down at the exit, whose node sits where the let-go lands; any other replans.
+void note_off_zipline(BotContext& ctx, const rf::Entity& entity)
+{
+    if (!ctx.state.zipline_riding) {
+        return;
+    }
+    ctx.state.zipline_riding = false;
+    const std::vector<int>& path = ctx.state.waypoint_path;
+    const int index = ctx.state.waypoint_next_index;
+    if (index > 0 && index < static_cast<int>(path.size())
+        && waypoints_get_zipline_ride(path[index - 1], path[index], nullptr, nullptr, nullptr)
+        && zipline_last_ride_reached_end(&entity)) {
+        if (g_alpine_game_config.dbg_bot && ctx.player) {
+            xlog::info("[BotZip] {} let go at the exit", ctx.player->name);
+        }
+        bot_nav_record_waypoint_visit(path[index]);
+        if (index + 1 < static_cast<int>(path.size())) {
+            ++ctx.state.waypoint_next_index;
+            return;
+        }
+    }
+    else if (index > 0 && index < static_cast<int>(path.size())
+             && waypoints_get_zipline_ride(path[index - 1], path[index], nullptr, nullptr, nullptr)) {
+        // Whatever held it off the line may still be there: the planner must not send it straight back.
+        bot_nav_register_failed_edge_cooldown(path[index - 1], path[index], kZiplineFailedRideCooldownMs);
+        if (g_alpine_game_config.dbg_bot && ctx.player) {
+            xlog::info("[BotZip] {} let go short of the exit", ctx.player->name);
+        }
+    }
+    bot_internal_clear_waypoint_route();
+}
+}
+
+void bot_reset_foot_watchdogs()
+{
+    reset_foot_watchdogs_keeping_route();
+    bot_state_clear_waypoint_route(true, true, false);
+}
+
+void bot_internal_clear_waypoint_route()
+{
+    clear_waypoint_route();
+}
+
+bool bot_internal_start_recovery_anchor_reroute(
+    const rf::Entity& entity,
+    const int avoid_waypoint)
+{
+    return start_recovery_anchor_reroute(entity, avoid_waypoint);
+}
+
+// For a goal retrying a failed route update: a link failure there has already started recovery and kept the route for
+// repair, which starting over would discard.
+bool bot_internal_retry_route_recovery(const rf::Entity& entity, const int avoid_waypoint)
+{
+    const bool repair_pending = bot_state().recovery_pending_reroute && !bot_state().route_repair_path.empty();
+    return !repair_pending && start_recovery_anchor_reroute(entity, avoid_waypoint);
+}
+
+bool bot_internal_update_waypoint_target(const rf::Entity& entity)
+{
+    return update_waypoint_target(entity);
+}
+
+bool bot_internal_update_waypoint_target_towards(
+    const rf::Entity& entity,
+    const rf::Vector3& destination,
+    const rf::Vector3* los_target_eye_pos,
+    const rf::Object* los_target_obj,
+    const int repath_ms)
+{
+    return update_waypoint_target_towards(
+        entity,
+        destination,
+        los_target_eye_pos,
+        los_target_obj,
+        repath_ms
+    );
+}
+
+bool bot_internal_update_waypoint_target_for_local_los_reposition(
+    const rf::Entity& entity,
+    const rf::Entity& enemy_target,
+    const bool enemy_has_los)
+{
+    return update_waypoint_target_for_local_los_reposition(
+        entity,
+        enemy_target,
+        enemy_has_los
+    );
+}
+
+bool bot_internal_try_recover_from_corner_probe(
+    const rf::Entity& entity,
+    const rf::Vector3& move_target)
+{
+    return try_recover_from_corner_probe(entity, move_target);
+}
+
+bool bot_internal_is_following_waypoint_link(const rf::Entity& entity)
+{
+    return is_following_waypoint_link(entity);
+}
+
+bool bot_internal_is_collectible_goal_item(const rf::Item& item)
+{
+    return is_collectible_goal_item(item);
+}
+
+BotGoalType bot_internal_classify_collect_goal_item(const rf::Entity& local_entity, const rf::Item& item)
+{
+    const rf::ItemInfo* item_info = resolve_item_info(item);
+    if (!item_info || (item_info->flags & rf::IIF_NO_PICKUP)) {
+        return BotGoalType::none;
+    }
+    return classify_collect_goal_for_item(local_entity, item, *item_info);
+}
+
+bool bot_internal_is_item_goal_satisfied(
+    const rf::Entity& local_entity,
+    const BotGoalType goal_type,
+    const rf::Item& item)
+{
+    return is_item_goal_satisfied(local_entity, goal_type, item);
+}
+
+bool bot_internal_find_best_item_goal(
+    const rf::Entity& local_entity,
+    const rf::Entity* enemy_target,
+    ItemGoalCandidate& out_candidate)
+{
+    return find_best_item_goal(local_entity, enemy_target, out_candidate);
+}
+
+bool bot_internal_find_item_goal_waypoint(const rf::Vector3& item_pos, int& out_waypoint)
+{
+    return find_item_goal_waypoint_internal(item_pos, out_waypoint);
+}
+
+void bot_internal_note_item_goal_selection(const int item_handle, const BotGoalType goal_type)
+{
+    if (!bot_goal_is_item_collection(goal_type) || item_handle < 0) {
+        return;
+    }
+    bot_goal_memory_note_item_goal_selection(item_handle, goal_type);
+}
+
+float bot_internal_compute_enemy_goal_score(
+    const rf::Entity& local_entity,
+    const rf::Entity& enemy_target,
+    const bool enemy_has_los)
+{
+    return compute_enemy_goal_score(local_entity, enemy_target, enemy_has_los);
+}
+
+float bot_internal_compute_combat_readiness(
+    const rf::Entity& local_entity,
+    const rf::Entity* enemy_target)
+{
+    return bot_personality_manager_compute_combat_readiness(local_entity, enemy_target);
+}
+
+float bot_internal_get_combat_readiness_threshold()
+{
+    return bot_personality_manager_compute_combat_readiness_threshold();
+}
+
+bool bot_internal_is_deathmatch_mode()
+{
+    return bot_personality_manager_is_deathmatch_mode();
+}
+
+bool bot_internal_is_control_point_mode()
+{
+    return bot_personality_manager_is_control_point_mode();
+}
+
+bool is_client_bot_active()
+{
+    return client_bot_launch_enabled()
+        && rf::is_multi
+        && !rf::is_dedicated_server
+        && rf::gameseq_get_state() == rf::GS_GAMEPLAY;
+}
+
+void client_bot_render_debug()
+{
+    draw_bot_route_debug(client_bot_context());
+}
+
+void bot_context_reset_idle(BotContext& ctx)
+{
+    BotActiveScope scope{ctx};
+    reset_client_bot_state();
+    // Unlike reset(): cooldown handles and enemy contact belong to the level being left.
+    ctx.state.vehicle = BotVehicleState{};
+    bot_chat_manager_reset(ctx);
+    reset_goal_stuck_watchdog(true);
+    reset_no_move_target_watchdog();
+    reset_position_stall_watchdog();
+    reset_objective_progress_watchdog(true);
+    reset_global_failsafe_watchdog(true);
+    bot_state_reset_fsm(BotFsmState::inactive);
+    ctx.state.hud_status_timer.invalidate();
+    ctx.state.console_status_timer.invalidate();
+    // server_config_received is kept: the server sends the bot config once per join, not per level.
+    bot_perception_manager_reset_tracking();
+}
+
+void client_bot_do_frame()
+{
+    ensure_bot_input_hook_installed();
+    BotContext& ctx = client_bot_context();
+    BotState& state = ctx.state;
+    ctx.player = rf::local_player;
+    reset_bot_frame_scratch(ctx);
+
+    // Bot clients always run with toggle crouch enabled.
+    if (client_bot_launch_enabled()
+        && rf::local_player
+        && !rf::local_player->settings.toggle_crouch) {
+        rf::local_player->settings.toggle_crouch = true;
+    }
+
+    // Bot clients always run with weapon-specific control swapping disabled.
+    if (client_bot_launch_enabled()) {
+        g_alpine_game_config.swap_ar_controls = false;
+        g_alpine_game_config.swap_gn_controls = false;
+        g_alpine_game_config.swap_sg_controls = false;
+    }
+
+    // Bot config timeout - runs in all game states.
+    // Catches cases where the bot never reaches GS_GAMEPLAY (connection timeout, server not found, etc.).
+    // Join denials are handled separately via process_join_deny_packet_hook for faster response.
+    if (client_bot_launch_enabled() && !state.server_config_received) {
+        if (!state.server_config_timeout_timer.valid()) {
+            state.server_config_timeout_timer.set(kBotServerConfigTimeoutMs);
+            xlog::info("Bot waiting for server config...");
+        }
+        else if (state.server_config_timeout_timer.elapsed()) {
+            if (g_alpine_game_config.bot_quit_when_disconnected) {
+                WARN_ONCE("Bot did not receive config from server within timeout - auto-quitting");
+                rf::gameseq_set_state(rf::GS_QUIT_GAME, false);
+            }
+            else {
+                xlog::warn("Bot did not receive config from server within timeout - disconnecting");
+                multi_disconnect_from_server();
+            }
+            return;
+        }
+    }
+
+    if (!is_client_bot_active()) {
+        // Connection watchdog: if config was received but we haven't reached (or returned to)
+        // GS_GAMEPLAY within the timeout, the connection is likely dead.
+        if (state.server_config_received
+            && state.connection_watchdog_timer.valid()
+            && state.connection_watchdog_timer.elapsed()) {
+            if (g_alpine_game_config.bot_quit_when_disconnected) {
+                xlog::warn("Bot connection watchdog expired (no gameplay for {}s after config) - auto-quitting",
+                    kBotConnectionWatchdogMs / 1000);
+                rf::gameseq_set_state(rf::GS_QUIT_GAME, false);
+            }
+            else {
+                xlog::warn("Bot connection watchdog expired - disconnecting");
+                multi_disconnect_from_server();
+            }
+            return;
+        }
+
+        bot_context_reset_idle(ctx);
+        return;
+    }
+
+    // In active gameplay - reset connection watchdog since we're connected and playing.
+    state.connection_watchdog_timer.set(kBotConnectionWatchdogMs);
+
+    // If server config hasn't been received yet, don't run bot logic.
+    // The timeout is handled above (before the is_client_bot_active check).
+    // Server deactivated the bot (go_inactive) - idle until reactivated.
+    if (!state.server_config_received || state.server_deactivated) {
+        // The input hooks keep applying a seat's trigger every frame, and only the trigger outlives the per-frame
+        // scratch reset: it must not stick.
+        if (state.vehicle.hull_handle != -1) {
+            state.firing.synthetic_primary_fire_down = false;
+            state.firing.synthetic_secondary_fire_down = false;
+            state.firing.synthetic_primary_fire_just_pressed = false;
+            state.firing.synthetic_secondary_fire_just_pressed = false;
+        }
+        return;
+    }
+
+    bot_run_frame(ctx);
+}
+
+void bot_run_frame(BotContext& ctx)
+{
+    BotActiveScope scope{ctx};
+    reset_bot_frame_scratch(ctx);
+
+    bot_weapon_profiles_init_for_active_bot();
+
+    rf::Player* const local_player = ctx.player;
+    if (!local_player) {
+        clear_bot_crouch_jump_link_state();
+        ctx.state.firing.wants_fire = false;
+        ctx.state.firing.synthetic_primary_fire_down = false;
+        ctx.state.firing.synthetic_secondary_fire_down = false;
+        ctx.state.firing.synthetic_primary_fire_just_pressed = false;
+        ctx.state.firing.synthetic_secondary_fire_just_pressed = false;
+        ctx.state.firing.explosive_fire_delay_timer.invalidate();
+        ctx.state.firing.explosive_fire_delay_weapon = -1;
+        ctx.state.firing.explosive_fire_delay_alt = false;
+        ctx.state.firing.explosive_release_hold_timer.invalidate();
+        ctx.state.firing.explosive_release_hold_target = {};
+        ctx.state.firing.explosive_release_hold_weapon = -1;
+        ctx.state.firing.explosive_release_hold_alt = false;
+        ctx.state.firing.remote_charge_pending_detonation = false;
+        ctx.state.firing.remote_charge_pending_detonation_timer.invalidate();
+        ctx.state.firing.remote_charge_give_up_timer.invalidate();
+        ctx.state.crater_goal_timeout_timer.invalidate();
+        ctx.state.shatter_goal_timeout_timer.invalidate();
+        ctx.state.respawn_gearup_timer.invalidate();
+        ctx.state.respawn_uncrouch_retry_timer.invalidate();
+        ctx.state.retaliation_timer.invalidate();
+        ctx.state.retaliation_target_handle = -1;
+        ctx.state.ctf_threat_handle = -1;
+        ctx.state.ctf_threat_pos = {};
+        ctx.state.ctf_threat_visible = false;
+        ctx.state.control_point_route_fail_timer.invalidate();
+        ctx.state.control_point_patrol_waypoint = 0;
+        ctx.state.control_point_patrol_timer.invalidate();
+        ctx.state.salvage_hold_pos = {};
+        ctx.state.salvage_hold_orbit_timer.invalidate();
+        ctx.state.salvage_hold_orbit_left = false;
+        ctx.state.salvage_stage_route_fails = 0;
+        ctx.state.salvage_stage_given_up = false;
+        ctx.state.scav_role_timer.invalidate();
+        ctx.state.payload_hold_side = 0;
+        ctx.state.payload_hold_side_timer.invalidate();
+        ctx.state.payload_hold_progress_timer.invalidate();
+        ctx.state.payload_spot_refresh.invalidate();
+        ctx.state.payload_hold_best_dist_sq = 0.0f;
+        ctx.state.payload_pushed_grace_timer.invalidate();
+        ctx.state.last_recorded_health = -1.0f;
+        ctx.state.last_recorded_armor = -1.0f;
+        clear_semi_auto_click_state();
+        bot_state_reset_fsm(BotFsmState::inactive);
+        ctx.state.hud_status_timer.invalidate();
+        ctx.state.console_status_timer.invalidate();
+        bot_perception_manager_reset_tracking();
+        bot_memory_manager_reset();
+        reset_goal_stuck_watchdog(true);
+        reset_no_move_target_watchdog();
+        reset_position_stall_watchdog();
+        reset_objective_progress_watchdog(true);
+        reset_global_failsafe_watchdog(true);
+        reset_confusion_abort_tracking();
+        return;
+    }
+
+    const bool is_dead = rf::player_is_dead(local_player);
+    const bool is_dying = rf::player_is_dying(local_player);
+    bot_chat_manager_update_frame(ctx, *local_player);
+    update_bot_spawn_state(*local_player);
+
+    rf::Entity* local_entity = bot_entity();
+
+    if (ctx.info.can_spawn || is_dead || is_dying || local_player->is_spectator) {
+        clear_bot_crouch_jump_link_state();
+        ctx.state.firing.wants_fire = false;
+        ctx.state.firing.synthetic_primary_fire_down = false;
+        ctx.state.firing.synthetic_secondary_fire_down = false;
+        ctx.state.firing.synthetic_primary_fire_just_pressed = false;
+        ctx.state.firing.synthetic_secondary_fire_just_pressed = false;
+        bot_state_clear_goal_and_eval();
+        ctx.state.respawn_gearup_timer.invalidate();
+        ctx.state.respawn_uncrouch_retry_timer.invalidate();
+        ctx.state.retaliation_timer.invalidate();
+        ctx.state.retaliation_target_handle = -1;
+        ctx.state.ctf_threat_handle = -1;
+        ctx.state.ctf_threat_pos = {};
+        ctx.state.ctf_threat_visible = false;
+        ctx.state.control_point_route_fail_timer.invalidate();
+        ctx.state.control_point_patrol_waypoint = 0;
+        ctx.state.control_point_patrol_timer.invalidate();
+        ctx.state.salvage_hold_pos = {};
+        ctx.state.salvage_hold_orbit_timer.invalidate();
+        ctx.state.salvage_hold_orbit_left = false;
+        ctx.state.salvage_stage_route_fails = 0;
+        ctx.state.salvage_stage_given_up = false;
+        ctx.state.scav_role_timer.invalidate();
+        ctx.state.payload_hold_side = 0;
+        ctx.state.payload_hold_side_timer.invalidate();
+        ctx.state.payload_hold_progress_timer.invalidate();
+        ctx.state.payload_spot_refresh.invalidate();
+        ctx.state.payload_hold_best_dist_sq = 0.0f;
+        ctx.state.payload_pushed_grace_timer.invalidate();
+        ctx.state.last_recorded_health = -1.0f;
+        ctx.state.last_recorded_armor = -1.0f;
+        ctx.state.bridge.zone_uid = -1;
+        ctx.state.bridge.trigger_uid = -1;
+        ctx.state.bridge.trigger_pos = {};
+        ctx.state.bridge.activation_radius = 0.0f;
+        ctx.state.bridge.requires_use = false;
+        ctx.state.bridge.use_press_timer.invalidate();
+        ctx.state.bridge.activation_abort_timer.invalidate();
+        ctx.state.bridge.activation_best_dist_sq = std::numeric_limits<float>::infinity();
+        ctx.state.bridge.post_open_zone_uid = -1;
+        ctx.state.bridge.post_open_target_waypoint = 0;
+        ctx.state.bridge.post_open_priority_timer.invalidate();
+        ctx.state.vehicle.reset();
+        ctx.state.drop_link_route_locked = false;
+        ctx.state.drop_freefall_active = false;
+        ctx.state.zipline_entrance = 0;
+        ctx.state.zipline_attempt_entrance = 0;
+        ctx.state.zipline_riding = false;
+        ctx.state.crater_goal_abort_timer.invalidate();
+        ctx.state.crater_standoff_abort_timer.invalidate();
+        ctx.state.crater_goal_timeout_timer.invalidate();
+        ctx.state.shatter_goal_abort_timer.invalidate();
+        ctx.state.shatter_goal_timeout_timer.invalidate();
+        ctx.state.firing.explosive_fire_delay_timer.invalidate();
+        ctx.state.firing.explosive_fire_delay_weapon = -1;
+        ctx.state.firing.explosive_fire_delay_alt = false;
+        ctx.state.firing.explosive_release_hold_timer.invalidate();
+        ctx.state.firing.explosive_release_hold_target = {};
+        ctx.state.firing.explosive_release_hold_weapon = -1;
+        ctx.state.firing.explosive_release_hold_alt = false;
+        ctx.state.firing.remote_charge_pending_detonation = false;
+        ctx.state.firing.remote_charge_pending_detonation_timer.invalidate();
+        ctx.state.firing.remote_charge_give_up_timer.invalidate();
+        ctx.state.route_repair_path.clear();
+        ctx.state.route_bias_avoid.clear();
+        ctx.state.route_bias_goal = 0;
+        ctx.state.firing.target_acquisition_handle = -1;
+        clear_enemy_aim_error_state();
+        clear_semi_auto_click_state();
+
+        if (local_entity && local_entity->ai.current_primary_weapon >= 0) {
+            rf::entity_turn_weapon_off(
+                local_entity->handle,
+                local_entity->ai.current_primary_weapon
+            );
+        }
+
+        if (ctx.info.can_spawn
+            && (!ctx.state.respawn_retry_timer.valid()
+                || ctx.state.respawn_retry_timer.elapsed())) {
+            bot_backend_request_respawn(*local_player);
+            ctx.state.respawn_retry_timer.set(kBotRespawnRetryMs);
+        }
+
+        bot_state_reset_fsm(BotFsmState::inactive);
+        ctx.state.hud_status_timer.invalidate();
+        ctx.state.console_status_timer.invalidate();
+        bot_perception_manager_reset_tracking();
+        bot_memory_manager_reset();
+        reset_goal_stuck_watchdog(true);
+        reset_no_move_target_watchdog();
+        reset_position_stall_watchdog();
+        reset_objective_progress_watchdog(true);
+        reset_global_failsafe_watchdog(true);
+        reset_confusion_abort_tracking();
+
+        return;
+    }
+
+    if (!local_entity) {
+        clear_bot_crouch_jump_link_state();
+        ctx.state.firing.synthetic_primary_fire_down = false;
+        ctx.state.firing.synthetic_secondary_fire_down = false;
+        ctx.state.firing.synthetic_primary_fire_just_pressed = false;
+        ctx.state.firing.synthetic_secondary_fire_just_pressed = false;
+        ctx.state.firing.explosive_fire_delay_timer.invalidate();
+        ctx.state.firing.explosive_fire_delay_weapon = -1;
+        ctx.state.firing.explosive_fire_delay_alt = false;
+        ctx.state.firing.explosive_release_hold_timer.invalidate();
+        ctx.state.firing.explosive_release_hold_target = {};
+        ctx.state.firing.explosive_release_hold_weapon = -1;
+        ctx.state.firing.explosive_release_hold_alt = false;
+        ctx.state.firing.remote_charge_pending_detonation = false;
+        ctx.state.firing.remote_charge_pending_detonation_timer.invalidate();
+        ctx.state.firing.remote_charge_give_up_timer.invalidate();
+        ctx.state.firing.weapon_pickup_pending = false;
+        ctx.state.firing.weapon_select_candidate = -1;
+        ctx.state.firing.weapon_select_target_handle = -1;
+        ctx.state.firing.aim_at_floor = false;
+        ctx.state.firing.weapon_ranges = {};
+        ctx.state.crater_goal_timeout_timer.invalidate();
+        ctx.state.shatter_goal_timeout_timer.invalidate();
+        ctx.state.ctf_threat_handle = -1;
+        ctx.state.ctf_threat_pos = {};
+        ctx.state.ctf_threat_visible = false;
+        ctx.state.control_point_route_fail_timer.invalidate();
+        ctx.state.control_point_patrol_waypoint = 0;
+        ctx.state.control_point_patrol_timer.invalidate();
+        ctx.state.salvage_hold_pos = {};
+        ctx.state.salvage_hold_orbit_timer.invalidate();
+        ctx.state.salvage_hold_orbit_left = false;
+        ctx.state.salvage_stage_route_fails = 0;
+        ctx.state.salvage_stage_given_up = false;
+        ctx.state.scav_role_timer.invalidate();
+        ctx.state.payload_hold_side = 0;
+        ctx.state.payload_hold_side_timer.invalidate();
+        ctx.state.payload_hold_progress_timer.invalidate();
+        ctx.state.payload_spot_refresh.invalidate();
+        ctx.state.payload_hold_best_dist_sq = 0.0f;
+        ctx.state.payload_pushed_grace_timer.invalidate();
+        ctx.state.last_recorded_health = -1.0f;
+        ctx.state.last_recorded_armor = -1.0f;
+        ctx.state.console_status_timer.invalidate();
+        ctx.state.vehicle.reset();
+        bot_memory_manager_reset();
+        reset_goal_stuck_watchdog(true);
+        reset_no_move_target_watchdog();
+        reset_position_stall_watchdog();
+        reset_objective_progress_watchdog(true);
+        reset_global_failsafe_watchdog(true);
+        reset_confusion_abort_tracking();
+        return;
+    }
+
+    // Not the live hull: a rider of a dying one gets no foot frame.
+    if (rf::Entity* const hull = vehicle_ridden_hull(local_entity)) {
+        bot_vehicle_run_seated_frame(ctx, *local_player, *local_entity, *hull);
+        return;
+    }
+    bot_vehicle_note_on_foot(ctx);
+    if (zipline_entity_simulates_ride(local_entity)) {
+        run_zipline_riding_frame(ctx, *local_player, *local_entity);
+        return;
+    }
+    note_off_zipline(ctx, *local_entity);
+
+    if (!ctx.state.respawn_gearup_timer.valid()) {
+        ctx.state.respawn_gearup_timer.set(kBotRespawnGearupDurationMs);
+        force_uncrouch_after_respawn(*local_player, *local_entity);
+    }
+    maintain_uncrouched_after_respawn(*local_player, *local_entity);
+    update_retaliation_context(*local_player, *local_entity);
+
+    bot_combat_manager_prepare_frame(*local_player, *local_entity);
+
+    rf::Entity* enemy_target = bot_perception_manager_select_enemy_target(*local_player, *local_entity);
+    bool enemy_has_los = false;
+    if (enemy_target) {
+        enemy_has_los = bot_perception_manager_get_enemy_los_cached(*local_entity, *enemy_target);
+    }
+    else {
+        // Keep pursuing a committed target handle when selector momentarily drops lock.
+        if (ctx.state.active_goal == BotGoalType::eliminate_target
+            && ctx.state.goal_target_handle >= 0) {
+            rf::Entity* goal_enemy = rf::entity_from_handle(ctx.state.goal_target_handle);
+            if (goal_enemy
+                && goal_enemy != local_entity
+                && !rf::entity_is_dying(goal_enemy)
+                && !bot_vehicle_hull_without_enemy(*goal_enemy, *local_player)) {
+                enemy_target = goal_enemy;
+                enemy_has_los = bot_perception_manager_get_enemy_los_cached(*local_entity, *enemy_target);
+            }
+        }
+
+        if (!enemy_target) {
+            bot_perception_manager_reset_tracking();
+            clear_enemy_aim_error_state();
+            clear_semi_auto_click_state();
+        }
+    }
+
+    const bool any_combat_lock_active =
+        enemy_target
+        && enemy_has_los
+        && (ctx.state.firing.wants_fire
+            || ctx.state.firing.synthetic_primary_fire_down
+            || ctx.state.firing.synthetic_secondary_fire_down);
+    if (any_combat_lock_active) {
+        if (!ctx.state.combat_lock_watchdog_timer.valid()) {
+            ctx.state.combat_lock_watchdog_timer.set(kCombatLockWatchdogOverrideMs);
+        }
+    }
+    else {
+        ctx.state.combat_lock_watchdog_timer.invalidate();
+    }
+    const bool combat_lock_expired =
+        ctx.state.combat_lock_watchdog_timer.valid()
+        && ctx.state.combat_lock_watchdog_timer.elapsed();
+
+    if (ctx.state.active_goal == BotGoalType::none
+        && ctx.state.fsm_state == BotFsmState::idle) {
+        reset_no_move_target_watchdog();
+        reset_position_stall_watchdog();
+        reset_objective_progress_watchdog(true);
+
+        if (!ctx.state.idle_escalation_timer.valid()) {
+            ctx.state.idle_escalation_timer.set(kIdleEscalationMs);
+        }
+        else if (ctx.state.idle_escalation_timer.elapsed()) {
+            // Each escalation forces a full goal evaluation; repeats while still idle come slower.
+            ctx.state.idle_escalation_timer.set(kIdleEscalationRepeatMs);
+            ctx.state.goal_eval_timer.invalidate();
+            ctx.state.goal_switch_lock_timer.invalidate();
+            bot_state_clear_waypoint_route(true, true, false);
+            if (g_alpine_game_config.dbg_bot) {
+                xlog::warn("Bot idle escalation: forcing goal re-evaluation");
+            }
+        }
+    }
+    else {
+        ctx.state.idle_escalation_timer.invalidate();
+    }
+
+    rf::Vector3 bot_aim_dir = local_entity->eye_orient.fvec;
+    if (bot_aim_dir.len_sq() < 0.0001f) {
+        bot_aim_dir = local_entity->orient.fvec;
+    }
+    bot_aim_dir.normalize_safe();
+
+    if (should_abort_for_confusion(*local_entity, bot_aim_dir)) {
+        abort_goal_and_fsm_for_confusion(*local_entity, "confusion failsafe");
+    }
+
+    bot_goal_manager_refresh_and_ensure(*local_entity, enemy_target, enemy_has_los, 180);
+
+    bool pursuing_enemy_goal = bot_navigation_manager_sync_pursuit_target(enemy_target);
+    bot_navigation_manager_update_pursuit_recovery_timer();
+
+    // Set high-priority FSMs before move-target planning to avoid one-frame lag.
+    const BotFsmState pre_move_state = bot_fsm_manager_select_state(
+        *local_player,
+        *local_entity,
+        enemy_target,
+        pursuing_enemy_goal,
+        enemy_has_los,
+        false
+    );
+    bot_fsm_manager_transition_state(pre_move_state);
+
+    update_blind_escape_state(
+        *local_entity,
+        pursuing_enemy_goal ? enemy_target : nullptr,
+        pursuing_enemy_goal && enemy_has_los
+    );
+
+    const float skill_factor = bot_get_skill_factor();
+
+    rf::Vector3 move_target{};
+    bool has_move_target = false;
+    bot_navigation_manager_update_move_target(
+        *local_entity,
+        enemy_target,
+        enemy_has_los,
+        pursuing_enemy_goal,
+        move_target,
+        has_move_target
+    );
+    const BotFsmState resolved_state = bot_fsm_manager_select_state(
+        *local_player,
+        *local_entity,
+        enemy_target,
+        pursuing_enemy_goal,
+        enemy_has_los,
+        has_move_target
+    );
+    if (resolved_state != ctx.state.fsm_state) {
+        bot_fsm_manager_transition_state(resolved_state);
+        bot_navigation_manager_update_move_target(
+            *local_entity,
+            enemy_target,
+            enemy_has_los,
+            pursuing_enemy_goal,
+            move_target,
+            has_move_target
+        );
+    }
+
+    if (ctx.state.active_goal == BotGoalType::none) {
+        // Runtime invariant: movement/combat stages should never run with no active goal.
+        bot_goal_manager_ensure_active(*local_entity, enemy_target, enemy_has_los, 180);
+
+        pursuing_enemy_goal = bot_navigation_manager_sync_pursuit_target(enemy_target);
+        const BotFsmState invariant_state = bot_fsm_manager_select_state(
+            *local_player,
+            *local_entity,
+            enemy_target,
+            pursuing_enemy_goal,
+            enemy_has_los,
+            false
+        );
+        bot_fsm_manager_transition_state(invariant_state);
+        bot_navigation_manager_update_move_target(
+            *local_entity,
+            enemy_target,
+            enemy_has_los,
+            pursuing_enemy_goal,
+            move_target,
+            has_move_target
+        );
+    }
+
+    bot_nav_update_route_dangers(*local_player, *local_entity);
+
+    const GoalStuckWatchdogAction stuck_watchdog_action =
+        update_goal_stuck_watchdog(*local_entity);
+    if (stuck_watchdog_action != GoalStuckWatchdogAction::none) {
+        reset_position_stall_watchdog();
+        reset_objective_progress_watchdog(true);
+        if (stuck_watchdog_action == GoalStuckWatchdogAction::abandon_goal) {
+            bot_goal_manager_force_refresh_and_ensure(*local_entity, enemy_target, enemy_has_los, 180);
+        }
+
+        pursuing_enemy_goal = bot_navigation_manager_sync_pursuit_target(enemy_target);
+        const BotFsmState watchdog_state = bot_fsm_manager_select_state(
+            *local_player,
+            *local_entity,
+            enemy_target,
+            pursuing_enemy_goal,
+            enemy_has_los,
+            false
+        );
+        bot_fsm_manager_transition_state(watchdog_state);
+        bot_navigation_manager_update_move_target(
+            *local_entity,
+            enemy_target,
+            enemy_has_los,
+            pursuing_enemy_goal,
+            move_target,
+            has_move_target
+        );
+    }
+
+    const PositionStallWatchdogAction position_stall_action =
+        update_position_stall_watchdog(
+            *local_entity,
+            has_move_target,
+            pursuing_enemy_goal,
+            enemy_has_los
+        );
+    if (position_stall_action != PositionStallWatchdogAction::none) {
+        if (position_stall_action == PositionStallWatchdogAction::abandon_goal) {
+            reset_goal_stuck_watchdog(true);
+            reset_no_move_target_watchdog();
+            reset_objective_progress_watchdog(true);
+            bot_goal_manager_force_refresh_and_ensure(*local_entity, enemy_target, enemy_has_los, 180);
+        }
+        pursuing_enemy_goal = bot_navigation_manager_sync_pursuit_target(enemy_target);
+        const BotFsmState stall_watchdog_state = bot_fsm_manager_select_state(
+            *local_player,
+            *local_entity,
+            enemy_target,
+            pursuing_enemy_goal,
+            enemy_has_los,
+            false
+        );
+        bot_fsm_manager_transition_state(stall_watchdog_state);
+        bot_navigation_manager_update_move_target(
+            *local_entity,
+            enemy_target,
+            enemy_has_los,
+            pursuing_enemy_goal,
+            move_target,
+            has_move_target
+        );
+    }
+
+    if (has_move_target) {
+        reset_no_move_target_watchdog();
+    }
+    else if (bot_fsm_state_should_have_move_target(
+                 ctx.state.fsm_state,
+                 pursuing_enemy_goal,
+                 enemy_has_los)) {
+        if (!ctx.state.no_move_target_watchdog_timer.valid()) {
+            ctx.state.no_move_target_watchdog_timer.set(kNoMoveTargetWatchdogMs);
+        }
+        else if (ctx.state.no_move_target_watchdog_timer.elapsed()) {
+            ++ctx.state.no_move_target_watchdog_retries;
+            ctx.state.no_move_target_watchdog_timer.set(kNoMoveTargetWatchdogMs);
+            bot_internal_set_last_heading_change_reason("no_move_target_reroute");
+
+            const int avoid_waypoint =
+                ctx.state.goal_target_waypoint > 0
+                    ? ctx.state.goal_target_waypoint
+                    : ctx.state.waypoint_goal;
+            bot_internal_start_recovery_anchor_reroute(*local_entity, avoid_waypoint);
+            bot_navigation_manager_update_move_target(
+                *local_entity,
+                enemy_target,
+                enemy_has_los,
+                pursuing_enemy_goal,
+                move_target,
+                has_move_target
+            );
+
+            if (!has_move_target
+                && ctx.state.no_move_target_watchdog_retries >= kNoMoveTargetWatchdogRetryLimit) {
+                if (g_alpine_game_config.dbg_bot) {
+                    xlog::warn(
+                        "Bot no-move watchdog: clearing stalled goal={} fsm={} handle={} id={} waypoint={}",
+                        static_cast<int>(ctx.state.active_goal),
+                        static_cast<int>(ctx.state.fsm_state),
+                        ctx.state.goal_target_handle,
+                        ctx.state.goal_target_identifier,
+                        ctx.state.goal_target_waypoint
+                    );
+                }
+
+                const BotGoalType stalled_goal = ctx.state.active_goal;
+                const int stalled_handle = ctx.state.goal_target_handle;
+                bot_vehicle_note_goal_abandoned("no-move watchdog");
+                bot_memory_manager_note_failed_goal_target(
+                    stalled_goal,
+                    stalled_handle,
+                    kFailedItemGoalCooldownMs
+                );
+
+                bot_state_set_roam_fallback_goal(220);
+                ctx.state.eliminate_target_reacquire_timer.invalidate();
+                bot_state_clear_waypoint_route(true, true, false);
+                bot_internal_set_last_heading_change_reason("no_move_target_goal_reset");
+                reset_goal_stuck_watchdog(true);
+                reset_no_move_target_watchdog();
+                reset_position_stall_watchdog();
+                reset_objective_progress_watchdog(true);
+
+                bot_goal_manager_force_refresh_and_ensure(*local_entity, enemy_target, enemy_has_los, 180);
+                pursuing_enemy_goal = bot_navigation_manager_sync_pursuit_target(enemy_target);
+                const BotFsmState no_move_watchdog_state = bot_fsm_manager_select_state(
+                    *local_player,
+                    *local_entity,
+                    enemy_target,
+                    pursuing_enemy_goal,
+                    enemy_has_los,
+                    false
+                );
+                bot_fsm_manager_transition_state(no_move_watchdog_state);
+                bot_navigation_manager_update_move_target(
+                    *local_entity,
+                    enemy_target,
+                    enemy_has_los,
+                    pursuing_enemy_goal,
+                    move_target,
+                    has_move_target
+                );
+            }
+
+            if (has_move_target) {
+                reset_no_move_target_watchdog();
+            }
+        }
+    }
+    else {
+        reset_no_move_target_watchdog();
+    }
+
+    const ObjectiveProgressWatchdogAction objective_progress_action =
+        update_objective_progress_watchdog(
+            *local_entity,
+            enemy_target,
+            enemy_has_los,
+            pursuing_enemy_goal,
+            combat_lock_expired
+        );
+    if (objective_progress_action != ObjectiveProgressWatchdogAction::none) {
+        reset_goal_stuck_watchdog(true);
+        reset_no_move_target_watchdog();
+        reset_position_stall_watchdog();
+        if (objective_progress_action == ObjectiveProgressWatchdogAction::abandon_goal) {
+            bot_goal_manager_force_refresh_and_ensure(*local_entity, enemy_target, enemy_has_los, 180);
+        }
+
+        pursuing_enemy_goal = bot_navigation_manager_sync_pursuit_target(enemy_target);
+        const BotFsmState objective_watchdog_state = bot_fsm_manager_select_state(
+            *local_player,
+            *local_entity,
+            enemy_target,
+            pursuing_enemy_goal,
+            enemy_has_los,
+            false
+        );
+        bot_fsm_manager_transition_state(objective_watchdog_state);
+        bot_navigation_manager_update_move_target(
+            *local_entity,
+            enemy_target,
+            enemy_has_los,
+            pursuing_enemy_goal,
+            move_target,
+            has_move_target
+        );
+    }
+
+    const GlobalFailsafeWatchdogAction global_failsafe_action =
+        update_global_failsafe_watchdog(
+            *local_entity,
+            enemy_target,
+            enemy_has_los,
+            pursuing_enemy_goal,
+            has_move_target,
+            bot_aim_dir,
+            combat_lock_expired
+        );
+    if (global_failsafe_action != GlobalFailsafeWatchdogAction::none) {
+        reset_goal_stuck_watchdog(true);
+        reset_no_move_target_watchdog();
+        reset_position_stall_watchdog();
+        reset_objective_progress_watchdog(true);
+
+        bot_goal_manager_force_refresh_and_ensure(*local_entity, enemy_target, enemy_has_los, 180);
+        pursuing_enemy_goal = bot_navigation_manager_sync_pursuit_target(enemy_target);
+        const BotFsmState global_failsafe_state = bot_fsm_manager_select_state(
+            *local_player,
+            *local_entity,
+            enemy_target,
+            pursuing_enemy_goal,
+            enemy_has_los,
+            false
+        );
+        bot_fsm_manager_transition_state(global_failsafe_state);
+        bot_navigation_manager_update_move_target(
+            *local_entity,
+            enemy_target,
+            enemy_has_los,
+            pursuing_enemy_goal,
+            move_target,
+            has_move_target
+        );
+    }
+
+    if (!ctx.is_server_bot) {
+        update_bot_status_hud(ctx);
+    }
+    update_bot_status_console(
+        ctx,
+        *local_entity,
+        enemy_target,
+        enemy_has_los,
+        pursuing_enemy_goal,
+        has_move_target,
+        move_target
+    );
+
+    bot_combat_manager_process_frame(
+        *local_player,
+        *local_entity,
+        enemy_target,
+        enemy_has_los,
+        skill_factor,
+        has_move_target,
+        move_target
+    );
+
+    if (!has_move_target) {
+        return;
+    }
+
+    bot_process_movement(
+        *local_player,
+        *local_entity,
+        move_target,
+        pursuing_enemy_goal,
+        enemy_has_los,
+        skill_factor
+    );
+}

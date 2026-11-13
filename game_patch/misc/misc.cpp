@@ -16,11 +16,14 @@
 #include "alpine_options.h"
 #include "alpine_settings.h"
 #include "misc.h"
+#include "string.h"
 #include "level.h"
 #include "../sound/sound.h"
 #include "../os/console.h"
 #include "../main/main.h"
 #include "../multi/multi.h"
+#include "../multi/demo/demo.h"
+#include "../multi/demo/demo_browser.h"
 #include "../multi/server.h"
 #include "../rf/gr/gr.h"
 #include "../rf/player/player.h"
@@ -29,10 +32,17 @@
 #include "../rf/os/os.h"
 #include "../rf/misc.h"
 #include "../rf/parse.h"
+#include "../rf/geometry.h"
 #include "../rf/vmesh.h"
 #include "../rf/level.h"
+#include "../rf/localize.h"
 #include "../rf/file/file.h"
 #include "../object/object.h"
+#include "../fflink/afstats_client.h"
+#include "waypoints.h"
+#include "settings_registry.h"
+#include "../ui/extras_menu.h"
+#include "../ui/settings_menu.h"
 
 void achievements_apply_patch();
 void apply_main_menu_patches();
@@ -46,6 +56,7 @@ void destruction_do_patch();
 void camera_do_patch();
 void side_scroller_do_patch();
 void ui_apply_patch();
+void vote_panel_apply_patch();
 void game_apply_patch();
 void character_apply_patch();
 void level_apply_patch();
@@ -59,8 +70,10 @@ struct JoinMpGameData
 
 bool g_in_mp_game = false;
 bool g_jump_to_multi_server_list = false;
+bool g_jump_to_demo_browser = false;
 std::optional<JoinMpGameData> g_join_mp_game_seq_data;
 std::optional<std::string> g_levelm_filename;
+std::optional<rf::NetGameType> g_levelm_game_type;
 std::optional<rf::NetGameType> g_local_pending_game_type; // used for pending gt received from server. I don't like this being here, todo: refactor
 std::optional<int> g_local_pending_win_condition;
 
@@ -93,6 +106,11 @@ bool rfl_version_minimum(int check_version)
     else {
         return false;
     }
+}
+
+bool level_rfl_version_at_least(int check_version)
+{
+    return rf::level.version >= check_version;
 }
 
 // check if we're currently in an Alpine level
@@ -128,16 +146,22 @@ void set_jump_to_multi_server_list(bool jump)
     g_jump_to_multi_server_list = jump;
 }
 
+void set_jump_to_demo_browser(bool jump)
+{
+    g_jump_to_demo_browser = jump;
+}
+
 void start_join_multi_game_sequence(const rf::NetAddr& addr, const std::string& password)
 {
     g_jump_to_multi_server_list = true;
     g_join_mp_game_seq_data = {JoinMpGameData{addr, password}};
 }
 
-void start_levelm_load_sequence(std::string filename)
+void start_levelm_load_sequence(std::string filename, std::optional<rf::NetGameType> game_type)
 {
     g_jump_to_multi_server_list = true;
     g_levelm_filename = filename;
+    g_levelm_game_type = game_type;
 }
 
 bool multi_join_game(const rf::NetAddr& addr, const std::string& password)
@@ -156,56 +180,150 @@ bool multi_join_game(const rf::NetAddr& addr, const std::string& password)
     return true;
 }
 
-FunHook<void(int, int)> rf_init_state_hook{
-    0x004B1AC0,
-    [](int state, int old_state) {
-        rf_init_state_hook.call_target(state, old_state);
-        xlog::trace("state {} old_state {} g_jump_to_multi_server_list {}", state, old_state, g_jump_to_multi_server_list);
+FunHook<void(rf::GameState, rf::GameState, bool)> rf_close_state_hook{
+    0x004B1BF0,
+    [] (const rf::GameState state, const rf::GameState new_state, const bool immediately) {
+        const bool discarded = immediately || !rf::gameseq_pending_push;
+        if (discarded
+            && (state == rf::GS_MULTI_LEVEL_DOWNLOAD
+                || state == rf::GS_MULTI_LIMBO_JUST_JOINED
+                || state == rf::GS_MULTI_LIMBO))
+        {
+            g_gameseq_defer_new_level = false;
+        }
 
-        bool exiting_game = state == rf::GS_MAIN_MENU &&
-            (old_state == rf::GS_END_GAME || old_state == rf::GS_NEW_LEVEL);
+        rf_close_state_hook.call_target(state, new_state, immediately);
+    }
+};
+
+// The stock inits of the menus Alpine draws itself would build panels that are never shown.
+static bool enter_alpine_menu(rf::GameState state)
+{
+    if (legacy_menus_enabled()) {
+        return false;
+    }
+    if (state == rf::GS_OPTIONS_MENU) {
+        settings_menu_enter();
+        return true;
+    }
+    if (state == rf::GS_EXTRAS_MENU) {
+        extras_menu_enter();
+        return true;
+    }
+    return false;
+}
+
+FunHook<void(rf::GameState, rf::GameState)> rf_init_state_hook{
+    0x004B1AC0,
+    [] (rf::GameState state, rf::GameState old_state) {
+        if (enter_alpine_menu(state)) {
+            return;
+        }
+
+        rf_init_state_hook.call_target(state, old_state);
+
+        xlog::trace(
+            "state: {}, old_state: {}, g_jump_to_multi_server_list: {}",
+            std::to_underlying(state),
+            std::to_underlying(old_state),
+            g_jump_to_multi_server_list
+        );
+
+        const bool exiting_game = state == rf::GS_MAIN_MENU
+            && (old_state == rf::GS_END_GAME || old_state == rf::GS_NEW_LEVEL);
         if (exiting_game && g_in_mp_game) {
             g_in_mp_game = false;
-            g_jump_to_multi_server_list = true;
-        }
-
-        if (state == rf::GS_MAIN_MENU && g_jump_to_multi_server_list) {
-            xlog::trace("jump to mp menu!");
-            set_sound_enabled(false);
-            AddrCaller{0x00443C20}.c_call(); // open_multi_menu
-            old_state = state;
-            state = rf::gameseq_process_deferred_change();
-            rf_init_state_hook.call_target(state, old_state);
-        }
-        if (state == rf::GS_MULTI_MENU && g_jump_to_multi_server_list) {
-            AddrCaller{0x00448B70}.c_call(); // on_mp_join_game_btn_click
-            old_state = state;
-            state = rf::gameseq_process_deferred_change();
-            rf_init_state_hook.call_target(state, old_state);
-        }
-        if (state == rf::GS_MULTI_SERVER_LIST && g_jump_to_multi_server_list) {
-            g_jump_to_multi_server_list = false;
-            set_sound_enabled(true);
-
-            if (g_join_mp_game_seq_data) {
-                auto addr = g_join_mp_game_seq_data.value().addr;
-                auto password = g_join_mp_game_seq_data.value().password;
-                g_join_mp_game_seq_data.reset();
-                multi_join_game(addr, password);
-            }
-            else if (g_levelm_filename.has_value()) {
-                start_level_in_multi(g_levelm_filename.value());
-                g_levelm_filename.reset();
+            // Exiting demo playback lands on the demo browser (flag set by the demo
+            // system at teardown) instead of the multiplayer server list
+            if (!g_jump_to_demo_browser) {
+                g_jump_to_multi_server_list = true;
             }
         }
+
+        if (g_jump_to_multi_server_list) {
+            if (state == rf::GS_MAIN_MENU) {
+                xlog::trace("jump to mp menu!");
+                set_sound_enabled(false);
+                AddrCaller{0x00443C20}.c_call(); // open_multi_menu
+                rf::rf_close_state(state, old_state, false);
+                old_state = state;
+                state = rf::gameseq_process_deferred_change();
+                rf_init_state_hook.call_target(state, old_state);
+            }
+
+            if (state == rf::GS_MULTI_MENU) {
+                AddrCaller{0x00448B70}.c_call(); // on_mp_join_game_btn_click
+                rf::rf_close_state(state, old_state, false);
+                old_state = state;
+                state = rf::gameseq_process_deferred_change();
+                rf_init_state_hook.call_target(state, old_state);
+            }
+
+            if (state == rf::GS_MULTI_SERVER_LIST) {
+                g_jump_to_multi_server_list = false;
+                set_sound_enabled(true);
+
+                if (g_join_mp_game_seq_data) {
+                    const rf::NetAddr& addr = g_join_mp_game_seq_data->addr;
+                    const std::string& password = g_join_mp_game_seq_data->password;
+                    g_join_mp_game_seq_data.reset();
+                    multi_join_game(addr, password);
+                } else if (g_levelm_filename.has_value()) {
+                    start_level_in_multi(g_levelm_filename.value(), g_levelm_game_type);
+                    g_levelm_filename.reset();
+                    g_levelm_game_type.reset();
+                }
+            }
+        }
+
+        // Same close-and-advance machinery as the server-list jump above, but landing
+        // on the Extras menu with the demo browser open (demo playback exit)
+        if (g_jump_to_demo_browser) {
+            if (state == rf::GS_MAIN_MENU) {
+                set_sound_enabled(false);
+                // mainmenu_do_open_multi_menu performs this cleanup before leaving a
+                // post-game main menu; mainmenu_open_extras lacks it because the stock
+                // Extras button is never reachable with game state left behind
+                if (!addr_as_ref<bool>(0x0063C11C)) { // mainmenu "game beneath the menu" flag
+                    rf::game_shutdown();
+                }
+                AddrCaller{0x00443C70}.c_call(); // mainmenu_open_extras
+                rf::rf_close_state(state, old_state, false);
+                old_state = state;
+                state = rf::gameseq_process_deferred_change();
+                if (!enter_alpine_menu(state)) {
+                    rf_init_state_hook.call_target(state, old_state);
+                }
+            }
+
+            if (state == rf::GS_EXTRAS_MENU) {
+                g_jump_to_demo_browser = false;
+                set_sound_enabled(true);
+                demo_browser_open();
+            }
+        }
+
+        // Deferred demo-playback restart (backward seek) once a menu state is reached
+        demo_playback_on_state_init(std::to_underlying(state));
     },
 };
 
 FunHook<bool(int)> rf_state_is_closed_hook{
     0x004B1DD0,
     [](int state) {
-        if (g_jump_to_multi_server_list)
+        const bool alpine_options = state == rf::GS_OPTIONS_MENU && !legacy_menus_enabled();
+        if (g_jump_to_multi_server_list || g_jump_to_demo_browser) {
+            if (alpine_options) {
+                settings_menu_abandon();
+            }
             return true;
+        }
+        if (alpine_options) {
+            return settings_menu_is_closed();
+        }
+        if (state == rf::GS_EXTRAS_MENU && !legacy_menus_enabled()) {
+            return extras_menu_is_closed();
+        }
         return rf_state_is_closed_hook.call_target(state);
     },
 };
@@ -215,7 +333,8 @@ FunHook<void()> multi_after_players_packet_hook{
     []() {
         multi_after_players_packet_hook.call_target();
         g_in_mp_game = true;
-        mp_send_handicap_request(false);
+        mp_send_handicap_request(true);
+        fflink::afstats_client_on_entered_game();
     },
 };
 
@@ -336,6 +455,88 @@ CodeInjection emitters_tbl_buffer_overflow_fix{
     },
 };
 
+// v3d/v3m/v3c mesh parser hardening
+// Cap the v3d top-level element counts so count*element_size cannot overflow 32 bits and
+// yield an undersized allocation.
+CodeInjection v3d_element_count_overflow_fix{
+    0x0053BA22,
+    [](auto& regs) {
+        constexpr int max_count = 0x800000; // 8,388,608 — headroom for high-poly meshes
+        const uintptr_t v3d = addr_as_ref<uintptr_t>(regs.ebp - 0x1D4);
+        for (int off : {0x48, 0x68, 0x70, 0x80, 0x78, 0x58, 0x60}) {
+            if (addr_as_ref<int>(v3d + off) > max_count) {
+                xlog::warn("Rejecting v3d mesh: element count at +0x{:x} exceeds {} (possible integer overflow)", off, max_count);
+                regs.eip = 0x0053B8F2;
+                return;
+            }
+        }
+    },
+};
+
+// A mesh with more SUBM chunks than declared overflows the array.
+CodeInjection v3d_submesh_count_overflow_fix{
+    0x0053C025,
+    [](auto& regs) {
+        const uintptr_t v3d = addr_as_ref<uintptr_t>(regs.ebp - 0x1D4);
+        const int submesh_index = addr_as_ref<int>(regs.ebp - 0x20);
+        const int num_meshes = addr_as_ref<int>(v3d + 0x48);
+        if (submesh_index >= num_meshes) {
+            xlog::warn("Truncating v3d mesh: more SUBM chunks than declared num_meshes ({})", num_meshes);
+            regs.eip = 0x0053C0BE;
+        }
+    },
+};
+
+CodeInjection v3d_csphere_count_overflow_fix{
+    0x0053C082,
+    [](auto& regs) {
+        const uintptr_t v3d = addr_as_ref<uintptr_t>(regs.ebp - 0x1D4);
+        const int csphere_index = addr_as_ref<int>(regs.ebp - 0x1C);
+        const int num_cspheres = addr_as_ref<int>(v3d + 0x60);
+        if (csphere_index >= num_cspheres) {
+            xlog::warn("Truncating v3d mesh: more CSPH chunks than declared num_cspheres ({})", num_cspheres);
+            regs.esp += 4;
+            regs.eip = 0x0053C0BE;
+        }
+    },
+};
+
+FunHook<int(int, void*, unsigned*)> vif_chunk_reader_hook{
+    0x00569920,
+    [](int param_1, void* param_2, unsigned* param_3) -> int {
+        const unsigned num_faces = static_cast<unsigned short>(param_3[2]);
+        const unsigned data_block_size = param_3[3];
+        if (static_cast<uint64_t>(num_faces) * 0x38 > data_block_size) {
+            xlog::warn("Rejecting mesh chunk: num_faces {} * 0x38 exceeds data_block_size {}", num_faces, data_block_size);
+            return 0;
+        }
+        return vif_chunk_reader_hook.call_target(param_1, param_2, param_3);
+    },
+};
+
+CodeInjection vif_chunk_tex_count_overflow_fix{
+    0x00569C79,
+    [](auto& regs) {
+        auto& num_textures = addr_as_ref<int>(regs.ebp + 0x3C);
+        if (num_textures > 7) {
+            xlog::warn("Clamping mesh texture count {} to 7", num_textures);
+            num_textures = 7;
+        }
+    },
+};
+
+// A .vfx ribbon (CHNE) chunk's vertices are copied into a 16-entry stack buffer when drawn (0x0053EF90).
+CodeInjection vfx_ribbon_vertex_count_overflow_fix{
+    0x0053E53F,
+    [](auto& regs) {
+        const int num_vertices = regs.eax;
+        if (num_vertices < 0 || num_vertices > 16) {
+            xlog::warn("Clamping vfx ribbon vertex count {} to 16", num_vertices);
+            regs.eax = std::clamp(num_vertices, 0, 16);
+        }
+    },
+};
+
 FunHook<void(const char*, int)> lcl_add_message_bof_fix{
     0x004B0720,
     [](const char* str, int id) {
@@ -349,11 +550,22 @@ FunHook<void(const char*, int)> lcl_add_message_bof_fix{
     },
 };
 
+// stock strings.tbl has no entry 889, used as the left_game reason 6 suffix
+FunHook<void(int)> lcl_init_missing_string_fix{
+    0x004B08E0,
+    [](int lang_id) {
+        lcl_init_missing_string_fix.call_target(lang_id);
+        if (!rf::strings::array[889]) {
+            static char timed_out_joining[] = " timed out joining the game";
+            const_cast<char*&>(rf::strings::array[889]) = timed_out_joining;
+        }
+    },
+};
+
 CodeInjection glass_shard_level_init_fix{
     0x00435A90,
     []() {
-        auto glass_shard_level_init = addr_as_ref<void()>(0x00490F60);
-        glass_shard_level_init();
+        rf::glass_shard_level_init();
     },
 };
 
@@ -396,10 +608,63 @@ CodeInjection explosion_crash_fix{
     },
 };
 
+CodeInjection camera_get_pos_null_crash_fix{
+    0x0040D760,
+    [](auto& regs) {
+        uintptr_t cp = *reinterpret_cast<uintptr_t*>(regs.esp + 8);
+        if (cp == 0) {
+            regs.eip = 0x0040D779;
+        }
+    },
+};
+
+CodeInjection camera_get_orient_null_crash_fix{
+    0x0040D780,
+    [](auto& regs) {
+        uintptr_t cp = *reinterpret_cast<uintptr_t*>(regs.esp + 8);
+        if (cp == 0) {
+            regs.eip = 0x0040D79C;
+        }
+    },
+};
+
+CodeInjection camera_set_pos_null_crash_fix{
+    0x0040D7A0,
+    [](auto& regs) {
+        uintptr_t cp = *reinterpret_cast<uintptr_t*>(regs.esp + 4);
+        if (cp == 0) {
+            regs.eip = 0x0040D7D5;
+        }
+    },
+};
+
+CodeInjection camera_set_orient_null_crash_fix{
+    0x0040D7E0,
+    [](auto& regs) {
+        uintptr_t cp = *reinterpret_cast<uintptr_t*>(regs.esp + 4);
+        if (cp == 0) {
+            regs.eip = 0x0040D813;
+        }
+    },
+};
+
 CodeInjection vfile_read_stack_corruption_fix{
     0x0052D0E0,
     [](auto& regs) {
         regs.esi = regs.eax;
+    },
+};
+
+FunHook<bool __fastcall(rf::File*, int, const char*, int)> file_find_ext_tail_guard_hook{
+    0x00523CE0,
+    [](rf::File* this_, int edx, const char* filename, int path_id) FASTCALL_LAMBDA -> bool {
+        if (filename) {
+            const char* dot = std::strrchr(filename, '.');
+            if (dot && std::strlen(dot) > max_file_ext_tail) {
+                return false;
+            }
+        }
+        return file_find_ext_tail_guard_hook.call_target(this_, edx, filename, path_id);
     },
 };
 
@@ -437,6 +702,8 @@ CallHook level_init_pre_console_output_hook{
                         auto& server_info = get_af_server_info_mutable().value();
                         switch (rf::netgame.type) {
                         case rf::NetGameType::NG_TYPE_CTF:
+                        case rf::NetGameType::NG_TYPE_SAL:
+                        case rf::NetGameType::NG_TYPE_SCAV:
                             rf::netgame.max_captures = g_local_pending_win_condition.value();
                             break;
                         case rf::NetGameType::NG_TYPE_KOTH:
@@ -447,6 +714,7 @@ CallHook level_init_pre_console_output_hook{
                             break;
                         case rf::NetGameType::NG_TYPE_ESC:
                         case rf::NetGameType::NG_TYPE_REV:
+                        case rf::NetGameType::NG_TYPE_PAY:
                             break;
                         case rf::NetGameType::NG_TYPE_RUN:
                             break;
@@ -488,13 +756,6 @@ CodeInjection level_read_header_patch{
     }
 };
 
-CodeInjection level_read_geometry_header_patch{
-    0x00461A62, [](auto& regs) {
-
-        write_mem<float>(0x00646018, 1120403456.0f);
-    }
-};
-
 CodeInjection static_bomb_code_patch{
     0x0043B4C7,
     [](auto& regs) {
@@ -515,7 +776,7 @@ CodeInjection static_bomb_code_patch{
 ConsoleCommand2 static_bomb_code_cmd{
     "sp_staticbombcode",
     []() {
-        g_alpine_game_config.static_bomb_code = !g_alpine_game_config.static_bomb_code;
+        setting_console_set("static_bomb_code", "toggle");
         rf::console::print("Static bomb code is {}", g_alpine_game_config.static_bomb_code ? "enabled" : "disabled");
     },
     "Toggle bomb code between randomized (default) and static.",
@@ -524,14 +785,33 @@ ConsoleCommand2 static_bomb_code_cmd{
 ConsoleCommand2 geo_chunk_physics_cmd{
     "sp_geochunkphysics",
     []() {
-        g_alpine_game_config.geo_chunk_physics = !g_alpine_game_config.geo_chunk_physics;
+        setting_console_set("geo_chunk_physics", "toggle");
         rf::console::print("GeoMod chunk physics is {}", g_alpine_game_config.geo_chunk_physics ? "enabled" : "disabled");
     },
     "Toggle whether isolated geomod chunks fall as physics objects or disappear.",
 };
 
+void apply_reduced_speed_in_background()
+{
+    // Stock sleeps a second per frame while the window is in the background unless this JNZ skips it.
+    // Headless bot clients always bypass the throttle to keep net/sim stable.
+    const bool throttle = g_alpine_game_config.reduced_speed_in_background && !is_headless_mode();
+    write_mem<u8>(0x004353CC, throttle ? asm_opcodes::jnz_rel_short : asm_opcodes::jmp_rel_short);
+}
+
+// Latched once: the launcher config is reloaded mid-session (FactionFiles link), and the menus in
+// use must not change under a running game.
+static bool g_legacy_menus = false;
+
+bool legacy_menus_enabled()
+{
+    return g_legacy_menus;
+}
+
 void misc_init()
 {
+    g_legacy_menus = g_game_config.legacy_menus;
+
     // Static bomb code
     static_bomb_code_patch.install();
     static_bomb_code_cmd.register_cmd();
@@ -539,20 +819,9 @@ void misc_init()
     // GeoMod chunk physics
     geo_chunk_physics_cmd.register_cmd();
 
-    //gr_set_far_clip_hook.install();
-    //AsmWriter{0x0051806F}.jmp(0x00518083); // stops far clip from derendering geometry covered by fog, buggy
-
     // Allow loading of rfl files with supported AF-specific versions
     level_read_header_patch.install();
     AsmWriter{0x004461BF}.jmp(0x00446200); // load Level Name from all rfls (any version) on listen server create panel
-
-
-    // fog experimentation - attempting to stop fp weapon cutoff. Success when using static values but not when rfl has specified values
-    //fog_near_clip_patch.install();
-    //gr_fog_set_hook.install();
-    //AsmWriter{0x00461A5C}.nop(6);
-    //level_read_geometry_header_patch.install();
-    //AsmWriter(0x00461A5C).nop(6);
 
     // Display a more informative message to user if they try to load an unsupported rfl
     static char new_unsupported_version_message[] =
@@ -588,6 +857,8 @@ void misc_init()
     // It is not visible in game because other things are drawn over it
     AsmWriter(0x0041AE47, 0x0041AE4C).nop();
 
+    rf_close_state_hook.install();
+
     // Open server list menu instead of main menu when leaving multiplayer game
     rf_init_state_hook.install();
     rf_state_is_closed_hook.install();
@@ -613,6 +884,15 @@ void misc_init()
     pc_multi_tbl_buffer_overflow_fix.install();
     emitters_tbl_buffer_overflow_fix.install();
     lcl_add_message_bof_fix.install();
+    lcl_init_missing_string_fix.install();
+
+    // Fix heap overflows in the stock v3d/v3m/v3c mesh parser
+    v3d_element_count_overflow_fix.install();
+    v3d_submesh_count_overflow_fix.install();
+    v3d_csphere_count_overflow_fix.install();
+    vif_chunk_reader_hook.install();
+    vif_chunk_tex_count_overflow_fix.install();
+    vfx_ribbon_vertex_count_overflow_fix.install();
 
     // Fix killed glass restoration from a save file
     AsmWriter(0x0043604A).nop(5);
@@ -627,13 +907,19 @@ void misc_init()
     // Fix crash caused by explosion near dying player-controlled entity (entity->local_player is null)
     explosion_crash_fix.install();
 
-    // If speed reduction in background is not wanted disable that code in RF
-    if (!g_game_config.reduced_speed_in_background) {
-        write_mem<u8>(0x004353CC, asm_opcodes::jmp_rel_short);
-    }
+    // Fix crash in camera functions when Camera pointer is null
+    camera_get_pos_null_crash_fix.install();
+    camera_get_orient_null_crash_fix.install();
+    camera_set_pos_null_crash_fix.install();
+    camera_set_orient_null_crash_fix.install();
+
+    apply_reduced_speed_in_background();
 
     // Fix stack corruption when packfile has lower size than expected
     vfile_read_stack_corruption_fix.install();
+
+    // Reject over-long filename extensions that would overflow File::find's stack buffer
+    file_find_ext_tail_guard_hook.install();
 
     // Improve parse error message
     // For some reason RF replaces all characters with code lower than 0x20 (space) by character with code 0x16 (SYN)
@@ -669,7 +955,10 @@ void misc_init()
     camera_do_patch();
     side_scroller_do_patch();
     ui_apply_patch();
+    vote_panel_apply_patch();
     game_apply_patch();
     character_apply_patch();
     level_apply_patch();
+    misc_string_apply_patch();
+    waypoints_init();
 }

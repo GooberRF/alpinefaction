@@ -1,5 +1,9 @@
 #pragma once
 
+#include <string>
+#include <string_view>
+#include <unordered_set>
+
 // Forward declarations
 namespace rf
 {
@@ -18,6 +22,70 @@ void disable_sound_before_cutscene_skip();
 void enable_sound_after_cutscene_skip();
 void set_sound_enabled(bool enabled);
 int get_custom_sound_id(int custom_id);
-void play_local_sound_2d(uint16_t sound_id, int group, float volume);
+bool is_valid_custom_sound_id(int custom_id);
+int get_spray_sound_id();
+int get_award_sound_id();
+int get_jeep_horn_sound_id();
+// A snd_play/snd_play_3d instance that is still playing its own sound; stock snd_is_playing answers for
+// whatever has since reused the slot.
+bool snd_instance_is_playing(int instance_handle);
+// snd_play_3d looping whatever the sound's record says: a stock file a level may also play once.
+int snd_play_3d_looping(int handle, const rf::Vector3& pos, float volume, int group);
+// Plays a playing instance at ratio times its recorded rate (DirectSound only).
+void snd_instance_set_pitch(int instance_handle, float ratio);
+// Speeds up all sounds but music and snd_play_unscaled ones (DirectSound only); 1 restores normal playback.
+void snd_set_global_rate(float rate);
+// Frees the stretched copies snd_set_global_rate keeps, which permanent sounds would otherwise hold forever
+void snd_clear_global_rate_cache();
+// snd_play unaffected by snd_set_global_rate (interface sounds)
+int snd_play_unscaled(int handle, int group, float pan, float volume);
+// sound_ds.cpp: the DirectSound side of the above
+void snd_ds_set_channel_pitch(int channel, float ratio);
+void snd_ds_set_new_channel_unscaled(bool unscaled);
+void snd_ds_set_global_rate(float rate);
+void snd_ds_clear_stretch_cache();
+int play_local_sound_2d(uint16_t sound_id, int group, float volume);
 void play_local_sound_3d(uint16_t sound_id, rf::Vector3 pos, int group, float volume);
 void play_chat_sound(std::string_view msg, bool is_taunt);
+// Sound files the loading level makes loop (mapname_info.tbl $Looping Sound, RED's Looping checkbox on v306+).
+// Init reverts the previous level's flags and starts from the given lowercase filenames; reset reverts them.
+void snd_level_looping_init(const std::unordered_set<std::string>& filenames);
+void snd_level_looping_add(std::string_view filename);
+void snd_level_looping_reset();
+
+// Named custom sound IDs, keep in sync with the order of entries in gamesound_parse_custom_sounds.
+// Dedicated servers don't load custom sound IDs, so we need to hardcode the refs.
+namespace custom_sound_id
+{
+    constexpr int af_achievement       = 0;
+    constexpr int af_ping_location     = 1;
+    constexpr int af_hit_sound         = 2;
+    constexpr int af_kill_sound        = 3;
+    constexpr int console_large_03     = 4;  // Console_Large_03.wav
+    constexpr int ann_time_expired     = 5;  // MP_ANN_04.wav
+    constexpr int ann_match_over       = 6;  // MP_ANN_06.wav
+    constexpr int ann_five_kills_left  = 7;  // MP_ANN_10.wav
+    constexpr int ann_one_kill_left    = 8;  // MP_ANN_11.wav
+}
+
+// Hardcoded stock sounds.tbl indices
+namespace stock_sound_id
+{
+    constexpr int menu_error           = 2;    // stock menu error beep
+    constexpr int end_voice            = 4;    // end_voice.wav
+    constexpr int beep_01              = 29;   // Beep01.wav
+    constexpr int jolt_01              = 35;   // Jolt_01.wav
+    constexpr int menu_select          = 41;   // menu_select.wav
+    constexpr int panel_highlight      = 42;   // panel_highlight.wav
+    constexpr int panel_button_click   = 43;   // panel_button_click.wav
+    constexpr int checkbox_on          = 44;   // checkbox_on.wav
+    constexpr int checkbox_off         = 45;   // checkbox_off.wav
+    constexpr int menu_slide_in        = 49;   // stock Extras menu slide-in
+    constexpr int bomb_tick            = 55;   // bomb_tick.wav
+    constexpr int flag_capture         = 63;   // Flag_Capture.wav
+    constexpr int flag_pickup          = 64;   // Flag_Pickup.wav
+    constexpr int flag_respawn         = 65;   // Flag_Respawn.wav
+    constexpr int ann_one              = 68;   // MP_ANN-01.wav, followed by "two" to "ten"
+    constexpr int ann_game_over        = 78;   // MP_ANN-GO.wav
+    constexpr int ann_winner           = 80;   // MP_ANN_ALLYOURBASE.wav
+}

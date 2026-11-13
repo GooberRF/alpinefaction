@@ -1,6 +1,8 @@
 #pragma once
 
 #include <patch_common/MemUtils.h>
+#include <algorithm>
+#include <cmath>
 #include <string>
 #include <sstream>
 #include "../bmpman.h"
@@ -42,11 +44,36 @@ namespace rf::gr
             return Color(r, g, b, a);
         }
 
+        static float srgb_to_linear(ubyte v)
+        {
+            return std::pow(v / 255.0f, 2.2f);
+        }
+
+        static ubyte linear_to_srgb(float v)
+        {
+            if (v <= 0.0f) return 0;
+            return static_cast<ubyte>(std::clamp(std::lround(std::pow(v, 1.0f / 2.2f) * 255.0f), 0L, 255L));
+        }
+
+        static Color lerp(const Color& a, const Color& b, float t)
+        {
+            return Color(
+                linear_to_srgb(std::lerp(srgb_to_linear(a.red), srgb_to_linear(b.red), t)),
+                linear_to_srgb(std::lerp(srgb_to_linear(a.green), srgb_to_linear(b.green), t)),
+                linear_to_srgb(std::lerp(srgb_to_linear(a.blue), srgb_to_linear(b.blue), t)),
+                static_cast<ubyte>(std::clamp(std::lround(std::lerp(static_cast<float>(a.alpha), static_cast<float>(b.alpha), t)), 0L, 255L))
+            );
+        }
+
         static Color from_rgb_string(const std::string& rgb_string, ubyte alpha = 255)
         {
+            if (rgb_string.empty()) {
+                return Color(255, 255, 255, alpha);
+            }
+
             // remove < and > if present (for compatibility with format from level properties)
             std::string cleaned_string = rgb_string;
-            if (rgb_string.front() == '<' && rgb_string.back() == '>') {
+            if (cleaned_string.front() == '<' && cleaned_string.back() == '>') {
                 cleaned_string = rgb_string.substr(1, rgb_string.size() - 2);
             }
 
@@ -60,6 +87,7 @@ namespace rf::gr
 
             return Color(values[0], values[1], values[2], alpha);
         }
+
     };
 
     struct BaseVertex
@@ -324,6 +352,7 @@ namespace rf::gr
 
     static auto& screen = addr_as_ref<Screen>(0x017C7BC0);
     static auto& gamma_ramp = addr_as_ref<uint32_t[256]>(0x017C7C68);
+    static auto& gameplay_fov = addr_as_ref<float>(0x0059613C); // horizontal FOV the scene is rendered with
     static auto& default_wfar = addr_as_ref<float>(0x00596140);
     static auto& gamma = addr_as_ref<float>(0x005A445C);
 
@@ -338,6 +367,18 @@ namespace rf::gr
     static auto& bitmap_3d_wrap_mode = addr_as_ref<Mode>(0x017756E4);
     static auto& glow_3d_bitmap_mode = addr_as_ref<Mode>(0x01775B30);
     static auto& glow_3d_poly_no_z_mode = addr_as_ref<Mode>(0x01775B14);
+    static auto& solid_mode = addr_as_ref<Mode>(0x01808328);
+    static auto& solid_alpha_mode = addr_as_ref<Mode>(0x0180832C);
+    static auto& decal_mode = addr_as_ref<Mode>(0x01808318);
+    static auto& decal_tiling_u_mode = addr_as_ref<Mode>(0x0180831C);
+    static auto& decal_tiling_v_mode = addr_as_ref<Mode>(0x0181833C);
+    static auto& decals_enabled = addr_as_ref<bool>(0x005A4458);
+    // The stock modes gr_d3d_render_vfx (0x00553EE0) picks between
+    static auto& vfx_untextured_mode = addr_as_ref<Mode>(0x017C7BB8);
+    static auto& vfx_flag8_mode = addr_as_ref<Mode>(0x01775B10);
+    static auto& vfx_additive_mode = addr_as_ref<Mode>(0x017756B8);
+    static auto& vfx_opaque_mode = addr_as_ref<Mode>(0x01775AEC);
+    static auto& vfx_crossfade_alpha_mode = addr_as_ref<Mode>(0x017C7C64);
 
     static auto& view_matrix = addr_as_ref<Matrix3>(0x018186C8);
     static auto& view_pos = addr_as_ref<Vector3>(0x01818690);
@@ -347,6 +388,9 @@ namespace rf::gr
     static auto& light_base = addr_as_ref<Vector3>(0x01818A28);
     static auto& matrix_scale = addr_as_ref<Vector3>(0x01818B48);
     static auto& one_over_matrix_scale_z = addr_as_ref<float>(0x01818A60);
+    // Cleared by gr_setup_3d (0x00547150) for an orthographic view, in which rotate_vertex gives every
+    // vertex the same depth and compute_vertex_codes skips the near and far planes.
+    static auto& perspective_projection = addr_as_ref<bool>(0x005A4D19);
     static auto& projection_xadd = addr_as_ref<float>(0x01818B54);
     static auto& projection_xmul = addr_as_ref<float>(0x01818B58);
     static auto& projection_yadd = addr_as_ref<float>(0x01818B5C);
@@ -359,7 +403,11 @@ namespace rf::gr
     static auto& set_alpha = addr_as_ref<void(ubyte a)>(0x0050D030);
     static auto& read_backbuffer = addr_as_ref<int(int x, int y, int w, int h, void* buffer)>(0x0050DFF0);
     static auto& clear = addr_as_ref<void()>(0x0050CDF0);
+    static auto& setup_3d = addr_as_ref<void(const Matrix3* orient, const Vector3* pos, float fov, int zbuffer, int z_scale)>(0x00517EB0);
+    static auto& flush = addr_as_ref<void()>(0x0050E4B0);
     static auto& cull_sphere = addr_as_ref<bool(const Vector3& pos, float radius)>(0x005186A0);
+    // Distance from the eye scaled by the projection, as LOD selection (0x0052FA40) compares it
+    static auto& get_apparent_distance_from_camera = addr_as_ref<float(const Vector3& pos)>(0x005182F0);
     static auto& set_texture_mip_filter = addr_as_ref<void(bool linear)>(0x0050E830);
     static auto& lock = addr_as_ref<bool(int bm_handle, int section, LockInfo* lock, LockMode mode)>(0x0050E2E0);
     static auto& unlock = addr_as_ref<void(LockInfo* lock)>(0x0050E310);
@@ -367,6 +415,7 @@ namespace rf::gr
     static auto& get_clip = addr_as_ref<void(int* x, int* y, int* w, int* h)>(0x0050CD80);
     static auto& reset_clip = addr_as_ref<void()>(0x0050CDD0);
     static auto& page_in = addr_as_ref<int(int bm_handle)>(0x0050CE00);
+    static auto& flip = addr_as_ref<void()>(0x0050CE20);
     static auto& mark_texture_dirty = addr_as_ref<int(int bm_handle)>(0x0050D080);
     static auto& tcache_add_ref = addr_as_ref<void(int bm_handle)>(0x0050E850);
     static auto& tcache_remove_ref = addr_as_ref<void(int bm_handle)>(0x0050E870);
@@ -376,6 +425,8 @@ namespace rf::gr
     static auto& tmapper = addr_as_ref<void (int nv, Vertex **verts, TMapperFlags vertex_attributes, Mode mode)>(0x0050DF80);
     static auto& lighting_enabled = addr_as_ref<bool()>(0x004DB8B0);
     static auto& cull_bounding_box = addr_as_ref<bool (const Vector3& mn, const Vector3& mx)>(0x00518750);
+    // Screen rect of the box's projection; false when no part of it is in front of the eye and on screen
+    static auto& project_bounding_box = addr_as_ref<bool(const Vector3& mn, const Vector3& mx, float* left, float* top, float* right, float* bot)>(0x00515D00);
     static auto& poly = addr_as_ref<bool (int num, Vertex **vertices, TMapperFlags vertex_attributes, Mode mode, bool constant_sw, float sw)>(0x005159A0);
     static auto& rotate_vertex = addr_as_ref<ubyte (Vertex *vertex_out, const Vector3* vec_in)>(0x00518360);
     static auto& world_poly = addr_as_ref<bool (int bm_handle, int n_verts, const Vector3* verts, const Vector2* uvs, Mode mode, const Color& color)>(0x00517110);
@@ -384,10 +435,12 @@ namespace rf::gr
     static auto& project_vertex = addr_as_ref<ubyte (Vertex *p)>(0x00518440);
     static auto& show_lightmaps = *reinterpret_cast<bool*>(0x009BB5A4);
     static auto& light_set_ambient = addr_as_ref<void(float r, float g, float b)>(0x004D8CE0);
+    static auto& light_frame_begin = addr_as_ref<void()>(0x004D8050); // empty in the retail build
+    static auto& light_filter_for_camera = addr_as_ref<void()>(0x005174D0);
     static auto& line_arrow = addr_as_ref<void(float x1, float y1, float z1, float x2, float y2, float z2, int r, int g, int b)>(0x00516AD0);
     static auto& cursor_3d = addr_as_ref<void(Vector3* pos, Matrix3* orient, float scale)>(0x00516B10);
     static auto& string_render_into_bitmap = addr_as_ref<void(int x, int y, int bm_handle, const char* s, int font)>(0x005203A0);
-    static auto& string_3d = addr_as_ref<void(Vector3* pos, Matrix3* orient, float scale, const char* string, int font_num, Mode mode)>(0x00520020);
+    static auto& string_3d = addr_as_ref<void(const Vector3* pos, const Matrix3* orient, float scale, const char* string, int font_num, Mode mode)>(0x00520020);
     static auto& bitmap_3d = addr_as_ref<void(Vector3* pos, Matrix3* orient, float scale, Mode mode)>(0x00515B10);
     static auto& bitmap_3d_angle = addr_as_ref<void(Vector3* pos, float angle, float scale, Mode mode)>(0x00515B40);
     static auto& bitmap_3d_angle_wh = addr_as_ref<void(Vector3* pos, float angle, float width, float height, Mode mode)>(0x00555B20);
@@ -433,6 +486,12 @@ namespace rf::gr
     {
         AddrCaller{0x0050D250}.c_call(bm_handle, x, y, w, h, sx, sy, sw, sh, flip_x, flip_y, mode);
     }
+}
+
+namespace rf::gr::d3d
+{
+    // Power of 2 texture enforcement
+    static auto& p2t = addr_as_ref<int>(0x01CFCC18);
 }
 
 namespace rf

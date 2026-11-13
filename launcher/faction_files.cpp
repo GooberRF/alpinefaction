@@ -119,6 +119,33 @@ std::string FactionFilesAFLink::get_extraction_path(const std::string& game_exe_
     return (base_path / "unknown_files").generic_string(); // Fallback path
 }
 
+// Reject ZIP member names that could escape extract_to.
+static bool is_unsafe_zip_member_name(const std::string& name)
+{
+    if (name.empty()) {
+        return true;
+    }
+    if (name[0] == '/' || name[0] == '\\') {
+        return true; // leading separator => absolute
+    }
+    if (name.size() >= 2 && name[1] == ':') {
+        return true; // drive letter
+    }
+    size_t start = 0;
+    while (true) {
+        const size_t sep = name.find_first_of("/\\", start);
+        const size_t end = (sep == std::string::npos) ? name.size() : sep;
+        if (name.compare(start, end - start, "..") == 0) {
+            return true;
+        }
+        if (sep == std::string::npos) {
+            break;
+        }
+        start = sep + 1;
+    }
+    return false;
+}
+
 bool FactionFilesAFLink::extract_zip(const std::string& zip_path, const std::string& extract_to)
 {
     xlog::info("Opening ZIP file for extraction: {}", zip_path);
@@ -149,39 +176,50 @@ bool FactionFilesAFLink::extract_zip(const std::string& zip_path, const std::str
             xlog::error("Failed to get ZIP file info");
             break;
         }
+        // minizip does not NUL-terminate file_name when the stored name length >= the buffer
+        // size; force termination to prevent an out-of-bounds read on the std::string copy below.
+        file_name[sizeof(file_name) - 1] = '\0';
 
         std::string relative_path = file_name; // Preserve directory structure
-        std::string output_path = extract_to + "\\" + relative_path;
 
-        if (relative_path.back() == '/' || relative_path.back() == '\\') {
-            // If entry is a directory, create it
-            std::filesystem::create_directories(output_path);
-            xlog::info("Created directory: {}", output_path);
+        // Reject zip-slip / path traversal (empty, absolute, drive, or ".." components) before
+        // using the member name to build a path on either the directory or file branch.
+        if (is_unsafe_zip_member_name(relative_path)) {
+            xlog::warn("Skipping unsafe ZIP entry: {}", relative_path);
         }
         else {
-            // Ensure parent directories exist
-            std::filesystem::create_directories(std::filesystem::path(output_path).parent_path());
+            std::string output_path = extract_to + "\\" + relative_path;
 
-            // Extract file
-            std::ofstream file(output_path, std::ios_base::binary);
-            if (!file) {
-                xlog::error("Failed to create output file: {}", output_path);
-                break;
+            if (relative_path.back() == '/' || relative_path.back() == '\\') {
+                // If entry is a directory, create it
+                std::filesystem::create_directories(output_path);
+                xlog::info("Created directory: {}", output_path);
             }
+            else {
+                // Ensure parent directories exist
+                std::filesystem::create_directories(std::filesystem::path(output_path).parent_path());
 
-            if (unzOpenCurrentFile(archive) != UNZ_OK) {
-                xlog::error("Failed to open file inside ZIP: {}", relative_path);
-                break;
+                // Extract file
+                std::ofstream file(output_path, std::ios_base::binary);
+                if (!file) {
+                    xlog::error("Failed to create output file: {}", output_path);
+                    break;
+                }
+
+                if (unzOpenCurrentFile(archive) != UNZ_OK) {
+                    xlog::error("Failed to open file inside ZIP: {}", relative_path);
+                    break;
+                }
+
+                int bytesRead;
+                while ((bytesRead = unzReadCurrentFile(archive, buf, sizeof(buf))) > 0) {
+                    file.write(buf, bytesRead);
+                }
+
+                file.close();
+                unzCloseCurrentFile(archive);
+                xlog::info("Extracted file: {}", output_path);
             }
-
-            int bytesRead;
-            while ((bytesRead = unzReadCurrentFile(archive, buf, sizeof(buf))) > 0) {
-                file.write(buf, bytesRead);
-            }
-
-            file.close();
-            unzCloseCurrentFile(archive);
-            xlog::info("Extracted file: {}", output_path);
         }
 
         if (i + 1 < global_info.number_entry) {

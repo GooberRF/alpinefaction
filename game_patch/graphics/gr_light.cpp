@@ -7,6 +7,7 @@
 #include "../rf/gr/gr.h"
 #include "../rf/os/frametime.h"
 #include "../rf/vmesh.h"
+#include "gr.h"
 #include "gr_internal.h"
 #include "../misc/alpine_settings.h"
 
@@ -91,6 +92,18 @@ void explosion_flash_lights_init()
 
 void explosion_flash_lights_level_init()
 {
+    g_active_explosion_flash_lights.clear();
+}
+
+// Mid-level reset (demo seek): the engine light pool is live, so the handles must be released.
+void explosion_flash_lights_destroy_all()
+{
+    for (auto& light : g_active_explosion_flash_lights) {
+        if (light.light_handle > -1
+            && rf::gr::light_get_from_handle(light.light_handle)->type != rf::gr::LT_NONE) {
+            rf::gr::light_delete(light.light_handle, 0);
+        }
+    }
     g_active_explosion_flash_lights.clear();
 }
 

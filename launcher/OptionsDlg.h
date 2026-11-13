@@ -7,9 +7,9 @@
 #include <memory>
 #include <thread>
 #include <atomic>
+#include "OptionsAdvancedDlg.h"
 #include "OptionsDisplayDlg.h"
 #include "OptionsMiscDlg.h"
-#include "OptionsMultiplayerDlg.h"
 
 class OptionsDlg : public CDialog
 {
@@ -32,12 +32,13 @@ private:
     LRESULT OnFFLinkComplete(WPARAM wparam, LPARAM lparam);
     LRESULT OnFFLinkCancelled(WPARAM wparam, LPARAM lparam);
     void InitNestedDialog(CDialog& dlg, int placeholder_id);
+    void ShowAdvancedOptions(bool show);
 
     CToolTip m_tool_tip;
     GameConfig m_conf;
     OptionsDisplayDlg m_display_dlg;
     OptionsMiscDlg m_misc_dlg;
-    OptionsMultiplayerDlg m_multiplayer_dlg;
+    OptionsAdvancedDlg m_advanced_dlg;
 
     // FactionFiles Link
     std::string m_fflink_token;

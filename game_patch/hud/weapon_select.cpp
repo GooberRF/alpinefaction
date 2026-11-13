@@ -122,7 +122,7 @@ void weapon_select_render()
         rf::gr::rect(num_ind_x, num_ind_y, num_ind_w, num_ind_h);
 
         if (weapon_category == selected_cycle_entry.category) {
-            static int weapon_icon_bitmaps[32];
+            static int weapon_icon_bitmaps[rf::max_weapon_types];
             static bool weapon_icon_bitmaps_initialized = false;
             if (!weapon_icon_bitmaps_initialized) {
                 for (auto& bmh : weapon_icon_bitmaps) {

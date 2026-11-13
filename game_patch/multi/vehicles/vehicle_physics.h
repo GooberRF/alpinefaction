@@ -1,0 +1,210 @@
+#pragma once
+
+// No bt* type, allocation or header crosses out of multi/vehicles/physics.
+// Ownership is a PARTITION: a driver's client simulates his own hull, a server every DRIVERLESS
+// synced car, flyer and sub and every hull whose seat-0 occupant it simulates itself (an in-process
+// bot) from that occupant's live input, and a turret - which has no motion to author - nobody.
+
+namespace rf
+{
+    struct Camera;
+    struct Entity;
+    struct GeomodParams;
+    struct GRoom;
+    struct PCollisionOut;
+    struct Vector3;
+}
+
+// collide_linesegment_world plus mover_brush_is_solid: a see-through mover the hulls pass through is
+// skipped. `flags` are rf::CollideFlags.
+bool vphys_collide_solid_segment(const rf::Vector3& a, const rf::Vector3& b, int flags, rf::PCollisionOut& out);
+
+// True means the camera entity is already posed and camera_do_frame must not run (orbit view).
+bool vehicle_physics_camera_do_frame(rf::Camera* camera);
+
+// Change View while seated: flips the driver's or the jeep gunner's third-person setting. False for
+// every other seat, which has no choice (fighter/sub drivers first person, passengers third).
+bool vehicle_physics_camera_toggle_view();
+
+// Whether the local player's current seat is viewed through the orbit camera.
+bool vehicle_physics_camera_local_seat_is_orbit();
+// Whether the local player's seat offers a third-person view to toggle into.
+bool vehicle_physics_camera_local_can_toggle_view();
+
+// A third-person driver's mouse and look keys turn the orbit, not the hull.
+bool vehicle_physics_camera_owns_driver_look();
+
+// 0x0049DE50's look deltas for the local gunner or passenger in the orbit view: they turn the orbit
+// instead, and are replaced by the deltas that put his eye on the camera's aim. False: untouched.
+bool vehicle_physics_camera_take_rider_look(rf::Entity* ep, float& pitch_delta, float& yaw_delta);
+
+// The local third-person APC driver's convergence aim (world, unit); false keeps the rebuilt frame.
+// out_capped: whether the hull limits moved it off the aim point, or the look past them is fading it off.
+bool vehicle_physics_camera_driver_aim(const rf::Entity* vehicle, const rf::Entity* driver,
+                                       rf::Vector3* out_dir, bool* out_capped = nullptr);
+
+// The local first-person APC driver's mouse yaw, which swings his aim off the hull's nose.
+void vehicle_physics_camera_fp_aim_input(const rf::Entity* vehicle, float yaw_delta);
+
+// A new driver, or the local one gone: that hull's held first-person aim goes back to the nose.
+void vehicle_physics_camera_fp_aim_reset(int vehicle_handle);
+
+// Screen offset of the reticle from the view centre; false hides it.
+bool vehicle_physics_camera_reticle_offset(float* out_dx, float* out_dy);
+
+// True while a Bullet body owns this entity's motion, so stock integration must not run for it.
+bool vehicle_physics_drives(const rf::Entity* ep);
+
+// Live velocity of the body the LOCAL player DRIVES; false and `out` untouched if none is held here.
+bool vehicle_physics_driven_velocity(int vehicle_handle, rf::Vector3* out);
+
+// Front-wheel steer angle of the body this machine steers from live input (the local player's, or a
+// server-driven one), in RADIANS, positive toward the hull's right.
+bool vehicle_physics_driven_steer_angle(int vehicle_handle, float* out);
+
+// The same body's held steering position in [-1,1]; out may be null.
+bool vehicle_physics_steer_held(int vehicle_handle, float* out);
+
+// For each hull-local point, its nearest wheel's height above where that wheel sits loaded at rest:
+// from the body this machine simulates, else (allow_probe) one straight-down level cast per point.
+bool vehicle_physics_wheel_offsets(const rf::Entity* ep, const rf::Vector3* points, int num_points,
+                                   bool allow_probe, float* out);
+
+// Creates or destroys the local body to match who is driving; call on every seat change.
+void vehicle_physics_on_seat_change();
+
+// Frame top: lifecycle only. The step runs from a hook on the input read in gameplay_do_frame.
+void vehicle_physics_do_frame();
+
+// The dbg_vphys world-space collision overlay; a no-op unless dbg_vphys is on.
+void vehicle_physics_render_debug();
+
+// geomod_queue_add with the vphys hook stepped over; ONLY for the RF2 smoke replay's landed crater.
+void vehicle_physics_geomod_queue_add_raw(rf::GeomodParams* params);
+
+// A room's face set has ALREADY changed engine-side: marks exactly that room for rebuild.
+void vehicle_physics_notify_room_geometry_changed(rf::GRoom* room);
+
+// True when this CLASS has its DRIVER's eye frame described by the af_vehicle_orient supplement.
+bool vehicle_physics_class_syncs_driver_aim(const rf::Entity* vehicle);
+
+// Holds a world aim direction to what an APC lets its driver aim: within the yaw cap of its nose and the hull's
+// eye pitch limits. False (dir untouched) for any other class or no direction.
+bool vehicle_physics_clamp_driver_aim(const rf::Entity* vehicle, rf::Vector3& dir);
+
+// What a car class's steering and speed loops answer to (vphys_car's apply_car_controls).
+struct VehicleCarTuning
+{
+    float top_speed = 0.0f;       // u/s the engine stops pushing past
+    float brake_accel = 0.0f;     // u/s^2 when throttling against the motion
+    float steer_angle_max = 0.0f; // radians at full lock, standing still
+    float steer_input_gain = 0.0f;
+    float steer_speed_falloff = 0.0f;
+    // Per-axis control signs.
+    float yaw_sign = 1.0f;
+    float thrust_sign = 1.0f;
+};
+// False for a class that is not a car.
+bool vehicle_physics_class_car_tuning(int vdc_class, VehicleCarTuning& out);
+
+// What a flyer's or sub's control loops answer to (vphys_flight's apply_flight_model).
+struct VehicleFlightTuning
+{
+    float top_speed = 0.0f;    // u/s the drag ramp holds the hull at
+    float thrust_accel = 0.0f; // u/s^2 along the nose at full move.z
+    float strafe_accel = 0.0f; // u/s^2 along the side at full move.x
+    float lift_accel = 0.0f;   // u/s^2 world up at full move.y
+    float pitch_rate = 0.0f;   // rad/s at a full pitch command
+    float yaw_rate = 0.0f;     // rad/s at full rot.y
+    float ceiling_band = 0.0f; // how far under the level's flight ceiling a climb is shaped (not for a sub)
+    // Per-axis control signs.
+    float pitch_sign = 1.0f;
+    float yaw_sign = 1.0f;
+    float thrust_sign = 1.0f;
+    float strafe_sign = 1.0f;
+    float lift_sign = 1.0f;
+};
+// False for a class that neither flies nor swims.
+bool vehicle_physics_class_flight_tuning(int vdc_class, VehicleFlightTuning& out);
+
+// Fastest a VehicleDamageClass may legitimately travel (a car's GROUND speed): the cap the post-step
+// enforces on the LIVE tuning. 0 for a class that cannot move.
+float vehicle_physics_class_max_speed(int vdc_class);
+
+// The post-step's clamp, for wire-side checks: non-finite input or an immobile class gives zero.
+void vehicle_physics_clamp_class_velocity(int vdc_class, rf::Vector3& vel);
+
+// The class cap on the WHOLE vector, for what a hull's motion bills or hands on (damage, a rider's
+// launch): a car's separately capped fall speed must not multiply it. Non-finite gives zero.
+rf::Vector3 vehicle_physics_cap_class_speed(int vdc_class, const rf::Vector3& vel);
+
+// The speed the model drives a VehicleDamageClass at, below that cap. 0 for a class that cannot move.
+float vehicle_physics_class_top_speed(int vdc_class);
+
+// 1 + the class restitution: the largest velocity change a contact gives per unit of approach speed.
+float vehicle_physics_class_bounce_gain(int vdc_class);
+
+// The largest velocity change a contact can give this class: its fastest motion, plus the bounce off it.
+float vehicle_physics_class_max_impact_speed(int vdc_class);
+
+// The drown test: the hull ORIGIN below a liquid room's plane, and never the sub.
+bool vphys_hull_submerged(const rf::Entity* ep);
+
+// Ensure a server body for this hull; true means one exists after the call. A null seed_vel seeds from
+// the entity - only the driver's Use-exit must pass a velocity captured first. driven: a server-local
+// driver feeds its ai.ci; false (driverless) coasts it. An existing body is switched, never reseeded.
+bool vehicle_physics_server_ensure(rf::Entity* ep, const rf::Vector3* seed_vel, bool driven = false);
+
+// Destroy the server body for this vehicle; never touches the LOCAL player's driven body.
+void vehicle_physics_server_release(int vehicle_handle);
+
+// `out_asleep` is strictly stronger than "below the speed threshold". False when there is no body.
+bool vehicle_physics_server_state(int vehicle_handle, rf::Vector3* out_pos, float* out_linear_speed,
+                                  float* out_angular_speed, bool* out_asleep);
+
+// Does THIS machine simulate a server body for this hull? The ownership question, asked directly.
+bool vehicle_physics_server_owns(int vehicle_handle);
+
+// The hull box every sweep measures, from the entity alone. Either output may be null.
+void vehicle_physics_entity_hull_box(const rf::Entity* ep, rf::Vector3* out_half,
+                                     rf::Vector3* out_center);
+
+// The radius of a flyer's or sub's physics sphere, which holds its origin this far off any surface; 0 for a
+// wheeled hull or anything the physics does not shape.
+float vehicle_physics_hull_standoff(const rf::Entity* ep);
+
+// How far a corridor must stay clear either side of the path of a hull of this entity type, before it spawns:
+// the standoff sphere for a flyer or sub, the half width for a wheeled hull. 0 for a type the physics does not move.
+float vehicle_physics_type_corridor_radius(int entity_type);
+
+// A hull surface at or within this distance of the level is touching it.
+inline constexpr float vehicle_physics_touch_dist = 0.02f;
+
+struct VehiclePhysicsContact
+{
+    rf::Vector3 point;       // on the surface
+    rf::Vector3 normal;      // out of the surface
+    rf::Vector3 surface_vel; // the surface's own velocity there: a mover's, else zero
+};
+
+// The level, mover and prop surfaces a sphere at center touches in this machine's vehicle physics world - what a
+// hull body of that radius collides with, to vehicle_physics_touch_dist; props exist only around the hulls this
+// machine simulates. One contact per surface, however finely it is split into triangles. Fills at most
+// max_contacts; 0 when there is no world.
+int vehicle_physics_sphere_contacts(const rf::Vector3& center, float radius, VehiclePhysicsContact* out,
+                                    int max_contacts);
+
+// The SERVER body's live velocity; p_data.vel is deliberately zero for one, so it is no source.
+bool vehicle_physics_server_velocity(int vehicle_handle, rf::Vector3* out);
+
+// Not optional before a shove: updateActivationState ZEROES a sleeping body's velocity every step.
+void vehicle_physics_server_wake(int vehicle_handle);
+
+// Change this SERVER body's velocity by `delta_v` world u/s along `dir` (need not be normalized).
+bool vehicle_physics_server_shove(int vehicle_handle, const rf::Vector3& dir, float delta_v);
+
+void vehicle_physics_level_reset();
+// MUST run after the RFL chunk parse - vehicle_physics_level_reset fires before it.
+void vehicle_physics_level_init_post();
+void vehicle_physics_on_multi_shutdown();
+void vehicle_physics_apply_patches();

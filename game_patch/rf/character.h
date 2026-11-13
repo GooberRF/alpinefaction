@@ -25,7 +25,9 @@ namespace rf
 
         bool has_morph_vertices() const
         {
-            return AddrCaller{0x0053A820}.this_call<bool>(this);
+            // Fix null reference crash when referencing unloaded skeletons.
+            const int* morph_data = AddrCaller{0x00539DF0}.this_call<const int*>(this);
+            return morph_data != nullptr && morph_data[7] > 0;
         }
 
         void morph(rf::Vector3 *morphed_vecs, int num_vecs, int time, short *orig_vecs_map, int num_orig_vecs) const
@@ -34,6 +36,51 @@ namespace rf
         }
     };
     static_assert(sizeof(Skeleton) == 0x7C);
+
+    struct SkeletonRotationKey
+    {
+        int time;
+        short rotation[4]; // x, y, z, w
+        char ease_in;
+        char ease_out;
+        short padding;
+    };
+    static_assert(sizeof(SkeletonRotationKey) == 0x10);
+    static_assert(offsetof(SkeletonRotationKey, rotation) == 0x4);
+
+    struct SkeletonBoneTrack
+    {
+        float weight;
+        short num_rotation_keys;
+        short num_position_keys;
+        SkeletonRotationKey rotation_keys[1];
+    };
+    static_assert(offsetof(SkeletonBoneTrack, weight) == 0x0);
+    static_assert(offsetof(SkeletonBoneTrack, num_rotation_keys) == 0x4);
+    static_assert(offsetof(SkeletonBoneTrack, rotation_keys) == 0x8);
+
+    // Skeleton::animation_data: a loaded .rfa. Every offset is relative to this header.
+    struct SkeletonAnimation
+    {
+        int signature;
+        int version;
+        float pos_reduction;
+        float rot_reduction;
+        int start_time;
+        int end_time;
+        int num_bones;
+        int num_morph_vertices;
+        int num_morph_keyframes;
+        int ramp_in_time;
+        int ramp_out_time;
+        Quaternion total_rotation;
+        Vector3 total_translation;
+        int morph_vertex_map_offset;
+        int morph_data_offset;
+        int bone_offsets[1];
+    };
+    static_assert(offsetof(SkeletonAnimation, num_bones) == 0x18);
+    static_assert(offsetof(SkeletonAnimation, bone_offsets) == 0x50);
 
     struct CiAnimInfo
     {
@@ -88,6 +135,9 @@ namespace rf
         int root;
     };
     static_assert(sizeof(Character) == 0x1A58);
+    static_assert(offsetof(Character, flags) == 0x44);
+    static_assert(offsetof(Character, num_bones) == 0x48);
+    static_assert(offsetof(Character, num_tags) == 0x12B8);
 
     struct CharacterInstance
     {
@@ -117,8 +167,20 @@ namespace rf
         CharacterInstance *next;
         CharacterInstance *prev;
     };
+    static_assert(offsetof(CharacterInstance, bone_info) == 0x1394);
+    static_assert(offsetof(CharacterInstance, iteration_counter) == 0x1CF8);
+
+    static auto& base_characters = addr_as_ref<Character[64]>(0x0181BDC0);
 
     static auto& g_fast_animations = addr_as_ref<bool>(0x005A4459);
+
+    // Compute bone_transforms_combined and bone_transforms_final for a CharacterInstance.
+    // RF calls this just before rendering; culled characters never get it called.
+    // __thiscall: ECX=ci, 6 ignored stack args, RET 0x18.
+    static inline void ci_update_bone_transforms(CharacterInstance* ci)
+    {
+        AddrCaller{0x0051BA00}.this_call(ci, 0, 0, 0, 0, 0, 0);
+    }
 
     static auto& skeleton_link_base = addr_as_ref<Skeleton *__cdecl(const char *filename)>(0x00539D00);
     static auto& skeleton_unlink_base = addr_as_ref<void __cdecl(Skeleton *s, bool force_unload)>(0x00539D20);

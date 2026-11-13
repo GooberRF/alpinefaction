@@ -37,6 +37,9 @@ namespace rf::gr::d3d
     static auto& get_texture = addr_as_ref<IDirect3DTexture8*(int bm_handle)>(0x0055D1E0);
     static auto& free_texture = addr_as_ref<void(Texture& tslot)>(0x0055B640);
     static auto& set_state = addr_as_ref<void(Mode)>(0x0054F160);
+    // Pages bm_handle0/1 into texture stages 0/1 (-1 skips a stage), then set_state(mode).
+    static auto& set_state_and_texture = addr_as_ref<void(Mode mode, int bm_handle0, int bm_handle1)>(0x00550850);
+    static auto& get_num_texture_sections = addr_as_ref<int(int bm_handle)>(0x0055CA60);
 
 #if defined(DIRECT3D_VERSION) && DIRECT3D_VERSION == 0x0800
     static auto& d3d = addr_as_ref<IDirect3D8*>(0x01CFCBE0);
@@ -64,6 +67,5 @@ namespace rf::gr::d3d
     static auto& primitive_type = addr_as_ref<D3DPRIMITIVETYPE>(0x01D862A8);
 #endif
     static auto& zm = addr_as_ref<float>(0x005A7DD8);
-    static auto& p2t = addr_as_ref<int>(0x01CFCC18);
     static auto& use_glorad_detail_map = addr_as_ref<bool>(0x01CFCBCC);
 }

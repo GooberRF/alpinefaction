@@ -1,39 +1,29 @@
-# CMake 3.15 is required for CMAKE_MSVC_RUNTIME_LIBRARY.
-cmake_minimum_required(VERSION 3.15)
+# CMake 3.20 is required for `cxx_std_23`.
+cmake_minimum_required(VERSION 3.20)
 project(AlpineFaction)
 
 if(NOT "${CMAKE_SIZEOF_VOID_P}" STREQUAL "4")
-    message(FATAL_ERROR "Only x86 (32 bit) platform is supported!")
+    message(FATAL_ERROR "Only x86 (32-bit) platforms are supported!")
 endif()
 
 set(CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-if(MSVC)
-    add_compile_definitions(
-        _CRT_SECURE_NO_WARNINGS
-        _CRT_SECURE_NO_DEPRECATE
-        _CRT_NONSTDC_NO_DEPRECATE
-        _SCL_SECURE_NO_WARNINGS
-        _USE_MATH_DEFINES
-    )
-endif()
+option(ALPINE_BUILD_PACKFILE "Compile the shaders and build alpinefaction.vpp" ON)
 
-# Set target Windows version to XP SP3
+# Set our target version to Windows 7.
 add_compile_definitions(
-    WINVER=0x0501
-    # needed for PROCESS_DEP_ENABLE on MinGW
     _WIN32_WINNT=0x0601
-    _WIN32_IE=0x0501
-    # needed for GetModuleFileNameEx resolution before Windows 7
-    PSAPI_VERSION=1
+    NTDDI_VERSION=0x06010000
+    WINVER=0x0601
+    _WIN32_IE=0x0800
     ALPINE_FACTION
     "$<$<CONFIG:Debug>:DEBUG>"
 )
 
 if(MSVC)
-    set(CMAKE_EXE_LINKER_FLAGS    "${CMAKE_EXE_LINKER_FLAGS} /MANIFEST:NO")
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /MANIFEST:NO")
     set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} /MANIFEST:NO")
 else()
     # Use static linking
@@ -41,29 +31,40 @@ else()
     set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -static")
 endif()
 
-# Output all 'exe' and 'dll' files into 'bin' directory
+# Output all 'exe' and 'dll' files into 'bin' directory.
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
 if(MSVC)
+    add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
     add_compile_options(/arch:SSE2)
+    # MSBuild compiles a project's sources serially without /MP. Ninja already parallelizes per file.
+    if(CMAKE_GENERATOR MATCHES "Visual Studio")
+        add_compile_options(/MP)
+    endif()
     # Statically link Microsoft's CRT.
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 else()
-    add_compile_options(-msse2)
+    # RF.exe calls our hooks with a 4-byte aligned stack, so GCC must not assume its ABI default
+    # of 16, or aligned locals (Bullet's btVector3/btTransform) get no realignment prologue.
+    add_compile_options(-msse2 -mincoming-stack-boundary=2)
+    # Likewise the 32-bit Windows heap only aligns to 8, as MSVC assumes, so 16-aligned types
+    # (the D3D11 RenderContext) must take the aligned operator new.
+    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-faligned-new=8>)
 endif()
-
-# FIXME
-# if(MSVC)
-#     set(CMAKE_GENERATOR_TOOLSET v141_xp)
-# endif()
 
 # Macros
 
 macro(enable_warnings target)
     if(NOT MSVC)
-        target_compile_options(${target} PRIVATE -Wall -Wextra -Wundef)
+        target_compile_options(${target} PRIVATE
+            -Wall -Wextra -Wundef
+            -Wformat -Wformat-security -Werror=format-security)
     else()
-        target_compile_options(${target} PRIVATE /W3)
+        target_compile_options(${target} PRIVATE
+            /W3
+            /w34100 # Unused parameters.
+            /w34189 # Unused local variables.
+        )
     endif()
 endmacro()
 
@@ -83,6 +84,19 @@ macro(setup_debug_info target)
 endmacro()
 
 add_subdirectory(vendor)
+
+# Pin both charsets for Alpine Faction's own code. Sources are UTF-8; narrow string literals are Windows-1252,
+# because the .vf bitmap fonts are indexed by Windows-1252 byte value and several literals embed those bytes
+# directly (\x95 bullet, \xA6 chat prefix, ...). Without this the ordinary literal encoding follows the build
+# machine's system code page: on a DBCS locale such as 932 those bytes become invalid multi-byte sequences and
+# std::format throws std::format_error at runtime.
+# This is applied AFTER vendor/ so third-party code keeps its own charset settings.
+if(MSVC)
+    add_compile_options(/source-charset:utf-8 /execution-charset:windows-1252)
+else()
+    add_compile_options(-finput-charset=UTF-8 -fexec-charset=WINDOWS-1252)
+endif()
+
 add_subdirectory(launcher_common)
 add_subdirectory(launcher)
 add_subdirectory(common)

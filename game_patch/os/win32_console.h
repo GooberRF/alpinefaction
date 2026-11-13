@@ -8,6 +8,7 @@ namespace rf::gr
 void win32_console_pre_init();
 void win32_console_init();
 void win32_console_close();
+void win32_console_set_forced(bool forced);
 bool win32_console_is_enabled();
 void win32_console_update();
 void win32_console_poll_input();

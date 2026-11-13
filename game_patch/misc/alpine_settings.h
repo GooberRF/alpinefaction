@@ -1,11 +1,24 @@
 #pragma once
 
 #include <algorithm>
+#include <cmath>
+#include <iterator>
+#include <optional>
+#include <common/utils/color-utils.h>
 #include "../rf/os/timestamp.h"
 #include "../hud/hud.h"
 #include "../hud/remote_server_cfg_ui.h"
 
+namespace rf
+{
+    struct Player;
+    struct ControlConfig;
+}
+
 extern bool g_loaded_alpine_settings_file;
+
+// forward declaration (in sprays.cpp)
+int spray_count();
 
 struct AlpineGameSettings
 {
@@ -46,31 +59,39 @@ struct AlpineGameSettings
         scanner_sensitivity_modifier = std::clamp(mod, min_sens_mod, max_sens_mod);
     }
 
+    static constexpr float min_level_sound_volume = 0.0f;
+    static constexpr float max_level_sound_volume = 1.0f;
     float level_sound_volume = 1.0f;
     void set_level_sound_volume(float scale)
     {
-        level_sound_volume = std::clamp(scale, 0.0f, 1.0f);
+        level_sound_volume = std::clamp(scale, min_level_sound_volume, max_level_sound_volume);
     }
 
     // lod settings
     bool multi_no_character_lod = true;
 
+    static constexpr float min_entity_sim_distance = 1.0f;
+    static constexpr float max_entity_sim_distance = 100000.0f;
     float entity_sim_distance = 100.0f;
     void set_entity_sim_distance(float dist)
     {
-        entity_sim_distance = std::clamp(dist, 1.0f, 100000.0f);
+        entity_sim_distance = std::clamp(dist, min_entity_sim_distance, max_entity_sim_distance);
     }
 
+    static constexpr float min_lod_dist_scale = 0.1f;
+    static constexpr float max_lod_dist_scale = 1000.0f;
     float lod_dist_scale = 10.0f;
     void set_lod_dist_scale(float scale)
     {
-        lod_dist_scale = std::clamp(scale, 0.1f, 1000.0f);
+        lod_dist_scale = std::clamp(scale, min_lod_dist_scale, max_lod_dist_scale);
     }
 
+    static constexpr int min_monitor_resolution_scale = 1;
+    static constexpr int max_monitor_resolution_scale = 8;
     int monitor_resolution_scale = 2;
     void set_monitor_resolution_scale(int scale)
     {
-        monitor_resolution_scale = std::clamp(scale, 1, 8);
+        monitor_resolution_scale = std::clamp(scale, min_monitor_resolution_scale, max_monitor_resolution_scale);
     }
 
     bool scope_static_sensitivity = false;
@@ -78,7 +99,10 @@ struct AlpineGameSettings
     bool swap_gn_controls = false;
     bool swap_sg_controls = false;
     bool mouse_linear_pitch = true;
+    int mouse_scale = 0; // 0=Classic (RF native), 1=Raw (pure degrees), 2=Modern (id Tech/Source 0.022 deg/pixel)
     bool big_hud = false;
+    bool big_hud_health = true;
+    bool big_hud_ammo = true;
     int skip_cutscene_bind_alias = -1;
     bool try_disable_weapon_shake = false;
     bool try_fullbright_characters = false;
@@ -88,11 +112,147 @@ struct AlpineGameSettings
     bool world_hud_alt_damage_indicators = false;
     bool world_hud_flag_overdraw = true;
     bool world_hud_hill_overdraw = true;
+    bool world_hud_cp_medallions = true;
+    bool world_hud_cp_role_text = true;
     bool world_hud_damage_numbers = true;
+    bool world_hud_payload_tethers = true;
+    bool world_hud_payload_push_zone = true;
+    bool world_hud_payload_cart_status = true;
     bool world_hud_spectate_player_labels = false;
+    bool world_hud_demo_player_info = false;
+    bool world_hud_demo_spawns = false;
+    bool demo_powerup_timers = true;
+    bool demo_minimal_compact_bar = false;
     bool world_hud_team_player_labels = false;
     bool show_location_pings = true;
     bool play_hit_sounds = true;
+    bool hit_sound_streak_pitch = true;
+    bool show_awards = true;
+    bool vehicle_respawn_markers = true;
+    bool vehicle_health_bars = true;
+    bool vehicle_driver_third_person = false;
+    bool vehicle_gunner_third_person = false;
+    bool vehicle_control_hints = true;
+
+    // Third-person vehicle camera. Times are smoothing times in seconds (0 = rigid).
+    bool vehicle_cam_recenter = true; // idle drift back behind the vehicle
+    static constexpr float default_vehicle_cam_follow = 0.3f;
+    static constexpr float max_vehicle_cam_follow = 2.0f;
+    float vehicle_cam_follow = default_vehicle_cam_follow;
+    void set_vehicle_cam_follow(float value)
+    {
+        if (!std::isnan(value)) {
+            vehicle_cam_follow = std::clamp(value, 0.0f, max_vehicle_cam_follow);
+        }
+    }
+    static constexpr float default_vehicle_cam_velocity = 1.0f;
+    static constexpr float max_vehicle_cam_velocity = 1.0f;
+    float vehicle_cam_velocity = default_vehicle_cam_velocity; // share of the travel heading at speed
+    void set_vehicle_cam_velocity(float value)
+    {
+        if (!std::isnan(value)) {
+            vehicle_cam_velocity = std::clamp(value, 0.0f, max_vehicle_cam_velocity);
+        }
+    }
+    static constexpr float default_vehicle_cam_min_speed = 1.5f;
+    static constexpr float max_vehicle_cam_min_speed = 10.0f;
+    float vehicle_cam_min_speed = default_vehicle_cam_min_speed; // m/s
+    void set_vehicle_cam_min_speed(float value)
+    {
+        if (!std::isnan(value)) {
+            vehicle_cam_min_speed = std::clamp(value, 0.0f, max_vehicle_cam_min_speed);
+        }
+    }
+    static constexpr float default_vehicle_cam_lookahead = 0.2f;
+    static constexpr float max_vehicle_cam_lookahead = 1.0f;
+    float vehicle_cam_lookahead = default_vehicle_cam_lookahead; // s of yaw rate
+    void set_vehicle_cam_lookahead(float value)
+    {
+        if (!std::isnan(value)) {
+            vehicle_cam_lookahead = std::clamp(value, 0.0f, max_vehicle_cam_lookahead);
+        }
+    }
+    static constexpr float default_vehicle_cam_lookahead_max = 12.0f;
+    static constexpr float max_vehicle_cam_lookahead_max = 30.0f;
+    float vehicle_cam_lookahead_max = default_vehicle_cam_lookahead_max; // degrees
+    void set_vehicle_cam_lookahead_max(float value)
+    {
+        if (!std::isnan(value)) {
+            vehicle_cam_lookahead_max = std::clamp(value, 0.0f, max_vehicle_cam_lookahead_max);
+        }
+    }
+    static constexpr float default_vehicle_cam_pitch_follow = 0.35f;
+    static constexpr float max_vehicle_cam_pitch_follow = 1.0f;
+    float vehicle_cam_pitch_follow = default_vehicle_cam_pitch_follow; // share of the hull pitch
+    void set_vehicle_cam_pitch_follow(float value)
+    {
+        if (!std::isnan(value)) {
+            vehicle_cam_pitch_follow = std::clamp(value, 0.0f, max_vehicle_cam_pitch_follow);
+        }
+    }
+    static constexpr float default_vehicle_cam_pitch_smooth = 0.9f;
+    static constexpr float max_vehicle_cam_pitch_smooth = 3.0f;
+    float vehicle_cam_pitch_smooth = default_vehicle_cam_pitch_smooth;
+    void set_vehicle_cam_pitch_smooth(float value)
+    {
+        if (!std::isnan(value)) {
+            vehicle_cam_pitch_smooth = std::clamp(value, 0.0f, max_vehicle_cam_pitch_smooth);
+        }
+    }
+    static constexpr float default_vehicle_cam_bounce = 0.15f;
+    static constexpr float max_vehicle_cam_bounce = 1.0f;
+    float vehicle_cam_bounce = default_vehicle_cam_bounce; // vertical
+    void set_vehicle_cam_bounce(float value)
+    {
+        if (!std::isnan(value)) {
+            vehicle_cam_bounce = std::clamp(value, 0.0f, max_vehicle_cam_bounce);
+        }
+    }
+    static constexpr float default_vehicle_cam_lag = 0.04f;
+    static constexpr float max_vehicle_cam_lag = 0.5f;
+    float vehicle_cam_lag = default_vehicle_cam_lag; // horizontal
+    void set_vehicle_cam_lag(float value)
+    {
+        if (!std::isnan(value)) {
+            vehicle_cam_lag = std::clamp(value, 0.0f, max_vehicle_cam_lag);
+        }
+    }
+
+    bool vehicle_tracers = true;
+    bool vehicle_effects = true;
+    static constexpr int default_vehicle_tracer_frequency = 1;
+    static constexpr int min_vehicle_tracer_frequency = 1;
+    static constexpr int max_vehicle_tracer_frequency = 10;
+    int vehicle_tracer_frequency = default_vehicle_tracer_frequency; // every Nth round
+    void set_vehicle_tracer_frequency(int value)
+    {
+        vehicle_tracer_frequency =
+            std::clamp(value, min_vehicle_tracer_frequency, max_vehicle_tracer_frequency);
+    }
+    static constexpr uint32_t default_vehicle_tracer_color = 0xFFB43CFF; // RRGGBBAA
+    uint32_t vehicle_tracer_color = default_vehicle_tracer_color;
+    static constexpr float default_vehicle_tracer_length = 3.0f;
+    static constexpr float min_vehicle_tracer_length = 0.5f;
+    static constexpr float max_vehicle_tracer_length = 10.0f;
+    float vehicle_tracer_length = default_vehicle_tracer_length; // m
+    void set_vehicle_tracer_length(float value)
+    {
+        if (!std::isnan(value)) {
+            vehicle_tracer_length =
+                std::clamp(value, min_vehicle_tracer_length, max_vehicle_tracer_length);
+        }
+    }
+    bool vehicle_horns = true; // other players' jeep horns; your own always plays
+
+    bool show_domination_msgs = true;
+
+    bool spray_display = true;
+    int selected_spray_index = 0;
+    void set_selected_spray_index(int index)
+    {
+        const int count = spray_count();
+        selected_spray_index = (count > 0) ? std::clamp(index, 0, count - 1) : 0;
+    }
 
     static constexpr int min_hit_sound_interval_ms = 0;
     static constexpr int max_hit_sound_interval_ms = 1000;
@@ -109,15 +269,74 @@ struct AlpineGameSettings
     bool gaussian_spread = false;
     bool geo_chunk_physics = true;
     bool show_run_timer = true;
+    bool show_gametype_help = true;
+    bool show_mini_scoreboard_dm = true;
     bool multi_ricochet = false;
-    bool damage_screen_flash = true;
+    bool crit_reticle_flash = true;
+    // 0=off, 1=stock red screen flash, 2=screen-edge vignette (d3d11 only)
+    static constexpr int min_damage_flash = 0;
+    static constexpr int max_damage_flash = 2;
+    int damage_flash = 1;
+    void set_damage_flash(int value)
+    {
+        damage_flash = std::clamp(value, min_damage_flash, max_damage_flash);
+    }
     bool spectate_damage_screen_flash = true;
     bool explosion_weapon_flash_lights = true;
     bool explosion_env_flash_lights = true;
     bool burning_entity_lights = true;
     bool death_bars = true;
-    bool mesh_static_lighting = true;
+    // Mesh lighting mode: 0 = off (ambient only), 1 = vertex (legacy), 2 = pixel (D3D11 GPU)
+    int mesh_lighting_mode = 2;
+    bool mesh_lighting_use_static() const { return mesh_lighting_mode >= 1; }
+    bool mesh_lighting_use_vertex() const { return mesh_lighting_mode <= 1; }
+    static constexpr float max_dynamic_light_ndotl = 1.0f;
+    float dynamic_light_ndotl = 1.0f; // N·L blend for dynamic lights on BSP faces: 0.0 = none, 1.0 = full
+    void set_dynamic_light_ndotl(float value)
+    {
+        dynamic_light_ndotl = std::clamp(value, 0.0f, max_dynamic_light_ndotl);
+    }
+    static constexpr float max_pixel_light_overbright = 3.0f;
+    float pixel_light_overbright = 0.5f; // overbright range for pixel lighting compression: 0.0 = hard clamp, higher = more overbright
+    void set_pixel_light_overbright(float value)
+    {
+        pixel_light_overbright = std::clamp(value, 0.0f, max_pixel_light_overbright);
+    }
     bool show_glares = true;
+    bool weather = true;
+    // 0=stock, 1=caustics, 2=+fog/waterline/tint/vignette, 3=+screen distortion (d3d11 only)
+    static constexpr int min_underwater_fx = 0;
+    static constexpr int max_underwater_fx = 3;
+    int underwater_fx = 0;
+    void set_underwater_fx(int value)
+    {
+        underwater_fx = std::clamp(value, min_underwater_fx, max_underwater_fx);
+    }
+    // 0=off, 1=light, 2=heavy scope lens (d3d11 only)
+    static constexpr int min_scope_glass = 0;
+    static constexpr int max_scope_glass = 2;
+    int scope_glass = 2;
+    void set_scope_glass(int value)
+    {
+        scope_glass = std::clamp(value, min_scope_glass, max_scope_glass);
+    }
+    bool particle_sim_cull = true; // skip simulating level particle emitters that are not being rendered
+    bool particle_sim_fixed_step = true; // step cosmetic particle lists at a fixed rate instead of once per frame
+    bool particle_sim_collide_lod = true; // test cosmetic particle world collision less often with distance
+    static constexpr int min_particle_pool_size = 1100;
+    static constexpr int max_particle_pool_size = 16384;
+    int particle_pool_size = 8192; // 0 keeps the stock capacities (500 and 1100)
+    void set_particle_pool_size(int size)
+    {
+        particle_pool_size = size <= 0 ? 0 : std::clamp(size, min_particle_pool_size, max_particle_pool_size);
+    }
+    static constexpr int min_particle_sim_rate = 30;
+    static constexpr int max_particle_sim_rate = 240;
+    int particle_sim_rate = 60;
+    void set_particle_sim_rate(int hz)
+    {
+        particle_sim_rate = std::clamp(hz, min_particle_sim_rate, max_particle_sim_rate);
+    }
     bool show_enemy_bullets = true;
     bool fps_counter = true;
     static constexpr int min_fps_counter_average_ms = 0;
@@ -128,16 +347,50 @@ struct AlpineGameSettings
         fps_counter_average_ms = std::clamp(window_ms, min_fps_counter_average_ms, max_fps_counter_average_ms);
     }
     bool speed_display = false;
+    bool minimap = true;
+    bool minimap_rotate = false;
+    bool minimap_labels = true;
+    static constexpr float min_minimap_size = 80.0f;
+    static constexpr float max_minimap_size = 240.0f;
+    float minimap_size = 140.0f; // small-HUD pixels
+    void set_minimap_size(float value)
+    {
+        if (std::isnan(value)) {
+            return;
+        }
+        minimap_size = std::clamp(value, min_minimap_size, max_minimap_size);
+    }
+    static constexpr float min_minimap_zoom = 0.1f;
+    static constexpr float max_minimap_zoom = 1.0f;
+    float minimap_zoom = 0.35f; // share of the level's larger extent shown across the panel
+    void set_minimap_zoom(float value)
+    {
+        if (std::isnan(value)) {
+            return;
+        }
+        minimap_zoom = std::clamp(value, min_minimap_zoom, max_minimap_zoom);
+    }
     bool ping_display = true;
+    bool netmeter_display = false;
     bool spectate_mode_minimal_ui = false;
+    bool spectate_show_camera_meshes = true; // draw camera meshes in free look
+    bool spectate_povcomp = true; // delay other players to match what the spectated player saw
     bool save_console_history = false; // checked before config loaded, must be false here
+    static constexpr uint32_t default_console_color = 0x274E69C0; // RRGGBBAA
+    uint32_t console_color = default_console_color;
     bool screen_shake_force_off = false;
     bool display_target_player_names = true;
     bool verbose_time_left_display = true;
     bool nearest_texture_filtering = false;
+    bool anisotropic_filtering = true;
+    bool reduced_speed_in_background = false;
     bool direct_input = true;
     bool scoreboard_anim = true;
+    bool scoreboard_cursor = true;
+    bool scoreboard_cursor_hint = true;
     bool legacy_bob = false;
+    bool weapon_sway = false;
+    bool rail_beam_fix = true;
     bool scoreboard_split_simple = true;
     bool scoreboard_split_spectators = true;
     bool scoreboard_split_bots = false;
@@ -147,10 +400,19 @@ struct AlpineGameSettings
     bool af_branding = true;
     int seasonal_effect = 1; // 0=none, 1=auto, 2=always_snow
     bool player_join_beep = false;
+    bool player_join_flash = true;
+    bool discord_rich_presence = true;
+    bool discord_join_button = true;
     bool full_range_lighting = true;
     bool always_clamp_official_lightmaps = false;
+    bool ignore_tbl_vertex_lighting = false;
+    bool ignore_tbl_pixel_light_overbright = false;
+    bool ignore_tbl_lightmap_clamping = false;
+    bool ignore_tbl_caustics = false;
+    bool ignore_tbl_underwater_fog = false;
     bool static_bomb_code = false;
     bool entity_pain_sounds = true;
+    bool footsteps = true;
     static constexpr int min_gib_chunk_count = 7;
     static constexpr int max_gib_chunk_count = 100;
     int gib_chunk_count = 14;
@@ -172,17 +434,64 @@ struct AlpineGameSettings
     {
         gib_lifetime_ms = std::clamp(lifetime_ms, min_gib_lifetime_ms, max_gib_lifetime_ms);
     }
+    static constexpr float min_freelook_cam_slide = 0.0f;
+    static constexpr float max_freelook_cam_slide = 1.0f;
+    float freelook_cam_slide = 1.0f;
+    void set_freelook_cam_slide(float value)
+    {
+        if (std::isnan(value)) {
+            return;
+        }
+        freelook_cam_slide = std::clamp(value, min_freelook_cam_slide, max_freelook_cam_slide);
+    }
+    bool gib_flames = true;
+    bool ragdolls = false;
+    static constexpr int min_ragdolls_max = 4;
+    static constexpr int max_ragdolls_max = 128;
+    int ragdolls_max = 16;
+    void set_ragdolls_max(int value)
+    {
+        ragdolls_max = std::clamp(value, min_ragdolls_max, max_ragdolls_max);
+    }
+    bool shell_casings = true;
+    bool shell_casings_collide = true;
+    static constexpr int min_shell_casing_lifetime_ms = 1000;
+    static constexpr int max_shell_casing_lifetime_ms = 10000;
+    int shell_casing_lifetime_ms = 2000;
+    void set_shell_casing_lifetime_ms(int lifetime_ms)
+    {
+        shell_casing_lifetime_ms = std::clamp(lifetime_ms, min_shell_casing_lifetime_ms, max_shell_casing_lifetime_ms);
+    }
+    bool ejected_magazines = true;
     bool real_armor_values = false;
     bool always_show_spectators = false;
+    bool show_advanced_settings = false; // settings menu lists SF_ADVANCED rows
     RemoteServerCfgPopup::DisplayMode remote_server_cfg_display_mode =
         RemoteServerCfgPopup::DISPLAY_MODE_ALIGN_RIGHT_HIGHLIGHT_BOX;
     bool simple_server_chat_msgs = true;
     bool quick_exit = false;
+    bool bound_caps_lock_capitalizes = false;
     uint32_t bot_shared_secret = 0;
+    std::string bot_personality_preset = "balanced";
+    std::string bot_skill_preset = "average";
+    bool bot_quit_when_disconnected = true;
+    bool waypoints_edit_mode = false;
+    bool waypoints_edit_default_enabled = false;
     int suppress_autoswitch_alias = -1;
     bool always_autoswitch_empty = true;
     bool apply_exposure_damage = true;
+    bool climb_fix = true;
     bool killfeed_enabled = false;
+    bool show_assist_names = true;
+    bool highlight_assisted_kills = true;
+    bool autodl_blur_background = true;
+    bool autodl_download_awps = false;
+    bool hide_chat = false;
+    bool spectate_cinematic_mode = false;
+
+    // MSAA anti-aliasing
+    // 1 = disabled, 2/4/8 = MSAA level
+    uint32_t sample_count = 1;
 
     // hud color overrides
     std::optional<uint32_t> sniper_scope_color_override{};
@@ -255,28 +564,56 @@ struct AlpineGameSettings
         world_hud_ping_label_text_scale.reset();
     }
 
+    static constexpr int min_picmip = 1;
+    static constexpr int max_picmip = 256;
     int picmip = 1; // d3d11 only
     void set_picmip(int value)
     {
-        picmip = std::clamp(value, 1, 256);
+        picmip = std::clamp(value, min_picmip, max_picmip);
     }
 
+    static constexpr int detail_textures_off = 0;
+    static constexpr int detail_textures_atx = 1;
+    static constexpr int detail_textures_auto = 2;
+    int detail_textures = detail_textures_atx; // d3d11 only
+    void set_detail_textures(int value)
+    {
+        detail_textures = std::clamp(value, detail_textures_off, detail_textures_auto);
+    }
+
+    static constexpr int min_colorblind_mode = 0;
+    static constexpr int max_colorblind_mode = 3;
     int colorblind_mode = 0;    // 0=off,1=protanopia,2=deuteranopia,3=tritanopia (d3d11 only)
     void set_colorblind_mode(int value)
     {
-        colorblind_mode = std::clamp(value, 0, 3);
+        colorblind_mode = std::clamp(value, min_colorblind_mode, max_colorblind_mode);
     }
 
     bool precache_rooms = true; // d3d11 only
 
+    // outline rendering (d3d11 multiplayer)
+    bool try_outlines = false;
+    bool outlines_spectator = false;
+    bool outlines_spectator_xray = true;
+    bool try_outlines_team_xray = true;
+
+    uint32_t outlines_color = 0xFF3232FF;         // red, opaque (RRGGBBAA)
+    uint32_t outlines_color_team_r = 0xFF3232FF;   // 255, 50, 50, 255
+    uint32_t outlines_color_team_b = 0x0096FFFF;   // 0, 150, 255, 255
+    std::optional<uint32_t> outlines_color_enemy{};
+    std::optional<uint32_t> outlines_color_team{};
+
+    static constexpr int min_suppress_autoswitch_fire_wait = 0;
+    static constexpr int max_suppress_autoswitch_fire_wait = 10000;
     int suppress_autoswitch_fire_wait = 0;
     void set_suppress_autoswitch_fire_wait(int value)
     {
-        suppress_autoswitch_fire_wait = std::clamp(value, 0, 10000);
+        suppress_autoswitch_fire_wait =
+            std::clamp(value, min_suppress_autoswitch_fire_wait, max_suppress_autoswitch_fire_wait);
     }
 
     std::string multiplayer_tracker = "rfgt.factionfiles.com";
-    static constexpr size_t max_tracker_hostname_length = 200;
+    static constexpr size_t max_tracker_hostname_length = 63;
     void set_multiplayer_tracker(const std::string& tracker_hostname)
     {
         if (!tracker_hostname.empty() && tracker_hostname.length() <= max_tracker_hostname_length)
@@ -285,77 +622,123 @@ struct AlpineGameSettings
             multiplayer_tracker = "rfgt.factionfiles.com";
     }
 
+    // Bytes/s budget pre-1.5 servers scale their send rate to this client by (the `rate` command)
+    unsigned client_rate = 200000u;
+
+    // Client obj_update send rate on Alpine 1.5+ servers, and the 1.4 rate kept for older and stock servers
+    // (stock sends 20/s). client_obj_update_send_interval_ms() picks one.
+    static constexpr unsigned client_net_rate = 100u;
+    static constexpr unsigned legacy_client_net_rate = 40u;
+
     // max_fps default is 120
-    static constexpr unsigned min_fps_limit = 1u;
+    // Below this a frame limit only makes the game (and the menu used to undo it) unusable.
+    static constexpr unsigned min_fps_limit = 10u;
     static constexpr unsigned max_fps_limit = 100000u;
-    static constexpr unsigned max_fps_limit_mp = 240u;
     unsigned max_fps = 240u;
     void set_max_fps(unsigned fps_value)
     {
         max_fps = std::clamp(fps_value, min_fps_limit, max_fps_limit);
     }
 
-    unsigned server_max_fps = 60u;
-    void set_server_max_fps(unsigned fps_value)
+    // Net rate tiers. Each tier's send interval is a whole number of ms that divides the server
+    // frame at that tier's fps, so ticks are never truncated or bunched. sv_bandwidth cycles
+    // through them; medium matches 1.4 (40 net updates/s at 80 fps).
+    struct NetRateTier
     {
-        server_max_fps = std::clamp(fps_value, min_fps_limit, max_fps_limit);
+        const char* name;
+        unsigned netfps;
+        unsigned server_fps; // dedicated server fps: the send interval is two frames either way
+    };
+    static constexpr NetRateTier net_rate_tiers[] = {{"low", 20u, 40u}, {"medium", 40u, 80u}, {"high", 100u, 200u}};
+    static constexpr size_t default_net_rate_tier = 1; // medium
+    // Anything that is not exactly a tier is medium, the 1.4 rate
+    static const NetRateTier& net_rate_tier(unsigned netfps)
+    {
+        const auto it = std::find_if(std::begin(net_rate_tiers), std::end(net_rate_tiers),
+                                     [netfps](const NetRateTier& tier) { return tier.netfps == netfps; });
+        return it != std::end(net_rate_tiers) ? *it : net_rate_tiers[default_net_rate_tier];
     }
 
-    // server netfps default is 1/0.085 ~= 12
-    static constexpr unsigned min_server_netfps = 12u;
-    static constexpr unsigned max_server_netfps = 300u;
-    unsigned server_netfps = 30u;
-    void set_server_netfps(unsigned netfps_value)
+    // Server send rate, always one of net_rate_tiers
+    unsigned server_netfps = net_rate_tiers[default_net_rate_tier].netfps;
+    const NetRateTier& server_net_rate_tier() const
     {
-        server_netfps = std::clamp(netfps_value, min_server_netfps, max_server_netfps);
+        return net_rate_tier(server_netfps);
+    }
+    // alpine_settings.ini stores the tier index (ServerBandwidth)
+    int server_net_rate_tier_index() const
+    {
+        return static_cast<int>(&server_net_rate_tier() - net_rate_tiers);
+    }
+    void set_server_net_rate_tier_index(int index)
+    {
+        server_netfps = net_rate_tiers[std::clamp(index, 0, static_cast<int>(std::size(net_rate_tiers)) - 1)].netfps;
     }
 
+    static constexpr int min_desired_handicap = 0;
+    static constexpr int max_desired_handicap = 99;
     int desired_handicap = 0;
     void set_desired_handicap(int value)
     {
-        desired_handicap = std::clamp(value, 0, 99);
+        desired_handicap = std::clamp(value, min_desired_handicap, max_desired_handicap);
     }
+
+    static constexpr float max_control_point_height_scale = 1000.0f;
+    static constexpr int min_control_point_segments = 3;
+    static constexpr int max_control_point_segments = 256;
 
     float control_point_outline_height_scale = 5.0f;
     void set_control_point_outline_height_scale(float scale)
     {
-        control_point_outline_height_scale = std::clamp(scale, 0.0f, 1000.0f);
+        control_point_outline_height_scale = std::clamp(scale, 0.0f, max_control_point_height_scale);
     }
 
     int control_point_outline_segments = 32;
     void set_control_point_outline_segments(int segments)
     {
-        control_point_outline_segments = std::clamp(segments, 3, 256);
+        control_point_outline_segments = std::clamp(segments, min_control_point_segments, max_control_point_segments);
     }
 
     int control_point_column_segments = 8;
     void set_control_point_column_segments(int segments)
     {
-        control_point_column_segments = std::clamp(segments, 3, 256);
+        control_point_column_segments = std::clamp(segments, min_control_point_segments, max_control_point_segments);
     }
 
     float control_point_column_height_scale = 1.0f;
     void set_control_point_column_height_scale(float scale)
     {
-        control_point_column_height_scale = std::clamp(scale, 0.0f, 1000.0f);
+        control_point_column_height_scale = std::clamp(scale, 0.0f, max_control_point_height_scale);
     }
 
     bool rendering_enabled = true;
     bool sound_enabled = true;
     bool background_mouse = false;
+    bool dbg_bot = false;
 
     // entity shadow settings
     bool shadow_corpses = true;
     bool shadow_items = true;
+    static constexpr int min_shadow_distance = 0;
+    static constexpr int max_shadow_distance = 5;
     int shadow_distance = 3; // 0=lowest, 1=low, 2=medium, 3=high, 4=very_high, 5=maximum
     void set_shadow_distance(int value)
     {
-        shadow_distance = std::clamp(value, 0, 5);
+        shadow_distance = std::clamp(value, min_shadow_distance, max_shadow_distance);
     }
+    static constexpr int min_shadow_quality = 0;
+    static constexpr int max_shadow_quality = 5;
     int shadow_quality = 3; // 0=lowest(blob), 1=low, 2=medium, 3=high, 4=very_high, 5=maximum
     void set_shadow_quality(int value)
     {
-        shadow_quality = std::clamp(value, 0, 5);
+        shadow_quality = std::clamp(value, min_shadow_quality, max_shadow_quality);
+    }
+    static constexpr int min_shadow_frame_lag = 1;
+    static constexpr int max_shadow_frame_lag = 30;
+    int shadow_frame_lag = 1; // 1=every frame (default), 2-30=refresh every N frames
+    void set_shadow_frame_lag(int value)
+    {
+        shadow_frame_lag = std::clamp(value, min_shadow_frame_lag, max_shadow_frame_lag);
     }
 };
 
@@ -371,7 +754,6 @@ struct FpsCounterState
 extern AlpineGameSettings g_alpine_game_config;
 std::optional<uint32_t> parse_hex_color_string(const std::string& value);
 std::string format_hex_color_string(uint32_t color);
-std::tuple<int, int, int, int> extract_color_components(uint32_t color);
 std::tuple<float, float, float, float> extract_normalized_color_components(uint32_t color);
 void initialize_alpine_core_config();
 void alpine_core_config_save();
@@ -381,9 +763,12 @@ void update_scanner_sensitivity();
 void recalc_mesh_static_lighting();
 void apply_show_enemy_bullets();
 void apply_console_history_setting();
+void apply_console_color_setting();
 void build_time_left_string_format();
 void gr_update_texture_filtering();
 void set_play_sound_events_volume_scale();
 void apply_entity_sim_distance();
 void gr_d3d_update_vsync();
 bool is_d3d11();
+void resolve_scan_code_conflicts(rf::ControlConfig& config);
+void resolve_mouse_button_conflicts(rf::ControlConfig& config);

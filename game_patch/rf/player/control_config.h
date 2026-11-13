@@ -34,6 +34,9 @@ namespace rf
         CC_ACTION_MP_STATS = 0x16,
         CC_ACTION_QUICK_SAVE = 0x17,
         CC_ACTION_QUICK_LOAD = 0x18,
+        // 4 weapon-category selects, then the per-weapon selects control_config_init (0x0043D060) appends
+        CC_ACTION_SELECT_WEAPON_FIRST = 0x19,
+        CC_ACTION_SELECT_WEAPON_LAST = 0x3C,
     };
 
     enum AlpineControlConfigAction
@@ -53,7 +56,13 @@ namespace rf
         AF_ACTION_NO_AUTOSWITCH = 0xC,
         AF_ACTION_REMOTE_SERVER_CFG = 0xD,
         AF_ACTION_INSPECT_WEAPON = 0xE,
-        _AF_ACTION_LAST_VARIANT = AF_ACTION_INSPECT_WEAPON
+        AF_ACTION_SPECTATE_ATTACH = 0xF,
+        AF_ACTION_SPECTATE_TOGGLE = 0x10,
+        AF_ACTION_SPECTATE_CHANGE_VIEW = 0x11,
+        AF_ACTION_SPRAY = 0x12,
+        AF_ACTION_VOTE_MENU = 0x13,
+        AF_ACTION_BIG_MAP = 0x14,
+        _AF_ACTION_LAST_VARIANT = AF_ACTION_BIG_MAP
     };
 
     struct ControlConfigItem

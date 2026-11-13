@@ -1,9 +1,14 @@
 #pragma once
 
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
 #include <expected>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
+#include <vector>
 #include <xlog/xlog.h>
 #include "server_internal.h"
 #include "../rf/player/player.h"
@@ -17,11 +22,19 @@ struct PlayerStatsNew : rf::PlayerLevelStats
     unsigned short num_deaths;
     unsigned short current_streak;
     unsigned short max_streak;
+    unsigned short num_assists;
     float num_shots_hit;
     float num_shots_fired;
     float damage_received;
     float damage_given;
     float damage_given_current_life;
+    // Efficiency numerator/denominator. Deliberately NOT damage_given: that counts every weapon,
+    // while potential only accrues for weapons whose shots reach these counters, so pairing the two
+    // would compare a flame-inclusive numerator with a flame-exclusive denominator.
+    float efficiency_dealt;
+    float damage_potential;
+    // Clients count no shots for other players, so calc_accuracy() is only meaningful on the server.
+    uint8_t reported_accuracy;
 
     void inc_kills()
     {
@@ -37,6 +50,11 @@ struct PlayerStatsNew : rf::PlayerLevelStats
         damage_given_current_life = 0;
     }
 
+    void inc_assists()
+    {
+        ++num_assists;
+    }
+
     void add_shots_hit(float add)
     {
         // Weapons with multiple projectiles (shotgun) use fractional values
@@ -47,6 +65,16 @@ struct PlayerStatsNew : rf::PlayerLevelStats
     {
         // Weapons with multiple projectiles (shotgun) use fractional values
         num_shots_fired += add;
+    }
+
+    void add_efficiency_dealt(float add)
+    {
+        efficiency_dealt += add;
+    }
+
+    void add_damage_potential(float add)
+    {
+        damage_potential += add;
     }
 
     void add_damage_received(float damage)
@@ -68,17 +96,39 @@ struct PlayerStatsNew : rf::PlayerLevelStats
         return 0;
     }
 
+    // Clamped: converting an out-of-range float to an unsigned type is undefined, and
+    // accuracy is a ratio of two independently maintained counters.
+    [[nodiscard]] uint8_t calc_accuracy_percent() const
+    {
+        return static_cast<uint8_t>(std::clamp(calc_accuracy(), 0.0f, 1.0f) * 100.f);
+    }
+
+    // Not clamped: over 100% is legitimate. One rocket's potential is its damage value, but its
+    // blast can deal that much to several players at once.
+    [[nodiscard]] float calc_efficiency() const
+    {
+        if (damage_potential > 0) {
+            return efficiency_dealt / damage_potential;
+        }
+        return 0;
+    }
+
     void clear()
     {
         num_kills = 0;
         num_deaths = 0;
+        num_assists = 0;
         num_shots_hit = 0.0f;
         num_shots_fired = 0.0f;
+        efficiency_dealt = 0.0f;
+        damage_potential = 0.0f;
+        reported_accuracy = 0;
         current_streak = 0;
         max_streak = 0;
         damage_received = 0;
         damage_given = 0;
         damage_given_current_life = 0;
+        took_part_in_flag_capture = false;
     }
 };
 
@@ -86,6 +136,8 @@ struct AlpineFactionServerInfo
 {
     uint8_t version_major = 0;
     uint8_t version_minor = 0;
+    uint8_t version_patch = 0; // unreliable if from < AF 1.3
+    uint8_t version_type = 0;  // unreliable if from < AF 1.3
     bool saving_enabled = false;
     std::optional<float> max_fov;
     bool allow_fb_mesh = false;
@@ -95,13 +147,32 @@ struct AlpineFactionServerInfo
     bool allow_no_mf = false;
     bool click_limit = false;
     std::optional<int> semi_auto_cooldown;
-    bool unlimited_fps = false;
     bool gaussian_spread = false;
     bool geo_chunk_physics = false;
     bool location_pinging = false;
     bool delayed_spawns = false;
     int koth_score_limit = 0;
     int dc_score_limit = 0;
+    bool allow_footsteps = false;
+    bool allow_outlines = false;
+    bool allow_outlines_xray = false;
+    bool clear_stale_movement_input = false;
+    bool was_manual_level_load = false;
+    bool allow_sprays = false;
+    bool match_mode = false;
+    bool reload_on_kill = false;
+    bool super_drain = false;
+    bool jetpacks = false;
+    bool low_gravity = false;
+    bool skiing = false;
+    bool dodging = false;
+    bool pogo = false;
+    bool scrapyard_gibs = false;
+    bool no_exposure_damage = false;
+    bool projectile_lag_comp = false;
+    int server_netfps = 0; // 0: unknown (older server)
+    int projectile_lag_comp_max_ms = 0;
+    bool delta_obj_update = false;
 };
 
 enum class AlpineRestrictVerdict : uint8_t
@@ -109,41 +180,78 @@ enum class AlpineRestrictVerdict : uint8_t
     ok = 0,
     need_alpine = 1,
     need_release = 2,
-    need_update = 3
+    need_update = 3,
+    need_d3d11 = 4,
 };
 
 extern rf::Timestamp g_select_weapon_done_timestamp[rf::multi_max_player_id];
+extern bool g_gameseq_defer_new_level;
 
 void set_local_pending_game_type(rf::NetGameType game_type, int win_condition);
 void reset_local_pending_game_type();
-const bool was_level_loaded_manually();
+bool was_level_loaded_manually();
 void set_manually_loaded_level(bool is_true);
 bool version_is_older(int aMaj, int aMin, int bMaj, int bMin);
 void enforce_alpine_hard_reject_for_all_players_on_current_level();
 std::tuple<AlpineRestrictVerdict, std::string, bool> evaluate_alpine_restrict_status(const ClientVersionInfoProfile& info, bool check_level_version);
 void multi_level_download_update();
 bool download_level_if_missing(std::string level_filename);
+bool start_awp_download_for_installed_map(const std::string& rfl_filename, int max_retries, bool force = false);
+void poll_awp_download();
+void cancel_awp_download();
 void multi_do_patch();
 void multi_after_full_game_init();
+bool client_bot_launch_enabled();
+bool client_bot_headless_enabled();
+bool is_awpgen_active();
+bool is_headless_mode();
 void multi_init_player(rf::Player* player);
+bool multi_is_selecting_weapon(rf::Player* pp);
+// chat_line wire packet (header + {player id, team flag, message}); the message is capped at 255 chars.
+std::vector<std::byte> build_chat_line_packet(uint8_t player_id, bool is_team_msg, std::string_view msg);
 void send_chat_line_packet(std::string_view msg, rf::Player* target, rf::Player* sender = nullptr, bool is_team_msg = false);
 const std::optional<AlpineFactionServerInfo>& get_af_server_info();
+bool af_server_is_1_5_or_newer();
+int client_obj_update_send_interval_ms();
 std::optional<AlpineFactionServerInfo>& get_af_server_info_mutable();
+void multi_limbo_just_joined_do_frame();
 void multi_level_download_do_frame();
 void multi_level_download_abort();
+void multi_level_download_manager_start(std::string filename);
+bool multi_next_level_exists();
 bool rotation_autodl_in_progress();
 void rotation_autodl_start(size_t levels_count, std::vector<std::string> unique_levels);
 void multi_ban_apply_patch();
 std::expected<uint32_t, std::errc> get_level_file_version(const std::string& file_name);
 void print_player_info(rf::Player* player, bool new_join);
 void server_set_player_weapon(rf::Player* pp, rf::Entity* ep, int weapon_type);
-void start_level_in_multi(std::string filename);
+void multi_turn_weapon_on(rf::Entity* ep, rf::Player* pp, bool alt_fire);
+void multi_turn_weapon_off(rf::Entity* ep);
+bool is_remote_charge_pair(int weapon_a, int weapon_b);
+// The server refuses this weapon switch (multi_select_weapon_server_side) whatever the player owns.
+bool multi_is_weapon_switch_locked(int from_weapon, int to_weapon);
+// The remote-fire handler (0x0047D220) creates these itself instead of going through entity_fire_weapon.
+bool multi_weapon_fire_is_thrown(int weapon_type, bool alt_fire);
+void multi_hide_level_items(const std::vector<int>& allowed_item_type_indices, bool preserve_ctf_objects = false);
+// Without a game type, the type is inferred from the level name's prefix.
+void start_level_in_multi(std::string filename, std::optional<rf::NetGameType> game_type = std::nullopt);
+// Leaves the current game and hosts a local listen server on the level, as levelm does.
+void start_local_multi_game(std::string_view filename, std::optional<rf::NetGameType> game_type);
 std::optional<std::string> multi_ban_unban_last();
 std::string_view multi_game_type_name(rf::NetGameType game_type);
 std::string_view multi_game_type_name_upper(rf::NetGameType game_type);
 std::string_view multi_game_type_name_short(rf::NetGameType game_type);
 std::string_view multi_game_type_prefix(rf::NetGameType game_type);
+// The inverse of multi_game_type_prefix: the game type a filename's prefix names.
+std::optional<rf::NetGameType> multi_game_type_for_level_prefix(std::string_view level_filename);
+bool multi_game_type_uses_any_level(rf::NetGameType game_type);
+bool multi_level_name_matches_any_mp_prefix(const char* filename);
+// Full acceptance test: the strict prefix, the quirks table's run maps and the
+// any-level game types. The predicate the vote gate and the vote blob's per-level
+// mask share; level default resolution can answer outside it (see multi.cpp).
+bool multi_level_name_matches_game_type(std::string_view level_filename, rf::NetGameType game_type);
+std::string normalize_level_filename(std::string_view name); // appends ".rfl" when it is missing
 [[nodiscard]] int multi_num_spawned_players();
 int get_semi_auto_fire_wait_override();
-void mp_send_handicap_request(bool force);
+void mp_send_handicap_request(bool on_join);
 void print_alpine_dedicated_server_config_info(std::string& output, bool verbose, bool remote = false);

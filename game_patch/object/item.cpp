@@ -2,19 +2,29 @@
 #include <patch_common/CodeInjection.h>
 #include <patch_common/AsmWriter.h>
 #include <common/utils/string-utils.h>
+#include <common/utils/list-utils.h>
 #include <xlog/xlog.h>
 #include <algorithm>
 #include <string_view>
+#include "../fflink/afstats_events.h"
 #include "../rf/event.h"
 #include "../rf/item.h"
 #include "../rf/misc.h"
 #include "../rf/entity.h"
+#include "../rf/gameseq.h"
 #include "../rf/multi.h"
 #include "../rf/weapon.h"
+#include "../rf/os/frametime.h"
 #include "../rf/player/player.h"
 #include "../misc/achievements.h"
 #include "../misc/misc.h"
+#include "../multi/bagman.h"
+#include "../multi/gametype.h"
+#include "../multi/mutators.h"
+#include "../multi/salvage.h"
 #include "../multi/server.h"
+#include "../multi/demo/demo.h"
+#include "object.h"
 
 int item_lookup_type(const char* name)
 {
@@ -35,11 +45,39 @@ int item_lookup_type(const char* name)
 FunHook<int(int, int, int, int)> item_touch_weapon_hook{
     0x0045A6D0,
     [](int entity_handle, int item_handle, int weapon_type, int count) {
-        if (server_weapon_items_give_full_ammo() && weapon_type != rf::shoulder_cannon_weapon_type) {
+        // Exclude fusion from "weapon items give full ammo", and from "infinite magazines"
+        // everywhere except GunGame.
+        const bool not_fusion = weapon_type != rf::shoulder_cannon_weapon_type;
+        const bool full_ammo_pickup = server_weapon_items_give_full_ammo() && not_fusion;
+        const bool infinite_mag_top_up = server_weapon_infinite_magazines()
+            && (not_fusion || (rf::is_multi && gt_is_gungame()));
+        // Infinite magazines is only meaningful if there is a magazine to reload from, so it
+        // tops the weapon up.
+        if ((full_ammo_pickup || infinite_mag_top_up)
+            && weapon_type >= 0 && weapon_type < rf::num_weapon_types) {
             rf::WeaponInfo& winfo = rf::weapon_types[weapon_type];
             count = winfo.max_ammo + winfo.clip_size;
         }
         return item_touch_weapon_hook.call_target(entity_handle, item_handle, weapon_type, count);
+    },
+};
+
+FunHook<rf::Item*(int, const char*, int, int, const rf::Vector3*, rf::Matrix3*, int, bool, bool)>
+    item_create_pool_reserve_hook{
+    0x00459100,
+    [](int type, const char* name, int count, int parent_handle, const rf::Vector3* pos,
+       rf::Matrix3* orient, int respawn_time, bool permanent, bool from_packet) -> rf::Item* {
+        // Keep one pool slot free for a gametype objective item that does not exist yet, so
+        // weapon drops on a full map cannot starve the Salvage flag or Bagman bag.
+        const int capacity = level_allows_extra_items() ? extended_item_limit : stock_item_limit;
+        if (rf::is_server && rf::item_pool_num_used >= capacity - 1
+            && (salvage_reserves_item_slot(type) || bagman_reserves_item_slot(type))) {
+            return nullptr;
+        }
+        rf::Item* item = item_create_pool_reserve_hook.call_target(
+            type, name, count, parent_handle, pos, orient, respawn_time, permanent, from_packet);
+        bagman_apply_bag_mesh(item, type);
+        return item;
     },
 };
 
@@ -97,25 +135,41 @@ CodeInjection game_level_init_pre_patch{
     }
 };
 
+// Both injections below fire right after the touch callback confirmed a pickup.
+static void on_item_picked_up(rf::Item* item, rf::Entity* entity)
+{
+    if (!item || !entity) {
+        return;
+    }
+
+    if (!rf::is_multi) {
+        if (entity == rf::local_player_entity) {
+            //xlog::warn("player {} picked up item {}, uid {}, handle {}", entity->name, item->name, item->uid, item->handle);
+            if (is_achievement_system_initialized()) {
+                achievement_check_item_picked_up(item);
+            }
+
+            rf::activate_all_events_of_type(rf::EventType::When_Picked_Up, item->handle, entity->handle, true);
+        }
+    }
+    else {
+        mutators_on_item_picked_up(item, entity);
+        if (rf::is_server) {
+            // respawn_time_ms is the per-instance value and already reflects any
+            // server-config or mutator override; negative means it never respawns.
+            rf::Player* player = rf::player_from_entity_handle(entity->handle);
+            afstats::on_item_pickup(player, item->info_index, item->pos, item->respawn_time_ms);
+            demo_record_item_pickup(player, item);
+        }
+    }
+}
+
 CodeInjection item_pickup_patch {
     0x004597BA,
     [](auto& regs) {
-        if (!rf::is_multi) {
-            bool picked_up = regs.eax != -1;
-
-            if (picked_up)
-            {
-                rf::Item* item = regs.esi;
-                rf::Entity* entity = regs.edi;
-                if (item && entity && entity == rf::local_player_entity) {
-                    //xlog::warn("player {} picked up item {}, uid {}, handle {}", entity->name, item->name, item->uid, item->handle);
-                    if (is_achievement_system_initialized()) {
-                        achievement_check_item_picked_up(item);
-                    }
-
-                    rf::activate_all_events_of_type(rf::EventType::When_Picked_Up, item->handle, entity->handle, true);
-                }
-            }
+        bool picked_up = regs.eax != -1;
+        if (picked_up) {
+            on_item_picked_up(regs.esi, regs.edi);
         }
     }
 };
@@ -123,22 +177,9 @@ CodeInjection item_pickup_patch {
 CodeInjection item_pickup_patch2 {
     0x004597D8,
     [](auto& regs) {
-        if (!rf::is_multi) {
-            bool picked_up = regs.eax != -1;
-
-            if (picked_up)
-            {
-                rf::Item* item = regs.esi;
-                rf::Entity* entity = regs.edi;
-                if (item && entity && entity == rf::local_player_entity) {
-                    //xlog::warn("player {} picked up item {}, uid {}, handle {}", entity->name, item->name, item->uid, item->handle);
-                    if (is_achievement_system_initialized()) {
-                        achievement_check_item_picked_up(item);
-                    }
-
-                    rf::activate_all_events_of_type(rf::EventType::When_Picked_Up, item->handle, entity->handle, true);
-                }
-            }
+        bool picked_up = regs.eax != -1;
+        if (picked_up) {
+            on_item_picked_up(regs.esi, regs.edi);
         }
     }
 };
@@ -163,6 +204,22 @@ CodeInjection multi_powerup_add_mp_check {
     }
 };
 
+void item_do_frame()
+{
+    if (rf::is_dedicated_server || !rf::is_multi || rf::game_paused) {
+        return;
+    }
+    constexpr float spin_rate = 2.35619449f;
+    constexpr float two_pi = 6.28318548f;
+    const float delta = rf::frametime * demo_playback_sim_time_scale() * spin_rate;
+    for (auto& item : DoublyLinkedList{rf::item_list}) {
+        if (item.info && (item.info->flags & rf::IIF_SPINS_IN_MULTI)) {
+            const float angle = item.spin_angle + delta;
+            item.spin_angle = angle > two_pi ? angle - two_pi : angle;
+        }
+    }
+}
+
 void item_do_patch()
 {
     // activate When_Picked_Up events
@@ -179,4 +236,10 @@ void item_do_patch()
 
     // Sort objects by mesh name to improve rendering performance
     item_create_sort_injection.install();
+
+    // Objective item slot reservation and Bagman bag mesh swap
+    item_create_pool_reserve_hook.install();
+
+    // Skip item_render's spin advance in favour of item_do_frame.
+    AsmWriter{0x00459071, 0x00459073}.jmp(0x004590A8);
 }

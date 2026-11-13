@@ -6,8 +6,8 @@
 #include <wxx_dialog.h>
 #include <wxx_commondlg.h>
 
-OptionsDisplayDlg::OptionsDisplayDlg(GameConfig& conf) :
-    CDialog(IDD_OPTIONS_DISPLAY), m_conf(conf)
+OptionsDisplayDlg::OptionsDisplayDlg(GameConfig& conf, CDialog& advanced_dlg) :
+    CDialog(IDD_OPTIONS_DISPLAY), m_conf(conf), m_advanced_dlg(advanced_dlg)
 {
 }
 
@@ -21,17 +21,16 @@ BOOL OptionsDisplayDlg::OnInitDialog()
     }
 
     // Attach controls
-    AttachItem(IDC_RENDERER_COMBO, m_renderer_combo);
-    AttachItem(IDC_ADAPTER_COMBO, m_adapter_combo);
+    m_renderer_combo.AttachDlgItem(IDC_RENDERER_COMBO, m_advanced_dlg);
+    AttachItem(IDC_DISPLAY_COMBO, m_display_combo);
     AttachItem(IDC_RESOLUTIONS_COMBO, m_res_combo);
-    AttachItem(IDC_COLOR_DEPTH_COMBO, m_color_depth_combo);
+    m_color_depth_combo.AttachDlgItem(IDC_COLOR_DEPTH_COMBO, m_advanced_dlg);
     AttachItem(IDC_WND_MODE_COMBO, m_wnd_mode_combo);
-    AttachItem(IDC_MSAA_COMBO, m_msaa_combo);
 
     // Populate combo boxes with static content
-    m_renderer_combo.AddString("Direct3D 8");
-    m_renderer_combo.AddString("Direct3D 9 (recommended)");
-    m_renderer_combo.AddString("Direct3D 11 (testing)");
+    m_renderer_combo.AddString("Direct3D 8 (deprecated)");
+    m_renderer_combo.AddString("Direct3D 9 (deprecated)");
+    m_renderer_combo.AddString("Direct3D 11 (recommended)");
 
     m_wnd_mode_combo.AddString("Exclusive Fullscreen");
     m_wnd_mode_combo.AddString("Windowed");
@@ -39,13 +38,10 @@ BOOL OptionsDisplayDlg::OnInitDialog()
 
     // Display
     m_renderer_combo.SetCurSel(static_cast<int>(m_conf.renderer.value()));
-    UpdateAdapterCombo();
+    UpdateDisplayCombo();
     UpdateColorDepthCombo(); // should be before resolution
     UpdateResolutionCombo();
     m_wnd_mode_combo.SetCurSel(static_cast<int>(m_conf.wnd_mode));
-    SetDlgItemInt(IDC_RENDERING_CACHE_EDIT, m_conf.geometry_cache_size, false);
-    UpdateMsaaCombo();
-    UpdateAnisotropyCheckbox();
     CheckDlgButton(IDC_HIGH_SCANNER_RES_CHECK, m_conf.high_scanner_res ? BST_CHECKED : BST_UNCHECKED);
     CheckDlgButton(IDC_TRUE_COLOR_TEXTURES_CHECK, m_conf.true_color_textures ? BST_CHECKED : BST_UNCHECKED);
 
@@ -54,87 +50,49 @@ BOOL OptionsDisplayDlg::OnInitDialog()
     return TRUE;
 }
 
-void OptionsDisplayDlg::UpdateMsaaCombo()
-{
-    m_msaa_combo.ResetContent();
-    m_msaa_combo.AddString("Disabled");
-
-    if (!m_video_info) {
-        return;
-    }
-
-    int selected_msaa = 0;
-    m_multi_sample_types.push_back(0);
-    try {
-        BOOL windowed = m_conf.wnd_mode != GameConfig::FULLSCREEN;
-        auto multi_sample_types = m_video_info->get_multisample_types(m_conf.selected_video_card, m_conf.res_backbuffer_format, windowed);
-        for (auto msaa : multi_sample_types) {
-            auto s = std::format("MSAAx{}", msaa);
-            int idx = m_msaa_combo.AddString(s.c_str());
-            if (m_conf.msaa == msaa)
-                selected_msaa = idx;
-            m_multi_sample_types.push_back(msaa);
-        }
-    }
-    catch (std::exception &e) {
-        xlog::error("Cannot check available MSAA modes: {}", e.what());
-    }
-    m_msaa_combo.SetCurSel(selected_msaa);
-}
-
-void OptionsDisplayDlg::UpdateAnisotropyCheckbox()
-{
-    bool anisotropy_supported = false;
-    try {
-        if (m_video_info) {
-            anisotropy_supported = m_video_info->has_anisotropy_support(m_conf.selected_video_card);
-        }
-    }
-    catch (std::exception &e) {
-        xlog::error("Cannot check anisotropy support: {}", e.what());
-    }
-    if (anisotropy_supported) {
-        GetDlgItem(IDC_ANISOTROPIC_CHECK).EnableWindow(TRUE);
-        CheckDlgButton(IDC_ANISOTROPIC_CHECK, m_conf.anisotropic_filtering ? BST_CHECKED : BST_UNCHECKED);
-    }
-    else
-        GetDlgItem(IDC_ANISOTROPIC_CHECK).EnableWindow(FALSE);
-}
-
 void OptionsDisplayDlg::InitToolTip()
 {
     m_tool_tip.Create(*this);
-    m_tool_tip.AddTool(GetDlgItem(IDC_RENDERER_COMBO), "Graphics API used for rendering");
-    m_tool_tip.AddTool(GetDlgItem(IDC_ADAPTER_COMBO), "Graphics card/adapter used for rendering");
-    m_tool_tip.AddTool(GetDlgItem(IDC_RENDERING_CACHE_EDIT), "RAM allocated for level geometry rendering, max 32 MB");
-    m_tool_tip.AddTool(GetDlgItem(IDC_RESOLUTIONS_COMBO), "Select resolution from provided dropdown list or type a resolution manually");
-    m_tool_tip.AddTool(GetDlgItem(IDC_ANISOTROPIC_CHECK), "Improve render quality of textures at far distances");
-    m_tool_tip.AddTool(GetDlgItem(IDC_HIGH_SCANNER_RES_CHECK), "Increase scanner resolution (used by Rail Driver, Rocket Launcher and Fusion Launcher)");
-    m_tool_tip.AddTool(GetDlgItem(IDC_TRUE_COLOR_TEXTURES_CHECK), "Increase texture color depth - especially visible for lightmaps and shadows");
+    m_tool_tip.SetMaxTipWidth(512);
+    m_tool_tip.AddTool(GetDlgItem(IDC_DISPLAY_COMBO), "Monitor the game opens on");
+    m_tool_tip.AddTool(GetDlgItem(IDC_RESOLUTIONS_COMBO), "Select resolution from provided drop-down list, or type a resolution manually");
+    m_tool_tip.AddTool(GetDlgItem(IDC_HIGH_SCANNER_RES_CHECK), "Increase scanner resolution (used by Rail Driver, Rocket Launcher, and Fusion Launcher)");
+    m_tool_tip.AddTool(GetDlgItem(IDC_TRUE_COLOR_TEXTURES_CHECK), "Increase texture color depth, especially visible for lightmaps and shadows");
 }
 
-void OptionsDisplayDlg::UpdateAdapterCombo()
+void OptionsDisplayDlg::UpdateDisplayCombo()
 {
-    m_adapter_combo.ResetContent();
-    if (!m_video_info) {
-        return;
+    m_displays = enumerate_displays();
+    m_display_combo.ResetContent();
+    int selected_idx = m_display_combo.AddString("Primary display");
+    for (size_t i = 0; i < m_displays.size(); ++i) {
+        const auto& display = m_displays[i];
+        auto label = std::format(
+            "{}: {} ({}x{}){}",
+            i + 1,
+            display.friendly_name,
+            display.monitor_rect.right - display.monitor_rect.left,
+            display.monitor_rect.bottom - display.monitor_rect.top,
+            display.primary ? " - primary" : ""
+        );
+        int idx = m_display_combo.AddString(label.c_str());
+        if (!m_conf.display_device.value().empty() && display.device_path == m_conf.display_device.value())
+            selected_idx = idx;
     }
-    int selected_idx = -1;
-    try {
-        auto adapters = m_video_info->get_adapters();
-        for (const auto &adapter : adapters) {
-            int idx = m_adapter_combo.AddString(adapter.c_str());
-            if (idx < 0)
-                throw std::runtime_error("failed to add string to combo box");
-            if (m_conf.selected_video_card == static_cast<unsigned>(idx))
-                selected_idx = idx;
-        }
-    }
-    catch (std::exception &e) {
-        xlog::error("Cannot get video adapters: {}", e.what());
-    }
-    if (selected_idx != -1)
-        m_adapter_combo.SetCurSel(selected_idx);
+    m_display_combo.SetCurSel(selected_idx);
+}
+
+std::string OptionsDisplayDlg::GetSelectedDisplayDevice()
+{
+    int sel = m_display_combo.GetCurSel();
+    if (sel <= 0 || static_cast<size_t>(sel) > m_displays.size())
+        return "";
+    return m_displays[sel - 1].device_path;
+}
+
+DisplayInfo OptionsDisplayDlg::GetDisplay()
+{
+    return resolve_display(m_conf.display_device.value()).value_or(DisplayInfo{});
 }
 
 void OptionsDisplayDlg::UpdateResolutionCombo()
@@ -147,7 +105,7 @@ void OptionsDisplayDlg::UpdateResolutionCombo()
     }
     try {
         auto format = m_video_info->get_format_from_bpp(m_conf.res_bpp);
-        auto resolutions = m_video_info->get_resolutions(m_conf.selected_video_card, format);
+        auto resolutions = m_video_info->get_resolutions(GetDisplay(), format);
         for (const auto &res : resolutions) {
             buf.Format("%dx%d", res.width, res.height);
             int pos = m_res_combo.AddString(buf);
@@ -173,10 +131,11 @@ void OptionsDisplayDlg::UpdateColorDepthCombo()
     if (!m_video_info) {
         return;
     }
+    auto display = GetDisplay();
     auto format_32 = m_video_info->get_format_from_bpp(32);
     auto format_16 = m_video_info->get_format_from_bpp(16);
-    bool has_16bpp_modes = !m_video_info->get_resolutions(m_conf.selected_video_card, format_16).empty();
-    bool has_32bpp_modes = !m_video_info->get_resolutions(m_conf.selected_video_card, format_32).empty();
+    bool has_16bpp_modes = !m_video_info->get_resolutions(display, format_16).empty();
+    bool has_32bpp_modes = !m_video_info->get_resolutions(display, format_32).empty();
 
     if (!has_16bpp_modes) {
         m_conf.res_bpp = 32;
@@ -189,10 +148,10 @@ void OptionsDisplayDlg::UpdateColorDepthCombo()
     int index_32 = -1;
     int index_16 = -1;
     if (has_32bpp_modes) {
-        index_32 = m_color_depth_combo.AddString("32 bit");
+        index_32 = m_color_depth_combo.AddString("32-bit");
     }
     if (has_16bpp_modes) {
-        index_16 = m_color_depth_combo.AddString("16 bit");
+        index_16 = m_color_depth_combo.AddString("16-bit");
     }
     m_color_depth_combo.SetCurSel(m_conf.res_bpp == 16 ? index_16 : index_32);
 }
@@ -204,8 +163,8 @@ BOOL OptionsDisplayDlg::OnCommand(WPARAM wparam, [[ maybe_unused ]] LPARAM lpara
             case IDC_RENDERER_COMBO:
                 OnRendererChange();
                 break;
-            case IDC_ADAPTER_COMBO:
-                OnAdapterChange();
+            case IDC_DISPLAY_COMBO:
+                OnDisplayChange();
                 break;
             case IDC_WND_MODE_COMBO:
                 OnWindowModeChange();
@@ -221,8 +180,6 @@ BOOL OptionsDisplayDlg::OnCommand(WPARAM wparam, [[ maybe_unused ]] LPARAM lpara
 void OptionsDisplayDlg::OnSave()
 {
     m_conf.renderer = static_cast<GameConfig::Renderer>(m_renderer_combo.GetCurSel());
-    m_conf.selected_video_card = m_adapter_combo.GetCurSel();
-
     CString resolution_str = GetDlgItemTextA(IDC_RESOLUTIONS_COMBO);
     char *ptr = const_cast<char*>(resolution_str.c_str());
     const char *width_str = strtok(ptr, "x");
@@ -233,13 +190,10 @@ void OptionsDisplayDlg::OnSave()
     }
 
     if (m_video_info) {
-        m_conf.res_bpp = m_color_depth_combo.GetWindowTextA() == "32 bit" ? 32 : 16;
+        m_conf.res_bpp = m_color_depth_combo.GetWindowTextA() == "32-bit" ? 32 : 16;
         m_conf.res_backbuffer_format = m_video_info->get_format_from_bpp(m_conf.res_bpp);
     }
     m_conf.wnd_mode = static_cast<GameConfig::WndMode>(m_wnd_mode_combo.GetCurSel());
-    m_conf.geometry_cache_size = GetDlgItemInt(IDC_RENDERING_CACHE_EDIT, false);
-    m_conf.msaa = m_multi_sample_types[m_msaa_combo.GetCurSel()];
-    m_conf.anisotropic_filtering = (IsDlgButtonChecked(IDC_ANISOTROPIC_CHECK) == BST_CHECKED);
     m_conf.high_scanner_res = (IsDlgButtonChecked(IDC_HIGH_SCANNER_RES_CHECK) == BST_CHECKED);
     m_conf.true_color_textures = (IsDlgButtonChecked(IDC_TRUE_COLOR_TEXTURES_CHECK) == BST_CHECKED);
 }
@@ -257,20 +211,15 @@ void OptionsDisplayDlg::OnRendererChange()
     if (m_video_info) {
         m_conf.res_backbuffer_format = m_video_info->get_format_from_bpp(m_conf.res_bpp);
     }
-    UpdateAdapterCombo();
     UpdateResolutionCombo();
     UpdateColorDepthCombo();
-    UpdateMsaaCombo();
-    UpdateAnisotropyCheckbox();
 }
 
-void OptionsDisplayDlg::OnAdapterChange()
+void OptionsDisplayDlg::OnDisplayChange()
 {
-    m_conf.selected_video_card = m_adapter_combo.GetCurSel();
+    m_conf.display_device = GetSelectedDisplayDevice();
     UpdateResolutionCombo();
     UpdateColorDepthCombo();
-    UpdateMsaaCombo();
-    UpdateAnisotropyCheckbox();
 }
 
 void OptionsDisplayDlg::OnColorDepthChange()
@@ -278,14 +227,12 @@ void OptionsDisplayDlg::OnColorDepthChange()
     if (!m_video_info) {
         return;
     }
-    m_conf.res_bpp = m_color_depth_combo.GetWindowTextA() == "32 bit" ? 32 : 16;
+    m_conf.res_bpp = m_color_depth_combo.GetWindowTextA() == "32-bit" ? 32 : 16;
     m_conf.res_backbuffer_format = m_video_info->get_format_from_bpp(m_conf.res_bpp);
     UpdateResolutionCombo();
-    UpdateMsaaCombo();
 }
 
 void OptionsDisplayDlg::OnWindowModeChange()
 {
     m_conf.wnd_mode = static_cast<GameConfig::WndMode>(m_wnd_mode_combo.GetCurSel());
-    UpdateMsaaCombo();
 }

@@ -17,30 +17,60 @@ bool apply_game_type_for_current_level();
 void apply_rules_for_current_level();
 void server_do_frame();
 bool check_server_chat_command(const char* msg, rf::Player* sender);
+std::pair<std::string_view, std::string_view> strip_by_space(std::string_view str);
 bool server_is_saving_enabled();
+bool server_is_match_mode_enabled();
+bool server_demo_auto_record();
+bool server_demo_chat_record();
+bool server_fflink_demo_upload();
+int server_fflink_demo_max_mb();
+int server_fflink_demo_queue_max();
+bool server_fflink_demo_delete_after_send();
 bool server_allow_fullbright_meshes();
 bool server_allow_lightmaps_only();
 bool server_allow_disable_screenshake();
 bool server_no_player_collide();
+bool server_exposure_damage();
 bool server_location_pinging();
 bool server_delayed_spawns();
 bool server_allow_disable_muzzle_flash();
 bool server_apply_click_limiter();
-bool server_allow_unlimited_fps();
+bool server_allow_outlines();
+bool server_allow_outlines_xray();
 bool server_gaussian_spread();
+int server_hitscan_lag_comp_max_ms();
 bool server_geo_chunk_physics();
+bool server_clear_stale_movement_input();
+bool server_allow_footsteps();
+bool server_sprays_enabled();
+int server_spray_cooldown_ms();
 std::tuple<bool, int, bool, bool> server_features_require_alpine_client();
 void server_reliable_socket_ready(rf::Player* player);
+// Re-sends every client bot's personality, which carries the rules' vehicle courtesy override.
+void server_resend_client_bot_personalities();
 bool server_weapon_items_give_full_ammo();
+bool server_weapon_infinite_magazines();
 void server_add_player_weapon(rf::Player* player, int weapon_type, bool full_ammo);
+void send_nonclip_ammo_sync(rf::Player* player, rf::Entity* entity, int weapon_type);
 void multi_create_alpine_respawn_point(int uid, const char* name, rf::Vector3 pos, rf::Matrix3 orient, bool red, bool blue, bool enabled);
 void multi_reload_weapon_server_side(rf::Player* pp, int weapon_type);
-void multi_update_gungame_weapon(rf::Player* player, bool force_notification);
-void gungame_on_player_spawn(rf::Player* player);
 void update_player_active_status(rf::Player* player);
 void player_idle_check(rf::Player* player);
+void auto_team_balance_on_player_death(rf::Player* killed_player);
+bool auto_team_balance_blocks_team_change(rf::Player* player, int requested_team);
+bool humans_vs_bots_active();
+// Whether spectator follows target; a listen host spectates client-side, without the spectatee bookkeeping.
+bool player_is_spectating(const rf::Player& spectator, const rf::Player* target);
 void send_sound_packet_throwaway(rf::Player* target, int sound_id);
+// World-space sound broadcast to every connected player, via the stock sound packet.
+void broadcast_sound_packet_3d(const rf::Vector3& pos, int sound_id);
 void multi_change_level_alpine(const char* filename);
 const char* get_rand_level_filename();
-void shuffle_level_array();void process_queued_spawn_points_from_items();
+void shuffle_level_array();
+void process_queued_spawn_points_from_items();
 bool is_player_idle(const rf::Player* player);
+void entity_drop_powerup(rf::Entity* ep, int powerup_type, int count);
+// Server: force whichever flag this player carries (CTF or Salvage) to the ground at his feet.
+// A cause-driven drop like death, so no flag_dropping rule gate; a no-op if he carries nothing.
+// Drops at the carrier ENTITY's current position, so call it before anything moves him.
+void multi_force_drop_carried_flag(rf::Player* player);

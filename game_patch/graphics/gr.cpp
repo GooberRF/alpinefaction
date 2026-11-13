@@ -2,8 +2,10 @@
 #include <cctype>
 #include <common/error/d3d-error.h>
 #include <common/utils/list-utils.h>
+#include <common/utils/display-utils.h>
 #include <common/utils/os-utils.h>
 #include <common/config/BuildConfig.h>
+#include <common/lighting/alpine_lighting.h>
 #include <common/ComPtr.h>
 #include <patch_common/CallHook.h>
 #include <patch_common/FunHook.h>
@@ -11,11 +13,19 @@
 #include <patch_common/ShortTypes.h>
 #include <patch_common/AsmWriter.h>
 #include <xlog/xlog.h>
+#include <iterator>
+#include <optional>
+#include <shellapi.h>
 #include "../os/console.h"
+#include "../os/os.h"
 #include "../main/main.h"
 #include "../multi/multi.h"
 #include "../misc/alpine_settings.h"
+#include "../misc/settings_registry.h"
+#include "../misc/level.h"
+#include "../misc/misc.h"
 #include "../rf/gr/gr.h"
+#include "../rf/gr/gr_light.h"
 #include "../rf/gameseq.h"
 #include "../rf/level.h"
 #include "../rf/geometry.h"
@@ -24,19 +34,68 @@
 #include "../rf/os/os.h"
 #include "../rf/os/frametime.h"
 #include "../rf/item.h"
+#include "../rf/misc.h"
 #include "../rf/clutter.h"
+#include "../rf/ui.h"
 #include "gr.h"
 #include "gr_internal.h"
+#include "weather.h"
+#include "scene_capture.h"
+#include "detail_texture.h"
 #include "../misc/alpine_options.h"
 #include "../hud/multi_spectate.h"
+#include "../multi/demo/demo.h"
+#include "../multi/vehicles/vehicle_view.h"
 #include "legacy/gr_d3d.h"
 #include "d3d11/gr_d3d11_hooks.h"
 
-namespace df::gr::d3d11
+namespace gr::d3d11
 {
     bool set_render_target(int bm_handle);
     void update_window_mode();
     void bitmap_float(int bitmap_handle, float x, float y, float w, float h, float sx, float sy, float sw, float sh, bool flip_x, bool flip_y, rf::gr::Mode mode);
+}
+
+bool should_bypass_graphics_init_for_headless_bot()
+{
+    return is_headless_mode() || headless_requested_from_raw_cmdline();
+}
+
+const std::optional<DisplayInfo>& gr_get_display()
+{
+    static const auto display = [] {
+        auto display = resolve_display(g_game_config.display_device.value());
+        if (display) {
+            xlog::info("[Display] {} ({})", display->friendly_name, display->device_path);
+        }
+        return display;
+    }();
+    return display;
+}
+
+// Stock gr_init places the window on the primary display
+static void gr_init_move_window_to_display()
+{
+    const auto& display = gr_get_display();
+    if (!display || display->primary || g_game_config.wnd_mode == GameConfig::STRETCHED) {
+        return;
+    }
+    if (rf::gr::screen.window_mode == rf::gr::WINDOWED) {
+        RECT rect;
+        if (!GetWindowRect(rf::main_wnd, &rect)) {
+            return;
+        }
+        // Like stock: centered horizontally at the top of the work area
+        const RECT& work = display->work_rect;
+        const int x = std::max(work.left + (work.right - work.left - (rect.right - rect.left)) / 2, work.left);
+        SetWindowPos(rf::main_wnd, nullptr, x, work.top, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    else if (rf::gr::screen.window_mode == rf::gr::FULLSCREEN) {
+        // D3D11 goes fullscreen on the output holding most of the window, and stock sizes it to the primary display
+        const RECT& mon = display->monitor_rect;
+        SetWindowPos(rf::main_wnd, nullptr, mon.left, mon.top, mon.right - mon.left, mon.bottom - mon.top,
+            SWP_NOZORDER | SWP_NOACTIVATE);
+    }
 }
 
 CodeInjection gr_init_stretched_window_injection{
@@ -44,12 +103,14 @@ CodeInjection gr_init_stretched_window_injection{
     [](auto& regs) {
         if (g_game_config.wnd_mode == GameConfig::STRETCHED) {
             // Make sure stretched window is always full screen
-            auto cx = GetSystemMetrics(SM_CXSCREEN);
-            auto cy = GetSystemMetrics(SM_CYSCREEN);
+            RECT rect{0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)};
+            if (const auto& display = gr_get_display()) {
+                rect = display->monitor_rect;
+            }
             SetWindowLongA(rf::main_wnd, GWL_STYLE, WS_POPUP | WS_SYSMENU);
             SetWindowLongA(rf::main_wnd, GWL_EXSTYLE, 0);
-            SetWindowPos(rf::main_wnd, HWND_NOTOPMOST, 0, 0, cx, cy, SWP_SHOWWINDOW);
-            rf::gr::screen.aspect = static_cast<float>(cx) / static_cast<float>(cy) * 0.75f;
+            SetWindowPos(rf::main_wnd, HWND_NOTOPMOST, rect.left, rect.top, rect.right - rect.left,
+                rect.bottom - rect.top, SWP_SHOWWINDOW);
             regs.eip = 0x0050C551;
         }
     },
@@ -60,6 +121,42 @@ CodeInjection gr_init_injection{
     []() {
         // Make sure pixel aspect ratio is set to 1 so the frame is not stretched
         rf::gr::screen.aspect = 1.0f;
+    },
+};
+
+CodeInjection gr_init_headless_skip_backend_injection{
+    0x0050C551,
+    [](auto& regs) {
+        if (!should_bypass_graphics_init_for_headless_bot()) {
+            gr_init_move_window_to_display();
+            return;
+        }
+
+        // Skip the backend init path entirely (gr_d3d_init / renderer bootstrap).
+        // This keeps headless bot startup independent from Direct3D availability.
+        rf::gr::screen.mode = rf::gr::NONE;
+        regs.eip = 0x0050C582;
+    },
+};
+
+CodeInjection gr_d3d_init_headless_early_return_injection{
+    0x00545960,
+    [](auto& regs) {
+        if (!should_bypass_graphics_init_for_headless_bot()) {
+            return;
+        }
+
+        static bool logged = false;
+        if (!logged) {
+            xlog::info("Headless bot: bypassing gr_d3d_init entry");
+            logged = true;
+        }
+
+        // Extra safety: if any path still reaches gr_d3d_init while headless,
+        // bail before any Direct3D module/device setup runs.
+        regs.eax = 0;
+        regs.eip = addr_as_ref<uint32_t>(regs.esp);
+        regs.esp += 4;
     },
 };
 
@@ -103,6 +200,31 @@ bool gr_3d_bitmap_oriented_wh(const rf::Vector3* pnt, const rf::Matrix3* M, floa
     return rf::gr::poly(4, verts, rf::gr::TMapperFlags::TMAP_FLAG_TEXTURED, mode, 0, 0.0f);
 }
 
+bool gr_project_world_to_screen(const rf::Vector3& world_pos, float& out_sx, float& out_sy)
+{
+    rf::gr::Vertex v{};
+    if (rf::gr::rotate_vertex(&v, &world_pos)) { // behind the near plane
+        return false;
+    }
+    rf::gr::project_vertex(&v);
+    if (!(v.flags & rf::gr::VF_PROJECTED)) {
+        return false;
+    }
+    out_sx = v.sx;
+    out_sy = v.sy;
+    return true;
+}
+
+void gr_set_colored_vertex(rf::gr::Vertex& v, const rf::Vector3& pos, const rf::Color& color, float alpha)
+{
+    rf::Vector3 p = pos;
+    rf::gr::rotate_vertex(&v, &p);
+    v.r = color.red;
+    v.g = color.green;
+    v.b = color.blue;
+    v.a = static_cast<rf::ubyte>(std::clamp(alpha * color.alpha + 0.5f, 0.0f, 255.0f));
+}
+
 float gr_scale_fov_hor_plus(float horizontal_fov)
 {
     // Use Hor+ FOV scaling method to improve user experience for wide screens
@@ -141,8 +263,10 @@ CodeInjection gameplay_render_frame_fov_injection{
     0x00431BA1,
     []() {
         // Scale world FOV
-        auto& rf_fov = addr_as_ref<float>(0x0059613C);
-        rf_fov = gr_scale_world_fov(rf_fov);
+        rf::gr::gameplay_fov = gr_scale_world_fov(rf::gr::gameplay_fov);
+        // Free-look spectate stepped zoom and the vehicle gun zoom narrow the FOV (1.0 when not zoomed)
+        rf::gr::gameplay_fov /= multi_spectate_get_view_fov_scale();
+        rf::gr::gameplay_fov /= vehicle_gun_zoom_fov_scale();
     },
 };
 
@@ -161,7 +285,7 @@ ConsoleCommand2 fov_cmd{
     "r_fov",
     [](std::optional<float> fov_opt) {
         if (fov_opt) {
-            g_alpine_game_config.set_horz_fov(std::max(0.0f, fov_opt.value()));
+            setting_console_set("horz_fov", std::to_string(std::max(0.0f, fov_opt.value())));
         }
         rf::console::print("Horizontal FOV: {:.2f}", gr_scale_world_fov());
 
@@ -176,9 +300,9 @@ ConsoleCommand2 fov_cmd{
 
 ConsoleCommand2 gamma_cmd{
     "r_gamma",
-    [](std::optional<float> value_opt) {
-        if (value_opt) {
-            rf::gr::set_gamma(value_opt.value());
+    [] (const std::optional<float> gamma) {
+        if (gamma) {
+            setting_console_set("gamma", std::to_string(*gamma));
         }
         rf::console::print("Gamma: {:.2f}", rf::gr::gamma);
     },
@@ -205,7 +329,7 @@ ConsoleCommand2 colorblind_cmd{
             rf::console::print("Usage: r_colorblind <off|protanopia|deuteranopia|tritanopia>");
             return;
         }
-        g_alpine_game_config.set_colorblind_mode(new_mode);
+        setting_console_set("colorblind_mode", std::to_string(new_mode));
         rf::console::print("Colorblind mode set to {} (Direct3D 11 renderer only)", names[g_alpine_game_config.colorblind_mode]);
     },
     "Configure colorblind mode rendering filter (Direct3D 11 renderer only)",
@@ -215,7 +339,7 @@ ConsoleCommand2 colorblind_cmd{
 ConsoleCommand2 precache_rooms_cmd{
     "r_precache_rooms",
     []() {
-        g_alpine_game_config.precache_rooms = !g_alpine_game_config.precache_rooms;
+        setting_console_set("precache_rooms", "toggle");
         rf::console::print("D3D11 room precaching is {}", g_alpine_game_config.precache_rooms ? "enabled" : "disabled");
     },
     "Toggle room precaching in D3D11 renderer (increases initial level load time, reduces risk of hitches during gameplay)",
@@ -245,9 +369,7 @@ void evaluate_lightmaps_only()
 ConsoleCommand2 lightmaps_only_cmd{
     "r_lightmaps",
     []() {
-        g_alpine_game_config.try_disable_textures = !g_alpine_game_config.try_disable_textures;
-
-        evaluate_lightmaps_only();
+        setting_console_set("lightmaps_only", "toggle");
 
         rf::console::print("Lightmap only mode is {}", g_alpine_game_config.try_disable_textures ?
             "enabled. In multiplayer, this will only apply if the server allows it." : "disabled.");
@@ -259,7 +381,7 @@ ConsoleCommand2 lightmaps_only_cmd{
 ConsoleCommand2 disable_rendering_cmd{
     "dbg_togglerendering",
     []() {
-        g_alpine_game_config.rendering_enabled = !g_alpine_game_config.rendering_enabled;
+        setting_console_set("rendering_enabled", "toggle");
         rf::console::print("Rendering is now {}.", g_alpine_game_config.rendering_enabled ? "enabled" : "disabled");
     },
     "Toggle all game rendering.",
@@ -269,7 +391,7 @@ ConsoleCommand2 disable_rendering_cmd{
 FunHook<void(rf::Player*, int)> gameplay_render_frame_hook{
     0x00431A00,
     [](rf::Player* pp, int flags) {
-        if (!g_alpine_game_config.rendering_enabled) {
+        if (is_headless_mode() || !g_alpine_game_config.rendering_enabled || demo_playback_is_seeking()) {
             return;
         }
 
@@ -282,7 +404,7 @@ FunHook<void(rf::Player*, int)> gameplay_render_frame_hook{
 FunHook<void()> gameplay_render_frame_pre_hook{
     0x00431820,
     []() {
-        if (!g_alpine_game_config.rendering_enabled) {
+        if (is_headless_mode() || !g_alpine_game_config.rendering_enabled || demo_playback_is_seeking()) {
             return;
         }
 
@@ -310,6 +432,22 @@ FunHook<void()> explosion_do_frame_hook{
     []() {
         explosion_do_frame_hook.call_target();
         explosion_flash_lights_do_frame();
+    },
+};
+
+// Vclips (explosion sprites etc.) spawned during a demo seek burst barely age before the
+// seek ends and would all pop on screen at once afterwards. Failing the call here also
+// suppresses the flash lights the two CallHooks below add on success, and the particles
+// and explosions vclip_play_3d itself creates.
+FunHook<int(int index, rf::GRoom* src_room, rf::Vector3* src_pos, rf::Vector3* pos,
+    float radius, int parent_handle, rf::Vector3* dir, bool play_sound)> vclip_play_3d_hook{
+    0x004C16E0,
+    [](int index, rf::GRoom* src_room, rf::Vector3* src_pos, rf::Vector3* pos,
+        float radius, int parent_handle, rf::Vector3* dir, bool play_sound) {
+        if (demo_playback_in_seek_burst()) {
+            return -1;
+        }
+        return vclip_play_3d_hook.call_target(index, src_room, src_pos, pos, radius, parent_handle, dir, play_sound);
     },
 };
 
@@ -376,7 +514,7 @@ bool gr_set_render_target(int bm_handle)
 {
     if (rf::gr::screen.mode == rf::gr::DIRECT3D) {
         if (is_d3d11()) {
-            return df::gr::d3d11::set_render_target(bm_handle);
+            return gr::d3d11::set_render_target(bm_handle);
         }
         else {
             return gr_d3d_set_render_target(bm_handle);
@@ -385,12 +523,35 @@ bool gr_set_render_target(int bm_handle)
     return false;
 }
 
+int gr_render_target_generation()
+{
+    if (rf::gr::screen.mode == rf::gr::DIRECT3D && is_d3d11()) {
+        return gr::d3d11::render_target_generation();
+    }
+    return 0;
+}
+
+// Drop the renderer's cached texture-handle pair; see the declaration in gr.h.
+void gr_invalidate_texture_cache()
+{
+    if (rf::gr::screen.mode == rf::gr::DIRECT3D && is_d3d11()) {
+        gr::d3d11::invalidate_texture_cache();
+    }
+}
+
+void gr_flush_outlines_before_fpgun()
+{
+    if (rf::gr::screen.mode == rf::gr::DIRECT3D && is_d3d11()) {
+        gr::d3d11::flush_outlines_before_fpgun();
+    }
+}
+
 void gr_bitmap_scaled_float(int bitmap_handle, float x, float y, float w, float h,
                             float sx, float sy, float sw, float sh, bool flip_x, bool flip_y, rf::gr::Mode mode)
 {
     if (rf::gr::screen.mode == rf::gr::DIRECT3D) {
         if (is_d3d11()) {
-            df::gr::d3d11::bitmap_float(bitmap_handle, x, y, w, h, sx, sy, sw, sh, flip_x, flip_y, mode);
+            gr::d3d11::bitmap_float(bitmap_handle, x, y, w, h, sx, sy, sw, sh, flip_x, flip_y, mode);
         }
         else {
             gr_d3d_bitmap_float(bitmap_handle, x, y, w, h, sx, sy, sw, sh, flip_x, flip_y, mode);
@@ -398,12 +559,24 @@ void gr_bitmap_scaled_float(int bitmap_handle, float x, float y, float w, float 
     }
 }
 
-void gr_set_window_mode(rf::gr::WindowMode window_mode)
+void gr_poly_2d(int bitmap_handle, int nv, const rf::gr::Vertex* vertices, rf::gr::Mode mode)
+{
+    if (rf::gr::screen.mode == rf::gr::DIRECT3D) {
+        if (is_d3d11()) {
+            gr::d3d11::poly_2d(bitmap_handle, nv, vertices, mode);
+        }
+        else {
+            gr_d3d_poly_2d(bitmap_handle, nv, vertices, mode);
+        }
+    }
+}
+
+static void gr_set_window_mode(rf::gr::WindowMode window_mode)
 {
     if (rf::gr::screen.mode == rf::gr::DIRECT3D) {
         rf::gr::screen.window_mode = window_mode;
         if (is_d3d11()) {
-            df::gr::d3d11::update_window_mode();
+            gr::d3d11::update_window_mode();
         }
         else {
             gr_d3d_update_window_mode();
@@ -415,7 +588,7 @@ void gr_update_texture_filtering()
 {
     if (rf::gr::screen.mode == rf::gr::DIRECT3D) {
         if (is_d3d11()) {
-            df::gr::d3d11::update_texture_filtering();
+            gr::d3d11::update_texture_filtering();
         }
         else {
             gr_d3d_update_texture_filtering();
@@ -440,8 +613,7 @@ ConsoleCommand2 windowed_cmd{
 ConsoleCommand2 nearest_texture_filtering_cmd{
     "r_nearest",
     []() {
-        g_alpine_game_config.nearest_texture_filtering = !g_alpine_game_config.nearest_texture_filtering;
-        gr_update_texture_filtering();
+        setting_console_set("nearest_texture_filtering", "toggle");
         rf::console::print("Nearest texture filtering is {}", g_alpine_game_config.nearest_texture_filtering ? "enabled" : "disabled");
     },
     "Toggle nearest texture filtering",
@@ -451,12 +623,11 @@ ConsoleCommand2 picmip_cmd{
     "r_picmip",
     [](std::optional<int> picmip_opt) {
         if (picmip_opt) {
-            int divisor = picmip_opt.value();
-            if (divisor < 1) {
-                divisor = 1;
+            if (rf::gr::screen.mode != rf::gr::DIRECT3D || !is_d3d11()) {
+                rf::console::print("r_picmip is supported only by the Direct3D 11 renderer");
+                return;
             }
-            g_alpine_game_config.set_picmip(divisor);
-            gr_update_texture_filtering();
+            setting_console_set("picmip", std::to_string(picmip_opt.value()));
         }
         rf::console::print(
             "Texture resolution divisor is set to {} (Direct3D 11 renderer only, 1 = full resolution)",
@@ -471,7 +642,7 @@ ConsoleCommand2 lod_distance_scale_cmd{
     "r_lodscale",
     [](std::optional<float> scale_opt) {
         if (scale_opt.has_value()) {
-            g_alpine_game_config.set_lod_dist_scale(scale_opt.value());
+            setting_console_set("lod_dist_scale", std::to_string(scale_opt.value()));
         }
         rf::console::print("LOD distance scale: {:.2f}", g_alpine_game_config.lod_dist_scale);
     },
@@ -488,11 +659,41 @@ CodeInjection gr_d3d_render_lod_vif_injection{
     },
 };
 
-// Power of 2 texture enforcement
-// Access p2t flag directly to avoid pulling in D3D8 types from gr_direct3d.h
-namespace rf::gr::d3d {
-    static auto& p2t = addr_as_ref<int>(0x01CFCC18);
+SunLightState gr_get_sun_state()
+{
+    SunLightState state;
+    if (!(rf::level.flags & rf::LEVEL_LOADED)) {
+        return state;
+    }
+    const alpine_lighting::SunState sun = alpine_lighting::sun_state(AlpineLevelProperties::instance());
+    state.enabled = sun.enabled;
+    state.affects_meshes = sun.affects_meshes;
+    state.drives_shadowmap_dir = sun.drives_shadowmap_dir;
+    state.mesh_mode = sun.mesh_mode;
+    state.travel_dir = {sun.travel_dir[0], sun.travel_dir[1], sun.travel_dir[2]};
+    std::copy(std::begin(sun.color), std::end(sun.color), state.color);
+    return state;
 }
+
+float gr_sun_get_mesh_scale(const float* ambient)
+{
+    const SunLightState sun = gr_get_sun_state();
+    float global_ambient[3];
+    if (!ambient) {
+        rf::gr::light_get_ambient(&global_ambient[0], &global_ambient[1], &global_ambient[2]);
+        ambient = global_ambient;
+    }
+    return alpine_lighting::sun_mesh_scale(sun.enabled && sun.affects_meshes, sun.mesh_mode, ambient);
+}
+
+void gr_mesh_blend_ambient(const float (&lightmap)[3], float (&out)[3])
+{
+    float global_ambient[3];
+    rf::gr::light_get_ambient(&global_ambient[0], &global_ambient[1], &global_ambient[2]);
+    alpine_lighting::mesh_blend_ambient(global_ambient, lightmap, out);
+}
+
+// Power of 2 texture enforcement
 static bool override_pow2tex = false;
 
 ConsoleCommand2 pow2_tex_cmd{
@@ -525,14 +726,71 @@ ConsoleCommand2 pow2_tex_cmd{
     "Manual debug override for power of 2 texture enforcement. Only affects new level loads. If you don't know what this does, do not use this command.",
 };
 
+ConsoleCommand2 underwater_fx_cmd{
+    "r_underwater",
+    [](std::optional<int> level_opt) {
+        if (level_opt) {
+            setting_console_set("underwater_fx", std::to_string(level_opt.value()));
+        }
+        rf::console::print(
+            "Underwater effects level is {} (Direct3D 11 renderer only, 0 = stock)",
+            g_alpine_game_config.underwater_fx
+        );
+        if (gr::d3d11::underwater_fx_level() != g_alpine_game_config.underwater_fx
+            || (g_alpine_game_config.underwater_fx >= 1 && !gr::d3d11::underwater_caustics_enabled())) {
+            rf::console::print(
+                "Note: per-map override in mapname_info.tbl is active for this level (effective level {}, caustics {})",
+                gr::d3d11::underwater_fx_level(), gr::d3d11::underwater_caustics_enabled() ? "on" : "off");
+        }
+    },
+    "Sets the underwater effects level: 0 stock, 1 caustics, 2 + fog/tint/vignette, 3 + distortion "
+    "(Direct3D 11 renderer only)",
+    "r_underwater <0-3>",
+};
+
+ConsoleCommand2 ignore_tbl_caustics_cmd{
+    "cl_ignore_tbl_caustics",
+    []() {
+        setting_console_set("ignore_tbl_caustics", "toggle");
+        rf::console::print("Ignore TBL caustics override: {}",
+                           g_alpine_game_config.ignore_tbl_caustics ? "enabled" : "disabled");
+    },
+    "Toggle ignoring per-map overrides from mapname_info.tbl that turn caustics off.",
+};
+
+ConsoleCommand2 ignore_tbl_underwater_fog_cmd{
+    "cl_ignore_tbl_underwater_fog",
+    []() {
+        setting_console_set("ignore_tbl_underwater_fog", "toggle");
+        rf::console::print("Ignore TBL underwater fog override: {}",
+                           g_alpine_game_config.ignore_tbl_underwater_fog ? "enabled" : "disabled");
+    },
+    "Toggle ignoring per-map overrides from mapname_info.tbl that turn underwater fog off.",
+};
+
+ConsoleCommand2 scope_glass_cmd{
+    "r_scopeglass",
+    [](std::optional<int> level_opt) {
+        if (level_opt) {
+            setting_console_set("scope_glass", std::to_string(level_opt.value()));
+        }
+        rf::console::print(
+            "Scope lens effect level is {} (Direct3D 11 renderer only, 0 = off)",
+            g_alpine_game_config.scope_glass
+        );
+    },
+    "Sets the lens distortion, chromatic aberration and vignetting seen through rifle scopes: "
+    "0 off, 1 light, 2 heavy (Direct3D 11 renderer only)",
+    "r_scopeglass <0-2>",
+};
+
 // checked during level load
 void evaluate_pow2tex(const rf::String& level_filename) {
     // if dbg_pow2tex is active, use manual override instead of level filename lookup
     if (!override_pow2tex) {
-        bool should_p2t_fix = false;
-
-        if (is_p2t_fix_level(level_filename)) {
-            should_p2t_fix = true;
+        const bool should_p2t_fix = is_p2t_fix_level(level_filename);
+        // Renderer-only, so a dedicated server has nothing to report.
+        if (!rf::is_dedicated_server && should_p2t_fix) {
             rf::console::print("Applying power of 2 texture fix to known affected level {}", level_filename);
         }
 
@@ -541,12 +799,148 @@ void evaluate_pow2tex(const rf::String& level_filename) {
 
     // Always sync D3D11 state with current p2t value at level load
     if (g_game_config.renderer == GameConfig::Renderer::d3d11) {
-        df::gr::d3d11::set_pow2_tex_active(rf::gr::d3d::p2t != 0);
+        gr::d3d11::set_pow2_tex_active(rf::gr::d3d::p2t != 0);
+        if (!rf::is_dedicated_server && is_sky_fix_level(level_filename)) {
+            rf::console::print("Applying sky fix to known affected level {}", level_filename);
+        }
+    }
+}
+
+// ─── Camera far clip ───
+
+// gr_d3d_setup_3d (0x00547150) clamps the legacy renderers' z range to 1000
+constexpr float legacy_max_camera_far_clip = 1000.0f;
+constexpr float stock_default_wfar = 275.0f;
+constexpr float d3d11_default_projection_far = 1700.0f;
+
+float level_camera_far_clip()
+{
+    const float far_clip = AlpineLevelProperties::instance().camera_far_clip;
+    return is_d3d11() ? far_clip : std::min(far_clip, legacy_max_camera_far_clip);
+}
+
+float gr_fog_near_clip()
+{
+    return rfl_version_minimum(306) ? rf::gr::screen.fog_near : 0.0f;
+}
+
+// 0x0045BB00 swaps its own value into gr::default_wfar until 0x0045BE76 restores it, and that window keeps it.
+float level_default_far_clip()
+{
+    const float camera_far_clip = level_camera_far_clip();
+    return camera_far_clip > 0.0f && rf::gr::default_wfar == stock_default_wfar ? camera_far_clip
+                                                                                : rf::gr::default_wfar;
+}
+
+float level_dry_far_clip()
+{
+    const float camera_far_clip = level_camera_far_clip();
+    if (camera_far_clip > 0.0f) {
+        return camera_far_clip;
+    }
+    if (!rf::level.has_skyroom && rf::level.distance_fog_far_clip > 0.0f) {
+        return rf::level.distance_fog_far_clip;
+    }
+    return rf::gr::default_wfar;
+}
+
+float level_projection_far()
+{
+    const float camera_far_clip = level_camera_far_clip();
+    if (camera_far_clip > 0.0f) {
+        return camera_far_clip;
+    }
+    return rf::level.distance_fog_far_clip > 0.0f ? rf::level.distance_fog_far_clip : d3d11_default_projection_far;
+}
+
+float fog_far_clip_fade(float distance)
+{
+    const float far_clip = rf::level.distance_fog_far_clip;
+    if (!(far_clip > 0.0f)) {
+        return 1.0f;
+    }
+    return std::clamp(4.0f * (1.0f - distance / far_clip), 0.0f, 1.0f);
+}
+
+// gameplay_render_frame starts each frame at gr::default_wfar
+CallHook<void(float)> gameplay_render_frame_default_far_clip_hook{
+    0x00431AF4,
+    []([[maybe_unused]] float far_clip) {
+        gameplay_render_frame_default_far_clip_hook.call_target(level_default_far_clip());
+    },
+};
+
+// The sky room pass (0x00516DC0) switches to gr::default_wfar for the sky solid only when the level has fog
+// (0x004318C9), so without fog the sky would be clipped at the camera far clip. gr_far_clip_dist is 0 while the
+// far clip is off, which gr_set_far_clip(0) restores.
+CallHook<void(rf::GRoom*)> g_solid_render_sky_room_hook{
+    0x004D3A62,
+    [](rf::GRoom* room) {
+        if (!(level_camera_far_clip() > 0.0f) || rf::level.distance_fog_far_clip > 0.0f) {
+            g_solid_render_sky_room_hook.call_target(room);
+            return;
+        }
+        const float far_clip = rf::gr_far_clip_dist;
+        rf::gr_set_far_clip(rf::gr::default_wfar);
+        g_solid_render_sky_room_hook.call_target(room);
+        rf::gr_set_far_clip(far_clip);
+    },
+};
+
+// The fog far clip set as the far clip: dry with fog (0x00431F33), after the sky solid (0x00431911) and after
+// glares (0x004319C8). The sky solid itself keeps gr::default_wfar (0x004318EA).
+CallHook<void(float)> gameplay_render_frame_fog_far_clip_hook{
+    {0x00431F33, 0x00431911, 0x004319C8},
+    [](float far_clip) {
+        const float camera_far_clip = level_camera_far_clip();
+        gameplay_render_frame_fog_far_clip_hook.call_target(camera_far_clip > 0.0f ? camera_far_clip : far_clip);
+    },
+};
+
+// Glares and volumetric lights draw with twice the far clip
+CallHook<void(float)> gameplay_render_frame_glare_far_clip_hook{
+    0x00431988,
+    [](float far_clip) {
+        const float camera_far_clip = level_camera_far_clip();
+        gameplay_render_frame_glare_far_clip_hook.call_target(camera_far_clip > 0.0f ? 2.0f * camera_far_clip
+                                                                                     : far_clip);
+    },
+};
+
+bool gr_is_antialiasing_err() {
+    if (rf::is_dedicated_server || is_headless_mode()) {
+        return false;
+    } else if (is_d3d11()) {
+        return gr::d3d11::is_antialiasing_err();
+    } else {
+        return gr_d3d_is_antialiasing_err();
+    }
+}
+
+bool gr_supports_sample_count(const uint32_t sample_count) {
+    if (rf::is_dedicated_server || is_headless_mode()) {
+        return false;
+    } else if (is_d3d11()) {
+        return gr::d3d11::supports_sample_count(sample_count);
+    } else {
+        return gr_d3d_supports_sample_count(sample_count);
+    }
+}
+
+void gr_flush_frame_buffers() {
+    if (!rf::is_dedicated_server && !is_headless_mode()) {
+        if (is_d3d11()) {
+            gr::d3d11::flush_frame_buffers();
+        } else {
+            gr_d3d_flush_frame_buffers();
+        }
     }
 }
 
 void gr_apply_patch()
 {
+    const bool headless_bot_graphics_bypass = should_bypass_graphics_init_for_headless_bot();
+
     if (g_game_config.wnd_mode != GameConfig::FULLSCREEN) {
         // Enable windowed mode
         write_mem<u32>(0x004B29A5 + 6, 0xC8);
@@ -555,6 +949,8 @@ void gr_apply_patch()
 
     // Fix FOV for widescreen
     gr_init_injection.install();
+    gr_init_headless_skip_backend_injection.install();
+    gr_d3d_init_headless_early_return_injection.install();
     gameplay_render_frame_fov_injection.install();
     gr_setup_3d_railgun_hook.install();
 
@@ -570,22 +966,32 @@ void gr_apply_patch()
     // Lights
     gr_light_apply_patch();
 
-    if (g_game_config.renderer == GameConfig::Renderer::d3d11) {
-        void gr_d3d11_apply_patch();
-        gr_d3d11_apply_patch();
-    }
-    else {
-        // D3D generic patches
-        gr_d3d_apply_patch();
+    // Plankton fix and weather regions
+    weather_apply_patch();
 
-        // D3D texture handling
-        gr_d3d_texture_apply_patch();
+    // Display_Projection scene capture
+    scene_capture_apply_patch();
 
-        // Back-buffer capture or render to texture related code
-        gr_d3d_capture_apply_patch();
+    if (!headless_bot_graphics_bypass) {
+        const bool use_d3d11_renderer =
+            g_game_config.renderer == GameConfig::Renderer::d3d11;
+        if (use_d3d11_renderer) {
+            void gr_d3d11_apply_patch();
+            gr_d3d11_apply_patch();
+        }
+        else {
+            // D3D generic patches
+            gr_d3d_apply_patch();
 
-        // Gamma related code
-        gr_d3d_gamma_apply_patch();
+            // D3D texture handling
+            gr_d3d_texture_apply_patch();
+
+            // Back-buffer capture or render to texture related code
+            gr_d3d_capture_apply_patch();
+
+            // Gamma related code
+            gr_d3d_gamma_apply_patch();
+        }
     }
 
     // Bink Video patch
@@ -615,8 +1021,23 @@ void gr_apply_patch()
     // Handle explosion dynamic light flashes
     vclip_init_hook.install();
     explosion_do_frame_hook.install();
+    vclip_play_3d_hook.install();
     vclip_play_3d_weapon_hook.install();
     vclip_play_3d_env_hook.install();
+
+    // ---
+    // Render bolts steady instead of flickering: vanilla rolls a random
+    // brightness (10-100% of bolt color) and width (50-100% of thickness) for
+    // every bolt on every rendered frame. Collapse the random ranges to the
+    // constants the engine uses for its static bolt path (visible while the
+    // game is paused). Designer-controlled shape jitter is unaffected.
+    // ---
+    // Logic works, disabled until a mechanism to apply it on-demand by level designers exists
+    // Todo
+    //write_mem<u32>(0x00558090 + 1, 0x3F000000); // brightness max: 1.0 -> 0.5
+    //write_mem<u32>(0x00558095 + 1, 0x3F000000); // brightness min: 0.1 -> 0.5
+    //write_mem<u32>(0x0055815C + 1, 0x3F400000); // width max: 1.0 -> 0.75
+    //write_mem<u32>(0x00558161 + 1, 0x3F400000); // width min: 0.5 -> 0.75
 
     // Fix gr_rect_border not drawing left border
     AsmWriter{0x0050DF2D}.push(asm_regs::ebp).push(asm_regs::ebx);
@@ -624,6 +1045,12 @@ void gr_apply_patch()
     // Allow client to disable rendering
     gameplay_render_frame_hook.install();
     gameplay_render_frame_pre_hook.install();
+
+    // Level camera far clip
+    gameplay_render_frame_default_far_clip_hook.install();
+    g_solid_render_sky_room_hook.install();
+    gameplay_render_frame_fog_far_clip_hook.install();
+    gameplay_render_frame_glare_far_clip_hook.install();
 
     // Commands
     fov_cmd.register_cmd();
@@ -634,10 +1061,15 @@ void gr_apply_patch()
     nearest_texture_filtering_cmd.register_cmd();
     lod_distance_scale_cmd.register_cmd();
     picmip_cmd.register_cmd();
+    detail_texture_register_commands();
     colorblind_cmd.register_cmd();
     precache_rooms_cmd.register_cmd();
     disable_rendering_cmd.register_cmd();
     pow2_tex_cmd.register_cmd();
+    underwater_fx_cmd.register_cmd();
+    ignore_tbl_caustics_cmd.register_cmd();
+    ignore_tbl_underwater_fog_cmd.register_cmd();
+    scope_glass_cmd.register_cmd();
 
     // Fix `rf::gr::text_2d_mode`.
     AsmWriter{0x0050BB40}.push<int8_t>(rf::gr::FOG_NOT_ALLOWED);

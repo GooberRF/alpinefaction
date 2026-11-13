@@ -4,7 +4,12 @@
 #include <patch_common/AsmWriter.h>
 #include <patch_common/StaticBufferResizePatch.h>
 #include <common/utils/string-utils.h>
+#include <common/utils/list-utils.h>
+#include <common/alpine_mesh_scale.h>
 #include <xlog/xlog.h>
+#include <unordered_map>
+#include <algorithm>
+#include <cmath>
 #include "../rf/gr/gr_light.h"
 #include "../rf/sound/sound.h"
 #include "../rf/object.h"
@@ -14,14 +19,33 @@
 #include "../rf/level.h"
 #include "../rf/particle_emitter.h"
 #include "../rf/geometry.h"
+#include "../rf/collide.h"
+#include "../rf/vmesh.h"
+#include "../rf/vfx.h"
 #include "../rf/math/ix.h"
 #include "../rf/gameseq.h"
+#include "../rf/entity.h"
+#include "../rf/weapon.h"
+#include "../rf/item.h"
+#include "../rf/player/player.h"
+#include "../rf/player/player_fpgun.h"
+#include "../hud/multi_spectate.h"
+#include "../multi/alpine_packets.h"
+#include "../multi/gametype.h"
+#include "../multi/server_internal.h"
+#include "../multi/mutators.h"
+#include "../multi/vehicles/physics/ragdoll.h"
+#include "../multi/vehicles/vehicle.h"
+#include "../graphics/weather.h"
 #include "../misc/alpine_options.h"
 #include "../misc/misc.h"
 #include "../misc/achievements.h"
+#include "alpine_rope.h"
 #include "event_alpine.h"
+#include "obj_collision.h"
 #include "object.h"
 #include "object_private.h"
+#include "particle_sim.h"
 #include "../misc/level.h"
 
 std::string get_object_type_string(int type) {
@@ -120,7 +144,9 @@ CodeInjection obj_create_find_slot_patch{
 
         int index_hint, min_index, max_index;
         bool use_low_index;
-        if (rf::is_server && (obj_type == rf::OT_ENTITY || obj_type == rf::OT_ITEM)) {
+        // Only AF clients can load v306+ levels, so their items do not need low object numbers
+        if (rf::is_server
+            && (obj_type == rf::OT_ENTITY || (obj_type == rf::OT_ITEM && !level_allows_extra_items()))) {
             // Use low object numbers server-side for entities and items for better client compatibility
             use_low_index = true;
             index_hint = low_index_hint;
@@ -188,6 +214,21 @@ CallHook<void*(size_t)> GPool_allocate_new_hook{
         }
         return result;
     },
+};
+
+// Level items are created during load, before LEVEL_LOADED is set.
+bool level_allows_extra_items()
+{
+    return level_rfl_version_at_least(306);
+}
+
+CodeInjection obj_create_item_limit_patch{
+    0x004871D9,
+    [](auto& regs) {
+        const int limit = level_allows_extra_items() ? extended_item_limit : stock_item_limit;
+        regs.eip = rf::item_pool_num_used < limit ? 0x004871E9 : 0x004872BC;
+    },
+    false
 };
 
 CodeInjection sort_clutter_patch{
@@ -268,11 +309,272 @@ CodeInjection obj_create_mesh_check_valid{
     },
 };
 
+FunHook<bool(rf::VMesh*, rf::VMeshCollisionInput*, rf::VMeshCollisionOutput*, bool)> vmesh_collide_hook{
+    0x005031F0,
+    [](rf::VMesh* vmesh, rf::VMeshCollisionInput* in, rf::VMeshCollisionOutput* out, bool clear) {
+        if (!vmesh) {
+            if (clear && out) {
+                out->fraction = 1.0f;
+                out->triangle_indices = nullptr;
+            }
+            return false;
+        }
+        const float scale = alpine_mesh_vmesh_draw_scale(vmesh);
+        if (scale != 1.0f && in) {
+            // Collide against the unscaled geometry with a copy, leaving the caller's input untouched
+            rf::VMeshCollisionInput scaled_in = *in;
+            alpine_mesh_scale_collision_input(scaled_in, scale);
+            const bool hit = vmesh_collide_hook.call_target(vmesh, &scaled_in, out, clear);
+            if (hit && out) {
+                // hit_point is mesh-local
+                out->hit_point *= scale;
+            }
+            return hit;
+        }
+        return vmesh_collide_hook.call_target(vmesh, in, out, clear);
+    },
+};
+
+// vmesh_render call in clutter_render; also covers D3D11, whose mesh backends sit below vmesh_render
+CallHook<void(rf::VMesh*, rf::Vector3*, rf::Matrix3*, rf::MeshRenderParams*)> clutter_render_vmesh_hook{
+    0x0041048C,
+    [](rf::VMesh* vmesh, rf::Vector3* pos, rf::Matrix3* orient, rf::MeshRenderParams* params) {
+        const float scale = alpine_mesh_vmesh_draw_scale(vmesh);
+        if (scale == 1.0f) {
+            clutter_render_vmesh_hook.call_target(vmesh, pos, orient, params);
+            return;
+        }
+        rf::Matrix3 scaled_orient = alpine_mesh_scale::scale_orient(*orient, scale);
+        clutter_render_vmesh_hook.call_target(vmesh, pos, &scaled_orient, params);
+    },
+};
+
+// vmesh_process call in obj_render for .vfx meshes: particle emitters and lights are placed with this orient
+CallHook<void(rf::VMesh*, float, int, rf::Vector3*, rf::Matrix3*, int)> obj_render_vfx_process_hook{
+    0x00488B93,
+    [](rf::VMesh* vmesh, float frametime, int increment_only, rf::Vector3* pos, rf::Matrix3* orient, int lod_level) {
+        const float scale = alpine_mesh_vmesh_draw_scale(vmesh);
+        if (scale == 1.0f) {
+            obj_render_vfx_process_hook.call_target(vmesh, frametime, increment_only, pos, orient, lod_level);
+            return;
+        }
+        rf::Matrix3 scaled_orient = alpine_mesh_scale::scale_orient(*orient, scale);
+        obj_render_vfx_process_hook.call_target(vmesh, frametime, increment_only, pos, &scaled_orient, lod_level);
+    },
+};
+
+// .vfx part draws invert their instance transform with the orient's transpose, which a scaled orient breaks.
+// Draw with the orthonormal orient and the part's object-space data scaled instead.
+FunHook<void __fastcall(rf::VfxSfxoRenderObj*, int, float, rf::Vector3*, rf::Matrix3*)> vfx_part_render_hook{
+    0x0053EE90,
+    [](rf::VfxSfxoRenderObj* part, int edx, float frame, rf::Vector3* pos, rf::Matrix3* orient) FASTCALL_LAMBDA {
+        const float scale = orient ? alpine_mesh_scale::orient_scale(*orient) : 1.0f;
+        if (scale == 1.0f || !part->chunk) {
+            vfx_part_render_hook.call_target(part, edx, frame, pos, orient);
+            return;
+        }
+        rf::Matrix3 unit_orient = alpine_mesh_scale::scale_orient(*orient, 1.0f / scale);
+        alpine_mesh_scale::ScopedVfxPartScale scaled_part{*part, scale};
+        vfx_part_render_hook.call_target(part, edx, frame, pos, &unit_orient);
+    },
+};
+
+// Particles are drawn without a transform, so their size takes the scale of the orient their emitter was processed with
+FunHook<void __fastcall(rf::VfxPartInstance*, int, int, float)> vfx_particle_render_hook{
+    0x005431D0,
+    [](rf::VfxPartInstance* emitter, int edx, int index, float frame) FASTCALL_LAMBDA {
+        const float scale = alpine_mesh_scale::orient_scale(emitter->orient);
+        if (scale == 1.0f) {
+            vfx_particle_render_hook.call_target(emitter, edx, index, frame);
+            return;
+        }
+        const float radius = emitter->particle_radius;
+        emitter->particle_radius = radius * scale;
+        vfx_particle_render_hook.call_target(emitter, edx, index, frame);
+        emitter->particle_radius = radius;
+    },
+};
+
+// An emitter whose bounding sphere is off screen stops simulating and drawing its particles; scale that sphere's
+// radius (pushed just below) like the emission it bounds
+CodeInjection vfx_particle_cull_radius_injection{
+    0x00543150,
+    [](auto& regs) {
+        const rf::VfxPartInstance* emitter = regs.esi;
+        const float scale = alpine_mesh_scale::orient_scale(emitter->orient);
+        if (scale != 1.0f) {
+            addr_as_ref<float>(regs.esp + 0x68) *= scale;
+        }
+    },
+};
+
+FunHook<bool(rf::Object*, rf::Object*)> collide_object_object_mesh_hook{
+    0x0049AFE0,
+    [](rf::Object* objp, rf::Object* mesh_objp) {
+        // Mode-3 meshes are collided as static world geometry inside collide_object_world and
+        // collide_spheres_world, so the object pair path must not generate a second response.
+        // Projectiles are the exception: they stay on the vmesh test so impacts and
+        // destructible-mesh damage keep being attributed to the mesh object.
+        const bool bypass = objp->type != rf::OT_WEAPON && alpine_mesh_is_collision_mesh(mesh_objp);
+        if (bypass) {
+            return false;
+        }
+        return collide_object_object_mesh_hook.call_target(objp, mesh_objp);
+    },
+};
+
+// Mode 3 (brush) mesh collision
+static void mesh_world_fill_contact(rf::PCollisionOut& out, const AlpineMeshContact& contact)
+{
+    out.hit_point = contact.hit_point;
+    out.hit_normal = contact.hit_normal;
+    out.hit_time = contact.fraction;
+    out.material = contact.material;
+    out.inv_mass = 0.0f;
+    out.vel = contact.vel;
+    out.obj_handle = contact.obj_handle;
+    out.bitmap_handle = -1;
+    out.is_liquid = 0;
+    out.hit_face = nullptr;
+    out.hit_face_v3d = nullptr;
+}
+
+// Contacts whose hit_time is within this of the nearest are treated as a tie when picking the
+// representative rideable handle/vel (matches the push-hook blend tolerance).
+constexpr float mesh_world_tie_tol = 0.01f;
+
+static void mesh_world_aggregate_contacts(rf::Object* objp)
+{
+    rf::Vector3 sum_point{0.0f, 0.0f, 0.0f};
+    rf::Vector3 sum_normal{0.0f, 0.0f, 0.0f};
+    float min_time = 1.0f;
+    // src = index whose vel/obj_handle represents the aggregate.
+    int src = 0;
+    for (int i = 0; i < rf::g_world_contact_count; i++) {
+        const float t = rf::g_world_contacts[i].hit_time;
+        min_time = std::min(min_time, t);
+        sum_normal += rf::g_world_contacts[i].hit_normal;
+        sum_point += rf::g_world_contacts[i].hit_point;
+        if (i > 0) {
+            const float src_t = rf::g_world_contacts[src].hit_time;
+            if (t < src_t - mesh_world_tie_tol) {
+                src = i;
+            }
+            else if (t <= src_t + mesh_world_tie_tol && rf::g_world_contacts[src].obj_handle == -1
+                     && rf::g_world_contacts[i].obj_handle != -1) {
+                src = i;
+            }
+        }
+    }
+    if (rf::g_world_contact_count > 1) {
+        sum_normal.normalize_safe();
+        sum_point /= static_cast<float>(rf::g_world_contact_count);
+    }
+
+    rf::PCollisionOut& out = objp->p_data.collide_out;
+    out.hit_point = sum_point;
+    out.hit_normal = sum_normal;
+    out.hit_normal.normalize_safe();
+    out.hit_time = min_time;
+    out.material = rf::g_world_contacts[0].material;
+    out.inv_mass = 0.0f;
+    out.vel = rf::g_world_contacts[src].vel;
+    out.obj_handle = rf::g_world_contacts[src].obj_handle;
+    out.bitmap_handle = rf::g_world_contacts[0].bitmap_handle;
+    out.is_liquid = rf::g_world_contacts[0].is_liquid;
+    out.hit_face = rf::g_world_contacts[0].hit_face;
+    out.hit_face_v3d = nullptr;
+}
+
+FunHook<char(rf::Object*)> collide_object_world_hook{
+    0x0049BB70,
+    [](rf::Object* objp) -> char {
+        if (!objp || !alpine_mesh_has_collision_solids()) {
+            return collide_object_world_hook.call_target(objp);
+        }
+        char result = collide_object_world_hook.call_target(objp);
+        // Stock bails before touching the contact set when world collision is off, in which
+        // case it still holds another object's contacts. Projectiles keep the object pair path.
+        if (!(objp->p_data.flags & rf::PF_COLLIDE_WORLD) || objp->type == rf::OT_WEAPON) {
+            return result;
+        }
+
+        // Contacts within this much of the best one are blended instead of replacing it
+        constexpr float tolerance = 0.01f;
+
+        bool added = false;
+        for (const rf::PCollisionSphere& csphere : objp->p_data.cspheres) {
+            const rf::Vector3 start = objp->p_data.pos + objp->p_data.orient.transform_vector(csphere.center);
+            const rf::Vector3 end =
+                objp->p_data.next_pos + objp->p_data.next_orient.transform_vector(csphere.center);
+            // g_world_contacts[0].hit_time doubles as the stock best-so-far accumulator and
+            // holds the incoming p_data.collide_out.hit_time while the set is empty
+            const float best = rf::g_world_contacts[0].hit_time;
+            const float max_fraction = std::min(1.0f, best + tolerance);
+
+            AlpineMeshContact contact;
+            const bool got = alpine_mesh_collide_sphere_world(start, end, csphere.radius, &objp->p_data,
+                                                              max_fraction, contact);
+
+            if (got) {
+                if (contact.fraction - best < -tolerance || rf::g_world_contact_count == 0) {
+                    mesh_world_fill_contact(rf::g_world_contacts[0], contact);
+                    rf::g_world_contact_count = 1;
+                    added = true;
+                }
+                else if (rf::g_world_contact_count > 0 && rf::g_world_contact_count < rf::world_contact_max) {
+                    mesh_world_fill_contact(rf::g_world_contacts[rf::g_world_contact_count], contact);
+                    ++rf::g_world_contact_count;
+                    added = true;
+                }
+            }
+        }
+
+        if (added) {
+            mesh_world_aggregate_contacts(objp);
+        }
+        return added ? static_cast<char>(1) : result;
+    },
+};
+
+FunHook<char(rf::Vector3*, rf::Vector3*, rf::PhysicsData*, rf::PCollisionOut*)> collide_spheres_world_hook{
+    0x00499ED0,
+    [](rf::Vector3* p0, rf::Vector3* p1, rf::PhysicsData* pd, rf::PCollisionOut* out) -> char {
+        if (!alpine_mesh_has_collision_solids()) {
+            return collide_spheres_world_hook.call_target(p0, p1, pd, out);
+        }
+        char result = collide_spheres_world_hook.call_target(p0, p1, pd, out);
+
+        for (const rf::PCollisionSphere& csphere : pd->cspheres) {
+            const rf::Vector3 offset = pd->orient.transform_vector(csphere.center);
+            const float best = out->hit_time;
+            AlpineMeshContact contact;
+            const bool got = alpine_mesh_collide_sphere_world(*p0 + offset, *p1 + offset, csphere.radius, pd, best, contact);
+            if (got) {
+                mesh_world_fill_contact(*out, contact);
+                result = 1;
+            }
+        }
+        return result;
+    },
+};
+
 FunHook<void(rf::Object*)> obj_delete_mesh_hook{
     0x00489FC0,
     [](rf::Object* objp) {
         obj_delete_mesh_hook.call_target(objp);
         obj_mesh_lighting_free_one(objp);
+        alpine_mesh_free_collision_solid(objp->handle);
+        alpine_mesh_release_scale_vmesh(objp);
+    },
+};
+
+// obj_delete's own obj_delete_mesh call: the object is going away, so its draw scale goes too
+CallHook<void(rf::Object*)> obj_delete_free_mesh_hook{
+    0x00486708,
+    [](rf::Object* objp) {
+        obj_delete_free_mesh_hook.call_target(objp);
+        alpine_mesh_free_scale(objp);
     },
 };
 
@@ -297,42 +599,59 @@ CodeInjection mover_process_post_patch{
         if (object && object->type == rf::OT_EVENT) {
             rf::Event* event = static_cast<rf::Event*>(object);
 
-            if (event->event_type == rf::event_type_to_int(rf::EventType::Anchor_Marker)) {
+            if (event->event_type == std::to_underlying(rf::EventType::Anchor_Marker)) {
+                const rf::Vector3 anchor_pos = event->p_data.next_pos;
+
                 for (const auto& linked_uid : event->links) {
-                    
-                    // check for an object - Note objects store handles in link int rather than UID
+
+                    // check for an object
                     if (auto* obj =
                             static_cast<rf::Object*>(rf::obj_from_handle(linked_uid))) {
-                        obj->pos = event->pos;
+                        obj->pos = anchor_pos;
                     }
 
                     // check for a light
                     if (auto* light = static_cast<rf::gr::Light*>(
                             rf::gr::light_get_from_handle(rf::gr::level_get_light_handle_from_uid(linked_uid)))) {
-                        light->vec = event->pos;
+                        light->vec = anchor_pos;
                     }
 
                     // check for a particle emitter
                     if (auto* emitter =
                             static_cast<rf::ParticleEmitter*>(rf::level_get_particle_emitter_from_uid(linked_uid))) {
-                        emitter->pos = event->pos;
+                        emitter->pos = anchor_pos;
                     }
 
                     // check for a push region
                     if (auto* push_region =
                             static_cast<rf::PushRegion*>(rf::level_get_push_region_from_uid(linked_uid))) {
-                        push_region->pos = event->pos;
+                        push_region->pos = anchor_pos;
                     }
+
+                    // check for a gas region
+                    if (auto* gas_region = gas_region_get_by_uid(linked_uid)) {
+                        gas_region->pos = anchor_pos;
+                    }
+
+                    // check for a climbing region
+                    if (auto* climb_region = climb_region_get_by_uid(linked_uid)) {
+                        climb_region->pos = anchor_pos;
+                    }
+
+                    // check for a weather region
+                    weather_move_region(linked_uid, anchor_pos);
                 }
             }
 
-            if (event->event_type == rf::event_type_to_int(rf::EventType::Anchor_Marker_Orient)) {
+            if (event->event_type == std::to_underlying(rf::EventType::Anchor_Marker_Orient)) {
+                const rf::Vector3 anchor_pos = event->p_data.next_pos;
+
                 for (const auto& linked_uid : event->links) {
-                    
-                    // check for an object - Note objects store handles in link int rather than UID
+
+                    // check for an object
                     if (auto* obj =
                             static_cast<rf::Object*>(rf::obj_from_handle(linked_uid))) {
-                        rf::Vector3 new_obj_pos = event->pos;
+                        rf::Vector3 new_obj_pos = anchor_pos;
                         obj->pos = new_obj_pos;
                         obj->p_data.pos = new_obj_pos;
                         obj->p_data.next_pos = new_obj_pos;
@@ -346,13 +665,13 @@ CodeInjection mover_process_post_patch{
                     // check for a light
                     if (auto* light = static_cast<rf::gr::Light*>(
                             rf::gr::light_get_from_handle(rf::gr::level_get_light_handle_from_uid(linked_uid)))) {
-                        light->vec = event->pos;
+                        light->vec = anchor_pos;
                     }
 
                     // check for a particle emitter
                     if (auto* emitter =
                             static_cast<rf::ParticleEmitter*>(rf::level_get_particle_emitter_from_uid(linked_uid))) {
-                        emitter->pos = event->pos;
+                        emitter->pos = anchor_pos;
 
                         emitter->dir = event->orient.fvec;
                     }
@@ -360,10 +679,25 @@ CodeInjection mover_process_post_patch{
                     // check for a push region
                     if (auto* push_region =
                             static_cast<rf::PushRegion*>(rf::level_get_push_region_from_uid(linked_uid))) {
-                        push_region->pos = event->pos;
+                        push_region->pos = anchor_pos;
 
                         push_region->orient = event->orient;
                     }
+
+                    // check for a gas region
+                    if (auto* gas_region = gas_region_get_by_uid(linked_uid)) {
+                        gas_region->pos = anchor_pos;
+                        gas_region->orient = event->orient;
+                    }
+
+                    // check for a climbing region
+                    if (auto* climb_region = climb_region_get_by_uid(linked_uid)) {
+                        climb_region->pos = anchor_pos;
+                        climb_region->orient = event->orient;
+                    }
+
+                    // check for a weather region
+                    weather_move_region(linked_uid, anchor_pos, event->orient);
                 }
             }
         }
@@ -382,10 +716,37 @@ FunHook<void(rf::Entity*)> entity_on_dead_hook{
             rf::activate_all_events_of_type(rf::EventType::AF_When_Dead, ep->handle, -1, true);
         }
 
+        // entity_die kills the occupants and then frees the seats with entity_detach_leech,
+        // which the vehicle module's exit broadcast never sees, so it announces them here.
+        vehicle_before_entity_die(ep);
         entity_on_dead_hook.call_target(ep);
+        ragdoll_after_entity_dead(ep);
+        vehicle_after_entity_die(ep);
     },
 };
 
+// Catch clutter deaths from all code paths
+FunHook<void(rf::Object*)> obj_flag_dead_hook{
+    0x0048AB40,
+    [](rf::Object* objp) {
+        // Crit tags are keyed by object handle, which the engine recycles.
+        crits_on_object_dead(objp);
+
+        if (objp->type == rf::OT_CLUTTER && !(objp->obj_flags & rf::OF_DELAYED_DELETE)) {
+            rf::Clutter* cp = reinterpret_cast<rf::Clutter*>(objp);
+
+            if (!rf::is_multi && is_achievement_system_initialized()) {
+                achievement_check_clutter_death(cp);
+            }
+
+            rf::activate_all_events_of_type(rf::EventType::AF_When_Dead, cp->handle, -1, true);
+        }
+
+        obj_flag_dead_hook.call_target(objp);
+    },
+};
+
+// Corpse spawn for alpine meshes
 CallHook<void(rf::Object*)> obj_flag_dead_clutter_hook{
     {
         0x0040FE31,
@@ -394,60 +755,518 @@ CallHook<void(rf::Object*)> obj_flag_dead_clutter_hook{
         0x004101F4
     },
     [](rf::Object* objp) {
-        //xlog::warn("killing clutter UID {}, name {}", objp->uid, objp->name);
-
         rf::Clutter* cp = reinterpret_cast<rf::Clutter*>(objp);
 
-        if (!rf::is_multi && is_achievement_system_initialized() && cp) {
-            achievement_check_clutter_death(cp);
-        }
-
-        rf::activate_all_events_of_type(rf::EventType::AF_When_Dead, cp->handle, -1, true);
-
         // Check for alpine mesh corpse: if this is an alpine mesh (info_index == -1)
-        // with a corpse filename, swap to corpse model instead of removing the object.
-        // Also skip killing if corpse was already applied (the death processing function
-        // calls obj_flag_dead multiple times — we must block all subsequent calls).
+        // with a corpse filename, spawn a separate corpse object and let the original die.
         if (cp->info_index == -1) {
-            if (alpine_mesh_is_corpse(objp->handle)) {
-                return;
-            }
-            const std::string* corpse = alpine_mesh_get_corpse_filename(objp->handle);
-            if (corpse && !corpse->empty()) {
-                std::string corpse_copy = *corpse;
-                alpine_mesh_apply_corpse(objp, corpse_copy);
-                if (alpine_mesh_is_corpse(objp->handle)) {
-                    return; // Corpse applied successfully, don't kill
-                }
-                // Corpse mesh failed to load — fall through to normal death
-            }
+            alpine_mesh_spawn_corpse(objp);
+            // Fall through to kill the original regardless of whether corpse spawned
         }
 
         obj_flag_dead_clutter_hook.call_target(objp);
     },
 };
 
+// Multiplayer riot shield synchronization
+static constexpr int k_shield_break_suppress_ms = 5000;
+static std::unordered_map<int, rf::Timestamp> g_shield_break_pending;
+
+// Record that this holder's shield has broken, so entity_process cannot immediately
+// hand them a fresh one. Applies on both sides: the server races an in-flight client
+// obj_update that still claims the riot shield, the client races its own
+// entity_process creating a shield after the break packet has already arrived.
+static void riot_shield_note_break(int holder_handle)
+{
+    g_shield_break_pending[holder_handle].set(k_shield_break_suppress_ms);
+}
+
+static bool clutter_is_riot_shield(rf::Clutter* cp)
+{
+    return cp && rf::riot_shield_clutter_type >= 0 && cp->info_index == rf::riot_shield_clutter_type;
+}
+
+static bool obj_is_riot_shield(rf::Object* objp)
+{
+    return objp && objp->type == rf::OT_CLUTTER && clutter_is_riot_shield(static_cast<rf::Clutter*>(objp));
+}
+
+// The player whose first person weapon is currently rendering as a
+// spectate target, or null when that is not happening.
+static rf::Player* riot_shield_fp_spectate_target()
+{
+    if (!rf::is_multi || !multi_spectate_is_first_person()) {
+        return nullptr;
+    }
+    rf::Player* target = multi_spectate_get_target_player();
+    // Spectating yourself is the stock case and is already handled.
+    return (target && target != rf::local_player) ? target : nullptr;
+}
+
+static bool riot_shield_is_unbreakable()
+{
+    if (gt_is_gungame()) {
+        return true;
+    }
+
+    const auto& mutators = g_alpine_server_config_active_rules.mutators;
+    return mutators.lock_to_featured_weapon && mutators.featured_weapon_index >= 0;
+}
+
+// Let a player pick up a riot shield again after theirs broke.
+static void riot_shield_clear_weapon_stay_markers(rf::Player* holder)
+{
+    if (!holder || rf::riot_shield_weapon_type < 0) {
+        return;
+    }
+
+    const int count = std::min(rf::num_item_types, 96);
+    for (int i = 0; i < count; ++i) {
+        if (rf::item_info[i].gives_weapon_id == rf::riot_shield_weapon_type) {
+            holder->key_items[i] = false;
+        }
+    }
+}
+
+static bool entity_has_riot_shield_weapon(rf::Entity* ep)
+{
+    const int weapon_type = rf::riot_shield_weapon_type;
+    if (!ep || weapon_type < 0 || weapon_type >= 64) {
+        return false;
+    }
+    return ep->ai.has_weapon[weapon_type];
+}
+
+// Remove a holder's shield object without any break effects and forget the handle.
+static void riot_shield_remove_silently(rf::Entity* ep)
+{
+    if (!ep || ep->riot_shield_handle == -1) {
+        return;
+    }
+    if (rf::Object* shield_objp = rf::obj_from_handle(ep->riot_shield_handle)) {
+        shield_objp->obj_flags |= rf::OF_DELAYED_DELETE;
+    }
+    ep->riot_shield_handle = -1;
+}
+
+// How many of a player's 25 first person shield decal slots are occupied. Used to tell
+// whether stock clutter_damage added a decal of its own on this hit.
+static int riot_shield_fp_decal_count(rf::Player* pp)
+{
+    if (!pp) {
+        return 0;
+    }
+    int count = 0;
+    for (void* decal : pp->shield_decals) {
+        if (decal) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+// Server side: damage the shield.
 FunHook<void(rf::Clutter*, float, int, int, rf::PCollisionOut*)> clutter_damage_hook{
     0x00410270,
     [](rf::Clutter* damaged_cp, float damage, int responsible_entity_handle, int damage_type, rf::PCollisionOut* collide_out) {
-
-        if (rf::is_multi && damaged_cp->name == "riot_shield") {
-            xlog::warn("damaged {}, info index {}", damaged_cp->name, damaged_cp->info_index);
+        if (!rf::is_multi || !clutter_is_riot_shield(damaged_cp)) {
+            clutter_damage_hook.call_target(damaged_cp, damage, responsible_entity_handle, damage_type, collide_out);
             return;
         }
 
+        // Do not affect level-placed riot shield clutter objects.
+        if (!rf::entity_from_handle(damaged_cp->parent_handle)) {
+            clutter_damage_hook.call_target(damaged_cp, damage, responsible_entity_handle, damage_type, collide_out);
+            return;
+        }
+
+        // Clients never damage a shield locally - its life is replicated by the server.
+        if (!rf::is_server) {
+            return;
+        }
+
+        if (riot_shield_is_unbreakable()) {
+            return;
+        }
+
+        const int holder_handle = damaged_cp->parent_handle;
+        const rf::Vector3 impact_pos = collide_out ? collide_out->hit_point : damaged_cp->pos;
+
         clutter_damage_hook.call_target(damaged_cp, damage, responsible_entity_handle, damage_type, collide_out);
+
+        const float life = damaged_cp->life;
+        af_send_riot_shield_state(static_cast<uint32_t>(holder_handle), life, impact_pos);
+
+        if (life <= 0.0f) {
+            riot_shield_note_break(holder_handle);
+            riot_shield_clear_weapon_stay_markers(rf::player_from_entity_handle(holder_handle));
+        }
+    },
+};
+
+// Client side: bring the local copy of a holder's shield in line with the server.
+void riot_shield_apply_remote_state(rf::Entity* ep, float life, const rf::Vector3& impact_pos)
+{
+    if (!ep) {
+        return;
+    }
+
+    // life comes straight off the wire. Validate before ANY use of it, so the single
+    // break predicate below is the only one this function needs.
+    if (!std::isfinite(life)) {
+        return;
+    }
+
+    const bool is_break = life <= 0.0f;
+
+    // Never run clutter_damage for a dying holder.
+    if (rf::entity_is_dying(ep)) {
+        if (is_break) {
+            riot_shield_remove_silently(ep);
+            riot_shield_reset_fp_decals(rf::player_from_entity_handle(ep->handle));
+            riot_shield_note_break(ep->handle);
+        }
+        return;
+    }
+
+    rf::Object* shield_objp = rf::obj_from_handle(ep->riot_shield_handle);
+    if (!obj_is_riot_shield(shield_objp)) {
+        // No shield object here yet. If this was the break, record it anyway so the
+        // create suppression drops the replacement entity_process would otherwise make.
+        if (is_break) {
+            riot_shield_note_break(ep->handle);
+        }
+        return;
+    }
+
+    rf::Clutter* shield_cp = static_cast<rf::Clutter*>(shield_objp);
+
+    life = std::min(std::max(life, 0.0f), shield_cp->life);
+
+    const float delta = shield_cp->life - life;
+    if (delta <= 0.0f) {
+        // Deliberately does NOT write life back, those updates are sent unreliably.
+        return;
+    }
+
+    // clutter_damage only reads hit_point out of the collision (to place the
+    // impact decal) and tolerates a null pointer, but we have a real position.
+    rf::PCollisionOut collide_out{};
+    // impact_pos comes straight off the wire like life. Validate it.
+    collide_out.hit_point = (
+        std::isfinite(impact_pos.x) &&
+        std::isfinite(impact_pos.y) &&
+        std::isfinite(impact_pos.z)
+    )
+    ? impact_pos
+    : ep->pos;
+    collide_out.obj_handle = -1;
+
+    rf::Player* holder = rf::player_from_entity_handle(ep->handle);
+
+    // The decal counts below are only consulted for a spectate target, which is false
+    // for almost every damage event, so only scan the 25 slot array when it matters.
+    const bool is_fp_spectate_target = holder && holder == riot_shield_fp_spectate_target();
+    const int decals_before = is_fp_spectate_target ? riot_shield_fp_decal_count(holder) : 0;
+
+    // damage_type -1 skips clutter.tbl damage scaling so `delta` lands verbatim and the
+    // client ends up on exactly the life the server reported.
+    clutter_damage_hook.call_target(shield_cp, delta, -1, -1, &collide_out);
+
+    const int decals_after = is_fp_spectate_target ? riot_shield_fp_decal_count(holder) : 0;
+
+    if (is_break) {
+        // clutter_damage just stored our -1 damage type into the clutter, and
+        // clutter_process's shatter branch only spawns the glass debris when
+        // 0 <= dmg_type_that_killed_me <= 2.
+        shield_cp->dmg_type_that_killed_me = rf::DT_BULLET;
+        riot_shield_note_break(ep->handle);
+    }
+
+    // Impact decals for a first person spectate target.
+    if (is_fp_spectate_target) {
+        if (is_break) {
+            // The break takes the first person branch here, which never reaches
+            // ai_remove_weapon, so nothing in the engine clears these.
+            riot_shield_reset_fp_decals(holder);
+        }
+        else if (decals_after <= decals_before) {
+            rf::player_fpgun_add_shield_decal(holder, shield_cp, &collide_out);
+        }
+    }
+}
+
+// entity_process creates the third person shield when the holder's current primary
+// weapon is the riot shield and no shield object exists yet. Suppressed briefly after a
+// break so an in-flight obj_update cannot hand out a fresh full life shield.
+CallHook<rf::Clutter*(int, const char*, int, rf::Vector3*, rf::Matrix3*, int)> entity_process_create_riot_shield_hook{
+    0x0041DB7F,
+    [](int clutter_type, const char* name, int parent_handle, rf::Vector3* pos, rf::Matrix3* orient,
+       int killable) -> rf::Clutter* {
+        if (rf::is_multi && g_shield_break_pending.contains(parent_handle)) {
+            // The caller null checks the result.
+            return nullptr;
+        }
+
+        rf::Clutter* shield_cp = entity_process_create_riot_shield_hook.call_target(clutter_type, name, parent_handle, pos, orient, killable);
+
+        // A brand new shield must start undamaged on screen.
+        if (shield_cp && rf::is_multi) {
+            riot_shield_reset_fp_decals(rf::player_from_entity_handle(parent_handle));
+        }
+
+        return shield_cp;
+    },
+};
+
+// The fpgun break completion runs for whichever player's first person weapon is being
+// rendered.
+CallHook<void(rf::Player*, int, bool, bool)> fpgun_riot_shield_break_switch_weapon_hook{
+    0x004AB7C3,
+    [](rf::Player* player, int weapon_type, bool play_draw_anim, bool force) {
+        if (player != rf::local_player) {
+            return;
+        }
+        fpgun_riot_shield_break_switch_weapon_hook.call_target(player, weapon_type, play_draw_anim, force);
+    },
+};
+
+// Stock entity_delete never touches riot_shield_handle, so an unbroken shield outlives
+// its holder - in multiplayer that leaves one floating wherever they died or left.
+FunHook<void(rf::Entity*)> entity_delete_hook{
+    0x00424F40,
+    [](rf::Entity* ep) {
+        int fly_sound_slot = -1;
+        if (ep) {
+            entity_rate_limit_on_entity_delete(ep->handle);
+            fly_sound_slot = ep->fly_sound_ambient_handle;
+            // Stock entity_delete never stops the drill loop, and a dead driller no longer runs the code that would.
+            if (ep->driller_sound_handle >= 0) {
+                rf::snd_stop(ep->driller_sound_handle);
+                ep->driller_sound_handle = -1;
+            }
+            if (rf::is_multi) {
+                // Silent removal, no shatter debris: the shield did not break.
+                riot_shield_remove_silently(ep);
+                g_shield_break_pending.erase(ep->handle);
+            }
+        }
+
+        entity_delete_hook.call_target(ep);
+
+        // Stock entity_delete only zeroes the fly sound's ambient volume and clears the entity's
+        // slot index - it never frees the slot itself, so every destroyed entity with a $FlySnd
+        // permanently consumes one of the 25 ambient slots.
+        if (fly_sound_slot >= 0 && fly_sound_slot < static_cast<int>(std::size(rf::ambient_sounds))) {
+            auto& ambient_snd = rf::ambient_sounds[fly_sound_slot];
+            if (ambient_snd.sig >= 0) {
+                rf::snd_pc_stop(ambient_snd.sig);
+            }
+            rf::ambient_sound_reset(&ambient_snd);
+        }
+    },
+};
+
+// Handle riot shield for first person spectators.
+static int g_spectate_hidden_shield_handle = -1;
+
+CodeInjection gameplay_render_hide_spectate_riot_shield_injection{
+    0x00431C75,
+    []() {
+        g_spectate_hidden_shield_handle = -1;
+
+        rf::Player* target = riot_shield_fp_spectate_target();
+        if (!target) {
+            return;
+        }
+        rf::Entity* ep = rf::entity_from_handle(target->entity_handle);
+        if (!ep || ep->ai.current_primary_weapon != rf::riot_shield_weapon_type) {
+            return;
+        }
+        rf::Object* shield_objp = rf::obj_from_handle(ep->riot_shield_handle);
+        // Already hidden for some other reason: leave it alone so the paired
+        // unhide below cannot make it visible.
+        if (!obj_is_riot_shield(shield_objp) || (shield_objp->obj_flags & rf::OF_HIDDEN)) {
+            return;
+        }
+
+        rf::obj_hide(shield_objp);
+        g_spectate_hidden_shield_handle = shield_objp->handle;
+    },
+};
+
+CodeInjection gameplay_render_unhide_spectate_riot_shield_injection{
+    0x00432D12,
+    []() {
+        if (g_spectate_hidden_shield_handle == -1) {
+            return;
+        }
+        rf::Object* shield_objp = rf::obj_from_handle(g_spectate_hidden_shield_handle);
+        g_spectate_hidden_shield_handle = -1;
+        if (shield_objp) {
+            rf::obj_unhide(shield_objp);
+        }
+    },
+};
+
+// Drop every first person shield impact decal belonging to a player.
+void riot_shield_reset_fp_decals(rf::Player* player)
+{
+    if (player) {
+        rf::player_fpgun_delete_shield_decals(player);
+    }
+}
+
+void riot_shield_do_frame()
+{
+    if (!rf::is_multi || g_shield_break_pending.empty()) {
+        return;
+    }
+
+    std::erase_if(g_shield_break_pending, [](auto& entry) {
+        auto& [handle, expiry] = entry;
+
+        // Backstop only.
+        if (!expiry.valid() || expiry.elapsed()) {
+            return true;
+        }
+
+        rf::Entity* ep = rf::entity_from_handle(handle);
+        if (!ep) {
+            return true;
+        }
+
+        // Holder's own client: the first person break defers clearing
+        // current_primary_weapon until the animation completes, and that field is what
+        // gates shield creation, so this self-times with the animation instead of
+        // guessing at a duration.
+        if (ep->local_player && ep->ai.current_primary_weapon != rf::riot_shield_weapon_type) {
+            return true;
+        }
+
+        // Server only: legitimate re-acquisition is instant.
+        return rf::is_server && entity_has_riot_shield_weapon(ep) && ep->riot_shield_handle == -1;
+    });
+}
+
+// Handle reuse guard. Runs AFTER the spawn, so player->entity_handle is already the NEW
+// entity - the old life's entry was cleared by the entity delete hook, not here.
+void riot_shield_on_player_spawn(rf::Player* player)
+{
+    if (!player) {
+        return;
+    }
+    g_shield_break_pending.erase(player->entity_handle);
+}
+
+
+// Level change: free every player's shield decals.
+static void riot_shield_free_all_fp_decals()
+{
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        riot_shield_reset_fp_decals(&player);
+    }
+}
+
+void riot_shield_on_multi_level_init()
+{
+    g_shield_break_pending.clear();
+    riot_shield_free_all_fp_decals();
+}
+
+static void client_alpine_mesh_on_death(rf::Object* objp)
+{
+    rf::Clutter* cp = reinterpret_cast<rf::Clutter*>(objp);
+    if (cp->info_index == -1) {
+        alpine_mesh_spawn_corpse(objp);
+    }
+}
+
+FunHook<void(void*)> process_clutter_kill_packet_hook{
+    0x0047F380,
+    [](void* data) {
+        if (rf::is_multi && !rf::is_server) {
+            // Packet format: [uint32 uid, uint32 damage_type]
+            int uid = *reinterpret_cast<int*>(data);
+
+            // Walk the clutter list to find the matching object by UID
+            rf::Clutter* cp = rf::clutter_list.next;
+            while (cp != &rf::clutter_list) {
+                rf::Object* objp = reinterpret_cast<rf::Object*>(cp);
+                if (objp->uid == uid) {
+                    client_alpine_mesh_on_death(objp);
+                    break;
+                }
+                cp = cp->next;
+            }
+        }
+
+        process_clutter_kill_packet_hook.call_target(data);
+    },
+};
+
+CallHook<void(rf::Object*)> clutter_state_sync_death_hook{
+    0x0047F2C3,
+    [](rf::Object* objp) {
+        if (!rf::is_server) {
+            client_alpine_mesh_on_death(objp);
+        }
+        clutter_state_sync_death_hook.call_target(objp);
+    },
+};
+
+// In v304+ levels, deregister collision when hiding objects and re-register when unhiding.
+FunHook<void(rf::Object*)> obj_hide_hook{
+    0x0048A570,
+    [](rf::Object* obj) {
+        obj_hide_hook.call_target(obj);
+        if (rfl_version_minimum(304) && (obj->p_data.flags & rf::PF_COLLIDE_OBJECTS)) {
+            rf::obj_collision_deregister(obj);
+        }
+        if (obj->type == rf::OT_CLUTTER) {
+            alpine_rope_on_anchor_toggled(obj->handle);
+        }
+    },
+};
+
+FunHook<void(rf::Object*)> obj_unhide_hook{
+    0x0048A660,
+    [](rf::Object* obj) {
+        bool had_collision = (obj->p_data.flags & rf::PF_COLLIDE_OBJECTS) != 0;
+        obj_unhide_hook.call_target(obj);
+        if (rfl_version_minimum(304) && had_collision) {
+            rf::obj_collision_register(obj);
+        }
+        if (obj->type == rf::OT_CLUTTER) {
+            alpine_rope_on_anchor_toggled(obj->handle);
+        }
     },
 };
 
 void object_do_patch()
 {
-    // Disable damage for the riot shield in multiplayer (needs fix)
-    //clutter_damage_hook.install(); // disabled for now, makes riot shields persist after player leaves
+    // Server authoritative riot shield durability, replicated to clients
+    clutter_damage_hook.install();
+    
+    // Hide the first person spectate target's third person shield during the scene
+    gameplay_render_hide_spectate_riot_shield_injection.install();
+    gameplay_render_unhide_spectate_riot_shield_injection.install();
+    entity_process_create_riot_shield_hook.install();
+    entity_delete_hook.install();
+    fpgun_riot_shield_break_switch_weapon_hook.install();
 
-    // Support AF_When_Dead events
+    // Deregister collision for hidden objects in v304+ levels
+    obj_hide_hook.install();
+    obj_unhide_hook.install();
+
+    // Support AF_When_Dead events and achievement checks for clutter deaths
     entity_on_dead_hook.install();
+    obj_flag_dead_hook.install();
     obj_flag_dead_clutter_hook.install();
+
+    // Hook client-side clutter_kill and clutter_udate packets for alpine mesh corpse + event support
+    process_clutter_kill_packet_hook.install();
+    clutter_state_sync_death_hook.install();
 
     // Allow Anchor_Marker events to drag lights, particle emitters, and push regions on movers
     mover_process_post_patch.install();
@@ -478,6 +1297,7 @@ void object_do_patch()
     write_mem<u8>(0x0048B5BB, asm_opcodes::jmp_rel_short); // weapon
     write_mem<u8>(0x0048B72B, asm_opcodes::jmp_rel_short); // debris
     write_mem<u8>(0x0048B89B, asm_opcodes::jmp_rel_short); // corpse
+    write_mem<u8>(0x0048BA0B, asm_opcodes::jmp_rel_short); // item
     write_mem<u8>(0x004D7EEB, asm_opcodes::jmp_rel_short); // decal poly
     write_mem<u8>(0x004E3C5B, asm_opcodes::jmp_rel_short); // face
     write_mem<u8>(0x004E3DEB, asm_opcodes::jmp_rel_short); // face vertex
@@ -488,11 +1308,14 @@ void object_do_patch()
     // Remove object type-specific limits
     AsmWriter(0x0048712A, 0x00487137).nop(); // corpse
     AsmWriter(0x00487173, 0x00487180).nop(); // debris
-    AsmWriter(0x004871D9, 0x004871E9).nop(); // item
     AsmWriter(0x00487271, 0x0048727A).nop(); // weapon
+    obj_create_item_limit_patch.install();   // item: stock limit only in pre-v306 levels
 
     // Zero memory allocated from GPool dynamically
     GPool_allocate_new_hook.install();
+
+    // Allow both debris and explosion vclip to fire on clutter death
+    AsmWriter(0x0041021B, 0x0041021D).nop();
 
     // Sort objects by mesh name to improve rendering performance
     sort_clutter_patch.install();
@@ -500,9 +1323,25 @@ void object_do_patch()
     // Calculate lighting when object mesh is changed, handle per-map mesh replacements
     obj_create_mesh_hook.install();
     obj_delete_mesh_hook.install();
+    obj_delete_free_mesh_hook.install();
 
     // Print a warning to console when an invalid mesh would have been loaded
     obj_create_mesh_check_valid.install();
+
+    // Skip vmesh_collide when the mesh is invalid (fix crash from null deref); collide scaled meshes
+    vmesh_collide_hook.install();
+
+    // Draw Alpine meshes at their draw scale
+    clutter_render_vmesh_hook.install();
+    obj_render_vfx_process_hook.install();
+    vfx_part_render_hook.install();
+    vfx_particle_render_hook.install();
+    vfx_particle_cull_radius_injection.install();
+
+    // Mode 3 (brush) mesh collision, and improved mesh collision
+    collide_object_object_mesh_hook.install();
+    collide_object_world_hook.install();
+    collide_spheres_world_hook.install();
 
     // Optimize Object::find_room function
     object_find_room_optimization.install();
@@ -523,5 +1362,8 @@ void object_do_patch()
     monitor_do_patch();
     mover_do_patch();
     particle_do_patch();
+    particle_sim_do_patch();
     obj_light_apply_patch();
+    obj_collision_apply_patch();
+    clock_do_patch();
 }

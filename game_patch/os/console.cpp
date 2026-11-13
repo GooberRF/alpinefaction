@@ -3,9 +3,12 @@
 #include "../misc/player.h"
 #include "../misc/misc.h"
 #include "../misc/alpine_settings.h"
+#include "../multi/multi.h"
+#include "../multi/demo/demo_ui.h"
 #include "../rf/player/player.h"
 #include "../rf/gameseq.h"
 #include "../rf/input.h"
+#include "../rf/multi.h"
 #include "win32_console.h"
 #include <common/config/BuildConfig.h>
 #include <common/version/version.h>
@@ -81,7 +84,11 @@ rf::Player* find_best_matching_player(const char* name)
 {
     rf::Player* found_player;
     int num_found = 0;
+    // The virtual demo recorder ("[demo]") must never be selectable by name - a
+    // kick/ban would free it behind the demo module's back (C1).
     find_player(StringMatcher().exact(name), [&](rf::Player* player) {
+        if (player->is_observer())
+            return;
         found_player = player;
         ++num_found;
     });
@@ -90,6 +97,8 @@ rf::Player* find_best_matching_player(const char* name)
 
     num_found = 0;
     find_player(StringMatcher().infix(name), [&](rf::Player* player) {
+        if (player->is_observer())
+            return;
         found_player = player;
         ++num_found;
     });
@@ -108,7 +117,9 @@ FunHook<int()> gameseq_process_hook{
     0x00434230,
     []() {
         int menu_id = gameseq_process_hook.call_target();
-        if (menu_id == rf::GS_MULTI_LIMBO) // hide cursor when changing level - hackfixed in RF by changing rendering logic
+        // hide cursor when changing level - hackfixed in RF by changing rendering logic. The demo
+        // controls panel stays usable on the limbo scoreboard and keeps its cursor.
+        if (menu_id == rf::GS_MULTI_LIMBO && !demo_controls_ui_is_open())
             rf::mouse_set_visible(false);
         else if (menu_id == rf::GS_MAIN_MENU)
             rf::mouse_set_visible(true);
@@ -149,6 +160,66 @@ void console_register_command(rf::console::Command* cmd)
         assert(false);
 }
 
+// The stock console writer (rf::console::output at 0x00509EC0) splits `text` on
+// '\n' and strncpy's each segment into a fixed 0x105-byte ring slot with no length
+// check: bytes [0, 0x101) hold the segment text plus its NUL and [0x101, 0x105) hold
+// the color dword, across 500 slots based at 0x01754730. A single newline-delimited
+// segment longer than the slot runs past its entry and corrupts adjacent .data
+// globals (the same hazard noted at game_patch/multi/mutators.cpp:44). Clamp each
+// segment defensively before it reaches the stock writer.
+constexpr size_t k_console_slot_size = 0x105;   // ring slot stride (261 bytes)
+constexpr size_t k_console_max_segment = 255;   // conservative cap on text bytes before the NUL
+static_assert(k_console_max_segment + 1 <= k_console_slot_size - 4,
+              "clamped segment + NUL must fit before the color dword in a ring slot");
+
+// True if any '\n'-delimited segment of `text` exceeds the slot cap. `text` must be non-null.
+static bool console_line_exceeds_slot(const char* text)
+{
+    size_t seg_len = 0;
+    for (const char* p = text; *p; ++p) {
+        if (*p == '\n') {
+            seg_len = 0;
+        }
+        else if (++seg_len > k_console_max_segment) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Rebuild `text` with every '\n'-delimited segment capped at k_console_max_segment
+// bytes, backing off to a UTF-8 code-point boundary so a multibyte sequence is never
+// split (same boundary rule as fflink::sanitize_for_log). Line structure is preserved:
+// each segment is capped independently and the '\n' separators are kept.
+static std::string console_clamp_segments(const char* text)
+{
+    std::string out;
+    const char* seg = text;
+    for (;;) {
+        const char* nl = seg;
+        while (*nl && *nl != '\n') {
+            ++nl;
+        }
+        size_t seg_len = static_cast<size_t>(nl - seg);
+        if (seg_len > k_console_max_segment) {
+            size_t cut = k_console_max_segment;
+            // If the cap lands in the middle of a UTF-8 sequence, step back over the
+            // continuation bytes (10xxxxxx) so the partial code point is dropped whole.
+            while (cut > 0 && (static_cast<unsigned char>(seg[cut]) & 0xC0) == 0x80) {
+                --cut;
+            }
+            seg_len = cut;
+        }
+        out.append(seg, seg_len);
+        if (*nl == '\0') {
+            break;
+        }
+        out.push_back('\n');
+        seg = nl + 1;
+    }
+    return out;
+}
+
 static FunHook<void(const char*, const rf::Color*)> console_output_hook{
     &rf::console::output,
     [](const char* text, const rf::Color* color) {
@@ -156,9 +227,19 @@ static FunHook<void(const char*, const rf::Color*)> console_output_hook{
             win32_console_output(text, color);
         }
         else {
-            console_output_hook.call_target(text, color);
+            // Clamp over-long lines before they reach the stock ring-buffer writer,
+            // which has no length check (see console_clamp_segments). Inert on the
+            // happy path: with no over-long segment we pass the original pointer
+            // through unchanged with zero allocation. Null text delegates as-is.
+            const char* out_text = text;
+            std::string clamped;
+            if (text && console_line_exceeds_slot(text)) {
+                clamped = console_clamp_segments(text);
+                out_text = clamped.c_str();
+            }
+            console_output_hook.call_target(out_text, color);
         }
-        std::string_view text_view{text};
+        std::string_view text_view = text ? std::string_view{text} : std::string_view{};
         console_log_write(text_view);
         if (g_console_log.is_open() && (text_view.empty() || (text_view.back() != '\n' && text_view.back() != '\r'))) {
             g_console_log.put('\n');
@@ -186,7 +267,9 @@ static FunHook<void()> console_draw_client_hook{
         // Fixes console rendering in endgame state
         rf::gr::reset_clip();
 
-        console_draw_client_hook.call_target();
+        if (gameseq_is_visible()) {
+            console_draw_client_hook.call_target();
+        }
     },
 };
 
@@ -249,6 +332,15 @@ void apply_console_history_setting() {
     rf::console::console_keep_history = g_alpine_game_config.save_console_history;
 }
 
+void apply_console_color_setting() {
+    auto [r, g, b, a] = extract_color_components(g_alpine_game_config.console_color);
+    write_mem<u32>(0x005098D1, a);
+    write_mem<u8>(0x005098D6, b);
+    write_mem<u8>(0x005098D8, g);
+    write_mem<u8>(0x005098DA, r);
+    rf::console::background_color.set(r, g, b, a);
+}
+
 extern void console_commands_apply_patches();
 extern void console_auto_complete_apply_patches();
 extern void console_commands_init();
@@ -259,11 +351,7 @@ void console_apply_patches()
     write_mem_ptr(0x004B2534, "-- " PRODUCT_NAME " Initializing --\n");
 
     // Console background color
-    constexpr rf::Color console_color{0x27, 0x4E, 0x69, 0xC0};
-    write_mem<u32>(0x005098D1, console_color.alpha);
-    write_mem<u8>(0x005098D6, console_color.blue);
-    write_mem<u8>(0x005098D8, console_color.green);
-    write_mem<u8>(0x005098DA, console_color.red);
+    apply_console_color_setting();
 
     // Support unsigned hexadecimal arguments.
     AsmWriter{0x0050B0B0}.call(std::strtoul);
@@ -317,7 +405,8 @@ void console_apply_patches()
 void console_init()
 {
     console_commands_init();
-    print_fflink_info();
-    initialize_achievement_manager();
-
+    if (!client_bot_launch_enabled() && !is_headless_mode() && !rf::is_dedicated_server) {
+        print_fflink_info();
+        initialize_achievement_manager();
+    }
 }

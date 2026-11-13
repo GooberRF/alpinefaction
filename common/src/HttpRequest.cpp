@@ -5,10 +5,11 @@
 #include <format>
 #include <cassert>
 #include <cctype>
+#include <stdexcept>
 
 struct ParsedUrl
 {
-    bool ssl;
+    bool ssl = false;
     std::string host;
     std::string resource;
 };
@@ -28,7 +29,9 @@ static ParsedUrl parse_http_url(std::string_view url)
         host_pos = http.size();
     }
     else {
-        assert(false);
+        // Reject unrecognized schemes instead of falling through with an uninitialized ssl flag
+        // and a misparsed host. Throwing here is caught by the download/HTTP callers.
+        throw std::runtime_error("unsupported URL scheme (expected http:// or https://)");
     }
 
     size_t resource_pos = url.find('/', host_pos);
@@ -69,6 +72,14 @@ void HttpSession::set_receive_timeout(unsigned long timeout_ms)
 {
     if (!InternetSetOptionA(m_inet, INTERNET_OPTION_RECEIVE_TIMEOUT, const_cast<unsigned long*>(&timeout_ms),
                        sizeof(timeout_ms)))
+        THROW_WIN32_ERROR();
+}
+
+// WinINet defaults to 5, which silently multiplies the connect timeout by 5 per attempt.
+void HttpSession::set_connect_retries(unsigned long retries)
+{
+    if (!InternetSetOptionA(m_inet, INTERNET_OPTION_CONNECT_RETRIES, const_cast<unsigned long*>(&retries),
+                        sizeof(retries)))
         THROW_WIN32_ERROR();
 }
 
@@ -128,7 +139,7 @@ void HttpRequest::write(const void* data, size_t len)
     }
 }
 
-void HttpRequest::send(std::string_view body)
+int HttpRequest::send_no_check(std::string_view body)
 {
     if (m_in_body) {
         write(body);
@@ -150,6 +161,12 @@ void HttpRequest::send(std::string_view body)
         THROW_WIN32_ERROR();
     }
 
+    return static_cast<int>(status_code);
+}
+
+void HttpRequest::send(std::string_view body)
+{
+    int status_code = send_no_check(body);
     if (status_code != 200) {
         throw std::runtime_error(std::format("Invalid HTTP status code: {}", status_code));
     }

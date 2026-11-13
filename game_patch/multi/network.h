@@ -1,5 +1,9 @@
 #pragma once
 
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
 #include <common/version/version.h>
 #include "server_internal.h"
 #include "../rf/multi.h"
@@ -76,9 +80,41 @@ struct AFFooter
     uint16_t total_len; // bytes from start of AF block up to start of this footer
     uint32_t magic;
 };
+
+// CTF flag packet payloads used by process_* hooks.
+struct RFCtfFlagDroppedPacket
+{
+    uint8_t is_red;
+    uint8_t red_score;
+    uint8_t blue_score;
+    float pos_x;
+    float pos_y;
+    float pos_z;
+
+    rf::Vector3 get_flag_position() const
+    {
+        return {pos_x, pos_y, pos_z};
+    }
+};
+
+struct RFCtfFlagSingleTeamPacket
+{
+    uint8_t is_red;
+};
+
+struct RFCtfFlagPickedUpPacket
+{
+    uint8_t picker_player_id;
+    uint8_t red_score;
+    uint8_t blue_score;
+};
 #pragma pack(pop)
 
-// Appended to game_info packets
+static_assert(sizeof(RFCtfFlagDroppedPacket) == 15);
+static_assert(sizeof(RFCtfFlagSingleTeamPacket) == 1);
+static_assert(sizeof(RFCtfFlagPickedUpPacket) == 3);
+
+// Appended to game_info packets (legacy, sent to gi_req_ext_ver 1-2 clients)
 struct af_sign_packet_ext
 {
     uint32_t af_signature = ALPINE_FACTION_SIGNATURE;
@@ -94,11 +130,45 @@ struct af_sign_packet_ext
     }
 };
 
+// In-memory representation of the AF game_info v2 extension.
+// On-wire layout: [sig][ver*4][flags][filename\0][bot_counts*4]
+// The wire format is built by serialize_to_wire(); it does not match the in-memory layout.
+struct af_game_info_ext_v2
+{
+    // on-wire size of fields before the filename (sig + ver*4 + flags)
+    static constexpr size_t wire_pre_fname_size = 12;
+    // on-wire size of fields after the filename (bot_counts*4)
+    static constexpr size_t wire_post_fname_size = 4;
+
+    uint32_t af_signature = ALPINE_FACTION_SIGNATURE;
+    uint8_t version_major = VERSION_MAJOR;
+    uint8_t version_minor = VERSION_MINOR;
+    uint8_t version_patch = VERSION_PATCH;
+    uint8_t version_type = VERSION_TYPE;
+    uint32_t af_flags = 0;
+    std::string level_filename;
+    uint8_t num_bots = 0;
+    uint8_t num_human_players = 0;
+    uint8_t num_browsers = 0;
+    uint8_t num_total_clients = 0; // bots + humans + browsers
+
+    void set_flags(const AFGameInfoFlags& flags)
+    {
+        af_flags = flags.game_info_flags_to_uint32();
+    }
+
+    // Build the wire representation: [sig][ver*4][flags][filename\0][bot_counts*4]
+    std::vector<uint8_t> serialize_to_wire() const;
+};
+
+#pragma pack(push, 1)
 struct AlpineFactionJoinAcceptPacketExt
 {
     uint32_t af_signature = ALPINE_FACTION_SIGNATURE;
     uint8_t version_major = VERSION_MAJOR;
     uint8_t version_minor = VERSION_MINOR;
+    uint8_t version_patch = VERSION_PATCH;
+    uint8_t version_type = VERSION_TYPE;
 
     enum class Flags : uint32_t {
         none                = 0,
@@ -115,12 +185,34 @@ struct AlpineFactionJoinAcceptPacketExt
         location_pinging    = 1u << 10,
         delayed_spawns      = 1u << 11,
         geo_chunk_physics   = 1u << 12,
+        allow_footsteps     = 1u << 13,
+        allow_outlines      = 1u << 14,
+        allow_outlines_xray = 1u << 15,
+        clear_stale_movement_input = 1u << 16,
+        allow_sprays        = 1u << 17,
+        match_mode          = 1u << 18,
+        featured_no_clip    = 1u << 19,
+        reload_on_kill      = 1u << 20,
+        super_drain         = 1u << 21,
+        jetpacks            = 1u << 22,
+        low_gravity         = 1u << 23,
+        skiing              = 1u << 24,
+        pogo                = 1u << 25,
+        dodging             = 1u << 26,
+        stats_enabled       = 1u << 27,
+        scrapyard_gibs      = 1u << 28,
+        no_exposure_damage  = 1u << 29,
+        projectile_lag_comp = 1u << 30,
+        delta_obj_update    = 1u << 31, // server sends af_obj_update_delta to clients that asked
     } flags = Flags::none;
 
-    float max_fov;
-    int semi_auto_cooldown;
-
+    float max_fov = 0.0f;
+    int32_t semi_auto_cooldown = 0;
+    uint16_t server_netfps = 0; // only feeds the client's netmeter; 0: server predates this field
+    uint16_t projectile_lag_comp_max_ms = 0; // server's cap on the projectile advance
 };
+#pragma pack(pop)
+static_assert(sizeof(AlpineFactionJoinAcceptPacketExt) == 24, "unexpected AlpineFactionJoinAcceptPacketExt size");
 template<>
 struct EnableEnumBitwiseOperators<AlpineFactionJoinAcceptPacketExt::Flags> : std::true_type {};
 
@@ -161,6 +253,9 @@ struct AlpineFactionJoinReqPacketExt // used for stashed data during join proces
     enum class Flags : uint32_t
     {
         none = 0,
+        client_bot = 1u << 0,
+        client_d3d11 = 1u << 1,
+        client_delta_obj_update = 1u << 2,
     };
 
     uint32_t af_signature = 0u;
@@ -175,9 +270,67 @@ struct AlpineFactionJoinReqPacketExt // used for stashed data during join proces
 template<>
 struct EnableEnumBitwiseOperators<AlpineFactionJoinReqPacketExt::Flags> : std::true_type {};
 
+// Bits of AFGameInfoExtra::af_flags, produced by AFGameInfoFlags::game_info_flags_to_uint32().
+constexpr uint32_t AF_GI_FLAG_STATS_ENABLED = 1u << 9;
+
+// Per-server extra data parsed from the AF game_info v2 extension
+struct AFGameInfoExtra
+{
+    uint8_t version_major = 0;
+    uint8_t version_minor = 0;
+    uint8_t version_patch = 0;
+    uint8_t version_type = 0;
+    uint32_t af_flags = 0;
+    std::string level_filename;
+    uint8_t num_bots = 0;
+    uint8_t num_human_players = 0;
+    uint8_t num_browsers = 0;
+    uint8_t num_total_clients = 0;
+    // Server's reported game_type was >= RF_GT_UNK, used to block joins.
+    bool unknown_game_type = false;
+};
+
+enum class JoiningClientKind
+{
+    Human,
+    Bot,
+    Browser,
+};
+
+// Identity of the client whose join request is currently being processed,
+// derived from the parsed join-req tail. Only meaningful during
+// process_join_req_packet (the globals are reset afterwards).
+JoiningClientKind get_joining_client_kind();
+
+// player_list without the demo recorder: the count the server-full check uses.
+int multi_num_players_occupying_slots();
+// Joiners whose reliable socket has not attached yet, without the demo recorder.
+int multi_num_players_waiting_for_reliable_socket();
+
+// Longest player name on the wire: clients receive names into 32-byte buffers (g_buffer_overflow_patches).
+constexpr int k_max_player_name_len = 31;
+
+// Look up AF extra data for a server by address. Returns nullptr if not found.
+const AFGameInfoExtra* get_server_browser_extra(const rf::NetAddr& addr);
+void clear_server_browser_extra();
+
 bool packet_check_whitelist(int packet_type);
 void handle_vote_or_ready_up_msg(std::string_view msg);
 void handle_sound_msg(std::string_view name);
 void send_queues_rel_clear_packets(int socket_id);
 void send_queues_rel_add_packet(int socket_id, const uint8_t* data, size_t len);
+void network_debug_apply_patches();
+bool try_to_auto_forward_port(int port);
 void clear_rcon_profile_sessions();
+void clear_rcon_state_for_addr(const rf::NetAddr& addr);
+void handle_rcon_player_action(const rf::NetAddr& addr, uint8_t target_player_id, uint8_t action);
+void set_local_rcon_commands(std::vector<std::string> commands);
+bool local_rcon_command_available(std::string_view command);
+uint8_t player_role_flags(const rf::Player* player);
+void set_local_player_roles(std::vector<std::pair<uint8_t, uint8_t>> roles);
+void send_player_roles_to(rf::Player* player);
+void server_player_roles_do_frame();
+void multi_disconnect_from_server();
+void server_apply_net_rate();
+void server_set_net_rate(unsigned netfps);
+void apply_client_rate();

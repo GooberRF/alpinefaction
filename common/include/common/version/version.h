@@ -24,16 +24,18 @@
 // Variables to be modified during the release process
 #define PRODUCT_NAME           "Alpine Faction"
 #define VERSION_MAJOR          1
-#define VERSION_MINOR          3
+#define VERSION_MINOR          5
 #define VERSION_PATCH          0
 #define VERSION_TYPE           VERSION_TYPE_DEV
-#define VERSION_TYPE_REVISION  2
-#define VERSION_CODE           "Bakeapple"
+#define VERSION_TYPE_REVISION  0
+#define VERSION_CODE           "Trillium"
 
 // Version used for Alpine settings files
 #define ADS_VERSION            2      // .toml dedicated server config files
-#define AFS_VERSION            12     // alpine_settings.ini
-#define AFCC_VERSION           1      // alpine_system.ini
+#define AFS_VERSION            14     // alpine_settings.ini
+#define AFCC_VERSION           2      // alpine_system.ini
+#define AFES_VERSION           1      // alpine_editor.ini
+#define AFL_VERSION            1      // .afl per-level saved info
 
 // Increment only when absolutely necessary! Will break level compatibility for older clients.
 // Stock RF1 uses versions 156 - 200. RF2 uses version 295
@@ -45,7 +47,9 @@
 // 302 = Alpine 1.2.0
 // 303 = Alpine 1.2.2
 // 304 = Alpine 1.3.0
-#define MAXIMUM_RFL_VERSION    304
+// 305 = Alpine 1.4.0
+// 306 = Alpine 1.5.0
+#define MAXIMUM_RFL_VERSION    306
 
 // clang-format on
 

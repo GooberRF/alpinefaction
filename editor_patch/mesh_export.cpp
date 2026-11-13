@@ -8,25 +8,13 @@
 #include <windows.h>
 #include <commdlg.h>
 #include <xlog/xlog.h>
+#include "file_dialogs.h"
+#include "geometry.h"
 #include "level.h"
 #include "textures.h"
 #include "resources.h"
 #include "meshes.h"
 #include "mesh.h"
-
-// ─── V3M format constants ───────────────────────────────────────────────────
-
-static constexpr int32_t V3M_SIGNATURE = 0x52463344; // 'RF3D'
-static constexpr int32_t V3D_VERSION = 0x40000;
-static constexpr int32_t V3D_SECTION_SUBMESH = 0x5355424D; // 'SUBM'
-static constexpr int32_t V3D_SECTION_END = 0x00000000;
-static constexpr uint32_t V3D_LOD_TRIANGLE_PLANES = 0x20;
-static constexpr int V3D_ALIGNMENT = 16;
-
-// v3d_batch_info stores positions_size as uint16_t (num_vertices * 12, aligned to 16).
-// 5461 * 12 = 65532, which aligns up to 65536 and overflows uint16_t.
-// 5460 * 12 = 65520, already 16-byte aligned, fits in uint16_t.
-static constexpr size_t MAX_BATCH_VERTICES = 5460;
 
 // ─── Export options (persisted across dialog invocations) ────────────────────
 
@@ -60,7 +48,7 @@ struct ExportBatch
 static std::string resolve_texture_name(int bitmap_id)
 {
     if (bitmap_id < 0) return "default.tga";
-    int index = BitmapEntry::handle_to_index(bitmap_id);
+    int index = rf::bm::get_cache_slot(bitmap_id);
     if (index < 0) return "default.tga";
     BitmapEntry* entry = &BitmapEntry::entries[index];
     if (entry->name[0] == '\0') return "default.tga";
@@ -142,7 +130,7 @@ static GatherResult gather_brush_geometry(BrushNode* brush, const Vector3& origi
         Vector3 normal = rotate_vector(orient, face->plane.normal);
 
         size_t vert_count = batch.vertices.size() + face_verts.size();
-        if (vert_count > MAX_BATCH_VERTICES) {
+        if (vert_count > V3D_MAX_BATCH_VERTICES) {
             return GatherResult::vertex_limit;
         }
 
@@ -256,9 +244,6 @@ struct SubmeshData
     std::string name;
     std::vector<ExportBatch> batches;
 };
-
-static constexpr int V3D_MAX_TEXTURES_PER_LOD = 7;
-static constexpr int V3D_MAX_SUBMESHES = 8192;
 
 static void write_submesh_section(BinaryWriter& out, const SubmeshData& submesh)
 {
@@ -416,7 +401,7 @@ static void write_submesh_section(BinaryWriter& out, const SubmeshData& submesh)
     // ── Write section ──
 
     // v3d_section_header
-    out.write_i32(V3D_SECTION_SUBMESH);
+    out.write_i32(V3D_SUBMESH);
     out.write_i32(0);
 
     // v3d_submesh
@@ -503,7 +488,7 @@ static bool write_v3m(const char* filepath, const std::vector<SubmeshData>& subm
     }
 
     // V3D_END
-    out.write_i32(V3D_SECTION_END);
+    out.write_i32(V3D_END);
     out.write_i32(0);
 
     FILE* fp = std::fopen(filepath, "wb");
@@ -547,9 +532,6 @@ static INT_PTR CALLBACK ConvertOptionsDlgProc(HWND hdlg, UINT msg, WPARAM wParam
 static bool create_mesh_object_at(CDedLevel* level, const char* mesh_filename,
                                   const Vector3& pos)
 {
-    // Reload VFS paths so the editor can find the newly exported file
-    reload_custom_meshes();
-
     // Verify the mesh can be loaded before creating the object
     EditorVMesh* loaded_vmesh = vmesh_load_v3m(mesh_filename, 1, -1);
     if (!loaded_vmesh) {
@@ -578,21 +560,6 @@ static bool create_mesh_object_at(CDedLevel* level, const char* mesh_filename,
 }
 
 // ─── Handler ────────────────────────────────────────────────────────────────
-
-static std::vector<BrushNode*> collect_selected_brushes(CDedLevel* level)
-{
-    std::vector<BrushNode*> selected;
-    BrushNode* head = level->brush_list;
-    if (!head) return selected;
-    BrushNode* b = head;
-    do {
-        if (b->state == BRUSH_STATE_SELECTED && b->geometry) {
-            selected.push_back(b);
-        }
-        b = b->next;
-    } while (b != head);
-    return selected;
-}
 
 void handle_brush_convert()
 {
@@ -685,7 +652,7 @@ void handle_brush_convert()
     ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
     ofn.lpstrTitle = "Export Brush as V3M Mesh";
 
-    if (!GetSaveFileNameA(&ofn)) return;
+    if (!alpine_get_save_file_name(&ofn)) return;
 
     // Derive base name from filename (used for submesh naming)
     const char* file_base = std::strrchr(filename, '\\');
@@ -709,7 +676,7 @@ void handle_brush_convert()
             std::snprintf(msg, sizeof(msg),
                 "Brush %d has too many vertices sharing a single texture (limit is %zu per texture batch). "
                 "Split the brush or use more distinct textures.",
-                static_cast<int>(si + 1), MAX_BATCH_VERTICES);
+                static_cast<int>(si + 1), V3D_MAX_BATCH_VERTICES);
             show_error_message(msg);
             return;
         }
@@ -753,6 +720,9 @@ void handle_brush_convert()
         show_error_message("Failed to write V3M file.");
         return;
     }
+
+    // Register the written file so it can be selected in the mesh browser.
+    register_written_file(filename);
 
     int total_tris = 0;
     for (auto& sm : submeshes)

@@ -1,6 +1,7 @@
 #include <xlog/SimpleFormatter.h>
 #include <string>
 #include <string_view>
+#include <cstdint>
 #include <windows.h>
 
 std::string xlog::SimpleFormatter::prepare(xlog::Level level, const std::string& logger_name) const

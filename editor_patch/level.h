@@ -1,31 +1,93 @@
 #pragma once
 
 #include <cstdint>
+#include <cmath>
+#include <cstring>
+#include <initializer_list>
 #include <map>
+#include <optional>
+#include <unordered_map>
+#include <type_traits>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 #include <string>
 #include <algorithm>
 #include <patch_common/MemUtils.h>
+#include <xlog/xlog.h>
+#include <common/alpine_camera_far_clip.h>
+#include <common/lighting/alpine_lighting.h>
+#include <common/lightmap/alpine_lightmap.h>
+#include <common/mover_path.h>
+#include <common/payload.h>
 #include "vtypes.h"
 #include "mfc_types.h"
 #include "resources.h"
 
 void DestroyDedMesh(DedMesh* mesh);
+void DestroyDedNote(DedNote* note);
 void DestroyDedCorona(DedCorona* corona);
+void DestroyDedBag(DedBag* bag);
+void DestroyDedWeatherRegion(DedWeatherRegion* weather_region);
+void DestroyDedVehicleFactory(DedVehicleFactory* factory);
+void DestroyDedProjectionCamera(DedProjectionCamera* camera);
+void DestroyDedRopeEmitter(DedRopeEmitter* rope);
+void DestroyDedTerrain(DedTerrain* terrain);
+void DestroyDedDirectionalLight(DedDirectionalLight* light);
+void DestroyDedWaypointHelper(DedWaypointHelper* helper);
 
 constexpr int alpine_props_chunk_id = 0x0AFBA5ED;
 constexpr int alpine_mesh_chunk_id = 0x0AFBAE01;
 constexpr int alpine_note_chunk_id = 0x0AFBAE02;
 constexpr int alpine_corona_chunk_id = 0x0AFBAE03;
+constexpr int alpine_bag_chunk_id = 0x0AFBAE04;
 constexpr int alpine_brush_group_chunk_id = 0x0AFBAE05; // brush metadata in .rfg group files only
+constexpr int alpine_weather_region_chunk_id = 0x0AFBAE06;
+constexpr int alpine_vehicle_factory_chunk_id = 0x0AFBAE07;
+constexpr int alpine_projection_camera_chunk_id = 0x0AFBAE08;
+constexpr int alpine_rope_emitter_chunk_id = 0x0AFBAE0A;
+constexpr int alpine_terrain_chunk_id = static_cast<int>(alpine_terrain::chunk_id); // 0x0AFBAE0B
+constexpr int alpine_lightmaps_chunk_id = static_cast<int>(alpine_lightmap::chunk_id); // 0x0AFBAE09
+constexpr int alpine_directional_light_chunk_id = static_cast<int>(alpine_dir_light::chunk_id); // 0x0AFBAE0C
+constexpr int alpine_waypoint_helper_chunk_id = static_cast<int>(alpine_waypoint_helper::chunk_id); // 0x0AFBAE0D
+constexpr int alpine_mover_path_chunk_id = static_cast<int>(mover_path::chunk_id); // 0x0AFBAE0E
+constexpr int alpine_liquid_emission_chunk_id = 0x0AFBAE0F; // editor only: Liquid Room light emission
+
+// Other editors save RFL chunks of their own that Alpine Faction can neither read nor parse.
+// AlpineEditor retains them verbatim on load and re-emits them on save, so the originating
+// editor can still read the file properly.
+constexpr uint32_t foreign_chunk_id_mask = 0xFFF00000u;
+struct ForeignRflChunkSource {
+    uint32_t prefix;
+    const char* editor;
+};
+constexpr ForeignRflChunkSource foreign_chunk_sources[] = {
+    {0x6ED00000u, "Glacier"},
+    {0x5ED00000u, "RED+"},
+};
+// Name of the editor that owns this chunk id, or nullptr for anything that is not a foreign chunk.
+inline const char* foreign_chunk_editor(uint32_t id)
+{
+    for (const auto& src : foreign_chunk_sources) {
+        if ((id & foreign_chunk_id_mask) == src.prefix) {
+            return src.editor;
+        }
+    }
+    return nullptr;
+}
+
+// A retained RFL section captured verbatim from another editor.
+struct RetainedRflChunk {
+    uint32_t id;
+    std::vector<uint8_t> data;
+};
 
 // Per-entry data in the alpine_brush_group_chunk_id chunk (.rfg only).
 // Stores geoable/breakable flags for brushes by serialization index.
 #pragma pack(push, 1)
 struct BrushGroupEntry {
     uint32_t brush_index;
-    uint8_t flags;      // bit 0 = geoable, bit 1 = breakable
+    uint8_t flags;      // bit 0 = geoable, bit 1 = breakable, bit 2 = no shadow cast
     uint8_t material;   // breakable material byte (bits 0-6 = material, bit 7 = no_debris)
 };
 #pragma pack(pop)
@@ -36,14 +98,21 @@ struct GFace;
 struct GSolid;
 struct GBBox;
 struct DecalPoly;
+struct TextureGroup;
 
 // Shared vertex position data. Multiple GFaceVertex entries reference the same GVertex.
 struct GVertex
 {
     Vector3 pos;                   // +0x00
-    char _pad_0C[0x20 - 0x0C];    // +0x0C
-    VArray<void*> face_refs;       // +0x20 back-references to faces using this vertex
+    Vector3 rotated_pos;           // +0x0C view space, scaled, as the per-face draw (0x004E94B0) last rotated it
+    int last_frame;                // +0x18 GSolid render stamp of that rotation
+    int clip_codes;                // +0x1C clip codes of that rotation
+    VArray<GFace*> face_refs;      // +0x20 back-references to faces using this vertex
 };
+static_assert(offsetof(GVertex, rotated_pos) == 0x0C);
+static_assert(offsetof(GVertex, last_frame) == 0x18);
+static_assert(offsetof(GVertex, clip_codes) == 0x1C);
+static_assert(offsetof(GVertex, face_refs) == 0x20);
 
 // Per-face vertex wrapper (0x1C bytes, pool-allocated at 0x00A12530)
 // Contains texture coords and pointer to shared GVertex; linked in circular doubly-linked list per face.
@@ -86,7 +155,8 @@ struct GRoom
     Vector3 bbox_max;            // +0x14  serialized
     int room_index;              // +0x20  serialized (used in portal/detail-room sections)
     int uid;                     // +0x24  serialized (first field written per room)
-    char _face_list[8];          // +0x28  VList<GFace>: head ptr + count (faces serialized separately)
+    GFace* face_list_head;       // +0x28  VList<GFace, FACE_LIST_ROOM>: head pointer (faces serialized separately)
+    int face_list_count;         // +0x2C  VList<GFace, FACE_LIST_ROOM>: element count
     VArray<void*> portals;       // +0x30  VArray<GPortal*> (serialized separately)
     void* bbox_ptr;              // +0x3C  runtime pointer (GBBox*)
     bool is_blocked;             // +0x40  not serialized in room loop
@@ -150,6 +220,13 @@ struct GRoom
     {
         AddrCaller{0x00486a10}.this_call(this, solid, detail);
     }
+
+    // FUN_00485850: rebuild the room's face bbox tree (GRoom+0x3C); the last step of every
+    // from-scratch solid build (RED 0x004a5020)
+    void rebuild_bbox()
+    {
+        AddrCaller{0x00485850}.this_call(this);
+    }
 };
 static_assert(sizeof(GRoom) == 0x1CC);
 static_assert(offsetof(GRoom, is_detail) == 0x00);
@@ -157,7 +234,10 @@ static_assert(offsetof(GRoom, bbox_min) == 0x08);
 static_assert(offsetof(GRoom, bbox_max) == 0x14);
 static_assert(offsetof(GRoom, room_index) == 0x20);
 static_assert(offsetof(GRoom, uid) == 0x24);
+static_assert(offsetof(GRoom, face_list_head) == 0x28);
+static_assert(offsetof(GRoom, face_list_count) == 0x2C);
 static_assert(offsetof(GRoom, is_cold) == 0x41);
+static_assert(offsetof(GRoom, is_airlock) == 0x43);
 static_assert(offsetof(GRoom, ambient_light_defined) == 0x45);
 static_assert(offsetof(GRoom, ambient_light) == 0x46);
 static_assert(offsetof(GRoom, eax_effect) == 0x4A);
@@ -165,6 +245,41 @@ static_assert(offsetof(GRoom, has_alpha) == 0x6A);
 static_assert(offsetof(GRoom, life) == 0x94);
 static_assert(offsetof(GRoom, liquid_type) == 0x180);
 static_assert(offsetof(GRoom, contains_liquid) == 0x184);
+
+// Attribute block a new GFace is stamped with: FUN_0048a660 copies these 0x18 bytes straight to
+// GFace+0x28. init() applies the editor's own defaults (FUN_00419f90) — flags 0x100, no texture,
+// face_id -1; Build Geometry's phase 1 (FUN_004399b0) assigns the real face ids.
+struct GFaceAttributes
+{
+    int flags;
+    int group_id;
+    int bitmap_id;
+    short portal_id;
+    short surface_index;
+    int face_id;
+    int smoothing_groups;
+
+    void init()
+    {
+        AddrCaller{0x00419f90}.this_call(this);
+    }
+};
+static_assert(sizeof(GFaceAttributes) == 0x18);
+
+// GFace::flags bits.
+enum GFaceFlags
+{
+    FACE_SHOW_SKY = 0x1,
+    FACE_MIRRORED = 0x2,
+    FACE_LIQUID = 0x4,
+    FACE_IS_DETAIL = 0x8,
+    FACE_SCROLL_TEXTURE = 0x10,
+    FACE_FULL_BRIGHT = 0x20,
+    FACE_SEE_THRU = 0x40,
+    FACE_HAS_HOLES = 0x80,
+    FACE_LIGHTMAP_RESOLUTION = 0x300, // lightmap resolution code - 1
+    FACE_INVISIBLE = 0x2000,
+};
 
 // Editor-side GFace layout (0x60 bytes, matches stock RED.exe / RF.exe GFace)
 // Full game-side definition: game_patch/rf/geometry.h
@@ -204,10 +319,31 @@ struct GFace
         AddrCaller{0x0048a700}.c_call(face);
     }
 
-    // FUN_00484230: generate next unique face/brush UID (delegates to ::generate_uid in vtypes.h)
-    static int generate_uid()
+    // FUN_0048abd0: pool-allocate a GFaceVertex and append it to the circular edge loop
+    GFaceVertex* add_vertex(GVertex* vertex, float u, float v, float lm_u, float lm_v)
     {
-        return ::generate_uid();
+        return AddrCaller{0x0048abd0}.this_call<GFaceVertex*>(this, vertex, u, v, lm_u, lm_v);
+    }
+
+    // FUN_004861d0 (hooked in level.cpp): more corners in front of portal's plane than behind, or all on it with
+    // agreeing normals
+    bool in_front_of(const GFace& portal)
+    {
+        return AddrCaller{0x004861d0}.c_call<bool>(this, &portal);
+    }
+
+    // FUN_0048c9e0: point-in-face, half-open with no tolerance
+    bool contains(const Vector3& point)
+    {
+        return AddrCaller{0x0048c9e0}.this_call<bool>(this, &point);
+    }
+
+    // FUN_0048a8b0 (RET 8, so both stack arguments are passed): with a null plane it derives the
+    // plane from the edge loop winding by Newell's method and recomputes the face AABB. Returns
+    // false for a face with fewer than three vertices or zero area.
+    bool compute_plane_and_bbox()
+    {
+        return AddrCaller{0x0048a8b0}.this_call<bool>(this, 0, 0);
     }
 };
 static_assert(sizeof(GFace) == 0x60);
@@ -220,6 +356,285 @@ static_assert(offsetof(GFace, face_id) == 0x38);
 static_assert(offsetof(GFace, edge_loop) == 0x40);
 static_assert(offsetof(GFace, which_room) == 0x44);
 static_assert(offsetof(GFace, next_solid) == 0x54);
+static_assert(offsetof(GFace, next_bbox) == 0x58);
+static_assert(offsetof(GFace, next_room) == 0x5C);
+
+// Calls fn(GFaceVertex&) around the face's edge loop, bounded against a corrupt one
+template<typename Fn>
+void for_each_face_corner(const GFace& face, Fn&& fn)
+{
+    GFaceVertex* first = face.edge_loop;
+    GFaceVertex* fv = first;
+    for (int guard = 0; fv && guard < 100000; ++guard) {
+        fn(*fv);
+        fv = fv->next;
+        if (fv == first) {
+            break;
+        }
+    }
+}
+
+inline int face_corner_count(const GFace& face)
+{
+    int count = 0;
+    for_each_face_corner(face, [&](GFaceVertex&) { ++count; });
+    return count;
+}
+
+inline std::vector<GFaceVertex*> face_corner_list(const GFace& face)
+{
+    std::vector<GFaceVertex*> corners;
+    for_each_face_corner(face, [&](GFaceVertex& fv) { corners.push_back(&fv); });
+    return corners;
+}
+
+// Editor-side GLightmap (matches stock RED.exe / RF.exe GLightmap), one lightmap page
+// Full game-side definition: game_patch/rf/geometry.h
+struct GLightmap
+{
+    std::uint8_t* alpha;    // +0x00, w*h bytes, null unless built with alpha
+    int w;                  // +0x04
+    int h;                  // +0x08
+    std::uint8_t* pixels;   // +0x0C  RGB8, w * h * 3 bytes
+    int bm_handle;          // +0x10
+    int index;              // +0x14
+};
+static_assert(sizeof(GLightmap) == 0x18);
+static_assert(offsetof(GLightmap, w) == 0x04);
+static_assert(offsetof(GLightmap, h) == 0x08);
+static_assert(offsetof(GLightmap, pixels) == 0x0C);
+static_assert(offsetof(GLightmap, bm_handle) == 0x10);
+static_assert(offsetof(GLightmap, index) == 0x14);
+
+// The level's lightmap pages, written as the 0x1200 section by FUN_00430bf0.
+static auto& lightmap_pages = addr_as_ref<VArray<GLightmap*>>(0x01128678);
+
+// GSurface::flags: the work FUN_004ac470 does on the surface, all cleared when it returns unless the surface
+// has zero width or height.
+enum GSurfaceFlags
+{
+    SURFACE_DYNAMIC_LIGHTS = 0x1, // the lightmap plus the dynamic lights reaching it, into its bitmap
+    SURFACE_SHADE = 0x2,          // shade from the static lights, every shadow casting light masked
+    SURFACE_SHADE_RUNTIME = 0x4,  // likewise, but only SHADOWCAST_RUNTIME lights masked
+    SURFACE_UPLOAD = 0x8,         // the lightmap into its bitmap
+};
+
+// Editor-side GSurface partial layout (matches stock RED.exe / RF.exe GSurface), a face's lightmap
+// fragment. Full game-side definition: game_patch/rf/geometry.h
+struct GSurface
+{
+    int index; // +0x00  the GFace::surface_index of its faces
+    char _pad_04[0x08 - 0x04];
+    std::uint8_t flags;     // +0x08  GSurfaceFlags
+    std::uint8_t smooth;    // +0x09  nonzero: FUN_004ad160 takes its smooth (vertex interpolating) path
+    std::uint8_t fullbright; // +0x0A  nonzero: FUN_004ac470 never shades it
+    char _pad_0B;
+    GLightmap* lightmap;    // +0x0C
+    int xstart;             // +0x10
+    int ystart;             // +0x14
+    int width;              // +0x18
+    int height;             // +0x1C
+    char _pad_20[0x34 - 0x20];
+    float bbox_mn[3];       // +0x34
+    float bbox_mx[3];       // +0x40
+    float uv_scale_x;       // +0x4C
+    float uv_scale_y;       // +0x50
+    float uv_add_x;         // +0x54
+    float uv_add_y;         // +0x58
+    int dropped_coefficient; // +0x5C
+    int u_coefficient;      // +0x60  axis of bbox_mn/bbox_mx the lightmap u follows
+    int v_coefficient;      // +0x64
+    int room_index;         // +0x68  index into GSolid::all_rooms, -1 for none
+    Plane plane;            // +0x6C  the flat path's lumel normal (0x004adda7)
+};
+static_assert(offsetof(GSurface, index) == 0x00);
+static_assert(offsetof(GSurface, flags) == 0x08);
+static_assert(offsetof(GSurface, smooth) == 0x09);
+static_assert(offsetof(GSurface, fullbright) == 0x0A);
+static_assert(offsetof(GSurface, lightmap) == 0x0C);
+static_assert(offsetof(GSurface, xstart) == 0x10);
+static_assert(offsetof(GSurface, ystart) == 0x14);
+static_assert(offsetof(GSurface, width) == 0x18);
+static_assert(offsetof(GSurface, height) == 0x1C);
+static_assert(offsetof(GSurface, bbox_mn) == 0x34);
+static_assert(offsetof(GSurface, bbox_mx) == 0x40);
+static_assert(offsetof(GSurface, uv_scale_x) == 0x4C);
+static_assert(offsetof(GSurface, uv_scale_y) == 0x50);
+static_assert(offsetof(GSurface, uv_add_x) == 0x54);
+static_assert(offsetof(GSurface, uv_add_y) == 0x58);
+static_assert(offsetof(GSurface, dropped_coefficient) == 0x5C);
+static_assert(offsetof(GSurface, u_coefficient) == 0x60);
+static_assert(offsetof(GSurface, v_coefficient) == 0x64);
+static_assert(offsetof(GSurface, room_index) == 0x68);
+static_assert(offsetof(GSurface, plane) == 0x6C);
+
+// FUN_004ac470 (thiscall on the surface, RET 8): does the GSurfaceFlags work the surface carries.
+// `mode` is the shadow mode, 0 for none.
+static auto& lightmap_shade_surface =
+    addr_as_ref<void __fastcall(GSurface* surface, int edx, void* solid, int mode)>(0x004ac470);
+
+// A face or occluder polygon in a surface's lightmap texel space, as the stock shadow projector
+// FUN_004ae360 builds them (operator new 0x104, ctor FUN_004af490 zeroes count).
+struct LightmapPolygon
+{
+    float verts[32][2]; // +0x00
+    int count;          // +0x100
+};
+static_assert(sizeof(LightmapPolygon) == 0x104);
+static_assert(offsetof(LightmapPolygon, count) == 0x100);
+
+// FUN_004ae360's locals as seen from ESP inside its per-face clip loop (0x004af1db..0x004af2b0).
+struct ShadowProjectorFrame
+{
+    char _pad_00[0x40];
+    VArray<LightmapPolygon*> faces; // +0x40  the surface's own faces
+};
+static_assert(offsetof(ShadowProjectorFrame, faces) == 0x40);
+
+// FUN_004ae360's cdecl arguments as seen from its frame pointer (PUSH EBP; MOV EBP,ESP).
+struct ShadowProjectorArgs
+{
+    void* saved_ebp;   // +0x00
+    void* return_addr; // +0x04
+    GSolid* solid;     // +0x08
+    GSurface* surface; // +0x0C
+    GrLight* light;    // +0x10
+};
+static_assert(offsetof(ShadowProjectorArgs, light) == 0x10);
+
+// FUN_004ad160's smooth path locals around the lumel it passes the accumulator at 0x004adb30: the normal
+// argument points at `normal` (ESP+0xE0), the position argument at `pos`.
+struct SmoothLumelLocals
+{
+    Vector3 normal;          // +0x00
+    Vector3 crossing_normal; // +0x0C  normal at the row's first edge crossing
+    Vector3 pos;             // +0x18
+    Vector3 crossing_pos;    // +0x24  position of the row's first edge crossing
+};
+static_assert(offsetof(SmoothLumelLocals, crossing_normal) == 0x0C);
+static_assert(offsetof(SmoothLumelLocals, pos) == 0x18);
+static_assert(offsetof(SmoothLumelLocals, crossing_pos) == 0x24);
+
+// An edge crossing of FUN_004ad160's smooth path pick (written at 0x004ad606): the edge a -> b of a face's edge loop
+// and FUN_004952d0's pointers to the vertex normals of both ends.
+struct LumelCrossing
+{
+    GFaceVertex* a;
+    Vector3* n_a;
+    GFaceVertex* b;
+    Vector3* n_b;
+};
+static_assert(sizeof(LumelCrossing) == 0x10);
+static_assert(offsetof(LumelCrossing, n_a) == 0x04);
+static_assert(offsetof(LumelCrossing, b) == 0x08);
+static_assert(offsetof(LumelCrossing, n_b) == 0x0C);
+
+// FUN_004ad160's smooth path locals as seen from ESP inside its per-lumel loop (0x004ad32e..0x004adbd0).
+struct LumelPassFrame
+{
+    char _pad_00[0x18];
+    float u;                  // +0x18  lumel centre in lightmap UV
+    char _pad_1c[0x24 - 0x1c];
+    float v;                  // +0x24
+    char _pad_28[0x34 - 0x28];
+    int row;                  // +0x34
+    char _pad_38[0x48 - 0x38];
+    VArray<Vector3>* normals; // +0x48  FUN_004aded0's vertex normals, per face of `faces`, in edge-loop order
+    char _pad_4c[0x5c - 0x4c];
+    VArray<GFace*> faces;     // +0x5C
+    char _pad_68[0x74 - 0x68];
+    int col;                  // +0x74
+    char _pad_78[0xa0 - 0x78];
+    LumelCrossing crossings[2]; // +0xA0
+    char _pad_c0[0xe0 - 0xc0];
+    SmoothLumelLocals lumel;  // +0xE0  what the accumulator call at 0x004adb30 passes
+    char _pad_110[0x298 - 0x110];
+    GSurface* surface;        // +0x298
+};
+static_assert(offsetof(LumelPassFrame, u) == 0x18);
+static_assert(offsetof(LumelPassFrame, v) == 0x24);
+static_assert(offsetof(LumelPassFrame, row) == 0x34);
+static_assert(offsetof(LumelPassFrame, normals) == 0x48);
+static_assert(offsetof(LumelPassFrame, faces) == 0x5C);
+static_assert(offsetof(LumelPassFrame, col) == 0x74);
+static_assert(offsetof(LumelPassFrame, crossings) == 0xA0);
+static_assert(offsetof(LumelPassFrame, lumel) == 0xE0);
+static_assert(offsetof(LumelPassFrame, surface) == 0x298);
+
+// FUN_004aded0's locals as seen from ESP inside its per-vertex loop (0x004adf62..0x004ae014).
+struct VertexNormalFrame
+{
+    char _pad_00[0x1c];
+    VArray<Vector3>* normals; // +0x1C  the current face's vertex normals, appended in edge-loop order
+    Vector3 normal;           // +0x20  the vertex normal being built
+};
+static_assert(offsetof(VertexNormalFrame, normals) == 0x1C);
+static_assert(offsetof(VertexNormalFrame, normal) == 0x20);
+
+// One smoothed surface of the blend pass: FUN_004aabf0 builds the array (ctor FUN_004ab980) and
+// hands it to FUN_004aae80.
+struct LightmapBlendEntry
+{
+    GSurface* surface;    // +0x00
+    VArray<GFace*> faces; // +0x04  the faces whose surface_index is surface->index
+    char _pad_10[0x1C - 0x10];
+};
+static_assert(sizeof(LightmapBlendEntry) == 0x1C);
+static_assert(offsetof(LightmapBlendEntry, faces) == 0x04);
+
+// Scrolling texture record. In brush geometry it is keyed by the owning face's face_id
+// (Face Properties FUN_00402d60, Build Geometry phase 1 in FUN_004399b0).
+struct GTextureMover
+{
+    int face_id;
+    float u_pan_speed;
+    float v_pan_speed;
+    VArray<GFace*> faces;
+};
+static_assert(sizeof(GTextureMover) == 0x18);
+
+// GSolid::collide's segment query (ctor FUN_00416430), the solid placed at pos/orient
+struct SolidRayQuery
+{
+    GFace* hint;                 // +0x00
+    Vector3 pos;                 // +0x04
+    Matrix3 orient;              // +0x10
+    Vector3 p0;                  // +0x34
+    Vector3 dir;                 // +0x40  the segment runs p0 .. p0 + dir
+    float radius;                // +0x4C
+    uint32_t flags;              // +0x50  SolidRayQueryFlags
+    Vector3 local_p0;            // +0x54
+    Vector3 local_dir;           // +0x60
+
+    SolidRayQuery()
+    {
+        AddrCaller{0x00416430}.this_call(this);
+    }
+};
+static_assert(sizeof(SolidRayQuery) == 0x6C);
+static_assert(offsetof(SolidRayQuery, p0) == 0x34);
+static_assert(offsetof(SolidRayQuery, flags) == 0x50);
+enum SolidRayQueryFlags : uint32_t
+{
+    // as texture mode's click casts against the level solid
+    SRQ_LEVEL_SOLID = 0x8,
+};
+
+// GSolid::collide's result (ctor FUN_004162a0)
+struct SolidRayResult
+{
+    int num_hits;                // +0x00
+    float t;                     // +0x04  fraction of the segment
+    char _pad_08[0x24 - 0x08];
+    GFace* face;                 // +0x24
+
+    SolidRayResult()
+    {
+        AddrCaller{0x004162a0}.this_call(this);
+    }
+};
+static_assert(sizeof(SolidRayResult) == 0x28);
+static_assert(offsetof(SolidRayResult, face) == 0x24);
 
 // Editor-side GSolid partial layout (matches stock RED.exe / RF.exe GSolid)
 // Full game-side definition with ALPINE_FACTION extensions: game_patch/rf/geometry.h
@@ -237,9 +652,12 @@ struct GSolid
     VArray<GVertex*> vertices;   // +0x78
     VArray<GRoom*> children;     // +0x84
     VArray<GRoom*> all_rooms;    // +0x90
-    char _pad_9C[0xCC - 0x9C];  // +0x9C  unknown fields
+    char _pad_9C[0xC0 - 0x9C];   // +0x9C  unknown fields
+    VArray<GSurface*> surfaces;  // +0xC0  lightmap fragments
     VArray<GVertex*> vertex_selection; // +0xCC  selected vertices in vertex mode
     VArray<GFace*> face_selection;  // +0xD8  selected faces in face mode
+    char _pad_E4[0x2F4 - 0xE4];  // +0xE4  unknown fields
+    VArray<GTextureMover*> texture_movers; // +0x2F4
 
     // FUN_00486bd0: remove face from solid's face linked list (thiscall on face_list at +0x70)
     void remove_face(GFace* face)
@@ -252,11 +670,154 @@ struct GSolid
     {
         AddrCaller{0x0043df30}.this_call(&vertices, vertex);
     }
+
+    // FUN_00496120: allocate a GVertex at pos and append it to the solid's vertex array
+    GVertex* add_vertex(const Vector3* pos)
+    {
+        return AddrCaller{0x00496120}.this_call<GVertex*>(this, pos);
+    }
+
+    // FUN_00495f50: pool-allocate a GFace stamped with attrs and link it onto the solid's face list
+    GFace* create_face(const GFaceAttributes* attrs)
+    {
+        return AddrCaller{0x00495f50}.this_call<GFace*>(this, attrs);
+    }
+
+    // FUN_00495e40: recompute bbox_min/bbox_max from the vertex array, pad them by the geometry
+    // epsilon and fit the bounding sphere
+    void compute_bbox_sphere()
+    {
+        AddrCaller{0x00495e40}.this_call(this);
+    }
+
+    // FUN_00490c10: re-derives the UVs of this level solid's faces built from brush_face, of the brush at pos/orient
+    void update_faces_from_brush_face(GFace* brush_face, const Vector3* pos, const Matrix3* orient)
+    {
+        AddrCaller{0x00490c10}.this_call(this, brush_face, pos, orient);
+    }
+
+    // FUN_00490a40: the size of its vertices' bounding box
+    Vector3 vertex_bbox_size()
+    {
+        Vector3 size;
+        AddrCaller{0x00490A40}.this_call(this, &size);
+        return size;
+    }
+
+    // FUN_0049a760: draws the solid at pos/orient as editor views do: in lines of the color given (selected faces red,
+    // vertices marked with vertex_marks) when outline, else textured, with each face's edges over it with face_outlines
+    void draw(bool outline, bool face_outlines, bool vertex_marks, const Vector3* pos, const Matrix3* orient, int r,
+              int g, int b)
+    {
+        AddrCaller{0x0049a760}.this_call(this, static_cast<char>(outline), static_cast<int>(face_outlines),
+                                         static_cast<char>(vertex_marks), pos, orient, r, g, b);
+    }
+
+    // FUN_004a6950 (ends the t-joint pass): splits faces over 16 corners, keeping each piece's room and bbox node
+    void split_large_faces()
+    {
+        AddrCaller{0x004a6950}.c_call(this, &face_list_head);
+    }
+
+    // FUN_00496770: inserts `vertex` between `a` and `b` in every face with both whose detail state matches it
+    void insert_vertex_on_edge(GVertex* a, GVertex* b, GVertex* vertex)
+    {
+        AddrCaller{0x00496770}.this_call(this, a, b, vertex);
+    }
+
+    // FUN_004affa0: links a portal face between `room` and `other`, creating their GPortal if needed; sets the face's
+    // portal_id and clears its texture and surface
+    void link_portal_face(GFace* face, GRoom* room, GRoom* other)
+    {
+        AddrCaller{0x004affa0}.this_call(this, face, room, other);
+    }
+
+    // FUN_0048c0c0 (RF.exe's find_room, 0x004E1630): the room the point is in, or null outside the level
+    GRoom* room_at(const Vector3* pos)
+    {
+        return AddrCaller{0x0048c0c0}.c_call<GRoom*>(this, pos);
+    }
+
+    // FUN_00485490: the scroll mover of the faces with face_id, or null
+    GTextureMover* find_texture_mover(int face_id)
+    {
+        return AddrCaller{0x00485490}.this_call<GTextureMover*>(this, face_id);
+    }
+
+    // As Face Properties adds one (0x00402E7D): ctor FUN_004851d0, appended, then FUN_004852d0 gathers the faces with
+    // face_id. The caller sets FACE_SCROLL_TEXTURE on them.
+    GTextureMover* add_texture_mover(int face_id, float u_speed, float v_speed)
+    {
+        void* mem = AddrCaller{0x0052ee74}.c_call<void*>(sizeof(GTextureMover));
+        if (!mem) return nullptr;
+        auto* mover = AddrCaller{0x004851d0}.this_call<GTextureMover*>(mem);
+        AddrCaller{0x00491020}.this_call(&texture_movers, mover);
+        mover->face_id = face_id;
+        mover->u_pan_speed = u_speed;
+        mover->v_pan_speed = v_speed;
+        AddrCaller{0x004852d0}.this_call(mover, this);
+        return mover;
+    }
+
+    // As Face Properties removes one (0x00402F31): FUN_0043df30, then the scalar deleting destructor FUN_00411560
+    void remove_texture_mover(GTextureMover* mover)
+    {
+        AddrCaller{0x0043df30}.this_call(&texture_movers, mover);
+        AddrCaller{0x00411560}.this_call(mover, 1);
+    }
+
+    // Calls fn(GFace&) along the face list, stopping when it returns true (and returning true then)
+    template<typename Fn>
+    bool for_each_face(Fn&& fn)
+    {
+        int guard = 0;
+        for (GFace* face = face_list_head; face && guard < 10000000; face = face->next_solid, ++guard) {
+            if (fn(*face)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Its faces by face id
+    std::unordered_map<int, std::vector<GFace*>> faces_by_id()
+    {
+        std::unordered_map<int, std::vector<GFace*>> faces;
+        for_each_face([&](GFace& face) {
+            faces[face.face_id].push_back(&face);
+            return false;
+        });
+        return faces;
+    }
+
+    // FUN_004917a0: the nearest face the query's segment hits, as texture mode's click (0x0042C020) casts it
+    bool collide(SolidRayQuery& query, SolidRayResult& result)
+    {
+        AddrCaller{0x004917a0}.this_call(this, &query, &result, 1);
+        return result.num_hits > 0;
+    }
+
+    // FUN_00495500 on a 0x378 byte allocation, as every from-scratch solid in RED does
+    static GSolid* create()
+    {
+        auto* solid = static_cast<GSolid*>(AddrCaller{0x0052ee74}.c_call<void*>(0x378));
+        if (!solid) return nullptr;
+        return AddrCaller{0x00495500}.this_call<GSolid*>(solid);
+    }
+
+    // FUN_00419ae0(1): scalar deleting destructor — releases rooms, faces and vertices, then frees
+    static void destroy(GSolid* solid)
+    {
+        AddrCaller{0x00419ae0}.this_call(solid, 1);
+    }
 };
 static_assert(offsetof(GSolid, face_list_head) == 0x70);
+static_assert(offsetof(GSolid, face_list_count) == 0x74);
 static_assert(offsetof(GSolid, all_rooms) == 0x90);
+static_assert(offsetof(GSolid, surfaces) == 0xC0);
 static_assert(offsetof(GSolid, vertex_selection) == 0xCC);
 static_assert(offsetof(GSolid, face_selection) == 0xD8);
+static_assert(offsetof(GSolid, texture_movers) == 0x2F4);
 
 // Brush state enum (BrushNode::state at +0x48)
 // Determined via byte-pattern searches and cross-referencing comparison/assignment sites:
@@ -319,6 +880,41 @@ struct BrushNode
     BrushState state;            // +0x48  brush state (0=normal, 2=hidden, 3=selected)
     BrushNode* next;             // +0x4C  next node in circular doubly-linked list
     BrushNode* prev;             // +0x50  prev node in circular doubly-linked list
+
+    // FUN_0044d5a0 on a 0x54 byte allocation, the same pairing the .rfl brush reader uses at
+    // 0x004308e2. Leaves uid -1, pos zero, identity orient, null geometry, brush_type AIR,
+    // life -1, state NORMAL.
+    static BrushNode* create()
+    {
+        auto* brush = static_cast<BrushNode*>(AddrCaller{0x0052ee74}.c_call<void*>(sizeof(BrushNode)));
+        if (!brush) return nullptr;
+        return AddrCaller{0x0044d5a0}.this_call<BrushNode*>(brush);
+    }
+
+    // FUN_0044d8b0(1): scalar deleting destructor
+    static void destroy(BrushNode* brush)
+    {
+        AddrCaller{0x0044d8b0}.this_call(brush, 1);
+    }
+
+    // A point of its geometry placed in the world
+    Vector3 to_world(const Vector3& local) const
+    {
+        return orient * local + pos;
+    }
+
+    // FUN_004b57b0: to_world with RED's rounding, for tests that must agree with stock ones
+    Vector3 to_world_stock(const Vector3& local) const
+    {
+        Vector3 world = local;
+        AddrCaller{0x004B57B0}.c_call(&world, &pos, &orient);
+        return world;
+    }
+
+    bool pickable() const
+    {
+        return state != BRUSH_STATE_RED && state != BRUSH_STATE_HIDDEN;
+    }
 };
 static_assert(sizeof(BrushNode) == 0x54);
 static_assert(offsetof(BrushNode, vtable) == 0x00);
@@ -334,6 +930,30 @@ static_assert(offsetof(BrushNode, life) == 0x44);
 static_assert(offsetof(BrushNode, state) == 0x48);
 static_assert(offsetof(BrushNode, next) == 0x4C);
 static_assert(offsetof(BrushNode, prev) == 0x50);
+
+// Inverse of alpine_lighting::sun_to_light_dir for a light travelling along `travel_dir`: yaw wrapped like
+// SanitizeSunProperties, pitch clamped to [0, 90] (a direction travelling upward parks the sun on the
+// horizon). False for a zero or non-finite direction.
+inline bool alpine_light_dir_to_sun_angles(const Vector3& travel_dir, float& yaw_deg, float& pitch_deg)
+{
+    const Vector3& d = travel_dir;
+    const float len = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+    if (!std::isfinite(len) || len <= 0.0f) {
+        return false;
+    }
+    const float x = -d.x / len;
+    const float y = -d.y / len;
+    const float z = -d.z / len;
+
+    constexpr float rad_to_deg = 180.0f / 3.14159265358979f;
+    yaw_deg = std::atan2(x, z) * rad_to_deg;
+    yaw_deg = std::fmod(yaw_deg, 360.0f);
+    if (yaw_deg < 0.0f) {
+        yaw_deg += 360.0f;
+    }
+    pitch_deg = std::clamp(std::asin(std::clamp(y, -1.0f, 1.0f)) * rad_to_deg, 0.0f, 90.0f);
+    return true;
+}
 
 // should match structure in game_patch\misc\level.h
 struct AlpineLevelProperties
@@ -356,6 +976,45 @@ struct AlpineLevelProperties
     std::vector<int32_t> breakable_brush_uids;
     std::vector<int32_t> breakable_room_uids; // computed at save time, parallel to breakable_brush_uids
     std::vector<uint8_t> breakable_materials;  // material type per entry
+    std::vector<int32_t> hold_open_keyframe_uids; // first keyframe UIDs of moving groups with "Hold Open"
+    // Own chunk. Entries outlive their keyframes; a save writes the live ones.
+    std::unordered_map<int32_t, mover_path::KeyframeData> mover_path_keyframes; // by keyframe UID
+    std::unordered_map<int32_t, mover_path::MoverSettings> mover_path_movers;   // by first keyframe UID
+    // v5
+    bool enable_sun = false;
+    float sun_yaw = 0.0f;   // degrees
+    float sun_pitch = 90.0f; // degrees above horizon, 90 = zenith
+    uint8_t sun_color_r = 255, sun_color_g = 255, sun_color_b = 255, sun_color_a = 255;
+    float sun_intensity = 1.0f;
+    float sun_spread_angle = 0.0f; // degrees, penumbra half-angle for baked soft shadows
+    bool sun_cast_baked_shadows = true;
+    bool sun_affects_meshes = true;
+    uint8_t sun_mesh_mode = 0; // 0 = scale by sampled lightmap luminance, 1 = apply everywhere
+    bool sun_drives_shadowmap_dir = true;
+    bool legacy_lighting = false;   // 1 = bake with the byte-identical stock pipeline
+    bool highres_lightmaps = false; // 256x256 pages, 254 texel fragments, 4x density; needs a Build Geometry
+    bool sun_liquid_occludes = true; // liquid surfaces block sun rays during the bake
+    bool invisible_faces_occlude = false; // invisible faces block light hitting their front side
+    bool alpha_faces_occlude = false; // alpha textured faces block light; stock skips them entirely
+    std::vector<int32_t> no_shadow_cast_brush_uids; // brushes whose faces never occlude a baked ray
+    bool meshes_occlude = false; // alpine mesh objects cast baked shadows
+    uint8_t lightmap_density = 0; // texels per world unit for the alpine lightmap bake, 0 = default, density_off
+    bool d3d11_only_lightmaps = false; // skip writing the stock 0x1200 lightmaps section
+    bool stock_lightmaps_omitted = false; // load-time only: the file had no stock lightmaps section
+    uint8_t lightmap_compression = 0; // alpine_lightmap::CompressionMode
+
+    // v6
+    bool vehicle_flight_ceiling_enabled = false;   // mapper opted into an altitude ceiling for flyers
+    float vehicle_flight_ceiling = 0.0f;           // world Y (RF up axis) the ceiling sits at
+    bool minimap_enabled = false;
+    std::string minimap_bitmap;
+    Vector3 minimap_world_min{};
+    Vector3 minimap_world_max{};
+    float minimap_cut_height = 0.0f;
+    bool require_d3d11 = false; // the mapper's "Require Direct3D 11" setting
+    float camera_far_clip = 0.0f; // 0 = the stock far clip (fog far clip, else 275)
+    bool alpha_tested_occlusion = false; // see-through faces and alpha mesh triangles occlude by texel alpha
+    payload::LevelRules payload_rules;
 
     // Alpine mesh objects (stored separately from stock object VArrays)
     std::vector<DedMesh*> mesh_objects;
@@ -366,7 +1025,109 @@ struct AlpineLevelProperties
     // Alpine corona objects
     std::vector<DedCorona*> corona_objects;
 
-    static constexpr std::uint32_t current_alpine_chunk_version = 4u;
+    // Alpine bag objects
+    std::vector<DedBag*> bag_objects;
+
+    // Alpine weather region objects
+    std::vector<DedWeatherRegion*> weather_region_objects;
+
+    // Alpine vehicle factory objects
+    std::vector<DedVehicleFactory*> vehicle_factory_objects;
+
+    // Alpine projection camera objects
+    std::vector<DedProjectionCamera*> projection_camera_objects;
+
+    // Alpine rope emitter objects
+    std::vector<DedRopeEmitter*> rope_emitter_objects;
+
+    // Alpine terrain objects
+    std::vector<DedTerrain*> terrain_objects;
+    // Not serialized: sorted uids of the compiled solid's rooms that hold terrain chunks, from the last
+    // Build Geometry or the loaded build mappings.
+    std::vector<int32_t> terrain_room_uids;
+    // Not serialized: sorted uids of other rooms holding only terrain chunk faces (a chunk split across
+    // rooms), from the last Build Geometry. Hidden like terrain_room_uids, but lit as ordinary faces:
+    // the game knows a chunk by its mapped room alone.
+    std::vector<int32_t> terrain_split_room_uids;
+
+    // Alpine directional light objects
+    std::vector<DedDirectionalLight*> directional_light_objects;
+
+    std::vector<DedWaypointHelper*> waypoint_helper_objects;
+
+    // Retained foreign-editor RFL sections
+    std::vector<RetainedRflChunk> retained_chunks;
+
+    static constexpr std::uint32_t current_alpine_chunk_version = 6u;
+
+    // Level property `require_d3d11` (u8): the game refuses the level on other renderers when it is non-zero.
+    static constexpr std::uint8_t require_d3d11_needed = 1u << 0;  // any reason, recomputed on every save
+    static constexpr std::uint8_t require_d3d11_setting = 1u << 1; // the mapper's setting
+
+    // Unit vector pointing TOWARD the sun. The light travel direction is its negation.
+    Vector3 sun_to_light_dir() const
+    {
+        const alpine_lighting::Direction d = alpine_lighting::sun_to_light_dir(sun_yaw, sun_pitch);
+        return {d.x, d.y, d.z};
+    }
+
+    // Needs the ray traced shadows: the stock projector legacy lighting keeps cannot sample a texture.
+    bool alpha_tested_occlusion_active() const
+    {
+        return alpha_tested_occlusion && !legacy_lighting;
+    }
+
+    // Calculate Lighting gives the surfaces alpine charts; D3D11-only lightmaps can only apply then.
+    bool surface_charts_enabled() const
+    {
+        return !legacy_lighting && lightmap_density != alpine_lightmap::density_off;
+    }
+
+    bool is_terrain_room(int32_t room_uid) const
+    {
+        return std::binary_search(terrain_room_uids.begin(), terrain_room_uids.end(), room_uid);
+    }
+
+    bool is_terrain_split_room(int32_t room_uid) const
+    {
+        return std::binary_search(terrain_split_room_uids.begin(), terrain_split_room_uids.end(), room_uid);
+    }
+
+    void SanitizeSunProperties()
+    {
+        const float yaw_in = sun_yaw, pitch_in = sun_pitch;
+        const float intensity_in = sun_intensity, spread_in = sun_spread_angle;
+        const uint8_t mesh_mode_in = sun_mesh_mode;
+
+        sun_yaw = std::isfinite(sun_yaw) ? std::fmod(sun_yaw, 360.0f) : 0.0f;
+        if (sun_yaw < 0.0f) {
+            sun_yaw += 360.0f;
+        }
+        sun_pitch = std::clamp(std::isfinite(sun_pitch) ? sun_pitch : 90.0f, 0.0f, 90.0f);
+        sun_intensity = std::clamp(std::isfinite(sun_intensity) ? sun_intensity : 1.0f, 0.0f, 10.0f);
+        sun_spread_angle =
+            std::clamp(std::isfinite(sun_spread_angle) ? sun_spread_angle : 0.0f, 0.0f, 45.0f);
+        if (sun_mesh_mode > 1) {
+            sun_mesh_mode = 0;
+        }
+
+        if (!(yaw_in == sun_yaw) || !(pitch_in == sun_pitch) ||
+            !(intensity_in == sun_intensity) || !(spread_in == sun_spread_angle) ||
+            mesh_mode_in != sun_mesh_mode) {
+            xlog::warn("[AlpineLevelProps] out of range sunlight properties corrected: yaw {} -> {}, "
+                       "pitch {} -> {}, intensity {} -> {}, spread {} -> {}, mesh mode {} -> {}",
+                       yaw_in, sun_yaw, pitch_in, sun_pitch, intensity_in, sun_intensity, spread_in,
+                       sun_spread_angle, mesh_mode_in, sun_mesh_mode);
+        }
+    }
+
+    // A new level (File > New, and the document RED starts with) gets the current behaviour, not the legacy one
+    void LoadNewLevelDefaults()
+    {
+        LoadDefaults();
+        legacy_cyclic_timers = false;
+        legacy_movers = false;
+    }
 
     // defaults for existing levels, overwritten for maps with these fields in their alpine level props chunk
     // relevant for maps without alpine level props and maps with older alpine level props versions
@@ -385,16 +1146,51 @@ struct AlpineLevelProperties
         breakable_brush_uids.clear();
         breakable_room_uids.clear();
         breakable_materials.clear();
+        hold_open_keyframe_uids.clear();
+        mover_path_keyframes.clear();
+        mover_path_movers.clear();
+        enable_sun = false;
+        sun_yaw = 0.0f;
+        sun_pitch = 90.0f;
+        sun_color_r = 255;
+        sun_color_g = 255;
+        sun_color_b = 255;
+        sun_color_a = 255;
+        sun_intensity = 1.0f;
+        sun_spread_angle = 0.0f;
+        sun_cast_baked_shadows = true;
+        sun_affects_meshes = true;
+        sun_mesh_mode = 0;
+        sun_drives_shadowmap_dir = true;
+        legacy_lighting = false;
+        highres_lightmaps = false;
+        sun_liquid_occludes = true;
+        invisible_faces_occlude = false;
+        alpha_faces_occlude = false;
+        no_shadow_cast_brush_uids.clear();
+        meshes_occlude = false;
+        vehicle_flight_ceiling_enabled = false;
+        vehicle_flight_ceiling = 0.0f;
+        minimap_enabled = false;
+        minimap_bitmap.clear();
+        minimap_world_min = {};
+        minimap_world_max = {};
+        minimap_cut_height = 0.0f;
+        lightmap_density = 0;
+        d3d11_only_lightmaps = false;
+        stock_lightmaps_omitted = false;
+        lightmap_compression = 0;
+        require_d3d11 = false;
+        camera_far_clip = 0.0f;
+        alpha_tested_occlusion = false;
+        payload_rules = {};
         for (auto* m : mesh_objects) {
             DestroyDedMesh(m);
         }
         mesh_objects.clear();
 
         for (auto* n : note_objects) {
-            n->field_4.free();
-            n->script_name.free();
-            n->class_name.free();
-            delete n;
+            DestroyDedNote(n);
         }
         note_objects.clear();
 
@@ -402,9 +1198,53 @@ struct AlpineLevelProperties
             DestroyDedCorona(c);
         }
         corona_objects.clear();
+
+        for (auto* b : bag_objects) {
+            DestroyDedBag(b);
+        }
+        bag_objects.clear();
+
+        for (auto* w : weather_region_objects) {
+            DestroyDedWeatherRegion(w);
+        }
+        weather_region_objects.clear();
+
+        for (auto* f : vehicle_factory_objects) {
+            DestroyDedVehicleFactory(f);
+        }
+        vehicle_factory_objects.clear();
+
+        for (auto* c : projection_camera_objects) {
+            DestroyDedProjectionCamera(c);
+        }
+        projection_camera_objects.clear();
+
+        for (auto* r : rope_emitter_objects) {
+            DestroyDedRopeEmitter(r);
+        }
+        rope_emitter_objects.clear();
+
+        for (auto* t : terrain_objects) {
+            DestroyDedTerrain(t);
+        }
+        terrain_objects.clear();
+        terrain_room_uids.clear();
+        terrain_split_room_uids.clear();
+
+        for (auto* d : directional_light_objects) {
+            DestroyDedDirectionalLight(d);
+        }
+        directional_light_objects.clear();
+
+        for (auto* h : waypoint_helper_objects) {
+            DestroyDedWaypointHelper(h);
+        }
+        waypoint_helper_objects.clear();
+
+        retained_chunks.clear();
     }
 
-    void Serialize(rf::File& file) const
+    void Serialize(rf::File& file, bool stock_lightmaps_suppressed, bool needs_d3d11) const
     {
         file.write<std::uint32_t>(current_alpine_chunk_version);
 
@@ -436,6 +1276,61 @@ struct AlpineLevelProperties
             uint8_t mat = (i < breakable_materials.size()) ? breakable_materials[i] : 0;
             file.write<uint8_t>(mat);
         }
+        // Write hold open first-keyframe UIDs
+        std::uint32_t ho_count = static_cast<std::uint32_t>(hold_open_keyframe_uids.size());
+        file.write<std::uint32_t>(ho_count);
+        for (std::uint32_t i = 0; i < ho_count; i++) {
+            file.write<int32_t>(hold_open_keyframe_uids[i]);
+        }
+        // v5
+        file.write<std::uint8_t>(enable_sun ? 1u : 0u);
+        file.write<float>(sun_yaw);
+        file.write<float>(sun_pitch);
+        file.write<std::uint8_t>(sun_color_r);
+        file.write<std::uint8_t>(sun_color_g);
+        file.write<std::uint8_t>(sun_color_b);
+        file.write<std::uint8_t>(sun_color_a);
+        file.write<float>(sun_intensity);
+        file.write<float>(sun_spread_angle);
+        file.write<std::uint8_t>(sun_cast_baked_shadows ? 1u : 0u);
+        file.write<std::uint8_t>(sun_affects_meshes ? 1u : 0u);
+        file.write<std::uint8_t>(sun_mesh_mode);
+        file.write<std::uint8_t>(sun_drives_shadowmap_dir ? 1u : 0u);
+        file.write<std::uint8_t>(legacy_lighting ? 1u : 0u);
+        file.write<std::uint8_t>(highres_lightmaps ? 1u : 0u);
+        file.write<std::uint8_t>(sun_liquid_occludes ? 1u : 0u);
+        file.write<std::uint8_t>(invisible_faces_occlude ? 1u : 0u);
+        file.write<std::uint8_t>(alpha_faces_occlude ? 1u : 0u);
+        std::uint32_t nsc_count = static_cast<std::uint32_t>(no_shadow_cast_brush_uids.size());
+        file.write<std::uint32_t>(nsc_count);
+        for (std::uint32_t i = 0; i < nsc_count; i++) {
+            file.write<int32_t>(no_shadow_cast_brush_uids[i]);
+        }
+        file.write<std::uint8_t>(meshes_occlude ? 1u : 0u);
+        file.write<std::uint8_t>(lightmap_density);
+        file.write<std::uint8_t>(static_cast<std::uint8_t>(
+            (stock_lightmaps_suppressed ? alpine_lightmap::d3d11_only_stock_omitted : 0u) |
+            (d3d11_only_lightmaps ? alpine_lightmap::d3d11_only_setting : 0u)));
+        file.write<std::uint8_t>(lightmap_compression);
+        // v6
+        file.write<std::uint8_t>(vehicle_flight_ceiling_enabled ? 1u : 0u);
+        file.write<float>(vehicle_flight_ceiling);
+        file.write<std::uint8_t>(minimap_enabled ? 1u : 0u);
+        write_rfl_string(file, minimap_bitmap);
+        file.write<float>(minimap_world_min.x);
+        file.write<float>(minimap_world_min.y);
+        file.write<float>(minimap_world_min.z);
+        file.write<float>(minimap_world_max.x);
+        file.write<float>(minimap_world_max.y);
+        file.write<float>(minimap_world_max.z);
+        file.write<float>(minimap_cut_height);
+        file.write<std::uint8_t>(static_cast<std::uint8_t>((needs_d3d11 ? require_d3d11_needed : 0u) |
+                                                           (require_d3d11 ? require_d3d11_setting : 0u)));
+        file.write<float>(camera_far_clip);
+        file.write<std::uint8_t>(alpha_tested_occlusion ? 1u : 0u);
+        for (const float* field : payload::LevelRules::file_fields(payload_rules)) {
+            file.write<float>(*field);
+        }
         file.write<std::uint8_t>(perspective);
     }
 
@@ -444,6 +1339,13 @@ struct AlpineLevelProperties
         std::size_t remaining = chunk_len;
 
         rf::File::ChunkGuard chunk_guard{file, remaining};
+
+        // Runs on every one of this function's many early returns, so a chunk that stops half way
+        // through the sun fields still leaves usable values behind.
+        struct SanitizeGuard {
+            AlpineLevelProperties* props;
+            ~SanitizeGuard() { props->SanitizeSunProperties(); }
+        } sanitize_guard{this};
 
         auto read_bytes = [&](void* dst, std::size_t n) -> bool {
             if (remaining < n)
@@ -454,6 +1356,21 @@ struct AlpineLevelProperties
                 return false;
             }
             remaining -= n;
+            return true;
+        };
+
+        // A count larger than the cap still describes that many entries in the file, so the
+        // surplus has to be consumed or every field behind it is read from the wrong offset.
+        auto skip_entries = [&](std::uint32_t surplus, std::size_t entry_size) -> bool {
+            std::uint64_t bytes = static_cast<std::uint64_t>(surplus) * entry_size;
+            std::uint8_t scratch[256];
+            while (bytes > 0) {
+                const std::size_t step =
+                    static_cast<std::size_t>(std::min<std::uint64_t>(bytes, sizeof(scratch)));
+                if (!read_bytes(scratch, step))
+                    return false;
+                bytes -= step;
+            }
             return true;
         };
 
@@ -511,6 +1428,7 @@ struct AlpineLevelProperties
             std::uint32_t count = 0;
             if (!read_bytes(&count, sizeof(count)))
                 return;
+            std::uint32_t count_surplus = count > 10000 ? count - 10000 : 0;
             if (count > 10000) count = 10000;
             geoable_brush_uids.resize(count);
             geoable_room_uids.resize(count);
@@ -524,12 +1442,15 @@ struct AlpineLevelProperties
                     return;
                 geoable_room_uids[i] = room_uid;
             }
+            if (!skip_entries(count_surplus, 8))
+                return;
             xlog::debug("[AlpineLevelProps] geoable entries count={}", count);
 
             // Breakable material entries as (brush_uid, room_uid, material) triples
             std::uint32_t bcount = 0;
             if (!read_bytes(&bcount, sizeof(bcount)))
                 return;
+            std::uint32_t bcount_surplus = bcount > 10000 ? bcount - 10000 : 0;
             if (bcount > 10000) bcount = 10000;
             breakable_brush_uids.resize(bcount);
             breakable_room_uids.resize(bcount);
@@ -548,10 +1469,152 @@ struct AlpineLevelProperties
                     return;
                 breakable_materials[i] = mat;
             }
+            if (!skip_entries(bcount_surplus, 9))
+                return;
+
+            // Hold open first-keyframe UIDs
+            std::uint32_t ho_count = 0;
+            if (!read_bytes(&ho_count, sizeof(ho_count)))
+                return;
+            std::uint32_t ho_surplus = ho_count > 10000 ? ho_count - 10000 : 0;
+            if (ho_count > 10000) ho_count = 10000;
+            hold_open_keyframe_uids.resize(ho_count);
+            for (std::uint32_t i = 0; i < ho_count; i++) {
+                int32_t uid = 0;
+                if (!read_bytes(&uid, sizeof(uid)))
+                    return;
+                hold_open_keyframe_uids[i] = uid;
+            }
+            if (!skip_entries(ho_surplus, 4))
+                return;
         }
 
-        // perspective appended to v4
-        if (version >= 4) {
+        if (version >= 5) {
+            std::uint8_t u8 = 0;
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            enable_sun = (u8 != 0);
+            if (!read_bytes(&sun_yaw, sizeof(sun_yaw)))
+                return;
+            if (!read_bytes(&sun_pitch, sizeof(sun_pitch)))
+                return;
+            if (!read_bytes(&sun_color_r, sizeof(sun_color_r)))
+                return;
+            if (!read_bytes(&sun_color_g, sizeof(sun_color_g)))
+                return;
+            if (!read_bytes(&sun_color_b, sizeof(sun_color_b)))
+                return;
+            if (!read_bytes(&sun_color_a, sizeof(sun_color_a)))
+                return;
+            if (!read_bytes(&sun_intensity, sizeof(sun_intensity)))
+                return;
+            if (!read_bytes(&sun_spread_angle, sizeof(sun_spread_angle)))
+                return;
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            sun_cast_baked_shadows = (u8 != 0);
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            sun_affects_meshes = (u8 != 0);
+            if (!read_bytes(&sun_mesh_mode, sizeof(sun_mesh_mode)))
+                return;
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            sun_drives_shadowmap_dir = (u8 != 0);
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            legacy_lighting = (u8 != 0);
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            highres_lightmaps = (u8 != 0);
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            sun_liquid_occludes = (u8 != 0);
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            invisible_faces_occlude = (u8 != 0);
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            alpha_faces_occlude = (u8 != 0);
+            std::uint32_t nsc_count = 0;
+            if (!read_bytes(&nsc_count, sizeof(nsc_count)))
+                return;
+            std::uint32_t nsc_surplus = nsc_count > 10000 ? nsc_count - 10000 : 0;
+            if (nsc_count > 10000) nsc_count = 10000;
+            no_shadow_cast_brush_uids.resize(nsc_count);
+            for (std::uint32_t i = 0; i < nsc_count; i++) {
+                if (!read_bytes(&no_shadow_cast_brush_uids[i], sizeof(int32_t)))
+                    return;
+            }
+            if (!skip_entries(nsc_surplus, 4))
+                return;
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            meshes_occlude = (u8 != 0);
+            xlog::debug("[AlpineLevelProps] enable_sun {} yaw {} pitch {} intensity {} no_shadow_cast {}",
+                enable_sun, sun_yaw, sun_pitch, sun_intensity, nsc_count);
+            if (!read_bytes(&lightmap_density, sizeof(lightmap_density)))
+                return;
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            d3d11_only_lightmaps = (u8 & alpine_lightmap::d3d11_only_setting) != 0;
+            stock_lightmaps_omitted = (u8 & alpine_lightmap::d3d11_only_stock_omitted) != 0;
+            if (!read_bytes(&lightmap_compression, sizeof(lightmap_compression)))
+                return;
+            lightmap_compression =
+                static_cast<std::uint8_t>(alpine_lightmap::compression_mode_from_wire(lightmap_compression));
+        }
+
+        if (version >= 6) {
+            std::uint8_t u8 = 0;
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            vehicle_flight_ceiling_enabled = (u8 != 0);
+            if (!read_bytes(&vehicle_flight_ceiling, sizeof(vehicle_flight_ceiling)))
+                return;
+
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            minimap_enabled = (u8 != 0);
+            std::string bitmap = read_rfl_string(file, remaining);
+            if (rfl_name_over_long(bitmap) || bitmap.find_first_of("\\/:") != std::string::npos) {
+                xlog::warn("[AlpineLevelProps] Ignoring invalid minimap bitmap name");
+                bitmap.clear();
+            }
+            minimap_bitmap = std::move(bitmap);
+            float bounds[6] = {};
+            for (float& f : bounds) {
+                if (!read_bytes(&f, sizeof(f)))
+                    return;
+                if (!std::isfinite(f))
+                    f = 0.0f;
+            }
+            minimap_world_min = {bounds[0], bounds[1], bounds[2]};
+            minimap_world_max = {bounds[3], bounds[4], bounds[5]};
+            if (!read_bytes(&minimap_cut_height, sizeof(minimap_cut_height)))
+                return;
+            if (!std::isfinite(minimap_cut_height))
+                minimap_cut_height = 0.0f;
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            require_d3d11 = (u8 & require_d3d11_setting) != 0;
+            if (!read_bytes(&camera_far_clip, sizeof(camera_far_clip)))
+                return;
+            camera_far_clip = alpine_camera_far_clip::sanitize(camera_far_clip);
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            alpha_tested_occlusion = (u8 != 0);
+            payload::LevelRules rules;
+            for (float* field : payload::LevelRules::file_fields(rules)) {
+                if (!read_bytes(field, sizeof(*field)))
+                    return;
+            }
+            rules.sanitize();
+            payload_rules = rules;
+        }
+
+        // perspective appended to v6
+        if (version >= 6) {
             std::uint8_t u8 = 0;
             if (!read_bytes(&u8, sizeof(u8)))
                 return;
@@ -566,6 +1629,62 @@ enum class DedRoomEffectType : int
     Liquid = 2,
 };
 
+enum class DedEditMode : int
+{
+    Brush = 0,
+    Face = 1,
+    Vertex = 2,
+    Texture = 3,
+    Object = 4,
+    Group = 5,
+};
+
+// A moving group member's position and orientation relative to the first keyframe (ctor FUN_004162c0)
+struct MovingGroupMember
+{
+    int uid;          // +0x00  member object or brush uid
+    Vector3 rel_pos;  // +0x04
+    Matrix3 orient;   // +0x10
+};
+static_assert(sizeof(MovingGroupMember) == 0x34);
+static_assert(offsetof(MovingGroupMember, uid) == 0x00);
+static_assert(offsetof(MovingGroupMember, rel_pos) == 0x04);
+static_assert(offsetof(MovingGroupMember, orient) == 0x10);
+
+// One of a moving group's mover sounds, as the ctor (FUN_004162e0) builds four of them
+struct MovingGroupSound
+{
+    VString filename;   // +0x00
+    char _pad_08[4];    // +0x08
+};
+static_assert(sizeof(MovingGroupSound) == 0xC);
+
+// GroupEntry::keyframes target (ctor FUN_004162e0)
+struct MovingGroupKeyframes
+{
+    VArray<DedObject*> objects;           // +0x00  keyframe objects
+    VArray<MovingGroupMember*> members;   // +0x0C  looked up first match by uid (FUN_0042a690)
+    bool is_door;                         // +0x18
+    bool use_travel_time_as_velocity;     // +0x19
+    bool force_orient;                    // +0x1A
+    bool no_player_collide;               // +0x1B
+    bool rotate_in_place;                 // +0x1C
+    bool starts_backwards;                // +0x1D
+    char _pad_1e[2];                      // +0x1E
+    int movement_type;                    // +0x20  rf::MoverKeyframeMoveType
+    int starting_keyframe;                // +0x24  one-based
+    // +0x28  start, loop, stop and close; the level check FUN_0041d4c0 reads start, stop and close as
+    // sound names
+    MovingGroupSound sounds[4];
+};
+static_assert(sizeof(MovingGroupKeyframes) == 0x58);
+static_assert(offsetof(MovingGroupKeyframes, objects) == 0x00);
+static_assert(offsetof(MovingGroupKeyframes, members) == 0x0C);
+static_assert(offsetof(MovingGroupKeyframes, use_travel_time_as_velocity) == 0x19);
+static_assert(offsetof(MovingGroupKeyframes, rotate_in_place) == 0x1C);
+static_assert(offsetof(MovingGroupKeyframes, movement_type) == 0x20);
+static_assert(offsetof(MovingGroupKeyframes, sounds) == 0x28);
+
 // Group entry struct (0x34 bytes) — element of CDedLevel::moving_groups
 // Constructor: FUN_0043dec0 (zeros 4 x 12-byte blocks at +0x04, +0x10, +0x1C, +0x28)
 // Creation: FUN_0043ccf0 (allocs 0x34, calls constructor, sets type, pushes to moving_groups)
@@ -575,8 +1694,7 @@ struct GroupEntry
     int type;                               // +0x00  set by FUN_0043ccf0 (values: 3,4,5,10)
     VArray<BrushNode*> brushes;             // +0x04  brushes in this group
     VArray<DedObject*> objects;             // +0x10  objects in this group
-    VArray<DedObject*>* keyframes;          // +0x1C  NULL=user-defined group, non-NULL=moving group
-                                            //        points to dynamically allocated VArray of keyframe objects
+    MovingGroupKeyframes* keyframes;        // +0x1C  NULL=user-defined group, non-NULL=moving group
     VString name;                           // +0x20  group display name
     VArray<void*> field_28;                 // +0x28  purpose unknown (zeroed by constructor)
 
@@ -591,6 +1709,110 @@ static_assert(offsetof(GroupEntry, keyframes) == 0x1C);
 static_assert(offsetof(GroupEntry, name) == 0x20);
 static_assert(offsetof(GroupEntry, field_28) == 0x28);
 
+// UndoEntry::type, as Undo (FUN_0043d210) and Redo (FUN_0043d320) dispatch on it
+enum UndoEntryType : int
+{
+    undo_create_objects = 0,
+    undo_create_brushes = 1,
+    undo_create_objects_and_brushes = 2,
+    undo_delete_objects = 3,
+    undo_delete_brushes = 4,
+    undo_delete_objects_and_brushes = 5,
+    undo_transform_objects = 6,
+    undo_transform_brushes = 7,
+    undo_transform_group = 8,
+    undo_reorder_brushes = 9,
+    undo_modify_brushes = 10,
+};
+
+// Undo entry (0x34 bytes), created by FUN_0043ccf0(type)
+struct UndoEntry
+{
+    UndoEntryType type;                     // +0x00
+    VArray<DedObject*> objects;             // +0x04
+    VArray<BrushNode*> brushes;             // +0x10  type 10: live clones
+    VArray<BrushNode*> brushes_aux;         // +0x1C  type 10: originals, type 4: list predecessors
+    VArray<void*> raw_blocks;               // +0x28  operator-delete'd with the entry
+};
+static_assert(sizeof(UndoEntry) == 0x34);
+
+inline UndoEntry* undo_stack_top(const VArray<UndoEntry*>& stack)
+{
+    return stack.size > 0 ? stack.data_ptr[stack.size - 1] : nullptr;
+}
+
+// An Alpine block in an undo entry's raw_blocks, which stock frees with the entry. Stock move/rotate code indexes
+// raw_blocks of whatever entry is on top, reading +0x00 and writing +0x30..+0x5F of its 0x60 byte move records, so
+// the link is shaped like one and keeps its fields clear of those ranges.
+struct UndoLink
+{
+    char move_record_pos[0x0C];         // +0x00
+    uint32_t magic;                     // +0x0C
+    uintptr_t value;                    // +0x10
+    char move_record_rest[0x60 - 0x14]; // +0x14
+};
+static_assert(offsetof(UndoLink, value) == 0x10);
+static_assert(sizeof(UndoLink) == 0x60);
+
+// The spare array slots are nulled, so any further index faults as in stock. False when the allocation failed.
+inline bool undo_link_append(UndoEntry& entry, uint32_t magic, uintptr_t value)
+{
+    auto* link = static_cast<UndoLink*>(rf_alloc(sizeof(UndoLink)));
+    if (!link) return false;
+    std::memset(link, 0, sizeof(UndoLink));
+    link->magic = magic;
+    link->value = value;
+    auto& blocks = entry.raw_blocks;
+    blocks.push_back(link);
+    std::fill(blocks.data_ptr + blocks.size, blocks.data_ptr + blocks.capacity, nullptr);
+    return true;
+}
+
+// The value of the link with `magic` at raw_blocks[index], or 0.
+inline uintptr_t undo_link_value(const UndoEntry& entry, int index, uint32_t magic)
+{
+    if (index < 0 || index >= entry.raw_blocks.size) return 0;
+    const auto* link = static_cast<const UndoLink*>(entry.raw_blocks.data_ptr[index]);
+    return link && link->magic == magic ? link->value : 0;
+}
+
+// Build Geometry's progress dialog, CDedLevel::dialog_panels[build_dialog_panel_index]
+struct BuildProgressDialog
+{
+    char _pad_00[0x5C];                // +0x00
+    std::uint8_t cancelled;            // +0x5C set by its Cancel button, read by GeoBuild_Driver
+    char _pad_5d[0x64 - 0x5D];         // +0x5D
+    VArray<BrushNode*> brushes;        // +0x64 GeoBuild_Driver adds one per tick
+    VArray<BrushNode*> portal_brushes; // +0x70 then chops one per tick
+    int brushes_added;                 // +0x7C
+    int portals_chopped;               // +0x80
+};
+static_assert(offsetof(BuildProgressDialog, cancelled) == 0x5C);
+static_assert(offsetof(BuildProgressDialog, brushes) == 0x64);
+static_assert(offsetof(BuildProgressDialog, portal_brushes) == 0x70);
+static_assert(offsetof(BuildProgressDialog, brushes_added) == 0x7C);
+static_assert(offsetof(BuildProgressDialog, portals_chopped) == 0x80);
+constexpr int build_dialog_panel_index = (0x4A4 - 0x444) / 4;
+
+// A clutter, entity or item class: the add paths (0x004151C0, 0x00414F00, 0x00414C20) find the entry
+// whose name matches the new object's class_name and copy the template into it.
+struct DedObjectClass
+{
+    VString name;
+    DedObject* tmpl;
+};
+static_assert(sizeof(DedObjectClass) == 0xC);
+static_assert(offsetof(DedObjectClass, tmpl) == 0x8);
+
+// One connected group of a face or vertex mode transform, its vertices' world positions moving until the finalize
+// (FUN_00427460) writes them to the brush
+struct TransformGroup
+{
+    VArray<void*> vertices;      // +0x00
+    BrushNode* brush;            // +0x0C
+};
+static_assert(offsetof(TransformGroup, brush) == 0x0C);
+
 struct CDedLevel
 {
     // --- vtable + string properties ---
@@ -601,10 +1823,11 @@ struct CDedLevel
     VString unk_str_1C;                           // +0x1C (VString, 8 bytes)
     VString geomod_texture;                       // +0x24 (crater texture filename)
     char _pad_2C[0x30 - 0x2C];                   // +0x2C
-    int unk_30;                                   // +0x30 (small object, FUN_004b9380)
+    Color ambient_color;                          // +0x30 (level properties, FUN_004b9380)
     int unk_34;                                   // +0x34
-    int unk_38;                                   // +0x38
-    char _pad_3C[0x44 - 0x3C];                   // +0x3C
+    Color fog_color;                              // +0x38
+    float fog_near_clip;                          // +0x3C
+    float fog_far_clip;                           // +0x40
     int unk_44;                                   // +0x44 (init 0)
     char unk_48;                                  // +0x48 (init 0)
     char _pad_49[0x4C - 0x49];                   // +0x49
@@ -612,16 +1835,20 @@ struct CDedLevel
     // --- compiled geometry ---
     GSolid* solid;                                // +0x4C (compiled geometry, 0x378-byte object)
     char _pad_50[0x54 - 0x50];                   // +0x50
-    int uid_counters[8];                          // +0x54 (all init -1, 32 bytes)
+    // The Cutscene and Brush Clip dialogs' placement (-1 for none): seeded from the preferences, set on close
+    RECT cutscene_dialog_rect;                    // +0x54
+    RECT brush_clip_dialog_rect;                  // +0x64
     char unk_74;                                  // +0x74 (init 0)
     char _pad_75[0x78 - 0x75];                   // +0x75
     float default_angles[32];                     // +0x78 (all init 89.9f, 128 bytes to +0xF8)
-    int unk_F8;                                   // +0xF8 (init 0)
+    DedEditMode edit_mode;                        // +0xF8 (init 0)
     int unk_FC;                                   // +0xFC (init 3)
-    int unk_100;                                  // +0x100 (init 0)
-    int unk_104;                                  // +0x104 (init 0)
-    float unk_108;                                // +0x108 (init 1.0f)
-    float unk_10C;                                // +0x10C (init 0.2625f)
+    // Top bar Coords (0x411, G toggles): 0 Global = the viewing camera's axes, 1 Local = each item's own
+    int coords_local;                             // +0x100
+    // From the held key, each tick (0x0047BA70): 0 none, 1 move, 2 rotate, 3 scale, 5 P, 6 S in Object mode, 7 clip
+    int transform_mode;                           // +0x104
+    float grid_size;                              // +0x108 top bar Grid, metres (init 1.0f)
+    float rotate_step;                            // +0x10C top bar Rotate, radians (init pi/12, 15 degrees)
     int unk_110;                                  // +0x110 (init 16)
     char unk_114;                                 // +0x114 (init 0)
     char unk_115;                                 // +0x115 (init 0)
@@ -631,11 +1858,17 @@ struct CDedLevel
     BrushNode* brush_list;                        // +0x118 (head of brush linked list)
 
     // --- editor strings + containers ---
-    char _pad_11C[0x1AC - 0x11C];                // +0x11C (3 CString+container pairs at +0x11C/+0x128, +0x14C/+0x158, +0x17C/+0x188)
+    // Vector3+Matrix3 pos/orient pair: brush-mode cursor +0x11C/+0x128
+    char _pad_11C[0x14C - 0x11C];                // +0x11C
+    // Texture mode's map gizmo (Cylinder Map's axis is uvec), reset at level init, not saved
+    Vector3 texture_map_pos;                      // +0x14C
+    Matrix3 texture_map_orient;                   // +0x158
+    Vector3 player_start_pos;                     // +0x17C
+    Matrix3 player_start_orient;                  // +0x188
     void* unk_obj_1AC;                            // +0x1AC (0x14-byte allocated object)
     char _pad_1B0[0x1C0 - 0x1B0];               // +0x1B0 (CString + int)
     int unk_1C0;                                  // +0x1C0 (init 0, file filter related)
-    char _pad_1C4[0x1D0 - 0x1C4];               // +0x1C4 (VArray, 12 bytes + padding)
+    VArray<TextureGroup*> texture_groups;        // +0x1C4 built at startup by 0x0041b7c0
 
     // --- icon texture handles ---
     int icon_sp_start;                            // +0x1D0 (Icon_SinglePlayerStart.tga)
@@ -662,7 +1895,10 @@ struct CDedLevel
     int icon_keyframe_silver;                     // +0x224 (Icon_Keyframe_Silver.tga)
     int icon_camera;                              // +0x228 (Icon_CameraPosition.tga)
     int icon_push_region;                         // +0x22C (Icon_ClimbRegion.tga second)
-    char _pad_230[0x272 - 0x230];                // +0x230 (editor state)
+    bool transform_in_progress;                   // +0x230 set by the per-mode transform begins, cleared by FUN_00427260
+    char _pad_231;                                // +0x231
+    std::uint8_t build_running;                   // +0x232 a Build Geometry is running (FUN_0043a710 sets it)
+    char _pad_233[0x272 - 0x233];                // +0x233 (editor state)
     bool geometry_needs_rebuild;                   // +0x272
     char _pad_273[0x280 - 0x273];                // +0x273
 
@@ -671,14 +1907,25 @@ struct CDedLevel
     // FUN_0043d320 (redo) pops from +0x28C, pushes to +0x280
     // Each entry's child VArray at +0x04 may hold raw DedObject* pointers
     // FUN_0043d170 cleanup calls FUN_0041c360 on those pointers (use-after-free risk)
-    VArray<void*> undo_stack;                     // +0x280
-    VArray<void*> redo_stack;                     // +0x28C
+    VArray<UndoEntry*> undo_stack;                // +0x280
+    VArray<UndoEntry*> redo_stack;                // +0x28C
 
     // --- selection ---
     VArray<DedObject*> selection;                 // +0x298
-    char _pad_2A4[0x2E0 - 0x2A4];                // +0x2A4
+    char _pad_2A4[0x2B0 - 0x2A4];                // +0x2A4
+    // Group import (FUN_00438340) clears these, then FUN_004365c0 records each uid it renumbers on
+    // a collision: old uid here, new uid at the same index below. Left filled until the next import.
+    VArray<int> import_renumbered_old_uids;       // +0x2B0
+    VArray<int> import_renumbered_new_uids;       // +0x2BC
+    char _pad_2C8[0x2D4 - 0x2C8];                // +0x2C8
+    VArray<TransformGroup*> transform_groups;     // +0x2D4 a face or vertex mode transform's, FUN_00426de0
     VArray<DedObject*> master_objects;            // +0x2E0 (all DedObjects, searched by FUN_00483920 for link validation)
-    char _pad_2EC[0x340 - 0x2EC];                // +0x2EC
+    // Ctrl+C's clipboard (FUN_00412e20 fills it, FUN_00414140 empties it): object and brush clones, and a third
+    // array of clones freed through their vtable
+    VArray<DedObject*> object_clipboard;          // +0x2EC
+    VArray<BrushNode*> brush_clipboard;           // +0x2F8
+    VArray<void*> clipboard_304;                  // +0x304
+    char _pad_310[0x340 - 0x310];                // +0x310
 
     // --- object VArrays (21 contiguous, 12 bytes each) ---
     // Offsets verified against save function FUN_00430bf0 chunk IDs
@@ -691,7 +1938,7 @@ struct CDedLevel
     VArray<DedObject*> triggers;                  // +0x37C (chunk 0x500)
     VArray<DedObject*> obj_arr_388;               // +0x388 (chunk 0x50000)
     VArray<DedObject*> entities;                  // +0x394 (chunk 0x300)
-    VArray<DedObject*> lights;                    // +0x3A0 (chunk 0x200)
+    VArray<DedObject*> geo_regions;               // +0x3A0 (chunk 0x200)
     VArray<DedObject*> obj_arr_3AC;               // +0x3AC (type 9 objects, chunk 0x20000, searched by FUN_004839a0)
     VArray<DedObject*> ambient_sounds;            // +0x3B8 (chunk 0x400)
     VArray<DedObject*> events;                    // +0x3C4 (chunk 0x5000)
@@ -711,7 +1958,13 @@ struct CDedLevel
 
     // --- moving groups (Keyframes) ---
     VArray<GroupEntry*> moving_groups;             // +0x4B4 (0x34-byte GroupEntry structs)
-    char _pad_4C0[0x608 - 0x4C0];                // +0x4C0 (VArrays, containers, strings to end)
+    char _pad_4C0[0x5CC - 0x4C0];                // +0x4C0 (VArrays, containers, strings)
+    VArray<DedObjectClass*> object_classes;       // +0x5CC searched by name when a clutter, entity or item is added
+    char _pad_5D8[0x5F0 - 0x5D8];                // +0x5D8
+    // Texture mode's Copy (FUN_004132a0): the one selected face's corner UVs from its canonical corner
+    // (FUN_00413380), which Paste (FUN_00413470) writes back around faces with as many corners
+    VArray<float> texture_clipboard_u;            // +0x5F0
+    VArray<float> texture_clipboard_v;            // +0x5FC
 
     std::size_t BeginRflSection(rf::File& file, int chunk_id)
     {
@@ -726,9 +1979,26 @@ struct CDedLevel
     AlpineLevelProperties& GetAlpineLevelProperties();
 
 
+    void delete_object(DedObject* obj)
+    {
+        AddrCaller{0x0041be70}.this_call(this, obj);
+    }
+
     void deselect_all()
     {
         AddrCaller{0x0042C7A0}.this_call(this);
+    }
+
+    // FUN_0042c7b0: empties every brush's and the level solid's face selection
+    void deselect_all_faces()
+    {
+        AddrCaller{0x0042C7B0}.this_call(this);
+    }
+
+    // FUN_0042c7f0: empties every brush's vertex selection
+    void deselect_all_vertices()
+    {
+        AddrCaller{0x0042C7F0}.this_call(this);
     }
 
     void clear_selection()
@@ -751,6 +2021,12 @@ struct CDedLevel
         AddrCaller{0x00423460}.this_call(this);
     }
 
+    // Modal Level Properties dialog (FUN_00402300).
+    void show_level_properties_dialog()
+    {
+        AddrCaller{0x00402300}.this_call(this);
+    }
+
     bool hit_test_point(int screen_x, int screen_y, const Vector3* pos)
     {
         return AddrCaller{0x0042AC00}.this_call<bool>(this, screen_x, screen_y, pos);
@@ -766,6 +2042,71 @@ struct CDedLevel
         AddrCaller{0x00413050}.this_call(this);
     }
 
+    // FUN_00412e20: Ctrl+C. Empties the clipboard, then clones the selection into it (objects in Object / Group mode,
+    // keyframes skipped; selected brushes in Brush / Group mode).
+    void copy_selection()
+    {
+        AddrCaller{0x00412E20}.this_call(this);
+    }
+
+    // FUN_00414140: frees the clipboard's clones and empties its arrays (their buffers are kept)
+    void clear_clipboard()
+    {
+        AddrCaller{0x00414140}.this_call(this);
+    }
+
+    // FUN_004073d0: opens the Links dialog for the selection
+    void open_links_dialog()
+    {
+        AddrCaller{0x004073D0}.this_call(this);
+    }
+
+    // FUN_00408d30: opens the selected event's properties dialog for its type (Alpine types in event.cpp)
+    void open_event_properties()
+    {
+        AddrCaller{0x00408D30}.this_call(this);
+    }
+
+    // FUN_0043d210: Edit > Undo of the top entry (AF-hooked in geometry.cpp)
+    void undo()
+    {
+        AddrCaller{0x0043D210}.this_call(this);
+    }
+
+    // FUN_0043cf60: frees every redo entry, as pushing a new undo entry does first (0x0043CD0C)
+    void clear_redo_stack()
+    {
+        AddrCaller{0x0043CF60}.this_call(this);
+    }
+
+    // FUN_0043a710: starts Build Geometry as the Build command does; sets build_running
+    void start_build_geometry()
+    {
+        AddrCaller{0x0043a710}.this_call(this);
+    }
+
+    // FUN_004399b0 (GeoBuild_Driver): one idle tick of a running Build Geometry
+    void build_geometry_tick()
+    {
+        AddrCaller{0x004399b0}.this_call(this);
+    }
+
+    // FUN_00414650: assign a uid when the brush carries -1 and splice it into the circular brush
+    // list.
+    //
+    // register_undo opens a type 1 undo record (FUN_0043ccf0) and pushes the brush into its +0x10
+    // array. That path is complete but dead in stock RED: both call sites push 0 (the .rfl brush
+    // reader at 0x004308ff and 0x004381fa), and paste clones brushes without going through here.
+    // Traced anyway, because "unused" is not "broken": undo dispatch case 1 (FUN_0043d470) reads
+    // +0x10, unlinks each brush and saves its former prev in +0x1C; redo case 1 (FUN_0043d5a0)
+    // splices them back from those two arrays; and evicting a type 1 record past the 16 record cap
+    // frees only the record, never the brushes (FUN_0043ccf0 has no type 1 case and its tail loop
+    // walks +0x28, which stays empty).
+    void insert_brush(BrushNode* brush, bool register_undo)
+    {
+        AddrCaller{0x00414650}.this_call(this, brush, register_undo);
+    }
+
     // FUN_0042d6b0: check if any brush has face selection (face mode)
     bool has_face_selection()
     {
@@ -776,16 +2117,59 @@ struct CDedLevel
     // FUN_0042d6b0 only checks face selection (+0xD8), so this is custom.
     bool has_vertex_selection()
     {
-        BrushNode* head = brush_list;
-        if (!head) return false;
-        BrushNode* b = head;
-        do {
-            auto* solid = static_cast<GSolid*>(b->geometry);
-            if (solid && solid->vertex_selection.size > 0)
+        return for_each_brush([](BrushNode& b) {
+            auto* solid = static_cast<GSolid*>(b.geometry);
+            return solid && solid->vertex_selection.size > 0;
+        });
+    }
+
+    // Calls fn(brush) once around the circular brush list from its head, bounded against a corrupt link. A bool fn
+    // returning true stops it, and then this returns true. A const level passes const brushes.
+    template<typename Fn>
+    bool for_each_brush(Fn&& fn)
+    {
+        return walk_brush_list<BrushNode>(brush_list, fn);
+    }
+
+    template<typename Fn>
+    bool for_each_brush(Fn&& fn) const
+    {
+        return walk_brush_list<const BrushNode>(brush_list, fn);
+    }
+
+    // In brush list order
+    std::vector<BrushNode*> selected_brushes() const
+    {
+        std::vector<BrushNode*> out;
+        walk_brush_list<BrushNode>(brush_list, [&](BrushNode& brush) {
+            if (brush.state == BRUSH_STATE_SELECTED) {
+                out.push_back(&brush);
+            }
+        });
+        return out;
+    }
+
+    template<typename Node, typename Fn>
+    static bool walk_brush_list(Node* head, Fn&& fn)
+    {
+        Node* brush = head;
+        for (int guard = 0; brush && guard < 1000000; guard++) {
+            if constexpr (std::is_void_v<std::invoke_result_t<Fn&, Node&>>) {
+                fn(*brush);
+            }
+            else if (fn(*brush)) {
                 return true;
-            b = b->next;
-        } while (b != head);
+            }
+            brush = brush->next;
+            if (brush == head) break;
+        }
         return false;
+    }
+
+    // FUN_0042a630: check if the brush belongs to any moving group (mover)
+    bool brush_in_moving_group(BrushNode* brush)
+    {
+        return AddrCaller{0x0042a630}.this_call<bool>(this, brush);
     }
 
     // FUN_0043bbe0: create undo snapshot (type 10, clones selected brushes)
@@ -794,9 +2178,51 @@ struct CDedLevel
         AddrCaller{0x0043bbe0}.this_call(this);
     }
 
+    // FUN_00426a30: by edit mode, pushes the undo entry of a viewport transform of the selection (type 6 / 7 / 8 for
+    // object / brush / group), records each item's "before" state and sets transform_in_progress. Nothing is pushed
+    // without a selected object (Object) or brush (Brush), or either (Group).
+    void begin_transform()
+    {
+        AddrCaller{0x00426A30}.this_call(this);
+    }
+
+    // FUN_00427260: commit the viewport transform in progress into its undo entry
+    void finish_transform()
+    {
+        AddrCaller{0x00427260}.this_call(this);
+    }
+
+    // A held transform records into whatever undo entry is on top when it finishes
+    void commit_pending_transform()
+    {
+        if (transform_in_progress) {
+            finish_transform();
+        }
+    }
+
     void mark_geometry_dirty()
     {
         geometry_needs_rebuild = true;
+    }
+
+    // Build Geometry's Cancel button was pressed; no progress dialog means no cancel
+    bool build_cancelling() const
+    {
+        const BuildProgressDialog* dialog = build_dialog();
+        return dialog && dialog->cancelled != 0;
+    }
+
+    const BuildProgressDialog* build_dialog() const
+    {
+        return static_cast<const BuildProgressDialog*>(dialog_panels[build_dialog_panel_index]);
+    }
+
+    // As the progress dialog's Cancel button: the next GeoBuild_Driver tick takes its "Build Canceled" branch
+    void cancel_build()
+    {
+        if (auto* dialog = static_cast<BuildProgressDialog*>(dialog_panels[build_dialog_panel_index])) {
+            dialog->cancelled = 1;
+        }
     }
 
     static CDedLevel* Get()
@@ -805,16 +2231,105 @@ struct CDedLevel
     }
 };
 static_assert(sizeof(CDedLevel) == 0x608);
+static_assert(offsetof(CDedLevel, ambient_color) == 0x30);
+static_assert(offsetof(CDedLevel, fog_color) == 0x38);
+static_assert(offsetof(CDedLevel, fog_near_clip) == 0x3C);
+static_assert(offsetof(CDedLevel, fog_far_clip) == 0x40);
+static_assert(offsetof(CDedLevel, build_running) == 0x232);
+static_assert(offsetof(CDedLevel, cutscene_dialog_rect) == 0x54);
+static_assert(offsetof(CDedLevel, brush_clip_dialog_rect) == 0x64);
+static_assert(offsetof(CDedLevel, edit_mode) == 0xF8);
+static_assert(offsetof(CDedLevel, coords_local) == 0x100);
+static_assert(offsetof(CDedLevel, transform_mode) == 0x104);
+static_assert(offsetof(CDedLevel, grid_size) == 0x108);
+static_assert(offsetof(CDedLevel, rotate_step) == 0x10C);
+static_assert(offsetof(CDedLevel, brush_list) == 0x118);
+static_assert(offsetof(CDedLevel, transform_in_progress) == 0x230);
+static_assert(offsetof(CDedLevel, undo_stack) == 0x280);
+static_assert(offsetof(CDedLevel, selection) == 0x298);
+static_assert(offsetof(CDedLevel, transform_groups) == 0x2D4);
+static_assert(offsetof(CDedLevel, master_objects) == 0x2E0);
+static_assert(offsetof(CDedLevel, object_clipboard) == 0x2EC);
+static_assert(offsetof(CDedLevel, clipboard_304) == 0x304);
+static_assert(offsetof(CDedLevel, texture_groups) == 0x1C4);
+static_assert(offsetof(CDedLevel, player_start_pos) == 0x17C);
+static_assert(offsetof(CDedLevel, texture_map_pos) == 0x14C);
+static_assert(offsetof(CDedLevel, texture_map_orient) == 0x158);
+static_assert(offsetof(CDedLevel, texture_clipboard_u) == 0x5F0);
+static_assert(offsetof(CDedLevel, texture_clipboard_v) == 0x5FC);
+static_assert(offsetof(CDedLevel, geo_regions) == 0x3A0);
+static_assert(offsetof(CDedLevel, dialog_panels) == 0x444);
+static_assert(offsetof(CDedLevel, object_classes) == 0x5CC);
+
+// "No shadow cast" is resolved back to a brush through the face ids CSG carried onto the compiled
+// geometry, so it can only mean anything for a brush whose geometry survives CSG as its own thing.
+// The moving group membership is the same for every brush, so a caller walking the brush list
+// gathers it once instead of rescanning every group for each brush.
+inline std::unordered_set<int32_t> collect_moving_group_brush_uids()
+{
+    std::unordered_set<int32_t> uids;
+    auto* level = CDedLevel::Get();
+    if (!level) {
+        return uids;
+    }
+    for (int i = 0; i < level->moving_groups.size; i++) {
+        const GroupEntry* group = level->moving_groups[i];
+        if (!group || !group->is_moving_group()) {
+            continue;
+        }
+        for (int j = 0; j < group->brushes.size; j++) {
+            const BrushNode* member = group->brushes[j];
+            if (member) {
+                uids.insert(member->uid);
+            }
+        }
+    }
+    return uids;
+}
+
+inline bool no_shadow_cast_eligible(const BrushNode& brush,
+                                    const std::unordered_set<int32_t>& mover_brush_uids)
+{
+    if (brush.brush_type != BRUSH_TYPE_SOLID) {
+        return false;
+    }
+    return brush.is_detail || mover_brush_uids.count(brush.uid) != 0;
+}
 
 // GRoom UID counter (RED.exe global, starts at 0x7FFFFFFF, decrements on each GRoom construction)
 // Final compiled rooms in all_rooms are clones that skip the constructor and get uid=-1;
 // they must be assigned from this counter manually before serialization.
 static auto& g_groom_uid_counter = addr_as_ref<int>(0x0057C954);
 
-// FUN_00483560: redraw all editor viewports
+inline void groom_assign_uid_if_missing(GRoom& room)
+{
+    if (room.uid == -1) {
+        room.uid = g_groom_uid_counter--;
+    }
+}
+
+// Set while the next GeoBuild_Driver tick is a build's first, which assigns the brush face ids
+static auto& g_build_first_tick_pending = addr_as_ref<std::uint8_t>(0x005774a0);
+
+// FUN_00483560: mark_level_modified, then redraw all editor viewports
 inline void redraw_all_viewports()
 {
     AddrCaller{0x00483560}.c_call();
+}
+
+// FUN_00413380: the corner Texture mode's Copy starts from and Paste lays the first copied UV on, by angle about the
+// face's center; null for a face with no corners
+inline GFaceVertex* texture_clipboard_first_corner(BrushNode* brush, GFace* face)
+{
+    return AddrCaller{0x00413380}.c_call<GFaceVertex*>(brush, face);
+}
+
+// FUN_00484890: the document's SetModifiedFlag(TRUE), so closing or replacing the level asks to save
+inline void mark_level_modified()
+{
+    if (CDedLevel::Get()) {
+        AddrCaller{0x00484890}.c_call();
+    }
 }
 
 // FUN_00538fa4: show a message box in the editor
@@ -841,9 +2356,99 @@ static auto& LogDlg_Append = addr_as_ref<int(void* self, const char* format, ...
 // FUN_00453200: sync DedLight properties (pos, orient, color, etc.) to its internal level_light
 static auto& DedLight_UpdateLevelLight = addr_as_ref<void __fastcall(void* this_)>(0x00453200);
 
+// FUN_0042a390 / FUN_0042a460: what the move tool and transform undo run after an object's pos or orient
+// changes (lights, nav points, particle emitters, gas regions, decals); no-ops for every other type.
+static auto& ded_object_pos_changed = addr_as_ref<void __stdcall(DedObject* obj)>(0x0042A390);
+static auto& ded_object_orient_changed = addr_as_ref<void __stdcall(DedObject* obj)>(0x0042A460);
+// Both updaters write through these without a check; stock never moves one that lacks it.
+inline bool ded_object_updaters_safe(const DedObject& obj)
+{
+    if (obj.type == DedObjectType::DED_PARTICLE_EMITTER) {
+        return static_cast<const DedParticleEmitter&>(obj).emitter != nullptr;
+    }
+    if (obj.type == DedObjectType::DED_GAS_REGION) {
+        return static_cast<const DedGasRegion&>(obj).region != nullptr;
+    }
+    return true;
+}
+
+// DirectInput keyboard state buffer, non-zero value at [scancode] means the key is held
+static auto& g_dinput_keys = addr_as_ref<uint8_t[256]>(0x0147ce8c);
+
+// DirectInput scan codes for edit operation hold-keys
+constexpr uint8_t DIK_R = 0x13;     // rotate
+constexpr uint8_t DIK_E = 0x12;     // rotate about the first axis dragged
+constexpr uint8_t DIK_M = 0x32;     // move
+constexpr uint8_t DIK_N = 0x31;     // move along the first axis dragged
+constexpr uint8_t DIK_S = 0x1F;     // scale
+constexpr uint8_t DIK_P = 0x19;     // place at the clicked point
+constexpr uint8_t DIK_LSHIFT = 0x2A;
+constexpr uint8_t DIK_RSHIFT = 0x36;
+constexpr uint8_t DIK_LCONTROL = 0x1D;
+constexpr uint8_t DIK_RCONTROL = 0x9D;
+constexpr uint8_t DIK_LMENU = 0x38;
+constexpr uint8_t DIK_RMENU = 0xB8;
+constexpr uint8_t DIK_LBRACKET = 0x1A;
+constexpr uint8_t DIK_RBRACKET = 0x1B;
+constexpr uint8_t DIK_ESCAPE = 0x01;
+// The top row digits run on from DIK_1 (DIK_1 + 4 is 5)
+constexpr uint8_t DIK_1 = 0x02;
+
+// A key RED's viewport input (0x0047BA70) holds a transform or click action on: M/N move, R/E rotate, S scale or
+// drop, P place.
+inline bool editor_transform_key_held()
+{
+    for (uint8_t key : {DIK_M, DIK_N, DIK_R, DIK_E, DIK_S, DIK_P}) {
+        if (g_dinput_keys[key]) return true;
+    }
+    return false;
+}
+
+void recompute_room_bbox(GRoom* room);
+void unlink_room_faces(GRoom* room, const std::unordered_set<GFace*>& faces);
+
 // Editor app globals
 void* GetMainFrame();
 void* GetLogDlg();
 HWND GetMainFrameHandle();
+
+// One line to the AlpineEditor log ("[tag] msg" at `level`) and to a headless bake's log (warnings and
+// errors prefixed there); `red_log` also appends msg to RED's message log outside a headless bake.
+enum class EditorReportLevel
+{
+    info,
+    warn,
+    error,
+};
+void editor_report(EditorReportLevel level, const char* tag, const std::string& msg, bool red_log);
+// editor_report at error level to RED's log, plus a message box titled `caption` outside a headless bake.
+void editor_report_blocking(const char* tag, const char* caption, const std::string& msg);
+
+// Empty when RED's address space has a free block of `largest` bytes and `total` bytes free overall;
+// otherwise the shortfall followed by `advice`.
+std::string editor_address_space_shortfall(std::uint64_t largest, std::uint64_t total,
+                                           const char* advice = "Save the level and restart RED.");
+// RED's largest free block and total free address space.
+void editor_address_space_free(std::uint64_t& free_largest, std::uint64_t& free_total);
+// RED runs large address aware, with 4 GB of address space instead of 2 GB. Allocation-free.
+bool editor_large_address_aware();
+
+enum class LevelFileOp
+{
+    none,
+    load,
+    save,
+    autosave,
+};
+// The CDedDoc::LoadSaveLevel running, if any.
+LevelFileOp level_file_op();
+// Inside RED's autosave (CDedDoc::LoadSaveLevel with is_autosave set).
+bool level_autosave_in_progress();
+// Saves the open level now under RED's autosave name ("~" before the extension; an untitled level as Untitled~.rfl in
+// the working directory), whatever the autosave setting. The full path written: the autosave, or the temporary file
+// beside it ("~.tmp" before the extension) when the save worked but could not replace the previous autosave. None when
+// nothing was saved: no level, a build, Calculate Lighting or a level load or save running, or the save failed (the
+// previous autosave stays).
+std::optional<std::string> level_autosave_now();
 
 void DedLevel_DoBackLink();

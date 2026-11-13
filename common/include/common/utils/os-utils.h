@@ -16,3 +16,5 @@ std::string get_module_pathname(HMODULE module);
 std::string get_module_dir(HMODULE module);
 std::string get_temp_path_name(const char* prefix);
 std::string get_uptime_from(std::time_t origin);
+// Through a temporary file, so the target is replaced whole or not at all. Throws Win32Error.
+void write_file_replacing(const std::string& path, const std::string& data);

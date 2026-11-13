@@ -3,35 +3,56 @@
 #include <patch_common/MemUtils.h>
 #include <patch_common/AsmWriter.h>
 #include <algorithm>
+#include <array>
+#include <format>
+#include <initializer_list>
+#include <optional>
 #include <unordered_set>
+#include <common/payload.h>
 #include "hud_internal.h"
 #include "hud_world.h"
 #include "multi_spectate.h"
+#include "payload_world.h"
+#include "world_medallion.h"
+#include "zone_marker.h"
 #include "../graphics/gr.h"
 #include "../object/event_alpine.h"
 #include "../multi/server.h"
 #include "../multi/gametype.h"
+#include "../multi/bagman.h"
+#include "../multi/salvage.h"
+#include "../multi/scavenger.h"
+#include "../multi/payload.h"
+#include "scavenger_zone.h"
 #include "../misc/alpine_settings.h"
 #include "../sound/sound.h"
+#include "../multi/demo/demo.h"
 #include "../rf/hud.h"
 #include "../rf/player/player.h"
 #include "../rf/player/camera.h"
 #include "../rf/entity.h"
 #include "../rf/bmpman.h"
+#include "../bmpman/bmpman.h"
 #include "../rf/multi.h"
 #include "../rf/gameseq.h"
 #include "../rf/level.h"
+#include "../rf/mover.h"
 #include "../rf/os/timer.h"
 #include "../rf/gr/gr.h"
 #include "../rf/gr/gr_font.h"
 #include "../rf/localize.h"
 #include "../os/console.h"
+#include <cmath>
+#include "../misc/settings_registry.h"
 
 WorldHUDAssets g_world_hud_assets;
 static KothHudTuning g_koth_hud_tuning{};
 static std::unordered_map<int, NameLabelTex> g_koth_name_labels;
+static std::array<NameLabelTex, 2> g_hill_role_labels; // attack, defend
+static NameLabelTex g_payload_cart_status_label;
 bool draw_mp_spawn_world_hud = false;
-std::unordered_set<rf::EventWorldHUDSprite*> world_hud_sprite_events;
+std::unordered_set<EventWorldHUDSprite*> world_hud_sprite_events;
+std::unordered_set<EventFullscreenOverlayBase*> fullscreen_overlay_events;
 std::vector<EphemeralWorldHUDSprite> ephemeral_world_hud_sprites;
 std::vector<EphemeralWorldHUDString> ephemeral_world_hud_strings;
 
@@ -61,6 +82,16 @@ void load_world_hud_assets() {
     g_world_hud_assets.koth_fill_red = rf::bm::load("af_wh_koth_fill_red.tga", -1, true);
     g_world_hud_assets.koth_fill_blue = rf::bm::load("af_wh_koth_fill_blue.tga", -1, true);
     g_world_hud_assets.koth_ring_fade = rf::bm::load("af_wh_koth_ring_fade.tga", -1, true);
+    g_world_hud_assets.bag_player_icon = rf::bm::load("af_wh_bag_hold.tga", -1, true);
+    g_world_hud_assets.bag_pickup_icon = rf::bm::load("af_wh_bag_take.tga", -1, true);
+    g_world_hud_assets.sal_take = rf::bm::load("af_wh_sal_take.tga", -1, true);
+    g_world_hud_assets.sal_wait = rf::bm::load("af_wh_sal_wait.tga", -1, true);
+    g_world_hud_assets.sal_base_red = rf::bm::load("af_wh_sal_base_red.tga", -1, true);
+    g_world_hud_assets.sal_base_blue = rf::bm::load("af_wh_sal_base_blue.tga", -1, true);
+    g_world_hud_assets.medallion_red = rf::bm::load("af_wh_medallion_red.tga", -1, true);
+    g_world_hud_assets.medallion_blue = rf::bm::load("af_wh_medallion_blue.tga", -1, true);
+    g_world_hud_assets.medallion_neutral = rf::bm::load("af_wh_medallion_neutral.tga", -1, true);
+    g_world_hud_assets.medallion_lock = rf::bm::load("af_wh_medallion_lock.tga", -1, true);
 }
 
 static rf::gr::Mode bitmap_mode_from(WorldHUDRenderMode render_mode)
@@ -219,12 +250,31 @@ void build_world_hud_sprite_icons() {
     }
 }
 
-static rf::Vector3 koth_hill_icon_pos(const HillInfo& h)
+rf::Color hud_color_from_packed(uint32_t packed, rf::ubyte alpha)
+{
+    const auto [r, g, b, a] = extract_color_components(packed);
+    return {static_cast<rf::ubyte>(r), static_cast<rf::ubyte>(g), static_cast<rf::ubyte>(b), alpha};
+}
+
+rf::Color hud_team_color(int team, rf::ubyte alpha)
+{
+    if (team != rf::TEAM_RED && team != rf::TEAM_BLUE) {
+        return {255, 255, 255, alpha};
+    }
+    const uint32_t packed = team == rf::TEAM_RED ? g_alpine_game_config.outlines_color_team_r
+                                                 : g_alpine_game_config.outlines_color_team_b;
+    return hud_color_from_packed(packed, alpha);
+}
+
+rf::Vector3 koth_hill_icon_pos(const HillInfo& h)
 {
     rf::Vector3 p{0.f, 0.f, 0.f};
 
-    // prefer handler position
-    if (h.handler) {
+    // prefer handler position, but a payload checkpoint is where the cart stands to capture it
+    if (const auto checkpoint_pos = payload_checkpoint_pos(h)) {
+        p = *checkpoint_pos;
+    }
+    else if (h.handler) {
         p = h.handler->pos;
     }
     else if (h.trigger) {
@@ -248,25 +298,49 @@ static float koth_fill_scale_from_progress(uint8_t progress01_100, float base_ic
     return base_icon_scale * g_koth_hud_tuning.fill_vs_ring_scale * r;
 }
 
-void render_string_3d_pos_new(const rf::Vector3& pos, const std::string& text, int offset_x, int offset_y,
-    int font, rf::ubyte r, rf::ubyte g, rf::ubyte b, rf::ubyte a)
-{
-    rf::gr::Vertex dest;
-
-    // Transform the position to screen space
-    if (!rf::gr::rotate_vertex(&dest, &pos))
-    {
-        rf::gr::project_vertex(&dest);
-
-        // Check if projection was successful
-        if (dest.flags & 1)
-        {
-            int screen_x = static_cast<int>(dest.sx) + offset_x;
-            int screen_y = static_cast<int>(dest.sy) + offset_y;
-            rf::gr::set_color(r, g, b, a);
-            rf::gr::string(screen_x, screen_y, text.c_str(), font);
-        }
+// Assumes `rf::gr::screen.aspect` to be 1, so x and y scales are equal.
+static float world_units_per_pixel(const rf::Vector3& pos) {
+    const rf::Vector3 delta = pos - rf::gr::view_pos;
+    const float z = rf::gr::view_matrix.fvec.dot_prod(delta);
+    if (z <= 1e-6f) {
+        return 0.f;
     }
+    return 2.f * z / (rf::gr::screen.clip_height * rf::gr::matrix_scale.y);
+}
+
+static void render_string_3d(
+    rf::Vector3 pos,
+    const char* const string,
+    const int screen_offset_x,
+    const int screen_offset_y,
+    const int font_num,
+    const rf::gr::Color color
+) {
+    const float scale = world_units_per_pixel(pos);
+    if (scale <= .0f) {
+        return;
+    }
+    if (screen_offset_x != 0) {
+        pos += rf::gr::eye_matrix.rvec
+            * static_cast<float>(screen_offset_x)
+            * scale;
+    }
+    if (screen_offset_y != 0) {
+        pos -= rf::gr::eye_matrix.uvec
+            * static_cast<float>(screen_offset_y)
+            * scale;
+    }
+    const rf::gr::Color prev_color{rf::gr::screen.current_color};
+    rf::gr::set_color(color);
+    rf::gr::string_3d(
+        &pos,
+        &rf::gr::eye_matrix,
+        scale,
+        string,
+        font_num,
+        rf::gr::bitmap_clamp_mode
+    );
+    rf::gr::set_color(prev_color);
 }
 
 static WorldHUDView make_world_hud_view(rf::Vector3 pos, bool stay_inside_fog = true)
@@ -293,6 +367,16 @@ static WorldHUDView make_world_hud_view(rf::Vector3 pos, bool stay_inside_fog = 
 
     v.dist_factor = std::max(distance, 1.0f) / WorldHUDRender::reference_distance;
     return v;
+}
+
+static inline float world_hud_label_scale_from(const WorldHUDView& view)
+{
+    return std::clamp(view.dist_factor, WorldHUDRender::min_scale, WorldHUDRender::max_scale);
+}
+
+float world_hud_label_scale(const rf::Vector3& pos, bool stay_inside_fog)
+{
+    return world_hud_label_scale_from(make_world_hud_view(pos, stay_inside_fog));
 }
 
 static inline void koth_owner_color(HillOwner owner, HillLockStatus lock_status, rf::ubyte& r, rf::ubyte& g, rf::ubyte& b, rf::ubyte& a)
@@ -344,49 +428,126 @@ static inline rf::Vector3 camera_up()
 
 static NameLabelTex& ensure_hill_name_tex(const HillInfo& h, int font)
 {
-    const int key = hill_key(h);
-    auto& slot = g_koth_name_labels[key];
-
-    if (slot.bm == -1 || slot.text != h.name || slot.font != font) {
-        const auto [tw, th] = rf::gr::get_string_size(h.name, font);
-
-        const int pad = 2;
-        const int bw = std::max(1, tw + pad * 2);
-        const int bh = std::max(1, th + pad * 2);
-
-        if (slot.bm != -1) {
-            rf::bm::release(slot.bm);
-            slot.bm = -1;
-        }
-
-        slot.bm = rf::bm::create(rf::bm::FORMAT_4444_ARGB, bw, bh);
-
-        // keep resident
-        rf::bm::texture_add_ref(slot.bm);
-
-        // clear on GPU path
-        rf::bm::clear_user_bitmap(slot.bm);
-
-        // render name text
-        rf::gr::set_color(255, 255, 255, 255);
-        rf::gr::string_render_into_bitmap(pad, pad, slot.bm, h.name.c_str(), font);
-
-        slot.w_px = bw;
-        slot.h_px = bh;
-        slot.text = h.name;
-        slot.font = font;
-    }
-
+    auto& slot = g_koth_name_labels[hill_key(h)];
+    world_hud_ensure_text_label(slot, h.name, font);
     return slot;
 }
 
 void clear_koth_name_textures()
 {
     for (auto& kv : g_koth_name_labels) {
-        if (kv.second.bm != -1)
-            rf::bm::release(kv.second.bm);
+        world_hud_release_text_label(kv.second);
     }
     g_koth_name_labels.clear();
+    for (NameLabelTex& lbl : g_hill_role_labels) {
+        world_hud_release_text_label(lbl);
+    }
+    world_hud_release_text_label(g_payload_cart_status_label);
+}
+
+void world_hud_release_text_label(NameLabelTex& slot)
+{
+    if (slot.bm != -1) {
+        // bm::release does not evict the D3D11 slot-keyed texture cache, so the GPU texture would
+        // leak and a reused cache slot would inherit it.
+        rf::gr::mark_texture_dirty(slot.bm);
+        rf::bm::release(slot.bm);
+    }
+
+    slot.bm = -1;
+    slot.w_px = 0;
+    slot.h_px = 0;
+    slot.text.clear();
+}
+
+bool world_hud_ensure_text_label(NameLabelTex& slot, const std::string& text, int font)
+{
+    if (slot.bm != -1 && slot.w_px > 0 && slot.h_px > 0 && slot.text == text && slot.font == font)
+        return true;
+
+    // Unclamped: the hooked string_render_into_bitmap (0x005203A0) also renders Alpine TrueType font ids.
+    const auto [tw, th] = rf::gr::get_string_size(text, font);
+
+    // A zero measurement means the font is not usable yet, so leave the slot unbuilt and retry later.
+    if (tw <= 0 || th <= 0) {
+        world_hud_release_text_label(slot);
+        return false;
+    }
+
+    const int pad = 2;
+    const int bw = tw + pad * 2;
+    const int bh = th + pad * 2;
+
+    world_hud_release_text_label(slot);
+
+    slot.bm = rf::bm::create(rf::bm::FORMAT_8888_ARGB, bw, bh);
+    if (slot.bm == -1)
+        return false;
+
+    // Mip chain so the label stays stable when minified.
+    bm_set_user_mipmap(slot.bm, true);
+
+    // keep resident
+    rf::bm::texture_add_ref(slot.bm);
+
+    // Transparent white so filtering and mips never bleed black into glyph edges.
+    bm_fill(slot.bm, 0x00FFFFFFu);
+
+    // white text so the draw-time vertex colour is a straight tint
+    rf::gr::set_color(255, 255, 255, 255);
+    rf::gr::string_render_into_bitmap(pad, pad, slot.bm, text.c_str(), font);
+
+    slot.w_px = bw;
+    slot.h_px = bh;
+    slot.text = text;
+    slot.font = font;
+    return true;
+}
+
+void do_render_world_hud_text_label(const NameLabelTex& label, const rf::Vector3& pos, float vertical_offset,
+    float height_world, WorldHUDRenderMode render_mode, bool stay_inside_fog, bool distance_scaling, rf::Color color)
+{
+    if (label.bm == -1 || label.w_px <= 0 || label.h_px <= 0)
+        return;
+
+    const WorldHUDView view = make_world_hud_view(pos, stay_inside_fog);
+    const float scale = distance_scaling ? world_hud_label_scale_from(view) : 1.0f;
+    const float h_world = height_world * scale;
+    const float w_world = h_world * (static_cast<float>(label.w_px) / static_cast<float>(label.h_px));
+
+    rf::Vector3 draw_pos = view.pos + camera_up() * (vertical_offset * scale);
+
+    rf::gr::set_color(color.red, color.green, color.blue, color.alpha);
+    rf::gr::set_texture(label.bm, -1);
+    rf::gr::bitmap_3d_angle_wh(&draw_pos, 0.0f, w_world, h_world, bitmap_mode_from(render_mode));
+}
+
+// Session-lifetime, like the font atlases: lets a solid quad share the textured labels' render modes.
+int world_hud_white_bitmap()
+{
+    static const int white_bm = bm_create_procedural(8, 8, [](int, int) { return 0xFFFFFFFFu; });
+    return white_bm;
+}
+
+void do_render_world_hud_rect(const rf::Vector3& pos, float vertical_offset, float horizontal_offset,
+    float width_world, float height_world, WorldHUDRenderMode render_mode, bool stay_inside_fog,
+    bool distance_scaling, rf::Color color)
+{
+    if (width_world <= 0.0f || height_world <= 0.0f)
+        return;
+    const int bm = world_hud_white_bitmap();
+    if (bm == -1)
+        return;
+
+    const WorldHUDView view = make_world_hud_view(pos, stay_inside_fog);
+    const float scale = distance_scaling ? world_hud_label_scale_from(view) : 1.0f;
+    rf::Vector3 draw_pos =
+        view.pos + camera_up() * (vertical_offset * scale) + camera_right() * (horizontal_offset * scale);
+
+    rf::gr::set_color(color.red, color.green, color.blue, color.alpha);
+    rf::gr::set_texture(bm, -1);
+    rf::gr::bitmap_3d_angle_wh(&draw_pos, 0.0f, width_world * scale, height_world * scale,
+                               bitmap_mode_from(render_mode));
 }
 
 bool hill_vis_contested(HillInfo& h)
@@ -409,7 +570,8 @@ bool hill_vis_contested(HillInfo& h)
     return h.vis_contested;
 }
 
-static int get_world_hud_font(const float world_hud_text_scale) {
+static int get_world_hud_font(const float world_hud_text_scale)
+{
     static constexpr int base_font_size = 14;
     static std::unordered_map<int, int> font_cache;
 
@@ -425,10 +587,124 @@ static int get_world_hud_font(const float world_hud_text_scale) {
     return font_id;
 }
 
+int get_world_hud_label_bitmap_font()
+{
+    // Texture resolution for world-space label quads, not a screen size; mips handle distance.
+    static const int font_id = rf::gr::load_font("boldfont.ttf:56");
+    return font_id;
+}
+
+// The local player's role at a hill, where it has one: true to attack, false to defend
+static std::optional<bool> hill_local_role_is_attack(const HillInfo& h, bool contested, bool locked)
+{
+    if (contested || locked || multi_spectate_is_spectating() || !rf::local_player)
+        return std::nullopt;
+    if (gt_is_esc()) {
+        return h.ownership == HillOwner::HO_Neutral
+            || esc_team_can_attack_hill(h, team_hill_owner(rf::local_player->team));
+    }
+    if (gt_is_rev() && h.ownership == HillOwner::HO_Neutral)
+        return rf::local_player->team == rf::TEAM_RED;
+    return std::nullopt;
+}
+
+namespace
+{
+constexpr float medallion_track_brightness = 0.35f;
+constexpr double medallion_pulse_period_ms = 1000.0;
+// Times the sprites' label scale
+constexpr float medallion_name_height = 0.55f;
+constexpr float medallion_role_height = 0.4f;
+
+struct MedallionLabel
+{
+    const NameLabelTex* tex = nullptr;
+    float height = 0.0f;
+};
+} // namespace
+
+int world_hud_medallion_face(int team)
+{
+    if (team == rf::TEAM_RED)
+        return g_world_hud_assets.medallion_red;
+    if (team == rf::TEAM_BLUE)
+        return g_world_hud_assets.medallion_blue;
+    return g_world_hud_assets.medallion_neutral;
+}
+
+static void render_world_hud_medallion(const rf::Vector3& pos, int face_bm, const rf::Color& color,
+                                       const WorldMedallionRing& ring, WorldHUDRenderMode rm, int64_t now_ms,
+                                       std::initializer_list<MedallionLabel> labels)
+{
+    constexpr float label_gap = 0.1f;
+
+    // Pulled in front of the fog's far clip as the sprites are, and shrunk to keep its true size on screen
+    const WorldHUDView view = make_world_hud_view(pos, true);
+    const rf::Vector3& center = view.pos;
+    const float pos_dist = (pos - rf::gr::eye_pos).len();
+    const float scale = pos_dist > 0.0f ? std::min(1.0f, (center - rf::gr::eye_pos).len() / pos_dist) : 1.0f;
+    world_medallion_draw(center, scale, face_bm, color, now_ms, rm == WorldHUDRenderMode::overdraw, ring);
+
+    // The labels keep the sprites' readable size, stacked above the ring from the first
+    const float label_scale = std::clamp(g_koth_hud_tuning.icon_base_scale * view.dist_factor,
+                                         WorldHUDRender::min_scale, WorldHUDRender::max_scale);
+    const rf::Vector3 up = camera_up();
+    float label_bottom = (world_medallion_ring_reach() + label_gap) * scale;
+    for (const MedallionLabel& label : labels) {
+        const NameLabelTex* lbl = label.tex;
+        if (!lbl || lbl->bm == -1 || lbl->w_px <= 0 || lbl->h_px <= 0)
+            continue;
+        const float text_h = label_scale * label.height;
+        const float text_w = text_h * static_cast<float>(lbl->w_px) / static_cast<float>(lbl->h_px);
+        rf::Vector3 text_pos = center + up * (label_bottom + 0.5f * text_h);
+        rf::gr::set_color(255, 255, 255, 255);
+        rf::gr::set_texture(lbl->bm, -1);
+        rf::gr::bitmap_3d_angle_wh(&text_pos, 0.0f, text_w, text_h, bitmap_mode_from(rm));
+        label_bottom += text_h;
+    }
+}
+
+static void render_koth_medallion_for_hill(const HillInfo& h, WorldHUDRenderMode rm)
+{
+    constexpr float locked_brightness = 0.4f;
+
+    const bool contested = hill_vis_contested(const_cast<HillInfo&>(h));
+    const bool locked = h.lock_status != HillLockStatus::HLS_Available;
+    const int owner = hill_owner_team(h.ownership);
+    const int face_bm = locked ? g_world_hud_assets.medallion_lock : world_hud_medallion_face(owner);
+    const rf::Color owner_color = hud_team_color(owner);
+    const float brightness = locked ? locked_brightness : 1.0f;
+    const int64_t now_ms = timer::get_i64(1000);
+
+    WorldMedallionRing ring{0.0f, zone_marker_scaled_color(owner_color, medallion_track_brightness * brightness), {}};
+    if (contested) {
+        const float pulse = zone_marker_pulse_at(now_ms, medallion_pulse_period_ms);
+        ring.progress = std::clamp(h.capture_progress, (uint8_t)0, (uint8_t)100) / 100.0f;
+        ring.track_color = zone_marker_scaled_color(owner_color, medallion_track_brightness * pulse);
+        ring.fill_color = zone_marker_scaled_color(hud_team_color(hill_owner_team(h.steal_dir)), pulse);
+    }
+    const int font = get_world_hud_label_bitmap_font();
+    const NameLabelTex* role = nullptr;
+    if (g_alpine_game_config.world_hud_cp_role_text) {
+        if (const auto attack = hill_local_role_is_attack(h, contested, locked)) {
+            NameLabelTex& lbl = g_hill_role_labels[*attack ? 0 : 1];
+            world_hud_ensure_text_label(lbl, *attack ? "Attack" : "Defend", font);
+            role = &lbl;
+        }
+    }
+    render_world_hud_medallion(koth_hill_icon_pos(h), face_bm, zone_marker_scaled_color(owner_color, brightness), ring,
+        rm, now_ms, {{role, medallion_role_height}, {&ensure_hill_name_tex(h, font), medallion_name_height}});
+}
+
 static void render_koth_icon_for_hill(const HillInfo& h, WorldHUDRenderMode rm)
 {
     if (!h.trigger)
         return;
+
+    if (g_alpine_game_config.world_hud_cp_medallions) {
+        render_koth_medallion_for_hill(h, rm);
+        return;
+    }
 
     const rf::Vector3 world_pos = koth_hill_icon_pos(h);
     const WorldHUDView view = make_world_hud_view(world_pos, true);
@@ -512,21 +788,23 @@ static void render_koth_icon_for_hill(const HillInfo& h, WorldHUDRenderMode rm)
     }
 
     // hill name label
-    //const int font = get_world_hud_font(g_alpine_game_config.world_hud_text_scale);
-    const int font = 0;
+    const int font = get_world_hud_label_bitmap_font();
     NameLabelTex& lbl = ensure_hill_name_tex(h, font);
 
-    const float text_h_world = ring_scale * 0.55f;
-    const float aspect = (lbl.w_px > 0 && lbl.h_px > 0) ? float(lbl.w_px) / float(lbl.h_px) : 1.0f;
-    const float text_w_world = text_h_world * aspect;
-
-    const rf::Vector3 up = camera_up();
-    const float margin = ring_scale * -0.4f;
-    const rf::Vector3 text_pos = view.pos + up * (ring_scale + margin + 0.5f * text_h_world);
-
     rf::gr::set_color(255, 255, 255, 255);
-    rf::gr::set_texture(lbl.bm, -1);
-    rf::gr::bitmap_3d_angle_wh(&const_cast<rf::Vector3&>(text_pos), 0.0f, text_w_world, text_h_world, bitmap_mode_from(rm));
+    if (lbl.bm != -1) {
+        const float text_h_world = ring_scale * 0.55f;
+        const float aspect = (lbl.w_px > 0 && lbl.h_px > 0) ? float(lbl.w_px) / float(lbl.h_px) : 1.0f;
+        const float text_w_world = text_h_world * aspect;
+
+        const rf::Vector3 up = camera_up();
+        const float margin = ring_scale * -0.4f;
+        const rf::Vector3 text_pos = view.pos + up * (ring_scale + margin + 0.5f * text_h_world);
+
+        rf::gr::set_texture(lbl.bm, -1);
+        rf::gr::bitmap_3d_angle_wh(&const_cast<rf::Vector3&>(text_pos), 0.0f, text_w_world, text_h_world,
+                                   bitmap_mode_from(rm));
+    }
 
     // icon ring
     rf::gr::set_texture(ring_bmp, -1);
@@ -559,12 +837,132 @@ static void build_koth_hill_icons()
     }
 }
 
+static std::string payload_cart_status()
+{
+    switch (payload_state()) {
+    case PayloadCartState::pushing:
+        return std::format("x{}", payload_useful_pushers());
+    case PayloadCartState::blocked:
+        return "Blocked";
+    case PayloadCartState::rolling_back:
+        return "Rolling back";
+    case PayloadCartState::finale:
+        return "Delivered";
+    case PayloadCartState::held: {
+        const int seconds = payload_countdown_whole_seconds().value_or(1);
+        return payload_in_setup() ? std::to_string(seconds) : std::format("Moving in {}", seconds);
+    }
+    default:
+        return payload_cart_name();
+    }
+}
+
+static void render_payload_cart_medallion()
+{
+    constexpr float idle_brightness = 0.5f;
+
+    const rf::Mover* cart = payload_cart_mover();
+    const auto cart_center = payload_cart_center();
+    if (!cart || !cart_center)
+        return;
+
+    const PayloadCartState state = payload_state();
+    const int64_t now_ms = timer::get_i64(1000);
+    float brightness = idle_brightness;
+    if (state == PayloadCartState::pushing || state == PayloadCartState::rolling_back
+        || state == PayloadCartState::finale) {
+        brightness = 1.0f;
+    }
+    else if (state == PayloadCartState::blocked) {
+        brightness = zone_marker_pulse_at(now_ms, medallion_pulse_period_ms);
+    }
+
+    // The fill is the attackers' way to the next checkpoint. The rest is neutral, so the fill reads against it, or the
+    // defenders' while they hold the cart.
+    const rf::Color attackers = hud_team_color(payload_attacking_team());
+    const rf::Color track = hud_team_color(payload_defenders_have_cart() ? payload_defending_team() : -1);
+    const WorldMedallionRing ring{payload_next_checkpoint_progress(),
+        zone_marker_scaled_color(track, medallion_track_brightness * brightness),
+        zone_marker_scaled_color(attackers, brightness)};
+
+    const NameLabelTex* status = nullptr;
+    if (g_alpine_game_config.world_hud_payload_cart_status) {
+        world_hud_ensure_text_label(g_payload_cart_status_label, payload_cart_status(),
+            get_world_hud_label_bitmap_font());
+        status = &g_payload_cart_status_label;
+    }
+    const auto rm = g_alpine_game_config.world_hud_hill_overdraw ? WorldHUDRenderMode::overdraw
+                                                                 : WorldHUDRenderMode::no_overdraw;
+    // Where the checkpoint holograms are, so it takes one's place as the cart arrives
+    render_world_hud_medallion(payload_medallion_center(*cart_center),
+        world_hud_medallion_face(payload_attacking_team()), zone_marker_scaled_color(attackers, brightness), ring, rm,
+        now_ms, {{status, medallion_name_height}});
+}
+
+// Health/armor bar plate drawn above a player's name label during demo playback.
+// offset_y is the plate's bottom edge; the plate extends upward so it never covers
+// the player model. Both bars share one scale so the 50-unit notches line up; the
+// scale grows in 50-unit steps when a value exceeds 100 (super health/armor amps).
+static void render_player_info_bars(const rf::Vector3& pos, int offset_y, float life, float armor, float fade)
+{
+    rf::gr::Vertex dest;
+    if (rf::gr::rotate_vertex(&dest, &pos))
+        return;
+    rf::gr::project_vertex(&dest);
+    if (!(dest.flags & 1))
+        return;
+
+    const float ui_scale = g_alpine_game_config.get_world_hud_label_text_scale();
+    const int health = std::max(0, static_cast<int>(std::lround(life)));
+    const int armor_points = std::max(0, static_cast<int>(std::lround(armor)));
+    const int bar_max = std::max({100, (health + 49) / 50 * 50, (armor_points + 49) / 50 * 50});
+
+    const float px_per_unit = 0.6f * ui_scale;
+    const int bar_w = std::max(1, static_cast<int>(std::lround(bar_max * px_per_unit)));
+    const int bar_h = std::max(2, static_cast<int>(std::lround(4.0f * ui_scale)));
+    constexpr int gap = 1;
+    constexpr int pad = 1;
+
+    const int plate_w = bar_w + 2 * pad;
+    const int plate_h = 2 * bar_h + gap + 2 * pad;
+    const int x = static_cast<int>(dest.sx) - plate_w / 2;
+    const int y = static_cast<int>(dest.sy) + offset_y - plate_h;
+
+    auto faded = [fade](int alpha) { return static_cast<int>(std::lround(alpha * fade)); };
+
+    rf::gr::set_color(0, 0, 0, faded(140));
+    rf::gr::rect(x, y, plate_w, plate_h);
+
+    const int health_y = y + pad;
+    const int armor_y = health_y + bar_h + gap;
+
+    auto fill_w = [&](int value) {
+        return static_cast<int>(std::lround(static_cast<float>(std::min(value, bar_max)) / bar_max * bar_w));
+    };
+
+    rf::gr::set_color(90, 200, 90, faded(220)); // health - green
+    if (int w = fill_w(health); w > 0)
+        rf::gr::rect(x + pad, health_y, w, bar_h);
+    rf::gr::set_color(210, 175, 60, faded(220)); // armor - amber
+    if (int w = fill_w(armor_points); w > 0)
+        rf::gr::rect(x + pad, armor_y, w, bar_h);
+
+    // notches every 50 units, spanning both bars
+    rf::gr::set_color(0, 0, 0, faded(200));
+    for (int notch = 50; notch < bar_max; notch += 50) {
+        int notch_x = x + pad + static_cast<int>(std::lround(static_cast<float>(notch) / bar_max * bar_w));
+        rf::gr::rect(notch_x, health_y, 1, 2 * bar_h + gap);
+    }
+}
+
 void build_player_labels() {
     bool is_spectating = multi_spectate_is_spectating();
-    bool show_all = is_spectating && g_alpine_game_config.world_hud_spectate_player_labels;
+    bool demo_player_info = demo_playback_active() && g_alpine_game_config.world_hud_demo_player_info;
+    bool show_all = is_spectating && (g_alpine_game_config.world_hud_spectate_player_labels || demo_player_info);
     bool is_team_mode = multi_is_team_game_type();
     bool show_teammates = g_alpine_game_config.world_hud_team_player_labels && is_team_mode && !is_spectating;
     auto spectate_target = multi_spectate_get_target_player();
+    rf::Camera* const camera = rf::local_player ? rf::local_player->cam : nullptr;
 
     const int font = get_world_hud_font(g_alpine_game_config.get_world_hud_label_text_scale());
     const int base_font = get_world_hud_font(1.0f);
@@ -611,11 +1009,15 @@ void build_player_labels() {
 
         rf::Vector3 string_pos = player_entity->pos;
         string_pos.y += 0.85f;
+        const float fade = camera ? fog_far_clip_fade(string_pos.distance_to(rf::camera_get_pos(camera))) : 1.0f;
+        if (!(fade > 0.0f)) {
+            continue;
+        }
         std::string label = player.name;
 
         // determine label width
         const auto [text_width, text_height] = rf::gr::get_string_size(label, font);
-        const int base_text_height = rf::gr::get_string_size(label, base_font).second;
+        const int base_text_height = rf::gr::get_font_height(base_font);
         int half_text_width = text_width / 2;
         int centered_offset_y = -25 - ((text_height - base_text_height) / 2);
 
@@ -645,7 +1047,13 @@ void build_player_labels() {
             label_a = teammate_override_a;
         }
 
-        render_string_3d_pos_new(string_pos, label.c_str(), -half_text_width, centered_offset_y, font, label_r, label_g, label_b, label_a);
+        label_a = static_cast<uint8_t>(std::lround(label_a * fade));
+        render_string_3d(string_pos, label.c_str(), -half_text_width, centered_offset_y, font, {label_r, label_g, label_b, label_a});
+
+        if (demo_player_info) {
+            render_player_info_bars(string_pos, centered_offset_y - 2, player_entity->life,
+                                    player_entity->armor, fade);
+        }
     }
 }
 
@@ -654,59 +1062,266 @@ void build_ephemeral_world_hud_sprite_icons() {
         return !es.timestamp.valid() || es.timestamp.elapsed();
     });
 
-    for (const auto& es : ephemeral_world_hud_sprites) {
-        const int font = get_world_hud_font(g_alpine_game_config.get_world_hud_ping_label_text_scale());
+    if (ephemeral_world_hud_sprites.empty()) {
+        return;
+    }
 
-        rf::gr::set_color(es.color.red, es.color.green, es.color.blue, es.color.alpha);
+    const int base_font = get_world_hud_font(1.f);
+    const int font =
+        get_world_hud_font(g_alpine_game_config.get_world_hud_ping_label_text_scale());
+
+    for (const auto& es : ephemeral_world_hud_sprites) {
+        rf::gr::set_color(es.color);
         if (es.bitmap != -1) {
             do_render_world_hud_sprite(es.pos, 1.0f, es.bitmap, es.render_mode, true, true, true);
         }
 
-        // determine label width
+        // Determine label's width.
         const auto [text_width, text_height] = rf::gr::get_string_size(es.label, font);
-        int half_text_width = text_width / 2;
+        const int half_text_width = text_width / 2;
+        const int base_text_height = rf::gr::get_font_height(base_font);
+        const int offset_y = -25 - (text_height - base_text_height);
 
-        auto text_pos = es.pos;
-        render_string_3d_pos_new(text_pos, es.label.c_str(), -half_text_width, -25,
-            font, es.color.red, es.color.green, es.color.blue, es.color.alpha);
+        render_string_3d(es.pos, es.label.c_str(), -half_text_width, offset_y, font, es.color);
     }
 }
 
+// Crit damage numbers read as a different class of event, not just a bigger number.
+constexpr float world_hud_crit_damage_text_scale = 1.5f;
+
 void build_ephemeral_world_hud_strings() {
-    std::erase_if(ephemeral_world_hud_strings, [](const EphemeralWorldHUDString& es) {
+    std::erase_if(ephemeral_world_hud_strings, [] (const EphemeralWorldHUDString& es) {
         return !es.timestamp.valid() || es.timestamp.elapsed();
     });
 
-    for (const auto& es : ephemeral_world_hud_strings) {
-        int label_y_offset = 0;
-        const int font = get_world_hud_font(g_alpine_game_config.get_world_hud_damage_text_scale());
+    if (ephemeral_world_hud_strings.empty()) {
+        return;
+    }
+
+    const int base_font = get_world_hud_font(1.f);
+    const int dmg_font =
+         get_world_hud_font(g_alpine_game_config.get_world_hud_damage_text_scale());
+    const int critical_font = get_world_hud_font(
+        g_alpine_game_config.get_world_hud_damage_text_scale() * world_hud_crit_damage_text_scale
+    );
+
+    for (const EphemeralWorldHUDString& es : ephemeral_world_hud_strings) {
+        const int font = es.crit ? critical_font : dmg_font;
         rf::Vector3 string_pos = es.pos;
-        string_pos.y += 0.85f;
+        string_pos.y += .85f;
 
         if (es.float_away) {
-            // Calculate the progress of the fade effect
+            // Calculate the progress of the fade effect.
             const float progress = es.timestamp.elapsed_frac();
-            string_pos.y += progress * 3.0f;
+            string_pos.y += progress * 3.f;
 
-            // Apply wind effect
-            const float elapsed_time = es.timestamp.time_since_sec();
-            float wind_amplitude = 0.15f;
-            float wind_frequency_x = 12.0f;
-            float wind_frequency_z = 9.0f;
-
-            string_pos.x += wind_amplitude * std::sin((elapsed_time * 0.002f) + es.wind_phase_offset);
-            string_pos.z += wind_amplitude * std::cos((elapsed_time * 0.002f) + es.wind_phase_offset * 0.8f);
+            // Apply wind.
+            const float elapsed_sec = es.timestamp.time_since_sec();
+            const float wind_amplitude = .15f;
+            const float wind_phase = elapsed_sec * 2.f;
+            string_pos.x +=
+                wind_amplitude * std::sin(wind_phase + es.wind_phase_offset);
+            string_pos.z +=
+                wind_amplitude * std::cos(wind_phase + es.wind_phase_offset * .8f);
         }
 
-        std::string label = std::to_string(es.damage);
-
-        // determine label width
+        const std::string label = std::to_string(es.damage);
         const auto [text_width, text_height] = rf::gr::get_string_size(label, font);
-        int half_text_width = text_width / 2;
+        const int half_text_width = text_width / 2;
+        const int base_text_height = rf::gr::get_font_height(base_font);
+        const int centered_offset_y = -25 - ((text_height - base_text_height) / 2);
 
-        render_string_3d_pos_new(string_pos, label.c_str(), -half_text_width, -25,
-            font, es.color.red, es.color.green, es.color.blue, es.color.alpha);
+        render_string_3d(
+            string_pos,
+            label.c_str(),
+            -half_text_width,
+            centered_offset_y,
+            font,
+            es.color
+        );
     }
+}
+
+static rf::Player* world_hud_viewed_player()
+{
+    if (multi_spectate_is_spectating()) {
+        return multi_spectate_get_target_player();
+    }
+    return rf::local_player;
+}
+
+static int world_hud_viewer_team()
+{
+    const rf::Player* viewer = world_hud_viewed_player();
+    return viewer ? static_cast<int>(viewer->team) : -1;
+}
+
+static int objective_carrier_icon(bool carrier_is_friendly)
+{
+    return carrier_is_friendly ? g_world_hud_assets.sal_wait : g_world_hud_assets.bag_player_icon;
+}
+
+void build_bag_icon()
+{
+    bagman_update_dynamic_light();
+    // No icon during the initial spawn delay — the bag doesn't yet exist.
+    if (g_bagman_info.state == BagState::BS_Delayed) return;
+    if (g_bagman_info.state == BagState::BS_Carried) {
+        if (!g_bagman_info.carrier) return;
+        if (bagman_viewer_is_carrier_first_person()) return;
+        rf::Entity* carrier_ep = rf::entity_from_handle(g_bagman_info.carrier->entity_handle);
+        if (!carrier_ep) return;
+
+        rf::Vector3 pos = carrier_ep->pos;
+        pos.y += WorldHUDRender::bag_player_icon_offset;
+
+        const bool carrier_is_friendly = gt_is_tbag() && g_bagman_info.carrier->team == world_hud_viewer_team();
+        do_render_world_hud_sprite(pos, 0.6f, objective_carrier_icon(carrier_is_friendly),
+            WorldHUDRenderMode::overdraw, true, true, true);
+        return;
+    }
+
+    // Bag is at home or dropped
+    rf::Vector3 vec;
+    if (!bagman_get_client_pickup_pos(&vec)) return;
+
+    const int bitmap_handle = g_world_hud_assets.bag_pickup_icon;
+    do_render_world_hud_sprite(vec, 0.6f, bitmap_handle, WorldHUDRenderMode::overdraw, true, true, true);
+
+    if (g_bagman_info.state == BagState::BS_Dropped && g_bagman_info.return_timer.valid()) {
+        const int time_left_ms = std::max(0, g_bagman_info.return_timer.time_until());
+        const float seconds = time_left_ms / 1000.0f;
+        const std::string label = std::format("{:.1f}", seconds);
+
+        const int font = get_world_hud_font(g_alpine_game_config.get_world_hud_damage_text_scale());
+        const auto [text_width, text_height] = rf::gr::get_string_size(label, font);
+        const int half_text_width = text_width / 2;
+
+        // Place the countdown above the icon
+        rf::Vector3 text_pos = vec;
+        text_pos.y += WorldHUDRender::bag_countdown_offset;
+
+        render_string_3d(text_pos, label.c_str(), -half_text_width, -25, font, hud_amber_color);
+    }
+}
+
+// Draw a countdown above a world position in the format ##.#
+static void render_world_hud_countdown(const rf::Vector3& anchor, float y_offset, int time_left_ms)
+{
+    const std::string label = std::format("{:.1f}", std::max(0, time_left_ms) / 1000.0f);
+
+    const int font = get_world_hud_font(g_alpine_game_config.get_world_hud_damage_text_scale());
+    const auto [text_width, text_height] = rf::gr::get_string_size(label, font);
+    const int half_text_width = text_width / 2;
+
+    rf::Vector3 text_pos = anchor;
+    text_pos.y += y_offset;
+
+    render_string_3d(text_pos, label.c_str(), -half_text_width, -25, font, hud_amber_color);
+}
+
+static int sal_icon_on_ground()    { return g_world_hud_assets.sal_take; }
+static int sal_icon_spawn_wait()   { return g_world_hud_assets.sal_wait; }
+static int sal_icon_base_red()     { return g_world_hud_assets.koth_red; }
+static int sal_icon_base_blue()    { return g_world_hud_assets.koth_blue; }
+static int sal_icon_deliver_red()  { return g_world_hud_assets.sal_base_red; }
+static int sal_icon_deliver_blue() { return g_world_hud_assets.sal_base_blue; }
+
+static void render_salvage_sprite(const rf::Vector3& pos, int bitmap_handle, WorldHUDRenderMode render_mode)
+{
+    do_render_world_hud_sprite(pos, 0.6f, bitmap_handle, render_mode, true, true, true);
+}
+
+// Team whose base should show the capture sprite.
+static int salvage_deliver_base_team()
+{
+    rf::Player* viewer = world_hud_viewed_player();
+    if (salvage_player_is_carrier(viewer)) {
+        return viewer->team;
+    }
+    return -1;
+}
+
+// Scavenger's capture zone, with its timeout countdown near the end. The deliver sprite for the carrier.
+static void build_scavenger_zone_icon(WorldHUDRenderMode render_mode)
+{
+    rf::Vector3 zone_pos{};
+    if (!scavenger_get_zone(&zone_pos)) return;
+
+    rf::Player* viewer = world_hud_viewed_player();
+    int bitmap_handle = g_world_hud_assets.koth_neutral;
+    if (salvage_player_is_carrier(viewer)) {
+        bitmap_handle = viewer->team == rf::TEAM_RED ? sal_icon_deliver_red() : sal_icon_deliver_blue();
+    }
+    zone_pos.y += WorldHUDRender::ctf_flag_offset;
+    render_salvage_sprite(zone_pos, bitmap_handle, render_mode);
+    const int time_left_ms = scavenger_get_zone_time_left_ms();
+    if (time_left_ms <= kScavZoneCountdownVisibleMs) {
+        render_world_hud_countdown(zone_pos, WorldHUDRender::bag_countdown_offset, time_left_ms);
+    }
+}
+
+// Draw Salvage's flag sprites.
+void build_salvage_icons()
+{
+    // Scavenger always overdraws, like Bagman.
+    const auto render_mode = (gt_is_scavenger() || g_alpine_game_config.world_hud_flag_overdraw)
+        ? WorldHUDRenderMode::overdraw : WorldHUDRenderMode::no_overdraw;
+    const SalFlagState state = salvage_get_state();
+
+    // Both capture bases are marked in every flag state.
+    rf::Vector3 base_red{};
+    rf::Vector3 base_blue{};
+    if (salvage_get_base_positions(&base_red, &base_blue)) {
+        const int deliver_team = salvage_deliver_base_team();
+        base_red.y += WorldHUDRender::ctf_flag_offset;
+        base_blue.y += WorldHUDRender::ctf_flag_offset;
+        render_salvage_sprite(base_red,
+            deliver_team == rf::TEAM_RED ? sal_icon_deliver_red() : sal_icon_base_red(), render_mode);
+        render_salvage_sprite(base_blue,
+            deliver_team == rf::TEAM_BLUE ? sal_icon_deliver_blue() : sal_icon_base_blue(), render_mode);
+    }
+    build_scavenger_zone_icon(render_mode);
+
+    if (state == SalFlagState::Carried) {
+        rf::Player* carrier = salvage_get_carrier();
+        if (carrier && !salvage_viewer_is_carrier_first_person()) {
+            if (rf::Entity* carrier_ep = rf::entity_from_handle(carrier->entity_handle)) {
+                rf::Vector3 pos = carrier_ep->pos;
+                pos.y += WorldHUDRender::bag_player_icon_offset;
+                // Team-relative marker.
+                const int viewer_team = world_hud_viewer_team();
+                const bool carrier_is_friendly =
+                    viewer_team >= 0 && viewer_team == static_cast<int>(carrier->team);
+                render_salvage_sprite(pos, objective_carrier_icon(carrier_is_friendly), render_mode);
+            }
+        }
+        return; // nothing marks the vacant spawn while somebody is running the flag
+    }
+
+    if (state == SalFlagState::AtSpawn || state == SalFlagState::Dropped) {
+        // Gated on state, not on the item: the flag item stays alive while carried.
+        rf::Vector3 flag_pos;
+        if (salvage_get_client_flag_pos(&flag_pos)) {
+            flag_pos.y += WorldHUDRender::ctf_flag_offset;
+            render_salvage_sprite(flag_pos, sal_icon_on_ground(), render_mode);
+            if (state == SalFlagState::Dropped) {
+                render_world_hud_countdown(flag_pos, WorldHUDRender::bag_countdown_offset,
+                    salvage_get_time_left_ms());
+            }
+        }
+        return; // a dropped flag is marked where it lies
+    }
+
+    // Delayed: no flag exists yet.
+    if (state != SalFlagState::Delayed || !salvage_spawn_is_known()) {
+        return; // the server hasn't told us where home is yet
+    }
+
+    rf::Vector3 spawn_pos = salvage_get_spawn_pos();
+    spawn_pos.y += WorldHUDRender::ctf_flag_offset;
+    render_salvage_sprite(spawn_pos, sal_icon_spawn_wait(), render_mode);
+    render_world_hud_countdown(spawn_pos, WorldHUDRender::bag_countdown_offset, salvage_get_time_left_ms());
 }
 
 static inline void make_onb_edge_with_up(const rf::Vector3& dir_norm, const rf::Vector3& up_exact, rf::Matrix3& M)
@@ -1060,11 +1675,28 @@ void hud_world_do_frame() {
     if (rf::is_multi && g_alpine_game_config.world_hud_ctf_icons && rf::multi_get_game_type() == rf::NetGameType::NG_TYPE_CTF) {
         build_ctf_flag_icons();
     }
+    // Unconditional: it also deletes the zone light once Scavenger is gone.
+    scavenger_zone_render();
+    if (rf::is_multi && salvage_framework_active()) {
+        salvage_update_dynamic_light();
+        // The flag marker toggles cover Salvage only.
+        if (gt_is_scavenger() || g_alpine_game_config.world_hud_ctf_icons) {
+            build_salvage_icons();
+        }
+    }
+    if (rf::is_multi && gt_is_bagman_any()) {
+        build_bag_icon();
+    }
+    payload_world_render();
     if (rf::is_multi && multi_is_game_type_with_hills()) {
         build_koth_hill_icons();
         build_koth_hill_outlines();
     }
-    if (g_pre_match_active || (draw_mp_spawn_world_hud && (!rf::is_multi || rf::is_server))) {
+    if (payload_active()) {
+        render_payload_cart_medallion();
+    }
+    if (g_pre_match_active || (draw_mp_spawn_world_hud && (!rf::is_multi || rf::is_server)) ||
+        (demo_playback_active() && g_alpine_game_config.world_hud_demo_spawns)) {
         build_mp_respawn_icons();
     }
     if (!world_hud_sprite_events.empty()) {
@@ -1077,7 +1709,9 @@ void hud_world_do_frame() {
         build_ephemeral_world_hud_strings();
     }
     if (rf::is_multi &&
-    ((multi_spectate_is_spectating() && g_alpine_game_config.world_hud_spectate_player_labels) ||
+    ((multi_spectate_is_spectating() &&
+    (g_alpine_game_config.world_hud_spectate_player_labels ||
+    (demo_playback_active() && g_alpine_game_config.world_hud_demo_player_info))) ||
     (!multi_spectate_is_spectating() && g_alpine_game_config.world_hud_team_player_labels && multi_is_team_game_type()))) {
         build_player_labels();
     }
@@ -1090,9 +1724,67 @@ void populate_world_hud_sprite_events()
     std::vector<rf::Event*> events = rf::find_all_events_by_type(rf::EventType::World_HUD_Sprite);
 
     for (rf::Event* event : events) {
-        if (auto* hud_sprite_event = dynamic_cast<rf::EventWorldHUDSprite*>(event)) {
+        if (auto* hud_sprite_event = dynamic_cast<EventWorldHUDSprite*>(event)) {
             world_hud_sprite_events.insert(hud_sprite_event);
             hud_sprite_event->build_sprite_ints();
+        }
+    }
+}
+
+void populate_fullscreen_overlay_events()
+{
+    fullscreen_overlay_events.clear();
+
+    auto image_events = rf::find_all_events_by_type(rf::EventType::AF_Fullscreen_Image);
+    for (rf::Event* event : image_events) {
+        if (auto* overlay = dynamic_cast<EventFullscreenOverlayBase*>(event)) {
+            fullscreen_overlay_events.insert(overlay);
+        }
+    }
+
+    auto color_events = rf::find_all_events_by_type(rf::EventType::AF_Fullscreen_Color);
+    for (rf::Event* event : color_events) {
+        if (auto* overlay = dynamic_cast<EventFullscreenOverlayBase*>(event)) {
+            fullscreen_overlay_events.insert(overlay);
+        }
+    }
+}
+
+// Demo seek: the burst feeds minutes of packets in a few wall seconds, and these all
+// age on wall clock - damage numbers pile up and a map-start fullscreen image outlives
+// the jump. Drop them; a finite overlay is transient, an infinite one is level state.
+void hud_world_seek_reset()
+{
+    ephemeral_world_hud_strings.clear();
+    ephemeral_world_hud_sprites.clear();
+    for (auto* overlay : fullscreen_overlay_events) {
+        if (overlay->duration > 0.0f || overlay->fading_out_early) {
+            overlay->active = false;
+        }
+    }
+}
+
+void hud_world_level_unload()
+{
+    world_hud_sprite_events.clear();
+    fullscreen_overlay_events.clear();
+    payload_world_level_unload();
+}
+
+void fullscreen_overlay_do_frame()
+{
+    if (!rf::gameseq_in_gameplay()) return;
+    for (auto* overlay : fullscreen_overlay_events) {
+        if (!overlay->active) continue;
+
+        if (overlay->is_finished()) {
+            overlay->active = false;
+            continue;
+        }
+
+        float alpha = overlay->compute_alpha();
+        if (alpha > 0.0f) {
+            overlay->render(alpha);
         }
     }
 }
@@ -1129,7 +1821,8 @@ void add_location_ping_world_hud_sprite(rf::Vector3 pos, std::string player_name
     ephemeral_world_hud_sprites.push_back(es);
 }
 
-void add_damage_notify_world_hud_string(rf::Vector3 pos, uint8_t damaged_player_id, uint16_t damage, bool died)
+void add_damage_notify_world_hud_string(rf::Vector3 pos, uint8_t damaged_player_id, int hull_handle, uint16_t damage,
+                                       bool died, bool crit)
 {
     if (!g_alpine_game_config.world_hud_damage_numbers) {
         return; // turned off
@@ -1139,14 +1832,17 @@ void add_damage_notify_world_hud_string(rf::Vector3 pos, uint8_t damaged_player_
 
     // Use cumulative damage values for the same player_id unless disabled
     if (!g_alpine_game_config.world_hud_alt_damage_indicators) {
-        // Search for an existing entry with the same player_id
+        // Search for an existing entry with the same victim
         auto it = std::find_if(
             ephemeral_world_hud_strings.begin(), ephemeral_world_hud_strings.end(),
-            [damaged_player_id](const EphemeralWorldHUDString& es) { return es.player_id == damaged_player_id; });
+            [damaged_player_id, hull_handle](const EphemeralWorldHUDString& es) {
+                return es.player_id == damaged_player_id && es.hull_handle == hull_handle;
+            });
 
         if (it != ephemeral_world_hud_strings.end()) {
             // If found, sum the damage values and remove the old entry
             damage += it->damage;
+            crit = crit || it->crit;
             ephemeral_world_hud_strings.erase(it);
         }
     }
@@ -1154,12 +1850,19 @@ void add_damage_notify_world_hud_string(rf::Vector3 pos, uint8_t damaged_player_
     EphemeralWorldHUDString es;
     es.pos = pos;
     es.player_id = damaged_player_id;
+    es.hull_handle = hull_handle;
     es.damage = damage;
-    es.timestamp.set_ms(1000);
+    es.timestamp.set_ms(damage_number_merge_ms);
     es.float_away = true;
     es.wind_phase_offset = wind_offset_dist(g_rng);
+    es.crit = crit;
 
-    if (g_alpine_game_config.damage_notify_color_override)
+    // A crit keeps its own colour even under the user override: the colour is what
+    // separates it from an ordinary hit.
+    if (crit) {
+        es.color = {255, 80, 0, 255};
+    }
+    else if (g_alpine_game_config.damage_notify_color_override)
     {
         es.color = rf::Color::from_hex(*g_alpine_game_config.damage_notify_color_override);
     }
@@ -1173,7 +1876,7 @@ void add_damage_notify_world_hud_string(rf::Vector3 pos, uint8_t damaged_player_
 ConsoleCommand2 worldhudaltdmgindicators_cmd{
     "cl_wh_altdmgindicators",
     []() {
-        g_alpine_game_config.world_hud_alt_damage_indicators = !g_alpine_game_config.world_hud_alt_damage_indicators;
+        setting_console_set("world_hud_alt_damage_indicators", "toggle");
         rf::console::print("Individual world HUD damage indicators are {}", g_alpine_game_config.world_hud_alt_damage_indicators ? "enabled" : "disabled");
     },
     "Toggle individual vs. cumulative (default) world HUD damage indicator strings",
@@ -1183,7 +1886,7 @@ ConsoleCommand2 worldhudaltdmgindicators_cmd{
 ConsoleCommand2 worldhudctf_cmd{
     "cl_wh_ctf",
     []() {
-        g_alpine_game_config.world_hud_ctf_icons = !g_alpine_game_config.world_hud_ctf_icons;
+        setting_console_set("world_hud_ctf_icons", "toggle");
         rf::console::print("CTF world HUD is {}", g_alpine_game_config.world_hud_ctf_icons ? "enabled" : "disabled");
     },
     "Toggle drawing of world HUD indicators for CTF flags",
@@ -1193,7 +1896,7 @@ ConsoleCommand2 worldhudctf_cmd{
 ConsoleCommand2 worldhudflagoverdraw_cmd{
     "cl_wh_flagoverdraw",
     []() {
-        g_alpine_game_config.world_hud_flag_overdraw = !g_alpine_game_config.world_hud_flag_overdraw;
+        setting_console_set("world_hud_flag_overdraw", "toggle");
         rf::console::print(
             "World HUD overdraw for CTF flag sprites is {}",
             g_alpine_game_config.world_hud_flag_overdraw ? "enabled" : "disabled"
@@ -1206,40 +1909,117 @@ ConsoleCommand2 worldhudflagoverdraw_cmd{
 ConsoleCommand2 worldhudhilloverdraw_cmd{
     "cl_wh_cpoverdraw",
     []() {
-        g_alpine_game_config.world_hud_hill_overdraw = !g_alpine_game_config.world_hud_hill_overdraw;
+        setting_console_set("world_hud_hill_overdraw", "toggle");
         rf::console::print(
-            "World HUD overdraw for control point sprites is {}",
+            "World HUD overdraw for control point sprites or medallions and the Payload cart medallion is {}",
             g_alpine_game_config.world_hud_hill_overdraw ? "enabled" : "disabled"
         );
     },
-    "Toggle whether world HUD sprites for control points are drawn on top of everything else",
+    "Toggle whether control point sprites or medallions and the Payload cart medallion draw on top of everything",
     "cl_wh_cpoverdraw",
+};
+
+ConsoleCommand2 worldhudcpmedallions_cmd{
+    "cl_wh_cpmedallions",
+    []() {
+        setting_console_set("world_hud_cp_medallions", "toggle");
+        rf::console::print("World HUD control point medallions are {}",
+                           g_alpine_game_config.world_hud_cp_medallions ? "enabled" : "disabled");
+    },
+    "Toggle whether control points show spinning medallions instead of sprites",
+    "cl_wh_cpmedallions",
+};
+
+ConsoleCommand2 worldhudcproletext_cmd{
+    "cl_wh_cproletext",
+    []() {
+        setting_console_set("world_hud_cp_role_text", "toggle");
+        rf::console::print("World HUD control point Attack/Defend text is {}",
+                           g_alpine_game_config.world_hud_cp_role_text ? "enabled" : "disabled");
+    },
+    "Toggle the Attack/Defend text over control point medallions in Revolution and Escalation",
+    "cl_wh_cproletext",
 };
 
 ConsoleCommand2 worldhuddamagenumbers_cmd{
     "cl_wh_hitnumbers",
     []() {
-        g_alpine_game_config.world_hud_damage_numbers = !g_alpine_game_config.world_hud_damage_numbers;
+        setting_console_set("world_hud_damage_numbers", "toggle");
         rf::console::print("World HUD damage indicator numbers are {}", g_alpine_game_config.world_hud_damage_numbers ? "enabled" : "disabled");
     },
     "Toggle whether to display numeric damage indicators when you hit players in multiplayer (if enabled by an Alpine Faction server)",
     "cl_wh_hitnumbers",
 };
 
+ConsoleCommand2 worldhudpayloadtethers_cmd{
+    "cl_wh_tethers",
+    []() {
+        setting_console_set("world_hud_payload_tethers", "toggle");
+        rf::console::print("World HUD Payload tethers are {}",
+                           g_alpine_game_config.world_hud_payload_tethers ? "enabled" : "disabled");
+    },
+    "Toggle whether to draw Payload beams from the players pushing or blocking the cart",
+    "cl_wh_tethers",
+};
+
+ConsoleCommand2 worldhudpayloadpushzone_cmd{
+    "cl_wh_pushzone",
+    []() {
+        setting_console_set("world_hud_payload_push_zone", "toggle");
+        rf::console::print("World HUD Payload push zone ring is {}",
+                           g_alpine_game_config.world_hud_payload_push_zone ? "enabled" : "disabled");
+    },
+    "Toggle the ring on the ground around the Payload cart that shows where players push it",
+    "cl_wh_pushzone",
+};
+
+ConsoleCommand2 worldhudpayloadcartstatus_cmd{
+    "cl_wh_cartstatus",
+    []() {
+        setting_console_set("world_hud_payload_cart_status", "toggle");
+        rf::console::print("World HUD Payload cart status text is {}",
+                           g_alpine_game_config.world_hud_payload_cart_status ? "enabled" : "disabled");
+    },
+    "Toggle the Payload cart's status text over its medallion, such as its pushers or countdown",
+    "cl_wh_cartstatus",
+};
+
 ConsoleCommand2 worldhudspectateplayerlabels_cmd{
     "spectate_playerlabels",
     []() {
-        g_alpine_game_config.world_hud_spectate_player_labels = !g_alpine_game_config.world_hud_spectate_player_labels;
+        setting_console_set("world_hud_spectate_player_labels", "toggle");
         rf::console::print("World HUD spectate mode player labels are {}", g_alpine_game_config.world_hud_spectate_player_labels ? "enabled" : "disabled");
     },
     "Toggle whether to display player name labels in spectate mode",
     "spectate_playerlabels",
 };
 
+ConsoleCommand2 worldhuddemoplayerinfo_cmd{
+    "spectate_playerinfo",
+    []() {
+        setting_console_set("world_hud_demo_player_info", "toggle");
+        rf::console::print("Demo playback player healthbars are {}",
+                           g_alpine_game_config.world_hud_demo_player_info ? "enabled" : "disabled");
+    },
+    "Toggle whether to display player health/armor bars during demo playback",
+    "spectate_playerinfo",
+};
+
+ConsoleCommand2 worldhuddemospawns_cmd{
+    "spectate_spawns",
+    []() {
+        setting_console_set("world_hud_demo_spawns", "toggle");
+        rf::console::print("Demo playback respawn point indicators are {}",
+                           g_alpine_game_config.world_hud_demo_spawns ? "enabled" : "disabled");
+    },
+    "Toggle whether world HUD indicators for multiplayer respawn points are drawn during demo playback",
+    "spectate_spawns",
+};
+
 ConsoleCommand2 worldhudteamplayerlabels_cmd{
     "cl_wh_teamplayerlabels",
     []() {
-        g_alpine_game_config.world_hud_team_player_labels = !g_alpine_game_config.world_hud_team_player_labels;
+        setting_console_set("world_hud_team_player_labels", "toggle");
         rf::console::print("World HUD team player labels are {}", g_alpine_game_config.world_hud_team_player_labels ? "enabled" : "disabled");
     },
     "Toggle whether to display player name labels for your teammates",
@@ -1265,7 +2045,7 @@ ConsoleCommand2 set_cp_outline_height_cmd{
     "cl_outlineheightscale",
     [](std::optional<float> new_height) {
         if (new_height) {
-            g_alpine_game_config.set_control_point_outline_height_scale(new_height.value());
+            setting_console_set("control_point_outline_height_scale", std::to_string(new_height.value()));
         }
         rf::console::print("Control point outline height scale is {:.2f}.", g_alpine_game_config.control_point_outline_height_scale);
     },
@@ -1277,7 +2057,7 @@ ConsoleCommand2 set_cp_outline_segments_cmd{
     "cl_outlinesegments",
     [](std::optional<int> new_segments) {
         if (new_segments) {
-            g_alpine_game_config.set_control_point_outline_segments(new_segments.value());
+            setting_console_set("control_point_outline_segments", std::to_string(new_segments.value()));
         }
         rf::console::print("Control point outline ring segments is set to {}.", g_alpine_game_config.control_point_outline_segments);
     },
@@ -1289,7 +2069,7 @@ ConsoleCommand2 set_cp_column_segments_cmd{
     "cl_columnsegments",
     [](std::optional<int> new_segments) {
         if (new_segments) {
-            g_alpine_game_config.set_control_point_column_segments(new_segments.value());
+            setting_console_set("control_point_column_segments", std::to_string(new_segments.value()));
         }
         rf::console::print("Control point column ring segments is set to {}.", g_alpine_game_config.control_point_column_segments);
     },
@@ -1301,7 +2081,7 @@ ConsoleCommand2 set_cp_column_height_scale_cmd{
     "cl_columnheightscale",
     [](std::optional<float> new_height) {
         if (new_height) {
-            g_alpine_game_config.set_control_point_column_height_scale(new_height.value());
+            setting_console_set("control_point_column_height_scale", std::to_string(new_height.value()));
         }
         rf::console::print("Control point light column height scale is {:.2f}.", g_alpine_game_config.control_point_column_height_scale);
     },
@@ -1316,8 +2096,15 @@ void hud_world_apply_patch()
     worldhudctf_cmd.register_cmd();
     worldhudflagoverdraw_cmd.register_cmd();
     worldhudhilloverdraw_cmd.register_cmd();
+    worldhudcpmedallions_cmd.register_cmd();
+    worldhudcproletext_cmd.register_cmd();
     worldhuddamagenumbers_cmd.register_cmd();
+    worldhudpayloadtethers_cmd.register_cmd();
+    worldhudpayloadpushzone_cmd.register_cmd();
+    worldhudpayloadcartstatus_cmd.register_cmd();
     worldhudspectateplayerlabels_cmd.register_cmd();
+    worldhuddemoplayerinfo_cmd.register_cmd();
+    worldhuddemospawns_cmd.register_cmd();
     worldhudteamplayerlabels_cmd.register_cmd();
     worldhudmpspawns_cmd.register_cmd();
     set_cp_outline_height_cmd.register_cmd();

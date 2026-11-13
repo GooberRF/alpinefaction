@@ -9,9 +9,9 @@
 #include "../multi/multi.h"
 #include "pf.h"
 #include "pf_packets.h"
-#include "pf_ac.h"
 #include "../misc/player.h"
 #include "../multi/server.h"
+#include "../multi/alpine_packets.h"
 
 void pf_send_reliable_packet(rf::Player* player, const void* data, int len)
 {
@@ -20,7 +20,7 @@ void pf_send_reliable_packet(rf::Player* player, const void* data, int len)
     // buffer before sending
     rf::multi_io_send_buffered_reliable_packets(player);
     // Buffer data in a reliable packet
-    rf::multi_io_send_reliable(player, data, len, 0);
+    rf::multi_io_send_reliable(player, data, len, false);
     // RF stops reading reliable packets after encountering the first unknown type so flush buffer after sending
     rf::multi_io_send_buffered_reliable_packets(player);
 #else // unreliable
@@ -45,31 +45,40 @@ void send_pf_player_stats_packet(rf::Player* player)
     size_t packet_len = sizeof(stats_packet);
     auto player_list = SinglyLinkedList{rf::player_list};
     for (auto& current_player : player_list) {
+        // The demo recorder is not a real client: real recipients would drop its
+        // unknown id anyway, and in demo captures the entry maps onto the playback
+        // viewer's local player.
+        if (current_player.is_observer()) {
+            continue;
+        }
         PlayerStatsNew& player_stats = *static_cast<PlayerStatsNew*>(current_player.stats);
         pf_player_stats_packet::player_stats out_stats{};
         out_stats.player_id = current_player.net_data->player_id;
         const pf_pure_status pure_status = std::invoke([&] {
-            if (current_player.is_spectator) {
-                return pf_pure_status::af_spectator;
-            } else if (current_player.is_bot) {
+            // Check is_bot FIRST: the pure_status values are mutually exclusive,
+            // so a bot must always report as a bot (keeping its "BOT" tag) even
+            // if is_spectator were somehow set — bots can't legitimately spectate.
+            if (current_player.is_bot) {
                 return current_player.is_spawn_disabled
                     ? pf_pure_status::af_spawn_disabled_bot
                     : pf_pure_status::af_bot;
+            } else if (current_player.is_spectator) {
+                return pf_pure_status::af_spectator;
             } else if (current_player.is_browser) {
                 return pf_pure_status::rfsb;
             } else if (player_is_idle(&current_player)) {
                 return pf_pure_status::af_idle;
             } else {
-                return pf_ac_get_pure_status(&current_player);
+                return pf_pure_status::none;
             }
         });
         out_stats.is_pure = static_cast<uint8_t>(pure_status);
-        out_stats.accuracy = static_cast<uint8_t>(player_stats.calc_accuracy() * 100.f);
+        out_stats.accuracy = player_stats.calc_accuracy_percent();
         out_stats.streak_max = player_stats.max_streak;
         out_stats.streak_current = player_stats.current_streak;
         out_stats.kills = player_stats.num_kills;
         out_stats.deaths = player_stats.num_deaths;
-        out_stats.team_kills = 0;
+        out_stats.assists = player_stats.num_assists;
         ++stats_packet.player_count;
         if (packet_len + sizeof(out_stats) > sizeof(packet_buf)) {
             // One packet should be enough for 32 players (13 bytes * 32 players = 416 bytes)
@@ -145,8 +154,12 @@ static void process_pf_player_stats_packet(const void* data, size_t len, [[ mayb
             }
             stats.max_streak = in_stats.streak_max;
             stats.current_streak = in_stats.streak_current;
+            stats.reported_accuracy = in_stats.accuracy;
             stats.num_kills = in_stats.kills;
             stats.num_deaths = in_stats.deaths;
+            // A pre-1.4 server sends the hardcoded 0 this slot used to carry, which is the
+            // correct assist count for a server that never tracked any.
+            stats.num_assists = in_stats.assists;
         }
         else {
             xlog::warn("PF player_stats packet: player {} not found", in_stats.player_id);
@@ -154,44 +167,8 @@ static void process_pf_player_stats_packet(const void* data, size_t len, [[ mayb
     }
 }
 
-static void process_pf_players_request_packet([[ maybe_unused ]] const void* data, [[ maybe_unused ]] size_t len, const rf::NetAddr& addr)
+bool pf_process_packet(const void* data, int len, const rf::NetAddr& addr)
 {
-    xlog::trace("PF players_request packet");
-
-    // Receive: server <- client (can be non-joined)
-    if (!rf::is_server) {
-        return;
-    }
-
-    pf_players_packet players_packet{};
-    players_packet.hdr.type = static_cast<uint8_t>(pf_packet_type::players);
-    players_packet.version = 1;
-    players_packet.show_ip = 0;
-
-    std::byte packet_buf[rf::max_packet_size];
-    int packet_len = sizeof(players_packet);
-    auto player_list = SinglyLinkedList(rf::player_list);
-    for (auto& player : player_list) {
-        int name_len = player.name.size();
-        if (packet_len + name_len + 1 > static_cast<int>(sizeof(packet_buf))) {
-            xlog::warn("PF players packet is too big! Skipping some players...");
-            break;
-        }
-        std::memcpy(packet_buf + packet_len, player.name.c_str(), name_len + 1);
-        packet_len += name_len + 1;
-    }
-
-    players_packet.hdr.size = packet_len - sizeof(players_packet.hdr);
-    std::memcpy(packet_buf, &players_packet, sizeof(players_packet));
-    rf::net_send(addr, packet_buf, packet_len);
-}
-
-bool pf_process_packet(const void* data, int len, const rf::NetAddr& addr, rf::Player* player)
-{
-    if (pf_ac_process_packet(data, len, addr, player)) {
-        return true;
-    }
-
     rf_packet_header header{};
     if (len < static_cast<int>(sizeof(header))) {
         return false;
@@ -223,46 +200,10 @@ bool pf_process_raw_unreliable_packet(const void* data, int len, const rf::NetAd
     std::memcpy(&header, data, sizeof(header));
     auto packet_type = static_cast<pf_packet_type>(header.type);
 
+    // sent by online rfsb, not connected clients
     if (packet_type == pf_packet_type::players_request) {
-        // Note: this packet can be sent by clients that do not join the server (e.g. online server browser)
-        // Because of that it must be handled here and not in pf_process_packet
-        process_pf_players_request_packet(data, len, addr);
+        af_send_player_info_response(addr);
         return true;
     }
     return false;
-}
-
-void pf_player_init([[ maybe_unused ]] rf::Player* const player) {
-    if (rf::is_server) {
-        pf_ac_init_player(player);
-    }
-}
-
-void pf_player_level_load(rf::Player* const player) {
-    if (rf::is_server) {
-        pf_ac_verify_player(player);
-    }
-}
-
-void pf_player_verified(
-    [[ maybe_unused ]] rf::Player* const player,
-    [[ maybe_unused ]] const pf_pure_status pure_status
-) {
-}
-
-bool pf_is_player_verified(rf::Player* player)
-{
-    pf_pure_status status = pf_ac_get_pure_status(player);
-    return status != pf_pure_status::none;
-}
-
-int pf_get_player_ac_level(rf::Player* player)
-{
-    pf_pure_status status = pf_ac_get_pure_status(player);
-    switch (status) {
-        case pf_pure_status::blue: return 2;
-        case pf_pure_status::gold: return 3;
-        case pf_pure_status::fail: return 1;
-        default: return 0;
-    }
 }

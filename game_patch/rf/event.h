@@ -16,28 +16,25 @@
 #include "player/player.h"
 #include "os/timestamp.h"
 
-namespace rf
+enum class SetVarOpts : int
 {
-    enum class SetVarOpts : int
-    {
-        delay,
-        int1,
-        int2,
-        float1,
-        float2,
-        bool1,
-        bool2,
-        str1,
-        str2
-    };
-}
+    delay,
+    int1,
+    int2,
+    float1,
+    float2,
+    bool1,
+    bool2,
+    str1,
+    str2
+};
 
 namespace std
 {
     template<>
-    struct hash<rf::SetVarOpts> // Allow SetVarOpts as a key in std::unordered_map
+    struct hash<SetVarOpts> // Allow SetVarOpts as a key in std::unordered_map
     {
-        std::size_t operator()(const rf::SetVarOpts& opt) const noexcept
+        std::size_t operator()(const SetVarOpts& opt) const noexcept
         {
             return static_cast<std::size_t>(opt);
         }
@@ -66,7 +63,7 @@ namespace rf
         bool delayed_msg;
 
         // handler storage, defined in event.cpp
-        static std::unordered_map<const Event*, std::unordered_map<rf::SetVarOpts, std::function<void(Event*, const std::string&)>>>
+        static std::unordered_map<const Event*, std::unordered_map<SetVarOpts, std::function<void(Event*, const std::string&)>>>
             variable_handler_storage;
 
 
@@ -173,6 +170,43 @@ namespace rf
         char event_specific_data[24];
     };
     static_assert(sizeof(GenericEvent) == 0x2D0);
+
+    struct ContinuousDamageEvent : Event
+    {
+        char padding[3];
+        int damage_per_second;
+        int damage_type;
+    };
+    static_assert(sizeof(ContinuousDamageEvent) == 0x2C0);
+
+    struct PlaySoundEvent : Event
+    {
+        char padding[3];
+        String sound_file;              // +0x2B8
+        String alt_sound_file;          // +0x2C0, played by the off signal instead of stopping
+        bool field_2c8;                 // +0x2C8
+        char padding2[3];
+        int sound_handle;               // +0x2CC
+        int sound_instance;             // +0x2D0
+        float min_dist;                 // +0x2D4, 0 plays it 2D
+        float duration;                 // +0x2D8
+        bool looping;                   // +0x2DC
+        bool is_on;                     // +0x2DD
+        char padding3[2];
+        Timestamp duration_timestamp;   // +0x2E0
+        int speaker_uid;                // +0x2E4
+    };
+    static_assert(offsetof(PlaySoundEvent, sound_file) == 0x2B8);
+    static_assert(offsetof(PlaySoundEvent, alt_sound_file) == 0x2C0);
+    static_assert(offsetof(PlaySoundEvent, sound_handle) == 0x2CC);
+    static_assert(offsetof(PlaySoundEvent, sound_instance) == 0x2D0);
+    static_assert(offsetof(PlaySoundEvent, min_dist) == 0x2D4);
+    static_assert(offsetof(PlaySoundEvent, duration) == 0x2D8);
+    static_assert(offsetof(PlaySoundEvent, looping) == 0x2DC);
+    static_assert(offsetof(PlaySoundEvent, is_on) == 0x2DD);
+    static_assert(offsetof(PlaySoundEvent, duration_timestamp) == 0x2E0);
+    static_assert(offsetof(PlaySoundEvent, speaker_uid) == 0x2E4);
+    static_assert(sizeof(PlaySoundEvent) == 0x2E8);
 
     struct PersistentGoalEvent
     {
@@ -343,24 +377,30 @@ namespace rf
         When_Round_Ends,
         Mesh_Animate,
         Mesh_Set_Texture,
-        Mesh_Set_Collision
+        Mesh_Set_Collision,
+        AF_Fullscreen_Image,
+        AF_Fullscreen_Color,
+        Unhide_Glare,
+        Gas_Region_State,
+        Modify_Gas_Region,
+        Resize_Gas_Region,
+        ATX_Set_Frame,
+        ATX_Play,
+        ATX_Pause,
+        ATX_Set_Frame_Time,
+        Weather_Region_State,
+        Display_Projection,
+        Climbing_Region_State,
+        When_Destroyed,
+        Rope_State,
+        Mesh_Set_Scale,
+        Payload_Handler,
+        Payload_Checkpoint,
+        When_Setup_Ends
     };
-
-    // int to EventType
-    inline EventType int_to_event_type(int id)
-    {
-        return static_cast<EventType>(id);
-    }
-
-    // EventType to int
-    inline int event_type_to_int(EventType eventType)
-    {
-        return static_cast<int>(eventType);
-    }
 
     std::vector<rf::Event*> find_all_events_by_type(rf::EventType event_type);
     bool check_if_event_is_type(rf::Event* event, rf::EventType type);
     bool check_if_object_is_event_type(rf::Object* object, rf::EventType type);
     void activate_all_events_of_type(rf::EventType event_type, int trigger_handle, int triggered_by_handle, bool on);
-
 }

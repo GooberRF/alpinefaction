@@ -1,0 +1,434 @@
+#pragma once
+
+#include <cmath>
+#include <cstdint>
+#include <numbers>
+#include <utility>
+#include <vector>
+#include <common/utils/math-utils.h>
+#include "../../rf/math/vector.h"
+#include "../../rf/math/matrix.h"
+#include "../../rf/physics.h"
+
+namespace rf
+{
+    struct Entity;
+    struct Object;
+    struct Player;
+    struct LevelCollisionOut;
+}
+
+struct AlpineVehicleFactoryInfo;
+
+// WIRE-FROZEN row ids - af_kill_info's damage_type HIGH NIBBLE when AF_KILL_FLAG_VEHICLE is set.
+enum VehicleDamageClass
+{
+    VDC_JEEP = 0,
+    VDC_APC,
+    VDC_DRILLER,
+    VDC_FIGHTER,
+    VDC_SUB,
+    VDC_TURRET, // every use_function-4 manned turret
+    VDC_COUNT,
+};
+
+// This entity's row above, or -1 for anything that is not a synced vehicle or turret.
+int vehicle_damage_class(const rf::Entity* ep);
+
+// The same row from an entity TYPE index, for a factory record that has no live hull.
+int vehicle_damage_class_from_type(int entity_type);
+
+// Display name of a VehicleDamageClass row; cased for use after a possessive ("Bob's APC").
+const char* vehicle_class_display_name(int vehicle_class);
+
+// entities.tbl $Use: "vehicle" (1) or "turret" (4).
+bool vehicle_is_synced_entity_type(int entity_type_index);
+bool vehicle_is_synced_entity_type(const rf::Entity* ep);
+
+// The synced vehicle hull this rider is aboard, or null - a null rider and host_handle -1 both
+// resolve to null. Says nothing about the rider's own liveness.
+rf::Entity* vehicle_ridden_hull(const rf::Entity* rider);
+
+// As above, and null once the HULL has begun dying.
+rf::Entity* vehicle_ridden_live_hull(const rf::Entity* rider);
+
+// Whether the vehicle code takes a Use press that rf::player_find_use_target answered with target and
+// tag_handle; a hull hit away from its seats falls through to the stock handler.
+bool vehicle_use_target_boards(const rf::Object* target, int tag_handle);
+
+// Contact box: world centre, the hull's own axes, and the hull-LOCAL half extents.
+struct VehicleHullObb
+{
+    rf::Vector3 center{};
+    rf::Matrix3 orient{};
+    rf::Vector3 half{};
+};
+
+// 15-axis SAT on the UNTRIMMED hull boxes; `margin` inflates both on every face.
+bool vehicle_hull_obb_overlap(const VehicleHullObb& a, const VehicleHullObb& b, float margin);
+
+// The one spelling of 2*pi in the vehicle tree.
+inline constexpr float vehicle_two_pi = 2.0f * std::numbers::pi_v<float>;
+inline constexpr float vehicle_deg_to_rad = std::numbers::pi_v<float> / 180.0f;
+
+// Slack allowed on every face of BOTH boxes.
+inline constexpr float vehicle_ram_contact_margin = 0.10f;  // server ram/crush sweep
+inline constexpr float vphys_pair_contact_margin = 0.15f;   // per-body pair contact cushion
+
+// The vehicle the local player is currently driving (not riding as a gunner), or null.
+rf::Entity* vehicle_local_driven_vehicle();
+
+// A seat that neither drives nor owns the hull's weapon, or null.
+rf::Entity* vehicle_passenger_vehicle(rf::Entity* rider);
+
+// Passenger seat this machine draws the view from - own or spectated; out_rider gets its occupant.
+rf::Entity* vehicle_fp_view_passenger_vehicle(rf::Entity** out_rider);
+
+// The first-person APC driver this machine draws the view of (own, or a first-person spectator's
+// target). His aim yaws off the hull's nose while the view stays on it.
+bool vehicle_fp_apc_view(rf::Entity** out_vehicle, rf::Entity** out_driver);
+
+// The hull's aim as fired, and the view frame on its nose at the same hull-relative pitch; false when
+// there is no usable frame.
+bool vehicle_fp_apc_aim_split(const rf::Entity* vehicle, const rf::Entity* driver, rf::Vector3* out_aim,
+                              rf::Matrix3* out_view);
+
+// Server: a synced hull whose obj_update rows this server samples itself (no remote driver).
+bool vehicle_server_samples_rows(const rf::Entity* ep);
+
+// collide_linesegment_level_for_multi (0x0049C690) without use_mesh_collide tests every entity as a
+// human-sized pillar at its origin, not its mesh: re-test synced hulls against their meshes and merge any
+// hit nearer than out.distance into out. Call it after that function, which resets out.distance and
+// clips p1 to a world hit. True when a hull took the hit.
+bool vehicle_collide_segment_hulls(const rf::Vector3& p0, const rf::Vector3& p1, const rf::Object* ignore1,
+                                   const rf::Object* ignore2, float collision_radius, rf::LevelCollisionOut& out,
+                                   bool (*skip_hull)(int handle) = nullptr);
+
+// How far the hull's cspheres reach beyond the origin along dir (a UNIT vector).
+float vehicle_collision_reach_along(rf::Entity* ep, const rf::Vector3& dir);
+
+// One surface the hull scrape probe found the hull touching: a ray's hit or a sphere contact.
+struct VehicleHullProbeHit
+{
+    rf::Vector3 point;
+    rf::Vector3 normal;
+    rf::Vector3 along; // the hull velocity's part along the surface; a sphere contact's is against a mover's motion
+    float along_speed = 0.0f;
+    int material = rf::MATERIAL_DEFAULT; // rays only: a sphere contact keeps the default
+};
+inline constexpr int vehicle_hull_probe_max_hits = 8;
+
+// The scrape probe the effects and the scrape damage share, with vel the hull's velocity. A flyer: what its
+// physics sphere touches (the vehicle physics world's level, movers and props, at any angle; not with ends_only),
+// and rays along its nose and tail where the hull reaches past that sphere. A car: rays along its sides. Returns
+// how many of out it filled.
+int vehicle_hull_probe(rf::Entity* ep, const rf::Vector3& vel, bool flyer, bool ends_only,
+                       VehicleHullProbeHit (&out)[vehicle_hull_probe_max_hits]);
+
+// A synced use_function-1 vehicle that is neither PF_AUTOMOBILE nor water-bound.
+bool vehicle_is_flyer(rf::Entity* ep);
+
+bool vehicle_hull_is_turret(const rf::Entity* ep);
+// A turret's or jeep's alt trigger toggles its gunner's zoom and drives no weapon.
+bool vehicle_alt_fire_zooms(rf::Entity* hull);
+
+// Rebuild the fire frame from the AUTHORITATIVE hull matrix, never the interpolated angles.
+void vehicle_rebuild_eye_orient(rf::Entity* ep, const rf::Matrix3& hull);
+// Re-assert the driver's synced aim on a freshly rebuilt eye_orient; on the DRIVING machine only a
+// third-person convergence aim is re-asserted.
+void vehicle_refresh_aim_orient(rf::Entity* vehicle);
+
+// The phb physics_make_orient (0x004A0D70) turns back into this matrix; RF has two conventions.
+rf::Vector3 vehicle_make_orient_phb(const rf::Matrix3& orient);
+
+// Server: create a vehicle/turret entity and announce it to every in-game client.
+rf::Entity* vehicle_spawn(const char* class_name, const rf::Vector3& pos, const rf::Matrix3& orient);
+
+// Seat identity on the wire is the interface point INDEX; the tag handle behind it is a
+// per-machine vmesh value.
+int vehicle_seat_index_from_tag(const rf::Entity* vehicle, int tag_handle);
+bool vehicle_seat_tag_from_index(const rf::Entity* vehicle, int seat_index, int* out_tag_handle);
+
+// WIRE SENTINEL in the af_client_req 0xC use request's u8 seat_index: "the lowest UNOCCUPIED seat".
+// Never a real index; resolved server-side on the enter path only, so the swap path rejects it.
+inline constexpr uint8_t vehicle_seat_auto = 0xFF;
+
+// Server: board seat seat_index of vehicle_handle (or vehicle_seat_auto for the lowest free seat),
+// change to seat_index when already aboard that same vehicle, or get out (vehicle_handle -1).
+void vehicle_server_handle_use_request(rf::Player* pp, int vehicle_handle, uint8_t seat_index);
+
+// Why a player may not board a hull. Computed from replicated state alone, so a client can ask it.
+enum VehicleEntryReason
+{
+    VEHICLE_ENTRY_OK = 0,
+    VEHICLE_ENTRY_OCCUPIED_OTHER_TEAM,
+    VEHICLE_ENTRY_LOCKED_OTHER_TEAM,
+    VEHICLE_ENTRY_NO_SEAT,
+    VEHICLE_ENTRY_SUB_OUT_OF_WATER,
+    VEHICLE_ENTRY_SEAT_TAKEN,
+};
+
+// THE entry rule, both sides of the wire: hull team + lock flag + occupancy, nothing server-only.
+// reason_out may be null; it gets a VehicleEntryReason. seat is the seat the press would ask for:
+// vehicle_seat_auto tests "any free seat", an explicit index tests that one seat.
+bool vehicle_hull_entry_allowed(const rf::Entity* hull, const rf::Player* pp, int* reason_out,
+                                int seat = vehicle_seat_auto);
+
+// The server's boarding distance check, tightened by margin.
+bool vehicle_board_in_range(const rf::Entity* rider, const rf::Entity* hull, float margin);
+// How far a rider's eye may be from the hull's origin to board it; 0 without an entity.
+float vehicle_board_range(const rf::Entity* hull);
+
+rf::Vector3 vehicle_live_hull_velocity(const rf::Entity* vehicle);
+
+// Every synced hull this machine knows, dying ones included: the server's tracked list, or on a client (which tracks
+// none) the entity list's. A client's list is rebuilt per call, so a caller keeps its own copy if it calls again.
+const std::vector<int>& vehicle_hull_handles();
+
+// Live non-turret hulls a bot drives; a client counts off the replicated seats.
+int vehicle_count_bot_driven_hulls();
+
+// Server: aims the turret a server-local gunner operates, consumed by this frame's physics. heading and pitch are
+// the turret's control_data phb.y and eye_phb.x.
+bool vehicle_server_set_turret_aim(rf::Entity* turret, const rf::Entity* gunner, float heading, float pitch);
+// The seat's eye pitch limits (min/max_rel_eye_phb.x) applied to an eye_phb.x.
+float vehicle_clamp_seat_eye_pitch(const rf::Entity* ep, float pitch);
+// Server: the controls of the hull a server-local driver drives (zero while he or it is dying), consumed by this
+// frame's physics. Each axis in [-1,1]: move as a driver's keys write it (cars: x steer, y handbrake, z throttle;
+// flyers: x strafe, y lift, z thrust), pitch_cmd and yaw_cmd as full-deflection rates.
+bool vehicle_server_set_driver_input(rf::Entity* vehicle, const rf::Entity* driver, const rf::Vector3& move,
+                                     float pitch_cmd, float yaw_cmd);
+// Server: the world direction a server-local APC driver aims along, held to what the hull allows him. A zero
+// direction (or a dying driver or hull) drops it and the hull's own frame stands; false when nothing is held.
+bool vehicle_server_set_driver_aim(rf::Entity* vehicle, const rf::Entity* driver, const rf::Vector3& dir);
+
+// The hull's affiliation, -1 none. Replicated, so this answers on a client too.
+int vehicle_hull_team(int vehicle_handle);
+
+// Any seat holds a player who is pp's enemy. Seats are replicated, so this answers on a client too.
+bool vehicle_occupied_by_enemy(const rf::Player* pp, const rf::Entity* vehicle);
+
+// Server: a hull left standing empty this long after its first rider goes back to its factory.
+inline constexpr int vehicle_unoccupied_destroy_s = 180;
+
+// Client: local clock the hull's unoccupied auto-return is due at, or 0 while it is not running.
+int64_t vehicle_hull_unoccupied_deadline(int vehicle_handle);
+
+// Client: appends (local hull handle, deadline ms) for every hull with a running auto-return.
+void vehicle_unoccupied_hulls(std::vector<std::pair<int, int64_t>>& out);
+
+// Server: set a factory's affiliation. An un-entered hull follows it, and a capture (team >= 0) spawns a
+// pending slot now. spawn_waiting=false (level init) neither spawns nor broadcasts: the state-info sweep
+// states it.
+void vehicle_factory_set_team(int factory_index, int team, bool spawn_waiting = true);
+
+// The g_vehicle_factories index of the factory carrying this RFL uid, -1 if there is none.
+int vehicle_factory_index_by_uid(int uid);
+
+// Client: the per-hull attributes af_vehicle_state carries beside the seat array.
+void vehicle_apply_hull_attrs_from_packet(int vehicle_handle, uint8_t team, uint8_t flags,
+                                          uint16_t unoccupied_s, const int32_t* seat_rider,
+                                          int seat_count, int16_t yaw_base, uint8_t yaw_limit_deg);
+
+// Client: converge this hull's seats on the occupancy an af_vehicle_state states. Idempotent.
+// changed_seat is af_vehicle_state_changed_none for a bulk assert with no event to cue.
+// hull_vel is the packet's quantised hull velocity, read only when this receiver is the NEW
+// seat-0 rider: nothing else can carry a coasting hull's momentum across the handoff.
+void vehicle_apply_seat_occupancy_from_packet(int vehicle_handle, const int32_t* seat_rider,
+                                              int seat_count, uint8_t changed_seat,
+                                              const int16_t* hull_vel);
+
+// Client: re-apply every stated occupancy still naming a rider this machine could not resolve,
+// until he turns up, the hull dies or the statement ages out.
+void vehicle_retry_pending_seat_occupancy();
+
+// Server: THE af_vehicle_state send. Every seat change states the hull's whole occupancy, so
+// changed_seat only drives receiver cues. `vehicle` null (hull already gone) states "nobody aboard".
+void vehicle_broadcast_seat_occupancy(int vehicle_handle, const rf::Entity* vehicle,
+                                      int changed_seat);
+void vehicle_send_seat_occupancy_to(rf::Player* pp, const rf::Entity* vehicle, int changed_seat);
+
+// Server: replay every hull's seat occupancy to a joining player.
+void vehicle_send_seat_states_to(rf::Player* pp);
+
+// Server: an entity weapon's actual on/off edge, from the engine's turn-on/turn-off hooks.
+void vehicle_server_announce_weapon_edge(int entity_handle, int weapon_type, bool on, bool alt_fire);
+
+// Client mirror of one Vehicle Factory's server-side respawn state, indexed like g_vehicle_factories.
+struct VehicleFactoryUi
+{
+    uint8_t state = 0;       // af_vehicle_factory_state_value
+    int64_t deadline_ms = 0; // client clock (timer::get_i64(1000)) the pending spawn is due at
+    int64_t spawned_ms = 0;  // client clock of the last pending -> alive transition
+};
+
+// Client: apply an af_vehicle_factory_state announcement. Idempotent.
+// team is the wire encoding: 0 red, 1 blue, 0xFF none.
+void vehicle_apply_factory_state_from_packet(uint16_t factory_index, uint8_t state,
+                                            uint16_t s_remaining, uint8_t team);
+
+// Server: replay every factory's respawn state to a joining player.
+void vehicle_send_factory_states_to(rf::Player* pp);
+
+// Client: the factory respawn mirror, for world HUD markers. Empty outside a factory level.
+int vehicle_factory_ui_count();
+const VehicleFactoryUi* vehicle_factory_ui(int i);
+const AlpineVehicleFactoryInfo* vehicle_factory(int i);
+// Elapsed fraction of the authored respawn delay: 1 while alive, 0 once the factory gave up.
+float vehicle_factory_ui_progress(int i, int64_t now);
+
+// Server: free the seat a leaving player sits in. MUST be called from player_destroy, while his
+// entity still resolves, or the exit announcement names a rider clients cannot identify.
+void vehicle_on_player_disconnect(rf::Player* pp);
+
+// Server: is this an obj_update row a driving client legitimately sends for its vehicle?
+bool vehicle_is_driver_obj_update_row(const rf::Player* pp, const rf::Entity* ep, int flags);
+
+// The occupant that owns the vehicle's weapon: the jeep gunner, the driver otherwise.
+rf::Entity* vehicle_firing_seat_occupant(rf::Entity* vehicle);
+int vehicle_firing_seat_index(const rf::Entity* vehicle);
+bool vehicle_local_owns_firing_seat(rf::Entity* ep);
+
+bool vehicle_suppress_local_fire(const rf::Player* pp);
+
+// Server: a client reported its vehicle trigger state (action 0/1) or, as the jeep driver, its horn
+// (action 3/4); action 2 is server->client only.
+void vehicle_server_handle_fire_request(rf::Player* pp, int vehicle_handle, uint8_t action,
+                                        uint8_t alt_fire);
+
+// Client: reproduce a discrete shot the server announced.
+void vehicle_apply_fire_from_packet(int vehicle_handle, uint8_t action, uint8_t alt_fire);
+
+// Hull pitch/bank the stock obj_update row has no slot for, quantized as angle * 32767 / pi and
+// belonging to the sample stamped tick; steer_q is angle * 127 / 0.75 and is render-only.
+void vehicle_server_handle_orient_report(rf::Player* pp, int vehicle_handle, uint16_t tick,
+                                         int16_t pitch_q, int16_t bank_q, int16_t aim_pitch_q,
+                                         int16_t aim_head_q, int8_t steer_q);
+void vehicle_apply_orient_from_packet(int vehicle_handle, uint16_t tick, int16_t pitch_q,
+                                      int16_t bank_q, int16_t aim_pitch_q, int16_t aim_head_q,
+                                      int8_t steer_q);
+
+// Client: store an af_vehicle_health update, and the values the HUD shows for a vehicle. A scrape_only drop
+// gives the riders no damage flash.
+void vehicle_store_health_from_packet(int vehicle_handle, float life, float max_life, int primary_ammo,
+                                      int secondary_ammo, uint16_t primary_refill_ms, uint16_t secondary_refill_ms,
+                                      const rf::Vector3* hit_dir = nullptr, bool scrape_only = false);
+// Total ammo (clip + reserve) for one weapon type, or -1 for a weapon with no ammo pool at all.
+// Only an exact 0 means EMPTY, so a caller gating on emptiness must test == 0, never <= 0.
+int vehicle_weapon_ammo(const rf::Entity* vehicle, int weapon_type);
+float vehicle_hud_life(const rf::Entity* vehicle);
+float vehicle_hud_max_life(const rf::Entity* vehicle);
+// A hull's drown or strand clock as its riders see it; false while it is clear of its lethal medium.
+struct VehicleHazardView
+{
+    bool is_sub = false;
+    float warn_left = 0.0f;  // seconds of warning left, 0 once the drain has begun
+    float drain_frac = 0.0f; // 0..1 through the drain
+};
+bool vehicle_hazard_view(rf::Entity* vehicle, VehicleHazardView& out);
+// A demo seek leaves the clocks a client ran for the frames it skipped.
+void vehicle_hazard_clear_client_clocks();
+// False when weapon slot 0 (primary) or 1 (secondary) has no refill pending; else its 0..1 progress.
+bool vehicle_hud_ammo_refill_progress(const rf::Entity* vehicle, int slot_index, float& progress);
+
+// Server, from obj_damage: the per-class / per-damage-type damage scales. MUST be passed the RAW
+// killer, before vehicle_filter_obj_damage rewrites it; returns damage unchanged off the server.
+float vehicle_scale_damage(int victim_handle, int killer_handle, int damage_type, float damage);
+
+// The hull's per-class scale for one damage type, 1 for anything that is not a synced hull.
+float vehicle_hull_damage_multiplier(const rf::Entity* victim, int damage_type);
+
+// Server, from obj_damage, BEFORE the stock body: *killer_handle is rewritten in place with the
+// occupant responsible for a vehicle killer. False means the damage must not be applied at all.
+bool vehicle_filter_obj_damage(int victim_handle, int* killer_handle, int damage_type);
+
+// Server, from entity_damage: the 10000 DT_EXPLOSIVE blast entity_die deals to a destroyed vehicle's
+// occupants. A guaranteed kill, so it must be exempt from every PvP damage reducer.
+bool vehicle_is_occupant_death_blast(const rf::Entity* victim, int damage_type);
+// The same blast's hull handle, or -1 for any other blow.
+int vehicle_occupant_death_blast_hull(int victim_handle, int damage_type);
+// Server: what killer_player's lethal blow on this hull was (weapon -1 / class -1 = unknown); false
+// when the lethal blow was not his.
+bool vehicle_lethal_blow_attribution(int vehicle_handle, const rf::Player* killer_player, int& weapon_type,
+                                     bool& splash, int& vehicle_class);
+
+// Server, from entity_damage after the blow lands on a synced hull: records the lethal blow's
+// killer and weapon, and offers a player attacker to every rider as an assist on that hull's blast.
+void vehicle_note_hull_damage(rf::Entity* vehicle, float life_before, int killer_handle,
+                              float real_damage, int weapon_type, bool splash);
+
+// Server: a client reported that the vehicle it drives ran a player over.
+void vehicle_server_handle_crush_report(rf::Player* pp, int vehicle_handle, int victim_handle);
+
+// The machine simulating this hull measured an impact against the level, a mover or a prop: the velocity
+// change along the contact normal, and whether it was ground rather than a wall. The server applies it; a
+// driver's client reports it.
+void vehicle_crash_impact(rf::Entity* vehicle, float impact_dv, bool ground);
+
+// The machine simulating this hull, once per counted physics step: its velocity and its body's fastest slide
+// along a wall or ceiling and along ground it touches (0 for none), over step_time of simulated time. The hull
+// scrape probe's nose and tail rays add what reaches past the body. Banked and dealt, or reported.
+void vehicle_scrape_contact(rf::Entity* vehicle, const rf::Vector3& vel, float wall_slide, float ground_slide,
+                            float step_time);
+
+// One authoritative pose of a hull (a received row, or the body this machine simulates), for the
+// run-over motion test.
+void vehicle_note_observed_pose(int vehicle_handle, const rf::Vector3& pos, float heading);
+
+// Server: a client reported an impact on the vehicle it drives.
+void vehicle_server_handle_crash_report(rf::Player* pp, int vehicle_handle, bool ground,
+                                        float impact_dv);
+
+// Server: a client reported its hull's banked slide (u of sliding past the class's free speed).
+void vehicle_server_handle_scrape_report(rf::Player* pp, int vehicle_handle, float slide_excess);
+
+// Server, from entity_damage: the VehicleDamageClass of the hull that ran this victim over, or -1.
+// Must be asked BEFORE the damage lands, while the victim still resolves.
+int vehicle_roadkill_damage_class(int victim_handle, int killer_handle);
+
+// Server, asked like vehicle_roadkill_damage_class: a run-over or a drill blow, never a ram.
+bool vehicle_crush_squashes(int victim_handle, int killer_handle);
+
+// Server, asked like vehicle_roadkill_damage_class: the run-over hull's speed, 0 for any other blow.
+float vehicle_roadkill_speed(int victim_handle, int killer_handle);
+
+// A run-over at 75% of the class's top speed or faster.
+bool vehicle_roadkill_speed_gibs(int vdc_class, float speed);
+
+// The victim class's squash foley at its position, as entity_crush_damage plays it.
+void vehicle_play_squash_sound(const rf::Entity* victim);
+
+// The VehicleDamageClass of the vehicle this entity rides in, or -1.
+int vehicle_occupied_damage_class(const rf::Entity* rider);
+
+// entity_die frees seats with entity_detach_leech, which the exit-broadcast hook never sees.
+void vehicle_before_entity_die(rf::Entity* ep);
+void vehicle_after_entity_die(rf::Entity* ep);
+
+void vehicle_client_do_frame();
+
+// Any occupant of a synced ENTITY_USE_VEHICLE hull. Turret occupants are deliberately out - their
+// pose IS their aim.
+bool vehicle_rider_pose_is_seat_locked(rf::Entity* ep);
+// True for a synced turret rider's ENTITY_STATE_ON_TURRET request.
+bool vehicle_is_turret_rider_state(rf::Entity* ep, int state);
+
+// Writes a seat-locked rider's body frame (orient, p_data.orient, next_orient); false for anyone else.
+bool vehicle_pin_rider_body(rf::Entity* ep);
+
+// The answer player_process_controls gets at 0x004A6101: true keeps the rider on his OWN
+// ControlInfo, false re-points it at the hull's. Also the OF_KEEP_ORIENT_ON_HOST predicate.
+bool __cdecl vehicle_rider_keeps_own_orient(rf::Entity* ep);
+
+// While first-person spectating a synced vehicle's DRIVER, the cockpit pose: the rider's eye_pos
+// with the HULL frame the view was composed from. False elsewhere; before the widescreen stretch.
+bool vehicle_cockpit_view_pose(rf::Vector3* out_pos, rf::Matrix3* out_orient);
+
+// load_assets is false when leaving multiplayer: nothing will draw what it would load.
+void vehicle_level_init(bool load_assets = true);
+void vehicle_level_init_post();
+void vehicle_do_frame();
+void vehicle_on_multi_shutdown();
+void vehicle_tbl_overrides_level_init_post();
+void vehicle_tbl_overrides_revert();
+void vehicle_apply_patches();

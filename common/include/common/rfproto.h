@@ -172,6 +172,16 @@ enum RF_GameType
     RF_GT_REV = 0x05,
     RF_GT_RUN = 0x06,
     RF_GT_ESC = 0x07,
+    RF_GT_BM = 0x08,
+    RF_GT_TBM = 0x09,
+    RF_GT_PIT = 0x0A,
+    RF_GT_WO = 0x0B,
+    RF_GT_GG = 0x0C,
+    RF_GT_SAL = 0x0D,
+    RF_GT_SCAV = 0x0E,
+    RF_GT_PAY = 0x0F,
+    // Sentinel: must always be the last entry. Keep in sync with rf::NetGameType.
+    RF_GT_UNK
 };
 
 enum RF_ServerFlags
@@ -271,7 +281,7 @@ enum RF_JoinDenyReason
     RF_JDR_LEVEL_CHANGING        = 0x05,
     RF_JDR_SERVER_ERROR          = 0x06,
     RF_JDR_DATA_DOESNT_MATCH     = 0x07,
-    RF_JDR_UNSUPPOROTED_VERSION  = 0x08,
+    RF_JDR_UNSUPPORTED_VERSION  = 0x08,
     RF_JDR_UNKNOWN               = 0x09,
     RF_JDR_BANNED                = 0x0A,
     // Note: reasons > 0x0A shows the same message as RF_JDR_UNKNOWN (tested in PF)
@@ -330,7 +340,7 @@ enum RF_LeftReason
     RF_LR_KICKED            = 0x02,
     RF_LR_DATA_INCOMPATIBLE = 0x04, // Note: received when PF wants to download map (?)
     RF_LR_BETWEEN_LEVELS    = 0x05,
-    RF_LR_EMPTY             = 0x06, // TODO: check if it's polish translation bug
+    RF_LR_TIMED_OUT_JOINING = 0x06,
     RF_LR_NO_LEVEL_FILE     = 0x07,
     // Note: other reasons shows the same message as RF_LR_UNKNOWN
 };
@@ -742,18 +752,23 @@ struct RF_ItemCreatePacket
     struct RF_GamePacketHeader header; // RF_GPT_ITEM_CREATE
 #ifdef PSEUDOCODE
     char script_name[];                // Zero-terminated string
-    uint8_t unknown;                   // Ie. 00
-    uint32_t item_type;                // Item type ID (entry number in items.tbl)
-    uint32_t respawn_time;             // Item respawn time in ms (0xFFFFFFFF if item is temporary)
-    uint32_t count;                    // $Count or $Count Multi from items.tbl (not value from RFL)
-    uint32_t item_handle;              // Item object ID
-    uint16_t item_bit;                 // Item index in RF_ItemUpdatePacket, 0xFFFF if item is temporary (created after death)
-    uint8_t unknown2;                  // 0x75 - enabled, 0x68 - not enabled
-    struct RF_Vector pos;
-    struct RF_Matrix rot_matrix;
+    struct RF_ItemCreatePacketRest rest;
 #else
     char rest[];
 #endif
+};
+
+struct RF_ItemCreatePacketRest
+{
+    uint8_t unknown;              // Ie. 00
+    uint32_t item_type;           // Item type ID (entry number in items.tbl)
+    uint32_t respawn_time;        // Item respawn time in ms (0xFFFFFFFF if item is temporary)
+    uint32_t count;               // $Count or $Count Multi from items.tbl (not value from RFL)
+    uint32_t item_handle;         // Item object ID
+    uint16_t item_bit;            // Item index in RF_ItemUpdatePacket, 0xFFFF if item is temporary (created after death)
+    uint8_t unknown2;             // 0x75 - enabled, 0x68 - not enabled
+    struct RF_Vector pos;
+    struct RF_Matrix rot_matrix;
 };
 
 struct RF_ReloadPacket

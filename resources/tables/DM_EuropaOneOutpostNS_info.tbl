@@ -1,0 +1,4 @@
+#Start
+$Lightmap Clamp Floor: {16,16,16}
+$Use Vertex Lighting: true
+#End

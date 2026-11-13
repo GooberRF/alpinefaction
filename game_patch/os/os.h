@@ -1,15 +1,31 @@
 #pragma once
 
+#include <cstddef>
 #include <chrono>
 #include <optional>
 #include <algorithm>
+#include <string>
 #include <windows.h>
 #include <xlog/xlog.h>
 
 void os_apply_patch();
 void frametime_render_ui();
+// Bottom y of the FPS/Speed/Ping counter stack (top-right, below the ammo HUD);
+// equals the stack's base y when no counter is visible.
+int frametime_hud_counter_stack_bottom_y();
 float get_maximum_fps();
 void apply_maximum_fps();
+bool cmdline_token_equals_ci(const wchar_t* token_begin, std::size_t token_len, const wchar_t* expected);
+bool cmdline_has_switch_token(const wchar_t* cmdline, const wchar_t* switch_name);
+bool raw_command_line_has_switch(const wchar_t* switch_name);
+bool is_client_bot_requested_from_cmdline();
+bool is_client_debugbot_requested_from_cmdline();
+bool headless_bot_requested_from_raw_cmdline();
+bool awpgen_requested_from_raw_cmdline();
+bool headless_requested_from_raw_cmdline();
+void wnd_set_flash(HWND hwnd);
+// Not rf::os_get_clipboard_text: it leaves the clipboard open when it holds no text.
+std::string read_clipboard_text(std::size_t max_len);
 
 struct WaitableTimer {
     HANDLE handle;

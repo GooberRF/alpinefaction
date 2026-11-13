@@ -23,8 +23,12 @@ namespace rf
         static const auto &explosive = array[782];
         static const auto &team = array[833];
         static const auto &player_name = array[835];
+        static const auto &you_are_on_team = array[863];
+        static const auto &red_caps = array[864];
+        static const auto &blue_caps = array[865];
         static const auto &exiting_game = array[884];
         static const auto &usage = array[886];
+        static const auto &incompatible_version = array[891];
         static const auto &level_name = array[920];
         static const auto &level_time = array[922];
         static const auto &days = array[923];
@@ -41,6 +45,13 @@ namespace rf
         static const auto &dm = array[723];
         static const auto &ctf = array[724];
         static const auto &teamdm = array[725];
+
+        // extras menu
+        static const auto &summoner_trailer = array[389];
+        static const auto &back = array[772];
+        static const auto &extras = array[982];
+        static const auto &credits = array[983];
+        static const auto &glass_house = array[985];
 
         // dedi config lookups
         static const auto& dedi_header = array[855];

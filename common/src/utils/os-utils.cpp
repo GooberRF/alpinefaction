@@ -13,14 +13,25 @@
 #include <intrin.h>
 #endif
 
-std::string get_os_version()
-{
-    OSVERSIONINFO ver_info;
+std::string get_os_version() {
+    OSVERSIONINFOA ver_info{};
     ver_info.dwOSVersionInfoSize = sizeof(ver_info);
-    if (!GetVersionEx(&ver_info))
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
+    if (!GetVersionExA(&ver_info)) {
         THROW_WIN32_ERROR("GetVersionEx failed");
-
-    return std::format("{}.{}.{}", ver_info.dwMajorVersion, ver_info.dwMinorVersion, ver_info.dwBuildNumber);
+    }
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
+    return std::format(
+        "{}.{}.{}",
+        ver_info.dwMajorVersion,
+        ver_info.dwMinorVersion,
+        ver_info.dwBuildNumber
+    );
 }
 
 std::string get_real_os_version()
@@ -205,6 +216,27 @@ std::string get_temp_path_name(const char* prefix)
     }
 
     return result;
+}
+
+// Written from memory, so no alternate data stream (mark of the web) comes along.
+void write_file_replacing(const std::string& path, const std::string& data)
+{
+    std::string temp_path = std::format("{}.{}.tmp", path, GetCurrentProcessId());
+    HANDLE file =
+        CreateFileA(temp_path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        THROW_WIN32_ERROR("CreateFileA failed");
+    }
+    DWORD bytes_written = 0;
+    const bool written = WriteFile(file, data.data(), static_cast<DWORD>(data.size()), &bytes_written, nullptr)
+        && bytes_written == data.size()
+        && FlushFileBuffers(file);
+    CloseHandle(file);
+    if (!written || !MoveFileExA(temp_path.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        DWORD error = GetLastError();
+        DeleteFileA(temp_path.c_str());
+        throw Win32Error(error, ("writing " + path + " failed").c_str());
+    }
 }
 
 std::string get_uptime_from(const std::time_t origin) {

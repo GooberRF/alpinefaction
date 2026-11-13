@@ -1,26 +1,43 @@
 #pragma once
 
 #include <cstddef>
+#include <optional>
 #include <string>
 #include "../rf/multi.h"
 #include "destruction.h"
 
+namespace rf {
+    enum GameState : int;
+}
+
 extern bool g_character_meshes_are_fullbright;
 void misc_init();
+// The launcher's "Use deprecated legacy menus", as it was when the game started.
+bool legacy_menus_enabled();
+void apply_reduced_speed_in_background();
 void set_jump_to_multi_server_list(bool jump);
+void set_jump_to_demo_browser(bool jump);
 void start_join_multi_game_sequence(const rf::NetAddr& addr, const std::string& password);
-void start_levelm_load_sequence(std::string filename);
+void start_levelm_load_sequence(std::string filename, std::optional<rf::NetGameType> game_type = std::nullopt);
 bool multi_join_game(const rf::NetAddr& addr, const std::string& password);
 void ui_get_string_size(int* w, int* h, const char* s, int s_len, int font_num);
 void g_solid_render_ui();
 bool tc_mod_is_loaded();
 bool af_rfl_version(int version);
 bool rfl_version_minimum(int check_version);
+// Like rfl_version_minimum, but also valid while the RFL is loading, before LEVEL_LOADED is set.
+bool level_rfl_version_at_least(int check_version);
 void evaluate_restrict_disable_ss();
+void alpine_camera_clear_static_mode();
 void evaluate_restrict_disable_muzzle_flash();
+void evaluate_footsteps();
 void initialize_achievement_manager();
 void set_levelmod_autotexture_ppm();
 void clear_explicit_upcoming_game_type_request();
 bool file_loaded_from_alpinefaction_vpp(const char* filename);
 bool weapon_reticle_is_customized(int weapon_id, bool bighud);
 bool rocket_locked_reticle_is_customized(bool bighud);
+bool gameseq_is_stacked(rf::GameState state);
+bool gameseq_is_deep_stacked(rf::GameState state);
+bool gameseq_is_visible();
+int letterbox_clip_height();

@@ -5,13 +5,18 @@
 #include <patch_common/ShortTypes.h>
 #include <patch_common/StaticBufferResizePatch.h>
 #include <algorithm>
+#include <vector>
+#include <common/utils/string-utils.h>
 #include "sound.h"
 #include "../rf/sound/sound.h"
 #include "../rf/sound/sound_ds.h"
 #include "../rf/entity.h"
 #include "../rf/multi.h"
 #include "../rf/os/frametime.h"
+#include "../rf/os/timestamp.h"
+#include "../multi/multi.h"
 #include "../misc/alpine_settings.h"
+#include "../misc/settings_registry.h"
 #include "../main/main.h"
 #include "../os/console.h"
 #include "../misc/vpackfile.h"
@@ -20,6 +25,9 @@ static int g_cutscene_bg_sound_sig = -1;
 static int g_custom_sound_entry_start = -1;
 static int g_taunt_sound_start = -1;
 static int g_radmsg_sound_start = -1;
+static int g_spray_sound_id = -1;
+static int g_award_sound_id = -1;
+static int g_jeep_horn_sound_id = -1;
 #ifdef DEBUG
 int g_sound_test = 0;
 #endif
@@ -97,6 +105,41 @@ CallHook<void()> cutscene_play_music_hook{
     },
 };
 
+// snd_pc stream play (0x00543B10 / 0x00543B90) never starts a sound quieter than 0.05, so a track started while
+// music is muted never plays at all, even after the volume is raised. Start it at its real volume instead:
+// snd_ds_play applies the volume before Play, and snd_music_update_volume adjusts it later.
+static int snd_music_play_track(CallHook<int(int, float, float)>& stock_play, int handle, float volume, float pan,
+                                bool looping)
+{
+    const float play_volume = rf::snd_pc_calc_play_volume(handle, volume);
+    // Stock compares at full precision, so a value that merely rounds to the floor must not go back to it.
+    // NaN fails the test and goes to stock, which rejects it as before.
+    if (!(play_volume <= rf::snd_pc_stream_min_play_volume)) {
+        return stock_play.call_target(handle, volume, pan);
+    }
+    if (!rf::sound_pc_inited || handle < 0 || handle >= static_cast<int>(std::size(rf::sounds))) {
+        return -1;
+    }
+    if (rf::snd_pc_load_hint(handle, true, false) == -1 || rf::sound_backend != rf::SOUND_BACKEND_DS) {
+        return -1;
+    }
+    return rf::snd_ds_play(rf::sounds[handle].ds_snd_id, play_volume, pan, looping, 1.0f);
+}
+
+CallHook<int(int, float, float)> snd_music_play_looping_track_hook{
+    0x00505D3D,
+    [](int handle, float volume, float pan) {
+        return snd_music_play_track(snd_music_play_looping_track_hook, handle, volume, pan, true);
+    },
+};
+
+CallHook<int(int, float, float)> snd_music_play_oneshot_track_hook{
+    0x00505D4A,
+    [](int handle, float volume, float pan) {
+        return snd_music_play_track(snd_music_play_oneshot_track_hook, handle, volume, pan, false);
+    },
+};
+
 FunHook<int(const char*, float)> snd_music_play_cutscene_hook{
     0x00505D70,
     [](const char *filename, float volume) {
@@ -124,6 +167,11 @@ void enable_sound_after_cutscene_skip()
 
 void set_sound_enabled(bool enabled)
 {
+    if (is_headless_mode()) {
+        rf::sound_enabled = false;
+        return;
+    }
+
     if (!g_alpine_game_config.sound_enabled) {
         rf::sound_enabled = false;
         return;
@@ -136,8 +184,7 @@ ConsoleCommand2 level_sounds_cmd{
     "levelsounds",
     [](std::optional<float> volume) {
         if (volume.has_value()) {
-            g_alpine_game_config.set_level_sound_volume(volume.value());
-            set_play_sound_events_volume_scale();
+            setting_console_set("level_sound_volume", std::to_string(volume.value()));
         }
         rf::console::print("Level sound volume: {:.1f}", g_alpine_game_config.level_sound_volume);
     },
@@ -147,9 +194,8 @@ ConsoleCommand2 level_sounds_cmd{
 
 ConsoleCommand2 sound_enabled_cmd{
     "dbg_togglesound",
-    [](std::optional<bool> enabled) {
-        g_alpine_game_config.sound_enabled = !g_alpine_game_config.sound_enabled;
-        set_sound_enabled(g_alpine_game_config.sound_enabled);
+    [] {
+        setting_console_set("sound_enabled", "toggle");
         rf::console::print("Game sound is now {}.", g_alpine_game_config.sound_enabled ? "enabled" : "disabled");
     },
     "Toggle all game sound.",
@@ -161,7 +207,8 @@ FunHook<int(int, int, float, float)> snd_play_hook{
     [](int handle, int group, float pan, float volume) {
         xlog::trace("snd_play {} {} {:.2f} {:.2f}", handle, group, pan, volume);
 
-        if (!rf::sound_enabled || handle < 0) {
+        // Upper-bound guard
+        if (!rf::sound_enabled || handle < 0 || handle >= rf::g_num_sounds) {
             return -1;
         }
         if (rf::snd_load_hint(handle) != 0) {
@@ -238,66 +285,77 @@ int snd_pc_play_3d_new(int handle, const rf::Vector3& pos, float vol_scale, bool
 }
 
 
+static int snd_play_3d_instance(int handle, const rf::Vector3& pos, float volume, int group, bool looping)
+{
+    xlog::trace("snd_play_3d {} {:.2f} {}", handle, volume, group);
+
+    // Upper-bound guard
+    if (!rf::sound_enabled || handle < 0 || handle >= rf::g_num_sounds) {
+        return -1;
+    }
+    if (rf::snd_load_hint(handle) != 0) {
+        xlog::warn("Failed to load sound {}", handle);
+        return -1;
+    }
+
+    int instance_index = snd_get_free_instance();
+    if (instance_index < 0) {
+        return -1;
+    }
+
+    float base_volume_2d;
+    float pan;
+    rf::snd_calculate_2d_from_3d_info(handle, pos, &pan, &base_volume_2d, volume);
+    // xlog::warn("snd_play_3d vol {:.2f}", vol_scale);
+    auto& instance = rf::sound_instances[instance_index];
+    int sig;
+    if (rf::ds3d_enabled) {
+        // Note that snd_pc_play_3d_new calls snd_calculate_2d_from_3d_info on its own
+        // so use volume here instead of base_volume_2d
+        float vol_scale = volume * rf::snd_group_volume[group];
+        sig = snd_pc_play_3d_new(handle, pos, vol_scale, looping);
+    }
+    else {
+        float vol_scale = base_volume_2d * rf::snd_group_volume[group];
+        if (looping) {
+            sig = rf::snd_pc_play_looping(handle, vol_scale, pan, 0.0f, true);
+        }
+        else {
+            sig = rf::snd_pc_play(handle, vol_scale, pan, 0.0f, true);
+        }
+    }
+    xlog::trace("snd_play_3d handle {} pos <{:.2f} {:.2f} {:.2f}> vol {:.2f} sig {}", handle, pos.x, pos.y, pos.z,
+                volume, sig);
+    if (sig < 0) {
+        return -1;
+    }
+
+    instance.sig = sig;
+    instance.handle = handle;
+    instance.group = group;
+    instance.base_volume = base_volume_2d;
+    instance.pan = pan;
+    instance.is_3d_sound = true;
+    instance.pos = pos;
+    instance.base_volume_3d = volume;
+    instance.use_count++;
+
+    int instance_handle = instance_index | (instance.use_count << 8);
+    return instance_handle;
+}
+
 FunHook<int(int, const rf::Vector3&, float, const rf::Vector3&, int)> snd_play_3d_hook{
     0x005056A0,
     [](int handle, const rf::Vector3& pos, float volume, const rf::Vector3&, int group) {
-        xlog::trace("snd_play_3d {} {:.2f} {}", handle, volume, group);
-
-        if (!rf::sound_enabled || handle < 0) {
-            return -1;
-        }
-        if (rf::snd_load_hint(handle) != 0) {
-            xlog::warn("Failed to load sound {}", handle);
-            return -1;
-        }
-
-
-        bool looping = rf::sounds[handle].is_looping;
-        int instance_index = snd_get_free_instance();
-        if (instance_index < 0) {
-            return -1;
-        }
-
-        float base_volume_2d;
-        float pan;
-        rf::snd_calculate_2d_from_3d_info(handle, pos, &pan, &base_volume_2d, volume);
-        // xlog::warn("snd_play_3d vol {:.2f}", vol_scale);
-        auto& instance = rf::sound_instances[instance_index];
-        int sig;
-        if (rf::ds3d_enabled) {
-            // Note that snd_pc_play_3d_new calls snd_calculate_2d_from_3d_info on its own
-            // so use volume here instead of base_volume_2d
-            float vol_scale = volume * rf::snd_group_volume[group];
-            sig = snd_pc_play_3d_new(handle, pos, vol_scale, looping);
-        }
-        else {
-            float vol_scale = base_volume_2d * rf::snd_group_volume[group];
-            if (looping) {
-                sig = rf::snd_pc_play_looping(handle, vol_scale, pan, 0.0f, true);
-            }
-            else {
-                sig = rf::snd_pc_play(handle, vol_scale, pan, 0.0f, true);
-            }
-        }
-        xlog::trace("snd_play_3d handle {} pos <{:.2f} {:.2f} {:.2f}> vol {:.2f} sig {}", handle, pos.x, pos.y, pos.z, volume, sig);
-        if (sig < 0) {
-            return -1;
-        }
-
-        instance.sig = sig;
-        instance.handle = handle;
-        instance.group = group;
-        instance.base_volume = base_volume_2d;
-        instance.pan = pan;
-        instance.is_3d_sound = true;
-        instance.pos = pos;
-        instance.base_volume_3d = volume;
-        instance.use_count++;
-
-        int instance_handle = instance_index | (instance.use_count << 8);
-        return instance_handle;
+        const bool looping = handle >= 0 && handle < rf::g_num_sounds && rf::sounds[handle].is_looping;
+        return snd_play_3d_instance(handle, pos, volume, group, looping);
     },
 };
+
+int snd_play_3d_looping(int handle, const rf::Vector3& pos, float volume, int group)
+{
+    return snd_play_3d_instance(handle, pos, volume, group, true);
+}
 
 FunHook<void(int, const rf::Vector3&, const rf::Vector3&, float)> snd_change_3d_hook{
     0x005058C0,
@@ -374,6 +432,15 @@ void snd_update_ambient_sounds(const rf::Vector3& camera_pos)
                     float pan = rf::snd_pc_calculate_pan(ambient_snd.pos);
                     rf::snd_pc_set_pan(ambient_snd.sig, pan);
                 }
+                else if (ambient_snd.sig >= 0) {
+                    // The DS3D buffer position is only set when the sound starts, so without this
+                    // a moving ambient sound (e.g. a vehicle engine loop) keeps its initial direction
+                    int chnl = rf::snd_ds_get_channel(ambient_snd.sig);
+                    if (chnl >= 0) {
+                        rf::snd_ds3d_update_buffer(chnl, sound.min_range, sound.max_range, ambient_snd.pos,
+                            rf::zero_vector);
+                    }
+                }
             }
             else if (ambient_snd.sig >= 0) {
                 rf::snd_pc_stop(ambient_snd.sig);
@@ -382,6 +449,19 @@ void snd_update_ambient_sounds(const rf::Vector3& camera_pos)
         }
     }
 }
+
+// Stock starts the fighter's held-fire loop with the 2D snd_play, so it plays at full volume everywhere; start it 3D.
+// No trampoline: this replaces the whole relative CALL, and the caller's add esp,0x10 (0x0041E685) pops its args.
+CodeInjection entity_process_post_fighter_fire_loop_injection{
+    0x0041E680,
+    [](auto& regs) {
+        rf::Entity* ep = regs.esi;
+        int sound_handle = regs.eax;
+        regs.eax = rf::snd_play_3d(sound_handle, ep->pos, 1.0f, rf::zero_vector, 0);
+        regs.eip = 0x0041E685;
+    },
+    false,
+};
 
 #ifdef DEBUG
 
@@ -410,9 +490,122 @@ void sound_test_do_frame()
 
 #endif // DEBUG
 
+// Defer sound preloads issued while reading level events: sound-heavy maps preload many MB
+// of ogg/wav synchronously during load. Queue the ids and warm them one per 10 ms after the
+// level is up; a sound played before it is warmed just loads on demand like in the stock game.
+static std::vector<int> g_deferred_snd_loads;
+static bool g_defer_snd_loads = false;
+
+FunHook<int(int)> snd_load_hint_defer_hook{
+    0x005054D0,
+    [](int snd_id) {
+        if (g_defer_snd_loads && rf::sound_enabled && snd_id >= 0) {
+            g_deferred_snd_loads.push_back(snd_id);
+            return 0;
+        }
+        return snd_load_hint_defer_hook.call_target(snd_id);
+    },
+};
+
+FunHook<void(void*)> level_read_events_snd_defer_hook{
+    0x00462150,
+    [](void* file) {
+        g_deferred_snd_loads.clear();
+        g_defer_snd_loads = true;
+        level_read_events_snd_defer_hook.call_target(file);
+        g_defer_snd_loads = false;
+        std::ranges::sort(g_deferred_snd_loads);
+        auto dupes = std::ranges::unique(g_deferred_snd_loads);
+        g_deferred_snd_loads.erase(dupes.begin(), dupes.end());
+    },
+};
+
+// Looping is a property of the sound entry, read once from bluebeard.bty when the entry is created, so a custom file
+// never loops. Entries outlive the level, so every flag forced here is put back when the level closes. Flags go by
+// file, so they depend only on the RFL and mapname_info.tbl and match on every client.
+static std::unordered_set<std::string> g_level_looping_sounds; // lowercase
+static std::unordered_set<std::string> g_level_looping_refused;
+static std::vector<int> g_level_forced_looping_handles;
+// Entries below this were registered before the first level: sound tables, foley, Alpine's own sounds, menu music
+static int g_startup_sound_count = -1;
+
+static void snd_level_looping_apply(int handle, const std::string& filename)
+{
+    if (handle < 0 || handle >= rf::g_num_sounds) {
+        return;
+    }
+    // Game, UI and Alpine sounds are played and never stopped: forced to loop, each play would hold a channel for good
+    if (handle < g_startup_sound_count) {
+        if (g_level_looping_refused.insert(filename).second) {
+            xlog::warn("[Sound] Not looping {}: it is a game sound, which is played without ever being stopped",
+                       filename);
+        }
+        return;
+    }
+    // Only an entry that did not loop is recorded, so the revert never touches one that loops on its own
+    auto& sound = rf::sounds[handle];
+    if (!sound.is_looping) {
+        sound.is_looping = true;
+        g_level_forced_looping_handles.push_back(handle);
+    }
+}
+
+void snd_level_looping_add(std::string_view filename)
+{
+    if (filename.find_first_not_of(' ') == std::string_view::npos) {
+        return;
+    }
+    auto [it, inserted] = g_level_looping_sounds.insert(string_to_lower(filename));
+    if (inserted) {
+        snd_level_looping_apply(rf::snd_pc_find_by_name(it->c_str()), *it);
+    }
+}
+
+void snd_level_looping_reset()
+{
+    for (int handle : g_level_forced_looping_handles) {
+        rf::sounds[handle].is_looping = false;
+    }
+    g_level_forced_looping_handles.clear();
+    g_level_looping_sounds.clear();
+    g_level_looping_refused.clear();
+}
+
+void snd_level_looping_init(const std::unordered_set<std::string>& filenames)
+{
+    // Every startup sound table is parsed during game init (0x004B1E70), before any level loads
+    if (g_startup_sound_count < 0) {
+        g_startup_sound_count = rf::g_num_sounds;
+    }
+    snd_level_looping_reset();
+    for (const auto& filename : filenames) {
+        snd_level_looping_add(filename);
+    }
+}
+
+// Catches an entry created after its file was named, and one returned by name from an earlier level.
+FunHook<int(const char*, float, float, float, int)> snd_pc_get_by_name_hook{
+    0x00543580,
+    [](const char* filename, float min_range, float base_volume, float rolloff, int unk) {
+        int handle = snd_pc_get_by_name_hook.call_target(filename, min_range, base_volume, rolloff, unk);
+        if (handle >= 0 && filename && !g_level_looping_sounds.empty()) {
+            std::string name = string_to_lower(filename);
+            if (g_level_looping_sounds.contains(name)) {
+                snd_level_looping_apply(handle, name);
+            }
+        }
+        return handle;
+    },
+};
+
 FunHook<void(const rf::Vector3&, const rf::Vector3&, const rf::Matrix3&)> snd_update_sounds_hook{
      0x00505EC0,
     [](const rf::Vector3& camera_pos, const rf::Vector3& camera_vel, const rf::Matrix3& camera_orient) {
+        if (is_headless_mode()) {
+            rf::sound_enabled = false;
+            return;
+        }
+
         player_fpgun_move_sounds(camera_pos, camera_vel);
 
 #ifdef DEBUG
@@ -421,6 +614,17 @@ FunHook<void(const rf::Vector3&, const rf::Vector3&, const rf::Matrix3&)> snd_up
 
         rf::sound_listener_pos = camera_pos;
         rf::sound_listener_rvec = camera_orient.rvec;
+
+        // Warm one deferred level sound per 10 ms
+        if (!g_deferred_snd_loads.empty()) {
+            static rf::Timestamp warm_timer;
+            if (!warm_timer.valid() || warm_timer.elapsed()) {
+                warm_timer.set(10);
+                int snd_id = g_deferred_snd_loads.back();
+                g_deferred_snd_loads.pop_back();
+                snd_load_hint_defer_hook.call_target(snd_id);
+            }
+        }
 
         // Update DirectSound 3D listener parameters
         rf::snd_pc_change_listener(camera_pos, camera_vel, camera_orient);
@@ -463,9 +667,88 @@ int get_custom_sound_id(int custom_id) {
     return g_custom_sound_entry_start + custom_id;
 }
 
+bool is_valid_custom_sound_id(int custom_id) {
+    // g_custom_sound_entry_start is -1 when sounds aren't loaded (dedicated
+    // server). Custom sounds occupy [g_custom_sound_entry_start, g_num_sounds);
+    // anything outside that is not a registered custom sound.
+    if (g_custom_sound_entry_start < 0 || custom_id < 0) {
+        return false;
+    }
+    const int handle = g_custom_sound_entry_start + custom_id;
+    // A looping entry played from a packet would never be stopped.
+    return handle >= 0 && handle < rf::g_num_sounds && !rf::sounds[handle].is_looping;
+}
+
 int get_custom_chat_message_sound_id(int custom_id, bool is_taunt)
 {
     return is_taunt ? g_taunt_sound_start + custom_id : g_radmsg_sound_start + custom_id;
+}
+
+int get_spray_sound_id()
+{
+    return g_spray_sound_id;
+}
+
+int get_award_sound_id()
+{
+    return g_award_sound_id;
+}
+
+int get_jeep_horn_sound_id()
+{
+    return g_jeep_horn_sound_id;
+}
+
+bool snd_instance_is_playing(int instance_handle)
+{
+    if (instance_handle < 0) {
+        return false;
+    }
+    const auto instance_index = static_cast<uint8_t>(instance_handle);
+    if (instance_index >= std::size(rf::sound_instances)) {
+        return false;
+    }
+    const auto& instance = rf::sound_instances[instance_index];
+    return instance.handle >= 0 && instance.use_count == (instance_handle >> 8)
+        && rf::snd_pc_is_playing(instance.sig);
+}
+
+static int snd_instance_ds_channel(int instance_handle)
+{
+    if (rf::sound_backend != rf::SOUND_BACKEND_DS || !snd_instance_is_playing(instance_handle)) {
+        return -1;
+    }
+    return rf::snd_ds_get_channel(rf::sound_instances[static_cast<uint8_t>(instance_handle)].sig);
+}
+
+void snd_instance_set_pitch(int instance_handle, float ratio)
+{
+    const int chnl = snd_instance_ds_channel(instance_handle);
+    if (chnl >= 0) {
+        snd_ds_set_channel_pitch(chnl, ratio);
+    }
+}
+
+void snd_set_global_rate(float rate)
+{
+    if (rf::sound_backend == rf::SOUND_BACKEND_DS) {
+        snd_ds_set_global_rate(rate);
+    }
+}
+
+void snd_clear_global_rate_cache()
+{
+    if (rf::sound_backend == rf::SOUND_BACKEND_DS) {
+        snd_ds_clear_stretch_cache();
+    }
+}
+
+int snd_play_unscaled(int handle, int group, float pan, float volume)
+{
+    snd_ds_set_new_channel_unscaled(true);
+    const int instance = rf::snd_play(handle, group, pan, volume);
+    snd_ds_set_new_channel_unscaled(false);
+    return instance;
 }
 
 void gamesound_parse_custom_sounds() 
@@ -481,6 +764,10 @@ void gamesound_parse_custom_sounds()
         {"af_hitsound1.wav", 10.0f, 1.0f, 1.0f},        // 2
         {"af_killsound1.wav", 10.0f, 1.0f, 1.0f},       // 3
         {"Console_Large_03.wav", 10.0f, 1.0f, 1.0f},
+        {"MP_ANN_04.wav", 10.0f, 1.0f, 1.0f},           // time expired
+        {"MP_ANN_06.wav", 10.0f, 1.0f, 1.0f},           // match over
+        {"MP_ANN_10.wav", 10.0f, 1.0f, 1.0f},           // five kills remaining
+        {"MP_ANN_11.wav", 10.0f, 1.0f, 1.0f},           // one kill remaining
         {"af_radmsg_000.ogg", 10.0f, 1.0f, 1.0f},
         {"af_radmsg_001.ogg", 10.0f, 1.0f, 1.0f},
         {"af_radmsg_002.ogg", 10.0f, 1.0f, 1.0f},
@@ -587,6 +874,10 @@ void gamesound_parse_custom_sounds()
         {"MP_TAUNT_72.wav", 10.0f, 1.0f, 1.0f},
         {"MP_TAUNT_73.wav", 10.0f, 1.0f, 1.0f},
         {"MP_TAUNT_74.wav", 10.0f, 1.0f, 1.0f},
+        {"af_spray1.ogg", 10.0f, 1.0f, 1.0f},
+        {"af_award1.ogg", 10.0f, 1.0f, 1.0f},
+        {"af_jeep_horn.ogg", 15.0f, 1.0f, 1.0f},
+        {"af_zipline_loop1.wav", 10.0f, 1.0f, 1.0f},
     };
 
     for (const auto& sound : custom_sounds) 
@@ -601,6 +892,16 @@ void gamesound_parse_custom_sounds()
 
     g_taunt_sound_start = rf::snd_pc_find_by_name("MP_TAUNT_16.wav");
     g_radmsg_sound_start = rf::snd_pc_find_by_name("af_radmsg_000.ogg");
+    g_spray_sound_id = rf::snd_pc_find_by_name("af_spray1.ogg");
+    g_award_sound_id = rf::snd_pc_find_by_name("af_award1.ogg");
+    g_jeep_horn_sound_id = rf::snd_pc_find_by_name("af_jeep_horn.ogg");
+    if (g_jeep_horn_sound_id >= 0) {
+        // Looping comes from the stock sound database, which has no record for an AF file.
+        rf::sounds[g_jeep_horn_sound_id].is_looping = true;
+    }
+    if (const int zipline_loop = rf::snd_pc_find_by_name("af_zipline_loop1.wav"); zipline_loop >= 0) {
+        rf::sounds[zipline_loop].is_looping = true;
+    }
 
     //xlog::warn("Custom sounds added, starting at ID {}. Taunts start at ID {}", g_custom_sound_entry_start, g_taunt_sound_start);
 }
@@ -608,7 +909,7 @@ void gamesound_parse_custom_sounds()
 CodeInjection gamesound_parse_sounds_table_patch{
     0x00434708,
     []() {
-        if (!rf::is_dedicated_server) {
+        if (!rf::is_dedicated_server && !is_headless_mode()) {
             gamesound_parse_custom_sounds();
         }
     },
@@ -782,6 +1083,10 @@ void apply_sound_patches()
     // Sound loop fix in snd_music_play
     write_mem<u8>(0x00505D07 + 1, 0x00505D5B - (0x00505D07 + 2));
 
+    // Start music even when muted, so raising the volume later picks it up mid-track
+    snd_music_play_looping_track_hook.install();
+    snd_music_play_oneshot_track_hook.install();
+
     // Cutscene skip support
     cutscene_play_music_hook.install();
     snd_music_play_cutscene_hook.install();
@@ -814,6 +1119,13 @@ void apply_sound_patches()
     snd_change_3d_hook.install();
     snd_update_sounds_hook.install();
 
+    // Defer level-event sound preloads to after level load
+    snd_load_hint_defer_hook.install();
+    level_read_events_snd_defer_hook.install();
+
+    // Per-level looping sound files
+    snd_pc_get_by_name_hook.install();
+
     // Apply patch for DirectSound specific code
     snd_ds_apply_patch();
 
@@ -834,6 +1146,9 @@ void apply_sound_patches()
 
     // Add custom sounds to sounds array
     gamesound_parse_sounds_table_patch.install();
+
+    // Play the fighter's held-fire weapon loop in 3D so it attenuates with distance
+    entity_process_post_fighter_fire_loop_injection.install();
 }
 
 void register_sound_commands()

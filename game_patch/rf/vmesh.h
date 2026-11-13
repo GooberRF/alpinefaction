@@ -6,6 +6,7 @@
 namespace rf
 {
     struct GRoom;
+    struct MeshRenderParams;
 
     enum VMeshType
     {
@@ -27,6 +28,14 @@ namespace rf
         //uint8_t _padding[3];            // 0x55 - Padding bytes to align to size 0x58
     };
     static_assert(sizeof(VMesh) == 0x58);   
+
+    // VMeshCollisionInput::flags
+    enum VMeshCollisionFlags : int
+    {
+        VMCF_STOP_AT_FIRST_HIT = 0x1,
+        // start_pos and dir are already mesh-local; the static collider sets it after converting them in place
+        VMCF_LOCAL_INPUT = 0x2,
+    };
 
     struct VMeshCollisionInput
     {
@@ -68,6 +77,12 @@ namespace rf
         int start_frame;
         float playback_rate;
         int anim_type;
+
+        // frame is in 15 fps units
+        int get_bitmap(float frame) const
+        {
+            return AddrCaller{0x0054A630}.this_call<int>(this, frame);
+        }
     };
     static_assert(sizeof(TexMap) == 0x34);
 
@@ -90,6 +105,22 @@ namespace rf
         float *self_illumination;
         int num_opacity_frames;
         int *opacity;
+
+        // frame is in 15 fps units
+        float get_opacity(float frame) const
+        {
+            return AddrCaller{0x0054AA80}.this_call<float>(this, frame);
+        }
+
+        float get_self_illumination(float frame) const
+        {
+            return AddrCaller{0x0054A9E0}.this_call<float>(this, frame);
+        }
+
+        float get_crossfade(float t) const
+        {
+            return AddrCaller{0x0054A930}.this_call<float>(this, t);
+        }
     };
     static_assert(sizeof(MeshMaterial) == 0xC8);
 
@@ -103,9 +134,10 @@ namespace rf
     static auto& vmesh_update_lighting_data = addr_as_ref<int(VMesh *vmesh, GRoom *room, const Vector3 &pos, const Matrix3 &orient, void *mesh_lighting_data)>(0x00504000);
     static auto& vmesh_reset_actions = addr_as_ref<void(VMesh* vmesh)>(0x005033F0);
     static auto& vmesh_set_action_weight = addr_as_ref<void(VMesh* vmesh, int action_index, float weight)>(0x00503390);
-    static auto& vmesh_play_action_by_index = addr_as_ref<void(VMesh* vmesh, int action_index, float transition_time, int hold_last_frame)>(0x005033B0);
+    static auto& vmesh_play_action_by_index = addr_as_ref<void(VMesh* vmesh, int action_index, float weight, int hold_last_frame)>(0x005033B0);
     static auto& vmesh_stop_all_actions = addr_as_ref<void(VMesh* vmesh)>(0x00503400);
     static auto& vmesh_get_materials_array = addr_as_ref<void(VMesh *vmesh, int *num_materials_out, MeshMaterial **materials_array_out)>(0x00503650);
+    static auto& vmesh_render = addr_as_ref<void(VMesh* vmesh, Vector3* pos, Matrix3* orient, MeshRenderParams* params)>(0x00503100);
     static auto& vmesh_process = addr_as_ref<void(VMesh* vmesh, float frametime, int increment_only, Vector3* pos, Matrix3* orient, int lod_level)>(0x00503360);
 
     // character_mesh_load_action: __thiscall on mesh_data (VMesh::mesh), loads .rfa animation file
@@ -113,11 +145,22 @@ namespace rf
     using CharMeshLoadActionFn = int(__thiscall*)(void* mesh_data, const char* rfa_filename, char is_state, char unused);
     static const auto character_mesh_load_action = reinterpret_cast<CharMeshLoadActionFn>(0x0051CC10);
     static auto& vmesh_create_anim_fx = addr_as_ref<VMesh*(const char *filename, int path_id)>(0x00502A60);
-    static auto& vmesh_get_tag_world_pos = addr_as_ref<void(VMesh* vmesh, int tag_index,
-        const Matrix3& orient, const Vector3& pos, Matrix3& out_orient, Vector3& out_pos)>(0x005034F0);
+    // Load a static v3m/v3d mesh (mesh_type==1 -> MESH_TYPE_STATIC). path_id may be 0xFFFFFFFF.
+    static auto& vmesh_load = addr_as_ref<VMesh*(const char* filename, int mesh_type, int path_id)>(0x00502880);
+    static auto& vmesh_free = addr_as_ref<void(VMesh* vmesh)>(0x00502B10);
+    // Returns prop-point index, or -1 if not found.
+    static auto& vmesh_lookup_prop_point = addr_as_ref<int(VMesh* vmesh, const char* name)>(0x00503220);
+    // Number of prop points on the mesh.
+    static auto& vmesh_get_num_prop_points = addr_as_ref<int(VMesh* vmesh)>(0x005034A0);
+    static auto& vmesh_get_prop_point_transform =
+        addr_as_ref<void(VMesh* vmesh, int prop_idx, Matrix3* entity_orient, Vector3* entity_pos,
+                         Matrix3* out_orient, Vector3* out_pos)>(0x005034F0);
     static auto& vclip_lookup = addr_as_ref<int(const char* name)>(0x004C1D00);
+    // Returns 0 on success, -1 on failure (bad index, no free instance, culled)
     static auto& vclip_play_3d =
-        addr_as_ref<void(int index, GRoom* src_room, Vector3* src_pos, Vector3* pos, float radius,
+        addr_as_ref<int(int index, GRoom* src_room, Vector3* src_pos, Vector3* pos, float radius,
             int parent_handle, Vector3* dir, bool play_sound)>(0x004C16E0);
+    // Deletes every active vclip instance (vclip_delete_instance over the instance pool)
+    static auto& vclip_level_release = addr_as_ref<void()>(0x004C1250);
 
 }

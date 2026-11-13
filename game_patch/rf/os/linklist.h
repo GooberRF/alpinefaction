@@ -101,6 +101,13 @@ namespace rf
             num_elements = 0;
         }
 
+        // Makes the list the chain from `first`, which the caller counted as `count` elements
+        void assign(T* first, int count)
+        {
+            head = first;
+            num_elements = count;
+        }
+
         [[nodiscard]] Iterator begin()
         {
             return Iterator{head};

@@ -12,13 +12,14 @@
 #include "../misc/player.h"
 #include "hud_internal.h"
 #include "../misc/alpine_settings.h"
+#include "../misc/vote_panel.h"
 #include <patch_common/CallHook.h>
 #include "../multi/alpine_packets.h"
+#include "../misc/settings_registry.h"
 
 bool g_big_chatbox = false;
 bool g_all_players_muted = false;
 
-constexpr int chat_msg_max_len = 224;
 constexpr int chatbox_border_alpha = 0x30; // default is 77
 constexpr int chatbox_bg_alpha = 0x40; // default is 128
 
@@ -29,6 +30,18 @@ FunHook<void(uint16_t)> multi_chat_say_add_char_hook{
             multi_chat_say_add_char_hook.call_target(key);
     },
 };
+
+static int chatbox_width(int clip_w)
+{
+    return clip_w - (g_big_chatbox ? 600 : 313);
+}
+
+int multi_hud_chat_box_right_x()
+{
+    const int clip_w = rf::gr::clip_width();
+    const int box_w = chatbox_width(clip_w);
+    return (clip_w - box_w) / 2 + box_w;
+}
 
 FunHook<void(const char*, bool)> multi_chat_say_accept_hook{
     0x00444440,
@@ -59,7 +72,8 @@ void multi_hud_render_chat()
         fade_out = rf::chat_fade_out_timer.time_until() / 750.0f;
     }
 
-    if (g_remote_server_cfg_popup.is_active()) {
+    if (g_remote_server_cfg_popup.is_active() || vote_panel_is_gameplay_overlay_active()
+        || !hud_element_visible(HudElement::chat)) {
         return;
     }
 
@@ -67,7 +81,7 @@ void multi_hud_render_chat()
     int clip_w = rf::gr::clip_width();
     int font_h = rf::gr::get_font_height(chatbox_font);
     int border = g_big_chatbox ? 3 : 2;
-    int box_w = clip_w - (g_big_chatbox ? 600 : 313);
+    int box_w = chatbox_width(clip_w);
     int box_h = 8 * font_h + 2 * border + 6;
     int content_w = box_w - 2 * border;
     int content_h = box_h - 2 * border;
@@ -144,7 +158,7 @@ void multi_hud_render_chat_inputbox(rf::String::Pod label_pod, rf::String::Pod m
     int clip_w = rf::gr::clip_width();
     int font_h = rf::gr::get_font_height(chatbox_font); // 12
     int border = g_big_chatbox ? 3 : 2;
-    int box_w = clip_w - (g_big_chatbox ? 600 : 313);
+    int box_w = chatbox_width(clip_w);
     int content_w = box_w - 2 * border; // clip_w - 317
     int hist_box_y = 10;
     int hist_box_h = 8 * font_h + 2 * border + 6;
@@ -220,6 +234,15 @@ CodeInjection process_chat_line_packet_injection{
     },
 };
 
+ConsoleCommand2 hide_chat_cmd{
+    "cl_chat",
+    []() {
+        setting_console_set("show_chat", "toggle");
+        rf::console::print("Chat display is {}", g_alpine_game_config.hide_chat ? "hidden" : "visible");
+    },
+    "Toggle MP chat display",
+};
+
 ConsoleCommand2 mute_all_players_cmd{
     "mute_all_players",
     []() {
@@ -247,7 +270,7 @@ ConsoleCommand2 mute_player_cmd{
 
 CallHook<void(const char*, bool)> process_rcon_req_packet_chat_say_hook{
     0x0046C62F,
-    [] (const char* msg, const bool is_team_msg) {
+    [] (const char* msg, [[maybe_unused]] const bool is_team_msg) {
         af_broadcast_automated_chat_msg(msg);
     },
 };
@@ -255,7 +278,7 @@ CallHook<void(const char*, bool)> process_rcon_req_packet_chat_say_hook{
 FunHook<void(int)> multi_chat_say_show_hook{
     0x00444A80,
     [] (const int is_team_chat) {
-        if (!g_remote_server_cfg_popup.is_active()) {
+        if (!g_remote_server_cfg_popup.is_active() && !vote_panel_is_gameplay_overlay_active()) {
             multi_chat_say_show_hook.call_target(is_team_chat);
         }
     },
@@ -281,6 +304,7 @@ void multi_hud_chat_apply_patches()
     process_chat_line_packet_injection.install();
     mute_all_players_cmd.register_cmd();
     mute_player_cmd.register_cmd();
+    hide_chat_cmd.register_cmd();
 
     // Do not strip '%' characters from chat messages
     write_mem<u8>(0x004785FD, asm_opcodes::jmp_rel_short);

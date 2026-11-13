@@ -222,8 +222,8 @@ static bool get_muzzle_world_pos(rf::Entity* entity, rf::Vector3& out_pos)
     // Step 1: character model hand tag → hand world pos/orient
     rf::Matrix3 hand_orient;
     rf::Vector3 hand_pos;
-    rf::vmesh_get_tag_world_pos(entity->vmesh, hand_tag, entity->orient, entity->pos,
-                                hand_orient, hand_pos);
+    rf::vmesh_get_prop_point_transform(entity->vmesh, hand_tag, &entity->orient, &entity->pos,
+                                       &hand_orient, &hand_pos);
 
     // Step 2: weapon third-person model muzzle tag → muzzle world pos
     int weapon_type = entity->ai.current_primary_weapon;
@@ -231,8 +231,8 @@ static bool get_muzzle_world_pos(rf::Entity* entity, rf::Vector3& out_pos)
         rf::WeaponInfo& wi = rf::weapon_types[weapon_type];
         if (wi.third_person_vmesh_handle && wi.third_person_muzzle_tag != -1) {
             rf::Matrix3 muzzle_orient;
-            rf::vmesh_get_tag_world_pos(wi.third_person_vmesh_handle, wi.third_person_muzzle_tag,
-                                        hand_orient, hand_pos, muzzle_orient, out_pos);
+            rf::vmesh_get_prop_point_transform(wi.third_person_vmesh_handle, wi.third_person_muzzle_tag,
+                                               &hand_orient, &hand_pos, &muzzle_orient, &out_pos);
             return true;
         }
     }

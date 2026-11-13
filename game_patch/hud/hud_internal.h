@@ -1,6 +1,9 @@
 #pragma once
 
+#include <cstdint>
+#include <optional>
 #include <string>
+#include "hud.h"
 #include "../rf/gr/gr.h"
 #include "../rf/input.h"
 
@@ -32,7 +35,12 @@ enum class ChatMenuListName : int
     Bravado,
     Derision,
     Casual,
-    RandomFunny
+    RandomFunny,
+    SpectateOutlines,
+    SpectateDemoOverlays,
+    SpectateHudElements,
+    SpectatePlayerHud,
+    SpectateMatchHud
 };
 
 enum class ChatMenuListType : int
@@ -40,7 +48,8 @@ enum class ChatMenuListType : int
     Basic,
     Map,
     TeamMode,
-    CTF
+    CTF,
+    DemoPlayback
 };
 
 struct ChatMenuElement
@@ -50,6 +59,8 @@ struct ChatMenuElement
     ChatMenuListType type = ChatMenuListType::Basic;
     std::string display_string = "";
     std::string long_string = "";
+    // Set for HUD element toggles: selecting one flips it and keeps the menu open
+    std::optional<HudElement> hud_element = std::nullopt;
 };
 
 struct ChatMenuList
@@ -59,10 +70,51 @@ struct ChatMenuList
     std::vector<ChatMenuElement> elements;
 };
 
+inline constexpr int chat_msg_max_len = 224;
+
 extern bool g_pre_match_active;
+extern float g_hud_ammo_scale;
 
 void hud_status_apply_patches();
 void hud_status_set_big(bool is_big);
+// How long a vehicle bar takes to rise over its previous alpha, and to fade once full.
+inline constexpr int64_t hud_vehicle_bar_rise_ms = 150;
+inline constexpr int64_t hud_vehicle_bar_fade_ms = 1000;
+// The vertical gauge the jetpack fuel and the vehicle hull share, at mid-height on the left or right edge.
+struct HudSideGaugeRect
+{
+    int x;
+    int y;
+    int w;
+    int h;
+};
+HudSideGaugeRect hud_side_gauge_rect(bool left);
+int hud_side_gauge_label_y(const HudSideGaugeRect& rect);
+// Its label above and an optional value below; alpha scales the whole gauge.
+void hud_draw_side_gauge(bool left, float frac, const rf::Color& fill, const char* label, const char* value,
+                         float alpha);
+// Centred text over a shadow pass, so it keeps its edges over bright geometry; the gauge and hint defaults.
+inline constexpr int hud_shadowed_text_alpha = 200;
+inline constexpr int hud_shadowed_text_shadow_alpha = 160;
+inline constexpr int hud_shadowed_text_shadow_offset_px = 1;
+void hud_draw_shadowed_text(int x, int y, const char* text, int font, const rf::Color& color, rf::ubyte shadow_alpha,
+                            int shadow_offset);
+// A vehicle HUD bar's alpha: rising while it has something to show, fading once full. One per bar;
+// a bar not drawn last frame, or now drawn for another hull, starts afresh.
+struct HudVehicleBarFade
+{
+    int hull_handle = -1;
+    int last_frame = -1;
+    bool active = false;
+    int64_t rise_since_ms = 0;
+    float rise_from = 0.0f;
+    int64_t full_since_ms = -1; // -1 while not full
+
+    // This frame's alpha, 0 once the bar is hidden.
+    float update(int hull, bool showing);
+};
+// Fill colour of a vehicle health bar at this fraction of max life; a is the HUD bar's alpha.
+void hud_vehicle_bar_fill_color(float frac, rf::ubyte& r, rf::ubyte& g, rf::ubyte& b, rf::ubyte& a);
 void hud_personas_apply_patches();
 void hud_personas_set_big(bool is_big);
 void hud_weapons_apply_patches();
@@ -71,6 +123,7 @@ void weapon_select_apply_patches();
 void weapon_select_set_big(bool is_big);
 void multi_hud_chat_apply_patches();
 void multi_hud_chat_set_big(bool is_big);
+int multi_hud_chat_box_right_x();
 void multi_hud_apply_patches();
 void multi_hud_set_big(bool is_big);
 void hud_scaled_bitmap(int bmh, int x, int y, float scale, rf::gr::Mode mode = rf::gr::bitmap_clamp_mode);
@@ -80,7 +133,7 @@ std::string hud_fit_string(std::string_view str, int max_w, int* str_w_out, int 
 rf::HudPoint hud_scale_coords(rf::HudPoint pt, float scale);
 const char* hud_get_default_font_name(bool big);
 const char* hud_get_bold_font_name(bool big);
-void scoreboard_maybe_render(bool show_scoreboard);
+void scoreboard_maybe_render(bool show_scoreboard, bool key_held);
 int hud_transform_value(int val, int old_max, int new_max);
 int hud_scale_value(int val, int max, float scale);
 void message_log_apply_patch();
@@ -89,7 +142,8 @@ void hud_colors_apply_patch();
 void hud_scale_apply_patch();
 void killfeed_add_kill(const char* killed_name, int killed_team,
                        const char* killer_name, int killer_team,
-                       const char* verb, bool is_local_kill, bool is_team_mode);
+                       const char* verb, bool is_local_kill, bool is_team_mode,
+                       const char* trailing = nullptr);
 void killfeed_route_next_message();
 void multi_hud_render_killfeed();
 void multi_hud_killfeed_apply_patches();

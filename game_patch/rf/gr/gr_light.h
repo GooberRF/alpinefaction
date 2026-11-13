@@ -2,6 +2,7 @@
 
 #include "../math/vector.h"
 #include "../math/matrix.h"
+#include "../os/vtypes.h"
 #include "../math/plane.h"
 #include "../os/string.h"
 #include "../math/vector.h"
@@ -105,11 +106,19 @@ namespace rf::gr
     static auto& level_light_lookup_from_uid = addr_as_ref<LevelLight*(int uid)>(0x0045D5E0);
     static auto& level_get_light_handle_from_uid = addr_as_ref<int(int uid)>(0x0045D580);
     static auto& light_get_from_handle = addr_as_ref<Light*(int handle)>(0x004D8DF0);
+    static auto& light_rotate_all = addr_as_ref<void()>(0x004D9FD0);
+    static auto& light_apply = addr_as_ref<void(ubyte* r, ubyte* g, ubyte* b, char use_ambient, const Vector3* pos,
+                                                const Vector3* normal, float scale)>(0x004DAFF0);
+    static auto& light_apply_specular = addr_as_ref<bool(const Vector3* pos, const Vector3* normal, ubyte* r, ubyte* g,
+                                                         ubyte* b, float level, float power, char allow_restricted)>(0x004DB1B0);
+    static auto& apply_chrome_mapping =
+        addr_as_ref<void(float* u, float* v, const Vector3* pos, const Vector3* normal)>(0x004DB760);
 
     static auto& light_filter_set_solid = addr_as_ref<int(GSolid *s, bool include_dynamic, bool include_static)>(0x004D9DD0);
     static auto& light_filter_reset = addr_as_ref<void()>(0x004D9FA0);
     static auto& light_delete = addr_as_ref<void(int handle, bool force_static_update)>(0x004D9130);
     static auto& light_get_ambient = addr_as_ref<void(float *r, float *g, float *b)>(0x004D8D10);
+    static auto& light_set_color = addr_as_ref<void(int handle, float intensity, float r, float g, float b)>(0x004D93D0);
     static auto& light_alloc = addr_as_ref<int(bool dynamic)>(0x004D8E10);
     static auto& light_create_point = addr_as_ref<int(rf::Vector3* pos, float r2, float intensity, float r, float g, float b,
         bool dynamic, rf::gr::LightShadowcastCondition shadow_condition, int atten_algo)>(0x004D8ED0);
@@ -118,6 +127,12 @@ namespace rf::gr
         int atten_algo, bool sq_fov_falloff)>(0x004D8F80);
 
     static auto& num_relevant_lights = addr_as_ref<int>(0x00C9687C);
+
+    // Bumped by light_create_point, light_delete and the light property setters (not light_alloc,
+    // which only resets the filter). gr_light_find_all_by_gsolid (0x004D9870) caches its per-solid
+    // light list under this key, so anything that changes a light in place must bump it and then
+    // call light_filter_reset.
+    static auto& light_cache_key = addr_as_ref<int>(0x00C96874);
 
     // static auto& relevant_lights = addr_as_ref<Light*[1100]>(0x00C4D588)
     // Defined in graphics/gr_light.cpp. Replaces above from stock game.

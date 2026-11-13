@@ -1,0 +1,43 @@
+#pragma once
+
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <string>
+#include <unordered_map>
+#include <vector>
+#include "../rf/math/vector.h"
+#include <common/terrain/alpine_terrain_decorations_runtime.h>
+
+// Static decoration meshes of one level by name, each loaded once. The engine owns level meshes and frees them on
+// unload, so clear() drops them without vmesh_free. Level init only: a mesh load at render time corrupts the
+// bitmap manager.
+class DecorationMeshCache
+{
+public:
+    explicit DecorationMeshCache(float max_radius,
+                                 std::uint32_t max_loads = std::numeric_limits<std::uint32_t>::max()) :
+        max_radius_{max_radius}, max_loads_{max_loads}
+    {
+    }
+
+    // The slot of `name`'s mesh, loaded on first use; -1 for a name that does not load or comes after max_loads
+    // others were tried, warned once as `log_tag`.
+    int resolve(const std::string& name, const char* log_tag);
+    // Records `name` as not loading without trying; false when it was already known.
+    bool reject(const std::string& name);
+    const DecorationMesh& operator[](int slot) const
+    {
+        return meshes_[static_cast<std::size_t>(slot)];
+    }
+    void clear();
+
+private:
+    float max_radius_;
+    std::uint32_t max_loads_;
+    std::uint32_t loads_ = 0;
+    bool over_max_loads_ = false;
+    std::vector<DecorationMesh> meshes_;
+    // Lowercased name -> slot, or -1 for a name known not to load
+    std::unordered_map<std::string, int> lookup_;
+};

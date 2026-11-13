@@ -2,6 +2,7 @@
 #include <patch_common/FunHook.h>
 #include <patch_common/CallHook.h>
 #include <patch_common/AsmWriter.h>
+#include "../rf/player/player.h"
 
 int multi_tdm_red_score = 0;
 int multi_tdm_blue_score = 0;
@@ -78,6 +79,13 @@ static CallHook<void(int*, int, int)> multi_load_dedicated_server_config_max_kil
         *v = std::clamp(*v, 1, 999);
     },
 };
+
+void multi_tdm_add_team_score(rf::Player* player, int delta)
+{
+    if (!player) return;
+    auto& score = player->team == 0 ? multi_tdm_red_score : multi_tdm_blue_score;
+    score = std::max(0, score + delta);
+}
 
 void multi_tdm_apply_patch()
 {

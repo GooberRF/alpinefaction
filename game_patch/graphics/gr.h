@@ -2,20 +2,74 @@
 
 #include "../rf/bmpman.h"
 #include "../rf/gr/gr.h"
+#include "../rf/os/frametime.h"
 #include "../rf/os/string.h"
+#include <common/lighting/alpine_sun_state.h>
+#include <optional>
+
+struct DisplayInfo;
 
 void gr_apply_patch();
+// The display the game opens on; nullopt keeps stock placement on the primary display
+const std::optional<DisplayInfo>& gr_get_display();
 void evaluate_pow2tex(const rf::String& level_filename);
 void evaluate_lightmaps_only();
 int gr_font_get_default();
 void gr_font_set_default(int font_id);
+int ui_ttf_font(bool bold, int pixel_size);
+bool ui_ttf_font_info(int font, bool& bold, int& pixel_size);
 bool gr_set_render_target(int bm_handle);
+void gr_invalidate_texture_cache();
+int gr_render_target_generation();
+void gr_flush_outlines_before_fpgun();
 bool gr_is_texture_format_supported(rf::bm::Format format);
 void gr_bitmap_scaled_float(int bitmap_handle, float x, float y, float w, float h, float sx, float sy, float sw, float sh, bool flip_x, bool flip_y, rf::gr::Mode mode);
+// Convex screen-space fan; sx/sy are clip-relative, u1/v1 used when bitmap_handle >= 0, colour from gr::set_color.
+void gr_poly_2d(int bitmap_handle, int nv, const rf::gr::Vertex* vertices, rf::gr::Mode mode);
 float gr_scale_fov_hor_plus(float horizontal_fov);
 bool gr_3d_bitmap_oriented_wh(const rf::Vector3* pnt, const rf::Matrix3* M, float half_w, float half_h, rf::gr::Mode mode);
+// Current view's screen position of a world point; false when behind the camera or not projected.
+bool gr_project_world_to_screen(const rf::Vector3& world_pos, float& out_sx, float& out_sy);
+// Rotates a world point into `v` with the colour's RGB; `alpha` (0-1) scales the colour's own alpha
+void gr_set_colored_vertex(rf::gr::Vertex& v, const rf::Vector3& pos, const rf::Color& color, float alpha);
 int gr_fit_string(std::string& text, int max_width, int font_id = -1, std::string_view suffix = "-");
+void explosion_flash_light_create(
+    const rf::Vector3& pos, float radius, float intensity, float r, float g, float b, int duration_ms, bool fade_only);
 void explosion_flash_lights_level_init();
+void explosion_flash_lights_destroy_all();
+
+SunLightState gr_get_sun_state();
+float gr_sun_get_mesh_scale(const float* ambient);
+// The D3D11 mesh ambient for a custom ambient (a lightmap colour 0..1): mostly the level ambient, tinted by it.
+void gr_mesh_blend_ambient(const float (&lightmap)[3], float (&out)[3]);
+
+// Fog near clip the Direct3D 11 fog starts at; levels below RFL 306 keep stock fog, which starts at the eye
+float gr_fog_near_clip();
+// The level's camera far clip, clamped on the legacy renderers; 0 when it sets none
+float level_camera_far_clip();
+// gr::default_wfar, unless the level sets a camera far clip
+float level_default_far_clip();
+// Far clip the engine culls at with a dry eye
+float level_dry_far_clip();
+// Far plane of the Direct3D 11 projection, where drawn geometry ends
+float level_projection_far();
+// Opacity of an outline or player label `distance` from the camera: full up to 3/4 of the way to the level's fog
+// far clip, none at it, and always full without fog
+float fog_far_clip_fade(float distance);
+
+bool gr_is_antialiasing_err();
+bool gr_supports_sample_count(uint32_t sample_count);
+void gr_flush_frame_buffers();
+
+// Zeroes rf::frametime for an extra world render.
+struct FrametimeGuard
+{
+    const float saved = rf::frametime;
+    FrametimeGuard() { rf::frametime = 0.0f; }
+    ~FrametimeGuard() { rf::frametime = saved; }
+    FrametimeGuard(const FrametimeGuard&) = delete;
+    FrametimeGuard& operator=(const FrametimeGuard&) = delete;
+};
 
 inline constexpr rf::gr::Mode overdraw_colorized_3d_bitmap{
         rf::gr::TEXTURE_SOURCE_WRAP,
@@ -23,6 +77,24 @@ inline constexpr rf::gr::Mode overdraw_colorized_3d_bitmap{
         rf::gr::ALPHA_SOURCE_TEXTURE,
         rf::gr::ALPHA_BLEND_ALPHA,
         rf::gr::ZBUFFER_TYPE_NONE,
+        rf::gr::FOG_NOT_ALLOWED
+    };
+
+inline constexpr rf::gr::Mode no_overdraw_2d_line{
+        rf::gr::TEXTURE_SOURCE_NONE,
+        rf::gr::COLOR_SOURCE_VERTEX,
+        rf::gr::ALPHA_SOURCE_VERTEX,
+        rf::gr::ALPHA_BLEND_ALPHA,
+        rf::gr::ZBUFFER_TYPE_FULL,
+        rf::gr::FOG_NOT_ALLOWED
+    };
+
+inline constexpr rf::gr::Mode no_overdraw_2d_text{
+        rf::gr::TEXTURE_SOURCE_NONE,
+        rf::gr::COLOR_SOURCE_VERTEX,
+        rf::gr::ALPHA_SOURCE_VERTEX,
+        rf::gr::ALPHA_BLEND_ALPHA,
+        rf::gr::ZBUFFER_TYPE_READ,
         rf::gr::FOG_NOT_ALLOWED
     };
 

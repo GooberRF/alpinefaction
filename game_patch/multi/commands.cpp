@@ -1,17 +1,28 @@
 #include "../os/console.h"
+#include "../fflink/afstats_events.h"
 #include "server_internal.h"
+#include "alpine_packets.h"
 #include "../rf/multi.h"
 #include "../rf/gameseq.h"
 #include "../rf/level.h"
 #include "../rf/player/player.h"
 #include "../rf/crt.h"
+#include "../rf/os/string.h"
 #include "server.h"
 #include "multi.h"
+#include "mutators.h"
+#include "bots/server_bots.h"
+#include <common/utils/string-utils.h>
 #include <patch_common/AsmWriter.h>
 #include <patch_common/CallHook.h>
+#include <algorithm>
+#include <charconv>
+#include <cstdint>
 #include <vector>
 #include <format>
 #include <optional>
+#include <string>
+#include <string_view>
 
 std::vector<int> g_players_to_kick;
 
@@ -26,10 +37,35 @@ void restart_current_level()
     if (g_manual_rules_override)
         manual_rules_override = *g_manual_rules_override;
 
+    // A restart keeps the game type the level is running under (an sv_gametype switch, say)
+    // unless a change is already queued.
+    if (get_upcoming_game_type() == rf::netgame.type
+        && get_upcoming_game_type_selection() != UpcomingGameTypeSelection::ExplicitRequest) {
+        set_upcoming_game_type(rf::netgame.type, UpcomingGameTypeSelection::ExplicitRequest);
+    }
+
     multi_change_level_alpine(rf::level.filename.c_str());
 
     if (manual_rules_override)
         set_manual_rules_override(std::move(*manual_rules_override));
+}
+
+// Restart, but running the level's CONFIGURED rules instead of whatever the
+// session's votes put in front of them.
+void restart_current_level_configured()
+{
+    clear_manual_rules_override();
+
+    const std::string filename = rf::level.filename.c_str();
+
+    if (g_dedicated_launched_from_ads) {
+        const rf::NetGameType configured = resolve_level_default_game_type(filename);
+        // Explicit so a game type the session voted in cannot survive as the
+        // still-queued upcoming type.
+        set_upcoming_game_type(configured, UpcomingGameTypeSelection::ExplicitRequest);
+    }
+
+    multi_change_level_alpine(filename.c_str());
 }
 
 void load_next_level()
@@ -40,9 +76,13 @@ void load_next_level()
 
 void load_prev_level()
 {
+    if (rf::netgame.levels.empty()) {
+        rf::console::print("Level rotation is empty");
+        return;
+    }
     clear_manual_rules_override();
     rf::netgame.current_level_index--;
-    if (rf::netgame.current_level_index < 0) {
+    if (rf::netgame.current_level_index < 0 || rf::netgame.current_level_index >= rf::netgame.levels.size()) {
         rf::netgame.current_level_index = rf::netgame.levels.size() - 1;
     }
     if (g_prev_level.empty()) {
@@ -136,24 +176,277 @@ ConsoleCommand2 map_prev_cmd{
     "Load previous level",
 };
 
+namespace
+{
+// Text rcon passes the arguments through raw, so a quoted name keeps its quotes.
+std::string_view trim_and_unquote(std::string_view arg)
+{
+    return trim(unquote(trim(arg)));
+}
+
+std::string server_bot_add_command(const int profile_index, const std::string_view team_name)
+{
+    const int num_profiles = static_cast<int>(g_alpine_server_config.bot_configs.size());
+    if (profile_index < -1 || profile_index >= num_profiles) {
+        return std::format("Profile index {} is out of range ({} bot profiles configured; -1 = automatic)",
+            profile_index, num_profiles);
+    }
+    int team = -1;
+    if (string_iequals(team_name, "red")) {
+        team = rf::TEAM_RED;
+    }
+    else if (string_iequals(team_name, "blue")) {
+        team = rf::TEAM_BLUE;
+    }
+    else if (!team_name.empty()) {
+        return std::format("Unknown team '{}' (use red or blue)", team_name);
+    }
+    if (!server_bots_add_to_roster(profile_index, team)) {
+        return "Cannot add a server bot: the roster is full";
+    }
+    return "Server bot added to the roster; it joins when a player slot is free";
+}
+
+std::string server_bot_remove_command(const std::string_view target)
+{
+    if (string_iequals(target, "all")) {
+        server_bots_clear_roster();
+        return "All server bots removed";
+    }
+    rf::Player* const player = find_best_matching_player(std::string{target}.c_str());
+    if (!player) {
+        return std::format("No single player matches '{}'", target);
+    }
+    if (!server_bot_from_player(player)) {
+        return std::format("{} is not a server bot", player->name);
+    }
+    std::string result = std::format("Removing server bot {}", player->name);
+    server_bots_remove_from_roster(player);
+    return result;
+}
+
+ConsoleCommand2 sv_bot_add_cmd{
+    "sv_bot_add",
+    [](std::optional<int> profile_index, std::optional<std::string> team_name) {
+        if (validate_is_server()) {
+            rf::console::print("{}", server_bot_add_command(profile_index.value_or(-1), team_name.value_or("")));
+        }
+    },
+    "Add a server bot (profile index -1 = automatic)",
+    "sv_bot_add [profile_index] [red|blue]",
+};
+
+ConsoleCommand2 sv_bot_remove_cmd{
+    "sv_bot_remove",
+    [](std::string target) {
+        if (validate_is_server()) {
+            rf::console::print("{}", server_bot_remove_command(target));
+        }
+    },
+    "Remove a server bot by name, or all server bots",
+    "sv_bot_remove <name|all>",
+};
+
+ConsoleCommand2 sv_bot_list_cmd{
+    "sv_bot_list",
+    []() {
+        if (validate_is_server()) {
+            rf::console::print("{}", server_bots_build_list_output());
+        }
+    },
+    "List server bots",
+};
+}
+
+std::string run_server_bot_rcon_command(const std::string_view command, const std::string_view args)
+{
+    if (command == "sv_bot_remove") {
+        const std::string_view target = trim_and_unquote(args);
+        return target.empty() ? std::string{"Usage: sv_bot_remove <name|all>"} : server_bot_remove_command(target);
+    }
+    const auto [profile_arg, team_arg] = split_once_whitespace(args);
+    int profile_index = -1;
+    if (!profile_arg.empty()) {
+        const auto [end, ec] = std::from_chars(profile_arg.data(), profile_arg.data() + profile_arg.size(), profile_index);
+        if (ec != std::errc{} || end != profile_arg.data() + profile_arg.size()) {
+            return "Usage: sv_bot_add [profile_index] [red|blue]";
+        }
+    }
+    return server_bot_add_command(profile_index, team_arg);
+}
+
 void kick_player_delayed(const rf::Player* const player) {
+    if (!player || !player->net_data) {
+        return;
+    }
+    const int player_id = player->net_data->player_id;
+    if (std::find(g_players_to_kick.begin(), g_players_to_kick.end(), player_id) != g_players_to_kick.end()) {
+        return;
+    }
     rf::console::print("{}{}", player->name, rf::strings::was_kicked);
-    g_players_to_kick.push_back(player->net_data->player_id);
+    g_players_to_kick.push_back(player_id);
 }
 
 CallHook<void(const rf::Player*)> multi_kick_player_hook{0x0047B9BD, kick_player_delayed};
 
 void process_delayed_kicks()
 {
-    // Process kicks outside of packet processing loop to avoid crash when a player is suddenly destroyed (00479299)
-    for (int player_id : g_players_to_kick) {
-        rf::Player* player = rf::multi_find_player_by_id(player_id);
-        if (player) {
-            rf::multi_kick_player(player);
+    // Process kicks outside of packet processing loop to avoid crash when a player is suddenly destroyed.
+    // The engine's receive loop caches player_list->next before dispatching each packet, so destroying
+    // a player from inside a packet handler makes the loop walk a freed rf::Player on the next iteration.
+    while (!g_players_to_kick.empty()) {
+        std::vector<int> batch;
+        batch.swap(g_players_to_kick);
+        for (int player_id : batch) {
+            rf::Player* player = rf::multi_find_player_by_id(static_cast<uint8_t>(player_id));
+            if (player) {
+                // Generic fallback: a ban or vote kick has already tagged its own
+                // reason, and note_leave_reason keeps the first writer.
+                afstats::note_leave_reason(player, afstats::LeaveReason::kicked);
+                rf::multi_kick_player(player);
+            }
         }
     }
-    g_players_to_kick.clear();
 }
+
+bool server_ban_player(rf::Player* player)
+{
+    if (server_bot_from_player(player)) {
+        rf::console::print("{} is a server bot and cannot be banned", player->name);
+        return false;
+    }
+    if (player == rf::local_player) {
+        rf::console::print("You cannot ban yourself!");
+        return false;
+    }
+    rf::console::printf(rf::strings::banning_player, player->name.c_str());
+    afstats::note_leave_reason(player, afstats::LeaveReason::banned);
+    rf::multi_ban_ip(player->net_data->addr);
+    kick_player_delayed(player);
+    return true;
+}
+
+bool server_kick_player(rf::Player* player)
+{
+    if (player == rf::local_player) {
+        rf::console::print("You cannot kick yourself!");
+        return false;
+    }
+    rf::console::printf(rf::strings::kicking_player, player->name.c_str());
+    if (server_bot_from_player(player)) {
+        server_bots_remove_from_roster(player);
+    }
+    else {
+        kick_player_delayed(player);
+    }
+    return true;
+}
+
+std::optional<std::string> server_run_player_action(rf::Player* player, uint8_t action)
+{
+    switch (action) {
+        case AF_RCON_PLAYER_KICK:
+            if (server_kick_player(player)) {
+                return std::nullopt;
+            }
+            return "that player cannot be kicked";
+        case AF_RCON_PLAYER_BAN:
+            if (server_ban_player(player)) {
+                return std::nullopt;
+            }
+            return "that player cannot be banned";
+        case AF_RCON_PLAYER_SWAP_TEAM:
+            return server_swap_player_team(player);
+        case AF_RCON_PLAYER_FORCE_SPECTATE:
+            return server_force_player_spectate(player);
+        case AF_RCON_PLAYER_TOGGLE_READY:
+            return server_toggle_player_ready(player);
+        case AF_RCON_PLAYER_FORCE_UNSPECTATE:
+            return server_force_player_unspectate(player);
+        case AF_RCON_PLAYER_MUTE_CHAT:
+            return server_toggle_player_chat_mute(player);
+        default:
+            return "unknown action";
+    }
+}
+
+std::string run_player_admin_rcon_command(const std::string_view command, const std::string_view target_arg)
+{
+    const auto action = af_rcon_player_action_from_command(command);
+    if (!action) {
+        return std::format("Unknown player command '{}'", command);
+    }
+    const std::string_view target = trim_and_unquote(target_arg);
+    if (target.empty()) {
+        return std::format("Usage: {} <player>", command);
+    }
+    rf::Player* const player = find_best_matching_player(std::string{target}.c_str());
+    if (!player) {
+        return std::format("No single player matches '{}'", target);
+    }
+
+    const auto failure = server_run_player_action(player, *action);
+    if (!failure && action == AF_RCON_PLAYER_MUTE_CHAT) {
+        return std::format("{} {}", player->name, server_player_chat_muted(player) ? "is now muted" : "is now unmuted");
+    }
+    return failure ? std::format("{} {} failed: {}", command, player->name, *failure)
+                   : std::format("{} {} done", command, player->name);
+}
+
+ConsoleCommand2 sv_swap_team_cmd{
+    "sv_swap_team",
+    [](std::string target) {
+        if (validate_is_server()) {
+            rf::console::print("{}", run_player_admin_rcon_command("sv_swap_team", target));
+        }
+    },
+    "Move a player to the other team",
+    "sv_swap_team <player>",
+};
+
+ConsoleCommand2 sv_force_spectate_cmd{
+    "sv_force_spectate",
+    [](std::string target) {
+        if (validate_is_server()) {
+            rf::console::print("{}", run_player_admin_rcon_command("sv_force_spectate", target));
+        }
+    },
+    "Kill a player and put them in spectate mode",
+    "sv_force_spectate <player>",
+};
+
+ConsoleCommand2 sv_force_unspectate_cmd{
+    "sv_force_unspectate",
+    [](std::string target) {
+        if (validate_is_server()) {
+            rf::console::print("{}", run_player_admin_rcon_command("sv_force_unspectate", target));
+        }
+    },
+    "Take a player out of spectate mode",
+    "sv_force_unspectate <player>",
+};
+
+ConsoleCommand2 sv_toggle_ready_cmd{
+    "sv_toggle_ready",
+    [](std::string target) {
+        if (validate_is_server()) {
+            rf::console::print("{}", run_player_admin_rcon_command("sv_toggle_ready", target));
+        }
+    },
+    "Toggle a player's ready status during match ready-up",
+    "sv_toggle_ready <player>",
+};
+
+ConsoleCommand2 sv_mute_chat_cmd{
+    "sv_mute_chat",
+    [](std::string target) {
+        if (validate_is_server()) {
+            rf::console::print("{}", run_player_admin_rcon_command("sv_mute_chat", target));
+        }
+    },
+    "Toggle a server-wide chat mute on a player, held by IP until unmuted or the server restarts",
+    "sv_mute_chat <player>",
+};
 
 void ban_cmd_handler_hook()
 {
@@ -163,13 +456,7 @@ void ban_cmd_handler_hook()
             rf::Player* player = find_best_matching_player(rf::console::str_arg);
 
             if (player) {
-                if (player != rf::local_player) {
-                    rf::console::printf(rf::strings::banning_player, player->name.c_str());
-                    rf::multi_ban_ip(player->net_data->addr);
-                    kick_player_delayed(player);
-                }
-                else
-                    rf::console::print("You cannot ban yourself!");
+                server_ban_player(player);
             }
         }
 
@@ -188,12 +475,7 @@ void kick_cmd_handler_hook()
             rf::Player* player = find_best_matching_player(rf::console::str_arg);
 
             if (player) {
-                if (player != rf::local_player) {
-                    rf::console::printf(rf::strings::kicking_player, player->name.c_str());
-                    kick_player_delayed(player);
-                }
-                else
-                    rf::console::print("You cannot kick yourself!");
+                server_kick_player(player);
             }
         }
 
@@ -224,6 +506,14 @@ void init_server_commands()
     map_next_cmd.register_cmd();
     map_rand_cmd.register_cmd();
     map_prev_cmd.register_cmd();
+    sv_bot_add_cmd.register_cmd();
+    sv_bot_remove_cmd.register_cmd();
+    sv_bot_list_cmd.register_cmd();
+    sv_swap_team_cmd.register_cmd();
+    sv_force_spectate_cmd.register_cmd();
+    sv_force_unspectate_cmd.register_cmd();
+    sv_toggle_ready_cmd.register_cmd();
+    sv_mute_chat_cmd.register_cmd();
 
     AsmWriter(0x0047B6F0).jmp(ban_cmd_handler_hook);
     AsmWriter(0x0047B580).jmp(kick_cmd_handler_hook);

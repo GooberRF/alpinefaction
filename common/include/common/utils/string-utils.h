@@ -30,6 +30,15 @@ inline std::string_view trim(std::string_view s)
     return rtrim(ltrim(s));
 }
 
+// Strips one pair of surrounding double quotes. Doesn't trim, so quoted whitespace survives.
+inline std::string_view unquote(std::string_view s)
+{
+    if (s.size() >= 2 && s.front() == '"' && s.back() == '"') {
+        s = s.substr(1, s.size() - 2);
+    }
+    return s;
+}
+
 inline std::pair<std::string_view, std::string_view> split_once_whitespace(std::string_view s)
 {
     s = trim(s);
@@ -136,6 +145,32 @@ inline std::string string_replace(const std::string_view& str, const std::string
         }
         result.replace(pos, search.size(), replacement);
         pos += replacement.size();
+    }
+    return result;
+}
+
+// Escapes control characters so the string logs on one line
+inline std::string string_escape_control_chars(std::string_view str)
+{
+    constexpr std::string_view hex_digits = "0123456789ABCDEF";
+    std::string result;
+    result.reserve(str.size());
+    for (const char c : str) {
+        const auto uc = static_cast<unsigned char>(c);
+        if (uc == '\r') {
+            result += "\\r";
+        }
+        else if (uc == '\n') {
+            result += "\\n";
+        }
+        else if (uc < 0x20 || uc == 0x7F) {
+            result += "\\x";
+            result += hex_digits[uc >> 4];
+            result += hex_digits[uc & 0xF];
+        }
+        else {
+            result += c;
+        }
     }
     return result;
 }
@@ -294,5 +329,15 @@ inline std::string_view get_ext_from_filename(std::string_view filename)
         return "";
     }
     return filename.substr(dot_pos + 1);
+}
+
+inline bool replace_ext_if(std::string& filename, std::string_view old_ext, std::string_view new_ext)
+{
+    auto ext = get_ext_from_filename(filename);
+    if (!string_iequals(ext, old_ext)) return false;
+    auto dot_pos = filename.rfind('.');
+    if (dot_pos == std::string::npos) return false;
+    filename.replace(dot_pos + 1, std::string::npos, new_ext);
+    return true;
 }
 

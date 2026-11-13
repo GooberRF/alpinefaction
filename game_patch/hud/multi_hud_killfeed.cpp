@@ -103,7 +103,8 @@ void killfeed_route_next_message()
 
 void killfeed_add_kill(const char* killed_name, int killed_team,
                        const char* killer_name, int killer_team,
-                       const char* verb, bool is_local_kill, bool is_team_mode)
+                       const char* verb, bool is_local_kill, bool is_team_mode,
+                       const char* trailing)
 {
     auto& msg = alloc_message();
 
@@ -114,6 +115,9 @@ void killfeed_add_kill(const char* killed_name, int killed_team,
         KillfeedColor killed_color = is_team_mode ? color_for_team(killed_team) : KILLFEED_COLOR_GREEN;
         add_segment(msg, killed_name, killed_color);
         add_segment(msg, verb, KILLFEED_COLOR_GREEN);
+        if (trailing) {
+            add_segment(msg, trailing, KILLFEED_COLOR_GREEN);
+        }
     }
     else {
         KillfeedColor killed_color = is_team_mode ? color_for_team(killed_team) : KILLFEED_COLOR_GREEN;
@@ -121,6 +125,9 @@ void killfeed_add_kill(const char* killed_name, int killed_team,
         add_segment(msg, killed_name, killed_color);
         add_segment(msg, verb, KILLFEED_COLOR_GREEN);
         add_segment(msg, killer_name, killer_color);
+        if (trailing) {
+            add_segment(msg, trailing, KILLFEED_COLOR_GREEN);
+        }
     }
 }
 

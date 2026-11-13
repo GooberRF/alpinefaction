@@ -6,18 +6,42 @@
 #include <patch_common/AsmWriter.h>
 #include <common/utils/list-utils.h>
 #include <common/version/version.h>
+#include <common/payload.h>
 #include "gametype.h"
+#include "awards.h"
+#include "bagman.h"
+#include "jetpack.h"
+#include "rounds.h"
+#include "pit.h"
+#include "wipeout.h"
+#include "gungame.h"
+#include "salvage.h"
+#include "scavenger.h"
+#include "payload.h"
+#include "vehicles/vehicle.h"
+#include "vehicles/vehicle_render.h"
+#include "vehicles/vehicle_markers.h"
+#include "vehicles/vehicle_physics.h"
 #include "multi.h"
+#include "mutators.h"
 #include "alpine_packets.h"
+#include "server_internal.h"
+#include "demo/demo.h"
+#include "../fflink/afstats_events.h"
 #include "../hud/hud_internal.h"
 #include "../hud/multi_spectate.h"
 #include "../sound/sound.h"
 #include "../rf/os/timestamp.h"
+#include "../object/object.h"
 #include "../object/event_alpine.h"
+#include "../rf/entity.h"
 #include "../rf/gameseq.h"
 #include "../rf/localize.h"
+#include "../rf/v3d.h"
+#include "../rf/vmesh.h"
+#include "../object/zipline.h"
 
-static char* const* g_af_gametype_names[8];
+static char* const* g_af_gametype_names[rf::NG_TYPE_UNK + 1];
 
 static char koth_name[] = "KOTH";
 static char* koth_slot = koth_name;
@@ -29,6 +53,25 @@ static char run_name[] = "RUN";
 static char* run_slot = run_name;
 static char esc_name[] = "ESC";
 static char* esc_slot = esc_name;
+static char bag_name[] = "BAG";
+static char* bag_slot = bag_name;
+static char tbag_name[] = "TBAG";
+static char* tbag_slot = tbag_name;
+static char pit_name[] = "PIT";
+static char* pit_slot = pit_name;
+static char wo_name[] = "WO";
+static char* wo_slot = wo_name;
+static char gg_name[] = "GG";
+static char* gg_slot = gg_name;
+static char sal_name[] = "SAL";
+static char* sal_slot = sal_name;
+static char scav_name[] = "SCAV";
+static char* scav_slot = scav_name;
+static char pay_name[] = "PAY";
+static char* pay_slot = pay_name;
+// UNK is the sentinel; new game types must be added above
+static char unk_name[] = "UNK";
+static char* unk_slot = unk_name;
 
 KothInfo g_koth_info; // KOTH and DC
 rf::Timestamp g_local_contest_alarm_cooldown;
@@ -57,14 +100,23 @@ static void stop_hill_sounds()
 }
 
 void populate_gametype_table() {
-    g_af_gametype_names[0] = &rf::strings::dm;
-    g_af_gametype_names[1] = &rf::strings::ctf;
-    g_af_gametype_names[2] = &rf::strings::teamdm;
-    g_af_gametype_names[3] = &koth_slot;
-    g_af_gametype_names[4] = &dc_slot;
-    g_af_gametype_names[5] = &rev_slot;
-    g_af_gametype_names[6] = &run_slot;
-    g_af_gametype_names[7] = &esc_slot;
+    g_af_gametype_names[rf::NG_TYPE_DM]     = &rf::strings::dm;
+    g_af_gametype_names[rf::NG_TYPE_CTF]    = &rf::strings::ctf;
+    g_af_gametype_names[rf::NG_TYPE_TEAMDM] = &rf::strings::teamdm;
+    g_af_gametype_names[rf::NG_TYPE_KOTH]   = &koth_slot;
+    g_af_gametype_names[rf::NG_TYPE_DC]     = &dc_slot;
+    g_af_gametype_names[rf::NG_TYPE_REV]    = &rev_slot;
+    g_af_gametype_names[rf::NG_TYPE_RUN]    = &run_slot;
+    g_af_gametype_names[rf::NG_TYPE_ESC]    = &esc_slot;
+    g_af_gametype_names[rf::NG_TYPE_BAG]    = &bag_slot;
+    g_af_gametype_names[rf::NG_TYPE_TBAG]   = &tbag_slot;
+    g_af_gametype_names[rf::NG_TYPE_PIT]    = &pit_slot;
+    g_af_gametype_names[rf::NG_TYPE_WO]     = &wo_slot;
+    g_af_gametype_names[rf::NG_TYPE_GG]     = &gg_slot;
+    g_af_gametype_names[rf::NG_TYPE_SAL]    = &sal_slot;
+    g_af_gametype_names[rf::NG_TYPE_SCAV]   = &scav_slot;
+    g_af_gametype_names[rf::NG_TYPE_PAY]    = &pay_slot;
+    g_af_gametype_names[rf::NG_TYPE_UNK]    = &unk_slot;
 
     for (int i = 0; i < 5; ++i) {
         const char* const* slot = g_af_gametype_names[i];
@@ -72,6 +124,20 @@ void populate_gametype_table() {
         //xlog::warn("GameType[{}]: {} (slot={}, name_ptr={})", i, name, static_cast<const void*>(slot), static_cast<const void*>(*slot));
     }
 }
+
+FunHook<int(uint8_t*, int)> server_list_load_entry_game_type_guard{
+    0x0044B810,
+    [](uint8_t* record, int is_favorite) -> int {
+        if (record) {
+            constexpr int num_gametypes = sizeof(g_af_gametype_names) / sizeof(g_af_gametype_names[0]);
+            auto& game_type = *reinterpret_cast<int32_t*>(record + 0x58);
+            if (game_type < 0 || game_type >= num_gametypes) {
+                game_type = static_cast<int32_t>(rf::NG_TYPE_UNK);
+            }
+        }
+        return server_list_load_entry_game_type_guard.call_target(record, is_favorite);
+    },
+};
 
 CallHook<char*(const char*, const char*)> listen_server_map_list_filename_contains_hook{
     0x00445730,
@@ -97,8 +163,13 @@ bool multi_game_type_is_team_type(rf::NetGameType game_type)
         case rf::NG_TYPE_DC:
         case rf::NG_TYPE_REV:
         case rf::NG_TYPE_ESC:
+        case rf::NG_TYPE_TBAG:
+        case rf::NG_TYPE_WO:
+        case rf::NG_TYPE_SAL:
+        case rf::NG_TYPE_SCAV:
+        case rf::NG_TYPE_PAY:
             return true;
-        default: // DM, RUN
+        default:
             return false;
     }
 }
@@ -110,8 +181,9 @@ bool multi_game_type_has_hills(rf::NetGameType game_type)
         case rf::NG_TYPE_DC:
         case rf::NG_TYPE_REV:
         case rf::NG_TYPE_ESC:
+        case rf::NG_TYPE_PAY:
             return true;
-        default: // DM, CTF, TDM, RUN
+        default:
             return false;
     }
 }
@@ -136,6 +208,46 @@ int multi_koth_get_blue_team_score() // KOTH and DC
     return g_koth_info.blue_team_score;
 }
 
+void multi_get_team_scores(rf::NetGameType type, int& red, int& blue)
+{
+    red = 0;
+    blue = 0;
+    switch (type) {
+        case rf::NG_TYPE_CTF:
+            red = rf::multi_ctf_get_red_team_score();
+            blue = rf::multi_ctf_get_blue_team_score();
+            break;
+        case rf::NG_TYPE_TEAMDM:
+            red = rf::multi_tdm_get_red_team_score();
+            blue = rf::multi_tdm_get_blue_team_score();
+            break;
+        case rf::NG_TYPE_KOTH:
+        case rf::NG_TYPE_DC:
+        case rf::NG_TYPE_REV:
+        case rf::NG_TYPE_ESC:
+        case rf::NG_TYPE_PAY:
+            red = multi_koth_get_red_team_score();
+            blue = multi_koth_get_blue_team_score();
+            break;
+        case rf::NG_TYPE_SAL:
+        case rf::NG_TYPE_SCAV:
+            red = salvage_get_red_team_score();
+            blue = salvage_get_blue_team_score();
+            break;
+        case rf::NG_TYPE_BAG:
+        case rf::NG_TYPE_TBAG:
+            red = bagman_get_red_team_score();
+            blue = bagman_get_blue_team_score();
+            break;
+        case rf::NG_TYPE_WO:
+            red = wipeout_get_red_team_score();
+            blue = wipeout_get_blue_team_score();
+            break;
+        default:
+            break;
+    }
+}
+
 void multi_koth_set_red_team_score(int score) // KOTH and DC
 {
     if (rf::is_server)
@@ -152,6 +264,11 @@ void multi_koth_set_blue_team_score(int score) // KOTH and DC
 
     g_koth_info.blue_team_score = score;
     return;
+}
+
+int koth_get_hill_handler_uid(const HillInfo& hill)
+{
+    return hill.handler ? hill.handler->uid : -1;
 }
 
 void multi_koth_reset_scores() // KOTH and DC
@@ -183,6 +300,107 @@ bool gt_is_esc()
 bool gt_is_run()
 {
     return rf::multi_get_game_type() == rf::NetGameType::NG_TYPE_RUN;
+}
+
+bool gt_is_bag()
+{
+    return rf::multi_get_game_type() == rf::NetGameType::NG_TYPE_BAG;
+}
+
+bool gt_is_tbag()
+{
+    return rf::multi_get_game_type() == rf::NetGameType::NG_TYPE_TBAG;
+}
+
+bool gt_is_bagman_any()
+{
+    return gt_is_bag() || gt_is_tbag();
+}
+
+bool gt_is_pit()
+{
+    return rf::multi_get_game_type() == rf::NetGameType::NG_TYPE_PIT;
+}
+
+bool gt_is_wipeout()
+{
+    return rf::multi_get_game_type() == rf::NetGameType::NG_TYPE_WO;
+}
+
+bool gt_is_gungame()
+{
+    return rf::multi_get_game_type() == rf::NetGameType::NG_TYPE_GG;
+}
+
+bool gt_is_salvage()
+{
+    return rf::multi_get_game_type() == rf::NetGameType::NG_TYPE_SAL;
+}
+
+bool gt_is_scavenger()
+{
+    return rf::multi_get_game_type() == rf::NetGameType::NG_TYPE_SCAV;
+}
+
+bool gt_is_payload()
+{
+    return rf::multi_get_game_type() == rf::NetGameType::NG_TYPE_PAY;
+}
+
+const char* multi_gametype_help_text(rf::NetGameType game_type)
+{
+    switch (game_type) {
+        case rf::NG_TYPE_DM:
+            return "Deathmatch: Frag everyone, free for all";
+        case rf::NG_TYPE_CTF:
+            return "Capture the Flag: Steal the the enemy flag and take it to your base";
+        case rf::NG_TYPE_TEAMDM:
+            return "Team Deathmatch: Frag everyone on the enemy team";
+        case rf::NG_TYPE_KOTH:
+            return "King of the Hill: Capture and hold the hill to earn points for your team";
+        case rf::NG_TYPE_DC:
+            return "Damage Control: Capture and hold control points to earn points for your team";
+        case rf::NG_TYPE_REV:
+            return "Revolt: Red attacks and captures control points in order, Blue defends";
+        case rf::NG_TYPE_RUN:
+            return "Run: Finish the course as fast as you can";
+        case rf::NG_TYPE_ESC:
+            return "Escalation: Capture control points in the path toward the enemy base";
+        case rf::NG_TYPE_BAG:
+            return "Bagman: Steal and hold the bag to earn points";
+        case rf::NG_TYPE_TBAG:
+            return "Team Bagman: Steal and hold the bag to earn points for your team";
+        case rf::NG_TYPE_PIT:
+            return "Pit: Duels, winner plays the next player in the queue";
+        case rf::NG_TYPE_WO:
+            return "Wipeout: Frag all enemy players before they respawn";
+        case rf::NG_TYPE_GG:
+            return "Gun Game: Get frags to advance to a new weapon";
+        case rf::NG_TYPE_SAL:
+            return "Salvage: Steal the flag and take it to your base";
+        case rf::NG_TYPE_SCAV:
+            return "Scavenger: Find the cartridge and take it to the target";
+        case rf::NG_TYPE_PAY:
+            return "Payload: Push the cart to the end of the track, or stop the attackers pushing it there";
+        default:
+            return nullptr;
+    }
+}
+
+bool gt_uses_custom_scoring()
+{
+    return gt_is_bagman_any() || gt_is_pit();
+}
+
+bool gt_type_uses_rounds(rf::NetGameType game_type)
+{
+    return game_type == rf::NetGameType::NG_TYPE_PIT
+        || game_type == rf::NetGameType::NG_TYPE_WO;
+}
+
+bool gt_uses_rounds()
+{
+    return gt_type_uses_rounds(rf::multi_get_game_type());
 }
 
 static HillInfo* esc_find_hill_by_role(HillRole role)
@@ -241,7 +459,7 @@ HillInfo* koth_find_hill_by_uid(uint8_t uid)
     return nullptr;
 }
 
-HillInfo* koth_find_hill_by_handler(const rf::EventCapturePointHandler* handler)
+HillInfo* koth_find_hill_by_handler(const EventCapturePointHandler* handler)
 {
     if (!handler)
         return nullptr;
@@ -254,11 +472,57 @@ HillInfo* koth_find_hill_by_handler(const rf::EventCapturePointHandler* handler)
     return nullptr;
 }
 
-float cylinder_radius_for_box_inscribed(const rf::Trigger* t)
+HillInfo* koth_find_hill_by_handler_uid(const int handler_uid)
 {
+    if (handler_uid < 0) {
+        return nullptr;
+    }
+
+    for (auto& hill : g_koth_info.hills) {
+        if (hill.handler && hill.handler->uid == handler_uid) {
+            return &hill;
+        }
+    }
+
+    return nullptr;
+}
+
+float koth_box_cylinder_radius(const rf::Trigger* t)
+{
+    if (!t) {
+        return 0.0f;
+    }
+
     const float hx = 0.5f * std::fabs(t->box_size.x);
     const float hz = 0.5f * std::fabs(t->box_size.z);
     return std::min(hx, hz);
+}
+
+bool koth_capture_point_handler_uses_cylinder(int handler_uid, int trigger_uid)
+{
+    if (handler_uid >= 0) {
+        if (HillInfo* hill = koth_find_hill_by_handler_uid(handler_uid);
+            hill && hill->handler) {
+            return hill->handler->sphere_to_cylinder;
+        }
+
+        if (rf::Event* event = rf::event_lookup_from_uid(handler_uid);
+            event
+            && event->event_type == std::to_underlying(rf::EventType::Capture_Point_Handler)) {
+            auto* handler = static_cast<EventCapturePointHandler*>(event);
+            return handler->sphere_to_cylinder;
+        }
+    }
+
+    if (trigger_uid >= 0) {
+        for (const auto& hill : g_koth_info.hills) {
+            if (hill.trigger_uid == trigger_uid && hill.handler) {
+                return hill.handler->sphere_to_cylinder;
+            }
+        }
+    }
+
+    return false;
 }
 
 static inline bool trigger_oriented_cylinder_check_if_activated(const rf::Trigger* tp, const rf::Object* objp, float radius,
@@ -339,7 +603,7 @@ bool player_inside_hill_trigger(const HillInfo& h, const rf::Player& p)
 
     if (h.trigger->type == 1 && h.handler->sphere_to_cylinder) {
         const rf::Trigger* t = h.trigger;
-        const float radius = cylinder_radius_for_box_inscribed(t);
+        const float radius = koth_box_cylinder_radius(t);
         const float half_h = 0.5f * std::fabs(t->box_size.y);
         const rf::Vector3 u = t->orient.uvec;
         const rf::Vector3 r = t->orient.rvec;
@@ -395,11 +659,7 @@ static int players_on_team(const Presence& pres, HillOwner team)
 
 static float rate_bonus_for_players(int player_count)
 {
-    if (player_count <= 1)
-        return 1.0f;
-    if (player_count == 2)
-        return 1.5f;
-    return 2.0f; // 3 or more
+    return payload::push_multiplier(std::max(player_count, 1));
 }
 
 static int scaled_capture_rate(const HillInfo& h, int base_rate, int player_count)
@@ -432,7 +692,9 @@ static std::vector<uint8_t> on_capture_collect_player_ids_on_hill_for_team(const
         if ((team == HillOwner::HO_Red && pl.team != 0) || (team == HillOwner::HO_Blue && pl.team != 1))
             continue;
 
-        if (!player_inside_hill_trigger(h, pl))
+        const bool on_point =
+            gt_is_payload() ? payload_player_credited_for_capture(pl) : player_inside_hill_trigger(h, pl);
+        if (!on_point)
             continue;
         if (pl.net_data) {
             ids.push_back(pl.net_data->player_id);
@@ -450,6 +712,20 @@ rf::Trigger* koth_resolve_trigger_from_uid(int uid)
     if (auto* o = rf::obj_lookup_from_uid(uid)) {
         if (o->type == rf::ObjectType::OT_TRIGGER)
             return static_cast<rf::Trigger*>(o);
+    }
+    return nullptr;
+}
+
+rf::Trigger* koth_capture_point_handler_trigger(const rf::Event& handler)
+{
+    const auto& cp = static_cast<const EventCapturePointHandler&>(handler);
+    if (cp.trigger_uid >= 0) {
+        return koth_resolve_trigger_from_uid(cp.trigger_uid);
+    }
+    for (const int handle : handler.links) {
+        if (auto* o = rf::obj_from_handle(handle); o && o->type == rf::ObjectType::OT_TRIGGER) {
+            return static_cast<rf::Trigger*>(o);
+        }
     }
     return nullptr;
 }
@@ -600,11 +876,13 @@ static bool hill_has_spawn_uid(const HillInfo& hill, int rp_uid)
 
 static bool rev_should_enable_respawn_point(int rp_uid)
 {
-    return std::any_of(g_koth_info.hills.begin(), g_koth_info.hills.end(), [rp_uid](const HillInfo& hill) {
-        if (hill.lock_status != HillLockStatus::HLS_Available)
-            return false;
-
-        return std::find(hill.mp_spawn_uids.begin(), hill.mp_spawn_uids.end(), rp_uid) != hill.mp_spawn_uids.end();
+    const auto& hills = g_koth_info.hills;
+    if (gt_is_payload() && !hills.empty() && hills.back().lock_status == HillLockStatus::HLS_Permalocked) {
+        // The cart can have track left past its last checkpoint, so that stage's spawns stay on
+        return hill_has_spawn_uid(hills.back(), rp_uid);
+    }
+    return std::any_of(hills.begin(), hills.end(), [rp_uid](const HillInfo& hill) {
+        return hill.lock_status == HillLockStatus::HLS_Available && hill_has_spawn_uid(hill, rp_uid);
     });
 }
 
@@ -693,6 +971,18 @@ static bool esc_should_enable_respawn_point_for_team(int rp_uid, HillOwner team)
     return false;
 }
 
+// REV and PAY take their points in stage order, by one attacking team, for good
+static std::optional<HillOwner> staged_attacker()
+{
+    if (gt_is_rev()) {
+        return HillOwner::HO_Red;
+    }
+    if (gt_is_payload()) {
+        return team_hill_owner(payload_attacking_team());
+    }
+    return std::nullopt;
+}
+
 static void koth_update_respawn_points(HillInfo* h) {
     if (!h || h->mp_spawn_uids.empty())
         return;
@@ -702,8 +992,8 @@ static void koth_update_respawn_points(HillInfo* h) {
     for (int rp_uid : h->mp_spawn_uids) {
         if (auto* rp = get_alpine_respawn_point_by_uid(rp_uid)) {
 
-            if (gt_is_rev()) { 
-                // REV: enable spawns when any linked hill is available
+            if (staged_attacker()) {
+                // REV/PAY: see rev_should_enable_respawn_point
                 set_alpine_respawn_point_enabled(rp, rev_should_enable_respawn_point(rp_uid));
             }
             else if (gt_is_esc()) {
@@ -744,7 +1034,8 @@ static void esc_update_all_respawn_points()
 
 static void rev_recalculate_stage_locks()
 {
-    if (!gt_is_rev())
+    const auto attacker = staged_attacker();
+    if (!attacker)
         return;
 
     if (g_koth_info.hills.empty())
@@ -770,7 +1061,7 @@ static void rev_recalculate_stage_locks()
             if (hill.stage != stage)
                 continue;
 
-            if (hill.ownership != HillOwner::HO_Red) {
+            if (hill.ownership != *attacker) {
                 stage_complete = false;
                 break;
             }
@@ -880,6 +1171,27 @@ static void esc_apply_initial_ownerships()
     }
 }
 
+static uint8_t afstats_team_for_owner(HillOwner owner)
+{
+    switch (owner) {
+        case HillOwner::HO_Red:  return afstats::team_red;
+        case HillOwner::HO_Blue: return afstats::team_blue;
+        default:                 return afstats::team_none;
+    }
+}
+
+static std::vector<rf::Player*> players_from_ids(const std::vector<uint8_t>& ids)
+{
+    std::vector<rf::Player*> players;
+    players.reserve(ids.size());
+    for (uint8_t id : ids) {
+        if (rf::Player* p = rf::multi_find_player_by_id(id)) {
+            players.push_back(p);
+        }
+    }
+    return players;
+}
+
 static void server_maybe_broadcast_state(HillInfo& h, const Presence& pres)
 {
     const uint8_t prog_bucket = static_cast<uint8_t>(h.capture_progress / 5);
@@ -894,6 +1206,23 @@ static void server_maybe_broadcast_state(HillInfo& h, const Presence& pres)
 
     if (!changed)
         return;
+
+    // Contest is a per-tick derived condition with nothing latched to hook, so the
+    // edge is taken against the same snapshot the network dedup already keeps.
+    const bool was_contested = h.net_last_red > 0 && h.net_last_blue > 0;
+    const bool is_contested = pres.red > 0 && pres.blue > 0;
+    if (was_contested != is_contested) {
+        afstats::on_point_event(h.hill_uid,
+            is_contested ? afstats::PointEventKind::contest_start
+                         : afstats::PointEventKind::contest_end,
+            afstats_team_for_owner(h.ownership), {},
+            h.lock_status != HillLockStatus::HLS_Available);
+    }
+    if (h.net_last_lock_status != h.lock_status) {
+        afstats::on_point_event(h.hill_uid, afstats::PointEventKind::lock_change,
+            afstats_team_for_owner(h.ownership), {},
+            h.lock_status != HillLockStatus::HLS_Available);
+    }
 
     af_send_koth_hill_state_packet_to_all(h, pres);
 
@@ -952,9 +1281,42 @@ static void esc_recalculate_stage_locks()
     }
 }
 
+// Lockdown: one team controls all control points (DC only).
+static void koth_maybe_grant_lockdown(const HillInfo& captured, HillOwner new_owner)
+{
+    if (!gt_is_dc() || !captured.trigger || !captured.handler) {
+        return;
+    }
+    int valid_hills = 0;
+    for (const HillInfo& hill : g_koth_info.hills) {
+        if (!hill.trigger || !hill.handler) {
+            continue;
+        }
+        if (hill.ownership != new_owner) {
+            return;
+        }
+        ++valid_hills;
+    }
+    if (valid_hills == 0) {
+        return;
+    }
+
+    const int capping_team = (new_owner == HillOwner::HO_Red) ? 0 : 1;
+    for (rf::Player& pl : SinglyLinkedList{rf::player_list}) {
+        if (pl.team != capping_team || !player_is_countable(pl)) {
+            continue;
+        }
+        if (!player_inside_hill_trigger(captured, pl)) {
+            continue;
+        }
+        grant_award(&pl, AwardId::lockdown);
+    }
+}
+
 static void koth_apply_ownership(HillInfo& h, HillOwner new_owner, bool announce = true, HillOwner scoring_team = HillOwner::HO_Neutral)
 {
-    if (gt_is_rev() && new_owner == HillOwner::HO_Blue)
+    const auto attacker = staged_attacker();
+    if (attacker && new_owner == opposite(*attacker))
         return;
 
     if (h.ownership == new_owner)
@@ -973,12 +1335,12 @@ static void koth_apply_ownership(HillInfo& h, HillOwner new_owner, bool announce
     //xlog::warn("[KOTH] {}: OWNER {} -> {}", h.name.c_str(), to_string(old_owner), to_string(new_owner));
 
     if (rf::is_server) {
-        if (gt_is_rev() && new_owner == HillOwner::HO_Red) {
+        if (attacker && new_owner == *attacker) {
             h.lock_status = HillLockStatus::HLS_Permalocked; // permalock captured point
         }
 
-        if (gt_is_rev()) {
-            // REV: update respawns on per-point basis, then recalculate stage locks
+        if (attacker) {
+            // REV/PAY: update respawns on per-point basis, then recalculate stage locks
             koth_update_respawn_points(&h);
             rev_recalculate_stage_locks();
         }
@@ -992,10 +1354,16 @@ static void koth_apply_ownership(HillInfo& h, HillOwner new_owner, bool announce
             koth_update_respawn_points(&h);
         }
 
+        // Linked Vehicle Factories follow the point's owner.
+        for (int factory_index : h.vehicle_factories) {
+            vehicle_factory_set_team(factory_index, hill_owner_team(new_owner));
+        }
+
         if (new_owner == HillOwner::HO_Red || new_owner == HillOwner::HO_Blue) {
             notify_capture_point_captured(h, new_owner);
+            koth_maybe_grant_lockdown(h, new_owner);
         }
-    
+
         if (announce) {
             //auto ids = on_capture_collect_player_ids_on_hill_for_team(h, new_owner);
             HillOwner reward_team = scoring_team;
@@ -1007,11 +1375,20 @@ static void koth_apply_ownership(HillInfo& h, HillOwner new_owner, bool announce
                 ids = on_capture_collect_player_ids_on_hill_for_team(h, reward_team);
             const uint8_t uid8 = static_cast<uint8_t>(std::clamp(h.hill_uid, 0, 255));
             af_send_koth_hill_captured_packet_to_all(uid8, new_owner, ids);
+            afstats::on_point_event(h.hill_uid, afstats::PointEventKind::owner_change,
+                afstats_team_for_owner(new_owner), players_from_ids(ids),
+                h.lock_status != HillLockStatus::HLS_Available);
+        }
+        else {
+            // A silent flip (script/event driven) still changes ownership.
+            afstats::on_point_event(h.hill_uid, afstats::PointEventKind::owner_change,
+                afstats_team_for_owner(new_owner), {},
+                h.lock_status != HillLockStatus::HLS_Available);
         }
     }
 }
 
-bool koth_set_capture_point_owner(rf::EventCapturePointHandler* handler, int owner, bool announce)
+bool koth_set_capture_point_owner(EventCapturePointHandler* handler, int owner, bool announce)
 {
     if (!rf::is_multi || !rf::is_server)
         return false; // ignore on client
@@ -1024,7 +1401,8 @@ bool koth_set_capture_point_owner(rf::EventCapturePointHandler* handler, int own
 
     if (hill->ownership == owner_enum) {
         bool adjusted = false;
-        if (gt_is_rev() && owner_enum == HillOwner::HO_Red && hill->lock_status != HillLockStatus::HLS_Permalocked) {
+        const auto attacker = staged_attacker();
+        if (attacker && owner_enum == *attacker && hill->lock_status != HillLockStatus::HLS_Permalocked) {
             hill->lock_status = HillLockStatus::HLS_Permalocked;
             koth_update_respawn_points(hill);
             rev_recalculate_stage_locks();
@@ -1507,8 +1885,8 @@ static void update_hill_client_predict_rev(HillInfo& h, int dt_ms)
 
 static void koth_client_predict_tick(int dt_ms)
 {
-    // client-only; server is authoritative
-    if (!rf::is_multi || rf::is_server || rf::is_dedicated_server)
+    // client-only; server is authoritative. Payload checkpoints change only by the server's cart.
+    if (!rf::is_multi || rf::is_server || gt_is_payload())
         return;
 
     // score prediction in KOTH/DC
@@ -1589,8 +1967,8 @@ void koth_do_frame() // fires every frame on both server and client
             const int dt_ms = static_cast<int>(std::min(dt_srv, 250LL));
 
             for (auto& h : g_koth_info.hills) {
-                // Only need to update hills if they are available
-                if (h.lock_status == HillLockStatus::HLS_Available) {
+                // Only need to update hills if they are available. Payload's cart captures its checkpoints.
+                if (h.lock_status == HillLockStatus::HLS_Available && !gt_is_payload()) {
                     if (gt_is_rev()) {
                         update_hill_server_rev(h, dt_ms);
                     }
@@ -1606,13 +1984,17 @@ void koth_do_frame() // fires every frame on both server and client
         }
     }
 
-    // client prediction tick
+    // client prediction tick, on demo time during playback so it follows the pause and timescale.
+    // That clock restarts below the last reading when playback starts or restarts, so a step
+    // back re-anchors instead of stalling the tick until it catches up.
     if (!rf::is_server && !rf::is_dedicated_server) {
-        static int64_t last_cli = timer::get_i64(1000);
-        const int64_t now_cli = timer::get_i64(1000);
+        static int64_t last_cli = demo_playback_interp_clock_ms();
+        const int64_t now_cli = demo_playback_interp_clock_ms();
         const int64_t dt_cli = now_cli - last_cli;
-        if (dt_cli > 0) {
+        if (dt_cli != 0) {
             last_cli = now_cli;
+        }
+        if (dt_cli > 0) {
             const int dt_ms = static_cast<int>(std::min(dt_cli, 250LL));
             koth_client_predict_tick(dt_ms);
         }
@@ -1697,9 +2079,12 @@ static int build_hills_from_capture_point_events()
         return int(g_koth_info.hills.size());
 
     int game_type_max_hills =
-        gt == rf::NetGameType::NG_TYPE_KOTH ? 1 : 32;
+        gt == rf::NetGameType::NG_TYPE_KOTH ? 1 : max_hills;
 
-    auto events = find_all_events_by_type(rf::EventType::Capture_Point_Handler);
+    // Payload's checkpoints are the handlers its cart's keyframes name, in track order, and have no trigger
+    const bool is_payload = gt == rf::NetGameType::NG_TYPE_PAY;
+    auto events = is_payload ? payload_checkpoint_handlers()
+                             : find_all_events_by_type(rf::EventType::Capture_Point_Handler);
     std::unordered_set<int> seen_uids;
 
     int idx = 0;
@@ -1707,38 +2092,39 @@ static int build_hills_from_capture_point_events()
         if (!e || int(g_koth_info.hills.size()) >= game_type_max_hills) // respect gametype max hills
             continue;
 
-        auto* cp = static_cast<rf::EventCapturePointHandler*>(e);
+        auto* cp = static_cast<EventCapturePointHandler*>(e);
 
-        // find trigger_uid from event links
-        if (cp->trigger_uid < 0 && !e->links.empty()) {
-            for (int handle : e->links) {
-                if (auto* o = rf::obj_from_handle(handle)) {
-                    if (o->type == rf::ObjectType::OT_TRIGGER) {
-                        cp->trigger_uid = o->uid;
-                        break;
-                    }
-                }
+        rf::Trigger* trig = nullptr;
+        if (!is_payload) {
+            trig = koth_capture_point_handler_trigger(*e);
+            if (!trig) {
+                xlog::warn("KOTH: Capture point '{}' has invalid trigger UID {}, skipping", cp->name.c_str(),
+                           cp->trigger_uid);
+                continue;
             }
-        }
+            cp->trigger_uid = trig->uid;
 
-        // resolve trigger pointer
-        rf::Trigger* trig = koth_resolve_trigger_from_uid(cp->trigger_uid);
-        if (!trig) {
-            xlog::warn("KOTH: Capture point '{}' has invalid trigger UID {}, skipping", cp->name.c_str(), cp->trigger_uid);
-            continue;
-        }
-
-        // fix a case where a mapper specified the same trigger for multiple capture point handlers
-        if (!seen_uids.insert(cp->trigger_uid).second) {
-            xlog::warn("KOTH: Duplicate capture point for trigger UID {}, ignoring subsequent entries", cp->trigger_uid);
-            continue;
+            // fix a case where a mapper specified the same trigger for multiple capture point handlers
+            if (!seen_uids.insert(cp->trigger_uid).second) {
+                xlog::warn("KOTH: Duplicate capture point for trigger UID {}, ignoring subsequent entries",
+                           cp->trigger_uid);
+                continue;
+            }
         }
 
         HillInfo h{};
         h.hill_uid = ++idx;
         // use name if set by mapper, if not name it "Hill" if only one, or "Control Point X" if multiple
-        h.name = cp->name.empty() ? (events.size() <= 1 ? "Hill" : std::format("Point {}", idx)) : cp->name;
-        h.trigger_uid = cp->trigger_uid;
+        if (!cp->name.empty()) {
+            h.name = cp->name;
+        }
+        else if (is_payload) {
+            h.name = std::format("Checkpoint {}", idx);
+        }
+        else {
+            h.name = events.size() <= 1 ? "Hill" : std::format("Point {}", idx);
+        }
+        h.trigger_uid = trig ? cp->trigger_uid : -1;
         h.trigger = trig;
         h.outline_offset = cp->outline_offset;
         h.capture_rate = cp->capture_rate;
@@ -1746,7 +2132,7 @@ static int build_hills_from_capture_point_events()
             && cp->position <= static_cast<int>(HillRole::HR_BlueForward)) {
             h.role = static_cast<HillRole>(cp->position);
         }
-        h.stage = cp->stage;
+        h.stage = is_payload ? idx : cp->stage;
         h.handler = cp;
         h.ownership = HillOwner::HO_Neutral;
         h.state = HillState::HS_Idle;
@@ -1756,10 +2142,16 @@ static int build_hills_from_capture_point_events()
         h.hold_ms_accum = 0;
 
         // build vector of respawn points associated with hill
+        // Alpine respawn points and vehicle factories are not engine objects, so level_load leaves
+        // their links as raw RFL uids while engine-object links become handles.
         if (!e->links.empty()) {
             for (int linked_uid : e->links) {
                 if (auto* rp = get_alpine_respawn_point_by_uid(linked_uid)) {
                     h.mp_spawn_uids.push_back(rp->uid);
+                }
+                const int factory_index = vehicle_factory_index_by_uid(linked_uid);
+                if (factory_index >= 0) {
+                    h.vehicle_factories.push_back(factory_index);
                 }
             }
         }
@@ -1835,20 +2227,79 @@ void hill_mode_level_init_post()
     //xlog::warn("KOTH: {} capture points found in this map, gt {}", n, static_cast<int>(rf::netgame.type));
 }
 
+// Hills are built before the factory slots exist, so an initial ownership (ESC bases, or any hill
+// a gametype starts owned) is pushed to its linked factories here instead of from the hill build.
+static void hill_mode_apply_linked_factory_teams()
+{
+    for (const auto& hill : g_koth_info.hills) {
+        if (hill.ownership == HillOwner::HO_Neutral)
+            continue; // a neutral hill leaves the factory's authored team alone
+
+        for (int factory_index : hill.vehicle_factories) {
+            vehicle_factory_set_team(factory_index, hill_owner_team(hill.ownership), false);
+        }
+    }
+}
+
 void multi_level_init_post_gametypes()
 {
+    payload_level_init_post(); // before the hills, which are built from its checkpoints
     hill_mode_level_init_post();
+    bagman_level_init_post();
+    salvage_level_init_post();
+    scavenger_level_init_post();
+    pit_level_init_post();
+    wipeout_level_init_post();
+    gungame_level_init_post();
+    // Before the factory spawns below: entity_create seeds each hull's life from EntityInfo.
+    vehicle_tbl_overrides_level_init_post();
+    vehicle_level_init_post();
+    vehicle_markers_level_init_post(); // after the mesh overrides and the factory mirror
+    vehicle_physics_level_init_post(); // after the factory records exist
+    hill_mode_apply_linked_factory_teams(); // after vehicle_level_init_post: needs the slots
+    // Rounds must initialise AFTER per-gametype level-init so the gametype
+    // has registered its callbacks before round 1 begins.
+    rounds_level_init_post();
+    // Mutator pickup suppression runs last so its policy applies on top of any
+    // gametype-specific item handling.
+    mutators_level_init_post();
+
+    // After everything above, so the round_start snapshot sees the level, the
+    // game type, the active rules and every gametype's own state as final.
+    if (rf::is_multi && rf::is_server) {
+        // Not from multi_level_init: that runs before level_load, so the factory-driven client
+        // requirement in server_features_require_alpine_client would read one level late.
+        initialize_game_info_server_flags();
+        af_send_server_info_packet_to_all();
+        enforce_alpine_hard_reject_for_all_players_on_current_level();
+        afstats::on_game_start();
+        server_broadcast_level_message();
+    }
 }
 
 // pre level being loaded
 CodeInjection multi_level_init_gametypes_injection{
     0x0046E466,
-    [](auto& regs) {
+    [] {
+        // Before gungame_level_init: weapons.tbl overrides restore LIFO.
+        vehicle_tbl_overrides_revert();
+        rounds_level_init();
         hill_mode_level_init();
+        bagman_level_init();
+        jetpack_level_init();
+        salvage_level_init();
+        scavenger_level_init();
+        payload_level_init();
+        pit_level_init();
+        wipeout_level_init();
+        gungame_level_init();
+        vehicle_level_init();
+        vehicle_physics_level_reset();
+        riot_shield_on_multi_level_init();
     },
 };
 
-// sync scores every 5ms during gameplay to account for clientside prediction errors
+// sync scores every 5 s during gameplay to account for clientside prediction errors
 CodeInjection send_team_score_server_do_frame_patch{
     0x0046E5B4,
     [](auto& regs) {
@@ -1878,9 +2329,42 @@ CodeInjection send_team_score_state_info_patch{
             }
         }
 
+        // send bagman state packet on join
+        if (gt_is_bagman_any()) {
+            if (rf::Player* pp = regs.edi) {
+                bagman_force_state_sync_to(pp);
+            }
+        }
+
+        // send salvage/scavenger flag state packet on join
+        if (salvage_framework_active()) {
+            if (rf::Player* pp = regs.edi) {
+                salvage_force_state_sync_to(pp);
+            }
+        }
+
+        if (gt_is_payload()) {
+            if (rf::Player* pp = regs.edi) {
+                payload_force_state_sync_to(pp);
+            }
+        }
+
+        // replay occupied vehicle and turret seats on join
+        if (rf::Player* pp = regs.edi) {
+            vehicle_send_seat_states_to(pp);
+        }
+
+        // send Pit queue state and roster on join.
+        if (gt_is_pit()) {
+            if (rf::Player* pp = regs.edi) {
+                pit_send_queue_state(pp);
+                pit_send_roster_to(pp);
+            }
+        }
+
         // send team_scores packet
         if (multi_game_type_is_team_type(game_type) && !gt_is_rev()) {
-            regs.eip = 0x00481859; 
+            regs.eip = 0x00481859;
         }
     },
 };
@@ -1907,10 +2391,31 @@ CodeInjection send_team_score_change_level_patch{
 CodeInjection send_team_score_patch{
     0x00472151,
     [](auto& regs) {
-        if (gt_is_koth() || gt_is_dc()) {
-            // both int16_t on the wire
+        if (gt_is_koth() || gt_is_dc() || gt_is_payload()) {
+            // both uint16_t on the wire
             const uint16_t red_score = (uint16_t)std::clamp(multi_koth_get_red_team_score(), 0, 0xFFFF);
             const uint16_t blue_score = (uint16_t)std::clamp(multi_koth_get_blue_team_score(), 0, 0xFFFF);
+            regs.si = red_score;
+            regs.ax = blue_score;
+            regs.eip = 0x00472176; // use stock game packet send
+        }
+        else if (gt_is_tbag()) {
+            const uint16_t red_score = (uint16_t)std::clamp(bagman_get_red_team_score(), 0, 0xFFFF);
+            const uint16_t blue_score = (uint16_t)std::clamp(bagman_get_blue_team_score(), 0, 0xFFFF);
+            regs.si = red_score;
+            regs.ax = blue_score;
+            regs.eip = 0x00472176; // use stock game packet send
+        }
+        else if (gt_is_wipeout()) {
+            const uint16_t red_score = (uint16_t)std::clamp(wipeout_get_red_team_score(), 0, 0xFFFF);
+            const uint16_t blue_score = (uint16_t)std::clamp(wipeout_get_blue_team_score(), 0, 0xFFFF);
+            regs.si = red_score;
+            regs.ax = blue_score;
+            regs.eip = 0x00472176; // use stock game packet send
+        }
+        else if (salvage_framework_active()) {
+            const uint16_t red_score = (uint16_t)std::clamp(salvage_get_red_team_score(), 0, 0xFFFF);
+            const uint16_t blue_score = (uint16_t)std::clamp(salvage_get_blue_team_score(), 0, 0xFFFF);
             regs.si = red_score;
             regs.ax = blue_score;
             regs.eip = 0x00472176; // use stock game packet send
@@ -1922,13 +2427,68 @@ CodeInjection send_team_score_patch{
 CodeInjection process_team_score_patch{
     0x0047221D,
     [](auto& regs) {
-        if (gt_is_koth() || gt_is_dc()) {
-            // both int16_t on the wire
-            int red_score = regs.esi;
-            int blue_score = regs.edi;
+        if (gt_is_koth() || gt_is_dc() || gt_is_payload()) {
+            int red_score = static_cast<uint16_t>(regs.si.value);
+            int blue_score = static_cast<uint16_t>(regs.di.value);
             multi_koth_set_red_team_score(red_score);
             multi_koth_set_blue_team_score(blue_score);
         }
+        else if (gt_is_tbag()) {
+            int red_score = static_cast<uint16_t>(regs.si.value);
+            int blue_score = static_cast<uint16_t>(regs.di.value);
+            bagman_set_red_team_score(red_score);
+            bagman_set_blue_team_score(blue_score);
+        }
+        else if (gt_is_wipeout()) {
+            int red_score = static_cast<uint16_t>(regs.si.value);
+            int blue_score = static_cast<uint16_t>(regs.di.value);
+            wipeout_set_red_team_score(red_score);
+            wipeout_set_blue_team_score(blue_score);
+        }
+        else if (salvage_framework_active()) {
+            int red_score = static_cast<uint16_t>(regs.si.value);
+            int blue_score = static_cast<uint16_t>(regs.di.value);
+            salvage_set_red_team_score(red_score);
+            salvage_set_blue_team_score(blue_score);
+        }
+    },
+};
+
+CodeInjection carrier_attachment_render_patch{
+    0x00421C0B,
+    [](auto& regs) {
+        auto* ep = reinterpret_cast<rf::Entity*>(regs.esi.value);
+        if (!ep) return;
+
+        // Shared entity_render attachment point for jetpacks and zip line trolleys. Deliberately ahead
+        // of the bagman gates below and not gated on rf::is_multi: the Jetpacks
+        // mutator applies to every gametype, and the single player `jetpack`
+        // command uses this same hook. jetpack_render_attachment() does its own
+        // active/first-person checks and yields to the bag on the carrier.
+        jetpack_render_attachment(ep);
+        zipline_render_attachment(ep);
+
+        // Same attachment point: AF's jeep hull carries no tires, so they are drawn right after it.
+        vehicle_render_jeep_tires(ep);
+
+        if (!rf::is_multi || !gt_is_bagman_any()) return;
+
+        // The hooked entity must be the carrier: the query derives its transform
+        // from the carrier entity's $prop_flag.
+        if (!g_bagman_info.carrier || ep->handle != g_bagman_info.carrier->entity_handle) return;
+
+        rf::VifLodMesh* lod = nullptr;
+        rf::Vector3 pos{};
+        rf::Matrix3 orient{};
+        if (!bagman_query_carrier_bag_outline(&lod, &pos, &orient)) return;
+
+        rf::VMesh* mesh = bagman_get_carrier_mesh();
+        if (!mesh) return;
+
+        rf::MeshRenderParams params{};
+        params.init_defaults();
+        params.orient = orient;
+        rf::vmesh_render(mesh, &pos, &orient, &params);
     },
 };
 
@@ -1963,11 +2523,11 @@ CodeInjection multi_hud_render_target_name_color_patch{
 CallHook<int()> multi_get_game_type_non_team_mode_hook{
     {
         0x004A4234, // player_create_entity for team coloured player models
-        0x004808EF, // multi_spawn_player_server_side for "You are on team X" for listen server host
         0x00443FC9, // chat_add_msg for [Team] prefix on team chat
         0x00444A93, // multi_chat_say_show
         0x00476CA8, // multi_hud_level_init for "You are on team X" for client
         0x004827E1, // multi_get_new_player_team on join
+        0x0048939F, // team damage gate
     },
     []() {
         // all are calls to multi_get_game_type in the stock game
@@ -1988,13 +2548,18 @@ void gametype_do_patch()
     write_mem<uint32_t>((0x0044C227) + 3, (uint32_t)(uintptr_t)&g_af_gametype_names[0]); // multi_join_game_render_row
     write_mem<uint32_t>((0x0044C724) + 3, (uint32_t)(uintptr_t)&g_af_gametype_names[0]); // multi_join_game_init
 
-    // patch listen server create menu gametype select field to use new table
+    // patch listen server create menu gametype select field to use new table.
+    // End pointer stops at NG_TYPE_UNK so UNK doesn't appear as a host-selectable
+    // option in the dropdown — UNK is a display-only sentinel for the browser.
     const uintptr_t base = (uintptr_t)&g_af_gametype_names[0];
-    const uintptr_t end = base + sizeof(g_af_gametype_names);
+    const uintptr_t end = (uintptr_t)&g_af_gametype_names[rf::NG_TYPE_UNK];
     const uintptr_t kMovBase = 0x004459B1;
     const uintptr_t kCmpEnd = 0x004459CE;
     write_mem<uint32_t>(kMovBase + 1, (uint32_t)base);
     write_mem<uint32_t>(kCmpEnd + 2, (uint32_t)end);
+
+    // Defensive clamp against game_type OOB crash in stale server records (like from favlist.adr)
+    server_list_load_entry_game_type_guard.install();
 
     // team_score packet expansion to support new team gametypes
     send_team_score_server_do_frame_patch.install();
@@ -2018,4 +2583,19 @@ void gametype_do_patch()
 
     // handle new non-team modes
     multi_get_game_type_non_team_mode_hook.install();
+
+    // render the cosmetic carrier attachment for the gametypes that have one
+    carrier_attachment_render_patch.install();
+
+    // bagman specific
+    bagman_do_patch();
+
+    // jetpack specific (registers the single player `jetpack` console command)
+    jetpack_apply_patch();
+
+    // salvage specific
+    salvage_do_patch();
+
+    // rounds
+    rounds_do_patch();
 }

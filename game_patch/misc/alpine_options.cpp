@@ -4,10 +4,12 @@
 #include <patch_common/CodeInjection.h>
 #include <patch_common/ShortTypes.h>
 #include <patch_common/AsmWriter.h>
+#include <common/utils/string-utils.h>
 #include <regex>
 #include "player.h"
 #include "alpine_settings.h"
 #include "../misc/vpackfile.h"
+#include "../multi/multi.h"
 #include "../os/console.h"
 #include "../rf/file/file.h"
 #include "../rf/gr/gr.h"
@@ -20,15 +22,20 @@
 #include "../rf/misc.h"
 #include "../rf/os/os.h"
 #include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <iostream>
 #include <fstream>
 #include <memory>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <stdexcept>
 #include <unordered_map>
 #include <unordered_set>
 #include <variant>
+#include <vector>
 #include <windows.h>
 #include <shellapi.h>
 #include <xlog/xlog.h>
@@ -36,8 +43,10 @@
 AlpineOptionsConfig g_alpine_options_config;
 AlpineLevelInfoConfig g_alpine_level_info_config;
 
-static std::unordered_set<std::string> g_p2t_fix_levels; // list of levels to apply power2tex fix
-static std::unordered_set<std::string> g_known_run_levels; // list of run mode levels manually added
+static std::unordered_set<std::string> g_p2t_fix_levels; // apply pow2tex fix
+static std::unordered_set<std::string> g_known_run_levels; // manually add to listen server map list
+static std::unordered_set<std::string> g_sky_fix_levels; // strip Show Sky flag from skybox faces
+static std::unordered_set<std::string> g_stock_alpha_test_levels; // use stock D3D8 alpha test threshold
 static std::string af_default_player_entity = "miner1";
 static std::string af_suit_player_entity = "parker_suit";
 static std::string af_sci_player_entity = "parker_sci";
@@ -47,15 +56,19 @@ bool is_p2t_fix_level(const std::string& filename)
     return g_p2t_fix_levels.contains(string_to_lower(filename));
 }
 
+bool is_sky_fix_level(const std::string& filename)
+{
+    return g_sky_fix_levels.contains(string_to_lower(filename));
+}
+
+bool is_stock_alpha_test_level(const std::string& filename)
+{
+    return g_stock_alpha_test_levels.contains(string_to_lower(filename));
+}
+
 bool is_known_run_level(const std::string& filename)
 {
-    std::string level_name = filename;
-    
-    if (!string_iends_with(level_name, ".rfl")) {
-        level_name += ".rfl";
-    }
-
-    return g_known_run_levels.contains(string_to_lower(level_name));
+    return g_known_run_levels.contains(string_to_lower(normalize_level_filename(filename)));
 }
 
 // trim leading and trailing whitespace
@@ -67,14 +80,8 @@ std::string trim(const std::string& str, bool remove_quotes = false)
         return "";
     }        
 
-    std::string trimmed = str.substr(start, end - start + 1);
-
-    // extract quoted value
-    if (remove_quotes && trimmed.size() >= 2 && trimmed.front() == '"' && trimmed.back() == '"') {
-        trimmed = trimmed.substr(1, trimmed.size() - 2);
-    }
-
-    return trimmed;
+    const std::string_view trimmed = std::string_view{str}.substr(start, end - start + 1);
+    return std::string{remove_quotes ? unquote(trimmed) : trimmed};
 }
 
 // ===== Parsers for AlpineOptions =====
@@ -256,7 +263,12 @@ std::optional<std::pair<std::string, std::string>> parse_mesh_replacement(const 
 
     if (std::regex_match(trimmed_value, matches, mesh_replacement_pattern)) {
         if (matches.size() == 3) { // Full match and 2 filename captures
-            return std::make_pair(trim(matches[1].str(), true), trim(matches[2].str(), true));
+            constexpr size_t mesh_replacement_max_len = 31; // obj_create_mesh copies into char[32]
+            std::string replacement = trim(matches[2].str(), true);
+            if (replacement.size() > mesh_replacement_max_len) {
+                return std::nullopt;
+            }
+            return std::make_pair(trim(matches[1].str(), true), std::move(replacement));
         }
     }
     return std::nullopt;
@@ -283,7 +295,11 @@ const std::unordered_map<std::string, LevelInfoMetadata> level_info_metadata = {
     {"$Chat Menu 7", {AlpineLevelInfoID::ChatMap7, parse_string_level}},
     {"$Chat Menu 8", {AlpineLevelInfoID::ChatMap8, parse_string_level}},
     {"$Chat Menu 9", {AlpineLevelInfoID::ChatMap9, parse_string_level}},
-    {"$Crater Texture PPM", {AlpineLevelInfoID::CraterTexturePPM, parse_float_level}}
+    {"$Crater Texture PPM", {AlpineLevelInfoID::CraterTexturePPM, parse_float_level}},
+    {"$Use Vertex Lighting", {AlpineLevelInfoID::UseVertexLighting, parse_bool_level}},
+    {"$Pixel Lighting Overbright", {AlpineLevelInfoID::PixelLightOverbright, parse_float_level}},
+    {"$Disable Caustics", {AlpineLevelInfoID::DisableCaustics, parse_bool_level}},
+    {"$Disable Underwater Fog", {AlpineLevelInfoID::DisableUnderwaterFog, parse_bool_level}}
 };
 
 // Load level info from filename_info.tbl
@@ -370,6 +386,21 @@ void load_level_info_config(const std::string& level_filename)
             }
             else {
                 xlog::warn("Invalid mesh replacement format in {}", info_filename);
+            }
+
+            continue;
+        }
+
+        // handle looping sounds
+        if (option_name == "$Looping Sound") {
+            std::string filename = trim(trim(option_value, true), false);
+            // Sound entries are bare file names, so a path or a stray quote could never match one
+            if (!filename.empty() && filename.find_first_of("/\\\"") == std::string::npos) {
+                g_alpine_level_info_config.looping_sounds.insert(string_to_lower(filename));
+                xlog::debug("Looping Sound Added: {} in {}", filename, level_filename);
+            }
+            else {
+                xlog::warn("Invalid looping sound format in {}", info_filename);
             }
 
             continue;
@@ -515,13 +546,15 @@ CallHook<int(const char*, int, bool)> ice_geo_crater_bm_load_hook {
 };
 
 // fall damage when impacting
+// engine splits the slam call site by rf::is_multi
+// (0x0049DE23 single player, 0x0049DE39 multiplayer)
 CallHook<void(rf::Entity*, float)> physics_calc_fall_damage_slam_hook{
-    0x0049DE39,
+    {0x0049DE23, 0x0049DE39},
     [](rf::Entity* entity, float rel_vel) {
         float damage_multiplier = get_option_or_default<float>(AlpineOptionID::FallDamageSlamMultiplier, 1.0f);
         float adjusted_rel_vel = rel_vel * damage_multiplier;
 
-        xlog::warn("New slam damage value is {}", adjusted_rel_vel);
+        xlog::trace("New slam damage value is {}", adjusted_rel_vel);
 
         physics_calc_fall_damage_slam_hook.call_target(entity, adjusted_rel_vel);
     }
@@ -534,7 +567,7 @@ CallHook<void(rf::Entity*, float)> physics_calc_fall_damage_land_hook{
         float damage_multiplier = get_option_or_default<float>(AlpineOptionID::FallDamageLandMultiplier, 1.0f);
         float adjusted_rel_vel = rel_vel * damage_multiplier;
 
-        xlog::warn("New land damage value is {}", adjusted_rel_vel);
+        xlog::trace("New land damage value is {}", adjusted_rel_vel);
 
         physics_calc_fall_damage_land_hook.call_target(entity, adjusted_rel_vel);
     }
@@ -575,7 +608,7 @@ FunHook<void(int, int)> extras_summoner_trailer_click_hook{
                 break;
             case 4: { // Load level
                 auto level_filename = get_option_value<std::string>(AlpineOptionID::SumTrailerButtonLevelFile);
-                rf::level_set_level_to_load(level_filename.c_str(), "");
+                rf::level_set_level_to_load(rf::String{level_filename.c_str()}, rf::String{""});
                 rf::game_new_game();
                 break;
             }
@@ -745,6 +778,55 @@ void apply_af_options_patches()
     }
 }
 
+static bool parse_custom_weapon_prop(CustomWeaponProps& props, const std::string& name, const std::string& value,
+                                     const std::string& file_name)
+{
+    auto parse_number = [&](float min_value, float& out) {
+        char* end = nullptr;
+        out = std::strtof(value.c_str(), &end);
+        const bool valid = end != value.c_str() && std::isfinite(out) && out >= min_value;
+        if (!valid) {
+            xlog::warn("[Fpgun] Invalid {} {} in {}", name, value, file_name);
+        }
+        return valid;
+    };
+
+    float number = 0.0f;
+    if (string_iequals(name, "+1st Person FOV")) {
+        if (parse_number(1.0f, number)) {
+            props.first_person_fov = number;
+        }
+    }
+    else if (string_iequals(name, "+1st Person offset")) {
+        rf::Vector3 offset;
+        if (std::sscanf(value.c_str(), " < %f , %f , %f >", &offset.x, &offset.y, &offset.z) == 3
+            && std::isfinite(offset.x) && std::isfinite(offset.y) && std::isfinite(offset.z)) {
+            props.first_person_offset = offset;
+        }
+        else {
+            xlog::warn("[Fpgun] Invalid {} {} in {}", name, value, file_name);
+        }
+    }
+    else if (string_iequals(name, "+1st Person Muzzle Flash Bitmap")) {
+        std::string bitmap = trim(value, true);
+        if (bitmap.empty()) {
+            xlog::warn("[Fpgun] Empty {} in {}", name, file_name);
+        }
+        else {
+            props.first_person_muzzle_flash_bitmap = std::move(bitmap);
+        }
+    }
+    else if (string_iequals(name, "+1st Person Muzzle Flash Radius")) {
+        if (parse_number(0.0f, number)) {
+            props.first_person_muzzle_flash_radius = number;
+        }
+    }
+    else {
+        return false;
+    }
+    return true;
+}
+
 void load_single_af_options_file(const std::string& file_name)
 {
     auto af_options_file = std::make_unique<rf::File>();
@@ -786,6 +868,10 @@ void load_single_af_options_file(const std::string& file_name)
         return;
     }
 
+    const bool is_af_client_file = file_name.starts_with("af_client") && file_name.ends_with(".tbl");
+    std::optional<FpgunArmsOverride> fpgun_arms_override;
+    std::optional<CustomWeaponProps> custom_weapon_props;
+
     // Process options until #End marker is found
     bool found_end = false;
     while (std::getline(file_stream, line)) {
@@ -807,9 +893,74 @@ void load_single_af_options_file(const std::string& file_name)
         std::string option_name = trim(line.substr(0, delimiter_pos), false);
         std::string option_value = trim(line.substr(delimiter_pos + 1), false);
 
+        if (fpgun_arms_override && option_name.starts_with('$')) {
+            player_fpgun_add_arms_override(std::move(*fpgun_arms_override));
+            fpgun_arms_override.reset();
+        }
+        if (custom_weapon_props && option_name.starts_with('$')) {
+            player_fpgun_add_custom_weapon_props(std::move(*custom_weapon_props));
+            custom_weapon_props.reset();
+        }
+
+        if (is_af_client_file && !rf::is_dedicated_server) {
+            if (option_name == "$Custom Weapon Props") {
+                std::string weapon = trim(option_value, true);
+                if (weapon.empty()) {
+                    xlog::warn("[Fpgun] $Custom Weapon Props in {} needs a quoted weapon name", file_name);
+                }
+                else {
+                    custom_weapon_props = CustomWeaponProps{std::move(weapon)};
+                }
+                continue;
+            }
+            if (custom_weapon_props && option_name.starts_with('+')) {
+                if (!parse_custom_weapon_prop(*custom_weapon_props, option_name, option_value, file_name)) {
+                    xlog::warn("[Fpgun] Unknown $Custom Weapon Props field {} in {}", option_name, file_name);
+                }
+                continue;
+            }
+            if (option_name == "$Fpgun Override") {
+                std::regex quoted_pattern("\\\"([^\"]+)\\\"");
+                std::vector<std::string> names;
+                for (auto it = std::sregex_iterator(option_value.begin(), option_value.end(), quoted_pattern);
+                     it != std::sregex_iterator(); ++it) {
+                    names.push_back((*it)[1].str());
+                }
+                if (names.size() == 2) {
+                    fpgun_arms_override = FpgunArmsOverride{names[0], names[1]};
+                }
+                else {
+                    xlog::warn("[Fpgun] $Fpgun Override in {} needs a quoted character and weapon name", file_name);
+                }
+                continue;
+            }
+            if (fpgun_arms_override && option_name.starts_with('+')) {
+                std::string value = trim(option_value, true);
+                if (value.empty()) {
+                    xlog::warn("[Fpgun] Empty {} in {}", option_name, file_name);
+                }
+                else if (option_name == "+Model") {
+                    fpgun_arms_override->model = std::move(value);
+                }
+                else if (option_name == "+Hand Texture") {
+                    fpgun_arms_override->textures[0] = std::move(value);
+                }
+                else if (option_name == "+Forearm Texture") {
+                    fpgun_arms_override->textures[1] = std::move(value);
+                }
+                else if (option_name == "+Bicep Texture") {
+                    fpgun_arms_override->textures[2] = std::move(value);
+                }
+                else {
+                    xlog::warn("[Fpgun] Unknown $Fpgun Override field {} in {}", option_name, file_name);
+                }
+                continue;
+            }
+        }
+
         // Handle af_level_quirks.tbl
         if (file_name == "af_level_quirks.tbl" &&
-            (option_name == "$P2T Fix" || option_name == "$Known Run Maps")) {
+            (option_name == "$P2T Fix" || option_name == "$Known Run Maps" || option_name == "$Sky Fix" || option_name == "$Stock Alpha Test")) {
             std::regex filename_pattern("\\\"([^\"]+)\\\"");
             auto begin = std::sregex_iterator(option_value.begin(), option_value.end(), filename_pattern);
             auto end = std::sregex_iterator();
@@ -824,18 +975,25 @@ void load_single_af_options_file(const std::string& file_name)
                     g_known_run_levels.insert(string_to_lower(filename));
                     //xlog::warn("Run mode level added: {}", filename);
                 }
+                else if (option_name == "$Sky Fix") {
+                    g_sky_fix_levels.insert(string_to_lower(filename));
+                    //xlog::warn("Sky Fix level added: {}", filename);
+                }
+                else if (option_name == "$Stock Alpha Test") {
+                    g_stock_alpha_test_levels.insert(string_to_lower(filename));
+                }
             }
 
             continue;
         }
 
         auto meta_it = option_metadata.find(option_name);
+        const bool meta_found = meta_it != option_metadata.end();
 
         // Allow any af_client*.tbl file for options designated to af_client.tbl
-        bool is_af_client_variant = (meta_it->second.filename == "af_client.tbl" &&
-                                     file_name.rfind("af_client", 0) == 0 && file_name.ends_with(".tbl"));
+        const bool is_af_client_variant = meta_found && meta_it->second.filename == "af_client.tbl" && is_af_client_file;
 
-        if (meta_it != option_metadata.end() &&
+        if (meta_found &&
             (meta_it->second.filename == file_name || is_af_client_variant) &&
             (!rf::is_dedicated_server || meta_it->second.apply_on_server)) {
             
@@ -848,7 +1006,7 @@ void load_single_af_options_file(const std::string& file_name)
                 xlog::debug("Option ID {} marked as loaded", static_cast<std::size_t>(metadata.id));
             }
         }
-        else if (meta_it != option_metadata.end()) {
+        else if (meta_found) {
             if (meta_it->second.filename != file_name && !is_af_client_variant) {
                 xlog::warn("Option {} in {} skipped (wrong alpine tbl file)", option_name, file_name);
             }
@@ -859,6 +1017,13 @@ void load_single_af_options_file(const std::string& file_name)
                 xlog::debug("Option {} in {} skipped (reason unknown)", option_name, file_name);
             }
         }
+    }
+
+    if (fpgun_arms_override) {
+        player_fpgun_add_arms_override(std::move(*fpgun_arms_override));
+    }
+    if (custom_weapon_props) {
+        player_fpgun_add_custom_weapon_props(std::move(*custom_weapon_props));
     }
 
     if (!found_end) {

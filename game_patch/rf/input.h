@@ -118,13 +118,22 @@ namespace rf
     };
 
     static auto& mouse_get_pos = addr_as_ref<int(int &x, int &y, int &z)>(0x0051E450);
+    static auto& mouse_set_pos = addr_as_ref<void(int x, int y)>(0x0051E4B0);
+    // Moves the OS cursor (ClientToScreen + SetCursorPos) when the window is foreground.
+    // Unlike mouse_set_pos it has no already-at-position early-out against the internal
+    // position globals, which can be stale in windowed-mouse mode.
+    static auto& mouse_force_pos = addr_as_ref<void(int x, int y)>(0x0051DE60);
     static auto& mouse_get_delta = addr_as_ref<void(int& dx, int& dy, int& dz)>(0x0051E630);
     static auto& mouse_was_button_pressed = addr_as_ref<int(int btn_idx)>(0x0051E5D0);
     static auto& mouse_button_is_down = addr_as_ref<bool(int btn_idx)>(0x0051E530);
     static auto& mouse_set_visible = addr_as_ref<void(bool visible)>(0x0051E680);
+    static auto& mouse_keep_centered_enable = addr_as_ref<void()>(0x0051E690);
+    static auto& mouse_keep_centered_disable = addr_as_ref<void()>(0x0051E6A0);
     static auto& key_process_event = addr_as_ref<void(int scan_code, int key_down, int delta_time)>(0x0051E6C0);
     static auto& key_is_down = addr_as_ref<bool(Key key)>(0x0051F220);
     static auto& key_get_and_reset_down_counter = addr_as_ref<int(Key key)>(0x0051F140);
+    static auto& key_get = addr_as_ref<Key()>(0x0051F000);
+    static auto& key_to_ascii = addr_as_ref<int(int16_t key)>(0x0051EFC0);
 
     static auto& scope_sensitivity_constant = addr_as_ref<float>(0x005895C0);
     static auto& mouse_initialized = addr_as_ref<uint8_t>(0x01885461);

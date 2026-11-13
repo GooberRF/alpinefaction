@@ -5,6 +5,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <variant>
 #include <cstddef>
 #include <xlog/xlog.h>
@@ -125,6 +126,10 @@ enum class AlpineLevelInfoID
     ChatMap8,
     ChatMap9,
     CraterTexturePPM,
+    UseVertexLighting,
+    PixelLightOverbright,
+    DisableCaustics,
+    DisableUnderwaterFog,
     _optioncount       // dummy for total count
 };
 
@@ -151,12 +156,14 @@ struct AlpineLevelInfoConfig
     std::string current_level;
     std::unordered_map<AlpineLevelInfoID, LevelInfoValue> level_options;
     std::unordered_map<std::string, std::string> mesh_replacements; // stored lowercase
+    std::unordered_set<std::string> looping_sounds; // stored lowercase
 
     void reset_for_level(const std::string& level)
     {
         current_level = level;
         level_options.clear();
         mesh_replacements.clear();
+        looping_sounds.clear();
     }
 
     // Check if an option exists for a given level
@@ -190,5 +197,7 @@ inline T get_level_info_or_default(const std::string& level, AlpineLevelInfoID i
 }
 
 bool is_p2t_fix_level(const std::string& filename);
+bool is_sky_fix_level(const std::string& filename);
+bool is_stock_alpha_test_level(const std::string& filename);
 bool is_known_run_level(const std::string& filename);
 void open_url(const std::string& url);

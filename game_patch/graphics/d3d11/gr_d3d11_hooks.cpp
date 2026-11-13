@@ -1,25 +1,156 @@
 #include <algorithm>
+#include <cmath>
+#include <cstring>
+#include <vector>
 #include <patch_common/AsmWriter.h>
 #include <patch_common/CallHook.h>
 #include <patch_common/CodeInjection.h>
 #include <patch_common/FunHook.h>
 #include <common/utils/list-utils.h>
+#include <common/alpine_mesh_scale.h>
 #include <float.h>
 #include "../../rf/gr/gr.h"
 #include "../../rf/gr/gr_light.h"
 #include "../../rf/os/os.h"
+#include "../../rf/os/frametime.h"
 #include "../../rf/v3d.h"
 #include "../../rf/character.h"
 #include "../../rf/level.h"
+#include "../../rf/geometry.h"
 #include "../../rf/mover.h"
+#include "../../rf/object.h"
+#include "../../rf/particle_emitter.h"
+#include "../../rf/player/player.h"
+#include "../../rf/vmesh.h"
+#include "../../rf/vfx.h"
 #include "../../bmpman/bmpman.h"
 #include "../../main/main.h"
 #include "../../misc/misc.h"
+#include "../../misc/level.h"
+#include "../../misc/alpine_options.h"
 #include "../../misc/alpine_settings.h"
+#include "../../os/console.h"
+#include "../detail_texture.h"
+#include "../gr.h"
 #include "gr_d3d11.h"
+#include "gr_d3d11_hooks.h"
+#include "../gr_ghost_mesh.h"
+#include "../../misc/settings_registry.h"
+#include <common/gr_d3d11/gr_d3d11_terrain.h>
+#include <common/gr_d3d11/gr_d3d11_liquid.h>
+#include <common/gr_d3d11/gr_d3d11_mesh.h>
+#include <common/gr_d3d11/gr_d3d11_vfx.h>
 
-namespace df::gr::d3d11
+void gr_light_use_static(bool use_static);
+
+namespace gr::d3d11
 {
+    // Local working buffer for gathered lights. Preserves dynamic-light results
+    // while running the static-light pass, then overwrites the globals for GPU upload.
+    static rf::gr::Light* gathered_lights[rf::gr::max_relevant_lights];
+
+    namespace
+    {
+        struct StaticMeshLight
+        {
+            rf::gr::Light* light;
+            rf::Vector3 vec;
+            rf::Vector3 vec2;
+            float rad_2;
+            bool tube;
+            bool subtractive;
+        };
+
+        // The static pass doesn't depend on the mesh; rebuilt each frame, since Anchor_Marker moves lights without
+        // bumping light_cache_key, and whenever the key changes
+        struct StaticMeshLights
+        {
+            int frame = -1;
+            int key = 0;
+            rf::GSolid* solid = nullptr;
+            std::vector<StaticMeshLight> lights;
+        };
+    }
+    static StaticMeshLights g_static_mesh_lights;
+    static rf::gr::Light* g_reaching_static_lights[rf::gr::max_relevant_lights];
+
+    // When true, render_v3d_vif/render_character_vif skip automatic light gathering.
+    // Used by sky room mesh rendering which pre-gathers lights at the untransformed position.
+    static bool skip_mesh_light_gather = false;
+
+    static void update_static_mesh_lights()
+    {
+        StaticMeshLights& cache = g_static_mesh_lights;
+        if (cache.frame == rf::frame_count && cache.key == rf::gr::light_cache_key
+            && cache.solid == rf::level.geometry) {
+            return;
+        }
+        rf::gr::light_filter_reset();
+        gr_light_use_static(true);
+        rf::gr::light_filter_set_solid(rf::level.geometry, true, true);
+        gr_light_use_static(false);
+        const int count = std::min(rf::gr::num_relevant_lights, rf::gr::max_relevant_lights);
+        cache.lights.clear();
+        for (int i = 0; i < count; ++i) {
+            rf::gr::Light* light = rf::gr::relevant_lights[i];
+            cache.lights.push_back({light, light->vec, light->vec2, light->rad_2, light->type == rf::gr::LT_TUBE,
+                                    light->r < 0.0f || light->g < 0.0f || light->b < 0.0f});
+        }
+        cache.frame = rf::frame_count;
+        // gr_light_use_static bumped it
+        cache.key = rf::gr::light_cache_key;
+        cache.solid = rf::level.geometry;
+    }
+
+    // Gather both dynamic and static lights for GPU-lit meshes.
+    // is_find_static_lights controls which linked list the internal light search
+    // functions traverse, so we must call light_filter_set_solid twice to get both.
+    static void gather_mesh_lights(const rf::Vector3& pos, float mesh_radius = 0.0f)
+    {
+        // Pass 1: dynamic lights (default is_find_static_lights=false)
+        rf::gr::light_filter_set_solid(rf::level.geometry, true, false);
+        int dynamic_count = std::min(rf::gr::num_relevant_lights, rf::gr::max_relevant_lights);
+
+        // Copy dynamic lights to local buffer
+        int total = 0;
+        for (int i = 0; i < dynamic_count && total < rf::gr::max_relevant_lights; ++i) {
+            gathered_lights[total++] = rf::gr::relevant_lights[i];
+        }
+
+        // Pass 2: static lights (requires is_find_static_lights=true)
+        if (g_alpine_game_config.mesh_lighting_use_static()) {
+            update_static_mesh_lights();
+            // prioritize_mesh_lights drops the others too; dropping them here spares it a walk of every static light
+            int static_count = 0;
+            for (const StaticMeshLight& sl : g_static_mesh_lights.lights) {
+                if (!sl.subtractive && light_reaches_mesh(sl.tube, sl.vec, sl.vec2, sl.rad_2, pos, mesh_radius)) {
+                    g_reaching_static_lights[static_count++] = sl.light;
+                }
+            }
+
+            // Insert static lights before dynamic so static don't push out dynamic
+            // Shift dynamic lights right, insert static at front
+            if (static_count > 0 && total > 0) {
+                int space = std::min(static_count, rf::gr::max_relevant_lights - total);
+                std::memmove(gathered_lights + space, gathered_lights, total * sizeof(rf::gr::Light*));
+                for (int i = 0; i < space; ++i) {
+                    gathered_lights[i] = g_reaching_static_lights[i];
+                }
+                total += space;
+            } else {
+                for (int i = 0; i < static_count && total < rf::gr::max_relevant_lights; ++i) {
+                    gathered_lights[total++] = g_reaching_static_lights[i];
+                }
+            }
+        }
+
+        total = prioritize_mesh_lights(gathered_lights, total, pos, mesh_radius);
+
+        // Write results back to the global arrays for the GPU upload to read
+        std::memcpy(rf::gr::relevant_lights, gathered_lights, total * sizeof(rf::gr::Light*));
+        rf::gr::num_relevant_lights = total;
+    }
+
     static std::optional<Renderer> renderer;
 
     void update_window_mode();
@@ -110,6 +241,16 @@ namespace df::gr::d3d11
         renderer->bitmap(bitmap_handle, x, y, w, h, sx, sy, sw, sh, flip_x, flip_y, mode);
     }
 
+    void ui_sdf(const UiSdfDraw& draw, rf::gr::Mode mode)
+    {
+        renderer->ui_sdf(draw, mode);
+    }
+
+    void poly_2d(int bitmap_handle, int nv, const rf::gr::Vertex* vertices, rf::gr::Mode mode)
+    {
+        renderer->poly_2d(bitmap_handle, nv, vertices, mode);
+    }
+
     void set_clip()
     {
         renderer->set_clip();
@@ -143,6 +284,13 @@ namespace df::gr::d3d11
     void texture_flush_cache(bool force)
     {
         renderer->texture_flush_cache(force);
+    }
+
+    void texture_flush_non_user_cache()
+    {
+        if (renderer) {
+            renderer->texture_flush_non_user_cache();
+        }
     }
 
     void texture_mark_dirty(int bm_handle)
@@ -187,9 +335,89 @@ namespace df::gr::d3d11
         renderer->render_solid(solid, rooms, num_rooms);
     }
 
+    // Stock gr_d3d_render_movable_solid (0x00553C60) gathers only dynamic lights
+    // using the mover's own GSolid (not level.geometry). Static lights are already
+    // baked into the mover's lightmap, so we must not add them as point lights.
+    // The stock engine also temporarily transforms the solid's bbox to world space
+    // before calling light_filter_set_solid, since it uses bbox for sphere overlap tests.
+    class ScopedMovableSolidLights
+    {
+    public:
+        ScopedMovableSolidLights(rf::GSolid* solid, const rf::Vector3& pos, const rf::Matrix3& orient)
+        {
+            if (!solid) {
+                return;
+            }
+            // Save local-space bbox
+            rf::Vector3 saved_min = solid->bbox_min;
+            rf::Vector3 saved_max = solid->bbox_max;
+
+            // Transform local bbox to world-space AABB (replicates stock FUN_00539a40)
+            rf::Vector3 local_center = (saved_min + saved_max) * 0.5f;
+            rf::Vector3 half = (saved_max - saved_min) * 0.5f;
+            rf::Vector3 world_center = pos + orient.transform_vector(local_center);
+            // Compute world-space half-extents from oriented local half-extents
+            rf::Vector3 world_half{
+                std::abs(orient.rvec.x) * half.x + std::abs(orient.uvec.x) * half.y + std::abs(orient.fvec.x) * half.z,
+                std::abs(orient.rvec.y) * half.x + std::abs(orient.uvec.y) * half.y + std::abs(orient.fvec.y) * half.z,
+                std::abs(orient.rvec.z) * half.x + std::abs(orient.uvec.z) * half.y + std::abs(orient.fvec.z) * half.z,
+            };
+            solid->bbox_min = world_center - world_half;
+            solid->bbox_max = world_center + world_half;
+
+            rf::gr::light_filter_set_solid(solid, true, false);
+            lights_gathered_ = true;
+
+            // Restore local-space bbox
+            solid->bbox_min = saved_min;
+            solid->bbox_max = saved_max;
+        }
+
+        ~ScopedMovableSolidLights()
+        {
+            if (lights_gathered_) {
+                rf::gr::light_filter_reset();
+                renderer->clear_mesh_lights();
+            }
+        }
+
+        ScopedMovableSolidLights(const ScopedMovableSolidLights&) = delete;
+        ScopedMovableSolidLights& operator=(const ScopedMovableSolidLights&) = delete;
+    private:
+        bool lights_gathered_ = false;
+    };
+
+    static rf::MoverBrush* find_mover_brush(rf::GSolid* solid)
+    {
+        for (auto& mb : DoublyLinkedList{rf::mover_brush_list}) {
+            if (mb.geometry == solid) {
+                return &mb;
+            }
+        }
+        return nullptr;
+    }
+
+    // Deferred alpha pass for a single mover brush, registered by obj_render_all_hook
+    static void render_mover_brush_alpha(void* user, rf::GSolid*)
+    {
+        auto* mb = static_cast<rf::MoverBrush*>(rf::obj_from_handle(static_cast<int>(reinterpret_cast<intptr_t>(user))));
+        if (!mb || !mb->geometry) {
+            return;
+        }
+        ScopedMovableSolidLights light_scope{mb->geometry, mb->pos, mb->orient};
+        renderer->render_movable_solid_alpha(mb->geometry, mb->pos, mb->orient);
+    }
+
     void render_movable_solid(rf::GSolid* solid, const rf::Vector3& pos, const rf::Matrix3& orient)
     {
-        renderer->render_movable_solid(solid, pos, orient);
+        // Mover brush see-through faces are drawn later, in the sorted alpha pass, so their depth
+        // writes stop hiding whatever is behind them. Debris solids reach here too and keep drawing
+        // their alpha faces inline.
+        rf::MoverBrush* mb = find_mover_brush(solid);
+        bool include_alpha = !mb || (mb->obj_flags & rf::OF_HAS_ALPHA);
+
+        ScopedMovableSolidLights light_scope{solid, pos, orient};
+        renderer->render_movable_solid(solid, pos, orient, include_alpha);
     }
 
     void render_alpha_detail_room(rf::GRoom *room, rf::GSolid *solid)
@@ -201,49 +429,151 @@ namespace df::gr::d3d11
 
     void render_sky_room(rf::GRoom *room)
     {
-        renderer->render_sky_room(room);
+        if (!room) {
+            return;
+        }
+
+        // Render sky room geometry and movers; get the computed sky transform back
+        rf::Vector3 sky_transform_pos;
+        rf::Matrix3 sky_transform_orient;
+        renderer->render_sky_room(room, sky_transform_pos, sky_transform_orient);
+
+        // Gather lights once for the sky room and build transformed copies.
+        // Filter to only lights within the sky room's bounding box.
+        // All meshes in the same sky room share the same light set.
+        constexpr int max_sky_lights = 32;
+        rf::gr::Light sky_light_copies[max_sky_lights];
+        rf::gr::Light* sky_light_ptrs[max_sky_lights];
+        int sky_light_count = 0;
+
+        gather_mesh_lights(rf::Vector3{
+            (room->bbox_min.x + room->bbox_max.x) * 0.5f,
+            (room->bbox_min.y + room->bbox_max.y) * 0.5f,
+            (room->bbox_min.z + room->bbox_max.z) * 0.5f});
+
+        for (int i = 0; i < rf::gr::num_relevant_lights && sky_light_count < max_sky_lights; ++i) {
+            rf::gr::Light* light = rf::gr::relevant_lights[i];
+            if (light->vec.x < room->bbox_min.x || light->vec.x > room->bbox_max.x ||
+                light->vec.y < room->bbox_min.y || light->vec.y > room->bbox_max.y ||
+                light->vec.z < room->bbox_min.z || light->vec.z > room->bbox_max.z) {
+                continue;
+            }
+            sky_light_copies[sky_light_count] = *light;
+            sky_light_copies[sky_light_count].vec = sky_transform_orient.transform_vector(light->vec) + sky_transform_pos;
+            sky_light_copies[sky_light_count].vec2 = sky_transform_orient.transform_vector(light->vec2) + sky_transform_pos;
+            sky_light_copies[sky_light_count].spotlight_dir = sky_transform_orient.transform_vector(light->spotlight_dir);
+            sky_light_ptrs[sky_light_count] = &sky_light_copies[sky_light_count];
+            sky_light_count++;
+        }
+        rf::gr::light_filter_reset();
+
+        // Render meshes (entities, clutter, items, etc.) that are in the sky room
+        for (rf::Object* obj = rf::object_list.next_obj; obj != &rf::object_list; obj = obj->next_obj) {
+            if (!obj->vmesh || obj->room != room) {
+                continue;
+            }
+            if (obj->obj_flags & rf::OF_HIDDEN) {
+                continue;
+            }
+            if (obj->type == rf::OT_MOVER_BRUSH) {
+                continue;
+            }
+
+            // Set pre-built sky room lights for this mesh
+            std::memcpy(rf::gr::relevant_lights, sky_light_ptrs, sky_light_count * sizeof(rf::gr::Light*));
+            rf::gr::num_relevant_lights = sky_light_count;
+            skip_mesh_light_gather = true;
+
+            rf::MeshRenderParams render_params{};
+            render_params.init_defaults();
+            render_params.flags = rf::MRF_CLIP_VERTICES;
+            render_params.vertex_colors = reinterpret_cast<rf::ubyte*>(obj->mesh_lighting_data);
+            if (room->ambient_light_defined) {
+                render_params.flags |= rf::MRF_CUSTOM_AMBIENT_COLOR;
+                render_params.ambient_color = room->ambient_light;
+            }
+
+            rf::Vector3 transformed_pos = sky_transform_orient.transform_vector(obj->pos) + sky_transform_pos;
+            rf::Matrix3 transformed_orient = sky_transform_orient;
+            transformed_orient.mul(obj->orient);
+            if (const float scale = alpine_mesh_draw_scale(obj); scale != 1.0f) {
+                transformed_orient = alpine_mesh_scale::scale_orient(transformed_orient, scale);
+            }
+            rf::vmesh_render(obj->vmesh, &transformed_pos, &transformed_orient, &render_params);
+
+            skip_mesh_light_gather = false;
+            renderer->clear_mesh_lights();
+        }
+
+        // Covers the meshes above as well as the sky solid; the world pass clears it again
+        renderer->set_sky_room(false);
+        renderer->set_draw_room_uid(-1);
     }
 
     void render_v3d_vif(rf::VifLodMesh *lod_mesh, [[maybe_unused]] rf::VifMesh *mesh, const rf::Vector3& pos, const rf::Matrix3& orient, int lod_index, const rf::MeshRenderParams& params)
     {
+        if (lod_mesh && lod_index >= 0 && lod_index < lod_mesh->num_levels && !level_uses_vertex_lighting()) {
+            bool lights_gathered = false;
+            if (rf::level.geometry && !skip_mesh_light_gather) {
+                // A scaled orient scales the mesh's extent too. `pos` is already the mesh centre: the stock
+                // caller adds orient * lod_mesh->center.
+                const float radius = lod_mesh->radius * orient.rvec.len();
+                gather_mesh_lights(pos, radius);
+                renderer->set_mesh_bounds(pos, radius);
+                lights_gathered = true;
+            }
+
+            // Ensure render cache exists before setting self-illumination.
+            renderer->page_in_v3d_mesh(lod_mesh);
+
+            // Detect fullbright batches from CPU vertex colors.
+            if (params.vertex_colors && lod_mesh->render_cache) {
+                auto* cache = reinterpret_cast<BaseMeshRenderCache*>(lod_mesh->render_cache);
+                rf::VifMesh* vif_mesh_lod = lod_mesh->meshes[lod_index];
+                if (vif_mesh_lod) {
+                    cache->mark_fullbright_batches(lod_index, *vif_mesh_lod, params.vertex_colors);
+                }
+            }
+
+            // Clear CPU vertex colors so the GPU shader handles all lighting.
+            rf::MeshRenderParams params_no_cpu_lighting = params;
+            params_no_cpu_lighting.vertex_colors = nullptr;
+
+            renderer->render_v3d_vif(lod_mesh, lod_index, pos, orient, params_no_cpu_lighting, true);
+
+            if (lights_gathered) {
+                rf::gr::light_filter_reset();
+                renderer->clear_mesh_lights();
+            }
+            return;
+        }
+
         renderer->render_v3d_vif(lod_mesh, lod_index, pos, orient, params);
     }
 
     void render_character_vif(rf::VifLodMesh *lod_mesh, [[maybe_unused]] rf::VifMesh *mesh, const rf::Vector3& pos, const rf::Matrix3& orient, const rf::CharacterInstance *ci, int lod_index, const rf::MeshRenderParams& params)
     {
+        bool use_vertex_lighting = level_uses_vertex_lighting();
+
         if (lod_mesh && lod_index >= 0 && lod_index < lod_mesh->num_levels) {
-            bool fullbright_character = g_character_meshes_are_fullbright && (params.flags & rf::MeshRenderFlags::MRF_FIRST_PERSON) == 0;
-            bool synthesize_colors = params.vertex_colors == nullptr || fullbright_character;
+            // Gather nearby lights (both static and dynamic) so the pixel shader can
+            // compute per-pixel N·L lighting for this character mesh.
+            // Skip when using vertex lighting — the old path doesn't need gathered lights.
+            bool is_first_person = (params.flags & rf::MeshRenderFlags::MRF_FIRST_PERSON) != 0;
+            bool lights_gathered = false;
+            if (!use_vertex_lighting && rf::level.geometry && !skip_mesh_light_gather) {
+                const float radius = lod_mesh->radius * orient.rvec.len();
+                gather_mesh_lights(pos, radius);
+                renderer->set_mesh_bounds(pos, radius);
+                lights_gathered = true;
+            }
+
+            bool fullbright_character = g_character_meshes_are_fullbright && !is_first_person;
+            // Baked vertex colors (character clutter) are only valid in vertex lighting modes
+            bool synthesize_colors = params.vertex_colors == nullptr || fullbright_character || !use_vertex_lighting;
 
             if (synthesize_colors) {
                 rf::MeshRenderParams params_with_vertex_colors = params;
-
-                float ambient_r = static_cast<float>(params.ambient_color.red);
-                float ambient_g = static_cast<float>(params.ambient_color.green);
-                float ambient_b = static_cast<float>(params.ambient_color.blue);
-                float lvl_ambient_r = static_cast<float>(rf::level.ambient_light.red);
-                float lvl_ambient_g = static_cast<float>(rf::level.ambient_light.green);
-                float lvl_ambient_b = static_cast<float>(rf::level.ambient_light.blue);
-
-                // if mesh amb color is full white it is usually because player is standing on a mover or a surface
-                // without lightmaps. Take a guess on a reasonable light level for the map so it doesn't look as ugly
-                if (ambient_r == 255 && ambient_g == 255 && ambient_b == 255) {
-                    ambient_r = lvl_ambient_r + 64.0f;
-                    ambient_g = lvl_ambient_g + 64.0f;
-                    ambient_b = lvl_ambient_b + 64.0f;
-                }
-
-                constexpr float scale = 1.5f;
-                constexpr float bias = 32.0f;
-
-                params_with_vertex_colors.ambient_color.red =
-                    static_cast<rf::ubyte>(std::clamp(ambient_r * scale + bias, 0.0f, 255.0f));
-                params_with_vertex_colors.ambient_color.green =
-                    static_cast<rf::ubyte>(std::clamp(ambient_g * scale + bias, 0.0f, 255.0f));
-                params_with_vertex_colors.ambient_color.blue =
-                    static_cast<rf::ubyte>(std::clamp(ambient_b * scale + bias, 0.0f, 255.0f));
-
-                //xlog::warn("built amb color {},{},{}", params_with_vertex_colors.ambient_color.red, params_with_vertex_colors.ambient_color.green, params_with_vertex_colors.ambient_color.blue);
 
                 rf::VifMesh* lod_mesh_level = lod_mesh->meshes[lod_index];
                 int total_vertices = 0;
@@ -261,10 +591,29 @@ namespace df::gr::d3d11
                 static thread_local ScratchVertexColors scratch_vertex_colors;
                 scratch_vertex_colors.data.resize(static_cast<std::size_t>(total_vertices) * 3);
 
-                rf::Color base_color = params_with_vertex_colors.ambient_color;
-                if (fullbright_character) {
-                    base_color = {255, 255, 255, 255};
+                rf::Color base_color{255, 255, 255, 255};
+
+                if (use_vertex_lighting && !fullbright_character) {
+                    // Old (master) CPU ambient calculation: scale + bias the entity's
+                    // lightmap-sampled ambient color into vertex colors.
+                    float ambient_r = static_cast<float>(params.ambient_color.red);
+                    float ambient_g = static_cast<float>(params.ambient_color.green);
+                    float ambient_b = static_cast<float>(params.ambient_color.blue);
+
+                    // White ambient means no lightmap data — guess from level ambient
+                    if (ambient_r == 255 && ambient_g == 255 && ambient_b == 255) {
+                        ambient_r = static_cast<float>(rf::level.ambient_light.red) + 64.0f;
+                        ambient_g = static_cast<float>(rf::level.ambient_light.green) + 64.0f;
+                        ambient_b = static_cast<float>(rf::level.ambient_light.blue) + 64.0f;
+                    }
+
+                    constexpr float scale = 1.5f;
+                    constexpr float bias = 32.0f;
+                    base_color.red = static_cast<rf::ubyte>(std::clamp(ambient_r * scale + bias, 0.0f, 255.0f));
+                    base_color.green = static_cast<rf::ubyte>(std::clamp(ambient_g * scale + bias, 0.0f, 255.0f));
+                    base_color.blue = static_cast<rf::ubyte>(std::clamp(ambient_b * scale + bias, 0.0f, 255.0f));
                 }
+                // else: enhanced lighting uses neutral white — shader handles all lighting
 
                 bool color_changed =
                     scratch_vertex_colors.last_color.red != base_color.red ||
@@ -283,22 +632,212 @@ namespace df::gr::d3d11
                 }
 
                 params_with_vertex_colors.vertex_colors = scratch_vertex_colors.data.data();
-                renderer->render_character_vif(lod_mesh, lod_index, pos, orient, ci, params_with_vertex_colors);
+                renderer->render_character_vif(lod_mesh, lod_index, pos, orient, ci, params_with_vertex_colors, !use_vertex_lighting);
+
+                if (lights_gathered) {
+                    rf::gr::light_filter_reset();
+                    renderer->clear_mesh_lights();
+                }
                 return;
             }
+
+            renderer->render_character_vif(lod_mesh, lod_index, pos, orient, ci, params);
+
+            if (lights_gathered) {
+                rf::gr::light_filter_reset();
+                renderer->clear_mesh_lights();
+            }
+            return;
         }
 
         renderer->render_character_vif(lod_mesh, lod_index, pos, orient, ci, params);
     }
+
+    static bool g_vfx_gpu = true;
+
+    // Eligibility is checked before the light gather so a stock fallback never sees a reset light list
+    FunHook<void(rf::VfxSfxoRenderObj*, float)> gr_d3d_render_vfx_hook{
+        0x00553EE0,
+        [](rf::VfxSfxoRenderObj* obj, float frame) {
+            float radius = 0.0f;
+            if (!g_vfx_gpu || !renderer || !vfx_gpu_eligible(obj, &radius)) {
+                gr_d3d_render_vfx_hook.call_target(obj, frame);
+                return;
+            }
+            bool lights_gathered = rf::level.geometry && !skip_mesh_light_gather && !level_uses_vertex_lighting();
+            if (lights_gathered) {
+                gather_mesh_lights(obj->render_pos, radius);
+                renderer->set_mesh_bounds(obj->render_pos, radius);
+            }
+            renderer->render_vfx(obj, frame);
+            if (lights_gathered) {
+                rf::gr::light_filter_reset();
+                renderer->clear_mesh_lights();
+            }
+        },
+    };
+
+    void evaluate_mesh_lighting(const std::string& level_filename)
+    {
+        if (!g_alpine_game_config.ignore_tbl_vertex_lighting
+            && g_alpine_level_info_config.is_option_loaded(level_filename, AlpineLevelInfoID::UseVertexLighting)
+            && get_level_info_value<bool>(AlpineLevelInfoID::UseVertexLighting)) {
+            g_level_vertex_lighting = true;
+        }
+        else {
+            g_level_vertex_lighting = g_alpine_game_config.mesh_lighting_use_vertex();
+        }
+    }
+
+    void evaluate_alpha_test_threshold(const std::string& level_filename)
+    {
+        if (is_stock_alpha_test_level(level_filename)) {
+            g_alpha_test_threshold = 16.0f / 255.0f;
+        }
+        else {
+            g_alpha_test_threshold = 1.0f / 255.0f;
+        }
+    }
+
+    void evaluate_pixel_light_overbright(const std::string& level_filename)
+    {
+        if (!g_alpine_game_config.ignore_tbl_pixel_light_overbright
+            && g_alpine_level_info_config.is_option_loaded(level_filename, AlpineLevelInfoID::PixelLightOverbright)) {
+            g_level_pixel_light_overbright = std::clamp(
+                get_level_info_value<float>(AlpineLevelInfoID::PixelLightOverbright), 0.0f, 3.0f);
+        }
+        else {
+            g_level_pixel_light_overbright = g_alpine_game_config.pixel_light_overbright;
+        }
+    }
+
+    static bool g_level_caustics_off = false;
+    static bool g_level_underwater_fog_off = false;
+
+    void evaluate_underwater_fx(const std::string& level_filename)
+    {
+        auto forced_off = [&](AlpineLevelInfoID id, bool ignored) {
+            return !ignored && g_alpine_level_info_config.is_option_loaded(level_filename, id)
+                && get_level_info_value<bool>(id);
+        };
+        g_level_caustics_off = forced_off(AlpineLevelInfoID::DisableCaustics, g_alpine_game_config.ignore_tbl_caustics);
+        g_level_underwater_fog_off =
+            forced_off(AlpineLevelInfoID::DisableUnderwaterFog, g_alpine_game_config.ignore_tbl_underwater_fog);
+    }
+
+    int underwater_fx_level()
+    {
+        // Tint, vignette and distortion build on the fog, so a level without it stops at caustics
+        const int level = g_level_underwater_fog_off
+            ? std::min(g_alpine_game_config.underwater_fx, 1) : g_alpine_game_config.underwater_fx;
+        return level == 1 && g_level_caustics_off ? 0 : level;
+    }
+
+    bool underwater_caustics_enabled()
+    {
+        return underwater_fx_level() >= 1 && !g_level_caustics_off;
+    }
+
+    ConsoleCommand2 vfx_gpu_cmd{
+        "dbg_vfxgpu",
+        []() {
+            g_vfx_gpu = !g_vfx_gpu;
+            rf::console::print("GPU vfx mesh rendering: {}", g_vfx_gpu ? "on" : "off");
+        },
+        "Toggles GPU rendering of .vfx meshes (off = stock CPU path)",
+    };
+
+    ConsoleCommand2 dbg_terrain_batches_cmd{
+        "dbg_terrain_batches",
+        [](std::optional<int> value) {
+            g_terrain_tint_batches = value ? value.value() != 0 : !g_terrain_tint_batches;
+            rf::console::print("Terrain batch tint is {} (green: surface, red: underside, blue: crater)",
+                               g_terrain_tint_batches ? "on" : "off");
+        },
+        "Tints terrain faces by the batch that draws them (Direct3D 11 renderer only)",
+        "dbg_terrain_batches [0|1]",
+    };
 
     void fog_set()
     {
         renderer->fog_set();
     }
 
+    int render_target_generation()
+    {
+        return renderer ? renderer->render_target_generation() : 0;
+    }
+
+    void invalidate_texture_cache()
+    {
+        if (renderer) {
+            renderer->invalidate_texture_cache();
+        }
+    }
+
     bool set_render_target(int bm_handle)
     {
-        return renderer->set_render_target(bm_handle);
+        return renderer && renderer->set_render_target(bm_handle);
+    }
+
+    void flush_outlines_before_fpgun()
+    {
+        // Called from a gameplay-side hook (player_fpgun.cpp), so unlike the gr_* vtable
+        // entries above it can be reached without the renderer being constructed.
+        if (renderer) {
+            renderer->flush_outlines_before_fpgun();
+        }
+    }
+
+    bool render_particle_emitter(rf::ParticleEmitter* emitter, float interp_dt, int* out_drawn, int* out_draws)
+    {
+        // Called from the emitter render callback, which also runs without a D3D11 renderer.
+        if (!renderer) {
+            return false;
+        }
+        return renderer->render_particle_emitter(emitter, interp_dt, out_drawn, out_draws);
+    }
+
+    bool batched_billboard(const rf::Vector3& pos, float angle, float radius, rf::gr::Mode mode)
+    {
+        if (!renderer) {
+            return false;
+        }
+        return renderer->batched_billboard(pos, angle, radius, mode);
+    }
+
+    bool batched_particle(const rf::Particle& particle)
+    {
+        return renderer && renderer->batched_particle(particle);
+    }
+
+    void flush_batched_quads()
+    {
+        if (renderer) {
+            renderer->flush_batched_quads();
+        }
+    }
+
+    bool upload_weather_seeds(const std::vector<WeatherSeed>& seeds)
+    {
+        return renderer && renderer->upload_weather_seeds(seeds);
+    }
+
+    bool update_weather_columns(int slot, int num_cells, int first, const std::vector<WeatherColumn>& cells)
+    {
+        return renderer && renderer->update_weather_columns(slot, num_cells, first, cells);
+    }
+
+    void release_weather_columns()
+    {
+        if (renderer) {
+            renderer->release_weather_columns();
+        }
+    }
+
+    bool draw_weather(const WeatherDraw& draw)
+    {
+        return renderer && renderer->draw_weather(draw);
     }
 
     void clear_solid_render_cache()
@@ -306,6 +845,44 @@ namespace df::gr::d3d11
         if (renderer) {
             renderer->clear_solid_cache();
         }
+    }
+
+    void release_detail_room_render_cache(rf::GRoom* room)
+    {
+        if (renderer) {
+            renderer->release_detail_room_cache(room);
+        }
+    }
+
+    void release_terrain_gpu()
+    {
+        if (renderer) {
+            renderer->release_terrain_gpu();
+        }
+    }
+
+    void build_liquid_volume_mask()
+    {
+        if (renderer) {
+            renderer->build_liquid_volume_mask();
+        }
+    }
+
+    bool upload_af_lightmap_atlas(const alpine_lightmap::ReadResult& section, const std::vector<std::uint8_t>& blocks)
+    {
+        return renderer && renderer->upload_af_lightmap_atlas(section, blocks);
+    }
+
+    void release_af_lightmap_atlas()
+    {
+        if (renderer) {
+            renderer->release_af_lightmap_atlas();
+        }
+    }
+
+    bool af_lightmap_atlas_live()
+    {
+        return renderer && renderer->af_lightmap_atlas_live();
     }
 
     void reset_solid_render_cache_after_boolean()
@@ -322,10 +899,17 @@ namespace df::gr::d3d11
 
     void update_window_mode()
     {
-        renderer->set_fullscreen_state(rf::gr::screen.window_mode == rf::gr::FULLSCREEN);
+        bool want_fullscreen = rf::gr::screen.window_mode == rf::gr::FULLSCREEN;
+        if (want_fullscreen && !renderer->supports_exclusive_fullscreen()) {
+            xlog::error("Cannot enter exclusive fullscreen while D3D11_LowFrameLatency or D3D11_AllowTearing are enabled in alpine_system.ini.");
+            rf::gr::screen.window_mode = rf::gr::WINDOWED;
+            renderer->set_fullscreen_state(false);
+            return;
+        }
+        renderer->set_fullscreen_state(want_fullscreen);
     }
 
-    rf::ubyte project_vertex_new(Vertex* v)
+    rf::ubyte project_vertex_new(rf::gr::Vertex* v)
     {
         renderer->project_vertex(v);
         return v->flags;
@@ -335,6 +919,195 @@ namespace df::gr::d3d11
     {
         return renderer->poly(nv, vertices, vertex_attributes, mode, constant_sw, sw);
     }
+
+    static void scene_post_pass()
+    {
+        if (renderer) {
+            renderer->run_scene_post_pass();
+        }
+    }
+
+    bool trigger_damage_vignette(unsigned dir_mask)
+    {
+        if (!renderer) {
+            return false;
+        }
+        renderer->trigger_damage_vignette(dir_mask);
+        return true;
+    }
+
+    // reticle is drawn before the fpgun and so before the post pass.
+    // Defer it past the pass, matching the rest of the HUD.
+    static CallHook<void(rf::Player*)> hud_weapons_render_reticle_hook{
+        0x00432857,
+        [](rf::Player* pp) {
+            if (renderer) {
+                renderer->take_deferred_reticle();
+                if (renderer->liquid_post_pass_pending()) {
+                    renderer->defer_reticle(pp);
+                    return;
+                }
+            }
+            hud_weapons_render_reticle_hook.call_target(pp);
+        },
+    };
+
+    // gr_fog_set(0, 0,0,0, -1, -1) turning fog off for the 2D phase, straight after the fpgun
+    // draw and its gr_flush: the last point in gameplay_render_frame where the 3D scene is
+    // complete. Reached unconditionally once per call on the main path.
+    static CallHook<void(int, int, int, int, float, float)> gameplay_render_frame_fog_off_hook{
+        0x00432879,
+        [](int enabled, int r, int g, int b, float fog_near, float fog_far) {
+            scene_post_pass();
+            gameplay_render_frame_fog_off_hook.call_target(enabled, r, g, b, fog_near, fog_far);
+            // After fog-off, so the deferred reticle cannot pick up the liquid fog
+            if (renderer) {
+                if (rf::Player* pp = renderer->take_deferred_reticle()) {
+                    hud_weapons_render_reticle_hook.call_target(pp);
+                }
+            }
+        },
+    };
+
+    // screen_flash_render, after the HUD, MP HUD and net stats.
+    static CallHook<void(rf::Player*)> screen_flash_render_hook{
+        0x00432C7C,
+        [](rf::Player* pp) {
+            screen_flash_render_hook.call_target(pp);
+            // Split screen calls this per local player; the vignette state is only ever fed for
+            // rf::local_player, so it must composite once, for that player's pass.
+            if (renderer && pp == rf::local_player) {
+                renderer->run_damage_vignette_pass();
+            }
+        },
+    };
+
+    static void scope_glass_pass()
+    {
+        if (renderer) {
+            renderer->run_scope_glass_pass();
+        }
+    }
+
+    // Sniper and precision scope overlays, after the full-screen tint and before the scope ring.
+    // The tint is the glass's colour, so it is vignetted along with the scene.
+    static CodeInjection sniper_scope_overlay_glass_injection{0x004AC472, scope_glass_pass};
+    static CodeInjection precision_scope_overlay_glass_injection{0x004AC86A, scope_glass_pass};
+
+    // Stock clamps the far clip to liquid_visibility while submerged, hidden by its fog being
+    // fully opaque there; the exponential fog is not, so the clip would show. Widen it instead of
+    // dropping it, so murky water still culls close and clear water reaches the stock baseline.
+    static CallHook<void(float)> gameplay_render_frame_liquid_far_clip_hook{
+        0x00431D3F,
+        [](float far_clip) {
+            if (underwater_fx_level() >= 2) {
+                far_clip = liquid_far_clip(far_clip);
+            }
+            gameplay_render_frame_liquid_far_clip_hook.call_target(far_clip);
+        },
+    };
+
+    // Stock sets fog far to liquid_visibility while submerged. The underwater model has its own
+    // range in b6, but draws it cannot handle (sprites without depth) still use the b0 linear fog
+    // and would go solid at that distance, so widen it to the same range the far clip uses.
+    static CallHook<void(int, int, int, int, float, float)> gameplay_render_frame_liquid_fog_hook{
+        0x00431D6A,
+        [](int enabled, int r, int g, int b, float fog_near, float fog_far) {
+            if (underwater_fx_level() >= 2) {
+                fog_far = liquid_far_clip(fog_far);
+            }
+            gameplay_render_frame_liquid_fog_hook.call_target(enabled, r, g, b, fog_near, fog_far);
+        },
+    };
+
+    // Colour of the opaque background rect stock draws behind the world while submerged. Match
+    // the depth-darkened colour the underwater fog converges to, or the far clip shows as an edge.
+    static CallHook<void(int, int, int, int)> gameplay_render_frame_liquid_bg_color_hook{
+        0x00431D8F,
+        [](int r, int g, int b, int a) {
+            rf::Vector3 col;
+            if (underwater_fx_level() >= 2 && renderer && renderer->liquid_background_color(col)) {
+                // Clamp before scaling: the cast is UB outside int range, and !(x > 0) also
+                // catches NaN.
+                auto to_byte = [](float x) {
+                    return static_cast<int>((x > 0.0f ? std::min(x, 1.0f) : 0.0f) * 255.0f + 0.5f);
+                };
+                r = to_byte(col.x);
+                g = to_byte(col.y);
+                b = to_byte(col.z);
+            }
+            gameplay_render_frame_liquid_bg_color_hook.call_target(r, g, b, a);
+        },
+    };
+
+    // Stock pre-HUD fullscreen liquid tint. The post pass draws the same color and alpha per
+    // pixel instead, so drop the rect only when it actually did so this frame.
+    static CallHook<void(int, int, int, int, int)> gameplay_render_frame_liquid_tint_hook{
+        0x004328FD,
+        [](int x, int y, int w, int h, int mode) {
+            if (renderer && renderer->render_target_bm_handle() == -1
+                && renderer->liquid_tint_drawn_this_frame()) {
+                return;
+            }
+            gameplay_render_frame_liquid_tint_hook.call_target(x, y, w, h, mode);
+        },
+    };
+
+    // g_render_room_objects draws every room-placed object mesh, once per visible room, so it
+    // is where a mesh learns its room.
+    static FunHook<void(rf::GRoom*, rf::GSolid*, int, void*)> g_render_room_objects_hook{
+        0x004D3C40,
+        [](rf::GRoom* room, rf::GSolid* solid, int num_objects, void* portal_objects) {
+            if (renderer) {
+                renderer->set_object_room_uid(room && !room->is_detail ? room->uid : -1);
+            }
+            g_render_room_objects_hook.call_target(room, solid, num_objects, portal_objects);
+            if (renderer) {
+                renderer->flush_batched_quads();
+                renderer->set_object_room_uid(-1);
+            }
+        },
+    };
+
+    // Draws one item of the room's render list. Particles no emitter owns stay batched from one item to
+    // the next (batched_particle), so any other item has to find them in the framebuffer first.
+    static FunHook<void __fastcall(rf::GRoomRenderItem*, int, void*, rf::GSolid*)> g_room_render_item_render_hook{
+        0x004D3460,
+        [](rf::GRoomRenderItem* item, int edx, void* user, rf::GSolid* solid) FASTCALL_LAMBDA {
+            if (renderer && item->render_fn != reinterpret_cast<rf::GRoomRenderItemFn>(&rf::particle_render_item)) {
+                renderer->flush_batched_quads();
+            }
+            g_room_render_item_render_hook.call_target(item, edx, user, solid);
+        },
+    };
+
+    // obj_render_all queues every object of a room for the room pass. Add a second, sortable render item for
+    // each mover brush with see-through faces, so those faces are drawn back to front after the
+    // unsorted items instead of writing depth ahead of them.
+    static FunHook<void(rf::GRoom*, int)> obj_render_all_hook{
+        0x00488230,
+        [](rf::GRoom* room, int flag) {
+            obj_render_all_hook.call_target(room, flag);
+            if (!renderer) {
+                return;
+            }
+            for (auto& mb : DoublyLinkedList{rf::mover_brush_list}) {
+                // OF_HAS_ALPHA movers are queued sortable by the engine, which sorts them whole
+                if (!mb.geometry || (mb.obj_flags & (rf::OF_DELAYED_DELETE | rf::OF_HAS_ALPHA))) {
+                    continue;
+                }
+                // Only the low byte of flag is meaningful; the portal room loop leaves garbage above it
+                if (!rf::obj_should_render_in_room(&mb, room, (flag & 0xFF) != 0)) {
+                    continue;
+                }
+                if (!renderer->movable_solid_has_alpha(mb.geometry)) {
+                    continue;
+                }
+                rf::g_room_render_item_add(reinterpret_cast<void*>(static_cast<intptr_t>(mb.handle)), mb.pos, mb.pos,
+                    mb.radius, render_mover_brush_alpha, true, nullptr, nullptr, nullptr, false, true);
+            }
+        },
+    };
 
     static CodeInjection g_render_room_objects_render_liquid_injection{
         0x004D4106,
@@ -346,22 +1119,35 @@ namespace df::gr::d3d11
         },
     };
 
+    // The room's unsorted items are drawn and its sorted ones (alpha detail, glass, liquid, see-through objects)
+    // are next: decoration soft edges go between, over the room's opaque objects and under its translucent ones.
+    static CodeInjection g_render_room_objects_decoration_edges_injection{
+        0x004D3D1F,
+        [](auto& regs) {
+            auto* room = addr_as_ref<rf::GRoom*>(regs.esp + 0x9C);
+            auto* solid = addr_as_ref<rf::GSolid*>(regs.esp + 0xA0);
+            if (renderer && room) {
+                renderer->render_room_decoration_edges(solid, room);
+            }
+        },
+    };
+
     static CodeInjection gr_d3d_setup_3d_injection{
         0x005473E4,
         []() {
-            float sx = matrix_scale.x / matrix_scale.z;
-            float sy = matrix_scale.y / matrix_scale.z;
+            float sx = rf::gr::matrix_scale.x / rf::gr::matrix_scale.z;
+            float sy = rf::gr::matrix_scale.y / rf::gr::matrix_scale.z;
             static auto& zm = addr_as_ref<float>(0x005A7DD8);
             float zn = 0.1f; // static near plane (RF uses: zm / matrix_scale.z)
             zm = 1.0f; // let's not use zm at all to simplify software projections
-            float zf = rf::level.distance_fog_far_clip > 0.0f ? rf::level.distance_fog_far_clip : 1700.0f;
+            float zf = level_projection_far();
             renderer->setup_3d(Projection{sx, sy, zn, zf});
         },
     };
 
-    static CodeInjection gr_d3d_setup_fustrum_injection{
+    CodeInjection gr_d3d_setup_fustrum_injection{
         0x00546A40,
-        []() {
+        [] {
             // Glares and volumetric lights use doubled far clip plane
             // To avoid using "user clip planes" disable depth clipping
             // Frustum culling should be enough
@@ -373,17 +1159,17 @@ namespace df::gr::d3d11
         },
     };
 
-    static CodeInjection vif_lod_mesh_ctor_injection{
+    CodeInjection vif_lod_mesh_ctor_injection{
         0x00569D00,
-        [](auto& regs) {
+        [] (auto& regs) {
             rf::VifLodMesh* lod_mesh = regs.ecx;
             lod_mesh->render_cache = nullptr;
         },
     };
 
-    static CodeInjection vif_lod_mesh_destroy_injection{
+    CodeInjection vif_lod_mesh_destroy_injection{
         0x005695D0,
-        [](auto& regs) {
+        [] (auto& regs) {
             const auto lod_mesh = addr_as_ref<rf::VifLodMesh*>(regs.esp + 4);
             if (renderer) {
                 renderer->clear_vif_cache(lod_mesh);
@@ -391,22 +1177,30 @@ namespace df::gr::d3d11
         },
     };
 
-    static CodeInjection v3d_page_in_injection{
+
+    CodeInjection v3d_page_in_injection{
         0x0053C1B9,
-        [](auto& regs) {
+        [] (auto& regs) {
             rf::V3d* v3d = regs.ecx;
-            if (renderer && v3d->num_meshes > 0) {
-                renderer->page_in_v3d_mesh(v3d->meshes[0].vu);
+            if (renderer && v3d->num_meshes > 0 && v3d->meshes[0].vu) {
+                auto* materials = reinterpret_cast<rf::MeshMaterial*>(v3d->meshes[0].materials);
+                int num_materials = v3d->meshes[0].num_materials;
+                renderer->page_in_v3d_mesh(v3d->meshes[0].vu,
+                    (num_materials > 0) ? materials : nullptr, num_materials);
             }
         },
     };
 
-    static CodeInjection character_instance_page_in_injection{
+    CodeInjection character_instance_page_in_injection{
         0x0051C4C0,
-        [](auto& regs) {
+        [] (auto& regs) {
             rf::CharacterInstance* ci = regs.ecx;
-            if (renderer) {
-                renderer->page_in_character_mesh(ci->base_character->character_meshes[0].mesh->vu);
+            if (!renderer || !ci->base_character || ci->base_character->num_character_meshes < 1) {
+                return;
+            }
+            rf::V3dMesh* mesh = ci->base_character->character_meshes[0].mesh;
+            if (mesh && mesh->vu) {
+                renderer->page_in_character_mesh(mesh->vu);
             }
         },
     };
@@ -418,9 +1212,9 @@ namespace df::gr::d3d11
         }
     }
 
-    static CodeInjection level_page_in_injection{
+    CodeInjection level_page_in_injection{
         0x0045CC20,
-        []() {
+        [] {
             if (renderer) {
                 renderer->page_in_solid(rf::level.geometry);
                 for (rf::MoverBrush& mb : DoublyLinkedList{rf::mover_brush_list}) {
@@ -431,32 +1225,192 @@ namespace df::gr::d3d11
         },
     };
 
-    static CodeInjection level_page_out_injection{
+    CodeInjection level_page_out_injection{
         0x0045CB83,
-        []() {
+        [] {
             if (renderer) {
                 renderer->flush_caches();
             }
+            clear_entity_ambient_cache();
         },
     };
 
     // Hook blob shadow rendering: allow blob shadows only when D3D11 shadow quality is 0
-    static CallHook<void()> obj_shadow_render_all_hook{
+    CallHook<void()> obj_shadow_render_all_hook{
         0x00432021,
-        []() {
+        [] {
             if (g_alpine_game_config.shadow_quality > 0) {
                 return; // D3D11 shadow mapping handles shadows at quality > 0
             }
             obj_shadow_render_all_hook.call_target();
         },
     };
+
+    // Mesh draws are handed no object
+    FunHook<void(rf::Object*)> obj_render_hook{
+        0x00488B20,
+        [](rf::Object* const obj) {
+            ScopedMeshObjectMaterial material{obj->material};
+            obj_render_hook.call_target(obj);
+        },
+    };
+
+    FunHook<void(rf::Item*)> item_render_hook{
+        0x00458F80,
+        [] (rf::Item* const item) {
+            if (g_alpine_game_config.picmip > 1) {
+                ScopedPicmipSkipObject guard{};
+                item_render_hook.call_target(item);
+            } else {
+                item_render_hook.call_target(item);
+            }
+        },
+    };
+
+    FunHook<void(rf::Entity*)> entity_render_weapon_in_hands_hook{
+        0x00421C40,
+        [] (rf::Entity* const entity) {
+            // Held weapons are metal, not their holder's material
+            ScopedMeshObjectMaterial material{rf::MATERIAL_METAL};
+            if (g_alpine_game_config.picmip > 1) {
+                ScopedPicmipSkipObject guard{};
+                entity_render_weapon_in_hands_hook.call_target(entity);
+            } else {
+                entity_render_weapon_in_hands_hook.call_target(entity);
+            }
+        },
+    };
+
+    bool is_antialiasing_err() {
+        // Guard the optional deref: this runs every frame the options panel is
+        // open. get_sample_count() is only reached when sample_count != 1, so the
+        // ordering also preserves the short-circuit.
+        return renderer
+            && g_alpine_game_config.sample_count != 1
+            && g_alpine_game_config.sample_count != renderer->get_sample_count();
+    }
+
+    bool supports_sample_count(const uint32_t sample_count) {
+        return renderer && renderer->supports_sample_count(sample_count);
+    }
+
+    void flush_frame_buffers() {
+        if (renderer) {
+            renderer->flush_frame_buffers();
+        }
+    }
+
+    ConsoleCommand2 r_antialiasing_mode_cmd{
+        "r_antialiasing_mode",
+        [] (const std::optional<std::string_view> mode) {
+            if (!renderer) {
+                rf::console::print("Anti-aliasing is not available");
+                return;
+            }
+            if (!mode) {
+                if (g_alpine_game_config.sample_count == 1) {
+                    rf::console::print("Anti-aliasing mode is none");
+                } else {
+                    rf::console::print(
+                        "Anti-aliasing mode is MSAAx{}",
+                        g_alpine_game_config.sample_count
+                    );
+                }
+            } else {
+                constexpr std::string_view MSAA_PREFIX = "msaax";
+                if (string_iequals(*mode, "none")) {
+                    if (g_alpine_game_config.sample_count != 1) {
+                        setting_console_set("sample_count", "1");
+                        rf::console::print("Anti-aliasing mode is none");
+                    } else {
+                        rf::console::print("Anti-aliasing mode is already none");
+                    }
+                } else {
+                    // Accept either "MSAAxN" or a bare "N" (N = 2, 4, or 8)
+                    std::string_view digits = *mode;
+                    if (string_istarts_with(digits, MSAA_PREFIX)) {
+                        digits.remove_prefix(MSAA_PREFIX.size());
+                    }
+                    int value = 0;
+                    const auto [ptr, err] = std::from_chars(
+                        digits.data(),
+                        digits.data() + digits.size(),
+                        value
+                    );
+                    if (err != std::errc{} || ptr != digits.data() + digits.size()) {
+                        rf::console::print("Invalid value!");
+                    } else if (value != 2 && value != 4 && value != 8) {
+                        rf::console::print("MSAA level must be 2, 4, or 8");
+                    } else if (std::cmp_not_equal(value, g_alpine_game_config.sample_count)) {
+                        if (!gr::d3d11::renderer->supports_sample_count(value)) {
+                            rf::console::print("MSAAx{} is an unsupported mode!", value);
+                        } else {
+                            setting_console_set("sample_count", std::to_string(value));
+                            rf::console::print("Anti-aliasing mode is MSAAx{}", value);
+                        }
+                    } else {
+                        rf::console::print(
+                            "Anti-aliasing mode is already MSAAx{}",
+                            value
+                        );
+                    }
+                }
+            }
+        },
+        "Sets anti-aliasing mode",
+        "r_antialiasing_mode [none|2|4|8|msaax{2,4,8}]",
+    };
+
+    // Level to restore when r_antialiasing toggles AA back on. Session-only: the
+    // persisted state is sample_count itself (none == off).
+    static uint32_t g_aa_restore_sample_count = 0;
+
+    ConsoleCommand2 r_antialiasing_cmd{
+        "r_antialiasing",
+        [] {
+            if (!renderer) {
+                rf::console::print("Anti-aliasing is not available");
+                return;
+            }
+            if (g_alpine_game_config.sample_count != 1) {
+                // Currently on -> remember the level and switch to none
+                g_aa_restore_sample_count = g_alpine_game_config.sample_count;
+                setting_console_set("sample_count", "1");
+                rf::console::print("Anti-aliasing is disabled");
+            } else if (g_aa_restore_sample_count >= 2
+                       && gr::d3d11::renderer->supports_sample_count(g_aa_restore_sample_count)) {
+                // Currently off -> restore the level we last turned off from
+                setting_console_set("sample_count", std::to_string(g_aa_restore_sample_count));
+                rf::console::print(
+                    "Anti-aliasing is enabled (MSAAx{})",
+                    g_alpine_game_config.sample_count
+                );
+            } else {
+                rf::console::print("No anti-aliasing mode is set; use r_antialiasing_mode to select a level first");
+            }
+        },
+        "Toggles anti-aliasing",
+    };
 }
 
 void gr_d3d11_apply_patch()
 {
-    using namespace df::gr::d3d11;
+    using namespace gr::d3d11;
 
+    hud_weapons_render_reticle_hook.install();
+    gameplay_render_frame_fog_off_hook.install();
+    gameplay_render_frame_liquid_tint_hook.install();
+    gameplay_render_frame_liquid_far_clip_hook.install();
+    gameplay_render_frame_liquid_fog_hook.install();
+    gameplay_render_frame_liquid_bg_color_hook.install();
+    screen_flash_render_hook.install();
+    sniper_scope_overlay_glass_injection.install();
+    precision_scope_overlay_glass_injection.install();
+    g_render_room_objects_hook.install();
+    g_room_render_item_render_hook.install();
+    obj_render_all_hook.install();
     g_render_room_objects_render_liquid_injection.install();
+    g_render_room_objects_decoration_edges_injection.install();
     gr_d3d_setup_3d_injection.install();
     gr_d3d_setup_fustrum_injection.install();
     vif_lod_mesh_ctor_injection.install();
@@ -500,7 +1454,7 @@ void gr_d3d11_apply_patch()
     AsmWriter{0x00551900}.jmp(tmapper); // gr_d3d_tmapper
     AsmWriter{0x005536C0}.jmp(render_sky_room);
     AsmWriter{0x00553C60}.jmp(render_movable_solid); // gr_d3d_render_movable_solid - uses gr_d3d_render_face_list
-    // AsmWriter{0x00553EE0}.ret(); // gr_d3d_vfx - uses gr_poly
+    gr_d3d_render_vfx_hook.install(); // gr_d3d_vfx - GPU path in gr_d3d11_vfx.cpp, stock fallback
     // AsmWriter{0x00554BF0}.ret(); // gr_d3d_vfx_facing - uses gr_d3d_3d_bitmap_angle, gr_d3d_render_volumetric_light
     // AsmWriter{0x00555080}.ret(); // gr_d3d_vfx_glow - uses gr_d3d_3d_bitmap_angle
     // AsmWriter{0x00555100}.ret(); // gr_d3d_line_vertex
@@ -549,8 +1503,53 @@ void gr_d3d11_apply_patch()
 
     // Hook blob shadow rendering: skip when D3D11 shadow mapping is active (quality > 0)
     obj_shadow_render_all_hook.install();
+    
+    item_render_hook.install();
+    obj_render_hook.install();
+    entity_render_weapon_in_hands_hook.install();
 
     // Change size of standard structures
     write_mem<int8_t>(0x00569884 + 1, sizeof(rf::VifMesh));
     write_mem<int8_t>(0x00569732 + 1, sizeof(rf::VifLodMesh));
+
+    r_antialiasing_cmd.register_cmd();
+    r_antialiasing_mode_cmd.register_cmd();
+    dbg_terrain_batches_cmd.register_cmd();
+    vfx_gpu_cmd.register_cmd();
+}
+
+namespace gr
+{
+    bool render_ghost_mesh(rf::VMesh* mesh, const rf::Vector3& pos, const rf::Matrix3& orient,
+                           float alpha_below, float alpha_above, float fill_y, const rf::Color* tint)
+    {
+        if (!mesh || rf::gr::screen.mode != rf::gr::DIRECT3D || !is_d3d11()) {
+            return false;
+        }
+        if (rf::vmesh_get_type(mesh) == rf::MESH_TYPE_ANIM_FX) {
+            return false;
+        }
+        if (!std::isfinite(alpha_below) || !std::isfinite(alpha_above) || !std::isfinite(fill_y)) {
+            return false;
+        }
+        alpha_below = std::clamp(alpha_below, 0.0f, 1.0f);
+        alpha_above = std::clamp(alpha_above, 0.0f, alpha_below);
+        if (alpha_below <= 0.0f) {
+            return false;
+        }
+
+        // Ratio 0 is the shader's "not a ghost draw" sentinel, so fully transparent clamps just above it.
+        d3d11::begin_ghost_fill(fill_y, std::max(alpha_above / alpha_below, 1.0f / 512.0f), tint);
+
+        rf::MeshRenderParams params{};
+        params.init_defaults();
+        params.alpha = static_cast<int>(alpha_below * 255.0f + 0.5f);
+        params.orient = orient;
+        rf::Vector3 draw_pos = pos;
+        rf::Matrix3 draw_orient = orient;
+        rf::vmesh_render(mesh, &draw_pos, &draw_orient, &params);
+
+        d3d11::end_ghost_fill();
+        return true;
+    }
 }

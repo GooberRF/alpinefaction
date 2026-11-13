@@ -2,8 +2,11 @@
 #include "../main/main.h"
 #include "../misc/player.h"
 #include "../misc/vpackfile.h"
+#include "../multi/demo/demo_file.h"
+#include "../multi/multi.h"
 #include "../rf/player/player.h"
 #include <patch_common/FunHook.h>
+#include <common/utils/string-utils.h>
 #include <cstring>
 
 void console_show_cmd_help(rf::console::Command* cmd)
@@ -114,6 +117,55 @@ void console_auto_complete_level(int offset)
     }
 }
 
+// Short game type names (dm, ctf, scav...), as sv_gametype accepts them. An empty prefix lists them all.
+void console_auto_complete_game_type(int offset)
+{
+    std::string prefix;
+    console_auto_complete_get_component(offset, prefix);
+
+    bool first = true;
+    std::string common_prefix;
+    std::vector<std::string> matches;
+    for (int i = 0; i < rf::NG_TYPE_UNK; ++i) {
+        std::string name = string_to_lower(multi_game_type_name_short(static_cast<rf::NetGameType>(i)));
+        if (!string_istarts_with(name, prefix)) {
+            continue;
+        }
+        console_auto_complete_update_common_prefix(common_prefix, name, first);
+        matches.push_back(std::move(name));
+    }
+
+    if (matches.size() == 1)
+        console_auto_complete_put_component(offset, matches[0], true);
+    else if (!matches.empty()) {
+        console_auto_complete_print_suggestions(matches, [](std::string& name) { return name.c_str(); });
+        console_auto_complete_put_component(offset, common_prefix, false);
+    }
+}
+
+void console_auto_complete_demo_file(int offset)
+{
+    std::string demo_name;
+    console_auto_complete_get_component(offset, demo_name);
+    // Empty prefix intentionally lists the whole demos folder
+
+    bool first = true;
+    std::string common_prefix;
+    std::vector<std::string> matches = demo_file_list_names(demo_name);
+    for (const auto& name : matches) {
+        console_auto_complete_update_common_prefix(common_prefix, name, first);
+    }
+
+    if (matches.size() == 1) {
+        // A folder match (trailing backslash) stays unfinished so the next Tab completes inside it
+        console_auto_complete_put_component(offset, matches[0], !matches[0].ends_with('\\'));
+    }
+    else if (!matches.empty()) {
+        console_auto_complete_print_suggestions(matches, [](std::string& name) { return name.c_str(); });
+        console_auto_complete_put_component(offset, common_prefix, false);
+    }
+}
+
 void console_auto_complete_player(int offset)
 {
     std::string player_name;
@@ -153,7 +205,7 @@ void console_auto_complete_command(int offset)
     std::vector<rf::console::Command*> matching_cmds;
     for (int i = 0; i < rf::console::num_commands; ++i) {
         rf::console::Command* cmd = g_commands_buffer[i];
-        if (!strnicmp(cmd->name, cmd_name.c_str(), cmd_name.size()) &&
+        if (!_strnicmp(cmd->name, cmd_name.c_str(), cmd_name.size()) &&
             (next_offset == -1 || !cmd->name[cmd_name.size()])) {
             matching_cmds.push_back(cmd);
             console_auto_complete_update_common_prefix(common_prefix, cmd->name, first);
@@ -161,12 +213,22 @@ void console_auto_complete_command(int offset)
     }
 
     if (next_offset != -1) {
-        if (!stricmp(cmd_name.c_str(), "level") || !stricmp(cmd_name.c_str(), "map") ||
-            !stricmp(cmd_name.c_str(), "levelm") || !stricmp(cmd_name.c_str(), "mapm"))
+        if (!_stricmp(cmd_name.c_str(), "level") || !_stricmp(cmd_name.c_str(), "map") ||
+            !_stricmp(cmd_name.c_str(), "levelm") || !_stricmp(cmd_name.c_str(), "mapm"))
             console_auto_complete_level(next_offset);
-        else if (!stricmp(cmd_name.c_str(), "kick") || !stricmp(cmd_name.c_str(), "ban"))
+        else if (!_stricmp(cmd_name.c_str(), "gt") || !_stricmp(cmd_name.c_str(), "sv_gametype")) {
+            std::string game_type;
+            const int level_offset = console_auto_complete_get_component(next_offset, game_type);
+            if (level_offset == -1)
+                console_auto_complete_game_type(next_offset);
+            else if (!game_type.empty())
+                console_auto_complete_level(level_offset);
+        }
+        else if (!_stricmp(cmd_name.c_str(), "kick") || !_stricmp(cmd_name.c_str(), "ban"))
             console_auto_complete_player(next_offset);
-        else if (!stricmp(cmd_name.c_str(), "rcon") || !stricmp(cmd_name.c_str(), "help"))
+        else if (!_stricmp(cmd_name.c_str(), "demo_play") || !_stricmp(cmd_name.c_str(), "demo_info"))
+            console_auto_complete_demo_file(next_offset);
+        else if (!_stricmp(cmd_name.c_str(), "rcon") || !_stricmp(cmd_name.c_str(), "help"))
             console_auto_complete_command(next_offset);
         else if (matching_cmds.size() != 1)
             return;

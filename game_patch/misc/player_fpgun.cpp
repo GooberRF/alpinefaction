@@ -3,19 +3,40 @@
 #include <patch_common/CallHook.h>
 #include <patch_common/AsmWriter.h>
 #include <common/config/BuildConfig.h>
+#include <common/utils/list-utils.h>
+#include <common/utils/math-utils.h>
+#include <common/utils/string-utils.h>
+#include <algorithm>
+#include <array>
+#include <optional>
+#include <string>
+#include <type_traits>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+#include <xlog/xlog.h>
 #include "alpine_options.h"
 #include "alpine_settings.h"
+#include "player.h"
+#include "../bmpman/bmpman.h"
 #include "../multi/gametype.h"
+#include "../rf/bmpman.h"
+#include "../rf/file/file.h"
+#include "../rf/parse.h"
 #include "../rf/player/player.h"
 #include "../rf/player/camera.h"
+#include "../rf/hud.h"
+#include "../rf/os/frametime.h"
 #include "../rf/sound/sound.h"
 #include "../rf/vmesh.h"
+#include "../rf/v3d.h"
 #include "../rf/weapon.h"
 #include "../rf/entity.h"
 #include "../rf/multi.h"
 #include "../graphics/gr.h"
 #include "../main/main.h"
 #include "../os/console.h"
+#include "settings_registry.h"
 
 static std::vector<int> g_fpgun_sounds;
 static rf::Player* g_fpgun_main_player = nullptr;
@@ -203,21 +224,122 @@ CallHook<void(rf::Player*)> player_fpgun_stop_idle_actions_hook{
 
 // Fix weapon bob oscillation: the original code at 0x004AA409 sets the weapon to IDLE before
 // checking if the player is running, causing constant IDLE<->RUN oscillation. This injection
-// skips that premature IDLE transition; the second IDLE check at 0x004AA474 handles all
-// legitimate idle cases.
+// skips that premature IDLE transition only when running or crouching, the gate of the run
+// branch (0x004AA4BD) that then picks the state itself. Otherwise (e.g. climbing) that branch
+// returns without setting one, and skipping would leave WS_LOOP_FIRE playing.
 CodeInjection player_fpgun_skip_premature_idle_injection{
     0x004AA409,
     [](auto& regs) {
-        if (!g_alpine_game_config.legacy_bob) {
+        rf::Entity* entity = regs.edi;
+        if (!g_alpine_game_config.legacy_bob
+            && (rf::entity_is_running(entity) || rf::entity_is_crouching(entity))) {
             regs.eip = 0x004AA423;
         }
     },
 };
 
+static constexpr float sway_cam_jump_dist = 3.0f;
+static constexpr float sway_scale = 0.008f;
+static constexpr float sway_max = 0.07f;
+static constexpr float sway_smooth_tau = 0.07f;
+
+// Removed grenade / remote charge / detonator exemptions from the stock gate.
+static FunHook<bool(rf::Player*)> player_fpgun_sway_enabled_hook{
+    0x004AB100,
+    [](rf::Player* player) {
+        if (player != rf::local_player) {
+            return false;
+        }
+        if (!rf::entity_from_handle(player->entity_handle)) {
+            return false;
+        }
+        if (!g_alpine_game_config.weapon_sway) {
+            return false;
+        }
+        return !rf::player_fpgun_action_anim_is_playing(player, rf::WA_RELOAD) &&
+               !rf::player_fpgun_action_anim_is_playing(player, rf::WA_CUSTOM_START) &&
+               !rf::player_fpgun_action_anim_is_playing(player, rf::WA_CUSTOM_LEAVE);
+    },
+};
+
+// Refreshes old_cam_pos/old_cam_orient after sway block, so on entry they still hold
+// the previous frame's values.
+static FunHook<void(rf::Player*)> player_fpgun_process_hook{
+    0x004AA6D0,
+    [](rf::Player* player) {
+        if (player != rf::local_player) {
+            player_fpgun_process_hook.call_target(player);
+            return;
+        }
+
+        auto& fpgun_data = player->fpgun_data;
+        if (!player->cam ||
+            rf::camera_get_mode(*player->cam) != rf::CAMERA_FIRST_PERSON ||
+            !g_alpine_game_config.weapon_sway) {
+            fpgun_data.goal_sway_xrot = 0.0f;
+            fpgun_data.goal_sway_yrot = 0.0f;
+            player->sway_pitch_vel = 0.0f;
+            player->sway_yaw_vel = 0.0f;
+            player_fpgun_process_hook.call_target(player);
+            return;
+        }
+
+        const rf::Matrix3 cam_orient = rf::camera_get_orient(player->cam);
+        const rf::Vector3 cam_pos = rf::camera_get_pos(player->cam);
+        const float dt = rf::frametime;
+
+        if (dt <= 0.0f ||
+            (cam_pos - fpgun_data.old_cam_pos).len_sq() > sway_cam_jump_dist * sway_cam_jump_dist ||
+            cam_orient.fvec.dot_prod(fpgun_data.old_cam_orient.fvec) < 0.5f) {
+            fpgun_data.goal_sway_xrot = 0.0f;
+            fpgun_data.goal_sway_yrot = 0.0f;
+            fpgun_data.cur_sway_xrot = 0.0f;
+            fpgun_data.cur_sway_yrot = 0.0f;
+            player->sway_pitch_vel = 0.0f;
+            player->sway_yaw_vel = 0.0f;
+            player_fpgun_process_hook.call_target(player);
+            return;
+        }
+
+        auto yaw_of = [](const rf::Vector3& fvec) { return std::atan2(fvec.x, fvec.z); };
+        auto pitch_of = [](const rf::Vector3& fvec) { return std::asin(std::clamp(-fvec.y, -1.0f, 1.0f)); };
+        auto ang_vel = [dt](float cur, float prev) {
+            return wrap_pi(cur - prev) / dt;
+        };
+
+        const rf::Vector3& old_fvec = fpgun_data.old_cam_orient.fvec;
+        const float pitch_vel = ang_vel(pitch_of(cam_orient.fvec), pitch_of(old_fvec));
+        const float yaw_vel = ang_vel(yaw_of(cam_orient.fvec), yaw_of(old_fvec));
+
+        // The stock rate limiter only clips large slews, so per-frame mouse quantization has to be
+        // filtered here or it reaches the gun unchanged.
+        const float alpha = 1.0f - std::exp(-dt / sway_smooth_tau);
+        player->sway_pitch_vel += (pitch_vel - player->sway_pitch_vel) * alpha;
+        player->sway_yaw_vel += (yaw_vel - player->sway_yaw_vel) * alpha;
+
+        // Positive xrot tilts the fpgun up and positive yrot swings it left, while positive pitch
+        // is downward, so matching the turn rate sign makes the gun trail the view.
+        fpgun_data.goal_sway_xrot = std::clamp(player->sway_pitch_vel * sway_scale, -sway_max, sway_max);
+        fpgun_data.goal_sway_yrot = std::clamp(player->sway_yaw_vel * sway_scale, -sway_max, sway_max);
+
+        player_fpgun_process_hook.call_target(player);
+    },
+};
+
+ConsoleCommand2 weapon_sway_cmd{
+    "cl_weaponsway",
+    []() {
+        setting_console_set("weapon_sway", "toggle");
+        rf::console::print("Weapon aim sway: {}",
+            g_alpine_game_config.weapon_sway ? "enabled" : "disabled");
+    },
+    "Toggle first person weapon aim sway",
+};
+
 ConsoleCommand2 legacy_bob_cmd{
     "cl_legacy_bob",
     []() {
-        g_alpine_game_config.legacy_bob = !g_alpine_game_config.legacy_bob;
+        setting_console_set("legacy_bob", "toggle");
         rf::console::print("Legacy weapon bob: {}",
             g_alpine_game_config.legacy_bob ? "enabled" : "disabled");
     },
@@ -282,11 +404,17 @@ CodeInjection after_game_render_to_dynamic_textures{
     },
 };
 
+float player_fpgun_render_fov(float base_fov)
+{
+    return gr_scale_fov_hor_plus(base_fov * g_alpine_game_config.fpgun_fov_scale);
+}
+
 CallHook<void(rf::Matrix3&, rf::Vector3&, float, bool, bool)> player_fpgun_render_gr_setup_3d_hook{
     0x004AB411,
     [](rf::Matrix3& viewer_orient, rf::Vector3& viewer_pos, float horizontal_fov, bool zbuffer_flag, bool z_scale) {
-        horizontal_fov *= g_alpine_game_config.fpgun_fov_scale;
-        horizontal_fov = gr_scale_fov_hor_plus(horizontal_fov);
+        // Flush VFX mesh outlines so they don't render on top of fpguns.
+        gr_flush_outlines_before_fpgun();
+        horizontal_fov = player_fpgun_render_fov(horizontal_fov);
         player_fpgun_render_gr_setup_3d_hook
             .call_target(viewer_orient, viewer_pos, horizontal_fov, zbuffer_flag, z_scale);
     },
@@ -296,7 +424,7 @@ ConsoleCommand2 fpgun_fov_scale_cmd{
     "r_fpgunfov",
     [](std::optional<float> scale_opt) {
         if (scale_opt) {
-            g_alpine_game_config.set_fpgun_fov_scale(scale_opt.value());
+            setting_console_set("fpgun_fov_scale", std::to_string(scale_opt.value()));
         }
         rf::console::print("Fpgun FOV scale: {:.4f}", g_alpine_game_config.fpgun_fov_scale);
     },
@@ -312,6 +440,22 @@ CodeInjection player_fpgun_render_main_player_entity_injection{
         regs.eip = 0x004ABB5E;
     },
 };
+
+// Stock renders fpgun attachments (silencer, remote charge detonator) with default MeshRenderParams, so the
+// renderer lights them like world meshes (near fullbright). Give them the same params as the fpgun itself.
+static void fpgun_attachment_render_params(BaseCodeInjection::Regs& regs)
+{
+    static_assert(offsetof(rf::Entity, ambient_color) == 0x1474);
+    static_assert(offsetof(rf::MeshRenderParams, orient) == 0x2C);
+    auto& entity = addr_as_ref<rf::Entity>(addr_as_ref<int>(regs.esp + 0x38));
+    auto& params = addr_as_ref<rf::MeshRenderParams>(regs.esp + 0xA0);
+    params.flags |= rf::MRF_CUSTOM_AMBIENT_COLOR | rf::MRF_CLIP_VERTICES | rf::MRF_FIRST_PERSON;
+    params.ambient_color = entity.ambient_color;
+    params.orient = entity.orient;
+}
+
+CodeInjection player_fpgun_render_silencer_params_injection{0x004AC22E, fpgun_attachment_render_params};
+CodeInjection player_fpgun_render_detonator_params_injection{0x004ABD70, fpgun_attachment_render_params};
 
 CodeInjection player_fpgun_render_ir_cull_patch_1{
     0x004AF137,
@@ -343,12 +487,301 @@ CodeInjection player_fpgun_render_ir_cull_patch_2{
     },
 };
 
+// Spectate lets any player borrow the shared fpgun meshes, but this frees them (deleting their
+// characters) and clears only the main player's handle, leaving every other borrower dangling.
+static FunHook<void()> player_fpgun_delete_meshes_hook{
+    0x004AEB40,
+    []() {
+        for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+            for (const rf::WeaponCycle& entry : rf::hud_weapon_cycle) {
+                if (entry.weapon_type >= 0 && player.weapon_mesh_handle
+                    && (player.weapon_mesh_handle == entry.mesh || player.weapon_mesh_handle == entry.fpgun_mesh)) {
+                    player.weapon_mesh_handle = nullptr;
+                }
+            }
+        }
+        player_fpgun_delete_meshes_hook.call_target();
+    },
+};
+
 CodeInjection players_cleanup_injection{
     0x004A259C,
     []() {
         g_fpgun_main_player = nullptr;
     },
 };
+
+// player_fpgun_get_muzzle_tag_pos tests pp->weapon_mesh_handle at 0x004AD705 but re-reads it at
+// 0x004AD752, after an intervening call can have cleared it. Exit through the function's own false
+// tail at 0x004AD731, which expects the one argument already pushed here.
+CodeInjection player_fpgun_get_muzzle_tag_pos_null_guard{
+    0x004AD74B,
+    [](auto& regs) {
+        rf::Player* pp = regs.esi;
+        if (!pp->weapon_mesh_handle) {
+            regs.esp += 4;
+            regs.eip = 0x004AD731;
+        }
+    },
+};
+
+namespace
+{
+    constexpr int max_custom_fpguns = static_cast<int>(std::extent_v<decltype(rf::MpCharacterInfo::custom_fpgun)>);
+
+    struct ResolvedFpgunArmsOverride
+    {
+        int character;   // -1 matches every character
+        int weapon_type; // -1 matches every weapon
+        const std::string* model;
+        std::array<std::optional<std::array<int, 3>>, 3> textures; // base, blue and red bitmap per arm part
+    };
+
+    std::vector<FpgunArmsOverride> g_fpgun_arms_override_specs;
+    // Never freed, so no engine String destructor runs after the engine heap is gone
+    std::unordered_map<int, rf::FpgunArms*> g_fpgun_arms_overrides;
+
+    int fpgun_arms_override_key(int character, int weapon_type)
+    {
+        return character * max_custom_fpguns + weapon_type;
+    }
+
+    constexpr std::size_t max_arm_texture_name_len = sizeof(rf::bm::BitmapEntry::name) - 1;
+    constexpr std::size_t max_fpgun_model_name_len = sizeof(rf::VMesh::filename) - 1;
+
+    int load_override_arm_team_texture(const std::string& filename, int base)
+    {
+        if (filename.size() > max_arm_texture_name_len) {
+            return base;
+        }
+        const int handle = bm_load_if_exists(filename.c_str(), -1, true);
+        return handle >= 0 ? handle : base;
+    }
+
+    std::optional<std::array<int, 3>> load_override_arm_texture(const std::string& filename)
+    {
+        if (filename.size() > max_arm_texture_name_len) {
+            xlog::warn("[Fpgun] Arm texture name {} is longer than {} characters", filename, max_arm_texture_name_len);
+            return std::nullopt;
+        }
+        const int base = bm_load_if_exists(filename.c_str(), -1, true);
+        if (base < 0) {
+            xlog::warn("[Fpgun] Arm texture {} not found", filename);
+            return std::nullopt;
+        }
+        const std::string stem{get_filename_without_ext(filename)};
+        return std::array{
+            base,
+            load_override_arm_team_texture(stem + "_blue.tga", base),
+            load_override_arm_team_texture(stem + "_red.tga", base),
+        };
+    }
+
+    void resolve_fpgun_arms_overrides()
+    {
+        if (g_fpgun_arms_override_specs.empty()) {
+            return;
+        }
+        const int num_characters = std::clamp(rf::num_multi_characters, 0, rf::MAX_MP_CHARACTERS);
+
+        std::vector<ResolvedFpgunArmsOverride> resolved;
+        for (const FpgunArmsOverride& spec : g_fpgun_arms_override_specs) {
+            int character = -1;
+            if (spec.character != "*") {
+                for (int i = 0; i < num_characters; ++i) {
+                    if (string_iequals(rf::mp_characters[i].name, spec.character)) {
+                        character = i;
+                        break;
+                    }
+                }
+                if (character < 0) {
+                    xlog::warn("[Fpgun] $Fpgun Override: unknown character {}", spec.character);
+                    continue;
+                }
+            }
+            int weapon_type = -1;
+            if (spec.weapon != "*") {
+                weapon_type = rf::weapon_lookup_type(spec.weapon.c_str());
+                if (weapon_type < 0 || weapon_type >= max_custom_fpguns) {
+                    xlog::warn("[Fpgun] $Fpgun Override: unknown weapon {}", spec.weapon);
+                    continue;
+                }
+            }
+            if (character >= 0 && weapon_type >= 0 && rf::mp_characters[character].custom_fpgun[weapon_type] < 0) {
+                xlog::warn("[Fpgun] $Fpgun Override: {} has no +Custom Fpgun for {}", spec.character, spec.weapon);
+                continue;
+            }
+
+            ResolvedFpgunArmsOverride entry{character, weapon_type, nullptr, {}};
+            if (spec.model) {
+                // The fpgun loader cuts the name at its last '.' twice, then opens <stem>.v3c and exits if that fails
+                if (!string_iends_with(*spec.model, ".v3c")
+                    || string_contains(get_filename_without_ext(*spec.model), '.')) {
+                    xlog::warn("[Fpgun] Fpgun model {} must be a .v3c file with no other '.'", *spec.model);
+                }
+                else if (spec.model->size() > max_fpgun_model_name_len) {
+                    xlog::warn("[Fpgun] Fpgun model name {} is longer than {} characters", *spec.model,
+                               max_fpgun_model_name_len);
+                }
+                else if (rf::File{}.find(spec.model->c_str())) {
+                    entry.model = &*spec.model;
+                }
+                else {
+                    xlog::warn("[Fpgun] Fpgun model {} not found", *spec.model);
+                }
+            }
+            for (std::size_t part = 0; part < spec.textures.size(); ++part) {
+                if (spec.textures[part]) {
+                    entry.textures[part] = load_override_arm_texture(*spec.textures[part]);
+                }
+            }
+            resolved.push_back(entry);
+        }
+
+        // Least specific first, so every field comes from the most specific block that sets it
+        std::ranges::stable_sort(resolved, {}, [](const ResolvedFpgunArmsOverride& entry) {
+            return (entry.character >= 0 ? 2 : 0) + (entry.weapon_type >= 0 ? 1 : 0);
+        });
+
+        for (int character = 0; character < num_characters; ++character) {
+            for (int weapon_type = 0; weapon_type < max_custom_fpguns; ++weapon_type) {
+                const int stock_index = rf::mp_characters[character].custom_fpgun[weapon_type];
+                if (stock_index < 0 || stock_index >= rf::num_fpgun_arms) {
+                    continue;
+                }
+                const std::string* model = nullptr;
+                std::array<std::optional<std::array<int, 3>>, 3> textures;
+                for (const ResolvedFpgunArmsOverride& entry : resolved) {
+                    if ((entry.character >= 0 && entry.character != character)
+                        || (entry.weapon_type >= 0 && entry.weapon_type != weapon_type)) {
+                        continue;
+                    }
+                    if (entry.model) {
+                        model = entry.model;
+                    }
+                    for (std::size_t part = 0; part < textures.size(); ++part) {
+                        if (entry.textures[part]) {
+                            textures[part] = entry.textures[part];
+                        }
+                    }
+                }
+                if (!model && std::ranges::none_of(textures, [](const auto& t) { return t.has_value(); })) {
+                    continue;
+                }
+
+                auto* arms = new rf::FpgunArms(rf::fpgun_arms[stock_index]);
+                if (model) {
+                    arms->model = model->c_str();
+                }
+                for (std::size_t part = 0; part < textures.size(); ++part) {
+                    if (textures[part]) {
+                        arms->arm_bitmaps[part] = (*textures[part])[0];
+                        arms->arm_bitmaps[part + 3] = (*textures[part])[1];
+                        arms->arm_bitmaps[part + 6] = (*textures[part])[2];
+                    }
+                }
+                g_fpgun_arms_overrides[fpgun_arms_override_key(character, weapon_type)] = arms;
+            }
+        }
+        xlog::info("[Fpgun] Applied {} fpgun arms overrides", g_fpgun_arms_overrides.size());
+        g_fpgun_arms_override_specs = {};
+    }
+
+    rf::FpgunArms* fpgun_arms_for(const rf::MpCharacterInfo* character, int weapon_type, int stock_index)
+    {
+        const int character_index = static_cast<int>(character - rf::mp_characters);
+        const auto it = g_fpgun_arms_overrides.find(fpgun_arms_override_key(character_index, weapon_type));
+        return it != g_fpgun_arms_overrides.end() ? it->second : &rf::fpgun_arms[stock_index];
+    }
+
+    std::vector<CustomWeaponProps> g_custom_weapon_props;
+
+    void apply_custom_weapon_props()
+    {
+        for (const CustomWeaponProps& props : g_custom_weapon_props) {
+            const int weapon_type = rf::weapon_lookup_type(props.weapon.c_str());
+            if (weapon_type < 0) {
+                xlog::warn("[Fpgun] $Custom Weapon Props: unknown weapon {}", props.weapon);
+                continue;
+            }
+            rf::WeaponInfo& info = rf::weapon_types[weapon_type];
+            if (props.first_person_fov) {
+                info.first_person_fov = *props.first_person_fov;
+            }
+            if (props.first_person_offset) {
+                info.first_person_offset = *props.first_person_offset;
+            }
+            if (props.first_person_muzzle_flash_bitmap) {
+                const std::string& filename = *props.first_person_muzzle_flash_bitmap;
+                const int bitmap = filename.size() <= max_arm_texture_name_len
+                    ? bm_load_if_exists(filename.c_str(), -1, true) : -1;
+                if (bitmap >= 0) {
+                    info.first_person_muzzle_flash_bitmap = bitmap;
+                }
+                else {
+                    xlog::warn("[Fpgun] Muzzle flash bitmap {} not found or its name is too long", filename);
+                }
+            }
+            if (props.first_person_muzzle_flash_radius) {
+                info.first_person_muzzle_flash_radius = *props.first_person_muzzle_flash_radius;
+            }
+        }
+    }
+
+    // pc_multi.tbl parse, which runs after fpgun.tbl and weapons.tbl are loaded
+    FunHook<void(rf::Parser*)> multi_load_characters_tbl_hook{
+        0x00475B00,
+        [](rf::Parser* parser) {
+            multi_load_characters_tbl_hook.call_target(parser);
+            resolve_fpgun_arms_overrides();
+            apply_custom_weapon_props();
+        },
+    };
+
+    CodeInjection player_fpgun_load_meshes_arms_injection{
+        0x004AE5C6,
+        [](auto& regs) {
+            const rf::MpCharacterInfo* character = regs.ebx;
+            const rf::WeaponCycle* entry = regs.esi;
+            const int stock_index = regs.eax;
+            regs.ebp = fpgun_arms_for(character, entry->weapon_type, stock_index);
+            regs.eip = 0x004AE5CD;
+        },
+        false, // no trampoline: the injection fully replaces the 7 byte LEA
+    };
+
+    CodeInjection player_fpgun_load_meshes_detonator_arms_injection{
+        0x004AE634,
+        [](auto& regs) {
+            const rf::MpCharacterInfo* character = regs.ebx;
+            const int stock_index = regs.eax;
+            regs.eax = fpgun_arms_for(character, rf::remote_charge_det_weapon_type, stock_index);
+            regs.eip = 0x004AE63B;
+        },
+        false, // no trampoline: the injection fully replaces the 7 byte LEA
+    };
+}
+
+void player_fpgun_add_arms_override(FpgunArmsOverride arms_override)
+{
+    if (!arms_override.model && std::ranges::none_of(arms_override.textures, [](const auto& t) { return t.has_value(); })) {
+        xlog::warn("[Fpgun] $Fpgun Override for {} {} sets no fields", arms_override.character, arms_override.weapon);
+        return;
+    }
+    g_fpgun_arms_override_specs.push_back(std::move(arms_override));
+}
+
+void player_fpgun_add_custom_weapon_props(CustomWeaponProps props)
+{
+    g_custom_weapon_props.push_back(std::move(props));
+}
+
+void player_fpgun_collect_override_arm_bitmaps(std::unordered_set<int>& bitmaps)
+{
+    for (const auto& [key, arms] : g_fpgun_arms_overrides) {
+        bitmaps.insert(std::begin(arms->arm_bitmaps), std::end(arms->arm_bitmaps));
+    }
+}
 
 void player_fpgun_do_patch()
 {
@@ -379,8 +812,13 @@ void player_fpgun_do_patch()
     write_mem_ptr(0x004A44F7 + 2, &g_fpgun_main_player); // player_create_entity
 
     players_cleanup_injection.install(); // fixes crash at 0x004AEB8F in player_fpgun_delete_meshes
+    player_fpgun_delete_meshes_hook.install();
 
     player_fpgun_render_main_player_entity_injection.install();
+
+    // Light fpgun attachments like the fpgun instead of fullbright
+    player_fpgun_render_silencer_params_injection.install();
+    player_fpgun_render_detonator_params_injection.install();
 
     player_fpgun_update_state_anim_hook.install();
 
@@ -447,9 +885,22 @@ void player_fpgun_do_patch()
     player_fpgun_render_gr_setup_3d_hook.install();
     fpgun_fov_scale_cmd.register_cmd();
 
+    // Weapon aim sway
+    player_fpgun_process_hook.install();
+    player_fpgun_sway_enabled_hook.install();
+    weapon_sway_cmd.register_cmd();
+
+    // af_client*.tbl $Fpgun Override and $Custom Weapon Props
+    multi_load_characters_tbl_hook.install();
+    player_fpgun_load_meshes_arms_injection.install();
+    player_fpgun_load_meshes_detonator_arms_injection.install();
+
     // Do not cull entities too early.
     player_fpgun_render_ir_cull_patch_1.install();
     player_fpgun_render_ir_cull_patch_2.install();
+
+    // A player with no fpgun mesh has no fpgun muzzle
+    player_fpgun_get_muzzle_tag_pos_null_guard.install();
 
 #ifndef NDEBUG
     reload_fpgun_cmd.register_cmd();

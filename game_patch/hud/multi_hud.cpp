@@ -1,25 +1,40 @@
 #include <ranges>
 #include <algorithm>
+#include <array>
 #include <tuple>
 #include <format>
 #include <cstdint>
+#include <random>
+#include <cmath>
 #include <patch_common/CodeInjection.h>
 #include <patch_common/AsmWriter.h>
 #include <patch_common/FunHook.h>
 #include <patch_common/CallHook.h>
+#include <common/payload.h>
 #include <common/utils/list-utils.h>
 #include <common/utils/string-utils.h>
 #include <xlog/xlog.h>
 #include "../multi/multi.h"
+#include "../multi/demo/demo.h"
+#include "../multi/demo/demo_ui.h"
 #include "../multi/gametype.h"
+#include "../multi/bagman.h"
+#include "../multi/payload.h"
+#include "../multi/jetpack.h"
+#include "../multi/vehicles/vehicle_seats.h"
+#include "../multi/salvage.h"
+#include "../multi/wipeout.h"
+#include "../multi/server.h"
 #include "../input/input.h"
 #include "../rf/input.h"
 #include "../rf/hud.h"
 #include "../rf/level.h"
+#include "../rf/bmpman.h"
 #include "../rf/gr/gr.h"
 #include "../rf/gr/gr_font.h"
 #include "../rf/multi.h"
 #include "../rf/player/player.h"
+#include "../rf/weapon.h"
 #include "../rf/os/frametime.h"
 #include "../rf/os/timer.h"
 #include "../rf/os/timestamp.h"
@@ -31,6 +46,7 @@
 #include "../graphics/gr.h"
 #include "../misc/alpine_options.h"
 #include "../misc/alpine_settings.h"
+#include "../misc/waypoints_utils.h"
 #include "../sound/sound.h"
 #include "../os/console.h"
 #include "hud_internal.h"
@@ -39,17 +55,106 @@
 #include "remote_server_cfg_ui.h"
 #include "../misc/player.h"
 #include "../multi/alpine_packets.h"
+#include "../multi/vote_client.h"
+#include "../misc/vote_panel.h"
 #include "../multi/network.h"
+#include "../multi/bots/bot_main.h"
+#include "../multi/mutators.h"
 #include "multi_spectate.h"
+#include "../misc/settings_registry.h"
+#include "../object/zipline.h"
 
 static bool g_big_team_scores_hud = false;
 constexpr bool g_debug_team_scores_hud = false;
 static bool g_draw_vote_notification = false;
 static std::string g_active_vote_type = "";
-static bool g_draw_ready_notification = false;
 bool g_pre_match_active = false;
+
+// Desired visibility of the ready-up prompt
+static bool g_ready_prompt_wanted = false;
 static bool g_draw_respawn_timer_notification = false;
 static bool g_draw_respawn_timer_can_respawn = false;
+
+struct ActiveHudNotification
+{
+    HudNotificationType type = HudNotificationType::None;
+    std::string text;
+    rf::Timestamp expiry; // invalid for perpetual
+    rf::Timestamp fade_start; // invalid while not fading
+    bool fade_on_expire = false;
+};
+static ActiveHudNotification g_hud_notification;
+static ActiveHudNotification g_hud_big_notification;
+constexpr int kHudNotificationFadeMs = 500;
+constexpr const char* kSalvageCarrierNotificationText = "You have the flag! Take it to your base!";
+constexpr const char* kScavengerCarrierNotificationText = "You have the cartridge! Take it to the target!";
+
+static void hud_notification_clear_slot(ActiveHudNotification& slot)
+{
+    slot.type = HudNotificationType::None;
+    slot.text.clear();
+    slot.expiry.invalidate();
+    slot.fade_start.invalidate();
+    slot.fade_on_expire = false;
+}
+
+static void hud_notification_clear()
+{
+    hud_notification_clear_slot(g_hud_notification);
+}
+
+static void hud_big_notification_clear()
+{
+    hud_notification_clear_slot(g_hud_big_notification);
+}
+
+// Third slot, under the reticle: the vehicle Use prompt or the zip line hint. It is local-only and
+// re-asserted every frame it applies, so it carries no HudNotificationType and never competes for the
+// two slots above.
+static struct {
+    bool active = false;
+    std::string text;
+    rf::Timestamp fade_start; // invalid while not fading
+} g_hud_reticle_prompt;
+
+void hud_reticle_prompt_clear()
+{
+    g_hud_reticle_prompt.active = false;
+    g_hud_reticle_prompt.text.clear();
+    g_hud_reticle_prompt.fade_start.invalidate();
+}
+
+// Latest Pit duel-queue state pushed by the server (af_sreq_pit_queue_state).
+// Drives the persistent queue overlay in the notification render path.
+static struct {
+    bool valid = false;
+    bool queued = false;
+    bool dueler = false;
+    bool spectate = false; // server wants this queued player in spectate mode
+    int pos = 0;
+    int total = 0;
+} g_pit_queue_state;
+
+// Replicated Pit roster (af_pit_roster): role per player_id (0=dueler,
+// 1=queued, 2=not_queued; 0xFF = unknown/none). Drives the Pit scoreboard
+// grouping. Initialized to all-unknown.
+static std::array<uint8_t, 256> g_pit_roster_role = [] {
+    std::array<uint8_t, 256> a{};
+    a.fill(0xFF);
+    return a;
+}();
+
+static std::array<uint8_t, 256> g_pit_roster_order{}; // all-zero = unknown
+static std::vector<std::pair<int, int>> g_gungame_order;
+static int g_gungame_last_score = 0;
+static bool g_gungame_score_synced = false;
+static bool g_gungame_spawn_notification_pending = false;
+static bool g_pit_queue_text_valid = false;
+static bool g_pit_queue_text_queued = false;
+static int g_pit_queue_text_pos = -1;
+static int g_pit_queue_text_total = -1;
+static std::string g_pit_queue_text_key;
+static std::string g_pit_queue_text;
 static std::string time_left_string_format = "";
 static int time_left_string_x_pos_offset = 135;
 static int time_left_string_y_pos_offset = 21;
@@ -57,6 +162,8 @@ static rf::Color time_left_string_color = {0, 255, 0, 255};
 static rf::TimestampRealtime g_run_life_start_timestamp;
 static bool g_run_timer_reset_by_respawn_key = false;
 static bool g_run_timer_fade_active = false;
+static int g_gt_help_last_shown_type = -1;
+int g_multi_hud_cp_strip_y = 0;
 
 void multi_hud_update_timer_color()
 {
@@ -357,6 +464,15 @@ static const ChatMenuList random_funny_menu{
     }
 };
 
+static std::optional<AfVoteType> chat_menu_simple_vote_type(std::string_view command)
+{
+    if (command == "/vote next") return AfVoteType::Next;
+    if (command == "/vote previous") return AfVoteType::Previous;
+    if (command == "/vote restart") return AfVoteType::Restart;
+    if (command == "/vote extend") return AfVoteType::Extend;
+    return std::nullopt;
+}
+
 // Command
 static const ChatMenuList command_menu{
     .display_string = "COMMANDS",
@@ -383,6 +499,74 @@ static const ChatMenuList spectate_menu{
         {false, ChatMenuListName::Null, ChatMenuListType::Basic, "Follow killer", "spectate_followkiller"},
         {false, ChatMenuListName::Null, ChatMenuListType::Basic, "Minimal UI", "spectate_minui"},
         {false, ChatMenuListName::Null, ChatMenuListType::Basic, "Player labels", "spectate_playerlabels"},
+        {true, ChatMenuListName::SpectateOutlines, ChatMenuListType::Basic, "Outlines"},
+        {false, ChatMenuListName::Null, ChatMenuListType::Basic, "HUD", "cl_hud"},
+        {true, ChatMenuListName::SpectateHudElements, ChatMenuListType::Basic, "HUD elements"},
+        {true, ChatMenuListName::SpectateDemoOverlays, ChatMenuListType::DemoPlayback, "Demo overlays"},
+    }
+};
+
+// Spectate HUD elements: more toggles than one menu holds, so split in two
+static const ChatMenuList spectate_hud_elements_menu{
+    .display_string = "HUD ELEMENTS",
+    .type = ChatMenuListType::Basic,
+    .elements = {
+        {true, ChatMenuListName::SpectatePlayerHud, ChatMenuListType::Basic, "Player HUD"},
+        {true, ChatMenuListName::SpectateMatchHud, ChatMenuListType::Basic, "Match HUD"},
+        {false, ChatMenuListName::Null, ChatMenuListType::Basic, "Show all", "cl_hudelement all"},
+    }
+};
+
+static ChatMenuElement hud_element_menu_item(HudElement element)
+{
+    return {false, ChatMenuListName::Null, ChatMenuListType::Basic, hud_element_label(element), "", element};
+}
+
+static const ChatMenuList spectate_player_hud_menu{
+    .display_string = "PLAYER HUD",
+    .type = ChatMenuListType::Basic,
+    .elements = {
+        hud_element_menu_item(HudElement::health),
+        hud_element_menu_item(HudElement::ammo),
+        hud_element_menu_item(HudElement::reticle),
+        hud_element_menu_item(HudElement::powerups),
+        hud_element_menu_item(HudElement::gauges),
+        hud_element_menu_item(HudElement::target_names),
+    }
+};
+
+static const ChatMenuList spectate_match_hud_menu{
+    .display_string = "MATCH HUD",
+    .type = ChatMenuListType::Basic,
+    .elements = {
+        hud_element_menu_item(HudElement::killfeed),
+        hud_element_menu_item(HudElement::chat),
+        hud_element_menu_item(HudElement::timer),
+        hud_element_menu_item(HudElement::scores),
+        hud_element_menu_item(HudElement::messages),
+        hud_element_menu_item(HudElement::minimap),
+    }
+};
+
+// Spectate outlines
+static const ChatMenuList spectate_outlines_menu{
+    .display_string = "OUTLINES",
+    .type = ChatMenuListType::Basic,
+    .elements = {
+        {false, ChatMenuListName::Null, ChatMenuListType::Basic, "Player outlines", "r_outlines_spectator"},
+        {false, ChatMenuListName::Null, ChatMenuListType::Basic, "Outline x-ray", "r_outlines_spectator_xray"},
+    }
+};
+
+// Spectate demo overlays
+static const ChatMenuList spectate_demo_overlays_menu{
+    .display_string = "DEMO OVERLAYS",
+    .type = ChatMenuListType::DemoPlayback,
+    .elements = {
+        {false, ChatMenuListName::Null, ChatMenuListType::DemoPlayback, "Player healthbars", "spectate_playerinfo"},
+        {false, ChatMenuListName::Null, ChatMenuListType::DemoPlayback, "Powerup timers", "spectate_powerups"},
+        {false, ChatMenuListName::Null, ChatMenuListType::DemoPlayback, "Spawn points", "spectate_spawns"},
+        {false, ChatMenuListName::Null, ChatMenuListType::DemoPlayback, "Minimal compact bar", "spectate_minimalbar"},
     }
 };
 
@@ -397,6 +581,72 @@ rf::TimestampRealtime g_chat_menu_timer;
 rf::TimestampRealtime g_taunt_timer;
 rf::TimestampRealtime g_rad_msg_timer;
 
+namespace
+{
+constexpr std::string_view kTauntChatPrefix = "\xA8[Taunt] ";
+
+const std::vector<const std::string*>& get_all_taunt_messages()
+{
+    static const std::vector<const std::string*> taunt_messages = []() {
+        std::vector<const std::string*> result{};
+        const ChatMenuList* const taunt_lists[] = {
+            &intimidation_menu,
+            &mockery_menu,
+            &celebration_menu,
+            &dismissiveness_menu,
+            &bravado_menu,
+            &derision_menu,
+            &casual_menu,
+            &random_funny_menu,
+        };
+        for (const ChatMenuList* list : taunt_lists) {
+            if (!list) {
+                continue;
+            }
+            for (const ChatMenuElement& element : list->elements) {
+                if (element.is_menu || element.long_string.empty()) {
+                    continue;
+                }
+                result.push_back(&element.long_string);
+            }
+        }
+        return result;
+    }();
+    return taunt_messages;
+}
+}
+
+std::string_view multi_hud_get_random_taunt_message()
+{
+    const auto& taunt_messages = get_all_taunt_messages();
+    if (taunt_messages.empty()) {
+        return {};
+    }
+    std::uniform_int_distribution<size_t> index_dist(0, taunt_messages.size() - 1);
+    return *taunt_messages[index_dist(g_rng)];
+}
+
+std::string multi_hud_format_taunt_chat_message(const std::string_view taunt_text)
+{
+    std::string msg{};
+    msg.reserve(kTauntChatPrefix.size() + taunt_text.size());
+    msg.append(kTauntChatPrefix.data(), kTauntChatPrefix.size());
+    msg.append(taunt_text.data(), taunt_text.size());
+    return msg;
+}
+
+bool multi_hud_send_taunt_chat_message(const std::string_view taunt_text)
+{
+    if (taunt_text.empty()) {
+        return false;
+    }
+
+    const std::string msg = multi_hud_format_taunt_chat_message(taunt_text);
+    rf::multi_chat_say(msg.c_str(), false);
+    rf::snd_play(stock_sound_id::end_voice, 0, 0.0f, 1.0f);
+    return true;
+}
+
 bool is_element_valid(const ChatMenuElement& element) {
     if (element.type == ChatMenuListType::Basic) {
         return true;
@@ -408,6 +658,9 @@ bool is_element_valid(const ChatMenuElement& element) {
         return true;
     }
     if (element.type == ChatMenuListType::Map && g_level_chat_menu_present && !element.display_string.empty()) {
+        return true;
+    }
+    if (element.type == ChatMenuListType::DemoPlayback && demo_playback_active()) {
         return true;
     }
     return false;
@@ -524,8 +777,165 @@ static void hud_draw_cp_row_fullwidth(int x, int y, int w, int h, const HillInfo
     }
 }
 
+static void hud_draw_payload_row_text(int x, int y, int h, const std::string& text, int font_id)
+{
+    const auto [tw, th] = rf::gr::get_string_size(text, font_id);
+    rf::gr::set_color(0, 0, 0, 220);
+    rf::gr::string(x + 1, y + (h - th) / 2 + 1, text.c_str(), font_id); // shadow
+    rf::gr::set_color(255, 255, 255, 255);
+    rf::gr::string(x, y + (h - th) / 2, text.c_str(), font_id); // main
+}
+
+static void hud_draw_payload_state_row(int x, int y, int w, int h, int font_id)
+{
+    const HillOwner attackers = team_hill_owner(payload_attacking_team());
+    const HillOwner defenders = team_hill_owner(payload_defending_team());
+    HillOwner fill = HillOwner::HO_Neutral;
+    std::string label;
+    std::string value;
+    switch (payload_state()) {
+        case PayloadCartState::pushing:
+            fill = attackers;
+            label = "Pushing";
+            value = std::format("x{}", payload_useful_pushers());
+            break;
+        case PayloadCartState::blocked:
+            fill = defenders;
+            label = "Blocked";
+            break;
+        case PayloadCartState::rolling_back:
+            fill = defenders;
+            label = "Rolling back";
+            break;
+        case PayloadCartState::finale:
+            fill = attackers;
+            label = "Delivered";
+            break;
+        case PayloadCartState::held:
+            fill = attackers;
+            label = payload_in_setup() ? "Setup" : "Moving in";
+            value = std::to_string(payload_countdown_whole_seconds().value_or(1));
+            break;
+        default:
+            if (const auto left = payload_countdown_whole_seconds()) {
+                label = "Rollback in";
+                value = std::to_string(*left);
+            }
+            else {
+                label = "Stopped";
+            }
+            break;
+    }
+    if (payload_in_overtime()) {
+        label = "OVERTIME: " + label;
+    }
+
+    rf::gr::set_color(0, 0, 0, 150);
+    rf::gr::rect(x, y, w, h);
+    rf::ubyte fr, fg, fb, fa;
+    cp_owner_color(fill, fr, fg, fb, fa);
+    rf::gr::set_color(fr, fg, fb, 130);
+    rf::gr::rect(x + 1, y + 1, w - 2, h - 2);
+    if (payload_in_overtime()) {
+        rf::gr::set_color(255, 220, 64, 220);
+    }
+    else {
+        rf::gr::set_color(150, 150, 150, 170);
+    }
+    rf::gr::rect_border(x, y, w, h);
+
+    const int pad = 6;
+    int value_room = 0;
+    if (!value.empty()) {
+        const auto [vw, vh] = rf::gr::get_string_size(value, font_id);
+        value_room = vw + pad;
+        hud_draw_payload_row_text(x + w - pad - vw, y, h, value, font_id);
+    }
+    const std::string fit_label = hud_fit_string(label, w - 2 * pad - value_room, nullptr, font_id);
+    hud_draw_payload_row_text(x + pad, y, h, fit_label, font_id);
+}
+
+static void hud_draw_payload_track_row(int x, int y, int w, int h)
+{
+    rf::gr::set_color(0, 0, 0, 150);
+    rf::gr::rect(x, y, w, h);
+
+    rf::ubyte ar, ag, ab, aa;
+    cp_steal_color(team_hill_owner(payload_attacking_team()), ar, ag, ab, aa);
+    rf::ubyte dr, dg, db, da;
+    cp_owner_color(team_hill_owner(payload_defending_team()), dr, dg, db, da);
+
+    const int tick = std::max(6, h / 2);
+    const int pad = tick / 2 + 3;
+    const int track_x = x + pad;
+    const int track_w = w - 2 * pad;
+    const int track_h = std::max(4, h / 4);
+    const int track_y = y + (h - track_h) / 2;
+    const float total = payload_total_length();
+    const auto x_at = [&](float distance) {
+        const float f = total > 0.0f ? std::clamp(distance / total, 0.0f, 1.0f) : 0.0f;
+        return track_x + static_cast<int>(std::lround(f * track_w));
+    };
+
+    const int cart_x = x_at(payload_distance());
+    rf::gr::set_color(dr, dg, db, 160);
+    rf::gr::rect(track_x, track_y, track_w, track_h);
+    if (cart_x > track_x) {
+        rf::gr::set_color(ar, ag, ab, aa);
+        rf::gr::rect(track_x, track_y, cart_x - track_x, track_h);
+    }
+
+    const auto& checkpoints = payload_checkpoints();
+    const int next = payload_next_checkpoint_index();
+    for (int i = 0; i < static_cast<int>(checkpoints.size()); ++i) {
+        const int tick_x = x_at(checkpoints[i].distance) - tick / 2;
+        const int tick_y = y + (h - tick) / 2;
+        if (payload_checkpoint_captured(checkpoints[i])) {
+            rf::gr::set_color(ar, ag, ab, 255);
+        }
+        else {
+            rf::gr::set_color(dr, dg, db, 255);
+        }
+        rf::gr::rect(tick_x, tick_y, tick, tick);
+        rf::gr::set_color(255, 255, 255, i == next ? 255 : 150);
+        rf::gr::rect_border(tick_x, tick_y, tick, tick);
+    }
+
+    const int cart_w = std::max(4, h / 5);
+    rf::gr::set_color(0, 0, 0, 220);
+    rf::gr::rect(cart_x - cart_w / 2 - 1, y + 2, cart_w + 2, h - 4);
+    rf::gr::set_color(255, 255, 255, 255);
+    rf::gr::rect(cart_x - cart_w / 2, y + 3, cart_w, h - 6);
+
+    rf::gr::set_color(150, 150, 150, 170);
+    rf::gr::rect_border(x, y, w, h);
+}
+
+// The cart is Payload's only objective, so its state and track take the capture point rows' place
+static void hud_render_payload_bar(int anchor_x, int anchor_y, int anchor_w)
+{
+    if (!payload_active()) {
+        g_multi_hud_cp_strip_y = anchor_y;
+        return;
+    }
+
+    const int row_h = g_big_team_scores_hud ? 28 : 22;
+    const int gap_y = 4;
+    const int margin = 6; // margin above team scores box
+    const int track_y = anchor_y - margin - row_h;
+    const int state_y = track_y - gap_y - row_h;
+    g_multi_hud_cp_strip_y = state_y;
+
+    hud_draw_payload_state_row(anchor_x, state_y, anchor_w, row_h, hud_get_default_font());
+    hud_draw_payload_track_row(anchor_x, track_y, anchor_w, row_h);
+}
+
 static void hud_render_cp_strip_koth_dc_fullwidth(int anchor_x, int anchor_y, int anchor_w)
 {
+    if (gt_is_payload()) {
+        hud_render_payload_bar(anchor_x, anchor_y, anchor_w);
+        return;
+    }
     if (!multi_is_game_type_with_hills())
         return;
 
@@ -554,6 +964,8 @@ static void hud_render_cp_strip_koth_dc_fullwidth(int anchor_x, int anchor_y, in
             y0 = anchor_y - total_h - margin;
         }
     }
+
+    g_multi_hud_cp_strip_y = y0;
 
     // draw from top row to bottom, stacked
     int cur_y = y0;
@@ -736,17 +1148,77 @@ static void hud_render_run_timer_widget(int x, int y, int w, int h, int font_id)
     draw_shadow_text(timer_x, timer_y, timer_string, font_id, timer_r, timer_g, timer_b, timer_a);
 }
 
+// Pulsing alpha for the big carrier-flag icon, shared by CTF and Salvage.
+static float hud_carrier_flag_pulse_alpha()
+{
+    static float alpha = 255.0f;
+    static bool falling = false;
+    const float delta_alpha = rf::frametime * 500.0f;
+    if (falling) {
+        alpha -= delta_alpha;
+        if (alpha <= 50.0f) {
+            alpha = 50.0f;
+            falling = false;
+        }
+    }
+    else {
+        alpha += delta_alpha;
+        if (alpha >= 255.0f) {
+            alpha = 255.0f;
+            falling = true;
+        }
+    }
+    return alpha;
+}
+
+// True when the player whose view we are rendering is carrying the Salvage flag.
+static bool hud_view_player_is_salvage_carrier()
+{
+    if (salvage_player_is_carrier(rf::local_player)) {
+        return true;
+    }
+    return multi_spectate_is_spectating()
+        && salvage_player_is_carrier(multi_spectate_get_target_player());
+}
+
+// Big carrier icon only, drawn beside the score box while the viewed player is
+// running the flag. Separate art from the score-row miniflag below; the two are
+// drawn at different sizes in different places and must not be merged.
+static int hud_salvage_flag_bmh()
+{
+    static const int sal_bmh = rf::bm::load("hud_flag_sal.vbm", -1, true);
+    static const int scav_bmh = rf::bm::load("hud_flag_scav.tga", -1, true);
+    return gt_is_scavenger() ? scav_bmh : sal_bmh;
+}
+
+// Score-row indicator only, drawn inside the score box, next to a team's score.
+static int hud_salvage_miniflag_bmh()
+{
+    static const int sal_bmh = rf::bm::load("hud_miniflag_sal.vbm", -1, true);
+    static const int scav_bmh = rf::bm::load("hud_miniflag_scav.tga", -1, true);
+    return gt_is_scavenger() ? scav_bmh : sal_bmh;
+}
+
 void multi_hud_render_team_scores()
 {
+    if (!hud_element_visible(HudElement::scores)) {
+        return;
+    }
     int clip_h = rf::gr::clip_height();
     rf::gr::set_color(0, 0, 0, 150);
 
     const auto game_type = rf::multi_get_game_type();
-    const bool is_koth_dc = (game_type == rf::NG_TYPE_KOTH || game_type == rf::NG_TYPE_DC);
-    const bool is_esc = (game_type == rf::NG_TYPE_ESC);
-    const bool is_rev = (game_type == rf::NG_TYPE_REV);
-    const bool is_run = (game_type == rf::NG_TYPE_RUN);
-    const bool is_hill_score = is_koth_dc || is_rev || is_esc;
+    const bool is_koth_dc = game_type == rf::NG_TYPE_KOTH || game_type == rf::NG_TYPE_DC;
+    const bool is_esc = game_type == rf::NG_TYPE_ESC;
+    const bool is_rev = game_type == rf::NG_TYPE_REV;
+    const bool is_pay = game_type == rf::NG_TYPE_PAY;
+    const bool is_run = game_type == rf::NG_TYPE_RUN;
+    const bool is_ffa_with_list = game_type == rf::NG_TYPE_DM
+        || game_type == rf::NG_TYPE_BAG
+        || game_type == rf::NG_TYPE_PIT
+        || game_type == rf::NG_TYPE_GG;
+    const bool is_hill_score = is_koth_dc || is_rev || is_esc || is_pay;
+    const bool is_neutral_flag = salvage_framework_active();
     const bool show_run_timer = g_alpine_game_config.show_run_timer;
 
     if (is_run && !show_run_timer) {
@@ -757,8 +1229,14 @@ void multi_hud_render_team_scores()
     if (is_koth_dc || is_run) {
         box_w = g_big_team_scores_hud ? 240 : 185;
         box_h = g_big_team_scores_hud ? 60  : 40;
-    } else if (is_rev || is_esc) {
+    } else if (is_rev || is_esc || is_pay) {
         box_w = g_big_team_scores_hud ? 240 : 185;
+    } else if (is_ffa_with_list) {
+        box_w = g_big_team_scores_hud ? 280 : 240;
+        box_h = g_big_team_scores_hud ? 90 : 65;
+    } else if (is_neutral_flag) {
+        box_w = g_big_team_scores_hud ? 240 : 185;
+        box_h = g_big_team_scores_hud ? 80 : 55;
     } else {
         const int ctf_box_w = rf::gr::clip_width() <= 1280 ? 350 : 370;
         box_w = g_big_team_scores_hud ? ctf_box_w : 185;
@@ -783,23 +1261,7 @@ void multi_hud_render_team_scores()
     int font_id = hud_get_default_font();
 
     if (game_type == rf::NG_TYPE_CTF) {
-        static float hud_flag_alpha = 255.0f;
-        static bool hud_flag_pulse_dir = false;
-        float delta_alpha = rf::frametime * 500.0f;
-        if (hud_flag_pulse_dir) {
-            hud_flag_alpha -= delta_alpha;
-            if (hud_flag_alpha <= 50.0f) {
-                hud_flag_alpha = 50.0f;
-                hud_flag_pulse_dir = false;
-            }
-        }
-        else {
-            hud_flag_alpha += delta_alpha;
-            if (hud_flag_alpha >= 255.0f) {
-                hud_flag_alpha = 255.0f;
-                hud_flag_pulse_dir = true;
-            }
-        }
+        const float hud_flag_alpha = hud_carrier_flag_pulse_alpha();
         rf::gr::set_color(53, 207, 22, 255);
         rf::Player* red_flag_player = g_debug_team_scores_hud ? rf::local_player : rf::multi_ctf_get_red_flag_player();
         if (red_flag_player) {
@@ -840,6 +1302,32 @@ void multi_hud_render_team_scores()
         }
     }
 
+    // Salvage: the neutral flag has no per-team row, but the carrier gets the
+    // same big pulsing flag icon CTF gives its carriers.
+    float sal_flag_alpha = 255.0f;
+    if (is_neutral_flag) {
+        sal_flag_alpha = hud_carrier_flag_pulse_alpha();
+        if (hud_view_player_is_salvage_carrier()) {
+            rf::gr::set_color(255, 255, 255, static_cast<int>(sal_flag_alpha));
+            hud_scaled_bitmap(hud_salvage_flag_bmh(), flag_x, box_y, flag_scale, rf::hud_flag_gr_mode);
+        }
+    }
+
+    // Wipeout: next to each team's flag icon, show how many of that team are
+    // currently alive vs. waiting (dead/awaiting-respawn or a late joiner). The
+    // round-win score itself is drawn on the right by the standard path below.
+    if (game_type == rf::NG_TYPE_WO) {
+        rf::gr::set_color(53, 207, 22, 255);
+        std::string red_label = std::format("({} Alive, {} Waiting)",
+            wipeout_count_team_alive(rf::TEAM_RED), wipeout_count_team_waiting(rf::TEAM_RED));
+        std::string blue_label = std::format("({} Alive, {} Waiting)",
+            wipeout_count_team_alive(rf::TEAM_BLUE), wipeout_count_team_waiting(rf::TEAM_BLUE));
+        std::string red_fit = hud_fit_string(red_label, max_miniflag_label_w, nullptr, font_id);
+        std::string blue_fit = hud_fit_string(blue_label, max_miniflag_label_w, nullptr, font_id);
+        rf::gr::string(miniflag_label_x, red_miniflag_label_y, red_fit.c_str(), font_id);
+        rf::gr::string(miniflag_label_x, blue_miniflag_label_y, blue_fit.c_str(), font_id);
+    }
+
     if (multi_is_team_game_type() && !is_hill_score && !is_run) {
         float miniflag_scale = g_big_team_scores_hud ? 1.5f : 1.0f;
         rf::gr::set_color(255, 255, 255, 255);
@@ -877,6 +1365,21 @@ void multi_hud_render_team_scores()
             red_score = multi_koth_get_red_team_score();
             blue_score = multi_koth_get_blue_team_score();
         }
+        else if (game_type == rf::NG_TYPE_TBAG) {
+            rf::gr::set_color(53, 207, 22, 255);
+            red_score = bagman_get_red_team_score();
+            blue_score = bagman_get_blue_team_score();
+        }
+        else if (game_type == rf::NG_TYPE_WO) {
+            rf::gr::set_color(53, 207, 22, 255);
+            red_score = wipeout_get_red_team_score();
+            blue_score = wipeout_get_blue_team_score();
+        }
+        else if (is_neutral_flag) {
+            rf::gr::set_color(53, 207, 22, 255);
+            red_score = salvage_get_red_team_score();
+            blue_score = salvage_get_blue_team_score();
+        }
     }
 
     auto red_score_str = std::to_string(red_score);
@@ -891,15 +1394,98 @@ void multi_hud_render_team_scores()
     else if (is_run) {
         hud_render_run_timer_widget(box_x, box_y, box_w, box_h, font_id);
     }
-    else if (!is_rev && !is_esc) {
+    else if (is_ffa_with_list) {
+        constexpr size_t kMaxEntries = 32;
+        std::array<rf::Player*, kMaxEntries> entries{};
+        size_t entry_count = 0;
+        for (rf::Player& p : SinglyLinkedList{rf::player_list}) {
+            if (!p.stats) continue;
+            if (p.is_non_participant()) continue;
+            // The demo viewer is not part of the recorded match - no phantom row
+            if (demo_playback_active() && &p == rf::local_player) continue;
+            if (entry_count >= kMaxEntries) break;
+            entries[entry_count++] = &p;
+        }
+        std::sort(entries.begin(), entries.begin() + entry_count,
+            [](rf::Player* a, rf::Player* b) {
+                return a->stats->score > b->stats->score;
+            });
+
+        // Pin the local player to the third row.
+        std::array<rf::Player*, 3> display_rows{};
+        size_t display_count = 0;
+        const auto entries_end = entries.begin() + entry_count;
+        const auto local_it = std::find(entries.begin(), entries_end, rf::local_player);
+        const auto local_rank_idx = std::distance(entries.begin(), local_it);
+        if (local_it != entries_end && local_rank_idx >= 2) {
+            if (entry_count >= 1) display_rows[display_count++] = entries[0];
+            if (entry_count >= 2) display_rows[display_count++] = entries[1];
+            display_rows[display_count++] = rf::local_player;
+        } else {
+            const size_t count = std::min<size_t>(3, entry_count);
+            for (size_t i = 0; i < count; ++i) {
+                display_rows[display_count++] = entries[i];
+            }
+        }
+
+        const int row_h = g_big_team_scores_hud ? 24 : 18;
+        const int name_x = box_x + 8;
+        const int max_name_w = box_w - 50; // leave room for the right-aligned score
+        int row_y = box_y + 4;
+
+        for (size_t i = 0; i < display_count; ++i) {
+            rf::Player* p = display_rows[i];
+            if (!p || !p->stats) continue;
+
+            if (p == rf::local_player) {
+                rf::gr::set_color(0xFF, 0xFF, 0x80, 0xFF);
+            } else {
+                rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xFF);
+            }
+
+            // Name (trimmed to fit)
+            const char* raw_name = p->name.c_str();
+            std::string fitting_name = hud_fit_string(raw_name, max_name_w, nullptr, font_id);
+            rf::gr::string(name_x, row_y + 4, fitting_name.c_str(), font_id);
+
+            // Score (right-aligned)
+            std::string score_str = std::to_string(p->stats->score);
+            auto [sw, sh] = rf::gr::get_string_size(score_str, font_id);
+            rf::gr::string(box_x + box_w - 5 - sw, row_y + 4, score_str.c_str(), font_id);
+
+            row_y += row_h;
+        }
+    }
+    else if (!is_rev && !is_esc && !is_pay) {
         auto [str_w, str_h] = rf::gr::get_string_size(red_score_str, font_id);
-        rf::gr::string(box_x + box_w - 5 - str_w, red_miniflag_label_y, red_score_str.c_str(), font_id);
+        const int red_score_x = box_x + box_w - 5 - str_w;
+        rf::gr::string(red_score_x, red_miniflag_label_y, red_score_str.c_str(), font_id);
         std::tie(str_w, str_h) = rf::gr::get_string_size(blue_score_str, font_id);
-        rf::gr::string(box_x + box_w - 5 - str_w, blue_miniflag_label_y, blue_score_str.c_str(), font_id);
+        const int blue_score_x = box_x + box_w - 5 - str_w;
+        rf::gr::string(blue_score_x, blue_miniflag_label_y, blue_score_str.c_str(), font_id);
+
+        // Salvage: park the neutral flag just left of the score of whichever team
+        // is holding it.
+        if (is_neutral_flag && salvage_get_state() == SalFlagState::Carried) {
+            const int sal_miniflag_bmh = hud_salvage_miniflag_bmh();
+            const rf::Player* carrier = salvage_get_carrier();
+            if (carrier) {
+                const bool carried_by_red = carrier->team == rf::TEAM_RED;
+                const float sal_flag_scale = g_big_team_scores_hud ? 1.5f : 1.0f;
+                int sal_bm_w = 0, sal_bm_h = 0;
+                rf::bm::get_dimensions(sal_miniflag_bmh, &sal_bm_w, &sal_bm_h);
+                const int sal_flag_x = (carried_by_red ? red_score_x : blue_score_x)
+                    - static_cast<int>(sal_bm_w * sal_flag_scale) - 6;
+                const int sal_flag_y = carried_by_red ? red_miniflag_y : blue_miniflag_y;
+                rf::gr::set_color(255, 255, 255, static_cast<int>(sal_flag_alpha));
+                hud_scaled_bitmap(sal_miniflag_bmh, sal_flag_x, sal_flag_y, sal_flag_scale,
+                    rf::hud_flag_gr_mode);
+            }
+        }
     }
 
     // render capture point bars
-    if (is_koth_dc || is_rev || is_esc) {
+    if (is_hill_score) {
         hud_render_cp_strip_koth_dc_fullwidth(box_x, box_y, box_w);
     }
 }
@@ -907,7 +1493,21 @@ void multi_hud_render_team_scores()
 CodeInjection multi_hud_render_team_scores_new_gamemodes_patch {
     0x00476DEB,
     [](auto& regs) {
-        if (gt_is_koth() || gt_is_dc() || gt_is_rev() || gt_is_run() || gt_is_esc()) {
+        const auto game_type = rf::multi_get_game_type();
+        const bool is_ffa_with_list = game_type == rf::NG_TYPE_BAG
+                                    || game_type == rf::NG_TYPE_PIT
+                                    || game_type == rf::NG_TYPE_GG
+                                    || (game_type == rf::NG_TYPE_DM && g_alpine_game_config.show_mini_scoreboard_dm);
+        if (gt_is_koth() ||
+            gt_is_dc() ||
+            gt_is_rev() ||
+            gt_is_run() ||
+            gt_is_esc() ||
+            gt_is_tbag() ||
+            gt_is_wipeout() ||
+            gt_is_payload() ||
+            salvage_framework_active() ||
+            is_ffa_with_list) {
             regs.eip = 0x00476E06; // multi_hud_render_team_scores
         }
     }
@@ -920,6 +1520,10 @@ CallHook<void(int, int, int, rf::gr::Mode)> multi_powerup_render_gr_bitmap_hook{
         0x0047FFFD,
     },
     [](int bm_handle, int x, int y, rf::gr::Mode mode) {
+        if (gt_is_bagman_any()) {
+            return;
+        }
+
         float scale = g_alpine_game_config.big_hud ? 2.0f : 1.0f;
         x = hud_transform_value(x, 640, rf::gr::clip_width());
         x = hud_scale_value(x, rf::gr::clip_width(), scale);
@@ -970,14 +1574,87 @@ void draw_respawn_timer_notification(bool can_respawn, bool force_respawn, int s
     g_draw_respawn_timer_can_respawn = can_respawn;
 }
 
-void hud_render_ready_notification() {
-    const std::string ready_key_text =
-        get_action_bind_name(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_READY));
+HudNotificationType hud_big_notification_current_type()
+{
+    return g_hud_big_notification.type;
+}
 
-    const std::string ready_notification_text =
-        "Press " + ready_key_text + " to ready up for the match";
+void hud_notification_show(std::string text, int duration_seconds,
+    HudNotificationType type, bool fade_on_expire)
+{
+    const bool big_slot = type == HudNotificationType::Rampage ||
+                          type == HudNotificationType::GenericBig ||
+                          type == HudNotificationType::Award;
+    ActiveHudNotification& slot = big_slot ? g_hud_big_notification : g_hud_notification;
+    slot.type = type;
+    slot.text = std::move(text);
+    if (duration_seconds >= 0) {
+        slot.expiry.set(duration_seconds * 1000);
+    } else {
+        slot.expiry.invalidate();
+    }
+    slot.fade_start.invalidate();
+    slot.fade_on_expire = fade_on_expire;
+}
 
-    rf::gr::set_color(255, 255, 255, 225);
+void hud_notification_remove(HudNotificationType type, bool instant)
+{
+    const bool big_slot_type = type == HudNotificationType::Rampage ||
+                               type == HudNotificationType::GenericBig ||
+                               type == HudNotificationType::Award;
+    if ((big_slot_type || type == HudNotificationType::None)
+        && g_hud_big_notification.type != HudNotificationType::None
+        && (!big_slot_type || g_hud_big_notification.type == type)) {
+        if (instant) {
+            hud_big_notification_clear();
+        } else if (!g_hud_big_notification.fade_start.valid()) {
+            g_hud_big_notification.fade_start.set(0);
+        }
+    }
+    if (big_slot_type) return;
+
+    if (g_hud_notification.type == HudNotificationType::None) return;
+    // Type::None matches any currently displayed notification.
+    if (type != HudNotificationType::None && g_hud_notification.type != type) return;
+    if (instant) {
+        hud_notification_clear();
+    } else if (!g_hud_notification.fade_start.valid()) {
+        g_hud_notification.fade_start.set(0);
+    }
+}
+
+static void hud_render_notification()
+{
+    if (g_hud_notification.type == HudNotificationType::None) return;
+
+    // Handle expiry: either start a fade or clear immediately.
+    if (!g_hud_notification.fade_start.valid()
+        && g_hud_notification.expiry.valid()
+        && g_hud_notification.expiry.elapsed()) {
+        if (g_hud_notification.fade_on_expire) {
+            g_hud_notification.fade_start.set(0);
+        } else {
+            hud_notification_clear();
+            return;
+        }
+    }
+
+    // Compute alpha (matches the 225 base used by other HUD overlays).
+    int alpha = 225;
+    if (g_hud_notification.fade_start.valid()) {
+        const int elapsed = g_hud_notification.fade_start.time_since();
+        if (elapsed >= kHudNotificationFadeMs) {
+            hud_notification_clear();
+            return;
+        }
+        const float t = static_cast<float>(elapsed) / static_cast<float>(kHudNotificationFadeMs);
+        alpha = static_cast<int>(225.0f * (1.0f - t));
+    }
+
+    // Hidden, it still expires above
+    if (!hud_element_visible(HudElement::messages)) return;
+
+    rf::gr::set_color(255, 255, 255, alpha);
     const int center_x = rf::gr::screen_width() / 2;
     const int font = hud_get_default_font();
     const int font_h = rf::gr::get_font_height(font);
@@ -991,31 +1668,504 @@ void hud_render_ready_notification() {
     if (!g_alpine_game_config.big_hud) {
         notification_y += 2;
     }
-    rf::gr::string_aligned(rf::gr::ALIGN_CENTER, center_x, notification_y, ready_notification_text.c_str(), font);
+    rf::gr::string_aligned(rf::gr::ALIGN_CENTER, center_x, notification_y, g_hud_notification.text.c_str(), font);
+}
+
+// Y of the standard notification line under the chat box (same math as
+// hud_render_notification), used to anchor the big slot below it.
+static int hud_standard_notification_y()
+{
+    const int font_h = rf::gr::get_font_height(hud_get_default_font());
+    const int border = g_alpine_game_config.big_hud ? 3 : 2;
+    const int hist_box_h = 8 * font_h + 2 * border + 6;
+    const int input_box_h = (font_h + 3) + 2 * border;
+    int y = 10 + hist_box_h + input_box_h;
+    if (!g_alpine_game_config.big_hud) {
+        y += 2;
+    }
+    return y;
+}
+
+// Big center-screen slot
+static void hud_render_big_notification()
+{
+    if (g_hud_big_notification.type == HudNotificationType::None) return;
+
+    // Handle expiry: either start a fade or clear immediately.
+    if (!g_hud_big_notification.fade_start.valid()
+        && g_hud_big_notification.expiry.valid()
+        && g_hud_big_notification.expiry.elapsed()) {
+        if (g_hud_big_notification.fade_on_expire) {
+            g_hud_big_notification.fade_start.set(0);
+        } else {
+            hud_big_notification_clear();
+            return;
+        }
+    }
+
+    // Compute alpha (same fade math as the standard slot).
+    int alpha = 225;
+    if (g_hud_big_notification.fade_start.valid()) {
+        const int elapsed = g_hud_big_notification.fade_start.time_since();
+        if (elapsed >= kHudNotificationFadeMs) {
+            hud_big_notification_clear();
+            return;
+        }
+        const float t = static_cast<float>(elapsed) / static_cast<float>(kHudNotificationFadeMs);
+        alpha = static_cast<int>(225.0f * (1.0f - t));
+    }
+
+    // Hidden, it still expires above: the award queue waits on this slot
+    if (!hud_element_visible(HudElement::messages)) return;
+
+    const int big_font = hud_get_large_font(); // bold variant under big_hud
+    const int big_font_h = rf::gr::get_font_height(big_font);
+    const int std_y = hud_standard_notification_y();
+    const int std_font_h = rf::gr::get_font_height(hud_get_default_font());
+    const int center_y = rf::gr::screen_height() / 2;
+
+    // Midpoint between the standard notification line and the reticle, clamped
+    // so the text never overlaps either (fully below the standard line, fully
+    // above screen center) at any resolution / big_hud setting.
+    const int min_y = std_y + std_font_h + 4;
+    const int max_y = center_y - big_font_h - 4;
+    int y = (std_y + center_y) / 2 - big_font_h / 2;
+    y = std::clamp(y, min_y, std::max(min_y, max_y));
+
+    // Shadow pass then main pass for visual weight (multi_spectate's
+    // draw_with_shadow technique), both following the fade alpha.
+    const int center_x = rf::gr::screen_width() / 2;
+    rf::gr::set_color(0, 0, 0, alpha / 2);
+    rf::gr::string_aligned(rf::gr::ALIGN_CENTER, center_x + 2, y + 2,
+                           g_hud_big_notification.text.c_str(), big_font);
+    rf::gr::set_color(255, 255, 255, alpha);
+    rf::gr::string_aligned(rf::gr::ALIGN_CENTER, center_x, y,
+                           g_hud_big_notification.text.c_str(), big_font);
+}
+
+// The vehicle prompt wins the line, as it wins the Use press; otherwise the zip line hint. The slot
+// fades out once neither asserts it.
+static void hud_reticle_prompt_ensure()
+{
+    const std::string& vehicle_text = vehicle_use_prompt_text();
+    const std::string& text = vehicle_text.empty() ? zipline_hint_text() : vehicle_text;
+    if (text.empty()) {
+        if (g_hud_reticle_prompt.active && !g_hud_reticle_prompt.fade_start.valid()) {
+            g_hud_reticle_prompt.fade_start.set(0);
+        }
+        return;
+    }
+    if (g_hud_reticle_prompt.text != text) {
+        g_hud_reticle_prompt.text = text;
+    }
+    g_hud_reticle_prompt.active = true;
+    g_hud_reticle_prompt.fade_start.invalidate();
+}
+
+// Under-reticle slot: the big slot's fade and shadow-then-main draw, placed below screen centre.
+void hud_render_reticle_prompt()
+{
+    if (rf::is_dedicated_server) return;
+    hud_reticle_prompt_ensure();
+    if (!g_hud_reticle_prompt.active) return;
+
+    int alpha = 225;
+    if (g_hud_reticle_prompt.fade_start.valid()) {
+        const int elapsed = g_hud_reticle_prompt.fade_start.time_since();
+        if (elapsed >= kHudNotificationFadeMs) {
+            hud_reticle_prompt_clear();
+            return;
+        }
+        const float t = static_cast<float>(elapsed) / static_cast<float>(kHudNotificationFadeMs);
+        alpha = static_cast<int>(225.0f * (1.0f - t));
+    }
+    if (!hud_element_visible(HudElement::messages)) {
+        return;
+    }
+
+    const int font = hud_get_default_font();
+    const int font_h = rf::gr::get_font_height(font);
+    // clip_height, not screen_height: the jetpack hint anchors on the clip region too.
+    const int center_y = rf::gr::clip_height() / 2;
+    // The jetpack thrust hint owns centre + 48/72 (big_hud); sit a full line under it so the two
+    // never collide whether or not the hint is up.
+    const int jetpack_hint_offset = g_alpine_game_config.big_hud ? 72 : 48;
+    int y = center_y + jetpack_hint_offset + font_h + 6;
+    // Never reach the respawn-timer line at 0.925 * height.
+    const int max_y = static_cast<int>(rf::gr::screen_height() * 0.925f) - font_h - 4;
+    y = std::min(y, std::max(center_y + font_h, max_y));
+
+    const int center_x = rf::gr::clip_width() / 2;
+    rf::gr::set_color(0, 0, 0, alpha / 2);
+    rf::gr::string_aligned(rf::gr::ALIGN_CENTER, center_x + 2, y + 2,
+                           g_hud_reticle_prompt.text.c_str(), font);
+    rf::gr::set_color(255, 255, 255, alpha);
+    rf::gr::string_aligned(rf::gr::ALIGN_CENTER, center_x, y,
+                           g_hud_reticle_prompt.text.c_str(), font);
 }
 
 void draw_hud_ready_notification(bool draw)
 {
-    g_draw_ready_notification = draw;
+    // Record the desired state so hud_ready_prompt_ensure() can keep the prompt
+    // alive in the shared slot for the whole pre-match, not just this one call.
+    g_ready_prompt_wanted = draw;
+    if (draw) {
+        const std::string key = get_action_bind_name(
+            get_af_control(rf::AlpineControlConfigAction::AF_ACTION_READY));
+        hud_notification_show("Press " + key + " to ready up for the match",
+            -1, HudNotificationType::ReadyUp, false);
+    } else {
+        hud_notification_remove(HudNotificationType::ReadyUp, true);
+    }
 }
 
 void set_local_pre_match_active(bool set_active) {
-    set_active ? g_pre_match_active = true : g_pre_match_active = false;
-
+    g_pre_match_active = set_active;
     draw_hud_ready_notification(set_active);
 }
 
+bool get_local_pre_match_active() {
+    return g_pre_match_active;
+}
+
+// Apply a tri-state ready-prompt signal from the server (af_sreq_ready_prompt):
+//   0 = pre-match not active: clear the flag + hide the prompt
+//   1 = pre-match active: set the flag + show the prompt
+//   2 = pre-match active, you readied: set the flag but hide the prompt (keeps
+//       g_pre_match_active true so pre-match spawn-point HUD icons stay drawn)
+void apply_ready_prompt_state(uint8_t state) {
+    switch (state) {
+    case 0:
+        set_local_pre_match_active(false); // clears flag + hides notification
+        break;
+    case 1:
+        g_pre_match_active = true;
+        draw_hud_ready_notification(true);
+        break;
+    case 2:
+        g_pre_match_active = true;
+        draw_hud_ready_notification(false);
+        break;
+    default:
+        break;
+    }
+}
+
+void set_local_pit_queue_state(bool queued, bool dueler, int pos, int total, bool spectate) {
+    g_pit_queue_state.valid = true;
+    g_pit_queue_state.queued = queued;
+    g_pit_queue_state.dueler = dueler;
+    g_pit_queue_state.spectate = spectate;
+    g_pit_queue_state.pos = pos;
+    g_pit_queue_state.total = total;
+}
+
+void reset_local_pit_queue_state() {
+    g_pit_queue_state = {};
+    g_pit_queue_text_valid = false; // force the overlay text to rebuild next time
+}
+
+void reset_local_pit_roster() {
+    g_pit_roster_role.fill(0xFF);
+    g_pit_roster_order.fill(0);
+}
+
+void set_local_pit_roster_entry(uint8_t player_id, uint8_t role, uint8_t order) {
+    g_pit_roster_role[player_id] = role;
+    g_pit_roster_order[player_id] = order;
+}
+
+// Client getter for the scoreboard: 0=dueler, 1=queued, 2=not_queued, or -1 when
+// unknown / not replicated (treated as not_queued by the scoreboard).
+int pit_scoreboard_role_for(const rf::Player* player) {
+    if (!player || !player->net_data) return -1;
+    const uint8_t role = g_pit_roster_role[player->net_data->player_id];
+    return role == 0xFF ? -1 : static_cast<int>(role);
+}
+
+// Client getter for the scoreboard: 1-based queue position for a queued player,
+// or 0 when unknown / not queued.
+int pit_scoreboard_order_for(const rf::Player* player) {
+    if (!player || !player->net_data) return 0;
+    return static_cast<int>(g_pit_roster_order[player->net_data->player_id]);
+}
+
+// Gun Game client weapon-progression notifications
+void reset_local_gungame_order() {
+    g_gungame_order.clear();
+    g_gungame_last_score = 0;
+    g_gungame_score_synced = false;
+    g_gungame_spawn_notification_pending = false;
+}
+
+static std::string gungame_weapon_name(int weapon_index) {
+    if (weapon_index < 0 || weapon_index >= 64) return "?";
+    const char* name = rf::weapon_types[weapon_index].display_name;
+    return name ? std::string{name} : std::string{"?"};
+}
+
+// Build the weapon-progression notification text for the given score from the
+// replicated threshold map. Returns false if no order is available.
+static bool gungame_build_notification_text(int score, std::string& out) {
+    if (g_gungame_order.empty()) return false;
+
+    // A post-suicide negative score still means "on the first weapon" — clamp
+    // so the text doesn't advertise advancing to the weapon already held.
+    score = std::max(score, 0);
+
+    // next = first threshold > score (the weapon to advance to).
+    const auto next_it = std::ranges::find_if(g_gungame_order,
+        [score](const std::pair<int, int>& e) { return e.first > score; });
+
+    if (next_it == g_gungame_order.end()) {
+        out = std::format("Final weapon: {} - get a frag to win!",
+                          gungame_weapon_name(g_gungame_order.back().second));
+    }
+    else {
+        const int frags_to_next = next_it->first - score;
+        out = std::format("Get {} more kill{} to advance to {}!",
+                          frags_to_next, frags_to_next == 1 ? "" : "s",
+                          gungame_weapon_name(next_it->second));
+    }
+    return true;
+}
+
+static void gungame_show_notification(int score) {
+    std::string text;
+    if (gungame_build_notification_text(score, text)) {
+        hud_notification_show(std::move(text), 5, HudNotificationType::GunGame, true);
+    }
+}
+
+void set_local_gungame_order(const af_gungame_order_entry* entries, uint8_t count) {
+    g_gungame_order.clear();
+    g_gungame_order.reserve(count);
+    for (uint8_t i = 0; i < count; ++i) {
+        g_gungame_order.emplace_back(static_cast<int>(entries[i].threshold),
+                                     static_cast<int>(entries[i].weapon_index));
+    }
+    // Built sorted server-side, but keep it robust.
+    std::ranges::sort(g_gungame_order, {}, &std::pair<int, int>::first);
+
+    // If a spawn happened before the order arrived, show the deferred spawn notification.
+    if (g_gungame_spawn_notification_pending) {
+        g_gungame_spawn_notification_pending = false;
+        if (rf::is_multi && gt_is_gungame()
+            && rf::local_player && !rf::player_is_dead(rf::local_player)) {
+            const int score = rf::local_player->stats ? rf::local_player->stats->score : 0;
+            gungame_show_notification(score);
+        }
+    }
+}
+
+// Per-frame: watch the local player's score and show a level-up notification when it increases.
+void gungame_client_do_frame() {
+    if (rf::is_dedicated_server) return;
+    if (!rf::is_multi || rf::multi_get_game_type() != rf::NG_TYPE_GG) return;
+    if (is_client_bot_active()) return;
+    if (!rf::local_player || !rf::local_player->stats) return;
+
+    const int score = rf::local_player->stats->score;
+    if (!g_gungame_score_synced) {
+        // First observation this life/level — sync without notifying. (A
+        // separate flag: score == -1 is legitimate after a suicide at 0.)
+        g_gungame_score_synced = true;
+        g_gungame_last_score = score;
+        return;
+    }
+    if (score > g_gungame_last_score) {
+        gungame_show_notification(score);
+    }
+    g_gungame_last_score = score;
+}
+
+// Re-assert the ready-up prompt if its notification slot was cleared.
+static void hud_ready_prompt_ensure() {
+    if (rf::is_dedicated_server) return;
+    if (!g_ready_prompt_wanted || !g_pre_match_active) return;
+    // Yield to any timed notification currently owning the slot;
+    // reclaim once it clears.
+    if (g_hud_notification.type != HudNotificationType::None) return;
+    draw_hud_ready_notification(true);
+}
+
+// Keep the persistent Pit queue overlay in sync with the latest server state.
+static void hud_pit_queue_ensure() {
+    const bool active = rf::is_multi
+        && rf::multi_get_game_type() == rf::NG_TYPE_PIT
+        && g_pit_queue_state.valid
+        && !g_pre_match_active
+        && !g_pit_queue_state.dueler;
+
+    if (!active) {
+        // A dueler (or invalid state / non-Pit): drop any queue overlay we own.
+        if (g_hud_notification.type == HudNotificationType::Queue) {
+            hud_notification_remove(HudNotificationType::Queue, true);
+        }
+        return;
+    }
+
+    // Skip all work while a higher-priority timed notification (round result,
+    // gametype help) owns the slot — the overlay returns when it expires.
+    const bool slot_free = g_hud_notification.type == HudNotificationType::None;
+    const bool slot_ours = g_hud_notification.type == HudNotificationType::Queue;
+    if (!slot_free && !slot_ours) {
+        return;
+    }
+
+    // Rebuild the overlay text only when an input changed (queue state or the
+    // READY bind); the format + bind-name lookup allocate, so we avoid doing it
+    // every frame in steady state.
+    const std::string key = get_action_bind_name(
+        get_af_control(rf::AlpineControlConfigAction::AF_ACTION_READY));
+    if (!g_pit_queue_text_valid
+        || g_pit_queue_text_queued != g_pit_queue_state.queued
+        || g_pit_queue_text_pos != g_pit_queue_state.pos
+        || g_pit_queue_text_total != g_pit_queue_state.total
+        || g_pit_queue_text_key != key) {
+        g_pit_queue_text = g_pit_queue_state.queued
+            ? std::format("You are {}/{} in the queue and will play soon. Press {} to exit the queue.",
+                          g_pit_queue_state.pos, g_pit_queue_state.total, key)
+            : std::format("You are NOT queued. Press {} to enter the queue to play.", key);
+        g_pit_queue_text_valid = true;
+        g_pit_queue_text_queued = g_pit_queue_state.queued;
+        g_pit_queue_text_pos = g_pit_queue_state.pos;
+        g_pit_queue_text_total = g_pit_queue_state.total;
+        g_pit_queue_text_key = key;
+    }
+
+    // Only (re)show when the slot is free or already ours with changed text, so
+    // we don't reset the fade/expiry state every frame.
+    if (slot_free || (slot_ours && g_hud_notification.text != g_pit_queue_text)) {
+        hud_notification_show(g_pit_queue_text, -1, HudNotificationType::Queue, false);
+    }
+}
+
+// Keep the Salvage carrier overlay alive.
+static void hud_salvage_carrier_ensure() {
+    if (rf::is_dedicated_server) return;
+
+    // Nothing objective-related belongs on screen before the match starts.
+    if (!salvage_player_is_carrier(rf::local_player) || g_pre_match_active) {
+        if (g_hud_notification.type == HudNotificationType::SalvageCarrier) {
+            hud_notification_remove(HudNotificationType::SalvageCarrier, false);
+        }
+        return;
+    }
+
+    // Already up (and not fading back out) — nothing to do.
+    if (g_hud_notification.type == HudNotificationType::SalvageCarrier
+        && !g_hud_notification.fade_start.valid()) {
+        return;
+    }
+    // Yield to any other notification owning the slot; reclaim once it clears.
+    if (g_hud_notification.type != HudNotificationType::None
+        && g_hud_notification.type != HudNotificationType::SalvageCarrier) {
+        return;
+    }
+    hud_notification_show(gt_is_scavenger() ? kScavengerCarrierNotificationText : kSalvageCarrierNotificationText,
+        -1, HudNotificationType::SalvageCarrier, false);
+}
+
+// Keep the bag carrier overlay alive: the carrier's own, or his teammates' in Team Bagman.
+static void hud_bag_carrier_ensure() {
+    if (rf::is_dedicated_server) return;
+
+    const char* text = nullptr;
+    if (bagman_local_player_is_carrier()) {
+        text = "You have the bag";
+    } else if (gt_is_tbag() && g_bagman_info.carrier && rf::local_player && !multi_spectate_is_spectating()
+        && g_bagman_info.carrier->team == rf::local_player->team) {
+        text = "Your team has the bag";
+    }
+
+    if (!text) {
+        if (g_hud_notification.type == HudNotificationType::BagCarrier) {
+            hud_notification_remove(HudNotificationType::BagCarrier, false);
+        }
+        return;
+    }
+
+    if (g_hud_notification.type == HudNotificationType::BagCarrier
+        && !g_hud_notification.fade_start.valid() && g_hud_notification.text == text) {
+        return;
+    }
+    if (g_hud_notification.type != HudNotificationType::None
+        && g_hud_notification.type != HudNotificationType::BagCarrier) {
+        return;
+    }
+    hud_notification_show(text, -1, HudNotificationType::BagCarrier, false);
+}
+
+static bool g_forced_spectate_pending = false;
+
+void hud_request_forced_spectate(bool enter)
+{
+    g_forced_spectate_pending = enter;
+    if (!enter && multi_spectate_is_spectating()) {
+        multi_spectate_leave();
+    }
+}
+
+// The entity outlives the kill until its death sequence ends, and freelook needs it gone.
+void hud_forced_spectate_do_frame()
+{
+    if (!g_forced_spectate_pending) {
+        return;
+    }
+    rf::Entity* const entity = rf::local_player ? rf::entity_from_handle(rf::local_player->entity_handle) : nullptr;
+    const bool respawned = entity && !rf::entity_is_dying(entity) && entity->life > 0.0f;
+    if (!rf::is_multi || multi_spectate_is_spectating() || respawned) {
+        g_forced_spectate_pending = false;
+    }
+    else if (rf::gameseq_get_state() == rf::GS_GAMEPLAY && rf::local_player && rf::player_is_dead(rf::local_player)) {
+        g_forced_spectate_pending = false;
+        multi_spectate_enter_freelook();
+    }
+}
+
+// Drop a queued player into freelook spectate when the server has flagged it.
+void hud_pit_queue_auto_spectate() {
+    if (rf::is_server) return;
+    // A headless/client bot must never auto-enter free-look.
+    // The server also never sends bots the spectate hint, so this should never be hit.
+    if (is_client_bot_active()) return;
+    if (!rf::is_multi || rf::multi_get_game_type() != rf::NG_TYPE_PIT) return;
+    if (rf::gameseq_get_state() != rf::GS_GAMEPLAY) return;
+    if (!g_pit_queue_state.valid || !g_pit_queue_state.spectate || g_pit_queue_state.dueler) return;
+    if (multi_spectate_is_spectating()) return;
+    if (!rf::local_player || !rf::player_is_dead(rf::local_player)) return;
+
+    multi_spectate_enter_freelook();
+}
+
+// Cache for the structured (AF 1.4+) notification.
+struct VoteHudCache
+{
+    bool valid = false;
+    int font = -1;
+    int title_max_w = -1;
+    std::string title_src;
+    std::string title_fit;
+    std::string prompt_yes;
+    std::string prompt_no;
+
+    bool tally_valid = false;
+    int tally_yes = -1;
+    int tally_no = -1;
+    int tally_secs = -1;
+    std::string tally;
+};
+
+static VoteHudCache g_vote_hud_cache;
+
+static void vote_notification_invalidate_cache()
+{
+    g_vote_hud_cache.valid = false;
+    g_vote_hud_cache.tally_valid = false;
+}
+
 void hud_render_vote_notification() {
-    const std::string vote_yes_key_text =
-        get_action_bind_name(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_VOTE_YES));
-
-    const std::string vote_no_key_text =
-        get_action_bind_name(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_VOTE_NO));
-
-    const std::string vote_notification_text =
-        "ACTIVE QUESTION: \n" + g_active_vote_type + "\n\nPress " + vote_yes_key_text + " to vote yes\nPress " + vote_no_key_text + " to vote no";
-
-    rf::gr::set_color(255, 255, 255, 225);
     const int font = hud_get_default_font();
     const int font_h = rf::gr::get_font_height(font);
     const int border = g_alpine_game_config.big_hud ? 3 : 2;
@@ -1025,21 +2175,102 @@ void hud_render_vote_notification() {
     if (!g_alpine_game_config.big_hud) {
         notification_y += 9;
     }
-    rf::gr::string_aligned(rf::gr::ALIGN_LEFT, 10, notification_y, vote_notification_text.c_str(), font);
+
+    // Pre 1.4 servers send no tally, so the title is all we can show.
+    const auto& state = vote_state_get();
+    if (!state) {
+        const std::string vote_yes_key_text =
+            get_action_bind_name(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_VOTE_YES));
+        const std::string vote_no_key_text =
+            get_action_bind_name(get_af_control(rf::AlpineControlConfigAction::AF_ACTION_VOTE_NO));
+        const std::string vote_notification_text = "ACTIVE QUESTION: \n" + g_active_vote_type
+            + "\n\nPress " + vote_yes_key_text + " to vote yes\nPress " + vote_no_key_text
+            + " to vote no";
+        rf::gr::set_color(255, 255, 255, 225);
+        rf::gr::string_aligned(rf::gr::ALIGN_LEFT, 10, notification_y, vote_notification_text.c_str(), font);
+        return;
+    }
+
+    // Server-composed titles can be long, so keep them inside the left half of the screen.
+    const int title_max_w = std::max(120, rf::gr::clip_width() / 2 - 20);
+
+    VoteHudCache& cache = g_vote_hud_cache;
+    if (!cache.valid || cache.font != font || cache.title_max_w != title_max_w
+        || cache.title_src != state->title) {
+        cache.font = font;
+        cache.title_max_w = title_max_w;
+        cache.title_src = state->title;
+        // A server that sends no title still gets a usable notification.
+        cache.title_fit = hud_fit_string(
+            state->title.empty() ? std::string_view{"Vote in progress"}
+                                 : std::string_view{state->title},
+            title_max_w, nullptr, font);
+        const std::string yes_key = get_action_bind_name(
+            get_af_control(rf::AlpineControlConfigAction::AF_ACTION_VOTE_YES));
+        const std::string no_key = get_action_bind_name(
+            get_af_control(rf::AlpineControlConfigAction::AF_ACTION_VOTE_NO));
+        cache.prompt_yes = "Press " + yes_key + " to vote yes";
+        cache.prompt_no = "Press " + no_key + " to vote no";
+        cache.valid = true;
+    }
+
+    const int secs = vote_state_seconds_remaining();
+    if (!cache.tally_valid || cache.tally_yes != state->yes || cache.tally_no != state->no
+        || cache.tally_secs != secs) {
+        cache.tally_yes = state->yes;
+        cache.tally_no = state->no;
+        cache.tally_secs = secs;
+        cache.tally = std::format("Yes: {}  No: {}     {}s left", static_cast<int>(state->yes),
+            static_cast<int>(state->no), secs);
+        cache.tally_valid = true;
+    }
+
+    // Half-height spacers instead of blank lines, and a single-line title, keep
+    // the block to ~5 line heights -- what notification_y above was tuned for.
+    // Lines are drawn one at a time so the bind prompt can be dimmed separately
+    // once this client has cast its vote.
+    int y = notification_y;
+    const auto draw_line = [&](const char* text) {
+        rf::gr::string_aligned(rf::gr::ALIGN_LEFT, 10, y, text, font);
+        y += font_h;
+    };
+
+    rf::gr::set_color(255, 255, 255, 225);
+    draw_line("ACTIVE QUESTION: ");
+    draw_line(cache.title_fit.c_str());
+    y += font_h / 2;
+    draw_line(cache.tally.c_str());
+    y += font_h / 2;
+
+    if (state->has_voted) {
+        rf::gr::set_color(150, 150, 150, 190);
+        draw_line("You have voted");
+    }
+    else if (vote_client_spectating_match()) {
+        rf::gr::set_color(150, 150, 150, 190);
+        draw_line("Only players in the current match can vote");
+    }
+    else {
+        draw_line(cache.prompt_yes.c_str());
+        draw_line(cache.prompt_no.c_str());
+    }
 }
 
 void draw_hud_vote_notification(std::string vote_type)
 {
-    if (!vote_type.empty()) {
-        g_draw_vote_notification = true;
-        g_active_vote_type = vote_type;
-    }
+    // Use a generic label for vote types we can't resolve.
+    // Typically this would mean we are an older client in a newer server that has a
+    // vote type we don't know about.
+    g_draw_vote_notification = true;
+    g_active_vote_type = vote_type.empty() ? std::string{"Vote in progress"} : std::move(vote_type);
+    vote_notification_invalidate_cache();
 }
 
 void remove_hud_vote_notification()
 {
     g_draw_vote_notification = false;
     g_active_vote_type = "";
+    vote_notification_invalidate_cache();
 }
 
 void build_local_player_spectators_strings() {
@@ -1083,15 +2314,16 @@ void multi_hud_render_local_player_spectators() {
         || multi_scoreboard_is_visible();
     if (show_spectators
         && !g_local_player_spectators.empty()
-        && !rf::hud_disabled
+        && !is_hud_effectively_hidden()
         && rf::gameseq_get_state() == rf::GS_GAMEPLAY) {
         const rf::NetGameType game_type = rf::multi_get_game_type();
         const bool is_koth_or_dc = game_type == rf::NG_TYPE_KOTH
             || game_type == rf::NG_TYPE_DC;
         const bool is_rev = game_type == rf::NG_TYPE_REV;
         const bool is_esc = game_type == rf::NG_TYPE_ESC;
+        const bool is_pay = game_type == rf::NG_TYPE_PAY;
         const int ctf_box_w = rf::gr::clip_width() <= 1280 ? 350 : 370;
-        const int box_w = is_koth_or_dc || is_rev || is_esc
+        const int box_w = is_koth_or_dc || is_rev || is_esc || is_pay
             ? g_alpine_game_config.big_hud ? 240 : 185
             : g_alpine_game_config.big_hud ? ctf_box_w : 185;
         constexpr int box_x = 10;
@@ -1099,13 +2331,14 @@ void multi_hud_render_local_player_spectators() {
         int x = 10;
         if (multi_is_team_game_type()) {
             x += box_x + box_w;
-            if (rf::multi_get_game_type() == rf::NG_TYPE_CTF) {
-                const bool has_flag = rf::multi_ctf_get_blue_flag_player() == rf::local_player
-                    || rf::multi_ctf_get_red_flag_player() == rf::local_player;
-                if (has_flag) {
-                    constexpr int flag_and_space_w = 111;
-                    x += flag_and_space_w;
-                }
+            // Clear the big carrier flag icon when it is on screen.
+            const bool has_flag = game_type == rf::NG_TYPE_CTF
+                ? (rf::multi_ctf_get_blue_flag_player() == rf::local_player
+                    || rf::multi_ctf_get_red_flag_player() == rf::local_player)
+                : salvage_player_is_carrier(rf::local_player);
+            if (has_flag) {
+                constexpr int flag_and_space_w = 111;
+                x += flag_and_space_w;
             }
         }
         const int y = rf::gr::clip_height() - (g_alpine_game_config.big_hud ? 30 : 20);
@@ -1128,19 +2361,44 @@ void multi_hud_render_local_player_spectators() {
 CallHook<void(int *dx, int *dy, int *dz)> control_config_get_mouse_delta_hook{
     0x0043D6D6,
     [] (int* const dx, int* const dy, int* dz) {
-        // If active, do not write mouse wheel scroll delta.
-        if (g_remote_server_cfg_popup.is_active()) {
-            int tmp{};
-            dz = &tmp;
-        }
         control_config_get_mouse_delta_hook.call_target(dx, dy, dz);
+
+        // While waypoint editor UI-cursor mode is active, consume mouse movement
+        // so the camera does not continue to aim/turn.
+        if (waypoints_utils_should_block_mouse_look()) {
+            if (dx) {
+                *dx = 0;
+            }
+            if (dy) {
+                *dy = 0;
+            }
+        }
+
+        // A gameplay overlay with a free cursor owns aiming while it is up.
+        if (vote_panel_is_gameplay_overlay_active() || demo_controls_ui_is_open()
+            || multi_scoreboard_cursor_active()) {
+            if (dx) {
+                *dx = 0;
+            }
+            if (dy) {
+                *dy = 0;
+            }
+        }
+
+        // If active, do not use mouse wheel scroll delta.
+        if ((g_remote_server_cfg_popup.is_active() || vote_panel_is_gameplay_overlay_active()
+             || demo_controls_ui_is_open() || multi_scoreboard_cursor_active())
+            && dz) {
+            *dz = 0;
+        }
     }
 };
 
 FunHook<void()> hud_msg_render_hook{
     0x004382D0,
     [] {
-        if (!g_remote_server_cfg_popup.is_active()) {
+        if (!g_remote_server_cfg_popup.is_active() && !vote_panel_is_gameplay_overlay_active()
+            && hud_element_visible(HudElement::messages)) {
             hud_msg_render_hook.call_target();
         }
     },
@@ -1159,27 +2417,28 @@ CodeInjection multi_hud_render_patch{
 
         multi_hud_render_local_player_spectators();
 
-        if (g_draw_vote_notification) {
+        if (g_draw_vote_notification && hud_element_visible(HudElement::messages)) {
             hud_render_vote_notification();
         }
 
-        if (g_draw_ready_notification) {
-            hud_render_ready_notification();
-        }
+        hud_ready_prompt_ensure();
+        hud_pit_queue_ensure();
+        hud_salvage_carrier_ensure();
+        hud_bag_carrier_ensure();
+        hud_render_notification();
+        hud_render_big_notification();
+        hud_render_reticle_prompt();
 
         if (g_draw_respawn_timer_notification) {
             hud_render_respawn_timer_notification();
         }
 
-        if (g_chat_menu_active != ChatMenuType::None) {
-            hud_render_draw_chat_menu();
+        multi_hud_render_chat_menu();
 
-            if (!g_chat_menu_timer.valid() || g_chat_menu_timer.elapsed()) {
-                toggle_chat_menu(ChatMenuType::None);
-            }
+        jetpack_render_hud();
+        if (hud_element_visible(HudElement::reticle)) {
+            crits_client_render_reticle_flash();
         }
-
-        multi_hud_render_killfeed();
     }
 };
 
@@ -1189,6 +2448,12 @@ void multi_hud_level_init() {
     g_run_life_start_timestamp.invalidate();
     g_run_timer_reset_by_respawn_key = false;
     g_run_timer_fade_active = false;
+    hud_notification_clear();
+    hud_big_notification_clear();
+    hud_reticle_prompt_clear();
+    reset_local_pit_queue_state();
+    reset_local_pit_roster();
+    reset_local_gungame_order();
     killfeed_clear();
 
     level_menu = ChatMenuList{
@@ -1262,7 +2527,11 @@ void draw_chat_menu_text(const int x, int y, const int w) {
         const std::string_view display_name = element.display_string.empty()
             ? element.long_string
             : element.display_string;
-        std::string line = std::format("{}: {}", display_index, display_name);
+        std::string line = element.hud_element
+            ? std::format("{}: {} [{}]", display_index, display_name,
+                hud_element_hidden_by_cl_chat(*element.hud_element) ? "OFF: cl_chat"
+                    : hud_element_visible(*element.hud_element) ? "ON" : "OFF")
+            : std::format("{}: {}", display_index, display_name);
         gr_fit_string(line, w - 8 * 2, font_id);
         rf::gr::string_aligned(
             rf::gr::ALIGN_LEFT,
@@ -1300,6 +2569,16 @@ void hud_render_draw_chat_menu() {
     draw_chat_menu_text(x, y, w);
 }
 
+void multi_hud_render_chat_menu() {
+    if (g_chat_menu_active != ChatMenuType::None) {
+        hud_render_draw_chat_menu();
+
+        if (!g_chat_menu_timer.valid() || g_chat_menu_timer.elapsed()) {
+            toggle_chat_menu(ChatMenuType::None);
+        }
+    }
+}
+
 void set_chat_menu_state(ChatMenuType state) {
     g_chat_menu_active = state;
 
@@ -1319,6 +2598,9 @@ void chat_menu_go_back()
         // if expanded in the future to have more third depth levels, this will need to be handled differently
         if (g_active_menu == &general_menu) {
             g_previous_menu = &radio_messages_menu;
+        }
+        else if (g_active_menu == &spectate_hud_elements_menu) {
+            g_previous_menu = &spectate_menu;
         }
         else {
             g_previous_menu = nullptr;
@@ -1412,16 +2694,25 @@ void chat_menu_action_handler(rf::Key key) {
             case ChatMenuListName::Casual: g_active_menu = &casual_menu; break;
             case ChatMenuListName::RandomFunny: g_active_menu = &random_funny_menu; break;
 
+            // Spectate menu
+            case ChatMenuListName::SpectateOutlines: g_active_menu = &spectate_outlines_menu; break;
+            case ChatMenuListName::SpectateDemoOverlays: g_active_menu = &spectate_demo_overlays_menu; break;
+            case ChatMenuListName::SpectateHudElements: g_active_menu = &spectate_hud_elements_menu; break;
+            case ChatMenuListName::SpectatePlayerHud: g_active_menu = &spectate_player_hud_menu; break;
+            case ChatMenuListName::SpectateMatchHud: g_active_menu = &spectate_match_hud_menu; break;
+
             default: break;
         }
+    } else if (selected_element.hud_element) {
+        // Toggles keep the menu open so several can be flipped in a row
+        const HudElement element = *selected_element.hud_element;
+        hud_element_set_visible(element, !hud_element_visible(element));
     } else {
         // Determine chat behavior based on menu type
         if (g_chat_menu_active == ChatMenuType::Taunts) {
             if (!g_taunt_timer.valid() || g_taunt_timer.elapsed()) {
                 g_taunt_timer.set(10000); // 10 second cooldown
-                const std::string msg = "\xA8[Taunt] " + selected_element.long_string;
-                rf::multi_chat_say(("\xA8[Taunt] " + selected_element.long_string).c_str(), false);
-                rf::snd_play(4, 0, 0.0f, 1.0f);
+                multi_hud_send_taunt_chat_message(selected_element.long_string);
             } else {
                 rf::String msg{"You must wait a little while between taunts"};
                 rf::multi_chat_print(msg, rf::ChatMsgColor::white_white, {});
@@ -1431,7 +2722,22 @@ void chat_menu_action_handler(rf::Key key) {
             // Commands do not play a chat sound or display for user
             const std::string msg = selected_element.long_string;
             if (!msg.empty()) {
-                send_chat_line_packet(msg, nullptr);
+                // AF 1.4+ servers no longer accept vote calls over chat.
+                const std::optional<AfVoteType> vote_type = chat_menu_simple_vote_type(msg);
+                if (rf::is_server) {
+                    check_server_chat_command(msg.c_str(), rf::local_player); // listen host
+                }
+                else if (vote_type && is_server_minimum_af_version(1, 4)) {
+                    AfVoteCallParams params{};
+                    params.type = *vote_type;
+                    if (params.type == AfVoteType::Extend) {
+                        params.extend_minutes = af_vote_extend_default_minutes;
+                    }
+                    af_send_vote_call(params);
+                }
+                else {
+                    send_chat_line_packet(msg, nullptr);
+                }
             }
         }
         else if (g_chat_menu_active == ChatMenuType::Spectate) {
@@ -1444,12 +2750,15 @@ void chat_menu_action_handler(rf::Key key) {
         else {
             // Default chat behavior
             volatile bool use_team_chat = (g_active_menu->type != ChatMenuListType::Basic);
-            const std::string msg = "\xA8 " + selected_element.long_string;
+            std::string msg = "\xA8 " + selected_element.long_string;
+            if (msg.size() > chat_msg_max_len) {
+                msg.resize(chat_msg_max_len);
+            }
             if (!msg.empty()) {
                 if (!g_rad_msg_timer.valid() || g_rad_msg_timer.elapsed()) {
                     g_rad_msg_timer.set(1000);
                     rf::multi_chat_say(msg.c_str(), use_team_chat);
-                    rf::snd_play(4, 0, 0.0f, 1.0f);
+                    rf::snd_play(stock_sound_id::end_voice, 0, 0.0f, 1.0f);
                 }
                 else {
                     rf::String msg{"You must wait at least one second between radio messages"};
@@ -1477,7 +2786,7 @@ static bool g_target_player_is_bot = false;
 CallHook<void(int, int, const char*, int, rf::gr::Mode)> multi_hud_render_target_player_name_hook{
     0x00478140,
     [] (int x, int y, const char* s, int font_num, rf::gr::Mode mode) {
-        if (!g_alpine_game_config.display_target_player_names) {
+        if (!g_alpine_game_config.display_target_player_names || !hud_element_visible(HudElement::target_names)) {
             return;
         }
         multi_hud_render_target_player_name_hook.call_target(x, y, s, font_num, mode);
@@ -1509,7 +2818,7 @@ CodeInjection multi_hud_update_target_player_patch_2{
 ConsoleCommand2 ui_playernames_cmd{
     "ui_playernames",
     []() {
-        g_alpine_game_config.display_target_player_names = !g_alpine_game_config.display_target_player_names;
+        setting_console_set("display_target_player_names", "toggle");
         rf::console::print("Display of names of targeted players is {}", g_alpine_game_config.display_target_player_names ? "enabled" : "disabled");
     },
     "Toggle displaying names of targeted players",
@@ -1519,6 +2828,9 @@ ConsoleCommand2 ui_playernames_cmd{
 FunHook<void()> multi_hud_render_time_left_hook{
     0x004770A0,
     []() {
+        if (!hud_element_visible(HudElement::timer)) {
+            return;
+        }
         if (!rf::time_left_visible || rf::time_left_seconds < 0 || rf::time_left_minutes < 0 || rf::time_left_hours < 0) {
         return;
     }
@@ -1598,8 +2910,7 @@ void build_time_left_string_format() {
 ConsoleCommand2 ui_verbosetimer_cmd{
     "ui_verbosetimer",
     []() {
-        g_alpine_game_config.verbose_time_left_display = !g_alpine_game_config.verbose_time_left_display;
-        build_time_left_string_format();
+        setting_console_set("verbose_time_left_display", "toggle");
         rf::console::print("Verbose in-game timer display is {}", g_alpine_game_config.verbose_time_left_display ? "enabled" : "disabled");
     },
     "Control whether the in-game timer displays the 'Time Left:' text",
@@ -1609,7 +2920,7 @@ ConsoleCommand2 ui_verbosetimer_cmd{
 ConsoleCommand2 ui_runtimer_cmd{
     "ui_runtimer",
     [] {
-        g_alpine_game_config.show_run_timer = !g_alpine_game_config.show_run_timer;
+        setting_console_set("show_run_timer", "toggle");
         rf::console::print("RUN game type timer display is {}", g_alpine_game_config.show_run_timer ? "enabled" : "disabled"
         );
     },
@@ -1617,10 +2928,64 @@ ConsoleCommand2 ui_runtimer_cmd{
     "ui_runtimer",
 };
 
+ConsoleCommand2 cl_vehiclemarkers_cmd{
+    "cl_vehiclemarkers",
+    [](std::optional<bool> enabled) {
+        setting_console_set_bool("vehicle_respawn_markers", enabled);
+        rf::console::print("Vehicle factory respawn markers are {}",
+            g_alpine_game_config.vehicle_respawn_markers ? "enabled" : "disabled");
+    },
+    "Toggle vehicle factory respawn markers and their spawn cues",
+    "cl_vehiclemarkers [bool]",
+};
+
+ConsoleCommand2 cl_vehiclehealthbars_cmd{
+    "cl_vehiclehealthbars",
+    [](std::optional<bool> enabled) {
+        setting_console_set_bool("vehicle_health_bars", enabled);
+        rf::console::print("Vehicle health bars are {}",
+            g_alpine_game_config.vehicle_health_bars ? "enabled" : "disabled");
+    },
+    "Toggle health bars over damaged vehicles and turrets",
+    "cl_vehiclehealthbars [bool]",
+};
+
+ConsoleCommand2 cl_vehiclehints_cmd{
+    "cl_vehiclehints",
+    [](std::optional<bool> enabled) {
+        setting_console_set_bool("vehicle_control_hints", enabled);
+        rf::console::print("Vehicle control hints are {}",
+            g_alpine_game_config.vehicle_control_hints ? "enabled" : "disabled");
+    },
+    "Toggle the list of vehicle controls shown while riding a vehicle or turret",
+    "cl_vehiclehints [bool]",
+};
+
+ConsoleCommand2 ui_gametype_help_cmd{
+    "ui_gametype_help",
+    [] {
+        setting_console_set("show_gametype_help", "toggle");
+        rf::console::print("Gametype help notification is {}", g_alpine_game_config.show_gametype_help ? "enabled" : "disabled");
+    },
+    "Toggle the gametype help notification shown when spawning on a server",
+    "ui_gametype_help",
+};
+
+ConsoleCommand2 ui_miniscoreboard_cmd{
+    "ui_minisb_dm",
+    [] {
+        setting_console_set("show_mini_scoreboard_dm", "toggle");
+        rf::console::print("Mini scoreboard HUD element in DM is {}",
+            g_alpine_game_config.show_mini_scoreboard_dm ? "enabled" : "disabled");
+    },
+    "Toggle whether the mini scoreboard HUD element is displayed in DM",
+    "ui_minisb_dm",
+};
+
 ConsoleCommand2 ui_always_show_specators_cmd{
     "ui_always_show_specators",
     [] {
-        g_alpine_game_config.always_show_spectators = !g_alpine_game_config.always_show_spectators;
+        setting_console_set("always_show_spectators", "toggle");
         rf::console::print(
             "Always show spectators is {}",
             g_alpine_game_config.always_show_spectators ? "enabled" : "disabled"
@@ -1633,7 +2998,7 @@ ConsoleCommand2 ui_always_show_specators_cmd{
 ConsoleCommand2 ui_gamefeed_cmd{
     "ui_gamefeed",
     [] {
-        g_alpine_game_config.killfeed_enabled = !g_alpine_game_config.killfeed_enabled;
+        setting_console_set("killfeed_enabled", "toggle");
         rf::console::print("Game feed is {}", g_alpine_game_config.killfeed_enabled ? "enabled" : "disabled");
     },
     "Toggle game event messages in a dedicated feed instead of chat",
@@ -1643,8 +3008,7 @@ ConsoleCommand2 ui_gamefeed_cmd{
 ConsoleCommand2 ui_simple_server_chat_messages_cmd{
     "ui_simple_server_chat_messages",
     [] {
-        g_alpine_game_config.simple_server_chat_msgs =
-            !g_alpine_game_config.simple_server_chat_msgs;
+        setting_console_set("simple_server_chat_msgs", "toggle");
         rf::console::print(
             "Simple server chat messages is {}",
             g_alpine_game_config.simple_server_chat_msgs ? "enabled" : "disabled"
@@ -1685,6 +3049,11 @@ void multi_hud_apply_patches()
     ui_playernames_cmd.register_cmd();
     ui_verbosetimer_cmd.register_cmd();
     ui_runtimer_cmd.register_cmd();
+    ui_gametype_help_cmd.register_cmd();
+    cl_vehiclemarkers_cmd.register_cmd();
+    cl_vehiclehealthbars_cmd.register_cmd();
+    cl_vehiclehints_cmd.register_cmd();
+    ui_miniscoreboard_cmd.register_cmd();
     ui_always_show_specators_cmd.register_cmd();
     ui_simple_server_chat_messages_cmd.register_cmd();
     ui_gamefeed_cmd.register_cmd();
@@ -1703,6 +3072,53 @@ void multi_hud_on_local_spawn()
         }
         g_run_timer_reset_by_respawn_key = false;
     }
+
+    // Capture first-spawn BEFORE the help block consumes the one-shot; the
+    // Gun Game spawn notification below depends on it.
+    const bool first_spawn =
+        static_cast<int>(rf::netgame.type) != g_gt_help_last_shown_type;
+
+    if (rf::is_multi && !rf::is_dedicated_server) {
+        if (static_cast<int>(rf::netgame.type) != g_gt_help_last_shown_type) {
+            // Consume the one-shot, never fire again until the type changes.
+            g_gt_help_last_shown_type = static_cast<int>(rf::netgame.type);
+            const auto& af_info = get_af_server_info();
+            const bool match_mode = af_info.has_value() && af_info->match_mode;
+            if (g_alpine_game_config.show_gametype_help && !g_pre_match_active && !match_mode) {
+                if (const char* text = multi_gametype_help_text(rf::netgame.type)) {
+                    hud_notification_show(text, 10, HudNotificationType::GametypeHelp, true);
+                }
+            }
+        }
+    }
+
+    // Gun Game spawn notification
+    if (rf::is_multi && !rf::is_dedicated_server && gt_is_gungame() && !is_client_bot_active()) {
+        const auto& af_info = get_af_server_info();
+        const bool match_mode = af_info.has_value() && af_info->match_mode;
+        const bool help_shown = first_spawn
+            && g_alpine_game_config.show_gametype_help
+            && !g_pre_match_active
+            && !match_mode
+            && multi_gametype_help_text(rf::netgame.type) != nullptr;
+
+        const int score = (rf::local_player && rf::local_player->stats) ? rf::local_player->stats->score : 0;
+        // Skip first spawn notifications if displaying a gametype hint.
+        if (!help_shown) {
+            if (g_gungame_order.empty()) {
+                g_gungame_spawn_notification_pending = true;
+            } else {
+                gungame_show_notification(score);
+            }
+        }
+        g_gungame_last_score = score;
+        g_gungame_score_synced = true;
+    }
+}
+
+void multi_hud_reset_gametype_help()
+{
+    g_gt_help_last_shown_type = -1;
 }
 
 void multi_hud_reset_run_gt_timer(bool triggered_by_respawn_key)

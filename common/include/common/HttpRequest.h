@@ -58,6 +58,7 @@ public:
     void set_connect_timeout(unsigned long timeout_ms);
     void set_send_timeout(unsigned long timeout_ms);
     void set_receive_timeout(unsigned long timeout_ms);
+    void set_connect_retries(unsigned long retries);
 
     HINTERNET get_internet_handle()
     {
@@ -97,6 +98,10 @@ public:
     }
 
     void send(std::string_view body = "");
+
+    // returns the HTTP status code
+    int send_no_check(std::string_view body = "");
+    
     size_t read(void* buf, size_t buf_size);
     std::optional<std::string> get_header(std::string_view name);
 };

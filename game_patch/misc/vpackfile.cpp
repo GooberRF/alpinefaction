@@ -59,7 +59,7 @@ const char* mod_file_allow_list[] = {
 static bool is_mod_file_in_whitelist(const char* Filename)
 {
     for (unsigned i = 0; i < std::size(mod_file_allow_list); ++i)
-        if (!stricmp(mod_file_allow_list[i], Filename))
+        if (!_stricmp(mod_file_allow_list[i], Filename))
             return true;
     return false;
 }
@@ -81,7 +81,7 @@ constexpr std::array<std::string_view, 7> tbl_mod_allow_list = {
 static bool is_tbl_file(const char* filename)
 {
     // confirm we're working with a tbl file
-    if (stricmp(rf::file_get_ext(filename), ".tbl") == 0) {
+    if (_stricmp(rf::file_get_ext(filename), ".tbl") == 0) {
         return true;
     }
     return false;
@@ -91,14 +91,14 @@ static bool is_tbl_file_in_allowlist(const char* filename)
 {
     // compare the input file against the tbl file allowlist
     return is_tbl_file(filename) && std::ranges::any_of(tbl_mod_allow_list, [filename](std::string_view allowed_tbl) {
-               return stricmp(allowed_tbl.data(), filename) == 0;
+               return _stricmp(allowed_tbl.data(), filename) == 0;
            });
 }
 
 static bool is_tbl_file_a_hud_messages_file(const char* filename)
 {
     // check if the input file ends with "_text.tbl"
-    if (strlen(filename) >= 9 && stricmp(filename + strlen(filename) - 9, "_text.tbl") == 0) {
+    if (strlen(filename) >= 9 && _stricmp(filename + strlen(filename) - 9, "_text.tbl") == 0) {
         return true;
     }
     return false;
@@ -177,11 +177,18 @@ static uint32_t vpackfile_process_header(rf::VPackfile* packfile, const void* ra
         uint32_t total_size;
     };
     constexpr unsigned VPP_SIG = 0x51890ACE;
+    // Bound the file count. 1M entries (~24 MB of VPackfileEntry) is far above any legitimate packfile.
+    constexpr unsigned VPP_MAX_FILES = 0x100000;
     const auto& hdr = *static_cast<const VppHeader*>(raw_header);
     packfile->num_files = hdr.num_files;
     packfile->file_size = hdr.total_size;
     if (hdr.sig != VPP_SIG || hdr.unk < 1u)
         return 0;
+    if (hdr.num_files > VPP_MAX_FILES) {
+        xlog::error("VPP rejected: num_files {} exceeds maximum {}", hdr.num_files, VPP_MAX_FILES);
+        packfile->num_files = 0;
+        return 0;
+    }
     return hdr.num_files;
 }
 
@@ -197,7 +204,7 @@ static std::string build_packfile_full_path(const char* filename, const char* di
 static bool is_packfile_loaded(const std::string& full_path)
 {
     for (auto& packfile : g_packfiles) {
-        if (!stricmp(packfile->path, full_path.c_str())) {
+        if (!_stricmp(packfile->path, full_path.c_str())) {
             return true;
         }
     }
@@ -249,15 +256,15 @@ static int vpackfile_add_new(const char* filename, const char* dir)
     packfile->num_files = 0;
 
     packfile->is_user_maps = (dir && (
-            stricmp(dir, "user_maps\\projects\\") == 0 ||
-            stricmp(dir, "user_maps\\multi\\") == 0 ||
-            stricmp(dir, "user_maps\\single\\") == 0));
+            _stricmp(dir, "user_maps\\projects\\") == 0 ||
+            _stricmp(dir, "user_maps\\multi\\") == 0 ||
+            _stricmp(dir, "user_maps\\single\\") == 0));
 
-    packfile->is_client_mods = (dir && stricmp(dir, "client_mods\\") == 0);
+    packfile->is_client_mods = (dir && _stricmp(dir, "client_mods\\") == 0);
 
     packfile->is_mods = (dir && PathIsRelativeA(dir) && StrCmpNIA(dir, "mods\\", 5) == 0);
 
-    packfile->is_alpinefaction_vpp = (filename && stricmp(filename, "alpinefaction.vpp") == 0);
+    packfile->is_alpinefaction_vpp = (filename && _stricmp(filename, "alpinefaction.vpp") == 0);
 
     xlog::debug(
         "Packfile {} is from {}user_maps, {}client_mods, {}mods, {}alpinefaction.vpp",
@@ -323,7 +330,7 @@ static void for_each_packfile_entry(const std::vector<std::string_view>& ext_fil
     ext_filter_lower.reserve(ext_filter.size());
     std::transform(ext_filter.begin(), ext_filter.end(), std::back_inserter(ext_filter_lower), string_to_lower);
     for (auto& packfile : g_packfiles) {
-        if (!packfile_filter || !stricmp(packfile_filter, packfile->filename)) {
+        if (!packfile_filter || !_stricmp(packfile_filter, packfile->filename)) {
             for (auto& entry : packfile->files) {
                 const char* ext_ptr = rf::file_get_ext(entry.name);
                 if (ext_ptr[0]) {
@@ -428,9 +435,62 @@ static bool is_lookup_table_entry_override_allowed(rf::VPackfileEntry* old_entry
     return true;
 }
 
+bool vpackfile_supercede_allowed(const char* requested_filename, const char* sibling_filename)
+{
+    if (!sibling_filename || !*sibling_filename) return false;
+
+    // The sibling must actually exist somewhere — otherwise there's nothing to supercede with.
+    auto sibling_it = g_loopup_table.find(string_to_lower(sibling_filename));
+    if (sibling_it == g_loopup_table.end()) {
+        return false;
+    }
+    rf::VPackfileEntry* sibling = sibling_it->second;
+
+    // Sources outside user_maps — root game packfiles, mods/, client_mods/ — can supercede
+    // unconditionally. Matches the same-name override policy for these sources.
+    //
+    // Note: deliberately NOT consulting g_is_overriding_disabled (the flag set after init).
+    // That flag protects against late packfile registration; runtime cache lookups are not
+    // late registrations, so reusing it here would falsely deny every supercede during
+    // gameplay (which is when bm_read_header_hook actually runs).
+    if (!sibling->parent->is_user_maps) {
+        if (sibling->parent->is_client_mods) {
+            g_is_modded_game = true;
+        }
+        return true;
+    }
+
+    // Sibling is from user_maps. Same-name policy says: user_maps can override another
+    // user_maps entry regardless of toggle, but can only override a non-user_maps entry
+    // when the "allow overwrite game files" toggle is on. Mirror that here.
+    auto requested_it = g_loopup_table.find(string_to_lower(requested_filename));
+
+    // If the requested file doesn't exist anywhere, the sibling isn't overriding anything —
+    // it's a net-new asset that the user_maps content needs in place of the legacy reference.
+    if (requested_it == g_loopup_table.end()) {
+        g_is_modded_game = true;
+        return true;
+    }
+
+    bool requested_is_user_maps = requested_it->second->parent->is_user_maps;
+    if (requested_is_user_maps) {
+        return true;
+    }
+    if (g_game_config.allow_overwrite_game_files) {
+        g_is_modded_game = true;
+        return true;
+    }
+    return false;
+}
+
 static void vpackfile_add_to_lookup_table(rf::VPackfileEntry* entry)
 {
     std::string filename_str = string_to_lower(entry->name);
+    // Alpine Faction option tables load from client_mods, mods and the game's own packfiles, never user_maps
+    if (entry->parent->is_user_maps && filename_str.starts_with("af_") && filename_str.ends_with(".tbl")) {
+        xlog::warn("Ignoring {} in user_maps packfile {}", entry->name, entry->parent->filename);
+        return;
+    }
     auto [it, inserted] = g_loopup_table.insert({filename_str, entry});
     if (!inserted) {
         ++g_num_name_collisions;
@@ -458,11 +518,25 @@ static int vpackfile_add_entries_new(rf::VPackfile* packfile, const void* block,
 
     for (unsigned i = 0; i < num_files; ++i) {
         const char* file_name = record->name;
+
+        // Bound the length to the field size before any copy.
+        const size_t name_len = strnlen(file_name, sizeof(record->name));
+
+        // Bound the per-entry size. The size drives a single allocation when the file is later read.
+        constexpr uint32_t vpp_max_entry_size = 0x60000000u; // 1.5 GiB
+        if (record->size > vpp_max_entry_size) {
+            xlog::error("VPP rejected: entry '{}' size {} exceeds maximum {} (index untrustworthy)",
+                        std::string(file_name, name_len), record->size, vpp_max_entry_size);
+            // Fail the load rather than skipping just this entry. This VPP is corrupt or crafted.
+            return 0;
+        }
+
         rf::VPackfileEntry& entry = packfile->files[num_added_files];
 
         // Note: we can't use string pool from RF because it's too small
-        char* file_name_buf = new char[strlen(file_name) + 1];
-        std::strcpy(file_name_buf, file_name);
+        char* file_name_buf = new char[name_len + 1];
+        std::memcpy(file_name_buf, file_name, name_len);
+        file_name_buf[name_len] = '\0';
         entry.name = file_name_buf;
         entry.name_checksum = rf::vpackfile_calc_file_name_checksum(entry.name);
         entry.size = record->size;
@@ -624,8 +698,9 @@ static void vpackfile_init_new()
     if (!rf::is_dedicated_server) {
         rf::vpackfile_add("music.vpp", nullptr);
         rf::vpackfile_add("ui.vpp", nullptr);
-        load_alpinefaction_vpp();
     }
+
+    load_alpinefaction_vpp();
     rf::vpackfile_add("tables.vpp", nullptr);
     addr_as_ref<int>(0x01BDB218) = 1;          // VPackfilesLoaded
     addr_as_ref<uint32_t>(0x01BDB210) = 10000; // NumFilesInVfs
@@ -789,7 +864,7 @@ void vpackfile_disable_overriding()
     g_is_overriding_disabled = true;
 }
 
-int vpackfile_load_user_maps_packfiles()
+std::string vpackfile_load_user_maps_packfiles()
 {
     rf::vpackfile_set_loading_user_maps(true);
     int loaded = 0;
@@ -797,5 +872,8 @@ int vpackfile_load_user_maps_packfiles()
     loaded += load_vpp_files_from_directory("user_maps\\single\\*.vpp", "user_maps\\single\\");
     loaded += load_vpp_files_from_directory("user_maps\\multi\\*.vpp", "user_maps\\multi\\");
     rf::vpackfile_set_loading_user_maps(false);
-    return loaded;
+    if (loaded == 0) {
+        return "No new packfiles found in user_maps\\";
+    }
+    return std::format("Loaded {} new packfile(s) from user_maps\\", loaded);
 }

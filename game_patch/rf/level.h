@@ -48,6 +48,32 @@ namespace rf
     };
     static_assert(sizeof(PushRegion) == 0x6C); // original is 0x69 due to 1 byte bool
 
+    struct GeoRegion
+    {
+        int shape;
+        int hardness;
+        bool use_shallow_geomods;
+        bool is_ice;
+        char padding[2];
+        float shallow_geomod_depth;
+        Vector3 pos;
+        Matrix3 orient;
+        float radius;
+        Vector3 extents;
+    };
+    static_assert(sizeof(GeoRegion) == 0x50);
+
+    enum PushRegionFlags
+    {
+        PRF_MASS_INDEPENDENT = 0x1,
+        PRF_GROUNDED = 0x2,
+        PRF_GROWS_TOWARDS_CENTER = 0x4,
+        PRF_GROWS_TOWARDS_BOUNDARIES = 0x8,
+        PRF_RADIAL = 0x10,
+        PRF_DOESNT_AFFECT_PLAYER = 0x20,
+        PRF_JUMP_PAD = 0x40
+    };
+
     struct EmitterPair
     {
         ParticleEmitter *pemitter;
@@ -118,9 +144,14 @@ namespace rf
     static auto& level = addr_as_ref<LevelInfo>(0x00645FD8);
     static auto& level_filename_to_load = addr_as_ref<String>(0x00646140);
     static auto& level_get_push_region_from_uid = addr_as_ref<PushRegion*(int uid)>(0x0045D6D0);
+    static auto& level_point_in_climb_region = addr_as_ref<ClimbRegion*(Vector3* pos)>(0x0045CCA0);
     static auto& geo_region_test_point = addr_as_ref<bool(const Vector3& pos, GeoRegion* region)>(0x0045d520);
 
-    static auto& level_set_level_to_load = addr_as_ref<void(String filename, String state_filename)>(0x0045E2E0);
+    // The callee takes both Strings by value and String-destroys them (frees their buffers). Use String::Pod
+    // (trivial 8-byte {int max_len; char* buf}, ABI-identical under MSVC and GCC) so ownership transfers correctly.
+    // Passing rf::String by value here breaks on MinGW: GCC passes non-trivial classes by hidden reference while
+    // MSVC passes the 8 bytes inline, so the engine would read garbage and free a garbage pointer.
+    static auto& level_set_level_to_load = addr_as_ref<void(String::Pod filename, String::Pod state_filename)>(0x0045E2E0);
     static auto& game_new_game = addr_as_ref<void()>(0x00436950);
 
 }

@@ -3,7 +3,9 @@
 #include <patch_common/CallHook.h>
 #include <patch_common/CodeInjection.h>
 #include <patch_common/ShortTypes.h>
+#include <algorithm>
 #include <array>
+#include <cstddef>
 #include <xlog/xlog.h>
 #include "../multi/server.h"
 #include "../rf/player/player.h"
@@ -14,24 +16,27 @@
 #include "../os/console.h"
 #include "../main/main.h"
 #include "../multi/multi.h"
+#include "../multi/kill_attribution.h"
+#include "../multi/mutators.h"
+#include "../multi/projectile_lag_comp.h"
 #include "../misc/misc.h"
 #include "../misc/alpine_settings.h"
+#include "../misc/settings_registry.h"
+#include "alpine_rope.h"
 
 static std::array<uint8_t, 64U> weapon_reticle_custom_mask{}; // bit 0 = _0, bit 1 = _1
 static std::pair<bool, bool> rocket_locked_custom_reticle = {false, false};
 
-bool entity_is_reloading_player_select_weapon_new(rf::Entity* entity)
+static bool weapon_is_excluded_from_gaussian_rng(int weapon_type)
 {
-    if (rf::entity_is_reloading(entity))
-        return true;
+    return weapon_type == rf::shotgun_weapon_type;
+}
 
-    int weapon_type = entity->ai.current_primary_weapon;
-    if (weapon_type >= 0) {
-        rf::WeaponInfo& wi = rf::weapon_types[weapon_type];
-        if (entity->ai.clip_ammo[weapon_type] == 0 && entity->ai.ammo[wi.ammo_type] > 0)
-            return true;
-    }
-    return false;
+static bool weapon_is_excluded_from_first_shot_accuracy(int weapon_type)
+{
+    return weapon_type == rf::shotgun_weapon_type
+        || weapon_type == rf::sniper_rifle_weapon_type
+        || weapon_type == rf::scope_assault_rifle_weapon_type;
 }
 
 CodeInjection weapons_tbl_buffer_overflow_fix_1{
@@ -56,7 +61,7 @@ CodeInjection weapons_tbl_buffer_overflow_fix_2{
 
 CodeInjection weapon_init_track_reticle_bitmap_injection{
     0x004C6756,
-    [](auto& regs) {
+    [] {
         weapon_reticle_custom_mask.fill(0);
         rocket_locked_custom_reticle = {false, false};
 
@@ -117,6 +122,10 @@ bool rocket_locked_reticle_is_customized(bool bighud) {
 FunHook<void(rf::Weapon*)> weapon_move_one_hook{
     0x004C69A0,
     [](rf::Weapon* weapon) {
+        // Covers fused and detonator-triggered explosions, which detonate from inside the mover.
+        // Constructed EVERY frame for EVERY live weapon, so the scope ctor must stay a pure lookup.
+        SplashWeaponScope splash_scope{weapon};
+        const CritWeaponScope crit_scope{weapon};
         weapon_move_one_hook.call_target(weapon);
         auto& level_aabb_min = rf::level.geometry->bbox_min;
         auto& level_aabb_max = rf::level.geometry->bbox_max;
@@ -190,26 +199,79 @@ void apply_show_enemy_bullets() {
 ConsoleCommand2 show_enemy_bullets_cmd{
     "cl_showenemybullets",
     []() {
-        g_alpine_game_config.show_enemy_bullets = !g_alpine_game_config.show_enemy_bullets;
-        apply_show_enemy_bullets();
+        setting_console_set("show_enemy_bullets", "toggle");
         rf::console::print("Enemy bullet impact effects are {}", g_alpine_game_config.show_enemy_bullets ? "enabled" : "disabled");
     },
     "Toggles visibility of enemy bullet impacts",
 };
 
-CallHook<void(rf::Vector3&, float, float, int, int)> weapon_hit_wall_obj_apply_radius_damage_hook{
+// apply_radius_damage (0x00488DC0) opens on an x87 instruction and cannot be FunHooked, so each of its
+// player-attributed call sites has exactly one CallHook here, shared by Critical Hits and lag comp
+using RadiusDamageHook = CallHook<void(rf::Vector3&, float, float, int, int)>;
+
+// follow_handle: the entity the epicenter is on (direct hit, stuck charge); it moves with that entity's rewind
+static void weapon_apply_radius_damage(RadiusDamageHook& hook, rf::Vector3& epicenter, float damage, float radius,
+                                       int killer_handle, int damage_type, bool full_ping = false,
+                                       int follow_handle = -1)
+{
+    const float crit_scale = crits_on_explosion(&epicenter, radius);
+    alpine_rope_apply_explosion(epicenter, radius * crit_scale, damage);
+    // Bullet impacts come through here too, with no blast to rewind for
+    const bool rewound = damage > 0.0f && radius > 0.0f
+        && projectile_lag_comp_rewind_for_killer(killer_handle, full_ping);
+    rf::Vector3 center = epicenter;
+    if (rewound && follow_handle != -1) {
+        center += projectile_lag_comp_rewound_offset(follow_handle);
+    }
+    hook.call_target(center, damage, radius * crit_scale, killer_handle, damage_type);
+    if (rewound) {
+        projectile_lag_comp_restore_entities();
+    }
+}
+
+// weapon_hit_level: projectile detonates on world geometry
+RadiusDamageHook weapon_hit_wall_obj_apply_radius_damage_hook{
     0x004C53A8,
     [](rf::Vector3& epicenter, float damage, float radius, int killer_handle, int damage_type) {
         auto& collide_out = *reinterpret_cast<rf::PCollisionOut*>(&epicenter);
         auto new_epicenter = epicenter + collide_out.hit_normal * 0.0001f;
-        weapon_hit_wall_obj_apply_radius_damage_hook.call_target(new_epicenter, damage, radius, killer_handle, damage_type);
+        weapon_apply_radius_damage(weapon_hit_wall_obj_apply_radius_damage_hook, new_epicenter, damage, radius,
+                                   killer_handle, damage_type);
+    },
+};
+
+// weapon_hit_obj impact splash: the epicenter is on the directly hit object, whose direct hit was tested where
+// the shooter saw it, so the epicenter follows that object's rewind
+RadiusDamageHook weapon_hit_obj_apply_radius_damage_hook{
+    0x004C62F5,
+    [](rf::Vector3& epicenter, float damage, float radius, int killer_handle, int damage_type) {
+        const auto& collide_out = *reinterpret_cast<rf::PCollisionOut*>(&epicenter);
+        weapon_apply_radius_damage(weapon_hit_obj_apply_radius_damage_hook, epicenter, damage, radius,
+                                   killer_handle, damage_type, /*full_ping*/ false,
+                                   /*follow_handle*/ collide_out.obj_handle);
+    },
+};
+
+// weapon_move_one fuse / detonator / lifetime expiry: epicenter is wp->pos. A remote charge detonates
+// on an un-advanced detonator packet, so its shooter is a full round trip behind.
+RadiusDamageHook weapon_expire_apply_radius_damage_hook{
+    0x004C6C94,
+    [](rf::Vector3& epicenter, float damage, float radius, int killer_handle, int damage_type) {
+        const auto* wp = reinterpret_cast<const rf::Weapon*>(
+            reinterpret_cast<const std::byte*>(&epicenter) - offsetof(rf::Object, pos));
+        // A charge stuck to someone moves with them (weapon_move_sticky_weapons 0x004C83C0), so the epicenter
+        // follows their rewind like a direct hit's
+        weapon_apply_radius_damage(weapon_expire_apply_radius_damage_hook, epicenter, damage, radius,
+                                   killer_handle, damage_type,
+                                   /*full_ping*/ wp->info_index == rf::remote_charge_weapon_type,
+                                   /*follow_handle*/ wp->sticky_host_handle);
     },
 };
 
 ConsoleCommand2 multi_ricochet_cmd{
     "mp_ricochet",
     []() {
-        g_alpine_game_config.multi_ricochet = !g_alpine_game_config.multi_ricochet;
+        setting_console_set("multi_ricochet", "toggle");
         rf::console::print("Multiplayer ricochets are {}", g_alpine_game_config.multi_ricochet ? "enabled" : "disabled");
     },
     "Toggles whether bullets ricochet in multiplayer (strictly visual, they deal no damage regardless)",
@@ -226,10 +288,70 @@ FunHook<bool(rf::Weapon*)> weapon_possibly_richochet {
     },
 };
 
+// Stock flies the beam's tip on along the beam until the round dies, so past a pierced surface it leaves
+// the round's path. Fly it along that path instead, never behind the round. Runs after
+// obj_move_all, which deletes rounds flagged dead only on the next frame.
+// No trampoline: eip is always redirected, so the overwritten FLD and FMUL never run.
+CodeInjection rail_gun_beam_tip_on_round_path{
+    0x004C2462,
+    [](auto& regs) {
+        rf::RailBeam* beam = regs.esi;
+        const rf::Weapon* round = regs.eax;
+        // Only a round that can't ricochet, deflect, home or fall keeps to a fixed path (stock rail does)
+        constexpr int straight_flags2 = rf::WTF2_PIERCES_ALL | rf::WTF2_UNDEVIATING;
+        const bool on_path = g_alpine_game_config.rail_beam_fix
+            && (round->info->flags2 & straight_flags2) == straight_flags2
+            && !(round->info->flags & (rf::WTF_HOMING | rf::WTF_GRAVITY));
+        if (!on_path) {
+            beam->tip += beam->orient.fvec * (beam->speed * beam->age);
+        }
+        else {
+            const rf::Vector3& path_dir = round->orient.fvec;
+            const float round_dist = (round->pos - round->firing_pos).dot_prod(path_dir);
+            // Like stock, the tip still takes this frame's step once the round stops and is never pulled back
+            // to it: a multiplayer client's round stops at the first entity (weapon_hit_obj skips the pierce test
+            // there) while the server's goes on through
+            const float tip_dist = (beam->tip - round->firing_pos).dot_prod(path_dir) + beam->speed * beam->age;
+            if (round->obj_flags & rf::OF_DELAYED_DELETE) {
+                beam->weapon_handle = -1;
+            }
+            beam->tip = round->firing_pos + path_dir * std::max(tip_dist, round_dist);
+        }
+        regs.eip = 0x004C2481;
+    },
+    false,
+};
+
+// The server's lag-comp ghost of each shot, swept along the shot by multi_lag_comp_weapon_fire for the
+// rewind raycast, gets its own beam too, doubling the real one. In multiplayer, the only place a ghost
+// exists, a beam aged 1 draws at zero alpha and the next update frees it.
+CallHook<rf::Weapon*(int, int, rf::Vector3*, rf::Matrix3*, int, int)> rail_gun_lag_comp_ghost_create_hook{
+    0x004266F8,
+    [](int weapon_type, int parent_handle, rf::Vector3* pos, rf::Matrix3* orient, int alt_fire, int flags) {
+        rf::Weapon* ghost =
+            rail_gun_lag_comp_ghost_create_hook.call_target(weapon_type, parent_handle, pos, orient, alt_fire, flags);
+        rf::RailBeam* newest = rf::rail_beam_list ? rf::rail_beam_list->prev : nullptr;
+        if (g_alpine_game_config.rail_beam_fix && ghost && newest && newest->weapon_handle == ghost->handle) {
+            newest->age = 1.0f;
+        }
+        return ghost;
+    },
+};
+
+ConsoleCommand2 rail_beam_fix_cmd{
+    "cl_railbeamfix",
+    []() {
+        setting_console_set("rail_beam_fix", "toggle");
+        rf::console::print("Rail Driver beam path fix is {}",
+            g_alpine_game_config.rail_beam_fix ? "enabled" : "disabled");
+    },
+    "Toggles whether the Rail Driver beam follows the shot's path through pierced surfaces",
+};
+
 ConsoleCommand2 gaussian_spread_cmd{
     "sp_spreadmode",
     []() {
-        g_alpine_game_config.gaussian_spread = !g_alpine_game_config.gaussian_spread;
+        setting_console_set("gaussian_spread", "toggle");
         rf::console::print("Random bullet spread calculation is using the {} method",
             g_alpine_game_config.gaussian_spread ? "new (gaussian)" : "legacy (uniform)");
     },
@@ -254,7 +376,7 @@ bool should_use_gaussian_spread()
 ConsoleCommand2 unlimited_semi_auto_cmd{
     "sp_unlimitedsemiauto",
     []() {
-        g_alpine_game_config.unlimited_semi_auto = !g_alpine_game_config.unlimited_semi_auto;
+        setting_console_set("unlimited_semi_auto", "toggle");
         rf::console::print("Fire rate cooldown for semi-automatic weapons in single player is {}",
             g_alpine_game_config.unlimited_semi_auto ? "disabled" : "enabled");
     },
@@ -311,7 +433,7 @@ CodeInjection entity_fire_primary_weapon_semi_auto_patch {
         if (should_use_gaussian_spread()) {
             int fire_wait2 = regs.eax;
             if (rf::obj_is_player(entity)){
-                if (!rf::weapon_is_shotgun(weapon_type) && entity->last_fired_timestamp.time_since() > (fire_wait2 * 2)) {
+                if (!weapon_is_excluded_from_first_shot_accuracy(weapon_type) && entity->last_fired_timestamp.time_since() > (fire_wait2 * 2)) {
                     entity->rapid_fire_spread_modifier = 0.0f;
                 }
                 else {
@@ -322,18 +444,20 @@ CodeInjection entity_fire_primary_weapon_semi_auto_patch {
     },
 };
 
-using Vector3_rand_around_dir = void __fastcall(rf::Vector3*, rf::Vector3, float);
-extern CallHook<Vector3_rand_around_dir> Vector3_rand_around_dir_hook;
-void __fastcall Vector3_rand_around_dir_new (rf::Vector3* self, rf::Vector3 dir, float dotfactor)
-{
-    if (should_use_gaussian_spread()) {
-        self->rand_around_dir_gaussian(dir, dotfactor); // replace stock RNG function
-    }
-    else {
-        Vector3_rand_around_dir_hook.call_target(self, dir, dotfactor); // maintain stock behaviour
-    }
-}
-CallHook<Vector3_rand_around_dir> Vector3_rand_around_dir_hook{0x00426639, Vector3_rand_around_dir_new};
+CodeInjection weapon_spread_gaussian_rng_patch{
+    0x00426639,
+    [](auto& regs) {
+        int weapon_type = regs.ebx;
+        if (should_use_gaussian_spread() && !weapon_is_excluded_from_gaussian_rng(weapon_type)) {
+            auto self = static_cast<rf::Vector3*>(regs.ecx);
+            auto& dir = *static_cast<rf::Vector3*>(regs.esp);
+            float dotfactor = *reinterpret_cast<float*>(regs.esp + 12);
+            self->rand_around_dir_gaussian(dir, dotfactor);
+            regs.esp += 0x10;
+            regs.eip = 0x0042663E;
+        }
+    },
+};
 
 CodeInjection entity_get_weapon_spread_first_shot_patch {
     0x0042D0C2,
@@ -358,7 +482,7 @@ CodeInjection autoswitch_empty_weapon_patch {
 ConsoleCommand2 always_autoswitch_empty_cmd{
     "cl_autoswitchempty",
     []() {
-        g_alpine_game_config.always_autoswitch_empty = !g_alpine_game_config.always_autoswitch_empty;
+        setting_console_set("always_autoswitch_empty", "toggle");
         rf::console::print("Always autoswitch empty weapons is {}",
                            g_alpine_game_config.always_autoswitch_empty ? "enabled" : "disabled");
     },
@@ -371,7 +495,7 @@ void apply_weapon_patches()
     autoswitch_empty_weapon_patch.install();
 
     // Apply new spread method using gaussian distribution and first shot accuracy
-    Vector3_rand_around_dir_hook.install();
+    weapon_spread_gaussian_rng_patch.install();
     entity_get_weapon_spread_first_shot_patch.install();
 
     // Apply fire wait to semi auto weapons and adjust values to be reasonable
@@ -387,12 +511,6 @@ void apply_weapon_patches()
 
     // Track which weapon reticles are customized
     weapon_init_track_reticle_bitmap_injection.install();
-
-#if 0
-    // Fix weapon switch glitch when reloading (should be used on Match Mode)
-    AsmWriter(0x004A4B4B).call(entity_is_reloading_player_select_weapon_new);
-    AsmWriter(0x004A4B77).call(entity_is_reloading_player_select_weapon_new);
-#endif
 
     // Delete weapons (projectiles) that reach bounding box of the level
     weapon_move_one_hook.install();
@@ -412,10 +530,18 @@ void apply_weapon_patches()
 
     // Fix rockets not making damage after hitting a detail brush
     weapon_hit_wall_obj_apply_radius_damage_hook.install();
+    // Crits blast scale and projectile lag comp rewind at the other two blast sites
+    weapon_hit_obj_apply_radius_damage_hook.install();
+    weapon_expire_apply_radius_damage_hook.install();
+
+    // Fix rail driver beam veering off the round's path after the round pierces a surface
+    rail_gun_beam_tip_on_round_path.install();
+    rail_gun_lag_comp_ghost_create_hook.install();
 
     // commands
     multi_ricochet_cmd.register_cmd();
     show_enemy_bullets_cmd.register_cmd();
+    rail_beam_fix_cmd.register_cmd();
     gaussian_spread_cmd.register_cmd();
     unlimited_semi_auto_cmd.register_cmd();
     always_autoswitch_empty_cmd.register_cmd();

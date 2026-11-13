@@ -10,12 +10,17 @@
 #include <common/utils/string-utils.h>
 #include <xlog/xlog.h>
 #include <algorithm>
+#include <chrono>
+#include <cstring>
 #include <filesystem>
 #include <limits>
 #include <format>
 #include <sstream>
 #include <numeric>
 #include <string_view>
+#include <thread>
+#include <tuple>
+#include <utility>
 #include <vector>
 #include <windows.h>
 #include <winsock2.h>
@@ -25,6 +30,9 @@
 #include "alpine_packets.h"
 #include "network.h"
 #include "multi.h"
+#include "gametype.h"
+#include "mutators.h"
+#include "../fflink/fflink_session.h"
 #include "../os/console.h"
 #include "../misc/player.h"
 #include "../misc/alpine_settings.h"
@@ -47,7 +55,8 @@
 #include "../rf/os/timer.h"
 #include "../rf/level.h"
 #include "../rf/collide.h"
-#include "../purefaction/pf.h"
+#include "bots/bot_personality.h"
+#include "bots/server_bots.h"
 #include <common/utils/os-utils.h>
 
 bool g_dedicated_launched_from_ads = false; // was the server launched from an ads file?
@@ -105,6 +114,12 @@ rf::CmdLineParam& get_nodl_cmd_line_param()
     return nodl_param;
 }
 
+rf::CmdLineParam& get_nogsk_cmd_line_param()
+{
+    static rf::CmdLineParam nogsk_param{"-nogsk", "", false};
+    return nogsk_param;
+}
+
 void handle_min_param()
 {
     g_ads_minimal_server_info = get_min_cmd_line_param().found();
@@ -118,6 +133,21 @@ void handle_log_param()
 void handle_nodl_param()
 {
     g_ads_skip_map_download = get_nodl_cmd_line_param().found();
+}
+
+static RoundConfig parse_rounds_config(const toml::table& t, RoundConfig c)
+{
+    // Whether rounds are active is fixed by gametype.
+    // Rounds config values are ignored in gametypes that don't use rounds.
+    if (auto v = t["max_rounds"].value<int>())
+        c.set_max_rounds(*v);
+    if (auto v = t["round_time"].value<int>())
+        c.set_round_time(*v);
+    if (auto v = t["post_round_time"].value<int>())
+        c.set_post_round_time(*v);
+    if (auto v = t["intermission_time"].value<int>())
+        c.set_intermission_time(*v);
+    return c;
 }
 
 static OvertimeConfig parse_overtime_config(const toml::table& t)
@@ -172,6 +202,8 @@ static SpawnDelayConfig parse_spawn_delay_config(const toml::table& t, SpawnDela
     if (c.enabled) {
         if (auto v = t["base_seconds"].value<float>())
             c.set_base_value(*v);
+        if (auto x = t["wave_respawns"].value<bool>())
+            c.wave_respawns = *x;
     }
 
     return c;
@@ -192,6 +224,18 @@ static GibConfig parse_gib_config(const toml::table& t, GibConfig c)
     return c;
 }
 
+static VehicleConfig parse_vehicle_config(const toml::table& t, VehicleConfig c)
+{
+    if (auto x = t["crash_damage"].value<bool>())
+        c.crash_damage = *x;
+    if (auto x = t["bots_use_vehicles"].value<bool>())
+        c.bots_use_vehicles = *x;
+    if (auto v = t["bot_max_drivers"].value<int>())
+        c.set_bot_max_drivers(*v);
+
+    return c;
+}
+
 
 static ForceCharacterConfig parse_force_character_config(const toml::table& t, ForceCharacterConfig c)
 {
@@ -206,82 +250,6 @@ static ForceCharacterConfig parse_force_character_config(const toml::table& t, F
     return c;
 }
 
-static CriticalHitsConfig parse_critical_hits_config(const toml::table& t, CriticalHitsConfig c)
-{
-    if (auto x = t["enabled"].value<bool>())
-        c.enabled = *x;
-
-    if (c.enabled) {
-        if (auto v = t["reward_duration"].value<int>())
-            c.set_reward_duration(*v);
-        if (auto v = t["base_chance"].value<float>())
-            c.set_base_chance(*v);
-        if (auto v = t["dynamic_scale"].value<float>())
-            c.dynamic_scale = *v;
-        if (auto v = t["dynamic_damage_bonus_ceiling"].value<float>())
-            c.set_damage_bonus_ceiling(*v);
-    }
-
-    return c;
-}
-
-static GunGameConfig parse_gungame_config(const toml::table& t, GunGameConfig gg)
-{
-    if (auto v = t["enabled"].value<bool>())
-        gg.enabled = *v;
-    if (auto v = t["dynamic_progression"].value<bool>())
-        gg.dynamic_progression = *v;
-    if (auto v = t["rampage_rewards"].value<bool>())
-        gg.rampage_rewards = *v;
-
-    if (auto ft = t["final"].as_table()) {
-        int kills = (*ft)["kills"].value_or<int>(-1);
-        auto w = (*ft)["weapon"].value_or<std::string>("");
-        if (kills >= 0 && !w.empty())
-            gg.set_final_level(kills, w);
-        else
-            xlog::warn("GunGame: [final] requires kills>=0 and weapon");
-    }
-
-    if (auto arr = t["levels"].as_array()) {
-        gg.levels.clear(); // levels array specified for this map. Otherwise, inherit base
-
-        int prev_kills = 0;
-        for (auto& node : *arr) {
-            auto tbl = node.as_table();
-            if (!tbl) {
-                xlog::warn("GunGame: level is not a table; skipping");
-                continue;
-            }
-
-            auto w = (*tbl)["weapon"].value_or<std::string>("");
-            if (w.empty()) {
-                xlog::warn("GunGame: level missing 'weapon'");
-                continue;
-            }
-
-            if (gg.dynamic_progression) {
-                int tier = (*tbl)["tier"].value_or<int>(-1);
-                if (tier < 1) {
-                    xlog::warn("GunGame: dynamic requires 'tier' >= 1");
-                    continue;
-                }
-                gg.add_level_by_tier(tier, w);
-            }
-            else {
-                int kills = (*tbl)["kills"].value_or<int>(prev_kills + 1);
-                gg.add_level_by_kills(kills, w);
-                prev_kills = kills;
-            }
-        }
-
-        if (!gg.dynamic_progression)
-            gg.normalize_manual(); // dedupe kill levels
-    }
-
-    return gg;
-}
-
 static WelcomeMessageConfig parse_welcome_message_config(const toml::table& t, WelcomeMessageConfig c)
 {
     if (auto x = t["enabled"].value<bool>())
@@ -290,6 +258,19 @@ static WelcomeMessageConfig parse_welcome_message_config(const toml::table& t, W
     if (c.enabled) {
         if (auto v = t["text"].value<std::string>())
             c.set_welcome_message(*v);
+    }
+
+    return c;
+}
+
+static LevelMessageConfig parse_level_message_config(const toml::table& t, LevelMessageConfig c)
+{
+    if (auto x = t["enabled"].value<bool>())
+        c.enabled = *x;
+
+    if (c.enabled) {
+        if (auto v = t["text"].value<std::string>())
+            c.set_text(*v);
     }
 
     return c;
@@ -361,15 +342,53 @@ static KillRewardConfig parse_kill_reward_config(const toml::table& t, KillRewar
     return c;
 }
 
+// Shared by Wipeout and Scavenger: 200 / 200 spawns and a fixed Pistol / AR / SR / RL / SG loadout
+// with infinite reloads and large reserves (effectively infinite ammo). Both modes hide every level
+// item, so no weapon/amp drops either.
+static void apply_fixed_loadout_defaults(AlpineServerConfigRules& rules)
+{
+    rules.location_pinging = true;
+
+    rules.spawn_life.enabled = true;
+    rules.spawn_life.set_value(200.0f);
+    rules.spawn_armour.enabled = true;
+    rules.spawn_armour.set_value(200.0f);
+
+    constexpr int fixed_reserve = 999;
+    rules.spawn_loadout.add("12mm handgun", fixed_reserve, false, true);
+    rules.spawn_loadout.add("Assault Rifle", fixed_reserve, false, true);
+    rules.spawn_loadout.add("Sniper Rifle", fixed_reserve, false, true);
+    rules.spawn_loadout.add("Rocket Launcher", fixed_reserve, false, true);
+    rules.spawn_loadout.add("Shotgun", fixed_reserve, false, true);
+    rules.weapon_infinite_magazines = true;
+    rules.default_player_weapon.set_weapon("Assault Rifle");
+
+    rules.drop_weapons = false;
+    rules.drop_amps = false;
+}
+
 void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigRules& rules)
 {
-    // all modes get baton
-    int baton_ammo = rf::weapon_types[rf::riot_stick_weapon_type].clip_size_multi;
-    rules.spawn_loadout.add("Riot Stick", baton_ammo, false, true);
+    // A game_type change rebuilds the loadout/defaults, so clear any mutator
+    // state too — a half-applied mutator would be broken.
+    // Mutators declared in the same scope re-apply immediately after this returns;
+    // a scope that changes game_type must re-declare its mutators.
+    rules.mutators = MutatorConfig{};
+    rules.game_type_defaults_applied = true;
+
+    // Rebuilt from nothing so one call always yields this game type's complete loadout
+    // regardless of what the rules held before. Anything layered on afterwards (operator
+    // spawn_loadout keys, mutators) is applied by the caller, not here.
+    rules.spawn_loadout.red_weapons.clear();
+    rules.spawn_loadout.blue_weapons.clear();
+
+    // Every mode gets the baton unless a case below drops it.
+    rules.spawn_loadout.add("Riot Stick", AlpineServerConfigRules::stock_riot_stick_reserve(), false, true);
     rules.set_pvp_damage_modifier(1.0f);
     rules.no_player_collide = false;
     rules.location_pinging = false;
     rules.saving_enabled = false;
+    rules.spawn_delay.wave_respawns = false;
 
     switch (game_type) {
         case rf::NetGameType::NG_TYPE_KOTH: {
@@ -381,10 +400,7 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
             rules.spawn_loadout.add("Remote Charge", 3, false, true);
 
             // primary weapon
-            rules.spawn_loadout.remove("12mm handgun", false);
             rules.default_player_weapon.set_weapon("Machine Pistol");
-
-            rules.spawn_loadout.loadouts_active = true;
             break;
         }
 
@@ -396,7 +412,6 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
             // primary weapon
             rules.default_player_weapon.set_weapon("12mm handgun");
 
-            rules.spawn_loadout.loadouts_active = false;
             break;
         }
 
@@ -409,10 +424,7 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
             rules.spawn_loadout.add("Remote Charge", 3, false, true);
 
             // primary weapon
-            rules.spawn_loadout.remove("12mm handgun", false);
             rules.default_player_weapon.set_weapon("Machine Pistol");
-
-            rules.spawn_loadout.loadouts_active = true;
             break;
         }
 
@@ -425,10 +437,7 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
             rules.spawn_loadout.add("Remote Charge", 3, false, true);
 
             // primary weapon
-            rules.spawn_loadout.remove("12mm handgun", false);
             rules.default_player_weapon.set_weapon("Machine Pistol");
-
-            rules.spawn_loadout.loadouts_active = true;
             break;
         }
 
@@ -443,7 +452,109 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
             // primary weapon
             rules.default_player_weapon.set_weapon("12mm handgun");
 
-            rules.spawn_loadout.loadouts_active = false;
+            break;
+        }
+
+        case rf::NetGameType::NG_TYPE_BAG:
+        case rf::NetGameType::NG_TYPE_TBAG: {
+            rules.spawn_delay.enabled = true;
+            rules.spawn_delay.set_base_value(2.0f);
+            rules.location_pinging = (game_type == rf::NetGameType::NG_TYPE_TBAG);
+
+            // primary weapon
+            rules.default_player_weapon.set_weapon("12mm handgun");
+
+            break;
+        }
+
+        case rf::NetGameType::NG_TYPE_SAL: {
+            rules.spawn_delay.enabled = true;
+            rules.spawn_delay.set_base_value(1.0f);
+            rules.location_pinging = true;
+
+            // primary weapon
+            rules.default_player_weapon.set_weapon("12mm handgun");
+
+            break;
+        }
+
+        case rf::NetGameType::NG_TYPE_SCAV: {
+            apply_fixed_loadout_defaults(rules);
+            rules.spawn_delay.enabled = true;
+            rules.spawn_delay.set_base_value(2.0f);
+            break;
+        }
+
+        case rf::NetGameType::NG_TYPE_PAY: {
+            rules.spawn_delay.enabled = true;
+            rules.spawn_delay.set_base_value(2.0f);
+            rules.spawn_delay.wave_respawns = true;
+            rules.location_pinging = true;
+            // Checkpoints add time, so the round starts short
+            rules.set_time_limit(300.0f);
+
+            // secondary weapon
+            rules.spawn_loadout.add("Remote Charge", 3, false, true);
+
+            // primary weapon
+            rules.default_player_weapon.set_weapon("Machine Pistol");
+            break;
+        }
+
+        case rf::NetGameType::NG_TYPE_PIT: {
+            rules.spawn_delay.enabled = false;
+            rules.force_respawn = false;
+            rules.location_pinging = false;
+            rules.drop_weapons = false;
+            rules.drop_amps = false;
+
+            // 200 / 200 spawn health and armor.
+            rules.spawn_life.enabled = true;
+            rules.spawn_life.set_value(200.0f);
+            rules.spawn_armour.enabled = true;
+            rules.spawn_armour.set_value(200.0f);
+
+            // Loadout: Baton, AR
+            constexpr int pit_reserve = 999;
+            rules.spawn_loadout.add("Assault Rifle", pit_reserve, false, true);
+            rules.weapon_infinite_magazines = true;
+            rules.default_player_weapon.set_weapon("Assault Rifle");
+
+            rules.rounds.round_time = 90;
+            rules.rounds.set_post_round_time(3);
+            rules.rounds.set_intermission_time(3);
+            break;
+        }
+
+        case rf::NetGameType::NG_TYPE_GG: {
+            rules.spawn_delay.enabled = true;
+            rules.spawn_delay.set_base_value(1.0f);
+            rules.force_respawn = false;
+            rules.location_pinging = false;
+            rules.drop_weapons = false;
+            rules.drop_amps = false;
+            rules.gungame_rampage_rewards = true;
+
+            // +50 effective health kill reward.
+            rules.kill_rewards.kill_reward_effective_health = 50.0f;
+            break;
+        }
+
+        case rf::NetGameType::NG_TYPE_WO: {
+            // Round-based team wipe mode.
+            apply_fixed_loadout_defaults(rules);
+
+            // Base respawn delay of 5s; the death hook multiplies it by the
+            // player's death count this round (escalating 5s/10s/15s...).
+            rules.spawn_delay.enabled = true;
+            rules.spawn_delay.set_base_value(5.0f);
+            rules.force_respawn = false; // wipeout_do_frame auto-respawns once the delay elapses
+
+            // Best-of-7, untimed rounds (a round ends only on a team wipe).
+            rules.rounds.set_max_rounds(7);
+            rules.rounds.round_time = 0; // unlimited
+            rules.rounds.set_post_round_time(3);
+            rules.rounds.set_intermission_time(5);
             break;
         }
 
@@ -453,42 +564,43 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
             // primary weapon
             rules.default_player_weapon.set_weapon("12mm handgun");
 
-            rules.spawn_loadout.loadouts_active = false;
             break;
         }
     }
 
-    // handle default player weapon
-    if (rules.default_player_weapon.index >= 0) {
-        int default_ammo = rf::weapon_types[rules.default_player_weapon.index].clip_size_multi * rules.default_player_weapon.num_clips;
-        rules.spawn_loadout.add(rules.default_player_weapon.weapon_name, default_ammo, false, true);
+    // Complete the loadout with the spawn weapon, unless the case above already placed it
+    // with reserve ammo of its own choosing.
+    if (rules.default_player_weapon.index >= 0
+        && !rules.spawn_loadout.contains(rules.default_player_weapon.weapon_name)) {
+        rules.spawn_loadout.add(rules.default_player_weapon.weapon_name,
+                                rules.stock_spawn_weapon_reserve(), false, true);
     }
 }
 
-// parse toml rules
-// for base rules, load all speciifed. For not specified, defaults are in struct
-// for level-specific rules, start with base rules and load anything specified beyond that
-AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineServerConfigRules& base_rules)
+bool g_rules_parse_quiet = false;
+
+// What a parse pass over a rules scope is allowed to touch.
+enum class RulesParseMode
 {
-    AlpineServerConfigRules o = base_rules;
+    Full,       // game type resolution, gametype defaults, mutators, explicit keys
+    NoMutators, // the same, minus the mutator declarations
+};
 
-    rf::NetGameType resolved_game_type = o.game_type;
-    if (auto v = t["game_type"].value<std::string>()) {
-        auto gt_opt = resolve_gametype_from_name(*v);
-        resolved_game_type = gt_opt.has_value() ? gt_opt.value() : rf::NetGameType::NG_TYPE_DM;
-    }
+struct RulesParseOptions
+{
+    RulesParseMode mode = RulesParseMode::Full;
+    // Canonical names of mutators left out of this table's declarations.
+    const std::vector<std::string>* skip_mutators = nullptr;
+};
 
-    const bool game_type_changed = resolved_game_type != base_rules.game_type;
-
-    o.game_type = resolved_game_type;
-
-    if (game_type_changed)
-        apply_defaults_for_game_type(o.game_type, o);
-
+static void apply_rules_keys_from_toml(const toml::table& t, AlpineServerConfigRules& o)
+{
     if (auto v = t["time_limit"].value<float>())
         o.set_time_limit(*v);
     if (auto v = t["overtime"].as_table())
         o.overtime = parse_overtime_config(*v);
+    if (auto v = t["rounds"].as_table())
+        o.rounds = parse_rounds_config(*v, o.rounds);
 
     if (auto v = t["individual_kill_limit"].value<int>())
         o.set_individual_kill_limit(*v);
@@ -500,6 +612,57 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
         o.set_koth_score_limit(*v);
     if (auto v = t["dc_score_limit"].value<int>())
         o.set_dc_score_limit(*v);
+    if (auto v = t["pit_score_limit"].value<int>())
+        o.set_pit_score_limit(*v);
+    if (auto v = t["gg_score_limit"].value<int>())
+        o.set_gungame_score_limit(*v);
+    if (auto v = t["bag_score_limit"].value<int>())
+        o.bagman.set_bag_score_limit(*v);
+    if (auto v = t["tbag_score_limit"].value<int>())
+        o.bagman.set_tbag_score_limit(*v);
+    if (auto v = t["bag_return_time"].value<float>())
+        o.bagman.set_bag_return_time(*v);
+    if (auto v = t["bag_spawn_delay"].value<float>())
+        o.bagman.set_bag_spawn_delay(*v);
+    if (auto v = t["sal_cap_limit"].value<int>())
+        o.salvage.set_cap_limit(*v);
+    if (auto v = t["sal_flag_spawn_delay"].value<float>())
+        o.salvage.set_flag_spawn_delay(*v);
+    if (auto v = t["sal_flag_capture_respawn_delay"].value<float>())
+        o.salvage.set_flag_capture_respawn_delay(*v);
+    if (auto v = t["sal_flag_return_time"].value<float>())
+        o.salvage.set_flag_return_time(*v);
+    if (auto v = t["scav_cap_limit"].value<int>())
+        o.scavenger.set_cap_limit(*v);
+    if (auto v = t["scav_cartridge_spawn_delay"].value<float>())
+        o.scavenger.set_objective_spawn_delay(*v);
+    if (auto v = t["scav_cartridge_capture_respawn_delay"].value<float>())
+        o.scavenger.set_objective_capture_respawn_delay(*v);
+    if (auto v = t["scav_cartridge_return_time"].value<float>())
+        o.scavenger.set_objective_return_time(*v);
+    if (auto v = t["scav_target_timeout"].value<float>())
+        o.scavenger.set_zone_timeout(*v);
+    if (auto v = t["scav_target_radius"].value<float>())
+        o.scavenger.set_zone_radius(*v);
+    if (auto v = t["pay_checkpoint_time_bonus"].value<float>())
+        o.payload.set_checkpoint_time_bonus(*v);
+    if (auto v = t["pay_overtime_grace"].value<float>())
+        o.payload.set_overtime_grace(*v);
+    if (auto v = t["pay_heal_per_tick"].value<float>())
+        o.payload.set_heal_per_tick(*v);
+    if (auto v = t["pay_setup_time"].value<float>())
+        o.payload.set_setup_time(*v);
+    for (const auto& [key, field] : {
+             std::pair{"pay_attacker_respawn_extra", &o.payload.attacker_respawn.base},
+             std::pair{"pay_attacker_respawn_per_checkpoint", &o.payload.attacker_respawn.per_checkpoint},
+             std::pair{"pay_attacker_respawn_final_stretch", &o.payload.attacker_respawn.final_stretch},
+             std::pair{"pay_defender_respawn_extra", &o.payload.defender_respawn.base},
+             std::pair{"pay_defender_respawn_per_checkpoint", &o.payload.defender_respawn.per_checkpoint},
+             std::pair{"pay_defender_respawn_final_stretch", &o.payload.defender_respawn.final_stretch},
+         }) {
+        if (auto v = t[key].value<float>())
+            PayloadConfig::set_respawn_extra(*field, *v);
+    }
     if (auto v = t["geo_limit"].value<int>())
         o.set_geo_limit(*v);
     if (auto v = t["rf2_geo_limit"].value<int>())
@@ -509,12 +672,16 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
         o.team_damage   = *v;
     if (auto v = t["fall_damage"].value<bool>())
         o.fall_damage   = *v;
+    if (auto v = t["exposure_damage"].value<bool>())
+        o.exposure_damage = *v;
     if (auto v = t["weapons_stay"].value<bool>())
         o.weapons_stay  = *v;
     if (auto v = t["force_respawn"].value<bool>())
         o.force_respawn = *v;
     if (auto v = t["balance_teams"].value<bool>())
         o.balance_teams = *v;
+    if (auto v = t["auto_team_balance"].value<bool>())
+        o.auto_team_balance = *v;
     if (auto v = t["ideal_player_count"].value<int>())
         o.set_ideal_player_count(*v);
     if (auto v = t["saving_enabled"].value<bool>())
@@ -535,15 +702,38 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
         o.location_pinging = *v;
     if (auto v = t["geo_chunk_physics"].value<bool>())
         o.geo_chunk_physics = *v;
+    if (auto v = t["clear_stale_movement_input"].value<bool>())
+        o.clear_stale_movement_input = *v;
     if (auto v = t["weapon_pickups_give_full_ammo"].value<bool>())
         o.weapon_items_give_full_ammo = *v;
     if (auto v = t["infinite_reloads"].value<bool>())
         o.weapon_infinite_magazines = *v;
     if (auto v = t["drop_weapons"].value<bool>())
         o.drop_weapons = *v;
+    if (auto v = t["force_rail_reload"].value<bool>())
+        o.force_rail_reload = *v;
 
-    if (auto sub = t["spawn_weapon"].as_table())
+    if (auto sub = t["spawn_weapon"].as_table()) {
+        const std::string prev_default = o.default_player_weapon.weapon_name;
         o.default_player_weapon = parse_default_player_weapon(*sub, o.default_player_weapon);
+
+        // The gametype defaults (or a broader scope's spawn_weapon) put the previous spawn weapon
+        // into the loadout, so overriding it here has to replace that entry instead of leaving
+        // both, unless an operator spawn_loadout listed it. The reserve is refreshed even when
+        // only `clips` changed, otherwise the stale entry would no longer match
+        // stock_spawn_weapon_reserve() and spawn_loadout_is_active() would report a real
+        // loadout, needlessly locking legacy clients out; a listed entry keeps its own. Any
+        // spawn_loadout key in this scope is parsed after this and still wins.
+        if (o.default_player_weapon.index >= 0) {
+            if (!prev_default.empty() && o.default_player_weapon.weapon_name != prev_default
+                && !o.spawn_loadout.is_listed(prev_default, false)) {
+                o.spawn_loadout.remove(prev_default, false);
+            }
+            if (!o.spawn_loadout.is_listed(o.default_player_weapon.weapon_name, false)) {
+                o.spawn_loadout.add(o.default_player_weapon.weapon_name, o.stock_spawn_weapon_reserve(), false, true);
+            }
+        }
+    }
     if (auto sub = t["spawn_life"].as_table())
         o.spawn_life  = parse_spawn_life_config(*sub, o.spawn_life);
     if (auto sub = t["spawn_armor"].as_table())
@@ -553,19 +743,37 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
         o.spawn_delay = parse_spawn_delay_config(*sub, o.spawn_delay);
     if (auto sub = t["gibbing"].as_table())
         o.gibbing = parse_gib_config(*sub, o.gibbing);
+    if (auto sub = t["vehicles"].as_table())
+        o.vehicles = parse_vehicle_config(*sub, o.vehicles);
 
-    if (auto arr = t["spawn_loadout"].as_array()) {
+    // spawn_loadout is the loadout for everyone; spawn_loadout_blue overrides it for the
+    // blue team only.
+    auto parse_spawn_loadout_array = [&](const char* key, bool blue_team) {
+        auto arr = t[key].as_array();
+        if (!arr) {
+            return;
+        }
         for (auto& node : *arr) {
             if (auto tbl = node.as_table()) {
                 if (auto nameOpt = (*tbl)["weapon_name"].value<std::string>()) {
-                    int ammo = (*tbl)["ammo"].value<int>().value_or(0);
+                    // weapon_name must match a weapons.tbl $Name. Resolve up front so an
+                    // unknown name is reported instead of silently dropping the entry.
+                    if (rf::weapon_lookup_type(nameOpt->c_str()) < 0) {
+                        if (!g_rules_parse_quiet)
+                            rf::console::print("  [WARN] {} weapon_name '{}' is not a weapons.tbl weapon; entry ignored.\n", key, *nameOpt);
+                        continue;
+                    }
+                    auto ammo = (*tbl)["ammo"].value<int>();
                     bool enabled = (*tbl)["include"].value<bool>().value_or(true); // default true if not specified
-                    o.spawn_loadout.add(*nameOpt, ammo, false, enabled);
-                    o.spawn_loadout.loadouts_active = true;
+                    // An entry that omits `ammo` is restating the weapon, not asking for a
+                    // zero reserve, so it must not overwrite what an earlier layer set.
+                    o.spawn_loadout.add(*nameOpt, ammo.value_or(0), blue_team, enabled, ammo.has_value(), true);
                 }
             }
         }
-    }
+    };
+    parse_spawn_loadout_array("spawn_loadout", false);
+    parse_spawn_loadout_array("spawn_loadout_blue", true);
 
     if (auto sub = t["spawn_protection"].as_table())
         o.spawn_protection = parse_spawn_protection_config(*sub, o.spawn_protection);
@@ -575,6 +783,8 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
         o.kill_rewards = parse_kill_reward_config(*sub, o.kill_rewards);
     if (auto sub = t["welcome_message"].as_table())
         o.welcome_message = parse_welcome_message_config(*sub, o.welcome_message);
+    if (auto sub = t["level_message"].as_table())
+        o.level_message = parse_level_message_config(*sub, o.level_message);
 
     //o.weapon_stay_exemptions.exemptions.clear();
     o.weapon_stay_exemptions.add("shoulder_cannon", true); // stock default
@@ -595,7 +805,7 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
             if (auto tbl = node.as_table()) {
                 auto from = (*tbl)["original"].value_or<std::string>("");
                 auto to = (*tbl)["replacement"].value_or<std::string>("");
-                if (!o.add_item_replacement(from, to))
+                if (!o.add_item_replacement(from, to) && !g_rules_parse_quiet)
                     xlog::warn("Invalid replacement {} -> {}", from, to);
             }
         }
@@ -606,8 +816,20 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
             if (auto tbl = node.as_table()) {
                 auto name = (*tbl)["item_name"].value_or<std::string>("");
                 auto ms = (*tbl)["respawn_ms"].value_or<int>(0);
-                if (!o.set_item_respawn_time(name, ms))
+                if (!o.set_item_respawn_time(name, ms) && !g_rules_parse_quiet)
                     xlog::warn("Invalid respawn override for '{}'", name);
+            }
+        }
+    }
+
+    if (auto arr = t["delayed_items"].as_array()) {
+        for (auto& node : *arr) {
+            if (auto tbl = node.as_table()) {
+                if (auto nameOpt = (*tbl)["item_name"].value<std::string>()) {
+                    bool added = o.delayed_items.add(*nameOpt);
+                    if (!added && !o.delayed_items.contains(*nameOpt) && !g_rules_parse_quiet)
+                        xlog::warn("Invalid delayed item '{}'", *nameOpt);
+                }
             }
         }
     }
@@ -615,12 +837,58 @@ AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineSer
     if (auto sub = t["force_character"].as_table())
         o.force_character = parse_force_character_config(*sub, o.force_character);
 
-    if (auto sub = t["critical_hits"].as_table())
-        o.critical_hits = parse_critical_hits_config(*sub, o.critical_hits);
+    if (auto v = t["gg_rampage_rewards"].value<bool>())
+        o.gungame_rampage_rewards = *v;
 
-    if (auto sub = t["gungame"].as_table())
-        o.gungame = parse_gungame_config(*sub, o.gungame);
+    if (auto arr = t["gg_tiers"].as_array()) {
+        std::vector<std::vector<std::string>> tiers;
+        for (auto& tier_node : *arr) {
+            if (auto tier_arr = tier_node.as_array()) {
+                std::vector<std::string> tier;
+                for (auto& weapon_node : *tier_arr) {
+                    if (auto name = weapon_node.value<std::string>()) {
+                        tier.emplace_back(std::move(*name));
+                    }
+                }
+                if (!tier.empty()) {
+                    tiers.push_back(std::move(tier));
+                }
+            }
+        }
+        o.gungame_tiers = std::move(tiers);
+    }
+    if (auto v = t["gg_final_weapon"].value<std::string>())
+        o.gungame_final_weapon = *v;
+    if (auto v = t["gg_end_with_fusion"].value<bool>())
+        o.gungame_end_with_fusion = *v;
+}
 
+// Applies one rules table: mutators (Full mode only) then explicit keys, so manual
+// keys always win. Across scopes: gametype defaults -> base mutators -> manual base
+// -> per-level mutators -> manual per-level.
+static AlpineServerConfigRules parse_server_rules(const toml::table& t, const AlpineServerConfigRules& base_rules,
+                                                  const RulesParseOptions& opts = {})
+{
+    AlpineServerConfigRules o = base_rules;
+
+    if (opts.mode == RulesParseMode::Full) {
+        if (auto mut_arr = t["mutators"].as_array()) {
+            if (opts.skip_mutators && !opts.skip_mutators->empty()) {
+                toml::array kept;
+                for (const auto& entry : *mut_arr) {
+                    if (std::none_of(opts.skip_mutators->begin(), opts.skip_mutators->end(),
+                            [&](const std::string& name) { return mutator_entry_names(entry, name); }))
+                        kept.push_back(entry);
+                }
+                apply_mutators_from_toml(kept, o);
+            }
+            else {
+                apply_mutators_from_toml(*mut_arr, o);
+            }
+        }
+    }
+
+    apply_rules_keys_from_toml(t, o);
     return o;
 }
 
@@ -631,11 +899,7 @@ static std::vector<std::string> parse_allowed_maps(const toml::table& t)
     if (auto arr = t["allowed_levels"].as_array()) {
         for (auto& node : *arr) {
             if (auto value = node.value<std::string>()) {
-                std::string map_name = *value;
-                if (!string_iends_with(map_name, ".rfl")) {
-                    map_name += ".rfl";
-                }
-                allowed_maps.emplace_back(std::move(map_name));
+                allowed_maps.push_back(normalize_level_filename(*value));
             }
         }
     }
@@ -665,6 +929,8 @@ static VoteConfig parse_vote_level_config(const toml::table& t)
     if (v.enabled) {
         if (auto x = t["add_rotation_to_allowed_levels"].value<bool>())
             v.add_rotation_to_allowed_levels = *x;
+        if (auto x = t["add_installed_to_allowed_levels"].value<bool>())
+            v.add_installed_to_allowed_levels = *x;
         if (auto x = t["only_allow_gametype_prefix"].value<bool>())
             v.only_allow_gametype_prefix = *x;
     }
@@ -777,6 +1043,19 @@ static DamageNotificationConfig parse_damage_notification_config(const toml::tab
     return o;
 }
 
+static SprayConfig parse_spray_config(const toml::table& t)
+{
+    SprayConfig o;
+    if (auto v = t["enabled"].value<bool>())
+        o.enabled = *v;
+
+    if (o.enabled) {
+        if (auto v = t["cooldown_ms"].value<int64_t>())
+            o.cooldown_ms = std::clamp(static_cast<int>(*v), 0, 600000);
+    }
+    return o;
+}
+
 static AlpineRestrictConfig parse_alpine_restrict_config(const toml::table &t)
 {
     AlpineRestrictConfig o;
@@ -792,168 +1071,171 @@ static AlpineRestrictConfig parse_alpine_restrict_config(const toml::table &t)
             o.reject_non_alpine_clients = *v;
         if (auto v = t["alpine_require_release_build"].value<bool>())
             o.alpine_require_release_build = *v;
+        if (auto v = t["require_d3d11"].value<bool>())
+            o.require_d3d11 = *v;
     }
     return o;
 }
 
 namespace fs = std::filesystem;
 
-static AlpineServerConfigRules apply_rules_presets_and_overrides(
-    const toml::table& scope_tbl, const fs::path& base_dir, const AlpineServerConfigRules& starting_rules,
-    std::string_view context, const std::map<std::string, std::filesystem::path>* preset_aliases = nullptr,
-    std::vector<fs::path>* preset_stack = nullptr, std::vector<std::pair<std::filesystem::path, std::optional<std::string>>>* applied_presets = nullptr)
+// Either table of a scope may declare the game type, nested wins.
+static rf::NetGameType scope_game_type(const toml::table& scope_tbl, rf::NetGameType fallback)
 {
-    std::vector<fs::path> local_stack;
-    const bool is_root_call = !preset_stack;
-    if (!preset_stack)
-        preset_stack = &local_stack;
+    std::optional<std::string> name;
+    if (const toml::table* nested = scope_tbl["rules"].as_table())
+        name = (*nested)["game_type"].value<std::string>();
+    if (!name)
+        name = scope_tbl["game_type"].value<std::string>();
+    return name ? resolve_gametype_from_name(*name).value_or(rf::NetGameType::NG_TYPE_DM) : fallback;
+}
 
-    if (is_root_call && applied_presets)
-        applied_presets->clear();
+// The [base] tables in parse order, and each rotation entry's table: rules for any level and
+// game type replay them over that game type's defaults, so base settings are the default
+// everywhere and a level's own settings follow it to any game type. The parsing set becomes the
+// live one when its config is installed.
+static std::vector<toml::table> g_base_scope_tables;
+static std::vector<toml::table> g_parsing_base_scope_tables;
+static std::vector<toml::table> g_level_scope_tables;
+static std::vector<toml::table> g_parsing_level_scope_tables;
 
-    AlpineServerConfigRules rules = starting_rules;
-
-    auto apply_preset = [&](std::string_view preset_path) {
-        bool used_alias = false;
-        fs::path resolved_path;
-
-        if (preset_aliases) {
-            auto alias_it = preset_aliases->find(std::string(preset_path));
-            if (alias_it != preset_aliases->end()) {
-                resolved_path = alias_it->second;
-                used_alias = true;
-            }
-        }
-
-        if (resolved_path.empty())
-            resolved_path = base_dir / preset_path;
-
-        try {
-            resolved_path = fs::weakly_canonical(resolved_path);
-        }
-        catch (const fs::filesystem_error& err) {
-            rf::console::print("  [WARN] failed to canonicalize rules preset '{}' in {}: {}\n", resolved_path.generic_string(), context, err.what()); resolved_path = fs::absolute(resolved_path);
-        }
-
-        if (std::find(preset_stack->begin(), preset_stack->end(), resolved_path) != preset_stack->end()) {
-            rf::console::print("  [ERROR] rules preset cycle detected at '{}' in {}\n", resolved_path.generic_string(), context);
-            return;
-        }
-
-        preset_stack->push_back(resolved_path);
-        try {
-            toml::table preset_root = toml::parse_file(resolved_path.generic_string());
-            const toml::table* preset_rules = nullptr;
-
-            if (auto tbl = preset_root["rules"].as_table())
-                preset_rules = tbl;
-            else
-                preset_rules = &preset_root;
-
-            std::string next_context = std::format("rules preset '{}'", resolved_path.generic_string());
-            rules = apply_rules_presets_and_overrides(*preset_rules, resolved_path.parent_path(), rules, next_context, preset_aliases, preset_stack, applied_presets);
-            if (applied_presets) {
-                if (used_alias)
-                    applied_presets->emplace_back(resolved_path, preset_path);
-                else
-                    applied_presets->emplace_back(resolved_path, std::nullopt);
-            }
-        }
-        catch (const toml::parse_error& err) {
-            rf::console::print("  [ERROR] failed to parse rules preset '{}' in {}: {}\n", resolved_path.generic_string(), context, err.description());
-        }
-        preset_stack->pop_back();
-    };
-
-    if (auto presets = scope_tbl["rules_presets"]) {
-        if (auto arr = presets.as_array()) {
-            for (auto& node : *arr) {
-                if (auto preset = node.value<std::string>())
-                    apply_preset(*preset);
-                else
-                    rf::console::print("  [WARN] rules_presets entries in {} must be strings.\n", context);
-            }
-        }
-        else if (auto preset = presets.value<std::string>()) {
-            apply_preset(*preset);
-        }
-        else {
-            rf::console::print("  [WARN] 'rules_presets' in {} must be a string or array of strings.\n", context);
-        }
+static AlpineServerConfigRules build_rules_over_base(const std::vector<toml::table>& base_tables,
+    rf::NetGameType game_type, const RulesParseOptions& opts)
+{
+    AlpineServerConfigRules rules;
+    rules.game_type = game_type;
+    apply_defaults_for_game_type(game_type, rules);
+    const RulesParseQuietGuard quiet;
+    for (const toml::table& tbl : base_tables) {
+        rules = parse_server_rules(tbl, rules, opts);
+        if (const toml::table* nested = tbl["rules"].as_table())
+            rules = parse_server_rules(*nested, rules, opts);
     }
-
-    // Allow presets to specify rule keys directly at the current scope.
-    rules = parse_server_rules(scope_tbl, rules);
-
-    if (auto rules_tbl = scope_tbl["rules"].as_table())
-        rules = parse_server_rules(*rules_tbl, rules);
-
     return rules;
 }
 
-std::optional<ManualRulesOverride> load_rules_preset_alias(std::string_view preset_name)
+// Base mutators a level switches off with enabled = false.
+static std::vector<std::string> level_disabled_mutators(const toml::table* lvl_tbl)
 {
-    const auto it = g_alpine_server_config.rules_preset_aliases.find(std::string(preset_name));
-    if (it == g_alpine_server_config.rules_preset_aliases.end())
-        return std::nullopt;
-
-    fs::path resolved_path = it->second;
-    try {
-        resolved_path = fs::weakly_canonical(resolved_path);
+    std::vector<std::string> disabled;
+    if (!lvl_tbl)
+        return disabled;
+    for (const toml::table* tbl : {lvl_tbl, (*lvl_tbl)["rules"].as_table()}) {
+        const toml::array* arr = tbl ? (*tbl)["mutators"].as_array() : nullptr;
+        if (!arr)
+            continue;
+        for (const auto& entry : *arr) {
+            if (auto name = mutator_disabled_by_entry(entry))
+                disabled.push_back(std::move(*name));
+        }
     }
-    catch (const fs::filesystem_error& err) {
-        rf::console::print("  [WARN] failed to canonicalize rules preset alias '{}' at '{}': {}\n", preset_name, resolved_path.generic_string(), err.what());
-        resolved_path = fs::absolute(resolved_path);
+    return disabled;
+}
+
+// `game_type`'s defaults, the base settings, then the level's own; a voted mutator set replaces
+// every base and level mutator and is applied last, so it wins over the keys it lands on.
+static AlpineServerConfigRules build_scope_rules(const std::vector<toml::table>& base_tables,
+    const toml::table* lvl_tbl, rf::NetGameType game_type, const std::vector<MutatorDeclaration>* voted_mutators,
+    bool report_level_problems)
+{
+    const std::vector<std::string> disabled = level_disabled_mutators(lvl_tbl);
+    const RulesParseMode mode = voted_mutators ? RulesParseMode::NoMutators : RulesParseMode::Full;
+    AlpineServerConfigRules rules = build_rules_over_base(base_tables, game_type, RulesParseOptions{mode, &disabled});
+    if (lvl_tbl) {
+        std::optional<RulesParseQuietGuard> quiet;
+        if (!report_level_problems)
+            quiet.emplace();
+        rules = parse_server_rules(*lvl_tbl, rules, RulesParseOptions{mode});
+        if (const toml::table* nested = (*lvl_tbl)["rules"].as_table())
+            rules = parse_server_rules(*nested, rules, RulesParseOptions{mode});
     }
-
-    std::vector<std::pair<std::filesystem::path, std::optional<std::string>>> applied_presets;
-
-    try {
-        toml::table preset_root = toml::parse_file(resolved_path.generic_string());
-        const toml::table* preset_rules = nullptr;
-
-        if (auto tbl = preset_root["rules"].as_table())
-            preset_rules = tbl;
-        else
-            preset_rules = &preset_root;
-
-        ManualRulesOverride result;
-        result.rules = apply_rules_presets_and_overrides(
-            *preset_rules, resolved_path.parent_path(), g_alpine_server_config.base_rules,
-            std::format("rules preset alias '{}'", preset_name), &g_alpine_server_config.rules_preset_aliases,
-            nullptr, &applied_presets);
-
-        applied_presets.emplace_back(resolved_path, preset_name);
-        result.applied_preset_paths = std::move(applied_presets);
-        result.preset_alias = std::string(preset_name);
-        return result;
+    if (voted_mutators && !voted_mutators->empty()) {
+        const RulesParseQuietGuard quiet;
+        apply_mutators_from_toml(mutator_declarations_to_toml_array(*voted_mutators), rules);
     }
-    catch (const toml::parse_error& err) {
-        rf::console::print("  [ERROR] failed to parse rules preset alias '{}' at '{}': {}\n",
-            preset_name, resolved_path.generic_string(), err.description());
-        return std::nullopt;
+    return rules;
+}
+
+static const toml::table* rotation_entry_table(const AlpineServerConfigLevelEntry& entry)
+{
+    return entry.scope_table >= 0 && entry.scope_table < static_cast<int>(g_level_scope_tables.size())
+        ? &g_level_scope_tables[entry.scope_table]
+        : nullptr;
+}
+
+int rotation_index_for_level(std::string_view level_filename)
+{
+    const auto& levels = g_alpine_server_config.levels;
+    const std::string normalized = normalize_level_filename(level_filename);
+    const int current = rf::netgame.current_level_index;
+    if (current >= 0 && current < static_cast<int>(levels.size())
+        && string_iequals(levels[current].level_filename, normalized))
+        return current;
+    for (int i = 0; i < static_cast<int>(levels.size()); ++i) {
+        if (string_iequals(levels[i].level_filename, normalized))
+            return i;
     }
+    return -1;
+}
+
+AlpineServerConfigRules build_level_rules(std::string_view level_filename, rf::NetGameType game_type,
+    const std::vector<MutatorDeclaration>* voted_mutators)
+{
+    const toml::table* lvl_tbl = nullptr;
+    if (!level_filename.empty()) {
+        const int index = rotation_index_for_level(level_filename);
+        if (index >= 0)
+            lvl_tbl = rotation_entry_table(g_alpine_server_config.levels[index]);
+    }
+    AlpineServerConfigRules natural = build_scope_rules(g_base_scope_tables, lvl_tbl, game_type, nullptr, false);
+    // A vote that picked exactly what the level would run keeps the layering its config gives it.
+    if (!voted_mutators || mutator_declarations_equivalent(*voted_mutators, natural.mutators.declarations, game_type))
+        return natural;
+    return build_scope_rules(g_base_scope_tables, lvl_tbl, game_type, voted_mutators, false);
+}
+
+void reset_base_scope_tables()
+{
+    g_base_scope_tables.clear();
+    g_level_scope_tables.clear();
+}
+
+// A scope can carry rule keys at its top level AND in a nested [.rules] table; both
+// are applied, top level first.
+static AlpineServerConfigRules parse_scope_rules(
+    const toml::table& scope_tbl, const AlpineServerConfigRules& starting_rules)
+{
+    AlpineServerConfigRules rules = starting_rules;
+    const toml::table* nested_rules_tbl = scope_tbl["rules"].as_table();
+
+    const rf::NetGameType resolved_game_type = scope_game_type(scope_tbl, rules.game_type);
+    const bool game_type_changed = resolved_game_type != starting_rules.game_type;
+    rules.game_type = resolved_game_type;
+    if (game_type_changed || !rules.game_type_defaults_applied)
+        apply_defaults_for_game_type(rules.game_type, rules);
+
+    rules = parse_server_rules(scope_tbl, rules);
+
+    if (nested_rules_tbl)
+        rules = parse_server_rules(*nested_rules_tbl, rules);
+
+    return rules;
 }
 
 static void add_level_entry_from_table(
     AlpineServerConfig& cfg,
     const toml::table& lvl_tbl,
-    const fs::path& base_dir,
     bool allow_missing_levels)
 {
     for (auto&& [k, v] : lvl_tbl) {
         const std::string key = std::string(k.str());
+        // rules_presets is a removed mechanic, accepted and ignored without complaint.
         if (key != "filename" && key != "rules" && key != "rules_presets") {
             xlog::warn("Unknown key '{}' inside a [[levels]] entry; did you intend to put it in [root]?", key);
         }
     }
 
-    auto tmp_filename = lvl_tbl["filename"].value_or<std::string>("");
-
-    // add .rfl extension if it's missing
-    if (!string_iends_with(tmp_filename, ".rfl")) {
-        tmp_filename += ".rfl";
-    }
+    const auto tmp_filename = normalize_level_filename(lvl_tbl["filename"].value_or<std::string>(""));
 
     rf::File f;
     if (!f.find(tmp_filename.c_str())) {
@@ -966,52 +1248,105 @@ static void add_level_entry_from_table(
 
     AlpineServerConfigLevelEntry entry;
     entry.level_filename = tmp_filename;
-
-    std::string context = "level '" + (tmp_filename.empty() ? std::string("<unknown>") : tmp_filename) + "'";
-    entry.rule_overrides = apply_rules_presets_and_overrides(
-        lvl_tbl, base_dir, cfg.base_rules, context, &cfg.rules_preset_aliases, nullptr, &entry.applied_rules_preset_paths);
+    entry.scope_table = static_cast<int>(g_parsing_level_scope_tables.size());
+    g_parsing_level_scope_tables.push_back(lvl_tbl);
+    entry.rule_overrides = build_scope_rules(g_parsing_base_scope_tables, &lvl_tbl,
+        scope_game_type(lvl_tbl, cfg.base_rules.game_type), nullptr, true);
 
     cfg.levels.push_back(std::move(entry));
 }
 
-static void apply_rules_preset_aliases(AlpineServerConfig& cfg, const toml::table& tbl, const fs::path& base_dir)
+static void parse_bot_config_table(ServerBotConfig& bot_cfg, const toml::table& tbl)
 {
-    for (auto&& [alias_key, node] : tbl) {
-        if (!node.is_value()) {
-            xlog::warn("rules_preset_aliases entry '{}' must be a string", alias_key.str());
-            continue;
-        }
+    if (auto v = tbl["player_name"].value<std::string>()) {
+        bot_cfg.player_name = v->substr(0, k_max_player_name_len);
+        rf::console::print("  Bot player name:                       {}\n", bot_cfg.player_name);
+    }
+    if (auto v = tbl["mp_character"].value<std::string>()) {
+        bot_cfg.mp_character = *v;
+        rf::console::print("  Bot MP character:                      {}\n", *v);
+    }
+    if (auto v = tbl["personality_preset"].value<std::string>()) {
+        bot_cfg.personality_preset = *v;
+        rf::console::print("  Bot personality preset:                {}\n", *v);
+    }
+    if (auto v = tbl["skill_preset"].value<std::string>()) {
+        bot_cfg.skill_preset = *v;
+        rf::console::print("  Bot skill preset:                      {}\n", *v);
+    }
 
-        auto alias_value = node.value<std::string>();
-        if (!alias_value) {
-            xlog::warn("rules_preset_aliases entry '{}' must be a string", alias_key.str());
-            continue;
-        }
-
-        fs::path resolved_path = base_dir / *alias_value;
-        try {
-            resolved_path = fs::weakly_canonical(resolved_path);
-        }
-        catch (const fs::filesystem_error& err) {
-            rf::console::print("  [WARN] failed to canonicalize rules preset alias '{}' -> '{}' : {}\n",
-                std::string(alias_key), *alias_value, err.what());
-            resolved_path = fs::absolute(resolved_path);
-        }
-
-        const std::string alias_name = static_cast<std::string>(alias_key.str());
-
-        auto it = cfg.rules_preset_aliases.find(alias_name);
-        if (it != cfg.rules_preset_aliases.end()) {
-            if (it->second == resolved_path)
+    if (const auto* overrides = tbl["personality_overrides"].as_table()) {
+        for (const auto& [k, val] : *overrides) {
+            const int field_id = bot_personality_field_id_from_name(std::string(k.str()).c_str());
+            if (field_id < 0) {
+                rf::console::print("  [WARN] Unknown bot personality field: {}\n", k.str());
                 continue;
+            }
+            float fval = 0.0f;
+            if (auto fv = val.value<double>()) {
+                fval = static_cast<float>(*fv);
+            }
+            else if (auto iv = val.value<int64_t>()) {
+                fval = static_cast<float>(*iv);
+            }
+            else {
+                rf::console::print("  [WARN] Bot personality field '{}' has unsupported type\n", k.str());
+                continue;
+            }
+            bot_cfg.personality_overrides.push_back({static_cast<uint8_t>(field_id), fval});
+            rf::console::print("  Bot personality override: {} = {}\n", k.str(), fval);
+        }
+    }
 
-            it->second = resolved_path;
-            rf::console::print("  Updated rules preset alias '{}' -> {}\n", alias_name, resolved_path.generic_string());
+    if (const auto* overrides = tbl["skill_overrides"].as_table()) {
+        for (const auto& [k, val] : *overrides) {
+            const int field_id = bot_skill_field_id_from_name(std::string(k.str()).c_str());
+            if (field_id < 0) {
+                rf::console::print("  [WARN] Unknown bot skill field: {}\n", k.str());
+                continue;
+            }
+            float fval = 0.0f;
+            if (auto fv = val.value<double>()) {
+                fval = static_cast<float>(*fv);
+            }
+            else if (auto iv = val.value<int64_t>()) {
+                fval = static_cast<float>(*iv);
+            }
+            else {
+                rf::console::print("  [WARN] Bot skill field '{}' has unsupported type\n", k.str());
+                continue;
+            }
+            bot_cfg.skill_overrides.push_back({static_cast<uint8_t>(field_id), fval});
+            rf::console::print("  Bot skill override: {} = {}\n", k.str(), fval);
         }
-        else {
-            cfg.rules_preset_aliases.emplace(alias_name, resolved_path);
-            rf::console::print("  Registered rules preset alias '{}' -> {}\n", alias_name, resolved_path.generic_string());
+    }
+
+    if (const auto* quirks = tbl["quirks"].as_table()) {
+        uint64_t mask = 0;
+        for (const auto& [k, val] : *quirks) {
+            const int bit = bot_quirk_bit_from_name(std::string(k.str()).c_str());
+            if (bit < 0) {
+                rf::console::print("  [WARN] Unknown bot quirk: {}\n", k.str());
+                continue;
+            }
+            auto bv = val.value<bool>();
+            if (!bv) {
+                rf::console::print("  [WARN] Bot quirk '{}' should be true or false\n", k.str());
+                continue;
+            }
+            if (*bv) {
+                mask |= (1ull << bit);
+                rf::console::print("  Bot quirk enabled: {}\n", k.str());
+            }
         }
+        // Emit quirk_mask_low and quirk_mask_high overrides
+        uint32_t low = static_cast<uint32_t>(mask & 0xFFFFFFFFull);
+        uint32_t high = static_cast<uint32_t>((mask >> 32) & 0xFFFFFFFFull);
+        float flow, fhigh;
+        std::memcpy(&flow, &low, sizeof(flow));
+        std::memcpy(&fhigh, &high, sizeof(fhigh));
+        bot_cfg.personality_overrides.push_back({static_cast<uint8_t>(af_personality_field::quirk_mask_low), flow});
+        bot_cfg.personality_overrides.push_back({static_cast<uint8_t>(af_personality_field::quirk_mask_high), fhigh});
     }
 }
 
@@ -1043,9 +1378,46 @@ static void apply_known_key_in_order(AlpineServerConfig& cfg, const std::string&
             cfg.set_bot_shared_secret(*v);
         }
     }
+    else if (key == "server_bots") {
+        if (const auto v = node.value<int>()) {
+            cfg.set_server_bots(*v);
+        }
+    }
+    else if (key == "fflink_gsk") {
+        if (get_nogsk_cmd_line_param().found()) {
+            rf::console::print("Ignoring fflink_gsk because -nogsk switch was used.\n");
+        }
+        else if (auto v = node.value<std::string>()) {
+            cfg.set_fflink_gsk(*v);
+        }
+    }
     else if (key == "upnp") {
         if (auto v = node.value<bool>())
             cfg.upnp_enabled = *v;
+    }
+    else if (key == "demo_auto_record") {
+        if (auto v = node.value<bool>())
+            cfg.demo_auto_record = *v;
+    }
+    else if (key == "demo_chat_record") {
+        if (auto v = node.value<bool>())
+            cfg.demo_chat_record = *v;
+    }
+    else if (key == "fflink_demo_upload") {
+        if (auto v = node.value<bool>())
+            cfg.fflink_demo_upload = *v;
+    }
+    else if (key == "fflink_demo_max_mb") {
+        if (auto v = node.value<int>())
+            cfg.fflink_demo_max_mb = *v;
+    }
+    else if (key == "fflink_demo_queue_max") {
+        if (auto v = node.value<int>())
+            cfg.fflink_demo_queue_max = *v;
+    }
+    else if (key == "fflink_demo_delete_after_send") {
+        if (auto v = node.value<bool>())
+            cfg.fflink_demo_delete_after_send = *v;
     }
     else if (key == "dynamic_rotation") {
         if (auto v = node.value<bool>())
@@ -1063,6 +1435,10 @@ static void apply_known_key_in_order(AlpineServerConfig& cfg, const std::string&
         if (auto v = node.value<bool>())
             cfg.stats_message_enabled = *v;
     }
+    else if (key == "announce_next_level") {
+        if (auto v = node.value<bool>())
+            cfg.announce_next_level = *v;
+    }
     else if (key == "allow_fullbright_meshes") {
         if (auto v = node.value<bool>())
             cfg.allow_fullbright_meshes = *v;
@@ -1079,17 +1455,48 @@ static void apply_known_key_in_order(AlpineServerConfig& cfg, const std::string&
         if (auto v = node.value<bool>())
             cfg.allow_disable_muzzle_flash = *v;
     }
-    else if (key == "allow_unlimited_fps") {
+    else if (key == "allow_footsteps") {
         if (auto v = node.value<bool>())
-            cfg.allow_unlimited_fps = *v;
+            cfg.allow_footsteps = *v;
     }
     else if (key == "use_sp_damage_calculation") {
         if (auto v = node.value<bool>())
             cfg.use_sp_damage_calculation = *v;
     }
-    else if (key == "exclude_bots_from_player_count") {
+    else if (key == "allow_outlines") {
         if (auto v = node.value<bool>())
-            cfg.exclude_bots_from_player_count = *v;
+            cfg.allow_outlines = *v;
+    }
+    else if (key == "allow_outlines_xray") {
+        if (auto v = node.value<bool>())
+            cfg.allow_outlines_xray = *v;
+    }
+    else if (key == "projectile_lag_comp") {
+        if (auto v = node.value<bool>())
+            cfg.projectile_lag_comp = *v;
+    }
+    else if (key == "projectile_lag_comp_max_ms") {
+        if (auto v = node.value<int64_t>())
+            cfg.projectile_lag_comp_max_ms = static_cast<int>(std::clamp<int64_t>(*v, 50, 500));
+    }
+    else if (key == "hitscan_lag_comp_max_ms") {
+        if (auto v = node.value<int64_t>())
+            cfg.hitscan_lag_comp_max_ms = static_cast<int>(std::clamp<int64_t>(*v, 50, 1000));
+    }
+    else if (key == "delta_obj_update") {
+        if (auto v = node.value<bool>())
+            cfg.delta_obj_update = *v;
+    }
+    else if (key == "bandwidth") {
+        if (auto v = node.value<std::string>()) {
+            const auto& tiers = AlpineGameSettings::net_rate_tiers;
+            const auto it = std::find_if(std::begin(tiers), std::end(tiers),
+                                         [&](const auto& tier) { return string_iequals(*v, tier.name); });
+            if (it != std::end(tiers))
+                cfg.server_netfps = it->netfps;
+            else
+                rf::console::print("  [WARN] bandwidth '{}' is not low, medium or high; ignoring it.\n", *v);
+        }
     }
 }
 
@@ -1098,13 +1505,14 @@ static void apply_known_table_in_order(
     AlpineServerConfig& cfg,
     const std::string& key,
     const toml::table& tbl,
-    const fs::path& base_dir,
     bool allow_missing_levels)
 {
     if (key == "inactivity")
         cfg.inactivity_config = parse_inactivity_config(tbl);
     else if (key == "damage_notifications")
         cfg.damage_notification_config = parse_damage_notification_config(tbl);
+    else if (key == "sprays")
+        cfg.spray_config = parse_spray_config(tbl);
     else if (key == "alpine_restrict")
         cfg.alpine_restricted_config = parse_alpine_restrict_config(tbl);
     else if (key == "click_limiter")
@@ -1119,8 +1527,6 @@ static void apply_known_table_in_order(
             cfg.vote_level.allowed_maps = parse_allowed_maps(tbl);
         }
     }
-    else if (key == "vote_gametype")
-        cfg.vote_gametype = parse_vote_config(tbl);
     else if (key == "vote_extend")
         cfg.vote_extend = parse_vote_config(tbl);
     else if (key == "vote_restart")
@@ -1131,11 +1537,9 @@ static void apply_known_table_in_order(
         cfg.vote_rand = parse_vote_config(tbl);
     else if (key == "vote_previous")
         cfg.vote_previous = parse_vote_config(tbl);
-    else if (key == "rules_preset_aliases")
-        apply_rules_preset_aliases(cfg, tbl, base_dir);
     else if (key == "base") {
-        cfg.base_rules = apply_rules_presets_and_overrides(
-            tbl, base_dir, cfg.base_rules, "base configuration", &cfg.rules_preset_aliases, nullptr, &cfg.base_rules_preset_paths);
+        g_parsing_base_scope_tables.push_back(tbl);
+        cfg.base_rules = parse_scope_rules(tbl, cfg.base_rules);
     }
     else if (key == "levels") {
         if (auto arr = tbl.as_array()) {
@@ -1143,7 +1547,7 @@ static void apply_known_table_in_order(
                 if (!elem.is_table())
                     continue;
                 auto& lvl_tbl = *elem.as_table();
-                add_level_entry_from_table(cfg, lvl_tbl, base_dir, allow_missing_levels);
+                add_level_entry_from_table(cfg, lvl_tbl, allow_missing_levels);
             }
         }
     }
@@ -1154,7 +1558,6 @@ static void apply_known_array_in_order(
     AlpineServerConfig& cfg,
     const std::string& key,
     const toml::array& arr,
-    const fs::path& base_dir,
     bool allow_missing_levels)
 {
     if (key == "levels") {
@@ -1164,7 +1567,7 @@ static void apply_known_array_in_order(
 
             auto& lvl_tbl = *elem.as_table();
 
-            add_level_entry_from_table(cfg, lvl_tbl, base_dir, allow_missing_levels);
+            add_level_entry_from_table(cfg, lvl_tbl, allow_missing_levels);
         }
     }
     else if (key == "rcon_profiles") {
@@ -1230,11 +1633,41 @@ static void apply_config_table_in_order(
         if (auto* arr = v.as_array()) {
             if (key == "levels") {
                 if (pass == ParsePass::Levels)
-                    apply_known_array_in_order(cfg, key, *arr, base_dir, allow_missing_levels);
+                    apply_known_array_in_order(cfg, key, *arr, allow_missing_levels);
             }
             else if (key == "rcon_profiles") {
                 if (pass == ParsePass::Core)
-                    apply_known_array_in_order(cfg, key, *arr, base_dir, allow_missing_levels);
+                    apply_known_array_in_order(cfg, key, *arr, allow_missing_levels);
+            }
+            else if (key == "bot_profiles") {
+                if (pass == ParsePass::Core) {
+                    for (const auto& elem : *arr) {
+                        auto profile_path_str = elem.value<std::string>();
+                        if (!profile_path_str) continue;
+
+                        fs::path resolved_path = base_dir / *profile_path_str;
+                        try {
+                            resolved_path = fs::weakly_canonical(resolved_path);
+                        }
+                        catch (const fs::filesystem_error& err) {
+                            rf::console::print("  [WARN] failed to canonicalize bot profile '{}': {}\n",
+                                *profile_path_str, err.what());
+                            resolved_path = fs::absolute(resolved_path);
+                        }
+
+                        try {
+                            toml::table profile_root = toml::parse_file(resolved_path.generic_string());
+                            ServerBotConfig bot_cfg;
+                            rf::console::print("  Loading bot profile: {}\n", resolved_path.generic_string());
+                            parse_bot_config_table(bot_cfg, profile_root);
+                            cfg.bot_configs.push_back(std::move(bot_cfg));
+                        }
+                        catch (const toml::parse_error& err) {
+                            rf::console::print("  [ERROR] failed to parse bot profile '{}': {}\n",
+                                resolved_path.generic_string(), err.description());
+                        }
+                    }
+                }
             }
             continue;
         }
@@ -1244,24 +1677,23 @@ static void apply_config_table_in_order(
             if (key == "levels") {
                 if (pass == ParsePass::Levels) {
                     if (auto nested = sub_tbl->as_array())
-                        apply_known_array_in_order(cfg, key, *nested, base_dir, allow_missing_levels);
+                        apply_known_array_in_order(cfg, key, *nested, allow_missing_levels);
                 }
                 continue;
             }
             if (key == "rcon_profiles") {
                 if (pass == ParsePass::Core) {
                     if (auto nested = sub_tbl->as_array())
-                        apply_known_array_in_order(cfg, key, *nested, base_dir, allow_missing_levels);
+                        apply_known_array_in_order(cfg, key, *nested, allow_missing_levels);
                 }
                 continue;
             }
-
             // allow root table workaround to allow root config after subsections in parent toml
             if (key == "root") {
                 apply_config_table_in_order(cfg, *sub_tbl, base_dir, pass, allow_missing_levels);
             }
-            else {
-                apply_known_table_in_order(cfg, key, *sub_tbl, base_dir, allow_missing_levels);
+            else if (pass == ParsePass::Core) {
+                apply_known_table_in_order(cfg, key, *sub_tbl, allow_missing_levels);
             }
 
             continue;
@@ -1275,6 +1707,12 @@ void load_ads_server_config(std::string ads_config_name, bool allow_missing_leve
 
     AlpineServerConfig cfg;     // start from defaults
 
+    // Seed the game type defaults before parsing so an explicit game_type
+    // layers on top of them.
+    g_parsing_base_scope_tables.clear();
+    g_parsing_level_scope_tables.clear();
+    apply_defaults_for_game_type(cfg.base_rules.game_type, cfg.base_rules);
+
     toml::table root;
     try {
         root = toml::parse_file(ads_config_name);
@@ -1284,10 +1722,19 @@ void load_ads_server_config(std::string ads_config_name, bool allow_missing_leve
         return;
     }
 
-    const fs::path root_path = fs::weakly_canonical(fs::path(ads_config_name));
+    fs::path root_path;
+    try {
+        root_path = fs::weakly_canonical(fs::path(ads_config_name));
+    }
+    catch (const std::exception& err) {
+        rf::console::print("  [WARN] failed to canonicalize {}: {}\n", ads_config_name, err.what());
+    }
 
     // config pass
     apply_config_table_in_order(cfg, root, root_path.parent_path(), ParsePass::Core, allow_missing_levels);
+    // Rebuilt from the base game type's own defaults: the parse seeded DM's, whose fields the base
+    // game type's defaults may not all claim back.
+    cfg.base_rules = build_rules_over_base(g_parsing_base_scope_tables, cfg.base_rules.game_type, {});
     // level pass
     apply_config_table_in_order(cfg, root, root_path.parent_path(), ParsePass::Levels, allow_missing_levels);
 
@@ -1325,123 +1772,56 @@ void load_ads_server_config(std::string ads_config_name, bool allow_missing_leve
     rf::console::print("\n");
 
     g_alpine_server_config = std::move(cfg);
+    g_base_scope_tables = std::move(g_parsing_base_scope_tables);
+    g_level_scope_tables = std::move(g_parsing_level_scope_tables);
     clear_rcon_profile_sessions();
+    server_bots_reset_roster(g_alpine_server_config.server_bots);
 }
 
 static void download_missing_server_levels()
 {
     auto& cfg = g_alpine_server_config;
-    if (cfg.levels.empty()) {
-        return;
+
+    if (!cfg.levels.empty()) {
+        rf::console::print("\nChecking for missing maps on server rotation...\n");
+
+        std::vector<AlpineServerConfigLevelEntry> resolved_levels;
+        resolved_levels.reserve(cfg.levels.size());
+
+        for (auto& entry : cfg.levels) {
+            if (download_level_if_missing(entry.level_filename)) {
+                resolved_levels.push_back(std::move(entry));
+            }
+            else {
+                rf::console::print("--> Skipping level {} (download failed).\n", entry.level_filename);
+                rf::console::print("\n");
+            }
+        }
+
+        cfg.levels = std::move(resolved_levels);
+        rf::console::print("\n");
     }
 
-    rf::console::print("\nChecking for missing maps on server rotation...\n");
+    if (!cfg.vote_level.allowed_maps.empty()) {
+        rf::console::print("\nChecking for missing maps on vote-allowed list...\n");
 
-    std::vector<AlpineServerConfigLevelEntry> resolved_levels;
-    resolved_levels.reserve(cfg.levels.size());
+        // Installing a level can append installed levels to allowed_maps, so walk a copy.
+        const auto requested = cfg.vote_level.allowed_maps;
+        std::vector<std::string> resolved_allowed;
+        resolved_allowed.reserve(requested.size());
 
-    for (auto& entry : cfg.levels) {
-        if (download_level_if_missing(entry.level_filename)) {
-            resolved_levels.push_back(std::move(entry));
+        for (const auto& filename : requested) {
+            if (download_level_if_missing(filename)) {
+                resolved_allowed.push_back(filename);
+            }
+            else {
+                rf::console::print("--> Skipping vote-allowed level {} (download failed).\n", filename);
+                rf::console::print("\n");
+            }
         }
-        else {
-            rf::console::print("--> Skipping level {} (download failed).\n", entry.level_filename);
-            rf::console::print("\n");
-        }
-    }
 
-    cfg.levels = std::move(resolved_levels);
-    rf::console::print("\n");
-}
-
-void print_gungame(std::string& output, const GunGameConfig& cur, const GunGameConfig& base_cfg, bool base = true)
-{
-    const auto iter = std::back_inserter(output);
-
-    // helper functions
-    auto gg_level_equal = [](const GunGameLevelEntry& a, const GunGameLevelEntry& b) {
-        return a.kills == b.kills && a.tier == b.tier && a.weapon_index == b.weapon_index;
-    };
-
-    auto gg_level_key = [](const GunGameLevelEntry& e) {
-        return std::tuple<int, int, int>{e.kills, e.tier, e.weapon_index};
-    };
-
-    auto gg_canon = [&](std::vector<GunGameLevelEntry> v, bool dynamic) {
-        if (dynamic) {
-            v.erase(std::remove_if(v.begin(), v.end(), [](auto& e) { return e.tier < 0 || e.weapon_index < 0; }),
-                    v.end());
-        }
-        else {
-            v.erase(std::remove_if(v.begin(), v.end(), [](auto& e) { return e.kills < 0 || e.weapon_index < 0; }),
-                    v.end());
-        }
-        std::sort(v.begin(), v.end(), [&](auto const& a, auto const& b) { return gg_level_key(a) < gg_level_key(b); });
-
-        std::vector<GunGameLevelEntry> out;
-        for (auto const& e : v) {
-            if (!out.empty() && gg_level_key(out.back()) == gg_level_key(e))
-                out.back() = e;
-            else
-                out.push_back(e);
-        }
-        return out;
-    };
-
-    auto gg_final_equal = [&](const std::optional<GunGameLevelEntry>& a, const std::optional<GunGameLevelEntry>& b) {
-        if (a.has_value() != b.has_value())
-            return false;
-        return !a || gg_level_equal(*a, *b);
-    };
-    // end helpers
-
-    if (base || cur.enabled != base_cfg.enabled)
-        std::format_to(iter, "  GunGame:                               {}\n", cur.enabled);
-
-    if (!cur.enabled)
-        return;
-
-    if (base || cur.dynamic_progression != base_cfg.dynamic_progression)
-        std::format_to(iter, "    Dynamic progression:                 {}\n", cur.dynamic_progression);
-    if (base || cur.rampage_rewards != base_cfg.rampage_rewards)
-        std::format_to(iter, "    Rampage rewards:                     {}\n", cur.rampage_rewards);
-
-    bool cur_final = cur.final_level.has_value();
-    bool base_final = base_cfg.final_level.has_value();
-    if (base || cur_final != base_final)
-        std::format_to(iter, "    Final level:                         {}\n", cur_final);
-
-    if (cur.final_level) {
-        bool print_details = base;
-        if (!print_details && base_cfg.final_level)
-            print_details = !gg_level_equal(*cur.final_level, *base_cfg.final_level);
-        else if (!base_cfg.final_level)
-            print_details = true;
-
-        if (print_details) {
-            std::format_to(iter, "      Kills:                             {}\n", cur.final_level->kills);
-            std::format_to(iter, "      Weapon:                            {}\n", cur.final_level->weapon_name);
-        }
-    }
-
-    const bool dyn = cur.dynamic_progression;
-    auto cur_levels = gg_canon(cur.levels, dyn);
-    auto base_levels = gg_canon(base_cfg.levels, dyn);
-
-    bool levels_changed = base || cur_levels.size() != base_levels.size() ||
-                          !std::equal(cur_levels.begin(), cur_levels.end(), base_levels.begin(), base_levels.end(),
-                                      [&](auto const& a, auto const& b) { return gg_level_equal(a, b); });
-
-    if (!levels_changed)
-        return;
-
-    if (dyn) {
-        std::format_to(iter, "    Dynamic tiers:\n");
-        for (auto const& e : cur_levels) std::format_to(iter, "      Tier {:<3} -> {}\n", e.tier, e.weapon_name);
-    }
-    else {
-        std::format_to(iter, "    Levels (kills -> weapon):\n");
-        for (auto const& e : cur_levels) std::format_to(iter, "      {:>4} -> {}\n", e.kills, e.weapon_name);
+        cfg.vote_level.allowed_maps = std::move(resolved_allowed);
+        rf::console::print("\n");
     }
 }
 
@@ -1453,6 +1833,57 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
     // game type
     if (base || rules.game_type != b.game_type)
         std::format_to(iter, "  Game type:                             {}\n", multi_game_type_name_short(rules.game_type));
+
+    // mutators
+    const bool mutators_changed =
+        rules.mutators.active_labels != b.mutators.active_labels ||
+        rules.mutators.vampire_enabled != b.mutators.vampire_enabled ||
+        rules.mutators.vampire_heal_ratio != b.mutators.vampire_heal_ratio ||
+        rules.mutators.hide_health_armor_pickups != b.mutators.hide_health_armor_pickups ||
+        rules.mutators.featured_weapon_index != b.mutators.featured_weapon_index ||
+        rules.mutators.redirect_exclude_thrown != b.mutators.redirect_exclude_thrown ||
+        rules.mutators.crits_enabled != b.mutators.crits_enabled ||
+        rules.mutators.jetpack_explode != b.mutators.jetpack_explode ||
+        rules.mutators.join_bots != b.mutators.join_bots ||
+        rules.mutators.join_bots_skill != b.mutators.join_bots_skill ||
+        rules.mutators.join_bots_personality != b.mutators.join_bots_personality;
+
+    if (base || mutators_changed) {
+        std::string joined;
+        for (size_t i = 0; i < rules.mutators.active_labels.size(); ++i) {
+            if (i)
+                joined += ", ";
+            joined += rules.mutators.active_labels[i];
+        }
+        std::format_to(iter, "  Mutators:                              {}\n", joined.empty() ? "<none>" : joined);
+        // One Weapon options
+        if (rules.mutators.redirect_pickups_to_featured) {
+            const int featured = rules.mutators.featured_weapon_index;
+            const char* featured_name = (featured >= 0 && featured < rf::num_weapon_types)
+                ? rf::weapon_types[featured].name.c_str()
+                : "<invalid>";
+            std::format_to(iter, "    Featured weapon:                     {}\n", featured_name);
+            std::format_to(iter, "    Keep thrown explosives:              {}\n",
+                           rules.mutators.redirect_exclude_thrown);
+        }
+        // Vampire options
+        if (rules.mutators.vampire_enabled) {
+            std::format_to(iter, "    Hide health/armor pickups:           {}\n",
+                           rules.mutators.hide_health_armor_pickups);
+            std::format_to(iter, "    Full lifesteal:                      {}\n",
+                           rules.mutators.vampire_heal_ratio >= 1.0f);
+        }
+        // Jetpacks options
+        if (rules.mutators.jetpacks_enabled) {
+            std::format_to(iter, "    Jetpacks explode:                    {}\n",
+                           rules.mutators.jetpack_explode);
+        }
+        // Join Bots options
+        if (rules.mutators.join_bots > 0) {
+            std::format_to(iter, "    Join bots:                           {} ({}, {})\n", rules.mutators.join_bots,
+                           rules.mutators.join_bots_skill, rules.mutators.join_bots_personality);
+        }
+    }
 
     // time limit
     if (base || rules.time_limit != b.time_limit)
@@ -1473,6 +1904,23 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         }
     }
 
+    const bool rules_uses_rounds = gt_type_uses_rounds(rules.game_type);
+    const bool base_uses_rounds = gt_type_uses_rounds(b.game_type);
+    const bool rounds_changed =
+        rules_uses_rounds != base_uses_rounds ||
+        (rules_uses_rounds && (rules.rounds.max_rounds != b.rounds.max_rounds ||
+          rules.rounds.round_time != b.rounds.round_time ||
+          rules.rounds.post_round_time != b.rounds.post_round_time ||
+          rules.rounds.intermission_time != b.rounds.intermission_time));
+
+    if (rules_uses_rounds && (base || rounds_changed)) {
+        std::format_to(iter, "  Rounds:\n");
+        std::format_to(iter, "    Max rounds per map:                  {}\n", rules.rounds.max_rounds);
+        std::format_to(iter, "    Round time:                          {} sec\n", rules.rounds.round_time);
+        std::format_to(iter, "    Post-round celebration:              {} sec\n", rules.rounds.post_round_time);
+        std::format_to(iter, "    Intermission between rounds:         {} sec\n", rules.rounds.intermission_time);
+    }
+
     // score limits
     if (base || rules.individual_kill_limit != b.individual_kill_limit)
         std::format_to(iter, "  DM player score limit:                 {}\n", rules.individual_kill_limit);
@@ -1484,6 +1932,18 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         std::format_to(iter, "  KOTH team score limit:                 {}\n", rules.koth_score_limit);
     if (base || rules.dc_score_limit != b.dc_score_limit)
         std::format_to(iter, "  DC team score limit:                   {}\n", rules.dc_score_limit);
+    if (base || rules.pit_score_limit != b.pit_score_limit)
+        std::format_to(iter, "  PIT player score limit:                {}\n", rules.pit_score_limit);
+    if (base || rules.gungame_score_limit != b.gungame_score_limit)
+        std::format_to(iter, "  GunGame player score limit:            {}\n", rules.gungame_score_limit);
+    if (base || rules.bagman.bag_score_limit != b.bagman.bag_score_limit)
+        std::format_to(iter, "  BAG player score limit:                {}\n", rules.bagman.bag_score_limit);
+    if (base || rules.bagman.tbag_score_limit != b.bagman.tbag_score_limit)
+        std::format_to(iter, "  TBAG team score limit:                 {}\n", rules.bagman.tbag_score_limit);
+    if (base || rules.salvage.cap_limit != b.salvage.cap_limit)
+        std::format_to(iter, "  SAL flag capture limit:                {}\n", rules.salvage.cap_limit);
+    if (base || rules.scavenger.cap_limit != b.scavenger.cap_limit)
+        std::format_to(iter, "  SCAV cartridge capture limit:          {}\n", rules.scavenger.cap_limit);
 
     // common limits & flags
     if (base || rules.geo_limit != b.geo_limit)
@@ -1495,16 +1955,71 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         std::format_to(iter, "  Team damage:                           {}\n", rules.team_damage);
     if (base || rules.fall_damage != b.fall_damage)
         std::format_to(iter, "  Fall damage:                           {}\n", rules.fall_damage);
+    if (base || rules.exposure_damage != b.exposure_damage)
+        std::format_to(iter, "  Exposure damage:                       {}\n", rules.exposure_damage);
     if (base || rules.weapons_stay != b.weapons_stay)
         std::format_to(iter, "  Weapon stay:                           {}\n", rules.weapons_stay);
     if (base || rules.force_respawn != b.force_respawn)
         std::format_to(iter, "  Force respawn:                         {}\n", rules.force_respawn);
     if (base || rules.balance_teams != b.balance_teams)
         std::format_to(iter, "  Balance teams:                         {}\n", rules.balance_teams);
+    if (base || rules.auto_team_balance != b.auto_team_balance)
+        std::format_to(iter, "  Auto team balance:                     {}\n", rules.auto_team_balance);
     if (base || rules.ideal_player_count != b.ideal_player_count)
         std::format_to(iter, "  Ideal player count:                    {}\n", rules.ideal_player_count);
     if (base || rules.saving_enabled != b.saving_enabled)
         std::format_to(iter, "  Position saving:                       {}\n", rules.saving_enabled);
+    if (base || rules.bagman.bag_return_time_ms != b.bagman.bag_return_time_ms)
+        std::format_to(iter, "  BAG/TBAG bag return time:              {} sec\n", rules.bagman.bag_return_time_ms / 1000.0f);
+    if (base || rules.bagman.bag_spawn_delay_ms != b.bagman.bag_spawn_delay_ms)
+        std::format_to(iter, "  BAG/TBAG bag spawn delay:              {} sec\n", rules.bagman.bag_spawn_delay_ms / 1000.0f);
+    if (base || rules.salvage.flag_spawn_delay_ms != b.salvage.flag_spawn_delay_ms)
+        std::format_to(iter, "  SAL flag spawn delay:                  {} sec\n", rules.salvage.flag_spawn_delay_ms / 1000.0f);
+    if (base || rules.salvage.flag_capture_respawn_delay_ms != b.salvage.flag_capture_respawn_delay_ms)
+        std::format_to(iter, "  SAL flag respawn delay after capture:  {} sec\n", rules.salvage.flag_capture_respawn_delay_ms / 1000.0f);
+    if (base || rules.salvage.flag_return_time_ms != b.salvage.flag_return_time_ms)
+        std::format_to(iter, "  SAL dropped flag return time:          {} sec\n", rules.salvage.flag_return_time_ms / 1000.0f);
+    if (base || rules.scavenger.objective_spawn_delay_ms != b.scavenger.objective_spawn_delay_ms)
+        std::format_to(iter, "  SCAV cartridge spawn delay:            {} sec\n", rules.scavenger.objective_spawn_delay_ms / 1000.0f);
+    if (base || rules.scavenger.objective_capture_respawn_delay_ms != b.scavenger.objective_capture_respawn_delay_ms)
+        std::format_to(iter, "  SCAV cartridge delay after capture:    {} sec\n", rules.scavenger.objective_capture_respawn_delay_ms / 1000.0f);
+    if (base || rules.scavenger.objective_return_time_ms != b.scavenger.objective_return_time_ms)
+        std::format_to(iter, "  SCAV dropped cartridge return time:    {} sec\n", rules.scavenger.objective_return_time_ms / 1000.0f);
+    if (base || rules.scavenger.zone_timeout_ms != b.scavenger.zone_timeout_ms)
+        std::format_to(iter, "  SCAV target timeout:                   {} sec\n", rules.scavenger.zone_timeout_ms / 1000.0f);
+    if (base || rules.scavenger.zone_radius != b.scavenger.zone_radius)
+        std::format_to(iter, "  SCAV target radius:                    {} m\n", rules.scavenger.zone_radius);
+    const auto payload_override = [](const std::optional<float>& value, std::string_view unit) {
+        return value ? std::format("{} {}", *value, unit) : std::string{"level's value"};
+    };
+    if (base || rules.payload.setup_time != b.payload.setup_time)
+        std::format_to(iter, "  PAY setup time:                        {} sec\n", rules.payload.setup_time);
+    if (base || rules.payload.checkpoint_time_bonus != b.payload.checkpoint_time_bonus)
+        std::format_to(iter, "  PAY checkpoint time bonus:             {}\n",
+                       payload_override(rules.payload.checkpoint_time_bonus, "sec"));
+    if (base || rules.payload.overtime_grace != b.payload.overtime_grace)
+        std::format_to(iter, "  PAY overtime grace:                    {}\n",
+                       payload_override(rules.payload.overtime_grace, "sec"));
+    if (base || rules.payload.heal_per_tick != b.payload.heal_per_tick)
+        std::format_to(iter, "  PAY pusher healing:                    {}\n",
+                       payload_override(rules.payload.heal_per_tick, "per sec"));
+    for (const auto& [label, value, base_value] : {
+             std::tuple{"PAY attacker respawn extra:", &rules.payload.attacker_respawn.base,
+                        &b.payload.attacker_respawn.base},
+             std::tuple{"PAY attacker respawn per cp:", &rules.payload.attacker_respawn.per_checkpoint,
+                        &b.payload.attacker_respawn.per_checkpoint},
+             std::tuple{"PAY attacker respawn final:", &rules.payload.attacker_respawn.final_stretch,
+                        &b.payload.attacker_respawn.final_stretch},
+             std::tuple{"PAY defender respawn extra:", &rules.payload.defender_respawn.base,
+                        &b.payload.defender_respawn.base},
+             std::tuple{"PAY defender respawn per cp:", &rules.payload.defender_respawn.per_checkpoint,
+                        &b.payload.defender_respawn.per_checkpoint},
+             std::tuple{"PAY defender respawn final:", &rules.payload.defender_respawn.final_stretch,
+                        &b.payload.defender_respawn.final_stretch},
+         }) {
+        if (base || *value != *base_value)
+            std::format_to(iter, "  {:<39}{}\n", label, payload_override(*value, "sec"));
+    }
     if (base || rules.flag_dropping != b.flag_dropping)
         std::format_to(iter, "  CTF flag dropping:                     {}\n", rules.flag_dropping);
     if (base || rules.flag_captures_while_stolen != b.flag_captures_while_stolen)
@@ -1517,12 +2032,16 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         std::format_to(iter, "  Drop amps:                             {}\n", rules.drop_amps);
     if (base || rules.drop_weapons != b.drop_weapons)
         std::format_to(iter, "  Drop weapons:                          {}\n", rules.drop_weapons);
+    if (base || rules.force_rail_reload != b.force_rail_reload)
+        std::format_to(iter, "  Force rail reload before switch:        {}\n", rules.force_rail_reload);
     if (base || rules.no_player_collide != b.no_player_collide)
         std::format_to(iter, "  No player collide:                     {}\n", rules.no_player_collide);
     if (base || rules.location_pinging != b.location_pinging)
         std::format_to(iter, "  Location pinging:                      {}\n", rules.location_pinging);
     if (base || rules.geo_chunk_physics != b.geo_chunk_physics)
         std::format_to(iter, "  GeoMod chunk physics:                  {}\n", rules.geo_chunk_physics);
+    if (base || rules.clear_stale_movement_input != b.clear_stale_movement_input)
+        std::format_to(iter, "  Clear stale movement input:            {}\n", rules.clear_stale_movement_input);
     if (base || rules.weapon_items_give_full_ammo != b.weapon_items_give_full_ammo)
         std::format_to(iter, "  Weapon pickups give full ammo:         {}\n", rules.weapon_items_give_full_ammo);
     if (base || rules.weapon_infinite_magazines != b.weapon_infinite_magazines)
@@ -1536,16 +2055,33 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         }
     }
 
+    if (base || rules.level_message.enabled != b.level_message.enabled ||
+        (rules.level_message.enabled && rules.level_message.text != b.level_message.text)) {
+        std::format_to(iter, "  Level message:                         {}\n", rules.level_message.enabled);
+        if (rules.level_message.enabled) {
+            std::format_to(iter, "    Text:                                {}\n", rules.level_message.text);
+        }
+    }
+
     if (base || rules.gibbing.enabled != b.gibbing.enabled ||
         (rules.gibbing.enabled &&
             (rules.gibbing.damage_threshold != b.gibbing.damage_threshold ||
-            rules.gibbing.all_damage != b.gibbing.all_damage))) {
+            rules.gibbing.all_damage != b.gibbing.all_damage ||
+            rules.gibbing.scrapyard != b.gibbing.scrapyard))) {
         std::format_to(iter, "  Gibbing:                               {}\n", rules.gibbing.enabled);
         if (rules.gibbing.enabled) {
             std::format_to(iter, "    Damage threshold:                    {}\n", rules.gibbing.damage_threshold);
             std::format_to(iter, "    All damage types:                    {}\n", rules.gibbing.all_damage);
+            std::format_to(iter, "    Scrapyard mode:                      {}\n", rules.gibbing.scrapyard);
         }
     }
+
+    if (base || rules.vehicles.crash_damage != b.vehicles.crash_damage)
+        std::format_to(iter, "  Vehicle crash damage:                  {}\n", rules.vehicles.crash_damage);
+    if (base || rules.vehicles.bots_use_vehicles != b.vehicles.bots_use_vehicles)
+        std::format_to(iter, "  Bots use vehicles:                     {}\n", rules.vehicles.bots_use_vehicles);
+    if (base || rules.vehicles.bot_max_drivers != b.vehicles.bot_max_drivers)
+        std::format_to(iter, "  Max bot drivers:                       {}\n", rules.vehicles.bot_max_drivers);
 
     // spawn weapon
     if (base || rules.default_player_weapon.index != b.default_player_weapon.index ||
@@ -1574,10 +2110,12 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
 
     // spawn delay
     if (base || rules.spawn_delay.enabled != b.spawn_delay.enabled ||
-        (rules.spawn_delay.enabled && rules.spawn_delay.base_value != b.spawn_delay.base_value)) {
+        (rules.spawn_delay.enabled && (rules.spawn_delay.base_value != b.spawn_delay.base_value ||
+                                       rules.spawn_delay.wave_respawns != b.spawn_delay.wave_respawns))) {
         std::format_to(iter, "  Spawn delay:                           {}\n", rules.spawn_delay.enabled);
         if (rules.spawn_delay.enabled) {
             std::format_to(iter, "    Base seconds:                        {} sec\n", rules.spawn_delay.base_value / 1000.0f);
+            std::format_to(iter, "    Wave respawns:                       {}\n", rules.spawn_delay.wave_respawns);
         }
     }
 
@@ -1593,8 +2131,15 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         }
     );
 
-    if (base || anySpawnLoadoutChanged) {
-        std::format_to(iter, "  Spawn loadout:\n");
+    const bool has_blue_loadout = !rules.spawn_loadout.blue_weapons.empty();
+
+    if (base || anySpawnLoadoutChanged || has_blue_loadout) {
+        // Say how the loadout reaches players - the list is carried either way, and when it
+        // matches the stock grant it is delivered by that instead of by the loadout packet.
+        std::format_to(iter, "  Spawn loadout{}:{}{}\n",
+                       has_blue_loadout ? " (red team)" : "",
+                       has_blue_loadout ? "              " : "                         ",
+                       rules.spawn_loadout_is_active() ? "granted by loadout" : "granted by stock spawn");
         for (auto const& e : rules.spawn_loadout.red_weapons) {
             bool unchanged = std::any_of(
                 b.spawn_loadout.red_weapons.begin(), b.spawn_loadout.red_weapons.end(), [&](auto const& be) {
@@ -1602,6 +2147,14 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
                 }
             );
             if (base || !unchanged) {
+                std::format_to(iter, "    {:<20}                 {}\n", e.weapon_name + ':', e.enabled);
+                std::format_to(iter, "      Extra ammo:                        {}\n", e.reserve_ammo);
+            }
+        }
+
+        if (has_blue_loadout) {
+            std::format_to(iter, "  Spawn loadout (blue team):\n");
+            for (auto const& e : rules.spawn_loadout.blue_weapons) {
                 std::format_to(iter, "    {:<20}                 {}\n", e.weapon_name + ':', e.enabled);
                 std::format_to(iter, "      Extra ammo:                        {}\n", e.reserve_ammo);
             }
@@ -1758,6 +2311,33 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         }
     }
 
+    // Delayed items
+    bool anyDelayedChanged = (rules.delayed_items.items != b.delayed_items.items);
+
+    if (base || anyDelayedChanged) {
+        std::format_to(iter, "  Delayed items:\n");
+        if (rules.delayed_items.items.empty() && b.delayed_items.items.empty()) {
+            std::format_to(iter, "    <none>\n");
+        }
+        else {
+            for (auto const& name : rules.delayed_items.items) {
+                if (base) {
+                    std::format_to(iter, "    {}\n", name);
+                }
+                else if (b.delayed_items.items.count(name) == 0) {
+                    std::format_to(iter, "    + {}\n", name);
+                }
+            }
+            if (!base) {
+                for (auto const& name : b.delayed_items.items) {
+                    if (rules.delayed_items.items.count(name) == 0) {
+                        std::format_to(iter, "    - {}\n", name);
+                    }
+                }
+            }
+        }
+    }
+
     // force character
     if (base || rules.force_character.enabled != b.force_character.enabled ||
         (rules.force_character.enabled && rules.force_character.character_index != b.force_character.character_index)) {
@@ -1767,51 +2347,105 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         }
     }
 
-    // critical hits
-    if (base || rules.critical_hits.enabled != b.critical_hits.enabled ||
-        (rules.critical_hits.enabled && rules.critical_hits.reward_duration != b.critical_hits.reward_duration) ||
-        (rules.critical_hits.enabled && rules.critical_hits.base_chance != b.critical_hits.base_chance) ||
-        (rules.critical_hits.enabled && rules.critical_hits.dynamic_scale != b.critical_hits.dynamic_scale) ||
-        (rules.critical_hits.enabled && rules.critical_hits.dynamic_scale &&
-         rules.critical_hits.dynamic_damage_bonus_ceiling != b.critical_hits.dynamic_damage_bonus_ceiling)
-        ) {
-        std::format_to(iter, "  Critical hits:                         {}\n", rules.critical_hits.enabled);
-        if (rules.critical_hits.enabled) {
-            std::format_to(iter, "    Reward duration:                     {} ms\n", rules.critical_hits.reward_duration);
-            std::format_to(iter, "    Base chance:                         {:.1f}%\n", rules.critical_hits.base_chance * 100.0f);
-            std::format_to(iter, "    Dynamic scale:                       {}\n", rules.critical_hits.dynamic_scale);
-            if (rules.critical_hits.dynamic_scale) {
-                std::format_to(iter, "      Dynamic damage bonus ceiling:      {}\n", rules.critical_hits.dynamic_damage_bonus_ceiling);
+    // gungame
+    if (base || rules.gungame_rampage_rewards != b.gungame_rampage_rewards)
+        std::format_to(iter, "  GunGame rampage rewards:               {}\n", rules.gungame_rampage_rewards);
+    if (base || rules.gungame_tiers != b.gungame_tiers) {
+        if (rules.gungame_tiers.empty()) {
+            std::format_to(iter, "  GunGame tiers:                         (built-in default)\n");
+        }
+        else {
+            std::format_to(iter, "  GunGame tiers:\n");
+            for (size_t i = 0; i < rules.gungame_tiers.size(); ++i) {
+                std::string joined;
+                for (size_t j = 0; j < rules.gungame_tiers[i].size(); ++j) {
+                    if (j) joined += ", ";
+                    joined += rules.gungame_tiers[i][j];
+                }
+                std::format_to(iter, "    Tier {}: {}\n", i + 1, joined);
             }
         }
     }
-
-    // gungame
-    print_gungame(output, rules.gungame, b.gungame, base);
+    if (base || rules.gungame_final_weapon != b.gungame_final_weapon)
+        std::format_to(iter, "  GunGame final weapon:                  {}\n", rules.gungame_final_weapon);
+    if (base || rules.gungame_end_with_fusion != b.gungame_end_with_fusion)
+        std::format_to(iter, "  GunGame end with fusion:               {}\n", rules.gungame_end_with_fusion);
 }
 
-void print_rules_with_presets(std::string& output, const AlpineServerConfigRules& rules, const std::vector<std::pair<std::filesystem::path, std::optional<std::string>>>& preset_paths, bool base, const bool remote = false)
+std::string format_mutator_option_value(const MutatorOptionValue& value)
 {
+    return std::visit([](const auto& v) -> std::string {
+        using T = std::decay_t<decltype(v)>;
+        if constexpr (std::is_same_v<T, bool>)
+            return v ? "true" : "false";
+        else if constexpr (std::is_same_v<T, float>)
+            return std::format("{:g}", v);
+        else if constexpr (std::is_same_v<T, std::string>)
+            return v;
+        else
+            return std::format("{}", v);
+    }, value);
+}
+
+// Rules the running level would use with no session override in play.
+static AlpineServerConfigRules configured_rules_for_running_level()
+{
+    const auto& cfg = g_alpine_server_config;
+    const int idx = rotation_index_for_level(rf::level.filename.c_str());
+    if (idx >= 0) {
+        return cfg.levels[idx].rule_overrides;
+    }
+    const std::string level = rf::level.filename.c_str();
+    return build_level_rules(level, resolve_level_default_game_type(level), nullptr);
+}
+
+// Rules a vote (or a manual rules load) put in front of the configured ones for
+// this session. Printed above the static config so the two are never confused.
+void print_session_overrides(std::string& output)
+{
+    if (!g_manual_rules_override) {
+        return;
+    }
+
+    const auto& active = g_alpine_server_config_active_rules;
+    const AlpineServerConfigRules configured = configured_rules_for_running_level();
+    const bool game_type_differs = active.game_type != configured.game_type;
+    const bool mutators_differ = active.mutators.declarations != configured.mutators.declarations;
+    if (!game_type_differs && !mutators_differ) {
+        return;
+    }
+
     const auto iter = std::back_inserter(output);
-    if (!preset_paths.empty()) {
-        std::format_to(iter, "  Rules presets applied:\n");
-        for (const auto& [preset_path, preset_alias] : preset_paths) {
-            const std::string path = remote
-                ? preset_path.filename().generic_string()
-                : preset_path.generic_string();
-            if (preset_alias) {
-                std::format_to(iter, "    {} (alias '{}')\n", path, preset_alias.value());
-            } else {
-                std::format_to(iter, "    {}\n", path);
+    std::format_to(iter, "\n---- Session overrides ----\n");
+
+    if (game_type_differs) {
+        std::format_to(iter, "  Game type:                             {} (configured: {})\n",
+                       multi_game_type_name_short(active.game_type),
+                       multi_game_type_name_short(configured.game_type));
+    }
+
+    if (mutators_differ) {
+        const std::string joined = mutators_join_labels(active.mutators.declarations);
+        std::format_to(iter, "  Mutators:                              {}\n",
+                       joined.empty() ? "<none>" : joined);
+        for (const auto& decl : active.mutators.declarations) {
+            if (decl.options.empty()) {
+                continue;
+            }
+            const MutatorInfo* info = mutators_find_by_name(decl.name);
+            std::format_to(iter, "    {}:\n", info ? info->label : decl.name);
+            for (const auto& [name, value] : decl.options) {
+                std::format_to(iter, "      {} = {}\n", name, format_mutator_option_value(value));
             }
         }
     }
-    print_rules(output, rules, base);
 }
 
 void print_alpine_dedicated_server_config_info(std::string& output, bool verbose, const bool remote) {
     auto& netgame = rf::netgame;
     const auto& cfg = g_alpine_server_config;
+
+    print_session_overrides(output);
 
     const auto iter = std::back_inserter(output);
     std::format_to(iter, "\n---- Core configuration ----\n");
@@ -1823,12 +2457,27 @@ void print_alpine_dedicated_server_config_info(std::string& output, bool verbose
         std::format_to(iter, "  Password:                              {}\n", netgame.password);
         std::format_to(iter, "  Rcon password (legacy):                {}\n", cfg.rcon_password);
         std::format_to(iter, "  Bot shared secret:                     {}\n", cfg.bot_shared_secret);
+        std::format_to(iter, "  FactionFiles GSK:                      {}\n", cfg.fflink_gsk);
     } else {
         std::format_to(iter, "  Uptime:                                {}\n", g_process_startup_time);
     }
+    std::format_to(iter, "  Bandwidth:                             {} ({} netfps, {} fps)\n",
+                   g_alpine_game_config.server_net_rate_tier().name,
+                   g_alpine_game_config.server_netfps,
+                   g_alpine_game_config.server_net_rate_tier().server_fps);
     std::format_to(iter, "  Max players:                           {}\n", netgame.max_players);
+    std::format_to(iter, "  Server bots:                           {}\n", cfg.server_bots);
     std::format_to(iter, "  Levels in rotation:                    {}\n", cfg.levels.size());
     std::format_to(iter, "  Dynamic rotation:                      {}\n", cfg.dynamic_rotation);
+    std::format_to(iter, "  Demos:\n");
+    std::format_to(iter, "    Include chat:                        {}\n", cfg.demo_chat_record);
+    std::format_to(iter, "    Auto-record:                         {}\n", cfg.demo_auto_record);
+    std::format_to(iter, "      Upload to FactionFiles:            {}\n", cfg.fflink_demo_upload);
+    if (cfg.fflink_demo_upload) {
+        std::format_to(iter, "        Max size:                        {} MiB\n", cfg.fflink_demo_max_mb);
+        std::format_to(iter, "        Max queue:                       {}\n", cfg.fflink_demo_queue_max);
+        std::format_to(iter, "        Delete after send:               {}\n", cfg.fflink_demo_delete_after_send);
+    }
 
     if (rf::mod_param.found()) {
         std::format_to(iter, "  TC mod loaded:                         {}\n", rf::mod_param.get_arg());
@@ -1867,13 +2516,21 @@ void print_alpine_dedicated_server_config_info(std::string& output, bool verbose
 
     std::format_to(iter, "  Gaussian bullet spread:                {}\n", cfg.gaussian_spread);
     std::format_to(iter, "  End of round stats message:            {}\n", cfg.stats_message_enabled);
+    std::format_to(iter, "  Announce next level:                   {}\n", cfg.announce_next_level);
     std::format_to(iter, "  Allow fullbright meshes:               {}\n", cfg.allow_fullbright_meshes);
     std::format_to(iter, "  Allow disable screenshake:             {}\n", cfg.allow_disable_screenshake);
     std::format_to(iter, "  Allow lightmap only mode:              {}\n", cfg.allow_lightmaps_only);
     std::format_to(iter, "  Allow disable muzzle flash:            {}\n", cfg.allow_disable_muzzle_flash);
-    std::format_to(iter, "  Allow disable 240 FPS cap:             {}\n", cfg.allow_unlimited_fps);
+    std::format_to(iter, "  Allow footsteps:                       {}\n", cfg.allow_footsteps);
     std::format_to(iter, "  SP-style damage calculation:           {}\n", cfg.use_sp_damage_calculation);
-    std::format_to(iter, "  Exclude bots from player count:        {}\n", cfg.exclude_bots_from_player_count);
+    std::format_to(iter, "  Allow outlines:                        {}\n", cfg.allow_outlines);
+    std::format_to(iter, "  Allow outlines xray:                   {}\n", cfg.allow_outlines_xray);
+    std::format_to(iter, "  Projectile lag compensation:           {}\n", cfg.projectile_lag_comp);
+    if (cfg.projectile_lag_comp) {
+        std::format_to(iter, "    Max compensation:                    {}ms\n", cfg.projectile_lag_comp_max_ms);
+    }
+    std::format_to(iter, "  Hitscan lag compensation max:          {}ms\n", cfg.hitscan_lag_comp_max_ms);
+    std::format_to(iter, "  Delta object updates:                  {}\n", cfg.delta_obj_update);
 
     // inactivity
     std::format_to(iter, "  Identify inactive players:             {}\n", cfg.inactivity_config.enabled);
@@ -1899,6 +2556,12 @@ void print_alpine_dedicated_server_config_info(std::string& output, bool verbose
         std::format_to(iter, "    Legacy client compatibility:         {}\n", cfg.damage_notification_config.support_legacy_clients);
     }
 
+    // sprays
+    std::format_to(iter, "  Sprays:                                {}\n", cfg.spray_config.enabled);
+    if (cfg.spray_config.enabled) {
+        std::format_to(iter, "    Cooldown:                            {} ms\n", cfg.spray_config.cooldown_ms);
+    }
+
     // alpine restrict
     std::format_to(iter, "  Advertise Alpine:                      {}\n", cfg.alpine_restricted_config.advertise_alpine);
     std::format_to(iter, "  Only welcome Alpine players:           {}\n", cfg.alpine_restricted_config.only_welcome_alpine);
@@ -1906,6 +2569,7 @@ void print_alpine_dedicated_server_config_info(std::string& output, bool verbose
     if (cfg.alpine_restricted_config.clients_require_alpine) {
         std::format_to(iter, "    Reject non-Alpine clients:           {}\n", cfg.alpine_restricted_config.reject_non_alpine_clients);
         std::format_to(iter, "    Require release build:               {}\n", cfg.alpine_restricted_config.alpine_require_release_build);
+        std::format_to(iter, "    Require Direct3D 11 renderer:        {}\n", cfg.alpine_restricted_config.require_d3d11);
     }
 
     // votes
@@ -1925,7 +2589,6 @@ void print_alpine_dedicated_server_config_info(std::string& output, bool verbose
     };
 
     print_vote("Vote kick:    ", cfg.vote_kick);
-    print_vote("Vote gametype:", cfg.vote_gametype);
     print_vote("Vote extend:  ", cfg.vote_extend);
     print_vote("Vote restart: ", cfg.vote_restart);
     print_vote("Vote next:    ", cfg.vote_next);
@@ -1937,38 +2600,32 @@ void print_alpine_dedicated_server_config_info(std::string& output, bool verbose
         std::format_to(iter, "    Ignore nonvoters:                    {}\n", cfg.vote_level.ignore_nonvoters);
         std::format_to(iter, "    Time limit:                          {} sec\n", cfg.vote_level.time_limit_seconds);
         std::format_to(iter, "    Add rotation to allowed levels:      {}\n", cfg.vote_level.add_rotation_to_allowed_levels);
+        std::format_to(iter, "    Add installed to allowed levels:     {}\n", cfg.vote_level.add_installed_to_allowed_levels);
         std::format_to(iter, "    Only allow gametype prefix:          {}\n", cfg.vote_level.only_allow_gametype_prefix);
-        if (!cfg.vote_level.allowed_maps.empty()) {
-            std::string allowed_maps;
-            for (size_t i = 0; i < cfg.vote_level.allowed_maps.size(); ++i) {
-                if (i != 0) {
-                    allowed_maps += ", ";
-                }
-                allowed_maps += cfg.vote_level.allowed_maps[i];
+
+        // Counts what is actually votable, not just allowed_maps.
+        {
+            std::set<std::string> votable;
+            for (const auto& name : cfg.vote_level.allowed_maps) {
+                votable.insert(string_to_lower(name));
             }
-            std::format_to(iter, "    Allowed levels:                      {}\n", allowed_maps);
+            if (cfg.vote_level.add_rotation_to_allowed_levels) {
+                for (const auto& level_entry : cfg.levels) {
+                    votable.insert(string_to_lower(level_entry.level_filename));
+                }
+            }
+            std::format_to(iter, "    Allowed levels:                      {}\n", votable.size());
         }
     }
     
-    if (!cfg.rules_preset_aliases.empty()) {
-        std::format_to(iter, "\n---- Rules preset alias mappings ----\n");
-        for (const auto& [alias, path] : cfg.rules_preset_aliases) {
-            if (remote) {
-                std::format_to(iter, "  {} -> {}\n", alias, path.filename().generic_string());
-            } else {
-                std::format_to(iter, "  {} -> {}\n", alias, path.generic_string());
-            }
-        }
-    }
-
     std::format_to(iter, "\n---- Base rules ----\n");
-    print_rules_with_presets(output, cfg.base_rules, cfg.base_rules_preset_paths, true, remote);
+    print_rules(output, cfg.base_rules, true);
 
     std::format_to(iter, "\n---- Level rotation ----\n");
     for (size_t i = 0; i < cfg.levels.size(); ++i) {
         const auto& lvl = cfg.levels[i];
         std::format_to(iter, "{} ({})\n", lvl.level_filename, i);
-        print_rules_with_presets(output, lvl.rule_overrides, lvl.applied_rules_preset_paths, false, remote);
+        print_rules(output, lvl.rule_overrides, false);
     }
     std::format_to(iter, "\n");
 }
@@ -1984,6 +2641,8 @@ void initialize_core_alpine_dedicated_server_settings(rf::NetGameInfo& netgame, 
     
     netgame.max_players = cfg.max_players;
 
+    server_set_net_rate(cfg.server_netfps);
+
     // other core settings are referenced directly in the structure and do not need to be initialized here
 }
 
@@ -1996,6 +2655,15 @@ void apply_alpine_dedicated_server_rules(rf::NetGameInfo& netgame, const AlpineS
             break;
         case rf::NetGameType::NG_TYPE_CTF:
             netgame.max_captures = r.cap_limit;
+            break;
+        case rf::NetGameType::NG_TYPE_GG:
+            netgame.max_kills = r.gungame_score_limit;
+            break;
+        case rf::NetGameType::NG_TYPE_SAL:
+            netgame.max_captures = r.salvage.cap_limit;
+            break;
+        case rf::NetGameType::NG_TYPE_SCAV:
+            netgame.max_captures = r.scavenger.cap_limit;
             break;
         default:
             netgame.max_kills = r.individual_kill_limit;
@@ -2016,6 +2684,11 @@ void apply_alpine_dedicated_server_rules(rf::NetGameInfo& netgame, const AlpineS
     if (r.weapons_stay)  netgame.flags |= rf::NG_FLAG_WEAPON_STAY;
     if (r.force_respawn) netgame.flags |= rf::NG_FLAG_FORCE_RESPAWN;
     if (r.balance_teams) netgame.flags |= rf::NG_FLAG_BALANCE_TEAMS;
+
+    // Mutator weapon-table override:
+    // Instagib makes the featured weapon behave as a no-clip weapon. Restores originals when
+    // not active. Clients mirror this via the af_server_info SIF_FEATURED_NO_CLIP flag.
+    mutators_set_no_clip_weapon(r.mutators.no_featured_reload ? r.mutators.featured_weapon_index : -1);
 }
 
 // keep the netgame levels array synced with level+rules array
@@ -2038,17 +2711,29 @@ void load_and_print_alpine_dedicated_server_config(std::string ads_config_name, 
         load_ads_server_config(ads_config_name, false);
         g_alpine_server_config.printed_cfg.clear();
         cfg.signal_cfg_changed = true;
+        server_vote_invalidate_options_blob();
+        clear_pending_rotation_preserve();
     }
 
     initialize_core_alpine_dedicated_server_settings(netgame, cfg, on_launch);
 
+    // After the parse rebuilt allowed_maps from the TOML: materialize the derived
+    // entries (installed levels, glass_house fallback) back into it.
+    vote_level_refresh_allowed_maps();
+
     apply_alpine_dedicated_server_rules(netgame, cfg.base_rules); // base rules
 
-    if (g_alpine_server_config.dynamic_rotation) {
+    if (g_alpine_server_config.dynamic_rotation && !cfg.levels.empty()) {
         shuffle_level_array();
     }
     else {
         rebuild_rotation_from_cfg();
+    }
+
+    if (netgame.levels.empty()) {
+        rf::console::print("----> No valid level files were specified!\n");
+        rf::console::print("----> Using Glass House as the level rotation...\n\n");
+        netgame.levels.add("glass_house.rfl");
     }
 
     std::string output{};
@@ -2062,36 +2747,40 @@ bool apply_game_type_for_current_level() {
 
     auto &netgame = rf::netgame;
     auto &cfg     = g_alpine_server_config;
-    const int idx = netgame.current_level_index;
     const auto upcoming = get_upcoming_game_type();
     const bool has_already_queued_change = (upcoming != netgame.type)
         || (get_upcoming_game_type_selection() == UpcomingGameTypeSelection::ExplicitRequest);
-    const bool manual_load = was_level_loaded_manually();
+    // A vote override, also one carried onto a rotation slot, names the game type.
+    const bool manual_load = was_level_loaded_manually() || g_manual_rules_override.has_value();
     rf::NetGameType desired = rf::NetGameType::NG_TYPE_DM;
 
     if (manual_load) {
-        const AlpineServerConfigRules& manual_rules =
-            g_manual_rules_override ? g_manual_rules_override->rules : cfg.base_rules;
+        // Same resolution a vote for this level would get.
+        const rf::NetGameType level_default = g_manual_rules_override
+            ? g_manual_rules_override->rules.game_type
+            : resolve_level_default_game_type(rf::level_filename_to_load.c_str());
 
-        desired = has_already_queued_change ? upcoming : manual_rules.game_type;
+        desired = has_already_queued_change ? upcoming : level_default;
 
         if (!g_ads_minimal_server_info && !has_already_queued_change && desired != upcoming) {
-            if (g_manual_rules_override && g_manual_rules_override->preset_alias) {
-                rf::console::print("Applying rules preset '{}' game type {} for manually loaded level {}...\n",
-                    *g_manual_rules_override->preset_alias, multi_game_type_name_short(desired), rf::level_filename_to_load);
+            if (g_manual_rules_override && g_manual_rules_override->mutator_labels) {
+                rf::console::print("Applying voted mutators '{}' game type {} for manually loaded level {}...\n",
+                    *g_manual_rules_override->mutator_labels, multi_game_type_name_short(desired), rf::level_filename_to_load);
             }
             else if (g_manual_rules_override) {
                 rf::console::print("Applying manual override game type {} for manually loaded level {}...\n",
                     multi_game_type_name_short(desired), rf::level_filename_to_load);
             }
             else {
-                rf::console::print("Applying base game type {} for manually loaded level {}...\n",
+                rf::console::print("Applying default game type {} for manually loaded level {}...\n",
                     multi_game_type_name_short(desired), rf::level_filename_to_load);
             }
         }
     }
     else { // in rotation
-        const bool idx_valid = (idx >= 0 && idx < static_cast<int>(cfg.levels.size()));
+        // The rotation can be reloaded or reshuffled under the running level.
+        const int idx = rotation_index_for_level(rf::level_filename_to_load.c_str());
+        const bool idx_valid = idx >= 0;
         const AlpineServerConfigRules& rules = (!has_already_queued_change && idx_valid)
             ? cfg.levels[idx].rule_overrides
             : cfg.base_rules;
@@ -2123,6 +2812,16 @@ bool apply_game_type_for_current_level() {
     return changed_this_call;
 }
 
+// Bumped once each time the active rules are (re)applied below. Consumers (e.g.
+// gungame_do_frame) watch this to detect mid-map config reloads — sv_loadconfig
+// changing tiers/final weapon/score limit — and rebuild derived state.
+static int g_active_rules_generation = 0;
+
+int get_active_rules_generation()
+{
+    return g_active_rules_generation;
+}
+
 void apply_rules_for_current_level()
 {
     auto &netgame = rf::netgame;
@@ -2132,54 +2831,178 @@ void apply_rules_for_current_level()
     if (cfg.levels.size() < 1) {
         return;
     }
+    const bool prev_bots_use_vehicles = g_alpine_server_config_active_rules.vehicles.bots_use_vehicles;
 
-    int idx = netgame.current_level_index;
-    // level manually loaded
-    if (was_level_loaded_manually()) {
+    // The rotation can be reloaded or reshuffled under the running level.
+    const int idx = rotation_index_for_level(rf::level_filename_to_load.c_str());
+    // A vote override, also one carried onto a rotation slot, wins over the configured rules.
+    if (was_level_loaded_manually() || g_manual_rules_override) {
         if (g_manual_rules_override) {
             g_alpine_server_config_active_rules = g_manual_rules_override->rules;
             if (!g_ads_minimal_server_info) {
-                if (g_manual_rules_override->preset_alias)
-                    rf::console::print("Applying rules preset '{}' for manually loaded level {}...\n",
-                                       *g_manual_rules_override->preset_alias, rf::level_filename_to_load);
+                if (g_manual_rules_override->mutator_labels)
+                    rf::console::print("Applying voted mutators '{}' for level {}...\n",
+                                       *g_manual_rules_override->mutator_labels, rf::level_filename_to_load);
                 else
-                    rf::console::print("Applying manual rules override for manually loaded level {}...\n",
+                    rf::console::print("Applying manual rules override for level {}...\n",
                                        rf::level_filename_to_load);
             }
         }
         else {
-            g_alpine_server_config_active_rules = cfg.base_rules;
+            // Built like the level's rotation slot would be. Never a copy of the previous
+            // level's rules, which would carry its game type's fields over.
+            g_alpine_server_config_active_rules =
+                build_level_rules(rf::level_filename_to_load.c_str(), rf::netgame.type, nullptr);
             if (!g_ads_minimal_server_info)
-                rf::console::print("Applying base rules for manually loaded level {}...\n", rf::level_filename_to_load);
+                rf::console::print("Applying derived rules for manually loaded level {}...\n", rf::level_filename_to_load);
         }
     }
     else { // level is in rotation
+        const bool idx_valid = idx >= 0;
+
         AlpineServerConfigRules const &override_rules =
-            (idx >= 0 && idx < (int)cfg.levels.size())
-              ? cfg.levels[idx].rule_overrides
-              : cfg.base_rules;
+            idx_valid ? cfg.levels[idx].rule_overrides : cfg.base_rules;
 
         g_alpine_server_config_active_rules = override_rules;
 
-        if (!g_ads_minimal_server_info)
-            rf::console::print("Applying level-specific rules for server rotation index {} ({})...\n", idx, cfg.levels[idx].level_filename);
+        if (!g_ads_minimal_server_info) {
+            std::string_view level_name =
+                idx_valid ? std::string_view(cfg.levels[idx].level_filename) : std::string_view("UNKNOWN");
+            rf::console::print("Applying level-specific rules for server rotation index {} ({})...\n", idx, level_name);
+        }
     }
 
-    // respect game type specific base rules (eg. koth spawn loadout) for voted or manually loaded maps
+    // A rotation vote asked to carry the session's vote-set rules onto this level.
+    // Derived from scratch, REPLACING the rules above, and stored back as the session
+    // override so a later preserve vote continues it.
+    // Deliberately NOT via set_manual_rules_override(): that would also flag the
+    // level as manually loaded and break the rotation cursor's semantics.
+    if (get_pending_rotation_preserve()) {
+        const PendingRotationPreserve pending = *get_pending_rotation_preserve();
+        clear_pending_rotation_preserve();
+
+        ManualRulesOverride carried = load_vote_rules_override(rf::level_filename_to_load.c_str(),
+                                                               pending.declarations, pending.gametype);
+        // A carried set was explicit where it was voted, and stays so here: a further
+        // preserve vote continues it.
+        carried.explicit_session = true;
+        g_alpine_server_config_active_rules = carried.rules;
+        g_manual_rules_override = std::move(carried);
+        if (!g_ads_minimal_server_info) {
+            rf::console::print("Carrying voted session rules onto {}...\n", rf::level_filename_to_load);
+        }
+    }
+
+    // The rules above can still name a different game type than the level is starting
+    // under (sv_gametype on a rotation entry). Rebuilt, not retargeted: retargeting
+    // leaves fields only the old game type claimed in force.
     const rf::NetGameType active_game_type = rf::netgame.type;
     if (g_alpine_server_config_active_rules.game_type != active_game_type) {
-        g_alpine_server_config_active_rules.game_type = active_game_type;
-        apply_defaults_for_game_type(active_game_type, g_alpine_server_config_active_rules);
+        if (g_manual_rules_override) {
+            const std::vector<MutatorDeclaration> saved_mutators =
+                g_alpine_server_config_active_rules.mutators.declarations;
+            g_alpine_server_config_active_rules =
+                build_level_rules(rf::level_filename_to_load.c_str(), active_game_type, &saved_mutators);
+        }
+        else {
+            g_alpine_server_config_active_rules =
+                build_level_rules(rf::level_filename_to_load.c_str(), active_game_type, nullptr);
+        }
+        if (g_manual_rules_override) {
+            g_manual_rules_override->rules = g_alpine_server_config_active_rules;
+            g_manual_rules_override->mutator_labels =
+                mutators_active_labels_string(g_alpine_server_config_active_rules);
+        }
     }
 
     // apply the rules
     apply_alpine_dedicated_server_rules(netgame, g_alpine_server_config_active_rules);
+    if (g_alpine_server_config_active_rules.vehicles.bots_use_vehicles != prev_bots_use_vehicles) {
+        server_resend_client_bot_personalities();
+    }
+    server_bots_sync_join_bots();
+
+    // Must precede the blob rebuild below: the mutator registry caches its live-value
+    // defaults against this generation.
+    ++g_active_rules_generation;
+
+    af_send_active_mutators_to_all();
+    // Rebuilt eagerly because the cfg-changed signal -- what makes every client
+    // re-request the blob -- is only worth raising when the bytes actually moved.
+    server_vote_invalidate_options_blob();
+    if (server_vote_refresh_options_blob()) {
+        cfg.signal_cfg_changed = true;
+    }
 }
 
 void init_alpine_dedicated_server() {
     // remove stock game weapon stay exemption for fusion
     AsmWriter(0x00459834).jmp(0x00459836);
     AsmWriter(0x004596BA).jmp(0x004596BC);
+}
+
+[[noreturn]] static void abort_launch_on_rejected_gsk(const std::string& last_error) {
+    const std::string_view reason = last_error.empty() ? std::string_view{"unknown_or_disabled_gsk"}
+                                                       : std::string_view{last_error};
+    const std::string detail = last_error.empty()
+        ? std::string{}
+        : std::format("Reason given by FactionFiles: {}\n", last_error);
+
+    xlog::error("[fflink] FATAL: FactionFiles rejected the configured fflink_gsk ({}); "
+                "server startup aborted", reason);
+
+    const std::string msg = std::format(
+        "\n"
+        "========================================================================\n"
+        "FATAL: FactionFiles rejected this server's stats key (fflink_gsk).\n"
+        "The key configured in {} is wrong.\n"
+        "{}"
+        "Player stats will NOT be tracked with this key.\n"
+        "Fix: set a valid fflink_gsk in your dedicated server config,\n"
+        "or remove fflink_gsk entirely to run without stats tracking.\n"
+        "Server startup aborted.\n"
+        "========================================================================\n\n",
+        g_ads_config_name, detail);
+
+    rf::console::print("{}", msg);
+
+    xlog::flush();
+
+    rf::console::do_critical_error();
+}
+
+// Launch path only. A hard rejection is an operator config error, so refuse to run a
+// server whose stats would silently go nowhere. Every other outcome launches as before.
+static void wait_for_fflink_session_or_abort() {
+    if (g_alpine_server_config.fflink_gsk.empty()) {
+        return;
+    }
+
+    auto state = fflink::snapshot_state();
+    // Nothing in flight: no exchange was started, or the local format check already
+    // rejected the key and printed its own error.
+    if (state.status == fflink::SessionStatus::none ||
+        state.status == fflink::SessionStatus::bad_gsk_format) {
+        return;
+    }
+
+    constexpr int poll_interval_ms = 100;
+    constexpr int max_wait_ms = 10000;
+    for (int waited_ms = 0;
+         state.status == fflink::SessionStatus::pending && waited_ms < max_wait_ms;
+         waited_ms += poll_interval_ms) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{poll_interval_ms});
+        state = fflink::snapshot_state();
+    }
+
+    if (state.status == fflink::SessionStatus::rejected_by_server) {
+        abort_launch_on_rejected_gsk(state.last_error);
+    }
+    if (state.status == fflink::SessionStatus::pending) {
+        rf::console::print("FactionFiles session key exchange still pending; continuing startup.\n\n");
+    }
+    // valid: the exchange prints its own success line.
+    // failed: transient, already reported; the worker keeps retrying in the background.
 }
 
 void launch_alpine_dedicated_server() {
@@ -2216,16 +3039,14 @@ void launch_alpine_dedicated_server() {
 
     load_and_print_alpine_dedicated_server_config(g_ads_config_name, true);
 
-    if (netgame.levels.size() <= 0) {
-        rf::console::print("----> No valid level files were specified!\n");
-        rf::console::print("----> Launching server on Glass House...\n\n");
-        netgame.levels.add("glass_house.rfl");
-    }
-
     g_alpine_server_config_active_rules = cfg.base_rules; // initialize rules with base in case it is checked before first level loads
     init_alpine_dedicated_server();
     netgame.current_level_index = 0;
     rf::multi_level_switch_queued = -1;
+
+    // Kick off FactionFiles session key exchange
+    fflink::start_session_exchange();
+    wait_for_fflink_session_or_abort();
 }
 
 ConsoleCommand2 print_server_config_cmd{
@@ -2261,7 +3082,7 @@ ConsoleCommand2 print_level_rules_cmd{
                     matches.push_back(i);
             }
             if (matches.empty()) {
-                rf::console::print("Level {} not found in rotation. If manually loaded, base rules would be used.\n", *maybe_filename);
+                rf::console::print("Level {} not found in rotation. If manually loaded, the base rules for its game type would be used.\n", *maybe_filename);
                 return;
             }
         } else {
@@ -2285,25 +3106,25 @@ ConsoleCommand2 print_level_rules_cmd{
             if (manual_load) {
                 rf::console::print("\n---- Rules for level {} ----\n", rf::level_filename_to_load, idx);
                 if (g_manual_rules_override) {
-                    if (g_manual_rules_override->preset_alias)
-                        rf::console::print("  (manually loaded {} is using rules preset '{}')\n\n", rf::level_filename_to_load, *g_manual_rules_override->preset_alias);
+                    if (g_manual_rules_override->mutator_labels)
+                        rf::console::print("  (manually loaded {} is using voted mutators '{}')\n\n", rf::level_filename_to_load, *g_manual_rules_override->mutator_labels);
                     else
                         rf::console::print("  (manually loaded {} has a manual rules override)\n\n", rf::level_filename_to_load);
                     std::string output{};
-                    print_rules_with_presets(output, g_manual_rules_override->rules, g_manual_rules_override->applied_preset_paths, true);
+                    print_rules(output, g_manual_rules_override->rules, true);
                     rf::console::print("{}", output.c_str());
                 }
                 else {
-                    rf::console::print("  (manually loaded {} is using base rules)\n\n", rf::level_filename_to_load);
+                    rf::console::print("  (manually loaded {} is using the base rules for its game type)\n\n", rf::level_filename_to_load);
                     std::string output{};
-                    print_rules_with_presets(output, cfg.base_rules, cfg.base_rules_preset_paths, true);
+                    print_rules(output, g_alpine_server_config_active_rules, true);
                     rf::console::print("{}", output.c_str());
                 }
             }
             else {
                 rf::console::print("\n---- Rules for level {} (index {}) ----\n", entry.level_filename, idx);
                 std::string output{};
-                print_rules_with_presets(output, entry.rule_overrides, entry.applied_rules_preset_paths, true);
+                print_rules(output, entry.rule_overrides, true);
                 rf::console::print("{}", output.c_str());
             }
         }
@@ -2321,6 +3142,12 @@ ConsoleCommand2 load_server_config_cmd{
             }
 
             load_and_print_alpine_dedicated_server_config(new_config.value_or(g_ads_config_name), false);
+            if (g_manual_rules_override) {
+                const std::vector<MutatorDeclaration> voted = g_manual_rules_override->rules.mutators.declarations;
+                g_manual_rules_override->rules = build_level_rules(rf::level_filename_to_load.c_str(),
+                    g_manual_rules_override->rules.game_type, &voted);
+                g_manual_rules_override->mutator_labels = mutators_active_labels_string(g_manual_rules_override->rules);
+            }
             bool changed_game_type = apply_game_type_for_current_level();
             apply_rules_for_current_level();
             initialize_game_info_server_flags();

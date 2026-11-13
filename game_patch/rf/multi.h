@@ -1,15 +1,18 @@
 #pragma once
 
+#include <cstddef>
+#include <format>
+#include <functional>
 #include <patch_common/MemUtils.h>
 #include "os/vtypes.h"
 #include "os/timestamp.h"
 #include "os/string.h"
 #include "os/array.h"
+#include "gr/gr.h"
 #include "object.h"
 #include "item.h"
 #include "geometry.h"
 #include "ai.h"
-#include "gr/gr.h"
 
 namespace rf
 {
@@ -20,9 +23,18 @@ namespace rf
     // nw/psnet
 
     #pragma pack(push, 4)
+    struct IpAddr {
+        uint32_t inner;
+
+        constexpr auto operator<=>(const IpAddr&) const = default;
+    };
+    #pragma pack(pop)
+    static_assert(sizeof(IpAddr) == 0x4);
+
+    #pragma pack(push, 4)
     struct NetAddr
     {
-        uint32_t ip_addr;
+        IpAddr ip_addr;
         uint16_t port;
         // padding byte
         // padding byte
@@ -35,12 +47,33 @@ namespace rf
     constexpr int NET_MAX_REL_SOCKETS = 40;
 
     static const auto& net_init_socket = addr_as_ref<void(unsigned short port)>(0x00528F10);
+    [[deprecated]]
     static const auto& net_addr_to_string = addr_as_ref<void(char *buf, int buf_size, const NetAddr& addr)>(0x00529FE0);
     static const auto& net_send = addr_as_ref<void(const NetAddr &addr, const void *data, int len)>(0x0052A080);
     static const auto& net_same = addr_as_ref<int(const NetAddr &addr1, const NetAddr &addr2, bool check_port)>(0x0052A930);
     static const auto& net_rel_send = addr_as_ref<int(int, const uint8_t*, int)>(0x0052A310);
     static auto& net_udp_socket = addr_as_ref<int>(0x005A660C);
+    // Reliable-socket slot id of the client's server connection, set by
+    // psnet_rel_connect_to_server (0x0052A4B0)
+    static auto& net_rel_last_connect_socket = addr_as_ref<int>(0x005A6608);
     static auto& net_port = addr_as_ref<unsigned short>(0x01B587D4);
+    static const auto& net_stats_update = addr_as_ref<void()>(0x00528580);
+    static const auto& net_stats_add = addr_as_ref<void(int, int, int, int)>(0x005286A0);
+    // psnet stats: 30 one-second slots of bytes per (payload | header-approx, recv | send,
+    // unreliable | reliable); net_stats_slot is the slot being accumulated (capped at 29, the
+    // arrays shift down once a second after that), so slot - 1 is the last complete second
+    static auto& net_stats_slot = addr_as_ref<int>(0x01B46ED8);
+    static auto& net_stats_recv_unrel = addr_as_ref<int[30]>(0x01B46EDC);
+    static auto& net_stats_recv_rel = addr_as_ref<int[30]>(0x01B46DE8);
+    static auto& net_stats_recv_hdr_unrel = addr_as_ref<int[30]>(0x01B46E60);
+    static auto& net_stats_recv_hdr_rel = addr_as_ref<int[30]>(0x01B46CF0);
+    static auto& net_stats_send_unrel = addr_as_ref<int[30]>(0x01B47970);
+    static auto& net_stats_send_rel = addr_as_ref<int[30]>(0x01B46C78);
+    static auto& net_stats_send_hdr_unrel = addr_as_ref<int[30]>(0x01B478F8);
+    static auto& net_stats_send_hdr_rel = addr_as_ref<int[30]>(0x01B46D70);
+    static const auto& net_packet_queue_push =
+        addr_as_ref<void(void*, const void*, int, const NetAddr*)>(0x00528950);
+    static auto& net_packet_queues = addr_as_ref<uint8_t[3][0x1050C]>(0x01B15950);
 
     struct NetReliableSocket;
     static auto& net_rel_sockets = addr_as_ref<NetReliableSocket[NET_MAX_REL_SOCKETS]>(0x01B479E8);
@@ -129,6 +162,16 @@ namespace rf
         NG_TYPE_REV = 5,    // Revolt, as of AF v1.2
         NG_TYPE_RUN = 6,    // Run, as of AF v1.2
         NG_TYPE_ESC = 7,    // Escalation, as of AF v1.2
+        NG_TYPE_BAG = 8,    // Bagman, as of AF v1.4
+        NG_TYPE_TBAG = 9,   // Team Bagman, as of AF v1.4
+        NG_TYPE_PIT = 10,   // Pit, as of AF v1.4
+        NG_TYPE_WO = 11,    // Wipeout, as of AF v1.4
+        NG_TYPE_GG = 12, // Gun Game, as of AF v1.4
+        NG_TYPE_SAL = 13,   // Salvage, as of AF v1.4
+        NG_TYPE_SCAV = 14,  // Scavenger, as of AF v1.5
+        NG_TYPE_PAY = 15,   // Payload, as of AF v1.5
+        // Sentinel: UNK must always be the last entry.
+        NG_TYPE_UNK
     };
 
     enum NetGameFlags
@@ -159,6 +202,12 @@ namespace rf
         NPF_RCON_HOLDER = 0x100
     };
 
+    enum NetPlayerState : int {
+        NETPLAYER_STATE_WAITING = 0x0,
+        NETPLAYER_STATE_SYNC = 0x1,
+        NETPLAYER_STATE_IN_GAME = 0x2,
+    };
+
     struct NetGameInfo
     {
         String name;
@@ -174,7 +223,7 @@ namespace rf
         int max_captures;
         NetAddr server_addr;
         int current_level_index;
-        VArray_String<String> levels;
+        VArray<String> levels;
     };
 
     struct JoinRequest
@@ -206,6 +255,19 @@ namespace rf
     };
     static_assert(sizeof(NetReliableSocketStatus) == 4);
 
+    // obj_update row flags byte.
+    enum ObjUpdateFlags
+    {
+        OUF_POS_ROT_ANIM = 0x01,
+        OUF_CONNECTION_COUNTER = 0x02,
+        OUF_WEAPON_TYPE = 0x04,
+        OUF_WEAPON_LAG_COMP = 0x08,
+        OUF_ALT_FIRE = 0x10,
+        OUF_HEALTH_ARMOR = 0x20,
+        OUF_FIRE = 0x40,
+        OUF_ARMOR_STATE = 0x80,
+    };
+
     #pragma pack(push, 1)
     struct NetReliableSocket {
         void* sbuffers[75];
@@ -218,8 +280,8 @@ namespace rf
         int last_packet_received;
         int last_packet_sent;
         NetReliableSocketStatus status;
-        uint16_t oursequence;
-        uint16_t theirsequence;
+        uint16_t theirsequence; // 0x67e: tracks the remote's sequence (window-checked on receive)
+        uint16_t oursequence;   // 0x680: our outgoing counter, stamped into ssequence and bumped per send
         rf::NetAddr net_addr;
         int pings[10];
         uint8_t ping_pos;
@@ -233,12 +295,17 @@ namespace rf
     constexpr size_t max_packet_size = 512;
 
     static auto& multi_get_game_type = addr_as_ref<NetGameType()>(0x00470770);
+    // What the stock friendly-fire gate in obj_damage consults (call at 0x004893A8): netgame.flags
+    // bit 9 alone, never the 0x240 pair the config writes.
+    static auto& multi_is_team_damage_on = addr_as_ref<bool()>(0x004826B0);
     static auto& multi_io_send = addr_as_ref<void(Player *player, const void *packet, int len)>(0x00479370);
     static auto& multi_io_send_reliable =
-        addr_as_ref<void(Player *player, const void *data, int len, int not_limbo)>(0x00479480);
+        addr_as_ref<void(Player *player, const void *data, int len, bool require_in_game)>(0x00479480);
     static auto& multi_io_send_reliable_to_all =
-        addr_as_ref<void(const void *data, int len, int a4)>(0x004795A0);
+        addr_as_ref<void(const void *data, int len, bool require_in_game)>(0x004795A0);
     static auto& multi_io_send_buffered_reliable_packets = addr_as_ref<void(Player *pp)>(0x004796C0);
+    // Reliable; a null player sends to every in-game client
+    static auto& send_team_scores_packet = addr_as_ref<void(Player* player)>(0x00472130);
     static auto& multi_find_player_by_addr = addr_as_ref<Player*(const NetAddr& addr)>(0x00484850);
     static auto& multi_find_player_by_id = addr_as_ref<Player*(uint8_t id)>(0x00484890);
     static auto& multi_time_limit = addr_as_ref<float>(0x0064EC4C);
@@ -249,6 +316,7 @@ namespace rf
     static auto& multi_server_flags = addr_as_ref<NetGameFlags>(0x0064EC40);
     static auto& multi_game_type = addr_as_ref<int>(0x0064EC3C);
     static auto& multi_level_switch_queued = addr_as_ref<int>(0x0064EC64);
+    static auto& multi_server_addr = addr_as_ref<NetAddr>(0x0064EC5C); // client: address of the joined server
     static auto& ctf_flag_cooldown_timestamp = addr_as_ref<Timestamp>(0x006C74F4);
     static auto& multi_ctf_drop_flag = addr_as_ref<void(Player* pp)>(0x00473F40);
     static auto& multi_ctf_get_red_team_score = addr_as_ref<uint8_t()>(0x00475020);
@@ -267,6 +335,8 @@ namespace rf
     static auto& ctf_blue_flag_pos = addr_as_ref<Vector3>(0x006C7510);
     static auto& multi_tdm_get_red_team_score = addr_as_ref<int()>(0x004828F0); // returns ubyte in vanilla game
     static auto& multi_tdm_get_blue_team_score = addr_as_ref<int()>(0x00482900); // returns ubyte in vanilla game
+    static auto& multi_send_team_change_packet =
+        addr_as_ref<void(Player* target_or_null, uint8_t player_id, uint8_t team)>(0x00482520);
     static auto& multi_num_players = addr_as_ref<int()>(0x00484830);
     static auto& multi_kick_player = addr_as_ref<void(Player *player)>(0x0047BF00);
     static auto& multi_ban_ip = addr_as_ref<void(const NetAddr& addr)>(0x0046D0F0);
@@ -280,26 +350,68 @@ namespace rf
     static auto& multi_chat_say = addr_as_ref<void(const char *msg, bool is_team_msg)>(0x00444150);
     static auto& multi_chat_add_msg = addr_as_ref<void(Player* pp, const char* msg, bool is_team_msg)>(0x00443FB0);
     static auto& multi_is_connecting_to_server = addr_as_ref<uint8_t(const NetAddr& addr)>(0x0044AD80);
+    static auto& multi_clear_current_server_addr = addr_as_ref<void()>(0x0044AD60);
+    // IP of the server a join is pending against; gates process_join_accept_packet
+    // (multi_join_game_is_connecting @ 0x0044AD70 / multi_is_connecting_to_server @ 0x0044AD80)
+    static auto& multi_pending_join_server_ip = addr_as_ref<uint32_t>(0x0063F63C);
+    static auto& multi_join_game_is_connecting = addr_as_ref<uint8_t()>(0x0044AD70);
+    static auto& multi_join_in_progress = addr_as_ref<bool>(0x0063E93C);
     using MultiIoProcessPackets_Type = void(const void* data, size_t len, const NetAddr& addr, Player* player);
     static auto& multi_io_process_packets = addr_as_ref<MultiIoProcessPackets_Type>(0x004790D0);
     static auto& multi_kill_local_player = addr_as_ref<void()>(0x004757A0);
     static auto& send_game_info_req_packet = addr_as_ref<void(const NetAddr& addr)>(0x0047B450);
+    static auto& multi_join_game_add_server = addr_as_ref<void __cdecl(
+        uint32_t ip, uint16_t port, const char* name, const char* level,
+        const char* mod, int players, int max_players, int game_type, int flags)>(0x0044DD50);
     static auto& multi_entity_is_female = addr_as_ref<bool(int mp_character_idx)>(0x004762C0);
     static auto& multi_powerup_has_player = addr_as_ref<bool(Player* pp, int powerup_type)>(0x004802B0);
     static auto& multi_powerup_get_time_until = addr_as_ref<int(Player* pp, int powerup_type)>(0x004802D0);
     static auto& multi_powerup_add = addr_as_ref<void(Player* pp, int powerup_type, int time_ms)>(0x00480050);
     static auto& multi_powerup_remove = addr_as_ref<void(Player* pp, int powerup_type)>(0x004801F0);
     static auto& multi_powerup_remove_all_for_player = addr_as_ref<void(Player* pp)>(0x00480310);
-    static auto& send_reload_packet = addr_as_ref<void(Entity* ep, int weapon_type, int clip_ammo, int ammo)>(0x00485B50);
+    static auto& send_reload_packet = addr_as_ref<void(Entity* ep, int weapon_type, int ammo, int clip_ammo)>(0x00485B50);
     static auto& send_obj_kill_packet = addr_as_ref<void(Entity* killed_entity, Item* item, int* a3)>(0x0047E8C0);
-    static auto& send_item_create_packet = addr_as_ref<void(Item* item, int16_t* index)>(0x00479A20); // send_item_create_packet3
+    static auto& send_obj_update_packet = addr_as_ref<void()>(0x0047E5B0); // client -> server
+    static auto& send_obj_update_packet_timestamp = addr_as_ref<TimestampRealtime>(0x006FB424);
+    // Signature of every process_*_packet handler multi_io_process_packets dispatches to
+    using MultiIoPacketHandler = void(char* data, const NetAddr& addr);
+    // data points past the 3-byte header; reads records until the 0xFFFFFFFF terminator
+    static auto& process_obj_update_packet = addr_as_ref<MultiIoPacketHandler>(0x0047DF90);
+    static auto& multi_pack_obj_update_data = addr_as_ref<int(Player* pp, Object* obj, uint8_t* out)>(0x0047DB20);
+    static auto& send_item_create_packet = addr_as_ref<void(Item* item, Player* recipient, int16_t level_item_index)>(0x00479A20);
+    static auto& send_item_apply_packet = addr_as_ref<void(Player* to, int item_handle, int entity_handle, int weapon, int ammo, int clip_ammo)>(0x00479810);
     static auto& send_respawn_req_packet = addr_as_ref<void(uint32_t multi_character, uint8_t player_id)>(0x004809D0); // client -> server
     static auto& multi_spawn_player_server_side = addr_as_ref<void(Player* pp)>(0x00480820);
     static auto& multi_limbo_timer = addr_as_ref<Timestamp>(0x006D6138);
     static auto& local_spawn_attempt_timer = addr_as_ref<Timestamp>(0x007C718C);
 
 
+    // Server-side join flow (used by the demo recorder's virtual player)
+    static auto& send_join_accept_packet = addr_as_ref<void(const NetAddr* addr, Player* player)>(0x0047A6D0);
+    static auto& send_players_packet = addr_as_ref<void(Player* player)>(0x00481C70);
+    static auto& send_state_info = addr_as_ref<void(Player* player)>(0x00481750);
+    static auto& send_netgame_update_packet = addr_as_ref<void(Player* player_or_null)>(0x00484DD0);
+    static auto& multi_alloc_player_id = addr_as_ref<uint8_t()>(0x0046EF00);
+    static auto& multi_player_left_game = addr_as_ref<void(Player* player)>(0x0046E9D0);
+    static auto& update_player_rate = addr_as_ref<void(Player* player)>(0x0047E7D0);
+    // `rate` command value in bytes/s; seeds each player's net_data->max_update_rate
+    static auto& client_rate = addr_as_ref<int>(0x0059EFF8);
+    static auto& send_rate_packet = addr_as_ref<void(int player_id, int rate)>(0x00480700); // client -> server
+    // Announces p to every other connected player (packet 0x05, carries net_data->flags).
+    static auto& send_new_player_packet = addr_as_ref<void __cdecl(Player* p)>(0x0047A460);
+    static auto& send_left_game_packet = addr_as_ref<void __cdecl(uint8_t player_id, uint8_t reason)>(0x0047BAE0);
+
+    // Server-side handlers of client requests (AF validates both in their FunHooks)
+    static auto& multi_select_weapon_server_side =
+        addr_as_ref<void __cdecl(Player* pp, Entity* ep, int weapon_type)>(0x004858D0);
+    static auto& multi_process_remote_weapon_fire =
+        addr_as_ref<void __cdecl(Entity* ep, int weapon_type, Vector3& pos, Matrix3& orient, bool alt_fire)>(0x0047D220);
+    // Client-side: reset by process_obj_update_packet; drives the broken-connection icon,
+    // the 20s timeout popup and the sim pause.
+    static auto& multi_connection_broken_timestamp = addr_as_ref<Timestamp>(0x0064ECA8);
+
     static auto& set_in_mp_flag = addr_as_ref<void()>(0x0046ED50);
+    static auto& remove_in_mp_flag = addr_as_ref<void()>(0x0046ED60);
     static auto& multi_start = addr_as_ref<void(int is_client, const NetAddr* serv_addr)>(0x0046D5B0);
     static auto& multi_stop = addr_as_ref<void()>(0x0046E2C0);
     static auto& multi_load_next_level = addr_as_ref<void()>(0x0046ED70);
@@ -310,9 +422,29 @@ namespace rf
     static auto& is_multi = addr_as_ref<bool>(0x0064ECB9);
     static auto& is_server = addr_as_ref<bool>(0x0064ECBA);
     static auto& is_dedicated_server = addr_as_ref<bool>(0x0064ECBB);
+    
+    struct MpCharacterInfo
+    {
+        int image_handle;
+        int entity_type;
+        int anim_entity_type;
+        char name[30];
+        char padding[2];
+        const char* screen_name;
+        char skin_name[16];
+        int custom_fpgun[64];
+    };
+    static_assert(sizeof(MpCharacterInfo) == 0x140);
+    static_assert(offsetof(MpCharacterInfo, screen_name) == 0x2C);
+    static_assert(offsetof(MpCharacterInfo, skin_name) == 0x30);
+    static_assert(offsetof(MpCharacterInfo, custom_fpgun) == 0x40);
+
+    constexpr int MAX_MP_CHARACTERS = 31;
+    static auto& mp_characters = addr_as_ref<MpCharacterInfo[MAX_MP_CHARACTERS]>(0x006C75A0);
     static auto& num_multi_characters = addr_as_ref<int>(0x006C9C60);
     static auto& simultaneous_ping = addr_as_ref<uint32_t>(0x00599CD8);
     static auto& tracker_addr = addr_as_ref<NetAddr>(0x006FC550);
+    static auto& tracker_hostname = addr_as_ref<char[64]>(0x0059F4B4);
     static auto& rcon_password = addr_as_ref<char[20]>(0x0064ECD0);
 
     enum ChatSayType {
@@ -329,7 +461,47 @@ namespace rf
     static auto& scoreboard_render_internal = addr_as_ref<void(bool netgame_scoreboard)>(0x00470880);
     static auto& multiplayer_walk_speed = addr_as_ref<float>(0x0059458C);
     static auto& multiplayer_crouch_walk_speed = addr_as_ref<float>(0x00594590);
+    // Sends local_player's current name; multiplayer only.
+    static auto& send_name_change_packet = addr_as_ref<void()>(0x0046EA00);
     static auto& send_glass_kill_packet = addr_as_ref<void(int room_uid, Vector3* break_pos, Vector3* explosion_pos, bool explosion)>(0x00472250);
 
     constexpr int multi_max_player_id = 256;
+    // Players the engine handles at once: the client scoreboard's player array (0x00470880) overflows beyond it.
+    constexpr int multi_max_player_slots = 32;
 }
+
+template <>
+struct std::formatter<rf::IpAddr, char> : std::formatter<std::string, char> {
+    auto format(const rf::IpAddr& ip_addr, format_context& ctx) const {
+        const std::string str = std::format(
+            "{}.{}.{}.{}",
+            (ip_addr.inner >> 24) & 0xFF,
+            (ip_addr.inner >> 16) & 0xFF,
+            (ip_addr.inner >> 8) & 0xFF,
+            ip_addr.inner & 0xFF
+        );
+        return std::formatter<std::string>::format(str, ctx);
+    }
+};
+
+template <>
+struct std::formatter<rf::NetAddr, char> : std::formatter<std::string, char> {
+    auto format(const rf::NetAddr& net_addr, format_context& ctx) const {
+        const std::string str = std::format(
+            "{}:{}",
+            net_addr.ip_addr,
+            net_addr.port
+        );
+        return std::formatter<std::string>::format(str, ctx);
+    }
+};
+
+template <>
+struct std::hash<rf::NetAddr> {
+    size_t operator()(const rf::NetAddr& net_addr) const noexcept {
+        const size_t ip_addr_hash = std::hash<uint32_t>{}(net_addr.ip_addr.inner);
+        const size_t port_hash = std::hash<uint16_t>{}(net_addr.port);
+        return ip_addr_hash
+            ^ (port_hash + 0x9E3779B9 + (ip_addr_hash << 6) + (ip_addr_hash >> 2));
+    }
+};

@@ -1,3 +1,4 @@
+#include "debug.h"
 #include "debug_internal.h"
 #include <patch_common/FunHook.h>
 #include <xlog/xlog.h>
@@ -111,7 +112,7 @@ FunHook<size_t(void*)> msize_hook{
 ConsoleCommand2 mem_stats_cmd{
     "d_mem_stats",
     []() {
-        constexpr float mb_float = 1024.0f * 1024.0f;
+        constexpr float mb_float = 1000.0f * 1000.0f;
         rf::console::print("Number of heap allocations: {}", g_num_heap_allocs);
         rf::console::print("Current heap usage: {:.2f} MB", g_current_heap_usage / mb_float);
         rf::console::print("Max heap usage: {:.2f} MB", g_max_heap_usage / mb_float);

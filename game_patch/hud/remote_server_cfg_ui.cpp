@@ -3,6 +3,7 @@
 #include "../input/input.h"
 #include "../misc/alpine_settings.h"
 #include "../multi/alpine_packets.h"
+#include "../multi/demo/demo.h"
 #include "../rf/gr/gr_font.h"
 #include "../rf/level.h"
 #include "../rf/os/console.h"
@@ -11,6 +12,7 @@
 #include <format>
 #include <utility>
 #include <common/utils/os-utils.h>
+#include "../multi/multi.h"
 
 static bool display_mode_is_compact() {
     return g_alpine_game_config.remote_server_cfg_display_mode
@@ -50,6 +52,23 @@ void RemoteServerCfgPopup::add_content(
     this Self& self,
     const std::string_view content
 ) {
+    // Cap accumulated content.
+    constexpr size_t kMaxLines = 16384;
+    constexpr size_t kMaxPartialLine = 8192;
+
+    // Replace the last line with a visible marker so a truncated config never looks complete to the user.
+    constexpr std::string_view kTruncMarker = "[content truncated - output too large to display in full]";
+    const auto mark_truncated = [&] {
+        if (!self.lines.empty()) {
+            self.lines.back() = std::string{kTruncMarker};
+        }
+    };
+
+    if (self.lines.size() >= kMaxLines) {
+        mark_truncated();
+        return; // already at capacity; drop further content
+    }
+
     size_t i = 0;
     const size_t len = content.size();
 
@@ -65,10 +84,19 @@ void RemoteServerCfgPopup::add_content(
         }
 
         self.partial_line += fragment;
+        if (self.partial_line.size() > kMaxPartialLine) {
+            self.partial_line.resize(kMaxPartialLine); // bound a single unbroken line
+            self.partial_line += " [line truncated]"; // show this specific line was cut
+        }
         self.add_line(self.partial_line);
 
         if (complete && !self.partial_line.empty()) {
             self.partial_line.clear();
+        }
+
+        if (self.lines.size() >= kMaxLines) {
+            mark_truncated();
+            break; // reached capacity mid-stream
         }
 
         i = complete ? new_line + 1 : len;
@@ -153,7 +181,15 @@ void RemoteServerCfgPopup::toggle(this Self& self) {
     self.active = !self.active;
 
     if (self.active && self.lines.empty()) {
-        af_send_server_cfg_request();
+        if (demo_playback_active()) {
+            // No server to ask: the demo recorded the config
+            if (const std::string* cfg = demo_playback_server_cfg()) {
+                self.add_content(*cfg);
+            }
+            self.finalize();
+        } else {
+            af_send_server_cfg_request();
+        }
     }
 }
 
@@ -255,7 +291,7 @@ void RemoteServerCfgPopup::render(this Self& self) {
 
     if (!rf::console::console_is_visible()) {
         const int page_h = h - label_h * 2 - separator_h;
-        constexpr int PAGE_UP_DOWN_GRACE_PERIOD_MS = 500;
+        constexpr int PAGE_UP_DOWN_GRACE_PERIOD_MS = 800;
         constexpr int PAGE_UP_DOWN_WAIT_TIME_MS = 100;
         if (rf::key_is_down(rf::KEY_PAGEUP)
             && (!self.page_up_timer.valid() || self.page_up_timer.elapsed())
@@ -467,7 +503,6 @@ void RemoteServerCfgPopup::render(this Self& self) {
         line_y += separator_h;
 
         rf::gr::set_color(255, 255, 255, 255);
-        const int line_w = content_w - 20 - static_cast<int>(50.f * ui_scale);
         if (std::holds_alternative<Self::KeyValue>(line)) {
             const auto& [key, value] =
                 std::get<Self::KeyValue>(line);
@@ -518,8 +553,14 @@ void RemoteServerCfgPopup::render(this Self& self) {
             }
         } else if (std::holds_alternative<std::string>(line)) {
             const std::string& text = std::get<std::string>(line);
-            if (text.starts_with(rf::level.filename.c_str())) {
-                rf::gr::set_color(255, 0, 255, 255);
+            const bool is_loaded_map =
+                text.starts_with(rf::level.filename.c_str())
+                && get_af_server_info()
+                && !get_af_server_info()->was_manual_level_load;
+            if (is_loaded_map) {
+                rf::gr::set_color(0, 200, 140, 72);
+                rf::gr::rect(content_x, line_y, content_w, line_h);
+                rf::gr::set_color(255, 255, 255, 255);
             }
             rf::gr::string_aligned(
                 rf::gr::ALIGN_LEFT,

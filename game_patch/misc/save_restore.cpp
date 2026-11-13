@@ -244,7 +244,7 @@ CodeInjection corpse_deserialize_all_obj_create_patch{
     [](auto& regs) {
         auto save_data = regs.edi;
         auto stack_frame = regs.esp + 0xD0;
-        auto create_info = addr_as_ref<rf::ObjectCreateInfo>(stack_frame - 0xA4);
+        auto& create_info = addr_as_ref<rf::ObjectCreateInfo>(stack_frame - 0xA4);
         auto entity_cls_id = addr_as_ref<int>(save_data + 0x144);
         // Create entity before creating the corpse to make sure entity action animations are fully loaded
         // This is needed to make sure pose_action_anim points to a valid animation

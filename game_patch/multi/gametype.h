@@ -1,16 +1,20 @@
 #pragma once
 
 #include <optional>
+#include <string>
 #include <xlog/xlog.h>
 #include "../rf/trigger.h"
 #include "../rf/os/string.h"
 #include "../rf/os/timestamp.h"
 #include "../rf/multi.h"
+#include "../rf/math/vector.h"
+#include "../rf/math/matrix.h"
 
 // forward declarations
+struct EventCapturePointHandler;
 namespace rf
 {
-    struct EventCapturePointHandler;
+    struct Event;
 }
 
 static const char* const multi_rfl_prefixes[] = {
@@ -21,7 +25,8 @@ static const char* const multi_rfl_prefixes[] = {
     "dc",
     "rev",
     "run",
-    "esc"};
+    "esc",
+    "pay"};
 
 enum class HillOwner : int
 {
@@ -82,7 +87,7 @@ struct HillInfo
     rf::Trigger* trigger = nullptr; // set on koth init during map init
     float outline_offset = 0.0f;
     float capture_rate = 0.0f;
-    rf::EventCapturePointHandler* handler = nullptr; // used for world HUD icon
+    EventCapturePointHandler* handler = nullptr; // used for world HUD icon
     HillRole role = HillRole::HR_Center;
     HillOwner ownership = HillOwner::HO_Neutral;
     HillOwner steal_dir = HillOwner::HO_Neutral;
@@ -92,6 +97,8 @@ struct HillInfo
     int hold_ms_accum = 0;
     int capture_milli = 0; // 0 - 100000 (100% = 100000)
     std::vector<int> mp_spawn_uids;
+    // g_vehicle_factories indices of the Vehicle Factories linked from this point's handler
+    std::vector<int> vehicle_factories;
     int stage = 0; // order of hills in REV
     int cap_gain_sfx_handle = -1;
     bool cap_gain_sfx_playing = false;
@@ -143,6 +150,20 @@ inline HillOwner opposite(HillOwner o)
                                        : HillOwner::HO_Neutral;
 }
 
+// KOTH has one; the other hill modes and Payload's checkpoints at most this
+inline constexpr int max_hills = 32;
+
+inline HillOwner team_hill_owner(int team)
+{
+    return team == 0 ? HillOwner::HO_Red : HillOwner::HO_Blue;
+}
+
+// -1 for neutral
+inline int hill_owner_team(HillOwner owner)
+{
+    return owner == HillOwner::HO_Red ? 0 : owner == HillOwner::HO_Blue ? 1 : -1;
+}
+
 static inline int rate_to_step(int rate_per_sec, int dt_ms)
 {
     // clamp so we dont skip past boundaries on long frames
@@ -164,6 +185,13 @@ static inline bool hostile_progress_present_server(const HillInfo& h)
 
 extern KothInfo g_koth_info;
 
+// Containment and liveness tests the hill frame code itself runs, so anything asking "was this
+// player on that hill" agrees with the capture logic by construction.
+bool player_inside_hill_trigger(const HillInfo& h, const rf::Player& p);
+bool player_is_countable(rf::Player& p);
+
+bool obj_inside_trigger(const rf::Trigger* t, const rf::Object* o);
+
 bool multi_game_type_is_team_type(rf::NetGameType game_type);
 bool multi_game_type_has_hills(rf::NetGameType game_type);
 bool multi_is_game_type_with_hills();
@@ -173,17 +201,40 @@ bool gt_is_dc();
 bool gt_is_rev();
 bool gt_is_esc();
 bool gt_is_run();
+bool gt_is_bag();
+bool gt_is_tbag();
+bool gt_is_bagman_any();
+bool gt_is_pit();
+bool gt_is_wipeout();
+bool gt_is_gungame();
+bool gt_is_salvage();
+bool gt_is_scavenger();
+bool gt_is_payload();
+const char* multi_gametype_help_text(rf::NetGameType game_type);
+
+// Score is driven by gametype-specific logic rather than directly by frags.
+bool gt_uses_custom_scoring();
+bool gt_uses_rounds();
+bool gt_type_uses_rounds(rf::NetGameType game_type);
 bool rev_all_points_permalocked();
 bool esc_all_points_owned_by_one_team();
 bool esc_team_can_attack_hill(const HillInfo& hill, HillOwner team);
 int multi_koth_get_red_team_score();
 int multi_koth_get_blue_team_score();
+void multi_get_team_scores(rf::NetGameType type, int& red, int& blue);
 void multi_koth_set_red_team_score(int score);
 void multi_koth_set_blue_team_score(int score);
+int koth_get_hill_handler_uid(const HillInfo& hill);
 HillInfo* koth_find_hill_by_uid(uint8_t uid);
-HillInfo* koth_find_hill_by_handler(const rf::EventCapturePointHandler* handler);
-bool koth_set_capture_point_owner(rf::EventCapturePointHandler* handler, int owner, bool announce = true);
+HillInfo* koth_find_hill_by_handler(const EventCapturePointHandler* handler);
+HillInfo* koth_find_hill_by_handler_uid(int handler_uid);
+bool koth_set_capture_point_owner(EventCapturePointHandler* handler, int owner, bool announce = true);
 rf::Trigger* koth_resolve_trigger_from_uid(int uid);
+// The trigger a Capture_Point_Handler event captures in, whatever the game type: its trigger uid, else the first
+// trigger it links to.
+rf::Trigger* koth_capture_point_handler_trigger(const rf::Event& handler);
+float koth_box_cylinder_radius(const rf::Trigger* trigger);
+bool koth_capture_point_handler_uses_cylinder(int handler_uid, int trigger_uid = -1);
 void koth_force_broadcast_all_hill_states();
 void koth_local_announce_hill_captured(const HillInfo* h, HillOwner new_owner, const uint8_t* ids, size_t ids_len);
 void koth_local_announce_hill_captured_vector(const HillInfo* h, HillOwner new_owner, const std::vector<uint8_t>& ids);

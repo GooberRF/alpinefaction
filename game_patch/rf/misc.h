@@ -20,6 +20,10 @@ namespace rf
 
     static auto& gr_use_far_clip = addr_as_ref<bool>(0x01818B65);
     static auto& gr_far_clip_dist = addr_as_ref<float>(0x01818B68);
+    // gr_far_clip_dist times matrix_scale.z (gr_d3d_setup_frustum 0x00546A40), the scaled view depth
+    // compute_vertex_codes clips at
+    static auto& gr_far_clip_dist_scaled = addr_as_ref<float>(0x01818B6C);
+    static auto& gr_set_far_clip = addr_as_ref<void(float dist)>(0x00518060);
     static auto& gr_setup_frustum = addr_as_ref<void()>(0x00517E70);
 
     static auto& bomb_defuse_time_left = addr_as_ref<float>(0x006391B4);
