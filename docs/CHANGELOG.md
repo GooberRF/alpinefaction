@@ -272,8 +272,12 @@ Version 1.5.0 (Trillium): Not yet released
 - Remove the 240 FPS cap in multiplayer, and the `allow_unlimited_fps` dedicated server config option (clients older than 1.5 always keep the cap on 1.5 servers)
 - Replace the launcher `Adapter` option with a `Display` option to choose the monitor the game opens on
 - Prefer the high-performance GPU on systems with more than one, unless `D3D11_PreferHighPerformanceGPU` is off in `alpine_system.ini` (Direct3D 11 renderer only)
+- Add `Use deprecated legacy console` launcher option to use the stock console instead of the new one
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
+- Revamp the in-game console with a new font, search, mouse text selection and inline command suggestions
+- Show kill feed messages in the console
+- Add `ui_console_fontsize`, `ui_console_height`, `ui_console_statusline`, `ui_console_sounds` and `ui_console_mousewheel` console commands to configure the console
 - Add `ui_color_console` console command to set the console background color
 - Render animated (`.vfx`) meshes on the GPU with per-pixel lighting, and apply their materials' reflection maps (Direct3D 11 renderer only)
 - Load levels with very large face counts or many level sounds much faster

@@ -17,14 +17,12 @@
 #include <vector>
 #include <nlohmann/json.hpp>
 #include <xlog/xlog.h>
-#include <common/utils/list-utils.h>
 #include <common/version/version.h>
 #include "discord_presence.h"
 #include "alpine_settings.h"
 #include "misc.h"
 #include "settings_registry.h"
 #include "../hud/hud.h"
-#include "../hud/multi_spectate.h"
 #include "../multi/demo/demo.h"
 #include "../multi/gametype.h"
 #include "../multi/multi.h"
@@ -416,12 +414,6 @@ bool server_has_password()
     return !(g_last_join.addr == rf::netgame.server_addr) || g_last_join.has_password;
 }
 
-std::string_view current_level_name()
-{
-    const char* const name = rf::level.name.c_str();
-    return name[0] ? std::string_view{name} : std::string_view{rf::level.filename.c_str()};
-}
-
 void update_session(const std::string& key, std::optional<int64_t> remaining_ms)
 {
     const int64_t now = unix_now_ms();
@@ -457,7 +449,7 @@ std::string_view activity_mode_prefix()
     // The listen-server host runs the match itself and gets no match state packets.
     const bool match_live = rf::is_server ? g_match_info.match_active : vote_client_match_live();
     const bool pre_match = rf::is_server ? g_match_info.pre_match_active : get_local_pre_match_active();
-    const bool spectating = multi_spectate_is_spectating() || (!rf::is_server && vote_client_spectating_match());
+    const bool spectating = multi_local_player_is_spectating();
     if (match_live) {
         return spectating ? "Spectating match: " : "Match: ";
     }
@@ -465,17 +457,6 @@ std::string_view activity_mode_prefix()
         return "Match starting: ";
     }
     return spectating ? "Spectating " : "";
-}
-
-int count_participants()
-{
-    int count = 0;
-    for (const rf::Player& player : SinglyLinkedList{rf::player_list}) {
-        if (!player.is_non_participant()) {
-            ++count;
-        }
-    }
-    return count;
 }
 
 json build_multi_activity()
@@ -492,7 +473,7 @@ json build_multi_activity()
     }
     else {
         activity["details"] = activity_str(std::format("{}{} - {}", activity_mode_prefix(),
-            multi_game_type_name(game_type), current_level_name()));
+            multi_game_type_name(game_type), level_display_name()));
         // REV and ESC have no running team score; the scoreboard shows none for them either.
         if (multi_game_type_is_team_type(game_type) && game_type != rf::NG_TYPE_REV && game_type != rf::NG_TYPE_ESC) {
             int red = 0;
@@ -506,9 +487,8 @@ json build_multi_activity()
     }
 
     std::optional<int64_t> remaining_ms;
-    const float time_left = rf::multi_time_limit - rf::level.time;
-    if (level_loaded && rf::multi_time_limit > 0.0f && time_left > 0.0f && !gt_uses_rounds()) {
-        remaining_ms = static_cast<int64_t>(time_left * 1000.0f);
+    if (const std::optional<float> time_left = multi_time_left()) {
+        remaining_ms = static_cast<int64_t>(*time_left * 1000.0f);
     }
     update_session(std::format("multi {} {}", server_addr, server_name), remaining_ms);
     activity["timestamps"] = g_session.end_ms ? json{{"end", g_session.end_ms}} : json{{"start", g_session.start_ms}};
@@ -522,7 +502,7 @@ json build_multi_activity()
     if (max_players > 0) {
         activity["party"] = {
             {"id", std::format("{:x}", std::hash<rf::NetAddr>{}(server_addr))},
-            {"size", {std::clamp(count_participants(), 1, max_players), max_players}},
+            {"size", {std::clamp(multi_count_participants(), 1, max_players), max_players}},
         };
     }
 
@@ -540,7 +520,7 @@ json build_activity()
         update_session("demo", std::nullopt);
         return {
             {"details", activity_str("Watching a demo")},
-            {"state", activity_str(current_level_name())},
+            {"state", activity_str(level_display_name())},
             {"timestamps", {{"start", g_session.start_ms}}},
             {"assets", {{"large_image", large_image_key}, {"large_text", activity_str(rf::level.filename.c_str())}}},
         };
@@ -559,7 +539,7 @@ json build_activity()
         activity["details"] = activity_str(std::format("{} \xB7 {}", mod && mod[0] ? mod : "Single player",
             difficulty_name(rf::game_get_skill_level())));
         const std::string_view prefix = paused ? "Paused: " : rf::cutscene_is_playing() ? "Cutscene: " : "";
-        activity["state"] = activity_str(std::format("{}{}", prefix, current_level_name()));
+        activity["state"] = activity_str(std::format("{}{}", prefix, level_display_name()));
         activity["assets"]["large_text"] = activity_str(rf::level.filename.c_str());
     }
     else {
