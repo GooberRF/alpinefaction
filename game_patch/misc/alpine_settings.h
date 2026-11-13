@@ -387,7 +387,7 @@ struct AlpineGameSettings
     }
     static constexpr int min_console_height_pct = 20;
     static constexpr int max_console_height_pct = 100;
-    int console_height_pct = 50;
+    int console_height_pct = 25;
     void set_console_height_pct(int pct)
     {
         console_height_pct = std::clamp(pct, min_console_height_pct, max_console_height_pct);

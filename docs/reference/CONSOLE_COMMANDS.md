@@ -195,7 +195,7 @@ Commands marked "D3D11 only" only have an effect with the Direct3D 11 renderer.
 | `ui_assist_highlight` | | Toggles highlighting kill messages for kills you assisted. Default: on. |
 | `ui_assist_names` | | Toggles including assists in kill messages. Default: on. |
 | `ui_console_fontsize` | `[px]` | Sets the console font size (8-32 px). Default: 14. |
-| `ui_console_height` | `[percent]` | Sets how much of the screen the open console covers (20-100%). Default: 50. |
+| `ui_console_height` | `[percent]` | Sets how much of the screen the open console covers (20-100%). Default: 25. |
 | `ui_console_mousewheel` | | Toggles scrolling the open console with the mouse wheel. When off, the wheel keeps its usual bindings while the console is open. Default: on. |
 | `ui_console_sounds` | | Toggles the console's own interface sounds (scrolling, copying, clicking a command name). Default: on. |
 | `ui_console_statusline` | | Toggles the console status line (player, level, server, player count, time left and FactionFiles link status). Default: on. |
