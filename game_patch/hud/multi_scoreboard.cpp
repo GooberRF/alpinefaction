@@ -260,10 +260,7 @@ static void scoreboard_rehook_cursor()
     g_swallow_attack = true;
     g_pin = {};
     g_hovered_player_id = -1;
-    // The mouse override is shared: the overlay that closed the scoreboard now owns it.
-    if (!vote_panel_is_gameplay_overlay_active() && !demo_controls_ui_is_open()) {
-        gameplay_overlay_apply_mouse(false);
-    }
+    gameplay_overlay_release_mouse();
 }
 
 static void scoreboard_press_button(PopoutButtonKind kind)

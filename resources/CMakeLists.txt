@@ -375,6 +375,8 @@ add_packfile(alpinefaction.vpp
     fonts/biggerfont.vf
     fonts/regularfont.ttf
     fonts/boldfont.ttf
+    fonts/consolefont.ttf
+    fonts/consolefont-bold.ttf
 
     meshes/Hendrix.v3c
     meshes/Generator_Small01.v3m

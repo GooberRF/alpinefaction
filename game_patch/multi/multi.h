@@ -252,6 +252,11 @@ bool multi_level_name_matches_any_mp_prefix(const char* filename);
 bool multi_level_name_matches_game_type(std::string_view level_filename, rf::NetGameType game_type);
 std::string normalize_level_filename(std::string_view name); // appends ".rfl" when it is missing
 [[nodiscard]] int multi_num_spawned_players();
+bool multi_local_player_is_spectating();
+int multi_count_participants(int* num_bots = nullptr);
+// Set while a time limit (not a round clock) is running.
+std::optional<float> multi_time_left();
+std::string_view level_display_name(); // falls back to the filename for unnamed levels
 int get_semi_auto_fire_wait_override();
 void mp_send_handicap_request(bool on_join);
 void print_alpine_dedicated_server_config_info(std::string& output, bool verbose, bool remote = false);

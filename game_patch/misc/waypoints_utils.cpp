@@ -395,7 +395,7 @@ void capture_waypoint_editor_mouse_input()
     }
     int mouse_z = 0;
     rf::mouse_get_pos(g_waypoint_editor_mouse_x, g_waypoint_editor_mouse_y, mouse_z);
-    g_waypoint_editor_left_click_pressed = rf::mouse_was_button_pressed(0) > 0;
+    g_waypoint_editor_left_click_pressed = rf::mouse_was_button_pressed(0);
     // Use secondary attack bind (whatever key/button it's bound to) for cursor toggle.
     // Read past the filter since our own veto blocks this action.
     bool secondary_just_pressed = false;

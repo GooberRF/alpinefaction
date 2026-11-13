@@ -381,6 +381,7 @@ void print_kill_message(rf::Player* killed_player, rf::Player* killer_player)
     }
 
     if (g_alpine_game_config.killfeed_enabled) {
+        killfeed_print_to_console(msg.c_str(), static_cast<int>(color_id));
         bool is_team_mode = multi_is_team_game_type();
         const char* trailing = kill_detail_suffix.empty() ? nullptr : kill_detail_suffix.c_str();
         // An assister counts as involved: same line as everyone else, just in white.
