@@ -34,6 +34,7 @@
 #include "../../../misc/alpine_terrain_decorations.h"
 #include "../../../misc/level.h"
 #include "../../../misc/misc.h"
+#include "../../../misc/side_scroller.h"
 #include "../../../multi/vehicles/vehicle_render.h"
 #include "../../../object/alpine_dir_light.h"
 #include "../../../object/object.h"
@@ -174,6 +175,28 @@ namespace gr::d3d11::engine
     {
         rf::Camera* cam = rf::local_player ? rf::local_player->cam : nullptr;
         return cam ? rf::camera_get_pos(cam) : rf::Vector3{};
+    }
+
+    inline bool side_scroller_occlusion_active()
+    {
+        return get_ss_occlusion_params().active;
+    }
+
+    inline bool side_scroller_occlusion(SideScrollerOcclusion& out)
+    {
+        static_assert(max_ss_occlusion_entities == max_side_scroller_occluders);
+        const SsOcclusionParams& ss = get_ss_occlusion_params();
+        if (!ss.active) {
+            return false;
+        }
+        out.fade_strength = ss.fade_strength;
+        out.radius = ss.radius;
+        out.num_entities = ss.num_entities;
+        for (int i = 0; i < ss.num_entities; ++i) {
+            out.entity_pos[i] = {ss.entity_pos[i].x, ss.entity_pos[i].y, ss.entity_pos[i].z};
+        }
+        out.camera_pos = {ss.camera_pos.x, ss.camera_pos.y, ss.camera_pos.z};
+        return true;
     }
 
     inline rf::MoverBrush* mover_brush_list()

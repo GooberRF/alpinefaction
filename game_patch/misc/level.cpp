@@ -17,6 +17,7 @@
 #include "misc.h"
 #include "player.h"
 #include "../multi/payload.h"
+#include "side_scroller.h"
 #include "../multi/server.h"
 #include "../multi/vehicles/vehicle_physics.h"
 #include "../object/alpine_corona.h"
@@ -147,6 +148,7 @@ CodeInjection level_load_init_patch{
         alpine_mover_path_clear_state();
         hud_world_level_unload();
         set_headlamp_toggle_enabled(AlpineLevelProperties::instance().starts_with_headlamp);
+        side_scroller_on_level_load();
     },
 };
 

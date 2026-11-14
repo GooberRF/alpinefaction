@@ -426,6 +426,8 @@ namespace gr::d3d11
             terrain_renderer_ = &terrain_renderer;
         }
 
+        void set_is_sky(bool is_sky) { is_sky_ = is_sky; }
+
         void add_solid(rf::GSolid* solid);
         void add_room(rf::GRoom* room, rf::GSolid* solid);
         void add_face(rf::GFace* face, rf::GSolid* solid);
@@ -492,21 +494,10 @@ namespace gr::d3d11
         for (rf::GFace& face : room->face_list) {
             add_face(&face, solid);
         }
-        // Only iterate detail_rooms for non-detail rooms. Detail rooms should never
-        // have sub-detail rooms in Red Faction. After RF2-style geomod, the boolean
-        // engine may corrupt the detail_rooms VArray on detail rooms, causing infinite
-        // recursion if we iterate it unconditionally.
-        if (!room->is_detail) {
-            for (rf::GRoom* detail_room : room->detail_rooms) {
-                if (detail_room->face_list.empty()) {
-                    continue; // skip destroyed breakable detail rooms
-                }
-                if (engine::terrain_is_separate_chunk(room, detail_room)) {
-                    continue;
-                }
-                add_room(detail_room, solid);
-            }
-        }
+        // Detail rooms are rendered separately via render_detail() which sets the
+        // ss_is_detail flag for side-scroller dithered transparency. Including them
+        // here would cause double-rendering and break that effect. Sky rooms also
+        // render their detail rooms explicitly in render_sky_room().
     }
 
     static inline FaceRenderType determine_face_render_type(rf::GFace* face)
@@ -1169,19 +1160,21 @@ namespace gr::d3d11
         return cache;
     }
 
-    void SolidRenderer::render_detail(rf::GSolid* solid, rf::GRoom* room, bool alpha)
+    void SolidRenderer::render_detail(rf::GSolid* solid, rf::GRoom* room, bool alpha, bool is_sky)
     {
         // A detail brush sits inside whatever normal room contains it, so its own uid would not
         // match the water room's; fall back to the bbox test.
         render_context_.set_draw_room_uid(-1);
-        GRenderCache* cache = get_or_create_detail_room_cache(solid, room);
+        GRenderCache* cache = get_or_create_detail_room_cache(solid, room, is_sky);
         if (!cache) return;
         // Terrain first: the room's level decals are in its opaque batches and have to land on top.
         if (!alpha && cache->has_terrain_batches()) {
             render_terrain(*cache);
         }
         FaceRenderType render_type = alpha ? FaceRenderType::alpha : FaceRenderType::opaque;
+        render_context_.set_ss_is_detail(true);
         cache->render(render_type, render_context_);
+        render_context_.set_ss_is_detail(false);
     }
 
     void SolidRenderer::render_terrain(GRenderCache& cache)
@@ -1268,17 +1261,26 @@ namespace gr::d3d11
     // clear_cache() resets all geo_cache to nullptr, which properly clears this sentinel.
     static const auto k_empty_detail_sentinel = reinterpret_cast<rf::GCache*>(uintptr_t(1));
 
-    GRenderCache* SolidRenderer::get_or_create_detail_room_cache(rf::GSolid* solid, rf::GRoom* room)
+    GRenderCache* SolidRenderer::get_or_create_detail_room_cache(rf::GSolid* solid, rf::GRoom* room, bool is_sky)
     {
+        // Check if existing cache needs invalidation due to sky mode mismatch
+        // (e.g. pre-cached as normal but now needed for a dynamic sky room set via Set_Skybox)
+        if (is_sky != sky_detail_rooms_.contains(room)) {
+            release_detail_room_cache(room);
+        }
         if (room->geo_cache == k_empty_detail_sentinel) {
             return nullptr;
         }
         auto cache = reinterpret_cast<GRenderCache*>(room->geo_cache);
         if (!cache) {
-            xlog::debug("Creating render cache for detail room {} (faces: {})",
-                room->room_index, room->face_list.size());
+            xlog::debug("Creating render cache for detail room {} (faces: {} sky: {})",
+                room->room_index, room->face_list.size(), is_sky);
             GRenderCacheBuilder builder{cache_options_};
-            if (terrain_pixel_shader_ && terrain_pixel_shader_no_gas_) {
+            if (is_sky) {
+                builder.set_is_sky(true);
+                sky_detail_rooms_.insert(room);
+            }
+            else if (terrain_pixel_shader_ && terrain_pixel_shader_no_gas_) {
                 builder.enable_terrain(terrain_renderer_);
             }
             builder.add_room(room, solid);
@@ -1312,6 +1314,7 @@ namespace gr::d3d11
         detail_render_cache_.clear();
         mover_render_cache_.clear();
         geo_cache_rooms_.clear();
+        sky_detail_rooms_.clear();
         rf::geo_cache_num_rooms = 0;
         decoration_chunks_.clear();
         decoration_chunk_rooms_.clear();
@@ -1322,6 +1325,7 @@ namespace gr::d3d11
     {
         rf::GCache* const cache = room->geo_cache;
         room->geo_cache = nullptr;
+        sky_detail_rooms_.erase(room);
         if (!cache || cache == k_empty_detail_sentinel) {
             return;
         }
@@ -1372,8 +1376,25 @@ namespace gr::d3d11
 
         before_render(out_sky_transform_pos, out_sky_transform_orient);
         render_room_faces(engine::level_solid(), room, FaceRenderType::opaque);
+
+        // Render detail rooms without frustum culling — skybox geometry is rendered
+        // with an offset/rotation so camera-based bounding box checks don't apply.
+        // All opaque detail faces must be drawn before any alpha detail faces to
+        // ensure correct blending when detail rooms overlap.
+        for (rf::GRoom* detail_room : room->detail_rooms) {
+            if (!detail_room->face_list.empty()) {
+                render_detail(engine::level_solid(), detail_room, false, true);
+            }
+        }
+
         render_room_faces(engine::level_solid(), room, FaceRenderType::alpha);
         render_room_faces(engine::level_solid(), room, FaceRenderType::liquid);
+
+        for (rf::GRoom* detail_room : room->detail_rooms) {
+            if (!detail_room->face_list.empty()) {
+                render_detail(engine::level_solid(), detail_room, true, true);
+            }
+        }
 
         // Render mover brushes that are in the sky room being projected
         if (rf::MoverBrush* const mover_brush_list = engine::mover_brush_list()) {
@@ -1411,10 +1432,12 @@ namespace gr::d3d11
         render_context_.update_lights();
         GRenderCache* cache = get_or_create_movable_solid_cache(solid);
         before_render(pos, orient);
+        render_context_.set_ss_is_detail(true);
         cache->render(FaceRenderType::opaque, render_context_);
         if (include_alpha) {
             cache->render(FaceRenderType::alpha, render_context_);
         }
+        render_context_.set_ss_is_detail(false);
         if (rf::gr::decals_enabled) {
             // Decals on mover brushes; picmip doesn't apply.
             RenderContext::ScopedPicmipActive decal_scope{render_context_, false};
@@ -1437,7 +1460,9 @@ namespace gr::d3d11
         render_context_.update_lights();
         GRenderCache* cache = get_or_create_movable_solid_cache(solid);
         before_render(pos, orient);
+        render_context_.set_ss_is_detail(true);
         cache->render(FaceRenderType::alpha, render_context_);
+        render_context_.set_ss_is_detail(false);
         if (rf::gr::decals_enabled) {
             // Decals on mover brushes; picmip doesn't apply.
             RenderContext::ScopedPicmipActive decal_scope{render_context_, false};
@@ -1616,6 +1641,8 @@ namespace gr::d3d11
             }
         }
         for (rf::GRoom* room: solid->cached_detail_room_list) {
+            // Pre-cache as non-sky; if later rendered in a sky room context,
+            // get_or_create_detail_room_cache will detect the mismatch and rebuild.
             get_or_create_detail_room_cache(solid, room);
         }
     }

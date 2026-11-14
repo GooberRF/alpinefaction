@@ -552,9 +552,19 @@ namespace gr::d3d11
         float liquid_surface;
         float fog_near;
         std::array<float, 2> _pad;
+        // Side-scroller occlusion (dithered transparency)
+        float ss_fade_strength;
+        float ss_radius;
+        float ss_is_detail;
+        float ss_num_entities;
+        // Each entity position stored as float4 (xyz + pad) for HLSL array packing
+        std::array<float, 4> ss_entity_pos[engine::max_side_scroller_occluders];
+        // Camera position for computing entity-to-camera cylinder axis
+        std::array<float, 3> ss_camera_pos;
+        float pad1;
     };
-    static_assert(sizeof(RenderModeBufferData) == 96);
     static_assert(offsetof(RenderModeBufferData, fog_near) == 84);
+    static_assert(offsetof(RenderModeBufferData, ss_fade_strength) == 96);
     static_assert(sizeof(RenderModeBufferData) % 16 == 0);
 
     RenderModeBuffer::RenderModeBuffer(ID3D11Device* device)
@@ -827,6 +837,18 @@ namespace gr::d3d11
         data.sky_room = current_sky_room_ ? 1.0f : 0.0f;
         data.draw_room_uid = static_cast<float>(current_draw_room_uid_);
         data.liquid_surface = current_liquid_surface_ ? 1.0f : 0.0f;
+
+        engine::SideScrollerOcclusion ss;
+        if (engine::side_scroller_occlusion(ss)) {
+            data.ss_fade_strength = ss.fade_strength;
+            data.ss_radius = ss.radius;
+            data.ss_num_entities = static_cast<float>(ss.num_entities);
+            for (int i = 0; i < ss.num_entities; ++i) {
+                data.ss_entity_pos[i] = {ss.entity_pos[i].x, ss.entity_pos[i].y, ss.entity_pos[i].z, 0.0f};
+            }
+            data.ss_camera_pos = {ss.camera_pos.x, ss.camera_pos.y, ss.camera_pos.z};
+        }
+        data.ss_is_detail = current_ss_is_detail_ ? 1.0f : 0.0f;
 
         D3D11_MAPPED_SUBRESOURCE mapped_subres;
         DF_GR_D3D11_CHECK_HR(

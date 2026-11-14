@@ -1556,6 +1556,8 @@ constexpr LevelTabControl level_tab_controls[] = {
     {IDC_PAYLOAD_RESPAWN_DEFENDER_BASE, LevelTab::gameplay},
     {IDC_PAYLOAD_RESPAWN_DEFENDER_PER_CHECKPOINT, LevelTab::gameplay},
     {IDC_PAYLOAD_RESPAWN_DEFENDER_FINAL_STRETCH, LevelTab::gameplay},
+    {IDC_PERSPECTIVE_LABEL, LevelTab::gameplay},
+    {IDC_PERSPECTIVE_COMBO, LevelTab::gameplay},
     {IDC_LEGACY_CYCLIC_TIMERS, LevelTab::compatibility},
     {IDC_LEGACY_MOVERS, LevelTab::compatibility},
     {IDC_LEGACY_LIGHTING, LevelTab::compatibility},
@@ -2333,6 +2335,12 @@ CodeInjection CLevelDialog_OnInitDialog_patch{
         CheckDlgButton(hdlg, IDC_SUN_DRIVES_SHADOWMAP_DIR, alpine_level_props.sun_drives_shadowmap_dir ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hdlg, IDC_SUN_LIQUID_OCCLUDES, alpine_level_props.sun_liquid_occludes ? BST_CHECKED : BST_UNCHECKED);
 
+        // Populate perspective dropdown
+        HWND combo = GetDlgItem(hdlg, IDC_PERSPECTIVE_COMBO);
+        SendMessageA(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("First person"));
+        SendMessageA(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>("Side-scroller"));
+        SendMessageA(combo, CB_SETCURSEL, alpine_level_props.perspective, 0);
+
         minimap_init_controls(hdlg, alpine_level_props);
         level_dialog_init_tabs(hdlg);
 
@@ -2427,6 +2435,11 @@ CodeInjection CLevelDialog_OnOK_patch{
         minimap_store_coord(hdlg, IDC_MINIMAP_MAX_X, alpine_level_props.minimap_world_max.x);
         minimap_store_coord(hdlg, IDC_MINIMAP_MAX_Z, alpine_level_props.minimap_world_max.z);
         minimap_store_coord(hdlg, IDC_MINIMAP_CUT_HEIGHT, alpine_level_props.minimap_cut_height);
+
+        int sel = static_cast<int>(SendDlgItemMessageA(hdlg, IDC_PERSPECTIVE_COMBO, CB_GETCURSEL, 0, 0));
+        if (sel != CB_ERR) {
+            alpine_level_props.perspective = static_cast<uint8_t>(sel);
+        }
 
         // Stock OnOK (and the menu path, 0x00402300) never marks the document modified.
         mark_level_modified();

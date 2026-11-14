@@ -140,7 +140,8 @@ namespace gr::d3d11
             float dynamic_light_ndotl = engine::dynamic_light_ndotl();
             float pixel_light_overbright = g_level_pixel_light_overbright;
             float alpha_test_threshold = g_alpha_test_threshold;
-            if (force_update_ || current_alpha_test_ != alpha_test || current_fog_allowed_ != fog_allowed || current_color_ != color || current_colorblind_mode_ != colorblind_mode || current_lightmap_only_ != lightmap_only || current_dynamic_lighting_ != dynamic_lighting || current_self_illumination_ != self_illumination || current_apply_light_scale_ != apply_light_scale || current_fixed_light_scale_ != fixed_light_scale || current_emissive_override_ != emissive_override || current_dynamic_light_ndotl_ != dynamic_light_ndotl || current_pixel_light_overbright_ != pixel_light_overbright || current_alpha_test_threshold_ != alpha_test_threshold) {
+            bool ss_active = engine::side_scroller_occlusion_active();
+            if (force_update_ || ss_active || current_alpha_test_ != alpha_test || current_fog_allowed_ != fog_allowed || current_color_ != color || current_colorblind_mode_ != colorblind_mode || current_lightmap_only_ != lightmap_only || current_dynamic_lighting_ != dynamic_lighting || current_self_illumination_ != self_illumination || current_apply_light_scale_ != apply_light_scale || current_fixed_light_scale_ != fixed_light_scale || current_emissive_override_ != emissive_override || current_dynamic_light_ndotl_ != dynamic_light_ndotl || current_pixel_light_overbright_ != pixel_light_overbright || current_alpha_test_threshold_ != alpha_test_threshold) {
                 current_alpha_test_ = alpha_test;
                 current_fog_allowed_ = fog_allowed;
                 current_color_ = color;
@@ -200,6 +201,15 @@ namespace gr::d3d11
             }
         }
 
+        // Detail and mover geometry, which side-scroller occlusion dithers. Scoped to the draw sequence too.
+        void set_ss_is_detail(bool is_detail, ID3D11DeviceContext* device_context)
+        {
+            if (current_ss_is_detail_ != is_detail) {
+                current_ss_is_detail_ = is_detail;
+                update_buffer(device_context);
+            }
+        }
+
     private:
         void update_buffer(ID3D11DeviceContext* device_context);
 
@@ -221,6 +231,7 @@ namespace gr::d3d11
         bool current_sky_room_ = false;
         int current_draw_room_uid_ = -1;
         bool current_liquid_surface_ = false;
+        bool current_ss_is_detail_ = false;
     };
 
     class PerFrameBuffer
@@ -678,6 +689,11 @@ namespace gr::d3d11
                 return;
             }
             render_mode_cbuffer_.set_liquid_surface(liquid_surface, device_context_);
+        }
+
+        void set_ss_is_detail(bool is_detail)
+        {
+            render_mode_cbuffer_.set_ss_is_detail(is_detail, device_context_);
         }
 
         void set_vertex_buffer(ID3D11Buffer* vertex_buffer, UINT stride, UINT slot = 0)

@@ -22,6 +22,7 @@
 #include "hud.h"
 #include "hud_internal.h"
 #include "multi_spectate.h"
+#include "../misc/side_scroller.h"
 
 float g_hud_ammo_scale = 1.0f;
 bool g_displaying_custom_reticle = false;
@@ -145,6 +146,13 @@ CallHook<void(int, int, int, rf::gr::Mode)> render_reticle_gr_bitmap_hook{
 
         x = static_cast<int>((x - clip_w / 2.0F) * scale + clip_w / 2.0F + aim_dx);
         y = static_cast<int>((y - clip_h / 2.0F) * scale + clip_h / 2.0F + aim_dy);
+
+        // In side-scroller mode, offset reticle to the cursor position
+        int reticle_off_x = 0, reticle_off_y = 0;
+        if (side_scroller_get_reticle_offset(reticle_off_x, reticle_off_y)) {
+            x += reticle_off_x;
+            y += reticle_off_y;
+        }
 
         hud_scaled_bitmap(bm_handle, x, y, scale, mode);
     },

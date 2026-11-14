@@ -4,6 +4,7 @@
 #include <optional>
 #include <memory>
 #include <span>
+#include <unordered_set>
 #include <d3d11.h>
 #include <common/ComPtr.h>
 #include "gr_d3d11_shader.h"
@@ -120,7 +121,7 @@ namespace gr::d3d11
         void before_render(const rf::Vector3& pos, const rf::Matrix3& orient);
         void after_render();
         void render_room_faces(rf::GSolid* solid, rf::GRoom* room, FaceRenderType render_type);
-        void render_detail(rf::GSolid* solid, rf::GRoom* room, bool alpha);
+        void render_detail(rf::GSolid* solid, rf::GRoom* room, bool alpha, bool is_sky = false);
         void render_terrain(GRenderCache& cache);
         void render_dynamic_decals(rf::GRoom** rooms, int num_rooms);
         void render_alpha_detail_dynamic_decals(rf::GRoom* detail_room);
@@ -128,7 +129,7 @@ namespace gr::d3d11
         void before_render_decals();
         void after_render_decals();
         RoomRenderCache* get_or_create_normal_room_cache(rf::GSolid* solid, rf::GRoom* room);
-        GRenderCache* get_or_create_detail_room_cache(rf::GSolid* solid, rf::GRoom* room);
+        GRenderCache* get_or_create_detail_room_cache(rf::GSolid* solid, rf::GRoom* room, bool is_sky = false);
         GRenderCache* get_or_create_movable_solid_cache(rf::GSolid* solid);
         bool claim_terrain_chunk(std::vector<int>& stamps, const rf::GRoom* room);
         bool terrain_chunk_drawn(const rf::GRoom* room) const;
@@ -166,6 +167,7 @@ namespace gr::d3d11
         std::vector<std::unique_ptr<GRenderCache>> detail_render_cache_;
         std::unordered_map<rf::GSolid*, std::unique_ptr<GRenderCache>> mover_render_cache_;
         std::vector<rf::GRoom*> geo_cache_rooms_;
+        std::unordered_set<rf::GRoom*> sky_detail_rooms_;
         SolidCacheOptions cache_options_;
         D3D11_CULL_MODE cull_mode_ = D3D11_CULL_BACK;
     };
