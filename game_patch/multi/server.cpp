@@ -1462,7 +1462,7 @@ static bool accuracy_shot_scope_consume()
     return true;
 }
 
-// Awards follow a shot's first player hit, which a hull pierced ahead of it must not spend.
+// Awards go to a shot's first player hit, so a hull it pierces first must not spend this latch.
 static bool accuracy_shot_scope_consume_award()
 {
     if (!g_accuracy_shot.active) {

@@ -189,9 +189,10 @@ extern KothInfo g_koth_info;
 // player on that hill" agrees with the capture logic by construction.
 bool player_inside_hill_trigger(const HillInfo& h, const rf::Player& p);
 bool player_is_countable(rf::Player& p);
-std::vector<rf::Player*> players_from_ids(const std::vector<uint8_t>& ids);
 
 bool obj_inside_trigger(const rf::Trigger* t, const rf::Object* o);
+
+std::vector<rf::Player*> players_from_ids(const std::vector<uint8_t>& ids);
 
 bool multi_game_type_is_team_type(rf::NetGameType game_type);
 bool multi_game_type_has_hills(rf::NetGameType game_type);
