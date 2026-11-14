@@ -454,6 +454,24 @@ Sniper Rifle, Rocket Launcher and Shotgun with unlimited magazines. The map has 
 reach the capture limit wins. If the time limit runs out first, the team with more captures wins.
 """
 
+[[gametype]]
+code = "PAY"
+description = """
+Attack and defend around a cart on a track. The map decides which team attacks. Attackers move the cart by standing
+next to it, and more of them push it faster, up to three. Any defender next to the cart blocks it. Left alone for a
+while, the cart starts rolling back, but never past the last checkpoint it reached.
+
+The checkpoints along the track belong to the defenders until the cart reaches them. Each one captured scores a point
+for the attackers, adds time to the clock and moves the spawn points forward, and some hold the cart in place
+for a few seconds. Each match opens with a short setup time before the cart can move.
+
+Attackers next to the cart slowly regain health, then armor, and ammunition for the weapon they hold.
+
+The attackers win by pushing the cart to the end of the track. The
+defenders win by holding them off until the time limit runs out. If time runs out while the attackers are pushing the
+cart, overtime keeps the match going until nobody has pushed it for a few seconds.
+"""
+
 # ------------------------------------------------------------------------------------------------------------
 # Powerups (items.tbl $Class Name, or an Alpine powerup class name)
 # ------------------------------------------------------------------------------------------------------------

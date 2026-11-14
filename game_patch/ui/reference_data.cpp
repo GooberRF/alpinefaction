@@ -434,6 +434,7 @@ const char* gametype_origin(rf::NetGameType type)
         case rf::NG_TYPE_SAL:
             return "Alpine Faction 1.4";
         case rf::NG_TYPE_SCAV:
+        case rf::NG_TYPE_PAY:
             return "Alpine Faction 1.5";
         case rf::NG_TYPE_UNK:
             break;
