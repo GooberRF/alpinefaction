@@ -304,6 +304,15 @@ add_packfile(alpinefaction.vpp
     images/dec_af_csp09.tga
     images/dec_af_csp10.tga
     images/af-jetpack1skin1.tga
+    images/af_armorshard1_tex.tga
+    images/af_haste1_metal.tga
+    images/af_haste1_glass.tga
+    images/af_haste1_frame.tga
+    images/af_vampire1_shell.tga
+    images/af_vampire1_orb.tga
+    images/af_vampire1_teeth.tga
+    images/af_healthshard1_shell.tga
+    images/af_healthshard1_gauze.tga
     images/af_menu_cap.svg
     images/af_connector.svg
     images/af_arrows.svg
@@ -415,6 +424,10 @@ add_packfile(alpinefaction.vpp
     meshes/af_turret_plain_debris.v3m
     meshes/af_sub_debris.v3m
     meshes/af_zipline1.v3m
+    meshes/af_armorshard1.v3m
+    meshes/af_haste1.v3m
+    meshes/af_vampire1.v3m
+    meshes/af_healthshard1.v3m
 
     animations/af_female_jeep_driver.rfa
     animations/af_female_jeep_gunner.rfa
