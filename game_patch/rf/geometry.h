@@ -359,6 +359,12 @@ namespace rf
         {
             return AddrCaller{0x00465F00}.this_call<bool>(this);
         }
+
+        // Rebuilds the liquid surface face at liquid_depth
+        void reset_liquid(GSolid* solid)
+        {
+            AddrCaller{0x004CDC50}.this_call(this, solid);
+        }
     };
     static_assert(sizeof(GRoom) == 0x1CC);
     static_assert(offsetof(GRoom, clip_wnd) == 0x16C);

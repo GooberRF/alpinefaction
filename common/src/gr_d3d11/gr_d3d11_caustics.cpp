@@ -265,7 +265,7 @@ namespace gr::d3d11
             candidates[slot] = {
                 room->bbox_min,
                 room->bbox_max,
-                room->bbox_min.y + room->liquid_depth,
+                engine::liquid_surface_y(room),
                 room->liquid_color,
                 dist,
                 room,

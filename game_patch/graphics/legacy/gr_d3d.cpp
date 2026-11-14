@@ -9,6 +9,7 @@
 #include <common/error/d3d-error.h>
 #include <common/config/BuildConfig.h>
 #include <xlog/xlog.h>
+#include <common/utils/display-utils.h>
 #include <common/utils/os-utils.h>
 #include "../../rf/gr/gr.h"
 #include "../../rf/gr/gr_font.h"
@@ -786,6 +787,25 @@ CodeInjection gr_d3d_init_load_library_injection{
     },
 };
 
+CodeInjection gr_d3d_init_adapter_injection{
+    0x00545A2C,
+    [] {
+        // The adapter heading the chosen display, never the stock Selected Video Card value
+        unsigned adapter = D3DADAPTER_DEFAULT;
+        const auto& display = gr_get_display();
+        if (display) {
+            auto get_adapter_monitor = [](unsigned i) { return rf::gr::d3d::d3d->GetAdapterMonitor(i); };
+            adapter = find_adapter_for_display(*display, rf::gr::d3d::d3d->GetAdapterCount(), get_adapter_monitor)
+                .value_or(D3DADAPTER_DEFAULT);
+        }
+        rf::gr::d3d::adapter_idx = adapter;
+        D3DADAPTER_IDENTIFIER8 identifier{};
+        rf::gr::d3d::d3d->GetAdapterIdentifier(adapter, D3DENUM_NO_WHQL_LEVEL, &identifier);
+        xlog::info("[Display] D3D adapter {}: {} for display {}", adapter, identifier.Description,
+            display ? display->friendly_name : "unknown");
+    },
+};
+
 CodeInjection gr_d3d_device_lost_injection{
     0x00545042,
     [] {
@@ -1033,6 +1053,7 @@ void gr_d3d_apply_patch()
 
     // Use d3d8to9 instead of d3d8
     gr_d3d_init_load_library_injection.install();
+    gr_d3d_init_adapter_injection.install();
 
     // Release default pool resources
     gr_d3d_device_lost_injection.install();

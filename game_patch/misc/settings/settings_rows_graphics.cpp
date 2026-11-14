@@ -120,6 +120,7 @@ const char* const labels_shadow_distance[] = {"Lowest", "Low", "Medium", "High",
 const char* const labels_shadow_quality[] = {"Blob", "Low", "Medium", "High", "Very high", "Maximum"};
 const char* const labels_underwater_fx[] = {"Off", "Caustics", "Caustics + fog", "Full"};
 const char* const labels_detail_textures[] = {"Off", "ATX only", "ATX and automatic"};
+const char* const labels_liquid_surface_quality[] = {"Low", "Medium", "High", "Every frame"};
 
 bool sample_count_offered(const int value)
 {
@@ -220,6 +221,18 @@ const SettingRow rows[] = {
         .flags = SF_D3D11_ONLY,
         ENUM_LABELS(labels_colorblind),
         .console_cmd = "r_colorblind",
+    },
+    {
+        .id = "prefer_high_performance_gpu",
+        .key = "D3D11_PreferHighPerformanceGPU",
+        .label = "Prefer high-performance GPU",
+        .tooltip = "Render on the high-performance GPU instead of the one Windows picks (restart required).",
+        .category = Cat::Graphics,
+        .subcategory = "Display",
+        .widget = Wid::Toggle,
+        .access = AccCoreBool{&ASC::prefer_high_performance_gpu},
+        .flags = SF_D3D11_ONLY | SF_HIDDEN | SF_RESTART_REQUIRED,
+        .persistence = Pers::Afcc,
     },
     {
         .id = "low_frame_latency",
@@ -584,6 +597,20 @@ const SettingRow rows[] = {
         .console_cmd = "cl_particlepoolsize",
         .ui_step = 2048.0f,
         .ui_zero_label = "Stock",
+    },
+    {
+        .id = "liquid_surface_quality",
+        .key = "LiquidSurfaceQuality",
+        .label = "Liquid surface updates",
+        .tooltip = "How closely a rising or falling liquid surface follows its level. Lower is faster on large levels.",
+        .category = Cat::Graphics,
+        .subcategory = "Effects",
+        .widget = Wid::Enum,
+        .access = AccInt{&AGS::liquid_surface_quality, &AGS::set_liquid_surface_quality,
+            AGS::min_liquid_surface_quality, AGS::max_liquid_surface_quality},
+        .flags = SF_ADVANCED,
+        ENUM_LABELS(labels_liquid_surface_quality),
+        .console_cmd = "r_liquidsurface",
     },
     {
         .id = "show_glares",

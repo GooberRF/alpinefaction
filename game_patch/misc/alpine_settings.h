@@ -353,6 +353,13 @@ struct AlpineGameSettings
     {
         particle_sim_rate = std::clamp(hz, min_particle_sim_rate, max_particle_sim_rate);
     }
+    static constexpr int min_liquid_surface_quality = 0;
+    static constexpr int max_liquid_surface_quality = 3;
+    int liquid_surface_quality = 2;
+    void set_liquid_surface_quality(int value)
+    {
+        liquid_surface_quality = std::clamp(value, min_liquid_surface_quality, max_liquid_surface_quality);
+    }
     bool show_enemy_bullets = true;
     bool fps_counter = true;
     static constexpr int min_fps_counter_average_ms = 0;
@@ -394,6 +401,23 @@ struct AlpineGameSettings
     bool save_console_history = false; // checked before config loaded, must be false here
     static constexpr uint32_t default_console_color = 0x274E69C0; // RRGGBBAA
     uint32_t console_color = default_console_color;
+    static constexpr int min_console_font_size = 8;
+    static constexpr int max_console_font_size = 32;
+    int console_font_size = 14;
+    void set_console_font_size(int px)
+    {
+        console_font_size = std::clamp(px, min_console_font_size, max_console_font_size);
+    }
+    static constexpr int min_console_height_pct = 20;
+    static constexpr int max_console_height_pct = 100;
+    int console_height_pct = 25;
+    void set_console_height_pct(int pct)
+    {
+        console_height_pct = std::clamp(pct, min_console_height_pct, max_console_height_pct);
+    }
+    bool console_statusline = true;
+    bool console_sounds = true;
+    bool console_mouse_wheel = true;
     bool screen_shake_force_off = false;
     bool display_target_player_names = true;
     bool verbose_time_left_display = true;
@@ -486,6 +510,7 @@ struct AlpineGameSettings
         RemoteServerCfgPopup::DISPLAY_MODE_ALIGN_RIGHT_HIGHLIGHT_BOX;
     bool simple_server_chat_msgs = true;
     bool quick_exit = false;
+    bool bound_caps_lock_capitalizes = false;
     uint32_t bot_shared_secret = 0;
     std::string bot_personality_preset = "balanced";
     std::string bot_skill_preset = "average";

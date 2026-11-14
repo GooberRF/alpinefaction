@@ -8,9 +8,11 @@
 #include <cassert>
 #include <unordered_set>
 #include <algorithm>
+#include <cmath>
 #include <format>
 #include "../misc/misc.h"
 #include "../misc/alpine_settings.h"
+#include "../misc/settings_registry.h"
 #include "../input/input.h"
 #include "../misc/level.h"
 #include "../rf/file/file.h"
@@ -19,6 +21,8 @@
 #include "../rf/hud.h"
 #include "../rf/entity.h"
 #include "../rf/level.h"
+#include "../rf/geometry.h"
+#include "../rf/os/frametime.h"
 #include "../rf/multi.h"
 #include "../rf/player/player.h"
 #include "../rf/sound/sound.h"
@@ -179,11 +183,8 @@ void __fastcall EventSetLiquidDepth_turn_on_new(EventSetLiquidDepthHook* this_)
     }
 }
 
-extern CallHook<void __fastcall (rf::GRoom*, int, rf::GSolid*)> liquid_depth_update_apply_all_GRoom_reset_liquid_hook;
-
-void __fastcall liquid_depth_update_apply_all_GRoom_reset_liquid(rf::GRoom* room, int edx, rf::GSolid* solid) {
-    liquid_depth_update_apply_all_GRoom_reset_liquid_hook.call_target(room, edx, solid);
-
+static void liquid_depth_update_room_objects(rf::GRoom* room)
+{
     // check objects in room if they are in water
     auto* objp = rf::object_list.next_obj;
     while (objp != &rf::object_list) {
@@ -206,9 +207,56 @@ void __fastcall liquid_depth_update_apply_all_GRoom_reset_liquid(rf::GRoom* room
     }
 }
 
-CallHook<void __fastcall (rf::GRoom* room, int edx, rf::GSolid* geo)> liquid_depth_update_apply_all_GRoom_reset_liquid_hook{
+// Indexed by liquid_surface_quality; a step of 0 rebuilds every frame
+constexpr float liquid_surface_rebuild_steps[] = {0.5f, 0.1f, 0.02f, 0.0f};
+static_assert(std::size(liquid_surface_rebuild_steps) == AlpineGameSettings::max_liquid_surface_quality + 1);
+
+// The depth the surface face is built at: whole steps from the start, so it can be found without state
+static float liquid_depth_update_surface_depth(const rf::LiquidDepthUpdate& update, float elapsed)
+{
+    if (elapsed >= update.duration) {
+        return update.target_depth;
+    }
+    const float step = liquid_surface_rebuild_steps[g_alpine_game_config.liquid_surface_quality];
+    const float total = update.target_depth - update.start_depth;
+    if (step <= 0.0f) {
+        return update.start_depth + total * elapsed / update.duration;
+    }
+    const float moved = std::floor(std::abs(total) * elapsed / update.duration / step) * step;
+    return update.start_depth + std::copysign(moved, total);
+}
+
+float liquid_depth_update_surface_y(const rf::GRoom* room)
+{
+    for (const rf::LiquidDepthUpdate* update : rf::liquid_depth_updates) {
+        if (update->room == room) {
+            return room->bbox_min.y + liquid_depth_update_surface_depth(*update, update->elapsed);
+        }
+    }
+    return room->bbox_min.y + room->liquid_depth;
+}
+
+// While the depth is changing, only rebuild the liquid surface each time the liquid has moved another step,
+// and on the final step. No trampoline: the handler makes the call itself, pops its argument and resumes after it.
+CodeInjection liquid_depth_update_apply_all_reset_liquid_injection{
     0x0045E4AC,
-    liquid_depth_update_apply_all_GRoom_reset_liquid,
+    [](auto& regs) {
+        auto* update = reinterpret_cast<rf::LiquidDepthUpdate*>(regs.esi.value);
+        auto* solid = *reinterpret_cast<rf::GSolid**>(regs.esp.value);
+        const bool finished = (regs.ebx.value & 0xFF) != 0;
+        const float prev_elapsed = update->elapsed - rf::frametime;
+        const float surface_depth = liquid_depth_update_surface_depth(*update, update->elapsed);
+        if (finished || prev_elapsed <= 0.0f
+            || surface_depth != liquid_depth_update_surface_depth(*update, prev_elapsed)) {
+            update->room->liquid_depth = surface_depth;
+            update->room->reset_liquid(solid);
+            update->room->liquid_depth = update->cur_depth;
+        }
+        liquid_depth_update_room_objects(update->room);
+        regs.esp += 4;
+        regs.eip = 0x0045E4B1;
+    },
+    false,
 };
 
 CallHook<int(rf::AiPathInfo*)> ai_path_release_on_load_level_event_crash_fix{
@@ -324,6 +372,19 @@ ConsoleCommand2 debug_event_msg_cmd{
     },
     "Print debug information for events",
     "dbg_events",
+};
+
+ConsoleCommand2 liquid_surface_quality_cmd{
+    "r_liquidsurface",
+    [](std::optional<int> level) {
+        if (level) {
+            setting_console_set("liquid_surface_quality", std::to_string(level.value()));
+        }
+        rf::console::print("Liquid surface update quality is {} (0 low, 1 medium, 2 high, 3 every frame)",
+            g_alpine_game_config.liquid_surface_quality);
+    },
+    "Set how closely a rising or falling liquid surface follows its level",
+    "r_liquidsurface [0-3]",
 };
 
 ConsoleCommand2 debug_goal_cmd{
@@ -745,7 +806,7 @@ void apply_event_patches()
 
     // Fix Set_Liquid_Depth event
     AsmWriter(0x004BCBE0).jmp(&EventSetLiquidDepth_turn_on_new);
-    liquid_depth_update_apply_all_GRoom_reset_liquid_hook.install();
+    liquid_depth_update_apply_all_reset_liquid_injection.install();
 
     // Fix crash after level change (Load_Level event) caused by GNavNode pointers in AiPathInfo not being cleared for entities
     // being taken from the previous level
@@ -771,4 +832,5 @@ void apply_event_patches()
     // Register commands
     debug_event_msg_cmd.register_cmd();
     debug_goal_cmd.register_cmd();
+    liquid_surface_quality_cmd.register_cmd();
 }

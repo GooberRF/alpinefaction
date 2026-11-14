@@ -60,7 +60,7 @@
 #define IDC_LICENSE_LINK                1041
 #define IDC_SRC_LINK                    1042
 // #define IDC_RATE_EDIT                   1043
-#define IDC_ADAPTER_COMBO               1044
+#define IDC_DISPLAY_COMBO               1044
 // #define IDC_BIG_HUD_CHECK               1045
 // #define IDC_SWAP_ASSAULT_RIFLE_CONTROLS 1046
 // #define IDC_SWAP_GRENADE_CONTROLS       1047
@@ -88,6 +88,7 @@
 #define IDC_ADVANCED_OPTIONS_BOX        1068
 #define IDC_ADVANCED_TOGGLE_BTN         1069
 #define IDC_LEGACY_MENUS_CHECK          1070
+#define IDC_LEGACY_CONSOLE_CHECK        1071
 
 #define IDC_VERSION_TEXT                3050
 
@@ -184,7 +185,7 @@
 #ifndef APSTUDIO_READONLY_SYMBOLS
 #define _APS_NEXT_RESOURCE_VALUE        113
 #define _APS_NEXT_COMMAND_VALUE         32771
-#define _APS_NEXT_CONTROL_VALUE         1071
+#define _APS_NEXT_CONTROL_VALUE         1072
 #define _APS_NEXT_SYMED_VALUE           101
 #endif
 #endif

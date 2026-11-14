@@ -43,6 +43,8 @@ namespace gr::d3d11::engine
     float fog_near_clip();
     float level_default_far_clip();
     float level_dry_far_clip();
+    // The height the room's liquid surface is drawn at, which trails the liquid level while it is moving
+    float liquid_surface_y(const rf::GRoom* room);
 
     struct DistanceFog
     {
