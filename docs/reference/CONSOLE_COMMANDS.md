@@ -63,6 +63,7 @@ Commands marked "D3D11 only" only have an effect with the Direct3D 11 renderer.
 | `r_fullrangelighting` | | Toggles full range lighting. Applies on the next level load. Default: on. |
 | `r_gamma` | `[value]` | Sets gamma (0.7-2.2, the stock slider range). Default: 1.0. |
 | `r_lightmaps` | | Toggles rendering only lightmaps (no textures) on level geometry. In multiplayer, only applies if the server allows it. Default: off. |
+| `r_liquidsurface` | `[0-3]` | Sets how closely a rising or falling liquid surface (`Set_Liquid_Depth`) follows its level: `0` every 50 cm, `1` every 10 cm, `2` every 2 cm, `3` every frame. Lower is faster on large levels. Default: 2. |
 | `r_lodscale` | `[scale]` | Sets the LOD distance scale (0.1-1000). Default: 10. |
 | `r_meshlighting` | `[0-2]` | Mesh lighting: `0` ambient only, `1` vertex (legacy), `2` pixel (D3D11). A level's `_info.tbl` can force vertex lighting. Default: 2. |
 | `r_monitorscale` | `[scale]` | Sets the resolution scale of security monitors and mirrors (1-8). Reload the level to apply. Default: 2. |
