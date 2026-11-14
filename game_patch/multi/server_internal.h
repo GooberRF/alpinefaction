@@ -739,6 +739,14 @@ enum class PickupPolicy : uint8_t
     HideAll               // hide every pickup
 };
 
+// `weapons_stay` config option.
+enum class WeaponStayMode : uint8_t
+{
+    Off = 0,
+    Stock,     // a weapon pickup stays for everyone; only a player without that weapon can take it
+    PerPlayer, // a weapon pickup stays for everyone; each player can take each copy, then waits out a per-player respawn
+};
+
 // Type tag for a mutator option value.
 // FROZEN wire constants: these values are sent in the vote-options schema and
 // echoed back in vote-call packets. Never reorder or reuse.
@@ -896,7 +904,8 @@ struct AlpineServerConfigRules
     bool team_damage = false;
     bool fall_damage = false;
     bool exposure_damage = true;
-    bool weapons_stay = false;
+    WeaponStayMode weapons_stay = WeaponStayMode::Off;
+    std::optional<int> per_player_respawn_time_ms{}; // none = each item's own respawn time
     bool force_respawn = false;
     bool balance_teams = false;
     bool auto_team_balance = false;
@@ -1096,6 +1105,10 @@ struct AlpineServerConfigRules
     void set_flag_return_time(float in_time)
     {
         ctf_flag_return_time_ms = static_cast<int>(std::max(in_time * 1000.0f, 1000.0f));
+    }
+    void set_per_player_respawn_time(float in_seconds)
+    {
+        per_player_respawn_time_ms = static_cast<int>(std::clamp(in_seconds, 0.0f, 3600.0f) * 1000.0f);
     }
     void set_pvp_damage_modifier(float modifier)
     {

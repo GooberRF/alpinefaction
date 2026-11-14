@@ -48,6 +48,7 @@
 #include "../hud/hud.h"
 #include "../hud/multi_spectate.h"
 #include "rounds.h"
+#include "per_player_respawn.h"
 #include "../sound/sound.h"
 #include "../misc/alpine_settings.h"
 #include "../object/object.h"
@@ -5892,6 +5893,31 @@ void af_send_play_custom_sound(int custom_sound_id, rf::Player* player)
         buf.packet.header.size + sizeof(buf.packet.header), 0);
 }
 
+void af_send_per_player_respawn(rf::Player* player, int item_handle, int remaining_ms)
+{
+    if (!rf::is_server || !player || player->is_bot) return;
+    if (player == rf::local_player) {
+        per_player_respawn_client_on_taken(item_handle, remaining_ms);
+        return;
+    }
+    // Older clients would drop the unknown type anyway; this only saves the send.
+    if (!is_player_minimum_af_client_version(player, 1, 5, 0)) return;
+
+    af_server_msg_packet_buf buf{};
+    buf.packet.header.type = static_cast<uint8_t>(af_packet_type::af_server_msg);
+    buf.packet.header.size = static_cast<uint16_t>(
+        sizeof(buf.packet) - sizeof(buf.packet.header) + sizeof(af_per_player_respawn_payload));
+    buf.packet.type = static_cast<uint8_t>(AF_SERVER_MSG_TYPE_PER_PLAYER_RESPAWN);
+
+    af_per_player_respawn_payload payload{};
+    payload.item_handle = item_handle;
+    payload.remaining_ms = static_cast<uint32_t>(std::max(remaining_ms, 0));
+    std::memcpy(buf.packet.data, &payload, sizeof(payload));
+
+    rf::multi_io_send_reliable(player, &buf.packet,
+        buf.packet.header.size + sizeof(buf.packet.header), 0);
+}
+
 void af_broadcast_round_countdown(int duration_seconds)
 {
     if (!rf::is_server) {
@@ -6012,6 +6038,20 @@ void af_process_server_msg_packet(
             return;
         }
         play_local_sound_2d(static_cast<uint16_t>(get_custom_sound_id(payload.custom_sound_id)), 0, 1.0f);
+    } else if (msg_packet.type == static_cast<uint8_t>(AF_SERVER_MSG_TYPE_PER_PLAYER_RESPAWN)) {
+        if (len < sizeof(msg_packet) + sizeof(af_per_player_respawn_payload)) {
+            return;
+        }
+        af_per_player_respawn_payload payload{};
+        std::memcpy(&payload, static_cast<const char*>(data) + sizeof(msg_packet), sizeof(payload));
+        // The wire carries the server's handle; ghosts are keyed by the local one.
+        rf::Object* item_obj = rf::obj_from_remote_handle(payload.item_handle);
+        if (!item_obj || item_obj->type != rf::OT_ITEM) {
+            return;
+        }
+        // The sender is untrusted: bound the cooldown to what the rule itself allows.
+        per_player_respawn_client_on_taken(item_obj->handle,
+            static_cast<int>(std::min<uint32_t>(payload.remaining_ms, per_player_respawn_max_ms)));
     }
 }
 
