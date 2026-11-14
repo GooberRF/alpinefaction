@@ -75,7 +75,7 @@ struct ScavengerInfo
     float captured_floor_y = 0.0f;
     int light_handle = -1;
     float light_pulse_phase = 0.0f;
-    // The level's first zone is placed before its game_start, so zones are reported from the frame
+    // The level's first zone is placed before game_start, so scavenger_do_frame reports it
     std::optional<afstats::ScavZoneCause> unreported_zone;
 };
 

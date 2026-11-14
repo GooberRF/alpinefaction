@@ -605,8 +605,7 @@ FunHook<bool(rf::Player*)> player_is_local_hook{
     }
 };
 
-// A dead player's entity_handle is -1, so the stock lookup resolves the "no killer" handle that
-// environmental damage passes to the first dead player, who is then credited with the kill.
+// Any player without an entity has entity_handle -1, so the stock lookup would resolve "no killer" to one of them.
 FunHook<rf::Player*(int)> player_from_entity_handle_hook{
     0x004A3740,
     [](int entity_handle) -> rf::Player* {

@@ -1212,7 +1212,7 @@ static uint8_t afstats_team_for_owner(HillOwner owner)
     }
 }
 
-static std::vector<rf::Player*> players_from_ids(const std::vector<uint8_t>& ids)
+std::vector<rf::Player*> players_from_ids(const std::vector<uint8_t>& ids)
 {
     std::vector<rf::Player*> players;
     players.reserve(ids.size());

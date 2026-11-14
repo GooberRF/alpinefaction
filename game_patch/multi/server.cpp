@@ -1422,6 +1422,7 @@ struct AccuracyShotState
 {
     bool active = false;
     bool hit_counted = false;
+    bool award_hit_counted = false;
     int shooter_handle = -1;
     int vehicle_class = -1; // VehicleDamageClass of a vehicle shooter
 };
@@ -1435,7 +1436,7 @@ public:
     explicit AccuracyShotScope(rf::Entity* shooter)
         : saved_(g_accuracy_shot)
     {
-        g_accuracy_shot = {true, false, shooter ? shooter->handle : -1, vehicle_damage_class(shooter)};
+        g_accuracy_shot = {true, false, false, shooter ? shooter->handle : -1, vehicle_damage_class(shooter)};
     }
     ~AccuracyShotScope() { g_accuracy_shot = saved_; }
 
@@ -1458,6 +1459,19 @@ static bool accuracy_shot_scope_consume()
         return false;
     }
     g_accuracy_shot.hit_counted = true;
+    return true;
+}
+
+// Awards follow a shot's first player hit, which a hull pierced ahead of it must not spend.
+static bool accuracy_shot_scope_consume_award()
+{
+    if (!g_accuracy_shot.active) {
+        return true;
+    }
+    if (g_accuracy_shot.award_hit_counted) {
+        return false;
+    }
+    g_accuracy_shot.award_hit_counted = true;
     return true;
 }
 
@@ -2208,7 +2222,7 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
                     // Bullets and other direct-only weapons; the rail cap keeps a pierced line to
                     // one hit.
                     count_hit = direct_weapon_hit && accuracy_shot_scope_consume();
-                    if (count_hit && damaged_player) {
+                    if (direct_weapon_hit && damaged_player && accuracy_shot_scope_consume_award()) {
                         awards_on_direct_hit(killer_player, damaged_player, stats_weapon);
                     }
                 }

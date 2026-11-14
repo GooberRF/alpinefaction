@@ -94,7 +94,6 @@ int count_team_waiting(int team)
     return n;
 }
 
-// The round report's survivors: whoever is still standing when the round is decided.
 void report_round_survivors()
 {
     std::vector<rf::Player*> survivors;

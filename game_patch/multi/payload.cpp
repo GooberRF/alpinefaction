@@ -153,7 +153,7 @@ struct PayloadInfo
     bool final_stretch_reached = false;
     bool end_announced = false;
     bool had_overtime = false; // a capture bonus can end overtime, but game_end still reports it
-    bool finale_blast = false; // the finale explosion is dealing its damage
+    bool finale_blast = false;
     // Unreliable sends may be lost, so changes are judged against the last reliable one
     std::optional<PayloadNetState> last_reliable;
     std::unordered_map<const rf::Player*, ResupplyOwed> resupply_owed;
@@ -466,13 +466,7 @@ void capture_checkpoint(const PayloadCheckpoint& cp, bool at_end)
 
 void report(afstats::PayloadEventKind kind, int push_time_ms = -1)
 {
-    std::vector<rf::Player*> pushers;
-    for (const uint8_t id : g_payload.pushers) {
-        if (rf::Player* pl = rf::multi_find_player_by_id(id)) {
-            pushers.push_back(pl);
-        }
-    }
-    afstats::on_payload_event(kind, g_payload.distance, pushers, push_time_ms);
+    afstats::on_payload_event(kind, g_payload.distance, players_from_ids(g_payload.pushers), push_time_ms);
 }
 
 // Each side fires it for its own world, as movers aren't synced. A late joiner fires it on its first state, so the
