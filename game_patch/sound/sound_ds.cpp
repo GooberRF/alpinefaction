@@ -137,7 +137,7 @@ namespace
         if (!buffer) {
             return;
         }
-        // What the channel's stretch does not make up of its speed and the global rate is pitched
+        // Pitch makes up whatever part of speed * rate the stretch doesn't
         const float ratio = g_ds_channel_pitch[channel] * (g_ds_channel_unscaled[channel] ? 1.0f : g_ds_rate)
             * g_ds_channel_speed[channel] / g_ds_channel_stretch[channel];
         if (ratio == 1.0f) {

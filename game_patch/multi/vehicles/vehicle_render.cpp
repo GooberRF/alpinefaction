@@ -1018,8 +1018,7 @@ std::vector<VehicleRestAttachment> vehicle_rest_attachments(int entity_type, rf:
         out.push_back(std::move(a));
     };
 
-    // Stock draws the held weapon's third person mesh on each primary_weapon_N tag (0x00421C40), which is
-    // how a driller shows its bits. The entity keeps the first two tags (0x0042D930).
+    // Stock keeps only the first two primary_weapon_N tags.
     constexpr int max_weapon_tags = 2;
     const char* weapon_mesh = weapon_third_person_mesh(info.default_primary_weapon);
     if (*weapon_mesh) {
@@ -1032,7 +1031,6 @@ std::vector<VehicleRestAttachment> vehicle_rest_attachments(int entity_type, rf:
         }
     }
 
-    // A jeep's mounted gun goes on its jeep_gun tag (0x00421EA0), turned to a gunner's aim only while manned.
     if (vdc == VDC_JEEP) {
         const int prop = rf::vmesh_lookup_prop_point(hull, "jeep_gun");
         if (prop >= 0) {
@@ -1080,7 +1078,7 @@ void vehicle_hit_flash_start(int vehicle_handle)
 void vehicle_hit_flash_do_frame()
 {
     // Sim time, so a paused demo holds the flash and its timescale stretches it.
-    const float dt = rf::frametime * demo_playback_sim_time_scale();
+    const float dt = cosmetic_frame_dt();
     if (!(dt > 0.0f)) {
         return;
     }

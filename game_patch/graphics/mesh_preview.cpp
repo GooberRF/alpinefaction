@@ -42,7 +42,6 @@ struct PreviewLight
     float b;
 };
 
-// A key light over the camera's left shoulder, a cooler fill from the right and a rim behind.
 constexpr std::size_t preview_light_count = 3;
 const std::array<PreviewLight, preview_light_count> preview_lights{{
     {{-0.65f, 0.75f, -0.65f}, 1.00f, 0.96f, 0.90f},
@@ -93,9 +92,7 @@ public:
         g_character_meshes_are_fullbright = saved_fullbright_;
         gr::d3d11::g_level_vertex_lighting = saved_vertex_lighting_;
         rf::gr::light_set_ambient(saved_ambient_[0], saved_ambient_[1], saved_ambient_[2]);
-        // Left empty, not as found: a count kept from the last level points at lights it no longer has, and
-        // the next level gathers its own. The GPU keeps the last upload, which lightmapped draws such as stock
-        // 2D rects add in, so it is emptied too.
+        // Emptied, not restored: the saved list points at a gone level's lights and the GPU copy tints later draws.
         rf::gr::num_relevant_lights = 0;
         gr::d3d11::clear_mesh_lights();
     }
@@ -156,7 +153,7 @@ rf::VMesh* load_preview_mesh(const std::string& filename)
         mesh = rf::vmesh_load(filename.c_str(), rf::MESH_TYPE_STATIC, -1);
     }
     else if (string_iequals(ext, "v3c") || string_iequals(ext, "vcm")) {
-        const std::string name = filename.substr(0, filename.size() - ext.size() - 1);
+        const std::string name{get_filename_without_ext(filename)};
         if (character_can_load(name)) {
             mesh = rf::vmesh_create_character(name.c_str(), 0, 0);
         }
@@ -195,7 +192,6 @@ void get_mesh_bounds(rf::VMesh* mesh, rf::Vector3& bbox_min, rf::Vector3& bbox_m
     }
 }
 
-// Grows [bbox_min, bbox_max] by `mesh`'s box placed at pos / orient.
 void grow_bbox(rf::VMesh* mesh, const rf::Vector3& pos, const rf::Matrix3& orient, rf::Vector3& bbox_min,
                rf::Vector3& bbox_max)
 {
@@ -256,9 +252,7 @@ void MeshPreview::set_character(const std::string& filename, const std::string& 
         dress(mesh_);
     }
     // The animation loads from <name>.rfa whatever extension the table gives it (0x0053A980).
-    const std::string_view anim_ext = get_ext_from_filename(state_anim);
-    const std::string anim_file =
-        state_anim.substr(0, anim_ext.empty() ? state_anim.size() : state_anim.size() - anim_ext.size() - 1) + ".rfa";
+    const std::string anim_file = std::string{get_filename_without_ext(state_anim)} + ".rfa";
     if (!state_anim.empty() && rf::File{}.find(anim_file.c_str())) {
         action_ = rf::character_mesh_load_action(mesh_->mesh, state_anim.c_str(), 1, 0);
     }
@@ -299,7 +293,6 @@ void MeshPreview::render(int w, int h)
             rf::vmesh_process(mesh_, dt, 0, &at, &facing, 0);
         }
     };
-    // A held part goes where the pose puts the mesh's prop, its grip on it.
     const auto held_frame = [&](const LoadedPart& part, rf::Vector3 at, rf::Matrix3 facing) {
         rf::Matrix3 prop_orient;
         rf::Vector3 prop_pos;
@@ -338,7 +331,6 @@ void MeshPreview::render(int w, int h)
     const rf::Vector3 center = (bbox_min + bbox_max) * 0.5f;
     const float radius = std::max((bbox_max - bbox_min).len() * 0.5f, 0.01f);
 
-    // The mesh turns about its own centre, which stays at the origin.
     rf::Matrix3 orient = yaw_orient(yaw_);
     rf::Vector3 pos = orient.transform_vector(center) * -1.0f;
 

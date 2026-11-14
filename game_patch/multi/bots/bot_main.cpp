@@ -1578,8 +1578,8 @@ bool contains_case_insensitive(std::string_view haystack, std::string_view needl
 bool item_info_contains_token(const rf::ItemInfo& item_info, std::string_view token)
 {
     return contains_case_insensitive(item_info.cls_name.c_str(), token)
-        || (item_info.hud_msg_name
-            && contains_case_insensitive(item_info.hud_msg_name, token));
+        || (item_info.hud_msg_name && *item_info.hud_msg_name
+            && contains_case_insensitive(*item_info.hud_msg_name, token));
 }
 
 bool item_info_is_health_pickup(const rf::ItemInfo& item_info)

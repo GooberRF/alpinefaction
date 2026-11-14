@@ -199,9 +199,7 @@ FunHook<void(rf::Glare*, int)> glare_render_corona_hook{
     },
 };
 
-// obj_attach_update (0x00487630) orients an object hosted with no prop point to host_orient times the inverse of its
-// host's orientation, which turns an Alpine corona's glare, hosted on its anchor that way, the wrong way.
-// Stock hosts its own glares on prop points, so only a corona glare gets here; it takes the anchor's orientation.
+// A corona glare is hosted with no prop point, where stock would turn it by its anchor's inverse orientation
 CodeInjection glare_host_orient_injection{
     0x0048771B,
     [](auto& regs) {

@@ -40,13 +40,11 @@ constexpr float turn_back_angle_deg = 100.0f;
 constexpr float turn_back_window = 3.0f;
 // Keeps the U-turn's two legs more than an arrow's width apart
 constexpr float u_turn_radius = 1.4f;
-// The lead-in and the U-turn are checked for floor and clearance this often
 constexpr float u_turn_sample_step = 0.75f;
 constexpr float lay_arrows_per_s = 11.25f;
 constexpr float arrow_drop_s = 0.15f;
 constexpr float arrow_drop_height = 0.5f;
 // Headings are taken over this much route either side, so the arrows don't snap round where the waypoints wiggle.
-// Near the middle of the U-turn's arc that is the arc's tangent; nearer its ends it blends with the straight beside it.
 constexpr float arrow_heading_window = 2.0f;
 // Corner-cutting passes over each walkable run, each taking at most max_corner_cut off a corner, so the trail stays on
 // a narrow walkway
@@ -70,7 +68,6 @@ constexpr float target_clearance = 0.3f;
 constexpr float start_waypoint_radius = 6.0f;
 constexpr float goal_waypoint_radius = 8.0f;
 constexpr int max_skipped_start_waypoints = 2;
-// Of the waypoints within start_waypoint_radius, the nearest this many are tried for a clear line
 constexpr int max_visible_start_candidates = 4;
 // Times a spawn prunes the blocked links on its planned route, from a graph loaded for the arrows alone, and plans
 // again: once for the route it found, and once more should the new route meet others
@@ -109,7 +106,6 @@ struct RouteArrowsState
     std::array<RouteArrow, max_arrows> arrows{};
 };
 
-// The points from the spawn to where the waypoint route takes over, and that route
 struct RoutePlan
 {
     std::vector<rf::Vector3> lead{};
@@ -194,7 +190,6 @@ int hill_goal_waypoint(const HillInfo& hill)
     return best;
 }
 
-// Where `team` heads from `from`, chosen once per spawn
 std::optional<RouteTarget> route_target(int team, const rf::Vector3& from)
 {
     if (gt_is_payload()) {
@@ -273,7 +268,6 @@ void cut_corners(std::vector<rf::Vector3>& points, std::vector<float>& low_y)
     low_y = std::move(out_low);
 }
 
-// Arrows every arrow_spacing of the route that falls on this walkable run
 void lay_run(const std::vector<rf::Vector3>& waypoint_points, RouteLayout& layout, RouteArrowsState& out)
 {
     // So the arrows follow a natural line rather than zig-zag between the waypoints
@@ -291,7 +285,6 @@ void lay_run(const std::vector<rf::Vector3>& waypoint_points, RouteLayout& layou
         along[i] = along[i - 1] + (points[i] - points[i - 1]).len();
     }
     const float run_length = along.back();
-    // The end of the segment `s` falls on
     const auto segment_end = [&](float s) {
         const auto next = static_cast<std::size_t>(std::upper_bound(along.begin(), along.end(), s) - along.begin());
         return std::clamp<std::size_t>(next, 1, points.size() - 1);
@@ -346,8 +339,6 @@ std::optional<rf::Vector3> route_point_on_floor(const rf::Vector3& flat, const r
     return rf::Vector3{flat.x, floor.y + kWaypointGenerateGroundOffset, flat.z};
 }
 
-// Appends `flat_at(k / steps)` for k = 1 to steps, each on the floor and in clear sight of the point before it; false
-// where one fails
 template<typename FlatAt>
 bool append_on_floor(int steps, const FlatAt& flat_at, std::vector<rf::Vector3>& out)
 {
@@ -435,8 +426,6 @@ rf::Vector3 route_heading(const rf::Vector3& from, const std::vector<int>& path)
     return heading;
 }
 
-// A half circle from `end` toward `side` that comes back against `facing`, appended to `out`; false where its way is
-// blocked or has no floor
 bool append_u_turn(const rf::Vector3& end, const rf::Vector3& facing, const rf::Vector3& side,
                    std::vector<rf::Vector3>& out)
 {
@@ -448,8 +437,6 @@ bool append_u_turn(const rf::Vector3& end, const rf::Vector3& facing, const rf::
     }, out);
 }
 
-// A lead-in `length` long the way the player faces, U-turning where the route heads back; false where none fits.
-// `path_from` finds the route from a start waypoint.
 template<typename PathFrom>
 bool plan_lead_in(const rf::Entity& ep, const rf::Vector3& target, float length, const PathFrom& path_from,
                   RoutePlan& plan)
@@ -483,7 +470,6 @@ bool plan_lead_in(const rf::Entity& ep, const rf::Vector3& target, float length,
         plan = {std::move(leg), std::move(path)};
         return true;
     }
-    // Toward the side the route goes, else the other
     const rf::Vector3 right{facing.z, 0.0f, -facing.x};
     const rf::Vector3 toward = right.dot_prod(heading) >= 0.0f ? right : right * -1.0f;
     for (const rf::Vector3& side : {toward, toward * -1.0f}) {
@@ -549,7 +535,6 @@ void end_short_of_target(RouteArrowsState& state, const Reaches& reaches)
     }
 }
 
-// Short of the Payload cart, or the edge of the control point the trail leads to
 void end_short_of_objective(RouteArrowsState& state, const RouteTarget& target)
 {
     constexpr float margin = arrow_half_length + target_clearance;
@@ -568,7 +553,6 @@ void end_short_of_objective(RouteArrowsState& state, const RouteTarget& target)
         });
         return;
     }
-    // At the arrow and at its tip plus the clearance
     end_short_of_target(state, [&](const RouteArrow& arrow) {
         return route_point_in_hill(*target.hill, arrow.pos)
             || route_point_in_hill(*target.hill, arrow.pos + arrow.dir * margin);
@@ -633,7 +617,6 @@ void draw_arrow(int white_bm, const rf::Vector3& base, const rf::Vector3& dir, f
     }
 }
 
-// The route from `start` toward the target, with a lead-in where one fits; false without one
 bool plan_route(const rf::Entity& ep, const RouteTarget& target, int hill_goal, int start, RoutePlan& plan)
 {
     // Every start below walks the goal's shared field, so a spawn costs at most one search for a goal not seen since
@@ -718,8 +701,7 @@ void route_arrows_on_local_spawn()
     route_arrows_clear();
     rf::Player* const player = rf::local_player;
     rf::Entity* const ep = player ? rf::entity_from_handle(player->entity_handle) : nullptr;
-    // level_load makes a listen host's entity before the new level's hills and waypoints exist and only then sets
-    // LEVEL_LOADED; level_init_post runs the spawn hook again for it
+    // A listen host first spawns before the level's hills and waypoints exist; it spawns again after init
     if (!ep || !(rf::level.flags & rf::LEVEL_LOADED) || !route_arrows_wanted_for_level()
         || is_waypoint_local_bot_mode_active()) {
         return;
@@ -785,7 +767,6 @@ void route_arrows_render()
         if (!arrow.grounded) {
             ground_arrow(arrow);
         }
-        // Dropped in, held, then reeled back in the order they landed
         const float landed = smoothstep01(since_start / arrow_drop_s);
         const float reeled = smoothstep01((since_start - arrow_drop_s - hold) / arrow_drop_s);
         const float presence = landed * (1.0f - reeled);

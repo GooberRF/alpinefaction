@@ -5596,7 +5596,7 @@ CodeInjection entity_maybe_die_patch{
             for (size_t i = 0; i < std::size(alpine_powerup_item_classes); ++i) {
                 const auto powerup = static_cast<AlpinePowerup>(i);
                 const int seconds = static_cast<int>(powerup_time_left(ep, powerup));
-                if (seconds >= 1) { // only drop if at least 1 second left
+                if (seconds >= 1) {
                     entity_drop_item(ep, powerup_item_type(powerup), alpine_powerup_item_classes[i].class_name, seconds);
                 }
             }

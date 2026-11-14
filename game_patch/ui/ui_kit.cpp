@@ -7,6 +7,7 @@
 #include "../hud/hud_internal.h"
 #include "../os/os.h"
 #include "../rf/gr/gr_font.h"
+#include "../rf/os/console.h"
 #include "../rf/os/frametime.h"
 #include "../rf/sound/sound.h"
 #include "../sound/sound.h"
@@ -160,13 +161,13 @@ std::string ui_fit_middle(std::string_view text, int max_w, int font)
     return std::string{"..."};
 }
 
-std::string ui_fit_end(std::string_view text, int max_w, int font)
+std::string ui_fit_end(std::string_view text, int max_w, int font, bool trim_spaces)
 {
     if (text.empty() || rf::gr::get_string_size(text, font).first <= max_w) {
         return std::string{text};
     }
     for (size_t keep = text.size(); keep > 0; --keep) {
-        const std::string_view kept = rtrim(text.substr(0, keep));
+        const std::string_view kept = trim_spaces ? rtrim(text.substr(0, keep)) : text.substr(0, keep);
         if (kept.empty()) {
             continue;
         }
@@ -1139,6 +1140,13 @@ UiTextInputResult ui_text_input(UiContext& ctx, const UiRect& r, UiId id, std::s
             hud_fit_string(shown, d.w - 2 * pad, nullptr, font).c_str(), font);
     }
     return res;
+}
+
+void ui_drop_text_focus_under_console(UiContext& ctx)
+{
+    if (rf::console::console_is_visible() && ctx.focused_text_id() != 0) {
+        ctx.release_text_focus(true);
+    }
 }
 
 bool ui_close_button(UiContext& ctx, const UiRect& r, int font)

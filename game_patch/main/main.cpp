@@ -147,8 +147,10 @@ CodeInjection after_full_game_init_hook{
         debug_init();
         if (!is_headless_mode()) {
             load_world_hud_assets();
-            // Every table and packfile is in by now, and the lists never change after.
-            reference_data_load();
+            if (!rf::is_dedicated_server) {
+                // Every table and packfile is in by now, and the lists never change after.
+                reference_data_load();
+            }
         }
         execute_startup_scripts();
 

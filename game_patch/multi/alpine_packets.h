@@ -785,7 +785,7 @@ struct af_scavenger_state_packet
 static_assert(sizeof(af_scavenger_state_packet) == 59);
 static_assert(offsetof(af_scavenger_state_packet, zone_x) == sizeof(af_salvage_state_packet));
 
-// The Payload cart, server -> client. Sent reliably on every change (pusher lists at most every 100 ms) and
+// The Payload cart, server -> client. Sent reliably on every change (the pusher list at most every 100 ms) and
 // unreliably while the cart moves or after a heal tick, so the client extrapolates distance with speed in between.
 constexpr uint8_t af_payload_state_flag_overtime = 0x1;
 constexpr uint8_t af_payload_state_flag_heals = 0x2;
@@ -804,7 +804,7 @@ struct af_payload_state_packet
     float distance;            // along the track
     float speed;               // signed, m/s
     uint8_t num_pushers;
-    // uint8_t pusher_ids[num_pushers], uint8_t num_blockers, uint8_t blocker_ids[num_blockers] appended on the wire
+    // uint8_t pusher_ids[num_pushers] appended on the wire
 };
 static_assert(sizeof(af_payload_state_packet) == sizeof(RF_GamePacketHeader) + 16);
 

@@ -778,10 +778,10 @@ void initialize_weights_from_game_data(BotContext& ctx)
         if (contains_case_insensitive(item.cls_name.c_str(), "health")
             || contains_case_insensitive(item.cls_name.c_str(), "med")
             || contains_case_insensitive(item.cls_name.c_str(), "armor")
-            || (item.hud_msg_name
-                && (contains_case_insensitive(item.hud_msg_name, "health")
-                    || contains_case_insensitive(item.hud_msg_name, "med")
-                    || contains_case_insensitive(item.hud_msg_name, "armor")))) {
+            || (item.hud_msg_name && *item.hud_msg_name
+                && (contains_case_insensitive(*item.hud_msg_name, "health")
+                    || contains_case_insensitive(*item.hud_msg_name, "med")
+                    || contains_case_insensitive(*item.hud_msg_name, "armor")))) {
             weight += 0.45f;
         }
         ctx.personality.item_weights[static_cast<size_t>(item_type)] = weight;

@@ -1,5 +1,6 @@
 #include "../../hud/hud.h"
 #include "../../rf/hud.h"
+#include "../waypoints.h"
 #include "settings_rows.h"
 
 namespace
@@ -743,6 +744,7 @@ const SettingRow rows[] = {
         .widget = Wid::Toggle,
         .access = AccBool{&AGS::world_hud_route_arrows},
         .flags = SF_MP_ONLY,
+        .apply = waypoints_on_route_arrows_toggled,
         .console_cmd = "cl_wh_routearrows",
     },
     {

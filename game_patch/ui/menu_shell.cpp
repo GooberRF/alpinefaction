@@ -9,7 +9,6 @@
 #include "../rf/gr/gr_font.h"
 #include "../rf/input.h"
 #include "../rf/multi.h"
-#include "../rf/os/console.h"
 #include "../rf/os/frametime.h"
 #include "../rf/ui.h"
 
@@ -256,7 +255,7 @@ void menu_ui_reset(UiContext& ctx)
 void menu_run_hit_test(UiContext& ctx, void (*key_callback)(int), const std::function<void(UiContext&)>& build)
 {
     rf::game_poll(key_callback);
-    menu_drop_text_focus_under_console(ctx);
+    ui_drop_text_focus_under_console(ctx);
     int x = 0;
     int y = 0;
     int z = 0;
@@ -282,11 +281,4 @@ void menu_run_draw(UiContext& ctx, const std::function<void(UiContext&)>& build)
     ctx.end_pass();
     ctx.draw_overlays();
     rf::gr::reset_clip();
-}
-
-void menu_drop_text_focus_under_console(UiContext& ctx)
-{
-    if (rf::console::console_is_visible() && ctx.focused_text_id() != 0) {
-        ctx.release_text_focus(true);
-    }
 }

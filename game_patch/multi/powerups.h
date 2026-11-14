@@ -64,8 +64,8 @@ int haste_scale_ms(const rf::Entity* ep, int ms);
 // Appends the HUD icon of each powerup `ep` holds that has one.
 void powerup_append_hud_icons(const rf::Entity* ep, std::vector<int>& icons);
 
-// Server, RFL item load: -1 drops a powerup item a mutator makes redundant. Every powerup item kept is noted for
-// level_has_alpine_powerups.
+// RFL item load, on every side: -1 drops a powerup item a mutator makes redundant. Every powerup item kept is noted
+// for level_has_alpine_powerups.
 int powerups_filter_level_item(int item_type);
 bool level_has_alpine_powerups();
 

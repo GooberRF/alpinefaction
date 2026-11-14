@@ -9,7 +9,7 @@ namespace rf
     {
         String cls_name;
         String v3d_filename;
-        const char *hud_msg_name; // in fact a string table slot, like the pickup messages
+        const char* const* hud_msg_name; // string table slot
         const char* const* pickup_msg_single; // string table slot
         const char* const* pickup_msg_multi;
         const char* const* pickup_msg_wa_single;

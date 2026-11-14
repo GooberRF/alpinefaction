@@ -12,7 +12,6 @@
 #include "../../rf/entity.h"
 #include "../../rf/multi.h"
 #include "../../rf/vmesh.h"
-#include "../../rf/os/frametime.h"
 
 namespace
 {
@@ -88,7 +87,6 @@ namespace
         return nullptr;
     }
 
-    // Looks up every tip's prop index whenever the hull's mesh changes.
     void trail_bind_mesh(WingTrail& trail, rf::Entity* ep)
     {
         if (trail.vmesh == ep->vmesh) {
@@ -176,7 +174,7 @@ void vehicle_trails_do_frame()
         vehicle_trails_clear();
         return;
     }
-    const float dt = rf::frametime * demo_playback_sim_time_scale();
+    const float dt = cosmetic_frame_dt();
     if (!(dt > 0.0f)) {
         return;
     }

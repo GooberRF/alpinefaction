@@ -133,7 +133,6 @@ struct PayloadInfo
     int next_checkpoint = 0;
     std::optional<float> countdown; // see payload_countdown_seconds
     std::vector<uint8_t> pushers;
-    std::vector<uint8_t> blockers;
     uint8_t heal_serial = 0;
     uint8_t net_sequence = 0; // the server's last sent, or the client's last applied
     bool setup = true; // until this side fires When_Setup_Ends
@@ -602,9 +601,8 @@ void maybe_broadcast()
         || now.heals != last->heals || now.setup != last->setup || now.next_checkpoint != last->next_checkpoint
         || now.countdown_seconds.has_value() != last->countdown_seconds.has_value()
         || (now.speed == 0.0f) != (last->speed == 0.0f);
-    const bool lists_due =
-        last && (now.pushers != last->pushers || now.blockers != last->blockers) && timer_due(g_payload.list_resend);
-    const bool reliable = state_changed || lists_due;
+    const bool pushers_due = last && now.pushers != last->pushers && timer_due(g_payload.list_resend);
+    const bool reliable = state_changed || pushers_due;
     const bool healed = now.heal_serial != g_payload.sent_heal_serial;
     const bool refresh = now.speed != 0.0f && timer_due(g_payload.moving_refresh);
     if (!reliable && !healed && !refresh) {
@@ -632,7 +630,6 @@ void server_tick(float dt)
     std::vector<rf::Player*> defenders;
     sample_push_zone(attackers, defenders);
     g_payload.pushers = player_ids(attackers);
-    g_payload.blockers = player_ids(defenders);
     if (!g_payload.pushers.empty()) {
         g_payload.last_pushers = g_payload.pushers;
         g_payload.capture_credit.set(capture_credit_ms);
@@ -1211,7 +1208,6 @@ PayloadNetState payload_build_net_state()
     net.distance = g_payload.distance;
     net.speed = g_payload.speed;
     net.pushers = g_payload.pushers;
-    net.blockers = g_payload.blockers;
     return net;
 }
 
@@ -1235,7 +1231,6 @@ void payload_apply_net_state(const PayloadNetState& net)
     g_payload.next_checkpoint = std::min<int>(net.next_checkpoint, static_cast<int>(g_payload.checkpoints.size()));
     g_payload.countdown = net.countdown_seconds;
     g_payload.pushers = net.pushers;
-    g_payload.blockers = net.blockers;
     g_payload.net_distance = std::clamp(net.distance, 0.0f, g_payload.total_length);
     g_payload.net_speed = g_payload.state == PayloadCartState::finale ? 0.0f : net.speed;
     g_payload.net_age = 0.0f;

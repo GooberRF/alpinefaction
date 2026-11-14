@@ -88,6 +88,15 @@ inline std::string string_to_upper(std::string_view str)
     return output;
 }
 
+inline std::string string_capitalize(std::string_view str)
+{
+    std::string output{str};
+    if (!output.empty()) {
+        output[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(output[0])));
+    }
+    return output;
+}
+
 inline bool string_iequals(std::string_view left, std::string_view right)
 {
     return left.size() == right.size() && std::equal(left.begin(), left.end(), right.begin(), [](unsigned char a, unsigned char b) {

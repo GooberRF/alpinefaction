@@ -59,7 +59,6 @@ struct PayloadNetState
     float distance = 0.0f;
     float speed = 0.0f;
     std::vector<uint8_t> pushers;
-    std::vector<uint8_t> blockers;
 };
 
 // ─── Read-only state, the same on the server and clients ─────────────────────

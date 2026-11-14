@@ -217,7 +217,7 @@ void make_items()
 // Player panel
 // ---------------------------------------------------------------------------
 
-// Along the bottom of the view. The portrait has no team, so it is inactive there.
+// Inactive in the portrait view, which has no team.
 void build_team_toggle(UiContext& ctx, const UiRect& bar, const MenuFonts& fonts)
 {
     const char* text = "Team";
@@ -324,7 +324,6 @@ void build_grid(UiContext& ctx, const UiRect& well, int tile_font)
     }
 }
 
-// Right-aligned on the header line, as the settings menu's Show advanced is.
 void build_view_toggle(UiContext& ctx, const UiRect& line, const MenuFonts& fonts)
 {
     const char* text = "View";

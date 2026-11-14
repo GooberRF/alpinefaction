@@ -17,6 +17,7 @@
 #include "../bagman.h"
 #include "../gametype.h"
 #include "../payload.h"
+#include "../powerups.h"
 #include "../salvage.h"
 #include "../scavenger.h"
 #include "../../misc/waypoints.h"
@@ -1102,8 +1103,8 @@ bool item_is_currently_available(const rf::Item& item)
 bool item_info_contains_token(const rf::ItemInfo& item_info, std::string_view token)
 {
     return contains_case_insensitive(item_info.cls_name.c_str(), token)
-        || (item_info.hud_msg_name
-            && contains_case_insensitive(item_info.hud_msg_name, token));
+        || (item_info.hud_msg_name && *item_info.hud_msg_name
+            && contains_case_insensitive(*item_info.hud_msg_name, token));
 }
 
 bool item_is_health_pickup(const rf::ItemInfo& item_info)
@@ -1148,11 +1149,15 @@ bool try_apply_named_replenish_profile(
         bool is_super;
     };
 
+    constexpr const AlpinePowerupItemClass& health_shard =
+        alpine_powerup_item_classes[static_cast<size_t>(AlpinePowerup::health_shard)];
+    constexpr const AlpinePowerupItemClass& armor_shard =
+        alpine_powerup_item_classes[static_cast<size_t>(AlpinePowerup::armor_shard)];
     static constexpr std::array<NamedProfile, 8> kProfiles{{
         {"Multi Super Health", ReplenishItemKind::health, 200, 4, true},
         {"Multi Super Armor", ReplenishItemKind::armor, 200, 5, true},
-        {"Alpine Health Shard", ReplenishItemKind::health, 10, 0, false},
-        {"Alpine Armor Shard", ReplenishItemKind::armor, 10, 0, false},
+        {health_shard.class_name, ReplenishItemKind::health, health_shard.count, 0, false},
+        {armor_shard.class_name, ReplenishItemKind::armor, armor_shard.count, 0, false},
         {"Suit Repair", ReplenishItemKind::armor, 50, 2, false},
         {"Medical Kit", ReplenishItemKind::health, 50, 1, false},
         {"First Aid Kit", ReplenishItemKind::health, 25, 0, false},
@@ -1211,7 +1216,7 @@ bool resolve_replenish_item_profile(
             && try_apply_named_replenish_profile(raw_name, out_profile);
     };
 
-    if (try_name(item_info.hud_msg_name)
+    if (try_name(item_info.hud_msg_name ? *item_info.hud_msg_name : nullptr)
         || try_name(item_info.cls_name.c_str())) {
         return true;
     }

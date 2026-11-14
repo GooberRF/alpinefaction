@@ -6,6 +6,7 @@
 #include "alpine_settings.h"
 #include "alpine_terrain.h"
 #include "level.h"
+#include "vpackfile.h"
 #include "../multi/bots/bot_navigation_routes.h"
 #include "../multi/bots/bot_waypoint_route.h"
 #include "../multi/bots/server_bots.h"
@@ -82,7 +83,7 @@ int g_cache_indexed_end = 1;
 std::unordered_map<int, std::vector<int>> g_waypoints_by_type;
 int g_waypoints_by_type_total = 0;
 bool g_has_loaded_wpt = false;
-// Loaded only for the spawn route arrows on a client without bots, so the graph stays read-only.
+// Loaded only for the spawn route arrows on a client without bots
 bool g_waypoints_for_route_arrows = false;
 int g_last_awp_source = 0; // 0=not_found, 1=user_maps, 2=vpp
 bool g_missing_awp_from_level_init = false;
@@ -4839,8 +4840,6 @@ void update_scavenger_zone_temporary_waypoint()
     }
 }
 
-// The link survives sanitize_waypoint_links_against_geometry: it clears the level, or is a jump pad's launch or a
-// one-way drop of 2 m or more, which are kept even where the level blocks them
 static bool waypoints_link_passes_geometry(const int from, const int to)
 {
     const int waypoint_total = static_cast<int>(g_waypoints.size());
@@ -5177,28 +5176,6 @@ static std::string get_awp_bare_filename(const std::string& rfl_filename)
     return std::string{get_filename_without_ext(rfl_filename.c_str())} + ".awp";
 }
 
-// Try to read an AWP file's content from the VPP packfile system.
-// Returns the file content as a string, or empty if not found.
-static std::string read_awp_from_vpp(const std::string& bare_awp_filename)
-{
-    rf::File file;
-    if (file.open(bare_awp_filename.c_str()) != 0) {
-        return {};
-    }
-    const int file_size = file.size();
-    if (file_size <= 0) {
-        file.close();
-        return {};
-    }
-    std::string content(static_cast<size_t>(file_size), '\0');
-    const int bytes_read = file.read(content.data(), file_size);
-    file.close();
-    if (bytes_read != file_size) {
-        return {};
-    }
-    return content;
-}
-
 enum class AwpSource
 {
     not_found,
@@ -5223,7 +5200,7 @@ static std::pair<AwpSource, toml::table> parse_awp_file(
     }
 
     // Second: try loading from alpinefaction.vpp (or other loaded VPPs).
-    std::string vpp_content = read_awp_from_vpp(bare_awp_filename);
+    std::string vpp_content = read_game_file(bare_awp_filename.c_str()).value_or(std::string{});
     if (!vpp_content.empty()) {
         try {
             return {AwpSource::vpp, toml::parse(vpp_content, bare_awp_filename)};
@@ -5288,7 +5265,7 @@ int get_local_awp_revision(const std::string& rfl_filename)
 
     // Second: try VPP.
     const std::string bare_filename = get_awp_bare_filename(rfl_filename);
-    std::string vpp_content = read_awp_from_vpp(bare_filename);
+    std::string vpp_content = read_game_file(bare_filename.c_str()).value_or(std::string{});
     if (!vpp_content.empty()) {
         std::istringstream vpp_stream(std::move(vpp_content));
         return scan_awp_revision_from_content(vpp_stream);
@@ -10291,8 +10268,7 @@ ConsoleCommand2 waypoint_edit_cmd{
         }
 
         if (request_enable && !g_alpine_game_config.waypoints_edit_mode) {
-            // The route arrows load without sanitize; the editor works on a graph like any other load's, which is no
-            // longer the arrows' alone, so their download won't reload over the edits
+            // Hand the editor a sanitized graph and stop the arrows' pending download from reloading over the edits
             if (waypoints_loaded_for_route_arrows_only()) {
                 sanitize_waypoint_links_against_geometry();
                 g_waypoints_for_route_arrows = false;
@@ -11322,6 +11298,20 @@ static void warm_waypoints_for_route_arrows()
     }
 }
 
+static void load_waypoints_for_route_arrows()
+{
+    g_waypoints_for_route_arrows = true;
+    g_has_loaded_wpt = load_waypoints(true, false);
+}
+
+static void start_awp_download_for_level()
+{
+    waypoints_set_awp_download_pending(true);
+    if (!start_awp_download_for_installed_map(std::string{rf::level.filename.c_str()}, 3)) {
+        waypoints_set_awp_download_pending(false);
+    }
+}
+
 void waypoints_level_init()
 {
     g_missing_awp_from_level_init = false;
@@ -11344,8 +11334,7 @@ void waypoints_level_init()
     else if (waypoints_wanted_for_route_arrows()) {
         // Nothing is seeded for the arrows, so a level without an AWP gets none. A local AWP loads now, without
         // waiting for the download, which reloads it only with a newer revision.
-        g_waypoints_for_route_arrows = true;
-        g_has_loaded_wpt = load_waypoints(true, false);
+        load_waypoints_for_route_arrows();
     }
     else {
         clear_waypoints();
@@ -11372,13 +11361,24 @@ void waypoints_level_init_with_awp_download()
     if ((rf::is_multi && is_waypoint_bot_mode_active()
             && (rf::is_dedicated_server || !g_alpine_game_config.waypoints_edit_mode))
         || waypoints_wanted_for_route_arrows()) {
-        waypoints_set_awp_download_pending(true);
-        if (!start_awp_download_for_installed_map(std::string{rf::level.filename.c_str()}, 3)) {
-            waypoints_set_awp_download_pending(false);
-        }
+        start_awp_download_for_level();
     }
 
     waypoints_level_init();
+}
+
+void waypoints_on_route_arrows_toggled()
+{
+    // A graph loaded otherwise, such as the editor's, is kept: reloading would drop its edits
+    if (!(rf::level.flags & rf::LEVEL_LOADED) || g_waypoints_for_route_arrows || g_waypoints.size() > 1
+        || !waypoints_wanted_for_route_arrows()) {
+        return;
+    }
+    if (!g_awp_download_pending) {
+        start_awp_download_for_level();
+    }
+    load_waypoints_for_route_arrows();
+    warm_waypoints_for_route_arrows();
 }
 
 void waypoints_level_reset()

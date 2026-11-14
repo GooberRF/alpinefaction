@@ -29,6 +29,7 @@
 #include "../os/os.h"
 #include "../bmpman/bmpman.h"
 #include <common/bitmap/fmt_conv_templates.h>
+#include <common/decal_clip.h>
 #include "../rf/gr/gr_light.h"
 #include "../rf/math/ix.h"
 #include "destruction.h"
@@ -764,33 +765,14 @@ CodeInjection g_decal_clip_to_face_clip_injection{
         rf::GFace* face = regs.edi;
         rf::GDecal* decal = regs.ebx;
         constexpr int max_poly_verts = std::extent_v<decltype(rf::DecalPoly::verts)>;
-        static std::vector<rf::Vector3> verts;
-        static std::vector<rf::Vector3> clipped;
-        verts.clear();
-        for (rf::GFaceVertex* fvert = face->edge_loop;
-             fvert && static_cast<int>(verts.size()) <= rf::max_face_vertices;) {
-            verts.push_back(fvert->vertex->pos);
-            fvert = fvert->next;
-            if (fvert == face->edge_loop) {
-                break;
-            }
-        }
-        const int num_face_verts = static_cast<int>(verts.size());
-        // A longer edge loop than any face has is corrupt
-        if (num_face_verts < 3 || num_face_verts > rf::max_face_vertices) {
+        int num_face_verts = 0;
+        const auto verts =
+            decal_clip_face_verts(*face, *decal, rf::max_face_vertices, rf::g_clip_poly_to_plane, num_face_verts);
+        if (verts.empty()) {
             regs.eip = 0x004D67C2;
             return;
         }
-        int num_verts = num_face_verts;
-        for (const rf::Plane& plane : decal->decal_poly_planes) {
-            clipped.resize(2 * num_verts);
-            num_verts = rf::g_clip_poly_to_plane(num_verts, verts.data(), clipped.data(), &plane);
-            if (num_verts < 3) {
-                regs.eip = 0x004D67C2;
-                return;
-            }
-            verts.swap(clipped);
-        }
+        const int num_verts = static_cast<int>(verts.size());
         // A level decal's poly takes a UV per face vertex and never reads the clipped polygon. For a face with more
         // vertices than it holds, g_decal_clip_to_face_level_uvs_injection leaves them to the Direct3D 11 renderer.
         const bool level_decal = decal->flags & rf::DF_LEVEL_DECAL;

@@ -3124,7 +3124,7 @@ void settings_menu_input()
     // The console reads the same key queue a focused box drains, so a box would type into both -
     // and the menu pump skips the key loop entirely while it is open, which would leave a capture
     // listening with nothing able to end it.
-    menu_drop_text_focus_under_console(g_ui);
+    ui_drop_text_focus_under_console(g_ui);
     if (rf::console::console_is_visible() && g_capture.row >= 0) {
         g_ui.cancel_key_capture();
     }

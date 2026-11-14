@@ -283,7 +283,7 @@ If neither the rotation nor `allowed_levels` names a level, `glass_house.rfl` is
 | `flag_dropping` | Boolean | `true` | Let CTF flag carriers drop the flag. |
 | `flag_captures_while_stolen` | Boolean | `false` | Let a team capture while its own CTF flag is stolen. |
 | `pvp_damage_modifier` | Number | game type | Multiplier for damage between players, 0-100. `1.0` everywhere except RUN (`0.0`). |
-| `drop_amps` | Boolean | `false` | Players drop damage amplifiers when they die. |
+| `drop_amps` | Boolean | `false` | Players drop their damage amplifier, invulnerability, Alpine Haste, Alpine Vampire and Alpine Jetpack when they die. |
 | `drop_weapons` | Boolean | `true` | Players drop their weapon when they die. Off in PIT, GG, WO and SCAV. |
 | `no_player_collide` | Boolean | game type | Players pass through each other. On by default only in RUN. |
 | `location_pinging` | Boolean | game type | Allow location pings. On by default in KOTH, DC, REV, RUN, ESC, TBAG, SAL, WO, SCAV and PAY. |
@@ -484,7 +484,7 @@ A mutator declared more than once in the same table uses its last declaration. A
 | `gibbing` | Gibbing | Turns on `gibbing`. | `scrapyard` (Boolean, default `false`: gibs are random debris instead of meat) | any |
 | `jetpacks` | Jetpacks | Every player wears a jetpack and thrusts by holding jump while falling. | `explode` (Boolean, default `false`: a direct shot in the back or burning to death gibs the wearer) | 1.4+ |
 | `humansvsbots` | Humans vs. Bots | Bots always play on Blue and humans on Red. Team game types only. | none | any |
-| `delayedsupers` | Delayed Supers | Adds Multi Super Health, Multi Super Armor, Multi Invulnerability, Multi Damage Amplifier and shoulder cannon (plus rail gun when `superrail` is active) to `delayed_items`. | none | any |
+| `delayedsupers` | Delayed Supers | Adds Multi Super Health, Multi Super Armor, Multi Invulnerability, Multi Damage Amplifier, Alpine Haste, Alpine Vampire, Alpine Jetpack and shoulder cannon (plus rail gun when `superrail` is active) to `delayed_items`. | none | any |
 | `weirdgungame` | Weird Gun Game | Replaces Gun Game's built-in progression and final weapon with unusual weapons. GG only. | none | any |
 | `lowgravity` | Low Gravity | Reduced gravity. | none | 1.4+ |
 | `skiing` | Skiing | Hold crouch to slide without ground friction. | none | 1.4+ |

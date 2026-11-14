@@ -883,3 +883,29 @@ std::string vpackfile_load_user_maps_packfiles()
     }
     return std::format("Loaded {} new packfile(s) from user_maps\\", loaded);
 }
+
+std::optional<std::string> read_game_file(const char* filename, int max_size)
+{
+    rf::File file;
+    if (file.open(filename) != 0) {
+        return std::nullopt;
+    }
+    const int size = file.size();
+    std::optional<std::string> content;
+    if (size >= 0 && size <= max_size) {
+        content.emplace(static_cast<std::size_t>(size), '\0');
+        int total_read = 0;
+        while (total_read < size) {
+            const int num_read = file.read(content->data() + total_read, size - total_read);
+            if (num_read <= 0) {
+                break;
+            }
+            total_read += num_read;
+        }
+        if (total_read != size) {
+            content.reset();
+        }
+    }
+    file.close();
+    return content;
+}

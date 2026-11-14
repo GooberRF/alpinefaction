@@ -500,8 +500,8 @@ void ui_set_text_color(const UiContext& ctx, bool enabled, bool hovered);
 // ---------------------------------------------------------------------------
 
 std::string ui_fit_middle(std::string_view text, int max_w, int font);
-// Cuts the end off, trailing spaces too, before the ellipsis.
-std::string ui_fit_end(std::string_view text, int max_w, int font);
+// Cuts the end off, trailing spaces too unless `trim_spaces` is false, before the ellipsis.
+std::string ui_fit_end(std::string_view text, int max_w, int font, bool trim_spaces = true);
 std::vector<std::string> ui_wrap_text(std::string_view text, int max_w, int font);
 void ui_draw_wrapped(const UiContext& ctx, const UiRect& r, std::string_view text, int font, int line_h);
 int ui_line_block_height(const std::vector<std::string>& lines, int max_w, int font, int line_h, int max_h);
@@ -543,6 +543,8 @@ int ui_listbox(UiContext& ctx, const UiRect& r, const std::vector<std::string>& 
 UiTextInputResult ui_text_input(UiContext& ctx, const UiRect& r, UiId id, std::string& text,
                                 size_t max_len, UiCharFilter allow_char, const char* hint, int font,
                                 bool enabled = true);
+// The console reads the key queue a focused text box drains, so the box lets go while the console is open.
+void ui_drop_text_focus_under_console(UiContext& ctx);
 
 // A focusable widget scrolled out of view: the keyboard focus can still step onto it. True when Enter took it.
 bool ui_offscreen_activatable(UiContext& ctx, UiId id);

@@ -708,9 +708,8 @@ namespace gr::d3d11
         }
     }
 
-    // A level decal poly holds a UV for at most 25 face vertices; the game writes none for a longer face (g_solid.cpp).
-    // Derives them as stock's decal clip does (0x004D6663), with its tiling shift (0x004D67D0). Returns false when the
-    // poly holds them.
+    // A level decal poly holds UVs for at most 25 face vertices and a longer face gets none, so derive them as stock's
+    // decal clip does, tiling shift included. Returns false when the poly holds them.
     static bool derive_level_decal_uvs(const rf::DecalPoly& dp, std::vector<rf::Vector2>& uvs)
     {
         const rf::GDecal& decal = *dp.my_decal;

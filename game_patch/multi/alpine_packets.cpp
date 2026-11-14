@@ -4201,8 +4201,7 @@ static size_t build_af_payload_state_packet(std::byte (&buf)[rf::max_packet_size
 {
     const PayloadNetState net = payload_build_net_state();
     const size_t num_pushers = std::min<size_t>(net.pushers.size(), af_payload_state_max_ids);
-    const size_t num_blockers = std::min<size_t>(net.blockers.size(), af_payload_state_max_ids);
-    const size_t wire_size = sizeof(af_payload_state_packet) + num_pushers + 1 + num_blockers;
+    const size_t wire_size = sizeof(af_payload_state_packet) + num_pushers;
     if (wire_size > rf::max_packet_size) {
         xlog::error("af_payload_state: packet too large ({} > {})", wire_size, rf::max_packet_size);
         return 0;
@@ -4231,11 +4230,6 @@ static size_t build_af_payload_state_packet(std::byte (&buf)[rf::max_packet_size
     if (num_pushers) {
         std::memcpy(buf + off, net.pushers.data(), num_pushers);
         off += num_pushers;
-    }
-    buf[off++] = static_cast<std::byte>(num_blockers);
-    if (num_blockers) {
-        std::memcpy(buf + off, net.blockers.data(), num_blockers);
-        off += num_blockers;
     }
     return off;
 }
@@ -4292,7 +4286,7 @@ void af_process_payload_state_packet(const void* data, size_t len, const rf::Net
         xlog::warn("payload_state: truncated (declared={}, len={})", hdr.size, len);
         return;
     }
-    if (wire_size < sizeof(af_payload_state_packet) + 1) {
+    if (wire_size < sizeof(af_payload_state_packet)) {
         xlog::warn("payload_state: short packet ({})", wire_size);
         return;
     }
@@ -4301,20 +4295,13 @@ void af_process_payload_state_packet(const void* data, size_t len, const rf::Net
     std::memcpy(&pkt, data, sizeof(pkt));
 
     const auto* bytes = static_cast<const uint8_t*>(data);
-    size_t off = sizeof(pkt);
-    if (off + pkt.num_pushers + 1 > wire_size) {
+    const size_t off = sizeof(pkt);
+    if (pkt.num_pushers > af_payload_state_max_ids || off + pkt.num_pushers != wire_size) {
         xlog::warn("payload_state: bad pusher count {}", pkt.num_pushers);
         return;
     }
     PayloadNetState net;
     net.pushers.assign(bytes + off, bytes + off + pkt.num_pushers);
-    off += pkt.num_pushers;
-    const uint8_t num_blockers = bytes[off++];
-    if (off + num_blockers != wire_size) {
-        xlog::warn("payload_state: bad blocker count {}", num_blockers);
-        return;
-    }
-    net.blockers.assign(bytes + off, bytes + off + num_blockers);
 
     if (pkt.state > static_cast<uint8_t>(PayloadCartState::held) || !std::isfinite(pkt.distance)
         || !std::isfinite(pkt.speed)) {

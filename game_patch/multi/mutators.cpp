@@ -2414,7 +2414,7 @@ static const char* const FLAME_EXTINGUISH_HEALTH_ITEMS[] = {
     "Medical Kit",
     "First Aid Kit",
     "Multi Super Health",
-    "Alpine Health Shard",
+    alpine_powerup_item_classes[static_cast<size_t>(AlpinePowerup::health_shard)].class_name,
 };
 
 void mutators_on_item_picked_up(rf::Item* item, rf::Entity* entity)

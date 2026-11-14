@@ -98,7 +98,6 @@ UiRect menu_draw_title_bar(const UiContext& ctx, int x, int right, int clear_r, 
 // `dx` slides the panel off to the right; `top` is the column's first slot.
 MenuPanel menu_panel(const UiContext& ctx, const MenuLayout& lay, int dx, int top, int canvas_y);
 void menu_draw_panel(const UiContext& ctx, const MenuPanel& panel);
-// The ridge under the panel's header line.
 void menu_draw_panel_ridge(const UiContext& ctx, const MenuPanel& panel);
 // The panel's heading on its header line, and the ridge under it.
 void menu_draw_panel_heading(const UiContext& ctx, const MenuPanel& panel, const char* text, int font);
@@ -108,12 +107,9 @@ void menu_draw_connector(const UiContext& ctx, const MenuPanel& panel, int mid_y
 int menu_build_column(UiContext& ctx, const MenuLayout& lay, int x, int y, std::span<const MenuColumnItem> items,
                       const char* back_label, int font, const char* id_name);
 
-// Forgets the context's transients and gives it the menus' style.
 void menu_ui_reset(UiContext& ctx);
 // A frame's hit-test pass: the keys go to `key_callback`, the mouse to the context, then `build` runs. A text box
 // lets go once the keys have opened the console, before they reach it.
 void menu_run_hit_test(UiContext& ctx, void (*key_callback)(int), const std::function<void(UiContext&)>& build);
 // A frame's draw pass over the stock menu background, popups on top.
 void menu_run_draw(UiContext& ctx, const std::function<void(UiContext&)>& build);
-// The console reads the key queue a focused text box drains, so the box lets go while the console is open.
-void menu_drop_text_focus_under_console(UiContext& ctx);

@@ -1,7 +1,6 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
-#include <cctype>
 #include <cmath>
 #include <format>
 #include <optional>
@@ -16,6 +15,7 @@
 #include <common/vehicle_meshes.h>
 #include "reference_data.h"
 #include "../misc/misc.h"
+#include "../misc/vpackfile.h"
 #include "../multi/gametype.h"
 #include "../multi/multi.h"
 #include "../multi/powerups.h"
@@ -52,21 +52,18 @@ std::vector<Record> g_mp_characters;
 
 std::optional<toml::table> load_reference_file()
 {
-    rf::File file;
-    if (file.open(reference_filename) != 0) {
-        xlog::warn("[Reference] {} not found; entries show their table stats only", reference_filename);
-        return std::nullopt;
-    }
-    const int size = file.size();
-    std::string content(static_cast<std::size_t>(std::max(size, 0)), '\0');
-    const int bytes_read = size > 0 ? file.read(content.data(), size) : 0;
-    file.close();
-    if (bytes_read != size) {
-        xlog::error("[Reference] Could not read {}", reference_filename);
+    const std::optional<std::string> content = read_game_file(reference_filename);
+    if (!content) {
+        if (rf::File{}.find(reference_filename)) {
+            xlog::error("[Reference] Could not read {}", reference_filename);
+        }
+        else {
+            xlog::warn("[Reference] {} not found; entries show their table stats only", reference_filename);
+        }
         return std::nullopt;
     }
     try {
-        return toml::parse(content, std::string{reference_filename});
+        return toml::parse(*content, std::string{reference_filename});
     }
     catch (const toml::parse_error& err) {
         xlog::error("[Reference] Failed to parse {}: {}", reference_filename, err.description());
@@ -187,14 +184,6 @@ std::string category_or(const Record* record, std::string fallback)
     return record && !record->category.empty() ? record->category : std::move(fallback);
 }
 
-std::string capitalized(std::string text)
-{
-    if (!text.empty()) {
-        text[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(text[0])));
-    }
-    return text;
-}
-
 // ---------------------------------------------------------------------------
 // Weapons
 // ---------------------------------------------------------------------------
@@ -266,7 +255,7 @@ std::string weapon_features(int type, const rf::WeaponInfo& w)
     for (const char* f : features) {
         text += text.empty() ? std::string{f} : std::string{", "} + f;
     }
-    return capitalized(std::move(text));
+    return string_capitalize(text);
 }
 
 std::string damage_text(float damage, int projectiles)
@@ -375,7 +364,7 @@ ReferenceEntry build_vehicle(int type, const Record* record)
     const rf::EntityInfo& info = rf::entity_types[type];
     ReferenceEntry e;
     e.name = display_or(record, info.name.c_str());
-    const std::string kind = capitalized(vehicle_class_display_name(vehicle_class_from_type(type)));
+    const std::string kind = string_capitalize(vehicle_class_display_name(vehicle_class_from_type(type)));
     e.subtitle = category_or(record, string_iequals(kind, e.name) ? std::string{} : kind);
     e.description = description_of(record);
     e.mesh = vehicle_preview_mesh(info);
@@ -488,7 +477,6 @@ std::vector<ReferenceEntry> build_gametypes(const std::vector<Record>& records)
 // Powerups
 // ---------------------------------------------------------------------------
 
-// The Alpine powerup class an item type is, if any.
 const AlpinePowerupItemClass* alpine_powerup_class(int item_type)
 {
     for (std::size_t i = 0; i < std::size(alpine_powerup_item_classes); ++i) {

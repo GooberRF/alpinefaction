@@ -235,7 +235,7 @@ void append_alpine_powerup_item_classes()
             rf::ItemInfo& info = rf::item_info[type];
             info.cls_name = def.class_name;
             info.v3d_filename = def.v3d_filename;
-            info.hud_msg_name = reinterpret_cast<const char*>(&def.hud_msg_name);
+            info.hud_msg_name = &def.hud_msg_name;
             info.pickup_msg_single = &def.pickup_msg;
             info.pickup_msg_multi = nullptr;
             info.pickup_msg_wa_single = nullptr;
@@ -283,9 +283,8 @@ const rf::gr::Color* holder_light_color(const rf::Entity* ep)
     return nullptr;
 }
 
-// entity_process, where the stock Damage Amp and Invulnerability holder lights are passed over for the CTF flag
-// carrier ones; the stock block deletes powerup_light_handle every frame before it gets here. A flag carrier keeps
-// the flag light. Replaces `call multi_ctf_get_blue_flag_player`, a relative call no trampoline can carry.
+// Replaces `call multi_ctf_get_blue_flag_player`, a relative call no trampoline can carry. Flag carriers keep the
+// flag light.
 CodeInjection entity_process_powerup_light_injection{
     0x0041ED06,
     [](auto& regs) {
@@ -366,10 +365,7 @@ void haste_shorten(rf::Timestamp& timestamp)
     }
 }
 
-// Speed limits are scaled only around the hasted entity's own step: the EntityInfo ones are shared by its whole
-// class, and the engine rewrites Entity::max_vel only on crouch, climb and run transitions. Multiplayer ground
-// response time is max_vel / mp_ground_acceleration, so both scale to keep it. Swim speed and air control follow
-// info->acceleration.
+// EntityInfo is shared by the entity's whole class, so its limits are scaled only around the hasted entity's step.
 FunHook<void(rf::Entity*)> physics_simulate_entity_haste_hook{
     0x0049F3C0,
     [](rf::Entity* ep) {
@@ -760,11 +756,7 @@ void powerups_do_frame()
     }
 }
 
-// The local player's icons, on the stock powerup icon row (multi_powerup_render_gr_bitmap_hook). That row has
-// Invulnerability (50 wide) at 271 and Damage Amp (38 wide) at 324, 3 apart, on the 640-wide HUD. The powerups with an
-// icon extend it in table order, taking turns left and right of those, each 3 past the one before it on that side. Like
-// the stock icons, each keeps its place while the ones before it are not held. Spectate mode draws the viewed player's
-// beside the name plaque.
+// The local player's icons extend the stock powerup icon row outward, alternating sides in table order.
 void powerups_render_hud()
 {
     const rf::Entity* ep = rf::local_player_entity;
@@ -774,10 +766,16 @@ void powerups_render_hud()
     const float scale = g_alpine_game_config.big_hud ? 2.0f : 1.0f;
     const int clip_w = rf::gr::clip_width();
     const int clip_h = rf::gr::clip_height();
-    const int y = hud_scale_value(clip_h - 53, clip_h, scale);
+    // The stock row's layout on the 640-wide HUD.
+    constexpr int row_bottom_offset = 53;
+    constexpr int invuln_icon_x = 271;
+    constexpr int amp_icon_x = 324;
+    constexpr int amp_icon_w = 38;
+    constexpr int hud_center_x = 320;
     constexpr int gap = 3;
-    int left_x = 271 - gap;
-    int right_x = 324 + 38 + gap;
+    const int y = hud_scale_value(clip_h - row_bottom_offset, clip_h, scale);
+    int left_x = invuln_icon_x - gap;
+    int right_x = amp_icon_x + amp_icon_w + gap;
     bool next_left = true;
     for (size_t i = 0; i < powerup_count; ++i) {
         const int bmh = powerup_hud_icon(i);
@@ -801,7 +799,7 @@ void powerups_render_hud()
             continue;
         }
         // Kept centred, as the stock row is: hud_transform_value would anchor an icon past 426 to the right edge.
-        const int x = clip_w / 2 + static_cast<int>(std::round((icon_x - 320) * scale));
+        const int x = clip_w / 2 + static_cast<int>(std::round((icon_x - hud_center_x) * scale));
         rf::gr::set_color(255, 255, 255, 255);
         hud_scaled_bitmap(bmh, x, y, scale, rf::gr::bitmap_wrap_mode);
     }

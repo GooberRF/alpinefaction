@@ -128,9 +128,7 @@ namespace
         rf::vmesh_free(vmesh);
     }
 
-    // entity_blow_up, loading the explode vclip for its 0x00436490 call; the radius is already pushed. Every machine,
-    // dedicated server included: the vclip and radius also set the death's radius damage (0x00436490 ->
-    // apply_radius_damage).
+    // Runs on every machine, dedicated server included: the vclip and radius also set the death's radius damage.
     CodeInjection entity_blow_up_vclip_injection{
         0x00419482,
         [](auto& regs) {
