@@ -1427,7 +1427,7 @@ void awards_on_ctf_flag_dropped(rf::Player* player)
     }
 }
 
-// Hat Trick, shared by the modes that capture flags (CTF, SAL and SCAV).
+// Hat Trick, shared by the modes that capture an objective (CTF, SAL and SCAV).
 static void awards_note_capture(rf::Player* player)
 {
     AwardPlayerState* state = state_for(player);

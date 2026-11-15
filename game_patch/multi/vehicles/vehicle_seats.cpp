@@ -788,7 +788,7 @@ namespace
                         vehicle_server_stop_fire(vehicle);
                     }
                     vehicle_broadcast_seat_occupancy(vehicle->handle, vehicle, seat_index);
-                    // entity_die detaches a rider killed in his seat.
+                    // entity_die detaches a rider killed in their seat.
                     vehicle_stats_sync_seats(vehicle->handle, rf::entity_is_dying(ep)
                         ? afstats::VehicleSeatReason::rider_died : afstats::VehicleSeatReason::voluntary);
                 }

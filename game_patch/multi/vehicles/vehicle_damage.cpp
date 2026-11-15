@@ -1563,7 +1563,7 @@ namespace
             if (!rf::is_multi || !rf::is_server || !vehicle) {
                 return; // single player and clients keep the stock scan
             }
-            // The destroyer as vehicle_resolve_damage_killer credits him: nobody for an unattributed death.
+            // The destroyer as vehicle_resolve_damage_killer credits them: nobody for an unattributed death.
             const auto lethal = g_vehicle_state.lethal_killer.find(vehicle->handle);
             const VehicleLethalKiller* blow =
                 lethal != g_vehicle_state.lethal_killer.end() ? &lethal->second : nullptr;

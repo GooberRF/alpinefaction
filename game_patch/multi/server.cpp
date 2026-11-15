@@ -1854,7 +1854,7 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
         // aboard it, unless the attacker is one of them.
         const bool hull_victim = victim_is_synced_vehicle && vehicle_hull_occupied(damaged_ep)
             && vehicle_ridden_hull(rf::entity_from_handle(killer_handle)) != damaged_ep;
-        // Same reason: a rider who dies can be out of his seat afterwards.
+        // Same reason: a rider who dies can be out of their seat afterwards.
         const int victim_vehicle_class = damaged_player ? vehicle_occupied_damage_class(damaged_ep) : -1;
         // Same reason: the roadkill derivation needs a live victim.
         const int roadkill_vehicle_class = damage_type == rf::DT_CRUSH
@@ -2029,7 +2029,7 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
             // the stats stream and the in-game attribution can never disagree.
             const rf::Vector3 victim_pos = damaged_ep ? damaged_ep->pos : victim_pos_before_damage;
             const rf::Entity* killer_ep_for_pos = rf::entity_from_handle(killer_handle);
-            // A run-over or ram is always its driver's, even once he has left the coasting hull.
+            // A run-over or ram is always its driver's, even once they have left the coasting hull.
             int killer_seat = -1;
             if (vehicle_kill_class >= 0) {
                 killer_seat = roadkill_vehicle_class >= 0 ? 0 : vehicle_rider_seat_index(killer_ep_for_pos);

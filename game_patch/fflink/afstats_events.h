@@ -129,7 +129,7 @@ enum class VehicleEventKind : uint8_t
 {
     spawn = 0,
     destroyed = 1,
-    claimed = 2,  // a boarder took a hull of another team, or of none, for his own
+    claimed = 2,  // a boarder took a hull of another team, or of none, for their own
     returned = 3, // scuttled with no credited destroyer
 };
 

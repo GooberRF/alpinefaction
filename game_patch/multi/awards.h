@@ -90,7 +90,7 @@ struct AwardKillVehicles
     int kill_class = -1;
     // The class of the hull that ran the victim over or drilled them.
     int roadkill_class = -1;
-    // The hull whose destruction killed the victim through its occupant blast.
+    // The handle of the hull whose destruction killed the victim through its occupant blast.
     int blast_hull = -1;
 };
 
