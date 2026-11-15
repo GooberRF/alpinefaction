@@ -19,6 +19,8 @@ namespace rf
     // Forward declarations
     struct Player;
     struct Entity;
+    struct EntityInfo;
+    struct Object;
 
     // nw/psnet
 
@@ -367,6 +369,8 @@ namespace rf
     static auto& multi_powerup_has_player = addr_as_ref<bool(Player* pp, int powerup_type)>(0x004802B0);
     static auto& multi_powerup_get_time_until = addr_as_ref<int(Player* pp, int powerup_type)>(0x004802D0);
     static auto& multi_powerup_add = addr_as_ref<void(Player* pp, int powerup_type, int time_ms)>(0x00480050);
+    // The stock powerup an item class name gives, -1 for none
+    static auto& multi_powerup_type_from_name = addr_as_ref<int(const String* name)>(0x00480010);
     static auto& multi_powerup_remove = addr_as_ref<void(Player* pp, int powerup_type)>(0x004801F0);
     static auto& multi_powerup_remove_all_for_player = addr_as_ref<void(Player* pp)>(0x00480310);
     static auto& send_reload_packet = addr_as_ref<void(Entity* ep, int weapon_type, int ammo, int clip_ammo)>(0x00485B50);
@@ -442,6 +446,10 @@ namespace rf
     constexpr int MAX_MP_CHARACTERS = 31;
     static auto& mp_characters = addr_as_ref<MpCharacterInfo[MAX_MP_CHARACTERS]>(0x006C75A0);
     static auto& num_multi_characters = addr_as_ref<int>(0x006C9C60);
+    // player_create_entity's (0x004A4130) team-skin builders for a character in the "default" skin.
+    static auto& mp_character_lacks_team_skins =
+        addr_as_ref<bool(MpCharacterInfo* character, EntityInfo* info)>(0x004A4540);
+    static auto& mp_character_add_team_skins = addr_as_ref<void(MpCharacterInfo* character, Object* obj)>(0x004A45A0);
     static auto& simultaneous_ping = addr_as_ref<uint32_t>(0x00599CD8);
     static auto& tracker_addr = addr_as_ref<NetAddr>(0x006FC550);
     static auto& tracker_hostname = addr_as_ref<char[64]>(0x0059F4B4);

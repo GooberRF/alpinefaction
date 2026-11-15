@@ -17,6 +17,8 @@
 #include "vehicle_spawn.h"
 #include "vehicle_tracers.h"
 #include "vehicle_fx.h"
+#include "vehicle_trails.h"
+#include "vehicle_debris.h"
 #include "../alpine_packets.h"
 #include "../demo/demo.h"
 #include "../multi.h"
@@ -95,13 +97,24 @@ namespace
     constexpr float vehicle_auto_return_pad_radius = 10.0f; // no auto-return this close to its factory
     constexpr float vehicle_auto_return_leave_radius = 12.0f; // hysteresis: the timer restarts only past this
 
+    bool is_vehicle_use_function(int use_function)
+    {
+        return use_function == rf::ENTITY_USE_VEHICLE || use_function == rf::ENTITY_USE_TURRET;
+    }
+
+    bool entity_type_in_range(int entity_type_index)
+    {
+        return entity_type_index >= 0 && entity_type_index < rf::num_entity_types
+            && entity_type_index < rf::MAX_ENTITY_TYPES;
+    }
+
     bool is_synced_use_function(int use_function)
     {
         // A MP level without factories has no synced hulls; its level-placed turrets stay stock props.
         if (rf::is_multi && !vehicle_level_has_factories()) {
             return false;
         }
-        return use_function == rf::ENTITY_USE_VEHICLE || use_function == rf::ENTITY_USE_TURRET;
+        return is_vehicle_use_function(use_function);
     }
 
     // Indexed by VehicleDamageClass; already cased for use after a possessive ("Bob's APC").
@@ -145,7 +158,12 @@ namespace
 
 int vehicle_damage_class_from_type(int entity_type)
 {
-    if (!vehicle_is_synced_entity_type(entity_type)) {
+    return vehicle_is_synced_entity_type(entity_type) ? vehicle_class_from_type(entity_type) : -1;
+}
+
+int vehicle_class_from_type(int entity_type)
+{
+    if (!vehicle_is_vehicle_entity_type(entity_type)) {
         return -1;
     }
     return vehicle_damage_class_from_info(rf::entity_types[entity_type]);
@@ -447,11 +465,14 @@ bool vehicle_is_flyer(rf::Entity* ep)
 
 bool vehicle_is_synced_entity_type(int entity_type_index)
 {
-    if (entity_type_index < 0 || entity_type_index >= rf::num_entity_types
-        || entity_type_index >= rf::MAX_ENTITY_TYPES) {
-        return false;
-    }
-    return is_synced_use_function(rf::entity_types[entity_type_index].use_function);
+    return entity_type_in_range(entity_type_index)
+        && is_synced_use_function(rf::entity_types[entity_type_index].use_function);
+}
+
+bool vehicle_is_vehicle_entity_type(int entity_type_index)
+{
+    return entity_type_in_range(entity_type_index)
+        && is_vehicle_use_function(rf::entity_types[entity_type_index].use_function);
 }
 
 bool vehicle_is_synced_entity_type(const rf::Entity* ep)
@@ -490,6 +511,9 @@ void vehicle_client_do_frame()
         vehicle_update_jeep_wheels();
         vehicle_update_treads();
         vehicle_fx_do_frame();
+        vehicle_trails_do_frame();
+        vehicle_hit_flash_do_frame();
+        vehicle_debris_do_frame();
         vehicle_hazard_client_do_frame();
         // Ahead of the engine frame the hook wraps (0x004B2D90), so the cockpit is stepped first.
         vehicle_process_spectated_cockpit();
@@ -897,6 +921,9 @@ void vehicle_level_init(bool load_assets)
     vehicle_markers_level_init();
     vehicle_tracers_level_init();
     vehicle_fx_level_init(load_assets);
+    vehicle_trails_clear();
+    vehicle_hit_flash_clear();
+    vehicle_debris_clear();
     // The bm cache is rebuilt per level, so a handle resolved for the last one means nothing here.
     vehicle_tread_runtime_reset();
     vehicle_ammo_regen_runtime_reset();
@@ -1130,5 +1157,6 @@ void vehicle_apply_patches()
     vehicle_spawn_install();
     vehicle_tracers_install();
     vehicle_fx_install();
+    vehicle_debris_install();
     vehicle_horn_install();
 }

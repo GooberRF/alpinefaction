@@ -188,6 +188,9 @@ extern KothInfo g_koth_info;
 // Containment and liveness tests the hill frame code itself runs, so anything asking "was this
 // player on that hill" agrees with the capture logic by construction.
 bool player_inside_hill_trigger(const HillInfo& h, const rf::Player& p);
+// The point form of its shapes. Where capture uses the stock object tests, which overlap a box trigger with the
+// player's bounds, this tests the point against the trigger's own sphere or box, so it only approximates capture.
+bool point_inside_hill_trigger(const HillInfo& h, const rf::Vector3& pos);
 bool player_is_countable(rf::Player& p);
 
 bool obj_inside_trigger(const rf::Trigger* t, const rf::Object* o);
@@ -221,6 +224,9 @@ bool gt_type_uses_rounds(rf::NetGameType game_type);
 bool rev_all_points_permalocked();
 bool esc_all_points_owned_by_one_team();
 bool esc_team_can_attack_hill(const HillInfo& hill, HillOwner team);
+// The team can take the point now: it is unlocked and not the team's own, and in ESC the next along its lane. REV's
+// points are red's to take.
+bool control_point_team_can_capture_hill(const HillInfo& hill, HillOwner team);
 int multi_koth_get_red_team_score();
 int multi_koth_get_blue_team_score();
 void multi_get_team_scores(rf::NetGameType type, int& red, int& blue);

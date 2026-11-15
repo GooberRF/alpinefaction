@@ -1,11 +1,14 @@
 #include <algorithm>
 #include <cmath>
 #include <string_view>
+#include <common/utils/string-utils.h>
 #include "menu_shell.h"
 #include "settings_skin.h"
 #include "../graphics/gr.h"
 #include "../rf/gr/gr.h"
 #include "../rf/gr/gr_font.h"
+#include "../rf/input.h"
+#include "../rf/multi.h"
 #include "../rf/os/frametime.h"
 #include "../rf/ui.h"
 
@@ -47,9 +50,43 @@ void note_widest_word(std::string_view text, int font, std::string_view& widest,
 
 } // namespace
 
+std::string menu_stock_label(const char* text)
+{
+    std::string label;
+    for (const char c : string_to_upper(text)) {
+        const bool space = c == ' ' || c == '\n' || c == '\r';
+        if (!space) {
+            label += c;
+        }
+        else if (!label.empty() && label.back() != ' ') {
+            label += ' ';
+        }
+    }
+    if (!label.empty() && label.back() == ' ') {
+        label.pop_back();
+    }
+    return label;
+}
+
 float menu_screen_scale()
 {
     return std::min(rf::gr::clip_width() / menu_ref_w, rf::gr::clip_height() / menu_ref_h);
+}
+
+MenuFrame menu_frame(UiContext& ctx, float slide)
+{
+    const float scale = menu_screen_scale();
+    ctx.set_scale(scale);
+    MenuFrame f;
+    f.canvas_y = (rf::gr::clip_height() - static_cast<int>(menu_ref_h * scale)) / 2;
+    f.lay = menu_layout(ctx);
+    f.slide_w = rf::gr::clip_width() - f.lay.panel_x;
+    f.enter_dx = static_cast<int>((1.0f - slide) * static_cast<float>(f.slide_w));
+    f.col_dx = -static_cast<int>((1.0f - slide) * static_cast<float>(f.lay.column_x + f.lay.column_w));
+    f.top = f.canvas_y + ctx.scaled(menu_column_y);
+    f.fonts = {menu_font(true, 46.0f, scale), menu_font(true, 20.0f, scale), menu_font(true, 32.0f, scale),
+               menu_font(true, 26.0f, scale), menu_font(false, 20.0f, scale), menu_font(false, 17.0f, scale)};
+    return f;
 }
 
 int menu_font(bool bold, float ref_px, float scale)
@@ -117,7 +154,7 @@ UiRect menu_draw_title_bar(const UiContext& ctx, int x, int right, int clear_r, 
     return UiRect{free_l, bar.y, std::max(0, free_r - free_l), bar.h};
 }
 
-MenuPanel menu_panel(const UiContext& ctx, const MenuLayout& lay, int dx, int top)
+MenuPanel menu_panel(const UiContext& ctx, const MenuLayout& lay, int dx, int top, int canvas_y)
 {
     const auto s = [&](float v) { return ctx.scaled(v); };
     const int h = menu_panel_slots * menu_button_h(ctx);
@@ -128,7 +165,25 @@ MenuPanel menu_panel(const UiContext& ctx, const MenuLayout& lay, int dx, int to
                          h - 2 * s(frame_edge)};
     panel.content_x = panel.inset.x + s(20.0f);
     panel.content_r = panel.inset.x + panel.inset.w - s(16.0f);
+    const int content_w = panel.content_r - panel.content_x;
+    panel.header = UiRect{panel.content_x, canvas_y + s(menu_panel_header_y), content_w, s(menu_panel_header_h)};
+    const int body_y = canvas_y + s(menu_panel_body_y);
+    panel.body = UiRect{panel.content_x, body_y, content_w, panel.inset.y + panel.inset.h - s(20.0f) - body_y};
     return panel;
+}
+
+void menu_draw_panel_ridge(const UiContext& ctx, const MenuPanel& panel)
+{
+    skin_ridge(ctx, panel.inset.x + ctx.scaled(8.0f), panel.header.y + panel.header.h + ctx.scaled(1.0f),
+               panel.inset.w - ctx.scaled(16.0f));
+}
+
+void menu_draw_panel_heading(const UiContext& ctx, const MenuPanel& panel, const char* text, int font)
+{
+    const UiRect& header = panel.header;
+    rf::gr::set_color(skin::ink_title);
+    rf::gr::string(header.x, header.y + (header.h - rf::gr::get_font_height(font)) / 2, text, font);
+    menu_draw_panel_ridge(ctx, panel);
 }
 
 void menu_draw_panel(const UiContext& ctx, const MenuPanel& panel)
@@ -188,4 +243,42 @@ int menu_build_column(UiContext& ctx, const MenuLayout& lay, int x, int y, std::
         clicked = static_cast<int>(items.size());
     }
     return clicked;
+}
+
+void menu_ui_reset(UiContext& ctx)
+{
+    ctx.reset();
+    ctx.style = settings_menu_style();
+    ctx.set_hover_sound_enabled(true);
+}
+
+void menu_run_hit_test(UiContext& ctx, void (*key_callback)(int), const std::function<void(UiContext&)>& build)
+{
+    rf::game_poll(key_callback);
+    ui_drop_text_focus_under_console(ctx);
+    int x = 0;
+    int y = 0;
+    int z = 0;
+    rf::mouse_get_pos(x, y, z);
+    ctx.begin_frame(x, y, rf::mouse_dz, rf::mouse_button_is_down(0), rf::mouse_was_button_pressed(0) != 0,
+                    rf::mouse_was_button_pressed(1) != 0);
+    ctx.begin_pass(UiPass::HitTest);
+    build(ctx);
+    ctx.end_pass();
+}
+
+void menu_run_draw(UiContext& ctx, const std::function<void(UiContext&)>& build)
+{
+    rf::gr::reset_clip();
+    rf::ui::menu_draw_background();
+    int x = 0;
+    int y = 0;
+    int z = 0;
+    rf::mouse_get_pos(x, y, z);
+    ctx.set_mouse_pos(x, y);
+    ctx.begin_pass(UiPass::Draw);
+    build(ctx);
+    ctx.end_pass();
+    ctx.draw_overlays();
+    rf::gr::reset_clip();
 }

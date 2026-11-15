@@ -37,6 +37,11 @@
 #include "../../rf/sound/sound.h"
 #include "../../sound/sound.h"
 
+float fx_rand(float lo, float hi)
+{
+    return std::uniform_real_distribution<float>{lo, hi}(g_rng);
+}
+
 namespace
 {
     // Every emitter's particles live in pool 1; the effects leave most of it to the level's own.
@@ -345,11 +350,6 @@ namespace
     float g_fx_debris_cooldown = 0.0f;
     // This frame's simulated time: a paused demo stops the particles, and a demo timescale moves the hulls.
     float g_fx_dt = 0.0f;
-
-    float fx_rand(float lo, float hi)
-    {
-        return std::uniform_real_distribution<float>{lo, hi}(g_rng);
-    }
 
     rf::Vector3 fx_rand_dir()
     {
@@ -1267,7 +1267,8 @@ namespace
             setting_console_set_bool("vehicle_effects", enabled);
             rf::console::print("Vehicle effects are {}", g_alpine_game_config.vehicle_effects ? "enabled" : "disabled");
         },
-        "Show dust, sparks, spray, smoke and fire effects, with their sounds and lights, for vehicles in multiplayer",
+        "Show dust, sparks, spray, smoke and fire effects, with their sounds and lights, and wingtip trails, for vehicles "
+        "in multiplayer",
         "cl_vehiclefx [bool]",
     };
 } // namespace

@@ -81,6 +81,9 @@ enum class DemoPickupKind : uint8_t
     damage_amp = 0,
     invulnerability = 1,
     fusion = 2,
+    haste = 3,
+    vampire = 4,
+    jetpack = 5,
 };
 // No-op unless recording and the item is one of the DemoPickupKind powerups
 void demo_record_item_pickup(rf::Player* player, const rf::Item* item);
@@ -149,6 +152,10 @@ bool demo_playback_sim_frozen();
 // demo is being played back. For viewer-side estimates that tick outside the sim frame
 // (inside it, rf::frametime is already demo time).
 float demo_playback_sim_time_scale();
+// The step for cosmetic effects advanced outside the sim frame: rf::frametime capped at cosmetic_max_frame_delta, so
+// a hitch doesn't make the effects jump, and scaled by demo_playback_sim_time_scale. Pausing is left to the caller.
+inline constexpr float cosmetic_max_frame_delta = 0.1f;
+float cosmetic_frame_dt();
 // Playback speed multiplier (same value the demo_timescale command sets), clamped to [0.05, 10].
 float demo_playback_timescale();
 void demo_playback_set_timescale(float scale);
@@ -199,6 +206,9 @@ enum class DemoMarkerKind : uint8_t
     damage_amp,
     invulnerability,
     fusion,
+    haste,
+    vampire,
+    jetpack,
     award,
     objective_taken,    // CTF's enemy flag, Salvage's flag, Scavenger's cartridge or Bagman's bag
     objective_captured, // CTF, Salvage and Scavenger

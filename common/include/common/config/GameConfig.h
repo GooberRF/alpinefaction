@@ -22,7 +22,6 @@ struct GameConfig
     };
     CfgVar<unsigned int> res_bpp = 32;
     CfgVar<unsigned int> res_backbuffer_format = 22; // D3DFMT_X8R8G8B8
-    CfgVar<unsigned int> selected_video_card = 0;
 
     enum WndMode
     {
@@ -32,6 +31,8 @@ struct GameConfig
     };
 
     CfgVar<WndMode> wnd_mode = FULLSCREEN;
+    // Monitor device path; empty for the primary display
+    CfgVar<std::string> display_device{""};
     CfgVar<bool> vsync = false;
     CfgVar<unsigned int> geometry_cache_size{
         32,
@@ -75,6 +76,7 @@ struct GameConfig
     CfgVar<bool> reduced_speed_in_background = false; // seeds alpine_settings.ini, as above
     CfgVar<bool> autoplay_af_demos = false;
     CfgVar<bool> legacy_menus = false;
+    CfgVar<bool> legacy_console = false;
     CfgVar<bool> editor_large_address_aware = false;
 
     // Internal

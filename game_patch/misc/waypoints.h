@@ -14,6 +14,7 @@ namespace rf
     struct Object;
     struct Entity;
     struct GFace;
+    struct Trigger;
 }
 
 constexpr int kWptVersion = 2;
@@ -39,6 +40,9 @@ constexpr float kWaypointGenerateMaxInclineRise = 1.0f;
 static_assert(kWaypointGenerateMaxInclineDeg == 45.0f, "kWaypointGenerateMaxInclineRise must follow the incline");
 // The highest rise a route climbs over one link, except between terrain nodes.
 constexpr float kRouteMaxUpwardStepHeight = 1.5f;
+// The floor change one walk sample may make whatever its spacing, as two stair risers can fall within one; matches the
+// drop the movement edge probe refuses to walk off.
+constexpr float kWalkDirectMaxStep = 1.0f;
 constexpr float kWaypointGenerateWallClearance = 0.5f;
 constexpr float kWaypointGenerateEdgeClearance = 1.0f;
 constexpr float kWaypointGenerateMinHeadroom = 1.375f;
@@ -237,7 +241,10 @@ struct WpCacheNode
 
 // Downward world trace used by waypoint generation to find the floor under a
 // point. Also used by Salvage to snap a computed midpoint to the ground.
-bool trace_ground_below_point(const rf::Vector3& pos, float max_downward_dist, rf::Vector3* out_hit_point = nullptr);
+// `nearest` takes the highest floor in reach rather than any one the trace meets, which on a grating over a floor can
+// be the floor below; generation keeps the any-hit trace so the graphs it builds stay as they are.
+bool trace_ground_below_point(
+    const rf::Vector3& pos, float max_downward_dist, rf::Vector3* out_hit_point = nullptr, bool nearest = false);
 
 void waypoints_init();
 int get_local_awp_revision(const std::string& rfl_filename);
@@ -257,6 +264,7 @@ bool waypoints_awp_download_pending();
 bool waypoints_awp_load_retry_pending();
 void waypoints_set_awp_download_pending(bool pending);
 void waypoints_on_awp_download_resolved();
+void waypoints_on_route_arrows_toggled();
 void waypoints_on_limbo_enter();
 void waypoints_on_trigger_activated(int trigger_uid);
 void waypoints_on_glass_shattered(const rf::GFace* face);
@@ -295,6 +303,8 @@ bool waypoints_get_target_by_uid(int target_uid, WaypointTargetDefinition& out_t
 bool waypoints_link_has_target_type(int from_waypoint, int to_waypoint, WaypointTargetType type);
 
 int waypoints_closest(const rf::Vector3& pos, float radius);
+// Inside the trigger's sphere, or its oriented box
+bool point_inside_trigger_zone(const rf::Trigger& trigger, const rf::Vector3& point);
 int waypoints_count();
 // Changes whenever the waypoint graph or the link gating changes.
 int waypoints_graph_version();
@@ -317,6 +327,9 @@ int waypoints_get_persistent_links(int index, std::array<int, kMaxWaypointLinks>
 void waypoints_get_temporary_overlay(std::vector<int>& out_temporary, std::vector<int>& out_linking_persistent);
 bool waypoints_has_direct_link(int from, int to);
 bool waypoints_link_is_clear(int from, int to);
+// On a graph loaded for the route arrows alone, which skips sanitize_waypoint_links_against_geometry, removes the link
+// if that sanitize would have; true when it did
+bool waypoints_prune_blocked_link(int from, int to);
 void sanitize_waypoint_links_against_geometry();
 
 int add_waypoint(

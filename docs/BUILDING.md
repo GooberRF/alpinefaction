@@ -53,7 +53,7 @@ Start build:
 make -j$(nproc)
 ```
 
-After build is finished you will find binaries in `build/Release/bin` subdirectory.
+After build is finished you will find binaries in `build/bin` subdirectory.
 
 To update your custom builds run:
 

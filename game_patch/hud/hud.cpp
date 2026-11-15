@@ -27,6 +27,7 @@
 #include "../rf/weapon.h"
 #include "../rf/gameseq.h"
 #include "../misc/settings_registry.h"
+#include "../ui/ui_kit.h"
 
 int g_target_player_name_font = -1;
 
@@ -445,16 +446,9 @@ void hud_rect_border(int x, int y, int w, int h, int border, rf::gr::Mode state)
 
 std::string hud_fit_string(std::string_view str, int max_w, int* str_w_out, int font_id)
 {
-    std::string result{str};
-    bool has_ellipsis = false;
-    auto [str_w, str_h] = rf::gr::get_string_size(result, font_id);
-    while (str_w > max_w) {
-        result = result.substr(0, result.size() - (has_ellipsis ? 4 : 1)) + "...";
-        has_ellipsis = true;
-        std::tie(str_w, str_h) = rf::gr::get_string_size(result, font_id);
-    }
+    std::string result = ui_fit_end(str, max_w, font_id, false);
     if (str_w_out) {
-        *str_w_out = str_w;
+        *str_w_out = rf::gr::get_string_size(result, font_id).first;
     }
     return result;
 }

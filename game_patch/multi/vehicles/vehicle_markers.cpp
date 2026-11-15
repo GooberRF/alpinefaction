@@ -1,5 +1,4 @@
 #include <algorithm>
-#include <cctype>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -139,9 +138,7 @@ namespace
         if (!base || base[0] == '\0') {
             return "Vehicle";
         }
-        std::string out{base};
-        out[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(out[0])));
-        return out;
+        return string_capitalize(base);
     }
 
     // Bare whole seconds, never M:SS - the auto-return window is read as a plain count.

@@ -179,6 +179,11 @@ void alpine_corona_create_all()
         glare->last_rendered_radius[1] = 0.0f;
         glare->is_rod = false;
         glare->parent_player = nullptr;
+        // Hosted on the anchor with no prop point, so a mover carrying the anchor carries the glare (0x00487630);
+        // glare.cpp gives it the anchor's orientation.
+        glare->host_handle = obj->handle;
+        glare->host_tag_handle = -1;
+        glare->host_offset = {};
 
         // Insert into glare linked list
         rf::Glare* tail = rf::glare_list_tail;

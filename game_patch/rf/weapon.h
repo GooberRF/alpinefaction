@@ -208,6 +208,8 @@ namespace rf
     static_assert(offsetof(WeaponInfo, fire_wait) == 0xD0);
     static_assert(offsetof(WeaponInfo, damage_multi) == 0x10C);
     static_assert(offsetof(WeaponInfo, crater_radius) == 0x14C);
+    static_assert(offsetof(WeaponInfo, launch_foley_id) == 0x160);
+    static_assert(offsetof(WeaponInfo, alt_launch_foley_id) == 0x164);
     static_assert(offsetof(WeaponInfo, damage_radius_multi) == 0x210);
     static_assert(offsetof(WeaponInfo, max_ammo_multi) == 0x25C);
     static_assert(offsetof(WeaponInfo, flags) == 0x264);

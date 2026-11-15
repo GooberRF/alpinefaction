@@ -16,14 +16,17 @@
 #include "scavenger.h"
 #include "awards.h"
 #include "gametype.h"
+#include "powerups.h"
 #include "server_internal.h"
 #include "alpine_packets.h"
+#include "demo/demo.h"
 #include "../fflink/afstats_events.h"
 #include "../fflink/fflink_session.h"
 #include "../hud/multi_spectate.h"
 #include "../misc/waypoints.h"
 #include "../rf/entity.h"
 #include "../rf/file/file.h"
+#include "../rf/gameseq.h"
 #include "../rf/gr/gr_light.h"
 #include "../rf/item.h"
 #include "../rf/level.h"
@@ -90,15 +93,6 @@ constexpr SalFlagSpawnEntry kSalFlagSpawnPositions[] = {
     { "ctfdarktess.rfl", 8.0f, 3.0f, 48.0f },
     { "CTF-RFU3-Pyramid.rfl", 4.74f, -2.97f, -0.55f },
     { "CTF_TERROR.rfl", -0.63f, -3.0f, -22.0f },
-};
-
-// Priority-ordered item classes considered as the map center.
-constexpr const char* const kSalCenterCandidateClasses[] = {
-    "Multi Damage Amplifier",
-    "Multi Invulnerability",
-    "Multi Super Armor",
-    "shoulder cannon",
-    "Multi Super Health",
 };
 
 int g_salvage_light_handle = -1;
@@ -515,8 +509,8 @@ std::vector<CenterCandidate> collect_center_candidates()
     std::vector<CenterCandidate> out;
     if (!g_salvage_info.bases_known) return out;
 
-    for (int priority = 0; priority < static_cast<int>(std::size(kSalCenterCandidateClasses)); ++priority) {
-        const int type_idx = rf::item_lookup_type(kSalCenterCandidateClasses[priority]);
+    for (int priority = 0; priority < static_cast<int>(std::size(super_item_class_names)); ++priority) {
+        const int type_idx = rf::item_lookup_type(super_item_class_names[priority]);
         if (type_idx < 0) continue;
         for (rf::Item* it = rf::item_list.next; it && it != &rf::item_list; it = it->next) {
             if (it->info_index != type_idx) continue;
@@ -573,7 +567,7 @@ void resolve_flag_spawn_pos()
         g_salvage_info.spawn_orient = best->item->orient;
         g_salvage_info.spawn_known = true;
         xlog::info("salvage: flag spawn from {} '{}' (imbalance {:.2f}) at ({},{},{})",
-            source, kSalCenterCandidateClasses[best->priority], best->imbalance,
+            source, super_item_class_names[best->priority], best->imbalance,
             g_salvage_info.spawn_pos.x, g_salvage_info.spawn_pos.y, g_salvage_info.spawn_pos.z);
         return;
     }
@@ -1170,7 +1164,7 @@ float salvage_advance_pickup_light_pulse(float& pulse_phase)
     const float sine_base      = addr_as_ref<float>(0x00594798);
     if (pulse_period <= 0.0f) return -1.0f;
 
-    pulse_phase = std::fmod(pulse_phase + rf::frametime, pulse_period);
+    pulse_phase = std::fmod(pulse_phase + (rf::game_paused ? 0.0f : cosmetic_frame_dt()), pulse_period);
 
     constexpr float kTwoPi = 6.28318530718f;
     return sine_base + sine_amplitude * std::sin(kTwoPi * pulse_phase / pulse_period);

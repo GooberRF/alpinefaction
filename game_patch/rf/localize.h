@@ -53,6 +53,12 @@ namespace rf
         static const auto &credits = array[983];
         static const auto &glass_house = array[985];
 
+        // in-game multiplayer menu
+        static const auto &options = array[43];
+        static const auto &quit = array[46];
+        static const auto &multiplayer = array[845];
+        static const auto &main_menu_return = array[828];
+
         // dedi config lookups
         static const auto& dedi_header = array[855];
 

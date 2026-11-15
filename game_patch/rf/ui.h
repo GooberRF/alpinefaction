@@ -238,6 +238,16 @@ namespace rf::ui
     static auto& popup_is_active = addr_as_ref<bool()>(0x00456680);
 
     static auto& mainmenu_quit_game_confirmed = addr_as_ref<void()>(0x00443CB0);
+    // Main menu buttons that act in a game too.
+    enum MainMenuButton
+    {
+        MAIN_MENU_BUTTON_OPTIONS = 4,
+        MAIN_MENU_BUTTON_RETURN = 5,
+        MAIN_MENU_BUTTON_QUIT = 7, // with its confirmation
+    };
+    static auto& mainmenu_button_action = addr_as_ref<void(MainMenuButton button)>(0x004438C0);
+    // Set by the main menu's init while a game runs beneath it, which turns it into the in-game menu.
+    static auto& mainmenu_game_beneath = addr_as_ref<bool>(0x0063C11C);
     static auto& menu_draw_background = addr_as_ref<void()>(0x00442CE0);
     static auto& menu_draw_side_bars = addr_as_ref<void()>(0x00442DB0);
     static auto& menu_background_bitmap = addr_as_ref<int>(0x00598FEC); // mars_background.tga, -1 if missing

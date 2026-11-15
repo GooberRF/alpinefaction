@@ -24,11 +24,11 @@
 #include "../multi/demo/demo_ui.h"
 #include "../multi/multi.h"
 #include "../multi/vote_client.h"
+#include "../os/console.h"
 #include "../rf/gameseq.h"
 #include "../rf/gr/gr.h"
 #include "../rf/gr/gr_font.h"
 #include "../rf/input.h"
-#include "../rf/os/console.h"
 #include "../rf/level.h"
 #include "../rf/multi.h"
 #include "../rf/player/control_config.h"
@@ -2961,11 +2961,7 @@ void vote_panel_gameplay_input()
         return; // the popup owns input; panel keeps rendering underneath
     }
 
-    // The console reads the same key queue this panel's text boxes drain, so a
-    // focused box would type into both at once.
-    if (rf::console::console_is_visible() && g_ui.focused_text_id() != 0) {
-        text_input_release_focus(true);
-    }
+    ui_drop_text_focus_under_console(g_ui);
 
     // Read the wheel accumulator before touching the mouse API.
     const int wheel = rf::mouse_dz;
@@ -3131,9 +3127,8 @@ FunHook<void(int, int)> gameseq_state_do_frame_hook{
 
 } // namespace
 
-// Shared by every gameplay overlay that needs a free cursor (vote panel, demo
-// controls popup, scoreboard cursor); only one owns it at a time, so sharing the
-// save/restore state below is safe.
+// Shared by every gameplay overlay that needs a free cursor. Overlays can overlap, so
+// the saved mouse-look is taken only on the first apply and restored on release.
 void gameplay_overlay_apply_mouse(bool active)
 {
     rf::Player* const player = rf::local_player;
@@ -3180,11 +3175,11 @@ bool gameplay_overlay_mouse_is_overridden()
 void vote_panel_close()
 {
     if (g_open) {
-        gameplay_overlay_apply_mouse(false);
+        g_open = false;
+        gameplay_overlay_release_mouse();
         // Rest of this frame plus at least one whole frame, extended while held.
         g_swallow_attack_frames = 2;
     }
-    g_open = false;
     // ESC-close discards a half-typed numeric edit.
     text_input_release_focus(false);
     // A filter is a transient search; carrying one across opens would read as a
@@ -3197,6 +3192,18 @@ void vote_panel_close()
 bool vote_panel_is_gameplay_overlay_active()
 {
     return g_open;
+}
+
+bool gameplay_overlay_cursor_active()
+{
+    return g_open || demo_controls_ui_is_open() || multi_scoreboard_cursor_active() || console_ui_cursor_active();
+}
+
+void gameplay_overlay_release_mouse()
+{
+    if (!gameplay_overlay_cursor_active()) {
+        gameplay_overlay_apply_mouse(false);
+    }
 }
 
 bool vote_panel_is_capturing_text()

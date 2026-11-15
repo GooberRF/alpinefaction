@@ -26,10 +26,14 @@
 #include "../awards.h"
 #include "../bagman.h"
 #include "../gametype.h"
+#include "../haste_trails.h"
 #include "../salvage.h"
 #include "../vehicles/vehicle.h"
 #include "../vehicles/vehicle_tracers.h"
 #include "../vehicles/vehicle_fx.h"
+#include "../vehicles/vehicle_trails.h"
+#include "../vehicles/vehicle_render.h"
+#include "../vehicles/vehicle_debris.h"
 #include "../../misc/misc.h"
 #include "../../misc/alpine_settings.h"
 #include "../../hud/multi_spectate.h"
@@ -358,6 +362,15 @@ namespace
                 break;
             case DemoPickupKind::fusion:
                 kind = DemoMarkerKind::fusion;
+                break;
+            case DemoPickupKind::haste:
+                kind = DemoMarkerKind::haste;
+                break;
+            case DemoPickupKind::vampire:
+                kind = DemoMarkerKind::vampire;
+                break;
+            case DemoPickupKind::jetpack:
+                kind = DemoMarkerKind::jetpack;
                 break;
             }
             if (kind)
@@ -1326,7 +1339,11 @@ namespace
         rf::particle_level_release();
         explosion_flash_lights_destroy_all();
         vehicle_tracers_clear();
+        haste_trails_clear();
         vehicle_fx_clear();
+        vehicle_trails_clear();
+        vehicle_hit_flash_clear();
+        vehicle_debris_clear();
         vehicle_hazard_clear_client_clocks();
         hud_world_seek_reset();
         // A delay armed during the burst before the tail would fire long after its recorded time
@@ -2025,6 +2042,11 @@ float demo_playback_sim_time_scale()
         return 1.0f;
     }
     return g_ctx.pause_fx_applied ? 0.0f : g_ctx.timescale;
+}
+
+float cosmetic_frame_dt()
+{
+    return std::clamp(rf::frametime, 0.0f, cosmetic_max_frame_delta) * demo_playback_sim_time_scale();
 }
 
 float demo_playback_timescale()

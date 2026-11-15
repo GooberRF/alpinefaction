@@ -9,11 +9,11 @@ namespace rf
     {
         String cls_name;
         String v3d_filename;
-        const char *hud_msg_name;
-        int pickup_msg_single;
-        int pickup_msg_multi;
-        int pickup_msg_wa_single;
-        int pickup_msg_wa_multi;
+        const char* const* hud_msg_name; // string table slot
+        const char* const* pickup_msg_single; // string table slot
+        const char* const* pickup_msg_multi;
+        const char* const* pickup_msg_wa_single;
+        const char* const* pickup_msg_wa_multi;
         int v3d_type;
         int pickup_snd;
         int count;
@@ -77,6 +77,9 @@ namespace rf
     static auto& item_unhide = addr_as_ref<void(Item *item)>(0x00459970); // no-op unless hidden; plays respawn sound
     static auto& item_create = addr_as_ref<Item*(int type, const char* name, int count, int parent_handle,
         const Vector3* pos, Matrix3* orient, int respawn_time, bool permanent, bool from_packet)>(0x00459100);
+    // Shows nothing unless `ep` is the local player's entity. weapon_owned picks the W/A messages.
+    static auto& item_show_pickup_message =
+        addr_as_ref<void(Object* ep, ItemInfo* info, int count, bool weapon_owned)>(0x0045A100);
 
     //static auto& item_pickup = addr_as_ref<void(Item* item, Entity* ep, bool do_los_check, int allow_multi)>(0x00459560);
 

@@ -36,6 +36,7 @@
 #include "kill_attribution.h"
 #include "bagman.h"
 #include "jetpack.h"
+#include "powerups.h"
 #include "../object/alpine_rope.h"
 #include "../object/zipline.h"
 #include "pit.h"
@@ -1070,6 +1071,15 @@ void serialize_payload(const EntityJetpackPayload& payload, std::byte* buf, size
     buf[offset++] = static_cast<std::byte>(payload.fuel_pct);
 }
 
+// af_sreq_powerup_state
+void serialize_payload(const PowerupStatePayload& payload, std::byte* buf, size_t& offset)
+{
+    buf[offset++] = static_cast<std::byte>(payload.player_id);
+    buf[offset++] = static_cast<std::byte>(payload.powerup_id);
+    std::memcpy(buf + offset, &payload.time_left_ms, sizeof(payload.time_left_ms));
+    offset += sizeof(payload.time_left_ms);
+}
+
 // af_sreq_riot_shield_state
 void serialize_payload(const RiotShieldStatePayload& payload, std::byte* buf, size_t& offset)
 {
@@ -1939,10 +1949,11 @@ static void af_process_client_req_packet(const void* data, size_t len, const rf:
                 xlog::warn("af_process_client_req_packet: JetpackState payload too short");
                 return;
             }
-            if (!g_alpine_server_config_active_rules.mutators.jetpacks_enabled) {
+            const bool on = bytes[offset] != 0;
+            // Switching off is never refused, so a pack whose powerup just ran out still stops thrusting.
+            if (on && !jetpack_is_active_for(rf::entity_from_handle(player->entity_handle))) {
                 return;
             }
-            const bool on = bytes[offset] != 0;
             const uint8_t fuel_pct = std::min<uint8_t>(bytes[offset + 1], 100);
             jetpack_server_on_state_request(player, on, fuel_pct);
             break;
@@ -2359,6 +2370,38 @@ void af_send_jetpack_state(uint32_t obj_handle, bool on, uint8_t fuel_pct)
             continue;
         }
         if (is_player_minimum_af_client_version(&player, 1, 4, 0)) {
+            af_send_server_req_packet(packet, &player);
+        }
+    }
+}
+
+void af_send_powerup_state(rf::Player* target, uint8_t player_id, uint8_t powerup_id, uint32_t time_left_ms)
+{
+    if (!rf::is_server) {
+        return;
+    }
+
+    af_server_req_packet packet{};
+    packet.header.type = static_cast<uint8_t>(af_packet_type::af_server_req);
+    packet.header.size = sizeof(uint8_t) + sizeof(PowerupStatePayload);
+    packet.req_type = af_server_req_type::af_sreq_powerup_state;
+    packet.payload = PowerupStatePayload{player_id, powerup_id, time_left_ms};
+
+    if (target) {
+        if (is_player_minimum_af_client_version(target, 1, 5, 0)) {
+            af_send_server_req_packet(packet, target);
+        }
+        return;
+    }
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if (&player == rf::local_player || !player.net_data || player.is_bot || player.is_browser) {
+            continue;
+        }
+        // Joining clients get the state from powerups_send_state_to in their state info.
+        if (player.net_data->state != rf::NETPLAYER_STATE_IN_GAME) {
+            continue;
+        }
+        if (is_player_minimum_af_client_version(&player, 1, 5, 0)) {
             af_send_server_req_packet(packet, &player);
         }
     }
@@ -3281,6 +3324,16 @@ static void af_process_server_req_packet(const void* data, size_t len, const rf:
             jetpack_on_remote_state(entity, payload.on != 0, payload.fuel_pct);
             break;
         }
+        case af_server_req_type::af_sreq_powerup_state: {
+            if (remaining < sizeof(PowerupStatePayload)) {
+                xlog::warn("af_process_server_req_packet: PowerupState payload too short");
+                return;
+            }
+            PowerupStatePayload payload{};
+            std::memcpy(&payload, bytes + offset, sizeof(payload));
+            powerups_apply_remote_state(payload.player_id, payload.powerup_id, payload.time_left_ms);
+            break;
+        }
         case af_server_req_type::af_sreq_riot_shield_state: {
             if (remaining < sizeof(RiotShieldStatePayload)) {
                 xlog::warn("af_process_server_req_packet: RiotShieldState payload too short");
@@ -4148,8 +4201,7 @@ static size_t build_af_payload_state_packet(std::byte (&buf)[rf::max_packet_size
 {
     const PayloadNetState net = payload_build_net_state();
     const size_t num_pushers = std::min<size_t>(net.pushers.size(), af_payload_state_max_ids);
-    const size_t num_blockers = std::min<size_t>(net.blockers.size(), af_payload_state_max_ids);
-    const size_t wire_size = sizeof(af_payload_state_packet) + num_pushers + 1 + num_blockers;
+    const size_t wire_size = sizeof(af_payload_state_packet) + num_pushers;
     if (wire_size > rf::max_packet_size) {
         xlog::error("af_payload_state: packet too large ({} > {})", wire_size, rf::max_packet_size);
         return 0;
@@ -4178,11 +4230,6 @@ static size_t build_af_payload_state_packet(std::byte (&buf)[rf::max_packet_size
     if (num_pushers) {
         std::memcpy(buf + off, net.pushers.data(), num_pushers);
         off += num_pushers;
-    }
-    buf[off++] = static_cast<std::byte>(num_blockers);
-    if (num_blockers) {
-        std::memcpy(buf + off, net.blockers.data(), num_blockers);
-        off += num_blockers;
     }
     return off;
 }
@@ -4239,7 +4286,7 @@ void af_process_payload_state_packet(const void* data, size_t len, const rf::Net
         xlog::warn("payload_state: truncated (declared={}, len={})", hdr.size, len);
         return;
     }
-    if (wire_size < sizeof(af_payload_state_packet) + 1) {
+    if (wire_size < sizeof(af_payload_state_packet)) {
         xlog::warn("payload_state: short packet ({})", wire_size);
         return;
     }
@@ -4248,20 +4295,13 @@ void af_process_payload_state_packet(const void* data, size_t len, const rf::Net
     std::memcpy(&pkt, data, sizeof(pkt));
 
     const auto* bytes = static_cast<const uint8_t*>(data);
-    size_t off = sizeof(pkt);
-    if (off + pkt.num_pushers + 1 > wire_size) {
+    const size_t off = sizeof(pkt);
+    if (pkt.num_pushers > af_payload_state_max_ids || off + pkt.num_pushers != wire_size) {
         xlog::warn("payload_state: bad pusher count {}", pkt.num_pushers);
         return;
     }
     PayloadNetState net;
     net.pushers.assign(bytes + off, bytes + off + pkt.num_pushers);
-    off += pkt.num_pushers;
-    const uint8_t num_blockers = bytes[off++];
-    if (off + num_blockers != wire_size) {
-        xlog::warn("payload_state: bad blocker count {}", num_blockers);
-        return;
-    }
-    net.blockers.assign(bytes + off, bytes + off + num_blockers);
 
     if (pkt.state > static_cast<uint8_t>(PayloadCartState::held) || !std::isfinite(pkt.distance)
         || !std::isfinite(pkt.speed)) {
@@ -4621,7 +4661,8 @@ void af_process_vehicle_health_packet(const void* data, size_t len, const rf::Ne
     vehicle_store_health_from_packet(pkt.vehicle_handle, pkt.life, pkt.max_life, pkt.primary_ammo,
                                     pkt.secondary_ammo, pkt.refill_ms[0], pkt.refill_ms[1],
                                     has_hit_dir ? &hit_dir : nullptr,
-                                    (pkt.flags & AF_VEHICLE_HEALTH_SCRAPE_ONLY) != 0);
+                                    (pkt.flags & AF_VEHICLE_HEALTH_SCRAPE_ONLY) != 0,
+                                    (pkt.flags & AF_VEHICLE_HEALTH_HURT) != 0);
 }
 
 static void build_af_vehicle_factory_state_packet(af_vehicle_factory_state_packet& pkt,

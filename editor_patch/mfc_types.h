@@ -557,6 +557,22 @@ struct DedAmbientSound : DedObject
 };
 static_assert(offsetof(DedAmbientSound, sound_filename) == 0x94);
 
+struct DedItem : DedObject
+{
+    int count;          // 0x94
+    int respawn_time_s; // 0x98
+    int unk_9C;
+
+    static DedItem* create()
+    {
+        auto* item = static_cast<DedItem*>(AddrCaller{0x0052ee74}.c_call<void*>(sizeof(DedItem)));
+        if (!item) return nullptr;
+        return AddrCaller{0x00452640}.this_call<DedItem*>(item);
+    }
+};
+static_assert(offsetof(DedItem, count) == 0x94);
+static_assert(sizeof(DedItem) == 0xA0);
+
 struct DedClutter : DedObject
 {
     char pad_94[0xB8 - 0x94];

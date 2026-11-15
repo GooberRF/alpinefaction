@@ -367,6 +367,11 @@ namespace gr::d3d11::engine
         return gr_far_clip_dist;
     }
 
+    inline float liquid_surface_y(const rf::GRoom* room)
+    {
+        return room->bbox_min.y + room->liquid_depth;
+    }
+
     inline DistanceFog level_distance_fog()
     {
         return {rf::Color{0, 0, 0, 0}, 0.0f, 0.0f};

@@ -1,7 +1,9 @@
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <common/error/d3d-error.h>
 #include <common/utils/list-utils.h>
+#include <common/utils/display-utils.h>
 #include <common/utils/os-utils.h>
 #include <common/config/BuildConfig.h>
 #include <common/lighting/alpine_lighting.h>
@@ -60,16 +62,56 @@ bool should_bypass_graphics_init_for_headless_bot()
     return is_headless_mode() || headless_requested_from_raw_cmdline();
 }
 
+const std::optional<DisplayInfo>& gr_get_display()
+{
+    static const auto display = [] {
+        auto display = resolve_display(g_game_config.display_device.value());
+        if (display) {
+            xlog::info("[Display] {} ({})", display->friendly_name, display->device_path);
+        }
+        return display;
+    }();
+    return display;
+}
+
+// Stock gr_init places the window on the primary display
+static void gr_init_move_window_to_display()
+{
+    const auto& display = gr_get_display();
+    if (!display || display->primary || g_game_config.wnd_mode == GameConfig::STRETCHED) {
+        return;
+    }
+    if (rf::gr::screen.window_mode == rf::gr::WINDOWED) {
+        RECT rect;
+        if (!GetWindowRect(rf::main_wnd, &rect)) {
+            return;
+        }
+        // Like stock: centered horizontally at the top of the work area
+        const RECT& work = display->work_rect;
+        const int x = std::max(work.left + (work.right - work.left - (rect.right - rect.left)) / 2, work.left);
+        SetWindowPos(rf::main_wnd, nullptr, x, work.top, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    else if (rf::gr::screen.window_mode == rf::gr::FULLSCREEN) {
+        // D3D11 goes fullscreen on the output holding most of the window, and stock sizes it to the primary display
+        const RECT& mon = display->monitor_rect;
+        SetWindowPos(rf::main_wnd, nullptr, mon.left, mon.top, mon.right - mon.left, mon.bottom - mon.top,
+            SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+}
+
 CodeInjection gr_init_stretched_window_injection{
     0x0050C464,
     [](auto& regs) {
         if (g_game_config.wnd_mode == GameConfig::STRETCHED) {
             // Make sure stretched window is always full screen
-            auto cx = GetSystemMetrics(SM_CXSCREEN);
-            auto cy = GetSystemMetrics(SM_CYSCREEN);
+            RECT rect{0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)};
+            if (const auto& display = gr_get_display()) {
+                rect = display->monitor_rect;
+            }
             SetWindowLongA(rf::main_wnd, GWL_STYLE, WS_POPUP | WS_SYSMENU);
             SetWindowLongA(rf::main_wnd, GWL_EXSTYLE, 0);
-            SetWindowPos(rf::main_wnd, HWND_NOTOPMOST, 0, 0, cx, cy, SWP_SHOWWINDOW);
+            SetWindowPos(rf::main_wnd, HWND_NOTOPMOST, rect.left, rect.top, rect.right - rect.left,
+                rect.bottom - rect.top, SWP_SHOWWINDOW);
             regs.eip = 0x0050C551;
         }
     },
@@ -87,6 +129,7 @@ CodeInjection gr_init_headless_skip_backend_injection{
     0x0050C551,
     [](auto& regs) {
         if (!should_bypass_graphics_init_for_headless_bot()) {
+            gr_init_move_window_to_display();
             return;
         }
 
@@ -158,6 +201,61 @@ bool gr_3d_bitmap_oriented_wh(const rf::Vector3* pnt, const rf::Matrix3* M, floa
     return rf::gr::poly(4, verts, rf::gr::TMapperFlags::TMAP_FLAG_TEXTURED, mode, 0, 0.0f);
 }
 
+void gr_band_strip(int rows, const rf::Vector3* pos, const rf::Vector3* side, const float* alpha, float band,
+                   const rf::gr::Color& color, rf::gr::Mode mode)
+{
+    const float col_offset[4] = {-1.0f, -band, band, 1.0f};
+    constexpr auto vertex_attributes =
+        static_cast<rf::gr::TMapperFlags>(rf::gr::TMAP_FLAG_RGB | rf::gr::TMAP_FLAG_ALPHA);
+    // Two rows of vertices, each refilled only once both quad rows that share it are drawn.
+    rf::gr::Vertex verts[2][4];
+    for (int row = 0; row < rows; ++row) {
+        rf::gr::Vertex* r1 = verts[row % 2];
+        for (int col = 0; col < 4; ++col) {
+            const bool edge = col == 0 || col == 3;
+            r1[col] = {};
+            gr_set_colored_vertex(r1[col], pos[row] + side[row] * col_offset[col], color, edge ? 0.0f : alpha[row]);
+        }
+        if (row == 0) {
+            continue;
+        }
+        rf::gr::Vertex* r0 = verts[(row - 1) % 2];
+        for (int col = 0; col < 3; ++col) {
+            if (col == 1 && band <= 0.0f) {
+                continue;
+            }
+            rf::gr::Vertex* quad[4] = {&r0[col], &r0[col + 1], &r1[col + 1], &r1[col]};
+            rf::gr::poly(4, quad, vertex_attributes, mode, 0, 0.0f);
+        }
+    }
+}
+
+void gr_camera_facing_sides(int rows, const rf::Vector3* pos, float half_width, rf::Vector3* out_side)
+{
+    const rf::Vector3& eye = rf::gr::eye_pos;
+    rf::Vector3 prev_tangent{0.0f, 0.0f, 1.0f};
+    rf::Vector3 prev_side{};
+    for (int i = 0; i < rows; ++i) {
+        rf::Vector3 tangent = pos[std::min(i + 1, rows - 1)] - pos[std::max(i - 1, 0)];
+        if (tangent.len_sq() < 1e-8f) {
+            tangent = prev_tangent;
+        }
+        tangent.normalize_safe();
+        prev_tangent = tangent;
+        rf::Vector3 side = tangent.cross(eye - pos[i]);
+        if (side.len_sq() < 1e-8f) {
+            side = rf::gr::eye_matrix.rvec;
+        }
+        side.normalize_safe();
+        // A tangent that turns toward the eye would flip the side and bowtie the strip.
+        if (i > 0 && side.dot_prod(prev_side) < 0.0f) {
+            side *= -1.0f;
+        }
+        prev_side = side;
+        out_side[i] = side * half_width;
+    }
+}
+
 bool gr_project_world_to_screen(const rf::Vector3& world_pos, float& out_sx, float& out_sy)
 {
     rf::gr::Vertex v{};
@@ -171,6 +269,24 @@ bool gr_project_world_to_screen(const rf::Vector3& world_pos, float& out_sx, flo
     out_sx = v.sx;
     out_sy = v.sy;
     return true;
+}
+
+float gr_pixels_per_meter(const rf::Vector3& pos)
+{
+    float px = 0.0f, py = 0.0f, ox = 0.0f, oy = 0.0f;
+    if (gr_project_world_to_screen(pos, px, py) && gr_project_world_to_screen(pos + rf::gr::eye_matrix.rvec, ox, oy)) {
+        return std::hypot(ox - px, oy - py);
+    }
+    return 0.0f;
+}
+
+float gr_floored_half_width(float px_per_m, float min_half_width, float min_half_px)
+{
+    constexpr float reference_height = 1080.0f;
+    if (!(px_per_m > 1e-3f)) {
+        return min_half_width;
+    }
+    return std::max(min_half_width, min_half_px * (rf::gr::screen.clip_height / reference_height) / px_per_m);
 }
 
 void gr_set_colored_vertex(rf::gr::Vertex& v, const rf::Vector3& pos, const rf::Color& color, float alpha)
@@ -817,6 +933,17 @@ float fog_far_clip_fade(float distance)
         return 1.0f;
     }
     return std::clamp(4.0f * (1.0f - distance / far_clip), 0.0f, 1.0f);
+}
+
+float gr_fog_fade(float distance)
+{
+    if (!rf::gr::screen.fog_mode) {
+        return 1.0f;
+    }
+    const float fog_near = gr_fog_near_clip();
+    const float fog_far = rf::gr::screen.fog_far;
+    return fog_far > fog_near ? std::clamp((fog_far - distance) / (fog_far - fog_near), 0.0f, 1.0f)
+                              : (distance < fog_far ? 1.0f : 0.0f);
 }
 
 // gameplay_render_frame starts each frame at gr::default_wfar

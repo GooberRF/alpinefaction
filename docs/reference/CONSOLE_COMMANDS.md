@@ -2,6 +2,8 @@
 
 Open the console with `~`. Press Tab to complete a command name; with a name and a space typed, Tab completes level names (`level`, `map`, `levelm`, `mapm`, `sv_gametype`, `gt`), player names (`kick`, `ban`), demo files (`demo_play`, `demo_info`) and command names (`rcon`, `help`), or prints the command's usage. `help <command>` prints usage, and `. <text>` lists every command whose name or description contains the text. Most settings changed here are saved to `alpine_settings.ini` (`alpine_settings_<mod>.ini` when a TC mod is loaded, or the file given with `-afs`); commands marked "not saved" only last for the session.
 
+While typing, Right arrow accepts the suggested command name, and `Ctrl+Left`/`Ctrl+Right`, `Ctrl+Backspace`/`Ctrl+Delete` and `Ctrl+U`/`Ctrl+K` move or delete by word or to the line start/end. `Ctrl+C` copies the selected output, or clears the line when nothing is selected. Page Up/Page Down and the mouse wheel (unless `ui_console_mousewheel` is off) scroll the output, `Ctrl+Home`/`Ctrl+End` jump to its start/end, and `Ctrl+F` filters it. Drag across the output to select and copy it, or click a command name to put it on the input line; in gameplay, first press the mouse button bound to Secondary Attack to show the cursor.
+
 This page lists the commands Alpine Faction adds, including those inherited from Dash Faction and stock Red Faction commands that the retail PC build leaves unregistered (marked "Stock RF command"; their arguments are listed where known). Other stock commands are not listed.
 
 Argument notation: `<x>` is required, `[x]` is optional. A `[bool]` argument accepts `true`, `on` or a non-zero number to enable and `false`, `off` or `0` to disable; leaving it out toggles. Value commands print the current value when run without an argument. Defaults are the values used when a setting is not in the settings file.
@@ -61,6 +63,7 @@ Commands marked "D3D11 only" only have an effect with the Direct3D 11 renderer.
 | `r_fullrangelighting` | | Toggles full range lighting. Applies on the next level load. Default: on. |
 | `r_gamma` | `[value]` | Sets gamma (0.7-2.2, the stock slider range). Default: 1.0. |
 | `r_lightmaps` | | Toggles rendering only lightmaps (no textures) on level geometry. In multiplayer, only applies if the server allows it. Default: off. |
+| `r_liquidsurface` | `[0-3]` | Sets how closely a rising or falling liquid surface (`Set_Liquid_Depth`) follows its level: `0` every 50 cm, `1` every 10 cm, `2` every 2 cm, `3` every frame. Lower is faster on large levels. Default: 2. |
 | `r_lodscale` | `[scale]` | Sets the LOD distance scale (0.1-1000). Default: 10. |
 | `r_meshlighting` | `[0-2]` | Mesh lighting: `0` ambient only, `1` vertex (legacy), `2` pixel (D3D11). A level's `_info.tbl` can force vertex lighting. Default: 2. |
 | `r_monitorscale` | `[scale]` | Sets the resolution scale of security monitors and mirrors (1-8). Reload the level to apply. Default: 2. |
@@ -183,8 +186,11 @@ Commands marked "D3D11 only" only have an effect with the Direct3D 11 renderer.
 | `cl_wh_flagoverdraw` | | Toggles drawing CTF flag world HUD sprites on top of everything. Default: on. |
 | `cl_wh_hitnumbers` | | Toggles damage numbers when you hit players in multiplayer, if the Alpine Faction server enables them. Default: on. |
 | `cl_wh_pushzone` | | Toggles the ring on the ground around the Payload cart that shows where players push it. Default: on. |
+| `cl_wh_routearrows` | | Toggles the arrows laid from where you spawn toward the objective: the cart in Payload, the hill in King of the Hill, the current point in Revolt, the frontier point in Escalation (the neutral center until it is taken), and in Damage Control the nearest point you need to visit (the enemy's, a neutral one, or yours while it is contested). Where there is room, the trail first runs a few meters the way you face, turning back in a U-turn if the route lies behind you. They follow the level's bot waypoints: in those game types the map's AWP is checked for on FactionFiles at level load, or when the arrows are turned on mid-level, which shows them from your next spawn. The trail breaks at ladders, jump pads, teleporters, lifts, zip lines, water and jumps. Default: on. |
+| `cl_wh_routearrows_time` | `[1.0-30.0]` | Sets how long each spawn route arrow stays, in seconds, before it is reeled in. Default: 6.5. |
 | `cl_wh_teamplayerlabels` | | Toggles name labels over teammates. Default: off. |
-| `cl_wh_tethers` | | Toggles the Payload beams linking the players pushing or blocking the cart to it. Default: on. |
+| `cl_wh_tethers` | | Toggles the Payload beams linking the players pushing the cart to it. Default: on. |
+| `cl_wh_trackpulse` | | Toggles the glowing pulses that run along the Payload track from the cart to its end. Default: on. |
 | `kill_messages` | | Toggles kill messages in the chat box and console. Default: on. Not saved. |
 | `mp_crit_flash` | | Toggles the reticle flash when you land a critical hit. Default: on. |
 | `mp_deathbars` | | Toggles red bars at the top and bottom of the screen while dead. Default: on. |
@@ -192,6 +198,11 @@ Commands marked "D3D11 only" only have an effect with the Direct3D 11 renderer.
 | `ui_always_show_specators` | | Toggles always showing spectators on your HUD. Default: off. |
 | `ui_assist_highlight` | | Toggles highlighting kill messages for kills you assisted. Default: on. |
 | `ui_assist_names` | | Toggles including assists in kill messages. Default: on. |
+| `ui_console_fontsize` | `[px]` | Sets the console font size (8-32 px). Default: 14. |
+| `ui_console_height` | `[percent]` | Sets how much of the screen the open console covers (20-100%). Default: 25. |
+| `ui_console_mousewheel` | | Toggles scrolling the open console with the mouse wheel. When off, the wheel keeps its usual bindings while the console is open. Default: on. |
+| `ui_console_sounds` | | Toggles the console's own interface sounds (scrolling, copying, clicking a command name). Default: on. |
+| `ui_console_statusline` | | Toggles the console status line (player, level, server, player count, time left and FactionFiles link status). Default: on. |
 | `ui_fpsavg` | `[milliseconds]` | Sets the FPS counter averaging window (0-60000 ms, 0 = update every frame). Default: 100. |
 | `ui_gamefeed` | | Toggles showing game event messages in a separate feed instead of chat. Default: off. |
 | `ui_gametype_help` | | Toggles the game type help notification shown when spawning on a server. Default: on. |
@@ -265,8 +276,11 @@ Colors are hex `RRGGBB` or `RRGGBBAA`, or comma-separated `R,G,B[,A]` values in 
 | `cl_vehiclecam_pitch_smooth` | `[0.0-3.0]` | Sets how slowly the vehicle camera follows the vehicle's pitch, in seconds. Default: 0.9. |
 | `cl_vehiclecam_recenter` | `[bool]` | Eases an idle vehicle camera back behind the vehicle while it drives forward. Default: on. |
 | `cl_vehiclecam_velocity` | `[0.0-1.0]` | Sets how far the vehicle camera turns toward a land vehicle's direction of travel at speed. Default: 1.0. |
-| `cl_vehiclefx` | `[bool]` | Shows dust, sparks, spray, smoke and fire effects, with their sounds and lights, for vehicles in multiplayer. Default: on. |
+| `cl_vehicledebris` | `[bool]` | Breaks destroyed vehicles into pieces of wreckage in multiplayer. Default: on. |
+| `cl_vehicledebrisflames` | `[bool]` | Sets some of the wreckage of destroyed vehicles on fire in multiplayer. Default: on. |
+| `cl_vehiclefx` | `[bool]` | Shows dust, sparks, spray, smoke and fire effects, with their sounds and lights, and wingtip trails, for vehicles in multiplayer. Default: on. |
 | `cl_vehiclehealthbars` | `[bool]` | Shows health bars over damaged vehicles and turrets. Default: on. |
+| `cl_vehiclehitflash` | `[bool]` | Flashes a vehicle red when it takes damage in multiplayer. Default: on. |
 | `cl_vehiclehints` | `[bool]` | Shows the list of vehicle controls while riding a vehicle or turret. Default: on. |
 | `cl_vehiclehorns` | `[bool]` | Plays other players' jeep horns in multiplayer; your own always plays. Default: on. |
 | `cl_vehiclemarkers` | `[bool]` | Shows vehicle factory respawn markers and their spawn cues. Default: on. |

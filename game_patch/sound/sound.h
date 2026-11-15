@@ -33,6 +33,11 @@ bool snd_instance_is_playing(int instance_handle);
 int snd_play_3d_looping(int handle, const rf::Vector3& pos, float volume, int group);
 // Plays a playing instance at ratio times its recorded rate (DirectSound only).
 void snd_instance_set_pitch(int instance_handle, float ratio);
+// Plays a playing looping instance speed times as fast at the same pitch (DirectSound only); 1 restores it. Under
+// snd_set_global_rate it plays speed times the rate.
+void snd_instance_set_speed(int instance_handle, float speed);
+// Makes ahead of time the copy snd_instance_set_speed needs to play a looping instance of sound `handle` at `speed`
+void snd_prepare_looping_speed(int handle, float speed);
 // Speeds up all sounds but music and snd_play_unscaled ones (DirectSound only); 1 restores normal playback.
 void snd_set_global_rate(float rate);
 // Frees the stretched copies snd_set_global_rate keeps, which permanent sounds would otherwise hold forever
@@ -41,6 +46,8 @@ void snd_clear_global_rate_cache();
 int snd_play_unscaled(int handle, int group, float pan, float volume);
 // sound_ds.cpp: the DirectSound side of the above
 void snd_ds_set_channel_pitch(int channel, float ratio);
+void snd_ds_set_channel_speed(int channel, float speed);
+void snd_ds_prepare_looping_speed(int buf_id, float speed);
 void snd_ds_set_new_channel_unscaled(bool unscaled);
 void snd_ds_set_global_rate(float rate);
 void snd_ds_clear_stretch_cache();
@@ -80,6 +87,8 @@ namespace stock_sound_id
     constexpr int panel_button_click   = 43;   // panel_button_click.wav
     constexpr int checkbox_on          = 44;   // checkbox_on.wav
     constexpr int checkbox_off         = 45;   // checkbox_off.wav
+    constexpr int list_scroll_up       = 46;   // stock list up arrow (Create Game map list)
+    constexpr int list_scroll_down     = 47;   // stock list down arrow
     constexpr int menu_slide_in        = 49;   // stock Extras menu slide-in
     constexpr int bomb_tick            = 55;   // bomb_tick.wav
     constexpr int flag_capture         = 63;   // Flag_Capture.wav

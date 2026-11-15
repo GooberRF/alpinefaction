@@ -33,6 +33,7 @@
 #include "../misc/alpine_settings.h"
 #include "../multi/gametype.h"
 #include "../multi/obj_interp_history.h"
+#include "../multi/powerups.h"
 #include "../multi/saved_info.h"
 #include "../multi/vehicles/vehicle.h"
 #include <common/config/BuildConfig.h>
@@ -1846,7 +1847,7 @@ void multi_spectate_process_bind_input()
     // Middle mouse toggles third-person orbit (attached third person only). mouse_was_button_pressed
     // is a pure read (the engine refreshes the per-frame button snapshot itself), so this is one
     // toggle per physical click.
-    const bool mmb_pressed = rf::mouse_was_button_pressed(2) > 0;
+    const bool mmb_pressed = rf::mouse_was_button_pressed(2);
     if (mmb_pressed && !typing && !multi_scoreboard_cursor_active() && g_spectate_mode_enabled
         && g_spectate_view_mode == SpectateViewMode::third_person) {
         g_spectate_third_person_orbit = !g_spectate_third_person_orbit;
@@ -2284,14 +2285,10 @@ static void draw_with_shadow(int x, int y, int shadow_dx, int shadow_dy, rf::Col
 }
 
 // Renders powerup icons to the left of the spectate nameplate bar.
-// Detects powerup state from entity_flags2 which are already synced by the stock netcode.
+// Detects stock powerup state from entity_flags2 which are already synced by the stock netcode.
 static void render_spectate_powerup_icons(rf::Entity* entity, int bar_x, int bar_y, int bar_h)
 {
     if (!entity)
-        return;
-
-    // Bagman has no powerup HUD icons
-    if (gt_is_bagman_any())
         return;
 
     // Load bitmaps once
@@ -2299,29 +2296,27 @@ static void render_spectate_powerup_icons(rf::Entity* entity, int bar_x, int bar
     static int bm_amp = rf::bm::load("hud_pow_damage.tga", -1, true);
 
     // Collect active powerups right-to-left (rightmost icon is closest to bar)
-    int active_bms[2];
-    int count = 0;
-    if ((entity->entity_flags2 & rf::EF2_POWERUP_DAMAGE_AMP) != 0 && bm_amp >= 0)
-        active_bms[count++] = bm_amp;
-    if ((entity->entity_flags2 & rf::EF2_POWERUP_INVULNERABLE) != 0 && bm_invuln >= 0)
-        active_bms[count++] = bm_invuln;
-
-    if (count == 0)
-        return;
+    std::vector<int> active_bms;
+    // Bagman has no stock powerup HUD icons
+    if (!gt_is_bagman_any()) {
+        if ((entity->entity_flags2 & rf::EF2_POWERUP_DAMAGE_AMP) != 0 && bm_amp >= 0)
+            active_bms.push_back(bm_amp);
+        if ((entity->entity_flags2 & rf::EF2_POWERUP_INVULNERABLE) != 0 && bm_invuln >= 0)
+            active_bms.push_back(bm_invuln);
+    }
+    powerup_append_hud_icons(entity, active_bms);
 
     float scale = g_alpine_game_config.big_hud ? 2.0f : 1.0f;
     int gap = static_cast<int>(4 * scale);
 
-    // Measure icon size (both bitmaps are the same dimensions)
-    int bm_w = 0, bm_h = 0;
-    rf::bm::get_dimensions(active_bms[0], &bm_w, &bm_h);
-    int icon_w = static_cast<int>(bm_w * scale);
-    int icon_h = static_cast<int>(bm_h * scale);
-
     // Place icons to the left of the nameplate bar, right-aligned toward bar_x
     int icon_x = bar_x - gap;
 
-    for (int i = 0; i < count; ++i) {
+    for (int bm : active_bms) {
+        int bm_w = 0, bm_h = 0;
+        rf::bm::get_dimensions(bm, &bm_w, &bm_h);
+        int icon_w = static_cast<int>(bm_w * scale);
+        int icon_h = static_cast<int>(bm_h * scale);
         icon_x -= icon_w;
 
         // Vertically center icon on the nameplate bar
@@ -2329,7 +2324,7 @@ static void render_spectate_powerup_icons(rf::Entity* entity, int bar_x, int bar
 
         // Draw icon
         rf::gr::set_color(255, 255, 255, 255);
-        hud_scaled_bitmap(active_bms[i], icon_x, icon_y, scale);
+        hud_scaled_bitmap(bm, icon_x, icon_y, scale);
 
         icon_x -= gap;
     }

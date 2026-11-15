@@ -6,6 +6,8 @@
 #include "alpine_settings.h"
 #include "alpine_terrain.h"
 #include "level.h"
+#include "vpackfile.h"
+#include "../multi/bots/bot_navigation_routes.h"
 #include "../multi/bots/bot_waypoint_route.h"
 #include "../multi/bots/server_bots.h"
 #include "../main/main.h"
@@ -40,6 +42,7 @@
 #include "../object/mover.h"
 #include "../object/zipline.h"
 #include "../graphics/gr.h"
+#include "../hud/route_arrows.h"
 #include <common/utils/string-utils.h>
 #include <patch_common/FunHook.h>
 #include <algorithm>
@@ -80,6 +83,8 @@ int g_cache_indexed_end = 1;
 std::unordered_map<int, std::vector<int>> g_waypoints_by_type;
 int g_waypoints_by_type_total = 0;
 bool g_has_loaded_wpt = false;
+// Loaded only for the spawn route arrows on a client without bots
+bool g_waypoints_for_route_arrows = false;
 int g_last_awp_source = 0; // 0=not_found, 1=user_maps, 2=vpp
 bool g_missing_awp_from_level_init = false;
 bool g_awp_download_pending = false;
@@ -286,6 +291,18 @@ bool is_waypoint_recording_active()
 bool are_waypoint_commands_enabled_for_local_client()
 {
     return is_waypoint_bot_mode_active() || g_alpine_game_config.waypoints_edit_mode;
+}
+
+// A client without bots loads the graph for the spawn route arrows, never over a file a host is editing
+static bool waypoints_wanted_for_route_arrows()
+{
+    return !is_waypoint_bot_mode_active() && !g_alpine_game_config.waypoints_edit_mode
+        && route_arrows_wanted_for_level();
+}
+
+static bool waypoints_loaded_for_route_arrows_only()
+{
+    return g_waypoints_for_route_arrows && !are_waypoint_commands_enabled_for_local_client();
 }
 
 bool ensure_waypoint_command_enabled(std::string_view command_name)
@@ -1519,11 +1536,13 @@ int InvisibleFloorFaces::cell_z(float z) const
 InvisibleFloorFaces g_invisible_floor_faces;
 
 // 0x00498E80 hits pass-through mover brushes too; only a trace that stops at one is retaken for the nearest solid hit.
-bool collide_linesegment_walkable_world(const rf::Vector3& from, const rf::Vector3& to, rf::PCollisionOut& out)
+// Without CF_ANY_HIT it shortens the segment to each hit, so the one it returns is the nearest.
+bool collide_linesegment_walkable_world(
+    const rf::Vector3& from, const rf::Vector3& to, rf::PCollisionOut& out, int flags = kWaypointWorldTraceFlags)
 {
     rf::Vector3 p0 = from;
     rf::Vector3 p1 = to;
-    if (!rf::collide_linesegment_world(p0, p1, kWaypointWorldTraceFlags, &out)) {
+    if (!rf::collide_linesegment_world(p0, p1, flags, &out)) {
         return false;
     }
     const rf::Object* hit_obj = out.obj_handle >= 0 ? rf::obj_from_handle(out.obj_handle) : nullptr;
@@ -1539,7 +1558,7 @@ bool collide_linesegment_walkable_world(const rf::Vector3& from, const rf::Vecto
 }
 } // namespace
 
-bool trace_ground_below_point(const rf::Vector3& pos, float max_downward_dist, rf::Vector3* out_hit_point)
+bool trace_ground_below_point(const rf::Vector3& pos, float max_downward_dist, rf::Vector3* out_hit_point, bool nearest)
 {
     if (max_downward_dist <= 0.0f) {
         return false;
@@ -1550,7 +1569,8 @@ bool trace_ground_below_point(const rf::Vector3& pos, float max_downward_dist, r
     rf::Vector3 p1 = pos - rf::Vector3{0.0f, max_downward_dist, 0.0f};
     rf::PCollisionOut collision{};
     collision.obj_handle = -1;
-    bool world_hit = collide_linesegment_walkable_world(p0, p1, collision);
+    const int flags = nearest ? kWaypointWorldTraceFlags & ~rf::CF_ANY_HIT : kWaypointWorldTraceFlags;
+    bool world_hit = collide_linesegment_walkable_world(p0, p1, collision, flags);
 
     // Supplemental check: test cached invisible faces that the standard collision
     // misses (e.g. detail brush ramps over staircases). Only accepts hits above
@@ -4820,6 +4840,34 @@ void update_scavenger_zone_temporary_waypoint()
     }
 }
 
+static bool waypoints_link_passes_geometry(const int from, const int to)
+{
+    const int waypoint_total = static_cast<int>(g_waypoints.size());
+    if (from <= 0 || from >= waypoint_total || !g_waypoints[from].valid) {
+        return false;
+    }
+    if (can_link_waypoint_indices(from, to)) {
+        return true;
+    }
+    // Preserve links that intentionally pass through geometry:
+    // - Jump pad outbound links (trajectory-based, parabolic path)
+    // - Downward drop links (bot walks off a ledge and falls)
+    const auto& node = g_waypoints[from];
+    const bool is_jump_pad_link = node.type == WaypointType::jump_pad;
+    const bool is_drop_link = to > 0
+        && to < waypoint_total
+        && g_waypoints[to].valid
+        && (node.pos.y - g_waypoints[to].pos.y) >= 2.0f
+        && !waypoint_has_link_to(to, from);
+    return is_jump_pad_link || is_drop_link;
+}
+
+bool waypoints_prune_blocked_link(const int from, const int to)
+{
+    return waypoints_loaded_for_route_arrows_only() && !waypoints_link_passes_geometry(from, to)
+        && remove_waypoint_links_from_to(from, to) > 0;
+}
+
 void sanitize_waypoint_links_against_geometry()
 {
     int removed_links = 0;
@@ -4834,20 +4882,9 @@ void sanitize_waypoint_links_against_geometry()
         int write_index = 0;
         for (int read_index = 0; read_index < node.num_links; ++read_index) {
             const int link = node.links[read_index];
-            if (!can_link_waypoint_indices(index, link)) {
-                // Preserve links that intentionally pass through geometry:
-                // - Jump pad outbound links (trajectory-based, parabolic path)
-                // - Downward drop links (bot walks off a ledge and falls)
-                const bool is_jump_pad_link = node.type == WaypointType::jump_pad;
-                const bool is_drop_link = link > 0
-                    && link < waypoint_total
-                    && g_waypoints[link].valid
-                    && (node.pos.y - g_waypoints[link].pos.y) >= 2.0f
-                    && !waypoint_has_link_to(link, index);
-                if (!is_jump_pad_link && !is_drop_link) {
-                    ++removed_links;
-                    continue;
-                }
+            if (!waypoints_link_passes_geometry(index, link)) {
+                ++removed_links;
+                continue;
             }
 
             bool duplicate = false;
@@ -5139,28 +5176,6 @@ static std::string get_awp_bare_filename(const std::string& rfl_filename)
     return std::string{get_filename_without_ext(rfl_filename.c_str())} + ".awp";
 }
 
-// Try to read an AWP file's content from the VPP packfile system.
-// Returns the file content as a string, or empty if not found.
-static std::string read_awp_from_vpp(const std::string& bare_awp_filename)
-{
-    rf::File file;
-    if (file.open(bare_awp_filename.c_str()) != 0) {
-        return {};
-    }
-    const int file_size = file.size();
-    if (file_size <= 0) {
-        file.close();
-        return {};
-    }
-    std::string content(static_cast<size_t>(file_size), '\0');
-    const int bytes_read = file.read(content.data(), file_size);
-    file.close();
-    if (bytes_read != file_size) {
-        return {};
-    }
-    return content;
-}
-
 enum class AwpSource
 {
     not_found,
@@ -5185,7 +5200,7 @@ static std::pair<AwpSource, toml::table> parse_awp_file(
     }
 
     // Second: try loading from alpinefaction.vpp (or other loaded VPPs).
-    std::string vpp_content = read_awp_from_vpp(bare_awp_filename);
+    std::string vpp_content = read_game_file(bare_awp_filename.c_str()).value_or(std::string{});
     if (!vpp_content.empty()) {
         try {
             return {AwpSource::vpp, toml::parse(vpp_content, bare_awp_filename)};
@@ -5250,7 +5265,7 @@ int get_local_awp_revision(const std::string& rfl_filename)
 
     // Second: try VPP.
     const std::string bare_filename = get_awp_bare_filename(rfl_filename);
-    std::string vpp_content = read_awp_from_vpp(bare_filename);
+    std::string vpp_content = read_game_file(bare_filename.c_str()).value_or(std::string{});
     if (!vpp_content.empty()) {
         std::istringstream vpp_stream(std::move(vpp_content));
         return scan_awp_revision_from_content(vpp_stream);
@@ -5283,7 +5298,7 @@ void seed_waypoints_from_objects()
                 continue;
             }
 
-            const std::string_view item_name = item->name.c_str();
+            const std::string_view item_name = item->info ? item->info->cls_name.c_str() : item->name.c_str();
 
             if (auto ctf_subtype = get_default_grid_ctf_flag_subtype(item_name); ctf_subtype) {
                 const int waypoint_index = add_waypoint(
@@ -8390,7 +8405,7 @@ bool waypoints_trace_breakable_glass_from_camera(
 
 void waypoints_on_glass_shattered(const rf::GFace* face)
 {
-    if (!face || !face->which_room || g_waypoint_targets.empty()) {
+    if (!face || !face->which_room || g_waypoint_targets.empty() || waypoints_loaded_for_route_arrows_only()) {
         return;
     }
 
@@ -9490,7 +9505,8 @@ bool save_waypoints()
     return true;
 }
 
-bool load_waypoints(bool include_std_new_waypoints = true)
+// Without `sanitize`, blocked links stay in the graph for whoever reads it to test, as the route arrows do
+bool load_waypoints(bool include_std_new_waypoints = true, bool sanitize = true)
 {
     clear_waypoints();
     auto disk_path = get_waypoint_filename();
@@ -9821,7 +9837,9 @@ bool load_waypoints(bool include_std_new_waypoints = true)
         remap_waypoints();
     }
     normalize_all_zone_bridge_waypoint_refs();
-    sanitize_waypoint_links_against_geometry();
+    if (sanitize) {
+        sanitize_waypoint_links_against_geometry();
+    }
     ensure_vehicle_factory_waypoints();
     waypoints_vehicle_on_awp_loaded(load_vehicle_layer(root));
     g_has_loaded_wpt = true;
@@ -10250,6 +10268,13 @@ ConsoleCommand2 waypoint_edit_cmd{
         }
 
         if (request_enable && !g_alpine_game_config.waypoints_edit_mode) {
+            // Hand the editor a sanitized graph and stop the arrows' pending download from reloading over the edits
+            if (waypoints_loaded_for_route_arrows_only()) {
+                sanitize_waypoint_links_against_geometry();
+                g_waypoints_for_route_arrows = false;
+                g_awp_load_retries_remaining = 0;
+                g_awp_load_retry_timer.invalidate();
+            }
             g_alpine_game_config.waypoints_edit_mode = true;
             waypoint_log("Waypoint editing enabled");
         }
@@ -11263,9 +11288,34 @@ void waypoints_init()
     waypoint_delete_cmd.register_cmd();
 }
 
+// Builds the spatial index and the route graph, with the floor probes of its ledge links, while the level loads
+// rather than at the first spawn. It must follow anything that invalidates them, such as invalidate_cache.
+static void warm_waypoints_for_route_arrows()
+{
+    if (g_has_loaded_wpt) {
+        ensure_cache();
+        bot_waypoint_route_warm();
+    }
+}
+
+static void load_waypoints_for_route_arrows()
+{
+    g_waypoints_for_route_arrows = true;
+    g_has_loaded_wpt = load_waypoints(true, false);
+}
+
+static void start_awp_download_for_level()
+{
+    waypoints_set_awp_download_pending(true);
+    if (!start_awp_download_for_installed_map(std::string{rf::level.filename.c_str()}, 3)) {
+        waypoints_set_awp_download_pending(false);
+    }
+}
+
 void waypoints_level_init()
 {
     g_missing_awp_from_level_init = false;
+    g_waypoints_for_route_arrows = false;
     if (is_waypoint_bot_mode_active()) {
         if (g_awp_download_pending) {
             // AWP download is in progress — defer load_waypoints until it resolves
@@ -11281,6 +11331,11 @@ void waypoints_level_init()
             }
         }
     }
+    else if (waypoints_wanted_for_route_arrows()) {
+        // Nothing is seeded for the arrows, so a level without an AWP gets none. A local AWP loads now, without
+        // waiting for the download, which reloads it only with a newer revision.
+        load_waypoints_for_route_arrows();
+    }
     else {
         clear_waypoints();
         g_has_loaded_wpt = false;
@@ -11291,6 +11346,9 @@ void waypoints_level_init()
     g_ctf_dropped_flag_packet_hints[1].active = false;
     invalidate_cache();
     waypoints_utils_level_init();
+    if (g_waypoints_for_route_arrows) {
+        warm_waypoints_for_route_arrows();
+    }
 }
 
 void waypoints_level_init_with_awp_download()
@@ -11298,29 +11356,43 @@ void waypoints_level_init_with_awp_download()
     // Cancel any in-flight AWP download from a previous map
     cancel_awp_download();
 
-    // Bots: start the async AWP download before waypoints_level_init so it sees the pending
-    // flag and defers load_waypoints until the download resolves. Never over a file a host is editing.
-    if (rf::is_multi && is_waypoint_bot_mode_active()
-        && (rf::is_dedicated_server || !g_alpine_game_config.waypoints_edit_mode)) {
-        waypoints_set_awp_download_pending(true);
-        if (!start_awp_download_for_installed_map(std::string{rf::level.filename.c_str()}, 3)) {
-            waypoints_set_awp_download_pending(false);
-        }
+    // Bots and the route arrows: start the async AWP download before waypoints_level_init, so for bots it sees the
+    // pending flag and defers load_waypoints until the download resolves. Never over a file a host is editing.
+    if ((rf::is_multi && is_waypoint_bot_mode_active()
+            && (rf::is_dedicated_server || !g_alpine_game_config.waypoints_edit_mode))
+        || waypoints_wanted_for_route_arrows()) {
+        start_awp_download_for_level();
     }
 
     waypoints_level_init();
+}
+
+void waypoints_on_route_arrows_toggled()
+{
+    // A graph loaded otherwise, such as the editor's, is kept: reloading would drop its edits
+    if (!(rf::level.flags & rf::LEVEL_LOADED) || g_waypoints_for_route_arrows || g_waypoints.size() > 1
+        || !waypoints_wanted_for_route_arrows()) {
+        return;
+    }
+    if (!g_awp_download_pending) {
+        start_awp_download_for_level();
+    }
+    load_waypoints_for_route_arrows();
+    warm_waypoints_for_route_arrows();
 }
 
 void waypoints_level_reset()
 {
     clear_waypoints();
     g_has_loaded_wpt = false;
+    g_waypoints_for_route_arrows = false;
     g_missing_awp_from_level_init = false;
     g_awp_download_pending = false;
     g_awp_load_retries_remaining = 0;
     g_awp_load_retry_timer.invalidate();
     g_last_drop_waypoint_by_entity.clear();
     g_last_lift_uid_by_entity.clear();
+    bot_nav_clear_ledge_link_cache();
     waypoints_utils_level_reset();
 }
 
@@ -11347,8 +11419,12 @@ void waypoints_set_awp_download_pending(bool pending)
 void waypoints_on_awp_download_resolved()
 {
     g_awp_download_pending = false;
-    if (is_waypoint_bot_mode_active()) {
-        g_has_loaded_wpt = load_waypoints(true);
+    if (waypoints_loaded_for_route_arrows_only() && g_has_loaded_wpt
+        && get_local_awp_revision(std::string{rf::level.filename.c_str()}) == g_waypoint_revision) {
+        return;
+    }
+    if (is_waypoint_bot_mode_active() || waypoints_loaded_for_route_arrows_only()) {
+        g_has_loaded_wpt = load_waypoints(true, is_waypoint_bot_mode_active());
         if (!g_has_loaded_wpt) {
             // If load failed but the AWP file exists on disk (e.g., another process is
             // mid-rename), schedule frame-based retries instead of blocking the main thread.
@@ -11360,6 +11436,9 @@ void waypoints_on_awp_download_resolved()
             }
         }
         g_missing_awp_from_level_init = !g_has_loaded_wpt;
+        if (waypoints_loaded_for_route_arrows_only()) {
+            warm_waypoints_for_route_arrows();
+        }
         // Don't seed from objects here — bots either load an AWP or sit out
     }
 }
@@ -11405,13 +11484,17 @@ void waypoints_do_frame()
     }
 
     // Retry loading AWP if a previous attempt failed (e.g., file race between bot processes)
-    if (g_awp_load_retries_remaining > 0 && g_awp_load_retry_timer.valid() && g_awp_load_retry_timer.elapsed()) {
+    if (g_awp_load_retries_remaining > 0 && g_awp_load_retry_timer.valid() && g_awp_load_retry_timer.elapsed()
+        && (is_waypoint_bot_mode_active() || waypoints_loaded_for_route_arrows_only())) {
         g_awp_load_retries_remaining--;
-        g_has_loaded_wpt = load_waypoints(true);
+        g_has_loaded_wpt = load_waypoints(true, is_waypoint_bot_mode_active());
         if (g_has_loaded_wpt) {
             g_awp_load_retries_remaining = 0;
             g_awp_load_retry_timer.invalidate();
             g_missing_awp_from_level_init = false;
+            if (waypoints_loaded_for_route_arrows_only()) {
+                warm_waypoints_for_route_arrows();
+            }
         }
         else if (g_awp_load_retries_remaining > 0) {
             g_awp_load_retry_timer.set(50);
@@ -11452,7 +11535,7 @@ void waypoints_do_frame()
 
 void waypoints_render_debug()
 {
-    if (!(rf::level.flags & rf::LEVEL_LOADED)) {
+    if (!(rf::level.flags & rf::LEVEL_LOADED) || waypoints_loaded_for_route_arrows_only()) {
         return;
     }
     waypoints_utils_render_debug();

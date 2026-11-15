@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <utility>
 #include <vector>
 #include <patch_common/AsmWriter.h>
 #include <patch_common/CallHook.h>
@@ -74,8 +75,8 @@ namespace gr::d3d11
     static StaticMeshLights g_static_mesh_lights;
     static rf::gr::Light* g_reaching_static_lights[rf::gr::max_relevant_lights];
 
-    // When true, render_v3d_vif/render_character_vif skip automatic light gathering.
-    // Used by sky room mesh rendering which pre-gathers lights at the untransformed position.
+    // When true, render_v3d_vif/render_character_vif skip automatic light gathering: for sky room meshes, which
+    // pre-gather lights at the untransformed position, and menu previews, which bring their own.
     static bool skip_mesh_light_gather = false;
 
     static void update_static_mesh_lights()
@@ -778,6 +779,18 @@ namespace gr::d3d11
     bool set_render_target(int bm_handle)
     {
         return renderer && renderer->set_render_target(bm_handle);
+    }
+
+    void clear_mesh_lights()
+    {
+        if (renderer) {
+            renderer->clear_mesh_lights();
+        }
+    }
+
+    bool set_skip_mesh_light_gather(bool skip)
+    {
+        return std::exchange(skip_mesh_light_gather, skip);
     }
 
     void flush_outlines_before_fpgun()

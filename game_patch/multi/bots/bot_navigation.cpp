@@ -17,6 +17,7 @@
 #include "../bagman.h"
 #include "../gametype.h"
 #include "../payload.h"
+#include "../powerups.h"
 #include "../salvage.h"
 #include "../scavenger.h"
 #include "../../misc/waypoints.h"
@@ -876,26 +877,6 @@ HillOwner local_hill_team_owner()
     return team_to_hill_owner(bot_player()->team);
 }
 
-bool control_point_team_can_capture_hill(const HillInfo& hill, const HillOwner local_team)
-{
-    if (local_team != HillOwner::HO_Red && local_team != HillOwner::HO_Blue) {
-        return false;
-    }
-    if (hill.lock_status != HillLockStatus::HLS_Available) {
-        return false;
-    }
-    if (hill.ownership == local_team) {
-        return false;
-    }
-    if (gt_is_esc()) {
-        return esc_team_can_attack_hill(hill, local_team);
-    }
-    if (gt_is_rev() && local_team != HillOwner::HO_Red) {
-        return false;
-    }
-    return true;
-}
-
 bool control_point_hill_needs_defense(const HillInfo& hill, const HillOwner local_team)
 {
     if (local_team != HillOwner::HO_Red && local_team != HillOwner::HO_Blue) {
@@ -1122,8 +1103,8 @@ bool item_is_currently_available(const rf::Item& item)
 bool item_info_contains_token(const rf::ItemInfo& item_info, std::string_view token)
 {
     return contains_case_insensitive(item_info.cls_name.c_str(), token)
-        || (item_info.hud_msg_name
-            && contains_case_insensitive(item_info.hud_msg_name, token));
+        || (item_info.hud_msg_name && *item_info.hud_msg_name
+            && contains_case_insensitive(*item_info.hud_msg_name, token));
 }
 
 bool item_is_health_pickup(const rf::ItemInfo& item_info)
@@ -1168,9 +1149,15 @@ bool try_apply_named_replenish_profile(
         bool is_super;
     };
 
-    static constexpr std::array<NamedProfile, 6> kProfiles{{
+    constexpr const AlpinePowerupItemClass& health_shard =
+        alpine_powerup_item_classes[static_cast<size_t>(AlpinePowerup::health_shard)];
+    constexpr const AlpinePowerupItemClass& armor_shard =
+        alpine_powerup_item_classes[static_cast<size_t>(AlpinePowerup::armor_shard)];
+    static constexpr std::array<NamedProfile, 8> kProfiles{{
         {"Multi Super Health", ReplenishItemKind::health, 200, 4, true},
         {"Multi Super Armor", ReplenishItemKind::armor, 200, 5, true},
+        {health_shard.class_name, ReplenishItemKind::health, health_shard.count, 0, false},
+        {armor_shard.class_name, ReplenishItemKind::armor, armor_shard.count, 0, false},
         {"Suit Repair", ReplenishItemKind::armor, 50, 2, false},
         {"Medical Kit", ReplenishItemKind::health, 50, 1, false},
         {"First Aid Kit", ReplenishItemKind::health, 25, 0, false},
@@ -1220,7 +1207,6 @@ bool try_apply_named_replenish_profile(
 }
 
 bool resolve_replenish_item_profile(
-    const rf::Item& item,
     const rf::ItemInfo& item_info,
     ReplenishItemProfile& out_profile)
 {
@@ -1230,8 +1216,7 @@ bool resolve_replenish_item_profile(
             && try_apply_named_replenish_profile(raw_name, out_profile);
     };
 
-    if (try_name(item.name.c_str())
-        || try_name(item_info.hud_msg_name)
+    if (try_name(item_info.hud_msg_name ? *item_info.hud_msg_name : nullptr)
         || try_name(item_info.cls_name.c_str())) {
         return true;
     }
@@ -1339,7 +1324,7 @@ bool find_best_contextual_item_goal(
         }
         else {
             ReplenishItemProfile profile{};
-            if (!resolve_replenish_item_profile(*item, *item_info, profile)) {
+            if (!resolve_replenish_item_profile(*item_info, profile)) {
                 continue;
             }
             if (!profile.is_super) {
@@ -1443,7 +1428,7 @@ bool update_contextual_item_goal(
             }
             else {
                 ReplenishItemProfile profile{};
-                if (!resolve_replenish_item_profile(*goal_item, *goal_info, profile)) {
+                if (!resolve_replenish_item_profile(*goal_info, profile)) {
                     need_refresh = true;
                 }
             }

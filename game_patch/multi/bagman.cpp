@@ -15,6 +15,7 @@
 #include "gametype.h"
 #include "kill.h"
 #include "multi.h"
+#include "powerups.h"
 #include "server.h"
 #include "server_internal.h"
 #include "alpine_packets.h"
@@ -234,15 +235,6 @@ void resolve_bag_spawn_from_placed_item()
         return;
     }
 
-    // Priority-ordered list of item classes used as bag spawn positions
-    // when no other location is specified for the map.
-    static const char* const kBagCandidateClasses[] = {
-        "Multi Damage Amplifier",
-        "Multi Invulnerability",
-        "Multi Super Armor",
-        "Multi Super Health",
-    };
-
     bool position_chosen = false;
 
     // Priority 1: mapper-placed Bag editor object.
@@ -261,12 +253,12 @@ void resolve_bag_spawn_from_placed_item()
         }
     }
 
-    // Walk item_list once per candidate class. The first match (in
-    // priority order) becomes the spawn position if no higher-priority
-    // source chose one.
-    for (const char* cls : kBagCandidateClasses) {
+    // Walk item_list once per super item class, leaving super weapons. The
+    // first match (in priority order) becomes the spawn position if no
+    // higher-priority source chose one.
+    for (const char* cls : super_item_class_names) {
         int type_idx = rf::item_lookup_type(cls);
-        if (type_idx < 0) continue;
+        if (type_idx < 0 || rf::item_info[type_idx].gives_weapon_id >= 0) continue;
         rf::Item* it = rf::item_list.next;
         while (it && it != &rf::item_list) {
             rf::Item* next = it->next;
@@ -304,6 +296,13 @@ void resolve_bag_spawn_from_placed_item()
 }
 
 } // namespace
+
+const rf::gr::Color* bagman_aura_tint(int bmh)
+{
+    // The green of the original bag aura art.
+    static constexpr rf::gr::Color tint{0, 157, 0};
+    return bmh >= 0 && bmh == g_bag_aura_bitmap ? &tint : nullptr;
+}
 
 void bagman_force_state_sync_to(rf::Player* player)
 {

@@ -496,6 +496,7 @@ enum class af_server_req_type : uint8_t
     af_sreq_rcon_state = 0x11,         // Alpine 1.5 (variable: is_holder, command count, commands)
     af_sreq_force_spectate = 0x12,     // Alpine 1.5 (1 byte: 1 = enter spectate, 0 = leave)
     af_sreq_player_roles = 0x13,       // Alpine 1.5 (variable: count, {player_id, af_player_role_flags})
+    af_sreq_powerup_state = 0x14,      // Alpine 1.5 (6 bytes: player_id, powerup_id, time_left_ms)
 };
 
 struct ShouldGibPayload
@@ -596,7 +597,7 @@ struct EntityOnFirePayload
 };
 static_assert(sizeof(EntityOnFirePayload) == 5);
 
-// Used by the Jetpacks mutator. Purely visual: the thrusting client already
+// Used by jetpacks (mutator or powerup). Purely visual: the thrusting client already
 // applied its own physics, this only drives the effects on every other client.
 struct EntityJetpackPayload
 {
@@ -615,6 +616,15 @@ struct ZiplineStatePayload
     int32_t rope_uid = -1;
 };
 static_assert(sizeof(ZiplineStatePayload) == 7);
+
+// Timed powerups are server authoritative. time_left_ms 0 means the powerup ended.
+struct PowerupStatePayload
+{
+    uint8_t player_id = 0;
+    uint8_t powerup_id = 0; // AlpinePowerup
+    uint32_t time_left_ms = 0;
+};
+static_assert(sizeof(PowerupStatePayload) == 6);
 
 // Riot shield durability is server authoritative.
 struct RiotShieldStatePayload
@@ -647,7 +657,8 @@ static_assert(sizeof(ReserveAmmoPayload) == 3);
 using af_server_req_payload = std::variant<ShouldGibPayload, TeleportEntityPayload, SprayPayload,
                                            ReadyPromptPayload, PitQueueStatePayload, EntityOnFirePayload,
                                            EntityJetpackPayload, RiotShieldStatePayload, AwardPayload,
-                                           MatchStatePayload, ZiplineStatePayload, ReserveAmmoPayload>;
+                                           MatchStatePayload, ZiplineStatePayload, ReserveAmmoPayload,
+                                           PowerupStatePayload>;
 
 struct af_server_req_packet
 {
@@ -774,7 +785,7 @@ struct af_scavenger_state_packet
 static_assert(sizeof(af_scavenger_state_packet) == 59);
 static_assert(offsetof(af_scavenger_state_packet, zone_x) == sizeof(af_salvage_state_packet));
 
-// The Payload cart, server -> client. Sent reliably on every change (pusher lists at most every 100 ms) and
+// The Payload cart, server -> client. Sent reliably on every change (the pusher list at most every 100 ms) and
 // unreliably while the cart moves or after a heal tick, so the client extrapolates distance with speed in between.
 constexpr uint8_t af_payload_state_flag_overtime = 0x1;
 constexpr uint8_t af_payload_state_flag_heals = 0x2;
@@ -793,7 +804,7 @@ struct af_payload_state_packet
     float distance;            // along the track
     float speed;               // signed, m/s
     uint8_t num_pushers;
-    // uint8_t pusher_ids[num_pushers], uint8_t num_blockers, uint8_t blocker_ids[num_blockers] appended on the wire
+    // uint8_t pusher_ids[num_pushers] appended on the wire
 };
 static_assert(sizeof(af_payload_state_packet) == sizeof(RF_GamePacketHeader) + 16);
 
@@ -885,6 +896,8 @@ enum af_vehicle_health_flags : uint8_t
 {
     // Every blow noted on the hull since the last packet was scrape damage: the riders get no damage flash.
     AF_VEHICLE_HEALTH_SCRAPE_ONLY = 0x1,
+    // The hull lost life, to anything, since the last streamed packet: it flashes.
+    AF_VEHICLE_HEALTH_HURT = 0x2,
 };
 
 // Hull angles the stock obj_update row has no slot for; tick keys them to the matching ObjInterp keyframe.
@@ -1254,6 +1267,8 @@ void af_send_zipline_state(uint8_t player_id, int32_t rope_uid, bool riding, int
 // spawn, by when the one-shot trigger replays (unreliable, unordered with this) have long landed.
 void af_send_rope_states_to(rf::Player* player, bool ziplines_only);
 void af_send_riot_shield_state(uint32_t obj_handle, float life, const rf::Vector3& impact_pos);
+// target nullptr: every client.
+void af_send_powerup_state(rf::Player* target, uint8_t player_id, uint8_t powerup_id, uint32_t time_left_ms);
 void af_send_award(rf::Player* player, uint8_t award_id, uint8_t victim_player_id);
 void af_send_reserve_ammo(rf::Player* player, int weapon_type, int reserve);
 void af_send_award_for_demo(rf::Player* recorder, uint8_t award_id, uint8_t victim_player_id, uint8_t earner_id);

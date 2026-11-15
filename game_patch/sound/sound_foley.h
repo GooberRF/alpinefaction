@@ -9,9 +9,10 @@ struct BreakableMaterialConfig;
 struct BreakableMaterialState;
 
 // Pre-built ISS globals (built after foley.tbl loads, persist for game lifetime).
-// Config structs point to these via impact_iss_ptr.
+// Breakable material configs point to rock/ice via impact_iss_ptr; vehicle debris uses metal.
 extern rf::ImpactSoundSet* g_rock_debris_iss;
 extern rf::ImpactSoundSet* g_ice_debris_iss;
+extern rf::ImpactSoundSet* g_metal_debris_iss;
 
 // Resolve the debris impact sound set for a material config.
 // Returns existing ISS from foley.tbl (impact_iss_name) or pre-built ISS (impact_iss_ptr).

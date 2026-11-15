@@ -26,6 +26,8 @@
 #include "vehicles/vehicle.h"
 #include "vehicles/vehicle_physics.h"
 #include "mutators.h"
+#include "powerups.h"
+#include "vote_client.h"
 #include "bots/bot_chat_manager.h"
 #include "bots/bot_context_fwd.h"
 #include "bots/bot_vehicle_nav.h"
@@ -533,7 +535,7 @@ void server_set_player_weapon(rf::Player* pp, rf::Entity* ep, int weapon_type)
 {
     rf::player_make_weapon_current_selection(pp, weapon_type);
     ep->ai.current_primary_weapon = weapon_type;
-    g_select_weapon_done_timestamp[pp->net_data->player_id].set(300);
+    g_select_weapon_done_timestamp[pp->net_data->player_id].set(haste_scale_ms(ep, 300));
 }
 
 bool is_remote_charge_pair(int weapon_a, int weapon_b)
@@ -658,7 +660,7 @@ FunHook<void(rf::Player*, rf::Entity*, int)> multi_select_weapon_server_side_hoo
         else {
             rf::player_make_weapon_current_selection(pp, weapon_type);
             ep->ai.current_primary_weapon = weapon_type;
-            g_select_weapon_done_timestamp[pp->net_data->player_id].set(300);
+            g_select_weapon_done_timestamp[pp->net_data->player_id].set(haste_scale_ms(ep, 300));
         }
     },
 };
@@ -709,7 +711,7 @@ void multi_reload_weapon_server_side(rf::Player* pp, int weapon_type)
                 reload_secs = 2.5f;
             }
 
-            pp->rail_gun_reload_timer.set(static_cast<int>(reload_secs * 1000.0f));
+            pp->rail_gun_reload_timer.set(haste_scale_ms(ep, static_cast<int>(reload_secs * 1000.0f)));
         }
     }
 }
@@ -871,9 +873,18 @@ bool multi_is_player_firing_too_fast(const rf::Player* const pp, const int weapo
 
     static std::vector<int> last_weapon_id(rf::multi_max_player_id, 0);
     static std::vector<int64_t> last_weapon_fire(rf::multi_max_player_id, 0);
+    static std::vector<bool> last_weapon_fire_hasted(rf::multi_max_player_id, false);
 
     const int player_id = pp->net_data->player_id;
     const int64_t now = timer::get_i64(1000);
+
+    // The client's Haste timer runs up to half a round trip behind the server's, so allow its rate for one shot after
+    // expiry.
+    const bool hasted = powerup_is_active(rf::entity_from_handle(pp->entity_handle), AlpinePowerup::haste);
+    if (hasted || last_weapon_fire_hasted[player_id]) {
+        fire_wait_ms = static_cast<int>(fire_wait_ms / haste_speed_factor);
+    }
+    last_weapon_fire_hasted[player_id] = hasted;
 
     // If weapon changed, skip interval check.
     if (last_weapon_id[player_id] != weapon_type) {
@@ -1268,6 +1279,43 @@ int multi_num_spawned_players() {
     return std::ranges::count_if(SinglyLinkedList{rf::player_list}, [] (const auto& p) {
         return !rf::player_is_dead(&p) && !rf::player_is_dying(&p);
     });
+}
+
+bool multi_local_player_is_spectating()
+{
+    // The listen-server host runs the match itself and gets no match state packets.
+    return multi_spectate_is_spectating() || (!rf::is_server && vote_client_spectating_match());
+}
+
+int multi_count_participants(int* num_bots)
+{
+    int count = 0;
+    int bots = 0;
+    for (const rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if (!player.is_non_participant()) {
+            ++count;
+            bots += player.is_bot;
+        }
+    }
+    if (num_bots) {
+        *num_bots = bots;
+    }
+    return count;
+}
+
+std::optional<float> multi_time_left()
+{
+    const float time_left = rf::multi_time_limit - rf::level.time;
+    if ((rf::level.flags & rf::LEVEL_LOADED) && rf::multi_time_limit > 0.0f && time_left > 0.0f && !gt_uses_rounds()) {
+        return time_left;
+    }
+    return std::nullopt;
+}
+
+std::string_view level_display_name()
+{
+    const char* const name = rf::level.name.c_str();
+    return name[0] ? std::string_view{name} : std::string_view{rf::level.filename.c_str()};
 }
 
 void configure_custom_gametype_listen_server_settings() {

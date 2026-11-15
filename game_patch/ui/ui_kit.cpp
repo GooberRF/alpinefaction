@@ -2,10 +2,12 @@
 #include <cctype>
 #include <cmath>
 #include <format>
+#include <common/utils/string-utils.h>
 #include "ui_kit.h"
 #include "../hud/hud_internal.h"
 #include "../os/os.h"
 #include "../rf/gr/gr_font.h"
+#include "../rf/os/console.h"
 #include "../rf/os/frametime.h"
 #include "../rf/sound/sound.h"
 #include "../sound/sound.h"
@@ -39,11 +41,6 @@ int font_height(int font)
 int text_pad(const UiContext& ctx)
 {
     return std::max(ctx.style.text_pad_min, ctx.scaled(ctx.style.text_pad));
-}
-
-int scrollbar_width(const UiContext& ctx)
-{
-    return std::max(ctx.style.scrollbar_w_min, ctx.scaled(ctx.style.scrollbar_w));
 }
 
 void ui_play_hover()
@@ -157,6 +154,25 @@ std::string ui_fit_middle(std::string_view text, int max_w, int font)
         std::string candidate{text.substr(0, left)};
         candidate += "...";
         candidate += std::string{text.substr(text.size() - right, right)};
+        if (rf::gr::get_string_size(candidate, font).first <= max_w) {
+            return candidate;
+        }
+    }
+    return std::string{"..."};
+}
+
+std::string ui_fit_end(std::string_view text, int max_w, int font, bool trim_spaces)
+{
+    if (text.empty() || rf::gr::get_string_size(text, font).first <= max_w) {
+        return std::string{text};
+    }
+    for (size_t keep = text.size(); keep > 0; --keep) {
+        const std::string_view kept = trim_spaces ? rtrim(text.substr(0, keep)) : text.substr(0, keep);
+        if (kept.empty()) {
+            continue;
+        }
+        std::string candidate{kept};
+        candidate += "...";
         if (rf::gr::get_string_size(candidate, font).first <= max_w) {
             return candidate;
         }
@@ -1041,13 +1057,19 @@ int ui_listbox(UiContext& ctx, const UiRect& r, const std::vector<std::string>& 
 
     if (max_scroll > 0.0f) {
         const float ratio = scroll / max_scroll;
-        const int bar_w = scrollbar_width(ctx);
+        const int bar_w = ui_scrollbar_width(ctx);
         const int bar_h = std::max(bar_w, r.h * r.h / std::max(1, total_h));
         const int bar_y = d.y + static_cast<int>(ratio * (r.h - bar_h));
         apply_color(ctx.style.scrollbar);
         rf::gr::rect(d.x + r.w - bar_w, bar_y, bar_w, bar_h);
     }
     return -1;
+}
+
+bool ui_offscreen_activatable(UiContext& ctx, UiId id)
+{
+    ctx.register_focusable(id, UiFocusKind::Activate);
+    return !ctx.draw && ctx.consume_activation(id);
 }
 
 UiTextInputResult ui_text_input(UiContext& ctx, const UiRect& r, UiId id, std::string& text,
@@ -1118,6 +1140,13 @@ UiTextInputResult ui_text_input(UiContext& ctx, const UiRect& r, UiId id, std::s
             hud_fit_string(shown, d.w - 2 * pad, nullptr, font).c_str(), font);
     }
     return res;
+}
+
+void ui_drop_text_focus_under_console(UiContext& ctx)
+{
+    if (rf::console::console_is_visible() && ctx.focused_text_id() != 0) {
+        ctx.release_text_focus(true);
+    }
 }
 
 bool ui_close_button(UiContext& ctx, const UiRect& r, int font)
@@ -1261,10 +1290,15 @@ void ui_scroll_focus_into_view(const UiContext& ctx, const UiRect& view, const s
     scrolled_to = ctx.focus_id();
 }
 
+int ui_scrollbar_width(const UiContext& ctx)
+{
+    return std::max(ctx.style.scrollbar_w_min, ctx.scaled(ctx.style.scrollbar_w));
+}
+
 UiScrollbarGeometry ui_scrollbar_geometry(const UiContext& ctx, const UiRect& view, int content_h, float scroll)
 {
     UiScrollbarGeometry g;
-    const int bar_w = scrollbar_width(ctx);
+    const int bar_w = ui_scrollbar_width(ctx);
     const int cap = std::min(ctx.scaled(ctx.style.scrollbar_cap), view.h / 4);
     g.gutter = UiRect{view.x + view.w - bar_w, view.y, bar_w, view.h};
     g.track = UiRect{g.gutter.x, view.y + cap, bar_w, std::max(0, view.h - 2 * cap)};

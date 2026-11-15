@@ -729,6 +729,25 @@ void snd_instance_set_pitch(int instance_handle, float ratio)
     }
 }
 
+void snd_instance_set_speed(int instance_handle, float speed)
+{
+    const int chnl = snd_instance_ds_channel(instance_handle);
+    if (chnl >= 0) {
+        snd_ds_set_channel_speed(chnl, speed);
+    }
+}
+
+void snd_prepare_looping_speed(int handle, float speed)
+{
+    if (!rf::sound_enabled || rf::sound_backend != rf::SOUND_BACKEND_DS || handle < 0 || handle >= rf::g_num_sounds) {
+        return;
+    }
+    const int buf_id = rf::snd_pc_load_hint(handle, false, false);
+    if (buf_id >= 0) {
+        snd_ds_prepare_looping_speed(buf_id, speed);
+    }
+}
+
 void snd_set_global_rate(float rate)
 {
     if (rf::sound_backend == rf::SOUND_BACKEND_DS) {

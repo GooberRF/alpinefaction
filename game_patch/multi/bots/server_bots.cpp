@@ -8,6 +8,7 @@
 #include "../gametype.h"
 #include "../multi.h"
 #include "../network.h"
+#include "../powerups.h"
 #include "../server.h"
 #include "../server_internal.h"
 #include "../demo/demo.h"
@@ -199,7 +200,7 @@ int server_bot_hold_left(ServerBot::WeaponHold& hold, const rf::Entity& ep)
 void server_bot_note_fire_anim(ServerBot& bot, const rf::Entity& ep, const int weapon_type, const bool alt_fire)
 {
     server_bot_set_hold(bot.fire_anim, ep, weapon_type,
-        fpgun_action_anim_ms(weapon_type, alt_fire ? rf::WA_ALT_FIRE : rf::WA_FIRE));
+        haste_scale_ms(&ep, fpgun_action_anim_ms(weapon_type, alt_fire ? rf::WA_ALT_FIRE : rf::WA_FIRE)));
 }
 
 bool server_bot_weapon_reloading(ServerBot& bot, rf::Entity& ep)
@@ -218,7 +219,7 @@ void server_bot_reload(ServerBot& bot, rf::Player& pp, const int weapon_type)
     }
     const int engine_ms = static_cast<int>(
         rf::weapon_types[weapon_type].clip_reload_time_secs * k_client_reload_ms_per_clip_reload_sec);
-    const int reload_ms = std::max(engine_ms, fpgun_action_anim_ms(weapon_type, rf::WA_RELOAD));
+    const int reload_ms = haste_scale_ms(ep, std::max(engine_ms, fpgun_action_anim_ms(weapon_type, rf::WA_RELOAD)));
     server_bot_set_hold(bot.client_reload, *ep, weapon_type, server_bot_hold_left(bot.fire_anim, *ep) + reload_ms);
 }
 
@@ -248,7 +249,7 @@ void server_bot_throw(ServerBot& bot, rf::Entity& ep, const int weapon_type, con
 {
     rf::entity_play_attack_anim(&ep, alt_fire);
     server_bot_note_fire_anim(bot, ep, weapon_type, alt_fire);
-    const int delay_ms = bot_weapon_create_delay_ms(weapon_type, alt_fire);
+    const int delay_ms = haste_scale_ms(&ep, bot_weapon_create_delay_ms(weapon_type, alt_fire));
     if (delay_ms <= 0) {
         server_bot_fire(ep, weapon_type, alt_fire);
         return;
@@ -332,11 +333,11 @@ void server_bot_apply_fire(ServerBot& bot, rf::Player& pp, rf::Entity& ep, const
         server_bot_note_fire_anim(bot, ep, weapon_type, alt_fire);
     }
     if (!thrown && rf::weapon_is_semi_automatic(weapon_type)) {
-        ep.ai.next_fire_primary.set(bot_semi_auto_min_interval_ms(weapon_type));
+        ep.ai.next_fire_primary.set(haste_scale_ms(&ep, bot_semi_auto_min_interval_ms(weapon_type)));
     }
     // Thrown weapons leave through the remote-fire handler, which never re-arms the fire wait.
     else if (!ep.ai.next_fire_primary.valid() || ep.ai.next_fire_primary.elapsed()) {
-        ep.ai.next_fire_primary.set(rf::weapon_get_fire_wait_ms(weapon_type, alt_fire));
+        ep.ai.next_fire_primary.set(haste_scale_ms(&ep, rf::weapon_get_fire_wait_ms(weapon_type, alt_fire)));
     }
 }
 

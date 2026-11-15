@@ -21,6 +21,7 @@
 #include "../multi/bagman.h"
 #include "../multi/payload.h"
 #include "../multi/jetpack.h"
+#include "../multi/powerups.h"
 #include "../multi/vehicles/vehicle_seats.h"
 #include "../multi/salvage.h"
 #include "../multi/wipeout.h"
@@ -61,6 +62,7 @@
 #include "../multi/bots/bot_main.h"
 #include "../multi/mutators.h"
 #include "multi_spectate.h"
+#include "route_arrows.h"
 #include "../misc/settings_registry.h"
 #include "../object/zipline.h"
 
@@ -2375,8 +2377,7 @@ CallHook<void(int *dx, int *dy, int *dz)> control_config_get_mouse_delta_hook{
         }
 
         // A gameplay overlay with a free cursor owns aiming while it is up.
-        if (vote_panel_is_gameplay_overlay_active() || demo_controls_ui_is_open()
-            || multi_scoreboard_cursor_active()) {
+        if (gameplay_overlay_cursor_active()) {
             if (dx) {
                 *dx = 0;
             }
@@ -2386,8 +2387,9 @@ CallHook<void(int *dx, int *dy, int *dz)> control_config_get_mouse_delta_hook{
         }
 
         // If active, do not use mouse wheel scroll delta.
+        // Not gameplay_overlay_cursor_active(): the console's cursor leaves the wheel to console_mouse_wheel.
         if ((g_remote_server_cfg_popup.is_active() || vote_panel_is_gameplay_overlay_active()
-             || demo_controls_ui_is_open() || multi_scoreboard_cursor_active())
+             || demo_controls_ui_is_open() || multi_scoreboard_cursor_active() || console_ui_takes_mouse_wheel())
             && dz) {
             *dz = 0;
         }
@@ -2436,6 +2438,7 @@ CodeInjection multi_hud_render_patch{
         multi_hud_render_chat_menu();
 
         jetpack_render_hud();
+        powerups_render_hud();
         if (hud_element_visible(HudElement::reticle)) {
             crits_client_render_reticle_flash();
         }
@@ -3114,6 +3117,8 @@ void multi_hud_on_local_spawn()
         g_gungame_last_score = score;
         g_gungame_score_synced = true;
     }
+
+    route_arrows_on_local_spawn();
 }
 
 void multi_hud_reset_gametype_help()

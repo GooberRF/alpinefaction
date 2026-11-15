@@ -10,6 +10,7 @@
 #include "demo_ui.h"
 #include "../awards.h"
 #include "../gametype.h"
+#include "../powerups.h"
 #include "../../misc/vote_panel.h"
 #include "../../hud/hud.h"
 #include "../../hud/hud_internal.h"
@@ -637,6 +638,15 @@ void set_marker_color(const Marker& marker)
     case DemoMarkerKind::fusion:
         rf::gr::set_color(70, 255, 70, 255);
         break;
+    case DemoMarkerKind::haste:
+        rf::gr::set_color(powerup_color(AlpinePowerup::haste));
+        break;
+    case DemoMarkerKind::vampire:
+        rf::gr::set_color(powerup_color(AlpinePowerup::vampire));
+        break;
+    case DemoMarkerKind::jetpack:
+        rf::gr::set_color(255, 120, 40, 255);
+        break;
     case DemoMarkerKind::award:
         rf::gr::set_color(255, 215, 0, 255);
         break;
@@ -667,6 +677,11 @@ const char* objective_label()
     return gt_is_scavenger() ? "Cartridge" : "Flag";
 }
 
+const char* powerup_name(AlpinePowerup powerup)
+{
+    return alpine_powerup_item_classes[static_cast<size_t>(powerup)].hud_msg_name;
+}
+
 std::string marker_label(const Marker& marker)
 {
     switch (marker.kind) {
@@ -678,6 +693,12 @@ std::string marker_label(const Marker& marker)
         return "Invulnerability";
     case DemoMarkerKind::fusion:
         return "Fusion";
+    case DemoMarkerKind::haste:
+        return powerup_name(AlpinePowerup::haste);
+    case DemoMarkerKind::vampire:
+        return powerup_name(AlpinePowerup::vampire);
+    case DemoMarkerKind::jetpack:
+        return powerup_name(AlpinePowerup::jetpack);
     case DemoMarkerKind::award:
         // An id from a newer build than this one has no name here
         if (const char* name = award_name(marker.detail)) {
@@ -913,7 +934,7 @@ void demo_controls_ui_close()
     g_open = false;
     g_dragging = false;
     g_opened_in_mouse_look = false;
-    gameplay_overlay_apply_mouse(false);
+    gameplay_overlay_release_mouse();
     // Rest of this frame plus at least one whole frame, extended while held.
     g_swallow_attack_frames = 2;
 }

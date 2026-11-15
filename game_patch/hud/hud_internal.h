@@ -145,6 +145,8 @@ void killfeed_add_kill(const char* killed_name, int killed_team,
                        const char* verb, bool is_local_kill, bool is_team_mode,
                        const char* trailing = nullptr);
 void killfeed_route_next_message();
+// Feed lines bypass multi_chat_print, so they need their own console echo.
+void killfeed_print_to_console(const char* text, int color_id); // color_id = rf::ChatMsgColor
 void multi_hud_render_killfeed();
 void multi_hud_killfeed_apply_patches();
 void killfeed_clear();

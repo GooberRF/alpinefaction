@@ -661,7 +661,6 @@ namespace
     // REPOINTED rather than the bytes overwritten - the stock literal has no room to grow into.
     constexpr uintptr_t jeep_gun_mesh_push_imm32 = 0x00423A45;
     constexpr uint32_t jeep_gun_mesh_stock_string = 0x00595AD8; // "jeep_gun.v3d" in .rdata
-    constexpr char af_jeep_gun_mesh_filename[] = "af_jeep_gun.v3m";
     bool g_jeep_gun_mesh_repointed = false;
 
     // Seated clips appended to $EntityAnimType state lists as if entity.tbl listed them: entity_create
@@ -786,6 +785,16 @@ namespace
         }
     }
 } // namespace
+
+std::optional<float> vehicle_mp_max_life(const char* entity_class)
+{
+    for (const VehicleEntityOverride& o : vehicle_entity_overrides) {
+        if (string_iequals(o.name, entity_class)) {
+            return o.max_life;
+        }
+    }
+    return std::nullopt;
+}
 
 void vehicle_tbl_overrides_revert()
 {
