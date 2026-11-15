@@ -94,7 +94,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Add `dbg_collision_pairs` console command to print object collision pair pool statistics
 - Add `sv_afstats_events_reset` console command to clear a stuck stats event send, a 401 pause, or a stretched retry pulse and resume the stream without discarding queued events
 - Add rcon profile access to `sv_afstats` and `sv_fflink` commands and make status commands return their output to the rcon holder
-- Expand FactionFiles stats reporting with vehicle kills, damage and seat events, Payload and Scavenger objective events, Wipeout rounds, critical hits, lifesteal, powerup pickups and holds, bot details, and match winners
+- Expand FactionFiles stats reporting with vehicle, objective, powerup and award events
 - Use the modern Windows file dialogs for every open and save in the level editor
 - Always render meshes at their highest LOD in the level editor
 - Make a mesh exported from a brush in the level editor immediately usable as a `Mesh` object
@@ -309,6 +309,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix object collision pairs silently running out on levels with many collidable clutter objects, triggers, and items when many players are connected
 - Fix FactionFiles stats event reporting stalling permanently when a send attempt hangs inside WinINet
 - Fix world damage and kills being attributed to a dead or spectating player in multiplayer
+- Fix deaths from the `kill` command, switching teams, or entering spectate mode not crediting assists, resetting award streaks, or being reported to FactionFiles stats
 - Fix level editor crashing when a mesh is played with an animation that does not fit its skeleton
 - Fix level editor crashing when a Direct3D buffer lock fails
 - Fix level editor crashing when a Weather Region's snow `Bitmap` names a loose file instead of one inside a packfile

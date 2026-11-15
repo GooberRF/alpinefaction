@@ -1800,6 +1800,18 @@ bool player_is_spectating(const rf::Player& spectator, const rf::Player* target)
     return spectator.spectatee.value_or(nullptr) == target;
 }
 
+static std::vector<uint8_t> credit_kill_assists(uint8_t killed_id, uint8_t killer_id, int blast_hull)
+{
+    std::vector<uint8_t> assists = kill_attribution_take_assists(killed_id, killer_id, blast_hull);
+    for (uint8_t assist_id : assists) {
+        rf::Player* assister = rf::multi_find_player_by_id(assist_id);
+        if (assister && assister->stats) {
+            static_cast<PlayerStatsNew*>(assister->stats)->inc_assists();
+        }
+    }
+    return assists;
+}
+
 FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
     0x0041A350,
     [](rf::Entity* damaged_ep, float damage, int killer_handle, int damage_type, int killer_uid) {
@@ -2016,14 +2028,7 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
             const uint8_t killed_id = damaged_player->net_data->player_id;
             const uint8_t killer_id = (killer_player && killer_player->net_data)
                 ? killer_player->net_data->player_id : 0xFF;
-            std::vector<uint8_t> assists = kill_attribution_take_assists(killed_id, killer_id, blast_hull);
-
-            for (uint8_t assist_id : assists) {
-                rf::Player* assister = rf::multi_find_player_by_id(assist_id);
-                if (assister && assister->stats) {
-                    static_cast<PlayerStatsNew*>(assister->stats)->inc_assists();
-                }
-            }
+            std::vector<uint8_t> assists = credit_kill_assists(killed_id, killer_id, blast_hull);
 
             // Same flags and assist list the af_kill_info packet is built from, so
             // the stats stream and the in-game attribution can never disagree.
@@ -2377,6 +2382,64 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
         }
 
         return real_damage;
+    },
+};
+
+// A suicide request sets life directly and never reaches entity_damage_hook, so its death is
+// recorded here as the self-inflicted kill it is.
+struct DirectSuicideVictim
+{
+    rf::Player* player = nullptr;
+    float life_before = 0.0f;
+    float armor_before = 0.0f;
+    // Taken first: the local path strips stock powerups before it returns.
+    uint8_t powerups = 0;
+};
+
+static DirectSuicideVictim direct_suicide_victim(rf::Player* player)
+{
+    DirectSuicideVictim victim{player};
+    if (rf::Entity* ep = player ? rf::entity_from_handle(player->entity_handle) : nullptr) {
+        victim.life_before = ep->life;
+        victim.armor_before = ep->armor;
+        victim.powerups = powerup_stats_mask(player);
+    }
+    return victim;
+}
+
+static void record_direct_suicide(const DirectSuicideVictim& victim)
+{
+    rf::Player* player = victim.player;
+    rf::Entity* ep = player ? rf::entity_from_handle(player->entity_handle) : nullptr;
+    if (!rf::is_server || !ep || !player->net_data || victim.life_before <= 0.0f || ep->life > 0.0f) {
+        return;
+    }
+    const uint8_t player_id = player->net_data->player_id;
+    std::vector<uint8_t> assists = credit_kill_assists(player_id, player_id, -1);
+    afstats::on_kill(player, player, -1, -1, AF_KILL_FLAG_SUICIDE, assists, ep->pos, &ep->pos, -1,
+                     vehicle_occupied_damage_class(ep), -1, false, afstats::KillCause::none, victim.powerups,
+                     victim.powerups);
+    kill_attribution_record(player_id, player_id, -1, AF_KILL_FLAG_SUICIDE, -1, -1, std::move(assists));
+    awards_on_kill(player, player, -1, false, ep->handle, player->team, 0.0f, victim.life_before,
+                   victim.armor_before, {});
+}
+
+FunHook<rf::MultiIoPacketHandler> process_suicide_packet_hook{
+    0x00475760,
+    [](char* data, const rf::NetAddr& addr) {
+        const DirectSuicideVictim victim = direct_suicide_victim(rf::multi_find_player_by_addr(addr));
+        process_suicide_packet_hook.call_target(data, addr);
+        record_direct_suicide(victim);
+    },
+};
+
+// A listen host's own suicide takes the same direct path.
+FunHook<void()> multi_kill_local_player_hook{
+    0x004757A0,
+    []() {
+        const DirectSuicideVictim victim = direct_suicide_victim(rf::local_player);
+        multi_kill_local_player_hook.call_target();
+        record_direct_suicide(victim);
     },
 };
 
@@ -5875,6 +5938,10 @@ void server_init()
 
     // Critical hits and hit sounds
     entity_damage_hook.install();
+
+    // Suicides that never reach entity_damage_hook
+    process_suicide_packet_hook.install();
+    multi_kill_local_player_hook.install();
 
     // Item replacements
     item_lookup_type_hook.install();

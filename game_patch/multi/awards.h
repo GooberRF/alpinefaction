@@ -94,8 +94,9 @@ struct AwardKillVehicles
     int blast_hull = -1;
 };
 
-// Lethal transition, from entity_damage_hook. Runs for every death, killer included or not: the
-// victim-side resets (streak, sniper/rail chain) must fire on world deaths and suicides too.
+// Lethal transition, from entity_damage_hook and the direct suicides. Runs for every death, killer
+// included or not: the victim-side resets (streak, sniper/rail chain) must fire on world deaths and
+// suicides too.
 // `victim_team` is the team the victim had when the damage landed - death processing can move
 // them (auto team balance) before this runs. `damage` is the killing event's post-modifier damage;
 // `victim_life` and `victim_armor` are the victim's values from before that hit landed.
