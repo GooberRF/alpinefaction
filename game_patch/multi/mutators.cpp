@@ -1,11 +1,14 @@
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <deque>
 #include <format>
+#include <functional>
 #include <map>
 #include <optional>
 #include <random>
 #include <set>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_set>
@@ -446,6 +449,135 @@ static void apply_join_bots(AlpineServerConfigRules& r, const toml::table& opts)
         join_bots_choice(opts, "personality", JOIN_BOTS_PERSONALITIES, JOIN_BOTS_DEFAULT_PERSONALITY);
 }
 
+// Item Replacement: fixed sets of item swaps, each switched on by its own option and added to item_replacements.
+namespace
+{
+
+struct ItemReplaceSet
+{
+    const char* option; // toml key
+    const char* label;  // shown in the client UI and the vote line
+    std::span<const char* const> originals;
+    const char* replacement; // empty removes the item
+};
+
+struct ItemReplaceClash
+{
+    size_t first;
+    size_t second;
+    const char* item;
+};
+
+constexpr const char* ITEM_REPLACE_DAMAGE_AMP[] = {"Multi Damage Amplifier"};
+constexpr const char* ITEM_REPLACE_INVULN[] = {"Multi Invulnerability"};
+constexpr const char* ITEM_REPLACE_SUPER_ARMOR[] = {"Multi Super Armor"};
+constexpr const char* ITEM_REPLACE_HASTE =
+    alpine_powerup_item_classes[static_cast<size_t>(AlpinePowerup::haste)].class_name;
+constexpr const char* ITEM_REPLACE_VAMPIRE =
+    alpine_powerup_item_classes[static_cast<size_t>(AlpinePowerup::vampire)].class_name;
+// Not super_item_class_names, which also holds the Fusion pickup.
+constexpr const char* ITEM_REPLACE_SUPERS[] = {
+    ITEM_REPLACE_DAMAGE_AMP[0],
+    ITEM_REPLACE_INVULN[0],
+    ITEM_REPLACE_HASTE,
+    ITEM_REPLACE_VAMPIRE,
+    alpine_powerup_item_classes[static_cast<size_t>(AlpinePowerup::jetpack)].class_name,
+    ITEM_REPLACE_SUPER_ARMOR[0],
+    "Multi Super Health",
+};
+
+// A set's index is its option id, a frozen wire value: append only.
+constexpr ItemReplaceSet ITEM_REPLACE_SETS[] = {
+    {"amp_to_haste", "Amp to Haste", ITEM_REPLACE_DAMAGE_AMP, ITEM_REPLACE_HASTE},
+    {"amp_to_vampire", "Amp to Vampire", ITEM_REPLACE_DAMAGE_AMP, ITEM_REPLACE_VAMPIRE},
+    {"invuln_to_vampire", "Invuln to Vampire", ITEM_REPLACE_INVULN, ITEM_REPLACE_VAMPIRE},
+    {"invuln_to_haste", "Invuln to Haste", ITEM_REPLACE_INVULN, ITEM_REPLACE_HASTE},
+    {"superarmor_to_amp", "Super Armor to Amp", ITEM_REPLACE_SUPER_ARMOR, ITEM_REPLACE_DAMAGE_AMP[0]},
+    {"no_supers", "No supers", ITEM_REPLACE_SUPERS, ""},
+};
+
+using ItemReplaceSelection = std::array<bool, std::size(ITEM_REPLACE_SETS)>;
+
+// The first item two switched-on sets replace with different things.
+std::optional<ItemReplaceClash> item_replace_clash(const ItemReplaceSelection& on)
+{
+    for (size_t a = 0; a < on.size(); ++a) {
+        if (!on[a]) {
+            continue;
+        }
+        for (size_t b = a + 1; b < on.size(); ++b) {
+            if (!on[b] || string_iequals(ITEM_REPLACE_SETS[a].replacement, ITEM_REPLACE_SETS[b].replacement)) {
+                continue;
+            }
+            for (const char* item : ITEM_REPLACE_SETS[a].originals) {
+                if (std::ranges::any_of(ITEM_REPLACE_SETS[b].originals,
+                                        [item](const char* other) { return string_iequals(item, other); })) {
+                    return ItemReplaceClash{a, b, item};
+                }
+            }
+        }
+    }
+    return std::nullopt;
+}
+
+void apply_item_replace(AlpineServerConfigRules& r, const toml::table& opts)
+{
+    // A narrower scope's redeclaration replaces the sets a broader one switched on, as other mutators' options do.
+    // An entry an explicit item_replacements key has changed since is left alone.
+    for (const auto& [original, replacement] : r.mutators.item_replace_entries) {
+        if (const auto it = r.item_replacements.find(original);
+            it != r.item_replacements.end() && it->second == replacement) {
+            r.item_replacements.erase(it);
+        }
+    }
+    r.mutators.item_replace_entries.clear();
+
+    bool any_on = false;
+    std::map<std::string_view, size_t> written; // original -> the set that wrote it
+    for (size_t i = 0; i < std::size(ITEM_REPLACE_SETS); ++i) {
+        const ItemReplaceSet& set = ITEM_REPLACE_SETS[i];
+        if (!opts[set.option].value_or(false)) {
+            continue;
+        }
+        any_on = true;
+        for (const char* original : set.originals) {
+            // Sets apply in order, so a later one overrides an earlier one's swap.
+            if (const auto it = written.find(original); it != written.end() && !g_rules_parse_quiet
+                && !string_iequals(ITEM_REPLACE_SETS[it->second].replacement, set.replacement)) {
+                rf::console::print("  [WARN] Item Replacement: '{}' overrides '{}' for {}\n", set.option,
+                                   ITEM_REPLACE_SETS[it->second].option, original);
+            }
+            // A TC mod's tables may lack one of the items.
+            if (r.add_item_replacement(original, set.replacement)) {
+                written[original] = i;
+                r.mutators.item_replace_entries[original] = set.replacement;
+            }
+            else if (!g_rules_parse_quiet) {
+                rf::console::print(
+                    "  [WARN] Item Replacement: '{}' skips {}, as the loaded tables lack an item it names\n",
+                    set.option, original);
+            }
+        }
+    }
+    if (!any_on && !g_rules_parse_quiet) {
+        rf::console::print("  [WARN] Item Replacement: no replacement sets are switched on\n");
+    }
+}
+
+// Every switched-on set of a declaration, an option it leaves out counting as off.
+ItemReplaceSelection item_replace_selection(const MutatorDeclaration& decl)
+{
+    ItemReplaceSelection on{};
+    for (size_t i = 0; i < on.size(); ++i) {
+        const auto it = decl.options.find(ITEM_REPLACE_SETS[i].option);
+        const bool* value = it != decl.options.end() ? std::get_if<bool>(&it->second) : nullptr;
+        on[i] = value && *value;
+    }
+    return on;
+}
+
+} // namespace
+
 // ============================================================================
 // Registry + application order
 // ============================================================================
@@ -493,6 +625,15 @@ static const MutatorOptionDef JOIN_BOTS_OPTIONS[] = {
     {1, "skill", "Skill", MutatorOptionType::Choice},
     {2, "personality", "Personality", MutatorOptionType::Choice},
 };
+
+static constexpr auto ITEM_REPLACE_OPTIONS = [] {
+    std::array<MutatorOptionDef, std::size(ITEM_REPLACE_SETS)> options{};
+    for (size_t i = 0; i < options.size(); ++i) {
+        options[i] = {static_cast<uint8_t>(i), ITEM_REPLACE_SETS[i].option, ITEM_REPLACE_SETS[i].label,
+                      MutatorOptionType::Bool};
+    }
+    return options;
+}();
 
 struct MutatorDef
 {
@@ -544,12 +685,14 @@ static const MutatorDef MUTATORS[] = {
     {MutatorId::ScoreLimitOverride, "scorelimit", "Score Limit Override", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_score_limit_override, SCORE_LIMIT_OPTIONS, std::size(SCORE_LIMIT_OPTIONS), MutatorGametypeReq::HasScoreLimit, "Score Limit", "score_limit"},
     {MutatorId::IdealPlayerCountOverride, "idealplayers", "Ideal Player Count Override", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_ideal_player_count_override, IDEAL_PLAYERS_OPTIONS, std::size(IDEAL_PLAYERS_OPTIONS), MutatorGametypeReq::BotsSupported, "Ideal Players", "ideal_players"},
     {MutatorId::JoinBots, "joinbots", "Join Bots", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_join_bots, JOIN_BOTS_OPTIONS, std::size(JOIN_BOTS_OPTIONS), MutatorGametypeReq::BotsSupported, nullptr, "bots"},
+    {MutatorId::ItemReplace, "itemreplace", "Item Replacement", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_item_replace, ITEM_REPLACE_OPTIONS.data(), ITEM_REPLACE_OPTIONS.size()},
 };
 
 // Hardcoded order in which simultaneously-active mutators are applied. Later
 // entries win where they overlap.
 static const MutatorId MUTATOR_APPLY_ORDER[] = {
     MutatorId::JoinBots,
+    MutatorId::ItemReplace,
     MutatorId::Pogo,
     MutatorId::Dodging,
     MutatorId::Skiing,
@@ -1104,6 +1247,17 @@ std::optional<std::string> mutators_build_declarations_from_vote(
             }
         }
 
+        if (info->id == MutatorId::ItemReplace) {
+            const ItemReplaceSelection on = item_replace_selection(decl);
+            if (std::ranges::none_of(on, std::identity{})) {
+                return std::format("pick at least one {} set", info->label);
+            }
+            if (const auto clash = item_replace_clash(on)) {
+                return std::format("'{}' and '{}' both replace {}", ITEM_REPLACE_SETS[clash->first].label,
+                                   ITEM_REPLACE_SETS[clash->second].label, clash->item);
+            }
+        }
+
         out.push_back(std::move(decl));
     }
 
@@ -1111,10 +1265,23 @@ std::optional<std::string> mutators_build_declarations_from_vote(
 }
 
 // The bracketed detail for one mutator's vote line, or empty when it has none.
-// Only the option named by vote_detail_option is shown; a Choice resolves to its
-// short UI label ("Rail") rather than the raw TOML value ("rail_gun").
+// Only the option named by vote_detail_option is shown, except that Item Replacement
+// lists every set it switches on; a Choice resolves to its short UI label ("Rail")
+// rather than the raw TOML value ("rail_gun").
 static std::string mutator_vote_detail(const MutatorDef& def, const MutatorDeclaration& decl)
 {
+    // Every switched-on set: a voter needs them all to know what the vote changes.
+    if (def.id == MutatorId::ItemReplace) {
+        std::string sets;
+        const ItemReplaceSelection on = item_replace_selection(decl);
+        for (size_t i = 0; i < on.size(); ++i) {
+            if (on[i]) {
+                sets += std::format("{}{}", sets.empty() ? "" : ", ", ITEM_REPLACE_SETS[i].label);
+            }
+        }
+        return sets;
+    }
+
     if (!def.vote_detail_option)
         return {};
 
