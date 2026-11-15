@@ -208,10 +208,11 @@ void grow_bbox(rf::VMesh* mesh, const rf::Vector3& pos, const rf::Matrix3& orien
 
 } // namespace
 
-void MeshPreview::set_mesh(const std::string& filename, const PartsFn& parts, float zoom)
+void MeshPreview::set_mesh(const std::string& filename, const PartsFn& parts, float zoom, bool face_camera)
 {
     release_mesh();
-    yaw_ = 0.0f;
+    // A mesh faces down its +z, away from the camera.
+    yaw_ = face_camera ? std::numbers::pi_v<float> : 0.0f;
     zoom_ = zoom;
     if (filename.empty()) {
         return;

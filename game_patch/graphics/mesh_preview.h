@@ -39,8 +39,8 @@ public:
     MeshPreview& operator=(const MeshPreview&) = delete;
 
     // A static (.v3d / .v3m), animated (.vfx) or character (.v3c / .vcm) mesh; an empty name, or one that does not
-    // load, shows nothing. `zoom` above 1 frames it closer than its box.
-    void set_mesh(const std::string& filename, const PartsFn& parts = {}, float zoom = 1.0f);
+    // load, shows nothing. `zoom` above 1 frames it closer than its box. `face_camera` starts it front on.
+    void set_mesh(const std::string& filename, const PartsFn& parts = {}, float zoom = 1.0f, bool face_camera = false);
     // A character mesh (.v3c / .vcm), dressed by `dress` once it has loaded and held in its looping state
     // animation `state_anim`, as an entity stands. Loaded afresh on every call, as set_mesh is, and it starts
     // facing the camera.

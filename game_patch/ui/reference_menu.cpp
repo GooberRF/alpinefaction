@@ -543,7 +543,9 @@ void render_preview()
                 return out;
             };
         }
-        g_preview.set_mesh(entry ? entry->mesh : std::string{}, parts, entry ? entry->preview_zoom : 1.0f);
+        const bool face_camera = entry && (entry->vehicle_type >= 0 || g_area == ReferenceArea::powerups);
+        g_preview.set_mesh(entry ? entry->mesh : std::string{}, parts, entry ? entry->preview_zoom : 1.0f,
+                           face_camera);
     }
     g_preview.render_in_well(g_preview_rect.w, g_preview_rect.h);
 }
