@@ -361,8 +361,6 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix RF2-style geomod giving up on geoable rooms with more than 5000 faces
 - Fix RF2-style geomod craters sometimes leaving stray faces and holes where geoable geometry meets neighboring geometry
 - Fix crash when a decal is created in a room containing a very large number of detail brushes
-- Fix game and level editor crashing when a decal lies on a face with many vertices
-- Fix decals on faces with many vertices showing only partly (Direct3D 11 renderer only)
 - Fix Direct3D 8/9 renderer geometry cache overflowing with more than 256 rooms or detail rooms in view
 - Fix Direct3D 8/9 renderer rebuilding every room's render cache each frame while a room with more than 8000 vertices is in view
 - Fix level editor memory use growing with every `Build Geometry` and `Calculate Lighting` because the Direct3D textures of discarded lightmaps were never released
@@ -430,13 +428,15 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix waypoint autogeneration placing waypoints on mover brushes set to `No Player Collide`, which players pass through
 - Fix level editor sometimes crashing when moving vertices after using `Weld` in vertex mode
 - Fix some level editor buttons in Face and Vertex modes not working when the mode was entered with a keyboard shortcut
-- Fix exploding grenades setting off their thrower's remote charges on clients in multiplayer
 - Fix players freezing in place in multiplayer for a moment after bumping into another player or mesh
 - Fix possible dedicated server crash when auto-downloading missing vote-allowed levels with `add_installed_to_allowed_levels` enabled
+- Improve handling of repeated join requests from connected players
 - Fix items swapped to or from stock powerups by `item_replacements`, or renamed in the level editor, giving the wrong powerup or refusing pickup
 - Fix items swapped in by `item_replacements` keeping the original item's respawn time, per-item server settings and bot handling
 - Fix `Corona` objects in a moving group staying behind instead of moving with the mover
-- Improve handling of repeated join requests from connected players
+- Fix exploding grenades setting off their thrower's remote charges on clients in multiplayer
+- Fix game and level editor crashing when a decal lies on a face with many vertices
+- Fix decals on faces with many vertices showing only partly (Direct3D 11 renderer only)
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize
