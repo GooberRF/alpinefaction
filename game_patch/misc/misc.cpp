@@ -812,7 +812,7 @@ void apply_reduced_speed_in_background() {
     // Stock sleeps a second per frame, when our window is out of focus.
     // Use `MsgWaitForMultipleObjects` instead of `os_sleep` to avoid window
     // activation delay.
-    AsmWriter{0x004353D8}.call(+[] (uint32_t ms) {
+    AsmWriter{0x004353D8}.call(+[] (const uint32_t ms) {
         // Do not throttle headless bot clients, because netcode and simulation need to
         // be stable.
         const bool throttle = g_alpine_game_config.reduced_speed_in_background
