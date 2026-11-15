@@ -38,17 +38,6 @@ const char* const g_stock_vehicle_classes[] = {
     "Stationary Turret_Plain",
 };
 
-// Offered by entity.tbl but not supported by factories; kept off the drop-list only.
-const char* const g_unsupported_vehicle_classes[] = {
-    "masako_fighter", "Stationary Turret", "Shuttle",
-};
-
-bool vehicle_factory_class_is_unsupported(const std::string& class_name)
-{
-    return std::any_of(std::begin(g_unsupported_vehicle_classes), std::end(g_unsupported_vehicle_classes),
-        [&](const char* name) { return string_iequals(class_name, name); });
-}
-
 // The stock turret names stand in when entity.tbl could not be read.
 bool vehicle_factory_class_is_turret(const std::string& class_name)
 {
@@ -465,16 +454,12 @@ std::string vehicle_factory_mesh_for_class(const std::string& class_name)
     std::string filename;
     // The game rewrites $V3D Filename for these classes at level init, so the preview has to show
     // the hull that will actually spawn.
-    for (const auto& entry : alpine_vehicle_class_meshes) {
-        if (!string_iequals(entry.class_name, class_name)) {
-            continue;
-        }
+    if (const char* alpine_hull = alpine_vehicle_class_mesh(class_name)) {
         // Probed, so an install without the AF assets still previews the stock hull.
         rf::File file;
-        if (file.open(entry.vmesh_filename)) {
-            filename = entry.vmesh_filename;
+        if (file.open(alpine_hull)) {
+            filename = alpine_hull;
         }
-        break;
     }
     if (filename.empty()) {
         if (const auto* ei = entity_tbl_find(class_name.c_str())) {

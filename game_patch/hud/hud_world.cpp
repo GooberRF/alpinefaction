@@ -13,6 +13,7 @@
 #include "hud_world.h"
 #include "multi_spectate.h"
 #include "payload_world.h"
+#include "route_arrows.h"
 #include "world_medallion.h"
 #include "zone_marker.h"
 #include "../graphics/gr.h"
@@ -529,6 +530,24 @@ int world_hud_white_bitmap()
     return white_bm;
 }
 
+static double g_world_hud_clock_ms = 0.0;
+
+void world_hud_clock_do_frame()
+{
+    if (rf::game_paused) {
+        return;
+    }
+    const float dt = cosmetic_frame_dt();
+    if (dt > 0.0f) {
+        g_world_hud_clock_ms += static_cast<double>(dt) * 1000.0;
+    }
+}
+
+int64_t world_hud_clock_ms()
+{
+    return static_cast<int64_t>(g_world_hud_clock_ms);
+}
+
 void do_render_world_hud_rect(const rf::Vector3& pos, float vertical_offset, float horizontal_offset,
     float width_world, float height_world, WorldHUDRenderMode render_mode, bool stay_inside_fog,
     bool distance_scaling, rf::Color color)
@@ -674,7 +693,7 @@ static void render_koth_medallion_for_hill(const HillInfo& h, WorldHUDRenderMode
     const int face_bm = locked ? g_world_hud_assets.medallion_lock : world_hud_medallion_face(owner);
     const rf::Color owner_color = hud_team_color(owner);
     const float brightness = locked ? locked_brightness : 1.0f;
-    const int64_t now_ms = timer::get_i64(1000);
+    const int64_t now_ms = world_hud_clock_ms();
 
     WorldMedallionRing ring{0.0f, zone_marker_scaled_color(owner_color, medallion_track_brightness * brightness), {}};
     if (contested) {
@@ -867,7 +886,7 @@ static void render_payload_cart_medallion()
         return;
 
     const PayloadCartState state = payload_state();
-    const int64_t now_ms = timer::get_i64(1000);
+    const int64_t now_ms = world_hud_clock_ms();
     float brightness = idle_brightness;
     if (state == PayloadCartState::pushing || state == PayloadCartState::rolling_back
         || state == PayloadCartState::finale) {
@@ -1688,6 +1707,7 @@ void hud_world_do_frame() {
         build_bag_icon();
     }
     payload_world_render();
+    route_arrows_render();
     if (rf::is_multi && multi_is_game_type_with_hills()) {
         build_koth_hill_icons();
         build_koth_hill_outlines();
@@ -1769,6 +1789,7 @@ void hud_world_level_unload()
     world_hud_sprite_events.clear();
     fullscreen_overlay_events.clear();
     payload_world_level_unload();
+    route_arrows_clear();
 }
 
 void fullscreen_overlay_do_frame()
@@ -1958,7 +1979,7 @@ ConsoleCommand2 worldhudpayloadtethers_cmd{
         rf::console::print("World HUD Payload tethers are {}",
                            g_alpine_game_config.world_hud_payload_tethers ? "enabled" : "disabled");
     },
-    "Toggle whether to draw Payload beams from the players pushing or blocking the cart",
+    "Toggle whether to draw Payload beams from the players pushing the cart",
     "cl_wh_tethers",
 };
 
@@ -1982,6 +2003,42 @@ ConsoleCommand2 worldhudpayloadcartstatus_cmd{
     },
     "Toggle the Payload cart's status text over its medallion, such as its pushers or countdown",
     "cl_wh_cartstatus",
+};
+
+ConsoleCommand2 worldhudpayloadtrackpulse_cmd{
+    "cl_wh_trackpulse",
+    []() {
+        setting_console_set("world_hud_payload_track_pulse", "toggle");
+        rf::console::print("World HUD Payload track pulses are {}",
+                           g_alpine_game_config.world_hud_payload_track_pulse ? "enabled" : "disabled");
+    },
+    "Toggle the glowing pulses that run along the Payload track from the cart to its end",
+    "cl_wh_trackpulse",
+};
+
+ConsoleCommand2 worldhudroutearrows_cmd{
+    "cl_wh_routearrows",
+    []() {
+        setting_console_set("world_hud_route_arrows", "toggle");
+        rf::console::print("World HUD spawn route arrows are {}",
+                           g_alpine_game_config.world_hud_route_arrows ? "enabled" : "disabled");
+    },
+    "Toggle the arrows laid from your spawn toward the objective in Payload, KOTH, DC, REV and ESC",
+    "cl_wh_routearrows",
+};
+
+ConsoleCommand2 worldhudroutearrowtime_cmd{
+    "cl_wh_routearrows_time",
+    [](std::optional<float> value) {
+        if (value) {
+            setting_console_set("world_hud_route_arrow_time", std::to_string(*value));
+        }
+        rf::console::print("World HUD spawn route arrows stay {:.1f} s (default {:.1f})",
+                           g_alpine_game_config.world_hud_route_arrow_time,
+                           AlpineGameSettings::default_world_hud_route_arrow_time);
+    },
+    "Set how long each spawn route arrow stays before it is reeled in, in seconds",
+    "cl_wh_routearrows_time [1.0-30.0]",
 };
 
 ConsoleCommand2 worldhudspectateplayerlabels_cmd{
@@ -2102,6 +2159,9 @@ void hud_world_apply_patch()
     worldhudpayloadtethers_cmd.register_cmd();
     worldhudpayloadpushzone_cmd.register_cmd();
     worldhudpayloadcartstatus_cmd.register_cmd();
+    worldhudpayloadtrackpulse_cmd.register_cmd();
+    worldhudroutearrows_cmd.register_cmd();
+    worldhudroutearrowtime_cmd.register_cmd();
     worldhudspectateplayerlabels_cmd.register_cmd();
     worldhuddemoplayerinfo_cmd.register_cmd();
     worldhuddemospawns_cmd.register_cmd();

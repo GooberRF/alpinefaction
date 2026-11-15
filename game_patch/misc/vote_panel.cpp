@@ -29,7 +29,6 @@
 #include "../rf/gr/gr.h"
 #include "../rf/gr/gr_font.h"
 #include "../rf/input.h"
-#include "../rf/os/console.h"
 #include "../rf/level.h"
 #include "../rf/multi.h"
 #include "../rf/player/control_config.h"
@@ -2962,11 +2961,7 @@ void vote_panel_gameplay_input()
         return; // the popup owns input; panel keeps rendering underneath
     }
 
-    // The console reads the same key queue this panel's text boxes drain, so a
-    // focused box would type into both at once.
-    if (rf::console::console_is_visible() && g_ui.focused_text_id() != 0) {
-        text_input_release_focus(true);
-    }
+    ui_drop_text_focus_under_console(g_ui);
 
     // Read the wheel accumulator before touching the mouse API.
     const int wheel = rf::mouse_dz;

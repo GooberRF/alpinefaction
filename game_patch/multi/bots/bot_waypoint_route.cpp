@@ -1392,6 +1392,24 @@ float bot_waypoint_destination_distance(const int from, const int goal)
     return search_waypoint_route(graph, from, goal, {}, nullptr, false, path) ? g_route_cur_score[goal] : kInfinity;
 }
 
+bool bot_waypoint_destination_path(const int from, const int goal, std::vector<int>& out_path)
+{
+    out_path.clear();
+    const RouteGraph& graph = route_graph();
+    if (from <= 0 || goal <= 0 || from >= graph.waypoint_total || goal >= graph.waypoint_total
+        || !graph.has_pos[from] || !graph.has_pos[goal]) {
+        return false;
+    }
+    const DestinationField* field = find_destination_field(graph, goal, true);
+    return field && std::isfinite(field->dist_of(from))
+        && destination_field_path(*field, from, graph.waypoint_total, out_path);
+}
+
+void bot_waypoint_route_warm()
+{
+    route_graph();
+}
+
 bool bot_waypoint_reachable(const int from, const int to)
 {
     if (from == to) {

@@ -36,7 +36,7 @@ void OptionsAdvancedDlg::InitToolTip()
     m_tool_tip.AddTool(GetDlgItem(IDC_ALLOW_OVERWRITE_GAME_CHECK), "Allows files in custom level folders to override core game files. Recommended to keep disabled (client_mods should be used for this instead)");
     m_tool_tip.AddTool(GetDlgItem(IDC_EDITOR_LAA_CHECK), "Start the level editor from a large address aware copy of RED.exe (RED_laa.exe), so it can use up to 4 GB of memory instead of 2 GB");
     m_tool_tip.AddTool(GetDlgItem(IDC_AUTOPLAY_AF_DEMOS_CHECK), "Skip the confirmation window when opening af://demo links and start playback immediately");
-    m_tool_tip.AddTool(GetDlgItem(IDC_LEGACY_MENUS_CHECK), "Use Red Faction's original options and extras menus in game instead of the Alpine Faction ones. Takes effect the next time the game starts");
+    m_tool_tip.AddTool(GetDlgItem(IDC_LEGACY_MENUS_CHECK), "Use Red Faction's original options, extras and in-game multiplayer menus instead of the Alpine Faction ones. Takes effect the next time the game starts");
     m_tool_tip.AddTool(GetDlgItem(IDC_LEGACY_CONSOLE_CHECK), "Use Red Faction's original in-game console instead of the Alpine Faction one. Takes effect the next time the game starts");
 }
 

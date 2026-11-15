@@ -204,6 +204,25 @@ CodeInjection multi_powerup_add_mp_check {
     }
 };
 
+// item_pickup's full Super Armor/Health check and the stock powerups' touch callback look the powerup up by the item's
+// script name. The level editor sets that to the class, but an item replacement or a mapper's rename leaves it naming
+// another, so the lookup is redone with the class.
+CodeInjection item_pickup_powerup_type_injection{
+    0x00459717,
+    [](auto& regs) {
+        const rf::Item* item = regs.esi;
+        regs.eax = rf::multi_powerup_type_from_name(&item->info->cls_name);
+    },
+};
+
+CodeInjection item_touch_powerup_type_injection{
+    0x0045AB30,
+    [](auto& regs) {
+        const rf::Item* item = regs.esi;
+        regs.eax = rf::multi_powerup_type_from_name(&item->info->cls_name);
+    },
+};
+
 void item_do_frame()
 {
     if (rf::is_dedicated_server || !rf::is_multi || rf::game_paused) {
@@ -230,6 +249,8 @@ void item_do_patch()
     item_touch_amp_multi_check.install();   // touch
     multi_powerup_add_mp_check.install();   // apply effect
     game_level_init_pre_patch.install();    // initialize powerup vars
+    item_pickup_powerup_type_injection.install();
+    item_touch_powerup_type_injection.install();
 
     // Allow overriding weapon items count value
     item_touch_weapon_hook.install();

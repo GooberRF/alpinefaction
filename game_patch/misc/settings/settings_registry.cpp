@@ -649,3 +649,21 @@ std::string setting_sanitize_player_name(std::string_view value)
     }
     return name;
 }
+
+bool player_name_char_allowed(char c)
+{
+    // player_change_name would substitute both.
+    return c >= 0x20 && c < 0x7F && c != '%' && c != '\\';
+}
+
+const char* player_name_warning(const std::string& text)
+{
+    const std::string clean = setting_sanitize_player_name(text);
+    if (clean.empty()) {
+        return "Enter a name";
+    }
+    if (clean.size() > player_name_max_len) {
+        return "20 characters maximum";
+    }
+    return nullptr;
+}

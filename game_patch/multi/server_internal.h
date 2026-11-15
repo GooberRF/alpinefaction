@@ -1109,6 +1109,9 @@ struct AlpineServerConfigRules
             // replacement name being blank is fine, removes item
             return false;
         }
+        if (!replacement.empty() && rf::item_lookup_type(replacement.c_str()) < 0) {
+            return false;
+        }
         item_replacements[std::string(original)] = std::string(replacement);
         return true;
     }

@@ -20,110 +20,156 @@ Their licenses can be found below.
 Special Thanks
 ---------------------------------
 
-Rafalh:
-* Authoring the Dash Faction codebase
-* An enormous amount of RE work on the game, level editor, and asset formats
-* Technical assistance
+Rafalh <https://github.com/rafalh>:
+  * Authoring the Dash Faction codebase
+  * An enormous amount of RE work on the game, level editor, and asset formats
+  * Technical assistance
 
-nick:
-* Extensive support and advice on virtually every aspect of the project
-* Being a firm sounding board for even the most outlandish and ambitious ideas
-* Code contributions
+nick <https://github.com/nickalreadyinuse>:
+  * Extensive support and advice on virtually every aspect of the project
+  * Being a firm sounding board for even the most outlandish and ambitious ideas
+  * Code contributions
 
-natalie <webmistress@natalie.ee>:
-* Technical assistance and extensive advice
-* FactionFiles API work to support integration with AF features
-* Hit sound
-* Code contributions
-* Assistance evaluating levels for `pow2tex` fix
+natalie <https://github.com/natarii>:
+  * Technical assistance and extensive advice
+  * FactionFiles API work to support integration with AF features
+  * Hit sound
+  * Code contributions
+  * Assistance evaluating levels for `pow2tex` fix
 
-is-this-c:
-* Code contributions
+is-this-c <https://github.com/is-this-c>:
+  * Code contributions
 
-AL2009man:
-* Code contributions
+AL2009man <https://github.com/AL2009man>:
+  * Code contributions
 
-jyh9521:
-* Code contributions
+jyh9521 <https://github.com/jyh9521>:
+  * Code contributions
 
-HeyItsDuke:
-* Rocket launcher lock on reticle for Big HUD
-* Assistance evaluating levels for `pow2tex` fix
+HeyItsDuke <https://github.com/HeyItsDuke>:
+  * Rocket launcher lock on reticle for Big HUD
+  * Assistance evaluating levels for `pow2tex` fix
 
 Hiro:
-* Assistance evaluating levels for `pow2tex` fix
+  * Assistance evaluating levels for `pow2tex` fix
 
-Intharth:
-* Multiplayer team color variants of vehicle textures (resources/images/vehicle_teams)
+Intharth <https://github.com/Intharth>:
+  * Multiplayer team color variants of vehicle textures
+
+Vel <https://github.com/Velarivia>:
+  * Meshes and textures for new Alpine pickups
 
 Beta testers:
-* nick
-* natalie
-* Intharth
-* Haze202
-* HeyItsDuke
-* Hiro
-* Vel
-* BATEMAN
-* MysticaL-AceR
-* liq
-* EasyOnMe
-* space9h0st
-* ED BUNGHOLE
-* icesolate
-* DVL_IAC
-* OK
-* Willson
-* Everyone who tried a test build and provided feedback
+  * nick
+  * natalie
+  * is-this-c
+  * Intharth
+  * Haze202
+  * HeyItsDuke
+  * Hiro
+  * Vel
+  * BATEMAN
+  * MysticaL-AceR
+  * liq
+  * EasyOnMe
+  * space9h0st
+  * ED BUNGHOLE
+  * icesolate
+  * DVL_IAC
+  * OK
+  * Willson
+  * Everyone who tried a test build and provided feedback
 
 The entire Red Faction community:
-* Your constant and steady stream of suggestions, feedback, and bug reports
-  which helped this project in more ways than I could possibly put into words.
-* Your continued support and enthusiasm for the game and my efforts with this
-  project. Alpine Faction is for each and every one of us, I hope you enjoy!
+  * Your constant and steady stream of suggestions, feedback, and bug reports
+    which helped this project in more ways than I could possibly put into words.
+  * Your continued support and enthusiasm for the game and my efforts with this
+    project. Alpine Faction is for each and every one of us, I hope you enjoy!
 
 ---------------------------------
 Asset Attribution
 ---------------------------------
 
-HeyItsDuke:
-* reticle_rocketlock_1.tga
+Some assets were modified from their originals (format conversion, renaming,
+resizing, etc.)
 
-natalie <webmistress@natalie.ee>:
-* af_hitsound1.wav
+Licenses:
+  CC0 1.0:       https://creativecommons.org/publicdomain/zero/1.0/
+  CC-BY 3.0:     https://creativecommons.org/licenses/by/3.0/
+  CC-BY 4.0:     https://creativecommons.org/licenses/by/4.0/
+  CC-BY-NC 4.0:  https://creativecommons.org/licenses/by-nc/4.0/
 
-Indian_gamer2005:
-* af_achievement1.wav (CC0: https://freesound.org/s/548434/)
+daveincamas <https://freesound.org/people/daveincamas/>:
+  * af_zipline_loop1.wav (CC-BY-NC 4.0: https://freesound.org/s/208729/)
 
-Rob_Marion:
-* af_pinglocation1.wav (CC0: https://freesound.org/s/542015/)
+Drummyfish <https://opengameart.org/users/drummyfish>:
+  Jetpack (CC0: https://opengameart.org/content/oldschool-afps-weapons/):
+    * af-jetpack1.v3m
+    * af-jetpack1skin1.tga
 
-soneproject:
-* af_killsound1.wav (CC-BY 3.0: https://freesound.org/s/346425/)
+F.M.Audio <https://freesound.org/people/F.M.Audio/>:
+  * af_fighter_scrape_loop.wav (CC-BY 4.0: https://freesound.org/s/620428/)
 
-theplax:
-* af_spray1.ogg (CC-BY 4.0: https://freesound.org/s/657793/)
+HeyItsDuke <https://github.com/HeyItsDuke>:
+  * reticle_rocketlock_1.tga
 
-LittleRobotSoundFactory:
-* af_award1.ogg (CC-BY 4.0: https://freesound.org/s/270404/)
+Indian_gamer2005 <https://freesound.org/people/Indian_gamer2005/>:
+  * af_achievement1.wav (CC0: https://freesound.org/s/548434/)
 
-Drummyfish:
-* af-jetpack1skin1.tga and af-jetpack1.v3m (CC0: https://opengameart.org/content/oldschool-afps-weapons/)
+Jerimee <https://freesound.org/people/Jerimee/>:
+  * af_haste_pickup1.wav (CC0: https://freesound.org/s/571129/)
 
-leeor_net:
-* af_caust00.png - af_caust15.png (CC0: https://opengameart.org/content/water-caustics-effect-small/)
+leeor_net <https://opengameart.org/users/leeornet>:
+  Water Caustics (CC0: https://opengameart.org/content/water-caustics-effect-small/):
+    * af_caust00.png - af_caust15.png
 
-mcpable:
-* af_jeep_horn.ogg (CC0: https://freesound.org/s/131930/)
+LittleRobotSoundFactory <https://freesound.org/people/LittleRobotSoundFactory/>:
+  * af_award1.ogg (CC-BY 4.0: https://freesound.org/s/270404/)
 
-daveincamas:
-* af_zipline_loop1.wav (CC-BY-NC 4.0: https://freesound.org/s/208729/)
+mcpable <https://freesound.org/people/mcpable/>:
+  * af_jeep_horn.ogg (CC0: https://freesound.org/s/131930/)
 
-F.M.Audio:
-* af_fighter_scrape_loop.wav (CC-BY 4.0: https://freesound.org/s/620428/)
+natalie <https://github.com/natarii>:
+  * af_hitsound1.wav
 
-Quaternius:
-* af_scavpumap1.dds and af-scavpumap1.v3m (CC0: https://opengameart.org/content/sci-fi-essentials-kit/)
+Quaternius <https://opengameart.org/users/quaternius>:
+  Scavenger Cartridge (CC0: https://opengameart.org/content/sci-fi-essentials-kit/):
+    * af-scavpumap1.v3m
+    * af_scavpumap1.dds
+
+Rob_Marion <https://freesound.org/people/Rob_Marion/>:
+  * af_pinglocation1.wav (CC0: https://freesound.org/s/542015/)
+
+Sadiquecat <https://freesound.org/people/Sadiquecat/>:
+  * af_haste_jump1.wav (CC0: https://freesound.org/s/814916/)
+
+soneproject <https://freesound.org/people/soneproject/>:
+  * af_killsound1.wav (CC-BY 3.0: https://freesound.org/s/346425/)
+
+TechspiredMinds <https://freesound.org/people/TechspiredMinds/>:
+  * af_vampire_pickup1.wav (CC-BY 4.0: https://freesound.org/s/729195/)
+
+theplax <https://freesound.org/people/theplax/>:
+  * af_spray1.ogg (CC-BY 4.0: https://freesound.org/s/657793/)
+
+Vel <https://github.com/Velarivia>:
+  Armor Shard (CC-BY 4.0):
+    * af_armorshard1.v3m
+    * af_armorshard1_tex.tga
+  Health Shard (CC-BY 4.0):
+    * af_healthshard1.v3m
+    * af_healthshard1_gauze.tga
+    * af_healthshard1_shell.tga
+  Haste (CC-BY 4.0):
+    * af_haste1.v3m
+    * af_haste1_frame.tga
+    * af_haste1_glass.tga
+    * af_haste1_metal.tga
+  Vampire (CC-BY 4.0):
+    * af_vampire1.v3m
+    * af_vampire1_orb.tga
+    * af_vampire1_shell.tga
+    * af_vampire1_teeth.tga
 
 ###############################################################################
 ## stb_image, stb_vorbis, stb_truetype, stb_image_write

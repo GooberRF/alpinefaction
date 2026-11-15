@@ -3,6 +3,8 @@
 
 #include <windows.h>
 #include <algorithm>
+#include <cmath>
+#include <limits>
 #include <vector>
 #include <unordered_map>
 #include <map>
@@ -706,6 +708,54 @@ namespace gr::d3d11
         }
     }
 
+    // A level decal poly holds UVs for at most 25 face vertices and a longer face gets none, so derive them as stock's
+    // decal clip does, tiling shift included. Returns false when the poly holds them.
+    static bool derive_level_decal_uvs(const rf::DecalPoly& dp, std::vector<rf::Vector2>& uvs)
+    {
+        const rf::GDecal& decal = *dp.my_decal;
+        float u_scale = 1.0f;
+        float v_scale = 1.0f;
+        if (decal.flags & rf::DF_TILING_U) {
+            u_scale = decal.width.x / decal.width.y * decal.tiling_scale;
+        }
+        else if (decal.flags & rf::DF_TILING_V) {
+            v_scale = decal.width.y / decal.width.x * decal.tiling_scale;
+        }
+        uvs.clear();
+        auto fvert = dp.face->edge_loop;
+        while (fvert && static_cast<int>(uvs.size()) < rf::max_face_vertices) {
+            const rf::Vector3& pos = fvert->vertex->pos;
+            uvs.push_back({-decal.decal_poly_planes[5].distance_to_point(pos) / decal.width.x * u_scale,
+                           -decal.decal_poly_planes[0].distance_to_point(pos) / decal.width.y * v_scale});
+            fvert = fvert->next;
+            if (fvert == dp.face->edge_loop) {
+                break;
+            }
+        }
+        if (uvs.size() <= std::size(dp.uvs)) {
+            return false;
+        }
+        // Stock shifts only v when both tilings are set
+        const int tiling = decal.flags & (rf::DF_TILING_U | rf::DF_TILING_V);
+        if (tiling) {
+            const bool shift_u = tiling == rf::DF_TILING_U;
+            float min_coord = std::numeric_limits<float>::max();
+            bool out_of_range = false;
+            for (const rf::Vector2& uv : uvs) {
+                const float coord = shift_u ? uv.x : uv.y;
+                out_of_range = out_of_range || !(coord >= 0.0f && coord <= 1.0f);
+                min_coord = std::min(min_coord, coord);
+            }
+            if (out_of_range) {
+                const float shift = static_cast<float>(static_cast<int>(std::floor(min_coord)));
+                for (rf::Vector2& uv : uvs) {
+                    (shift_u ? uv.x : uv.y) -= shift;
+                }
+            }
+        }
+        return true;
+    }
+
     // The edge lines of the face fan just appended at vb_data[first, end), as absolute vertex indices
     static void append_face_edges(std::vector<uint32_t>& edge_ib, std::size_t first, std::size_t end)
     {
@@ -779,6 +829,7 @@ namespace gr::d3d11
                 );
             }
         }
+        std::vector<rf::Vector2> derived_uvs;
         for (auto& e : batched_decal_polys_) {
             const GRenderCacheBuilder::DecalPolyBatchKey& key = e.first;
             auto& dps = e.second;
@@ -793,9 +844,12 @@ namespace gr::d3d11
                 auto face = dp->face;
                 if (!face->edge_loop) continue;
                 const AfFacePlacement placement = texture_2 != -1 ? af_face_placement(face) : AfFacePlacement{};
-                emit_face_fan(face, vb_data, ib_data, base_vertex, static_cast<int>(std::size(dp->uvs)),
-                    [dp] {
-                        xlog::error("build decal: face has more vertices than decal uvs capacity ({})", std::size(dp->uvs));
+                const bool derived = derive_level_decal_uvs(*dp, derived_uvs);
+                const rf::Vector2* uvs = derived ? derived_uvs.data() : dp->uvs;
+                const int num_uvs = static_cast<int>(derived ? derived_uvs.size() : std::size(dp->uvs));
+                emit_face_fan(face, vb_data, ib_data, base_vertex, num_uvs,
+                    [num_uvs] {
+                        xlog::error("build decal: face has more vertices than decal uvs capacity ({})", num_uvs);
                     },
                     [&](GpuVertex& gpu_vert, rf::GFaceVertex* fvert, int fvert_index) {
                         gpu_vert.x = fvert->vertex->pos.x;
@@ -804,8 +858,8 @@ namespace gr::d3d11
                         rf::Vector3 normal = calculate_face_vertex_normal(fvert, face);
                         gpu_vert.norm = {normal.x, normal.y, normal.z};
                         gpu_vert.diffuse = diffuse;
-                        gpu_vert.u0 = dp->uvs[fvert_index].x;
-                        gpu_vert.v0 = dp->uvs[fvert_index].y;
+                        gpu_vert.u0 = uvs[fvert_index].x;
+                        gpu_vert.v0 = uvs[fvert_index].y;
                         gpu_vert.u0_pan_speed = 0.0f;
                         gpu_vert.v0_pan_speed = 0.0f;
                         af_vertex_lightmap(placement, fvert, gpu_vert);

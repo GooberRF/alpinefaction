@@ -220,26 +220,6 @@ HillOwner local_hill_team_owner()
     return team_to_hill_owner(bot_player()->team);
 }
 
-bool control_point_team_can_capture_hill(const HillInfo& hill, const HillOwner local_team)
-{
-    if (local_team != HillOwner::HO_Red && local_team != HillOwner::HO_Blue) {
-        return false;
-    }
-    if (hill.lock_status != HillLockStatus::HLS_Available) {
-        return false;
-    }
-    if (hill.ownership == local_team) {
-        return false;
-    }
-    if (gt_is_esc()) {
-        return esc_team_can_attack_hill(hill, local_team);
-    }
-    if (gt_is_rev() && local_team != HillOwner::HO_Red) {
-        return false;
-    }
-    return true;
-}
-
 bool control_point_hill_needs_defense(const HillInfo& hill, const HillOwner local_team)
 {
     if (local_team != HillOwner::HO_Red && local_team != HillOwner::HO_Blue) {

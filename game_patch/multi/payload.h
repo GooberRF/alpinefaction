@@ -59,7 +59,6 @@ struct PayloadNetState
     float distance = 0.0f;
     float speed = 0.0f;
     std::vector<uint8_t> pushers;
-    std::vector<uint8_t> blockers;
 };
 
 // ─── Read-only state, the same on the server and clients ─────────────────────
@@ -68,6 +67,8 @@ bool payload_active();
 int payload_attacking_team(); // 0 red, 1 blue
 int payload_defending_team();
 rf::Mover* payload_cart_mover();
+// The world box around the cart's brushes now; false with no cart or no brushes
+bool payload_cart_bounds(rf::Vector3& lo, rf::Vector3& hi);
 std::optional<rf::Vector3> payload_cart_center();
 // The Payload_Handler's name, or the default one
 const std::string& payload_cart_name();
@@ -101,11 +102,10 @@ float payload_next_checkpoint_progress();
 bool payload_checkpoint_captured(const PayloadCheckpoint& checkpoint);
 // The world position of a payload checkpoint hill (it has no trigger), or nullopt for any other hill
 std::optional<rf::Vector3> payload_checkpoint_pos(const HillInfo& hill);
-// The server's lists: attackers and defenders in the push zone
+// The server's list of attackers in the push zone
 const std::vector<uint8_t>& payload_pusher_ids();
 // The pushers up to the most that speed the cart up
 int payload_useful_pushers();
-const std::vector<uint8_t>& payload_blocker_ids();
 // Where the cart's centre is at `distance` along the track
 rf::Vector3 payload_track_point(float distance);
 // The attackers once the cart reaches the end, else the defenders; -1 outside Payload or with no usable cart

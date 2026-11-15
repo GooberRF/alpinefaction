@@ -118,6 +118,19 @@ struct AlpineGameSettings
     bool world_hud_payload_tethers = true;
     bool world_hud_payload_push_zone = true;
     bool world_hud_payload_cart_status = true;
+    bool world_hud_payload_track_pulse = true;
+    bool world_hud_route_arrows = true;
+    static constexpr float default_world_hud_route_arrow_time = 6.5f;
+    static constexpr float min_world_hud_route_arrow_time = 1.0f;
+    static constexpr float max_world_hud_route_arrow_time = 30.0f;
+    float world_hud_route_arrow_time = default_world_hud_route_arrow_time; // s each arrow stays
+    void set_world_hud_route_arrow_time(float value)
+    {
+        if (!std::isnan(value)) {
+            world_hud_route_arrow_time =
+                std::clamp(value, min_world_hud_route_arrow_time, max_world_hud_route_arrow_time);
+        }
+    }
     bool world_hud_spectate_player_labels = false;
     bool world_hud_demo_player_info = false;
     bool world_hud_demo_spawns = false;
@@ -220,6 +233,9 @@ struct AlpineGameSettings
 
     bool vehicle_tracers = true;
     bool vehicle_effects = true;
+    bool vehicle_hit_flash = true;
+    bool vehicle_debris = true;
+    bool vehicle_debris_flames = true;
     static constexpr int default_vehicle_tracer_frequency = 1;
     static constexpr int min_vehicle_tracer_frequency = 1;
     static constexpr int max_vehicle_tracer_frequency = 10;

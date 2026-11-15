@@ -1,6 +1,7 @@
 #include <format>
 #include <algorithm>
 #include <memory>
+#include <optional>
 #include <map>
 #include <unordered_map>
 #include <unordered_set>
@@ -20,6 +21,7 @@
 #include "../rf/multi.h"
 #include "../rf/file/file.h"
 #include "../bmpman/bmpman.h"
+#include "../misc/vpackfile.h"
 
 #include <ft2build.h>
 #include FT_FREETYPE_H
@@ -124,31 +126,6 @@ static inline ParsedFontName parse_font_name(std::string_view name)
     return {file_name_str, size_x, size_y, digits_only};
 }
 
-static bool load_file_into_buffer(const char* name, std::vector<unsigned char>& buffer)
-{
-    rf::File file;
-    if (file.open(name) != 0) {
-        xlog::error("Failed to open file {}", name);
-        return false;
-    }
-    auto len = file.size();
-    buffer.resize(len);
-    int total_bytes_read = 0;
-    while (len - total_bytes_read > 0) {
-        int num_bytes_read = file.read(buffer.data() + total_bytes_read, len - total_bytes_read);
-        if (num_bytes_read <= 0) {
-            break;
-        }
-        total_bytes_read += num_bytes_read;
-    }
-    file.close();
-    if (total_bytes_read != len) {
-        xlog::error("Cannot read all file bytes");
-        return false;
-    }
-    return true;
-}
-
 template<typename T>
 inline void TextureAtlasPacker<T>::add(int w, int h, T userdata)
 {
@@ -233,15 +210,21 @@ GrNewFont::GrNewFont(std::string_view name) :
     name_{name}
 {
     auto [filename, size_x, size_y, digits_only] = parse_font_name(name);
-    std::vector<unsigned char> buffer;
     xlog::trace("Loading font {} size {}", filename, size_y);
-    if (!load_file_into_buffer(filename.c_str(), buffer)) {
-        xlog::error("load_file_into_buffer failed for {}", filename);
+    const std::optional<std::string> buffer = read_game_file(filename.c_str());
+    if (!buffer) {
+        if (rf::File{}.find(filename.c_str())) {
+            xlog::error("Cannot read all file bytes of {}", filename);
+        }
+        else {
+            xlog::error("Failed to open file {}", filename);
+        }
         throw std::runtime_error{"failed to load font"};
     }
 
     FT_Face face;
-    FT_Error error = FT_New_Memory_Face(g_freetype_lib, buffer.data(), buffer.size(), 0, &face);
+    FT_Error error = FT_New_Memory_Face(g_freetype_lib, reinterpret_cast<const FT_Byte*>(buffer->data()),
+        static_cast<FT_Long>(buffer->size()), 0, &face);
     if (error) {
         xlog::error("FT_New_Memory_Face failed: {}", error);
         throw std::runtime_error{"failed to load font"};

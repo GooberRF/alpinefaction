@@ -29,6 +29,11 @@ const BotWaypointDistanceField& bot_waypoint_distance_field(int source_waypoint,
 // costs one A*; once it repeats, its field is built and shared, so many starts against a few goals cost one search per
 // goal.
 float bot_waypoint_destination_distance(int from, int goal);
+// The shortest route from one waypoint to a goal waypoint, read from the goal's shared field, which is built on first
+// use; false without a route. Starts against one goal cost one search while the graph holds.
+bool bot_waypoint_destination_path(int from, int goal, std::vector<int>& out_path);
+// Builds the route graph and its link caches for the loaded waypoints, so the first search does not
+void bot_waypoint_route_warm();
 // Whether some route leads from one waypoint to the other, under the same link rules as bot_waypoint_route.
 bool bot_waypoint_reachable(int from, int to);
 

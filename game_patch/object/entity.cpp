@@ -521,7 +521,7 @@ static bool gib_flame_emitter_type(rf::ParticleEmitterType* out)
     return true;
 }
 
-static void gib_flame_attach(rf::Debris* gib)
+void gib_flame_attach(rf::Debris* gib, int burn_ms)
 {
     if (g_gib_flames.size() >= static_cast<size_t>(GIB_FLAME_MAX_TOTAL)) {
         return;
@@ -547,8 +547,8 @@ static void gib_flame_attach(rf::Debris* gib)
     GibFlame flame;
     flame.debris_handle = gib->handle;
     flame.emitter = em;
-    flame.off_at.set(GIB_FLAME_ON_MS);
-    flame.destroy_at.set(GIB_FLAME_ON_MS + GIB_FLAME_LINGER_MS);
+    flame.off_at.set(burn_ms);
+    flame.destroy_at.set(burn_ms + GIB_FLAME_LINGER_MS);
     g_gib_flames.push_back(flame);
 }
 
@@ -718,7 +718,7 @@ FunHook<void(int)> entity_blood_throw_gibs_hook{
             if (gib) {
                 gib->obj_flags |= rf::OF_INVULNERABLE;
                 if (g_alpine_game_config.gib_flames && i < GIB_FLAME_MAX_PER_DEATH) {
-                    gib_flame_attach(gib);
+                    gib_flame_attach(gib, GIB_FLAME_ON_MS);
                 }
             }
         }

@@ -7,6 +7,7 @@
 #include "bot_vehicle.h"
 #include "bot_waypoint_route.h"
 #include "../gametype.h"
+#include "../powerups.h"
 #include "../../main/main.h"
 #include "../../rf/collide.h"
 #include "../../rf/geometry.h"
@@ -631,7 +632,7 @@ float get_waypoint_item_value(const int waypoint_index)
     }
 
     const rf::ItemInfo& item = rf::item_info[subtype];
-    if (item.flags & rf::IIF_NO_PICKUP) {
+    if ((item.flags & rf::IIF_NO_PICKUP) || item_type_is_bot_unusable_powerup(subtype)) {
         return 0.0f;
     }
 
@@ -1563,6 +1564,11 @@ bool bot_nav_link_climbs_ledge(const int from_waypoint, const int to_waypoint)
     const bool climbs_ledge = bot_link_floor_step(from_pos, to_pos) >= kBotLedgeMinStep;
     g_ledge_link_cache[edge_key] = {from_pos, to_pos, climbs_ledge};
     return climbs_ledge;
+}
+
+void bot_nav_clear_ledge_link_cache()
+{
+    g_ledge_link_cache.clear();
 }
 
 bool bot_nav_path_has_unclimbable_upward_links(const std::vector<int>& path)

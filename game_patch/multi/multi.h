@@ -257,6 +257,8 @@ int multi_count_participants(int* num_bots = nullptr);
 // Set while a time limit (not a round clock) is running.
 std::optional<float> multi_time_left();
 std::string_view level_display_name(); // falls back to the filename for unnamed levels
+// What a player's stock semi-automatic waits between shots unless the server sets its own.
+inline constexpr int default_semi_auto_fire_wait_ms = 90;
 int get_semi_auto_fire_wait_override();
 void mp_send_handicap_request(bool on_join);
 void print_alpine_dedicated_server_config_info(std::string& output, bool verbose, bool remote = false);

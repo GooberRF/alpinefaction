@@ -31,6 +31,7 @@
 #include "network.h"
 #include "gametype.h"
 #include "mutators.h"
+#include "powerups.h"
 #include "bagman.h"
 #include "rounds.h"
 #include "pit.h"
@@ -122,14 +123,7 @@ const std::vector<std::string> g_rcon_cmd_masterlist = {
 std::vector<rf::AlpineRespawnPoint> g_alpine_respawn_points;
 std::vector<std::tuple<std::string, rf::Vector3, rf::Matrix3>> queued_item_spawn_points; // queued generated spawns
 std::optional<rf::Vector3> likely_position_of_central_item; // guess at the center of the map for generated spawns
-static const std::vector<std::string> possible_central_item_names = {
-    "Multi Damage Amplifier",
-    "Multi Invulnerability",
-    "Multi Super Armor",
-    "shoulder cannon",
-    "Multi Super Health"
-}; // prioritized list of common central items
-int current_center_item_priority = possible_central_item_names.size();
+size_t current_center_item_priority = std::size(super_item_class_names);
 AlpineServerConfig g_alpine_server_config;
 AlpineServerConfigRules g_alpine_server_config_active_rules; // currently active rules which are applied
 std::optional<ManualRulesOverride> g_manual_rules_override;
@@ -2225,7 +2219,7 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
             // Critical Hits mutator: recent damage dealt is what the crit chance ramps on
             crits_on_damage_dealt(killer_player, effective_damage);
 
-            // Vampire mutator
+            // Vampire mutator and powerup
             mutators_on_pvp_damage(killer_player, damaged_player, effective_damage);
 
             // Flaming Enemies mutator: flamethrower fire damage may grant or refresh a burn
@@ -2338,7 +2332,7 @@ CallHook<int(const char*)> item_lookup_type_hook{
             // Mutator pickup redirection.
             type_index = mutators_redirect_item_index(type_index);
         }
-        return type_index;
+        return powerups_filter_level_item(type_index);
     },
 };
 
@@ -5332,13 +5326,6 @@ void create_spawn_point_from_item(const std::string& name, const rf::Vector3* po
     multi_create_alpine_respawn_point(-1, name.c_str(), *pos, *orient, red_spawn, blue_spawn);
 }
 
-int get_item_priority(const std::string& item_name)
-{
-    auto it = std::find(possible_central_item_names.begin(), possible_central_item_names.end(), item_name);
-    return it != possible_central_item_names.end() ?
-        std::distance(possible_central_item_names.begin(), it) : possible_central_item_names.size();
-}
-
 void adjust_yaw_to_face_center(rf::Matrix3& orient, const rf::Vector3& pos, const rf::Vector3& center)
 {
     rf::Vector3 direction = center - pos;
@@ -5374,16 +5361,23 @@ void process_queued_spawn_points_from_items()
     //reset item generated spawn vars
     queued_item_spawn_points.clear();
     likely_position_of_central_item.reset();
-    current_center_item_priority = possible_central_item_names.size();
+    current_center_item_priority = std::size(super_item_class_names);
 }
 
 CallHook<rf::Item*(int, const char*, int, int, const rf::Vector3*, rf::Matrix3*, int, bool, bool)> item_create_hook{
     0x00465175,
     [](int type, const char* name, int count, int parent_handle, const rf::Vector3* pos, rf::Matrix3* orient,
        int respawn_time, bool permanent, bool from_packet) {
+        // `name` is the level's script name, which the level editor sets to the placed class. A replaced or redirected
+        // item keeps it, along with the respawn time the editor copied from that class's default.
+        if (const int placed_type = rf::item_lookup_type(name);
+            placed_type >= 0 && placed_type != type && respawn_time == rf::item_info[placed_type].respawn_time_millis) {
+            respawn_time = rf::item_info[type].respawn_time_millis;
+        }
+        const char* const cls_name = rf::item_info[type].cls_name.c_str();
 
         // when creating it, check if a spawn time override is configured for this item
-        if (auto it = g_alpine_server_config_active_rules.item_respawn_time_overrides.find(name);
+        if (auto it = g_alpine_server_config_active_rules.item_respawn_time_overrides.find(cls_name);
             it != g_alpine_server_config_active_rules.item_respawn_time_overrides.end()) {
             respawn_time = it->second;
         }
@@ -5392,19 +5386,19 @@ CallHook<rf::Item*(int, const char*, int, int, const rf::Vector3*, rf::Matrix3*,
         if (rf::is_dedicated_server && logic.dynamic_respawns) {
             // look up this item in the vector
             auto itcfg = std::find_if(logic.dynamic_respawn_items.begin(), logic.dynamic_respawn_items.end(),
-                                      [&](auto const& cfg) { return cfg.item_name == name; });
+                                      [&](auto const& cfg) { return cfg.item_name == cls_name; });
 
             if (itcfg != logic.dynamic_respawn_items.end()) {
                 int threshold = itcfg->min_respawn_points;
                 // queue if no threshold or we're under it
                 if (threshold == 0 || threshold > static_cast<int>(g_alpine_respawn_points.size())) {
-                    queued_item_spawn_points.emplace_back(std::string{name}, *pos, *orient);
+                    queued_item_spawn_points.emplace_back(std::string{cls_name}, *pos, *orient);
                 }
             }
 
             // attempt to isolate the center of the map based on items likely located there
-            int item_priority = get_item_priority(name);
-            if (item_priority < static_cast<int>(possible_central_item_names.size())) {
+            const size_t item_priority = super_item_priority(type);
+            if (item_priority < std::size(super_item_class_names)) {
                 if (!likely_position_of_central_item || item_priority < current_center_item_priority) {
                     likely_position_of_central_item = *pos;
                     current_center_item_priority = item_priority;
@@ -5418,7 +5412,7 @@ CallHook<rf::Item*(int, const char*, int, int, const rf::Vector3*, rf::Matrix3*,
         if (item
             && item->respawn_time_ms > 0
             && rf::is_server
-            && g_alpine_server_config_active_rules.delayed_items.contains(name))
+            && g_alpine_server_config_active_rules.delayed_items.contains(cls_name))
         {
             rf::obj_hide(item);
             item->respawn_next.set(item->respawn_time_ms);
@@ -5494,31 +5488,35 @@ void server_add_player_weapon(rf::Player* player, int weapon_type, bool full_amm
     }
 }
 
-void entity_drop_powerup(rf::Entity* ep, int powerup_type, int count)
+void entity_drop_item(rf::Entity* ep, int item_type, const char* cls_name, int count)
 {
-    if (!ep || (ep->p_data.flags & 0x400000) != 0) {
+    if (!ep || (ep->p_data.flags & 0x400000) != 0 || item_type < 0) {
         return;
     }
 
     rf::Vector3 drop_position = ep->pos;
     rf::Matrix3 drop_orient = ep->orient;
 
-    rf::Item* dropped_item = nullptr;
-
-    switch (powerup_type) {
-    case 1:
-        dropped_item = rf::item_create(33, "Multi Damage Amplifier", count, -1, &drop_position, &drop_orient, -1, 0, 0);
-        break;
-    case 0:
-        dropped_item = rf::item_create(32, "Multi Invulnerability", count, -1, &drop_position, &drop_orient, -1, 0, 0);
-        break;
-    default:
-        return;
-    }
+    rf::Item* dropped_item =
+        rf::item_create(item_type, cls_name, count, -1, &drop_position, &drop_orient, -1, 0, 0);
 
     if (dropped_item) {
         dropped_item->item_flags |= 8u;
         rf::send_item_create_packet(dropped_item, 0, -1);
+    }
+}
+
+void entity_drop_powerup(rf::Entity* ep, int powerup_type, int count)
+{
+    switch (powerup_type) {
+    case 1:
+        entity_drop_item(ep, 33, "Multi Damage Amplifier", count);
+        break;
+    case 0:
+        entity_drop_item(ep, 32, "Multi Invulnerability", count);
+        break;
+    default:
+        break;
     }
 }
 
@@ -5592,6 +5590,14 @@ CodeInjection entity_maybe_die_patch{
 
                 if (invuln_count >= 1000) { // only drop if at least 1 second left
                     entity_drop_powerup(ep, 0, invuln_count / 1000); // item_touch_multi_amp multiplies by 1000
+                }
+            }
+
+            for (size_t i = 0; i < std::size(alpine_powerup_item_classes); ++i) {
+                const auto powerup = static_cast<AlpinePowerup>(i);
+                const int seconds = static_cast<int>(powerup_time_left(ep, powerup));
+                if (seconds >= 1) {
+                    entity_drop_item(ep, powerup_item_type(powerup), alpine_powerup_item_classes[i].class_name, seconds);
                 }
             }
         }
@@ -6279,6 +6285,12 @@ std::tuple<bool, int, bool, bool> server_features_require_alpine_client()
 
     // Only v306+ levels carry vehicle factories, so a legacy client is already excluded by version.
     if (vehicle_level_has_factories()) {
+        requires_alpine = true;
+        hard_reject = true;
+        min_minor_version = std::max(min_minor_version, 5);
+    }
+
+    if (level_has_alpine_powerups()) {
         requires_alpine = true;
         hard_reject = true;
         min_minor_version = std::max(min_minor_version, 5);

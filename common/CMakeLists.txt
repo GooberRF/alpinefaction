@@ -8,10 +8,12 @@ set(SRCS
     include/common/alpine_camera_far_clip.h
     include/common/alpine_dir_light.h
     include/common/alpine_gas_region.h
+    include/common/alpine_powerup_items.h
     include/common/alpine_waypoint_helper.h
     include/common/ComPtr.h
     include/common/afd_format.h
     include/common/cache_pack.h
+    include/common/decal_clip.h
     include/common/rfa_format.h
     include/common/rfl_chunk_reader.h
     include/common/tlv.h

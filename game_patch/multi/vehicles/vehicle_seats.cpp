@@ -233,7 +233,7 @@ namespace
         if (!(vehicle->info->flags & rf::EIF_WATER_ONLY)) {
             return true;
         }
-        return vehicle->room && rf::point_in_liquid(vehicle->room, &vehicle->pos);
+        return vehicle_hull_in_liquid(vehicle);
     }
 
     void vehicle_deny(rf::Player* pp, std::string_view reason)
@@ -1086,6 +1086,11 @@ af_vehicle_state_attrs vehicle_build_hull_attrs(int vehicle_handle)
         attrs.unoccupied_s = static_cast<uint16_t>(std::clamp<int64_t>(elapsed_s, 0, 65535));
     }
     return attrs;
+}
+
+bool vehicle_hull_in_liquid(const rf::Entity* vehicle)
+{
+    return vehicle->room && rf::point_in_liquid(vehicle->room, &vehicle->pos);
 }
 
 bool vehicle_hull_occupied(const rf::Entity* vehicle)

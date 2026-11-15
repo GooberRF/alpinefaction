@@ -71,6 +71,10 @@ set(SRCS
     graphics/weather.h
     graphics/scene_capture.cpp
     graphics/scene_capture.h
+    graphics/mesh_preview.cpp
+    graphics/mesh_preview.h
+    graphics/ribbon_trail.cpp
+    graphics/ribbon_trail.h
     graphics/legacy/gr_d3d.cpp
     graphics/legacy/gr_d3d_texture.cpp
     graphics/legacy/gr_d3d_capture.cpp
@@ -111,6 +115,8 @@ set(SRCS
     hud/zone_marker.cpp
     hud/payload_world.h
     hud/payload_world.cpp
+    hud/route_arrows.h
+    hud/route_arrows.cpp
     hud/world_medallion.h
     hud/world_medallion.cpp
     hud/minimap.cpp
@@ -145,6 +151,10 @@ set(SRCS
     multi/bagman.cpp
     multi/jetpack.h
     multi/jetpack.cpp
+    multi/powerups.h
+    multi/powerups.cpp
+    multi/haste_trails.h
+    multi/haste_trails.cpp
     multi/rounds.h
     multi/rounds.cpp
     multi/pit.h
@@ -181,6 +191,10 @@ set(SRCS
     multi/vehicles/vehicle_tracers.cpp
     multi/vehicles/vehicle_fx.cpp
     multi/vehicles/vehicle_fx.h
+    multi/vehicles/vehicle_trails.cpp
+    multi/vehicles/vehicle_trails.h
+    multi/vehicles/vehicle_debris.cpp
+    multi/vehicles/vehicle_debris.h
     multi/vehicles/vehicle_horn.h
     multi/vehicles/vehicle_horn.cpp
     multi/vehicles/vehicle_physics.h
@@ -454,6 +468,12 @@ set(SRCS
     ui/menu_shell.cpp
     ui/extras_menu.h
     ui/extras_menu.cpp
+    ui/multi_pause_menu.h
+    ui/multi_pause_menu.cpp
+    ui/reference_data.h
+    ui/reference_data.cpp
+    ui/reference_menu.h
+    ui/reference_menu.cpp
     sound/sound.cpp
     sound/sound.h
     sound/sound_ds.cpp

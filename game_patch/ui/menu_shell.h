@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <span>
 #include <string>
 #include "ui_kit.h"
@@ -44,6 +45,31 @@ struct MenuPanel
     // Where content goes, clear of the frame's channel and the right pillar.
     int content_x = 0;
     int content_r = 0;
+    // The header line, and the body below its ridge down to the field's bottom margin.
+    UiRect header;
+    UiRect body;
+};
+
+struct MenuFonts
+{
+    int title;
+    int column;
+    int heading;
+    int name;
+    int body;
+    int caption;
+};
+
+// Where a menu screen's chrome sits this frame, for `slide` (0 = off canvas, 1 = seated) of its entry.
+struct MenuFrame
+{
+    int canvas_y = 0;
+    MenuLayout lay;
+    int slide_w = 0;  // how far a panel travels off to the right
+    int enter_dx = 0; // the title bar and panel, coming in from the right
+    int col_dx = 0;   // the column, coming in from the left
+    int top = 0;      // the column's first slot
+    MenuFonts fonts{};
 };
 
 struct MenuColumnItem
@@ -54,7 +80,12 @@ struct MenuColumnItem
     bool arrow = true;
 };
 
+// A stock string as a column label: upper case, its line breaks folded to single spaces for the column to
+// break itself.
+std::string menu_stock_label(const char* text);
 float menu_screen_scale();
+// Also sets the context's scale.
+MenuFrame menu_frame(UiContext& ctx, float slide);
 int menu_font(bool bold, float ref_px, float scale);
 MenuLayout menu_layout(const UiContext& ctx);
 int menu_button_h(const UiContext& ctx);
@@ -65,10 +96,20 @@ float menu_slide_step();
 UiRect menu_draw_title_bar(const UiContext& ctx, int x, int right, int clear_r, int canvas_y, const char* title,
                            int title_font);
 // `dx` slides the panel off to the right; `top` is the column's first slot.
-MenuPanel menu_panel(const UiContext& ctx, const MenuLayout& lay, int dx, int top);
+MenuPanel menu_panel(const UiContext& ctx, const MenuLayout& lay, int dx, int top, int canvas_y);
 void menu_draw_panel(const UiContext& ctx, const MenuPanel& panel);
+void menu_draw_panel_ridge(const UiContext& ctx, const MenuPanel& panel);
+// The panel's heading on its header line, and the ridge under it.
+void menu_draw_panel_heading(const UiContext& ctx, const MenuPanel& panel, const char* text, int font);
 // Bridges the gap from the column button whose slot is centred on `mid_y`.
 void menu_draw_connector(const UiContext& ctx, const MenuPanel& panel, int mid_y);
 // `items` then BACK, one slot each from `y`. Returns the index clicked, `items.size()` for BACK, or -1.
 int menu_build_column(UiContext& ctx, const MenuLayout& lay, int x, int y, std::span<const MenuColumnItem> items,
                       const char* back_label, int font, const char* id_name);
+
+void menu_ui_reset(UiContext& ctx);
+// A frame's hit-test pass: the keys go to `key_callback`, the mouse to the context, then `build` runs. A text box
+// lets go once the keys have opened the console, before they reach it.
+void menu_run_hit_test(UiContext& ctx, void (*key_callback)(int), const std::function<void(UiContext&)>& build);
+// A frame's draw pass over the stock menu background, popups on top.
+void menu_run_draw(UiContext& ctx, const std::function<void(UiContext&)>& build);

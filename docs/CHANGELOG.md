@@ -32,10 +32,12 @@ Version 1.5.0 (Trillium): Not yet released
   - `af_set` and `af_get` console commands to read and write any setting by name
   - Draw menus from resolution-independent vector artwork
   - Redraw the extras menu in the same style, with the demo browser as one of its panels
-  - `Use deprecated legacy menus` launcher option to use the stock options and extras screens instead of the new menus
+  - Redraw the in-game multiplayer menu in the same style, with a `Player` panel for picking your name and character
+  - Add `Use deprecated legacy menus` launcher option to use the stock menus instead
 - Add server-side bots, which run inside the dedicated or listen server process in addition to (or instead of) bot clients
   - `server_bots` ADS option (0-31) sets how many server bots join; they use the `bot_profiles` profiles and follow `ideal_player_count` like bot clients
   - Add `sv_bot_add [profile_index] [red|blue]`, `sv_bot_remove <name|all>` and `sv_bot_list` server console commands, which also work through rcon
+- Add new powerups `Haste`, `Vampire`, `Jetpack`, `Health Shard`, and `Armor Shard`
 - Add new multiplayer game types:
   - Scavenger (`SCAV`)
   - Payload (`PAY`)
@@ -74,6 +76,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Add `Rope Emitter` object for ropes, cables, power lines, and zip lines that players and bots can ride, with optional decorations
 - Add flames to gib chunks thrown by exploding entities, toggleable with `cl_gibflames`
 - Add `Jetpacks explode` option to the Jetpacks mutator
+- Ignore `item_replacements` entries whose `replacement` names an unknown item
 - Add `Scrapyard mode` option to the Gibbing mutator
 - Add underwater rendering effects — animated caustics, depth-based water fog with a waterline, screen tint/vignette and distortion — with quality levels 0-3 via `r_underwater` (Direct3D 11 renderer only)
 - Extend view distance while submerged at `r_underwater` 2 or higher, up to 4x the liquid visibility, with the extension capped at the normal far clip
@@ -223,8 +226,12 @@ Version 1.5.0 (Trillium): Not yet released
 - Raise minimum `maxfps` from 1 to 10, for both the client and the dedicated server
 - Limit `r_gamma` to 0.7-2.2
 - Allow pasting text with `Ctrl+V` into vote panel text boxes
+- Add `Reference` screen to the extras and in-game multiplayer menus, describing weapons, vehicles, gametypes and powerups
+  - Allow mods to replace its descriptions with their own `af_reference.toml`
+  - Allow `af_reference.toml` to rename multiplayer characters with `[[mp_character]]` records
 - Show control points as spinning team medallions with a notched capture progress ring
-- Add `cl_wh_tethers`, `cl_wh_pushzone`, and `cl_wh_cartstatus` commands to toggle the world HUD beams from the players pushing or blocking the cart in Payload, the ring around it that shows where to push, and the status text over it
+- Add `cl_wh_tethers`, `cl_wh_pushzone`, `cl_wh_cartstatus`, and `cl_wh_trackpulse` commands to toggle the world HUD beams from the players pushing the cart in Payload, the ring around it that shows where to push, the status text over it, and the pulses along its track
+- Add world HUD arrows that lead from your spawn toward the objective in objective game types, with `cl_wh_routearrows` to toggle them and `cl_wh_routearrows_time` to set how long they stay
 - Add a scoreboard cursor to scroll long player lists and view player details
 - Add mute and rcon admin buttons to the scoreboard player popout
 - Add `sv_swap_team`, `sv_force_spectate`, `sv_force_unspectate` and `sv_toggle_ready` commands, usable over rcon
@@ -240,6 +247,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Replace the launcher `Adapter` option with a `Display` option to choose the monitor the game opens on
 - Prefer the high-performance GPU on systems with more than one, unless `D3D11_PreferHighPerformanceGPU` is off in `alpine_system.ini` (Direct3D 11 renderer only)
 - Add `Use deprecated legacy console` launcher option to use the stock console instead of the new one
+- Redraw the Damage Amplifier and Invulnerability HUD icons and add Big HUD versions
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Revamp the in-game console with a new font, search, mouse text selection and inline command suggestions
@@ -423,6 +431,12 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix players freezing in place in multiplayer for a moment after bumping into another player or mesh
 - Fix possible dedicated server crash when auto-downloading missing vote-allowed levels with `add_installed_to_allowed_levels` enabled
 - Improve handling of repeated join requests from connected players
+- Fix items swapped to or from stock powerups by `item_replacements`, or renamed in the level editor, giving the wrong powerup or refusing pickup
+- Fix items swapped in by `item_replacements` keeping the original item's respawn time, per-item server settings and bot handling
+- Fix `Corona` objects in a moving group staying behind instead of moving with the mover
+- Fix exploding grenades setting off their thrower's remote charges on clients in multiplayer
+- Fix game and level editor crashing when a decal lies on a face with many vertices
+- Fix decals on faces with many vertices showing only partly (Direct3D 11 renderer only)
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize

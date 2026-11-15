@@ -125,6 +125,9 @@ struct NameLabelTex
 };
 
 void hud_world_do_frame();
+// Milliseconds of game time for world HUD animation: it holds while the game is paused and follows demo playback speed
+int64_t world_hud_clock_ms();
+void world_hud_clock_do_frame();
 // Session-lifetime 8x8 white bitmap for untextured quads drawn through textured render modes.
 int world_hud_white_bitmap();
 void load_world_hud_assets();
@@ -152,6 +155,8 @@ void do_render_world_hud_rect(const rf::Vector3& pos, float vertical_offset, flo
     float width_world, float height_world, WorldHUDRenderMode render_mode, bool stay_inside_fog,
     bool distance_scaling, rf::Color color);
 rf::Vector3 koth_hill_icon_pos(const HillInfo& h);
+// Whether the hill's medallion or sprite shows it contested: a capture under way, held briefly so it doesn't flicker
+bool hill_vis_contested(HillInfo& h);
 // The RGB of a packed config colour, with the given alpha.
 rf::Color hud_color_from_packed(uint32_t packed, rf::ubyte alpha = 255);
 // Red/blue from the outline team colours; white for no team.

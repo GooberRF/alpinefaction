@@ -13,6 +13,7 @@
 #include "kill.h"
 #include "gametype.h"
 #include "server_internal.h"
+#include "demo/demo.h"
 #include "../hud/hud.h"
 #include "../hud/multi_spectate.h"
 #include "../misc/level.h"
@@ -132,7 +133,6 @@ struct PayloadInfo
     int next_checkpoint = 0;
     std::optional<float> countdown; // see payload_countdown_seconds
     std::vector<uint8_t> pushers;
-    std::vector<uint8_t> blockers;
     uint8_t heal_serial = 0;
     uint8_t net_sequence = 0; // the server's last sent, or the client's last applied
     bool setup = true; // until this side fires When_Setup_Ends
@@ -301,11 +301,12 @@ void build_track(const rf::Mover& mover)
     }
 }
 
-void find_cart_center(const rf::Mover& mover)
+// The world box around the mover's brushes, and the first of them; false with none
+bool mover_brush_bounds(const rf::Mover& mover, rf::Vector3& lo, rf::Vector3& hi, int* first_brush = nullptr)
 {
     constexpr float big = std::numeric_limits<float>::max();
-    rf::Vector3 lo{big, big, big};
-    rf::Vector3 hi{-big, -big, -big};
+    lo = {big, big, big};
+    hi = {-big, -big, -big};
     bool any = false;
     for (const int handle : mover.brush_handles) {
         rf::Object* obj = rf::obj_from_handle(handle);
@@ -330,14 +331,22 @@ void find_cart_center(const rf::Mover& mover)
               std::min(lo.z, center.z - world_half.z)};
         hi = {std::max(hi.x, center.x + world_half.x), std::max(hi.y, center.y + world_half.y),
               std::max(hi.z, center.z + world_half.z)};
-        if (!any) {
-            g_payload.center_object_handle = handle;
-            any = true;
+        if (!any && first_brush) {
+            *first_brush = handle;
         }
+        any = true;
     }
+    return any;
+}
 
+void find_cart_center(const rf::Mover& mover)
+{
+    rf::Vector3 lo{};
+    rf::Vector3 hi{};
+    int first_brush = -1;
     rf::Vector3 center = mover.keyframes[0]->pos;
-    if (any) {
+    if (mover_brush_bounds(mover, lo, hi, &first_brush)) {
+        g_payload.center_object_handle = first_brush;
         center = (lo + hi) * 0.5f;
         g_payload.cart_half_height = 0.5f * (hi.y - lo.y);
     }
@@ -592,9 +601,8 @@ void maybe_broadcast()
         || now.heals != last->heals || now.setup != last->setup || now.next_checkpoint != last->next_checkpoint
         || now.countdown_seconds.has_value() != last->countdown_seconds.has_value()
         || (now.speed == 0.0f) != (last->speed == 0.0f);
-    const bool lists_due =
-        last && (now.pushers != last->pushers || now.blockers != last->blockers) && timer_due(g_payload.list_resend);
-    const bool reliable = state_changed || lists_due;
+    const bool pushers_due = last && now.pushers != last->pushers && timer_due(g_payload.list_resend);
+    const bool reliable = state_changed || pushers_due;
     const bool healed = now.heal_serial != g_payload.sent_heal_serial;
     const bool refresh = now.speed != 0.0f && timer_due(g_payload.moving_refresh);
     if (!reliable && !healed && !refresh) {
@@ -622,7 +630,6 @@ void server_tick(float dt)
     std::vector<rf::Player*> defenders;
     sample_push_zone(attackers, defenders);
     g_payload.pushers = player_ids(attackers);
-    g_payload.blockers = player_ids(defenders);
     if (!g_payload.pushers.empty()) {
         g_payload.last_pushers = g_payload.pushers;
         g_payload.capture_credit.set(capture_credit_ms);
@@ -833,6 +840,12 @@ rf::Mover* payload_cart_mover()
     return payload_active() ? cart() : nullptr;
 }
 
+bool payload_cart_bounds(rf::Vector3& lo, rf::Vector3& hi)
+{
+    const rf::Mover* mover = payload_cart_mover();
+    return mover && mover_brush_bounds(*mover, lo, hi);
+}
+
 std::optional<rf::Vector3> payload_cart_center()
 {
     if (!payload_active()) {
@@ -974,11 +987,6 @@ int payload_useful_pushers()
     return std::min(static_cast<int>(g_payload.pushers.size()), payload::max_useful_pushers);
 }
 
-const std::vector<uint8_t>& payload_blocker_ids()
-{
-    return g_payload.blockers;
-}
-
 rf::Vector3 payload_track_point(float distance)
 {
     rf::Mover* mover = payload_cart_mover();
@@ -1081,7 +1089,8 @@ void payload_do_frame()
         server_tick(dt);
     }
     else {
-        client_tick(dt);
+        // A demo feeds the cart's updates in its own time, which pauses and runs at the playback speed
+        client_tick(dt * demo_playback_sim_time_scale());
     }
     fire_pass_events();
     if (!rf::is_dedicated_server) {
@@ -1199,7 +1208,6 @@ PayloadNetState payload_build_net_state()
     net.distance = g_payload.distance;
     net.speed = g_payload.speed;
     net.pushers = g_payload.pushers;
-    net.blockers = g_payload.blockers;
     return net;
 }
 
@@ -1223,7 +1231,6 @@ void payload_apply_net_state(const PayloadNetState& net)
     g_payload.next_checkpoint = std::min<int>(net.next_checkpoint, static_cast<int>(g_payload.checkpoints.size()));
     g_payload.countdown = net.countdown_seconds;
     g_payload.pushers = net.pushers;
-    g_payload.blockers = net.blockers;
     g_payload.net_distance = std::clamp(net.distance, 0.0f, g_payload.total_length);
     g_payload.net_speed = g_payload.state == PayloadCartState::finale ? 0.0f : net.speed;
     g_payload.net_age = 0.0f;

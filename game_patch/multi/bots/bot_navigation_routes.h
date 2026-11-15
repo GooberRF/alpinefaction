@@ -36,6 +36,8 @@ bool bot_nav_is_link_traversable_for_route(int from_waypoint, int to_waypoint);
 // The route rules for a link, apart from whether the graph has it.
 bool bot_nav_link_allows_route(int from_waypoint, int to_waypoint);
 bool bot_nav_link_climbs_ledge(int from_waypoint, int to_waypoint);
+// Drops bot_nav_link_climbs_ledge's cached floor probes, which a new level's links never reuse.
+void bot_nav_clear_ledge_link_cache();
 bool bot_nav_path_has_unclimbable_upward_links(const std::vector<int>& path);
 void bot_nav_save_route_for_repair();
 void bot_nav_note_route_attacker(const rf::Entity& attacker);

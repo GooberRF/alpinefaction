@@ -792,6 +792,13 @@ namespace rf
         AddrCaller{0x004D6240}.c_call<void>(decal, face, skip_if_present);
     }
 
+    // Clips the polygon `verts` by `plane` into `out` and returns its new vertex count. Each edge can emit two
+    // vertices, so `out` must hold 2 * num_verts.
+    inline int g_clip_poly_to_plane(int num_verts, const Vector3* verts, Vector3* out, const Plane* plane)
+    {
+        return AddrCaller{0x0054A1C0}.c_call<int>(num_verts, verts, out, plane);
+    }
+
     // Whether `face` is near enough to `decal` for the orientation pass to take it
     inline bool g_decal_face_in_reach(GFace* face, GDecal* decal)
     {

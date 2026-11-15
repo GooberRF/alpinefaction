@@ -854,21 +854,6 @@ namespace
 
     // The Extras menu's Demos panel: the same list and preview, in the menus' skin.
 
-    struct PanelFonts
-    {
-        int heading;
-        int body;
-        int body_bold;
-        int caption;
-    };
-
-    PanelFonts panel_fonts(const UiContext& ctx)
-    {
-        const float scale = ctx.scale();
-        return {menu_font(true, 32.0f, scale), menu_font(false, 20.0f, scale), menu_font(true, 20.0f, scale),
-                menu_font(false, 17.0f, scale)};
-    }
-
     // The scoreboard's scroll region as the last draw pass laid it out. Only the draw pass knows
     // where the info lines above it end, so the hit-test pass scrolls by the previous frame's.
     UiRect g_score_view{};
@@ -924,9 +909,7 @@ namespace
         const int lines_y = *board_y + score_header_height(st, font);
         const UiRect view{pane.x + s(4.0f), lines_y, pane.w - s(8.0f), pane.y + pane.h - s(4.0f) - lines_y};
         // The columns make way for the scrollbar only when there is one.
-        const int gutter = content_h > view.h
-            ? std::max(ctx.style.scrollbar_w_min, ctx.scaled(ctx.style.scrollbar_w)) + s(4.0f)
-            : 0;
+        const int gutter = content_h > view.h ? ui_scrollbar_width(ctx) + s(4.0f) : 0;
         const int w = pane.w - 2 * st.text_pad - gutter;
         const ScoreColumns cols = score_columns(x, w, details.header.game_type, st, font);
         draw_score_header(x, w, *board_y, cols, st, font);
@@ -951,31 +934,20 @@ namespace
     }
 
     PanelHit panel_row(UiContext& ctx, const UiRect& r, const Entry& entry, bool selected,
-        const PanelFonts& fonts, UiId id)
+        const MenuFonts& fonts, UiId id)
     {
-        const bool hovered = ui_hover(ctx, r, id);
-        if (hovered) {
-            ctx.note_hovered(id);
-        }
-        ctx.register_focusable(id, UiFocusKind::Activate);
+        const SkinListRow row = skin_list_row(ctx, r, selected, id);
         if (!ctx.draw) {
-            if (ctx.consume_activation(id)) {
+            if (row.activated) {
                 return PanelHit::key;
             }
-            return hovered && ctx.click ? PanelHit::click : PanelHit::none;
+            return row.clicked ? PanelHit::click : PanelHit::none;
         }
 
         const auto s = [&](float v) { return skin_px(ctx, v); };
-        const UiRect d = ui_draw_rect(ctx, r);
-        rf::gr::set_color(skin::border_dim);
-        rf::gr::rect(d.x + s(8.0f), d.y + d.h - s(1.0f), d.w - s(8.0f), s(1.0f));
-        if (selected) {
-            const int inset = s(2.0f);
-            skin_selection_bar(ctx, d.x, d.y + inset, d.w, d.h - 2 * inset);
-        }
-        const bool lit = hovered || selected || (ctx.focus_visible() && ctx.focus_id() == id);
-        const rf::Color main_color = !entry.valid ? skin::txt_dim : lit ? skin::txt_hi : skin::txt;
-        const rf::Color sub_color = !entry.valid ? skin::txt_dim : lit ? skin::txt : skin::txt_hint;
+        const UiRect& d = row.draw;
+        const rf::Color main_color = !entry.valid ? skin::txt_dim : row.lit ? skin::txt_hi : skin::txt;
+        const rf::Color sub_color = !entry.valid ? skin::txt_dim : row.lit ? skin::txt : skin::txt_hint;
 
         // Clear of the selection bar's LED.
         const int thumb_x = d.x + s(24.0f);
@@ -1023,72 +995,43 @@ namespace
         }
         // Fitted from the end, so the level name gives way before the game type does.
         const std::string sub = entry.type_short + ": " + level_display_name(entry.header.level_filename);
-        rf::gr::string(text_x, sub_y, hud_fit_string(sub, text_w, nullptr, fonts.caption).c_str(), fonts.caption);
+        rf::gr::string(text_x, sub_y, ui_fit_end(sub, text_w, fonts.caption).c_str(), fonts.caption);
         return PanelHit::none;
     }
 
-    void build_panel_list(UiContext& ctx, const UiRect& well, const PanelFonts& fonts)
+    void build_panel_list(UiContext& ctx, const UiRect& well, const MenuFonts& fonts)
     {
         const auto s = [&](float v) { return skin_px(ctx, v); };
-        const UiRect view{well.x + s(4.0f), well.y + s(4.0f), well.w - s(8.0f), well.h - s(8.0f)};
-        // The bitmap fonts used below 480 px do not shrink with the scale.
-        const int row_h = std::max(s(64.0f),
-            rf::gr::get_font_height(fonts.body) + rf::gr::get_font_height(fonts.caption) + s(12.0f));
-        const int gutter = std::max(ctx.style.scrollbar_w_min, ctx.scaled(ctx.style.scrollbar_w));
-        const int row_w = view.w - gutter - s(4.0f);
-
-        if (ctx.draw) {
-            skin_slot(ctx, well.x, well.y, well.w, well.h);
-        }
-
         const int count = static_cast<int>(g_entries.size());
-        const int content_h = count * row_h;
-        const UiId list_id = ui_id("demo_list");
-        UiScrollRegion region = ui_scroll_begin(ctx, view, content_h, g_scroll, row_h, list_id, true);
-        std::optional<UiRect> focus_rect;
-        for (int i = 0; i < count; ++i) {
-            const UiRect rect{view.x, region.start_y() + i * row_h, row_w, row_h};
-            const UiId id = ui_id("demo_row", i);
-            if (ctx.focus_id() == id) {
-                focus_rect = rect;
-            }
-            if (rect.y + rect.h < view.y || rect.y > view.y + view.h) {
-                // Still reachable by keyboard: the focus can step onto it and scroll it into view.
-                ctx.register_focusable(id, UiFocusKind::Activate);
-                if (!ctx.draw && ctx.consume_activation(id)) {
-                    g_panel_pending = i;
-                    g_panel_pending_hit = PanelHit::key;
-                }
-                continue;
-            }
-            if (const PanelHit hit = panel_row(ctx, rect, g_entries[i], i == g_preview, fonts, id);
-                hit != PanelHit::none) {
-                g_panel_pending = i;
-                g_panel_pending_hit = hit;
-            }
-        }
-
         // The ".." row alone doesn't count as content (it still renders above the message).
         const bool only_up = count == 1 && g_entries[0].kind == Entry::Kind::up;
-        if (ctx.draw && (count == 0 || only_up)) {
-            const UiRect d = ui_draw_rect(ctx, UiRect{view.x, view.y + (only_up ? row_h : 0), row_w, row_h});
-            rf::gr::set_color(skin::txt_hint);
-            rf::gr::string_aligned(rf::gr::ALIGN_CENTER, d.x + d.w / 2,
-                d.y + (d.h - rf::gr::get_font_height(fonts.body)) / 2,
-                g_current_dir.empty() ? "No demos found" : "Folder is empty", fonts.body);
+        const char* empty_text = g_current_dir.empty() ? "No demos found" : "Folder is empty";
+        const SkinScrollList list{
+            .count = count,
+            // The bitmap fonts used below 480 px do not shrink with the scale.
+            .row_h = std::max(s(64.0f),
+                rf::gr::get_font_height(fonts.body) + rf::gr::get_font_height(fonts.caption) + s(12.0f)),
+            .id_name = "demo_list",
+            .row_id_name = "demo_row",
+            .empty_text = count == 0 || only_up ? empty_text : nullptr,
+            .font = fonts.body,
+        };
+        const auto build_row = [&](const SkinScrollListRow& row) {
+            PanelHit hit = row.offscreen_activated ? PanelHit::key : PanelHit::none;
+            if (row.in_view) {
+                hit = panel_row(ctx, row.rect, g_entries[row.index], row.index == g_preview, fonts, row.id);
+            }
+            if (hit != PanelHit::none) {
+                g_panel_pending = row.index;
+                g_panel_pending_hit = hit;
+            }
+        };
+        skin_scroll_list(ctx, well, list, g_scroll, g_panel_scrolled_to_focus, build_row);
+
+        if (!ctx.draw) {
+            // The preview follows the selection; this advances its delayed details scan.
+            update_preview(-1);
         }
-
-        ui_scroll_end(ctx, region);
-
-        if (ctx.draw) {
-            skin_scrollbar(ctx, view, content_h, g_scroll, ctx.captured_id() == list_id);
-            return;
-        }
-
-        ui_scroll_focus_into_view(ctx, view, focus_rect, g_scroll, g_panel_scrolled_to_focus);
-
-        // The preview follows the selection; this advances its delayed details scan.
-        update_preview(-1);
     }
 
     rf::ui::Button g_extras_demos_btn;
@@ -1196,26 +1139,21 @@ void demo_browser_back()
     }
 }
 
-void demo_browser_build_panel(UiContext& ctx, const MenuPanel& panel, int canvas_y)
+void demo_browser_build_panel(UiContext& ctx, const MenuPanel& panel, const MenuFonts& fonts)
 {
-    // Truncated like the Options panel's layout, so the shared header lines up with it.
     const auto s = [&](float v) { return ctx.scaled(v); };
-    const auto cy = [&](float v) { return canvas_y + ctx.scaled(v); };
-    const PanelFonts fonts = panel_fonts(ctx);
-    const int x = panel.content_x;
-    const int w = panel.content_r - x;
-    const UiRect header{x, cy(menu_panel_header_y), w, s(menu_panel_header_h)};
-    const int body_y = cy(menu_panel_body_y);
+    const int x = panel.body.x;
+    const int w = panel.body.w;
+    const UiRect& header = panel.header;
+    const int body_y = panel.body.y;
     const int footer_y = panel.inset.y + panel.inset.h - s(menu_panel_footer_inset);
     const int body_h = footer_y - s(16.0f) - body_y;
 
     if (ctx.draw) {
+        menu_draw_panel_heading(ctx, panel, "DEMOS", fonts.heading);
         // The title doubles as the breadcrumb for the current folder.
-        rf::gr::set_color(skin::ink_title);
-        const int title_w = text_width("DEMOS", fonts.heading);
-        rf::gr::string(header.x, header.y + (header.h - rf::gr::get_font_height(fonts.heading)) / 2, "DEMOS",
-            fonts.heading);
         if (!g_current_dir.empty()) {
+            const int title_w = text_width("DEMOS", fonts.heading);
             const int crumb_x = header.x + title_w + s(16.0f);
             const SkinText crumb =
                 skin_fit_text(ctx, "\\" + g_current_dir, fonts.body, std::max(0, header.x + header.w - crumb_x));
@@ -1223,7 +1161,6 @@ void demo_browser_build_panel(UiContext& ctx, const MenuPanel& panel, int canvas
             rf::gr::string(crumb_x, header.y + (header.h - rf::gr::get_font_height(crumb.font)) / 2,
                 crumb.text.c_str(), crumb.font);
         }
-        skin_ridge(ctx, panel.inset.x + s(8.0f), header.y + header.h + s(1.0f), panel.inset.w - s(16.0f));
     }
 
     const int gap = s(16.0f);
@@ -1232,10 +1169,10 @@ void demo_browser_build_panel(UiContext& ctx, const MenuPanel& panel, int canvas
     build_panel_preview(ctx, UiRect{x + w - pane_w, body_y, pane_w, body_h}, fonts.caption);
 
     const int footer_h = s(menu_panel_footer_h);
-    const int play_w = skin_button_width(ctx, "PLAY", fonts.body_bold, 140.0f);
+    const int play_w = skin_button_width(ctx, "PLAY", fonts.column, 140.0f);
     const bool playable = g_preview >= 0 && g_preview < static_cast<int>(g_entries.size())
         && !g_entries[g_preview].requires_newer;
-    if (skin_button(ctx, UiRect{x + w - play_w, footer_y, play_w, footer_h}, "PLAY", fonts.body_bold,
+    if (skin_button(ctx, UiRect{x + w - play_w, footer_y, play_w, footer_h}, "PLAY", fonts.column,
             SkinButton::Secondary, playable, ui_id("demo_play"))) {
         g_panel_play = true;
     }

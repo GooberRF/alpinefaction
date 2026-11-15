@@ -4,6 +4,7 @@
 #include <patch_common/MemUtils.h>
 #include <xlog/xlog.h>
 #include <common/utils/string-utils.h>
+#include <common/alpine_powerup_items.h>
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
@@ -160,6 +161,43 @@ CodeInjection CDedLevel_construct_patch{
         g_alpine_level_props.LoadNewLevelDefaults();
     },
 };
+
+// Runs before the CDedLevel constructor sorts the class list, so appended classes sort with the stock ones.
+void __fastcall CDedLevel_load_item_classes(CDedLevel* level);
+FunHook<decltype(CDedLevel_load_item_classes)> CDedLevel_load_item_classes_hook{
+    0x0041A3D0,
+    CDedLevel_load_item_classes,
+};
+void __fastcall CDedLevel_load_item_classes(CDedLevel* level)
+{
+    CDedLevel_load_item_classes_hook.call_target(level);
+    auto& classes = level->object_classes;
+    for (const AlpinePowerupItemClass& def : alpine_powerup_item_classes) {
+        const bool defined = std::any_of(classes.data_ptr, classes.data_ptr + classes.size,
+            [&def](const DedObjectClass* cls) { return _stricmp(cls->name.c_str(), def.class_name) == 0; });
+        if (defined) {
+            continue;
+        }
+        DedItem* tmpl = DedItem::create();
+        if (!tmpl) {
+            continue;
+        }
+        DedObjectClass* cls = DedObjectClass::create();
+        if (!cls) {
+            editor_free(tmpl);
+            continue;
+        }
+        tmpl->class_mesh_filename.assign_0(def.v3d_filename);
+        tmpl->field_10 = VMESH_TYPE_STATIC;
+        tmpl->class_name.assign_0(def.class_name);
+        tmpl->listed_in_tree = 1;
+        tmpl->count = def.count;
+        tmpl->respawn_time_s = def.respawn_time_s;
+        cls->name.assign(tmpl->class_name);
+        cls->tmpl = tmpl;
+        classes.push_back(cls);
+    }
+}
 
 // Clear alpine properties when the level is reset (File > New, File > Open, document close).
 // FUN_00418960 is CDedLevel::DeleteContents (thiscall), reached via vtable[27] (FUN_0041CDF0).
@@ -2645,6 +2683,7 @@ void ApplyLevelPatches()
 {
     // handle AlpineLevelProperties chunk
     CDedLevel_construct_patch.install();
+    CDedLevel_load_item_classes_hook.install();
     CDedLevel_DeleteContents_hook.install();
     CDedLevel_LoadLevel_patch1.install();
     CDedLevel_LoadLevel_patch2.install();

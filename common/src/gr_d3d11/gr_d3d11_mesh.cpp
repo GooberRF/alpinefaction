@@ -1141,18 +1141,35 @@ namespace gr::d3d11
                 rf::gr::ZBUFFER_TYPE_READ,
                 rf::gr::FOG_NOT_ALLOWED,
             };
-            render_context_.set_mode(powerup_mode);
-            render_context_.set_textures(params.powerup_bitmaps[0], -1);
-            for (auto& b : batches) {
-                render_context_.set_cull_mode(b.double_sided ? D3D11_CULL_NONE : D3D11_CULL_BACK);
-                render_context_.draw_indexed(b.num_indices, b.start_index, b.base_vertex);
-            }
-            if (params.powerup_bitmaps[1] != -1) {
-                render_context_.set_textures(params.powerup_bitmaps[1], -1);
+            static_assert(std::tuple_size_v<ScopedPowerupOverlayTints::Tints>
+                          == std::extent_v<decltype(rf::MeshRenderParams::powerup_bitmaps)>);
+            const ScopedPowerupOverlayTints::Tints* overlay_tints = ScopedPowerupOverlayTints::current();
+            for (size_t slot = 0; slot < std::size(params.powerup_bitmaps) && params.powerup_bitmaps[slot] != -1;
+                 ++slot) {
+                const rf::Color* tint = overlay_tints ? (*overlay_tints)[slot] : nullptr;
+                render_context_.set_mode(powerup_mode, tint ? *tint : rf::Color{255, 255, 255, 255});
+                render_context_.set_textures(params.powerup_bitmaps[slot], -1);
                 for (auto& b : batches) {
                     render_context_.set_cull_mode(b.double_sided ? D3D11_CULL_NONE : D3D11_CULL_BACK);
                     render_context_.draw_indexed(b.num_indices, b.start_index, b.base_vertex);
                 }
+            }
+        }
+        if (const rf::Color& flash = ScopedMeshFlash::current(); flash.alpha > 0 && !ir_scanner) {
+            rf::gr::Mode flash_mode{
+                rf::gr::TEXTURE_SOURCE_NONE,
+                rf::gr::COLOR_SOURCE_VERTEX,
+                rf::gr::ALPHA_SOURCE_VERTEX,
+                rf::gr::ALPHA_BLEND_ALPHA,
+                rf::gr::ZBUFFER_TYPE_READ,
+                rf::gr::FOG_NOT_ALLOWED,
+            };
+            // Emissive, so the colour is flat whatever lights the mesh
+            render_context_.set_mode(flash_mode, flash, false, false, 0.0f, false, true);
+            render_context_.set_textures(-1, -1);
+            for (auto& b : batches) {
+                render_context_.set_cull_mode(b.double_sided ? D3D11_CULL_NONE : D3D11_CULL_BACK);
+                render_context_.draw_indexed(b.num_indices, b.start_index, b.base_vertex);
             }
         }
         if (g_ghost_fill.active) {

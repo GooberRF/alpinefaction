@@ -1663,28 +1663,7 @@ void poll_awp_download()
     // Check if this result is for the current level (may have changed during download)
     bool is_current_level = string_iequals(target_map, rf::level.filename.c_str());
 
-    if (waypoints_awp_download_pending()) {
-        if (is_current_level) {
-            waypoints_on_awp_download_resolved();
-            if (result == AwpDownloadResult::success) {
-                rf::console::print("AWP waypoint file downloaded and loaded\n");
-            }
-            else if (result == AwpDownloadResult::failed) {
-                rf::console::print("AWP waypoint file download failed\n");
-            }
-            else if (result == AwpDownloadResult::map_not_found) {
-                rf::console::print("No AWP available: map was not found on FactionFiles\n");
-            }
-        }
-        else {
-            // Stale result from a different map — only clear the pending flag
-            // without reloading waypoints (they were already loaded for the current map)
-            waypoints_set_awp_download_pending(false);
-            xlog::info("AWP download result discarded (map changed from {} to {})",
-                target_map, rf::level.filename.c_str());
-        }
-    }
-    else {
+    const auto announce_background_result = [&]() {
         if (result == AwpDownloadResult::success) {
             rf::console::print("AWP waypoint file downloaded in background\n");
         }
@@ -1699,6 +1678,37 @@ void poll_awp_download()
                 rf::console::print("No AWP available via autodl for this map\n");
             }
         }
+    };
+
+    if (waypoints_awp_download_pending()) {
+        if (is_current_level) {
+            waypoints_on_awp_download_resolved();
+            if (is_waypoint_bot_mode_active()) {
+                if (result == AwpDownloadResult::success) {
+                    rf::console::print("AWP waypoint file downloaded and loaded\n");
+                }
+                else if (result == AwpDownloadResult::failed) {
+                    rf::console::print("AWP waypoint file download failed\n");
+                }
+                else if (result == AwpDownloadResult::map_not_found) {
+                    rf::console::print("No AWP available: map was not found on FactionFiles\n");
+                }
+            }
+            else if (level_download_wants_awp() || was_force) {
+                // Announced as a background download; one made only for the route arrows stays silent
+                announce_background_result();
+            }
+        }
+        else {
+            // Stale result from a different map — only clear the pending flag
+            // without reloading waypoints (they were already loaded for the current map)
+            waypoints_set_awp_download_pending(false);
+            xlog::info("AWP download result discarded (map changed from {} to {})",
+                target_map, rf::level.filename.c_str());
+        }
+    }
+    else {
+        announce_background_result();
     }
 }
 

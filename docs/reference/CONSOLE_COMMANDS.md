@@ -186,8 +186,11 @@ Commands marked "D3D11 only" only have an effect with the Direct3D 11 renderer.
 | `cl_wh_flagoverdraw` | | Toggles drawing CTF flag world HUD sprites on top of everything. Default: on. |
 | `cl_wh_hitnumbers` | | Toggles damage numbers when you hit players in multiplayer, if the Alpine Faction server enables them. Default: on. |
 | `cl_wh_pushzone` | | Toggles the ring on the ground around the Payload cart that shows where players push it. Default: on. |
+| `cl_wh_routearrows` | | Toggles the arrows laid from where you spawn toward the objective: the cart in Payload, the hill in King of the Hill, the current point in Revolt, the frontier point in Escalation (the neutral center until it is taken), and in Damage Control the nearest point you need to visit (the enemy's, a neutral one, or yours while it is contested). Where there is room, the trail first runs a few meters the way you face, turning back in a U-turn if the route lies behind you. They follow the level's bot waypoints: in those game types the map's AWP is checked for on FactionFiles at level load, or when the arrows are turned on mid-level, which shows them from your next spawn. The trail breaks at ladders, jump pads, teleporters, lifts, zip lines, water and jumps. Default: on. |
+| `cl_wh_routearrows_time` | `[1.0-30.0]` | Sets how long each spawn route arrow stays, in seconds, before it is reeled in. Default: 6.5. |
 | `cl_wh_teamplayerlabels` | | Toggles name labels over teammates. Default: off. |
-| `cl_wh_tethers` | | Toggles the Payload beams linking the players pushing or blocking the cart to it. Default: on. |
+| `cl_wh_tethers` | | Toggles the Payload beams linking the players pushing the cart to it. Default: on. |
+| `cl_wh_trackpulse` | | Toggles the glowing pulses that run along the Payload track from the cart to its end. Default: on. |
 | `kill_messages` | | Toggles kill messages in the chat box and console. Default: on. Not saved. |
 | `mp_crit_flash` | | Toggles the reticle flash when you land a critical hit. Default: on. |
 | `mp_deathbars` | | Toggles red bars at the top and bottom of the screen while dead. Default: on. |
@@ -273,8 +276,11 @@ Colors are hex `RRGGBB` or `RRGGBBAA`, or comma-separated `R,G,B[,A]` values in 
 | `cl_vehiclecam_pitch_smooth` | `[0.0-3.0]` | Sets how slowly the vehicle camera follows the vehicle's pitch, in seconds. Default: 0.9. |
 | `cl_vehiclecam_recenter` | `[bool]` | Eases an idle vehicle camera back behind the vehicle while it drives forward. Default: on. |
 | `cl_vehiclecam_velocity` | `[0.0-1.0]` | Sets how far the vehicle camera turns toward a land vehicle's direction of travel at speed. Default: 1.0. |
-| `cl_vehiclefx` | `[bool]` | Shows dust, sparks, spray, smoke and fire effects, with their sounds and lights, for vehicles in multiplayer. Default: on. |
+| `cl_vehicledebris` | `[bool]` | Breaks destroyed vehicles into pieces of wreckage in multiplayer. Default: on. |
+| `cl_vehicledebrisflames` | `[bool]` | Sets some of the wreckage of destroyed vehicles on fire in multiplayer. Default: on. |
+| `cl_vehiclefx` | `[bool]` | Shows dust, sparks, spray, smoke and fire effects, with their sounds and lights, and wingtip trails, for vehicles in multiplayer. Default: on. |
 | `cl_vehiclehealthbars` | `[bool]` | Shows health bars over damaged vehicles and turrets. Default: on. |
+| `cl_vehiclehitflash` | `[bool]` | Flashes a vehicle red when it takes damage in multiplayer. Default: on. |
 | `cl_vehiclehints` | `[bool]` | Shows the list of vehicle controls while riding a vehicle or turret. Default: on. |
 | `cl_vehiclehorns` | `[bool]` | Plays other players' jeep horns in multiplayer; your own always plays. Default: on. |
 | `cl_vehiclemarkers` | `[bool]` | Shows vehicle factory respawn markers and their spawn cues. Default: on. |

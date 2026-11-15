@@ -4,10 +4,11 @@
 #include "../rf/sound/sound.h"
 #include "../rf/geometry.h"
 
-// Pre-built impact sound sets for materials that don't have stock Custom Sound Sets.
+// Pre-built impact sound sets with no stock foley.tbl equivalent.
 // Built once after foley.tbl loads; persist for the game's lifetime.
 rf::ImpactSoundSet* g_rock_debris_iss = nullptr;
 rf::ImpactSoundSet* g_ice_debris_iss = nullptr;
+rf::ImpactSoundSet* g_metal_debris_iss = nullptr;
 
 static rf::ImpactSoundSet* build_custom_iss(const char* const* wavs, int count,
                                              float min_range, float base_volume)
@@ -71,6 +72,11 @@ CodeInjection foley_iss_init_injection{
             "Ice_Hit_Ice1.wav", "Ice_Hit_Ice2.wav",
         };
         g_ice_debris_iss = build_custom_iss(k_ice_wavs, std::size(k_ice_wavs), 5.0f, 0.9f);
+
+        static constexpr const char* k_metal_wavs[] = {
+            "Metal_Hit_Rock1.wav", "Metal_Hit_Rock2.wav", "Metal_Hit_Rock3.wav",
+        };
+        g_metal_debris_iss = build_custom_iss(k_metal_wavs, std::size(k_metal_wavs), 10.0f, 0.9f);
     },
 };
 

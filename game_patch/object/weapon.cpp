@@ -18,6 +18,7 @@
 #include "../multi/multi.h"
 #include "../multi/kill_attribution.h"
 #include "../multi/mutators.h"
+#include "../multi/powerups.h"
 #include "../multi/projectile_lag_comp.h"
 #include "../misc/misc.h"
 #include "../misc/alpine_settings.h"
@@ -115,6 +116,13 @@ bool weapon_reticle_is_customized(int weapon_id, bool bighud) {
     return (mask & (bighud ? 0x2 : 0x1)) != 0;
 }
 
+const char* weapon_third_person_mesh(int weapon_type)
+{
+    return weapon_type >= 0 && weapon_type < rf::num_weapon_types
+        ? rf::weapon_types[weapon_type].third_person_vmesh_filename.c_str()
+        : "";
+}
+
 bool rocket_locked_reticle_is_customized(bool bighud) {
     return bighud ? rocket_locked_custom_reticle.second : rocket_locked_custom_reticle.first;
 }
@@ -176,6 +184,20 @@ CodeInjection muzzle_flash_light_not_disabled_fix{
         rf::Timestamp* primary_muzzle_timestamp = regs.ecx;
         if (!primary_muzzle_timestamp->valid()) {
             regs.eip = 0x0041E969;
+        }
+    },
+};
+
+// weapon_move_one, on a multiplayer server: a weapon's fuse or lifetime explosion is followed by a remote charge kill
+// packet that has every client set off all of its owner's remote charges. Stock sends it for grenades and the other
+// weapons that explode this way too, so a thrown grenade blew up its thrower's charges on every client but not on the
+// server.
+CodeInjection weapon_explode_remote_charge_kill_fix{
+    0x004C6CAC,
+    [](auto& regs) {
+        rf::Weapon* weapon = regs.esi;
+        if (!(weapon->info->flags & rf::WTF_REMOTE_CHARGE)) {
+            regs.eip = 0x004C6CB9;
         }
     },
 };
@@ -399,10 +421,10 @@ bool should_apply_click_limiter() {
 // default fire wait 500ms like pistol and PR in stock weapons.tbl
 int get_semi_auto_fire_wait_override() {
     if (rf::is_multi && get_af_server_info().has_value()) {
-        return get_af_server_info()->semi_auto_cooldown.value_or(90);
+        return get_af_server_info()->semi_auto_cooldown.value_or(default_semi_auto_fire_wait_ms);
     }
     else {
-        return 90;
+        return default_semi_auto_fire_wait_ms;
     }
 }
 
@@ -427,6 +449,7 @@ CodeInjection entity_fire_primary_weapon_semi_auto_patch {
         if (rf::obj_is_player(entity) && rf::weapon_is_semi_automatic(weapon_type) && fire_wait == 500) {
             regs.eax = get_semi_auto_fire_wait_override();
         }
+        regs.eax = haste_scale_ms(entity, regs.eax);
 
         // apply first shot accuracy if 2x the weapon's fire wait has elapsed since the last shot
         // Note this also disables the difficulty-based rapid fire spread increase for the pistol in SP
@@ -521,6 +544,9 @@ void apply_weapon_patches()
     // Fix muzzle flash light sometimes not getting disabled (e.g. when weapon is switched during riot stick attack
     // in multiplayer)
     muzzle_flash_light_not_disabled_fix.install();
+
+    // Fix exploding grenades setting off their thrower's remote charges on clients in multiplayer
+    weapon_explode_remote_charge_kill_fix.install();
 
     // Fix weapon being auto-switched to previous one after respawn even when auto-switch is disabled
     process_create_entity_packet_switch_weapon_fix.install();

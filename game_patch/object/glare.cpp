@@ -1,5 +1,6 @@
 
 #include <patch_common/FunHook.h>
+#include <patch_common/CodeInjection.h>
 #include "../rf/entity.h"
 #include "../rf/corpse.h"
 #include "../rf/cutscene.h"
@@ -198,6 +199,23 @@ FunHook<void(rf::Glare*, int)> glare_render_corona_hook{
     },
 };
 
+// A corona glare is hosted with no prop point, where stock would turn it by its anchor's inverse orientation
+CodeInjection glare_host_orient_injection{
+    0x0048771B,
+    [](auto& regs) {
+        rf::Object* obj = regs.edi;
+        if (obj->type != rf::OT_GLARE || obj->host_tag_handle >= 0) {
+            return;
+        }
+        rf::Object* host = regs.esi;
+        const rf::Matrix3& orient = host->p_data.next_orient;
+        obj->orient = orient;
+        obj->p_data.orient = orient;
+        obj->p_data.next_orient = orient;
+        regs.eip = 0x00487750;
+    },
+};
+
 void glare_patches_patches()
 {
     // Support disabling glares and optimize rendering
@@ -208,4 +226,7 @@ void glare_patches_patches()
 
     // Corona rendering optimization
     glare_render_corona_hook.install();
+
+    // Alpine coronas on movers
+    glare_host_orient_injection.install();
 }

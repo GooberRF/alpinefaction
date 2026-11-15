@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <unordered_map>
 #include <vector>
@@ -84,6 +85,48 @@ namespace gr::d3d11
 
     private:
         static inline int depth_ = 0;
+    };
+
+    // RAII guard: while one of these is alive, mesh draws multiply the overlay in each powerup_bitmaps slot of their
+    // MeshRenderParams by the matching tint. A null tint leaves that slot as drawn.
+    class [[nodiscard]] ScopedPowerupOverlayTints
+    {
+    public:
+        using Tints = std::array<const rf::Color*, 2>;
+
+        explicit ScopedPowerupOverlayTints(const Tints& tints) noexcept : prev_{tints_}
+        {
+            tints_ = &tints;
+        }
+        ~ScopedPowerupOverlayTints() noexcept { tints_ = prev_; }
+        ScopedPowerupOverlayTints(const ScopedPowerupOverlayTints&) = delete;
+        ScopedPowerupOverlayTints& operator=(const ScopedPowerupOverlayTints&) = delete;
+
+        static const Tints* current() noexcept { return tints_; }
+
+    private:
+        const Tints* prev_;
+        static inline const Tints* tints_ = nullptr;
+    };
+
+    // RAII guard: while one of these with a nonzero alpha is alive, mesh draws are covered by a flat, unlit film of
+    // its colour, alpha-blended over the whole mesh after any powerup overlays.
+    class [[nodiscard]] ScopedMeshFlash
+    {
+    public:
+        explicit ScopedMeshFlash(const rf::Color& color) noexcept : prev_{color_}
+        {
+            color_ = color;
+        }
+        ~ScopedMeshFlash() noexcept { color_ = prev_; }
+        ScopedMeshFlash(const ScopedMeshFlash&) = delete;
+        ScopedMeshFlash& operator=(const ScopedMeshFlash&) = delete;
+
+        static const rf::Color& current() noexcept { return color_; }
+
+    private:
+        rf::Color prev_;
+        static inline rf::Color color_{0, 0, 0, 0};
     };
 
     struct BoundingBox
