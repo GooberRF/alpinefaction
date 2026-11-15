@@ -274,6 +274,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Add `ui_show_netmeter` console command to show network statistics
 
 [@is-this-c](https://github.com/is-this-c)
+- Activate Red Faction's window instantly, if it was out of focus
 - Add `bighud_health` and `bighud_ammo` console variables to disable `bighud` for health and ammo, which is useful for mods incompatible with `bighud`
 - Render `LOADING...` upon level changes in multi
 - Support TrueType fonts in 3D text rendering

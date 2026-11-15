@@ -166,8 +166,7 @@ const SettingRow rows[] = {
         .subcategory = "Display",
         .widget = Wid::Toggle,
         .access = AccBool{&AGS::reduced_speed_in_background},
-        .flags = SF_APPLY_ON_LOAD | SF_ADVANCED,
-        .apply = apply_reduced_speed_in_background,
+        .flags = SF_ADVANCED,
     },
     {
         .id = "sample_count",
