@@ -247,6 +247,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Replace the launcher `Adapter` option with a `Display` option to choose the monitor the game opens on
 - Prefer the high-performance GPU on systems with more than one, unless `D3D11_PreferHighPerformanceGPU` is off in `alpine_system.ini` (Direct3D 11 renderer only)
 - Add `Use deprecated legacy console` launcher option to use the stock console instead of the new one
+- Redraw the Damage Amplifier and Invulnerability HUD icons and add Big HUD versions
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Revamp the in-game console with a new font, search, mouse text selection and inline command suggestions

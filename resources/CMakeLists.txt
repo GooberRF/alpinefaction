@@ -272,6 +272,16 @@ add_packfile(alpinefaction.vpp
     images/hud_miniflag_scav.tga
     images/hud_microflag_scav.tga
     images/hud_flag_scav.tga
+    images/hud_pow_damage.tga
+    images/hud_pow_damage_1.tga
+    images/hud_pow_invuln.tga
+    images/hud_pow_invuln_1.tga
+    images/hud_pow_haste_0.tga
+    images/hud_pow_haste_1.tga
+    images/hud_pow_vampire_0.tga
+    images/hud_pow_vampire_1.tga
+    images/hud_pow_jetpack_0.tga
+    images/hud_pow_jetpack_1.tga
     images/CTFflag-afgr.tga
     images/noclip_ammo_bar_1.tga
     images/Icon_EAX.tga
