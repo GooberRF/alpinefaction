@@ -144,6 +144,8 @@ struct PlayerAdditionalData {
     // Floor rate limit for broadcast 3d world sounds (broadcast_sound_packet_3d).
     std::optional<int64_t> last_world_sound_ms{};
     std::optional<int64_t> last_spray_ms{};
+    // Floor rate limit for Haste jumps: those a client reports, and those a server relays.
+    std::optional<int64_t> last_haste_jump_ms{};
     // Floor rate limit for af_req_stats_pssk so a client cannot flood the handler.
     std::optional<int64_t> last_pssk_ms{};
     // Separate floor for the af_req_stats_pssk rejection warns, so a rejected packet

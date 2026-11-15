@@ -37,6 +37,7 @@
 #include "../rf/sound/sound.h"
 #include "../rf/weapon.h"
 #include "../misc/alpine_settings.h"
+#include "../os/os.h"
 #include "../sound/sound.h"
 
 namespace
@@ -111,6 +112,9 @@ bool g_level_has_powerups = false;
 
 constexpr const char* haste_jump_sound_filename = "af_haste_jump1.wav";
 int g_haste_jump_sound = -1;
+constexpr int64_t haste_jump_report_interval_ms = 200;
+// Under the report floor, to absorb jitter between two reports.
+constexpr int64_t haste_jump_relay_interval_ms = 150;
 
 std::optional<AlpinePowerup> powerup_for_item_type(int item_type)
 {
@@ -414,8 +418,24 @@ FunHook<void(rf::Entity*)> entity_jump_haste_hook{
         entity_jump_haste_hook.call_target(ep);
         rf::jump_velocity = jump_velocity;
         // The stock jump sets the vertical velocity only when it jumps, and plays its sound 2D, for the jumper alone.
-        if (ep->p_data.vel.y != vel_y && ep == rf::local_player_entity && g_haste_jump_sound >= 0) {
+        // Everyone else hears it in 3D through the server.
+        if (ep->p_data.vel.y == vel_y) {
+            return;
+        }
+        if (ep == rf::local_player_entity && g_haste_jump_sound >= 0) {
             play_local_sound_2d(static_cast<uint16_t>(g_haste_jump_sound), 0, 1.0f);
+        }
+        if (rf::is_server) {
+            powerups_server_on_haste_jump(rf::player_from_entity_handle(ep->handle));
+        }
+        else if (ep == rf::local_player_entity && rf::local_player) {
+            // A swimmer at the surface can jump every frame.
+            std::optional<int64_t>& reported_ms = rf::local_player->last_haste_jump_ms;
+            const int64_t now = timer::get_i64(1000);
+            if (!reported_ms || now - *reported_ms >= haste_jump_report_interval_ms) {
+                reported_ms = now;
+                af_send_haste_jump_request();
+            }
         }
     },
 };
@@ -676,6 +696,37 @@ void powerups_send_state_to(rf::Player* player)
             }
         }
     }
+}
+
+void powerups_server_on_haste_jump(rf::Player* jumper)
+{
+    if (!rf::is_server || !jumper || !jumper->net_data) {
+        return;
+    }
+    rf::Entity* ep = rf::entity_from_handle(jumper->entity_handle);
+    if (!ep || rf::entity_is_dying(ep) || !powerup_is_active(ep, AlpinePowerup::haste)) {
+        return;
+    }
+    const int64_t now = timer::get_i64(1000);
+    if (jumper->last_haste_jump_ms && now - *jumper->last_haste_jump_ms < haste_jump_relay_interval_ms) {
+        return;
+    }
+    jumper->last_haste_jump_ms.emplace(now);
+    af_send_haste_jump(jumper->net_data->player_id);
+    if (jumper != rf::local_player) {
+        powerups_on_remote_haste_jump(jumper->net_data->player_id);
+    }
+}
+
+void powerups_on_remote_haste_jump(uint8_t player_id)
+{
+    rf::Player* player = rf::multi_find_player_by_id(player_id);
+    rf::Entity* ep = player ? rf::entity_from_handle(player->entity_handle) : nullptr;
+    if (rf::is_dedicated_server || g_haste_jump_sound < 0 || !ep || ep == rf::local_player_entity
+        || rf::entity_is_dying(ep)) {
+        return;
+    }
+    rf::snd_play_3d(g_haste_jump_sound, ep->pos, 1.0f, rf::Vector3{}, rf::SOUND_GROUP_EFFECTS);
 }
 
 void powerups_level_init()

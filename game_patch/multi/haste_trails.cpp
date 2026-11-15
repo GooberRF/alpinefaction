@@ -1,7 +1,10 @@
 #include <algorithm>
 #include <array>
+#include <cstring>
+#include <string_view>
 #include <vector>
 #include <common/utils/list-utils.h>
+#include <common/utils/string-utils.h>
 #include "haste_trails.h"
 #include "multi.h"
 #include "powerups.h"
@@ -9,11 +12,13 @@
 #include "../graphics/ribbon_trail.h"
 #include "../hud/multi_spectate.h"
 #include "../misc/alpine_settings.h"
+#include "../rf/character.h"
 #include "../rf/entity.h"
 #include "../rf/gameseq.h"
 #include "../rf/multi.h"
 #include "../rf/object.h"
 #include "../rf/player/player.h"
+#include "../rf/vmesh.h"
 #include "../rf/gr/gr.h"
 
 namespace
@@ -31,8 +36,8 @@ constexpr float trail_sample_spacing = 0.15f;
 constexpr float trail_teleport_dist = 3.0f;
 constexpr float trail_ankle_height = 0.15f;
 constexpr float trail_side_offset = 0.18f;
-// Of the multiplayer run speed: a hasted crouch run is barely faster than it.
-constexpr float trail_min_speed_factor = 1.1f;
+// Of the unhasted multiplayer run speed.
+constexpr float trail_min_speed_factor = 0.8f;
 
 struct HasteTrail
 {
@@ -42,18 +47,15 @@ struct HasteTrail
     rf::Vector3 ref_pos{};
     float ref_time = 0.0f;
     bool has_ref = false;
-    rf::Vector3 side_dir{}; // horizontal, right of the direction of travel
+    // The foot bones of `character`, -1 where it has none.
+    const rf::Character* character = nullptr;
+    std::array<int, 2> foot_bones{-1, -1};
     bool seen = false;
 
     void reset()
     {
         ribbon.reset();
         has_ref = false;
-    }
-
-    std::array<rf::Vector3, 2> lines(const rf::Vector3& anchor) const
-    {
-        return {anchor - side_dir * trail_side_offset, anchor + side_dir * trail_side_offset};
     }
 };
 
@@ -79,8 +81,47 @@ rf::Vector3 trail_anchor(const rf::Entity* ep)
     return {ep->pos.x, ep->pos.y + lowest + trail_ankle_height, ep->pos.z};
 }
 
-// A sample every trail_sample_spacing of travel covered faster than the multiplayer run speed, so a hasted run or a
-// forward jump shows and a crouch run does not.
+int find_bone(const rf::Character& ch, std::string_view suffix)
+{
+    const int num_bones = std::min(ch.num_bones, static_cast<int>(std::size(ch.bones)));
+    for (int i = 0; i < num_bones; ++i) {
+        const rf::Bone& bone = ch.bones[i];
+        if (string_iends_with(std::string_view{bone.name, strnlen(bone.name, sizeof(bone.name))}, suffix)) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+// Matched by suffix: every stock humanoid skeleton names its ankles "<prefix>foot-l" and "<prefix>foot-r".
+std::array<rf::Vector3, 2> trail_points(HasteTrail& trail, rf::Entity* ep)
+{
+    const auto* ci = ep->vmesh && ep->vmesh->type == rf::MESH_TYPE_CHARACTER
+        ? static_cast<const rf::CharacterInstance*>(ep->vmesh->instance)
+        : nullptr;
+    const rf::Character* ch = ci ? ci->base_character : nullptr;
+    if (ch != trail.character) {
+        trail.character = ch;
+        trail.foot_bones = ch ? std::array{find_bone(*ch, "foot-l"), find_bone(*ch, "foot-r")} : std::array{-1, -1};
+    }
+    std::array<rf::Vector3, 2> points;
+    if (trail.foot_bones[0] >= 0 && trail.foot_bones[1] >= 0) {
+        for (size_t i = 0; i < points.size(); ++i) {
+            rf::Matrix3 orient;
+            rf::vmesh_get_prop_point_transform(ep->vmesh, trail.foot_bones[i], &ep->orient, &ep->pos, &orient,
+                                               &points[i]);
+        }
+        return points;
+    }
+    const rf::Vector3 anchor = trail_anchor(ep);
+    rf::Vector3 side{ep->orient.rvec.x, 0.0f, ep->orient.rvec.z};
+    side.normalize_safe();
+    return {anchor - side * trail_side_offset, anchor + side * trail_side_offset};
+}
+
+// A sample every trail_sample_spacing of travel: any while airborne, otherwise horizontal travel at
+// trail_min_speed_factor of the unhasted run speed or faster, so starting off, stopping or pushing into a wall shows
+// none.
 void trail_update(HasteTrail& trail, rf::Entity* ep, float dt)
 {
     if (rf::entity_is_dying(ep)) {
@@ -92,38 +133,39 @@ void trail_update(HasteTrail& trail, rf::Entity* ep, float dt)
         trail.has_ref = false;
         return;
     }
-    const rf::Vector3 anchor = trail_anchor(ep);
-    if (!trail.has_ref || (anchor - trail.ref_pos).len() > trail_teleport_dist) {
+    if (!trail.has_ref || (ep->pos - trail.ref_pos).len() > trail_teleport_dist) {
         if (trail.has_ref) {
             trail.reset();
         }
-        trail.ref_pos = anchor;
+        trail.ref_pos = ep->pos;
         trail.ref_time = 0.0f;
         trail.has_ref = true;
         return;
     }
     trail.ref_time += dt;
-    rf::Vector3 move = anchor - trail.ref_pos;
-    move.y = 0.0f;
+    const bool airborne = rf::entity_is_falling(ep);
+    rf::Vector3 move = ep->pos - trail.ref_pos;
+    if (!airborne) {
+        move.y = 0.0f;
+    }
     const float dist = move.len();
     // entity_set_speed (0x00427450) gives every multiplayer class this standing run speed, whatever its info->max_vel.
-    const float min_speed = rf::multiplayer_walk_speed * trail_min_speed_factor;
+    const float min_speed = airborne ? 0.0f : rf::multiplayer_walk_speed * trail_min_speed_factor;
     if (dist < trail_sample_spacing) {
         if (trail.ref_time * min_speed > trail_sample_spacing) {
             trail.ribbon.live = false;
-            trail.ref_pos = anchor;
+            trail.ref_pos = ep->pos;
             trail.ref_time = 0.0f;
         }
         return;
     }
     if (dist >= min_speed * trail.ref_time) {
-        trail.side_dir = rf::Vector3{move.z, 0.0f, -move.x} * (1.0f / dist);
-        trail.ribbon.push(trail.lines(anchor));
+        trail.ribbon.push(trail_points(trail, ep));
     }
     else {
         trail.ribbon.live = false;
     }
-    trail.ref_pos = anchor;
+    trail.ref_pos = ep->pos;
     trail.ref_time = 0.0f;
 }
 
@@ -183,24 +225,26 @@ void haste_trails_render()
     }
     const rf::gr::Color& color = powerup_color(AlpinePowerup::haste);
     bool texture_cleared = false;
-    for (const HasteTrail& trail : g_trails) {
+    for (HasteTrail& trail : g_trails) {
         rf::Entity* ep = rf::entity_from_handle(trail.entity_handle);
         if (!ep || trail.ribbon.count == 0 || (ep->obj_flags & rf::OF_HIDDEN)
             || multi_spectate_view_is_first_person_of(ep)) {
             continue;
         }
-        const rf::Vector3 anchor = trail_anchor(ep);
         float fade = 0.0f;
         float half_width = 0.0f;
-        if (!ribbon_trail_view(anchor, trail_style, fade, half_width)) {
+        if (!ribbon_trail_view(ep->pos, trail_style, fade, half_width)) {
             continue;
         }
         if (!texture_cleared) {
             rf::gr::set_texture(-1, -1);
             texture_cleared = true;
         }
-        const std::array<rf::Vector3, 2> head = trail.lines(anchor);
-        ribbon_trail_render(trail.ribbon, trail_should_sample(ep) ? &head : nullptr, 1.0f, trail_style, fade,
-                            half_width, color);
+        const bool sampling = trail_should_sample(ep);
+        std::array<rf::Vector3, 2> head{};
+        if (sampling) {
+            head = trail_points(trail, ep);
+        }
+        ribbon_trail_render(trail.ribbon, sampling ? &head : nullptr, 1.0f, trail_style, fade, half_width, color);
     }
 }

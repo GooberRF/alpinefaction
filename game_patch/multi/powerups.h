@@ -71,6 +71,9 @@ bool level_has_alpine_powerups();
 
 void powerups_apply_remote_state(uint8_t player_id, uint8_t powerup_id, uint32_t time_left_ms);
 void powerups_send_state_to(rf::Player* player);
+// Server: relays a jump by `jumper` to the other clients for its sound, if `jumper` is hasted.
+void powerups_server_on_haste_jump(rf::Player* jumper);
+void powerups_on_remote_haste_jump(uint8_t player_id);
 
 void powerups_level_init();
 // Multiplayer client, after level load: makes the sped-up continuous-fire loops Haste plays, so none is made mid-fight.

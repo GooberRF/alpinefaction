@@ -1080,6 +1080,12 @@ void serialize_payload(const PowerupStatePayload& payload, std::byte* buf, size_
     offset += sizeof(payload.time_left_ms);
 }
 
+// af_sreq_haste_jump
+void serialize_payload(const HasteJumpPayload& payload, std::byte* buf, size_t& offset)
+{
+    buf[offset++] = static_cast<std::byte>(payload.player_id);
+}
+
 // af_sreq_riot_shield_state
 void serialize_payload(const RiotShieldStatePayload& payload, std::byte* buf, size_t& offset)
 {
@@ -1246,6 +1252,23 @@ void af_send_jetpack_state_request(bool on, uint8_t fuel_pct)
     packet.payload = JetpackStateReqPayload{static_cast<uint8_t>(on ? 1 : 0), fuel_pct};
 
     af_send_client_req_packet(packet, true); // reliable
+}
+
+// Haste: report that the local player jumped, for the sound on other clients.
+void af_send_haste_jump_request()
+{
+    if (!rf::is_multi || rf::is_server) {
+        return;
+    }
+
+    af_client_req_packet packet{};
+    packet.header.type = static_cast<uint8_t>(af_packet_type::af_client_req);
+    packet.header.size = sizeof(uint8_t); // req_type only
+    packet.req_type = af_client_req_type::af_req_haste_jump;
+    packet.payload = std::monostate{};
+
+    // A late resend would sound after the jump, so a lost one stays lost.
+    af_send_client_req_packet(packet);
 }
 
 // Zip lines: report that the local player grabbed or let go of a line.
@@ -2039,6 +2062,10 @@ static void af_process_client_req_packet(const void* data, size_t len, const rf:
             zipline_server_on_state_request(player, rope_uid, riding, dir);
             break;
         }
+        case af_client_req_type::af_req_haste_jump: {
+            powerups_server_on_haste_jump(player);
+            break;
+        }
         case af_client_req_type::af_req_stats_pssk: {
             constexpr int64_t k_pssk_min_interval_ms = 1000;
             const int64_t now_ms = timer::get_i64(1000);
@@ -2403,6 +2430,32 @@ void af_send_powerup_state(rf::Player* target, uint8_t player_id, uint8_t poweru
         }
         if (is_player_minimum_af_client_version(&player, 1, 5, 0)) {
             af_send_server_req_packet(packet, &player);
+        }
+    }
+}
+
+// Haste: relay a player's jump. The jumper is skipped because it played its own sound.
+void af_send_haste_jump(uint8_t player_id)
+{
+    if (!rf::is_server) {
+        return;
+    }
+
+    af_server_req_packet packet{};
+    packet.header.type = static_cast<uint8_t>(af_packet_type::af_server_req);
+    packet.header.size = sizeof(uint8_t) + sizeof(HasteJumpPayload);
+    packet.req_type = af_server_req_type::af_sreq_haste_jump;
+    packet.payload = HasteJumpPayload{player_id};
+
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if (&player == rf::local_player || !player.net_data || player.is_bot || player.is_browser) {
+            continue;
+        }
+        if (player.net_data->player_id == player_id || player.net_data->state != rf::NETPLAYER_STATE_IN_GAME) {
+            continue;
+        }
+        if (is_player_minimum_af_client_version(&player, 1, 5, 0)) {
+            af_send_server_req_packet(packet, &player, false);
         }
     }
 }
@@ -3332,6 +3385,14 @@ static void af_process_server_req_packet(const void* data, size_t len, const rf:
             PowerupStatePayload payload{};
             std::memcpy(&payload, bytes + offset, sizeof(payload));
             powerups_apply_remote_state(payload.player_id, payload.powerup_id, payload.time_left_ms);
+            break;
+        }
+        case af_server_req_type::af_sreq_haste_jump: {
+            if (remaining < sizeof(HasteJumpPayload)) {
+                xlog::warn("af_process_server_req_packet: HasteJump payload too short");
+                return;
+            }
+            powerups_on_remote_haste_jump(bytes[offset]);
             break;
         }
         case af_server_req_type::af_sreq_riot_shield_state: {
