@@ -513,7 +513,7 @@ bool owner_is_hasted(const auto& is_owner)
 // player_fpgun_process: the pause before the next weapon is drawn.
 CallHook<int __fastcall(rf::Timestamp*, int, int)> player_fpgun_draw_delay_haste_hook{
     0x004AAD67,
-    [](rf::Timestamp* timestamp, int edx, int delay_ms) {
+    [](rf::Timestamp* timestamp, int edx, int delay_ms) FASTCALL_LAMBDA {
         if (owner_is_hasted(
                 [timestamp](rf::Player& player) { return &player.fpgun_data.draw_delay_timestamp == timestamp; })) {
             delay_ms = static_cast<int>(delay_ms / haste_speed_factor);

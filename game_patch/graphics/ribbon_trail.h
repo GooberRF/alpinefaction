@@ -84,7 +84,8 @@ void ribbon_trail_stroke(int n, const rf::Vector3* pos, const float* alpha, floa
 // Draws each line of `trail`, eased out with age and clear at each stroke's tail. `head`, when given, extends the
 // newest sample to the source's current points at `head_strength`.
 template<int Lines, int Capacity>
-void ribbon_trail_render(const RibbonTrail<Lines, Capacity>& trail, const std::array<rf::Vector3, Lines>* head,
+void ribbon_trail_render(const RibbonTrail<Lines, Capacity>& trail,
+                         const std::array<rf::Vector3, static_cast<std::size_t>(Lines)>* head,
                          float head_strength, const RibbonTrailStyle& style, float fade, float half_width,
                          const rf::gr::Color& color)
 {
