@@ -152,6 +152,7 @@ enum class af_client_req_type : uint8_t
     af_req_vehicle_crush = 0xD, // Alpine 1.5 (13 bytes: VehicleCrushReqPayload)
     af_req_zipline_state = 0xE, // Alpine 1.5 (6 bytes: rope_uid, riding, dir)
     af_req_rcon_player_action = 0xF, // Alpine 1.5 (2 bytes: RconPlayerActionReqPayload)
+    af_req_haste_jump = 0x10,   // Alpine 1.5 (no additional data)
 };
 
 // Frozen wire constants, values can NEVER be reordered or changed.
@@ -497,6 +498,7 @@ enum class af_server_req_type : uint8_t
     af_sreq_force_spectate = 0x12,     // Alpine 1.5 (1 byte: 1 = enter spectate, 0 = leave)
     af_sreq_player_roles = 0x13,       // Alpine 1.5 (variable: count, {player_id, af_player_role_flags})
     af_sreq_powerup_state = 0x14,      // Alpine 1.5 (6 bytes: player_id, powerup_id, time_left_ms)
+    af_sreq_haste_jump = 0x15,         // Alpine 1.5 (1 byte: player_id)
 };
 
 struct ShouldGibPayload
@@ -626,6 +628,14 @@ struct PowerupStatePayload
 };
 static_assert(sizeof(PowerupStatePayload) == 6);
 
+// A hasted player jumped. Movement is clientside, so a client's jumps are reported to the server, which relays them for
+// the sound.
+struct HasteJumpPayload
+{
+    uint8_t player_id = 0;
+};
+static_assert(sizeof(HasteJumpPayload) == 1);
+
 // Riot shield durability is server authoritative.
 struct RiotShieldStatePayload
 {
@@ -658,7 +668,7 @@ using af_server_req_payload = std::variant<ShouldGibPayload, TeleportEntityPaylo
                                            ReadyPromptPayload, PitQueueStatePayload, EntityOnFirePayload,
                                            EntityJetpackPayload, RiotShieldStatePayload, AwardPayload,
                                            MatchStatePayload, ZiplineStatePayload, ReserveAmmoPayload,
-                                           PowerupStatePayload>;
+                                           PowerupStatePayload, HasteJumpPayload>;
 
 struct af_server_req_packet
 {
@@ -1269,6 +1279,8 @@ void af_send_rope_states_to(rf::Player* player, bool ziplines_only);
 void af_send_riot_shield_state(uint32_t obj_handle, float life, const rf::Vector3& impact_pos);
 // target nullptr: every client.
 void af_send_powerup_state(rf::Player* target, uint8_t player_id, uint8_t powerup_id, uint32_t time_left_ms);
+void af_send_haste_jump_request();
+void af_send_haste_jump(uint8_t player_id);
 void af_send_award(rf::Player* player, uint8_t award_id, uint8_t victim_player_id);
 void af_send_reserve_ammo(rf::Player* player, int weapon_type, int reserve);
 void af_send_award_for_demo(rf::Player* recorder, uint8_t award_id, uint8_t victim_player_id, uint8_t earner_id);

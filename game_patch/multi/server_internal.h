@@ -864,6 +864,9 @@ struct MutatorConfig
     std::string join_bots_skill;
     std::string join_bots_personality;
 
+    // Item Replacement: the item_replacements entries it wrote, so a narrower scope's redeclaration can take them back.
+    std::map<std::string, std::string> item_replace_entries;
+
     // Display only: human-readable names of the mutators applied to these rules.
     std::vector<std::string> active_labels;
 

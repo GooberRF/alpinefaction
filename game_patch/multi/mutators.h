@@ -52,6 +52,7 @@ enum class MutatorId : uint8_t
     Dodging = 19,
     Crits = 20,
     JoinBots = 21,
+    ItemReplace = 22,
 };
 
 struct MutatorOptionChoice
