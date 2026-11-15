@@ -20,6 +20,7 @@
 #include "vehicle_crash_tuning.h"
 #include "vehicle_debris.h"
 #include "../alpine_packets.h"
+#include "../awards.h"
 #include "../gametype.h"
 #include "../kill_attribution.h"
 #include "../server_internal.h"
@@ -1562,6 +1563,13 @@ namespace
             if (!rf::is_multi || !rf::is_server || !vehicle) {
                 return; // single player and clients keep the stock scan
             }
+            // The destroyer as vehicle_resolve_damage_killer credits him: nobody for an unattributed death.
+            const auto lethal = g_vehicle_state.lethal_killer.find(vehicle->handle);
+            const VehicleLethalKiller* blow =
+                lethal != g_vehicle_state.lethal_killer.end() ? &lethal->second : nullptr;
+            rf::Player* destroyer = blow && vehicle_lethal_killer_entity(*blow)
+                ? rf::multi_find_player_by_id(blow->player_id) : nullptr;
+            const AwardsVehicleBlastScope award_scope{vehicle, destroyer, blow ? blow->vehicle_class : -1};
             for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
                 rf::Entity* occupant = rf::entity_from_handle(player.entity_handle);
                 if (occupant && occupant->host_handle == vehicle->handle) {

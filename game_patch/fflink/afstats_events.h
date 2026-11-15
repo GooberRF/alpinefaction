@@ -161,6 +161,35 @@ enum class KillCause : uint8_t
     payload_finale = 2,
 };
 
+// Wire values from the powerup registry of powerup_event and the kill bitmasks: the stock pair, then
+// 2 + AlpinePowerup for the timed Alpine powerups.
+enum class Powerup : uint8_t
+{
+    damage_amp = 0,
+    invulnerability = 1,
+    jetpack = 2,
+    haste = 3,
+    vampire = 4,
+};
+inline constexpr size_t powerup_count = static_cast<size_t>(Powerup::vampire) + 1;
+
+// Wire values from the powerup_event `kind` registry.
+enum class PowerupEventKind : uint8_t
+{
+    start = 0,
+    refresh = 1, // picked up again while held
+    end = 2,
+};
+
+// Wire values from the powerup_event `end_reason` registry.
+enum class PowerupEndReason : uint8_t
+{
+    expired = 0,
+    died = 1,
+    left = 2,
+    level_end = 3,
+};
+
 // Wire values from the match_end `result` registry.
 enum class MatchResult : uint8_t
 {
@@ -246,12 +275,13 @@ void on_game_end();
 // `vehicle_class` is the wire-frozen VehicleDamageClass of the killing vehicle, or -1
 // (reported as JSON null). `victim_vehicle_class` is the same for the hull the victim rode, and
 // `killer_seat` the seat of the killing vehicle the blow came from; -1 is null for both. `crit` is
-// only reported while the Crits mutator is on.
+// only reported while the Crits mutator is on. `killer_powerups` and `victim_powerups` are bitmasks
+// on the Powerup registry.
 void on_kill(rf::Player* victim, rf::Player* killer, int weapon_type, int damage_type,
              uint8_t kill_flags, const std::vector<uint8_t>& assist_player_ids,
              const rf::Vector3& victim_pos, const rf::Vector3* killer_pos, int vehicle_class,
              int victim_vehicle_class = -1, int killer_seat = -1, bool crit = false,
-             KillCause cause = KillCause::none);
+             KillCause cause = KillCause::none, uint8_t killer_powerups = 0, uint8_t victim_powerups = 0);
 
 // A player earned an award. `award_id` is the wire-frozen AwardId registry in multi/awards.h and
 // goes on the wire verbatim; `victim` is the opposing player the award was earned against, null
@@ -337,8 +367,16 @@ void on_payload_event(PayloadEventKind kind, float distance, const std::vector<r
 // time (defenders blocking it).
 void on_payload_zone_time(const std::vector<rf::Player*>& players, bool blocking, float dt);
 
-// The Vampire mutator's life steal gave `player` this much effective health (armor counts double).
+// Life steal, from the Vampire mutator or powerup, gave `player` this much effective health (armor
+// counts double).
 void on_lifesteal(rf::Player* player, float healed);
+
+// A player picked up a timed powerup. `was_held` is whether they held it just before, and
+// `time_left_ms` the time it has now. Emits `powerup_event` start, or refresh while its hold is open.
+void on_powerup_pickup(rf::Player* player, Powerup powerup, bool was_held, uint32_t time_left_ms);
+// A player's timed Alpine powerup ran out or was lost to death. Emits `powerup_event` end for an open hold.
+// The stock pair's ends are polled instead. Holds also end as their player leaves and as the game ends.
+void on_powerup_end(rf::Player* player, Powerup powerup, PowerupEndReason reason);
 
 // The Scavenger target zone was placed.
 void on_scav_zone(ScavZoneCause cause, const rf::Vector3& pos, float radius, int timeout_ms);

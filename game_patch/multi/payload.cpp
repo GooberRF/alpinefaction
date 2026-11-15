@@ -10,6 +10,7 @@
 #include <common/utils/list-utils.h>
 #include "payload.h"
 #include "alpine_packets.h"
+#include "awards.h"
 #include "kill.h"
 #include "gametype.h"
 #include "server_internal.h"
@@ -490,6 +491,12 @@ void end_setup()
     }
 }
 
+// The cart is coasting on its last pushers' credit, with nobody pushing it now
+bool capture_credit_coasting()
+{
+    return g_payload.pushers.empty() && g_payload.capture_credit.valid() && !g_payload.capture_credit.elapsed();
+}
+
 void begin_finale()
 {
     g_payload.state = PayloadCartState::finale;
@@ -499,6 +506,11 @@ void begin_finale()
     const float push_time = std::max(rf::level.time - g_payload.setup_end_time, 0.0f);
     // Ahead of the finale's own deaths
     report(afstats::PayloadEventKind::finale, static_cast<int>(std::lround(push_time * 1000.0f)));
+    if (g_payload.overtime) {
+        for (const uint8_t id : capture_credit_coasting() ? g_payload.last_pushers : g_payload.pushers) {
+            grant_award(rf::multi_find_player_by_id(id), AwardId::special_delivery);
+        }
+    }
     if (g_payload.finale) {
         if (const auto center = payload_cart_center()) {
             damage_near_finale(*center);
@@ -1199,9 +1211,7 @@ bool payload_player_credited_for_capture(const rf::Player& player)
     if (payload_player_in_push_zone(player)) {
         return true;
     }
-    const bool coasting = g_payload.pushers.empty() && g_payload.capture_credit.valid()
-        && !g_payload.capture_credit.elapsed();
-    return coasting && player.net_data
+    return capture_credit_coasting() && player.net_data
         && std::find(g_payload.last_pushers.begin(), g_payload.last_pushers.end(), player.net_data->player_id)
             != g_payload.last_pushers.end();
 }

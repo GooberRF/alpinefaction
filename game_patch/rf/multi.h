@@ -366,6 +366,14 @@ namespace rf
         uint32_t ip, uint16_t port, const char* name, const char* level,
         const char* mod, int players, int max_players, int game_type, int flags)>(0x0044DD50);
     static auto& multi_entity_is_female = addr_as_ref<bool(int mp_character_idx)>(0x004762C0);
+    // multi_powerup_add types. The super pair is applied at once; only the first two are timed.
+    enum MultiPowerupType
+    {
+        MULTI_POWERUP_INVULNERABILITY = 0,
+        MULTI_POWERUP_DAMAGE_AMP = 1,
+        MULTI_POWERUP_SUPER_ARMOR = 2,
+        MULTI_POWERUP_SUPER_HEALTH = 3,
+    };
     static auto& multi_powerup_has_player = addr_as_ref<bool(Player* pp, int powerup_type)>(0x004802B0);
     static auto& multi_powerup_get_time_until = addr_as_ref<int(Player* pp, int powerup_type)>(0x004802D0);
     static auto& multi_powerup_add = addr_as_ref<void(Player* pp, int powerup_type, int time_ms)>(0x00480050);

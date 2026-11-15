@@ -15,6 +15,7 @@
 #include "../../purefaction/pf_packets.h"
 #include "../multi.h"
 #include "../../multi/obj_update_delta.h"
+#include <array>
 #include <limits>
 #include <map>
 
@@ -50,6 +51,15 @@ struct ClientVersionInfoProfile {
     bool is_d3d11 = false;
 };
 
+// A timed powerup a player holds, from its powerup_event start to its end.
+struct AfstatsPowerupHold {
+    bool open = false;
+    int64_t start_ms = 0;
+    uint32_t kills = 0;
+    float damage = 0.0f;
+    float healed = 0.0f;
+};
+
 // Per-game, per-player counters for the FactionFiles event stream. Reset at
 // every game start; serialized whole into the game_end / player_leave summary
 // block. Score and caps are read live from the engine at summary time instead of
@@ -75,8 +85,10 @@ struct AfstatsGameCounters {
     // Summed from frame times, so kept fractional until reported
     double payload_push_ms = 0.0;
     double payload_block_ms = 0.0;
-    // Vampire mutator, in effective health
+    // Vampire mutator and powerup, in effective health
     float lifesteal_healed = 0.0f;
+    // Indexed by the powerup_event registry
+    std::array<AfstatsPowerupHold, 5> powerup_holds{};
     int64_t ping_sum = 0;
     uint32_t ping_samples = 0;
     // The same, but only over the current player_pings window: sampled every frame and

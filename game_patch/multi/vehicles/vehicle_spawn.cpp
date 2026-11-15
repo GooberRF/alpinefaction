@@ -14,6 +14,7 @@
 #include "vehicle_internal.h"
 #include "vehicle_spawn.h"
 #include "../alpine_packets.h"
+#include "../awards.h"
 #include "../gametype.h"
 #include "../../misc/level.h"
 #include "../../object/alpine_obj_common.h"
@@ -226,6 +227,10 @@ void vehicle_on_hull_boarded(rf::Entity* vehicle, const rf::Entity* rider)
         if (pp) {
             const int team = pp->team == 1 ? 1 : 0;
             if (st->team != team) {
+                // Taken from the other team rather than claimed from nobody.
+                if (st->team != -1 && !vehicle_hull_is_turret(vehicle)) {
+                    awards_on_vehicle_claimed(pp, vehicle->handle);
+                }
                 st->team = team;
                 st->lock_to_team = false;
                 vehicle_stats_hull_event(vehicle->handle, afstats::VehicleEventKind::claimed, pp);

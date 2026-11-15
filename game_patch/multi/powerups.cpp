@@ -1,8 +1,10 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <functional>
 #include <iterator>
 #include <optional>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -15,11 +17,14 @@
 #include <xlog/xlog.h>
 #include "powerups.h"
 #include "alpine_packets.h"
+#include "awards.h"
 #include "bagman.h"
+#include "gametype.h"
 #include "haste_trails.h"
 #include "jetpack.h"
 #include "salvage.h"
 #include "demo/demo.h"
+#include "../fflink/afstats_events.h"
 #include "../hud/hud.h"
 #include "../hud/hud_internal.h"
 #include "../rf/ai.h"
@@ -107,10 +112,25 @@ std::array<int, std::size(super_item_class_names)> g_super_item_types = [] {
     return types;
 }();
 
-bool g_level_has_powerups = false;
+// Each powerup whose item the level kept.
+std::array<bool, powerup_count> g_level_powerups{};
 
 constexpr const char* haste_jump_sound_filename = "af_haste_jump1.wav";
 int g_haste_jump_sound = -1;
+
+// The stock pair ahead of the Alpine powerups in the afstats registry.
+constexpr int stock_powerup_count = 2;
+static_assert(
+    static_cast<int>(afstats::Powerup::jetpack) == stock_powerup_count + static_cast<int>(AlpinePowerup::jetpack));
+static_assert(
+    static_cast<int>(afstats::Powerup::haste) == stock_powerup_count + static_cast<int>(AlpinePowerup::haste));
+static_assert(
+    static_cast<int>(afstats::Powerup::vampire) == stock_powerup_count + static_cast<int>(AlpinePowerup::vampire));
+
+afstats::Powerup stats_powerup(AlpinePowerup powerup)
+{
+    return static_cast<afstats::Powerup>(stock_powerup_count + static_cast<int>(powerup));
+}
 
 std::optional<AlpinePowerup> powerup_for_item_type(int item_type)
 {
@@ -187,8 +207,10 @@ int __cdecl powerup_item_touch(int entity_handle, int item_handle, int count)
         }
         const auto time_left_ms = static_cast<uint32_t>(std::clamp(count, 1, max_powerup_seconds)) * 1000u;
         const uint8_t player_id = player->net_data->player_id;
+        const bool was_held = powerup_is_active(ep, *powerup);
         set_time_left(entity_handle, player_id, *powerup, time_left_ms / 1000.0f);
         af_send_powerup_state(nullptr, player_id, static_cast<uint8_t>(*powerup), time_left_ms);
+        powerups_on_timed_pickup(player, stats_powerup(*powerup), was_held, time_left_ms);
     }
 
     rf::item_show_pickup_message(ep, item->info, count, false);
@@ -270,6 +292,30 @@ FunHook<void()> items_tbl_parse_hook{
             g_super_item_types[i] = rf::item_lookup_type(super_item_class_names[i]);
         }
     },
+};
+
+// The stock powerups' touch callback, replacing its `call multi_powerup_add`, a relative call no trampoline can carry.
+// The arguments are on the stack, and the caller pops them.
+CodeInjection item_touch_multi_powerup_add_injection{
+    0x0045AB35,
+    [](auto& regs) {
+        rf::Player* player = addr_as_ref<rf::Player*>(regs.esp);
+        const int type = addr_as_ref<int>(regs.esp + 4);
+        const int time_ms = addr_as_ref<int>(regs.esp + 8);
+        // The Bagman carrier's amp has no effect in Bagman modes, so it is no powerup there.
+        const bool reported = type == rf::MULTI_POWERUP_INVULNERABILITY
+            || (type == rf::MULTI_POWERUP_DAMAGE_AMP && !gt_is_bagman_any());
+        const bool was_held = reported && rf::multi_powerup_has_player(player, type);
+        rf::multi_powerup_add(player, type, time_ms);
+        if (reported) {
+            // multi_powerup_add sets the timer, so the time left is the item's.
+            powerups_on_timed_pickup(player,
+                type == rf::MULTI_POWERUP_DAMAGE_AMP ? afstats::Powerup::damage_amp : afstats::Powerup::invulnerability,
+                was_held, static_cast<uint32_t>(std::max(time_ms, 0)));
+        }
+        regs.eip = 0x0045AB3A;
+    },
+    false,
 };
 
 // Colour of the light around a holder of `ep`'s first coloured powerup, null when it holds none.
@@ -631,13 +677,59 @@ int powerups_filter_level_item(int item_type)
     if (*powerup == AlpinePowerup::jetpack && rf::is_multi && jetpacks_are_active()) {
         return -1;
     }
-    g_level_has_powerups = true;
+    g_level_powerups[static_cast<size_t>(*powerup)] = true;
     return item_type;
 }
 
 bool level_has_alpine_powerups()
 {
-    return g_level_has_powerups;
+    return std::ranges::any_of(g_level_powerups, std::identity{});
+}
+
+bool level_has_powerup(AlpinePowerup powerup)
+{
+    // Bagman deletes the placed super items after they load.
+    if (gt_is_bagman_any() && item_type_is_super(powerup_item_type(powerup))) {
+        return false;
+    }
+    return g_level_powerups[static_cast<size_t>(powerup)];
+}
+
+void powerups_on_timed_pickup(rf::Player* player, afstats::Powerup powerup, bool was_held, uint32_t time_left_ms)
+{
+    if (!rf::is_multi || !rf::is_server) {
+        return;
+    }
+    afstats::on_powerup_pickup(player, powerup, was_held, time_left_ms);
+    awards_on_powerup_pickup(player, powerup);
+}
+
+bool powerup_stats_held(rf::Player* player, afstats::Powerup powerup)
+{
+    switch (powerup) {
+        case afstats::Powerup::damage_amp:
+            // Bagman modes patch out its damage, so holding it there is no powerup.
+            return !gt_is_bagman_any() && rf::multi_powerup_has_player(player, rf::MULTI_POWERUP_DAMAGE_AMP);
+        case afstats::Powerup::invulnerability:
+            return rf::multi_powerup_has_player(player, rf::MULTI_POWERUP_INVULNERABILITY);
+        case afstats::Powerup::jetpack:
+        case afstats::Powerup::haste:
+        case afstats::Powerup::vampire:
+            break;
+    }
+    return powerup_is_active(rf::entity_from_handle(player->entity_handle),
+        static_cast<AlpinePowerup>(static_cast<int>(powerup) - stock_powerup_count));
+}
+
+uint8_t powerup_stats_mask(rf::Player* player)
+{
+    uint8_t mask = 0;
+    for (size_t i = 0; i < afstats::powerup_count; ++i) {
+        if (powerup_stats_held(player, static_cast<afstats::Powerup>(i))) {
+            mask |= static_cast<uint8_t>(1u << i);
+        }
+    }
+    return mask;
 }
 
 void powerups_apply_remote_state(uint8_t player_id, uint8_t powerup_id, uint32_t time_left_ms)
@@ -681,7 +773,7 @@ void powerups_send_state_to(rf::Player* player)
 void powerups_level_init()
 {
     g_powerups.clear();
-    g_level_has_powerups = false;
+    g_level_powerups.fill(false);
     haste_trails_clear();
 }
 
@@ -724,7 +816,7 @@ void powerups_do_frame()
     // Runs from rf_do_frame, outside the sim frame the demo pause freezes.
     const float dt = rf::frametime * demo_playback_sim_time_scale();
     g_holder_light_intensity = salvage_advance_pickup_light_pulse(g_holder_light_phase);
-    std::vector<std::pair<int, AlpinePowerup>> expired;
+    std::vector<std::tuple<int, AlpinePowerup, bool>> expired;
     for (auto& [entity_handle, state] : g_powerups) {
         rf::Entity* ep = rf::entity_from_handle(entity_handle);
         rf::Player* player = rf::multi_find_player_by_id(state.player_id);
@@ -738,20 +830,23 @@ void powerups_do_frame()
                 time_left -= dt;
             }
             else {
-                expired.emplace_back(entity_handle, static_cast<AlpinePowerup>(i));
+                expired.emplace_back(entity_handle, static_cast<AlpinePowerup>(i), alive);
             }
         }
     }
 
-    for (const auto& [entity_handle, powerup] : expired) {
+    for (const auto& [entity_handle, powerup, alive] : expired) {
         const auto it = g_powerups.find(entity_handle);
         if (it == g_powerups.end()) {
             continue;
         }
         const uint8_t player_id = it->second.player_id;
         set_time_left(entity_handle, player_id, powerup, 0.0f);
-        if (rf::is_server && rf::multi_find_player_by_id(player_id)) {
+        // A holder who left is no longer found; their holds ended as they left.
+        if (rf::Player* player = rf::is_server ? rf::multi_find_player_by_id(player_id) : nullptr) {
             af_send_powerup_state(nullptr, player_id, static_cast<uint8_t>(powerup), 0);
+            afstats::on_powerup_end(player, stats_powerup(powerup),
+                alive ? afstats::PowerupEndReason::expired : afstats::PowerupEndReason::died);
         }
     }
 }
@@ -808,6 +903,7 @@ void powerups_render_hud()
 void powerups_do_patch()
 {
     items_tbl_parse_hook.install();
+    item_touch_multi_powerup_add_injection.install();
     entity_process_powerup_light_injection.install();
     entity_render_powerup_overlay_injection.install();
     player_fpgun_render_powerup_overlay_injection.install();

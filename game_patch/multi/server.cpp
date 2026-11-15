@@ -2041,9 +2041,12 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
             else if (payload_finale_blast_active()) {
                 kill_cause = afstats::KillCause::payload_finale;
             }
+            // The engine strips a victim's stock powerups only in its deferred death processing.
             afstats::on_kill(damaged_player, killer_player, weapon, damage_type, kill_flags, assists,
                              victim_pos, killer_ep_for_pos ? &killer_ep_for_pos->pos : nullptr,
-                             vehicle_kill_class, victim_vehicle_class, killer_seat, crit_applied, kill_cause);
+                             vehicle_kill_class, victim_vehicle_class, killer_seat, crit_applied, kill_cause,
+                             killer_player ? powerup_stats_mask(killer_player) : 0,
+                             powerup_stats_mask(damaged_player));
 
             kill_attribution_record(killed_id, killer_id, weapon, kill_flags, damage_type,
                                     vehicle_kill_class, std::move(assists));
@@ -2052,7 +2055,8 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
             // from. Runs for every death, so the victim-side award resets cover world deaths and
             // suicides too.
             awards_on_kill(damaged_player, killer_player, weapon, splash, killer_handle,
-                           victim_team_before_damage, damage, life_before, armor_before);
+                           victim_team_before_damage, damage, life_before, armor_before,
+                           {vehicle_kill_class, roadkill_vehicle_class, blast_hull});
 
             // Arena's reload-on-kill is applied from on_player_kill, which the engine only runs
             // in its deferred death processing - too late for the shot that killed, whose clip

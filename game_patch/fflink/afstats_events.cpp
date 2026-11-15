@@ -39,11 +39,13 @@
 #include "../multi/gametype.h"
 #include "../multi/multi.h"
 #include "../multi/payload.h"
+#include "../multi/powerups.h"
 #include "../multi/server_config_snapshot.h"
 #include "../multi/server_internal.h"
 #include "../multi/vehicles/vehicle.h"
 #include "../os/console.h"
 #include "../rf/clutter.h"
+#include "../rf/entity.h"
 #include "../rf/level.h"
 #include "../rf/multi.h"
 #include "../rf/os/os.h"
@@ -279,6 +281,8 @@ struct EvKill
     bool has_crit = false;
     bool crit = false;
     uint8_t cause = 0; // KillCause; none is not sent
+    uint8_t killer_powerups = 0; // Powerup bitmask; 0 is not sent
+    uint8_t victim_powerups = 0;
 };
 
 // The kill event's `vehicle` ids are part of the FactionFiles contract.
@@ -402,6 +406,19 @@ struct EvVehicleEvent
     bool has_cause = false;
     uint8_t cause = 0;
     Vec3 pos;
+};
+
+struct EvPowerupEvent
+{
+    uint8_t kind = 0;
+    uint8_t powerup = 0;
+    std::string player;
+    uint32_t duration_ms = 0; // the time left after a start or refresh, the time held at an end
+    // End only
+    uint8_t end_reason = 0;
+    uint32_t kills = 0;
+    float damage = 0.0f;
+    float healed = 0.0f; // sent for Vampire only
 };
 
 struct EvVehicleSeat
@@ -533,7 +550,8 @@ using EventPayload =
                  EvItemPickup, EvFlagEvent, EvPointEvent, EvBagmanEvent, EvGgLevelup, EvMatchStart,
                  EvMatchEnd, EvRoundStart, EvRoundEnd, EvVoteCalled, EvVoteEnded, EvGeomod,
                  EvClutterDestroyed, EvDetailBrushDestroyed, EvAward, EvPlayerScoreChange,
-                 EvTeamScoreChange, EvPlayerPings, EvPayloadEvent, EvScavZone, EvVehicleEvent, EvVehicleSeat>;
+                 EvTeamScoreChange, EvPlayerPings, EvPayloadEvent, EvScavZone, EvVehicleEvent, EvVehicleSeat,
+                 EvPowerupEvent>;
 
 struct Event
 {
@@ -1224,7 +1242,7 @@ RosterEntry build_roster_entry(rf::Player* player, bool with_summary)
         e.push_ms = std::llround(c.payload_push_ms);
         e.block_ms = std::llround(c.payload_block_ms);
     }
-    if (g_alpine_server_config_active_rules.mutators.vampire_enabled) {
+    if (g_alpine_server_config_active_rules.mutators.vampire_enabled || level_has_powerup(AlpinePowerup::vampire)) {
         e.has_lifesteal = true;
         e.lifesteal_healed = c.lifesteal_healed;
     }
@@ -1527,6 +1545,12 @@ nlohmann::json event_to_json(const Event& e)
                 if (p.cause != 0) {
                     j["cause"] = p.cause;
                 }
+                if (p.killer_powerups != 0) {
+                    j["killer_powerups"] = p.killer_powerups;
+                }
+                if (p.victim_powerups != 0) {
+                    j["victim_powerups"] = p.victim_powerups;
+                }
             }
             else if constexpr (std::is_same_v<T, EvAward>) {
                 j["type"] = "award";
@@ -1646,6 +1670,21 @@ nlohmann::json event_to_json(const Event& e)
                 j["from_seat"] = p.from_seat;
                 j["to_seat"] = p.to_seat;
                 j["reason"] = p.reason;
+            }
+            else if constexpr (std::is_same_v<T, EvPowerupEvent>) {
+                j["type"] = "powerup_event";
+                j["kind"] = p.kind;
+                j["powerup"] = p.powerup;
+                j["player"] = p.player;
+                j["duration_ms"] = p.duration_ms;
+                if (p.kind == static_cast<uint8_t>(PowerupEventKind::end)) {
+                    j["end_reason"] = p.end_reason;
+                    j["kills"] = p.kills;
+                    j["damage"] = p.damage;
+                    if (p.powerup == static_cast<uint8_t>(Powerup::vampire)) {
+                        j["healed"] = p.healed;
+                    }
+                }
             }
             else if constexpr (std::is_same_v<T, EvMatchStart>) {
                 j["type"] = "match_start";
@@ -2392,6 +2431,58 @@ bool ensure_session()
 }
 
 // -------------------------------------------------------------------------
+// Powerup holds
+// -------------------------------------------------------------------------
+
+static_assert(std::tuple_size_v<decltype(AfstatsGameCounters::powerup_holds)> == powerup_count);
+
+// Another player, and in a team game one of the other team.
+bool is_opponent(const rf::Player* attacker, const rf::Player* victim)
+{
+    return attacker != victim && !(multi_is_team_game_type() && attacker->team == victim->team);
+}
+
+void end_powerup_hold(rf::Player* player, Powerup powerup, PowerupEndReason reason)
+{
+    AfstatsPowerupHold& hold = player->afstats_game.powerup_holds[static_cast<size_t>(powerup)];
+    if (!hold.open) {
+        return;
+    }
+    EvPowerupEvent ev;
+    ev.kind = static_cast<uint8_t>(PowerupEventKind::end);
+    ev.powerup = static_cast<uint8_t>(powerup);
+    ev.player = player->afstats_key;
+    ev.duration_ms = static_cast<uint32_t>(std::max<int64_t>(static_cast<int64_t>(uptime_ms()) - hold.start_ms, 0));
+    ev.end_reason = static_cast<uint8_t>(reason);
+    ev.kills = hold.kills;
+    ev.damage = hold.damage;
+    ev.healed = hold.healed;
+    hold = AfstatsPowerupHold{};
+    push_event(std::move(ev));
+}
+
+void end_powerup_holds(rf::Player* player, PowerupEndReason reason)
+{
+    for (size_t i = 0; i < powerup_count; ++i) {
+        end_powerup_hold(player, static_cast<Powerup>(i), reason);
+    }
+}
+
+// The engine expires the stock powerups and strips them on death in its own frame, so their holds are polled.
+void poll_stock_powerup_holds(rf::Player* player)
+{
+    for (const Powerup powerup : {Powerup::damage_amp, Powerup::invulnerability}) {
+        if (!player->afstats_game.powerup_holds[static_cast<size_t>(powerup)].open
+            || powerup_stats_held(player, powerup)) {
+            continue;
+        }
+        rf::Entity* ep = rf::entity_from_handle(player->entity_handle);
+        end_powerup_hold(player, powerup,
+                         ep && !rf::entity_is_dying(ep) ? PowerupEndReason::expired : PowerupEndReason::died);
+    }
+}
+
+// -------------------------------------------------------------------------
 // game_start / game_end content
 // -------------------------------------------------------------------------
 
@@ -2497,6 +2588,10 @@ void emit_game_end(GameEndType end_type)
     // stream closes the nested unit before the game that contained it.
     if (g_round_open) {
         on_round_end(RoundResult::canceled, team_none, nullptr);
+    }
+
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        end_powerup_holds(&player, PowerupEndReason::level_end);
     }
 
     const auto game_type = rf::multi_get_game_type();
@@ -2702,6 +2797,8 @@ void on_player_leave(rf::Player* player)
         return;
     }
 
+    end_powerup_holds(player, PowerupEndReason::left);
+
     EvPlayerLeave ev;
     // Nothing local marked this player: they went away without a left_game packet
     // and without a kick this build initiated, which is a connection timeout.
@@ -2856,7 +2953,7 @@ void on_game_end()
 void on_kill(rf::Player* victim, rf::Player* killer, int weapon_type, int damage_type, uint8_t kill_flags,
              const std::vector<uint8_t>& assist_player_ids, const rf::Vector3& victim_pos,
              const rf::Vector3* killer_pos, int vehicle_class, int victim_vehicle_class, int killer_seat, bool crit,
-             KillCause cause)
+             KillCause cause, uint8_t killer_powerups, uint8_t victim_powerups)
 {
     if (!victim || !ensure_session() || victim->afstats_key.empty()) {
         return;
@@ -2883,6 +2980,8 @@ void on_kill(rf::Player* victim, rf::Player* killer, int weapon_type, int damage
     ev.has_crit = g_alpine_server_config_active_rules.mutators.crits_enabled;
     ev.crit = crit;
     ev.cause = static_cast<uint8_t>(cause);
+    ev.killer_powerups = killer_powerups;
+    ev.victim_powerups = victim_powerups;
 
     for (uint8_t assist_id : assist_player_ids) {
         rf::Player* assister = rf::multi_find_player_by_id(assist_id);
@@ -2899,6 +2998,13 @@ void on_kill(rf::Player* victim, rf::Player* killer, int weapon_type, int damage
         ++c.kills;
         ++c.current_streak;
         c.highest_streak = std::max(c.highest_streak, c.current_streak);
+        if (is_opponent(killer, victim)) {
+            for (AfstatsPowerupHold& hold : c.powerup_holds) {
+                if (hold.open) {
+                    ++hold.kills;
+                }
+            }
+        }
     }
 
     push_event(std::move(ev));
@@ -2988,6 +3094,13 @@ void on_damage(rf::Player* attacker, rf::Player* victim, int weapon_type, int da
     // a roster, so accumulating a summary for them can only ever be dead work.
     if (!attacker_key.empty()) {
         attacker->afstats_game.damage_dealt += amount;
+        if (is_opponent(attacker, victim)) {
+            for (AfstatsPowerupHold& hold : attacker->afstats_game.powerup_holds) {
+                if (hold.open) {
+                    hold.damage += amount;
+                }
+            }
+        }
     }
 
     // The caller decides what counts as an accuracy hit - splash detonations and continuous
@@ -3218,6 +3331,42 @@ void on_lifesteal(rf::Player* player, float healed)
         return;
     }
     player->afstats_game.lifesteal_healed += healed;
+    // The powerup overrides the mutator's ratio, so all of a holder's life steal is the powerup's.
+    AfstatsPowerupHold& vampire = player->afstats_game.powerup_holds[static_cast<size_t>(Powerup::vampire)];
+    if (vampire.open) {
+        vampire.healed += healed;
+    }
+}
+
+void on_powerup_pickup(rf::Player* player, Powerup powerup, bool was_held, uint32_t time_left_ms)
+{
+    // A hold opens only inside a game, so game_end can close every one.
+    if (!player || !ensure_session() || !g_game_open || player->afstats_key.empty()) {
+        return;
+    }
+    AfstatsPowerupHold& hold = player->afstats_game.powerup_holds[static_cast<size_t>(powerup)];
+    if (hold.open && !was_held) {
+        // A stock powerup that ran out and was picked up again before the poll saw it end.
+        end_powerup_hold(player, powerup, PowerupEndReason::expired);
+    }
+
+    EvPowerupEvent ev;
+    ev.kind = static_cast<uint8_t>(hold.open ? PowerupEventKind::refresh : PowerupEventKind::start);
+    ev.powerup = static_cast<uint8_t>(powerup);
+    ev.player = player->afstats_key;
+    ev.duration_ms = time_left_ms;
+    if (!hold.open) {
+        hold.open = true;
+        hold.start_ms = static_cast<int64_t>(uptime_ms());
+    }
+    push_event(std::move(ev));
+}
+
+void on_powerup_end(rf::Player* player, Powerup powerup, PowerupEndReason reason)
+{
+    if (player) {
+        end_powerup_hold(player, powerup, reason);
+    }
 }
 
 void on_scav_zone(ScavZoneCause cause, const rf::Vector3& pos, float radius, int timeout_ms)
@@ -3649,6 +3798,7 @@ void do_frame_impl()
     for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
         if (!player.is_browser && !player.afstats_key.empty()) {
             sample_player_state(&player);
+            poll_stock_powerup_holds(&player);
         }
     }
     // Once per frame, not once per player: the team scores are per-team state.

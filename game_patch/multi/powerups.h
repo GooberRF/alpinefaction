@@ -15,6 +15,11 @@ namespace rf::gr
     struct Color;
 }
 
+namespace afstats
+{
+    enum class Powerup : uint8_t;
+}
+
 // Timed powerups granted by the item classes in common/alpine_powerup_items.h. The server owns the timers and sends
 // each change to the clients, keyed by player id.
 
@@ -65,9 +70,18 @@ int haste_scale_ms(const rf::Entity* ep, int ms);
 void powerup_append_hud_icons(const rf::Entity* ep, std::vector<int>& icons);
 
 // RFL item load, on every side: -1 drops a powerup item a mutator makes redundant. Every powerup item kept is noted
-// for level_has_alpine_powerups.
+// for level_has_alpine_powerups and level_has_powerup.
 int powerups_filter_level_item(int item_type);
 bool level_has_alpine_powerups();
+bool level_has_powerup(AlpinePowerup powerup);
+
+// Server: `player` picked up a timed powerup, stock or Alpine, never one AF grants itself. `was_held` is whether they
+// held it just before, and `time_left_ms` the time it has now.
+void powerups_on_timed_pickup(rf::Player* player, afstats::Powerup powerup, bool was_held, uint32_t time_left_ms);
+// Whether `player` holds the timed powerup `powerup` names in the afstats registry.
+bool powerup_stats_held(rf::Player* player, afstats::Powerup powerup);
+// The afstats registry bitmask of the timed powerups `player` holds.
+uint8_t powerup_stats_mask(rf::Player* player);
 
 void powerups_apply_remote_state(uint8_t player_id, uint8_t powerup_id, uint32_t time_left_ms);
 void powerups_send_state_to(rf::Player* player);

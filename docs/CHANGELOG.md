@@ -94,7 +94,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Add `dbg_collision_pairs` console command to print object collision pair pool statistics
 - Add `sv_afstats_events_reset` console command to clear a stuck stats event send, a 401 pause, or a stretched retry pulse and resume the stream without discarding queued events
 - Add rcon profile access to `sv_afstats` and `sv_fflink` commands and make status commands return their output to the rcon holder
-- Expand FactionFiles stats reporting with vehicle kills, damage and seat events, Payload and Scavenger objective events, Wipeout rounds, critical hits, lifesteal, bot details, and match winners
+- Expand FactionFiles stats reporting with vehicle kills, damage and seat events, Payload and Scavenger objective events, Wipeout rounds, critical hits, lifesteal, powerup pickups and holds, bot details, and match winners
 - Use the modern Windows file dialogs for every open and save in the level editor
 - Always render meshes at their highest LOD in the level editor
 - Make a mesh exported from a brush in the level editor immediately usable as a `Mesh` object
@@ -118,6 +118,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Switching from a spectated player to free look starts the free look camera at the current view instead of where free look was last left
 - Show the spectated player's jetpack fuel gauge in third person spectate and when `spectate_minui` is enabled
 - Add `cl_dominationmsgs` console command to toggle display of dominating and revenge server messages in chat
+- Add Special Delivery, Roadkill, Scrap Metal, Wrecking Crew, Grand Theft Auto, Air Superiority, Power Trip and Stacked multiplayer awards
 - Add `dbg_terrain_batches` console command to tint terrain faces by render batch (Direct3D 11 renderer only)
 - Add `dbg_terrain_decorations` console command to toggle terrain mesh decorations and print their draw statistics
 - Add `Require Direct3D 11` level property

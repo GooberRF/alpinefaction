@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <bitset>
 #include <chrono>
 #include <deque>
@@ -33,9 +34,13 @@
 #include "kill_attribution.h"
 #include "multi.h"
 #include "mutators.h"
+#include "payload.h"
+#include "powerups.h"
 #include "salvage.h"
+#include "scavenger.h"
 #include "server.h"
 #include "server_internal.h"
+#include "vehicles/vehicle.h"
 #include "../misc/settings_registry.h"
 
 // Server-detected per-player awards. The server owns every condition below; the client is told an
@@ -116,13 +121,18 @@ bool player_scanner_engaged(const rf::Player* player, const rf::Entity* ep)
         && rf::weapon_has_scanner(ep->ai.current_primary_weapon);
 }
 
-bool player_is_flag_carrier(rf::Player* player)
+// Whoever is running the mode's objective: a flag or cartridge carrier, or an attacker pushing the cart.
+bool player_is_objective_runner(const rf::Player* player, int player_team)
 {
     if (rf::multi_get_game_type() == rf::NG_TYPE_CTF) {
         return rf::multi_ctf_get_red_flag_player() == player ||
         rf::multi_ctf_get_blue_flag_player() == player;
     }
-    return gt_is_salvage() && salvage_get_carrier() == player;
+    if (payload_active()) {
+        return player_team == payload_attacking_team() && payload_player_in_push_zone(*player)
+            && !payload_in_setup() && !payload_finale_reached();
+    }
+    return salvage_player_is_carrier(player);
 }
 
 // -------------------------------------------------------------------------
@@ -143,6 +153,9 @@ constexpr int64_t bag_check_window_ms = 1000;
 constexpr uint8_t nemesis_kills_needed = 5;
 constexpr int hat_trick_caps_needed = 3;
 constexpr int stonewall_kills_needed = 5;
+constexpr int wrecking_crew_kills_needed = 2;
+constexpr int power_trip_kills_needed = 5;
+constexpr int stacked_powerups_needed = 3;
 constexpr int clean_sweep_min_roster = 2;
 constexpr int64_t hazard_pay_hold_ms = 60000;
 constexpr int64_t censored_window_ms = 1000;
@@ -180,7 +193,7 @@ struct AwardPlayerState
     bool hazard_pay_granted = false;
     // Hat Trick: captures since this life began.
     int caps_this_life = 0;
-    // Stonewall: flag carriers killed this life.
+    // Stonewall: objective runners killed this life.
     int carrier_kills = 0;
     // Clean Sweep: the enemies killed this life, and whether the sweep already paid out. A bitset,
     // not a container: 256 of these live in a flat array, so the state may not heap-allocate.
@@ -193,6 +206,13 @@ struct AwardPlayerState
     // 2fer: the shotgun volley being counted.
     int64_t last_shotgun_kill_ms = 0;
     int shotgun_volley_kills = 0;
+    // Grand Theft Auto: the hull this player took from the other team this life, or -1.
+    int stolen_hull_handle = -1;
+    // Power Trip and Stacked, as afstats::Powerup bits: the timed powerups running from a pickup this
+    // life, and which pickups have paid out. The kill counts are per pickup and restart with each one.
+    uint8_t power_pickup_mask = 0;
+    uint8_t power_trip_granted_mask = 0;
+    std::array<uint8_t, afstats::powerup_count> power_trip_kills{};
     // Per-award repeat throttle; 0 = never granted.
     std::array<int64_t, award_id_count> last_grant_ms{};
 };
@@ -252,6 +272,24 @@ struct DetonationFrame
 // nor leaving one may allocate in the common (no kills) case.
 std::vector<DetonationFrame> g_detonation_stack;
 int g_detonation_depth = 0;
+
+// -------------------------------------------------------------------------
+// Vehicle blast frames (Scrap Metal, Wrecking Crew, Air Superiority). One frame per hull whose
+// occupant blast is resolving, stacked in case a rider's death destroys another hull meanwhile.
+// -------------------------------------------------------------------------
+
+struct VehicleBlastFrame
+{
+    int hull_handle = -1;
+    int hull_class = -1;
+    rf::Player* destroyer = nullptr;
+    int destroyer_vehicle_class = -1;
+    // Counted as the hull dies, not from the kills: a rider can survive the blast.
+    int enemy_occupants = 0;
+    std::vector<DetonationKills> killers;
+};
+
+std::vector<VehicleBlastFrame> g_vehicle_blast_stack;
 
 // -------------------------------------------------------------------------
 // Lag-compensated shot scope (2fer). One scope is one fired projectile: sniper and rail both
@@ -514,13 +552,22 @@ bool ctf_capture_denied(rf::Player* killer, rf::Player* victim, int victim_team_
     return true;
 }
 
-bool sal_capture_denied(rf::Player* killer, rf::Player* victim, int victim_team, rf::Vector3* out_base)
+bool sal_capture_denied(rf::Player* killer, rf::Player* victim, int victim_team, rf::Vector3* out_base,
+                        float* out_radius)
 {
-    if (!gt_is_salvage() || salvage_get_carrier() != victim) {
+    if (!salvage_player_is_carrier(victim)) {
         return false;
     }
     if (multi_is_team_game_type() && killer->team == victim_team) {
         return false;
+    }
+    if (gt_is_scavenger()) {
+        // A carrier who reaches the zone alive captures that frame, so the margin starts at its edge.
+        if (!scavenger_get_zone(out_base)) {
+            return false;
+        }
+        *out_radius = scavenger_get_zone_radius() + denied_base_radius;
+        return true;
     }
     rf::Vector3 red_base{};
     rf::Vector3 blue_base{};
@@ -535,8 +582,9 @@ bool sal_capture_denied(rf::Player* killer, rf::Player* victim, int victim_team,
 void check_capture_denied(rf::Player* killer, rf::Player* victim, int victim_team)
 {
     rf::Vector3 base{};
+    float radius = denied_base_radius;
     if (!ctf_capture_denied(killer, victim, victim_team, &base)
-        && !sal_capture_denied(killer, victim, victim_team, &base)) {
+        && !sal_capture_denied(killer, victim, victim_team, &base, &radius)) {
         return;
     }
 
@@ -545,7 +593,7 @@ void check_capture_denied(rf::Player* killer, rf::Player* victim, int victim_tea
     if (!victim_ep) {
         return;
     }
-    if ((victim_ep->pos - base).len() <= denied_base_radius) {
+    if ((victim_ep->pos - base).len() <= radius) {
         grant_award(killer, AwardId::capture_denied, victim);
     }
 }
@@ -689,9 +737,9 @@ void check_quickdraw(rf::Player* killer, rf::Player* victim, int weapon_type, bo
     grant_award(killer, AwardId::quickdraw, victim);
 }
 
-void check_stonewall(rf::Player* killer, rf::Player* victim)
+void check_stonewall(rf::Player* killer, rf::Player* victim, int victim_team)
 {
-    if (!player_is_flag_carrier(victim)) {
+    if (!player_is_objective_runner(victim, victim_team)) {
         return;
     }
     AwardPlayerState* state = state_for(killer);
@@ -804,6 +852,83 @@ void check_x_ray(rf::Player* attacker, rf::Player* victim, int weapon_type)
     grant_award(attacker, AwardId::x_ray, victim);
 }
 
+// The crush is only ever dealt to a player on foot: a seated rider is exempt from it.
+void check_roadkill(rf::Player* killer, rf::Player* victim, const AwardKillVehicles& vehicles)
+{
+    if (vehicles.roadkill_class >= 0) {
+        grant_award(killer, AwardId::roadkill, victim);
+    }
+}
+
+void check_grand_theft_auto(rf::Player* killer, rf::Player* victim, int killer_entity_handle,
+                            const AwardKillVehicles& vehicles)
+{
+    AwardPlayerState* state = state_for(killer);
+    if (!state || state->stolen_hull_handle == -1 || vehicles.kill_class < 0) {
+        return;
+    }
+    const rf::Entity* hull = vehicle_ridden_live_hull(rf::entity_from_handle(killer_entity_handle));
+    if (!hull || hull->handle != state->stolen_hull_handle) {
+        return;
+    }
+    state->stolen_hull_handle = -1;
+    grant_award(killer, AwardId::grand_theft_auto, victim);
+}
+
+void note_vehicle_blast_kill(rf::Player* killer, rf::Player* victim, int blast_hull)
+{
+    const int killer_id = player_id_of(killer);
+    if (blast_hull == -1 || killer_id < 0) {
+        return;
+    }
+    for (auto frame = g_vehicle_blast_stack.rbegin(); frame != g_vehicle_blast_stack.rend(); ++frame) {
+        if (frame->hull_handle != blast_hull) {
+            continue;
+        }
+        auto it = std::find_if(frame->killers.begin(), frame->killers.end(),
+                               [&](const DetonationKills& k) { return k.killer_id == killer_id; });
+        if (it == frame->killers.end()) {
+            frame->killers.push_back({static_cast<uint8_t>(killer_id), 1, victim});
+        }
+        else {
+            ++it->count;
+            it->last_victim = victim;
+        }
+        return;
+    }
+}
+
+// Pruned against the live holds rather than cleared at each powerup's end, so nothing has to watch for
+// one running out.
+void prune_power_pickups(rf::Player* player, AwardPlayerState& state)
+{
+    state.power_pickup_mask &= powerup_stats_mask(player);
+}
+
+void check_power_trip(rf::Player* killer, rf::Player* victim)
+{
+    AwardPlayerState* state = state_for(killer);
+    if (!state) {
+        return;
+    }
+    prune_power_pickups(killer, *state);
+    bool grant = false;
+    for (size_t i = 0; i < afstats::powerup_count; ++i) {
+        const auto bit = static_cast<uint8_t>(1u << i);
+        if (!(state->power_pickup_mask & bit) || (state->power_trip_granted_mask & bit)) {
+            continue;
+        }
+        if (++state->power_trip_kills[i] >= power_trip_kills_needed) {
+            state->power_trip_granted_mask |= bit;
+            grant = true;
+        }
+    }
+    // Once for the kill, however many of the running pickups it completes.
+    if (grant) {
+        grant_award(killer, AwardId::power_trip, victim);
+    }
+}
+
 // Nemesis is a private status message pair, never an award; Revenge is the award for breaking one.
 void update_nemesis(rf::Player* killer, rf::Player* victim)
 {
@@ -900,6 +1025,14 @@ constexpr std::array<AwardDisplay, award_id_count> award_display{{
     {"X-Ray", "X-RAY!", nullptr},
     {"Depth Charge", "DEPTH CHARGE!", nullptr},
     {"Censored", "CENSORED!", nullptr},
+    {"Special Delivery", "SPECIAL DELIVERY!", nullptr},
+    {"Roadkill", "ROADKILL!", nullptr},
+    {"Scrap Metal", "SCRAP METAL!", nullptr},
+    {"Wrecking Crew", "WRECKING CREW!", nullptr},
+    {"Grand Theft Auto", "GRAND THEFT AUTO!", nullptr},
+    {"Air Superiority", "AIR SUPERIORITY!", nullptr},
+    {"Power Trip", "POWER TRIP!", nullptr},
+    {"Stacked", "STACKED!", nullptr},
 }};
 static_assert(award_display[award_id_count - 1].text != nullptr);
 
@@ -976,7 +1109,7 @@ const char* award_name(uint8_t award_id)
 
 void awards_on_kill(rf::Player* victim, rf::Player* killer, int weapon_type, bool splash,
                     int killer_entity_handle, int victim_team, float damage, float victim_life,
-                    float victim_armor)
+                    float victim_armor, const AwardKillVehicles& vehicles)
 {
     if (!awards_tracking_active() || !victim) {
         return;
@@ -994,6 +1127,8 @@ void awards_on_kill(rf::Player* victim, rf::Player* killer, int weapon_type, boo
         victim_state->clean_sweep_granted = false;
         victim_state->riot_stick_kill = false;
         victim_state->riot_shield_kill = false;
+        victim_state->stolen_hull_handle = -1;
+        victim_state->power_pickup_mask = 0;
     }
 
     sample_ctf_flag_homes();
@@ -1036,6 +1171,8 @@ void awards_on_kill(rf::Player* victim, rf::Player* killer, int weapon_type, boo
         g_shot_scope.last_victim = victim;
     }
 
+    note_vehicle_blast_kill(killer, victim, vehicles.blast_hull);
+
     // Toasty: burn out the player who lit you, before their fire burns you out. Both ids must be
     // real - the accessor's "not burning" answer is -1, which is also an unidentifiable player.
     const int killer_id = player_id_of(killer);
@@ -1061,10 +1198,13 @@ void awards_on_kill(rf::Player* victim, rf::Player* killer, int weapon_type, boo
     check_airshot(killer, victim, weapon_type, splash);
     check_clean_sweep(killer, victim);
     check_quickdraw(killer, victim, weapon_type, splash);
-    check_stonewall(killer, victim);
+    check_stonewall(killer, victim, victim_team);
     check_last_laugh(killer, victim, weapon_type, killer_entity_handle);
     check_depth_charge(killer, victim, killer_entity_handle);
     check_shotgun_volley(killer, victim, weapon_type, splash);
+    check_roadkill(killer, victim, vehicles);
+    check_grand_theft_auto(killer, victim, killer_entity_handle, vehicles);
+    check_power_trip(killer, victim);
     update_nemesis(killer, victim);
 }
 
@@ -1185,6 +1325,85 @@ void awards_detonation_end()
     }
 }
 
+AwardsVehicleBlastScope::AwardsVehicleBlastScope(const rf::Entity* hull, rf::Player* destroyer,
+                                                 int destroyer_vehicle_class)
+{
+    if (!awards_tracking_active() || !hull) {
+        return;
+    }
+    int enemy_occupants = 0;
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        const rf::Entity* occupant = rf::entity_from_handle(player.entity_handle);
+        if (occupant && occupant->host_handle == hull->handle && is_enemy_kill(destroyer, &player, player.team)) {
+            ++enemy_occupants;
+        }
+    }
+    active_ = true;
+    g_vehicle_blast_stack.push_back(
+        {hull->handle, vehicle_damage_class(hull), destroyer, destroyer_vehicle_class, enemy_occupants, {}});
+}
+
+AwardsVehicleBlastScope::~AwardsVehicleBlastScope()
+{
+    if (!active_ || g_vehicle_blast_stack.empty()) {
+        return;
+    }
+    const VehicleBlastFrame frame = std::move(g_vehicle_blast_stack.back());
+    g_vehicle_blast_stack.pop_back();
+
+    const int destroyer_id = player_id_of(frame.destroyer);
+    rf::Player* destroyer_victim = nullptr;
+    for (const DetonationKills& entry : frame.killers) {
+        if (entry.killer_id == destroyer_id) {
+            destroyer_victim = entry.last_victim;
+        }
+        if (entry.count >= wrecking_crew_kills_needed) {
+            grant_award(rf::multi_find_player_by_id(entry.killer_id), AwardId::wrecking_crew, entry.last_victim);
+        }
+    }
+    if (!frame.destroyer || frame.enemy_occupants <= 0) {
+        return;
+    }
+    if (frame.destroyer_vehicle_class < 0) {
+        grant_award(frame.destroyer, AwardId::scrap_metal, destroyer_victim);
+    }
+    else if (frame.hull_class == VDC_FIGHTER && frame.destroyer_vehicle_class == VDC_FIGHTER) {
+        grant_award(frame.destroyer, AwardId::air_superiority, destroyer_victim);
+    }
+}
+
+void awards_on_vehicle_claimed(const rf::Player* player, int hull_handle)
+{
+    if (!awards_tracking_active()) {
+        return;
+    }
+    if (AwardPlayerState* state = state_for(player)) {
+        state->stolen_hull_handle = hull_handle;
+    }
+}
+
+void awards_on_powerup_pickup(rf::Player* player, afstats::Powerup powerup)
+{
+    const auto index = static_cast<size_t>(powerup);
+    if (!awards_tracking_active() || index >= afstats::powerup_count) {
+        return;
+    }
+    AwardPlayerState* state = state_for(player);
+    if (!state) {
+        return;
+    }
+    // Before this pickup's own bit: a powerup that has run out must not be one of Stacked's three.
+    prune_power_pickups(player, *state);
+    const auto bit = static_cast<uint8_t>(1u << index);
+    const bool already_running = (state->power_pickup_mask & bit) != 0;
+    state->power_pickup_mask |= bit;
+    state->power_trip_kills[index] = 0;
+    state->power_trip_granted_mask &= static_cast<uint8_t>(~bit);
+    if (!already_running && std::popcount(state->power_pickup_mask) == stacked_powerups_needed) {
+        grant_award(player, AwardId::stacked);
+    }
+}
+
 void awards_on_ctf_flag_taken(rf::Player* player, bool red_flag, bool from_base, const rf::Vector3& pos)
 {
     if (!awards_tracking_active()) {
@@ -1208,7 +1427,7 @@ void awards_on_ctf_flag_dropped(rf::Player* player)
     }
 }
 
-// Hat Trick, shared by the two modes that capture flags (CTF and SAL).
+// Hat Trick, shared by the modes that capture flags (CTF, SAL and SCAV).
 static void awards_note_capture(rf::Player* player)
 {
     AwardPlayerState* state = state_for(player);
@@ -1236,7 +1455,7 @@ void awards_on_ctf_capture(rf::Player* player)
 
 void awards_on_sal_flag_taken(rf::Player* player, bool from_spawn)
 {
-    // The shared objective engine also runs Scavenger, which has no awards of its own yet.
+    // The shared objective engine also runs Scavenger, which has no Flag Runner.
     if (!gt_is_salvage() || !awards_tracking_active()) {
         return;
     }
@@ -1257,11 +1476,11 @@ void awards_on_sal_flag_dropped(rf::Player* player)
 
 void awards_on_sal_capture(rf::Player* player)
 {
-    if (!gt_is_salvage() || !awards_tracking_active()) {
+    if (!awards_tracking_active()) {
         return;
     }
     AwardPlayerState* state = state_for(player);
-    if (state && state->clean_steal) {
+    if (gt_is_salvage() && state && state->clean_steal) {
         state->clean_steal = false;
         grant_award(player, AwardId::flag_runner);
     }
@@ -1349,6 +1568,7 @@ void awards_level_init()
     g_nemesis.clear();
     g_detonation_stack.clear();
     g_detonation_depth = 0;
+    g_vehicle_blast_stack.clear();
     g_shot_scope = {};
     g_flag_home[0] = {};
     g_flag_home[1] = {};
