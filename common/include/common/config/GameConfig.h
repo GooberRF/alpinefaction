@@ -56,7 +56,7 @@ struct GameConfig
     CfgVar<bool> true_color_textures = true;
 
     // Audio
-    CfgVar<bool> eax_sound = true;
+    CfgVar<bool> eax_sound = false;
 
     // Multiplayer
     CfgVar<unsigned int> force_port{
