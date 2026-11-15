@@ -51,36 +51,17 @@ LRESULT WINAPI wnd_proc(HWND wnd_handle, UINT msg, WPARAM w_param, LPARAM l_para
     }
 
     switch (msg) {
-    case WM_ACTIVATE:
-        if (is_headless_mode()) {
-            // In headless mode, the console window will have focus and WM_ACTIVATE for the
-            // hidden game window may report inactive. Keep active state pinned so client
-            // simulation/network timing does not fall into background-throttled behavior.
-            rf::is_main_wnd_active = true;
-            return 0;
-        }
-
-        if (!rf::is_dedicated_server) {
-            // Show cursor if window is not active
-            if (w_param) {
-                ShowCursor(FALSE);
-                while (ShowCursor(FALSE) >= 0)
-                    ;
-            }
-            else {
-                ShowCursor(TRUE);
-                while (ShowCursor(TRUE) < 0)
-                    ;
-            }
-        }
-
-        rf::is_main_wnd_active = w_param;
-        return 0;
+    case WM_ACTIVATE: {
+        const bool active = LOWORD(w_param) != WA_INACTIVE;
+        const bool minimized = HIWORD(w_param) != 0;
+        rf::is_main_wnd_active = active && !minimized;
+        return DefWindowProcA(wnd_handle, msg, w_param, l_param);
+    }
 
     case WM_WINDOWPOSCHANGING:
         if (is_headless_mode() && l_param) {
             // Prevent any late startup/system path from re-showing the hidden client window.
-            auto* wp = reinterpret_cast<WINDOWPOS*>(l_param);
+            WINDOWPOS* const wp = reinterpret_cast<WINDOWPOS*>(l_param);
             wp->flags &= ~SWP_SHOWWINDOW;
             wp->flags |= SWP_HIDEWINDOW | SWP_NOACTIVATE;
         }
