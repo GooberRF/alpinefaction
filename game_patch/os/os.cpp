@@ -55,6 +55,15 @@ LRESULT WINAPI wnd_proc(HWND wnd_handle, UINT msg, WPARAM w_param, LPARAM l_para
         const bool active = LOWORD(w_param) != WA_INACTIVE;
         const bool minimized = HIWORD(w_param) != 0;
         rf::is_main_wnd_active = active && !minimized;
+
+        if (!rf::is_dedicated_server) {
+            if (rf::is_main_wnd_active) {
+                while (ShowCursor(FALSE) >= 0) {}
+            } else {
+                while (ShowCursor(TRUE) < 0) {}
+            }
+        }
+
         return DefWindowProcA(wnd_handle, msg, w_param, l_param);
     }
 
