@@ -8,6 +8,7 @@
 #include <common/rfproto.h>
 #include <common/utils/list-utils.h>
 #include <common/utils/string-utils.h>
+#include <common/utils/build-utils.h>
 #include <xlog/xlog.h>
 #include <algorithm>
 #include <chrono>
