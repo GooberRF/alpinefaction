@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <vector>
 #include <common/alpine_powerup_items.h>
 
@@ -64,6 +65,8 @@ const rf::gr::Color& powerup_color(AlpinePowerup powerup);
 // True for the Jetpack, which bots never fly, so they leave its pickups for players.
 bool item_type_is_bot_unusable_powerup(int item_type);
 bool item_type_is_alpine_shard(int item_type);
+// The Alpine item class `item_type` is, shards included.
+std::optional<AlpinePowerup> powerup_for_item_type(int item_type);
 // `ms` shortened by Haste when `ep` holds it.
 int haste_scale_ms(const rf::Entity* ep, int ms);
 // Appends the HUD icon of each powerup `ep` holds that has one.

@@ -31,7 +31,7 @@ namespace fflink {
 
 namespace {
 
-constexpr const char* k_session_url = "https://www.factionfiles.com/pfapi/afstats/v1/playerstatssession.php";
+constexpr const char* k_session_url = "https://link.factionfiles.com/afstats/v1/playerstatssession.php";
 constexpr const char* k_user_agent = AF_USER_AGENT_SUFFIX("AFStatsPlayer");
 
 // Connect and receive timeouts in ms

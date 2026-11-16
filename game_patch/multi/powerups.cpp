@@ -136,18 +136,6 @@ afstats::Powerup stats_powerup(AlpinePowerup powerup)
     return static_cast<afstats::Powerup>(stock_powerup_count + static_cast<int>(powerup));
 }
 
-std::optional<AlpinePowerup> powerup_for_item_type(int item_type)
-{
-    if (item_type < 0) {
-        return std::nullopt;
-    }
-    const auto it = std::ranges::find(g_powerup_item_types, item_type);
-    if (it == g_powerup_item_types.end()) {
-        return std::nullopt;
-    }
-    return static_cast<AlpinePowerup>(std::distance(g_powerup_item_types.begin(), it));
-}
-
 // A continuous-fire loop keeps to the hasted fire rate.
 void haste_on_powerup_changed(int entity_handle, bool granted)
 {
@@ -614,6 +602,18 @@ CallHook<void(rf::VMesh*, float, int, rf::Vector3*, rf::Matrix3*, int)> entity_p
 };
 
 } // namespace
+
+std::optional<AlpinePowerup> powerup_for_item_type(int item_type)
+{
+    if (item_type < 0) {
+        return std::nullopt;
+    }
+    const auto it = std::ranges::find(g_powerup_item_types, item_type);
+    if (it == g_powerup_item_types.end()) {
+        return std::nullopt;
+    }
+    return static_cast<AlpinePowerup>(std::distance(g_powerup_item_types.begin(), it));
+}
 
 bool powerup_is_active(const rf::Entity* ep, AlpinePowerup powerup)
 {

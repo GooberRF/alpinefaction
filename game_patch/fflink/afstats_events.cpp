@@ -343,6 +343,7 @@ struct EvItemPickup
     int item = -1;
     Vec3 pos;
     uint32_t respawn_ms = 0;
+    int alpine_item = -1; // AlpinePowerup; -1 is not sent
 };
 
 struct EvFlagEvent
@@ -1603,6 +1604,9 @@ nlohmann::json event_to_json(const Event& e)
                 j["item"] = p.item;
                 j["pos"] = pos_to_json(p.pos);
                 j["respawn_ms"] = p.respawn_ms;
+                if (p.alpine_item >= 0) {
+                    j["alpine_item"] = p.alpine_item;
+                }
             }
             else if constexpr (std::is_same_v<T, EvFlagEvent>) {
                 j["type"] = "flag_event";
@@ -3193,6 +3197,10 @@ void on_item_pickup(rf::Player* player, int item_type, const rf::Vector3& pos, i
     ev.item = item_type;
     ev.pos = Vec3{pos.x, pos.y, pos.z};
     ev.respawn_ms = respawn_ms > 0 ? static_cast<uint32_t>(respawn_ms) : 0;
+    // A mod's items.tbl shifts the Alpine classes' `item` ids, so they are also named.
+    if (const auto alpine_item = powerup_for_item_type(item_type)) {
+        ev.alpine_item = static_cast<int>(*alpine_item);
+    }
     push_event(std::move(ev));
 }
 
