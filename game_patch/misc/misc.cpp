@@ -806,13 +806,14 @@ ConsoleCommand2 geo_chunk_physics_cmd{
         rf::console::print("GeoMod chunk physics is {}", g_alpine_game_config.geo_chunk_physics ? "enabled" : "disabled");
     },
     "Toggle whether isolated geomod chunks fall as physics objects or disappear.",
-};  
+};
 
-static void reduced_speed_in_background_do_patch() {
+static void reduced_speed_in_background_do_patch()
+{
     // Stock sleeps a second per frame, when our window is out of focus.
     // Use `MsgWaitForMultipleObjects` instead of `os_sleep` to avoid window
     // activation delay.
-    AsmWriter{0x004353D8}.call(+[] (const uint32_t ms) {
+    AsmWriter{0x004353D8}.call(+[](const uint32_t ms) {
         // Do not throttle headless bot clients, because netcode and simulation need to
         // be stable.
         const bool reduce_speed = g_alpine_game_config.reduced_speed_in_background
