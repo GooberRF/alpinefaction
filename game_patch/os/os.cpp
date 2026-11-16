@@ -60,7 +60,8 @@ LRESULT WINAPI wnd_proc(HWND wnd_handle, UINT msg, WPARAM w_param, LPARAM l_para
 
     case WM_WINDOWPOSCHANGING:
         if (is_headless_mode() && l_param) {
-            // Prevent any late startup/system path from re-showing the hidden client window.
+            // Prevent subsequent startup or system operations from showing our window
+            // in headless mode.
             WINDOWPOS* const wp = reinterpret_cast<WINDOWPOS*>(l_param);
             wp->flags &= ~SWP_SHOWWINDOW;
             wp->flags |= SWP_HIDEWINDOW | SWP_NOACTIVATE;
@@ -86,9 +87,7 @@ LRESULT WINAPI wnd_proc(HWND wnd_handle, UINT msg, WPARAM w_param, LPARAM l_para
         mouse_handle_xbutton_wm(2 + HIWORD(w_param), false);
         return TRUE;
 
-    case WM_QUIT:
     case WM_CLOSE:
-    case WM_DESTROY:
         rf::close_app_req = 1;
         break;
 
