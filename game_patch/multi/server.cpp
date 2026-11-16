@@ -1864,8 +1864,10 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
         const bool victim_is_synced_vehicle = rf::is_multi && vehicle_is_synced_entity_type(damaged_ep);
         // Same reason: a destroyed hull has dropped its riders. Accuracy fights a hull as the players
         // aboard it, unless the attacker is one of them.
+        const bool attacker_rides_victim = victim_is_synced_vehicle
+            && vehicle_ridden_hull(rf::entity_from_handle(killer_handle)) == damaged_ep;
         const bool hull_victim = victim_is_synced_vehicle && vehicle_hull_occupied(damaged_ep)
-            && vehicle_ridden_hull(rf::entity_from_handle(killer_handle)) != damaged_ep;
+            && !attacker_rides_victim;
         // Same reason: a rider who dies can be out of their seat afterwards.
         const int victim_vehicle_class = damaged_player ? vehicle_occupied_damage_class(damaged_ep) : -1;
         // Same reason: the roadkill derivation needs a live victim.
@@ -2342,8 +2344,9 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
             }
         }
 
-        // Anchored on the hull's world position because the victim is not a player.
-        if (rf::is_server && rf::is_multi && victim_is_synced_vehicle && real_damage > 0.0f
+        // Anchored on the hull's world position because the victim is not a player. None for the hull the
+        // attacker is riding when the damage lands.
+        if (rf::is_server && rf::is_multi && victim_is_synced_vehicle && !attacker_rides_victim && real_damage > 0.0f
             && killer_player && killer_player->net_data
             && g_alpine_server_config.damage_notification_config.enabled) {
             const AfDamageNotifyHull hull{damaged_ep ? damaged_ep->pos : victim_pos_before_damage,
