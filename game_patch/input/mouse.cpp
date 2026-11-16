@@ -522,8 +522,12 @@ void mouse_apply_patch()
     // Do not limit the cursor to the game window if in menu (Win32 mouse)
     AsmWriter(0x0051DD7C).jmp(0x0051DD8E);
 
-    // Use exclusive DirectInput mode so cursor cannot exit game window
-    //write_mem<u8>(0x0051E14B + 1, 5); // DISCL_EXCLUSIVE|DISCL_FOREGROUND
+    // Use `MsgWaitForMultipleObjects` instead of `Sleep` to avoid window activation delay,
+    // if `DIERR_INPUTLOST` or `DIERR_NOTACQUIRED`.
+    AsmWriter{0x0051DF08, 0x0051DF0F}.call(+[] {
+        // Stock sleeps for 500 ms.
+        MsgWaitForMultipleObjects(0, nullptr, FALSE, 500, QS_ALLINPUT);
+    });
 
     // Commands
     input_mode_cmd.register_cmd();

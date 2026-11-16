@@ -278,6 +278,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Add `ui_show_netmeter` console command to show network statistics
 
 [@is-this-c](https://github.com/is-this-c)
+- Fix delay when switching back to the game window with DirectInput or Reduced Speed In Background enabled, and release held keys when the window loses focus
 - Add `bighud_health` and `bighud_ammo` console variables to disable `bighud` for health and ammo, which is useful for mods incompatible with `bighud`
 - Render `LOADING...` upon level changes in multi
 - Support TrueType fonts in 3D text rendering
