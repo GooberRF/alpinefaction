@@ -252,6 +252,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Redraw the Damage Amplifier and Invulnerability HUD icons and add Big HUD versions
 - Disable EAX sound by default
 - Add `Item Replacement` mutator, with sets that swap super pickups for other powerups or remove them
+- Add `bag_multiple_spawns` dedicated server config option to spawn the Bagman bag at a random `Bag` object or super item spot each time it returns
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Revamp the in-game console with a new font, search, mouse text selection and inline command suggestions
@@ -443,7 +444,6 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix exploding grenades setting off their thrower's remote charges on clients in multiplayer
 - Fix game and level editor crashing when a decal lies on a face with many vertices
 - Fix decals on faces with many vertices showing only partly (Direct3D 11 renderer only)
-- Fix impact decals and particles everywhere taking the color of dynamic lights near the center of the level (Direct3D 11 renderer only)
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize

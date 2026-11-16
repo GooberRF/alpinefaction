@@ -1,5 +1,6 @@
 #pragma once
 
+#include <vector>
 #include "../rf/math/vector.h"
 #include "../rf/math/matrix.h"
 #include "../rf/os/timestamp.h"
@@ -26,12 +27,19 @@ enum class BagState : uint8_t
     BS_Delayed = 3,  // initial spawn delay active; no bag item exists yet
 };
 
+struct BagHome
+{
+    rf::Vector3 pos{};
+    rf::Matrix3 orient{};
+};
+
 struct BagmanInfo
 {
     bool active = false;
     bool spawn_known = false;
     rf::Vector3 spawn_pos{}; // home
     rf::Matrix3 spawn_orient{};
+    std::vector<BagHome> homes; // spawn_pos candidates, rolled at level start and on every return
     int bag_item_type = -1;
     int bag_item_handle = -1;
     rf::Vector3 bag_pos{}; // last known

@@ -3,6 +3,7 @@
 #include <format>
 #include <memory>
 #include <optional>
+#include <random>
 #include <string_view>
 #include <xlog/xlog.h>
 #include <patch_common/CodeInjection.h>
@@ -20,6 +21,7 @@
 #include "server_internal.h"
 #include "alpine_packets.h"
 #include "../fflink/afstats_events.h"
+#include "../main/main.h"
 #include "../rf/multi.h"
 #include "../rf/item.h"
 #include "../rf/entity.h"
@@ -226,6 +228,16 @@ void kill_current_bag_item()
     g_bagman_info.bag_item_handle = -1;
 }
 
+void roll_bag_home()
+{
+    const auto& homes = g_bagman_info.homes;
+    if (homes.empty()) return;
+    std::uniform_int_distribution<size_t> dist(0, homes.size() - 1);
+    const BagHome& home = homes[dist(g_rng)];
+    g_bagman_info.spawn_pos = home.pos;
+    g_bagman_info.spawn_orient = home.orient;
+}
+
 void resolve_bag_spawn_from_placed_item()
 {
     if (g_bagman_info.bag_item_type < 0) {
@@ -235,27 +247,9 @@ void resolve_bag_spawn_from_placed_item()
         return;
     }
 
-    bool position_chosen = false;
-
-    // Priority 1: mapper-placed Bag editor object.
-    if (auto bag = get_first_bag_object()) {
-        g_bagman_info.spawn_pos = bag->pos;
-        g_bagman_info.spawn_orient = bag->orient;
-        position_chosen = true;
-    }
-
-    // Priority 2: hardcoded bag positions for specific RFLs.
-    if (!position_chosen) {
-        if (auto override_pos = lookup_hardcoded_bag_home(rf::level.filename.c_str())) {
-            g_bagman_info.spawn_pos = *override_pos;
-            g_bagman_info.spawn_orient = rf::identity_matrix;
-            position_chosen = true;
-        }
-    }
-
-    // Walk item_list once per super item class, leaving super weapons. The
-    // first match (in priority order) becomes the spawn position if no
-    // higher-priority source chose one.
+    // Walk item_list once per super item class, leaving super weapons. Every match is removed,
+    // collected in priority order as a possible home.
+    std::vector<BagHome> super_item_homes;
     for (const char* cls : super_item_class_names) {
         int type_idx = rf::item_lookup_type(cls);
         if (type_idx < 0 || rf::item_info[type_idx].gives_weapon_id >= 0) continue;
@@ -263,34 +257,58 @@ void resolve_bag_spawn_from_placed_item()
         while (it && it != &rf::item_list) {
             rf::Item* next = it->next;
             if (it->info_index == type_idx) {
-                if (!position_chosen) {
-                    g_bagman_info.spawn_pos = it->pos;
-                    g_bagman_info.spawn_orient = it->orient;
-                    position_chosen = true;
-                }
+                super_item_homes.push_back({it->pos, it->orient});
                 rf::obj_flag_dead(it);
             }
             it = next;
         }
     }
 
-    // Last resort: the level's player start position.
-    if (!position_chosen) {
-        g_bagman_info.spawn_pos = rf::level.player_start_pos;
-        g_bagman_info.spawn_orient = rf::level.player_start_orient;
+    const bool multiple_spawns = g_alpine_server_config_active_rules.bagman.bag_multiple_spawns;
+    auto& homes = g_bagman_info.homes;
+    if (const auto& bags = get_bag_objects(); !bags.empty()) {
+        // Priority 1: mapper-placed Bag editor objects.
+        if (multiple_spawns) {
+            for (const AlpineBagInfo& bag : bags) {
+                homes.push_back({bag.pos, bag.orient});
+            }
+        }
+        else {
+            homes.push_back({bags.front().pos, bags.front().orient});
+        }
+    }
+    else if (multiple_spawns && super_item_homes.size() > 1) {
+        // Multiple bag spawns without Bag objects: every super item spot.
+        homes = std::move(super_item_homes);
+    }
+    else if (auto override_pos = lookup_hardcoded_bag_home(rf::level.filename.c_str())) {
+        // Priority 2: hardcoded bag positions for specific RFLs.
+        homes.push_back({*override_pos, rf::identity_matrix});
+    }
+    else if (!super_item_homes.empty()) {
+        // Priority 3: the highest priority super item.
+        homes.push_back(super_item_homes.front());
+    }
+    else {
+        // Last resort: the level's player start position.
+        homes.push_back({rf::level.player_start_pos, rf::level.player_start_orient});
         xlog::warn("bagman: no suitable item found in level; bag spawned at player start position");
     }
 
-    // Items on the home spot would sit inside the bag, remove them.
+    // Items on a home spot would sit inside the bag, remove them.
     rf::Item* it = rf::item_list.next;
     while (it && it != &rf::item_list) {
         rf::Item* next = it->next;
-        if ((it->pos - g_bagman_info.spawn_pos).len() <= kBagSpawnClearRadius) {
-            rf::obj_flag_dead(it);
+        for (const BagHome& home : homes) {
+            if ((it->pos - home.pos).len() <= kBagSpawnClearRadius) {
+                rf::obj_flag_dead(it);
+                break;
+            }
         }
         it = next;
     }
 
+    roll_bag_home();
     g_bagman_info.bag_pos = g_bagman_info.spawn_pos;
     g_bagman_info.spawn_known = true;
 }
@@ -538,6 +556,7 @@ void bagman_play_return_sound()
 
 static void on_return()
 {
+    roll_bag_home();
     afstats::on_bagman_event(afstats::BagmanEventKind::ret, nullptr, g_bagman_info.spawn_pos);
     g_bagman_info.state = BagState::BS_At_Spawn;
     g_bagman_info.return_timer.invalidate();

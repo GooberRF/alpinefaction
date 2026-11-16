@@ -63,6 +63,7 @@ std::vector<std::pair<std::string, SettingValue>> build_gametype_settings(rf::Ne
             add("score_tick_ms", bagman_get_score_tick_ms());
             add("bag_return_time_ms", rules.bagman.bag_return_time_ms);
             add("bag_spawn_delay_ms", rules.bagman.bag_spawn_delay_ms);
+            out.emplace_back("bag_multiple_spawns", SettingValue{rules.bagman.bag_multiple_spawns});
             break;
         case rf::NG_TYPE_SAL:
             add("flag_spawn_delay_ms", rules.salvage.flag_spawn_delay_ms);

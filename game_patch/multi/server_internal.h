@@ -130,6 +130,7 @@ struct BagmanConfig
     int bag_spawn_delay_ms = 7500;
     int bag_score_limit = 150;
     int tbag_score_limit = 300;
+    bool bag_multiple_spawns = true;
 
     void set_bag_return_time(float in_seconds)
     {

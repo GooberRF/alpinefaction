@@ -624,6 +624,8 @@ static void apply_rules_keys_from_toml(const toml::table& t, AlpineServerConfigR
         o.bagman.set_bag_return_time(*v);
     if (auto v = t["bag_spawn_delay"].value<float>())
         o.bagman.set_bag_spawn_delay(*v);
+    if (auto v = t["bag_multiple_spawns"].value<bool>())
+        o.bagman.bag_multiple_spawns = *v;
     if (auto v = t["sal_cap_limit"].value<int>())
         o.salvage.set_cap_limit(*v);
     if (auto v = t["sal_flag_spawn_delay"].value<float>())
@@ -1973,6 +1975,8 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         std::format_to(iter, "  BAG/TBAG bag return time:              {} sec\n", rules.bagman.bag_return_time_ms / 1000.0f);
     if (base || rules.bagman.bag_spawn_delay_ms != b.bagman.bag_spawn_delay_ms)
         std::format_to(iter, "  BAG/TBAG bag spawn delay:              {} sec\n", rules.bagman.bag_spawn_delay_ms / 1000.0f);
+    if (base || rules.bagman.bag_multiple_spawns != b.bagman.bag_multiple_spawns)
+        std::format_to(iter, "  BAG/TBAG multiple bag spawns:          {}\n", rules.bagman.bag_multiple_spawns);
     if (base || rules.salvage.flag_spawn_delay_ms != b.salvage.flag_spawn_delay_ms)
         std::format_to(iter, "  SAL flag spawn delay:                  {} sec\n", rules.salvage.flag_spawn_delay_ms / 1000.0f);
     if (base || rules.salvage.flag_capture_respawn_delay_ms != b.salvage.flag_capture_respawn_delay_ms)
