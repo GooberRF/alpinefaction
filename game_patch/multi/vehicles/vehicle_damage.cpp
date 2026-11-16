@@ -1594,6 +1594,20 @@ namespace
         },
     };
 
+    // The hit region pick skips a player victim unless the projectile's parent is a player, and a vehicle's
+    // weapon is parented to its hull. Judge the occupant credited with the shot instead.
+    CallHook<bool(int)> hit_region_shooter_is_player_hook{
+        0x0042CE2F,
+        [](int parent_handle) {
+            if (rf::is_multi) {
+                if (const rf::Entity* occupant = vehicle_shot_occupant(parent_handle)) {
+                    return hit_region_shooter_is_player_hook.call_target(occupant->handle);
+                }
+            }
+            return hit_region_shooter_is_player_hook.call_target(parent_handle);
+        },
+    };
+
     // The geomod rock update damages a player the rocks hit. Disable this in multiplayer for
     // vehicle riders.
     CallHook<rf::GRoom* __fastcall(rf::Entity*)> geomod_rock_hit_room_hook{
@@ -2347,6 +2361,7 @@ void vehicle_damage_apply_patch()
     obj_damage_vehicle_crush_injection.install();
     entity_die_occupant_kill_injection.install();
     entity_damage_ignite_berserk_hook.install();
+    hit_region_shooter_is_player_hook.install();
     geomod_rock_hit_room_hook.install();
     entity_die_corpse_create_hook.install();
     item_pickup_hook.install();
