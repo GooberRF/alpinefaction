@@ -274,7 +274,7 @@ namespace
 
     // Turn a negative-multiplier blow into life, sharing the regen's ceiling and never-resurrect
     // rule. The regen clock is left alone: a repair is not damage.
-    void vehicle_apply_repair(rf::Entity* vehicle, int killer_handle, float heal)
+    void vehicle_apply_repair(rf::Entity* vehicle, int killer_handle, float heal, const rf::Vector3* pos)
     {
         if (heal <= 0.0f || vehicle->life <= 0.0f || rf::entity_is_dying(vehicle)) {
             return;
@@ -296,7 +296,11 @@ namespace
         // Shift the watermark by exactly what was healed, not to the new life: damage that landed
         // earlier in this same frame must still read as a drop to the regen pass.
         regen.last_seen_life = std::min(regen.last_seen_life + applied, regen.spawn_max_life);
-        afstats::on_vehicle_repair(rf::player_from_entity_handle(killer_handle), applied);
+        rf::Player* repairer = rf::player_from_entity_handle(killer_handle);
+        afstats::on_vehicle_repair(repairer, applied);
+        awards_on_vehicle_repair(repairer, applied);
+        send_hull_damage_notify(repairer, AfDamageNotifyHull{pos ? *pos : vehicle->pos, vehicle->handle}, applied,
+                                false, true);
     }
 
     // pp's entity: the one entity_handle names while it is still his, otherwise his live one.
@@ -1985,7 +1989,8 @@ void vehicle_note_hull_damage(rf::Entity* vehicle, float life_before, int killer
     }
 }
 
-float vehicle_scale_damage(int victim_handle, int killer_handle, int damage_type, float damage)
+float vehicle_scale_damage(int victim_handle, int killer_handle, int damage_type, float damage,
+                           const rf::Vector3* pos)
 {
     // Only for a blow that NAMES a killer, which keeps the table out of the module's own lethal
     // blows and level hazards (all killer -1), so a 0.0 column cannot leave a drowning hull afloat.
@@ -2006,7 +2011,7 @@ float vehicle_scale_damage(int victim_handle, int killer_handle, int damage_type
         if (mult < 0.0f) {
             // The blow is consumed here and ZERO continues down the call: obj_damage and
             // entity_damage subtract what they are handed with no sign test.
-            vehicle_apply_repair(victim, killer_handle, damage * -mult);
+            vehicle_apply_repair(victim, killer_handle, damage * -mult, pos);
             return 0.0f;
         }
         return damage * mult;

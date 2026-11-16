@@ -118,7 +118,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Switching from a spectated player to free look starts the free look camera at the current view instead of where free look was last left
 - Show the spectated player's jetpack fuel gauge in third person spectate and when `spectate_minui` is enabled
 - Add `cl_dominationmsgs` console command to toggle display of dominating and revenge server messages in chat
-- Add Special Delivery, Roadkill, Scrap Metal, Wrecking Crew, Grand Theft Auto, Air Superiority, Power Trip and Stacked multiplayer awards
+- Add Special Delivery, Roadkill, Scrap Metal, Wrecking Crew, Grand Theft Auto, Air Superiority, Power Trip, Stacked and Mechanic multiplayer awards
 - Add `dbg_terrain_batches` console command to tint terrain faces by render batch (Direct3D 11 renderer only)
 - Add `dbg_terrain_decorations` console command to toggle terrain mesh decorations and print their draw statistics
 - Add `Require Direct3D 11` level property

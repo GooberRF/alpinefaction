@@ -57,9 +57,10 @@ enum class AwardId : uint8_t
     air_superiority = 33,
     power_trip = 34,
     stacked = 35,
+    mechanic = 36,
 };
 
-constexpr uint8_t award_id_count = 36;
+constexpr uint8_t award_id_count = 37;
 
 // Wire sentinel for "this award has no opposing player", in the award packet's victim id.
 constexpr uint8_t award_no_victim = 0xFF;
@@ -150,6 +151,8 @@ private:
 void awards_on_vehicle_claimed(const rf::Player* player, int hull_handle);
 // A timed powerup picked up from an item, never one AF grants itself.
 void awards_on_powerup_pickup(rf::Player* player, afstats::Powerup powerup);
+// `player` repaired a vehicle or turret hull by this much life.
+void awards_on_vehicle_repair(rf::Player* player, float repaired);
 
 // Flag carrying. CTF distinguishes a steal from a ground pickup by `from_base`; Salvage by whether
 // the flag was taken from its spawn.

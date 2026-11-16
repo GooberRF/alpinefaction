@@ -1410,6 +1410,36 @@ void send_legacy_hit_sound_packet(rf::Player* const target) {
     send_sound_packet(target, target->last_hit_sound_ms, 10, stock_sound_id::beep_01);
 }
 
+void send_hull_damage_notify(rf::Player* attacker, const AfDamageNotifyHull& hull, float amount, bool died,
+                             bool repair)
+{
+    if (!attacker || !attacker->net_data || !g_alpine_server_config.damage_notification_config.enabled) {
+        return;
+    }
+    const auto can_show = [](const rf::Player* player) {
+        return player == rf::local_player || is_player_minimum_af_client_version(player, 1, 1, 0);
+    };
+
+    if (can_show(attacker)) {
+        af_send_damage_notify_packet(af_damage_notify_no_player, amount, died, false, attacker, &hull, repair);
+    }
+    else if (!repair && g_alpine_server_config.damage_notification_config.support_legacy_clients) {
+        send_legacy_hit_sound_packet(attacker);
+    }
+
+    for (auto& player : SinglyLinkedList{rf::player_list}) {
+        if (!player.net_data || &player == attacker) {
+            continue;
+        }
+        if (player_is_spectating(player, attacker) && can_show(&player)) {
+            af_send_damage_notify_packet(af_damage_notify_no_player, amount, died, false, &player, &hull, repair);
+        }
+    }
+
+    demo_record_pvp_damage_notify(af_damage_notify_no_player, amount, died, false, attacker->net_data->player_id,
+                                  &hull, repair);
+}
+
 // One lag-compensated projectile's whole flight, every pierced victim included, resolves inside a
 // single multi_lag_comp_weapon_fire call - so this scope caps a rail bolt at one hit.
 struct AccuracyShotState
@@ -2346,35 +2376,10 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
 
         // Anchored on the hull's world position because the victim is not a player. None for the hull the
         // attacker is riding when the damage lands.
-        if (rf::is_server && rf::is_multi && victim_is_synced_vehicle && !attacker_rides_victim && real_damage > 0.0f
-            && killer_player && killer_player->net_data
-            && g_alpine_server_config.damage_notification_config.enabled) {
+        if (rf::is_server && rf::is_multi && victim_is_synced_vehicle && !attacker_rides_victim && real_damage > 0.0f) {
             const AfDamageNotifyHull hull{damaged_ep ? damaged_ep->pos : victim_pos_before_damage,
                                           damaged_ep_handle};
-
-            if (killer_player == rf::local_player
-                || is_player_minimum_af_client_version(killer_player, 1, 1, 0)) {
-                af_send_damage_notify_packet(af_damage_notify_no_player, effective_damage, is_dead, false,
-                                             killer_player, &hull);
-            }
-            else if (g_alpine_server_config.damage_notification_config.support_legacy_clients) {
-                send_legacy_hit_sound_packet(killer_player);
-            }
-
-            for (auto& player : SinglyLinkedList{rf::player_list}) {
-                if (!player.net_data || &player == killer_player) {
-                    continue;
-                }
-                if (player_is_spectating(player, killer_player)
-                    && (&player == rf::local_player || is_player_minimum_af_client_version(&player, 1, 1, 0))) {
-                    af_send_damage_notify_packet(af_damage_notify_no_player, effective_damage, is_dead, false,
-                                                 &player, &hull);
-                }
-            }
-
-            demo_record_pvp_damage_notify(af_damage_notify_no_player, effective_damage, is_dead,
-                                          false, killer_player->net_data->player_id,
-                                          &hull);
+            send_hull_damage_notify(killer_player, hull, effective_damage, is_dead, false);
         }
 
         if (is_achievement_system_initialized() &&

@@ -433,7 +433,7 @@ static constexpr size_t af_damage_notify_hull_size = 3 * sizeof(float) + sizeof(
 
 // Wire tail order: fixed part, then the optional hull tail, then the caller's extra tail.
 static size_t af_build_damage_notify(std::byte* out, uint8_t player_id, int rounded_damage, bool died,
-                                     bool crit, const AfDamageNotifyHull* hull, size_t extra_tail)
+                                     bool crit, const AfDamageNotifyHull* hull, bool repair, size_t extra_tail)
 {
     af_damage_notify_packet damage_notify_packet{};
     damage_notify_packet.header.type = static_cast<uint8_t>(af_packet_type::af_damage_notify);
@@ -442,7 +442,8 @@ static size_t af_build_damage_notify(std::byte* out, uint8_t player_id, int roun
     damage_notify_packet.flags =
         (died ? AF_DAMAGE_NOTIFY_DIED : 0) |
         (crit ? AF_DAMAGE_NOTIFY_CRIT : 0) |
-        (hull ? AF_DAMAGE_NOTIFY_WORLD_POS : 0);
+        (hull ? AF_DAMAGE_NOTIFY_WORLD_POS : 0) |
+        (hull && repair ? AF_DAMAGE_NOTIFY_REPAIR : 0);
 
     size_t len = sizeof(damage_notify_packet);
     if (hull) {
@@ -464,7 +465,7 @@ static size_t af_build_damage_notify(std::byte* out, uint8_t player_id, int roun
 
 // Anchored on world_pos when given, else on the victim player's entity.
 static void af_show_damage_notify(uint8_t player_id, const rf::Vector3* world_pos, int32_t hull_handle,
-                                  uint16_t damage, bool died, bool crit)
+                                  uint16_t damage, bool died, bool crit, bool repair)
 {
     rf::Vector3 anchor{};
     if (world_pos) {
@@ -483,12 +484,15 @@ static void af_show_damage_notify(uint8_t player_id, const rf::Vector3* world_po
         anchor = entity->pos;
     }
 
-    add_damage_notify_world_hud_string(anchor, player_id, hull_handle, damage, died, crit);
-    play_local_hit_sound(player_id, hull_handle, died);
+    add_damage_notify_world_hud_string(anchor, player_id, hull_handle, damage, died, crit, repair);
+    // The repairing blow makes its own sound.
+    if (!repair) {
+        play_local_hit_sound(player_id, hull_handle, died);
+    }
 }
 
 void af_send_damage_notify_packet(uint8_t player_id, float damage, bool died, bool crit, rf::Player* player,
-                                  const AfDamageNotifyHull* hull)
+                                  const AfDamageNotifyHull* hull, bool repair)
 {
     // Send: server -> client
     if (!rf::is_server) {
@@ -508,19 +512,20 @@ void af_send_damage_notify_packet(uint8_t player_id, float damage, bool died, bo
     if (player == rf::local_player) {
         // Listen-server host: show it locally; packets to the host are never delivered.
         af_show_damage_notify(hull ? af_damage_notify_no_player : player_id, hull ? &hull->pos : nullptr,
-                              hull ? hull->handle : -1, static_cast<uint16_t>(rounded_damage), died, crit);
+                              hull ? hull->handle : -1, static_cast<uint16_t>(rounded_damage), died, crit,
+                              hull && repair);
         return;
     }
 
     std::byte packet_buf[rf::max_packet_size];
     const size_t len =
-        af_build_damage_notify(packet_buf, player_id, rounded_damage, died, crit, hull, 0);
+        af_build_damage_notify(packet_buf, player_id, rounded_damage, died, crit, hull, repair, 0);
     af_send_packet(player, packet_buf, static_cast<int>(len), false);
 }
 
 void af_send_damage_notify_packet_for_demo(uint8_t victim_id, float damage, bool died, bool crit,
                                            uint8_t attacker_id, rf::Player* recorder,
-                                           const AfDamageNotifyHull* hull)
+                                           const AfDamageNotifyHull* hull, bool repair)
 {
     // Send: server -> demo recorder only
     if (!rf::is_server || !recorder) {
@@ -534,7 +539,7 @@ void af_send_damage_notify_packet_for_demo(uint8_t victim_id, float damage, bool
 
     std::byte packet_buf[sizeof(af_damage_notify_packet) + af_damage_notify_hull_size + 1];
     const size_t len =
-        af_build_damage_notify(packet_buf, victim_id, rounded_damage, died, crit, hull, 1);
+        af_build_damage_notify(packet_buf, victim_id, rounded_damage, died, crit, hull, repair, 1);
     packet_buf[len] = static_cast<std::byte>(attacker_id);
     af_send_packet(recorder, packet_buf, static_cast<int>(len + 1), false);
 }
@@ -590,8 +595,9 @@ static void af_process_damage_notify_packet(const void* data, size_t len, const 
 
     const bool died = (damage_notify_packet.flags & AF_DAMAGE_NOTIFY_DIED) != 0;
     const bool crit = (damage_notify_packet.flags & AF_DAMAGE_NOTIFY_CRIT) != 0;
+    const bool repair = has_world_pos && (damage_notify_packet.flags & AF_DAMAGE_NOTIFY_REPAIR) != 0;
     af_show_damage_notify(damage_notify_packet.player_id, has_world_pos ? &world_pos : nullptr, hull_handle,
-                          damage_notify_packet.damage, died, crit);
+                          damage_notify_packet.damage, died, crit, repair);
 }
 
 void af_send_crit_shot_packet(uint8_t shooter_player_id, uint8_t weapon_type, rf::Player* player)

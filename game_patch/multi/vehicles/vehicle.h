@@ -361,8 +361,10 @@ void vehicle_hazard_clear_client_clocks();
 bool vehicle_hud_ammo_refill_progress(const rf::Entity* vehicle, int slot_index, float& progress);
 
 // Server, from obj_damage: the per-class / per-damage-type damage scales. MUST be passed the RAW
-// killer, before vehicle_filter_obj_damage rewrites it; returns damage unchanged off the server.
-float vehicle_scale_damage(int victim_handle, int killer_handle, int damage_type, float damage);
+// killer, before vehicle_filter_obj_damage rewrites it; returns damage unchanged off the server. `pos` is
+// where the blow landed, null when obj_damage was given none.
+float vehicle_scale_damage(int victim_handle, int killer_handle, int damage_type, float damage,
+                           const rf::Vector3* pos);
 
 // The hull's per-class scale for one damage type, 1 for anything that is not a synced hull.
 float vehicle_hull_damage_multiplier(const rf::Entity* victim, int damage_type);

@@ -28,6 +28,7 @@ namespace rf
 }
 
 struct AfVoteCallParams; // alpine_packets.h
+struct AfDamageNotifyHull; // alpine_packets.h
 
 // used for game_info packets
 struct AFGameInfoFlags
@@ -1475,6 +1476,11 @@ std::string build_info_command_output();
 // swing's deferred projectile connects, so melee hits can never outrun melee swings. Keyed per
 // weapon, because accuracy buckets are.
 void melee_grant_hit_credit(rf::Player* attacker, int weapon_type);
+
+// The number shown to `attacker` (and their first-person spectators and the demo) for damage dealt to,
+// or with `repair` life restored to, a vehicle or turret hull.
+void send_hull_damage_notify(rf::Player* attacker, const AfDamageNotifyHull& hull, float amount, bool died,
+                             bool repair);
 
 // Combined accuracy/efficiency exclude flamethrower, riot stick, riot shield.
 bool accuracy_excluded_from_combined(int weapon_type);

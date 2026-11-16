@@ -1127,12 +1127,14 @@ void build_ephemeral_world_hud_strings() {
     for (const EphemeralWorldHUDString& es : ephemeral_world_hud_strings) {
         const int font = es.crit ? critical_font : dmg_font;
         rf::Vector3 string_pos = es.pos;
-        string_pos.y += .85f;
+        // A repair sits on its hit point at arm's length, where the lift and rise sized for a victim's
+        // centre would carry it off the top of the screen.
+        string_pos.y += es.repair ? 0.f : .85f;
 
         if (es.float_away) {
             // Calculate the progress of the fade effect.
             const float progress = es.timestamp.elapsed_frac();
-            string_pos.y += progress * 3.f;
+            string_pos.y += progress * (es.repair ? .5f : 3.f);
 
             // Apply wind.
             const float elapsed_sec = es.timestamp.time_since_sec();
@@ -1144,7 +1146,7 @@ void build_ephemeral_world_hud_strings() {
                 wind_amplitude * std::cos(wind_phase + es.wind_phase_offset * .8f);
         }
 
-        const std::string label = std::to_string(es.damage);
+        const std::string label = (es.repair ? "+" : "") + std::to_string(es.damage);
         const auto [text_width, text_height] = rf::gr::get_string_size(label, font);
         const int half_text_width = text_width / 2;
         const int base_text_height = rf::gr::get_font_height(base_font);
@@ -1843,7 +1845,7 @@ void add_location_ping_world_hud_sprite(rf::Vector3 pos, std::string player_name
 }
 
 void add_damage_notify_world_hud_string(rf::Vector3 pos, uint8_t damaged_player_id, int hull_handle, uint16_t damage,
-                                       bool died, bool crit)
+                                       bool died, bool crit, bool repair)
 {
     if (!g_alpine_game_config.world_hud_damage_numbers) {
         return; // turned off
@@ -1856,8 +1858,8 @@ void add_damage_notify_world_hud_string(rf::Vector3 pos, uint8_t damaged_player_
         // Search for an existing entry with the same victim
         auto it = std::find_if(
             ephemeral_world_hud_strings.begin(), ephemeral_world_hud_strings.end(),
-            [damaged_player_id, hull_handle](const EphemeralWorldHUDString& es) {
-                return es.player_id == damaged_player_id && es.hull_handle == hull_handle;
+            [damaged_player_id, hull_handle, repair](const EphemeralWorldHUDString& es) {
+                return es.player_id == damaged_player_id && es.hull_handle == hull_handle && es.repair == repair;
             });
 
         if (it != ephemeral_world_hud_strings.end()) {
@@ -1877,10 +1879,14 @@ void add_damage_notify_world_hud_string(rf::Vector3 pos, uint8_t damaged_player_
     es.float_away = true;
     es.wind_phase_offset = wind_offset_dist(g_rng);
     es.crit = crit;
+    es.repair = repair;
 
-    // A crit keeps its own colour even under the user override: the colour is what
+    // A crit or a repair keeps its own colour even under the user override: the colour is what
     // separates it from an ordinary hit.
-    if (crit) {
+    if (repair) {
+        es.color = {64, 255, 64, 255};
+    }
+    else if (crit) {
         es.color = {255, 80, 0, 255};
     }
     else if (g_alpine_game_config.damage_notify_color_override)

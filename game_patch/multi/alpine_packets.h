@@ -85,6 +85,8 @@ enum af_damage_notify_flags : uint8_t
     AF_DAMAGE_NOTIFY_CRIT = 1 << 1,
     // Victim is not a player: player_id is af_damage_notify_no_player and the hull tail follows
     AF_DAMAGE_NOTIFY_WORLD_POS = 1 << 2,
+    // Life restored to a hull rather than damage dealt; always sent with AF_DAMAGE_NOTIFY_WORLD_POS
+    AF_DAMAGE_NOTIFY_REPAIR = 1 << 3,
 };
 
 // Not a valid player id, so an older client's multi_find_player_by_id answers null for it.
@@ -1248,13 +1250,13 @@ void af_send_ping_location_packet_to_all(rf::Vector3* pos, uint8_t player_id);
 static void af_process_ping_location_packet(const void* data, size_t len, const rf::NetAddr& addr);
 // hull non-null replaces the victim player id with a non-player victim's position and handle
 void af_send_damage_notify_packet(uint8_t player_id, float damage, bool died, bool crit, rf::Player* player,
-                                  const AfDamageNotifyHull* hull = nullptr);
+                                  const AfDamageNotifyHull* hull = nullptr, bool repair = false);
 // Demo-recorder variant: same payload plus a trailing attacker id, so playback can
 // filter notifications down to the player currently being spectated. Live clients
 // never receive this form (their copy is implicitly "attacker = you").
 void af_send_damage_notify_packet_for_demo(uint8_t victim_id, float damage, bool died, bool crit,
                                            uint8_t attacker_id, rf::Player* recorder,
-                                           const AfDamageNotifyHull* hull = nullptr);
+                                           const AfDamageNotifyHull* hull = nullptr, bool repair = false);
 static void af_process_damage_notify_packet(const void* data, size_t len, const rf::NetAddr& addr);
 void af_send_crit_shot_packet(uint8_t shooter_player_id, uint8_t weapon_type, rf::Player* player);
 static void af_process_crit_shot_packet(const void* data, size_t len, const rf::NetAddr& addr);

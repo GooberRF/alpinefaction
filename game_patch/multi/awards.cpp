@@ -156,6 +156,7 @@ constexpr int stonewall_kills_needed = 5;
 constexpr int wrecking_crew_kills_needed = 2;
 constexpr int power_trip_kills_needed = 5;
 constexpr int stacked_powerups_needed = 3;
+constexpr float mechanic_repair_needed = 1500.0f;
 constexpr int clean_sweep_min_roster = 2;
 constexpr int64_t hazard_pay_hold_ms = 60000;
 constexpr int64_t censored_window_ms = 1000;
@@ -213,6 +214,8 @@ struct AwardPlayerState
     uint8_t power_pickup_mask = 0;
     uint8_t power_trip_granted_mask = 0;
     std::array<uint8_t, afstats::powerup_count> power_trip_kills{};
+    // Mechanic: hull life repaired this life since its last payout.
+    float repaired_this_life = 0.0f;
     // Per-award repeat throttle; 0 = never granted.
     std::array<int64_t, award_id_count> last_grant_ms{};
 };
@@ -1033,6 +1036,7 @@ constexpr std::array<AwardDisplay, award_id_count> award_display{{
     {"Air Superiority", "AIR SUPERIORITY!", nullptr},
     {"Power Trip", "POWER TRIP!", nullptr},
     {"Stacked", "STACKED!", nullptr},
+    {"Mechanic", "MECHANIC!", nullptr},
 }};
 static_assert(award_display[award_id_count - 1].text != nullptr);
 
@@ -1129,6 +1133,7 @@ void awards_on_kill(rf::Player* victim, rf::Player* killer, int weapon_type, boo
         victim_state->riot_shield_kill = false;
         victim_state->stolen_hull_handle = -1;
         victim_state->power_pickup_mask = 0;
+        victim_state->repaired_this_life = 0.0f;
     }
 
     sample_ctf_flag_homes();
@@ -1401,6 +1406,22 @@ void awards_on_powerup_pickup(rf::Player* player, afstats::Powerup powerup)
     state->power_trip_granted_mask &= static_cast<uint8_t>(~bit);
     if (!already_running && std::popcount(state->power_pickup_mask) == stacked_powerups_needed) {
         grant_award(player, AwardId::stacked);
+    }
+}
+
+void awards_on_vehicle_repair(rf::Player* player, float repaired)
+{
+    if (!awards_tracking_active()) {
+        return;
+    }
+    AwardPlayerState* state = state_for(player);
+    if (!state) {
+        return;
+    }
+    state->repaired_this_life += repaired;
+    if (state->repaired_this_life >= mechanic_repair_needed) {
+        state->repaired_this_life -= mechanic_repair_needed;
+        grant_award(player, AwardId::mechanic);
     }
 }
 

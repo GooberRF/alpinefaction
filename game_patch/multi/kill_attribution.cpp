@@ -257,7 +257,7 @@ FunHook<float(int, float, int, int, int, rf::Vector3*, int, char)> obj_damage_ho
     [](int victim_handle, float damage, int killer_handle, int weapon_type, int damage_type,
        rf::Vector3* pos, int killer_uid, char flags) {
         // On the RAW killer argument, before the remap below: the tuning table exempts every killer -1 blow.
-        damage = vehicle_scale_damage(victim_handle, killer_handle, damage_type, damage);
+        damage = vehicle_scale_damage(victim_handle, killer_handle, damage_type, damage, pos);
 
         // Ahead of the early-out below: the stock friendly-fire gate inside obj_damage reads the killer argument.
         if (!vehicle_filter_obj_damage(victim_handle, &killer_handle, damage_type)) {

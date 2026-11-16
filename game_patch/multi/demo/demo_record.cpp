@@ -478,13 +478,13 @@ void demo_record_capture_team_scoped(const void* data, size_t len, unsigned char
 }
 
 void demo_record_pvp_damage_notify(unsigned char victim_id, float damage, bool died, bool crit,
-                                   unsigned char attacker_id, const AfDamageNotifyHull* hull)
+                                   unsigned char attacker_id, const AfDamageNotifyHull* hull, bool repair)
 {
     if (!g_state.recorder || !g_state.writer.is_open())
         return;
     // Goes through the multi_io_send tap into the file like every other recorder packet
     af_send_damage_notify_packet_for_demo(victim_id, damage, died, crit, attacker_id, g_state.recorder,
-                                          hull);
+                                          hull, repair);
 }
 
 void demo_record_crit_shot(unsigned char shooter_id, unsigned char weapon_type)
