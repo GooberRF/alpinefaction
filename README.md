@@ -32,7 +32,7 @@ Key Features
 * Fixes for critical security vulnerabilities, game-breaking bugs, and high frame rate issues (including the infamous submarine explosion bug)
 * Direct3D 11 renderer with real-time per-pixel lighting and full mesh shadows
 * Drivable multiplayer vehicles and turrets: jeeps, APCs, drillers, fighters, and submarines
-* 12 new multiplayer game types, plus server-configurable mutators and an in-game voting panel
+* 13 new multiplayer game types, plus server-configurable mutators and an in-game voting panel
 * Multiplayer bots, with automatic waypoint generation for custom maps
 * Demo recording and playback
 * FactionFiles integration: multiplayer stats, single player achievements, level ratings, automatic level downloads, and one-click level and mod installs
@@ -45,17 +45,21 @@ Key Features
 * Player headlamp (flashlight)
 * Gibs from explosive kills, and ragdoll deaths
 * Enhanced mouse input with selectable sensitivity scaling
+* In-game reference screen describing weapons, vehicles, game types, and powerups
 
 ### Graphics and display
 * Any resolution and aspect ratio, in fullscreen, windowed, or borderless window modes
 * Anti-aliasing, full color range lighting, and colorblind mode
 * Underwater effects including caustics, depth-based water fog, and distortion
 * High resolution HUD and vector fonts
+* Redesigned options, extras, and multiplayer menus drawn from resolution-independent vector artwork
+* Revamped console with search, mouse text selection, and inline command suggestions
 * Many performance and visual improvements
 
 ### Multiplayer
-* 12 new game types: King of the Hill, Damage Control, Revolt, Escalation, Run, Bagman, Team Bagman, Pit, Gun Game, Wipeout, Salvage, and Scavenger
-* Higher (and configurable) tick rate and many netcode improvements
+* 13 new game types: King of the Hill, Damage Control, Revolt, Escalation, Run, Bagman, Team Bagman, Pit, Gun Game, Wipeout, Salvage, Scavenger, and Payload
+* New powerups: Haste, Vampire, Jetpack, and Health and Armor Shards
+* Reworked netcode with lower bandwidth use, and hitscan and projectile lag compensation
 * Damage feedback with hit sounds, kill sounds, and damage numbers
 * Sprays, awards, assists, radio messages, and taunts
 * Objective and teammate indicators, nameplates, location pings, and a minimap
@@ -84,6 +88,8 @@ Key Features
 * New object types: Mesh, Corona, Note, Rope Emitter, Directional Light, Projection Camera, and Vehicle Factory
 * Gas regions, weather regions (rain and snow), and dynamic lights
 * Movers that can carry dynamic lights, particle emitters, and push regions
+* Curved mover paths with easing, path-following rotation, and live preview in the level editor
+* Ropes, cables, and zip lines that players and bots can ride
 * More immersive skyboxes, with support for movers, meshes, and mesh lighting
 * RF2-style brush-based geomod and breakable detail brushes with debris
 * Full color range lightmaps
