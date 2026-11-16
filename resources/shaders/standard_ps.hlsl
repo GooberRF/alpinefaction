@@ -1159,7 +1159,10 @@ float4 main(VsOutput input) : SV_TARGET
         }
         float3 mesh_ambient = ambient_light;
 #endif
-        light_color = add_scene_lights(light_color, input.world_pos_and_depth.xyz, input.norm, mesh_ambient);
+        // Pre-transformed vertices (dynamic decals, particles) have no world position to light
+        if (dot(input.norm, input.norm) != 0.0f) {
+            light_color = add_scene_lights(light_color, input.world_pos_and_depth.xyz, input.norm, mesh_ambient);
+        }
     }
     return finish_fragment(input, target, tex0_color.rgb, light_color, input.norm);
 }

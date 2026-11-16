@@ -443,6 +443,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix exploding grenades setting off their thrower's remote charges on clients in multiplayer
 - Fix game and level editor crashing when a decal lies on a face with many vertices
 - Fix decals on faces with many vertices showing only partly (Direct3D 11 renderer only)
+- Fix impact decals and particles everywhere taking the color of dynamic lights near the center of the level (Direct3D 11 renderer only)
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize
