@@ -808,7 +808,7 @@ ConsoleCommand2 geo_chunk_physics_cmd{
     "Toggle whether isolated geomod chunks fall as physics objects or disappear.",
 };  
 
-void reduced_speed_in_background_do_patch() {
+static void reduced_speed_in_background_do_patch() {
     // Stock sleeps a second per frame, when our window is out of focus.
     // Use `MsgWaitForMultipleObjects` instead of `os_sleep` to avoid window
     // activation delay.
