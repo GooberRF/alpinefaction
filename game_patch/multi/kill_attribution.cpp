@@ -46,6 +46,8 @@ struct DamageResolutionContext
     // Inside a SplashWeaponScope, and whether that detonation's single accuracy hit is spent.
     bool splash_scope = false;
     bool splash_hit_counted = false;
+    // The VehicleDamageClass of the vehicle that fired the SplashWeaponScope's projectile, or -1.
+    int vehicle_shot_class = -1;
     // A damaging particle is applying its contact damage (the flamethrower stream).
     bool particle_damage = false;
 };
@@ -197,12 +199,14 @@ SplashWeaponScope::SplashWeaponScope(rf::Weapon* wp)
     active_ = true;
     prev_ = g_ctx.splash_weapon;
     prev_hit_counted_ = g_ctx.splash_hit_counted;
+    prev_vehicle_shot_class_ = g_ctx.vehicle_shot_class;
     g_ctx.splash_weapon = wp->info_index;
     // A fresh detonation starts with its hit unspent, whatever the enclosing one did. Keep this
     // ctor free of consuming or erasing: weapon_move_one constructs it every frame per live
     // weapon, so anything consumed here fires on a projectile's first frame, not at its impact.
     g_ctx.splash_scope = true;
     g_ctx.splash_hit_counted = false;
+    g_ctx.vehicle_shot_class = vehicle_damage_class(rf::entity_from_handle(wp->parent_handle));
     // One detonation frame per scope, for the Massacre award. Nests with the scope. The weapon
     // rides along so the detonation's own direct-hit kill can be matched to it.
     awards_detonation_begin(wp->info_index);
@@ -216,6 +220,7 @@ SplashWeaponScope::~SplashWeaponScope()
         // unspent accuracy hit.
         g_ctx.splash_weapon = prev_;
         g_ctx.splash_hit_counted = prev_hit_counted_;
+        g_ctx.vehicle_shot_class = prev_vehicle_shot_class_;
         g_ctx.splash_scope = prev_.has_value();
         awards_detonation_end();
     }
@@ -238,6 +243,11 @@ bool kill_attribution_splash_hit_consume()
     }
     g_ctx.splash_hit_counted = true;
     return true;
+}
+
+int kill_attribution_vehicle_shot_class()
+{
+    return g_ctx.vehicle_shot_class;
 }
 
 // Universal damage dispatcher and the only place a weapon type is passed in.

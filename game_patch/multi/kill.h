@@ -11,7 +11,7 @@ namespace rf
     struct Player;
 }
 
-void distribute_effective_health(rf::Entity* ep, float amount, float max_life_cap, float max_armor_cap);
+float distribute_effective_health(rf::Entity* ep, float amount, float max_life_cap, float max_armor_cap);
 // False if the player has no live entity to heal
 bool apply_effective_health_reward(rf::Player* player, float amount);
 

@@ -881,6 +881,7 @@ void salvage_enter_delayed(int delay_ms)
 void salvage_respawn_at_home()
 {
     spawn_flag_at_home();
+    afstats::on_flag_event(afstats::FlagEventKind::reset, afstats::team_none, nullptr, g_salvage_info.spawn_pos);
 }
 
 void salvage_capture_flag(rf::Player* player, const rf::Vector3& pos)

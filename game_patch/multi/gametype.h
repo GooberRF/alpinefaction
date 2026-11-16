@@ -195,6 +195,8 @@ bool player_is_countable(rf::Player& p);
 
 bool obj_inside_trigger(const rf::Trigger* t, const rf::Object* o);
 
+std::vector<rf::Player*> players_from_ids(const std::vector<uint8_t>& ids);
+
 bool multi_game_type_is_team_type(rf::NetGameType game_type);
 bool multi_game_type_has_hills(rf::NetGameType game_type);
 bool multi_is_game_type_with_hills();
@@ -228,6 +230,8 @@ bool control_point_team_can_capture_hill(const HillInfo& hill, HillOwner team);
 int multi_koth_get_red_team_score();
 int multi_koth_get_blue_team_score();
 void multi_get_team_scores(rf::NetGameType type, int& red, int& blue);
+// Team type's red/blue standing for deciding its winner: the higher side won, equal is a tie.
+void multi_get_winner_scores(rf::NetGameType type, int& red, int& blue);
 void multi_koth_set_red_team_score(int score);
 void multi_koth_set_blue_team_score(int score);
 int koth_get_hill_handler_uid(const HillInfo& hill);

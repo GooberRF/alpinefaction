@@ -10,7 +10,8 @@ void vehicle_release_orphaned_riders();
 
 // Server: the INVOLUNTARY exit - the voluntary one is vehicle_server_handle_exit, which additionally
 // carries the exit velocity and the coast claim.
-void vehicle_server_free_seat(rf::Entity* vehicle, int seat_index, int rider_handle);
+void vehicle_server_free_seat(rf::Entity* vehicle, int seat_index, int rider_handle,
+                              afstats::VehicleSeatReason reason);
 
 // Client: keys 1..6 request seat 0..5 of the vehicle the local player is already in.
 void vehicle_poll_seat_hotkeys();

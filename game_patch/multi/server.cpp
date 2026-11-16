@@ -1416,7 +1416,9 @@ struct AccuracyShotState
 {
     bool active = false;
     bool hit_counted = false;
+    bool award_hit_counted = false;
     int shooter_handle = -1;
+    int vehicle_class = -1; // VehicleDamageClass of a vehicle shooter
 };
 static AccuracyShotState g_accuracy_shot;
 
@@ -1428,7 +1430,7 @@ public:
     explicit AccuracyShotScope(rf::Entity* shooter)
         : saved_(g_accuracy_shot)
     {
-        g_accuracy_shot = {true, false, shooter ? shooter->handle : -1};
+        g_accuracy_shot = {true, false, false, shooter ? shooter->handle : -1, vehicle_damage_class(shooter)};
     }
     ~AccuracyShotScope() { g_accuracy_shot = saved_; }
 
@@ -1451,6 +1453,19 @@ static bool accuracy_shot_scope_consume()
         return false;
     }
     g_accuracy_shot.hit_counted = true;
+    return true;
+}
+
+// Awards go to a shot's first player hit, so a hull it pierces first must not spend this latch.
+static bool accuracy_shot_scope_consume_award()
+{
+    if (!g_accuracy_shot.active) {
+        return true;
+    }
+    if (g_accuracy_shot.award_hit_counted) {
+        return false;
+    }
+    g_accuracy_shot.award_hit_counted = true;
     return true;
 }
 
@@ -1785,15 +1800,28 @@ bool player_is_spectating(const rf::Player& spectator, const rf::Player* target)
     return spectator.spectatee.value_or(nullptr) == target;
 }
 
+static std::vector<uint8_t> credit_kill_assists(uint8_t killed_id, uint8_t killer_id, int blast_hull)
+{
+    std::vector<uint8_t> assists = kill_attribution_take_assists(killed_id, killer_id, blast_hull);
+    for (uint8_t assist_id : assists) {
+        rf::Player* assister = rf::multi_find_player_by_id(assist_id);
+        if (assister && assister->stats) {
+            static_cast<PlayerStatsNew*>(assister->stats)->inc_assists();
+        }
+    }
+    return assists;
+}
+
 FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
     0x0041A350,
     [](rf::Entity* damaged_ep, float damage, int killer_handle, int damage_type, int killer_uid) {
         // vehicle_filter_obj_damage has already run, so killer_handle names the responsible occupant.
         rf::Player* damaged_player = rf::player_from_entity_handle(damaged_ep->handle);
         rf::Player* killer_player = rf::player_from_entity_handle(killer_handle);
+        const bool occupant_blast = vehicle_is_occupant_death_blast(damaged_ep, damage_type);
         // The occupant death blast is a guaranteed kill; keep it out of the damage reducers.
         bool is_pvp_damage = damaged_player && killer_player && damaged_player != killer_player
-            && !vehicle_is_occupant_death_blast(damaged_ep, damage_type);
+            && !occupant_blast;
         bool crit_applied = false;
         if (rf::is_server && is_pvp_damage) {
             damage *= g_alpine_server_config_active_rules.pvp_damage_modifier;
@@ -1834,6 +1862,14 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
         rf::Vector3 victim_pos_before_damage = damaged_ep->pos;
         // Same reason: a destroyed vehicle is gone by the time the attacker's feedback is sent.
         const bool victim_is_synced_vehicle = rf::is_multi && vehicle_is_synced_entity_type(damaged_ep);
+        // Same reason: a destroyed hull has dropped its riders. Accuracy fights a hull as the players
+        // aboard it, unless the attacker is one of them.
+        const bool attacker_rides_victim = victim_is_synced_vehicle
+            && vehicle_ridden_hull(rf::entity_from_handle(killer_handle)) == damaged_ep;
+        const bool hull_victim = victim_is_synced_vehicle && vehicle_hull_occupied(damaged_ep)
+            && !attacker_rides_victim;
+        // Same reason: a rider who dies can be out of their seat afterwards.
+        const int victim_vehicle_class = damaged_player ? vehicle_occupied_damage_class(damaged_ep) : -1;
         // Same reason: the roadkill derivation needs a live victim.
         const int roadkill_vehicle_class = damage_type == rf::DT_CRUSH
             ? vehicle_roadkill_damage_class(damaged_ep_handle, killer_handle) : -1;
@@ -1859,6 +1895,7 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
 
         // should entity gib?
         bool did_gib = false;
+        bool jetpack_exploded = false;
         if (damaged_ep) {
             if (!rf::is_multi) { // SP gibbing
                 if (damaged_ep->life < -100.0f &&                          // very dead
@@ -1900,6 +1937,7 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
                     entity_set_gib_flag(damaged_ep);
                     af_send_should_gib_req(static_cast<uint32_t>(damaged_ep->handle));
                     did_gib = true;
+                    jetpack_exploded = jetpack_explode_gib;
                 }
             }
         }
@@ -1992,22 +2030,30 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
             const uint8_t killed_id = damaged_player->net_data->player_id;
             const uint8_t killer_id = (killer_player && killer_player->net_data)
                 ? killer_player->net_data->player_id : 0xFF;
-            std::vector<uint8_t> assists = kill_attribution_take_assists(killed_id, killer_id, blast_hull);
-
-            for (uint8_t assist_id : assists) {
-                rf::Player* assister = rf::multi_find_player_by_id(assist_id);
-                if (assister && assister->stats) {
-                    static_cast<PlayerStatsNew*>(assister->stats)->inc_assists();
-                }
-            }
+            std::vector<uint8_t> assists = credit_kill_assists(killed_id, killer_id, blast_hull);
 
             // Same flags and assist list the af_kill_info packet is built from, so
             // the stats stream and the in-game attribution can never disagree.
             const rf::Vector3 victim_pos = damaged_ep ? damaged_ep->pos : victim_pos_before_damage;
             const rf::Entity* killer_ep_for_pos = rf::entity_from_handle(killer_handle);
+            // A run-over or ram is always its driver's, even once they have left the coasting hull.
+            int killer_seat = -1;
+            if (vehicle_kill_class >= 0) {
+                killer_seat = roadkill_vehicle_class >= 0 ? 0 : vehicle_rider_seat_index(killer_ep_for_pos);
+            }
+            afstats::KillCause kill_cause = afstats::KillCause::none;
+            if (jetpack_exploded) {
+                kill_cause = afstats::KillCause::jetpack_explode;
+            }
+            else if (payload_finale_blast_active()) {
+                kill_cause = afstats::KillCause::payload_finale;
+            }
+            // The engine strips a victim's stock powerups only in its deferred death processing.
             afstats::on_kill(damaged_player, killer_player, weapon, damage_type, kill_flags, assists,
                              victim_pos, killer_ep_for_pos ? &killer_ep_for_pos->pos : nullptr,
-                             vehicle_kill_class);
+                             vehicle_kill_class, victim_vehicle_class, killer_seat, crit_applied, kill_cause,
+                             killer_player ? powerup_stats_mask(killer_player) : 0,
+                             powerup_stats_mask(damaged_player));
 
             kill_attribution_record(killed_id, killer_id, weapon, kill_flags, damage_type,
                                     vehicle_kill_class, std::move(assists));
@@ -2016,7 +2062,8 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
             // from. Runs for every death, so the victim-side award resets cover world deaths and
             // suicides too.
             awards_on_kill(damaged_player, killer_player, weapon, splash, killer_handle,
-                           victim_team_before_damage, damage, life_before, armor_before);
+                           victim_team_before_damage, damage, life_before, armor_before,
+                           {vehicle_kill_class, roadkill_vehicle_class, blast_hull});
 
             // Arena's reload-on-kill is applied from on_player_kill, which the engine only runs
             // in its deferred death processing - too late for the shot that killed, whose clip
@@ -2039,19 +2086,35 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
             }
         }
 
+        // "A projectile or a damaging particle delivered this damage", as opposed to a
+        // per-frame processor that merely names a weapon - the burn spread and the Flaming
+        // Enemies DoT are inside none of these scopes, which is what keeps them out.
+        const bool from_projectile = kill_attribution_in_projectile_impact()
+            || kill_attribution_in_splash_scope()
+            || kill_attribution_in_particle_damage()
+            || g_accuracy_shot.active;
+        // A vehicle's weapon, like the novelty weapons, counts in its own bucket only, kept per vehicle.
+        int vehicle_shot_class = kill_attribution_vehicle_shot_class();
+        if (vehicle_shot_class < 0 && g_accuracy_shot.active) {
+            vehicle_shot_class = g_accuracy_shot.vehicle_class;
+        }
+        const bool vehicle_shot = vehicle_shot_class >= 0;
+
         // Feeds the windowed damage/accuracy aggregates. Deliberately wider than the
         // PvP block below: environmental deaths and self-damage are real damage the
         // stream reports, with a null attacker where there is no player behind it.
-        if (rf::is_server && damaged_player && real_damage > 0.0f) {
+        if (rf::is_server && (damaged_player || hull_victim) && real_damage > 0.0f) {
             int stats_weapon = damage_ctx.weapon_type;
-            if (stats_weapon < 0 && killer_player && killer_player != damaged_player) {
+            // Weapon-less crush and the occupant blast are never the held weapon's doing.
+            if (stats_weapon < 0 && killer_player && killer_player != damaged_player
+                && damage_type != rf::DT_CRUSH && !occupant_blast) {
                 if (rf::Entity* killer_ep = rf::entity_from_handle(killer_handle)) {
                     stats_weapon = killer_ep->ai.current_primary_weapon;
                 }
             }
             const bool stats_melee = kill_attribution_is_melee_weapon(stats_weapon);
             int stats_hit_region = -1;
-            if (direct_weapon_hit && !stats_melee) {
+            if (direct_weapon_hit && !stats_melee && damaged_player) {
                 // Hit region is projectile-measured, so melee stays out of region detection.
                 // The value is the engine's winning hit-SPHERE INDEX, not a closed enum:
                 // FUN_0042CE00 initializes the out-param to -1 and writes the winning sphere index
@@ -2076,13 +2139,6 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
             // under-count. That is what keeps hits <= fired by construction.
             bool count_hit = false;
             bool count_hit_bucket_only = false;
-            // "A projectile or a damaging particle delivered this damage", as opposed to a
-            // per-frame processor that merely names a weapon - the burn spread and the Flaming
-            // Enemies DoT are inside none of these scopes, which is what keeps them out.
-            const bool from_projectile = kill_attribution_in_projectile_impact()
-                || kill_attribution_in_splash_scope()
-                || kill_attribution_in_particle_damage()
-                || g_accuracy_shot.active;
 
             // Self-damage never scores. Compared by ENTITY HANDLE, not Player pointer: the same
             // physical self-hit was observed resolving to equal pointers on one damage application
@@ -2113,10 +2169,11 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
             const bool accuracy_melee = kill_attribution_is_valid_weapon_type(stats_weapon)
                 && rf::weapon_is_melee(stats_weapon);
 
-            // Which ledger this weapon's shots, hits and damage belong to. The flame stream and
-            // continuous melee are bucket-only; everything else reaches the overall counters too.
+            // Which ledger this weapon's shots, hits and damage belong to. The flame stream, continuous
+            // melee, novelty and vehicle weapons are bucket-only; everything else reaches the overall
+            // counters too.
             bool bucket_only_mode = kill_attribution_in_particle_damage()
-                || accuracy_excluded_from_combined(stats_weapon);
+                || accuracy_excluded_from_combined(stats_weapon) || vehicle_shot;
             if (!bucket_only_mode && accuracy_melee) {
                 if (rf::Entity* kep = rf::entity_from_handle(killer_handle)) {
                     bucket_only_mode = rf::entity_weapon_is_on(kep->handle, stats_weapon);
@@ -2170,25 +2227,28 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
                     // Bullets and other direct-only weapons; the rail cap keeps a pierced line to
                     // one hit.
                     count_hit = direct_weapon_hit && accuracy_shot_scope_consume();
-                    if (count_hit) {
+                    if (direct_weapon_hit && damaged_player && accuracy_shot_scope_consume_award()) {
                         awards_on_direct_hit(killer_player, damaged_player, stats_weapon);
                     }
                 }
             }
 
-            // Novelty-weapon hits stay bucket-only in every mode, pairing with their fired side.
-            if (accuracy_excluded_from_combined(stats_weapon)) {
+            // Novelty-weapon and vehicle hits stay bucket-only in every mode, pairing with their
+            // fired side.
+            if (accuracy_excluded_from_combined(stats_weapon) || vehicle_shot) {
                 count_hit_bucket_only = true;
             }
 
             // Efficiency numerator: effective damage this weapon put on somebody else. Not gated
             // on count_hit - every point that landed counts, whether or not the shot scored as a
             // hit. Overkill is already capped out of effective_damage, so it wastes potential.
-            if (killer_player && !self_damage && scoreable_damage
+            // A hull's rams, crashes and burns are no weapon's doing, so it only takes a projectile's.
+            if (killer_player && !self_damage && scoreable_damage && (damaged_player || from_projectile)
                 && kill_attribution_is_valid_weapon_type(stats_weapon)) {
                 afstats::on_damage_dealt(killer_player, stats_weapon, effective_damage,
                                          bucket_only_mode ? afstats::CountScope::bucket_only
-                                                          : afstats::CountScope::full);
+                                                          : afstats::CountScope::full,
+                                         vehicle_shot_class);
                 if (!bucket_only_mode && killer_player->stats) {
                     static_cast<PlayerStatsNew*>(killer_player->stats)
                         ->add_efficiency_dealt(effective_damage);
@@ -2198,8 +2258,17 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
             const afstats::CountScope hit_scope = count_hit_bucket_only
                 ? afstats::CountScope::bucket_only
                 : afstats::CountScope::full;
-            afstats::on_damage(killer_player, damaged_player, stats_weapon, damage_type,
-                               effective_damage, count_hit, stats_hit_region, hit_scope);
+            if (damaged_player) {
+                int damage_vehicle = vehicle_shot_class;
+                if (!vehicle_shot && stats_weapon < 0) {
+                    damage_vehicle = roadkill_vehicle_class;
+                }
+                afstats::on_damage(killer_player, damaged_player, stats_weapon, damage_type, effective_damage,
+                                   count_hit, stats_hit_region, hit_scope, damage_vehicle, crit_applied);
+            }
+            else if (count_hit) {
+                afstats::on_hull_hit(killer_player, stats_weapon, hit_scope, vehicle_shot_class);
+            }
 
             // Paired with the afstats summary write by the identical condition, so the two overall
             // counters can never diverge.
@@ -2275,8 +2344,9 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
             }
         }
 
-        // Anchored on the hull's world position because the victim is not a player.
-        if (rf::is_server && rf::is_multi && victim_is_synced_vehicle && real_damage > 0.0f
+        // Anchored on the hull's world position because the victim is not a player. None for the hull the
+        // attacker is riding when the damage lands.
+        if (rf::is_server && rf::is_multi && victim_is_synced_vehicle && !attacker_rides_victim && real_damage > 0.0f
             && killer_player && killer_player->net_data
             && g_alpine_server_config.damage_notification_config.enabled) {
             const AfDamageNotifyHull hull{damaged_ep ? damaged_ep->pos : victim_pos_before_damage,
@@ -2315,6 +2385,64 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
         }
 
         return real_damage;
+    },
+};
+
+// A suicide request sets life directly and never reaches entity_damage_hook, so its death is
+// recorded here as the self-inflicted kill it is.
+struct DirectSuicideVictim
+{
+    rf::Player* player = nullptr;
+    float life_before = 0.0f;
+    float armor_before = 0.0f;
+    // Taken first: the local path strips stock powerups before it returns.
+    uint8_t powerups = 0;
+};
+
+static DirectSuicideVictim direct_suicide_victim(rf::Player* player)
+{
+    DirectSuicideVictim victim{player};
+    if (rf::Entity* ep = player ? rf::entity_from_handle(player->entity_handle) : nullptr) {
+        victim.life_before = ep->life;
+        victim.armor_before = ep->armor;
+        victim.powerups = powerup_stats_mask(player);
+    }
+    return victim;
+}
+
+static void record_direct_suicide(const DirectSuicideVictim& victim)
+{
+    rf::Player* player = victim.player;
+    rf::Entity* ep = player ? rf::entity_from_handle(player->entity_handle) : nullptr;
+    if (!rf::is_server || !ep || !player->net_data || victim.life_before <= 0.0f || ep->life > 0.0f) {
+        return;
+    }
+    const uint8_t player_id = player->net_data->player_id;
+    std::vector<uint8_t> assists = credit_kill_assists(player_id, player_id, -1);
+    afstats::on_kill(player, player, -1, -1, AF_KILL_FLAG_SUICIDE, assists, ep->pos, &ep->pos, -1,
+                     vehicle_occupied_damage_class(ep), -1, false, afstats::KillCause::none, victim.powerups,
+                     victim.powerups);
+    kill_attribution_record(player_id, player_id, -1, AF_KILL_FLAG_SUICIDE, -1, -1, std::move(assists));
+    awards_on_kill(player, player, -1, false, ep->handle, player->team, 0.0f, victim.life_before,
+                   victim.armor_before, {});
+}
+
+FunHook<rf::MultiIoPacketHandler> process_suicide_packet_hook{
+    0x00475760,
+    [](char* data, const rf::NetAddr& addr) {
+        const DirectSuicideVictim victim = direct_suicide_victim(rf::multi_find_player_by_addr(addr));
+        process_suicide_packet_hook.call_target(data, addr);
+        record_direct_suicide(victim);
+    },
+};
+
+// A listen host's own suicide takes the same direct path.
+FunHook<void()> multi_kill_local_player_hook{
+    0x004757A0,
+    []() {
+        const DirectSuicideVictim victim = direct_suicide_victim(rf::local_player);
+        multi_kill_local_player_hook.call_target();
+        record_direct_suicide(victim);
     },
 };
 
@@ -3711,16 +3839,28 @@ FunHook<void(rf::Entity*, rf::Weapon*)> multi_lag_comp_weapon_fire_hook{
     },
 };
 
-// One shot per real projectile created by a trigger pull, to both counters.
+// A vehicle's shot goes to the occupant its hits are credited to, in the weapon's bucket only.
+static void accuracy_count_vehicle_shot(int weapon_type, int parent_handle, bool is_alt)
+{
+    const rf::Entity* occupant = vehicle_shot_occupant(parent_handle);
+    rf::Player* gunner = occupant ? rf::player_from_entity_handle(occupant->handle) : nullptr;
+    if (gunner) {
+        afstats::on_weapon_fired(gunner, weapon_type, 1, afstats::CountScope::bucket_only,
+                                 weapon_potential_damage(weapon_type, is_alt),
+                                 vehicle_damage_class(rf::entity_from_handle(parent_handle)));
+    }
+}
+
+// One shot per real projectile created by a trigger pull. Novelty and vehicle weapons count in their
+// bucket only; everything else reaches both counters.
 //
 // Hooked at the CALL SITES, never on weapon_create itself: lag-compensated weapons create a second
 // ghost projectile per shot at 0x004266F8 for the rewind raycast, so a FunHook there double-counts
 // exactly the way PF's accuracy stat does. The two sites are mutually exclusive, so each projectile
 // is counted once, and counting per creation makes pellets and double blasts exact for free.
-// alt_fire is typed int so the pushed dword is forwarded byte-for-byte; the hook never reads it.
-// Anything that starts reading it MUST mask to the low byte and compare against 1: the engine
-// writes the flag as a byte and pushes the containing dword, leaving the upper 24 bits as stack
-// residue (a genuine alt shot was captured as 0xEE5EB801).
+// alt_fire is typed int so the pushed dword is forwarded byte-for-byte. Reading it MUST mask to the
+// low byte and compare against 1: the engine writes the flag as a byte and pushes the containing
+// dword, leaving the upper 24 bits as stack residue (a genuine alt shot was captured as 0xEE5EB801).
 CallHook<rf::Weapon*(int, int, rf::Vector3*, rf::Matrix3*, int, int)>
     weapon_fire_projectile_create_hook{
     {0x00426665, 0x0047D2DE},
@@ -3740,10 +3880,8 @@ CallHook<rf::Weapon*(int, int, rf::Vector3*, rf::Matrix3*, int, int)>
             projectile_lag_comp_advance_weapon(rf::entity_from_handle(parent_handle), wp);
         }
         if (wp && rf::is_server) {
+            const bool is_alt = (alt_fire & 0xFF) == 1;
             if (rf::Player* pp = rf::player_from_entity_handle(parent_handle)) {
-                // Low byte compared against 1, matching the engine's own contract -- the pushed
-                // dword's upper bytes are stack residue on the continuous-fire path.
-                const bool is_alt = (alt_fire & 0xFF) == 1;
                 const float potential = weapon_potential_damage(weapon_type, is_alt);
                 const bool excluded = accuracy_excluded_from_combined(weapon_type);
                 afstats::on_weapon_fired(pp, weapon_type, 1,
@@ -3757,6 +3895,24 @@ CallHook<rf::Weapon*(int, int, rf::Vector3*, rf::Matrix3*, int, int)>
                     stats->add_damage_potential(potential);
                 }
             }
+            else {
+                accuracy_count_vehicle_shot(weapon_type, parent_handle, is_alt);
+            }
+        }
+        return wp;
+    },
+};
+
+// The secondary-fire creator, through which vehicles fire their alt weapon. alt_fire is a literal 0 here.
+CallHook<rf::Weapon*(int, int, rf::Vector3*, rf::Matrix3*, int, int)>
+    secondary_fire_projectile_create_hook{
+    0x00426E5D,
+    [](int weapon_type, int parent_handle, rf::Vector3* pos, rf::Matrix3* orient,
+       int alt_fire, int a6) {
+        rf::Weapon* wp = secondary_fire_projectile_create_hook.call_target(
+            weapon_type, parent_handle, pos, orient, alt_fire, a6);
+        if (wp && rf::is_server) {
+            accuracy_count_vehicle_shot(weapon_type, parent_handle, false);
         }
         return wp;
     },
@@ -3778,9 +3934,9 @@ CallHook<rf::Weapon*(int, int, rf::Vector3*, rf::Matrix3*, int, int)>
 // early for the local player's entity), 0x004A28FA the local player's own (FUN_004A2700, so the
 // firing client and the listen host). Remote humans' throws create inline at 0x0047D2DE instead.
 //
-// 0x00426E5D is deliberately NOT here: it sits in the AI secondary-fire creator (FUN_00426CA0,
-// scheduled by the pending-shot queue in FUN_00409280) and fires ai.current_secondary_weapon,
-// which is a different weapon from the one any of the above rolled or counted for.
+// 0x00426E5D (entity_fire_secondary_weapon) is deliberately NOT here: it fires
+// ai.current_secondary_weapon, a different weapon from the one any of the above rolled or counted
+// for. secondary_fire_projectile_create_hook counts its vehicle shots.
 CallHook<rf::Weapon*(int, int, rf::Vector3*, rf::Matrix3*, int, int)>
     deferred_melee_create_hook{
     {0x0040956B, 0x004A28FA},
@@ -4003,6 +4159,8 @@ void server_reliable_socket_ready(rf::Player* player)
         }
         if (bot_count >= ideal) {
             rf::console::print("Bot initialization was rejected because bot count already meets ideal player count of {}\n", ideal);
+            // Ahead of the client's own left_game, which reads as a quit
+            afstats::note_leave_reason(player, afstats::LeaveReason::bot_removed);
             af_send_bot_control_simple(player, af_bot_control_type::disconnect_bot);
             return;
         }
@@ -5784,6 +5942,10 @@ void server_init()
     // Critical hits and hit sounds
     entity_damage_hook.install();
 
+    // Suicides that never reach entity_damage_hook
+    process_suicide_packet_hook.install();
+    multi_kill_local_player_hook.install();
+
     // Item replacements
     item_lookup_type_hook.install();
 
@@ -5844,6 +6006,7 @@ void server_init()
     // scopes a projectile's flight so rail piercing awards at most one hit per bolt.
     multi_lag_comp_weapon_fire_hook.install();
     weapon_fire_projectile_create_hook.install();
+    secondary_fire_projectile_create_hook.install();
     deferred_melee_create_hook.install();
 
     // Set lower bound of server max players clamp range to 1 (instead of 2)

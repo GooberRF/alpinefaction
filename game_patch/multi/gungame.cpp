@@ -370,7 +370,7 @@ void resolve_tier_weapons()
 // The Riot Stick is the final level at `top`, one kill long. With gg_end_with_fusion the
 // Fusion follows at (limit - 1), otherwise `top` is (limit - 1). Either way the limit-th
 // kill is made with the last level and wins.
-std::map<int, int> build_order_for_player()
+std::map<int, int> build_order_for_player(bool shuffle = true)
 {
     std::map<int, int> map;
 
@@ -409,7 +409,9 @@ std::map<int, int> build_order_for_player()
     int total_left = total_weapons;
 
     for (auto tier : g_resolved_tiers) { // copy so we can shuffle per player
-        std::shuffle(tier.begin(), tier.end(), g_rng);
+        if (shuffle) {
+            std::shuffle(tier.begin(), tier.end(), g_rng);
+        }
         const int tier_size = static_cast<int>(tier.size());
 
         const int tier_kills = (total_left > 0) ? (remaining * tier_size) / total_left : 0;
@@ -771,4 +773,11 @@ int gungame_spawn_weapon_for(rf::Player* player)
     auto& order = ensure_order(player);
     const int score = player->stats ? player->stats->score : 0;
     return weapon_for_score(order, score);
+}
+
+int gungame_level_count()
+{
+    // Every player's order has the same score thresholds; only the weapons on them are shuffled. Unshuffled,
+    // so a count leaves g_rng's sequence alone.
+    return static_cast<int>(build_order_for_player(false).size());
 }

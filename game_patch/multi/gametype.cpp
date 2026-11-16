@@ -250,6 +250,38 @@ void multi_get_team_scores(rf::NetGameType type, int& red, int& blue)
     }
 }
 
+void multi_get_winner_scores(rf::NetGameType type, int& red, int& blue)
+{
+    red = 0;
+    blue = 0;
+    // These decide the winner by objective state rather than by their team score.
+    switch (type) {
+    case rf::NG_TYPE_REV:
+        red = static_cast<int>(rev_all_points_permalocked());
+        blue = 1 - red;
+        break;
+    case rf::NG_TYPE_PAY: {
+        const int winner = payload_winning_team();
+        red = static_cast<int>(winner == 0);
+        blue = static_cast<int>(winner == 1);
+        break;
+    }
+    case rf::NG_TYPE_ESC:
+        for (const auto& hill : g_koth_info.hills) {
+            if (hill.ownership == HillOwner::HO_Red) {
+                red++;
+            }
+            else if (hill.ownership == HillOwner::HO_Blue) {
+                blue++;
+            }
+        }
+        break;
+    default:
+        multi_get_team_scores(type, red, blue);
+        break;
+    }
+}
+
 void multi_koth_set_red_team_score(int score) // KOTH and DC
 {
     if (rf::is_server)
@@ -1223,7 +1255,7 @@ static uint8_t afstats_team_for_owner(HillOwner owner)
     }
 }
 
-static std::vector<rf::Player*> players_from_ids(const std::vector<uint8_t>& ids)
+std::vector<rf::Player*> players_from_ids(const std::vector<uint8_t>& ids)
 {
     std::vector<rf::Player*> players;
     players.reserve(ids.size());
@@ -2316,6 +2348,7 @@ void multi_level_init_post_gametypes()
         af_send_server_info_packet_to_all();
         enforce_alpine_hard_reject_for_all_players_on_current_level();
         afstats::on_game_start();
+        vehicle_report_level_hulls();
         server_broadcast_level_message();
     }
 }
