@@ -808,16 +808,16 @@ ConsoleCommand2 geo_chunk_physics_cmd{
     "Toggle whether isolated geomod chunks fall as physics objects or disappear.",
 };  
 
-void apply_reduced_speed_in_background() {
+void reduced_speed_in_background_do_patch() {
     // Stock sleeps a second per frame, when our window is out of focus.
     // Use `MsgWaitForMultipleObjects` instead of `os_sleep` to avoid window
     // activation delay.
     AsmWriter{0x004353D8}.call(+[] (const uint32_t ms) {
         // Do not throttle headless bot clients, because netcode and simulation need to
         // be stable.
-        const bool throttle = g_alpine_game_config.reduced_speed_in_background
+        const bool reduce_speed = g_alpine_game_config.reduced_speed_in_background
             && !is_headless_mode();
-        if (throttle) {
+        if (reduce_speed) {
             MsgWaitForMultipleObjects(0, nullptr, FALSE, ms, QS_ALLINPUT);
         }
     });
@@ -937,7 +937,7 @@ void misc_init()
     camera_set_pos_null_crash_fix.install();
     camera_set_orient_null_crash_fix.install();
 
-    apply_reduced_speed_in_background();
+    reduced_speed_in_background_do_patch();
 
     // Fix stack corruption when packfile has lower size than expected
     vfile_read_stack_corruption_fix.install();
