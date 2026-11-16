@@ -296,6 +296,7 @@ namespace
         // Shift the watermark by exactly what was healed, not to the new life: damage that landed
         // earlier in this same frame must still read as a drop to the regen pass.
         regen.last_seen_life = std::min(regen.last_seen_life + applied, regen.spawn_max_life);
+        afstats::on_vehicle_repair(rf::player_from_entity_handle(killer_handle), applied);
     }
 
     // pp's entity: the one entity_handle names while it is still his, otherwise his live one.

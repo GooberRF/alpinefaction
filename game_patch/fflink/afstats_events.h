@@ -371,6 +371,9 @@ void on_payload_zone_time(const std::vector<rf::Player*>& players, bool blocking
 // counts double).
 void on_lifesteal(rf::Player* player, float healed);
 
+// `player` repaired a vehicle or turret hull by this much life.
+void on_vehicle_repair(rf::Player* player, float repaired);
+
 // A player picked up a timed powerup. `was_held` is whether they held it just before, and
 // `time_left_ms` the time it has now. Emits `powerup_event` start, or refresh while its hold is open.
 void on_powerup_pickup(rf::Player* player, Powerup powerup, bool was_held, uint32_t time_left_ms);

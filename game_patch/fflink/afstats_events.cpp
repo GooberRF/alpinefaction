@@ -33,6 +33,7 @@
 #include <common/utils/os-utils.h>
 #include <common/version/version.h>
 
+#include "../misc/level.h"
 #include "../misc/player.h"
 #include "../multi/alpine_packets.h"
 #include "../multi/bots/server_bots.h"
@@ -173,6 +174,8 @@ struct RosterEntry
     int64_t block_ms = 0;
     bool has_lifesteal = false;
     float lifesteal_healed = 0.0f;
+    bool has_vehicle_repaired = false;
+    float vehicle_repaired = 0.0f;
 };
 
 // Config data model, sanitizer, and the byte cap for external strings live in the shared
@@ -1247,6 +1250,10 @@ RosterEntry build_roster_entry(rf::Player* player, bool with_summary)
         e.has_lifesteal = true;
         e.lifesteal_healed = c.lifesteal_healed;
     }
+    if (vehicle_level_has_factories()) {
+        e.has_vehicle_repaired = true;
+        e.vehicle_repaired = c.vehicle_repaired;
+    }
     return e;
 }
 
@@ -1350,6 +1357,9 @@ nlohmann::json roster_entry_to_json(const RosterEntry& e)
     }
     if (e.has_lifesteal) {
         j["lifesteal_healed"] = e.lifesteal_healed;
+    }
+    if (e.has_vehicle_repaired) {
+        j["vehicle_repaired"] = e.vehicle_repaired;
     }
     return j;
 }
@@ -3344,6 +3354,14 @@ void on_lifesteal(rf::Player* player, float healed)
     if (vampire.open) {
         vampire.healed += healed;
     }
+}
+
+void on_vehicle_repair(rf::Player* player, float repaired)
+{
+    if (!player || !ensure_session()) {
+        return;
+    }
+    player->afstats_game.vehicle_repaired += repaired;
 }
 
 void on_powerup_pickup(rf::Player* player, Powerup powerup, bool was_held, uint32_t time_left_ms)

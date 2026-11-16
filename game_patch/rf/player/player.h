@@ -87,6 +87,8 @@ struct AfstatsGameCounters {
     double payload_block_ms = 0.0;
     // Vampire mutator and powerup, in effective health
     float lifesteal_healed = 0.0f;
+    // Hull life restored with melee repairs
+    float vehicle_repaired = 0.0f;
     // Indexed by the powerup_event registry
     std::array<AfstatsPowerupHold, 5> powerup_holds{};
     int64_t ping_sum = 0;
