@@ -524,7 +524,7 @@ void mouse_apply_patch()
 
     // Use `MsgWaitForMultipleObjects` instead of `Sleep` to avoid window activation delay,
     // if `DIERR_INPUTLOST` or `DIERR_NOTACQUIRED`.
-    AsmWriter{0x0051DF08, 0x0051DF0D}.call(+[] {
+    AsmWriter{0x0051DF08, 0x0051DF0F}.call(+[] {
         // Stock sleeps for 500 ms.
         MsgWaitForMultipleObjects(0, nullptr, FALSE, 500, QS_ALLINPUT);
     });
