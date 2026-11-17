@@ -1,5 +1,4 @@
 #include <algorithm>
-#include <cctype>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -16,6 +15,7 @@
 #include "vehicle_markers.h"
 #include "../alpine_packets.h"
 #include "../multi.h"
+#include "../../graphics/gr.h"
 #include "../../graphics/gr_ghost_mesh.h"
 #include "../../hud/hud_internal.h"
 #include "../../hud/hud_world.h"
@@ -138,9 +138,7 @@ namespace
         if (!base || base[0] == '\0') {
             return "Vehicle";
         }
-        std::string out{base};
-        out[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(out[0])));
-        return out;
+        return string_capitalize(base);
     }
 
     // Bare whole seconds, never M:SS - the auto-return window is read as a plain count.
@@ -262,8 +260,7 @@ namespace
     // Geometry past the level's far clip is culled away, so anything drawn out there hangs in the void.
     bool marker_beyond_far_clip(float distance)
     {
-        const float far_clip = rf::level.distance_fog_far_clip;
-        return far_clip > 0.0f && distance > far_clip;
+        return distance > level_projection_far();
     }
 
     // Alpha for a marker at this position; 0 also means "culled", so callers need no second test.

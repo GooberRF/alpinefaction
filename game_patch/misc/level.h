@@ -9,12 +9,17 @@
 #include <xlog/xlog.h>
 #include <common/rfl_chunk_reader.h>
 #include <common/alpine_dir_light.h>
+#include <common/alpine_waypoint_helper.h>
+#include <common/alpine_camera_far_clip.h>
+#include <common/mover_path.h>
+#include <common/payload.h>
 #include <common/lightmap/alpine_lightmap.h>
 #include <common/terrain/alpine_terrain.h>
 #include "../rf/geometry.h"
 #include "../rf/level.h"
 #include "../rf/file/file.h"
 #include "../os/os.h"
+#include <common/alpine_gas_region.h>
 
 constexpr int alpine_props_chunk_id = 0x0AFBA5ED;
 constexpr int dash_level_props_chunk_id = 0xDA58FA00;
@@ -28,6 +33,8 @@ constexpr int alpine_rope_emitter_chunk_id = 0x0AFBAE0A;
 constexpr int alpine_terrain_chunk_id = static_cast<int>(alpine_terrain::chunk_id); // 0x0AFBAE0B
 constexpr int alpine_lightmaps_chunk_id = static_cast<int>(alpine_lightmap::chunk_id); // 0x0AFBAE09
 constexpr int alpine_directional_light_chunk_id = static_cast<int>(alpine_dir_light::chunk_id); // 0x0AFBAE0C
+constexpr int alpine_waypoint_helper_chunk_id = static_cast<int>(alpine_waypoint_helper::chunk_id); // 0x0AFBAE0D
+constexpr int alpine_mover_path_chunk_id = static_cast<int>(mover_path::chunk_id); // 0x0AFBAE0E
 constexpr int stock_lightmaps_chunk_id = 0x1200;
 
 // Length limit (with the terminator) for bitmap names read from untrusted alpine level chunks.
@@ -99,6 +106,8 @@ struct AlpineLevelProperties
     rf::Vector3 minimap_world_max{};
     float minimap_cut_height = 0.0f; // editor-side bake parameter, no effect in game
     bool require_d3d11 = false; // refuse the level on the other renderers
+    float camera_far_clip = 0.0f; // 0 = the stock far clip (fog far clip, else gr::default_wfar)
+    payload::LevelRules payload_rules;
 
     // should match SanitizeSunProperties in editor_patch\level.h
     // A level file can carry anything; these floats end up in the lights constant buffer and in the
@@ -413,6 +422,23 @@ struct AlpineLevelProperties
             if (!reader.read_bytes(&u8, sizeof(u8)))
                 return;
             require_d3d11 = u8 != 0;
+            float far_clip = 0.0f;
+            if (!reader.read_bytes(&far_clip, sizeof(far_clip)))
+                return;
+            camera_far_clip = alpine_camera_far_clip::sanitize(far_clip);
+            if (!(camera_far_clip == far_clip)) {
+                xlog::warn("[AlpineLevelProps] Camera far clip {} corrected to {}", far_clip, camera_far_clip);
+            }
+            // alpha_tested_occlusion is editor-only
+            if (!reader.read_bytes(&u8, sizeof(u8)))
+                return;
+            payload::LevelRules rules;
+            for (float* field : payload::LevelRules::file_fields(rules)) {
+                if (!reader.read_bytes(field, sizeof(*field)))
+                    return;
+            }
+            rules.sanitize();
+            payload_rules = rules;
         }
     }
 };
@@ -473,6 +499,7 @@ struct AlpineMeshInfo {
 };
 
 void level_shutdown();
+void level_sanitize_fog_near_clip();
 void alpine_mesh_load_chunk(rf::File& file, std::size_t chunk_len, int content_version);
 void alpine_mesh_do_frame();
 void alpine_mesh_clear_state();
@@ -556,26 +583,13 @@ struct AlpineVehicleFactoryInfo {
     int32_t team = -1;
     bool lock_to_team = false;
     bool active_by_default = true;
+    // Turret classes only: degrees the turret may yaw either side of its spawn facing; 0 = unrestricted.
+    uint8_t turret_yaw_limit_deg = 0;
 };
 
 void vehicle_factory_load_chunk(rf::File& file, std::size_t chunk_len);
 void vehicle_factory_clear_state();
 bool vehicle_level_has_factories();
-
-// Gas region info, loaded from stock RFL chunk 0xB00
-struct GasRegionInfo {
-    int32_t uid = -1;
-    rf::Vector3 pos{};
-    rf::Matrix3 orient{};
-    int32_t shape = 1;       // 1=sphere, 2=box
-    float radius = 1.0f;     // sphere only
-    float height = 1.0f;     // box only
-    float width = 1.0f;      // box only
-    float depth = 1.0f;      // box only
-    rf::Color color{255, 255, 255, 255};
-    float density = 1.0f;
-    bool enabled = true;
-};
 
 void gas_region_clear_state();
 const std::vector<GasRegionInfo>& gas_region_get_all();

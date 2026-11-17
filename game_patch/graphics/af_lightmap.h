@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <common/lightmap/af_lightmap_runtime.h>
 
 namespace rf
 {
@@ -45,25 +46,6 @@ bool af_lightmap_terrain_sample(int terrain_index, float world_x, float world_z,
 
 // ─── charts for the D3D11 renderer, handed out only while it holds the atlas ───
 
-// Everything the solid builder needs to place one face's vertices in the atlas. chart < 0
-// means this face has no alpine chart and keeps the stock lightmap UVs.
-struct AfLightmapFace
-{
-    int chart = -1;
-    int axis_u = 0;
-    int axis_v = 0;
-    float scale_u = 0.0f;
-    float scale_v = 0.0f;
-    float add_u = 0.0f;
-    float add_v = 0.0f;
-    std::uint32_t lm_w = 0;
-    std::uint32_t lm_h = 0;
-    std::uint32_t surf_x = 0;
-    std::uint32_t surf_y = 0;
-    std::uint32_t k_u = 0;
-    std::uint32_t k_v = 0;
-};
-
 // With no stock lightmaps section, the engine's synthesised page's bitmap handle, else -1.
 // Geomod pages created later are real.
 int af_lightmap_synthesized_page_bm();
@@ -73,23 +55,8 @@ int af_lightmap_synthesized_page_bm();
 bool af_lightmap_face_setup(rf::GSolid* solid, int surface_index, AfLightmapFace& out);
 void af_lightmap_face_texel(const AfLightmapFace& face, const rf::Vector3& pos, float& out_u, float& out_v);
 
-struct AfLightmapConstants
-{
-    float enabled;
-    float page_size;
-    float tile_step;
-    float gutter;
-};
 AfLightmapConstants af_lightmap_constants();
 
-// The terrain chart the terrain pixel shader samples: its af_lm_index record and its XZ mapping.
-struct AfTerrainChart
-{
-    int chart;
-    float origin_x;
-    float origin_z;
-    float texel_size;
-};
 // For terrain `terrain_index` (alpine_terrain_get_all order), when the atlas is live and the level
 // carries a chart af_lightmap_resolve_terrains matched to it.
 bool af_lightmap_terrain_chart(int terrain_index, AfTerrainChart& out);
@@ -107,11 +74,6 @@ void af_lightmap_overflow_face_destroyed(rf::GFace* face);
 void af_lightmap_overflow_face_cloned(rf::GFace* source, rf::GFace* clone);
 
 // The overflow chart lighting a face of the level solid, while the D3D11 renderer holds the atlas.
-struct AfOverflowFace
-{
-    int chart = -1;
-    std::uint32_t record = 0;
-};
 bool af_lightmap_overflow_face(const rf::GSolid* solid, const rf::GFace* face, AfOverflowFace& out);
 // The chart coordinate of `pos`; false when the chart is gone.
 bool af_lightmap_overflow_texel(const AfOverflowFace& face, const rf::Vector3& pos, float& out_u, float& out_v);

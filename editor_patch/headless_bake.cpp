@@ -1,5 +1,4 @@
 #include <windows.h>
-#include <shellapi.h>
 #include <cctype>
 #include <cstddef>
 #include <cstdio>
@@ -9,8 +8,10 @@
 #include <format>
 #include <patch_common/MemUtils.h>
 #include <xlog/xlog.h>
+#include "command_line.h"
 #include "headless_bake.h"
 #include "level.h"
+#include "terrain_build.h"
 #include "vtypes.h"
 
 namespace
@@ -37,6 +38,7 @@ bool g_bake_started = false;
 bool g_load_reported = false;
 bool g_load_ok = false;
 bool g_bake_refused = false;
+bool g_build_only = false;
 std::string g_input_path;
 std::string g_output_path;
 std::string g_log_path;
@@ -45,30 +47,17 @@ DWORD g_start_ticks = 0;
 DWORD g_first_idle_ticks = 0;
 int g_dialogs_suppressed = 0;
 
-std::string narrow(const wchar_t* wide)
-{
-    int len = WideCharToMultiByte(CP_ACP, 0, wide, -1, nullptr, 0, nullptr, nullptr);
-    if (len <= 1) {
-        return {};
-    }
-    std::string result(static_cast<size_t>(len - 1), '\0');
-    WideCharToMultiByte(CP_ACP, 0, wide, -1, result.data(), len, nullptr, nullptr);
-    return result;
-}
-
+// The file first: formatting the xlog line allocates, and memory_guard_fatal's line must reach the file.
 void bake_log(std::string_view line)
 {
+    if (!g_log_path.empty()) {
+        if (FILE* f = std::fopen(g_log_path.c_str(), "a")) {
+            std::fprintf(f, "[%9.3f] %.*s\n", (GetTickCount() - g_start_ticks) / 1000.0,
+                         static_cast<int>(line.size()), line.data());
+            std::fclose(f);
+        }
+    }
     xlog::info("[bake] {}", line);
-    if (g_log_path.empty()) {
-        return;
-    }
-    FILE* f = std::fopen(g_log_path.c_str(), "a");
-    if (!f) {
-        return;
-    }
-    std::fprintf(f, "[%9.3f] %.*s\n", (GetTickCount() - g_start_ticks) / 1000.0,
-                 static_cast<int>(line.size()), line.data());
-    std::fclose(f);
 }
 
 EditorViewData* view_camera(int index)
@@ -135,7 +124,7 @@ bool run_build_geometry()
         }
         level->build_geometry_tick();
     }
-    return !level->build_cancelling();
+    return !level->build_cancelling() && !build_geometry_out_of_memory();
 }
 
 int WINAPI MessageBoxA_headless(HWND, LPCSTR text, LPCSTR caption, UINT type)
@@ -190,14 +179,19 @@ void run_bake()
     }
     bake_log(std::format("built in {:.1f}s", (GetTickCount() - build_begin) / 1000.0));
 
-    DWORD bake_begin = GetTickCount();
-    bake_log("baking");
-    main_frame->OnCalculateLighting();
-    if (g_bake_refused) {
-        bake_log("error: lighting was refused, nothing was saved");
-        bake_finish(5);
+    if (g_build_only) {
+        bake_log("lighting skipped (-buildonly)");
     }
-    bake_log(std::format("baked in {:.1f}s", (GetTickCount() - bake_begin) / 1000.0));
+    else {
+        DWORD bake_begin = GetTickCount();
+        bake_log("baking");
+        main_frame->OnCalculateLighting();
+        if (g_bake_refused) {
+            bake_log("error: lighting was refused, nothing was saved");
+            bake_finish(5);
+        }
+        bake_log(std::format("baked in {:.1f}s", (GetTickCount() - bake_begin) / 1000.0));
+    }
 
     DWORD save_begin = GetTickCount();
     restore_view_cameras();
@@ -252,21 +246,9 @@ bool path_is_bake_input(const char* path)
 
 void parse_args()
 {
-    int argc = 0;
-    wchar_t** argv = CommandLineToArgvW(GetCommandLineW(), &argc);
-    if (!argv) {
-        return;
-    }
-    for (int i = 1; i < argc; ++i) {
-        std::wstring_view arg = argv[i];
-        if (arg == L"-bake" && i + 1 < argc) {
-            g_input_path = narrow(argv[++i]);
-        }
-        else if (arg == L"-bakeout" && i + 1 < argc) {
-            g_output_path = narrow(argv[++i]);
-        }
-    }
-    LocalFree(argv);
+    g_input_path = editor_command_line_path(L"-bake").value_or("");
+    g_output_path = editor_command_line_path(L"-bakeout").value_or("");
+    g_build_only = editor_command_line_has(L"-buildonly");
     g_active = !g_input_path.empty();
 }
 

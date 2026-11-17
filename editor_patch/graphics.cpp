@@ -14,10 +14,11 @@
 #include "level.h"
 #include "alpine_obj.h"
 #include "terrain_preview.h"
+#include "editor_settings.h"
+#include "graphics/d3d11/gr_d3d11_editor_hooks.h"
+#include "graphics/editor_gr.h"
 
 HWND GetMainFrameHandle();
-
-bool g_editor_force_lod0 = true;
 
 // After geometry rebuild, rooms allocated from recycled heap memory may have stale
 // non-NULL geo_cache pointers left over from the previous cycle. The D3D8 renderer
@@ -120,18 +121,21 @@ static u8** frame_slot(uintptr_t esp, unsigned offset)
 CallHook<void()> frametime_calculate_hook{
     0x00483047,
     []() {
-        HWND hwnd = GetMainFrameHandle();
-        if (!IsWindowVisible(hwnd)) {
-            // when minimized limit to 1 FPS
-            Sleep(1000);
-        }
-        else {
-            // Check if editor is the foreground window
-            HWND foreground_wnd = GetForegroundWindow();
-            bool editor_is_in_foreground = GetWindowThreadProcessId(foreground_wnd, nullptr) == GetCurrentThreadId();
-            // when editor is in background limit to 4 FPS
-            if (!editor_is_in_foreground) {
-                Sleep(250);
+        if (g_editor_settings.background_throttle) {
+            HWND hwnd = GetMainFrameHandle();
+            if (!IsWindowVisible(hwnd)) {
+                // when minimized limit to 1 FPS
+                Sleep(1000);
+            }
+            else {
+                // Check if editor is the foreground window
+                HWND foreground_wnd = GetForegroundWindow();
+                bool editor_is_in_foreground =
+                    GetWindowThreadProcessId(foreground_wnd, nullptr) == GetCurrentThreadId();
+                // when editor is in background limit to 4 FPS
+                if (!editor_is_in_foreground) {
+                    Sleep(250);
+                }
             }
         }
         frametime_calculate_hook.call_target();
@@ -243,11 +247,23 @@ CodeInjection gr_d3d_render_geometry_face_patch_2{
     },
 };
 
+static BOOL CALLBACK grow_to_monitor(HMONITOR, HDC, LPRECT rect, LPARAM size)
+{
+    auto& s = *reinterpret_cast<SIZE*>(size);
+    s.cx = std::max(s.cx, rect->right - rect->left);
+    s.cy = std::max(s.cy, rect->bottom - rect->top);
+    return TRUE;
+}
+
+// The back buffer the views draw into is as big as the largest monitor, so a view (or the Texture Browser) on any of
+// them can use all of it
 CallHook<void(int, int, int, int, int, HWND, float, bool, int, D3DFORMAT)> gr_init_hook{
     0x00482B78,
     [](int max_w, int max_h, int bit_depth, int mode, int window_mode, HWND hwnd, float far_zvalue, bool sync_blit, int video_card, D3DFORMAT backbuffer_format) {
-        max_w = GetSystemMetrics(SM_CXSCREEN);
-        max_h = GetSystemMetrics(SM_CYSCREEN);
+        SIZE largest{GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)};
+        EnumDisplayMonitors(nullptr, nullptr, grow_to_monitor, reinterpret_cast<LPARAM>(&largest));
+        max_w = largest.cx;
+        max_h = largest.cy;
         gr_init_hook.call_target(max_w, max_h, bit_depth, mode, window_mode, hwnd, far_zvalue, sync_blit, video_card, backbuffer_format);
     },
 };
@@ -291,7 +307,7 @@ CodeInjection geo_cache_validate_in_render{
         auto original_esp = static_cast<uintptr_t>(regs.esp);
         auto loop_index = *reinterpret_cast<int*>(original_esp + 0x80);
         if (loop_index == 0) {
-            pool_cursor_snapshot = addr_as_ref<char*>(0x01128364);
+            pool_cursor_snapshot = static_cast<char*>(geo_cache_pool_cursor);
         }
 
         // Read geo_cache pointer from room struct
@@ -299,9 +315,8 @@ CodeInjection geo_cache_validate_in_render{
         auto* geo_cache = *reinterpret_cast<char**>(room + 0x4);
 
         if (geo_cache) {
-            auto& pool_base = addr_as_ref<char*>(0x010e8f60);
             auto gc_addr = reinterpret_cast<uintptr_t>(geo_cache);
-            if (gc_addr < reinterpret_cast<uintptr_t>(pool_base) ||
+            if (gc_addr < reinterpret_cast<uintptr_t>(geo_cache_pool_base) ||
                 gc_addr >= reinterpret_cast<uintptr_t>(pool_cursor_snapshot)) {
                 // Cache pointer is outside the valid pool range — it's stale
                 *reinterpret_cast<void**>(room + 0x4) = nullptr;
@@ -330,12 +345,8 @@ CodeInjection geo_cache_validate_in_render{
 CodeInjection geo_build_reset_render_cache{
     0x0043a6cd, // MOV ECX, dword ptr [0x006f9e68] — right after post-build room loop
     [](auto& regs) {
-        auto& pool_cursor = addr_as_ref<void*>(0x01128364);
-        auto& pool_base = addr_as_ref<void*>(0x010e8f60);
-        auto& tracked_room_count = addr_as_ref<int>(0x010ac748);
-
-        pool_cursor = pool_base;
-        tracked_room_count = 0;
+        geo_cache_pool_cursor = geo_cache_pool_base;
+        geo_cache_num_rooms = 0;
     },
 };
 
@@ -554,9 +565,62 @@ CallHook<void()> gr_d3d_device_reset_state_recovery{
     },
 };
 
+// Render Everything draws the level face by face without the sky the portal walk draws behind it (FUN_00425950);
+// its face loop already leaves out sky faces.
+CallHook<void __fastcall(GSolid*, int, char, int, char, const Vector3*, const Matrix3*, int, int, int)>
+    level_render_everything_hook{
+    0x0047AF79,
+    [](GSolid* solid, int edx, char outline, int face_outlines, char vertex_marks, const Vector3* pos,
+       const Matrix3* orient, int r, int g, int b) FASTCALL_LAMBDA {
+        if (GRoom* sky = level_sky_room(solid)) {
+            room_draw_clip_set(sky);
+            sky_room_draw(solid, sky, 0);
+            room_draw_clip_set(nullptr);
+        }
+        level_render_everything_hook.call_target(solid, edx, outline, face_outlines, vertex_marks, pos, orient, r, g,
+                                                 b);
+    },
+};
+
+// Both LOD distance branches made unconditional (JZ, JNZ to JMP) always draw a mesh's first LOD.
+void editor_apply_force_lod0()
+{
+    const bool force = g_editor_settings.force_lod0;
+    write_mem<u8>(0x00507907, force ? 0xEB : 0x74);
+    write_mem<u8>(0x00507915, force ? 0xEB : 0x75);
+}
 
 void ApplyGraphicsPatches()
 {
+    // Add Sleep if window is inactive
+    frametime_calculate_hook.install();
+
+    // Improve performance
+    after_gr_init_hook.install();
+
+    // Fix editor not using all space for rendering when used with a big monitor
+    gr_init_hook.install();
+
+    // Fix aspect ratio on wide screens
+    gr_init_widescreen_patch.install();
+
+    // Use Hor+ FOV scaling
+    gr_setup_3d_hook.install();
+
+    // When rendering semi-transparent objects do not group them behind alpha detail rooms, same as the game.
+    // Stock stores up to 128 groups per room without a limit check.
+    AsmWriter{0x00425789}.jmp(0x00425831);
+    AsmWriter{0x00425847}.nop(2);
+
+    // Draw the sky in Render Everything as the portal modes do
+    level_render_everything_hook.install();
+
+    if (editor_gr_is_d3d11()) {
+        editor_d3d11_apply_patch();
+        return;
+    }
+
+    // Everything below patches the stock Direct3D 8 backend, which the Direct3D 11 renderer replaces
 #if D3D_HW_VERTEX_PROCESSING
     // Use hardware vertex processing instead of software processing
     write_mem<u8>(0x004EC73E + 1, D3DCREATE_HARDWARE_VERTEXPROCESSING);
@@ -566,12 +630,6 @@ void ApplyGraphicsPatches()
 
     // Avoid flushing D3D buffers in GrSetColorRgba
     AsmWriter(0x004B976D).nop(5);
-
-    // Add Sleep if window is inactive
-    frametime_calculate_hook.install();
-
-    // Improve performance
-    after_gr_init_hook.install();
 
     // Reduce number of draw-calls for line rendering
     AsmWriter(0x004E1335).nop(5);
@@ -602,15 +660,6 @@ void ApplyGraphicsPatches()
     gr_texture_mip_create_failure_unlock.install();
     gr_texture_mip_upload_failure_unlock.install();
 
-    // Fix editor not using all space for rendering when used with a big monitor
-    gr_init_hook.install();
-
-    // Fix aspect ratio on wide screens
-    gr_init_widescreen_patch.install();
-
-    // Use Hor+ FOV scaling
-    gr_setup_3d_hook.install();
-
     // Use d3d8to9 instead of d3d8
     gr_d3d_init_load_library_injection.install();
 
@@ -622,11 +671,6 @@ void ApplyGraphicsPatches()
 
     // Reset render cache pool after geometry rebuild so stale geo_cache pointers are detected
     geo_build_reset_render_cache.install();
-
-    // When rendering semi-transparent objects do not group them behind alpha detail rooms, same as the game.
-    // Stock stores up to 128 groups per room without a limit check.
-    AsmWriter{0x00425789}.jmp(0x00425831);
-    AsmWriter{0x00425847}.nop(2);
 
     // Expand detail rooms array from 256 entries (0x010cee5c)
     // Array base references
@@ -769,11 +813,6 @@ void ApplyGraphicsPatches()
     repoint_array_refs({0x00505f4f, 0x00505f63, 0x00505ffc, 0x00506444, 0x00506bd1, 0x00506cc3,
                         0x005074b1},
                        0x01ab6294, mesh_vert_rgb);
-
-    if (g_editor_force_lod0) {
-        write_mem<u8>(0x00507907, 0xEB);
-        write_mem<u8>(0x00507915, 0xEB);
-    }
 
     // Restore render state after D3D device Reset()
     gr_d3d_device_reset_state_recovery.install();

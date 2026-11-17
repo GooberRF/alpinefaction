@@ -257,13 +257,25 @@ static void mesh_apply_texture_overrides(DedMesh* mesh)
     }
 }
 
+int vmesh_chunk_bitmap(const EditorV3dMesh& sub, const EditorVifMesh& vm, const EditorVifChunk& chunk)
+{
+    const int idx = chunk.texture_idx;
+    if (idx < 0 || idx >= 7 || idx >= vm.num_texture_handles) return -1;
+    if (vm.tex_handles[idx] != -1) return vm.tex_handles[idx];
+    const int material = vm.tex_ids[idx];
+    if (sub.materials && material < sub.num_materials) {
+        return alpine_dlg_resolve_bitmap(sub.materials[material].texture_maps[0].name);
+    }
+    return -1;
+}
+
 // Free all VString members before deleting a DedMesh
 void DestroyDedMesh(DedMesh* mesh)
 {
     if (!mesh) return;
     mesh_release_vmesh(mesh);
     // Free VString members from DedObject base
-    mesh->field_4.free();
+    mesh->class_mesh_filename.free();
     mesh->script_name.free();
     mesh->class_name.free();
     // Free VString members from DedMesh
@@ -1394,10 +1406,10 @@ void mesh_ensure_uid(int& uid)
 
 // ─── Object Lifecycle ───────────────────────────────────────────────────────
 
-void PlaceNewMeshObject()
+DedMesh* PlaceNewMeshObject(const char* filename, const Vector3& pos, const Matrix3& orient)
 {
     auto* level = CDedLevel::Get();
-    if (!level) return;
+    if (!level) return nullptr;
 
     auto* mesh = new DedMesh();
     memset(static_cast<DedObject*>(mesh), 0, sizeof(DedObject));
@@ -1407,21 +1419,9 @@ void PlaceNewMeshObject()
 
     // Default values
     mesh->script_name.assign_0("Mesh");
-    mesh->mesh_filename.assign_0("barrel.v3m");
-
-    // Get camera position and orientation from the active viewport
-    auto* viewport = get_active_viewport();
-    if (viewport && viewport->view_data) {
-        mesh->pos = viewport->view_data->camera_pos;
-        mesh->orient = viewport->view_data->camera_orient;
-    }
-
-    // Fallback if no viewport data
-    if (mesh->pos.x == 0.0f && mesh->pos.y == 0.0f && mesh->pos.z == 0.0f) {
-        mesh->orient.rvec = {1.0f, 0.0f, 0.0f};
-        mesh->orient.uvec = {0.0f, 1.0f, 0.0f};
-        mesh->orient.fvec = {0.0f, 0.0f, 1.0f};
-    }
+    mesh->mesh_filename.assign_0(filename);
+    mesh->pos = pos;
+    mesh->orient = orient;
 
     mesh->uid = generate_uid();
 
@@ -1436,6 +1436,7 @@ void PlaceNewMeshObject()
 
     // Update console display to show selected object info
     level->update_console_display();
+    return mesh;
 }
 
 DedMesh* CloneMeshObject(DedMesh* source, bool add_to_level)
@@ -1553,7 +1554,8 @@ void ShowMeshPropertiesForSelection(CDedLevel* level)
 // ─── Scaled Rendering ───────────────────────────────────────────────────────
 
 // The position that draws a part centred on mesh-local `center` in its true place under an orient scaled by
-// `scale`: the engine draws such a part as if the camera sat scale * scale times as far from its centre.
+// `scale`: RED's Direct3D 8 mesh renderer draws such a part as if the camera sat scale * scale times as far from
+// its centre. The Direct3D 11 renderer draws a scaled orient correctly.
 static Vector3 scaled_draw_pos(const Vector3& pos, const Matrix3& orient, float scale, const Vector3& center)
 {
     const float distance_factor = 1.0f / (scale * scale);
@@ -1571,13 +1573,14 @@ static Vector3 scaled_draw_pos(const Vector3& pos, const Matrix3& orient, float 
 void vmesh_render_scaled(EditorVMesh* vm, const Vector3& pos, const Matrix3& orient, float scale,
                          const EditorRenderParams& params)
 {
+    const bool compensate = scale != 1.0f && !editor_gr_is_d3d11();
     if (vm->type == VMESH_TYPE_STATIC) {
         // Each submesh is drawn about its own centre.
         const auto* v3d = static_cast<const EditorV3d*>(vm->instance);
         if (!v3d || v3d->num_meshes <= 0 || !v3d->meshes) return;
         for (int i = 0; i < v3d->num_meshes; i++) {
             Vector3 p = pos;
-            if (scale != 1.0f) {
+            if (compensate) {
                 const EditorVifLodMesh* lod = v3d->meshes[i].lod_mesh;
                 p = scaled_draw_pos(pos, orient, scale, lod ? lod->center : Vector3{});
             }
@@ -1586,7 +1589,7 @@ void vmesh_render_scaled(EditorVMesh* vm, const Vector3& pos, const Matrix3& ori
         return;
     }
     Vector3 p = pos;
-    if (vm->type == VMESH_TYPE_CHARACTER && scale != 1.0f) {
+    if (vm->type == VMESH_TYPE_CHARACTER && compensate) {
         // The first character mesh is the one drawn, about its lod mesh centre.
         const auto* character = static_cast<const EditorCharacter*>(vm->mesh);
         const EditorV3dMesh* m =
@@ -1880,6 +1883,11 @@ DedMesh* mesh_click_pick(CDedLevel* level, float click_x, float click_y, float* 
 // Mesh clipboard: stores staged clones (with add_to_level=false) for Ctrl+V paste.
 static std::vector<DedMesh*> g_mesh_clipboard;
 
+void mesh_swap_clipboard(std::vector<DedMesh*>& other)
+{
+    g_mesh_clipboard.swap(other);
+}
+
 void mesh_clear_clipboard()
 {
     for (auto* mesh : g_mesh_clipboard) {
@@ -1888,7 +1896,7 @@ void mesh_clear_clipboard()
             g_v3c_action_simulating.erase(v);
             vmesh_free(v);
         }
-        mesh->field_4.free();
+        mesh->class_mesh_filename.free();
         mesh->script_name.free();
         mesh->class_name.free();
         mesh->mesh_filename.free();

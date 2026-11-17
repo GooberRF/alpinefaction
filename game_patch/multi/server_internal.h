@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cmath>
 #include <string_view>
 #include <string>
 #include <set>
@@ -10,6 +11,7 @@
 #include <filesystem>
 #include <unordered_map>
 #include <unordered_set>
+#include <common/payload.h>
 #include "../rf/math/vector.h"
 #include "../rf/math/matrix.h"
 #include "../rf/os/string.h"
@@ -17,6 +19,7 @@
 #include "../rf/os/console.h"
 #include "../rf/multi.h"
 #include "../rf/weapon.h"
+#include "bots/bot_personality.h"
 
 // Forward declarations
 namespace rf
@@ -25,6 +28,7 @@ namespace rf
 }
 
 struct AfVoteCallParams; // alpine_packets.h
+struct AfDamageNotifyHull; // alpine_packets.h
 
 // used for game_info packets
 struct AFGameInfoFlags
@@ -127,6 +131,7 @@ struct BagmanConfig
     int bag_spawn_delay_ms = 7500;
     int bag_score_limit = 150;
     int tbag_score_limit = 300;
+    bool bag_multiple_spawns = true;
 
     void set_bag_return_time(float in_seconds)
     {
@@ -176,6 +181,118 @@ struct SalvageConfig
     void set_flag_return_time(float in_seconds)
     {
         flag_return_time_ms = std::clamp(static_cast<int>(in_seconds * 1000.0f), 1000, 60000);
+    }
+};
+
+struct ScavengerConfig
+{
+    int cap_limit = 15;
+    int objective_spawn_delay_ms = 10000;
+    int objective_capture_respawn_delay_ms = 5000;
+    int objective_return_time_ms = 30000;
+    int zone_timeout_ms = 120000;
+    float zone_radius = 1.5f;
+
+    void set_cap_limit(int count)
+    {
+        cap_limit = std::clamp(count, 1, 65535);
+    }
+
+    // Clamped in float so an out-of-range value never reaches the int cast; non-finite input
+    // keeps the current value.
+    static void set_clamped_ms(int& out_ms, float in_seconds, float min_ms, float max_ms)
+    {
+        if (std::isfinite(in_seconds)) {
+            out_ms = static_cast<int>(std::clamp(in_seconds * 1000.0f, min_ms, max_ms));
+        }
+    }
+
+    void set_objective_spawn_delay(float in_seconds)
+    {
+        // 2 bytes (uint16_t) on the wire
+        set_clamped_ms(objective_spawn_delay_ms, in_seconds, 0.0f, 60000.0f);
+    }
+
+    void set_objective_capture_respawn_delay(float in_seconds)
+    {
+        set_clamped_ms(objective_capture_respawn_delay_ms, in_seconds, 0.0f, 60000.0f);
+    }
+
+    void set_objective_return_time(float in_seconds)
+    {
+        set_clamped_ms(objective_return_time_ms, in_seconds, 1000.0f, 60000.0f);
+    }
+
+    void set_zone_timeout(float in_seconds)
+    {
+        set_clamped_ms(zone_timeout_ms, in_seconds, 10000.0f, 600000.0f);
+    }
+
+    void set_zone_radius(float in_meters)
+    {
+        if (std::isfinite(in_meters)) {
+            zone_radius = std::clamp(in_meters, 1.0f, 10.0f);
+        }
+    }
+};
+
+// The server's Payload settings. The optionals override the level's rules, unset meaning the level's value.
+struct PayloadConfig
+{
+    static constexpr float max_setup_time = 60.0f;
+    float setup_time = 20.0f; // the cart stays put this long at the round's start
+    std::optional<float> checkpoint_time_bonus; // also wins over a checkpoint's own bonus
+    std::optional<float> overtime_grace;
+    std::optional<float> heal_per_tick; // per second
+
+    struct RespawnExtrasOverride
+    {
+        std::optional<float> base;
+        std::optional<float> per_checkpoint;
+        std::optional<float> final_stretch;
+
+        payload::RespawnExtras applied_to(payload::RespawnExtras extras) const
+        {
+            extras.base = base.value_or(extras.base);
+            extras.per_checkpoint = per_checkpoint.value_or(extras.per_checkpoint);
+            extras.final_stretch = final_stretch.value_or(extras.final_stretch);
+            return extras;
+        }
+    };
+    RespawnExtrasOverride attacker_respawn;
+    RespawnExtrasOverride defender_respawn;
+
+    // Non-finite input keeps the current value
+    static void set_clamped(std::optional<float>& out, float in, float lo, float hi)
+    {
+        if (std::isfinite(in)) {
+            out = std::clamp(in, lo, hi);
+        }
+    }
+
+    void set_checkpoint_time_bonus(float in_seconds)
+    {
+        set_clamped(checkpoint_time_bonus, in_seconds, 0.0f, payload::max_checkpoint_time_bonus);
+    }
+
+    void set_overtime_grace(float in_seconds)
+    {
+        set_clamped(overtime_grace, in_seconds, 0.0f, payload::max_overtime_grace);
+    }
+
+    void set_heal_per_tick(float in_amount)
+    {
+        set_clamped(heal_per_tick, in_amount, 0.0f, payload::max_heal_per_second);
+    }
+
+    void set_setup_time(float in_seconds)
+    {
+        setup_time = payload::clamp_rule(in_seconds, 0.0f, max_setup_time, setup_time);
+    }
+
+    static void set_respawn_extra(std::optional<float>& out, float in_seconds)
+    {
+        set_clamped(out, in_seconds, -payload::max_respawn_extra, payload::max_respawn_extra);
     }
 };
 
@@ -314,6 +431,19 @@ struct WelcomeMessageConfig
     }
 };
 
+struct LevelMessageConfig
+{
+    bool enabled = false;
+    std::string text = "";
+
+    // =============================================
+
+    void set_text(std::string_view new_text)
+    {
+        text.assign(new_text.substr(0, 240));
+    }
+};
+
 struct WeaponStayExemptionEntry
 {
     bool exemption_enabled = true;
@@ -406,15 +536,19 @@ struct SpawnLifeConfig
 
 struct SpawnDelayConfig
 {
+    static constexpr int min_delay_ms = 250;
+    static constexpr int max_delay_ms = 60000;
     bool enabled = false;
     int base_value = 5000;
+    // Each team respawns together, on multiples of its delay since the level began
+    bool wave_respawns = false;
 
     // =============================================
 
     void set_base_value(float in_value)
     {
         int value_int = static_cast<int>(in_value * 1000);
-        base_value = std::clamp(value_int, 250, 60000);
+        base_value = std::clamp(value_int, min_delay_ms, max_delay_ms);
     }
 };
 
@@ -571,6 +705,9 @@ struct GibConfig
     bool all_damage = false;
     float damage_threshold = 100.0f;
 
+    // Gibs are random debris instead of meat chunks. Set by the Gibbing mutator.
+    bool scrapyard = false;
+
     // =============================================
 
     void set_damage_threshold(float threshold)
@@ -581,8 +718,17 @@ struct GibConfig
 
 struct VehicleConfig
 {
-    // Hulls take damage from hitting the level or a mover hard, and from hard landings.
+    // Hulls take damage from hitting the level, a mover or a prop hard, from hard landings, and (the fighter)
+    // from scraping along the level.
     bool crash_damage = true;
+    // Bots may board vehicles, and at most this many hulls may have a bot driving them.
+    bool bots_use_vehicles = true;
+    int bot_max_drivers = 4;
+
+    void set_bot_max_drivers(int count)
+    {
+        bot_max_drivers = std::clamp(count, 0, 32);
+    }
 };
 
 // Controls which level pickups survive under a mutator. Enforced server-side in
@@ -715,6 +861,14 @@ struct MutatorConfig
     // Pogo: hold jump to auto-jump on every landing. Client-side physics.
     bool pogo_enabled = false;
 
+    // Join Bots: this many server bots join for the level, or fill a match's empty slots, all at one skill preset.
+    int join_bots = 0;
+    std::string join_bots_skill;
+    std::string join_bots_personality;
+
+    // Item Replacement: the item_replacements entries it wrote, so a narrower scope's redeclaration can take them back.
+    std::map<std::string, std::string> item_replace_entries;
+
     // Display only: human-readable names of the mutators applied to these rules.
     std::vector<std::string> active_labels;
 
@@ -746,6 +900,7 @@ struct AlpineServerConfigRules
     int rf2_geo_limit = -1; // -1 = unlimited, 0 = disabled, >0 = specific limit
     bool team_damage = false;
     bool fall_damage = false;
+    bool exposure_damage = true;
     bool weapons_stay = false;
     bool force_respawn = false;
     bool balance_teams = false;
@@ -769,6 +924,7 @@ struct AlpineServerConfigRules
     GibConfig gibbing;
     VehicleConfig vehicles;
     WelcomeMessageConfig welcome_message;
+    LevelMessageConfig level_message;
     bool weapon_items_give_full_ammo = false;
     bool weapon_infinite_magazines = false;
     bool drop_weapons = true;
@@ -777,6 +933,8 @@ struct AlpineServerConfigRules
     WeaponStayExemptionConfig weapon_stay_exemptions;
     BagmanConfig bagman;
     SalvageConfig salvage;
+    ScavengerConfig scavenger;
+    PayloadConfig payload;
     std::map<std::string, std::string> item_replacements;
     std::map<std::string, int> item_respawn_time_overrides;
     DelayedItemsConfig delayed_items;
@@ -784,6 +942,7 @@ struct AlpineServerConfigRules
     bool gungame_rampage_rewards = true;
     std::vector<std::vector<std::string>> gungame_tiers; // uses built-in tiers if not specified
     std::string gungame_final_weapon = "Riot Stick";
+    bool gungame_end_with_fusion = true;
     bool geo_chunk_physics = true;
     bool clear_stale_movement_input = false;
     MutatorConfig mutators;
@@ -898,6 +1057,7 @@ struct AlpineServerConfigRules
         switch (game_type) {
             case rf::NetGameType::NG_TYPE_CTF:     return cap_limit;
             case rf::NetGameType::NG_TYPE_SAL:     return salvage.cap_limit;
+            case rf::NetGameType::NG_TYPE_SCAV:    return scavenger.cap_limit;
             case rf::NetGameType::NG_TYPE_TEAMDM:  return team_kill_limit;
             case rf::NetGameType::NG_TYPE_KOTH:    return koth_score_limit;
             case rf::NetGameType::NG_TYPE_DC:      return dc_score_limit;
@@ -908,7 +1068,8 @@ struct AlpineServerConfigRules
             case rf::NetGameType::NG_TYPE_WO:      return rounds.wins_to_take_match();
             case rf::NetGameType::NG_TYPE_RUN:
             case rf::NetGameType::NG_TYPE_REV:
-            case rf::NetGameType::NG_TYPE_ESC:     return std::nullopt;
+            case rf::NetGameType::NG_TYPE_ESC:
+            case rf::NetGameType::NG_TYPE_PAY:     return std::nullopt;
             default:                               return individual_kill_limit;
         }
     }
@@ -921,6 +1082,7 @@ struct AlpineServerConfigRules
         switch (game_type) {
             case rf::NetGameType::NG_TYPE_CTF:     set_cap_limit(count); return true;
             case rf::NetGameType::NG_TYPE_SAL:     salvage.set_cap_limit(count); return true;
+            case rf::NetGameType::NG_TYPE_SCAV:    scavenger.set_cap_limit(count); return true;
             case rf::NetGameType::NG_TYPE_TEAMDM:  set_team_kill_limit(count); return true;
             case rf::NetGameType::NG_TYPE_KOTH:    set_koth_score_limit(count); return true;
             case rf::NetGameType::NG_TYPE_DC:      set_dc_score_limit(count); return true;
@@ -931,7 +1093,8 @@ struct AlpineServerConfigRules
             case rf::NetGameType::NG_TYPE_WO:      rounds.set_wins_to_take_match(count); return true;
             case rf::NetGameType::NG_TYPE_RUN:
             case rf::NetGameType::NG_TYPE_REV:
-            case rf::NetGameType::NG_TYPE_ESC:     return false;
+            case rf::NetGameType::NG_TYPE_ESC:
+            case rf::NetGameType::NG_TYPE_PAY:     return false;
             default:                               set_individual_kill_limit(count); return true;
         }
     }
@@ -949,6 +1112,9 @@ struct AlpineServerConfigRules
         if (orig_idx < 0) {
             // check if original name is invalid
             // replacement name being blank is fine, removes item
+            return false;
+        }
+        if (!replacement.empty() && rf::item_lookup_type(replacement.c_str()) < 0) {
             return false;
         }
         item_replacements[std::string(original)] = std::string(replacement);
@@ -981,11 +1147,6 @@ struct AlpineRconProfile
     std::vector<std::string> allowed_commands;
 };
 
-struct BotConfigOverride {
-    uint8_t field_id;
-    float value;
-};
-
 struct ServerBotConfig {
     std::string personality_preset = "balanced";
     std::string skill_preset = "average";
@@ -999,12 +1160,19 @@ struct BotProfileSlotTracker {
     std::unordered_map<const rf::Player*, int> assignments;
 
     int assign_slot(const rf::Player* player, int num_profiles);
+    void assign_explicit(const rf::Player* player, int slot);
     void release_slot(const rf::Player* player);
     int get_slot(const rf::Player* player) const;
     void clear();
 };
 
 extern BotProfileSlotTracker g_bot_profile_slots;
+
+constexpr int k_max_server_bots = 31;
+
+void resolve_bot_identity(const ServerBotConfig& config, const rf::Player* self, std::string& out_name,
+                          int32_t& out_character);
+int pick_team_for_new_server_bot();
 
 struct AlpineServerConfig
 {
@@ -1016,6 +1184,7 @@ struct AlpineServerConfig
     uint32_t bot_shared_secret = 0;
     std::string fflink_gsk = "";
     std::vector<ServerBotConfig> bot_configs;
+    int server_bots = 0;
     bool upnp_enabled = false;
     bool demo_auto_record = false;
     bool demo_chat_record = true;
@@ -1027,15 +1196,20 @@ struct AlpineServerConfig
     bool dynamic_rotation = false;
     bool gaussian_spread = true;
     bool stats_message_enabled = true;
+    bool announce_next_level = false;
     bool allow_fullbright_meshes = false;
     bool allow_lightmaps_only = false;
     bool allow_disable_screenshake = true;
     bool allow_disable_muzzle_flash = true;
-    bool allow_unlimited_fps = false;
     bool allow_footsteps = true;
     bool allow_outlines = false;
     bool allow_outlines_xray = true;
     bool use_sp_damage_calculation = false;
+    bool projectile_lag_comp = true;
+    int projectile_lag_comp_max_ms = 250;
+    int hitscan_lag_comp_max_ms = 1000;
+    bool delta_obj_update = true; // offer af_obj_update_delta to clients that ask; read per join
+    unsigned server_netfps = 40u; // `bandwidth` key: the sv_bandwidth tier applied on every config load
     AlpineRestrictConfig alpine_restricted_config;
     InactivityConfig inactivity_config;
     DamageNotificationConfig damage_notification_config;
@@ -1083,6 +1257,11 @@ struct AlpineServerConfig
         bot_shared_secret = secret;
     }
 
+    void set_server_bots(int count)
+    {
+        server_bots = std::clamp(count, 0, k_max_server_bots);
+    }
+
     void set_fflink_gsk(std::string_view new_gsk) {
         fflink_gsk.assign(new_gsk);
     }
@@ -1096,6 +1275,8 @@ struct ManualRulesOverride
     // set. A plain vote installs derived rules too, but arms no session set, so a
     // rotation preserve vote after one carries nothing.
     bool explicit_session = false;
+    // Installed by a match vote: its Join Bots last from when the match is queued until the level after it.
+    bool match = false;
 };
 
 struct MatchInfo
@@ -1181,6 +1362,7 @@ enum class UpcomingGameTypeSelection {
 
 rf::NetGameType get_upcoming_game_type();
 UpcomingGameTypeSelection get_upcoming_game_type_selection();
+extern const std::vector<std::string> g_rcon_cmd_masterlist;
 bool is_rcon_command_masterlisted(std::string_view command);
 bool set_upcoming_game_type(rf::NetGameType gt, UpcomingGameTypeSelection selection = UpcomingGameTypeSelection::Rotation);
 void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigRules& rules);
@@ -1233,6 +1415,8 @@ bool player_spawn_blocked_by_game(const rf::Player* player);
 void update_pre_match_powerups(rf::Player* player);
 void start_match();
 void cancel_match();
+// Ends the live match as a win for the other team
+void surrender_match(int losing_team);
 void start_pre_match();
 // The afstats::MatchState value describing the ready-up match system right now,
 // as a raw uint8 so this header stays free of the stats API. Read at round_start.
@@ -1243,6 +1427,8 @@ void toggle_ready_status(rf::Player* player);
 bool get_ready_status(const rf::Player* player);
 void server_vote_do_frame();
 void init_server_commands();
+// sv_bot_add / sv_bot_remove for an rcon caller: the result line is returned instead of printed.
+std::string run_server_bot_rcon_command(std::string_view command, std::string_view args);
 void rebuild_rotation_from_cfg();
 void on_dedicated_server_launch_post();
 void extend_round_time(int minutes);
@@ -1255,6 +1441,17 @@ void server_vote_on_player_leave(rf::Player* player);
 void server_vote_on_limbo_state_enter();
 void process_delayed_kicks();
 void kick_player_delayed(const rf::Player* player);
+bool server_kick_player(rf::Player* player);
+bool server_ban_player(rf::Player* player);
+// The player actions return the reason they were refused.
+std::optional<std::string> server_run_player_action(rf::Player* player, uint8_t action);
+std::optional<std::string> server_swap_player_team(rf::Player* player);
+std::optional<std::string> server_force_player_spectate(rf::Player* player);
+std::optional<std::string> server_force_player_unspectate(rf::Player* player);
+std::optional<std::string> server_toggle_player_ready(rf::Player* player);
+std::optional<std::string> server_toggle_player_chat_mute(rf::Player* player);
+bool server_player_chat_muted(const rf::Player* player);
+std::string run_player_admin_rcon_command(std::string_view command, std::string_view target);
 bool ends_with(const rf::String& str, const std::string& suffix);
 const AlpineServerConfig& server_get_alpine_config();
 bool server_is_modded();
@@ -1262,11 +1459,13 @@ rf::CmdLineParam& get_ads_cmd_line_param();
 rf::CmdLineParam& get_min_cmd_line_param();
 rf::CmdLineParam& get_log_cmd_line_param();
 rf::CmdLineParam& get_nodl_cmd_line_param();
+rf::CmdLineParam& get_nogsk_cmd_line_param();
 void handle_min_param();
 void handle_log_param();
 void handle_nodl_param();
 const AFGameInfoFlags& server_get_game_info_flags();
 void initialize_game_info_server_flags();
+void server_broadcast_level_message();
 std::optional<rf::NetGameType> resolve_gametype_from_name(std::string_view gametype_name);
 bool multi_set_gametype_alpine(std::string_view gametype_name);
 bool is_gametype_name_valid(std::string_view gametype_name);
@@ -1277,6 +1476,11 @@ std::string build_info_command_output();
 // swing's deferred projectile connects, so melee hits can never outrun melee swings. Keyed per
 // weapon, because accuracy buckets are.
 void melee_grant_hit_credit(rf::Player* attacker, int weapon_type);
+
+// The number shown to `attacker` (and their first-person spectators and the demo) for damage dealt to,
+// or with `repair` life restored to, a vehicle or turret hull.
+void send_hull_damage_notify(rf::Player* attacker, const AfDamageNotifyHull& hull, float amount, bool died,
+                             bool repair);
 
 // Combined accuracy/efficiency exclude flamethrower, riot stick, riot shield.
 bool accuracy_excluded_from_combined(int weapon_type);

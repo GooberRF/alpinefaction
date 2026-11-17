@@ -6,9 +6,15 @@
 #include <unordered_map>
 #include <vector>
 #include <common/lightmap/alpine_lightmap.h>
+#include "lightmap_pages.h"
 
 struct GSolid;
 struct GFace;
+
+namespace alpine_lightmap
+{
+    struct ReadResult;
+}
 
 // Alpine overflow charts: charts for the static faces RED's surface pass leaves without a surface once its 32767
 // are used up, on D3D11-only levels. alpine_lightmaps.cpp lays them out after the surface, mover and terrain
@@ -27,7 +33,7 @@ bool overflow_bake_begin(const GSolid* solid, const std::vector<std::int32_t>& t
 const OverflowLayout& overflow_layout();
 // Shades every chart into `pages` (page_size^2 RGB8 each), blends the seams between charts and makes a tiled
 // chart's shared gutter texels agree, marking their blocks in `shared_blocks`. False when it failed (reported).
-bool overflow_shade(std::vector<std::vector<std::uint8_t>>& pages, std::vector<std::uint8_t>& shared_blocks);
+bool overflow_shade(LightmapPages& pages, std::vector<std::uint8_t>& shared_blocks);
 // After a failed shade: the table keeps its layout but carries a fingerprint no faces match.
 void overflow_mark_unusable();
 // Whether the bake has a table to write, and its tile count.
@@ -48,11 +54,16 @@ enum class OverflowStamp
 OverflowStamp overflow_save_stamp(const std::uint8_t* body, std::size_t len, const GSolid* solid,
                                   std::size_t& offset, std::uint64_t& value);
 
-// The viewport's view of the overflow lighting: a face's chart mean, as a stock lightmap texel (drawn doubled).
-// Rebuilt after a bake and when a level's section is retained; dropped with the level.
+// The Direct3D 9 viewport's view of the overflow lighting: a face's chart mean, as a stock lightmap texel (drawn
+// doubled). Rebuilt after a bake and when a level's section is retained; dropped with the level. Always empty on
+// Direct3D 11, which draws the charts.
 void overflow_preview_from_bake();
 void overflow_preview_from_section(const std::uint8_t* body, std::size_t len, const GSolid* solid);
 void overflow_preview_clear();
+// The faces of `solid` lit by a usable record of section `r`'s overflow table, with that record; none unless the
+// table was baked for the faces as they are now.
+std::unordered_map<const GFace*, std::uint32_t> overflow_face_records(const alpine_lightmap::ReadResult& r,
+                                                                      const GSolid* solid);
 // The preview faces and their colours, for the viewport (overflow_preview.cpp).
 const std::unordered_map<const GFace*, std::array<std::uint8_t, 3>>& overflow_preview_faces();
 // Defined in overflow_preview.cpp: the preview faces changed; after a bake the level's room caches are rebuilt.

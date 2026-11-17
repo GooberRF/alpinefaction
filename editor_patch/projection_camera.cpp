@@ -22,7 +22,7 @@ static void projection_camera_load_icon()
 void DestroyDedProjectionCamera(DedProjectionCamera* camera)
 {
     if (!camera) return;
-    camera->field_4.free();
+    camera->class_mesh_filename.free();
     camera->script_name.free();
     camera->class_name.free();
     delete camera;
@@ -185,7 +185,7 @@ void projection_camera_render(CDedLevel* level)
 
     projection_camera_load_icon();
 
-    const float cam_param = gr_cam_param;
+    const rf::gr::Mode billboard_mode = rf::gr::bitmap_3d_mode_no_z;
 
     for (auto* camera : cameras) {
         if (camera->hidden_in_editor) continue;
@@ -201,7 +201,7 @@ void projection_camera_render(CDedLevel* level)
         if (g_projection_camera_icon_handle >= 0) {
             gr_set_bitmap(g_projection_camera_icon_handle, -1);
         }
-        gr_render_billboard(&camera->pos, 0, 0.25f, cam_param);
+        gr_render_billboard(&camera->pos, 0, 0.25f, billboard_mode);
     }
 }
 
@@ -287,6 +287,11 @@ void projection_camera_paste_objects(CDedLevel* level)
             level->add_to_selection(static_cast<DedObject*>(clone));
         }
     }
+}
+
+void projection_camera_swap_clipboard(std::vector<DedProjectionCamera*>& other)
+{
+    g_projection_camera_clipboard.swap(other);
 }
 
 void projection_camera_clear_clipboard()

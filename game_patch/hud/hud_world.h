@@ -43,7 +43,14 @@ struct WorldHUDAssets
     int sal_wait;
     int sal_base_red;
     int sal_base_blue;
+    int medallion_red;
+    int medallion_blue;
+    int medallion_neutral;
+    int medallion_lock;
 };
+
+// The medallion face with `team`'s emblem, or the plain one for -1
+int world_hud_medallion_face(int team);
 
 struct KothHudTuning
 {
@@ -106,6 +113,7 @@ struct EphemeralWorldHUDString
     float wind_phase_offset = 0.0f;
     rf::Color color = {255, 255, 255, 255};
     bool crit = false;
+    bool repair = false; // life restored to a hull, shown as "+N"
 };
 
 struct NameLabelTex
@@ -118,15 +126,23 @@ struct NameLabelTex
 };
 
 void hud_world_do_frame();
+// Milliseconds of game time for world HUD animation: it holds while the game is paused and follows demo playback speed
+int64_t world_hud_clock_ms();
+void world_hud_clock_do_frame();
+// Session-lifetime 8x8 white bitmap for untextured quads drawn through textured render modes.
+int world_hud_white_bitmap();
 void load_world_hud_assets();
 void clear_koth_name_textures();
 void populate_world_hud_sprite_events();
 void populate_fullscreen_overlay_events();
 void fullscreen_overlay_do_frame();
 void hud_world_level_unload();
+void hud_world_seek_reset();
 void add_location_ping_world_hud_sprite(rf::Vector3 pos, std::string player_name, int player_id);
+// Hits on one victim within this window add up into one damage number.
+inline constexpr int damage_number_merge_ms = 1000;
 void add_damage_notify_world_hud_string(rf::Vector3 pos, uint8_t damaged_player_id, int hull_handle, uint16_t damage,
-                                       bool died, bool crit = false);
+                                       bool died, bool crit = false, bool repair = false);
 void do_render_world_hud_sprite(rf::Vector3 pos, float base_scale, int bitmap_handle, WorldHUDRenderMode render_mode,
                                 bool stay_inside_fog, bool distance_scaling, bool only_draw_during_gameplay);
 int get_world_hud_label_bitmap_font();
@@ -140,6 +156,8 @@ void do_render_world_hud_rect(const rf::Vector3& pos, float vertical_offset, flo
     float width_world, float height_world, WorldHUDRenderMode render_mode, bool stay_inside_fog,
     bool distance_scaling, rf::Color color);
 rf::Vector3 koth_hill_icon_pos(const HillInfo& h);
+// Whether the hill's medallion or sprite shows it contested: a capture under way, held briefly so it doesn't flicker
+bool hill_vis_contested(HillInfo& h);
 // The RGB of a packed config colour, with the given alpha.
 rf::Color hud_color_from_packed(uint32_t packed, rf::ubyte alpha = 255);
 // Red/blue from the outline team colours; white for no team.

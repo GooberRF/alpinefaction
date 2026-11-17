@@ -19,6 +19,8 @@
 #include <numeric>
 #include <string_view>
 #include <thread>
+#include <tuple>
+#include <utility>
 #include <vector>
 #include <windows.h>
 #include <winsock2.h>
@@ -54,6 +56,7 @@
 #include "../rf/level.h"
 #include "../rf/collide.h"
 #include "bots/bot_personality.h"
+#include "bots/server_bots.h"
 #include <common/utils/os-utils.h>
 
 bool g_dedicated_launched_from_ads = false; // was the server launched from an ads file?
@@ -109,6 +112,12 @@ rf::CmdLineParam& get_nodl_cmd_line_param()
 {
     static rf::CmdLineParam nodl_param{"-nodl", "", false};
     return nodl_param;
+}
+
+rf::CmdLineParam& get_nogsk_cmd_line_param()
+{
+    static rf::CmdLineParam nogsk_param{"-nogsk", "", false};
+    return nogsk_param;
 }
 
 void handle_min_param()
@@ -193,6 +202,8 @@ static SpawnDelayConfig parse_spawn_delay_config(const toml::table& t, SpawnDela
     if (c.enabled) {
         if (auto v = t["base_seconds"].value<float>())
             c.set_base_value(*v);
+        if (auto x = t["wave_respawns"].value<bool>())
+            c.wave_respawns = *x;
     }
 
     return c;
@@ -217,6 +228,10 @@ static VehicleConfig parse_vehicle_config(const toml::table& t, VehicleConfig c)
 {
     if (auto x = t["crash_damage"].value<bool>())
         c.crash_damage = *x;
+    if (auto x = t["bots_use_vehicles"].value<bool>())
+        c.bots_use_vehicles = *x;
+    if (auto v = t["bot_max_drivers"].value<int>())
+        c.set_bot_max_drivers(*v);
 
     return c;
 }
@@ -243,6 +258,19 @@ static WelcomeMessageConfig parse_welcome_message_config(const toml::table& t, W
     if (c.enabled) {
         if (auto v = t["text"].value<std::string>())
             c.set_welcome_message(*v);
+    }
+
+    return c;
+}
+
+static LevelMessageConfig parse_level_message_config(const toml::table& t, LevelMessageConfig c)
+{
+    if (auto x = t["enabled"].value<bool>())
+        c.enabled = *x;
+
+    if (c.enabled) {
+        if (auto v = t["text"].value<std::string>())
+            c.set_text(*v);
     }
 
     return c;
@@ -314,6 +342,31 @@ static KillRewardConfig parse_kill_reward_config(const toml::table& t, KillRewar
     return c;
 }
 
+// Shared by Wipeout and Scavenger: 200 / 200 spawns and a fixed Pistol / AR / SR / RL / SG loadout
+// with infinite reloads and large reserves (effectively infinite ammo). Both modes hide every level
+// item, so no weapon/amp drops either.
+static void apply_fixed_loadout_defaults(AlpineServerConfigRules& rules)
+{
+    rules.location_pinging = true;
+
+    rules.spawn_life.enabled = true;
+    rules.spawn_life.set_value(200.0f);
+    rules.spawn_armour.enabled = true;
+    rules.spawn_armour.set_value(200.0f);
+
+    constexpr int fixed_reserve = 999;
+    rules.spawn_loadout.add("12mm handgun", fixed_reserve, false, true);
+    rules.spawn_loadout.add("Assault Rifle", fixed_reserve, false, true);
+    rules.spawn_loadout.add("Sniper Rifle", fixed_reserve, false, true);
+    rules.spawn_loadout.add("Rocket Launcher", fixed_reserve, false, true);
+    rules.spawn_loadout.add("Shotgun", fixed_reserve, false, true);
+    rules.weapon_infinite_magazines = true;
+    rules.default_player_weapon.set_weapon("Assault Rifle");
+
+    rules.drop_weapons = false;
+    rules.drop_amps = false;
+}
+
 void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigRules& rules)
 {
     // A game_type change rebuilds the loadout/defaults, so clear any mutator
@@ -335,6 +388,7 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
     rules.no_player_collide = false;
     rules.location_pinging = false;
     rules.saving_enabled = false;
+    rules.spawn_delay.wave_respawns = false;
 
     switch (game_type) {
         case rf::NetGameType::NG_TYPE_KOTH: {
@@ -424,6 +478,29 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
             break;
         }
 
+        case rf::NetGameType::NG_TYPE_SCAV: {
+            apply_fixed_loadout_defaults(rules);
+            rules.spawn_delay.enabled = true;
+            rules.spawn_delay.set_base_value(2.0f);
+            break;
+        }
+
+        case rf::NetGameType::NG_TYPE_PAY: {
+            rules.spawn_delay.enabled = true;
+            rules.spawn_delay.set_base_value(2.0f);
+            rules.spawn_delay.wave_respawns = true;
+            rules.location_pinging = true;
+            // Checkpoints add time, so the round starts short
+            rules.set_time_limit(300.0f);
+
+            // secondary weapon
+            rules.spawn_loadout.add("Remote Charge", 3, false, true);
+
+            // primary weapon
+            rules.default_player_weapon.set_weapon("Machine Pistol");
+            break;
+        }
+
         case rf::NetGameType::NG_TYPE_PIT: {
             rules.spawn_delay.enabled = false;
             rules.force_respawn = false;
@@ -465,35 +542,13 @@ void apply_defaults_for_game_type(rf::NetGameType game_type, AlpineServerConfigR
 
         case rf::NetGameType::NG_TYPE_WO: {
             // Round-based team wipe mode.
-            rules.location_pinging = true;
-
-            // 200 / 200 spawn health and armor.
-            rules.spawn_life.enabled = true;
-            rules.spawn_life.set_value(200.0f);
-            rules.spawn_armour.enabled = true;
-            rules.spawn_armour.set_value(200.0f);
+            apply_fixed_loadout_defaults(rules);
 
             // Base respawn delay of 5s; the death hook multiplies it by the
             // player's death count this round (escalating 5s/10s/15s...).
             rules.spawn_delay.enabled = true;
             rules.spawn_delay.set_base_value(5.0f);
             rules.force_respawn = false; // wipeout_do_frame auto-respawns once the delay elapses
-
-            // Fixed loadout: Pistol / AR / SR / RL / SG, with infinite reloads
-            // and large reserves (effectively infinite ammo).
-            constexpr int wo_reserve = 999;
-            rules.spawn_loadout.add("12mm handgun", wo_reserve, false, true);
-            rules.spawn_loadout.add("Assault Rifle", wo_reserve, false, true);
-            rules.spawn_loadout.add("Sniper Rifle", wo_reserve, false, true);
-            rules.spawn_loadout.add("Rocket Launcher", wo_reserve, false, true);
-            rules.spawn_loadout.add("Shotgun", wo_reserve, false, true);
-            rules.weapon_infinite_magazines = true;
-            rules.default_player_weapon.set_weapon("Assault Rifle");
-
-            // No item spawns, no weapon/amp drops (wipeout also hides all level
-            // items each round; see wipeout.cpp).
-            rules.drop_weapons = false;
-            rules.drop_amps = false;
 
             // Best-of-7, untimed rounds (a round ends only on a team wipe).
             rules.rounds.set_max_rounds(7);
@@ -569,6 +624,8 @@ static void apply_rules_keys_from_toml(const toml::table& t, AlpineServerConfigR
         o.bagman.set_bag_return_time(*v);
     if (auto v = t["bag_spawn_delay"].value<float>())
         o.bagman.set_bag_spawn_delay(*v);
+    if (auto v = t["bag_multiple_spawns"].value<bool>())
+        o.bagman.bag_multiple_spawns = *v;
     if (auto v = t["sal_cap_limit"].value<int>())
         o.salvage.set_cap_limit(*v);
     if (auto v = t["sal_flag_spawn_delay"].value<float>())
@@ -577,6 +634,37 @@ static void apply_rules_keys_from_toml(const toml::table& t, AlpineServerConfigR
         o.salvage.set_flag_capture_respawn_delay(*v);
     if (auto v = t["sal_flag_return_time"].value<float>())
         o.salvage.set_flag_return_time(*v);
+    if (auto v = t["scav_cap_limit"].value<int>())
+        o.scavenger.set_cap_limit(*v);
+    if (auto v = t["scav_cartridge_spawn_delay"].value<float>())
+        o.scavenger.set_objective_spawn_delay(*v);
+    if (auto v = t["scav_cartridge_capture_respawn_delay"].value<float>())
+        o.scavenger.set_objective_capture_respawn_delay(*v);
+    if (auto v = t["scav_cartridge_return_time"].value<float>())
+        o.scavenger.set_objective_return_time(*v);
+    if (auto v = t["scav_target_timeout"].value<float>())
+        o.scavenger.set_zone_timeout(*v);
+    if (auto v = t["scav_target_radius"].value<float>())
+        o.scavenger.set_zone_radius(*v);
+    if (auto v = t["pay_checkpoint_time_bonus"].value<float>())
+        o.payload.set_checkpoint_time_bonus(*v);
+    if (auto v = t["pay_overtime_grace"].value<float>())
+        o.payload.set_overtime_grace(*v);
+    if (auto v = t["pay_heal_per_tick"].value<float>())
+        o.payload.set_heal_per_tick(*v);
+    if (auto v = t["pay_setup_time"].value<float>())
+        o.payload.set_setup_time(*v);
+    for (const auto& [key, field] : {
+             std::pair{"pay_attacker_respawn_extra", &o.payload.attacker_respawn.base},
+             std::pair{"pay_attacker_respawn_per_checkpoint", &o.payload.attacker_respawn.per_checkpoint},
+             std::pair{"pay_attacker_respawn_final_stretch", &o.payload.attacker_respawn.final_stretch},
+             std::pair{"pay_defender_respawn_extra", &o.payload.defender_respawn.base},
+             std::pair{"pay_defender_respawn_per_checkpoint", &o.payload.defender_respawn.per_checkpoint},
+             std::pair{"pay_defender_respawn_final_stretch", &o.payload.defender_respawn.final_stretch},
+         }) {
+        if (auto v = t[key].value<float>())
+            PayloadConfig::set_respawn_extra(*field, *v);
+    }
     if (auto v = t["geo_limit"].value<int>())
         o.set_geo_limit(*v);
     if (auto v = t["rf2_geo_limit"].value<int>())
@@ -586,6 +674,8 @@ static void apply_rules_keys_from_toml(const toml::table& t, AlpineServerConfigR
         o.team_damage   = *v;
     if (auto v = t["fall_damage"].value<bool>())
         o.fall_damage   = *v;
+    if (auto v = t["exposure_damage"].value<bool>())
+        o.exposure_damage = *v;
     if (auto v = t["weapons_stay"].value<bool>())
         o.weapons_stay  = *v;
     if (auto v = t["force_respawn"].value<bool>())
@@ -695,6 +785,8 @@ static void apply_rules_keys_from_toml(const toml::table& t, AlpineServerConfigR
         o.kill_rewards = parse_kill_reward_config(*sub, o.kill_rewards);
     if (auto sub = t["welcome_message"].as_table())
         o.welcome_message = parse_welcome_message_config(*sub, o.welcome_message);
+    if (auto sub = t["level_message"].as_table())
+        o.level_message = parse_level_message_config(*sub, o.level_message);
 
     //o.weapon_stay_exemptions.exemptions.clear();
     o.weapon_stay_exemptions.add("shoulder_cannon", true); // stock default
@@ -769,6 +861,8 @@ static void apply_rules_keys_from_toml(const toml::table& t, AlpineServerConfigR
     }
     if (auto v = t["gg_final_weapon"].value<std::string>())
         o.gungame_final_weapon = *v;
+    if (auto v = t["gg_end_with_fusion"].value<bool>())
+        o.gungame_end_with_fusion = *v;
 }
 
 // Applies one rules table: mutators (Full mode only) then explicit keys, so manual
@@ -1167,8 +1261,8 @@ static void add_level_entry_from_table(
 static void parse_bot_config_table(ServerBotConfig& bot_cfg, const toml::table& tbl)
 {
     if (auto v = tbl["player_name"].value<std::string>()) {
-        bot_cfg.player_name = *v;
-        rf::console::print("  Bot player name:                       {}\n", *v);
+        bot_cfg.player_name = v->substr(0, k_max_player_name_len);
+        rf::console::print("  Bot player name:                       {}\n", bot_cfg.player_name);
     }
     if (auto v = tbl["mp_character"].value<std::string>()) {
         bot_cfg.mp_character = *v;
@@ -1286,8 +1380,16 @@ static void apply_known_key_in_order(AlpineServerConfig& cfg, const std::string&
             cfg.set_bot_shared_secret(*v);
         }
     }
+    else if (key == "server_bots") {
+        if (const auto v = node.value<int>()) {
+            cfg.set_server_bots(*v);
+        }
+    }
     else if (key == "fflink_gsk") {
-        if (auto v = node.value<std::string>()) {
+        if (get_nogsk_cmd_line_param().found()) {
+            rf::console::print("Ignoring fflink_gsk because -nogsk switch was used.\n");
+        }
+        else if (auto v = node.value<std::string>()) {
             cfg.set_fflink_gsk(*v);
         }
     }
@@ -1335,6 +1437,10 @@ static void apply_known_key_in_order(AlpineServerConfig& cfg, const std::string&
         if (auto v = node.value<bool>())
             cfg.stats_message_enabled = *v;
     }
+    else if (key == "announce_next_level") {
+        if (auto v = node.value<bool>())
+            cfg.announce_next_level = *v;
+    }
     else if (key == "allow_fullbright_meshes") {
         if (auto v = node.value<bool>())
             cfg.allow_fullbright_meshes = *v;
@@ -1351,10 +1457,6 @@ static void apply_known_key_in_order(AlpineServerConfig& cfg, const std::string&
         if (auto v = node.value<bool>())
             cfg.allow_disable_muzzle_flash = *v;
     }
-    else if (key == "allow_unlimited_fps") {
-        if (auto v = node.value<bool>())
-            cfg.allow_unlimited_fps = *v;
-    }
     else if (key == "allow_footsteps") {
         if (auto v = node.value<bool>())
             cfg.allow_footsteps = *v;
@@ -1370,6 +1472,33 @@ static void apply_known_key_in_order(AlpineServerConfig& cfg, const std::string&
     else if (key == "allow_outlines_xray") {
         if (auto v = node.value<bool>())
             cfg.allow_outlines_xray = *v;
+    }
+    else if (key == "projectile_lag_comp") {
+        if (auto v = node.value<bool>())
+            cfg.projectile_lag_comp = *v;
+    }
+    else if (key == "projectile_lag_comp_max_ms") {
+        if (auto v = node.value<int64_t>())
+            cfg.projectile_lag_comp_max_ms = static_cast<int>(std::clamp<int64_t>(*v, 50, 500));
+    }
+    else if (key == "hitscan_lag_comp_max_ms") {
+        if (auto v = node.value<int64_t>())
+            cfg.hitscan_lag_comp_max_ms = static_cast<int>(std::clamp<int64_t>(*v, 50, 1000));
+    }
+    else if (key == "delta_obj_update") {
+        if (auto v = node.value<bool>())
+            cfg.delta_obj_update = *v;
+    }
+    else if (key == "bandwidth") {
+        if (auto v = node.value<std::string>()) {
+            const auto& tiers = AlpineGameSettings::net_rate_tiers;
+            const auto it = std::find_if(std::begin(tiers), std::end(tiers),
+                                         [&](const auto& tier) { return string_iequals(*v, tier.name); });
+            if (it != std::end(tiers))
+                cfg.server_netfps = it->netfps;
+            else
+                rf::console::print("  [WARN] bandwidth '{}' is not low, medium or high; ignoring it.\n", *v);
+        }
     }
 }
 
@@ -1648,6 +1777,7 @@ void load_ads_server_config(std::string ads_config_name, bool allow_missing_leve
     g_base_scope_tables = std::move(g_parsing_base_scope_tables);
     g_level_scope_tables = std::move(g_parsing_level_scope_tables);
     clear_rcon_profile_sessions();
+    server_bots_reset_roster(g_alpine_server_config.server_bots);
 }
 
 static void download_missing_server_levels()
@@ -1677,12 +1807,14 @@ static void download_missing_server_levels()
     if (!cfg.vote_level.allowed_maps.empty()) {
         rf::console::print("\nChecking for missing maps on vote-allowed list...\n");
 
+        // Installing a level can append installed levels to allowed_maps, so walk a copy.
+        const auto requested = cfg.vote_level.allowed_maps;
         std::vector<std::string> resolved_allowed;
-        resolved_allowed.reserve(cfg.vote_level.allowed_maps.size());
+        resolved_allowed.reserve(requested.size());
 
-        for (auto& filename : cfg.vote_level.allowed_maps) {
+        for (const auto& filename : requested) {
             if (download_level_if_missing(filename)) {
-                resolved_allowed.push_back(std::move(filename));
+                resolved_allowed.push_back(filename);
             }
             else {
                 rf::console::print("--> Skipping vote-allowed level {} (download failed).\n", filename);
@@ -1713,7 +1845,10 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         rules.mutators.featured_weapon_index != b.mutators.featured_weapon_index ||
         rules.mutators.redirect_exclude_thrown != b.mutators.redirect_exclude_thrown ||
         rules.mutators.crits_enabled != b.mutators.crits_enabled ||
-        rules.mutators.jetpack_explode != b.mutators.jetpack_explode;
+        rules.mutators.jetpack_explode != b.mutators.jetpack_explode ||
+        rules.mutators.join_bots != b.mutators.join_bots ||
+        rules.mutators.join_bots_skill != b.mutators.join_bots_skill ||
+        rules.mutators.join_bots_personality != b.mutators.join_bots_personality;
 
     if (base || mutators_changed) {
         std::string joined;
@@ -1744,6 +1879,11 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         if (rules.mutators.jetpacks_enabled) {
             std::format_to(iter, "    Jetpacks explode:                    {}\n",
                            rules.mutators.jetpack_explode);
+        }
+        // Join Bots options
+        if (rules.mutators.join_bots > 0) {
+            std::format_to(iter, "    Join bots:                           {} ({}, {})\n", rules.mutators.join_bots,
+                           rules.mutators.join_bots_skill, rules.mutators.join_bots_personality);
         }
     }
 
@@ -1804,6 +1944,8 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         std::format_to(iter, "  TBAG team score limit:                 {}\n", rules.bagman.tbag_score_limit);
     if (base || rules.salvage.cap_limit != b.salvage.cap_limit)
         std::format_to(iter, "  SAL flag capture limit:                {}\n", rules.salvage.cap_limit);
+    if (base || rules.scavenger.cap_limit != b.scavenger.cap_limit)
+        std::format_to(iter, "  SCAV cartridge capture limit:          {}\n", rules.scavenger.cap_limit);
 
     // common limits & flags
     if (base || rules.geo_limit != b.geo_limit)
@@ -1815,6 +1957,8 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         std::format_to(iter, "  Team damage:                           {}\n", rules.team_damage);
     if (base || rules.fall_damage != b.fall_damage)
         std::format_to(iter, "  Fall damage:                           {}\n", rules.fall_damage);
+    if (base || rules.exposure_damage != b.exposure_damage)
+        std::format_to(iter, "  Exposure damage:                       {}\n", rules.exposure_damage);
     if (base || rules.weapons_stay != b.weapons_stay)
         std::format_to(iter, "  Weapon stay:                           {}\n", rules.weapons_stay);
     if (base || rules.force_respawn != b.force_respawn)
@@ -1831,12 +1975,55 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         std::format_to(iter, "  BAG/TBAG bag return time:              {} sec\n", rules.bagman.bag_return_time_ms / 1000.0f);
     if (base || rules.bagman.bag_spawn_delay_ms != b.bagman.bag_spawn_delay_ms)
         std::format_to(iter, "  BAG/TBAG bag spawn delay:              {} sec\n", rules.bagman.bag_spawn_delay_ms / 1000.0f);
+    if (base || rules.bagman.bag_multiple_spawns != b.bagman.bag_multiple_spawns)
+        std::format_to(iter, "  BAG/TBAG multiple bag spawns:          {}\n", rules.bagman.bag_multiple_spawns);
     if (base || rules.salvage.flag_spawn_delay_ms != b.salvage.flag_spawn_delay_ms)
         std::format_to(iter, "  SAL flag spawn delay:                  {} sec\n", rules.salvage.flag_spawn_delay_ms / 1000.0f);
     if (base || rules.salvage.flag_capture_respawn_delay_ms != b.salvage.flag_capture_respawn_delay_ms)
         std::format_to(iter, "  SAL flag respawn delay after capture:  {} sec\n", rules.salvage.flag_capture_respawn_delay_ms / 1000.0f);
     if (base || rules.salvage.flag_return_time_ms != b.salvage.flag_return_time_ms)
         std::format_to(iter, "  SAL dropped flag return time:          {} sec\n", rules.salvage.flag_return_time_ms / 1000.0f);
+    if (base || rules.scavenger.objective_spawn_delay_ms != b.scavenger.objective_spawn_delay_ms)
+        std::format_to(iter, "  SCAV cartridge spawn delay:            {} sec\n", rules.scavenger.objective_spawn_delay_ms / 1000.0f);
+    if (base || rules.scavenger.objective_capture_respawn_delay_ms != b.scavenger.objective_capture_respawn_delay_ms)
+        std::format_to(iter, "  SCAV cartridge delay after capture:    {} sec\n", rules.scavenger.objective_capture_respawn_delay_ms / 1000.0f);
+    if (base || rules.scavenger.objective_return_time_ms != b.scavenger.objective_return_time_ms)
+        std::format_to(iter, "  SCAV dropped cartridge return time:    {} sec\n", rules.scavenger.objective_return_time_ms / 1000.0f);
+    if (base || rules.scavenger.zone_timeout_ms != b.scavenger.zone_timeout_ms)
+        std::format_to(iter, "  SCAV target timeout:                   {} sec\n", rules.scavenger.zone_timeout_ms / 1000.0f);
+    if (base || rules.scavenger.zone_radius != b.scavenger.zone_radius)
+        std::format_to(iter, "  SCAV target radius:                    {} m\n", rules.scavenger.zone_radius);
+    const auto payload_override = [](const std::optional<float>& value, std::string_view unit) {
+        return value ? std::format("{} {}", *value, unit) : std::string{"level's value"};
+    };
+    if (base || rules.payload.setup_time != b.payload.setup_time)
+        std::format_to(iter, "  PAY setup time:                        {} sec\n", rules.payload.setup_time);
+    if (base || rules.payload.checkpoint_time_bonus != b.payload.checkpoint_time_bonus)
+        std::format_to(iter, "  PAY checkpoint time bonus:             {}\n",
+                       payload_override(rules.payload.checkpoint_time_bonus, "sec"));
+    if (base || rules.payload.overtime_grace != b.payload.overtime_grace)
+        std::format_to(iter, "  PAY overtime grace:                    {}\n",
+                       payload_override(rules.payload.overtime_grace, "sec"));
+    if (base || rules.payload.heal_per_tick != b.payload.heal_per_tick)
+        std::format_to(iter, "  PAY pusher healing:                    {}\n",
+                       payload_override(rules.payload.heal_per_tick, "per sec"));
+    for (const auto& [label, value, base_value] : {
+             std::tuple{"PAY attacker respawn extra:", &rules.payload.attacker_respawn.base,
+                        &b.payload.attacker_respawn.base},
+             std::tuple{"PAY attacker respawn per cp:", &rules.payload.attacker_respawn.per_checkpoint,
+                        &b.payload.attacker_respawn.per_checkpoint},
+             std::tuple{"PAY attacker respawn final:", &rules.payload.attacker_respawn.final_stretch,
+                        &b.payload.attacker_respawn.final_stretch},
+             std::tuple{"PAY defender respawn extra:", &rules.payload.defender_respawn.base,
+                        &b.payload.defender_respawn.base},
+             std::tuple{"PAY defender respawn per cp:", &rules.payload.defender_respawn.per_checkpoint,
+                        &b.payload.defender_respawn.per_checkpoint},
+             std::tuple{"PAY defender respawn final:", &rules.payload.defender_respawn.final_stretch,
+                        &b.payload.defender_respawn.final_stretch},
+         }) {
+        if (base || *value != *base_value)
+            std::format_to(iter, "  {:<39}{}\n", label, payload_override(*value, "sec"));
+    }
     if (base || rules.flag_dropping != b.flag_dropping)
         std::format_to(iter, "  CTF flag dropping:                     {}\n", rules.flag_dropping);
     if (base || rules.flag_captures_while_stolen != b.flag_captures_while_stolen)
@@ -1872,19 +2059,33 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
         }
     }
 
+    if (base || rules.level_message.enabled != b.level_message.enabled ||
+        (rules.level_message.enabled && rules.level_message.text != b.level_message.text)) {
+        std::format_to(iter, "  Level message:                         {}\n", rules.level_message.enabled);
+        if (rules.level_message.enabled) {
+            std::format_to(iter, "    Text:                                {}\n", rules.level_message.text);
+        }
+    }
+
     if (base || rules.gibbing.enabled != b.gibbing.enabled ||
         (rules.gibbing.enabled &&
             (rules.gibbing.damage_threshold != b.gibbing.damage_threshold ||
-            rules.gibbing.all_damage != b.gibbing.all_damage))) {
+            rules.gibbing.all_damage != b.gibbing.all_damage ||
+            rules.gibbing.scrapyard != b.gibbing.scrapyard))) {
         std::format_to(iter, "  Gibbing:                               {}\n", rules.gibbing.enabled);
         if (rules.gibbing.enabled) {
             std::format_to(iter, "    Damage threshold:                    {}\n", rules.gibbing.damage_threshold);
             std::format_to(iter, "    All damage types:                    {}\n", rules.gibbing.all_damage);
+            std::format_to(iter, "    Scrapyard mode:                      {}\n", rules.gibbing.scrapyard);
         }
     }
 
     if (base || rules.vehicles.crash_damage != b.vehicles.crash_damage)
         std::format_to(iter, "  Vehicle crash damage:                  {}\n", rules.vehicles.crash_damage);
+    if (base || rules.vehicles.bots_use_vehicles != b.vehicles.bots_use_vehicles)
+        std::format_to(iter, "  Bots use vehicles:                     {}\n", rules.vehicles.bots_use_vehicles);
+    if (base || rules.vehicles.bot_max_drivers != b.vehicles.bot_max_drivers)
+        std::format_to(iter, "  Max bot drivers:                       {}\n", rules.vehicles.bot_max_drivers);
 
     // spawn weapon
     if (base || rules.default_player_weapon.index != b.default_player_weapon.index ||
@@ -1913,10 +2114,12 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
 
     // spawn delay
     if (base || rules.spawn_delay.enabled != b.spawn_delay.enabled ||
-        (rules.spawn_delay.enabled && rules.spawn_delay.base_value != b.spawn_delay.base_value)) {
+        (rules.spawn_delay.enabled && (rules.spawn_delay.base_value != b.spawn_delay.base_value ||
+                                       rules.spawn_delay.wave_respawns != b.spawn_delay.wave_respawns))) {
         std::format_to(iter, "  Spawn delay:                           {}\n", rules.spawn_delay.enabled);
         if (rules.spawn_delay.enabled) {
             std::format_to(iter, "    Base seconds:                        {} sec\n", rules.spawn_delay.base_value / 1000.0f);
+            std::format_to(iter, "    Wave respawns:                       {}\n", rules.spawn_delay.wave_respawns);
         }
     }
 
@@ -2169,6 +2372,8 @@ void print_rules(std::string& output, const AlpineServerConfigRules& rules, bool
     }
     if (base || rules.gungame_final_weapon != b.gungame_final_weapon)
         std::format_to(iter, "  GunGame final weapon:                  {}\n", rules.gungame_final_weapon);
+    if (base || rules.gungame_end_with_fusion != b.gungame_end_with_fusion)
+        std::format_to(iter, "  GunGame end with fusion:               {}\n", rules.gungame_end_with_fusion);
 }
 
 std::string format_mutator_option_value(const MutatorOptionValue& value)
@@ -2260,11 +2465,12 @@ void print_alpine_dedicated_server_config_info(std::string& output, bool verbose
     } else {
         std::format_to(iter, "  Uptime:                                {}\n", g_process_startup_time);
     }
-    if (rf::is_dedicated_server) {
-        std::format_to(iter, "  Target FPS:                            {}\n", g_alpine_game_config.server_max_fps);
-    }
-    std::format_to(iter, "  Net FPS:                               {}\n", g_alpine_game_config.server_netfps);
+    std::format_to(iter, "  Bandwidth:                             {} ({} netfps, {} fps)\n",
+                   g_alpine_game_config.server_net_rate_tier().name,
+                   g_alpine_game_config.server_netfps,
+                   g_alpine_game_config.server_net_rate_tier().server_fps);
     std::format_to(iter, "  Max players:                           {}\n", netgame.max_players);
+    std::format_to(iter, "  Server bots:                           {}\n", cfg.server_bots);
     std::format_to(iter, "  Levels in rotation:                    {}\n", cfg.levels.size());
     std::format_to(iter, "  Dynamic rotation:                      {}\n", cfg.dynamic_rotation);
     std::format_to(iter, "  Demos:\n");
@@ -2314,15 +2520,21 @@ void print_alpine_dedicated_server_config_info(std::string& output, bool verbose
 
     std::format_to(iter, "  Gaussian bullet spread:                {}\n", cfg.gaussian_spread);
     std::format_to(iter, "  End of round stats message:            {}\n", cfg.stats_message_enabled);
+    std::format_to(iter, "  Announce next level:                   {}\n", cfg.announce_next_level);
     std::format_to(iter, "  Allow fullbright meshes:               {}\n", cfg.allow_fullbright_meshes);
     std::format_to(iter, "  Allow disable screenshake:             {}\n", cfg.allow_disable_screenshake);
     std::format_to(iter, "  Allow lightmap only mode:              {}\n", cfg.allow_lightmaps_only);
     std::format_to(iter, "  Allow disable muzzle flash:            {}\n", cfg.allow_disable_muzzle_flash);
-    std::format_to(iter, "  Allow disable 240 FPS cap:             {}\n", cfg.allow_unlimited_fps);
     std::format_to(iter, "  Allow footsteps:                       {}\n", cfg.allow_footsteps);
     std::format_to(iter, "  SP-style damage calculation:           {}\n", cfg.use_sp_damage_calculation);
     std::format_to(iter, "  Allow outlines:                        {}\n", cfg.allow_outlines);
     std::format_to(iter, "  Allow outlines xray:                   {}\n", cfg.allow_outlines_xray);
+    std::format_to(iter, "  Projectile lag compensation:           {}\n", cfg.projectile_lag_comp);
+    if (cfg.projectile_lag_comp) {
+        std::format_to(iter, "    Max compensation:                    {}ms\n", cfg.projectile_lag_comp_max_ms);
+    }
+    std::format_to(iter, "  Hitscan lag compensation max:          {}ms\n", cfg.hitscan_lag_comp_max_ms);
+    std::format_to(iter, "  Delta object updates:                  {}\n", cfg.delta_obj_update);
 
     // inactivity
     std::format_to(iter, "  Identify inactive players:             {}\n", cfg.inactivity_config.enabled);
@@ -2433,6 +2645,8 @@ void initialize_core_alpine_dedicated_server_settings(rf::NetGameInfo& netgame, 
     
     netgame.max_players = cfg.max_players;
 
+    server_set_net_rate(cfg.server_netfps);
+
     // other core settings are referenced directly in the structure and do not need to be initialized here
 }
 
@@ -2451,6 +2665,9 @@ void apply_alpine_dedicated_server_rules(rf::NetGameInfo& netgame, const AlpineS
             break;
         case rf::NetGameType::NG_TYPE_SAL:
             netgame.max_captures = r.salvage.cap_limit;
+            break;
+        case rf::NetGameType::NG_TYPE_SCAV:
+            netgame.max_captures = r.scavenger.cap_limit;
             break;
         default:
             netgame.max_kills = r.individual_kill_limit;
@@ -2618,6 +2835,7 @@ void apply_rules_for_current_level()
     if (cfg.levels.size() < 1) {
         return;
     }
+    const bool prev_bots_use_vehicles = g_alpine_server_config_active_rules.vehicles.bots_use_vehicles;
 
     // The rotation can be reloaded or reshuffled under the running level.
     const int idx = rotation_index_for_level(rf::level_filename_to_load.c_str());
@@ -2703,6 +2921,10 @@ void apply_rules_for_current_level()
 
     // apply the rules
     apply_alpine_dedicated_server_rules(netgame, g_alpine_server_config_active_rules);
+    if (g_alpine_server_config_active_rules.vehicles.bots_use_vehicles != prev_bots_use_vehicles) {
+        server_resend_client_bot_personalities();
+    }
+    server_bots_sync_join_bots();
 
     // Must precede the blob rebuild below: the mutator registry caches its live-value
     // defaults against this generation.

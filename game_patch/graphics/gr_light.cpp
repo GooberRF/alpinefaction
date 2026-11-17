@@ -7,6 +7,7 @@
 #include "../rf/gr/gr.h"
 #include "../rf/os/frametime.h"
 #include "../rf/vmesh.h"
+#include "gr.h"
 #include "gr_internal.h"
 #include "../misc/alpine_settings.h"
 

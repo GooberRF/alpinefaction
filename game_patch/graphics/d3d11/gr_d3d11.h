@@ -1,7 +1,5 @@
 #pragma once
 
-#include <source_location>
-#include <concepts>
 #include <cstdint>
 #include <vector>
 #include <d3d11.h>
@@ -10,8 +8,9 @@
 #include <xlog/xlog.h>
 #include "../../rf/gr/gr.h"
 #include "../../rf/os/frametime.h"
-#include "gr_d3d11_transform.h"
-#include "gr_d3d11_liquid.h"
+#include <common/gr_d3d11/gr_d3d11_util.h>
+#include <common/gr_d3d11/gr_d3d11_transform.h>
+#include <common/gr_d3d11/gr_d3d11_liquid.h>
 #include "gr_d3d11_scenefx.h"
 
 namespace rf
@@ -25,6 +24,8 @@ namespace rf
     struct CharacterInstance;
     struct Player;
     struct VfxSfxoRenderObj;
+    struct Particle;
+    struct ParticleEmitter;
 }
 
 namespace alpine_lightmap
@@ -38,6 +39,10 @@ namespace gr::d3d11
     class ShaderManager;
     class TextureManager;
     class DynamicGeometryRenderer;
+    class ParticleRenderer;
+    struct WeatherSeed;
+    struct WeatherColumn;
+    struct WeatherDraw;
     class RenderContext;
     class AfLightmapRenderer;
     class SolidRenderer;
@@ -47,6 +52,7 @@ namespace gr::d3d11
     class OutlineRenderer;
     class VfxMeshRenderer;
     class GammaPass;
+    struct UiSdfDraw;
 
     class Renderer
     {
@@ -83,6 +89,7 @@ namespace gr::d3d11
         void tmapper(int nv, const rf::gr::Vertex **vertices, int vertex_attributes, rf::gr::Mode mode);
         void line_3d(const rf::gr::Vertex& v0, const rf::gr::Vertex& v1, rf::gr::Mode mode);
         void line_2d(float x1, float y1, float x2, float y2, rf::gr::Mode mode);
+        void ui_sdf(const UiSdfDraw& draw, rf::gr::Mode mode);
         bool poly(int nv, rf::gr::Vertex** vertices, int vertex_attributes, rf::gr::Mode mode, bool constant_sw, float sw);
         void project_vertex(rf::gr::Vertex* v);
         void setup_3d(Projection proj);
@@ -91,6 +98,14 @@ namespace gr::d3d11
         bool movable_solid_has_alpha(rf::GSolid* solid);
         void render_movable_solid_alpha(rf::GSolid* solid, const rf::Vector3& pos, const rf::Matrix3& orient);
         void render_alpha_detail_room(rf::GRoom *room, rf::GSolid *solid);
+        bool render_particle_emitter(rf::ParticleEmitter* emitter, float interp_dt, int* out_drawn, int* out_draws);
+        bool batched_billboard(const rf::Vector3& pos, float angle, float radius, rf::gr::Mode mode);
+        bool batched_particle(const rf::Particle& particle);
+        void flush_batched_quads();
+        bool upload_weather_seeds(const std::vector<WeatherSeed>& seeds);
+        bool update_weather_columns(int slot, int num_cells, int first, const std::vector<WeatherColumn>& cells);
+        void release_weather_columns();
+        bool draw_weather(const WeatherDraw& draw);
         void render_sky_room(rf::GRoom *room, rf::Vector3& out_sky_transform_pos, rf::Matrix3& out_sky_transform_orient);
         void render_room_liquid_surface(rf::GSolid* solid, rf::GRoom* room);
         void render_room_decoration_edges(rf::GSolid* solid, rf::GRoom* room);
@@ -98,6 +113,7 @@ namespace gr::d3d11
         void release_detail_room_cache(rf::GRoom* room);
         void reset_solid_cache_after_boolean();
         void release_terrain_gpu();
+        void build_liquid_volume_mask();
         bool upload_af_lightmap_atlas(const alpine_lightmap::ReadResult& section,
                                       const std::vector<std::uint8_t>& blocks);
         void release_af_lightmap_atlas();
@@ -165,6 +181,9 @@ namespace gr::d3d11
         void init_device();
         void init_swap_chain(HWND hwnd);
         void init_back_buffer(const uint32_t sample_count);
+        void resize_swap_chain_buffers();
+        // The MSAA setting, or 1 when the device can't do it
+        uint32_t usable_sample_count();
         void init_scene_texture();
         void init_depth_stencil_buffer(const uint32_t sample_count);
         void flush_outlines_before_2d();
@@ -191,6 +210,7 @@ namespace gr::d3d11
         std::unique_ptr<ShaderManager> shader_manager_;
         std::unique_ptr<TextureManager> texture_manager_;
         std::unique_ptr<DynamicGeometryRenderer> dyn_geo_renderer_;
+        std::unique_ptr<ParticleRenderer> particle_renderer_;
         std::unique_ptr<RenderContext> render_context_;
         std::unique_ptr<AfLightmapRenderer> af_lightmap_renderer_;
         std::unique_ptr<SolidRenderer> solid_renderer_;
@@ -216,70 +236,11 @@ namespace gr::d3d11
         bool low_frame_latency_ = false;
         bool allow_tearing_ = false;
         bool frame_latency_stall_logged_ = false;
+        // Set after a rejected Present was recovered, so a second rejection in a row stays fatal
+        bool present_recovered_ = false;
+        // What the depth buffer was built with; a resized back buffer has to match it
+        uint32_t frame_buffer_sample_count_ = 1;
         HANDLE frame_latency_wait_handle_ = nullptr;
         UINT swap_chain_flags_ = 0;
     };
-
-    void init_error(ID3D11Device* device);
-    void fatal_gr_error(
-        HRESULT hr,
-        const std::source_location& loc = std::source_location::current()
-    );
-
-    template <std::invocable F>
-    inline void check_hr(
-        const HRESULT hr,
-        F&& what,
-        const std::source_location& loc = std::source_location::current()
-    ) {
-        if (FAILED(hr)) {
-            what();
-            fatal_gr_error(hr, loc);
-        }
-    }
-
-    #define DF_GR_D3D11_CHECK_HR(code) { \
-        const char* const func_name = __func__; \
-        ::gr::d3d11::check_hr( \
-            code, \
-            [=] { \
-                ::xlog::error( \
-                    "D3D11 call failed: {} (function {} in line {})", \
-                    #code, \
-                    func_name, \
-                    __LINE__ \
-                ); \
-            } \
-        ); \
-    }
-
-    // Viewport origin in render-target pixels. Single source for RenderContext::set_clip() and
-    // every screen-space reconstruction, which must agree on it.
-    static inline std::array<float, 2> viewport_origin()
-    {
-        return {
-            static_cast<float>(rf::gr::screen.clip_left + rf::gr::screen.offset_x),
-            static_cast<float>(rf::gr::screen.clip_top + rf::gr::screen.offset_y),
-        };
-    }
-
-    static inline int pack_color(const rf::Color& color)
-    {
-        // assume little endian
-        return (color.alpha << 24) | (color.blue << 16) | (color.green << 8) | color.red;
-    }
-
-    static inline std::array<int, 2> normalize_texture_handles_for_mode(rf::gr::Mode mode, const std::array<int, 2>& textures)
-    {
-        switch (mode.get_texture_source()) {
-            case rf::gr::TEXTURE_SOURCE_NONE:
-                return {-1, -1};
-            case rf::gr::TEXTURE_SOURCE_WRAP:
-            case rf::gr::TEXTURE_SOURCE_CLAMP:
-            case rf::gr::TEXTURE_SOURCE_CLAMP_NO_FILTERING:
-                return {textures[0], -1};
-            default:
-                return textures;
-        }
-    }
 }

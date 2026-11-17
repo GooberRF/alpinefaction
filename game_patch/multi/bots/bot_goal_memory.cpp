@@ -1,5 +1,6 @@
 #include "bot_goal_memory.h"
 
+#include "bot_context.h"
 #include <algorithm>
 #include <cmath>
 
@@ -7,7 +8,7 @@ namespace
 {
 void prune_recent_item_goal_selections()
 {
-    auto& recent = g_client_bot_state.recent_item_goal_selections;
+    auto& recent = bot_state().recent_item_goal_selections;
     recent.erase(
         std::remove_if(
             recent.begin(),
@@ -28,7 +29,7 @@ void register_recent_item_goal_selection(const int item_handle, const BotGoalTyp
     }
 
     prune_recent_item_goal_selections();
-    for (RecentItemGoalSelection& entry : g_client_bot_state.recent_item_goal_selections) {
+    for (RecentItemGoalSelection& entry : bot_state().recent_item_goal_selections) {
         if (entry.item_handle == item_handle) {
             entry.goal_type = goal_type;
             entry.cooldown.set(kRecentItemGoalSelectionMs);
@@ -36,23 +37,23 @@ void register_recent_item_goal_selection(const int item_handle, const BotGoalTyp
         }
     }
 
-    if (g_client_bot_state.recent_item_goal_selections.size()
+    if (bot_state().recent_item_goal_selections.size()
         >= kRecentItemGoalSelectionCapacity) {
-        g_client_bot_state.recent_item_goal_selections.erase(
-            g_client_bot_state.recent_item_goal_selections.begin());
+        bot_state().recent_item_goal_selections.erase(
+            bot_state().recent_item_goal_selections.begin());
     }
 
     RecentItemGoalSelection entry{};
     entry.item_handle = item_handle;
     entry.goal_type = goal_type;
     entry.cooldown.set(kRecentItemGoalSelectionMs);
-    g_client_bot_state.recent_item_goal_selections.push_back(entry);
+    bot_state().recent_item_goal_selections.push_back(entry);
 }
 }
 
 void bot_goal_memory_prune_failed_item_goal_cooldowns()
 {
-    auto& cooldowns = g_client_bot_state.failed_item_goal_cooldowns;
+    auto& cooldowns = bot_state().failed_item_goal_cooldowns;
     cooldowns.erase(
         std::remove_if(
             cooldowns.begin(),
@@ -74,22 +75,22 @@ void bot_goal_memory_register_failed_item_goal_cooldown(
     }
 
     bot_goal_memory_prune_failed_item_goal_cooldowns();
-    for (FailedItemGoalCooldown& cooldown : g_client_bot_state.failed_item_goal_cooldowns) {
+    for (FailedItemGoalCooldown& cooldown : bot_state().failed_item_goal_cooldowns) {
         if (cooldown.item_handle == item_handle) {
             cooldown.cooldown.set(cooldown_ms);
             return;
         }
     }
 
-    if (g_client_bot_state.failed_item_goal_cooldowns.size() >= kFailedItemGoalCooldownCapacity) {
-        g_client_bot_state.failed_item_goal_cooldowns.erase(
-            g_client_bot_state.failed_item_goal_cooldowns.begin());
+    if (bot_state().failed_item_goal_cooldowns.size() >= kFailedItemGoalCooldownCapacity) {
+        bot_state().failed_item_goal_cooldowns.erase(
+            bot_state().failed_item_goal_cooldowns.begin());
     }
 
     FailedItemGoalCooldown cooldown{};
     cooldown.item_handle = item_handle;
     cooldown.cooldown.set(cooldown_ms);
-    g_client_bot_state.failed_item_goal_cooldowns.push_back(cooldown);
+    bot_state().failed_item_goal_cooldowns.push_back(cooldown);
 }
 
 bool bot_goal_memory_is_failed_item_goal_cooldown_active_no_prune(const int item_handle)
@@ -98,7 +99,7 @@ bool bot_goal_memory_is_failed_item_goal_cooldown_active_no_prune(const int item
         return false;
     }
 
-    for (const FailedItemGoalCooldown& cooldown : g_client_bot_state.failed_item_goal_cooldowns) {
+    for (const FailedItemGoalCooldown& cooldown : bot_state().failed_item_goal_cooldowns) {
         if (cooldown.item_handle == item_handle
             && cooldown.cooldown.valid()
             && !cooldown.cooldown.elapsed()) {
@@ -118,8 +119,8 @@ void bot_goal_memory_note_item_goal_selection(
     }
 
     register_recent_item_goal_selection(item_handle, goal_type);
-    g_client_bot_state.recent_secondary_goal_type = goal_type;
-    g_client_bot_state.recent_secondary_goal_timer.set(kSecondaryGoalTypeRepeatMs);
+    bot_state().recent_secondary_goal_type = goal_type;
+    bot_state().recent_secondary_goal_timer.set(kSecondaryGoalTypeRepeatMs);
 }
 
 float bot_goal_memory_get_recent_item_goal_penalty(
@@ -132,7 +133,7 @@ float bot_goal_memory_get_recent_item_goal_penalty(
 
     prune_recent_item_goal_selections();
     float penalty = 0.0f;
-    for (const RecentItemGoalSelection& entry : g_client_bot_state.recent_item_goal_selections) {
+    for (const RecentItemGoalSelection& entry : bot_state().recent_item_goal_selections) {
         if (entry.item_handle != item_handle
             || !entry.cooldown.valid()
             || entry.cooldown.elapsed()) {
@@ -157,14 +158,14 @@ float bot_goal_memory_get_recent_item_goal_penalty(
 float bot_goal_memory_get_secondary_goal_repeat_penalty(const BotGoalType goal_type)
 {
     if (!bot_goal_is_item_collection(goal_type)
-        || g_client_bot_state.recent_secondary_goal_type != goal_type
-        || !g_client_bot_state.recent_secondary_goal_timer.valid()
-        || g_client_bot_state.recent_secondary_goal_timer.elapsed()) {
+        || bot_state().recent_secondary_goal_type != goal_type
+        || !bot_state().recent_secondary_goal_timer.valid()
+        || bot_state().recent_secondary_goal_timer.elapsed()) {
         return 0.0f;
     }
 
     const float remaining_norm = std::clamp(
-        static_cast<float>(g_client_bot_state.recent_secondary_goal_timer.time_until())
+        static_cast<float>(bot_state().recent_secondary_goal_timer.time_until())
             / static_cast<float>(kSecondaryGoalTypeRepeatMs),
         0.0f,
         1.0f);

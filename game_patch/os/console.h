@@ -102,6 +102,21 @@ inline std::optional<std::string_view> console_read_arg() {
     return std::optional{rf::console::str_arg};
 }
 
+// The engine lowercases a string argument unless told otherwise; a handler takes this type where
+// the case is part of the value.
+struct ConsoleCasedString
+{
+    std::string value;
+};
+
+template<>
+inline std::optional<ConsoleCasedString> console_read_arg()
+{
+    if (!console_read_arg_internal(rf::console::ARG_STR, true))
+        return {};
+    return std::optional{ConsoleCasedString{rf::console::str_arg}};
+}
+
 class BaseCommand : public rf::console::Command
 {
 protected:
@@ -216,3 +231,19 @@ private:
 constexpr int CMD_LIMIT = 512;
 
 extern rf::console::Command* g_commands_buffer[CMD_LIMIT];
+
+// Stock console_handle_input/draw use a 200 byte buffer for: "] ", user input and '\0'
+constexpr int max_cmd_line_len = 200 - 2 - 1;
+
+void console_clear_input();
+void console_ui_add_output(const char* text, const rf::Color* color);
+void console_ui_render();
+// Styles console output printed between these calls as a chat line (color = rf::ChatMsgColor).
+void console_ui_begin_chat(int color, const char* prefix);
+void console_ui_end_chat();
+void console_ui_apply_patches();
+bool console_ui_cursor_active();
+// True while the open console scrolls with the wheel (console_mouse_wheel), so gameplay doesn't get it.
+bool console_ui_takes_mouse_wheel();
+// The launcher's "Use deprecated legacy console", as it was when the game started.
+bool legacy_console_enabled();

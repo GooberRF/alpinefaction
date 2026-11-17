@@ -1,5 +1,8 @@
+#include <format>
 #include <algorithm>
 #include <memory>
+#include <optional>
+#include <map>
 #include <unordered_map>
 #include <unordered_set>
 #include <cstddef>
@@ -13,7 +16,6 @@
 #include <patch_common/FunHook.h>
 #include <patch_common/CodeInjection.h>
 #include <patch_common/AsmWriter.h>
-#include <format>
 #include <cmath>
 #include <common/utils/string-utils.h>
 #include "gr.h"
@@ -23,6 +25,7 @@
 #include "../rf/multi.h"
 #include "../rf/file/file.h"
 #include "../bmpman/bmpman.h"
+#include "../misc/vpackfile.h"
 
 #include <ft2build.h>
 #include FT_FREETYPE_H
@@ -109,7 +112,7 @@ private:
 
     std::string name_;
     // FT_New_Memory_Face does not copy its input, so the file has to outlive the face.
-    std::vector<unsigned char> file_data_;
+    std::unique_ptr<std::string> file_data_;
     FT_Face face_ = nullptr;
     bool digits_only_ = false;
     int height_ = 0;
@@ -178,31 +181,6 @@ static inline ParsedFontName parse_font_name(std::string_view name)
     return {file_name_str, size_x, size_y, digits_only};
 }
 
-static bool load_file_into_buffer(const char* name, std::vector<unsigned char>& buffer)
-{
-    rf::File file;
-    if (file.open(name) != 0) {
-        xlog::error("Failed to open file {}", name);
-        return false;
-    }
-    auto len = file.size();
-    buffer.resize(len);
-    int total_bytes_read = 0;
-    while (len - total_bytes_read > 0) {
-        int num_bytes_read = file.read(buffer.data() + total_bytes_read, len - total_bytes_read);
-        if (num_bytes_read <= 0) {
-            break;
-        }
-        total_bytes_read += num_bytes_read;
-    }
-    file.close();
-    if (total_bytes_read != len) {
-        xlog::error("Cannot read all file bytes");
-        return false;
-    }
-    return true;
-}
-
 // ============================================================================
 // Support for non-Latin scripts (CJK and others)
 // ----------------------------------------------------------------------------
@@ -255,14 +233,20 @@ GrNewFont::GrNewFont(std::string_view name) :
     auto [filename, size_x, size_y, digits_only] = parse_font_name(name);
     digits_only_ = digits_only;
     xlog::trace("Loading font {} size {}", filename, size_y);
-    if (!load_file_into_buffer(filename.c_str(), file_data_)) {
-        xlog::error("load_file_into_buffer failed for {}", filename);
+    std::optional<std::string> buffer = read_game_file(filename.c_str());
+    if (!buffer) {
+        if (rf::File{}.find(filename.c_str())) {
+            xlog::error("Cannot read all file bytes of {}", filename);
+        }
+        else {
+            xlog::error("Failed to open file {}", filename);
+        }
         throw std::runtime_error{"failed to load font"};
     }
 
-    // The face keeps a pointer into file_data_, so both live as long as the font.
-    FT_Error error = FT_New_Memory_Face(g_freetype_lib, file_data_.data(),
-        static_cast<FT_Long>(file_data_.size()), 0, &face_);
+    file_data_ = std::make_unique<std::string>(std::move(*buffer));
+    FT_Error error = FT_New_Memory_Face(g_freetype_lib, reinterpret_cast<const FT_Byte*>(file_data_->data()),
+        static_cast<FT_Long>(file_data_->size()), 0, &face_);
     if (error) {
         xlog::error("FT_New_Memory_Face failed: {}", error);
         throw std::runtime_error{"failed to load font"};
@@ -310,8 +294,7 @@ GrNewFont::GrNewFont(GrNewFont&& other) noexcept :
     pages_{std::move(other.pages_)},
     glyphs_{std::move(other.glyphs_)}
 {
-    // Moving the vector moves the heap block itself, so the pointer the face
-    // holds into it stays valid.
+    // Moving the owner leaves the backing string in place for FreeType.
     other.face_ = nullptr;
 }
 
@@ -700,6 +683,37 @@ int gr_font_get_default()
 void gr_font_set_default(int font_id)
 {
     g_default_font_id = font_id;
+}
+
+// (bold, pixel size) of every font handed out by ui_ttf_font, so a caller that has only the
+// id can ask for the same face one size down.
+static std::unordered_map<int, std::pair<bool, int>> g_ui_ttf_fonts;
+
+int ui_ttf_font(bool bold, int pixel_size)
+{
+    // Text fitting asks for many sizes every frame; the load below formats a name and scans
+    // every loaded font, so known sizes - and failed loads - are answered from here.
+    static std::map<std::pair<bool, int>, int> font_ids;
+    if (const auto it = font_ids.find({bold, pixel_size}); it != font_ids.end()) {
+        return it->second;
+    }
+    const int font = rf::gr::load_font(std::format("{}font.ttf:{}", bold ? "bold" : "regular", pixel_size).c_str());
+    if (font >= 0) {
+        g_ui_ttf_fonts[font] = {bold, pixel_size};
+    }
+    font_ids.emplace(std::pair{bold, pixel_size}, font);
+    return font;
+}
+
+bool ui_ttf_font_info(int font, bool& bold, int& pixel_size)
+{
+    const auto it = g_ui_ttf_fonts.find(font);
+    if (it == g_ui_ttf_fonts.end()) {
+        return false;
+    }
+    bold = it->second.first;
+    pixel_size = it->second.second;
+    return true;
 }
 
 FunHook<int(const char*, int)> gr_init_font_hook{

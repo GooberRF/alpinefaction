@@ -21,9 +21,12 @@
 #include "alpine_obj.h"
 #include "bake_progress.h"
 #include "brush_import.h"
+#include "brush_preview.h"
 #include "face_list_cache.h"
+#include "graphics/editor_gr.h"
 #include "headless_bake.h"
 #include "level.h"
+#include "memory_guard.h"
 #include "mfc_types.h"
 #include "terrain.h"
 #include "terrain_build.h"
@@ -563,12 +566,59 @@ void finish_build(CDedLevel& level)
 
 // ─── Hooks ──────────────────────────────────────────────────────────────────
 
+// The last Build Geometry to finish was cancelled because RED ran out of memory.
+bool g_build_out_of_memory = false;
+
+// One GeoBuild_Driver tick lists the brushes, then one per brush, one per portal, and one for the finish
+void show_build_tick(CDedLevel& level)
+{
+    const BuildProgressDialog* dialog = level.build_dialog();
+    if (!dialog) return;
+    if (g_build_first_tick_pending) {
+        // the brush count is only known once this tick has listed them
+        build_progress_phase(level.GetAlpineLevelProperties().terrain_objects.empty() ? BuildPhase::brushes
+                                                                                      : BuildPhase::terrain);
+        return;
+    }
+    // each tick reports the steps before its own, so a phase is complete once the next starts
+    if (dialog->brushes_added < dialog->brushes.size) {
+        build_progress_phase(BuildPhase::brushes);
+        build_progress_steps(dialog->brushes_added, dialog->brushes.size);
+        build_progress_expect(BuildPhase::portals, dialog->portal_brushes.size);
+    }
+    else if (dialog->portals_chopped < dialog->portal_brushes.size) {
+        if (dialog->portals_chopped == 0) {
+            build_progress_complete();
+        }
+        build_progress_phase(BuildPhase::portals);
+        build_progress_steps(dialog->portals_chopped, dialog->portal_brushes.size);
+    }
+    else {
+        // the finish can't stop: Cancel goes grey before the window pumps again
+        build_progress_disallow_cancel();
+        build_progress_complete();
+        if (dialog->portal_brushes.size == 0) {
+            build_progress_skip(BuildPhase::portals);
+        }
+        build_progress_phase(BuildPhase::cleanup);
+    }
+}
+
 // GeoBuild_Driver, once per idle tick: chunk brushes go in before its first tick, out once it clears build_running.
 void __fastcall geobuild_driver_hooked(CDedLevel* level);
 FunHook<decltype(geobuild_driver_hooked)> geobuild_driver_hook{0x004399b0, geobuild_driver_hooked};
 void __fastcall geobuild_driver_hooked(CDedLevel* level)
 {
     FaceListCacheWindow face_list_cache;
+    // an allocation since the last tick was served from the memory guard's reserve: this tick cancels the build
+    const bool out_of_memory = level->build_running && memory_guard_take_tripped();
+    // the window pumps its messages as it shows the tick, so a Cancel confirmed then still stops this tick
+    if (!out_of_memory && !level->build_cancelling()) {
+        show_build_tick(*level);
+    }
+    if (out_of_memory || build_progress_cancelled()) {
+        level->cancel_build();
+    }
     const bool cancelling = level->build_cancelling();
     if (!cancelling && g_build_first_tick_pending) {
         try {
@@ -577,14 +627,29 @@ void __fastcall geobuild_driver_hooked(CDedLevel* level)
         catch (const std::bad_alloc&) {
             xlog::error("[Terrain] out of memory inserting terrain chunks");
         }
+        // RED's operator new throws MFC's CMemoryException once the memory guard's reserve is spent
+        catch (...) {
+            memory_guard_fatal("Build Geometry");
+        }
     }
-    geobuild_driver_hook.call_target(level);
+    // an exception reaching RED's idle loop would abort it, and the half-built state cannot be trusted
+    try {
+        geobuild_driver_hook.call_target(level);
+    }
+    catch (...) {
+        memory_guard_fatal("Build Geometry");
+    }
     if (level->build_running) return;
+    brush_preview_build_ended(!cancelling);
+    g_build_out_of_memory = out_of_memory;
     try {
         if (!cancelling) finish_build(*level);
     }
     catch (const std::bad_alloc&) {
         terrain_report("Out of memory finishing the terrain build; rebuild before saving.", false);
+    }
+    catch (...) {
+        memory_guard_fatal("Build Geometry");
     }
     try {
         remove_temp_brushes(*level);
@@ -592,8 +657,17 @@ void __fastcall geobuild_driver_hooked(CDedLevel* level)
     catch (const std::bad_alloc&) {
         xlog::error("[Terrain] out of memory removing temporary chunk brushes; saving strips them");
     }
+    catch (...) {
+        memory_guard_fatal("Build Geometry");
+    }
     g_built_terrains.clear();
     g_build_notes.clear();
+    build_progress_end();
+    if (out_of_memory) {
+        editor_report_blocking("Build Geometry", "Build Geometry",
+                               std::string{"Build Geometry ran out of memory and was cancelled. "} +
+                                   memory_guard_advice());
+    }
 }
 
 // Sorted uids of the level solid's terrain rooms while FUN_004aa610 builds its surfaces, else null.
@@ -705,7 +779,7 @@ bool __fastcall face_gets_surface_hooked(const int* flags)
     return !in_terrain_room(face, *g_terrain_gate_uids);
 }
 
-// Faces RED's surface pass left without a surface once its surfaces ran out.
+// Faces RED's surface pass would give a surface that have none: past its 32767, or since Build Geometry.
 uint32_t surface_overflow_faces(CDedLevel& level)
 {
     const GSolid* solid = level.solid;
@@ -787,7 +861,7 @@ void __fastcall lighting_surfaces_hooked(void* self)
     }
     alpine_lm_note_lighting_refused(refused);
     if (refused) return;
-    lighting_surfaces_hook.call_target(self);
+    lighting_surfaces_stock(self);
     // on a D3D11-only level they get overflow charts, and alpine_lm_bake_begin reports any that do not
     if (CDedLevel* level = CDedLevel::Get()) {
         const auto& props = level->GetAlpineLevelProperties();
@@ -853,7 +927,32 @@ bool face_gets_stock_surface(GFace* face, const std::vector<int32_t>& terrain_ui
 
 void lighting_surfaces_stock(void* self)
 {
-    lighting_surfaces_hook.call_target(self);
+    editor_gr_set_bake_precision();
+    lightmap_surfaces_shrunk_reset();
+    const MemoryGuardQuietScope quiet;
+    // an interrupted pass leaves surfaces without lightmaps, which the renderer dereferences
+    try {
+        lighting_surfaces_hook.call_target(self);
+    }
+    catch (...) {
+        memory_guard_fatal("Calculate Lighting");
+    }
+}
+
+void lighting_surfaces_checked(void* self)
+{
+    lighting_surfaces_hooked(self);
+}
+
+bool lighting_surfaces_missing(CDedLevel& level)
+{
+    return level.solid && static_cast<uint32_t>(level.solid->surfaces.get_size()) < red_max_level_surfaces &&
+           surface_overflow_faces(level) > 0;
+}
+
+bool build_geometry_out_of_memory()
+{
+    return g_build_out_of_memory;
 }
 
 void report_surface_overflow(CDedLevel& level, bool overflow_expected)
@@ -1121,7 +1220,15 @@ bool terrain_build_is_current(const DedTerrain& terrain)
 
 float terrain_build_level_ray_hit(CDedLevel& level, const float (&o)[3], const float (&d)[3], float t_max)
 {
+    float skipped_t = t_max;
+    return terrain_build_level_ray_hit(level, o, d, t_max, -INFINITY, skipped_t);
+}
+
+float terrain_build_level_ray_hit(CDedLevel& level, const float (&o)[3], const float (&d)[3], float t_max,
+                                  float min_normal_y, float& skipped_t)
+{
     float best = t_max;
+    skipped_t = t_max;
     const GSolid* solid = level.solid;
     if (!solid) return best;
     const auto& props = level.GetAlpineLevelProperties();
@@ -1150,8 +1257,9 @@ float terrain_build_level_ray_hit(CDedLevel& level, const float (&o)[3], const f
             }
         });
         if (loop.size() < 3) continue;
+        float& bound = n.y < min_normal_y ? skipped_t : best;
         constexpr float margin = 1e-3f;
-        float t0 = 0.0f, t1 = best;
+        float t0 = 0.0f, t1 = bound;
         for (int i = 0; i < 3 && t0 <= t1; i++) {
             if (std::fabs(d[i]) < 1e-12f) {
                 if (o[i] < lo[i] - margin || o[i] > hi[i] + margin) t0 = INFINITY;
@@ -1165,7 +1273,7 @@ float terrain_build_level_ray_hit(CDedLevel& level, const float (&o)[3], const f
         if (t0 > t1) continue;
         for (std::size_t k = 1; k + 1 < loop.size(); k++) {
             float t = 0.0f;
-            if (at::ray_triangle(o, d, loop[0].v, loop[k].v, loop[k + 1].v, 0.0f, best, t)) best = t;
+            if (at::ray_triangle(o, d, loop[0].v, loop[k].v, loop[k + 1].v, 0.0f, bound, t)) bound = t;
         }
     }
     return best;

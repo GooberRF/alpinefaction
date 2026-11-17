@@ -19,6 +19,7 @@
 #include "awards.h"
 #include "kill_attribution.h"
 #include "mutators.h"
+#include "vehicles/physics/ragdoll.h"
 #include "vehicles/vehicle.h"
 
 // Server-side capture of what actually landed the killing blow. The stock obj_kill packet
@@ -45,6 +46,8 @@ struct DamageResolutionContext
     // Inside a SplashWeaponScope, and whether that detonation's single accuracy hit is spent.
     bool splash_scope = false;
     bool splash_hit_counted = false;
+    // The VehicleDamageClass of the vehicle that fired the SplashWeaponScope's projectile, or -1.
+    int vehicle_shot_class = -1;
     // A damaging particle is applying its contact damage (the flamethrower stream).
     bool particle_damage = false;
 };
@@ -196,12 +199,14 @@ SplashWeaponScope::SplashWeaponScope(rf::Weapon* wp)
     active_ = true;
     prev_ = g_ctx.splash_weapon;
     prev_hit_counted_ = g_ctx.splash_hit_counted;
+    prev_vehicle_shot_class_ = g_ctx.vehicle_shot_class;
     g_ctx.splash_weapon = wp->info_index;
     // A fresh detonation starts with its hit unspent, whatever the enclosing one did. Keep this
     // ctor free of consuming or erasing: weapon_move_one constructs it every frame per live
     // weapon, so anything consumed here fires on a projectile's first frame, not at its impact.
     g_ctx.splash_scope = true;
     g_ctx.splash_hit_counted = false;
+    g_ctx.vehicle_shot_class = vehicle_damage_class(rf::entity_from_handle(wp->parent_handle));
     // One detonation frame per scope, for the Massacre award. Nests with the scope. The weapon
     // rides along so the detonation's own direct-hit kill can be matched to it.
     awards_detonation_begin(wp->info_index);
@@ -215,6 +220,7 @@ SplashWeaponScope::~SplashWeaponScope()
         // unspent accuracy hit.
         g_ctx.splash_weapon = prev_;
         g_ctx.splash_hit_counted = prev_hit_counted_;
+        g_ctx.vehicle_shot_class = prev_vehicle_shot_class_;
         g_ctx.splash_scope = prev_.has_value();
         awards_detonation_end();
     }
@@ -239,6 +245,11 @@ bool kill_attribution_splash_hit_consume()
     return true;
 }
 
+int kill_attribution_vehicle_shot_class()
+{
+    return g_ctx.vehicle_shot_class;
+}
+
 // Universal damage dispatcher and the only place a weapon type is passed in.
 // entity_damage, one level down, never sees it.
 FunHook<float(int, float, int, int, int, rf::Vector3*, int, char)> obj_damage_hook{
@@ -246,7 +257,7 @@ FunHook<float(int, float, int, int, int, rf::Vector3*, int, char)> obj_damage_ho
     [](int victim_handle, float damage, int killer_handle, int weapon_type, int damage_type,
        rf::Vector3* pos, int killer_uid, char flags) {
         // On the RAW killer argument, before the remap below: the tuning table exempts every killer -1 blow.
-        damage = vehicle_scale_damage(victim_handle, killer_handle, damage_type, damage);
+        damage = vehicle_scale_damage(victim_handle, killer_handle, damage_type, damage, pos);
 
         // Ahead of the early-out below: the stock friendly-fire gate inside obj_damage reads the killer argument.
         if (!vehicle_filter_obj_damage(victim_handle, &killer_handle, damage_type)) {
@@ -315,6 +326,7 @@ FunHook<float(rf::Entity*, rf::Weapon*, rf::Vector3*, int*)> get_hit_region_mult
 FunHook<bool(rf::Weapon*)> weapon_hit_obj_hook{
     0x004C59F0,
     [](rf::Weapon* wp) {
+        ragdoll_note_weapon_hit(wp);
         SplashWeaponScope splash_scope{wp};
         // Covers the direct hit and the impact splash alike.
         const CritWeaponScope crit_scope{wp};

@@ -34,15 +34,18 @@
 #include "../multi/gametype.h"
 #include "../multi/server_internal.h"
 #include "../multi/mutators.h"
+#include "../multi/vehicles/physics/ragdoll.h"
 #include "../multi/vehicles/vehicle.h"
 #include "../graphics/weather.h"
 #include "../misc/alpine_options.h"
 #include "../misc/misc.h"
 #include "../misc/achievements.h"
+#include "alpine_rope.h"
 #include "event_alpine.h"
 #include "obj_collision.h"
 #include "object.h"
 #include "object_private.h"
+#include "particle_sim.h"
 #include "../misc/level.h"
 
 std::string get_object_type_string(int type) {
@@ -141,7 +144,9 @@ CodeInjection obj_create_find_slot_patch{
 
         int index_hint, min_index, max_index;
         bool use_low_index;
-        if (rf::is_server && (obj_type == rf::OT_ENTITY || obj_type == rf::OT_ITEM)) {
+        // Only AF clients can load v306+ levels, so their items do not need low object numbers
+        if (rf::is_server
+            && (obj_type == rf::OT_ENTITY || (obj_type == rf::OT_ITEM && !level_allows_extra_items()))) {
             // Use low object numbers server-side for entities and items for better client compatibility
             use_low_index = true;
             index_hint = low_index_hint;
@@ -209,6 +214,21 @@ CallHook<void*(size_t)> GPool_allocate_new_hook{
         }
         return result;
     },
+};
+
+// Level items are created during load, before LEVEL_LOADED is set.
+bool level_allows_extra_items()
+{
+    return level_rfl_version_at_least(306);
+}
+
+CodeInjection obj_create_item_limit_patch{
+    0x004871D9,
+    [](auto& regs) {
+        const int limit = level_allows_extra_items() ? extended_item_limit : stock_item_limit;
+        regs.eip = rf::item_pool_num_used < limit ? 0x004871E9 : 0x004872BC;
+    },
+    false
 };
 
 CodeInjection sort_clutter_patch{
@@ -700,6 +720,7 @@ FunHook<void(rf::Entity*)> entity_on_dead_hook{
         // which the vehicle module's exit broadcast never sees, so it announces them here.
         vehicle_before_entity_die(ep);
         entity_on_dead_hook.call_target(ep);
+        ragdoll_after_entity_dead(ep);
         vehicle_after_entity_die(ep);
     },
 };
@@ -1202,6 +1223,9 @@ FunHook<void(rf::Object*)> obj_hide_hook{
         if (rfl_version_minimum(304) && (obj->p_data.flags & rf::PF_COLLIDE_OBJECTS)) {
             rf::obj_collision_deregister(obj);
         }
+        if (obj->type == rf::OT_CLUTTER) {
+            alpine_rope_on_anchor_toggled(obj->handle);
+        }
     },
 };
 
@@ -1212,6 +1236,9 @@ FunHook<void(rf::Object*)> obj_unhide_hook{
         obj_unhide_hook.call_target(obj);
         if (rfl_version_minimum(304) && had_collision) {
             rf::obj_collision_register(obj);
+        }
+        if (obj->type == rf::OT_CLUTTER) {
+            alpine_rope_on_anchor_toggled(obj->handle);
         }
     },
 };
@@ -1270,6 +1297,7 @@ void object_do_patch()
     write_mem<u8>(0x0048B5BB, asm_opcodes::jmp_rel_short); // weapon
     write_mem<u8>(0x0048B72B, asm_opcodes::jmp_rel_short); // debris
     write_mem<u8>(0x0048B89B, asm_opcodes::jmp_rel_short); // corpse
+    write_mem<u8>(0x0048BA0B, asm_opcodes::jmp_rel_short); // item
     write_mem<u8>(0x004D7EEB, asm_opcodes::jmp_rel_short); // decal poly
     write_mem<u8>(0x004E3C5B, asm_opcodes::jmp_rel_short); // face
     write_mem<u8>(0x004E3DEB, asm_opcodes::jmp_rel_short); // face vertex
@@ -1280,8 +1308,8 @@ void object_do_patch()
     // Remove object type-specific limits
     AsmWriter(0x0048712A, 0x00487137).nop(); // corpse
     AsmWriter(0x00487173, 0x00487180).nop(); // debris
-    AsmWriter(0x004871D9, 0x004871E9).nop(); // item
     AsmWriter(0x00487271, 0x0048727A).nop(); // weapon
+    obj_create_item_limit_patch.install();   // item: stock limit only in pre-v306 levels
 
     // Zero memory allocated from GPool dynamically
     GPool_allocate_new_hook.install();
@@ -1334,6 +1362,7 @@ void object_do_patch()
     monitor_do_patch();
     mover_do_patch();
     particle_do_patch();
+    particle_sim_do_patch();
     obj_light_apply_patch();
     obj_collision_apply_patch();
     clock_do_patch();

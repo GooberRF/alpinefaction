@@ -16,6 +16,7 @@
 #include "alpine_terrain_decorations.h"
 #include "misc.h"
 #include "player.h"
+#include "../multi/payload.h"
 #include "../multi/server.h"
 #include "../multi/vehicles/vehicle_physics.h"
 #include "../object/alpine_corona.h"
@@ -23,9 +24,11 @@
 #include "../object/alpine_projection_camera.h"
 #include "../object/alpine_rope.h"
 #include "../object/alpine_dir_light.h"
+#include "../object/alpine_waypoint_helper.h"
 #include "../object/mover.h"
 #include "../hud/hud_world.h"
 #include "../hud/minimap.h"
+#include "../sound/sound.h"
 #include "../graphics/af_lightmap.h"
 #include "../graphics/d3d11/gr_d3d11_hooks.h"
 #include "../graphics/weather.h"
@@ -41,6 +44,9 @@ struct ClimbRegionEntry {
 };
 static std::vector<ClimbRegionEntry> g_climb_regions;
 static std::vector<rf::ClimbRegion*> g_disabled_climb_regions;
+
+// The fog near clip the level file sets; Set_Fog_Far_Clip can move the far clip below it and back
+static float g_level_fog_near_clip = 0.0f;
 
 CodeInjection level_read_data_check_restore_status_patch{
     0x00461195,
@@ -105,16 +111,6 @@ CodeInjection level_read_moving_group_lift_patch{
     }
 };
 
-CodeInjection level_load_items_crash_fix{
-    0x0046519F,
-    [](auto& regs) {
-        void* item = regs.eax;
-        if (item == nullptr) {
-            regs.eip = 0x004651C6;
-        }
-    },
-};
-
 CallHook<void(rf::Vector3*, float, float, float, float, bool, int, int)> level_read_geometry_header_light_add_directional_hook{
     0x004619E1,
     [](rf::Vector3 *dir, float intensity, float r, float g, float b, bool is_dynamic, int casts_shadow, int dropoff_type) {
@@ -129,6 +125,7 @@ CodeInjection level_load_init_patch{
     []() {
         AlpineLevelProperties::instance() = {};
         DashLevelProps::instance() = {};
+        g_level_fog_near_clip = 0.0f;
         alpine_mesh_clear_state();
         alpine_corona_clear_state();
         alpine_bag_clear_state();
@@ -136,6 +133,7 @@ CodeInjection level_load_init_patch{
         alpine_projection_camera_clear_state();
         alpine_rope_clear_state();
         alpine_dir_light_clear_state();
+        alpine_waypoint_helper_clear_state();
         alpine_terrain_decorations_clear_state();
         alpine_terrain_clear_state();
         gr::d3d11::release_terrain_gpu();
@@ -146,6 +144,7 @@ CodeInjection level_load_init_patch{
         af_lightmap_level_reset();
         projector_clear_all();
         alpine_mover_clear_hold_open();
+        alpine_mover_path_clear_state();
         hud_world_level_unload();
         set_headlamp_toggle_enabled(AlpineLevelProperties::instance().starts_with_headlamp);
     },
@@ -159,11 +158,14 @@ void level_shutdown()
     projector_clear_all();
     alpine_rope_clear_state();
     alpine_dir_light_clear_state();
+    alpine_waypoint_helper_clear_state();
     alpine_terrain_decorations_clear_state();
     alpine_terrain_clear_state();
     gr::d3d11::release_terrain_gpu();
     alpine_mesh_free_collision_proxies();
     vehicle_physics_level_reset(); // the Bullet world keys on GRoom*, so it goes before the rooms
+    snd_level_looping_reset(); // the stock close that follows stops every channel, so nothing still plays the loop
+    payload_level_close();
 }
 
 // Reached from quit-to-menu and leaving for the multiplayer menu (via game_shutdown), the
@@ -265,6 +267,23 @@ CodeInjection level_load_chunk_patch{
         if (chunk_id == alpine_directional_light_chunk_id) {
             xlog::debug("[Level] Loading alpine directional light chunk: len={}", chunk_len);
             alpine_dir_light_load_chunk(file, chunk_len, file.get_version());
+            regs.eip = 0x004608EF;
+        }
+
+        if (chunk_id == alpine_waypoint_helper_chunk_id) {
+            xlog::debug("[Level] Loading alpine waypoint helper chunk: len={}", chunk_len);
+            alpine_waypoint_helper_load_chunk(file, chunk_len);
+            regs.eip = 0x004608EF;
+        }
+
+        if (chunk_id == alpine_mover_path_chunk_id) {
+            xlog::debug("[Level] Loading alpine mover path chunk: len={}", chunk_len);
+            if (file.check_version(306)) {
+                alpine_mover_path_load_chunk(file, chunk_len);
+            }
+            else {
+                file.seek(chunk_len, rf::File::seek_cur);
+            }
             regs.eip = 0x004608EF;
         }
 
@@ -375,6 +394,33 @@ FunHook<void(rf::File*)> level_read_mp_respawns_hook{
                 blue,
                 true
             );
+        }
+    },
+};
+
+// gr_fog_set (0x0050E020) keeps the previous near/far pair when near > far, so fog would stop following the level.
+// Below RFL 306 the near clip has no effect, and stock behaviour stays as it is.
+void level_sanitize_fog_near_clip()
+{
+    if (!level_rfl_version_at_least(306)) {
+        return;
+    }
+    const float near_clip = g_level_fog_near_clip;
+    const float far_clip = rf::level.distance_fog_far_clip;
+    const bool usable = near_clip == 0.0f
+        || (std::isfinite(near_clip) && near_clip > 0.0f && (!(far_clip > 0.0f) || near_clip < far_clip));
+    rf::level.distance_fog_near_clip = usable ? near_clip : 0.0f;
+}
+
+CallHook<void(rf::File*)> level_read_geometry_header_hook{
+    0x00460943,
+    [](rf::File* file) {
+        level_read_geometry_header_hook.call_target(file);
+        g_level_fog_near_clip = rf::level.distance_fog_near_clip;
+        level_sanitize_fog_near_clip();
+        if (rf::level.distance_fog_near_clip != g_level_fog_near_clip) {
+            xlog::warn("[Level] Fog near clip {} is not below the far clip {}, using 0", g_level_fog_near_clip,
+                       rf::level.distance_fog_far_clip);
         }
     },
 };
@@ -633,9 +679,6 @@ void level_apply_patch()
     level_read_moving_group_travel_time_patch.install();
     level_read_moving_group_lift_patch.install();
 
-    // Fix item_create null result handling in RFL loading (affects multiplayer only)
-    level_load_items_crash_fix.install();
-
     // Fix dedicated server crash when loading level that uses directional light
     level_read_geometry_header_light_add_directional_hook.install();
 
@@ -654,6 +697,9 @@ void level_apply_patch()
 
     // Allow level hardness 0 for version 304+ levels
     level_load_hardness_zero_patch.install();
+
+    // Fog near clip at or past the far clip in 306+ levels
+    level_read_geometry_header_hook.install();
 
     // Hook stock gas region loader to capture gas region data for volumetric fog
     gas_region_load_hook.install();

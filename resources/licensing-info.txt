@@ -20,107 +20,164 @@ Their licenses can be found below.
 Special Thanks
 ---------------------------------
 
-Rafalh:
-* Authoring the Dash Faction codebase
-* An enormous amount of RE work on the game, level editor, and asset formats
-* Technical assistance
+Rafalh <https://github.com/rafalh>:
+  * Authoring the Dash Faction codebase
+  * An enormous amount of RE work on the game, level editor, and asset formats
+  * Technical assistance
 
-nick:
-* Extensive support and advice on virtually every aspect of the project
-* Being a firm sounding board for even the most outlandish and ambitious ideas
-* Code contributions
+nick <https://github.com/nickalreadyinuse>:
+  * Extensive support and advice on virtually every aspect of the project
+  * Being a firm sounding board for even the most outlandish and ambitious ideas
+  * Code contributions
 
-natalie <webmistress@natalie.ee>:
-* Technical assistance and extensive advice
-* FactionFiles API work to support integration with AF features
-* Hit sound
-* Code contributions
-* Assistance evaluating levels for `pow2tex` fix
+natalie <https://github.com/natarii>:
+  * Technical assistance and extensive advice
+  * FactionFiles API work to support integration with AF features
+  * Hit sound
+  * Code contributions
+  * Assistance evaluating levels for `pow2tex` fix
 
-is-this-c:
-* Code contributions
+is-this-c <https://github.com/is-this-c>:
+  * Code contributions
 
-AL2009man:
-* Code contributions
+AL2009man <https://github.com/AL2009man>:
+  * Code contributions
 
-jyh9521:
-* Code contributions
+jyh9521 <https://github.com/jyh9521>:
+  * Code contributions
 
-HeyItsDuke:
-* Rocket launcher lock on reticle for Big HUD
-* Assistance evaluating levels for `pow2tex` fix
+HeyItsDuke <https://github.com/HeyItsDuke>:
+  * Rocket launcher lock on reticle for Big HUD
+  * Assistance evaluating levels for `pow2tex` fix
 
 Hiro:
-* Assistance evaluating levels for `pow2tex` fix
+  * Assistance evaluating levels for `pow2tex` fix
 
-Intharth:
-* Multiplayer team color variants of vehicle textures (resources/images/vehicle_teams)
+Intharth <https://github.com/Intharth>:
+  * Multiplayer team color variants of vehicle textures
+
+Vel <https://github.com/Velarivia>:
+  * Meshes and textures for new Alpine pickups
 
 Beta testers:
-* nick
-* natalie
-* Intharth
-* Haze202
-* HeyItsDuke
-* Hiro
-* Vel
-* BATEMAN
-* MysticaL-AceR
-* liq
-* EasyOnMe
-* space9h0st
-* ED BUNGHOLE
-* icesolate
-* DVL_IAC
-* OK
-* Willson
-* Everyone who tried a test build and provided feedback
+  * nick
+  * natalie
+  * is-this-c
+  * Intharth
+  * Haze202
+  * HeyItsDuke
+  * Hiro
+  * Vel
+  * BATEMAN
+  * MysticaL-AceR
+  * liq
+  * EasyOnMe
+  * space9h0st
+  * ED BUNGHOLE
+  * icesolate
+  * DVL_IAC
+  * OK
+  * Willson
+  * Everyone who tried a test build and provided feedback
 
 The entire Red Faction community:
-* Your constant and steady stream of suggestions, feedback, and bug reports
-  which helped this project in more ways than I could possibly put into words.
-* Your continued support and enthusiasm for the game and my efforts with this
-  project. Alpine Faction is for each and every one of us, I hope you enjoy!
+  * Your constant and steady stream of suggestions, feedback, and bug reports
+    which helped this project in more ways than I could possibly put into words.
+  * Your continued support and enthusiasm for the game and my efforts with this
+    project. Alpine Faction is for each and every one of us, I hope you enjoy!
 
 ---------------------------------
 Asset Attribution
 ---------------------------------
 
-HeyItsDuke:
-* reticle_rocketlock_1.tga
+Some assets were modified from their originals (format conversion, renaming,
+resizing, etc.)
 
-natalie <webmistress@natalie.ee>:
-* af_hitsound1.wav
+Licenses:
+  CC0 1.0:       https://creativecommons.org/publicdomain/zero/1.0/
+  CC-BY 3.0:     https://creativecommons.org/licenses/by/3.0/
+  CC-BY 4.0:     https://creativecommons.org/licenses/by/4.0/
+  CC-BY-NC 4.0:  https://creativecommons.org/licenses/by-nc/4.0/
 
-Indian_gamer2005:
-* af_achievement1.wav (CC0: https://freesound.org/s/548434/)
+daveincamas <https://freesound.org/people/daveincamas/>:
+  * af_zipline_loop1.wav (CC-BY-NC 4.0: https://freesound.org/s/208729/)
 
-Rob_Marion:
-* af_pinglocation1.wav (CC0: https://freesound.org/s/542015/)
+Drummyfish <https://opengameart.org/users/drummyfish>:
+  Jetpack (CC0: https://opengameart.org/content/oldschool-afps-weapons/):
+    * af-jetpack1.v3m
+    * af-jetpack1skin1.tga
 
-soneproject:
-* af_killsound1.wav (CC-BY 3.0: https://freesound.org/s/346425/)
+F.M.Audio <https://freesound.org/people/F.M.Audio/>:
+  * af_fighter_scrape_loop.wav (CC-BY 4.0: https://freesound.org/s/620428/)
 
-theplax:
-* af_spray1.ogg (CC-BY 4.0: https://freesound.org/s/657793/)
+HeyItsDuke <https://github.com/HeyItsDuke>:
+  * reticle_rocketlock_1.tga
 
-LittleRobotSoundFactory:
-* af_award1.ogg (CC-BY 4.0: https://freesound.org/s/270404/)
+Indian_gamer2005 <https://freesound.org/people/Indian_gamer2005/>:
+  * af_achievement1.wav (CC0: https://freesound.org/s/548434/)
 
-Drummyfish:
-* af-jetpack1skin1.tga and af-jetpack1.v3m (CC0: https://opengameart.org/content/oldschool-afps-weapons/)
+Jerimee <https://freesound.org/people/Jerimee/>:
+  * af_haste_pickup1.wav (CC0: https://freesound.org/s/571129/)
 
-leeor_net:
-* af_caust00.png - af_caust15.png (CC0: https://opengameart.org/content/water-caustics-effect-small/)
+leeor_net <https://opengameart.org/users/leeornet>:
+  Water Caustics (CC0: https://opengameart.org/content/water-caustics-effect-small/):
+    * af_caust00.png - af_caust15.png
 
-mcpable:
-* af_jeep_horn.ogg (CC0: https://freesound.org/s/131930/)
+LittleRobotSoundFactory <https://freesound.org/people/LittleRobotSoundFactory/>:
+  * af_award1.ogg (CC-BY 4.0: https://freesound.org/s/270404/)
+
+mcpable <https://freesound.org/people/mcpable/>:
+  * af_jeep_horn.ogg (CC0: https://freesound.org/s/131930/)
+
+natalie <https://github.com/natarii>:
+  * af_hitsound1.wav
+
+Quaternius <https://opengameart.org/users/quaternius>:
+  Scavenger Cartridge (CC0: https://opengameart.org/content/sci-fi-essentials-kit/):
+    * af-scavpumap1.v3m
+    * af_scavpumap1.dds
+
+Rob_Marion <https://freesound.org/people/Rob_Marion/>:
+  * af_pinglocation1.wav (CC0: https://freesound.org/s/542015/)
+
+Sadiquecat <https://freesound.org/people/Sadiquecat/>:
+  * af_haste_jump1.wav (CC0: https://freesound.org/s/814916/)
+
+soneproject <https://freesound.org/people/soneproject/>:
+  * af_killsound1.wav (CC-BY 3.0: https://freesound.org/s/346425/)
+
+TechspiredMinds <https://freesound.org/people/TechspiredMinds/>:
+  * af_vampire_pickup1.wav (CC-BY 4.0: https://freesound.org/s/729195/)
+
+theplax <https://freesound.org/people/theplax/>:
+  * af_spray1.ogg (CC-BY 4.0: https://freesound.org/s/657793/)
+
+Vel <https://github.com/Velarivia>:
+  Armor Shard (CC-BY 4.0):
+    * af_armorshard1.v3m
+    * af_armorshard1_tex.tga
+  Health Shard (CC-BY 4.0):
+    * af_healthshard1.v3m
+    * af_healthshard1_gauze.tga
+    * af_healthshard1_shell.tga
+  Haste (CC-BY 4.0):
+    * af_haste1.v3m
+    * af_haste1_frame.tga
+    * af_haste1_glass.tga
+    * af_haste1_metal.tga
+  Vampire (CC-BY 4.0):
+    * af_vampire1.v3m
+    * af_vampire1_orb.tga
+    * af_vampire1_shell.tga
+    * af_vampire1_teeth.tga
 
 ###############################################################################
-## stb_image, stb_vorbis
+## stb_image, stb_vorbis, stb_truetype, stb_image_write
 ###############################################################################
 
 Homepage: https://github.com/nothings/stb
+
+PlutoVG bundles stb_image, stb_truetype and stb_image_write.
 
 Copyright (c) 2017 Sean Barrett
 
@@ -446,6 +503,40 @@ ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ###############################################################################
+## LunaSVG, PlutoVG
+###############################################################################
+
+Source code: https://github.com/sammycage/lunasvg
+Source code: https://github.com/sammycage/plutovg
+
+MIT License
+
+LunaSVG: Copyright (c) 2020-2025 Samuel Ugochukwu <sammycageagle@gmail.com>
+PlutoVG: Copyright (c) 2020-2026 Samuel Ugochukwu <sammycageagle@gmail.com>
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Portions of PlutoVG (the polygon rasterizer and stroker) are derived from
+FreeType and are used under the FreeType License; see the FreeType section
+below.
+
+###############################################################################
 ## FreeType
 ###############################################################################
 
@@ -453,13 +544,115 @@ Portions of this software are copyright © 2024 The FreeType
 Project (www.freetype.org).  All rights reserved.
 
 ###############################################################################
-## Fonts
+## OPTIEdgar
 ###############################################################################
 
 This project uses highly modified versions of fonts:
 * OPTIEdgar-Extended
 * OPTIEdgarBold-Extended
 Copyright Copr. Castcraft Software, Inc. 1990-1991.
+
+###############################################################################
+## Inconsolata
+###############################################################################
+
+Source code: https://github.com/googlefonts/Inconsolata
+
+Used unmodified as the console fonts (fonts/consolefont.ttf,
+fonts/consolefont-bold.ttf).
+
+Copyright 2006 The Inconsolata Project Authors (https://github.com/cyrealtype/Inconsolata)
+
+This Font Software is licensed under the SIL Open Font License, Version 1.1.
+This license is copied below, and is also available with a FAQ at:
+https://scripts.sil.org/OFL
+
+-----------------------------------------------------------
+SIL OPEN FONT LICENSE Version 1.1 - 26 February 2007
+-----------------------------------------------------------
+
+PREAMBLE
+The goals of the Open Font License (OFL) are to stimulate worldwide
+development of collaborative font projects, to support the font creation
+efforts of academic and linguistic communities, and to provide a free and
+open framework in which fonts may be shared and improved in partnership
+with others.
+
+The OFL allows the licensed fonts to be used, studied, modified and
+redistributed freely as long as they are not sold by themselves. The
+fonts, including any derivative works, can be bundled, embedded, 
+redistributed and/or sold with any software provided that any reserved
+names are not used by derivative works. The fonts and derivatives,
+however, cannot be released under any other type of license. The
+requirement for fonts to remain under this license does not apply
+to any document created using the fonts or their derivatives.
+
+DEFINITIONS
+"Font Software" refers to the set of files released by the Copyright
+Holder(s) under this license and clearly marked as such. This may
+include source files, build scripts and documentation.
+
+"Reserved Font Name" refers to any names specified as such after the
+copyright statement(s).
+
+"Original Version" refers to the collection of Font Software components as
+distributed by the Copyright Holder(s).
+
+"Modified Version" refers to any derivative made by adding to, deleting,
+or substituting -- in part or in whole -- any of the components of the
+Original Version, by changing formats or by porting the Font Software to a
+new environment.
+
+"Author" refers to any designer, engineer, programmer, technical
+writer or other person who contributed to the Font Software.
+
+PERMISSION & CONDITIONS
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of the Font Software, to use, study, copy, merge, embed, modify,
+redistribute, and sell modified and unmodified copies of the Font
+Software, subject to the following conditions:
+
+1) Neither the Font Software nor any of its individual components,
+in Original or Modified Versions, may be sold by itself.
+
+2) Original or Modified Versions of the Font Software may be bundled,
+redistributed and/or sold with any software, provided that each copy
+contains the above copyright notice and this license. These can be
+included either as stand-alone text files, human-readable headers or
+in the appropriate machine-readable metadata fields within text or
+binary files as long as those fields can be easily viewed by the user.
+
+3) No Modified Version of the Font Software may use the Reserved Font
+Name(s) unless explicit written permission is granted by the corresponding
+Copyright Holder. This restriction only applies to the primary font name as
+presented to the users.
+
+4) The name(s) of the Copyright Holder(s) or the Author(s) of the Font
+Software shall not be used to promote, endorse or advertise any
+Modified Version, except to acknowledge the contribution(s) of the
+Copyright Holder(s) and the Author(s) or with their explicit written
+permission.
+
+5) The Font Software, modified or unmodified, in part or in whole,
+must be distributed entirely under this license, and must not be
+distributed under any other license. The requirement for fonts to
+remain under this license does not apply to any document created
+using the Font Software.
+
+TERMINATION
+This license becomes null and void if any of the above conditions are
+not met.
+
+DISCLAIMER
+THE FONT SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO ANY WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT
+OF COPYRIGHT, PATENT, TRADEMARK, OR OTHER RIGHT. IN NO EVENT SHALL THE
+COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+INCLUDING ANY GENERAL, SPECIAL, INDIRECT, INCIDENTAL, OR CONSEQUENTIAL
+DAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
+OTHER DEALINGS IN THE FONT SOFTWARE.
 
 ###############################################################################
 ## d3d8to9

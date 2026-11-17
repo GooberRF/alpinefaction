@@ -22,7 +22,6 @@ struct GameConfig
     };
     CfgVar<unsigned int> res_bpp = 32;
     CfgVar<unsigned int> res_backbuffer_format = 22; // D3DFMT_X8R8G8B8
-    CfgVar<unsigned int> selected_video_card = 0;
 
     enum WndMode
     {
@@ -32,6 +31,8 @@ struct GameConfig
     };
 
     CfgVar<WndMode> wnd_mode = FULLSCREEN;
+    // Monitor device path; empty for the primary display
+    CfgVar<std::string> display_device{""};
     CfgVar<bool> vsync = false;
     CfgVar<unsigned int> geometry_cache_size{
         32,
@@ -48,18 +49,16 @@ struct GameConfig
     CfgVar<Renderer> renderer = Renderer::d3d11;
 
     // Graphics
+    // Seeds alpine_settings.ini AnisotropicFiltering when the ini lacks the key.
     CfgVar<bool> anisotropic_filtering = true;
 
     CfgVar<bool> high_scanner_res = true;
     CfgVar<bool> true_color_textures = true;
 
     // Audio
-    CfgVar<bool> eax_sound = true;
+    CfgVar<bool> eax_sound = false;
 
     // Multiplayer
-    static constexpr unsigned int DEFAULT_UPDATE_RATE = 200000; // T1/LAN in stock launcher
-    CfgVar<unsigned int> update_rate = DEFAULT_UPDATE_RATE;
-
     CfgVar<unsigned int> force_port{
         0,
         [] (const auto val) {
@@ -74,8 +73,11 @@ struct GameConfig
     CfgVar<bool> fast_start = true;
     CfgVar<bool> allow_overwrite_game_files = false;
     CfgVar<bool> keep_launcher_open = true;
-    CfgVar<bool> reduced_speed_in_background = false;
+    CfgVar<bool> reduced_speed_in_background = false; // seeds alpine_settings.ini, as above
     CfgVar<bool> autoplay_af_demos = false;
+    CfgVar<bool> legacy_menus = false;
+    CfgVar<bool> legacy_console = false;
+    CfgVar<bool> editor_large_address_aware = false;
 
     // Internal
     CfgVar<std::string> alpine_faction_version{""};

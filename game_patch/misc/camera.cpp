@@ -27,8 +27,10 @@
 #include "../rf/os/console.h"
 #include "../rf/os/frametime.h"
 #include "player.h"
+#include "../hud/multi_scoreboard.h"
 #include "../hud/multi_spectate.h"
 #include "../hud/remote_server_cfg_ui.h"
+#include "../misc/settings_registry.h"
 
 constexpr auto screen_shake_fps = 150.0f;
 static float g_camera_shake_factor = 0.6f;
@@ -127,9 +129,7 @@ CallHook<rf::CameraMode(rf::Camera*)> camera_get_mode_emit_sound_hook{
 ConsoleCommand2 disable_weaphake_cmd{
     "cl_weapshake",
     []() {
-        g_alpine_game_config.try_disable_weapon_shake = !g_alpine_game_config.try_disable_weapon_shake;
-
-        evaluate_restrict_disable_ss();
+        setting_console_set("weapon_shake", "toggle");
 
         rf::console::print("Camera shake from weapon fire is {}",
                            g_alpine_game_config.try_disable_weapon_shake
@@ -142,7 +142,7 @@ ConsoleCommand2 disable_weaphake_cmd{
 ConsoleCommand2 force_disable_camerashake_cmd{
     "sp_camerashake",
     []() {
-        g_alpine_game_config.screen_shake_force_off = !g_alpine_game_config.screen_shake_force_off;
+        setting_console_set("screen_shake_sp", "toggle");
 
         rf::console::print("All instances of camera shake are {}being forcefully turned off in single player.",
                            g_alpine_game_config.screen_shake_force_off
@@ -179,7 +179,7 @@ CodeInjection camera_create_for_player_freelook_camera_patch{
 static bool freelook_wheel_captured_by_overlay()
 {
     return vote_panel_is_gameplay_overlay_active() || spray_picker_is_open() ||
-        g_remote_server_cfg_popup.is_active();
+        g_remote_server_cfg_popup.is_active() || multi_scoreboard_cursor_active();
 }
 
 CodeInjection free_camera_do_frame_patch{
@@ -257,7 +257,7 @@ ConsoleCommand2 freelook_slide_cmd{
     "cl_freelookslide",
     [](std::optional<float> scale_opt) {
         if (scale_opt) {
-            g_alpine_game_config.set_freelook_cam_slide(*scale_opt);
+            setting_console_set("freelook_cam_slide", std::to_string(*scale_opt));
         }
         rf::console::print("Freelook camera slide scale is {:.2f} (0 = no slide, 1 = default)",
                            g_alpine_game_config.freelook_cam_slide);
@@ -425,9 +425,10 @@ static float convert_pitch_delta_to_non_linear_space(
 }
 
 // Applies raw/modern mouse deltas and linear pitch correction at the entity
-// control injection point. For the player entity, this is where accumulated raw
-// mouse deltas are consumed (freelook camera deltas are consumed earlier in
-// mouse_get_delta_hook since the freelook camera has a separate control path).
+// control injection point. For the entity the local player's controls drive (his own,
+// or the turret or hull he is attached to), this is where accumulated raw mouse deltas
+// are consumed (freelook camera deltas are consumed earlier in mouse_get_delta_hook
+// since the freelook camera has a separate control path).
 CodeInjection linear_pitch_patch{
     0x0049DEC9,
     [](auto& regs) {
@@ -441,7 +442,10 @@ CodeInjection linear_pitch_patch{
 
         // Consume accumulated raw mouse deltas (Raw/Modern mode only).
         // In Classic mode the accumulators are empty and this is a no-op.
-        if (g_alpine_game_config.mouse_scale != 0) {
+        // Server bots and turrets manned by bots take this path too and must not eat the local look.
+        rf::Entity* const lpe = rf::local_player_entity;
+        const bool drives_local_look = entity == lpe || (lpe && lpe->host_handle == entity->handle);
+        if (g_alpine_game_config.mouse_scale != 0 && drives_local_look) {
             float mouse_pitch = 0.0f, mouse_yaw = 0.0f;
             consume_raw_mouse_deltas(mouse_pitch, mouse_yaw, true);
             pitch_delta += mouse_pitch;
@@ -472,7 +476,7 @@ ConsoleCommand2 linear_pitch_cmd{
 #ifdef DEBUG
         linear_pitch_test();
 #endif
-        g_alpine_game_config.mouse_linear_pitch = !g_alpine_game_config.mouse_linear_pitch;
+        setting_console_set("mouse_linear_pitch", "toggle");
         rf::console::print("Linear pitch is {}", g_alpine_game_config.mouse_linear_pitch ? "enabled" : "disabled");
     },
     "Toggles mouse linear pitch angle",

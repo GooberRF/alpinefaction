@@ -486,8 +486,9 @@ bool vpackfile_supercede_allowed(const char* requested_filename, const char* sib
 static void vpackfile_add_to_lookup_table(rf::VPackfileEntry* entry)
 {
     std::string filename_str = string_to_lower(entry->name);
-    // dedicated servers don't need .awp files.
-    if (rf::is_dedicated_server && filename_str.ends_with(".awp")) {
+    // Alpine Faction option tables load from client_mods, mods and the game's own packfiles, never user_maps
+    if (entry->parent->is_user_maps && filename_str.starts_with("af_") && filename_str.ends_with(".tbl")) {
+        xlog::warn("Ignoring {} in user_maps packfile {}", entry->name, entry->parent->filename);
         return;
     }
     auto [it, inserted] = g_loopup_table.insert({filename_str, entry});
@@ -585,6 +586,12 @@ bool file_loaded_from_alpinefaction_vpp(const char* filename)
         }
     }
     return false;
+}
+
+bool file_loaded_from_tc_mod(const char* filename)
+{
+    rf::VPackfileEntry* entry = vpackfile_find_new(filename);
+    return entry && entry->parent->is_mods;
 }
 
 CodeInjection vpackfile_open_check_seek_result_injection{
@@ -863,7 +870,7 @@ void vpackfile_disable_overriding()
     g_is_overriding_disabled = true;
 }
 
-int vpackfile_load_user_maps_packfiles()
+std::string vpackfile_load_user_maps_packfiles()
 {
     rf::vpackfile_set_loading_user_maps(true);
     int loaded = 0;
@@ -871,5 +878,34 @@ int vpackfile_load_user_maps_packfiles()
     loaded += load_vpp_files_from_directory("user_maps\\single\\*.vpp", "user_maps\\single\\");
     loaded += load_vpp_files_from_directory("user_maps\\multi\\*.vpp", "user_maps\\multi\\");
     rf::vpackfile_set_loading_user_maps(false);
-    return loaded;
+    if (loaded == 0) {
+        return "No new packfiles found in user_maps\\";
+    }
+    return std::format("Loaded {} new packfile(s) from user_maps\\", loaded);
+}
+
+std::optional<std::string> read_game_file(const char* filename, int max_size)
+{
+    rf::File file;
+    if (file.open(filename) != 0) {
+        return std::nullopt;
+    }
+    const int size = file.size();
+    std::optional<std::string> content;
+    if (size >= 0 && size <= max_size) {
+        content.emplace(static_cast<std::size_t>(size), '\0');
+        int total_read = 0;
+        while (total_read < size) {
+            const int num_read = file.read(content->data() + total_read, size - total_read);
+            if (num_read <= 0) {
+                break;
+            }
+            total_read += num_read;
+        }
+        if (total_read != size) {
+            content.reset();
+        }
+    }
+    file.close();
+    return content;
 }

@@ -8,9 +8,12 @@
 #include <cassert>
 #include <unordered_set>
 #include <algorithm>
+#include <cmath>
 #include <format>
 #include "../misc/misc.h"
 #include "../misc/alpine_settings.h"
+#include "../misc/settings_registry.h"
+#include "../input/input.h"
 #include "../misc/level.h"
 #include "../rf/file/file.h"
 #include "../rf/object.h"
@@ -18,15 +21,19 @@
 #include "../rf/hud.h"
 #include "../rf/entity.h"
 #include "../rf/level.h"
+#include "../rf/geometry.h"
+#include "../rf/os/frametime.h"
 #include "../rf/multi.h"
 #include "../rf/player/player.h"
+#include "../rf/sound/sound.h"
 #include "../rf/os/console.h"
 #include "../os/console.h"
 #include "../rf/v3d.h"
 #include "../rf/vmesh.h"
 #include <common/config/GameConfig.h>
 #include "../main/main.h"
-#include "../graphics/d3d11/gr_d3d11_mesh.h"
+#include <common/gr_d3d11/gr_d3d11_mesh.h>
+#include "../sound/sound.h"
 #include "object.h"
 
 bool event_debug_enabled;
@@ -176,11 +183,8 @@ void __fastcall EventSetLiquidDepth_turn_on_new(EventSetLiquidDepthHook* this_)
     }
 }
 
-extern CallHook<void __fastcall (rf::GRoom*, int, rf::GSolid*)> liquid_depth_update_apply_all_GRoom_reset_liquid_hook;
-
-void __fastcall liquid_depth_update_apply_all_GRoom_reset_liquid(rf::GRoom* room, int edx, rf::GSolid* solid) {
-    liquid_depth_update_apply_all_GRoom_reset_liquid_hook.call_target(room, edx, solid);
-
+static void liquid_depth_update_room_objects(rf::GRoom* room)
+{
     // check objects in room if they are in water
     auto* objp = rf::object_list.next_obj;
     while (objp != &rf::object_list) {
@@ -203,9 +207,56 @@ void __fastcall liquid_depth_update_apply_all_GRoom_reset_liquid(rf::GRoom* room
     }
 }
 
-CallHook<void __fastcall (rf::GRoom* room, int edx, rf::GSolid* geo)> liquid_depth_update_apply_all_GRoom_reset_liquid_hook{
+// Indexed by liquid_surface_quality; a step of 0 rebuilds every frame
+constexpr float liquid_surface_rebuild_steps[] = {0.5f, 0.1f, 0.02f, 0.0f};
+static_assert(std::size(liquid_surface_rebuild_steps) == AlpineGameSettings::max_liquid_surface_quality + 1);
+
+// The depth the surface face is built at: whole steps from the start, so it can be found without state
+static float liquid_depth_update_surface_depth(const rf::LiquidDepthUpdate& update, float elapsed)
+{
+    if (elapsed >= update.duration) {
+        return update.target_depth;
+    }
+    const float step = liquid_surface_rebuild_steps[g_alpine_game_config.liquid_surface_quality];
+    const float total = update.target_depth - update.start_depth;
+    if (step <= 0.0f) {
+        return update.start_depth + total * elapsed / update.duration;
+    }
+    const float moved = std::floor(std::abs(total) * elapsed / update.duration / step) * step;
+    return update.start_depth + std::copysign(moved, total);
+}
+
+float liquid_depth_update_surface_y(const rf::GRoom* room)
+{
+    for (const rf::LiquidDepthUpdate* update : rf::liquid_depth_updates) {
+        if (update->room == room) {
+            return room->bbox_min.y + liquid_depth_update_surface_depth(*update, update->elapsed);
+        }
+    }
+    return room->bbox_min.y + room->liquid_depth;
+}
+
+// While the depth is changing, only rebuild the liquid surface each time the liquid has moved another step,
+// and on the final step. No trampoline: the handler makes the call itself, pops its argument and resumes after it.
+CodeInjection liquid_depth_update_apply_all_reset_liquid_injection{
     0x0045E4AC,
-    liquid_depth_update_apply_all_GRoom_reset_liquid,
+    [](auto& regs) {
+        auto* update = reinterpret_cast<rf::LiquidDepthUpdate*>(regs.esi.value);
+        auto* solid = *reinterpret_cast<rf::GSolid**>(regs.esp.value);
+        const bool finished = (regs.ebx.value & 0xFF) != 0;
+        const float prev_elapsed = update->elapsed - rf::frametime;
+        const float surface_depth = liquid_depth_update_surface_depth(*update, update->elapsed);
+        if (finished || prev_elapsed <= 0.0f
+            || surface_depth != liquid_depth_update_surface_depth(*update, prev_elapsed)) {
+            update->room->liquid_depth = surface_depth;
+            update->room->reset_liquid(solid);
+            update->room->liquid_depth = update->cur_depth;
+        }
+        liquid_depth_update_room_objects(update->room);
+        regs.esp += 4;
+        regs.eip = 0x0045E4B1;
+    },
+    false,
 };
 
 CallHook<int(rf::AiPathInfo*)> ai_path_release_on_load_level_event_crash_fix{
@@ -321,6 +372,19 @@ ConsoleCommand2 debug_event_msg_cmd{
     },
     "Print debug information for events",
     "dbg_events",
+};
+
+ConsoleCommand2 liquid_surface_quality_cmd{
+    "r_liquidsurface",
+    [](std::optional<int> level) {
+        if (level) {
+            setting_console_set("liquid_surface_quality", std::to_string(level.value()));
+        }
+        rf::console::print("Liquid surface update quality is {} (0 low, 1 medium, 2 high, 3 every frame)",
+            g_alpine_game_config.liquid_surface_quality);
+    },
+    "Set how closely a rising or falling liquid surface follows its level",
+    "r_liquidsurface [0-3]",
 };
 
 ConsoleCommand2 debug_goal_cmd{
@@ -492,6 +556,85 @@ CodeInjection level_read_events_patch {
     }
 };
 
+// RED's Looping checkbox on Play_Sound and Music_Start, ignored before RFL 306.
+static bool level_honours_sound_looping_checkbox()
+{
+    return level_rfl_version_at_least(306);
+}
+
+static bool play_sound_event_loops(const rf::PlaySoundEvent* event)
+{
+    return event->looping && level_honours_sound_looping_checkbox();
+}
+
+// Music_Start loader case: the checkbox is bool1 ([esp+0x10]), which the create function (0x004B8740) never receives.
+// The jump table enters the case at 0x00462754, so nothing branches into this LEA + PUSH EDX.
+CodeInjection level_read_events_music_start_looping_injection{
+    0x00462758,
+    [](auto& regs) {
+        if (addr_as_ref<bool>(regs.esp + 0x10) && level_honours_sound_looping_checkbox()) {
+            const auto& filename = addr_as_ref<rf::String>(regs.esp + 0x3C); // str1
+            snd_level_looping_add(filename.c_str());
+        }
+    },
+};
+
+FunHook<rf::Event*(const rf::Vector3*, const char*, const char*, float, float, bool, int)> event_play_sound_create_hook{
+    0x004B7C10,
+    [](const rf::Vector3* pos, const char* sound_file, const char* alt_sound_file, float min_dist, float duration,
+       bool looping, int speaker_uid) -> rf::Event* {
+        auto* event = static_cast<rf::PlaySoundEvent*>(event_play_sound_create_hook.call_target(
+            pos, sound_file, alt_sound_file, min_dist, duration, looping, speaker_uid));
+        // The alt file is the one-shot "off" sound: Off plays it and nothing would ever stop it if it looped.
+        if (event && play_sound_event_loops(event)) {
+            snd_level_looping_add(event->sound_file.c_str());
+        }
+        return event;
+    },
+};
+
+// Off points sound_handle at the alt file and On plays whatever sound_handle holds, so a looping event could not
+// restart its own loop after an Off.
+static void __fastcall event_play_sound_turn_on(rf::PlaySoundEvent* event);
+FunHook<decltype(event_play_sound_turn_on)> event_play_sound_turn_on_hook{0x004BA440, event_play_sound_turn_on};
+static void __fastcall event_play_sound_turn_on(rf::PlaySoundEvent* event)
+{
+    if (play_sound_event_loops(event)) {
+        // Same lookup as the create function (0x004B7CA6), which finds the existing entry
+        event->sound_handle = rf::snd_get_handle(event->sound_file.c_str(), event->min_dist, 1.0f, 1.0f);
+    }
+    event_play_sound_turn_on_hook.call_target(event);
+}
+
+// With an alt file, stock Off only switches sounds: a speaker's voice keeps playing, and an alt file that does not
+// resolve returns at 0x004BA6D5 before stopping anything. Either way the loop would run until the level ends.
+static void __fastcall event_play_sound_turn_off(rf::PlaySoundEvent* event);
+FunHook<decltype(event_play_sound_turn_off)> event_play_sound_turn_off_hook{0x004BA690, event_play_sound_turn_off};
+static void __fastcall event_play_sound_turn_off(rf::PlaySoundEvent* event)
+{
+    event_play_sound_turn_off_hook.call_target(event);
+    if (!play_sound_event_loops(event) || event->alt_sound_file.empty()) {
+        return;
+    }
+    // Stops whatever line the speaker is voicing, as stock Off without an alt file does (0x004BA7CF)
+    if (event->speaker_uid > 0) {
+        if (rf::Object* speaker = rf::obj_lookup_from_uid(event->speaker_uid)) {
+            if (rf::Entity* ep = rf::entity_from_handle(speaker->handle)) {
+                rf::entity_stop_voice(ep);
+            }
+        }
+    }
+    // Mirrors stock Off without an alt file (0x004BA7DB)
+    if (event->sound_handle == -1 && event->sound_instance != -1) {
+        if (event->duration > 0.0f) {
+            event->duration_timestamp.invalidate();
+        }
+        rf::snd_stop(event->sound_instance);
+        event->sound_instance = -1;
+        event->is_on = false;
+    }
+}
+
 FunHook<char*(char*)> hud_translate_special_character_token_hook{
     0x004385C0,
     [](char* token) {
@@ -516,9 +659,14 @@ FunHook<char*(char*)> hud_translate_special_character_token_hook{
                 result = std::string(key_name.c_str());
             }
 
+            rf::String mouse_name;
             if (binding.mouse_btn_id >= 0) {
-                rf::String mouse_name;
                 rf::control_config_get_mouse_button_name(&mouse_name, binding.mouse_btn_id);
+            }
+            else if (ctrl_is_extra_mouse_scan(binding.scan_codes[1])) {
+                rf::control_config_get_key_name(&mouse_name, binding.scan_codes[1]);
+            }
+            if (!mouse_name.empty()) {
                 if (!result.empty())
                     result += ", ";
                 result += std::string(mouse_name.c_str());
@@ -625,6 +773,12 @@ void apply_event_patches()
     // allow custom directional events
     level_read_events_patch.install();
 
+    // Make the Looping checkbox on Play_Sound and Music_Start work (RFL v306+)
+    level_read_events_music_start_looping_injection.install();
+    event_play_sound_create_hook.install();
+    event_play_sound_turn_on_hook.install();
+    event_play_sound_turn_off_hook.install();
+
     // HUD Message magic word handling
     hud_translate_special_character_token_hook.install();
     hud_msg_hook.install();
@@ -652,7 +806,7 @@ void apply_event_patches()
 
     // Fix Set_Liquid_Depth event
     AsmWriter(0x004BCBE0).jmp(&EventSetLiquidDepth_turn_on_new);
-    liquid_depth_update_apply_all_GRoom_reset_liquid_hook.install();
+    liquid_depth_update_apply_all_reset_liquid_injection.install();
 
     // Fix crash after level change (Load_Level event) caused by GNavNode pointers in AiPathInfo not being cleared for entities
     // being taken from the previous level
@@ -678,4 +832,5 @@ void apply_event_patches()
     // Register commands
     debug_event_msg_cmd.register_cmd();
     debug_goal_cmd.register_cmd();
+    liquid_surface_quality_cmd.register_cmd();
 }

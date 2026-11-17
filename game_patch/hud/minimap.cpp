@@ -23,6 +23,7 @@
 #include "../input/input.h"
 #include "../misc/alpine_settings.h"
 #include "../misc/level.h"
+#include "../misc/settings_registry.h"
 #include "../misc/vote_panel.h"
 #include "../multi/alpine_packets.h"
 #include "../multi/bagman.h"
@@ -30,6 +31,7 @@
 #include "../multi/jetpack.h"
 #include "../multi/multi.h"
 #include "../multi/salvage.h"
+#include "../multi/scavenger.h"
 #include "../multi/vehicles/vehicle.h"
 #include "../multi/vehicles/vehicle_render.h"
 #include "../multi/vehicles/vehicle_markers.h"
@@ -460,8 +462,12 @@ namespace
 
     void draw_salvage_flag(const View& view)
     {
-        if (!gt_is_salvage()) {
+        if (!salvage_framework_active()) {
             return;
+        }
+        rf::Vector3 zone_pos{};
+        if (scavenger_get_zone(&zone_pos)) {
+            draw_objective(view, zone_pos, kScavZoneColorIdle);
         }
         const SalFlagState state = salvage_get_state();
         rf::Vector3 pos{};
@@ -863,7 +869,7 @@ std::optional<MinimapRect> minimap_panel_rect()
 
     // Stay in the column right of the centred chat box, and above the jetpack gauge's label.
     const int max_from_chat = right - (multi_hud_chat_box_right_x() + gap);
-    const int max_from_jet = jetpacks_are_active() ? jetpack_fuel_gauge_label_top_y() - gap - top : max_from_chat;
+    const int max_from_jet = jetpack_gauge_may_show() ? jetpack_fuel_gauge_label_top_y() - gap - top : max_from_chat;
 
     const int wanted = static_cast<int>(std::lround(g_alpine_game_config.minimap_size * s));
     const int size = std::min({wanted, max_from_chat, max_from_jet});
@@ -881,7 +887,7 @@ void minimap_render()
     if (big_map_held()) {
         render_big_map();
     }
-    else if (!corner_panel_suppressed()) {
+    else if (!corner_panel_suppressed() && hud_element_visible(HudElement::minimap)) {
         if (const auto rect = minimap_panel_rect()) {
             render_panel(rect->x, rect->y, rect->size,
                          {150, 230, 1.0f, true, g_alpine_game_config.minimap_labels, false, false});
@@ -927,7 +933,7 @@ void minimap_level_reset()
 ConsoleCommand2 minimap_cmd{
     "cl_minimap",
     [](std::optional<bool> enabled) {
-        g_alpine_game_config.minimap = enabled.value_or(!g_alpine_game_config.minimap);
+        setting_console_set_bool("minimap", enabled);
         rf::console::print("Minimap is {}", g_alpine_game_config.minimap ? "enabled" : "disabled");
     },
     "Show the multiplayer minimap on levels that provide one",
@@ -937,7 +943,7 @@ ConsoleCommand2 minimap_cmd{
 ConsoleCommand2 minimap_rotate_cmd{
     "cl_minimap_rotate",
     [](std::optional<bool> enabled) {
-        g_alpine_game_config.minimap_rotate = enabled.value_or(!g_alpine_game_config.minimap_rotate);
+        setting_console_set_bool("minimap_rotate", enabled);
         rf::console::print("Minimap rotation is {}",
                            g_alpine_game_config.minimap_rotate ? "enabled (player heading up)" : "disabled (north up)");
     },
@@ -948,7 +954,7 @@ ConsoleCommand2 minimap_rotate_cmd{
 ConsoleCommand2 minimap_labels_cmd{
     "cl_minimap_labels",
     [](std::optional<bool> enabled) {
-        g_alpine_game_config.minimap_labels = enabled.value_or(!g_alpine_game_config.minimap_labels);
+        setting_console_set_bool("minimap_labels", enabled);
         rf::console::print("Minimap control point names are {}",
                            g_alpine_game_config.minimap_labels ? "enabled" : "disabled");
     },
@@ -960,7 +966,7 @@ ConsoleCommand2 minimap_size_cmd{
     "cl_minimap_size",
     [](std::optional<float> size) {
         if (size) {
-            g_alpine_game_config.set_minimap_size(*size);
+            setting_console_set("minimap_size", std::to_string(*size));
         }
         rf::console::print("Minimap size is {:.0f} ({:.0f}-{:.0f}, scaled with the big HUD)",
                            g_alpine_game_config.minimap_size, AlpineGameSettings::min_minimap_size,
@@ -974,7 +980,7 @@ ConsoleCommand2 minimap_zoom_cmd{
     "cl_minimap_zoom",
     [](std::optional<float> zoom) {
         if (zoom) {
-            g_alpine_game_config.set_minimap_zoom(*zoom);
+            setting_console_set("minimap_zoom", std::to_string(*zoom));
         }
         rf::console::print("Minimap zoom is {:.2f} (share of the level's width shown across the panel)",
                            g_alpine_game_config.minimap_zoom);

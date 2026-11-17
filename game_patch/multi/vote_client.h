@@ -124,9 +124,9 @@ bool vote_level_allows_default_gametype(const VoteLevelInfo& level);
 uint8_t vote_default_gametype_for_level(const VoteOptionsData& options, std::string_view level_string);
 
 // The game type a Match vote on the CURRENT level resolves to: what the session is
-// running, put through the match game type cycler's team-only remap (DM becomes
-// TeamDM when the server offers it, otherwise the first team type offered; none when
-// it offers no team type at all). The single answer for both the panel's "Current
+// running, put through the match game type cycler's team-only remap (a type it does
+// not offer becomes TeamDM, otherwise the first team type offered; none when it
+// offers no team type at all). The single answer for both the panel's "Current
 // level" row and a saved Match record with no level, so both send the same byte.
 uint8_t vote_match_current_level_gametype(const VoteOptionsData& options);
 
@@ -169,6 +169,12 @@ const VoteOptionsData* vote_options_get();
 // picked up without re-deriving every frame.
 uint32_t vote_options_loaded_generation();
 bool vote_options_is_type_enabled(AfVoteType type);
+
+// From af_sreq_match_state; always false on a server older than 1.5
+bool vote_client_match_live();
+// A match is live and the local player is not in it, so it can neither call nor cast votes
+bool vote_client_spectating_match();
+void vote_client_on_match_state(uint8_t flags);
 // Ask the server for the blob if it isn't loaded (or went stale). Rate limited.
 void vote_options_request_if_needed();
 void vote_options_mark_stale();

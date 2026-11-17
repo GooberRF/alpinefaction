@@ -13,6 +13,16 @@ int DecorationMeshCache::resolve(const std::string& name, const char* log_tag)
     if (it != lookup_.end()) {
         return it->second;
     }
+    if (loads_ >= max_loads_) {
+        if (!over_max_loads_) {
+            xlog::warn("[{}] Decoration mesh '{}' is not loaded: a level loads at most {} different decoration meshes",
+                       log_tag, name, max_loads_);
+            over_max_loads_ = true;
+        }
+        lookup_.emplace(key, -1);
+        return -1;
+    }
+    loads_++;
     rf::VMesh* mesh = rf::vmesh_load(name.c_str(), rf::MESH_TYPE_STATIC, -1);
     if (!mesh) {
         xlog::warn("[{}] Failed to load decoration mesh '{}'", log_tag, name);
@@ -44,4 +54,6 @@ void DecorationMeshCache::clear()
 {
     meshes_.clear();
     lookup_.clear();
+    loads_ = 0;
+    over_max_loads_ = false;
 }

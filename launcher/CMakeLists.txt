@@ -25,14 +25,14 @@ set(SRCS
     main.cpp
     MainDlg.cpp
     MainDlg.h
+    OptionsAdvancedDlg.cpp
+    OptionsAdvancedDlg.h
     OptionsDlg.cpp
     OptionsDlg.h
     OptionsDisplayDlg.cpp
     OptionsDisplayDlg.h
     OptionsMiscDlg.cpp
     OptionsMiscDlg.h
-    OptionsMultiplayerDlg.cpp
-    OptionsMultiplayerDlg.h
     res
     resource.h
     stdafx.cpp

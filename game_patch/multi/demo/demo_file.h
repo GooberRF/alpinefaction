@@ -19,6 +19,8 @@
 //                       server's base config: mutators, gametype settings, a few flags) —
 //                       written once as the first record of a segment. Display-only metadata
 //                       (see demo_server_config.h); readers that don't know it skip it.
+//   type 0x03 (pickup): {player_id u8, DemoPickupKind u8} — a powerup pickup the seek bar
+//                       marks. Display-only; returned by next_record as a non-packet record.
 //   type 0xFF (footer): {duration_ms u32, packet_count u32} — clean-close marker; a
 //                       missing footer means "unclean but playable"
 // Unknown TLV types and unknown record types are skipped (forward compatibility).
@@ -45,6 +47,7 @@ enum class DemoRecordType : uint8_t
     packet = 0x00,
     marker = 0x01, // reserved for format 2.0 keyframe records
     server_info = 0x02, // versioned server-config block (display-only metadata; see demo_server_config.h)
+    pickup = 0x03,
     footer = 0xFF,
 };
 
@@ -125,6 +128,7 @@ public:
     // Writes one server_info record carrying an encoded server-config block. No-op if the
     // block is empty or exceeds the u16 record payload cap.
     void write_server_info(const std::vector<uint8_t>& block);
+    void write_pickup(uint32_t t_ms, uint8_t player_id, uint8_t kind);
     // Writes the footer record and closes the stream.
     void close(uint32_t duration_ms);
     // Closes without a footer (error path); the file stays parseable.
@@ -178,9 +182,17 @@ public:
     void close();
     // Reads the next record. Returns false at end of stream (clean or truncated).
     // The footer record is consumed internally (available via footer()) and not returned.
+    // Besides packets, pickup records are returned.
     bool next_record(DemoRecord& out);
     // Restarts record iteration from the first record (re-opens the gz stream).
     bool rewind_to_records();
+    // Adopts the footer an earlier full scan of the same file found, so a re-open can skip
+    // re-scanning it (it is otherwise only known once iteration reaches it).
+    void assume_footer(const DemoFooterInfo& footer)
+    {
+        m_footer = footer;
+        m_has_footer = true;
+    }
 
     [[nodiscard]] bool is_open() const
     {

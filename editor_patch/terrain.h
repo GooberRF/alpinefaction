@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <string>
+#include <vector>
 #include "mfc_types.h"
 #include "level.h"
 
@@ -43,5 +44,7 @@ void terrain_tree_add_object_type(EditorTreeCtrl* tree);
 bool terrain_copy_object(DedObject* source);
 void terrain_paste_objects(CDedLevel* level);
 void terrain_clear_clipboard();
+// Swaps the staged clones with `other`, so a duplicate can copy and paste with the user's clipboard set aside.
+void terrain_swap_clipboard(std::vector<DedTerrain*>& other);
 void terrain_handle_delete_or_cut(DedObject* obj);
 void terrain_ensure_uid(int& uid);

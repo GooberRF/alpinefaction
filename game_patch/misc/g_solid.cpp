@@ -2,6 +2,8 @@
 #include <cmath>
 #include <unordered_map>
 #include <new>
+#include <type_traits>
+#include <vector>
 #include <patch_common/FunHook.h>
 #include <patch_common/CallHook.h>
 #include <patch_common/CodeInjection.h>
@@ -26,10 +28,13 @@
 #include "../os/console.h"
 #include "../os/os.h"
 #include "../bmpman/bmpman.h"
-#include "../bmpman/fmt_conv_templates.h"
+#include <common/bitmap/fmt_conv_templates.h>
+#include <common/decal_clip.h>
 #include "../rf/gr/gr_light.h"
+#include "../rf/math/ix.h"
 #include "destruction.h"
 #include "level.h"
+#include "../misc/settings_registry.h"
 #include "alpine_terrain.h"
 #include "../graphics/af_lightmap.h"
 
@@ -609,7 +614,7 @@ CodeInjection level_load_lightmaps_color_conv_patch{
 ConsoleCommand2 lighting_color_range_cmd{
     "r_fullrangelighting",
     []() {
-        g_alpine_game_config.full_range_lighting = !g_alpine_game_config.full_range_lighting;        
+        setting_console_set("full_range_lighting", "toggle");
         rf::console::printf("Full range lighting is: %s", g_alpine_game_config.full_range_lighting ? "enabled" : "disabled");
     },
     "Toggle full range lighting. Only affects new level loads.",
@@ -618,7 +623,7 @@ ConsoleCommand2 lighting_color_range_cmd{
 ConsoleCommand2 clamp_official_lightmaps_cmd{
     "r_clampofficiallightmaps",
     []() {
-        g_alpine_game_config.always_clamp_official_lightmaps = !g_alpine_game_config.always_clamp_official_lightmaps;
+        setting_console_set("always_clamp_official_lightmaps", "toggle");
         rf::console::printf("Forced clamping of lightmaps in official levels is: %s", g_alpine_game_config.always_clamp_official_lightmaps ? "enabled" : "disabled");
     },
     "Toggle forced lightmap clamping for official Volition levels. Only affects new level loads. Only applicable if full range lighting is enabled.",
@@ -627,7 +632,7 @@ ConsoleCommand2 clamp_official_lightmaps_cmd{
 ConsoleCommand2 ignore_tbl_lightmap_clamping_cmd{
     "cl_ignore_tbl_lightmap_clamping",
     []() {
-        g_alpine_game_config.ignore_tbl_lightmap_clamping = !g_alpine_game_config.ignore_tbl_lightmap_clamping;
+        setting_console_set("ignore_tbl_lightmap_clamping", "toggle");
         rf::console::printf("Ignore TBL lightmap clamping override: %s", g_alpine_game_config.ignore_tbl_lightmap_clamping ? "enabled" : "disabled");
         rf::console::printf("Reload the level for this to take effect.");
     },
@@ -748,6 +753,59 @@ CodeInjection g_decal_orient_room_faces_injection{
         });
         regs.edi = decal;
         regs.eip = 0x004D5FE2;
+    },
+};
+
+// g_decal_clip_to_face (0x004D6240) copies and clips the face in two 25-vertex stack buffers with no bound, so a long
+// edge loop overruns its return address. Clip in heap buffers instead, and skip a clipped polygon the stock buffer or
+// the decal poly can't hold. No trampoline: every path sets eip past the replaced copy and clip.
+CodeInjection g_decal_clip_to_face_clip_injection{
+    0x004D634F,
+    [](auto& regs) {
+        rf::GFace* face = regs.edi;
+        rf::GDecal* decal = regs.ebx;
+        constexpr int max_poly_verts = std::extent_v<decltype(rf::DecalPoly::verts)>;
+        int num_face_verts = 0;
+        const auto verts =
+            decal_clip_face_verts(*face, *decal, rf::max_face_vertices, rf::g_clip_poly_to_plane, num_face_verts);
+        if (verts.empty()) {
+            regs.eip = 0x004D67C2;
+            return;
+        }
+        const int num_verts = static_cast<int>(verts.size());
+        // A level decal's poly takes a UV per face vertex and never reads the clipped polygon. For a face with more
+        // vertices than it holds, g_decal_clip_to_face_level_uvs_injection leaves them to the Direct3D 11 renderer.
+        const bool level_decal = decal->flags & rf::DF_LEVEL_DECAL;
+        if (!level_decal && num_verts > max_poly_verts) {
+            regs.eip = 0x004D67C2;
+            return;
+        }
+        if (level_decal && num_face_verts > max_poly_verts && !is_d3d11()) {
+            xlog::warn("[Decal] Skipping a level decal on a face with {} vertices (a decal poly holds {})",
+                num_face_verts, max_poly_verts);
+            regs.eip = 0x004D67C2;
+            return;
+        }
+        auto* result = &addr_as_ref<rf::Vector3>(regs.esp + 0x24); // stock's first clip buffer
+        if (!level_decal) {
+            std::copy_n(verts.data(), num_verts, result);
+        }
+        regs.esi = result;
+        regs.ebp = num_verts;
+        regs.eip = 0x004D63DB;
+    },
+    false,
+};
+
+// The level-decal branch of g_decal_clip_to_face writes a UV per face vertex into the poly's 25 with no bound. For a
+// longer face it writes none, and the Direct3D 11 renderer derives them (gr_d3d11_solid.cpp).
+CodeInjection g_decal_clip_to_face_level_uvs_injection{
+    0x004D66AA,
+    [](auto& regs) {
+        rf::GFace* face = regs.edx;
+        if (face->vertex_count() > static_cast<int>(std::extent_v<decltype(rf::DecalPoly::uvs)>)) {
+            regs.eip = 0x004D6715; // past the UV loop and its tiling shift (0x004D67D0)
+        }
     },
 };
 
@@ -1297,6 +1355,120 @@ CodeInjection collect_visible_rooms_append_injection{
     false,
 };
 
+// The stock walk enters a room once per on-screen path to it, which heavy geomod makes exponential. Past this
+// many calls in one search, it stops and visible_rooms_flood completes the list.
+static constexpr int visible_rooms_search_budget = 2048;
+
+// Completes the list the full walk would make: every room reachable through visible portals is listed, with its
+// window grown to the union of every window it is reached with.
+static void visible_rooms_flood(const rf::Vector3& eye)
+{
+    static std::vector<rf::GRoom*> queue;
+    static std::vector<bool> queued; // by room_index, all false between floods
+    auto is_queued = [](const rf::GRoom* room) {
+        const auto idx = static_cast<std::size_t>(room->room_index);
+        return idx < queued.size() && queued[idx];
+    };
+    auto set_queued = [](const rf::GRoom* room, bool value) {
+        const auto idx = static_cast<std::size_t>(room->room_index);
+        if (idx >= queued.size()) {
+            queued.resize(idx + 1, false);
+        }
+        queued[idx] = value;
+    };
+    // Out of memory leaves the rooms not reached yet out of the list
+    try {
+        queue.assign(g_visible_rooms, g_visible_rooms + rf::g_num_visible_rooms);
+        for (rf::GRoom* room : queue) {
+            set_queued(room, true);
+        }
+        for (std::size_t head = 0; head < queue.size(); ++head) {
+            rf::GRoom* room = queue[head];
+            set_queued(room, false);
+            if (room->is_blocked && room != rf::g_portal_camera_room) {
+                continue;
+            }
+            for (rf::GPortal* portal : room->portals) {
+                rf::GRoom* other = portal->room1 == room ? portal->room2 : portal->room1;
+                if (other->is_sky || other->is_detail) {
+                    continue;
+                }
+                if (!portal->rect_computed) {
+                    portal->rect_computed = true;
+                    if (rf::ix_point_in_box_expanded(eye, 1.0f, portal->bbox_min, portal->bbox_max)) {
+                        portal->rect = {0.0f, 0.0f, static_cast<float>(rf::gr::screen_width()),
+                            static_cast<float>(rf::gr::screen_height())};
+                        portal->is_invisible = false;
+                    }
+                    else {
+                        portal->is_invisible = rf::gr::cull_bounding_box(portal->bbox_min, portal->bbox_max) ||
+                            !rf::gr::project_bounding_box(portal->bbox_min, portal->bbox_max, &portal->rect.left,
+                                &portal->rect.top, &portal->rect.right, &portal->rect.bot);
+                    }
+                }
+                if (portal->is_invisible) {
+                    continue;
+                }
+                const rf::GClipWnd wnd{
+                    std::max(room->clip_wnd.left, portal->rect.left),
+                    std::max(room->clip_wnd.top, portal->rect.top),
+                    std::min(room->clip_wnd.right, portal->rect.right),
+                    std::min(room->clip_wnd.bot, portal->rect.bot),
+                };
+                if (!(wnd.left < wnd.right && wnd.top < wnd.bot)) {
+                    continue;
+                }
+                if (!other->visited_this_search) {
+                    if (rf::g_num_visible_rooms < static_cast<int>(std::size(g_visible_rooms))) {
+                        g_visible_rooms[rf::g_num_visible_rooms++] = other;
+                    }
+                    other->visited_this_frame = true;
+                    other->visited_this_search = true;
+                    other->clip_wnd = wnd;
+                }
+                else {
+                    rf::GClipWnd& cur = other->clip_wnd;
+                    if (wnd.left >= cur.left && wnd.top >= cur.top && wnd.right <= cur.right && wnd.bot <= cur.bot) {
+                        continue;
+                    }
+                    cur.left = std::min(cur.left, wnd.left);
+                    cur.top = std::min(cur.top, wnd.top);
+                    cur.right = std::max(cur.right, wnd.right);
+                    cur.bot = std::max(cur.bot, wnd.bot);
+                    if (is_queued(other)) {
+                        continue;
+                    }
+                }
+                queue.push_back(other);
+                set_queued(other, true);
+            }
+        }
+    }
+    catch (const std::bad_alloc&) {
+        queued.assign(queued.size(), false);
+        xlog::warn("Out of memory listing visible rooms");
+    }
+}
+
+FunHook<void(rf::GSolid*, rf::GRoom*, rf::GClipWnd*, int, unsigned, const rf::Vector3*)>
+    g_solid_collect_visible_rooms_recursive_hook{
+        0x004D4860,
+        [](rf::GSolid* solid, rf::GRoom* room, rf::GClipWnd* clip, int depth, unsigned flags,
+            const rf::Vector3* eye) {
+            static int num_calls = 0;
+            if (depth == 0) {
+                num_calls = 0;
+            }
+            if (++num_calls > visible_rooms_search_budget) {
+                return;
+            }
+            g_solid_collect_visible_rooms_recursive_hook.call_target(solid, room, clip, depth, flags, eye);
+            if (depth == 0 && num_calls > visible_rooms_search_budget) {
+                visible_rooms_flood(*eye);
+            }
+        },
+    };
+
 void g_solid_do_patch()
 {
     // allow Set_Skybox to set a specific sky room
@@ -1334,6 +1506,7 @@ void g_solid_do_patch()
     // g_solid_collect_visible_rooms_recursive addresses the last room as [count * 4 + base - 4]
     write_mem<uintptr_t>(0x004D499D + 3, reinterpret_cast<uintptr_t>(&g_visible_rooms) - sizeof(rf::GRoom*));
     collect_visible_rooms_append_injection.install();
+    g_solid_collect_visible_rooms_recursive_hook.install();
 
     // 32-bit color format - geomod
     GSurface_calculate_lightmap_color_conv_patch.install();
@@ -1378,6 +1551,8 @@ void g_solid_do_patch()
     g_decal_add_internal_cmp_global_weak_limit_injection.install();
     g_decal_clip_to_geometry_hook.install();
     g_decal_orient_room_faces_injection.install();
+    g_decal_clip_to_face_clip_injection.install();
+    g_decal_clip_to_face_level_uvs_injection.install();
 
     // When rendering semi-transparent objects do not group objects that are behind a detail room.
     // Grouping breaks sorting in many cases because orientation and sizes of detail rooms and objects

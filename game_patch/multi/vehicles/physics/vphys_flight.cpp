@@ -50,7 +50,7 @@ void apply_flight_model(VehicleSimBody& b, rf::Entity* ep, const VehiclePhysicsP
     constexpr float ci_pitch_norm = 2.0f;
     // ep->ai.ci still holds the departed driver's input; blind a COPY - the camera/aim path reads it.
     rf::ControlInfo ci = ep->ai.ci;
-    if (b.server_owned || vphys_hull_submerged(ep)) {
+    if ((b.server_owned && !b.server_driven) || vphys_hull_submerged(ep)) {
         ci.rot = rf::Vector3{};
         ci.move = rf::Vector3{};
     }
@@ -94,7 +94,7 @@ void apply_flight_model(VehicleSimBody& b, rf::Entity* ep, const VehiclePhysicsP
         }
     }
 
-    const float lift_scale = b.server_owned ? std::max(p.deadstick_lift, 0.0f) : 1.0f;
+    const float lift_scale = b.server_owned && !b.server_driven ? std::max(p.deadstick_lift, 0.0f) : 1.0f;
     btVector3 accel = thrust + world_up * (rf::gravity * p.gravity_scale * p.hover_gain * lift_scale);
 
     const btVector3 velocity = body->getLinearVelocity();

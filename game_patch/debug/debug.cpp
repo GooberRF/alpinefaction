@@ -1,3 +1,4 @@
+#include "debug.h"
 #include "debug_internal.h"
 #include <patch_common/FunHook.h>
 #include <xlog/xlog.h>

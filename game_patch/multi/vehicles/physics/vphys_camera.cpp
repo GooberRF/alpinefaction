@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cmath>
 #include <optional>
+#include <string>
 #include <string_view>
 #include "vphys_internal.h"
 #include "../vehicle_physics.h"
@@ -11,6 +12,7 @@
 #include "../../../hud/multi_spectate.h"
 #include "../../../input/mouse.h"
 #include "../../../misc/alpine_settings.h"
+#include "../../../misc/settings_registry.h"
 #include "../../../os/console.h"
 #include "../../../rf/ai.h"
 #include "../../../rf/collide.h"
@@ -92,6 +94,28 @@ namespace
         return std::asin(std::clamp(m.fvec.y, -1.0f, 1.0f));
     }
 
+    // A direction's yaw (toward rvec) and pitch (toward uvec) in a hull's frame, and back.
+    void hull_angles(const rf::Matrix3& hull, const rf::Vector3& v, float& yaw, float& pitch)
+    {
+        yaw = std::atan2(v.dot_prod(hull.rvec), v.dot_prod(hull.fvec));
+        pitch = std::asin(std::clamp(v.dot_prod(hull.uvec), -1.0f, 1.0f));
+    }
+
+    rf::Vector3 hull_dir(const rf::Matrix3& hull, float yaw, float pitch)
+    {
+        const rf::Vector3 local = dir_from_yaw_pitch(yaw, pitch);
+        return hull.rvec * local.x + hull.uvec * local.y + hull.fvec * local.z;
+    }
+
+    // The hull-relative pitch range the hull's eye limits allow its driver's aim.
+    void driver_aim_pitch_limits(const rf::Entity* vehicle, float& min_pitch, float& max_pitch)
+    {
+        const float a = eye_pitch_to_local(vehicle->min_rel_eye_phb.x);
+        const float b = eye_pitch_to_local(vehicle->max_rel_eye_phb.x);
+        min_pitch = std::min(a, b);
+        max_pitch = std::max(a, b);
+    }
+
     // The aim's weight on P: 1 up to an aim limit, falling to 0 `band` past it.
     float vcam_fade_weight(float excess, float band)
     {
@@ -103,7 +127,7 @@ namespace
     void vcam_fade_convergence(float w, float look_yaw, float look_pitch, float& yaw, float& pitch)
     {
         if (w < 1.0f) {
-            yaw = vehicle_wrap_pi(look_yaw + w * vehicle_wrap_pi(yaw - look_yaw));
+            yaw = wrap_pi(look_yaw + w * wrap_pi(yaw - look_yaw));
             pitch = look_pitch + w * (pitch - look_pitch);
         }
     }
@@ -294,7 +318,7 @@ namespace
     void vcam_spring_angle(float& x, float& vel, float target, float smooth_s, float dt)
     {
         if (std::isfinite(target)) {
-            x = vehicle_wrap_pi(target + vcam_spring_step(vehicle_wrap_pi(x - target), vel, smooth_s, dt));
+            x = wrap_pi(target + vcam_spring_step(wrap_pi(x - target), vel, smooth_s, dt));
         }
     }
 
@@ -316,10 +340,10 @@ namespace
             const float k = 1.0f - std::exp(-dt / vcam_track_smooth_s);
             const rf::Vector3 raw = (vehicle->pos - g_vcam.hull_pos) * (1.0f / dt);
             g_vcam.hull_vel += (raw - g_vcam.hull_vel) * k;
-            const float step = has_heading ? vehicle_wrap_pi(heading - g_vcam.hull_yaw) : 0.0f;
+            const float step = has_heading ? wrap_pi(heading - g_vcam.hull_yaw) : 0.0f;
             const float rate = std::abs(step) <= vcam_max_heading_step ? step / dt : 0.0f;
             g_vcam.hull_yaw_rate += (rate - g_vcam.hull_yaw_rate) * k;
-            if (!vehicle_vector_is_finite(g_vcam.hull_vel) || !std::isfinite(g_vcam.hull_yaw_rate)) {
+            if (!g_vcam.hull_vel.is_finite() || !std::isfinite(g_vcam.hull_yaw_rate)) {
                 g_vcam.hull_vel = rf::Vector3{};
                 g_vcam.hull_yaw_rate = 0.0f;
             }
@@ -350,7 +374,7 @@ namespace
                     // One speed ramp fades both in from the hold threshold, so neither steps there.
                     const float ramp = std::max(min_speed, vcam_velocity_ramp_floor);
                     const float fade = std::clamp((speed - ramp) / (2.0f * ramp), 0.0f, 1.0f);
-                    const float slip = std::clamp(vehicle_wrap_pi(std::atan2(v.x, v.z) - target),
+                    const float slip = std::clamp(wrap_pi(std::atan2(v.x, v.z) - target),
                                                   -vcam_velocity_yaw_cap, vcam_velocity_yaw_cap);
                     target += slip * fade * cfg.vehicle_cam_velocity;
                     const float max_ahead = cfg.vehicle_cam_lookahead_max * vehicle_deg_to_rad;
@@ -358,14 +382,14 @@ namespace
                                                   -max_ahead, max_ahead);
                 }
                 if (std::isfinite(target) && std::isfinite(lookahead)) {
-                    g_vcam.target_yaw = vehicle_wrap_pi(target);
+                    g_vcam.target_yaw = wrap_pi(target);
                 }
                 else {
                     lookahead = 0.0f;
                 }
             }
         }
-        const float yaw_target = vehicle_wrap_pi(g_vcam.target_yaw + lookahead);
+        const float yaw_target = wrap_pi(g_vcam.target_yaw + lookahead);
         const float pitch_target = std::clamp(std::asin(std::clamp(f.y, -1.0f, 1.0f)) * cfg.vehicle_cam_pitch_follow,
                                               -vcam_follow_pitch_limit, vcam_follow_pitch_limit);
         if (snap || !std::isfinite(g_vcam.ref_yaw) || !std::isfinite(g_vcam.ref_pitch)) {
@@ -380,9 +404,9 @@ namespace
         const float prev_yaw = g_vcam.ref_yaw;
         vcam_spring_angle(g_vcam.ref_yaw, g_vcam.ref_yaw_vel, yaw_target, cfg.vehicle_cam_follow, dt);
         const float max_step = vcam_heading_rate * dt;
-        const float step = vehicle_wrap_pi(g_vcam.ref_yaw - prev_yaw);
+        const float step = wrap_pi(g_vcam.ref_yaw - prev_yaw);
         if (dt > 0.0f && std::abs(step) > max_step) {
-            g_vcam.ref_yaw = vehicle_wrap_pi(prev_yaw + std::copysign(max_step, step));
+            g_vcam.ref_yaw = wrap_pi(prev_yaw + std::copysign(max_step, step));
             g_vcam.ref_yaw_vel = std::copysign(vcam_heading_rate, step);
         }
         vcam_spring(g_vcam.ref_pitch, g_vcam.ref_pitch_vel, pitch_target, cfg.vehicle_cam_pitch_smooth, dt);
@@ -396,10 +420,10 @@ namespace
         const AlpineGameSettings& cfg = g_alpine_game_config;
         rf::Vector3& p = g_vcam.focus;
         rf::Vector3& v = g_vcam.focus_vel;
-        if (!vehicle_vector_is_finite(target)) {
-            return vehicle_vector_is_finite(p) ? p : target;
+        if (!target.is_finite()) {
+            return p.is_finite() ? p : target;
         }
-        if (snap || !vehicle_vector_is_finite(p) || !vehicle_vector_is_finite(v)) {
+        if (snap || !p.is_finite() || !v.is_finite()) {
             p = target;
             v = rf::Vector3{};
             return p;
@@ -467,7 +491,7 @@ namespace
         g_vcam.hull_yaw = std::isfinite(view_yaw) ? view_yaw : 0.0f;
         g_vcam.target_yaw = g_vcam.hull_yaw;
         vcam_update_reference(vehicle, 0.0f, true);
-        g_vcam.rel_yaw = vehicle_wrap_pi(std::atan2(f.x, f.z) - g_vcam.ref_yaw);
+        g_vcam.rel_yaw = wrap_pi(std::atan2(f.x, f.z) - g_vcam.ref_yaw);
         g_vcam.rel_pitch = std::asin(std::clamp(f.y, -1.0f, 1.0f)) - g_vcam.ref_pitch;
         vcam_clamp_rel_pitch();
         g_vcam.idle_s = 0.0f;
@@ -478,7 +502,7 @@ namespace
         if (pitch == 0.0f && yaw == 0.0f) {
             return;
         }
-        g_vcam.rel_yaw = vehicle_wrap_pi(g_vcam.rel_yaw + yaw);
+        g_vcam.rel_yaw = wrap_pi(g_vcam.rel_yaw + yaw);
         g_vcam.rel_pitch += pitch;
         vcam_clamp_rel_pitch();
         g_vcam.idle_s = 0.0f;
@@ -560,31 +584,25 @@ namespace
             return false;
         }
         const rf::Matrix3& hull = vehicle->orient;
-        const auto hull_angles = [&hull](const rf::Vector3& v, float& yaw, float& pitch) {
-            yaw = std::atan2(v.dot_prod(hull.rvec), v.dot_prod(hull.fvec));
-            pitch = std::asin(std::clamp(v.dot_prod(hull.uvec), -1.0f, 1.0f));
-        };
         rf::Vector3 d = g_vcam.aim_point - driver->eye_pos;
         const float len = d.len();
         d = len > 0.01f ? d * (1.0f / len) : hull.fvec;
         float yaw = 0.0f;
         float pitch = 0.0f;
-        hull_angles(d, yaw, pitch);
+        hull_angles(hull, d, yaw, pitch);
         float look_yaw = 0.0f;
         float look_pitch = 0.0f;
-        hull_angles(g_vcam.look, look_yaw, look_pitch);
-        const float a = eye_pitch_to_local(vehicle->min_rel_eye_phb.x);
-        const float b = eye_pitch_to_local(vehicle->max_rel_eye_phb.x);
-        const float min_pitch = std::min(a, b);
-        const float max_pitch = std::max(a, b);
+        hull_angles(hull, g_vcam.look, look_yaw, look_pitch);
+        float min_pitch = 0.0f;
+        float max_pitch = 0.0f;
+        driver_aim_pitch_limits(vehicle, min_pitch, max_pitch);
         const float excess = std::max({std::abs(look_yaw) - apc_aim_yaw_cap, min_pitch - look_pitch,
                                        look_pitch - max_pitch, 0.0f});
         out_weight = vcam_fade_weight(excess, vcam_aim_fade_band);
         vcam_fade_convergence(out_weight, look_yaw, look_pitch, yaw, pitch);
         const float capped_yaw = std::clamp(yaw, -apc_aim_yaw_cap, apc_aim_yaw_cap);
         const float capped_pitch = std::clamp(pitch, min_pitch, max_pitch);
-        const rf::Vector3 local = dir_from_yaw_pitch(capped_yaw, capped_pitch);
-        out_dir = hull.rvec * local.x + hull.uvec * local.y + hull.fvec * local.z;
+        out_dir = hull_dir(hull, capped_yaw, capped_pitch);
         out_capped = excess > 0.0f || capped_yaw != yaw || capped_pitch != pitch;
         return true;
     }
@@ -616,17 +634,16 @@ namespace
         rf::Matrix3 eye = hull;
         eye.rotate_about_local_x(cd.automobile_eye_phb.x + cd.eye_phb.x);
         const float pitch = std::asin(std::clamp(eye.fvec.dot_prod(hull.uvec), -1.0f, 1.0f));
-        const rf::Vector3 local = dir_from_yaw_pitch(g_apc_fp_aim.yaw, pitch);
-        out_dir = hull.rvec * local.x + hull.uvec * local.y + hull.fvec * local.z;
+        out_dir = hull_dir(hull, g_apc_fp_aim.yaw, pitch);
         return std::isfinite(out_dir.x + out_dir.y + out_dir.z);
     }
 
-    void vcam_setting_cmd(std::optional<float> value, void (AlpineGameSettings::*setter)(float),
+    void vcam_setting_cmd(std::optional<float> value, const char* setting_id,
                           float AlpineGameSettings::*field, float def, std::string_view what,
                           std::string_view unit)
     {
         if (value) {
-            (g_alpine_game_config.*setter)(*value);
+            setting_console_set(setting_id, std::to_string(*value));
         }
         rf::console::print("{} is {:.2f}{} (default {:.2f})", what, g_alpine_game_config.*field, unit, def);
     }
@@ -634,7 +651,7 @@ namespace
     ConsoleCommand2 vehiclecam_follow_cmd{
         "cl_vehiclecam_follow",
         [](std::optional<float> value) {
-            vcam_setting_cmd(value, &AlpineGameSettings::set_vehicle_cam_follow,
+            vcam_setting_cmd(value, "vehicle_cam_follow",
                              &AlpineGameSettings::vehicle_cam_follow,
                              AlpineGameSettings::default_vehicle_cam_follow,
                              "Vehicle camera heading smoothing", " s (0 = rigid)");
@@ -646,7 +663,7 @@ namespace
     ConsoleCommand2 vehiclecam_velocity_cmd{
         "cl_vehiclecam_velocity",
         [](std::optional<float> value) {
-            vcam_setting_cmd(value, &AlpineGameSettings::set_vehicle_cam_velocity,
+            vcam_setting_cmd(value, "vehicle_cam_velocity",
                              &AlpineGameSettings::vehicle_cam_velocity,
                              AlpineGameSettings::default_vehicle_cam_velocity,
                              "Vehicle camera travel-direction follow", " (0 = hull heading only)");
@@ -658,7 +675,7 @@ namespace
     ConsoleCommand2 vehiclecam_min_speed_cmd{
         "cl_vehiclecam_min_speed",
         [](std::optional<float> value) {
-            vcam_setting_cmd(value, &AlpineGameSettings::set_vehicle_cam_min_speed,
+            vcam_setting_cmd(value, "vehicle_cam_min_speed",
                              &AlpineGameSettings::vehicle_cam_min_speed,
                              AlpineGameSettings::default_vehicle_cam_min_speed,
                              "Vehicle camera minimum follow speed", " m/s (0 = never hold)");
@@ -670,7 +687,7 @@ namespace
     ConsoleCommand2 vehiclecam_lookahead_cmd{
         "cl_vehiclecam_lookahead",
         [](std::optional<float> value) {
-            vcam_setting_cmd(value, &AlpineGameSettings::set_vehicle_cam_lookahead,
+            vcam_setting_cmd(value, "vehicle_cam_lookahead",
                              &AlpineGameSettings::vehicle_cam_lookahead,
                              AlpineGameSettings::default_vehicle_cam_lookahead,
                              "Vehicle camera turn look-ahead", " s of turn rate (0 = off)");
@@ -682,7 +699,7 @@ namespace
     ConsoleCommand2 vehiclecam_lookahead_max_cmd{
         "cl_vehiclecam_lookahead_max",
         [](std::optional<float> value) {
-            vcam_setting_cmd(value, &AlpineGameSettings::set_vehicle_cam_lookahead_max,
+            vcam_setting_cmd(value, "vehicle_cam_lookahead_max",
                              &AlpineGameSettings::vehicle_cam_lookahead_max,
                              AlpineGameSettings::default_vehicle_cam_lookahead_max,
                              "Vehicle camera look-ahead limit", " degrees");
@@ -694,7 +711,7 @@ namespace
     ConsoleCommand2 vehiclecam_pitch_follow_cmd{
         "cl_vehiclecam_pitch_follow",
         [](std::optional<float> value) {
-            vcam_setting_cmd(value, &AlpineGameSettings::set_vehicle_cam_pitch_follow,
+            vcam_setting_cmd(value, "vehicle_cam_pitch_follow",
                              &AlpineGameSettings::vehicle_cam_pitch_follow,
                              AlpineGameSettings::default_vehicle_cam_pitch_follow,
                              "Vehicle camera pitch follow", " (share of the vehicle's pitch, 0 = level)");
@@ -706,7 +723,7 @@ namespace
     ConsoleCommand2 vehiclecam_pitch_smooth_cmd{
         "cl_vehiclecam_pitch_smooth",
         [](std::optional<float> value) {
-            vcam_setting_cmd(value, &AlpineGameSettings::set_vehicle_cam_pitch_smooth,
+            vcam_setting_cmd(value, "vehicle_cam_pitch_smooth",
                              &AlpineGameSettings::vehicle_cam_pitch_smooth,
                              AlpineGameSettings::default_vehicle_cam_pitch_smooth,
                              "Vehicle camera pitch smoothing", " s (0 = rigid)");
@@ -718,7 +735,7 @@ namespace
     ConsoleCommand2 vehiclecam_bounce_cmd{
         "cl_vehiclecam_bounce",
         [](std::optional<float> value) {
-            vcam_setting_cmd(value, &AlpineGameSettings::set_vehicle_cam_bounce,
+            vcam_setting_cmd(value, "vehicle_cam_bounce",
                              &AlpineGameSettings::vehicle_cam_bounce,
                              AlpineGameSettings::default_vehicle_cam_bounce,
                              "Vehicle camera vertical smoothing", " s (0 = rigid)");
@@ -730,7 +747,7 @@ namespace
     ConsoleCommand2 vehiclecam_lag_cmd{
         "cl_vehiclecam_lag",
         [](std::optional<float> value) {
-            vcam_setting_cmd(value, &AlpineGameSettings::set_vehicle_cam_lag,
+            vcam_setting_cmd(value, "vehicle_cam_lag",
                              &AlpineGameSettings::vehicle_cam_lag,
                              AlpineGameSettings::default_vehicle_cam_lag,
                              "Vehicle camera horizontal smoothing", " s (0 = rigid)");
@@ -742,7 +759,7 @@ namespace
     ConsoleCommand2 vehiclecam_recenter_cmd{
         "cl_vehiclecam_recenter",
         [](std::optional<bool> enabled) {
-            g_alpine_game_config.vehicle_cam_recenter = enabled.value_or(!g_alpine_game_config.vehicle_cam_recenter);
+            setting_console_set_bool("vehicle_cam_recenter", enabled);
             rf::console::print("Vehicle camera recentering is {}",
                                g_alpine_game_config.vehicle_cam_recenter ? "enabled" : "disabled");
         },
@@ -838,7 +855,7 @@ bool vphys_chase_camera_do_frame(rf::Camera* camera)
             vcam_update_reference(vehicle, dt, jumped);
             if (gunner) {
                 // His view is his aim: it holds its world direction as the hull turns, as in first person.
-                g_vcam.rel_yaw = vehicle_wrap_pi(g_vcam.rel_yaw - vehicle_wrap_pi(g_vcam.ref_yaw - prev_ref_yaw));
+                g_vcam.rel_yaw = wrap_pi(g_vcam.rel_yaw - wrap_pi(g_vcam.ref_yaw - prev_ref_yaw));
                 g_vcam.rel_pitch -= g_vcam.ref_pitch - prev_ref_pitch;
             }
         }
@@ -869,9 +886,9 @@ bool vphys_chase_camera_do_frame(rf::Camera* camera)
             if (watched_gunner) {
                 const rf::Vector3& aim = rider->eye_orient.fvec;
                 const float aim_yaw = std::atan2(aim.x, aim.z);
-                drift_yaw = std::isfinite(aim_yaw) ? vehicle_wrap_pi(aim_yaw - g_vcam.ref_yaw) : 0.0f;
+                drift_yaw = std::isfinite(aim_yaw) ? wrap_pi(aim_yaw - g_vcam.ref_yaw) : 0.0f;
             }
-            g_vcam.rel_yaw = vehicle_wrap_pi(g_vcam.rel_yaw + vehicle_wrap_pi(drift_yaw - g_vcam.rel_yaw) * k);
+            g_vcam.rel_yaw = wrap_pi(g_vcam.rel_yaw + wrap_pi(drift_yaw - g_vcam.rel_yaw) * k);
             g_vcam.rel_pitch += (vcam_default_pitch - g_vcam.rel_pitch) * k;
         }
         vcam_clamp_rel_pitch();
@@ -938,6 +955,11 @@ bool vehicle_physics_camera_toggle_view()
     }
 }
 
+bool vehicle_physics_camera_local_can_toggle_view()
+{
+    return vcam_local_choice_seat(false) != VehicleOrbitSeat::none;
+}
+
 bool vehicle_physics_camera_local_seat_is_orbit()
 {
     rf::Entity* rider = rf::local_player_entity;
@@ -996,7 +1018,7 @@ bool vehicle_physics_camera_take_rider_look(rf::Entity* ep, float& pitch_delta, 
     }
     // 0x0049DE50 zeroes phb.x/z before building the eye from phb + eye_phb, so eye_phb.x is all of it.
     const rf::EntityControlData& cd = ep->control_data;
-    yaw_delta = vehicle_wrap_pi(heading - cd.phb.y);
+    yaw_delta = wrap_pi(heading - cd.phb.y);
     pitch_delta = pitch - cd.eye_phb.x;
     return true;
 }
@@ -1012,6 +1034,23 @@ bool vehicle_physics_camera_driver_aim(const rf::Entity* vehicle, const rf::Enti
     if (out_capped) {
         *out_capped = capped;
     }
+    return true;
+}
+
+bool vehicle_physics_clamp_driver_aim(const rf::Entity* vehicle, rf::Vector3& dir)
+{
+    const float len = dir.len();
+    if (!vehicle || vphys_class_for(vehicle) != VPHYS_CLASS_APC || !std::isfinite(len) || len < 0.0001f) {
+        return false;
+    }
+    float yaw = 0.0f;
+    float pitch = 0.0f;
+    hull_angles(vehicle->orient, dir * (1.0f / len), yaw, pitch);
+    float min_pitch = 0.0f;
+    float max_pitch = 0.0f;
+    driver_aim_pitch_limits(vehicle, min_pitch, max_pitch);
+    dir = hull_dir(vehicle->orient, std::clamp(yaw, -apc_aim_yaw_cap, apc_aim_yaw_cap),
+                   std::clamp(pitch, min_pitch, max_pitch));
     return true;
 }
 

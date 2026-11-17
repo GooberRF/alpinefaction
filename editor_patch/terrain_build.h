@@ -21,6 +21,13 @@ struct GFace;
 void ApplyTerrainBuildPatches();
 // Calculate Lighting's surface pass (FUN_00448ca0) as stock runs it, without the checks its hook adds.
 void lighting_surfaces_stock(void* self);
+// The surface pass as its command runs it, the checks its hook adds included.
+void lighting_surfaces_checked(void* self);
+// The level solid has faces the surface pass would give a surface but that have none while its surfaces are not
+// used up, as Build Geometry leaves them.
+bool lighting_surfaces_missing(CDedLevel& level);
+// The last Build Geometry to finish was cancelled because RED ran out of memory.
+bool build_geometry_out_of_memory();
 
 // "Terrain <uid> '<script name>'" for messages.
 std::string terrain_label(const DedTerrain& t);
@@ -133,6 +140,10 @@ bool terrain_build_resolves(CDedLevel& level, const DedTerrain& terrain);
 // Nearest t in [0, t_max] where the ray meets a face of the compiled level the viewport draws
 // opaque and front facing (terrain rooms excluded), else t_max.
 float terrain_build_level_ray_hit(CDedLevel& level, const float (&o)[3], const float (&d)[3], float t_max);
+// As above, but a face whose normal's y is below min_normal_y does not stop the ray; the nearest t of
+// those it passed is written to skipped_t (t_max when none).
+float terrain_build_level_ray_hit(CDedLevel& level, const float (&o)[3], const float (&d)[3], float t_max,
+                                  float min_normal_y, float& skipped_t);
 
 // Convert to Brushes: the faces the terrain would emit and the stock lightmap surfaces they would
 // make, and the level's surfaces now (numbered by the last Calculate Lighting when measured, else an

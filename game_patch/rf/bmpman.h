@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <patch_common/MemUtils.h>
 #include "os/vtypes.h"
 
@@ -80,6 +81,9 @@ namespace rf::bm
         int resolution_level;
     };
     static_assert(sizeof(BitmapEntry) == 0x6C);
+    static_assert(offsetof(BitmapEntry, num_levels) == 0x40);
+    static_assert(offsetof(BitmapEntry, orig_num_levels) == 0x41);
+    static_assert(offsetof(BitmapEntry, num_levels_in_ext_files) == 0x42);
 
     static auto& load = addr_as_ref<int(const char *filename, int a2, bool generate_mipmaps)>(0x0050F6A0);
     // -1 when the name is not resident; lets a caller tell a fresh load from a handout of an existing entry
@@ -101,12 +105,17 @@ namespace rf::bm
     static auto& get_mipmap_info = addr_as_ref<void(int bm_handle, int *w, int *h, int *num_pixels, int *mip_levels)>(0x00510680);
     static auto& lock = addr_as_ref<Format(int handle, ubyte **data, ubyte **pal)>(0x00510780);
     static auto& unlock = addr_as_ref<void(int)>(0x00511700);
+    static auto& has_alpha = addr_as_ref<bool(int bm_handle)>(0x00510710);
 
     // required for realtime bitmap generation, set in gr_d3d_init_device for DX8/9
     static auto& max_d3d_texture_resolution_h = addr_as_ref<int>(0x017C7C00);
     static auto& max_d3d_texture_resolution_w = addr_as_ref<int>(0x017C7BFC);
 
     static auto& bm_set_resolution_level_for_all = addr_as_ref<void(int level)>(0x0050EF10);
+
+    // Set while a level loads and plays: a power-of-two TGA up to 256 px loaded then gets a generated mip chain
+    // (0x0050FCB0), which its lock (0x00510860) fills only while this is set.
+    static auto& level_mipmaps_enabled = addr_as_ref<bool>(0x017E2790);
 
     static auto& bitmaps = addr_as_ref<BitmapEntry*>(0x017C80C4);
 

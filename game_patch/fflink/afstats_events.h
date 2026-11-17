@@ -40,6 +40,16 @@ enum class LeaveReason : uint8_t
     banned = 2,
     timeout = 3,
     vote_kicked = 4,
+    bot_removed = 5, // the server's bot handling took the bot out
+};
+
+// Wire values from the player_join `bot_source` registry.
+enum class BotSource : uint8_t
+{
+    client = 0,    // a bot client: a connected client playing as a bot
+    config = 1,    // the server config's server_bots
+    join_bots = 2, // the Join Bots mutator
+    command = 3,   // sv_bot_add
 };
 
 // Wire values from the status `kind` registry.
@@ -92,6 +102,92 @@ enum class BagmanFrom : uint8_t
 {
     spawn = 0,
     dropped = 1,
+};
+
+// Wire values from the payload_event `kind` registry.
+enum class PayloadEventKind : uint8_t
+{
+    setup_end = 0,
+    rollback_start = 1,
+    final_stretch = 2,
+    overtime_start = 3,
+    overtime_cleared = 4,
+    finale = 5,
+    stopped = 6,
+};
+
+// Wire values from the scav_zone `cause` registry.
+enum class ScavZoneCause : uint8_t
+{
+    initial = 0,
+    capture = 1,
+    timeout = 2,
+};
+
+// Wire values from the vehicle_event `kind` registry.
+enum class VehicleEventKind : uint8_t
+{
+    spawn = 0,
+    destroyed = 1,
+    claimed = 2,  // a boarder took a hull of another team, or of none, for their own
+    returned = 3, // scuttled with no credited destroyer
+};
+
+// Wire values from the vehicle_event `cause` registry: what ended a hull.
+enum class VehicleEndCause : uint8_t
+{
+    weapon = 0, // any blow that is not one of the others
+    crash = 1,  // a crash, a scrape, a ram or a drill
+    hazard = 2, // drowned, or a sub stranded out of the water
+    void_fall = 3,
+    idle_return = 4,
+};
+
+// Wire values from the vehicle_seat `reason` registry. Boarding and moving seats are always voluntary.
+enum class VehicleSeatReason : uint8_t
+{
+    voluntary = 0,
+    hull_destroyed = 1,
+    disconnect = 2,
+    orphan_release = 3, // the server's reconcile freed a seat whose rider or hull was gone
+    rider_died = 4,
+};
+
+// Wire values from the kill `cause` registry: a death the other kill fields can't tell apart.
+enum class KillCause : uint8_t
+{
+    none = 0, // not sent
+    jetpack_explode = 1,
+    payload_finale = 2,
+};
+
+// Wire values from the powerup registry of powerup_event and the kill bitmasks: the stock pair, then
+// 2 + AlpinePowerup for the timed Alpine powerups.
+enum class Powerup : uint8_t
+{
+    damage_amp = 0,
+    invulnerability = 1,
+    jetpack = 2,
+    haste = 3,
+    vampire = 4,
+};
+inline constexpr size_t powerup_count = static_cast<size_t>(Powerup::vampire) + 1;
+
+// Wire values from the powerup_event `kind` registry.
+enum class PowerupEventKind : uint8_t
+{
+    start = 0,
+    refresh = 1, // picked up again while held
+    end = 2,
+};
+
+// Wire values from the powerup_event `end_reason` registry.
+enum class PowerupEndReason : uint8_t
+{
+    expired = 0,
+    died = 1,
+    left = 2,
+    level_end = 3,
 };
 
 // Wire values from the match_end `result` registry.
@@ -177,10 +273,15 @@ void on_game_end();
 // `kill_flags` is the af_kill_info_flags bitfield and goes on the wire verbatim,
 // `assist_player_ids` is the attribution list in most-recent-first order, and
 // `vehicle_class` is the wire-frozen VehicleDamageClass of the killing vehicle, or -1
-// (reported as JSON null).
+// (reported as JSON null). `victim_vehicle_class` is the same for the hull the victim rode, and
+// `killer_seat` the seat of the killing vehicle the blow came from; -1 is null for both. `crit` is
+// only reported while the Crits mutator is on. `killer_powerups` and `victim_powerups` are bitmasks
+// on the Powerup registry.
 void on_kill(rf::Player* victim, rf::Player* killer, int weapon_type, int damage_type,
              uint8_t kill_flags, const std::vector<uint8_t>& assist_player_ids,
-             const rf::Vector3& victim_pos, const rf::Vector3* killer_pos, int vehicle_class);
+             const rf::Vector3& victim_pos, const rf::Vector3* killer_pos, int vehicle_class,
+             int victim_vehicle_class = -1, int killer_seat = -1, bool crit = false,
+             KillCause cause = KillCause::none, uint8_t killer_powerups = 0, uint8_t victim_powerups = 0);
 
 // A player earned an award. `award_id` is the wire-frozen AwardId registry in multi/awards.h and
 // goes on the wire verbatim; `victim` is the opposing player the award was earned against, null
@@ -206,21 +307,29 @@ enum class CountScope
 // A null `attacker` is environmental.
 // `amount` is what the hit actually removed from the victim's combined health and armor pools
 // capped at what they had left; only a hit that removed nothing (a corpse) is zero.
+// `vehicle_class` is the VehicleDamageClass whose weapon or hull dealt the damage, -1 for none.
+// `crit` is whether the Crits mutator multiplied this hit.
 void on_damage(rf::Player* attacker, rf::Player* victim, int weapon_type, int damage_type,
                float amount, bool accuracy_hit, int region,
-               CountScope hit_scope = CountScope::full);
+               CountScope hit_scope = CountScope::full, int vehicle_class = -1, bool crit = false);
+
+// A player's shot scored its accuracy hit on a vehicle hull with players aboard. A hull has no
+// player to take the damage, so this is the hit side of on_damage alone.
+void on_hull_hit(rf::Player* attacker, int weapon_type, CountScope hit_scope, int vehicle_class);
 
 // A player pulled a trigger. `projectiles` is the shot's projectile count from the
 // weapon table, so pellet weapons account exactly.
 // `potential_damage` is what those shots could have dealt at multiplayer damage values (torso),
 // the denominator of efficiency. It follows the same scope as the shot it belongs to.
+// `vehicle_class` is the VehicleDamageClass of the vehicle that fired, -1 for infantry.
 void on_weapon_fired(rf::Player* player, int weapon_type, uint32_t projectiles,
-                     CountScope scope = CountScope::full, float potential_damage = 0.0f);
+                     CountScope scope = CountScope::full, float potential_damage = 0.0f,
+                     int vehicle_class = -1);
 
 // Effective damage this weapon dealt to ANOTHER player - the efficiency numerator. Self-damage is
 // never dealt, though its shot's potential still counts, so a rocket jump lowers efficiency.
 void on_damage_dealt(rf::Player* attacker, int weapon_type, float amount,
-                     CountScope scope = CountScope::full);
+                     CountScope scope = CountScope::full, int vehicle_class = -1);
 
 // Out-of-band player state change. `value` is only read for
 // StatusKind::handicap.
@@ -250,6 +359,41 @@ void on_bagman_pickup(rf::Player* player, const rf::Vector3& pos, BagmanFrom fro
 // GunGame progression.
 void on_gg_levelup(rf::Player* player, int level, int weapon_type);
 
+// Payload cart transition. `players` are the attackers in the push zone. `push_time_ms` < 0 is
+// reported as JSON null.
+void on_payload_event(PayloadEventKind kind, float distance, const std::vector<rf::Player*>& players,
+                      int push_time_ms = -1);
+// `dt` seconds of the game_end summary's Payload push time (attackers pushing the cart) or block
+// time (defenders blocking it).
+void on_payload_zone_time(const std::vector<rf::Player*>& players, bool blocking, float dt);
+
+// Life steal, from the Vampire mutator or powerup, gave `player` this much effective health (armor
+// counts double).
+void on_lifesteal(rf::Player* player, float healed);
+
+// `player` repaired a vehicle or turret hull by this much life.
+void on_vehicle_repair(rf::Player* player, float repaired);
+
+// A player picked up a timed powerup. `was_held` is whether they held it just before, and
+// `time_left_ms` the time it has now. Emits `powerup_event` start, or refresh while its hold is open.
+void on_powerup_pickup(rf::Player* player, Powerup powerup, bool was_held, uint32_t time_left_ms);
+// A player's timed Alpine powerup ran out or was lost to death. Emits `powerup_event` end for an open hold.
+// The stock pair's ends are polled instead. Holds also end as their player leaves and as the game ends.
+void on_powerup_end(rf::Player* player, Powerup powerup, PowerupEndReason reason);
+
+// The Scavenger target zone was placed.
+void on_scav_zone(ScavZoneCause cause, const rf::Vector3& pos, float radius, int timeout_ms);
+
+// Multiplayer vehicle lifecycle. `vehicle_id` is the hull's per-game id and `vehicle_class` its
+// VehicleDamageClass. `team` is the hull's affiliation, -1 none, reported as team_none outside team
+// game types. `player` may be null, `weapon_type` < 0 is null, and `cause` is sent only for destroyed
+// and returned.
+void on_vehicle_event(VehicleEventKind kind, uint32_t vehicle_id, int vehicle_class, int team,
+                      const rf::Player* player, int weapon_type, VehicleEndCause cause, const rf::Vector3& pos);
+// A player's seat in a vehicle changed; -1 is on foot.
+void on_vehicle_seat(const rf::Player* player, uint32_t vehicle_id, int vehicle_class, int from_seat, int to_seat,
+                     VehicleSeatReason reason);
+
 // Ready-up match system, including Pit duels.
 void on_match_start(int team_size, const std::vector<rf::Player*>& participants);
 // `winner_team` is the team registry (team_none when not applicable) and
@@ -262,6 +406,9 @@ void on_match_end_derived(MatchResult result);
 // Round system: a traditional round driven by rounds.cpp (a Pit duel, a Wipeout
 // round). Nested inside a game (game_*). Numbering is 1-based and restarts each game.
 void on_round_start(const std::vector<rf::Player*>& participants);
+// Record who was still alive when a team round was decided, for the next on_round_end. Without a
+// call the round reports no survivors list.
+void note_round_survivors(const std::vector<rf::Player*>& survivors);
 // `winner_team` is the team registry (team_none when not applicable) and
 // `winner_player` is set only for duel-style rounds.
 void on_round_end(RoundResult result, uint8_t winner_team, rf::Player* winner_player);

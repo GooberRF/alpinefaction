@@ -30,6 +30,15 @@ inline std::string_view trim(std::string_view s)
     return rtrim(ltrim(s));
 }
 
+// Strips one pair of surrounding double quotes. Doesn't trim, so quoted whitespace survives.
+inline std::string_view unquote(std::string_view s)
+{
+    if (s.size() >= 2 && s.front() == '"' && s.back() == '"') {
+        s = s.substr(1, s.size() - 2);
+    }
+    return s;
+}
+
 inline std::pair<std::string_view, std::string_view> split_once_whitespace(std::string_view s)
 {
     s = trim(s);
@@ -76,6 +85,15 @@ inline std::string string_to_upper(std::string_view str)
     std::transform(str.begin(), str.end(), std::back_inserter(output), [](unsigned char ch) {
         return std::toupper(ch);
     });
+    return output;
+}
+
+inline std::string string_capitalize(std::string_view str)
+{
+    std::string output{str};
+    if (!output.empty()) {
+        output[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(output[0])));
+    }
     return output;
 }
 

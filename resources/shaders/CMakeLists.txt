@@ -23,6 +23,10 @@ add_shader(standard_vs standard_vs.hlsl vs_4_0)
 add_shader(decoration_vs standard_vs.hlsl vs_4_0 -DINSTANCED)
 add_shader(character_vs character_vs.hlsl vs_4_0)
 add_shader(transformed_vs transformed_vs.hlsl vs_4_0)
+add_shader(editor_lightmap_vs editor_lightmap_vs.hlsl vs_4_0)
+add_shader(particle_vs particle_vs.hlsl vs_4_0)
+add_shader(particle_stretched_vs particle_vs.hlsl vs_4_0 -DSTRETCHED)
+add_shader(weather_vs particle_vs.hlsl vs_4_0 -DWEATHER)
 add_shader(shadow_standard_vs shadow_standard_vs.hlsl vs_4_0)
 add_shader(shadow_character_vs shadow_character_vs.hlsl vs_4_0)
 
@@ -36,6 +40,7 @@ add_shader(terrain_nogas_ps standard_ps.hlsl ps_4_0 -DTERRAIN -DMAX_GAS_REGIONS=
 add_shader(decoration_ps standard_ps.hlsl ps_4_0 -DINSTANCE_LIGHT)
 add_shader(decoration_nogas_ps standard_ps.hlsl ps_4_0 -DINSTANCE_LIGHT -DMAX_GAS_REGIONS=0)
 add_shader(ui_ps ui_ps.hlsl ps_4_0)
+add_shader(ui_sdf_ps ui_ps.hlsl ps_4_0 -DUI_SDF)
 add_shader(shadow_debug_ps shadow_debug_ps.hlsl ps_4_0)
 add_shader(outline_ps outline_ps.hlsl ps_4_0)
 

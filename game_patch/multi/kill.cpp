@@ -31,11 +31,14 @@
 #include "awards.h"
 #include "sprays.h"
 #include "gungame.h"
+#include "bagman.h"
 #include "../misc/player.h"
 #include "../misc/misc.h"
 #include "kill.h"
 #include "kill_attribution.h"
+#include "../misc/settings_registry.h"
 #include "vehicles/vehicle.h"
+#include "bots/server_bots.h"
 
 bool kill_messages = true;
 
@@ -109,6 +112,10 @@ FunHook<void()> multi_level_init_hook{
                 player.death_time.reset();
                 if (player.is_bot) {
                     player.is_spawn_disabled = true;
+                }
+                // multi_change_level reset every player to WAITING; no state_info_req ever comes from a server bot.
+                if (server_bot_from_player(&player)) {
+                    player.net_data->state = rf::NETPLAYER_STATE_IN_GAME;
                 }
             }
         }
@@ -374,6 +381,7 @@ void print_kill_message(rf::Player* killed_player, rf::Player* killer_player)
     }
 
     if (g_alpine_game_config.killfeed_enabled) {
+        killfeed_print_to_console(msg.c_str(), static_cast<int>(color_id));
         bool is_team_mode = multi_is_team_game_type();
         const char* trailing = kill_detail_suffix.empty() ? nullptr : kill_detail_suffix.c_str();
         // An assister counts as involved: same line as everyone else, just in white.
@@ -421,15 +429,28 @@ void print_kill_message(rf::Player* killed_player, rf::Player* killer_player)
     }
 }
 
-void distribute_effective_health(rf::Entity* ep, float amount, float max_life_cap, float max_armor_cap)
+bool apply_effective_health_reward(rf::Player* player, float amount)
 {
-    if (!ep || amount <= 0.0f) return;
+    if (!player || amount <= 0.0f) return false;
+    rf::Entity* ep = rf::entity_from_handle(player->entity_handle);
+    if (!ep || ep->life <= 0.0f) return false;
+
+    const float max_life_cap = std::max(ep->life, ep->info->max_life);
+    const float max_armor_cap = std::max(ep->armor, ep->info->max_armor);
+    distribute_effective_health(ep, amount, max_life_cap, max_armor_cap);
+    return true;
+}
+
+float distribute_effective_health(rf::Entity* ep, float amount, float max_life_cap, float max_armor_cap)
+{
+    if (!ep || amount <= 0.0f) return 0.0f;
 
     const float life_to_add = std::min(amount, std::max(0.0f, max_life_cap - ep->life));
     const float armor_to_add = std::min((amount - life_to_add) / 2.0f, std::max(0.0f, max_armor_cap - ep->armor));
 
     ep->life += life_to_add;
     ep->armor += armor_to_add;
+    return life_to_add + armor_to_add * 2.0f;
 }
 
 void multi_apply_kill_reward(rf::Player* player)
@@ -479,19 +500,25 @@ void on_player_kill(rf::Player* killed_player, rf::Player* killer_player)
 
     if (killer_player) {
         auto* killer_stats = static_cast<PlayerStatsNew*>(killer_player->stats);
-        const bool score_from_kills = !gt_uses_custom_scoring();
+        // Bagman scores frags on top of bag time; a client mirrors that only for servers that award it.
+        const bool frags_score = !gt_uses_custom_scoring()
+            || (gt_is_bagman_any() && (rf::is_server || is_server_minimum_af_version(1, 5)));
         if (killer_player != killed_player) {
-            if (score_from_kills) {
+            if (frags_score) {
                 // No score for team kills for individual or team
                 const bool team_kill = multi_is_team_game_type() && killer_player->team == killed_player->team;
                 if (!team_kill) {
                     rf::player_add_score(killer_player, 1);
+                    if (gt_is_tbag()) {
+                        bagman_add_team_score(killer_player, 1);
+                    }
                 }
             }
             killer_stats->inc_kills();
         }
         else {
-            if (score_from_kills) {
+            // Custom-scored modes keep suicides free: their score tracks the objective, not a frag balance.
+            if (!gt_uses_custom_scoring()) {
                 rf::player_add_score(killer_player, -1);
 
                 // decrement TDM team score on self kill in match mode servers
@@ -545,7 +572,7 @@ ConsoleCommand2 kill_messages_cmd{
 ConsoleCommand2 ui_assist_names_cmd{
     "ui_assist_names",
     [] {
-        g_alpine_game_config.show_assist_names = !g_alpine_game_config.show_assist_names;
+        setting_console_set("show_assist_names", "toggle");
         rf::console::print("Assists in kill messages are {}",
                            g_alpine_game_config.show_assist_names ? "enabled" : "disabled");
     },
@@ -556,7 +583,7 @@ ConsoleCommand2 ui_assist_names_cmd{
 ConsoleCommand2 ui_assist_highlight_cmd{
     "ui_assist_highlight",
     [] {
-        g_alpine_game_config.highlight_assisted_kills = !g_alpine_game_config.highlight_assisted_kills;
+        setting_console_set("highlight_assisted_kills", "toggle");
         rf::console::print("Highlighting of kills you assisted is {}",
                            g_alpine_game_config.highlight_assisted_kills ? "enabled" : "disabled");
     },

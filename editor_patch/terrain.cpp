@@ -13,6 +13,7 @@
 #include <new>
 #include <random>
 #include <span>
+#include <unordered_set>
 #include <vector>
 #include <zlib.h>
 #include <stb_image.h>
@@ -469,7 +470,7 @@ void DestroyDedTerrain(DedTerrain* terrain)
 {
     if (!terrain) return;
     terrain_release_editor_state(terrain);
-    terrain->field_4.free();
+    terrain->class_mesh_filename.free();
     terrain->script_name.free();
     terrain->class_name.free();
     delete terrain;
@@ -649,9 +650,24 @@ void terrain_serialize_chunk(CDedLevel& level, rf::File& file, bool group)
     at::DecorationBudget budget;
     budget.instances++;
     uint32_t instances = 0;
+    // The distinct meshes the game loads for them (DecorationMeshCache), by lowercased name
+    std::unordered_set<std::string> meshes;
     for (const auto& rec : records) {
         if (!rec.write_mapping || budget.spent()) continue;
         const DedTerrain& t = *rec.terrain;
+        for (const DedTerrainDecoration& deco : t.data.decorations) {
+            const std::string& m = deco.mesh;
+            if (group || deco.density <= 0.0f || m.empty() || !at::decoration_mesh_valid(m.c_str(), m.size()) ||
+                at::decoration_mesh_is_vfx(m.c_str(), m.size())) {
+                continue;
+            }
+            try {
+                meshes.insert(string_to_lower(m));
+            }
+            catch (const std::bad_alloc&) {
+                xlog::error("[Terrain] out of memory counting the decoration meshes");
+            }
+        }
         instances += terrain_decoration_instances(t.uid, t.pos, t.data, budget);
     }
     try {
@@ -665,6 +681,12 @@ void terrain_serialize_chunk(CDedLevel& level, rf::File& file, bool group)
                                            "(most on ground steeper than their slope limit); the game draws the "
                                            "{} instances found first.",
                                            at::max_level_decoration_candidates, instances));
+        }
+        if (meshes.size() > at::max_level_decoration_meshes) {
+            problems.push_back(std::format("The level's terrain decorations use {} different meshes; the game loads "
+                                           "the first {} (by terrain, then list order) and draws nothing for the "
+                                           "rest.",
+                                           meshes.size(), at::max_level_decoration_meshes));
         }
     }
     catch (const std::bad_alloc&) {
@@ -3204,7 +3226,7 @@ void terrain_render(CDedLevel* level)
 {
     auto& terrains = level->GetAlpineLevelProperties().terrain_objects;
     if (!terrains.empty()) terrain_load_icon();
-    const float cam_param = gr_cam_param;
+    const rf::gr::Mode billboard_mode = rf::gr::bitmap_3d_mode_no_z;
 
     for (auto* terrain : terrains) {
         if (terrain->hidden_in_editor) continue;
@@ -3217,7 +3239,7 @@ void terrain_render(CDedLevel* level)
             gr_set_bitmap(g_terrain_icon_handle, -1);
         }
         Vector3 icon = terrain_icon_pos(terrain->pos, data);
-        gr_render_billboard(&icon, 0, terrain_icon_size, cam_param);
+        gr_render_billboard(&icon, 0, terrain_icon_size, billboard_mode);
     }
     terrain_paint_draw_cursor(*level);
 }
@@ -3324,6 +3346,11 @@ void terrain_paste_objects(CDedLevel* level)
     if (failed) {
         terrain_report(std::format("{} terrain(s) were not pasted: there is not enough memory.", failed), true);
     }
+}
+
+void terrain_swap_clipboard(std::vector<DedTerrain*>& other)
+{
+    g_terrain_clipboard.swap(other);
 }
 
 void terrain_clear_clipboard()

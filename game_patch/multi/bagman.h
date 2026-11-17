@@ -1,5 +1,6 @@
 #pragma once
 
+#include <vector>
 #include "../rf/math/vector.h"
 #include "../rf/math/matrix.h"
 #include "../rf/os/timestamp.h"
@@ -12,6 +13,10 @@ namespace rf
     struct NetAddr;
     struct VifLodMesh;
     struct VMesh;
+    namespace gr
+    {
+        struct Color;
+    }
 }
 
 enum class BagState : uint8_t
@@ -22,12 +27,19 @@ enum class BagState : uint8_t
     BS_Delayed = 3,  // initial spawn delay active; no bag item exists yet
 };
 
+struct BagHome
+{
+    rf::Vector3 pos{};
+    rf::Matrix3 orient{};
+};
+
 struct BagmanInfo
 {
     bool active = false;
     bool spawn_known = false;
     rf::Vector3 spawn_pos{}; // home
     rf::Matrix3 spawn_orient{};
+    std::vector<BagHome> homes; // spawn_pos candidates, rolled at level start and on every return
     int bag_item_type = -1;
     int bag_item_handle = -1;
     rf::Vector3 bag_pos{}; // last known
@@ -56,14 +68,25 @@ int bagman_get_blue_team_score();
 int bagman_get_score_tick_ms();
 void bagman_set_red_team_score(int v);
 void bagman_set_blue_team_score(int v);
+void bagman_add_team_score(rf::Player* player, int delta);
 void bagman_force_state_sync_to(rf::Player* player);
 void bagman_broadcast_state();
+// Feeds the bag's temporary waypoint node from the current bag state.
+void bagman_update_bot_waypoints();
 bool bagman_local_player_is_carrier();
 bool bagman_viewer_is_carrier_first_person();
+// Swaps the bag mesh onto a freshly created bag item.
+void bagman_apply_bag_mesh(rf::Item* item, int item_type);
+// True while the bag has a home but no item: item_create keeps one pool slot free for it.
+bool bagman_reserves_item_slot(int item_type);
 bool bagman_get_client_pickup_pos(rf::Vector3* out_pos);
+// LOD 0 of a static VMesh's first submesh, or null for any other mesh type.
+rf::VifLodMesh* static_vmesh_lod0(rf::VMesh* vmesh);
 bool bagman_query_pickup_bag_outline(rf::VifLodMesh** out_lod_mesh, rf::Vector3* out_pos, rf::Matrix3* out_orient);
 bool bagman_query_carrier_bag_outline(rf::VifLodMesh** out_lod_mesh, rf::Vector3* out_pos, rf::Matrix3* out_orient);
 rf::VMesh* bagman_get_carrier_mesh();
+// The overlay tint for `bmh` when it is the bag aura, else null.
+const rf::gr::Color* bagman_aura_tint(int bmh);
 void bagman_update_dynamic_light();
 void bagman_play_return_sound();
 

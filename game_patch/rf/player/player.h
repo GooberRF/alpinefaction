@@ -14,6 +14,8 @@
 #include "../../os/os.h"
 #include "../../purefaction/pf_packets.h"
 #include "../multi.h"
+#include "../../multi/obj_update_delta.h"
+#include <array>
 #include <limits>
 #include <map>
 
@@ -49,6 +51,15 @@ struct ClientVersionInfoProfile {
     bool is_d3d11 = false;
 };
 
+// A timed powerup a player holds, from its powerup_event start to its end.
+struct AfstatsPowerupHold {
+    bool open = false;
+    int64_t start_ms = 0;
+    uint32_t kills = 0;
+    float damage = 0.0f;
+    float healed = 0.0f;
+};
+
 // Per-game, per-player counters for the FactionFiles event stream. Reset at
 // every game start; serialized whole into the game_end / player_leave summary
 // block. Score and caps are read live from the engine at summary time instead of
@@ -71,6 +82,15 @@ struct AfstatsGameCounters {
     int64_t time_played_ms = 0;
     int64_t time_spectating_ms = 0;
     int64_t time_idle_ms = 0;
+    // Summed from frame times, so kept fractional until reported
+    double payload_push_ms = 0.0;
+    double payload_block_ms = 0.0;
+    // Vampire mutator and powerup, in effective health
+    float lifesteal_healed = 0.0f;
+    // Hull life restored with melee repairs
+    float vehicle_repaired = 0.0f;
+    // Indexed by the powerup_event registry
+    std::array<AfstatsPowerupHold, 5> powerup_holds{};
     int64_t ping_sum = 0;
     uint32_t ping_samples = 0;
     // The same, but only over the current player_pings window: sampled every frame and
@@ -124,6 +144,8 @@ struct PlayerAdditionalData {
     // Client-side variables.
     std::optional<pf_pure_status> received_pf_status{};
     bool is_muted = false;
+    // A client only learns a remote player's character from their entity_create.
+    bool multi_character_known = false;
 
     // Smoothed view angular velocity feeding fpgun aim sway, in rad/s.
     float sway_pitch_vel = 0.0f;
@@ -132,6 +154,8 @@ struct PlayerAdditionalData {
     // Server-side variables.
     bool in_grace_period = true;
     ClientVersionInfoProfile version_info{};
+    bool delta_obj_update = false; // agreed at join: client asked and the server offered it
+    obj_update_delta::Sender delta_sender{};
     std::optional<std::chrono::steady_clock::time_point> death_time{};
     std::optional<std::chrono::steady_clock::time_point> spectate_start_time{};
 
@@ -139,6 +163,8 @@ struct PlayerAdditionalData {
     // Floor rate limit for broadcast 3d world sounds (broadcast_sound_packet_3d).
     std::optional<int64_t> last_world_sound_ms{};
     std::optional<int64_t> last_spray_ms{};
+    // Floor rate limit for Haste jumps: those a client reports, and those a server relays.
+    std::optional<int64_t> last_haste_jump_ms{};
     // Floor rate limit for af_req_stats_pssk so a client cannot flood the handler.
     std::optional<int64_t> last_pssk_ms{};
     // Separate floor for the af_req_stats_pssk rejection warns, so a rejected packet
@@ -174,6 +200,10 @@ struct PlayerAdditionalData {
     std::optional<rf::Player*> spectatee{};
     bool remote_server_cfg_sent = false;
 
+    // First level item index not yet replicated after send_state_info, or -1. Everything
+    // from here on is pending except CTF items, which are never deferred.
+    int next_pending_level_item = -1;
+
     // Floor rate limit for af_req_vote_options: the blob is streamed over the
     // deferred reliable queue, so a client must not be able to spam it.
     rf::TimestampRealtime vote_options_req_timer{};
@@ -185,6 +215,9 @@ struct PlayerAdditionalData {
 
     // Rate limit for vote rejection replies.
     rf::TimestampRealtime vote_reject_msg_timer{};
+
+    // af_match_state_flags last sent to this player; a new client starts with none set.
+    uint8_t match_state_sent = 0;
 
     // Server side rail gun reload cooldown, used for force_rail_reload
     // needed because entity_is_reloading is unreliable on server
@@ -427,6 +460,9 @@ namespace rf
     static auto& player_delete = addr_as_ref<void(Player* player)>(0x004A35C0);
 
     static auto& player_from_entity_handle = addr_as_ref<Player*(int entity_handle)>(0x004A3740);
+    // Trims, validates and commits a name to local_player; false when empty or longer than 20 characters
+    // (with a message), or silently with no local player.
+    static auto& player_change_name = addr_as_ref<bool(String::Pod name)>(0x004A7540);
     static auto& player_is_undercover = addr_as_ref<bool()>(0x004B0580);
     static auto& player_undercover_alarm_is_on = addr_as_ref<bool()>(0x004B05F0);
     static auto& player_is_dead = addr_as_ref<bool(const Player *player)>(0x004A4920);

@@ -14,6 +14,7 @@
 #include "vehicle_internal.h"
 #include "vehicle_spawn.h"
 #include "../alpine_packets.h"
+#include "../awards.h"
 #include "../gametype.h"
 #include "../../misc/level.h"
 #include "../../object/alpine_obj_common.h"
@@ -104,7 +105,9 @@ namespace
         }
     }
 
-    bool vehicle_slot_try_spawn(VehicleSpawnSlot& slot, bool announce)
+    // report is false only at level init, which precedes the level's game_start: vehicle_report_level_hulls
+    // reports those hulls once it has gone out.
+    bool vehicle_slot_try_spawn(VehicleSpawnSlot& slot, bool announce, bool report = true)
     {
         if (rf::Entity* ep = vehicle_spawn_type(slot.entity_type, slot.pos, slot.orient)) {
             slot.handle = ep->handle;
@@ -115,11 +118,21 @@ namespace
             VehicleState& st = g_vehicle_state.hull_state[ep->handle];
             st.team = info ? info->team : -1;
             st.lock_to_team = info && info->lock_to_team;
+            st.yaw_limit_deg = slot.is_turret && info ? info->turret_yaw_limit_deg : uint8_t{0};
+            // entity_create uprighted the factory's matrix, so this is the facing the hull spawned with.
+            st.yaw_base = vehicle_quantize_angle(vehicle_make_orient_phb(ep->orient).y);
+            st.yaw_rel = 0.0f;
+            st.stats = VehicleStatsHull{};
+            st.stats.id = ++g_vehicle_state.last_stats_id;
+            st.stats.vehicle_class = vehicle_damage_class(ep);
             if (announce) {
                 vehicle_slot_announce(slot);
                 // Nothing else states a fresh hull's team and lock; the join sweep covers a
                 // silent level-init spawn.
                 vehicle_broadcast_seat_occupancy(ep->handle, ep, -1);
+            }
+            if (report) {
+                vehicle_stats_hull_event(ep->handle, afstats::VehicleEventKind::spawn);
             }
             return true;
         }
@@ -214,8 +227,13 @@ void vehicle_on_hull_boarded(rf::Entity* vehicle, const rf::Entity* rider)
         if (pp) {
             const int team = pp->team == 1 ? 1 : 0;
             if (st->team != team) {
+                // Taken from the other team rather than claimed from nobody.
+                if (st->team != -1 && !vehicle_hull_is_turret(vehicle)) {
+                    awards_on_vehicle_claimed(pp, vehicle->handle);
+                }
                 st->team = team;
                 st->lock_to_team = false;
+                vehicle_stats_hull_event(vehicle->handle, afstats::VehicleEventKind::claimed, pp);
             }
         }
     }
@@ -226,6 +244,30 @@ void vehicle_on_hull_boarded(rf::Entity* vehicle, const rf::Entity* rider)
     // The factory's TAKEN announcement.
     slot->entered_once = true;
     vehicle_slot_announce(*slot);
+}
+
+void vehicle_stats_hull_event(int vehicle_handle, afstats::VehicleEventKind kind, const rf::Player* player,
+                              int weapon_type, afstats::VehicleEndCause cause)
+{
+    const VehicleState* st = rf::is_server ? vehicle_hull_state(vehicle_handle) : nullptr;
+    const rf::Entity* ep = vehicle_synced_entity(vehicle_handle);
+    if (!st || st->stats.id == 0 || !ep) {
+        return;
+    }
+    afstats::on_vehicle_event(kind, st->stats.id, st->stats.vehicle_class, st->team, player, weapon_type, cause,
+                              ep->pos);
+}
+
+void vehicle_report_level_hulls()
+{
+    if (!rf::is_multi || !rf::is_server) {
+        return;
+    }
+    for (const VehicleSpawnSlot& slot : g_vehicle_state.factories) {
+        if (slot.handle != -1) {
+            vehicle_stats_hull_event(slot.handle, afstats::VehicleEventKind::spawn);
+        }
+    }
 }
 
 int vehicle_factory_index_by_uid(int uid)
@@ -387,7 +429,7 @@ void vehicle_factory_load_chunk(rf::File& file, std::size_t chunk_len)
     // Untrusted input reaching a server-side Bullet body: a non-finite value is UB and a
     // non-rotation basis shears every derived box.
     auto pose_is_sane = [](const AlpineVehicleFactoryInfo& info) {
-        if (!vehicle_vector_is_finite(info.pos)) {
+        if (!info.pos.is_finite()) {
             return false;
         }
         if (!alpine_orient_is_sane(info.orient)) {
@@ -431,8 +473,11 @@ void vehicle_factory_load_chunk(rf::File& file, std::size_t chunk_len)
         uint8_t team = 0xFF;
         if (!reader.read_bytes(&team, sizeof(team))) return;
         info.team = (team == 0 || team == 1) ? static_cast<int32_t>(team) : -1;
-        uint8_t reserved[2] = {};
-        if (!reader.read_bytes(reserved, sizeof(reserved))) return;
+        uint8_t yaw_limit_deg = 0;
+        if (!reader.read_bytes(&yaw_limit_deg, sizeof(yaw_limit_deg))) return;
+        info.turret_yaw_limit_deg = yaw_limit_deg <= vehicle_turret_max_yaw_limit_deg ? yaw_limit_deg : uint8_t{0};
+        uint8_t reserved = 0;
+        if (!reader.read_bytes(&reserved, sizeof(reserved))) return;
         uint8_t lock_to_team = 0;
         if (!reader.read_bytes(&lock_to_team, sizeof(lock_to_team))) return;
         // A team-none factory keeps its lock: a control point can hand it a team later, and
@@ -508,7 +553,7 @@ void vehicle_level_init_post()
     // then gets every slot's state from the state-info sweep (vehicle_send_factory_states_to).
     for (VehicleSpawnSlot& slot : g_vehicle_state.factories) {
         if (g_vehicle_factories[slot.factory_index].active_by_default) {
-            vehicle_slot_try_spawn(slot, false);
+            vehicle_slot_try_spawn(slot, false, false);
             continue;
         }
         slot.respawn_timer.set(slot.factory_delay_ms);
@@ -535,17 +580,20 @@ namespace
         std::optional<float> damage_radius; // $Damage Radius
         std::optional<float> crater_radius; // +Crater Radius
         bool clear_homing;                  // $Homing: false
+        std::optional<float> lifetime;        // $Lifetime
+        std::optional<float> thrust_lifetime; // $Thrust Lifetime
     };
 
-    // The mods/gg diff, with the APC and fighter minigun pools doubled. Anything not listed keeps its stock value.
+    // The mods/gg diff, with the APC and fighter minigun pools doubled and the torpedo's and fighter rocket's
+    // lifetimes our own. Anything not listed keeps its stock value.
     constexpr VehicleWeaponOverride vehicle_weapon_overrides[] = {
-        {"Torpedo",         17.0f, 1.25f, 275.0f, 5,   12.0f, 8.5f,  true},
-        {"Fighter Rocket",  {},    2.0f,  275.0f, 5,   {},    10.0f, true},
-        {"APC Rocket",      {},    {},    275.0f, 5,   {},    {},    false},
-        {"APC Minigun",     {},    {},    45.0f,  200, {},    {},    false},
-        {"Jeep Gun",        {},    {},    45.0f,  150, {},    {},    false},
-        {"Fighter Minigun", {},    {},    45.0f,  200, {},    {},    false},
-        {"Vauss",           {},    {},    45.0f,  150, {},    {},    false},
+        {"Torpedo",         17.0f, 1.25f, 275.0f, 5,   12.0f, 8.5f,  true,  5.0f,  {}},
+        {"Fighter Rocket",  {},    2.0f,  275.0f, 5,   {},    10.0f, true,  15.0f, 5.0f},
+        {"APC Rocket",      {},    {},    275.0f, 5,   {},    {},    false, {},    {}},
+        {"APC Minigun",     {},    {},    45.0f,  200, {},    {},    false, {},    {}},
+        {"Jeep Gun",        {},    {},    45.0f,  150, {},    {},    false, {},    {}},
+        {"Fighter Minigun", {},    {},    45.0f,  200, {},    {},    false, {},    {}},
+        {"Vauss",           {},    {},    45.0f,  150, {},    {},    false, {},    {}},
     };
 
     struct VehicleEntityOverride
@@ -567,6 +615,7 @@ namespace
     {
         int weapon_type;
         float max_speed, max_speed_multi, max_speed_single, lifetime_mul_vel;
+        float lifetime_seconds, lifetime_seconds_single, lifetime_seconds_multi, thrust_lifetime_seconds;
         float fire_wait, damage_multi;
         float damage_radius, damage_radius_single, damage_radius_multi;
         float crater_radius;
@@ -617,7 +666,6 @@ namespace
     // REPOINTED rather than the bytes overwritten - the stock literal has no room to grow into.
     constexpr uintptr_t jeep_gun_mesh_push_imm32 = 0x00423A45;
     constexpr uint32_t jeep_gun_mesh_stock_string = 0x00595AD8; // "jeep_gun.v3d" in .rdata
-    constexpr char af_jeep_gun_mesh_filename[] = "af_jeep_gun.v3m";
     bool g_jeep_gun_mesh_repointed = false;
 
     // Seated clips appended to $EntityAnimType state lists as if entity.tbl listed them: entity_create
@@ -743,6 +791,16 @@ namespace
     }
 } // namespace
 
+std::optional<float> vehicle_mp_max_life(const char* entity_class)
+{
+    for (const VehicleEntityOverride& o : vehicle_entity_overrides) {
+        if (string_iequals(o.name, entity_class)) {
+            return o.max_life;
+        }
+    }
+    return std::nullopt;
+}
+
 void vehicle_tbl_overrides_revert()
 {
     for (const VehicleWeaponSaved& s : g_vehicle_tbl_weapon_saved) {
@@ -754,6 +812,10 @@ void vehicle_tbl_overrides_revert()
         wi.max_speed_multi = s.max_speed_multi;
         wi.max_speed_single = s.max_speed_single;
         wi.lifetime_mul_vel = s.lifetime_mul_vel;
+        wi.lifetime_seconds = s.lifetime_seconds;
+        wi.lifetime_seconds_single = s.lifetime_seconds_single;
+        wi.lifetime_seconds_multi = s.lifetime_seconds_multi;
+        wi.thrust_lifetime_seconds = s.thrust_lifetime_seconds;
         wi.fire_wait = s.fire_wait;
         wi.damage_multi = s.damage_multi;
         wi.damage_radius = s.damage_radius;
@@ -808,7 +870,9 @@ void vehicle_tbl_overrides_level_init_post()
         }
         rf::WeaponInfo& wi = rf::weapon_types[wt];
         g_vehicle_tbl_weapon_saved.push_back({wt, wi.max_speed, wi.max_speed_multi,
-                                              wi.max_speed_single, wi.lifetime_mul_vel, wi.fire_wait,
+                                              wi.max_speed_single, wi.lifetime_mul_vel,
+                                              wi.lifetime_seconds, wi.lifetime_seconds_single,
+                                              wi.lifetime_seconds_multi, wi.thrust_lifetime_seconds, wi.fire_wait,
                                               wi.damage_multi, wi.damage_radius,
                                               wi.damage_radius_single, wi.damage_radius_multi,
                                               wi.crater_radius, wi.max_ammo, wi.max_ammo_multi,
@@ -819,9 +883,19 @@ void vehicle_tbl_overrides_level_init_post()
             wi.max_speed = *o.velocity;
             wi.max_speed_multi = *o.velocity;
             wi.max_speed_single = *o.velocity;
-            // Precomputed at startup and NOT re-derived by the resolver, so a velocity change must
-            // carry it or the round keeps its old maximum range.
+        }
+        if (o.lifetime) {
+            wi.lifetime_seconds = *o.lifetime;
+            wi.lifetime_seconds_single = *o.lifetime;
+            wi.lifetime_seconds_multi = *o.lifetime;
+        }
+        if (o.velocity || o.lifetime) {
+            // The AI's firing range, precomputed at startup and NOT re-derived by the resolver.
             wi.lifetime_mul_vel = wi.max_speed * wi.lifetime_seconds;
+        }
+        if (o.thrust_lifetime) {
+            // Read only at weapon creation; nothing re-derives it. Past it the round falls under gravity.
+            wi.thrust_lifetime_seconds = *o.thrust_lifetime;
         }
         if (o.fire_wait) {
             wi.fire_wait = *o.fire_wait;

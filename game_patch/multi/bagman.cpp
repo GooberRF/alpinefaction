@@ -3,6 +3,7 @@
 #include <format>
 #include <memory>
 #include <optional>
+#include <random>
 #include <string_view>
 #include <xlog/xlog.h>
 #include <patch_common/CodeInjection.h>
@@ -15,10 +16,12 @@
 #include "gametype.h"
 #include "kill.h"
 #include "multi.h"
+#include "powerups.h"
 #include "server.h"
 #include "server_internal.h"
 #include "alpine_packets.h"
 #include "../fflink/afstats_events.h"
+#include "../main/main.h"
 #include "../rf/multi.h"
 #include "../rf/item.h"
 #include "../rf/entity.h"
@@ -37,6 +40,7 @@
 #include "../rf/vmesh.h"
 #include "../rf/v3d.h"
 #include "../hud/multi_spectate.h"
+#include "../misc/waypoints.h"
 #include <patch_common/FunHook.h>
 
 BagmanInfo g_bagman_info;
@@ -178,17 +182,6 @@ void announce(std::string_view msg)
     af_broadcast_automated_chat_msg(msg);
 }
 
-void apply_effective_health_reward(rf::Player* player, float amount)
-{
-    if (!player || amount <= 0.0f) return;
-    rf::Entity* ep = rf::entity_from_handle(player->entity_handle);
-    if (!ep || ep->life <= 0.0f) return;
-
-    const float max_life_cap = std::max(ep->life, ep->info->max_life);
-    const float max_armor_cap = std::max(ep->armor, ep->info->max_armor);
-    distribute_effective_health(ep, amount, max_life_cap, max_armor_cap);
-}
-
 // Create amp (bag) item at an explicit position.
 void spawn_bag_item(const rf::Vector3& pos, rf::Matrix3& orient)
 {
@@ -235,6 +228,16 @@ void kill_current_bag_item()
     g_bagman_info.bag_item_handle = -1;
 }
 
+void roll_bag_home()
+{
+    const auto& homes = g_bagman_info.homes;
+    if (homes.empty()) return;
+    std::uniform_int_distribution<size_t> dist(0, homes.size() - 1);
+    const BagHome& home = homes[dist(g_rng)];
+    g_bagman_info.spawn_pos = home.pos;
+    g_bagman_info.spawn_orient = home.orient;
+}
+
 void resolve_bag_spawn_from_placed_item()
 {
     if (g_bagman_info.bag_item_type < 0) {
@@ -244,76 +247,80 @@ void resolve_bag_spawn_from_placed_item()
         return;
     }
 
-    // Priority-ordered list of item classes used as bag spawn positions
-    // when no other location is specified for the map.
-    static const char* const kBagCandidateClasses[] = {
-        "Multi Damage Amplifier",
-        "Multi Invulnerability",
-        "Multi Super Armor",
-        "Multi Super Health",
-    };
-
-    bool position_chosen = false;
-
-    // Priority 1: mapper-placed Bag editor object.
-    if (auto bag = get_first_bag_object()) {
-        g_bagman_info.spawn_pos = bag->pos;
-        g_bagman_info.spawn_orient = bag->orient;
-        position_chosen = true;
-    }
-
-    // Priority 2: hardcoded bag positions for specific RFLs.
-    if (!position_chosen) {
-        if (auto override_pos = lookup_hardcoded_bag_home(rf::level.filename.c_str())) {
-            g_bagman_info.spawn_pos = *override_pos;
-            g_bagman_info.spawn_orient = rf::identity_matrix;
-            position_chosen = true;
-        }
-    }
-
-    // Walk item_list once per candidate class. The first match (in
-    // priority order) becomes the spawn position if no higher-priority
-    // source chose one.
-    for (const char* cls : kBagCandidateClasses) {
+    // Walk item_list once per super item class, leaving super weapons. Every match is removed,
+    // collected in priority order as a possible home.
+    std::vector<BagHome> super_item_homes;
+    for (const char* cls : super_item_class_names) {
         int type_idx = rf::item_lookup_type(cls);
-        if (type_idx < 0) continue;
+        if (type_idx < 0 || rf::item_info[type_idx].gives_weapon_id >= 0) continue;
         rf::Item* it = rf::item_list.next;
         while (it && it != &rf::item_list) {
             rf::Item* next = it->next;
             if (it->info_index == type_idx) {
-                if (!position_chosen) {
-                    g_bagman_info.spawn_pos = it->pos;
-                    g_bagman_info.spawn_orient = it->orient;
-                    position_chosen = true;
-                }
+                super_item_homes.push_back({it->pos, it->orient});
                 rf::obj_flag_dead(it);
             }
             it = next;
         }
     }
 
-    // Last resort: the level's player start position.
-    if (!position_chosen) {
-        g_bagman_info.spawn_pos = rf::level.player_start_pos;
-        g_bagman_info.spawn_orient = rf::level.player_start_orient;
+    const bool multiple_spawns = g_alpine_server_config_active_rules.bagman.bag_multiple_spawns;
+    auto& homes = g_bagman_info.homes;
+    if (const auto& bags = get_bag_objects(); !bags.empty()) {
+        // Priority 1: mapper-placed Bag editor objects.
+        if (multiple_spawns) {
+            for (const AlpineBagInfo& bag : bags) {
+                homes.push_back({bag.pos, bag.orient});
+            }
+        }
+        else {
+            homes.push_back({bags.front().pos, bags.front().orient});
+        }
+    }
+    else if (multiple_spawns && super_item_homes.size() > 1) {
+        // Multiple bag spawns without Bag objects: every super item spot.
+        homes = std::move(super_item_homes);
+    }
+    else if (auto override_pos = lookup_hardcoded_bag_home(rf::level.filename.c_str())) {
+        // Priority 2: hardcoded bag positions for specific RFLs.
+        homes.push_back({*override_pos, rf::identity_matrix});
+    }
+    else if (!super_item_homes.empty()) {
+        // Priority 3: the highest priority super item.
+        homes.push_back(super_item_homes.front());
+    }
+    else {
+        // Last resort: the level's player start position.
+        homes.push_back({rf::level.player_start_pos, rf::level.player_start_orient});
         xlog::warn("bagman: no suitable item found in level; bag spawned at player start position");
     }
 
-    // Items on the home spot would sit inside the bag, remove them.
+    // Items on a home spot would sit inside the bag, remove them.
     rf::Item* it = rf::item_list.next;
     while (it && it != &rf::item_list) {
         rf::Item* next = it->next;
-        if ((it->pos - g_bagman_info.spawn_pos).len() <= kBagSpawnClearRadius) {
-            rf::obj_flag_dead(it);
+        for (const BagHome& home : homes) {
+            if ((it->pos - home.pos).len() <= kBagSpawnClearRadius) {
+                rf::obj_flag_dead(it);
+                break;
+            }
         }
         it = next;
     }
 
+    roll_bag_home();
     g_bagman_info.bag_pos = g_bagman_info.spawn_pos;
     g_bagman_info.spawn_known = true;
 }
 
 } // namespace
+
+const rf::gr::Color* bagman_aura_tint(int bmh)
+{
+    // The green of the original bag aura art.
+    static constexpr rf::gr::Color tint{0, 157, 0};
+    return bmh >= 0 && bmh == g_bag_aura_bitmap ? &tint : nullptr;
+}
 
 void bagman_force_state_sync_to(rf::Player* player)
 {
@@ -325,6 +332,23 @@ void bagman_broadcast_state()
 {
     if (!gt_is_bagman_any() || !rf::is_server) return;
     af_send_bagman_state_packet_to_all();
+}
+
+void bagman_update_bot_waypoints()
+{
+    if (!is_waypoint_bot_mode_active()) {
+        return;
+    }
+    if (g_bagman_info.state == BagState::BS_Carried || g_bagman_info.state == BagState::BS_Delayed) {
+        waypoints_on_bag_carried();
+    }
+    else {
+        // On-ground bag: position comes from the item object.
+        rf::Vector3 bag_world_pos;
+        if (bagman_get_client_pickup_pos(&bag_world_pos)) {
+            waypoints_on_bag_world_pos(bag_world_pos);
+        }
+    }
 }
 
 int bagman_get_score_tick_ms()
@@ -350,6 +374,13 @@ void bagman_set_red_team_score(int v)
 void bagman_set_blue_team_score(int v)
 {
     g_bagman_info.blue_team_score = v;
+}
+
+void bagman_add_team_score(rf::Player* player, int delta)
+{
+    if (!player) return;
+    auto& score = player->team == 0 ? g_bagman_info.red_team_score : g_bagman_info.blue_team_score;
+    score = std::max(0, score + delta);
 }
 
 void bagman_level_init()
@@ -525,6 +556,7 @@ void bagman_play_return_sound()
 
 static void on_return()
 {
+    roll_bag_home();
     afstats::on_bagman_event(afstats::BagmanEventKind::ret, nullptr, g_bagman_info.spawn_pos);
     g_bagman_info.state = BagState::BS_At_Spawn;
     g_bagman_info.return_timer.invalidate();
@@ -549,6 +581,9 @@ void bagman_do_frame()
         return;
     }
     if (!g_bagman_info.spawn_known) return;
+
+    // Every frame: the waypoints can load after the bag state last changed (AWP download).
+    bagman_update_bot_waypoints();
 
     if (g_bagman_info.carrier) {
         rf::Entity* raw_ep = rf::entity_from_handle(g_bagman_info.carrier->entity_handle);
@@ -576,11 +611,7 @@ void bagman_do_frame()
                 if (g_bagman_info.score_tick.elapsed()) {
                     rf::player_add_score(g_bagman_info.carrier, 1);
                     if (gt_is_tbag()) {
-                        if (g_bagman_info.carrier->team == 0) {
-                            g_bagman_info.red_team_score++;
-                        } else {
-                            g_bagman_info.blue_team_score++;
-                        }
+                        bagman_add_team_score(g_bagman_info.carrier, 1);
                     }
                     apply_effective_health_reward(g_bagman_info.carrier, kCarrierTickEffectiveHealth);
                     g_bagman_info.score_tick.set(kScoreTickMs);
@@ -695,6 +726,21 @@ bool bagman_local_player_is_carrier()
     return gt_is_bagman_any() &&
     g_bagman_info.carrier != nullptr
     && rf::local_player == g_bagman_info.carrier;
+}
+
+void bagman_apply_bag_mesh(rf::Item* item, int item_type)
+{
+    if (item && rf::is_multi && g_bag_mesh_exists && gt_is_bagman_any()
+        && item_type == g_bagman_info.bag_item_type) {
+        rf::item_restore_mesh(item, kBagMeshFilename);
+    }
+}
+
+bool bagman_reserves_item_slot(int item_type)
+{
+    return g_bagman_info.active && g_bagman_info.spawn_known
+        && g_bagman_info.bag_item_type >= 0 && item_type != g_bagman_info.bag_item_type
+        && item_from_handle_or_null(g_bagman_info.bag_item_handle) == nullptr;
 }
 
 bool bagman_viewer_is_carrier_first_person()
@@ -983,24 +1029,6 @@ CodeInjection bagman_suppress_amp_pickup_msg_patch{
     },
 };
 
-FunHook<rf::Item*(int, const char*, int, int, const rf::Vector3*, rf::Matrix3*, int, bool, bool)>
-    item_create_bagman_bag_mesh_swap_hook{
-    0x00459100,
-    [](int type, const char* name, int count, int parent_handle,
-       const rf::Vector3* pos, rf::Matrix3* orient, int respawn_time,
-       bool permanent, bool from_packet) -> rf::Item* {
-        rf::Item* item = item_create_bagman_bag_mesh_swap_hook.call_target(
-            type, name, count, parent_handle, pos, orient,
-            respawn_time, permanent, from_packet);
-
-        if (item && rf::is_multi && g_bag_mesh_exists && gt_is_bagman_any()
-            && type == g_bagman_info.bag_item_type) {
-            rf::item_restore_mesh(item, kBagMeshFilename);
-        }
-        return item;
-    },
-};
-
 CodeInjection bagman_carrier_amp_light_color_patch{
     0x0041EC7C,
     [](auto& regs) {
@@ -1049,7 +1077,4 @@ void bagman_do_patch()
 
     // Bagman's dynamic light is green instead of purple
     bagman_carrier_amp_light_color_patch.install();
-
-    // Amp (bag) pickup uses a new mesh in bagman mode
-    item_create_bagman_bag_mesh_swap_hook.install();
 }

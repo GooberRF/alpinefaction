@@ -5,9 +5,11 @@
 #include <string_view>
 #include <windows.h>
 #include <shellapi.h>
+#include <algorithm>
 #include <vector>
 #include <unordered_map>
 #include <memory>
+#include <optional>
 #include <iomanip>
 #include <sstream>
 #include <string>
@@ -24,7 +26,6 @@
 #include <patch_common/AsmWriter.h>
 #include <patch_common/CodeInjection.h>
 #include <crash_handler_stub.h>
-#include "../game_patch/rf/os/array.h"
 #include "exports.h"
 #include "resources.h"
 #include "level.h"
@@ -37,7 +38,7 @@
 
 // Custom event support
 constexpr int original_event_count = 89;
-constexpr int new_event_count = 65; // must be 1 higher than actual count
+constexpr int new_event_count = 68; // must be 1 higher than actual count
 constexpr int total_event_count = original_event_count + new_event_count;
 std::unique_ptr<const char*[]> extended_event_names; // array to hold original + additional event names
 
@@ -107,6 +108,9 @@ const char* additional_event_names[new_event_count] = {
     "When_Destroyed",
     "Rope_State",
     "Mesh_Set_Scale",
+    "Payload_Handler",
+    "Payload_Checkpoint",
+    "When_Setup_Ends",
     "_dummy"
 };
 
@@ -646,6 +650,31 @@ std::map<AlpineDedEventID, FieldConfig> eventFieldConfigs = {
             {FIELD_INT2, true}
         }
     }},
+    {AlpineDedEventID::Payload_Handler, {
+        {FIELD_STR1, FIELD_INT1, FIELD_FLOAT1, FIELD_INT2, FIELD_BOOL1, FIELD_BOOL2},
+        {
+            {FIELD_STR1, "Name (str1):"},
+            {FIELD_INT1, "Attacking team (int1):"},
+            {FIELD_FLOAT1, "Push radius (float1):"},
+            {FIELD_INT2, "Rollback delay (int2):"},
+            {FIELD_BOOL1, "No healing or ammo (bool1):"},
+            {FIELD_BOOL2, "No finale explosion (bool2):"}
+        },
+        {
+            {FIELD_INT1, {"Blue", "Red"}}
+        },
+        {
+            {FIELD_INT1, true}
+        }
+    }},
+    {AlpineDedEventID::Payload_Checkpoint, {
+        {FIELD_STR1, FIELD_FLOAT1, FIELD_INT1},
+        {
+            {FIELD_STR1, "Name (str1):"},
+            {FIELD_FLOAT1, "Hold seconds (float1):"},
+            {FIELD_INT1, "Time bonus seconds (int1):"}
+        }
+    }},
     {AlpineDedEventID::Modify_Respawn_Point, {
         {FIELD_BOOL1, FIELD_BOOL2},
         {
@@ -825,7 +854,7 @@ std::map<AlpineDedEventID, FieldConfig> eventFieldConfigs = {
     }},
 };
 
-void CreateDynamicControls(HWND hwndDlg, const FieldConfig& config, const std::string& className)
+void CreateDynamicControls(HWND hwndDlg, const FieldConfig& config, int eventType)
 {
     HDC hdc = GetDC(hwndDlg); // Get device context to measure font size
     TEXTMETRIC tm;
@@ -847,8 +876,24 @@ void CreateDynamicControls(HWND hwndDlg, const FieldConfig& config, const std::s
 
         SendMessage(hLabel, WM_SETFONT, (WPARAM)hDefaultFont, TRUE);
 
-        HWND hField = CreateWindowA("STATIC", className.c_str(), WS_VISIBLE | WS_CHILD, xField, yOffset + 4, fieldWidth,
-                                    controlHeight, hwndDlg, nullptr, nullptr, nullptr);
+        HWND hField = CreateWindowA("COMBOBOX", "", WS_VISIBLE | WS_CHILD | WS_VSCROLL | CBS_DROPDOWNLIST | CBS_SORT |
+                                    WS_TABSTOP, xField, yOffset, fieldWidth, controlHeight * 20, hwndDlg,
+                                    reinterpret_cast<HMENU>(FIELD_EVENT_TYPE), nullptr, nullptr);
+
+        // the last name is the count sentinel, which stock's list leaves out too
+        for (int i = 0; i < total_event_count - 1; ++i) {
+            if (extended_event_names[i]) {
+                int item = SendMessage(hField, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(extended_event_names[i]));
+                SendMessage(hField, CB_SETITEMDATA, item, i);
+            }
+        }
+        int count = SendMessage(hField, CB_GETCOUNT, 0, 0);
+        for (int item = 0; item < count; ++item) {
+            if (SendMessage(hField, CB_GETITEMDATA, item, 0) == eventType) {
+                SendMessage(hField, CB_SETCURSEL, item, 0);
+                break;
+            }
+        }
 
         SendMessage(hField, WM_SETFONT, (WPARAM)hDefaultFont, TRUE);
         yOffset += controlHeight + 10; // Increment vertical spacing
@@ -1080,7 +1125,7 @@ INT_PTR CALLBACK DialogProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPara
             SetWindowTextA(hwndDlg, title.c_str());
 
             // Create dynamic controls (already populates dropdowns)
-            CreateDynamicControls(hwndDlg, config, currentDedEvent->class_name.c_str());
+            CreateDynamicControls(hwndDlg, config, currentDedEvent->event_type);
 
             // Populate mandatory fields
             SetDlgItemTextA(hwndDlg, FIELD_SCRIPT_NAME, currentDedEvent->script_name.c_str());
@@ -1187,6 +1232,23 @@ INT_PTR CALLBACK DialogProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPara
             EndDialog(hwndDlg, IDCANCEL);
             return TRUE;
         }
+        else if (LOWORD(wParam) == FIELD_EVENT_TYPE && HIWORD(wParam) == CBN_SELCHANGE && currentDedEvent) {
+            HWND hType = reinterpret_cast<HWND>(lParam);
+            int selectedIndex = SendMessage(hType, CB_GETCURSEL, 0, 0);
+            if (selectedIndex == CB_ERR) {
+                return TRUE;
+            }
+            int newType = static_cast<int>(SendMessage(hType, CB_GETITEMDATA, selectedIndex, 0));
+            if (newType == currentDedEvent->event_type) {
+                return TRUE;
+            }
+            SaveCurrentFields(hwndDlg);
+            currentDedEvent->event_type = newType;
+            currentDedEvent->class_name.assign_0(extended_event_names[newType]);
+            // makes OpenAlpineEventProperties reopen the dialog for the new type, as stock does
+            EndDialog(hwndDlg, FIELD_EVENT_TYPE);
+            return TRUE;
+        }
         else if (LOWORD(wParam) == ID_LINKS && currentDedEvent) {
             // Save current fields before opening Links dialog
             SaveCurrentFields(hwndDlg);
@@ -1194,7 +1256,7 @@ INT_PTR CALLBACK DialogProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPara
 
             if (currentDedLevel) {
                 xlog::info("Opening Links dialog...");
-                OpenLinksDialog(currentDedLevel);
+                currentDedLevel->open_links_dialog();
             }
             return TRUE;
         }
@@ -1208,7 +1270,7 @@ INT_PTR CALLBACK DialogProc(HWND hwndDlg, UINT uMsg, WPARAM wParam, LPARAM lPara
     return FALSE;
 }
 
-bool ShowAlpineEventDialog(HWND parent, DedEvent* dedEvent, CDedLevel* level)
+int ShowAlpineEventDialog(HWND parent, DedEvent* dedEvent, CDedLevel* level)
 {
     currentDedEvent = dedEvent;
     currentDedLevel = level;
@@ -1226,11 +1288,15 @@ bool ShowAlpineEventDialog(HWND parent, DedEvent* dedEvent, CDedLevel* level)
     currentDedEvent = nullptr;
     currentDedLevel = nullptr;
 
-    return (result == IDOK);
+    return result;
 }
 
 void OpenAlpineEventProperties(DedEvent* dedEvent, CDedLevel* level) {
-    if (ShowAlpineEventDialog(GetActiveWindow(), dedEvent, level)) {
+    int result = ShowAlpineEventDialog(GetActiveWindow(), dedEvent, level);
+    if (result == FIELD_EVENT_TYPE) {
+        level->open_event_properties();
+    }
+    else if (result == IDOK) {
         xlog::info("Dialog saved successfully!");
     }
     else {
@@ -1393,7 +1459,8 @@ struct LinkColor { int r, g, b; };
 static LinkColor get_link_color()
 {
     if (const EditorColorPrefs* prefs = editor_color_prefs()) {
-        return {prefs->link_r, prefs->link_g, prefs->link_b};
+        const Color& link = prefs->color(EditorColorPrefIndex::link);
+        return {link.r, link.g, link.b};
     }
     return {0, 0, 255};
 }
@@ -1446,10 +1513,48 @@ static void draw_incoming_brush_links(CDedLevel* level)
     }
 }
 
-CodeInjection draw_links_cache_detail_brushes_patch{
+// Each link line's far end is found by uid, which stock (0x00483920) does by scanning master_objects; while
+// draw_links runs it comes from this map instead, which keeps that scan's first match
+namespace
+{
+
+struct DrawLinksObjectsByUid
+{
+    CDedLevel* level;
+    bool failed = false;
+    std::optional<std::unordered_map<int, DedObject*>> objects;
+
+    // False when the map could not be built, leaving the find to stock
+    bool find(int uid, DedObject*& found)
+    {
+        if (!objects && !failed) {
+            try {
+                objects.emplace();
+                for (int i = 0; i < level->master_objects.size; ++i) {
+                    if (DedObject* obj = level->master_objects.data_ptr[i]) {
+                        objects->emplace(obj->uid, obj);
+                    }
+                }
+            }
+            catch (...) {
+                failed = true;
+                objects.reset();
+            }
+        }
+        if (!objects) return false;
+        const auto it = objects->find(uid);
+        found = it != objects->end() ? it->second : nullptr;
+        return true;
+    }
+};
+
+DrawLinksObjectsByUid* g_draw_links_objects = nullptr;
+
+} // namespace
+
+FunHook<void __fastcall(CDedLevel*)> draw_links_hook{
     0x00422910,
-    [](auto& regs) {
-        auto* level = static_cast<CDedLevel*>(static_cast<void*>(regs.ecx));
+    [](CDedLevel* level) FASTCALL_LAMBDA {
         try {
             rebuild_detail_brush_lookup(level);
             if (g_link_draw_mode == 0) {
@@ -1461,39 +1566,98 @@ CodeInjection draw_links_cache_detail_brushes_patch{
             g_detail_brush_lookup.clear();
             g_any_detail_brush_selected = false;
         }
-    }
+        DrawLinksObjectsByUid objects{level};
+        g_draw_links_objects = &objects;
+        draw_links_hook.call_target(level);
+        g_draw_links_objects = nullptr;
+    },
 };
 
-static void draw_detail_brush_link(BaseCodeInjection::Regs& regs)
+// At draw_links' calls of the uid find, its argument pushed; `after_find` is the caller's pop of it
+static void draw_detail_brush_link(BaseCodeInjection::Regs& regs, uintptr_t after_find)
 {
     const int uid = *static_cast<int*>(static_cast<void*>(regs.esp));
 
     auto it = g_detail_brush_lookup.find(uid);
-    if (it == g_detail_brush_lookup.end()) {
-        return;
+    if (it != g_detail_brush_lookup.end()) {
+        auto* source = static_cast<DedObject*>(static_cast<void*>(regs.esi));
+        const BrushNode* brush = it->second;
+        const int blue = *reinterpret_cast<int*>(regs.esp + 0x1C);
+        const int green = *reinterpret_cast<int*>(regs.esp + 0x20);
+        const int red = *reinterpret_cast<int*>(regs.esp + 0x24);
+
+        draw_link_line(source->pos.x, source->pos.y, source->pos.z,
+                       brush->pos.x, brush->pos.y, brush->pos.z,
+                       red, green, blue);
     }
-
-    auto* source = static_cast<DedObject*>(static_cast<void*>(regs.esi));
-    const BrushNode* brush = it->second;
-    const int blue = *reinterpret_cast<int*>(regs.esp + 0x1C);
-    const int green = *reinterpret_cast<int*>(regs.esp + 0x20);
-    const int red = *reinterpret_cast<int*>(regs.esp + 0x24);
-
-    draw_link_line(source->pos.x, source->pos.y, source->pos.z,
-                   brush->pos.x, brush->pos.y, brush->pos.z,
-                   red, green, blue);
+    DedObject* target = nullptr;
+    if (g_draw_links_objects && g_draw_links_objects->find(uid, target)) {
+        regs.eax = reinterpret_cast<uintptr_t>(target);
+        regs.eip = after_find;
+    }
 }
 
 // "Show links for all objects" pass.
 CodeInjection draw_links_all_objects_brush_patch{
     0x004229B6,
-    [](auto& regs) { draw_detail_brush_link(regs); }
+    [](auto& regs) { draw_detail_brush_link(regs, 0x004229BB); }
 };
 
 // "Show links for the selection" pass.
 CodeInjection draw_links_selection_brush_patch{
     0x00422A67,
-    [](auto& regs) { draw_detail_brush_link(regs); }
+    [](auto& regs) { draw_detail_brush_link(regs, 0x00422A6C); }
+};
+
+// The selection pass's lines into the selection: stock tests every object against every selected one (0x004228B0),
+// so this draws each object's lines to the selected objects its links name, in selection order
+CodeInjection draw_links_selection_incoming_patch{
+    0x00422ACE,
+    [](auto& regs) {
+        auto* level = static_cast<CDedLevel*>(static_cast<void*>(regs.esi));
+        const auto& selection = level->selection;
+        if (selection.size <= 0) {
+            regs.eip = 0x00422B79;
+            return;
+        }
+        // Everything that can fail to allocate comes before the first line, so stock's loop can take over
+        try {
+            std::unordered_map<int, std::vector<int>> selected_by_uid;
+            for (int i = 0; i < selection.size; ++i) {
+                const DedObject* target = selection.data_ptr[i];
+                if (target && !target->hidden_in_editor) {
+                    selected_by_uid[target->uid].push_back(i);
+                }
+            }
+            std::vector<std::vector<int>> targets_of(level->master_objects.size);
+            for (int i = 0; !selected_by_uid.empty() && i < level->master_objects.size; ++i) {
+                const DedObject* source = level->master_objects.data_ptr[i];
+                if (!source || source->hidden_in_editor) continue;
+                auto& targets = targets_of[i];
+                for (int k = 0; k < source->links.size; ++k) {
+                    const auto it = selected_by_uid.find(source->links.data_ptr[k]);
+                    if (it != selected_by_uid.end()) {
+                        targets.insert(targets.end(), it->second.begin(), it->second.end());
+                    }
+                }
+                std::sort(targets.begin(), targets.end());
+                targets.erase(std::unique(targets.begin(), targets.end()), targets.end());
+            }
+            const LinkColor color = get_link_color();
+            for (size_t i = 0; i < targets_of.size(); ++i) {
+                const DedObject* source = level->master_objects.data_ptr[i];
+                for (const int index : targets_of[i]) {
+                    const DedObject* target = selection.data_ptr[index];
+                    draw_link_line(source->pos.x, source->pos.y, source->pos.z, target->pos.x, target->pos.y,
+                                   target->pos.z, color.r, color.g, color.b);
+                }
+            }
+        }
+        catch (...) {
+            return;
+        }
+        regs.eip = 0x00422B79;
+    },
 };
 
 void ApplyEventsPatches()
@@ -1502,9 +1666,10 @@ void ApplyEventsPatches()
     DedEvent__exchange_patch.install();
 
     // Draw link lines from objects to the detail brushes they link to
-    draw_links_cache_detail_brushes_patch.install();
+    draw_links_hook.install();
     draw_links_all_objects_brush_patch.install();
     draw_links_selection_brush_patch.install();
+    draw_links_selection_incoming_patch.install();
 
     // Allow linking events to detail brushes by UID (When_Destroyed)
     links_dialog_allow_detail_brush_patch.install();

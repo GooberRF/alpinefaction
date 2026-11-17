@@ -37,7 +37,7 @@ static void weather_region_load_icon()
 void DestroyDedWeatherRegion(DedWeatherRegion* weather_region)
 {
     if (!weather_region) return;
-    weather_region->field_4.free();
+    weather_region->class_mesh_filename.free();
     weather_region->script_name.free();
     weather_region->class_name.free();
     delete weather_region;
@@ -768,7 +768,7 @@ void weather_region_render(CDedLevel* level)
     weather_region_load_icon();
 
     const uint32_t mode = editor_line_mode();
-    const float cam_param = gr_cam_param;
+    const rf::gr::Mode billboard_mode = rf::gr::bitmap_3d_mode_no_z;
 
     for (auto* region : regions) {
         if (region->hidden_in_editor) continue;
@@ -821,7 +821,7 @@ void weather_region_render(CDedLevel* level)
         if (g_weather_region_icon_handle >= 0) {
             gr_set_bitmap(g_weather_region_icon_handle, -1);
         }
-        gr_render_billboard(&region->pos, 0, weather_region_icon_size, cam_param);
+        gr_render_billboard(&region->pos, 0, weather_region_icon_size, billboard_mode);
     }
 }
 
@@ -907,6 +907,11 @@ void weather_region_paste_objects(CDedLevel* level)
             level->add_to_selection(static_cast<DedObject*>(clone));
         }
     }
+}
+
+void weather_region_swap_clipboard(std::vector<DedWeatherRegion*>& other)
+{
+    g_weather_region_clipboard.swap(other);
 }
 
 void weather_region_clear_clipboard()

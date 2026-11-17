@@ -38,6 +38,10 @@ bool AlpineCoreConfig::load(const std::string& filename)
         vsync = string_to_bool(settings["VerticalSync"]);
         processed.insert("VerticalSync");
     }
+    if (settings.count("D3D11_PreferHighPerformanceGPU")) {
+        prefer_high_performance_gpu = string_to_bool(settings["D3D11_PreferHighPerformanceGPU"]);
+        processed.insert("D3D11_PreferHighPerformanceGPU");
+    }
     if (settings.count("D3D11_LowFrameLatency")) {
         low_frame_latency = string_to_bool(settings["D3D11_LowFrameLatency"]);
         processed.insert("D3D11_LowFrameLatency");
@@ -97,6 +101,7 @@ void AlpineCoreConfig::save(const std::string& filename) const
 
     file << "\n[Configuration]\n";
     file << "VerticalSync=" << bool_to_string(vsync) << "\n";
+    file << "D3D11_PreferHighPerformanceGPU=" << bool_to_string(prefer_high_performance_gpu) << "\n";
 
     file << "\n[Experimental]\n";
     file << "; These settings may cause crashes or other drawbacks on certain system configurations.\n";

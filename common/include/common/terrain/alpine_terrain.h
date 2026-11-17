@@ -107,7 +107,9 @@ inline constexpr std::uint8_t overlay_flag_mask = overlay_flag_triplanar | overl
 
 // Decorations: a static mesh scattered over the surface by its painted coverage plane, optionally scaled by a
 // texture layer's weight. Visual only.
-inline constexpr std::uint32_t max_decorations = 8;
+inline constexpr std::uint32_t max_decorations = 255;
+// The wire count and RED's per-instance decoration index are bytes.
+static_assert(max_decorations <= 0xFF);
 inline constexpr std::uint8_t decoration_link_none = 0xFF;
 inline constexpr std::uint8_t decoration_coverage_full = 255;
 inline constexpr std::uint8_t decoration_flag_align_to_slope = 0x1;
@@ -150,6 +152,9 @@ inline constexpr std::uint32_t max_decoration_instances_per_texel = 256;
 // tried this many candidates, placed or dropped by the slope limit (DecorationBudget).
 inline constexpr std::uint32_t max_level_decoration_instances = 250000;
 inline constexpr std::uint32_t max_level_decoration_candidates = 4 * max_level_decoration_instances;
+// Distinct decoration meshes a level loads, in the order the game places them; the rest draw nothing. The engine
+// appends every loaded mesh file to a 500 entry table (0x0053AB40) without a bounds check.
+inline constexpr std::uint32_t max_level_decoration_meshes = 128;
 
 // Decompressed bytes summed over every 0x0AFBAE0B chunk; a chunk that would pass it is dropped whole.
 inline constexpr std::uint64_t max_level_raw_bytes = 128ull * 1024 * 1024;
@@ -750,9 +755,10 @@ inline constexpr std::size_t blob_decoration_bytes(std::uint32_t nx, std::uint32
     return (flags & flag_decorations) ? decoration_plane_bytes(nx, nz, mul) * decoration_count : 0;
 }
 
-static_assert(blob_raw_size(max_verts, max_verts, 4) + chunk_mask_bytes(max_chunks) +
+static_assert(static_cast<std::uint64_t>(blob_raw_size(max_verts, max_verts, 4)) + chunk_mask_bytes(max_chunks) +
                   overlay_map_bytes(max_verts, max_verts, 4) +
-                  max_decorations * decoration_plane_bytes(max_verts, max_verts, 4) < 0xFFFFFFFFull);
+                  std::uint64_t{max_decorations} * decoration_plane_bytes(max_verts, max_verts, 4) <
+              0xFFFFFFFFull);
 
 // ─── Validation (every reader, and the editor before it writes) ──────────────
 

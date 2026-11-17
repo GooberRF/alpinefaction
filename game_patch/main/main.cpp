@@ -22,33 +22,43 @@
 #include "../bmpman/bmpman.h"
 #include "../debug/debug.h"
 #include "../graphics/gr.h"
+#include "../graphics/detail_texture.h"
 #include "../graphics/weather.h"
 #include "../graphics/scene_capture.h"
-#include "../graphics/d3d11/gr_d3d11_mesh.h"
+#include <common/gr_d3d11/gr_d3d11_mesh.h>
+#include "../graphics/d3d11/gr_d3d11_hooks.h"
 #include "../hud/hud.h"
 #include "../hud/hud_world.h"
 #include "../hud/minimap.h"
 #include "../hud/multi_scoreboard.h"
 #include "../hud/multi_spectate.h"
 #include "../object/object.h"
+#include "../object/particle_sim.h"
 #include "../multi/multi.h"
 #include "../multi/demo/demo.h"
 #include "../multi/gametype.h"
 #include "../multi/mutators.h"
 #include "../multi/bagman.h"
+#include "../multi/payload.h"
 #include "../multi/jetpack.h"
+#include "../multi/powerups.h"
 #include "../multi/salvage.h"
 #include "../multi/vehicles/vehicle.h"
 #include "../multi/vehicles/vehicle_markers.h"
 #include "../multi/vehicles/vehicle_physics.h"
 #include "../multi/vehicles/vehicle_tracers.h"
+#include "../multi/haste_trails.h"
+#include "../multi/vehicles/vehicle_trails.h"
 #include "../multi/server.h"
 #include "../multi/server_internal.h"
 #include "../multi/alpine_packets.h"
+#include "../multi/bots/server_bots.h"
 #include "../multi/awards.h"
 #include "../fflink/fflink.h"
+#include "../fflink/fflink_utils.h"
 #include "../misc/misc.h"
 #include "../misc/achievements.h"
+#include "../misc/discord_presence.h"
 #include "../misc/spray_picker.h"
 #include "../multi/demo/demo_browser.h"
 #include "../misc/alpine_options.h"
@@ -62,6 +72,9 @@
 #include "../graphics/af_lightmap.h"
 #include "../object/alpine_corona.h"
 #include "../object/alpine_rope.h"
+#include "../object/zipline.h"
+#include "../sound/sound.h"
+#include "../input/bind_context.h"
 #include "../input/input.h"
 #include "../rf/gr/gr.h"
 #include "../rf/multi.h"
@@ -75,11 +88,14 @@
 #endif
 
 #include "../multi/bots/bot_main.h"
+#include "../multi/bots/bot_vehicle_nav.h"
+#include "../ui/reference_data.h"
 
 GameConfig g_game_config;
 AlpineCoreConfig g_alpine_system_config;
 HMODULE g_hmodule;
 std::time_t g_process_startup_time;
+static DWORD g_main_thread_id = 0;
 
 std::mt19937 g_rng;
 
@@ -92,6 +108,7 @@ void initialize_random_generator() {
 CallHook<void()> rf_init_hook{
     0x004B27CD,
     [] {
+        g_main_thread_id = GetCurrentThreadId();
         const uint64_t start_ticks = GetTickCount64();
         xlog::info("Initializing game...");
         initialize_alpine_core_config();
@@ -125,10 +142,15 @@ CodeInjection after_full_game_init_hook{
         experimental_init_after_game();
 #endif
         console_init();
+        discord_presence_init();
         multi_after_full_game_init();
         debug_init();
         if (!is_headless_mode()) {
             load_world_hud_assets();
+            if (!rf::is_dedicated_server) {
+                // Every table and packfile is in by now, and the lists never change after.
+                reference_data_load();
+            }
         }
         execute_startup_scripts();
 
@@ -142,6 +164,7 @@ CodeInjection cleanup_game_hook{
     []() {
         // Set abort flag so AWP download future exits quickly and doesn't block static destruction
         cancel_awp_download();
+        discord_presence_shutdown();
         debug_cleanup();
     },
 };
@@ -174,24 +197,31 @@ FunHook<int()> rf_do_frame_hook{
         riot_shield_do_frame();
         client_bot_do_frame();
         koth_do_frame();
+        payload_do_frame(); // before the stock frame moves the cart
         bagman_do_frame();
+        powerups_do_frame();
         jetpack_do_frame();
         salvage_client_do_frame();      // client-side Salvage carried-flag attachment
         vehicle_client_do_frame();      // vehicle trigger state of the local firing seat owner
         vehicle_physics_do_frame();     // Bullet vehicle sim: body lifecycle (the step runs after the input read)
         hud_pit_queue_auto_spectate();  // client-side Pit auto-spectate
+        hud_forced_spectate_do_frame();
         gungame_client_do_frame();      // client-side Gun Game level-up notification watcher
         alpine_mesh_do_frame();
         alpine_rope_do_frame();
+        zipline_do_frame();
         item_do_frame();
         atx_do_frame();
         fflink::do_frame();
         int result = rf_do_frame_hook.call_target();
+        bind_context_do_frame();
         maybe_autosave();
         debug_do_frame_post();
         multi_level_download_update();
         poll_awp_download();
         waypoints_do_frame();
+        world_hud_clock_do_frame();
+        discord_presence_do_frame();
         return result;
     },
 };
@@ -210,38 +240,54 @@ CodeInjection after_level_render_hook{
         alpine_terrain_decorations_render_legacy();
         crits_client_render();
         vehicle_tracers_render();
+        haste_trails_render();
+        vehicle_trails_render();
         debug_render();
         waypoints_render_debug();
         client_bot_render_debug();
         vehicle_physics_render_debug();
+        bot_vehicle_nav_render_debug();
         vehicle_markers_render();   // 3D phase: leftovers only; the room pass below draws the rest
         hud_world_do_frame();
+    },
+};
+
+FunHook<void()> game_render_cursor_hook{
+    0x00435460,
+    [] {
+        if (gameseq_is_visible()) {
+            game_render_cursor_hook.call_target();
+        }
     },
 };
 
 CodeInjection after_frame_render_hook{
     0x004B2DC2,
     [] {
-        const rf::GameState state = rf::gameseq_get_state();
-        if (!rf::is_dedicated_server
-            && !is_headless_mode()
-            && state != rf::GS_QUITING
-            && state != rf::GS_NEW_LEVEL
-            && state != rf::GS_MULTI_GETTING_STATE_INFO) {
-            // Draw on top (after scene)
-            demo_playback_render_seek_overlay(); // first: covers the stale frame, UI below stays on top
-            frametime_render_ui();
-            achievement_system_do_frame();
-            awards_client_do_frame();
-            fullscreen_overlay_do_frame();
+        if (!rf::is_dedicated_server) {
             gas_region_transition_do_frame();
-            spray_picker_render();
-            demo_browser_render();
+
+            if (gameseq_is_visible() && !is_headless_mode()) {
+                // Draw on top (after scene)
+                g_solid_render_ui();
+                awards_client_do_frame();
+                fullscreen_overlay_do_frame();
+                achievement_system_do_frame();
+                demo_playback_render_seek_overlay();
+                frametime_render_ui();
+                demo_browser_render();
+                spray_picker_render();
 #if !defined(NDEBUG) && defined(HAS_EXPERIMENTAL)
-            experimental_render();
+                experimental_render();
 #endif
-            debug_render_ui();
-            g_solid_render_ui();
+                debug_render_ui();
+                particle_sim_render_ui();
+            }
+
+            // To dim our screen, and display "LOADING...", exit limbo here instead.
+            if (g_gameseq_defer_new_level) {
+                rf::gameseq_set_state(rf::GS_NEW_LEVEL, false);
+            }
         }
     },
 };
@@ -254,12 +300,15 @@ FunHook<int(rf::String&, rf::String&, char*)> level_load_hook{
         waypoints_level_reset();
         projector_clear_all();
         atx_level_reset();
+        detail_texture_level_reset();
+        particle_sim_level_reset();
         alpine_camera_clear_static_mode();
         if (!save_filename.empty())
             xlog::info("Restoring game from save file: {}", save_filename);
 
         // attempt to load level_info tbl file
         load_level_info_config(level_filename);
+        snd_level_looping_init(g_alpine_level_info_config.looping_sounds);
 
         // evaluate and cache vertex lighting mode for this level (D3D11 only)
         if (is_d3d11()) {
@@ -284,6 +333,28 @@ FunHook<int(rf::String&, rf::String&, char*)> level_load_hook{
                         gr::d3d11::g_level_pixel_light_overbright, level_filename);
                 }
             }
+
+            gr::d3d11::evaluate_underwater_fx(level_filename);
+            auto print_underwater_override = [&](AlpineLevelInfoID id, bool ignored, const char* effect,
+                                                 const char* ignore_cmd) {
+                if (!g_alpine_level_info_config.is_option_loaded(level_filename, id)
+                    || !get_level_info_value<bool>(id)) {
+                    return;
+                }
+                if (ignored) {
+                    rf::console::print("Ignoring {} override in mapname_info.tbl for {} ({} is enabled)", effect,
+                                       level_filename, ignore_cmd);
+                }
+                else {
+                    rf::console::print("Disabling {} for {} (per override present in mapname_info.tbl)", effect,
+                                       level_filename);
+                }
+            };
+            print_underwater_override(AlpineLevelInfoID::DisableCaustics, g_alpine_game_config.ignore_tbl_caustics,
+                                      "caustics", "cl_ignore_tbl_caustics");
+            print_underwater_override(AlpineLevelInfoID::DisableUnderwaterFog,
+                                      g_alpine_game_config.ignore_tbl_underwater_fog, "underwater fog",
+                                      "cl_ignore_tbl_underwater_fog");
 
             gr::d3d11::evaluate_alpha_test_threshold(level_filename);
             if (is_stock_alpha_test_level(level_filename)) {
@@ -326,31 +397,25 @@ FunHook<void(bool)> level_init_post_hook{
         level_init_post_hook.call_target(transition);
         xlog::info("Level loaded: {}{}", rf::level.filename, transition ? " (transition)" : "");
 
-        // Cancel any in-flight AWP download from a previous map
-        cancel_awp_download();
-
-        // Flow 2A: Bot clients — start async AWP download before waypoints_level_init
-        // so it sees the pending flag and defers load_waypoints until download resolves
-        if (rf::is_multi && client_bot_launch_enabled()) {
-            waypoints_set_awp_download_pending(true);
-            if (!start_awp_download_for_installed_map(std::string{rf::level.filename.c_str()}, 3)) {
-                waypoints_set_awp_download_pending(false);
-            }
-        }
-
-        waypoints_level_init();
-
-        // Flow 2B: Normal clients with autodl_download_awps — fire-and-forget AWP download
-        if (rf::is_multi && !client_bot_launch_enabled() && !rf::is_dedicated_server
-            && g_alpine_game_config.autodl_download_awps) {
-            start_awp_download_for_installed_map(std::string{rf::level.filename.c_str()}, 1);
-        }
-
         // Create corona objects (clutter + glare pairs) now that geometry is loaded
         alpine_corona_create_all();
 
-        // Ropes resolve their target uids here, once every level object exists
+        // Ropes resolve their target uids here, once every level object exists.
         alpine_rope_level_init();
+        zipline_level_init();
+
+        // Flow 2A: bots and the spawn route arrows start their AWP download before the waypoints load
+        waypoints_level_init_with_awp_download();
+        if (is_waypoint_bot_mode_active()) {
+            bot_vehicle_nav_level_init();
+        }
+
+        // Flow 2B: Normal clients with autodl_download_awps — fire-and-forget AWP download, unless the route arrows
+        // already started one
+        if (rf::is_multi && !is_waypoint_bot_mode_active() && !rf::is_dedicated_server
+            && g_alpine_game_config.autodl_download_awps && !waypoints_awp_download_pending()) {
+            start_awp_download_for_installed_map(std::string{rf::level.filename.c_str()}, 1);
+        }
 
         apply_maximum_fps(); // set maximum FPS based on game state
         process_queued_spawn_points_from_items();
@@ -361,6 +426,8 @@ FunHook<void(bool)> level_init_post_hook{
         // After gametype init so the demo snapshot includes koth/bagman/salvage/pit state
         demo_server_on_level_init_post();
         gib_flames_level_init();
+        server_bots_on_level_init();
+        shell_casings_level_init();
         // Multiplayer resets the jetpack from its own level-init injection.
         if (!rf::is_multi) {
             jetpack_level_init();
@@ -372,18 +439,22 @@ FunHook<void(bool)> level_init_post_hook{
         if (!rf::is_dedicated_server && !is_headless_mode()) {
             alpine_terrain_decorations_level_init();
             explosion_flash_lights_level_init();
+            gr::d3d11::build_liquid_volume_mask();
             evaluate_fullbright_meshes();
             set_levelmod_autotexture_ppm();
             if (!rf::is_multi) {
                 update_player_flashlight();
+                hud_reticle_prompt_clear();
             }
             else {
                 toggle_chat_menu(ChatMenuType::None);
                 player_multi_level_post_init();
                 multi_hud_level_init();
+                powerups_level_init_post();
                 minimap_level_init_post();
                 // listen server host spawns before this init, so we need to run on_local_spawn for them again
                 if (rf::is_server) {
+                    payload_greet_listen_host();
                     multi_hud_on_local_spawn();
                 }
             }
@@ -429,9 +500,13 @@ protected:
     {
         static auto& console_inited = addr_as_ref<bool>(0x01775680);
         if (console_inited) {
-            flush_startup_buf();
-
             rf::Color color = color_from_level(level);
+            // Worker threads log too, and the console scrollback is not thread-safe.
+            if (g_main_thread_id && GetCurrentThreadId() != g_main_thread_id) {
+                fflink::enqueue_main_thread_task([str, color] { rf::console::output(str.c_str(), &color); });
+                return;
+            }
+            flush_startup_buf();
             rf::console::output(str.c_str(), &color);
         }
         else {
@@ -563,6 +638,10 @@ void load_config()
     catch (std::exception& e) {
         xlog::error("Failed to load configuration: {}", e.what());
     }
+    // Seed the ini-backed copies so a missing key keeps the registry choice, and so renderer init
+    // (before the ini loads) sees it.
+    g_alpine_game_config.anisotropic_filtering = g_game_config.anisotropic_filtering;
+    g_alpine_game_config.reduced_speed_in_background = g_game_config.reduced_speed_in_background;
 
     // Log information from config
     xlog::info("Resolution: {}x{}x{}", g_game_config.res_width.value(), g_game_config.res_height.value(), g_game_config.res_bpp.value());
@@ -619,6 +698,7 @@ extern "C" DWORD __declspec(dllexport) Init([[maybe_unused]] void* unused)
     rf_do_frame_hook.install();
     after_level_render_hook.install();
     after_frame_render_hook.install();
+    game_render_cursor_hook.install();
     level_load_hook.install();
     level_init_post_hook.install();
 

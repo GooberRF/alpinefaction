@@ -1,5 +1,5 @@
 #include "hud_internal.h"
-#include "../rf/bmpman.h"
+#include "hud.h"
 #include "../rf/hud.h"
 #include "../rf/player/player.h"
 #include "../rf/entity.h"
@@ -8,7 +8,9 @@
 #include "../rf/gr/gr_font.h"
 #include "../rf/localize.h"
 #include "../rf/multi.h"
+#include "../rf/os/frametime.h"
 #include "../misc/alpine_settings.h"
+#include "../os/os.h"
 #include "../multi/vehicles/vehicle.h"
 #include <patch_common/AsmWriter.h>
 #include <patch_common/FunHook.h>
@@ -16,6 +18,7 @@
 #include <patch_common/MemUtils.h>
 #include <algorithm>
 #include <cmath>
+#include <format>
 
 bool g_big_health_armor_hud = false;
 
@@ -47,96 +50,154 @@ void hud_vehicle_bar_fill_color(float frac, rf::ubyte& r, rf::ubyte& g, rf::ubyt
 
 namespace
 {
-    // unscaled hud.tbl units
-    constexpr int hud_vehicle_panel_gap = 6;
-    constexpr int hud_vehicle_bar_height = 24;
+    constexpr int hud_side_gauge_text_gap = 4;
 
-    int hud_bitmap_height(int bmh)
+    float hud_vehicle_bar_alpha(const HudVehicleBarFade& bar, int64_t now)
     {
-        int w = 0;
-        int h = 0;
-        if (bmh >= 0) {
-            rf::bm::get_dimensions(bmh, &w, &h);
+        const float fade = bar.full_since_ms < 0
+            ? 1.0f
+            : std::clamp(1.0f - static_cast<float>(now - bar.full_since_ms) / hud_vehicle_bar_fade_ms, 0.0f, 1.0f);
+        const float t = std::clamp(static_cast<float>(now - bar.rise_since_ms) / hud_vehicle_bar_rise_ms, 0.0f, 1.0f);
+        return std::min(bar.rise_from + (1.0f - bar.rise_from) * t, fade);
+    }
+} // namespace
+
+float HudVehicleBarFade::update(int hull, bool showing)
+{
+    if (hull_handle != hull || last_frame != rf::frame_count - 1) {
+        *this = HudVehicleBarFade{hull};
+    }
+    last_frame = rf::frame_count;
+
+    const int64_t now = timer::get_i64(1000);
+    if (showing) {
+        if (!active || full_since_ms >= 0) {
+            rise_from = active ? hud_vehicle_bar_alpha(*this, now) : 0.0f;
+            rise_since_ms = now;
+            full_since_ms = -1;
+            active = true;
         }
-        return h;
+    }
+    else {
+        if (!active) {
+            return 0.0f;
+        }
+        if (full_since_ms < 0) {
+            full_since_ms = now;
+        }
+        if (now - full_since_ms >= hud_vehicle_bar_fade_ms) {
+            active = false;
+            return 0.0f;
+        }
+    }
+    return hud_vehicle_bar_alpha(*this, now);
+}
+
+void hud_draw_shadowed_text(int x, int y, const char* text, int font, const rf::Color& color, rf::ubyte shadow_alpha,
+                            int shadow_offset)
+{
+    rf::gr::set_color(0, 0, 0, shadow_alpha);
+    rf::gr::string_aligned(rf::gr::ALIGN_CENTER, x + shadow_offset, y + shadow_offset, text, font);
+    rf::gr::set_color(color);
+    rf::gr::string_aligned(rf::gr::ALIGN_CENTER, x, y, text, font);
+}
+
+HudSideGaugeRect hud_side_gauge_rect(bool left)
+{
+    const bool big = g_alpine_game_config.big_hud;
+    const int w = big ? 16 : 10;
+    const int h = big ? 180 : 120;
+    const int margin = big ? 60 : 40;
+    return {left ? margin : rf::gr::clip_width() - margin - w, (rf::gr::clip_height() - h) / 2, w, h};
+}
+
+int hud_side_gauge_label_y(const HudSideGaugeRect& rect)
+{
+    return rect.y - rf::gr::get_font_height(hud_get_small_font()) - hud_side_gauge_text_gap;
+}
+
+void hud_draw_side_gauge(bool left, float frac, const rf::Color& fill, const char* label, const char* value,
+                         float alpha)
+{
+    const auto scaled = [alpha](int a) { return static_cast<rf::ubyte>(a * alpha); };
+    const HudSideGaugeRect rect = hud_side_gauge_rect(left);
+    const auto [x, y, w, h] = rect;
+    const int border = g_alpine_game_config.big_hud ? 2 : 1;
+
+    rf::gr::set_color(0, 0, 0, scaled(128));
+    rf::gr::rect(x, y, w, h);
+    rf::gr::set_color(255, 255, 255, scaled(170));
+    hud_rect_border(x, y, w, h, border);
+
+    const int inner_h = h - 2 * border;
+    const int fill_h = static_cast<int>(inner_h * std::clamp(frac, 0.0f, 1.0f));
+    if (fill_h > 0) {
+        rf::gr::set_color(fill.red, fill.green, fill.blue, scaled(220));
+        rf::gr::rect(x + border, y + border + (inner_h - fill_h), w - 2 * border, fill_h);
     }
 
-    // Where the health/armor cluster ends, in unscaled hud.tbl units.
-    int hud_status_cluster_bottom(rf::Entity* entity)
+    const int font = hud_get_small_font();
+    const rf::Color text_color{255, 255, 255, scaled(hud_shadowed_text_alpha)};
+    const rf::ubyte shadow_alpha = scaled(hud_shadowed_text_shadow_alpha);
+    hud_draw_shadowed_text(x + w / 2, hud_side_gauge_label_y(rect), label, font, text_color, shadow_alpha,
+                           hud_shadowed_text_shadow_offset_px);
+    if (value) {
+        hud_draw_shadowed_text(x + w / 2, y + h + hud_side_gauge_text_gap, value, font, text_color, shadow_alpha,
+                               hud_shadowed_text_shadow_offset_px);
+    }
+}
+
+namespace
+{
+    // Below the reticle, clear of the notification slots above it: amber through the countdown, then a red pulse
+    // while the hull drains.
+    void hud_draw_vehicle_hazard_warning(const VehicleHazardView& hazard)
     {
-        const int health_idx = std::clamp(static_cast<int>(entity->life * 0.1f), 0, 10);
-        const float max_armor = entity->info ? entity->info->max_armor : 0.0f;
-        const int enviro_idx = max_armor > 0.0f
-            ? std::clamp(static_cast<int>(entity->armor / max_armor * 10.0f), 0, 10)
-            : 0;
-        int bottom = rf::hud_coords[rf::hud_health].y + hud_bitmap_height(rf::hud_health_bitmaps[health_idx]);
-        bottom = std::max(bottom,
-                          rf::hud_coords[rf::hud_envirosuit].y + hud_bitmap_height(rf::hud_enviro_bitmaps[enviro_idx]));
-        bottom = std::max(bottom, rf::hud_coords[rf::hud_health_value_ul_corner].y
-                                      + rf::hud_coords[rf::hud_health_value_width_and_height].y);
-        bottom = std::max(bottom, rf::hud_coords[rf::hud_envirosuit_value_ul_corner].y
-                                      + rf::hud_coords[rf::hud_envirosuit_value_width_and_height].y);
-        return bottom;
+        static float pulse_phase = 0.0f;
+        const bool draining = hazard.warn_left <= 0.0f;
+        pulse_phase = draining ? pulse_phase + rf::frametime * 12.0f : 0.0f;
+        const auto alpha = static_cast<rf::ubyte>(draining ? 150.0f + 105.0f * std::cos(pulse_phase) : 255.0f);
+        const rf::Color color = draining ? rf::Color{255, 60, 40, alpha} : rf::Color{255, 190, 0, alpha};
+
+        const int font_id = hud_get_large_font();
+        const int x = rf::gr::clip_width() / 2;
+        const int y = rf::gr::clip_height() * 5 / 8;
+        const std::string detail = draining ? "BAIL OUT!" : std::format("BAIL OUT  {:.1f}", hazard.warn_left);
+        hud_draw_shadowed_text(x, y, hazard.is_sub ? "OUT OF WATER" : "FLOODING", font_id, color, alpha, 2);
+        hud_draw_shadowed_text(x, y + rf::gr::get_font_height(font_id), detail.c_str(), font_id, color, alpha, 2);
     }
 
-    // Drawn under the rider's own health/armor cluster, not instead of it.
-    void hud_draw_vehicle_status(rf::Entity* entity, float scale)
+    // The jetpack fuel gauge's twin on the left, with the hull's life below; only while the hull is below full.
+    void hud_draw_vehicle_hull_gauge(rf::Entity* vehicle)
+    {
+        static HudVehicleBarFade fade;
+        const float max_life = vehicle_hud_max_life(vehicle);
+        const float life = vehicle_hud_life(vehicle);
+        const float frac = max_life > 0.0f ? std::clamp(life / max_life, 0.0f, 1.0f) : 1.0f;
+        const float alpha = fade.update(vehicle->handle, frac < 1.0f);
+        if (alpha <= 0.0f) {
+            return;
+        }
+        rf::ubyte r, g, b, a;
+        hud_vehicle_bar_fill_color(frac, r, g, b, a);
+        // Rounded up, so a hull still alive never reads 0.
+        const auto life_str = std::to_string(std::max(static_cast<int>(std::ceil(life)), 0));
+        hud_draw_side_gauge(true, frac, {r, g, b}, "HULL", life_str.c_str(), alpha);
+    }
+
+    // The ridden hull's gauge, and its drown or strand warning.
+    void hud_draw_vehicle_status(rf::Entity* entity)
     {
         rf::Entity* vehicle = vehicle_ridden_hull(entity);
         if (!vehicle) {
             return;
         }
+        hud_draw_vehicle_hull_gauge(vehicle);
 
-        const int bar_x_unscaled = rf::hud_coords[rf::hud_envirosuit].x;
-        const int bar_y_unscaled = hud_status_cluster_bottom(entity) + hud_vehicle_panel_gap;
-        const int bar_w_unscaled = rf::hud_coords[rf::hud_envirosuit_value_ul_corner].x
-            + rf::hud_coords[rf::hud_envirosuit_value_width_and_height].x - bar_x_unscaled;
-
-        rf::HudPoint pos = hud_scale_coords(rf::HudPoint{bar_x_unscaled, bar_y_unscaled}, scale);
-        const int w = std::max(8, static_cast<int>(bar_w_unscaled * scale));
-        const int h = std::max(6, static_cast<int>(hud_vehicle_bar_height * scale));
-
-        // Keep the whole bar on screen whatever hud.tbl and the scale produce.
-        pos.x -= std::max(0, pos.x + w - rf::gr::clip_width());
-        pos.y -= std::max(0, pos.y + h - rf::gr::clip_height());
-
-        const float max_life = vehicle_hud_max_life(vehicle);
-        const float life = vehicle_hud_life(vehicle);
-        const float frac = max_life > 0.0f ? std::clamp(life / max_life, 0.0f, 1.0f) : 1.0f;
-
-        const int border = std::max(1, static_cast<int>(std::lround(scale)));
-        const int inner_x = pos.x + border;
-        const int inner_y = pos.y + border;
-        const int inner_w = std::max(1, w - 2 * border);
-        const int inner_h = std::max(1, h - 2 * border);
-
-        rf::gr::set_color(0, 0, 0, 150);
-        rf::gr::rect(pos.x, pos.y, w, h);
-
-        if (frac > 0.0f) {
-            rf::ubyte r, g, b, a;
-            hud_vehicle_bar_fill_color(frac, r, g, b, a);
-            rf::gr::set_color(r, g, b, a);
-            // Rounded rather than truncated, so a full hull reaches the far edge.
-            rf::gr::rect(inner_x, inner_y, std::clamp(static_cast<int>(std::lround(inner_w * frac)), 1, inner_w),
-                         inner_h);
+        VehicleHazardView hazard;
+        if (vehicle_hazard_view(vehicle, hazard)) {
+            hud_draw_vehicle_hazard_warning(hazard);
         }
-
-        rf::gr::set_color(150, 150, 150, 170);
-        hud_rect_border(pos.x, pos.y, w, h, border);
-
-        // No ascent metric exists - both engine helpers return the whole LINE height - so th/6
-        // approximates the empty descender space and pulls the digits off the visual high side.
-        const int font_id = rf::hud_status_font;
-        auto life_str = std::to_string(std::max(static_cast<int>(life), 0));
-        const int th = rf::gr::get_string_size(life_str, font_id).second;
-        const int text_x = inner_x + inner_w / 2;
-        const int text_y = inner_y + (inner_h - th + 1) / 2 + th / 6;
-
-        rf::gr::set_color(0, 0, 0, 220);
-        rf::gr::string_aligned(rf::gr::ALIGN_CENTER, text_x + border, text_y + border, life_str.c_str(), font_id);
-        rf::gr::set_color(255, 255, 255, 255);
-        rf::gr::string_aligned(rf::gr::ALIGN_CENTER, text_x, text_y, life_str.c_str(), font_id);
     }
 
     // Retargets hud_status_render's entity_in_vehicle call (0x00439DA0). Answering false lands on
@@ -169,7 +230,7 @@ FunHook<void(rf::Player*)> hud_status_render_hook{
             // The retarget has already sent this man down the stock on-foot path.
             hud_status_render_hook.call_target(player);
             if (widget_rider) {
-                hud_draw_vehicle_status(widget_rider, 1.0f);
+                hud_draw_vehicle_status(widget_rider);
             }
             return;
         }
@@ -262,7 +323,7 @@ FunHook<void(rf::Player*)> hud_status_render_hook{
             }
 
             if (widget_rider) {
-                hud_draw_vehicle_status(widget_rider, scale);
+                hud_draw_vehicle_status(widget_rider);
             }
         }
     },

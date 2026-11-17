@@ -6,6 +6,7 @@
 #include "vehicle_internal.h"
 #include "../alpine_packets.h"
 #include "../../misc/alpine_settings.h"
+#include "../../misc/settings_registry.h"
 #include "../../os/console.h"
 #include "../../rf/entity.h"
 #include "../../rf/gameseq.h"
@@ -190,7 +191,7 @@ namespace
     ConsoleCommand2 vehiclehorns_cmd{
         "cl_vehiclehorns",
         [](std::optional<bool> enabled) {
-            g_alpine_game_config.vehicle_horns = enabled.value_or(!g_alpine_game_config.vehicle_horns);
+            setting_console_set_bool("vehicle_horns", enabled);
             rf::console::print("Other players' vehicle horns are {}",
                                g_alpine_game_config.vehicle_horns ? "audible" : "muted");
         },

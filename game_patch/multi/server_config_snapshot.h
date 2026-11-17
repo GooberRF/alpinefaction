@@ -58,6 +58,23 @@ struct ServerSettingsRecord
     bool force_character_enabled = false;
     int64_t force_character_index = 0;
     std::string force_character_name = "enviro_parker";
+    bool spawn_delay_enabled = false;
+    int64_t spawn_delay_base_ms = 5000;
+    bool spawn_delay_wave_respawns = false;
+    bool exposure_damage = true;
+    int64_t server_bots = 0;
+    int64_t ideal_player_count = 32;
+    bool bots_use_vehicles = true;
+    int64_t bot_max_drivers = 4;
+};
+
+// A Payload checkpoint as afstats reports it. SettingValue holds no arrays, and the demo block it
+// shares with the recorder is frozen, so the list travels beside gametype_settings.
+struct PayloadCheckpointRecord
+{
+    double distance = 0.0;
+    double hold_s = 0.0;
+    double time_bonus_s = 0.0;
 };
 
 // Byte cap for operator-authored strings (mutator names, option keys, string values).
@@ -73,5 +90,8 @@ ServerConfigSnapshot capture_server_config_snapshot();
 
 // Same, for the settings afstats reports on game_start. Server-side only.
 ServerSettingsRecord capture_server_settings();
+
+// The Payload cart's checkpoints in track order, with the server's overrides. Server-side only.
+std::vector<PayloadCheckpointRecord> capture_payload_checkpoints();
 
 } // namespace server_config

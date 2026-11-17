@@ -1,5 +1,6 @@
 #include <cassert>
 #include <algorithm>
+#include <functional>
 #include <vector>
 #include <patch_common/FunHook.h>
 #include <patch_common/CodeInjection.h>
@@ -18,67 +19,9 @@
 #include "stb_image_loader.h"
 #include "bmpman.h"
 
-int bm_calculate_pitch(int w, rf::bm::Format format)
-{
-    switch (format) {
-        case rf::bm::FORMAT_8888_ARGB:
-            return w * 4;
-        case rf::bm::FORMAT_888_RGB:
-            return w * 3;
-        case rf::bm::FORMAT_565_RGB:
-        case rf::bm::FORMAT_1555_ARGB:
-        case rf::bm::FORMAT_4444_ARGB:
-            return w * 2;
-        case rf::bm::FORMAT_8_ALPHA:
-        case rf::bm::FORMAT_8_PALETTED:
-            return w;
-        case rf::bm::FORMAT_DXT1:
-            // 4x4 pixels per block, 64 bits per block
-            return (w + 3) / 4 * 64 / 8;
-        case rf::bm::FORMAT_DXT2:
-        case rf::bm::FORMAT_DXT3:
-        case rf::bm::FORMAT_DXT4:
-        case rf::bm::FORMAT_DXT5:
-            // 4x4 pixels per block, 128 bits per block
-            return (w + 3) / 4 * 128 / 8;
-        default:
-            xlog::warn("Unknown format {} in bm_calculate_pitch", static_cast<int>(format));
-            return -1;
-    }
-}
-
-int bm_calculate_rows(int h, rf::bm::Format format)
-{
-    switch (format) {
-        case rf::bm::FORMAT_DXT1:
-        case rf::bm::FORMAT_DXT2:
-        case rf::bm::FORMAT_DXT3:
-        case rf::bm::FORMAT_DXT4:
-        case rf::bm::FORMAT_DXT5:
-            // 4x4 pixels per block
-            return (h + 3) / 4;
-        default:
-            return h;
-    }
-}
-
 size_t bm_calculate_total_bytes(int w, int h, rf::bm::Format format)
 {
     return bm_calculate_pitch(w, format) * bm_calculate_rows(h, format);
-}
-
-bool bm_is_compressed_format(rf::bm::Format format)
-{
-    switch (format) {
-        case rf::bm::FORMAT_DXT1:
-        case rf::bm::FORMAT_DXT2:
-        case rf::bm::FORMAT_DXT3:
-        case rf::bm::FORMAT_DXT4:
-        case rf::bm::FORMAT_DXT5:
-            return true;
-        default:
-            return false;
-    }
 }
 
 // Everything bm_read_header_hook can resolve a texture from, in its own precedence order.
@@ -224,7 +167,13 @@ FunHook<rf::bm::Format(int, void**, void**)> bm_lock_hook{
         if (bm_entry.bm_type == rf::bm::TYPE_ATX) {
             return lock_atx_bitmap(bm_entry, pixels_out, palette_out);
         }
+        // Lock a TGA with the mip chain it was loaded with: the flag gating generated levels is clear outside levels.
+        const bool saved_level_mipmaps = rf::bm::level_mipmaps_enabled;
+        if (bm_entry.bm_type == rf::bm::TYPE_TGA && bm_entry.orig_num_levels > bm_entry.num_levels_in_ext_files) {
+            rf::bm::level_mipmaps_enabled = true;
+        }
         auto pixel_fmt = bm_lock_hook.call_target(bmh, pixels_out, palette_out);
+        rf::bm::level_mipmaps_enabled = saved_level_mipmaps;
         if (pixel_fmt == rf::bm::FORMAT_NONE) {
             *pixels_out = nullptr;
             *palette_out = nullptr;
@@ -600,6 +549,67 @@ bool bm_fill(int bm_handle, uint32_t argb)
     std::vector<uint32_t> row(static_cast<size_t>(lock.w), argb);
     return bm_convert_format(lock.data, lock.format, row.data(), rf::bm::FORMAT_8888_ARGB,
                              lock.w, lock.h, lock.stride_in_bytes, 0, nullptr);
+}
+
+bool bm_write_argb(int bm_handle, const void* argb, int w, int h, int pitch)
+{
+    if (w <= 0 || h <= 0) {
+        return false;
+    }
+    rf::gr::LockInfo lock{};
+    if (!rf::gr::lock(bm_handle, 0, &lock, rf::gr::LOCK_WRITE_ONLY)) {
+        return false;
+    }
+
+    ScopeGuard lock_guard{[&] { rf::gr::unlock(&lock); }};
+
+    // A legacy texture can be padded past the bitmap, which is fine; a smaller one would overrun.
+    if (!bm_is_blit_format(lock.format) || lock.w < w || lock.h < h) {
+        return false;
+    }
+    return bm_convert_format(lock.data, lock.format, argb, rf::bm::FORMAT_8888_ARGB, w, h,
+                             lock.stride_in_bytes, pitch, nullptr);
+}
+
+static bool bm_fill_procedural(int bm_handle, const std::function<uint32_t(int x, int y)>& argb_at)
+{
+    rf::gr::LockInfo lock{};
+    if (!rf::gr::lock(bm_handle, 0, &lock, rf::gr::LOCK_READ_ONLY_WRITE)) {
+        return false;
+    }
+
+    ScopeGuard lock_guard{[&] { rf::gr::unlock(&lock); }};
+
+    if (!bm_is_blit_format(lock.format) || lock.w <= 0 || lock.h <= 0) {
+        return false;
+    }
+
+    std::vector<uint32_t> row(static_cast<size_t>(lock.w));
+    for (int y = 0; y < lock.h; ++y) {
+        for (int x = 0; x < lock.w; ++x) {
+            row[static_cast<size_t>(x)] = argb_at(x, y);
+        }
+        if (!bm_convert_format(lock.data + y * lock.stride_in_bytes, lock.format, row.data(),
+                               rf::bm::FORMAT_8888_ARGB, lock.w, 1, lock.stride_in_bytes, 0, nullptr)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+int bm_create_procedural(int w, int h, const std::function<uint32_t(int x, int y)>& argb_at)
+{
+    const int bm = rf::bm::create(rf::bm::FORMAT_8888_ARGB, w, h);
+    if (bm == -1) {
+        return -1;
+    }
+    if (!bm_fill_procedural(bm, argb_at)) {
+        rf::gr::mark_texture_dirty(bm);
+        rf::bm::release(bm);
+        return -1;
+    }
+    rf::bm::texture_add_ref(bm);
+    return bm;
 }
 
 void bm_apply_patch()

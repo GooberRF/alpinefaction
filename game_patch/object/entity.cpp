@@ -3,8 +3,13 @@
 #include <patch_common/CallHook.h>
 #include <patch_common/AsmWriter.h>
 #include <patch_common/MemUtils.h>
+#include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <deque>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -12,6 +17,7 @@
 #include <xlog/xlog.h>
 #include "../misc/achievements.h"
 #include "../misc/alpine_settings.h"
+#include "../misc/player.h"
 #include "../os/console.h"
 #include "../os/os.h"
 #include "../rf/gr/gr_light.h"
@@ -31,29 +37,59 @@
 #include "../rf/math/vector.h"
 #include "../rf/gameseq.h"
 #include "../multi/multi.h"
+#include "../multi/mutators.h"
 #include "../multi/server.h"
+#include "../misc/settings_registry.h"
+#include "../multi/bots/server_bots.h"
+#include "object.h"
+#include "zipline.h"
 
 rf::Timestamp g_player_jump_timestamp;
+// Server bots are simulated at this machine's frame rate.
+static std::unordered_map<int, rf::Timestamp> g_server_bot_jump_timestamps;
+
+void entity_skip_land_handling_after_jump(rf::Entity* entity)
+{
+    if (entity->local_player) {
+        g_player_jump_timestamp.set(64);
+    }
+    else if (server_bot_from_entity(entity)) {
+        g_server_bot_jump_timestamps[entity->handle].set(64);
+    }
+}
+
+static bool entity_skips_land_handling(rf::Entity* entity)
+{
+    if (entity->local_player) {
+        return g_player_jump_timestamp.valid() && !g_player_jump_timestamp.elapsed();
+    }
+    if (g_server_bot_jump_timestamps.empty()) {
+        return false;
+    }
+    const auto it = g_server_bot_jump_timestamps.find(entity->handle);
+    if (it == g_server_bot_jump_timestamps.end()) {
+        return false;
+    }
+    if (it->second.elapsed()) {
+        g_server_bot_jump_timestamps.erase(it);
+        return false;
+    }
+    return true;
+}
 
 CodeInjection stuck_to_ground_when_jumping_fix{
     0x0042891E,
     [](auto& regs) {
-        rf::Entity* entity = regs.esi;
-        if (entity->local_player) {
-            // Skip land handling code for next 64 ms (like in PF)
-            g_player_jump_timestamp.set(64);
-        }
+        // Skip land handling code for next 64 ms (like in PF)
+        entity_skip_land_handling_after_jump(regs.esi);
     },
 };
 
 CodeInjection stuck_to_ground_when_using_jump_pad_fix{
     0x00486B60,
     [](auto& regs) {
-        rf::Entity* entity = regs.esi;
-        if (entity->local_player) {
-            // Skip land handling code for next 64 ms
-            g_player_jump_timestamp.set(64);
-        }
+        // Skip land handling code for next 64 ms
+        entity_skip_land_handling_after_jump(regs.esi);
     },
 };
 
@@ -61,7 +97,10 @@ CodeInjection stuck_to_ground_fix{
     0x00487F82,
     [](auto& regs) {
         rf::Entity* entity = regs.esi;
-        if (entity->local_player && g_player_jump_timestamp.valid() && !g_player_jump_timestamp.elapsed()) {
+        // A rider is held off the ground only while still falling, so swim or climb mode taken
+        // this frame is not overwritten and ends the ride.
+        const bool riding = zipline_entity_simulates_ride(entity) && rf::entity_is_falling(entity);
+        if (riding || entity_skips_land_handling(entity)) {
             // Jump to jump handling code that sets entity to falling movement mode
             regs.eip = 0x00487F7B;
         }
@@ -80,10 +119,24 @@ CodeInjection entity_water_decelerate_fix{
     },
 };
 
+// Clients also run exposure damage on player entities (predicted life loss and damage feedback),
+// so they follow the server's rule to stay consistent with it. Non-Alpine servers keep stock behaviour.
+static bool exposure_damage_enabled()
+{
+    if (!rf::is_multi) {
+        return g_alpine_game_config.apply_exposure_damage;
+    }
+    if (rf::is_server) {
+        return server_exposure_damage();
+    }
+    const auto& server_info = get_af_server_info();
+    return !server_info.has_value() || !server_info->no_exposure_damage;
+}
+
 FunHook<void(rf::Entity*)> entity_maybe_apply_exposure_damage_hook{
     0x00421170,
     [](rf::Entity* ep) {
-        if (g_alpine_game_config.apply_exposure_damage) {
+        if (exposure_damage_enabled()) {
             entity_maybe_apply_exposure_damage_hook.call_target(ep);
         }
     },
@@ -92,7 +145,7 @@ FunHook<void(rf::Entity*)> entity_maybe_apply_exposure_damage_hook{
 CodeInjection player_exposure_damage_sound_patch{
     0x004A2A95,
     [](auto& regs) {
-        if (!g_alpine_game_config.apply_exposure_damage) {
+        if (!exposure_damage_enabled()) {
             regs.eip = 0x004A2AC2;
         }
     },
@@ -101,10 +154,10 @@ CodeInjection player_exposure_damage_sound_patch{
 ConsoleCommand2 sp_exposuredamage_cmd{
     "sp_exposuredamage",
     []() {
-        g_alpine_game_config.apply_exposure_damage = !g_alpine_game_config.apply_exposure_damage;
+        setting_console_set("apply_exposure_damage", "toggle");
         rf::console::print("Exposure damage is {}", g_alpine_game_config.apply_exposure_damage ? "enabled" : "disabled");
     },
-    "Toggle exposure damage when outside without armor",
+    "Toggle SP exposure damage when outside without armor",
     "sp_exposuredamage"
 };
 
@@ -138,7 +191,7 @@ CallHook<bool(rf::Entity*)> entity_make_run_uncrouch_hook{
 ConsoleCommand2 sp_climbfix_cmd{
     "sp_climbfix",
     []() {
-        g_alpine_game_config.climb_fix = !g_alpine_game_config.climb_fix;
+        setting_console_set("climb_fix", "toggle");
         rf::console::print("Climb region crouch fix is {}", g_alpine_game_config.climb_fix ? "enabled" : "disabled");
     },
     "Toggle SP fix for getting stuck climbing after leaving a climb region while crouched",
@@ -224,7 +277,13 @@ CodeInjection entity_collision_push_rate_limit{
     0x0049DDBB,
     [](auto& regs) {
         rf::Entity* ep = regs.esi;
-        if (!rf::is_multi || !rf::entity_from_handle(ep->p_data.collide_out.obj_handle)) {
+        rf::Entity* other = rf::entity_from_handle(ep->p_data.collide_out.obj_handle);
+        // A zip line rider carries up to 70 m/s of ride speed; brushing past one is not a hit.
+        if (other && zipline_entity_is_riding(other)) {
+            addr_as_ref<float>(regs.esp + 4) = 0.0f;
+            return;
+        }
+        if (!rf::is_multi || !other) {
             return;
         }
         const int64_t now = timer::get_i64(1000);
@@ -266,12 +325,14 @@ void entity_rate_limit_on_entity_delete(int handle)
 {
     g_entity_collision_push_last_ms.erase(handle);
     g_entity_land_sound_last_ms.erase(handle);
+    g_server_bot_jump_timestamps.erase(handle);
 }
 
 void entity_rate_limit_clear()
 {
     g_entity_collision_push_last_ms.clear();
     g_entity_land_sound_last_ms.clear();
+    g_server_bot_jump_timestamps.clear();
 }
 
 CodeInjection entity_process_post_hidden_injection{
@@ -460,7 +521,7 @@ static bool gib_flame_emitter_type(rf::ParticleEmitterType* out)
     return true;
 }
 
-static void gib_flame_attach(rf::Debris* gib)
+void gib_flame_attach(rf::Debris* gib, int burn_ms)
 {
     if (g_gib_flames.size() >= static_cast<size_t>(GIB_FLAME_MAX_TOTAL)) {
         return;
@@ -486,8 +547,8 @@ static void gib_flame_attach(rf::Debris* gib)
     GibFlame flame;
     flame.debris_handle = gib->handle;
     flame.emitter = em;
-    flame.off_at.set(GIB_FLAME_ON_MS);
-    flame.destroy_at.set(GIB_FLAME_ON_MS + GIB_FLAME_LINGER_MS);
+    flame.off_at.set(burn_ms);
+    flame.destroy_at.set(burn_ms + GIB_FLAME_LINGER_MS);
     g_gib_flames.push_back(flame);
 }
 
@@ -571,13 +632,46 @@ FunHook<void(int)> entity_blood_throw_gibs_hook{
         static constexpr float spin_scale_min = 10.0f;
         static constexpr float spin_scale_max = 25.0f;
         static constexpr float velocity_factor = 0.5f;
-        static const char* snd_set = "gib bounce";
-        static const std::vector<const char*> gib_filenames = {
+        static const std::vector<const char*> meat_gib_filenames = {
             "meatchunk1.v3m",
             "meatchunk2.v3m",
             "meatchunk3.v3m",
             "meatchunk4.v3m",
             "meatchunk5.v3m"};
+        static const std::vector<const char*> scrapyard_gib_filenames = {
+            "beerbottle01.v3m",
+            "camera1.v3m",
+            "capekscane.v3m",
+            "clipboard1.v3m",
+            "desktopPC_key.v3m",
+            "desktopPC_mon.v3m",
+            "Disk.v3m",
+            "doctools3.v3m",
+            "firextinguisher1.v3m",
+            "minertool2.v3m",
+            "Morter01.v3m",
+            "mug2.v3m",
+            "pan1.v3m",
+            "portrait1.v3m",
+            "portrait2.v3m",
+            "pot1.v3m",
+            "robotpart1.v3m",
+            "robotpart3.v3m",
+            "showerhead1.v3m",
+            "syringe1.v3m",
+            "Tech01_helmet.v3m",
+            "tools1.v3m",
+            "tools2.v3m",
+            "tools3.v3m",
+            "torpedo01.v3m",
+            "wallcal1.v3m",
+            "wallcal2.v3m",
+            "wastebasket1.v3m",
+            "weapon_remote_detonate.v3m",
+            "welder1.v3m"};
+        const bool scrapyard = mutators_scrapyard_gibs_active();
+        const char* snd_set = scrapyard ? "large debris bounce" : "gib bounce";
+        const auto& gib_filenames = scrapyard ? scrapyard_gib_filenames : meat_gib_filenames;
 
         const int gib_count = g_alpine_game_config.gib_chunk_count; // 7 from Volition
         const float velocity_scale = g_alpine_game_config.gib_velocity_scale;
@@ -624,7 +718,7 @@ FunHook<void(int)> entity_blood_throw_gibs_hook{
             if (gib) {
                 gib->obj_flags |= rf::OF_INVULNERABLE;
                 if (g_alpine_game_config.gib_flames && i < GIB_FLAME_MAX_PER_DEATH) {
-                    gib_flame_attach(gib);
+                    gib_flame_attach(gib, GIB_FLAME_ON_MS);
                 }
             }
         }
@@ -636,7 +730,7 @@ ConsoleCommand2 cl_gorelevel_cmd{
     [](std::optional<int> gore_setting) {
         if (gore_setting) {
             if (*gore_setting >= 0 && *gore_setting <= 2) {
-                rf::game_set_gore_level(*gore_setting);
+                setting_console_set("gore_level", std::to_string(*gore_setting));
                 rf::console::print("Set gore level to {}", rf::game_get_gore_level());
             }
             else {
@@ -655,7 +749,7 @@ ConsoleCommand2 cl_gibchunks_cmd{
     "cl_gibchunks",
     [](std::optional<int> count) {
         if (count) {
-            g_alpine_game_config.set_gib_chunk_count(*count);
+            setting_console_set("gib_chunk_count", std::to_string(*count));
             rf::console::print("Gib chunk count is {}", g_alpine_game_config.gib_chunk_count);
         }
         else {
@@ -670,7 +764,7 @@ ConsoleCommand2 cl_gibvelocityscale_cmd{
     "cl_gibvelocityscale",
     [](std::optional<float> scale) {
         if (scale) {
-            g_alpine_game_config.set_gib_velocity_scale(*scale);
+            setting_console_set("gib_velocity_scale", std::to_string(*scale));
         }
         rf::console::print("Gib velocity scale is {}", g_alpine_game_config.gib_velocity_scale);
     },
@@ -682,7 +776,7 @@ ConsoleCommand2 cl_giblifetimems_cmd{
     "cl_giblifetimems",
     [](std::optional<int> lifetime_ms) {
         if (lifetime_ms) {
-            g_alpine_game_config.set_gib_lifetime_ms(*lifetime_ms);
+            setting_console_set("gib_lifetime_ms", std::to_string(*lifetime_ms));
         }
         rf::console::print("Gib lifetime is {} ms", g_alpine_game_config.gib_lifetime_ms);
     },
@@ -693,11 +787,135 @@ ConsoleCommand2 cl_giblifetimems_cmd{
 ConsoleCommand2 cl_gibflames_cmd{
     "cl_gibflames",
     []() {
-        g_alpine_game_config.gib_flames = !g_alpine_game_config.gib_flames;
+        setting_console_set("gib_flames", "toggle");
         rf::console::print("Flaming gib chunks are {}",
             g_alpine_game_config.gib_flames ? "enabled" : "disabled");
     },
     "Toggle flames on gib chunks",
+};
+
+namespace
+{
+    // The live shell casings, oldest first: past the cap the oldest still alive goes.
+    struct ShellCasingRecord
+    {
+        int handle;
+        rf::Timestamp expired; // game time, as the casing's own lifetime
+    };
+    std::deque<ShellCasingRecord> g_shell_casings;
+    constexpr std::size_t max_live_shell_casings = 500;
+}
+
+void shell_casings_level_init()
+{
+    g_shell_casings.clear();
+}
+
+// Spawns one ejected shell casing as cosmetic local debris.
+FunHook<void(rf::Entity*)> entity_eject_shell_hook{
+    0x0042A1D0,
+    [](rf::Entity* ep) {
+        if (rf::is_dedicated_server || !g_alpine_game_config.shell_casings) {
+            return;
+        }
+        // debris_create appends to the debris list, so a casing made here is its new tail.
+        const rf::Debris* const tail_before = rf::debris_list.prev;
+        entity_eject_shell_hook.call_target(ep);
+        const rf::Debris* const tail = rf::debris_list.prev;
+        if (tail == tail_before || tail == &rf::debris_list) {
+            return;
+        }
+        ShellCasingRecord& record = g_shell_casings.emplace_back();
+        record.handle = tail->handle;
+        record.expired.set(AlpineGameSettings::max_shell_casing_lifetime_ms);
+        while (g_shell_casings.size() > max_live_shell_casings) {
+            const ShellCasingRecord oldest = g_shell_casings.front();
+            g_shell_casings.pop_front();
+            // Older than any casing lives: already gone, and its handle may since name another object.
+            if (oldest.expired.elapsed()) {
+                continue;
+            }
+            rf::Object* casing = rf::obj_from_handle(oldest.handle);
+            if (casing && casing->type == rf::OT_DEBRIS) {
+                rf::obj_flag_dead(casing);
+            }
+        }
+    },
+};
+
+// Just past the stock lifetime (0.8 s, 1.2 s for a player's) going into the casing's DebrisCreateStruct.
+CodeInjection entity_eject_shell_lifetime_injection{
+    0x0042A4F0,
+    [](auto& regs) {
+        addr_as_ref<int>(regs.esp + 0x64) = g_alpine_game_config.shell_casing_lifetime_ms;
+    },
+};
+
+// Keep the PF_COLLIDE_WORLD flag instead of removing it like the stock function does.
+CodeInjection entity_eject_shell_collide_injection{
+    0x0042A565,
+    [](auto& regs) {
+        if (g_alpine_game_config.shell_casings_collide) {
+            regs.edx = static_cast<int32_t>(regs.edx) | rf::PF_COLLIDE_WORLD;
+        }
+    },
+};
+
+// Spawns the local player's ejected magazine as debris, from the reload's eject timer.
+FunHook<void(rf::Entity*, rf::WeaponInfo*)> entity_eject_magazine_hook{
+    0x00419DF0,
+    [](rf::Entity* ep, rf::WeaponInfo* info) {
+        if (g_alpine_game_config.ejected_magazines) {
+            entity_eject_magazine_hook.call_target(ep, info);
+        }
+    },
+};
+
+ConsoleCommand2 cl_shellcasings_cmd{
+    "cl_shellcasings",
+    [](std::optional<bool> enabled) {
+        setting_console_set_bool("shell_casings", enabled);
+        rf::console::print("Ejected shell casings are {}",
+            g_alpine_game_config.shell_casings ? "enabled" : "disabled");
+    },
+    "Toggle shell casings ejected by firing weapons",
+    "cl_shellcasings [bool]",
+};
+
+ConsoleCommand2 cl_shellcollide_cmd{
+    "cl_shellcollide",
+    [](std::optional<bool> enabled) {
+        setting_console_set_bool("shell_casings_collide", enabled);
+        rf::console::print("Shell casings colliding with the level is {}",
+            g_alpine_game_config.shell_casings_collide ? "enabled" : "disabled");
+    },
+    "Toggle ejected shell casings bouncing off the level instead of falling through it",
+    "cl_shellcollide [bool]",
+};
+
+ConsoleCommand2 cl_shelllifetime_cmd{
+    "cl_shelllifetime",
+    [](std::optional<float> lifetime_s) {
+        if (lifetime_s && std::isfinite(*lifetime_s)) {
+            const float clamped_s = std::clamp(*lifetime_s, AlpineGameSettings::min_shell_casing_lifetime_ms / 1000.0f,
+                                               AlpineGameSettings::max_shell_casing_lifetime_ms / 1000.0f);
+            setting_console_set("shell_casing_lifetime_ms", std::to_string(std::lround(clamped_s * 1000.0f)));
+        }
+        rf::console::print("Shell casing lifetime is {:.1f} s",
+            g_alpine_game_config.shell_casing_lifetime_ms / 1000.0f);
+    },
+    "Set ejected shell casing lifetime in seconds (1-10)",
+    "cl_shelllifetime [seconds]",
+};
+
+ConsoleCommand2 cl_magazines_cmd{
+    "cl_magazines",
+    [](std::optional<bool> enabled) {
+        setting_console_set_bool("ejected_magazines", enabled);
+        rf::console::print("Ejected magazines are {}", g_alpine_game_config.ejected_magazines ? "enabled" : "disabled");
+    },
+    "Toggle magazines ejected when you reload",
+    "cl_magazines [bool]",
 };
 
 // makes some entities red - unfinished
@@ -791,8 +1009,7 @@ void evaluate_footsteps()
 ConsoleCommand2 cl_footsteps_cmd{
     "cl_footsteps",
     []() {
-        g_alpine_game_config.footsteps = !g_alpine_game_config.footsteps;
-        evaluate_footsteps();
+        setting_console_set("footsteps", "toggle");
         rf::console::print("Footsteps: {} (active: {})",
             g_alpine_game_config.footsteps ? "enabled" : "disabled",
             g_footsteps_active ? "yes" : "no");
@@ -842,7 +1059,7 @@ FunHook<void(rf::Entity*, float)> entity_maybe_play_pain_sound_hook{
 ConsoleCommand2 cl_painsounds_cmd{
     "cl_painsounds",
     []() {
-        g_alpine_game_config.entity_pain_sounds = !g_alpine_game_config.entity_pain_sounds;
+        setting_console_set("entity_pain_sounds", "toggle");
         rf::console::print("Entity pain sounds are {}", g_alpine_game_config.entity_pain_sounds ? "enabled" : "disabled");
     },
     "Toggle pain sounds",
@@ -877,6 +1094,76 @@ CodeInjection clear_stale_movement_input_injection{
             ep->ai.ci.mouse_dh = 0.0f;
             ep->ai.ci.mouse_dp = 0.0f;
         }
+    },
+};
+
+// Stock's eye height comes from "stand", but other players see an armed idle in "attack_stand". Kept out of
+// EntityInfo, which single player shares.
+static std::array<float, rf::MAX_ENTITY_TYPES> g_attack_stand_eye_delta_y{};
+
+FunHook<void(rf::Entity*)> entity_info_setup_bone_damage_modifiers2_hook{
+    0x00423BD0,
+    [](rf::Entity* ep) {
+        entity_info_setup_bone_damage_modifiers2_hook.call_target(ep);
+        rf::EntityInfo* info = ep->info2;
+        const int stand_anim = ep->default_state_anims[rf::ENTITY_STATE_STAND].vmesh_anim_index;
+        const int attack_stand_anim = ep->default_state_anims[rf::ENTITY_STATE_ATTACK_STAND].vmesh_anim_index;
+        // Stock init ends in a processed stand pose only for types that can crouch, so only those are restored.
+        // A zero frametime keeps the anim phase stock left, so single player is unchanged.
+        if (!ep->vmesh || info->eye_tag < 0 || !rf::entity_can_crouch(ep) || stand_anim < 0 || attack_stand_anim < 0
+            || attack_stand_anim == stand_anim) {
+            return;
+        }
+        rf::vmesh_reset_actions(ep->vmesh);
+        rf::vmesh_set_action_weight(ep->vmesh, attack_stand_anim, 1.0f);
+        rf::vmesh_process(ep->vmesh, 0.0f, 0, nullptr, nullptr, 1);
+        rf::Matrix3 eye_orient;
+        rf::Vector3 eye_pos;
+        rf::vmesh_get_prop_point_transform(ep->vmesh, info->eye_tag, &rf::identity_matrix, &rf::zero_vector,
+                                           &eye_orient, &eye_pos);
+        rf::vmesh_reset_actions(ep->vmesh);
+        rf::vmesh_set_action_weight(ep->vmesh, stand_anim, 1.0f);
+        rf::vmesh_process(ep->vmesh, 0.0f, 0, nullptr, nullptr, 1);
+        g_attack_stand_eye_delta_y[info - rf::entity_types] = eye_pos.y - info->local_eye_offset.y;
+    },
+};
+
+static bool entity_uses_attack_stand_eye(rf::Entity* ep)
+{
+    if (!rf::is_multi || ep->host_handle != -1 || g_attack_stand_eye_delta_y[ep->info2 - rf::entity_types] == 0.0f) {
+        return false;
+    }
+    // The measurement may come from a single player anim set; a character whose multiplayer set idles armed
+    // in its stand anim needs no correction.
+    const int stand_anim = ep->default_state_anims[rf::ENTITY_STATE_STAND].vmesh_anim_index;
+    const int attack_stand_anim = ep->default_state_anims[rf::ENTITY_STATE_ATTACK_STAND].vmesh_anim_index;
+    if (attack_stand_anim < 0 || attack_stand_anim == stand_anim) {
+        return false;
+    }
+    rf::Player* player = rf::player_from_entity_handle(ep->handle);
+    if (!player) {
+        return false;
+    }
+    // Both ends must agree on the height, or rounds the server fires for a shooter leave from the wrong eye
+    if (rf::is_server) {
+        return player == rf::local_player || is_player_minimum_af_client_version(player, 1, 5, 0);
+    }
+    return is_server_minimum_af_version(1, 5);
+}
+
+// Applied where the eye is built, not at the camera, so the server's lag-comp rewind uses the same height
+FunHook<void(rf::Entity*)> entity_calc_eye_pos_attack_stand_hook{
+    0x004194E0,
+    [](rf::Entity* ep) {
+        if (!entity_uses_attack_stand_eye(ep)) {
+            entity_calc_eye_pos_attack_stand_hook.call_target(ep);
+            return;
+        }
+        float& eye_y = ep->info2->local_eye_offset.y;
+        const float stock_eye_y = eye_y;
+        eye_y += g_attack_stand_eye_delta_y[ep->info2 - rf::entity_types];
+        entity_calc_eye_pos_attack_stand_hook.call_target(ep);
+        eye_y = stock_eye_y;
     },
 };
 
@@ -966,6 +1253,12 @@ void entity_do_patch()
     // in entity_eject_shell. Fixed debris pool being exhausted when local player is dead.
     AsmWriter(0x0042A223, 0x0042A232).mov(asm_regs::ecx, {&rf::local_player});
 
+    // Toggle ejected shell casings and magazines, and let casings bounce off the level
+    entity_eject_shell_hook.install();
+    entity_eject_shell_lifetime_injection.install();
+    entity_eject_shell_collide_injection.install();
+    entity_eject_magazine_hook.install();
+
     // Fix move sound not being muted if entity is created hidden (example: jeep in L18S3)
     entity_process_post_hidden_injection.install();
 
@@ -996,6 +1289,10 @@ void entity_do_patch()
     // Cancel movement input when escape menu is open in multiplayer
     clear_stale_movement_input_injection.install();
 
+    // Put the MP camera at the eye height of the armed idle pose other players see
+    entity_info_setup_bone_damage_modifiers2_hook.install();
+    entity_calc_eye_pos_attack_stand_hook.install();
+
     // Commands
     sp_exposuredamage_cmd.register_cmd();
     cl_gorelevel_cmd.register_cmd();
@@ -1003,6 +1300,10 @@ void entity_do_patch()
     cl_gibvelocityscale_cmd.register_cmd();
     cl_giblifetimems_cmd.register_cmd();
     cl_gibflames_cmd.register_cmd();
+    cl_shellcasings_cmd.register_cmd();
+    cl_shellcollide_cmd.register_cmd();
+    cl_shelllifetime_cmd.register_cmd();
+    cl_magazines_cmd.register_cmd();
     cl_painsounds_cmd.register_cmd();
     cl_footsteps_cmd.register_cmd();
 }

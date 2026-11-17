@@ -45,6 +45,22 @@ namespace rf
         float bot;
     };
 
+    struct GPortal
+    {
+        GRoom* room1;
+        GRoom* room2;
+        Vector3 bbox_min;
+        Vector3 bbox_max;
+        int index;
+        // Set by g_solid_collect_visible_rooms_recursive 0x004D4860 the first time it tests the portal in a search
+        bool rect_computed;
+        bool is_invisible;
+        GClipWnd rect;
+    };
+    static_assert(offsetof(GPortal, rect_computed) == 0x24);
+    static_assert(offsetof(GPortal, rect) == 0x28);
+    static_assert(sizeof(GPortal) == 0x38);
+
     enum GFaceListId
     {
         FACE_LIST_SOLID = 0,
@@ -104,6 +120,13 @@ namespace rf
         GCF_PROCESS_SHOW_SKY_FACES = 0x800,
         GCF_PROCESS_LIQUID_FACES = 0x1000,
         GCF_PROCESS_INVISIBLE_FACES = 0x2000,
+    };
+
+    enum LiquidType
+    {
+        LIQUID_WATER = 1,
+        LIQUID_LAVA = 2,
+        LIQUID_ACID = 3,
     };
 
     enum class GBooleanOperation
@@ -335,6 +358,12 @@ namespace rf
         bool is_breakable_glass()
         {
             return AddrCaller{0x00465F00}.this_call<bool>(this);
+        }
+
+        // Rebuilds the liquid surface face at liquid_depth
+        void reset_liquid(GSolid* solid)
+        {
+            AddrCaller{0x004CDC50}.this_call(this, solid);
         }
     };
     static_assert(sizeof(GRoom) == 0x1CC);
@@ -763,6 +792,13 @@ namespace rf
         AddrCaller{0x004D6240}.c_call<void>(decal, face, skip_if_present);
     }
 
+    // Clips the polygon `verts` by `plane` into `out` and returns its new vertex count. Each edge can emit two
+    // vertices, so `out` must hold 2 * num_verts.
+    inline int g_clip_poly_to_plane(int num_verts, const Vector3* verts, Vector3* out, const Plane* plane)
+    {
+        return AddrCaller{0x0054A1C0}.c_call<int>(num_verts, verts, out, plane);
+    }
+
     // Whether `face` is near enough to `decal` for the orientation pass to take it
     inline bool g_decal_face_in_reach(GFace* face, GDecal* decal)
     {
@@ -779,7 +815,10 @@ namespace rf
     {
         AddrCaller{0x004D7F70}.this_call<void>(&g_decal_pass_list_b, normal);
     }
-    static auto& geomod_create_rock_debris = addr_as_ref<int(Vector3* orientation, float scaled_radius,
+    // Up to 16 small rocks from the shared 80-rock pool burst from pos along source_dir. It first relaunches
+    // every live rock within scaled_radius of pos (all but those resting on a breakable detail brush), and
+    // once the pool is full each new rock recycles the oldest live one (0x00490100).
+    static auto& geomod_create_rock_debris = addr_as_ref<int(Vector3* pos, float scaled_radius,
         Vector3* source_dir, int texture, int room_ptr)>(0x0048FE30);
     // Recycles every live glass shard back into the pool and re-resolves foley sounds/bitmaps
     // (cached lookups). Does not touch broken-pane state (that lives in room/face data);
@@ -799,13 +838,31 @@ namespace rf
     static auto& gr_static_solid_scroll_clock = addr_as_ref<float>(0x01EA574C);
     // The rooms g_solid_collect_visible_rooms_recursive 0x004D4860 lists for the frame
     static auto& g_num_visible_rooms = addr_as_ref<int>(0x009BB57C);
+    // The room the portal renderer 0x004D45D0 searches from, null when there is none
+    static auto& g_portal_camera_room = addr_as_ref<GRoom*>(0x009BB588);
     static auto& set_currently_rendered_room = addr_as_ref<void(GRoom* room)>(0x004D3350);
     static auto& gr_decal_self_illuminated_mode = addr_as_ref<gr::Mode>(0x01818340);
     static auto& g_get_room_render_list = addr_as_ref<void(GRoom ***rooms, int *num_rooms)>(0x004D3330);
 
     using GRoomRenderItemFn = void(*)(void* user, GSolid* solid);
+
+    // One entry of the room pass render list (stock 0x0088FD20, resized in particle_sim.cpp) that
+    // g_room_render_item_add fills
+    struct GRoomRenderItem
+    {
+        void* user;                   // +0x00
+        Vector3 pos;                  // +0x04
+        float radius;                 // +0x10
+        bool sortable;                // +0x14
+        char padding[0x2C - 0x15];
+        GRoomRenderItemFn render_fn;  // +0x2C
+    };
+    static_assert(offsetof(GRoomRenderItem, radius) == 0x10);
+    static_assert(offsetof(GRoomRenderItem, sortable) == 0x14);
+    static_assert(offsetof(GRoomRenderItem, render_fn) == 0x2C);
+    static_assert(sizeof(GRoomRenderItem) == 0x30);
     // Queues a render item for the current room pass. Returns false when the sphere (cull_pos, radius)
-    // is frustum culled or the 2048 entry list is full; a null render_fn queues nothing.
+    // is frustum culled or the list is full; a null render_fn queues nothing.
     static auto& g_room_render_item_add = addr_as_ref<bool(void* user, const Vector3& pos, const Vector3& cull_pos,
         float radius, GRoomRenderItemFn render_fn, bool sortable, const Plane* group_plane,
         const Vector3* liquid_test_low, const Vector3* liquid_test_high, bool gather_lights,
@@ -830,6 +887,7 @@ namespace rf
     static auto& sky_room_rotation_rate = addr_as_ref<float>(0x00646020);
     static auto& sky_room_rotation_angle = addr_as_ref<float>(0x00646024);
     static auto& sky_room_rotation = addr_as_ref<Matrix3>(0x00646028);
+    static auto& sky_room_pass_active = addr_as_ref<bool>(0x0088FD1C);
 
     static auto& g_solid_load_v3d_embedded = addr_as_ref<GSolid*(const char*)>(0x00586E70);
     static auto& g_solid_load_v3d = addr_as_ref<GSolid*(const char*)>(0x00586F5C);

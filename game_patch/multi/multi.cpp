@@ -26,7 +26,12 @@
 #include "vehicles/vehicle.h"
 #include "vehicles/vehicle_physics.h"
 #include "mutators.h"
+#include "powerups.h"
+#include "vote_client.h"
 #include "bots/bot_chat_manager.h"
+#include "bots/bot_context_fwd.h"
+#include "bots/bot_vehicle_nav.h"
+#include "bots/server_bots.h"
 #include "../fflink/afstats_events.h"
 #include "../hud/hud.h"
 #include "../hud/multi_spectate.h"
@@ -58,6 +63,7 @@
 #include "../sound/sound.h"
 #include "../main/main.h"
 #include "../graphics/gr.h"
+#include "../misc/settings_registry.h"
 
 // Note: this must be called from DLL init function
 // Note: we can't use global variable because that would lead to crash when launcher loads this DLL to check dependencies
@@ -95,6 +101,20 @@ static rf::CmdLineParam& get_awpgen_cmd_line_param()
 {
     static rf::CmdLineParam awpgen_param{"-awpgen", "", true};
     return awpgen_param;
+}
+
+// With -awpgen: probe Alpine terrain like other geometry instead of laying a lattice over it.
+static rf::CmdLineParam& get_awpgen_fine_cmd_line_param()
+{
+    static rf::CmdLineParam awpgen_fine_param{"-awpgen_fine", "", false};
+    return awpgen_fine_param;
+}
+
+// With -awpgen: also probe open ground away from Alpine terrain at a wider spacing.
+static rf::CmdLineParam& get_awpgen_coarse_cmd_line_param()
+{
+    static rf::CmdLineParam awpgen_coarse_param{"-awpgen_coarse", "", false};
+    return awpgen_coarse_param;
 }
 
 static bool g_client_bot_launch_enabled = false;
@@ -169,7 +189,7 @@ static bool handle_bot_cmd_line_params()
             g_client_bot_launch_enabled = false;
             g_alpine_game_config.rendering_enabled = false;
             rf::sound_enabled = false;
-            rf::gameseq_set_state(rf::GS_QUITING, false);
+            rf::gameseq_set_state(rf::GS_QUIT_GAME, false);
             return false;
         }
     }
@@ -277,7 +297,7 @@ bool handle_awpgen_param()
     const char* arg = get_awpgen_cmd_line_param().get_arg();
     if (!arg || arg[0] == '\0') {
         xlog::error("-awpgen: missing level filename, quitting");
-        rf::gameseq_set_state(rf::GS_QUITING, false);
+        rf::gameseq_set_state(rf::GS_QUIT_GAME, false);
         return true;
     }
 
@@ -286,11 +306,21 @@ bool handle_awpgen_param()
     // Validate level file is installed
     if (rf::get_file_checksum(level_filename.c_str()) == 0) {
         xlog::error("-awpgen: unknown level {}, quitting", level_filename);
-        rf::gameseq_set_state(rf::GS_QUITING, false);
+        rf::gameseq_set_state(rf::GS_QUIT_GAME, false);
         return true;
     }
 
-    waypoints_start_awpgen(level_filename);
+    WaypointGenerationMode gen_mode = WaypointGenerationMode::standard;
+    if (get_awpgen_fine_cmd_line_param().found()) {
+        if (get_awpgen_coarse_cmd_line_param().found()) {
+            xlog::warn("-awpgen: both -awpgen_fine and -awpgen_coarse given, generating fine");
+        }
+        gen_mode = WaypointGenerationMode::fine;
+    }
+    else if (get_awpgen_coarse_cmd_line_param().found()) {
+        gen_mode = WaypointGenerationMode::coarse;
+    }
+    waypoints_start_awpgen(level_filename, gen_mode);
     start_levelm_load_sequence(level_filename);
     return true;
 }
@@ -351,7 +381,7 @@ FunHook<void()> multi_limbo_init{
         if (!rf::local_player)
             return;
 
-        bot_chat_manager_on_limbo_enter(*rf::local_player);
+        bot_chat_manager_on_limbo_enter(client_bot_context(), *rf::local_player);
 
         rf::camera_enter_random_fixed_pos();
         rf::camera_enter_fixed(rf::local_player->cam);
@@ -381,43 +411,17 @@ FunHook<void()> multi_limbo_init{
         else if (gt != rf::NG_TYPE_RUN) { // no winner in run
             int red = 0, blue = 0;
             switch (gt) {
-            case rf::NG_TYPE_CTF: {
-                red = rf::multi_ctf_get_red_team_score();
-                blue = rf::multi_ctf_get_blue_team_score();
-                break;
-            }
-            case rf::NG_TYPE_TEAMDM: {
-                red = rf::multi_tdm_get_red_team_score();
-                blue = rf::multi_tdm_get_blue_team_score();
-                break;
-            }
+            case rf::NG_TYPE_CTF:
+            case rf::NG_TYPE_TEAMDM:
             case rf::NG_TYPE_DC:
-            case rf::NG_TYPE_KOTH: {
-                red = multi_koth_get_red_team_score();
-                blue = multi_koth_get_blue_team_score();
+            case rf::NG_TYPE_KOTH:
+            case rf::NG_TYPE_SAL:
+            case rf::NG_TYPE_SCAV:
+            case rf::NG_TYPE_REV:
+            case rf::NG_TYPE_PAY:
+            case rf::NG_TYPE_ESC:
+                multi_get_winner_scores(gt, red, blue);
                 break;
-            }
-            case rf::NG_TYPE_SAL: {
-                red = salvage_get_red_team_score();
-                blue = salvage_get_blue_team_score();
-                break;
-            }
-            case rf::NG_TYPE_REV: {
-                red = static_cast<int>(rev_all_points_permalocked());
-                blue = static_cast<int>(!rev_all_points_permalocked());
-                break;
-            }
-            case rf::NG_TYPE_ESC: {
-                for (const auto& hill : g_koth_info.hills) {
-                    if (hill.ownership == HillOwner::HO_Red) {
-                        red++;
-                    }
-                    else if (hill.ownership == HillOwner::HO_Blue) {
-                        blue++;
-                    }
-                }
-                break;
-            }
             default:
                 break;
             }
@@ -531,7 +535,7 @@ void server_set_player_weapon(rf::Player* pp, rf::Entity* ep, int weapon_type)
 {
     rf::player_make_weapon_current_selection(pp, weapon_type);
     ep->ai.current_primary_weapon = weapon_type;
-    g_select_weapon_done_timestamp[pp->net_data->player_id].set(300);
+    g_select_weapon_done_timestamp[pp->net_data->player_id].set(haste_scale_ms(ep, 300));
 }
 
 bool is_remote_charge_pair(int weapon_a, int weapon_b)
@@ -540,6 +544,22 @@ bool is_remote_charge_pair(int weapon_a, int weapon_b)
         return w == rf::remote_charge_weapon_type || w == rf::remote_charge_det_weapon_type;
     };
     return is_rc(weapon_a) && is_rc(weapon_b);
+}
+
+bool multi_is_weapon_switch_locked(int from_weapon, int to_weapon)
+{
+    // GunGame allows only Remote Charge <-> Detonator; a lock-to-featured-weapon mutator (Instagib) only its weapon.
+    // Mutator rules exist only on the server.
+    return (gt_is_gungame() && !is_remote_charge_pair(from_weapon, to_weapon))
+        || (rf::is_server && mutators_should_deny_weapon_switch(from_weapon, to_weapon));
+}
+
+bool multi_weapon_fire_is_thrown(int weapon_type, bool alt_fire)
+{
+    return weapon_type == rf::grenade_weapon_type
+        || (weapon_type >= 0 && weapon_type < rf::num_weapon_types
+            && (rf::weapon_types[weapon_type].flags & rf::WTF_REMOTE_CHARGE))
+        || (rf::weapon_is_flamethrower(weapon_type) && alt_fire);
 }
 
 void multi_hide_level_items(const std::vector<int>& allowed_item_type_indices, bool preserve_ctf_objects)
@@ -610,13 +630,9 @@ FunHook<void(rf::Player*, rf::Entity*, int)> multi_select_weapon_server_side_hoo
             // Nothing to do
             return;
         }
-        if (gt_is_gungame() && !is_remote_charge_pair(ep->ai.current_primary_weapon, weapon_type)) {
-            // Deny switching in GG except Remote Charge <-> Detonator.
-            return;
-        }
-        if (mutators_should_deny_weapon_switch(ep->ai.current_primary_weapon, weapon_type)) {
-            // Instagib locks the player to the rail.
-            xlog::debug("Player {} denied weapon switch to {} by active mutator", pp->name, weapon_type);
+        if (multi_is_weapon_switch_locked(ep->ai.current_primary_weapon, weapon_type)) {
+            xlog::debug("Player {} denied weapon switch to {} by the game type or an active mutator", pp->name,
+                weapon_type);
             return;
         }
         bool has_weapon;
@@ -644,7 +660,7 @@ FunHook<void(rf::Player*, rf::Entity*, int)> multi_select_weapon_server_side_hoo
         else {
             rf::player_make_weapon_current_selection(pp, weapon_type);
             ep->ai.current_primary_weapon = weapon_type;
-            g_select_weapon_done_timestamp[pp->net_data->player_id].set(300);
+            g_select_weapon_done_timestamp[pp->net_data->player_id].set(haste_scale_ms(ep, 300));
         }
     },
 };
@@ -695,7 +711,7 @@ void multi_reload_weapon_server_side(rf::Player* pp, int weapon_type)
                 reload_secs = 2.5f;
             }
 
-            pp->rail_gun_reload_timer.set(static_cast<int>(reload_secs * 1000.0f));
+            pp->rail_gun_reload_timer.set(haste_scale_ms(ep, static_cast<int>(reload_secs * 1000.0f)));
         }
     }
 }
@@ -744,6 +760,39 @@ void multi_turn_weapon_on(rf::Entity* ep, rf::Player* pp, bool alt_fire)
         rf::entity_turn_weapon_on(ep->handle, weapon_type, alt_fire);
     }
 }
+
+// Every MP obj_update with OUF_FIRE re-arms the taser, bypassing the local trigger's alt fire wait, so the
+// zap rate followed the net rate. Gate the riot stick block on that wait: skip to the flamethrower check.
+CodeInjection entity_turn_weapon_on_riot_stick_fire_wait_injection{
+    0x0041AAD3,
+    [](auto& regs) {
+        if (!rf::is_multi) {
+            return;
+        }
+        rf::Entity* ep = regs.esi;
+        int weapon_type = regs.ebp;
+        if (rf::weapon_is_riot_stick(weapon_type) && ep->ai.next_fire_primary.valid()
+            && !ep->ai.next_fire_primary.elapsed()) {
+            regs.eip = 0x0041ABF7;
+        }
+    },
+};
+
+// The taser zaps four times as often as its table alt fire wait, making up the damage it lost when the zap rate
+// stopped following the net rate. Older servers keep the table rate, so clients only mirror it on 1.5 servers.
+constexpr int riot_stick_zap_rate_scale = 4;
+
+FunHook<int(int, bool)> weapon_get_fire_wait_ms_hook{
+    0x004C8710,
+    [](int weapon_type, bool alt_fire) {
+        const int wait_ms = weapon_get_fire_wait_ms_hook.call_target(weapon_type, alt_fire);
+        if (rf::is_multi && alt_fire && rf::weapon_is_riot_stick(weapon_type)
+            && (rf::is_server || af_server_is_1_5_or_newer())) {
+            return wait_ms / riot_stick_zap_rate_scale;
+        }
+        return wait_ms;
+    },
+};
 
 void multi_turn_weapon_off(rf::Entity* ep)
 {
@@ -824,9 +873,18 @@ bool multi_is_player_firing_too_fast(const rf::Player* const pp, const int weapo
 
     static std::vector<int> last_weapon_id(rf::multi_max_player_id, 0);
     static std::vector<int64_t> last_weapon_fire(rf::multi_max_player_id, 0);
+    static std::vector<bool> last_weapon_fire_hasted(rf::multi_max_player_id, false);
 
     const int player_id = pp->net_data->player_id;
     const int64_t now = timer::get_i64(1000);
+
+    // The client's Haste timer runs up to half a round trip behind the server's, so allow its rate for one shot after
+    // expiry.
+    const bool hasted = powerup_is_active(rf::entity_from_handle(pp->entity_handle), AlpinePowerup::haste);
+    if (hasted || last_weapon_fire_hasted[player_id]) {
+        fire_wait_ms = static_cast<int>(fire_wait_ms / haste_speed_factor);
+    }
+    last_weapon_fire_hasted[player_id] = hasted;
 
     // If weapon changed, skip interval check.
     if (last_weapon_id[player_id] != weapon_type) {
@@ -925,7 +983,7 @@ FunHook<void(rf::Entity*, int, rf::Vector3&, rf::Matrix3&, bool)> multi_process_
         if (rf::is_server && rf::weapon_is_melee(weapon_type)) {
             if (rf::Player* pp = rf::player_from_entity_handle(ep->handle)) {
                 // A swing's potential is the weapon's primary damage; the taser's zaps accrue
-                // their own alt-damage potential at the deferred creation site instead.
+                // their own potential at the deferred creation site instead.
                 const float potential = kill_attribution_is_valid_weapon_type(weapon_type)
                     ? rf::weapon_types[weapon_type].damage_multi
                     : 0.0f;
@@ -947,13 +1005,8 @@ FunHook<void(rf::Entity*, int, rf::Vector3&, rf::Matrix3&, bool)> multi_process_
         // Notify spectate system of weapon fire so the fpgun fire animation is triggered.
         // Skip thrown projectile weapons (grenade, C4, flamethrower canister alt-fire) because
         // their animation is driven earlier and at the correct time by entity_play_attack_anim_spectate_hook.
-        if (!rf::is_server) {
-            bool is_thrown = (weapon_type == rf::grenade_weapon_type)
-                || (weapon_type == rf::remote_charge_weapon_type)
-                || (rf::weapon_is_flamethrower(weapon_type) && alt_fire);
-            if (!is_thrown) {
-                multi_spectate_on_obj_update_fire(ep, alt_fire);
-            }
+        if (!rf::is_dedicated_server && !multi_weapon_fire_is_thrown(weapon_type, alt_fire)) {
+            multi_spectate_on_obj_update_fire(ep, alt_fire);
         }
     },
 };
@@ -991,6 +1044,10 @@ std::string_view multi_game_type_name(const rf::NetGameType game_type) {
         return std::string_view{"Gun Game"};
     } else if (game_type == rf::NG_TYPE_SAL) {
         return std::string_view{"Salvage"};
+    } else if (game_type == rf::NG_TYPE_SCAV) {
+        return std::string_view{"Scavenger"};
+    } else if (game_type == rf::NG_TYPE_PAY) {
+        return std::string_view{"Payload"};
     } else if (game_type == rf::NG_TYPE_UNK) {
         return std::string_view{"Unknown"};
     } else {
@@ -1028,6 +1085,10 @@ std::string_view multi_game_type_name_upper(const rf::NetGameType game_type) {
         return std::string_view{"GUN GAME"};
     } else if (game_type == rf::NG_TYPE_SAL) {
         return std::string_view{"SALVAGE"};
+    } else if (game_type == rf::NG_TYPE_SCAV) {
+        return std::string_view{"SCAVENGER"};
+    } else if (game_type == rf::NG_TYPE_PAY) {
+        return std::string_view{"PAYLOAD"};
     } else if (game_type == rf::NG_TYPE_UNK) {
         return std::string_view{"UNKNOWN"};
     } else {
@@ -1065,6 +1126,10 @@ std::string_view multi_game_type_name_short(const rf::NetGameType game_type) {
         return std::string_view{"GG"};
     } else if (game_type == rf::NG_TYPE_SAL) {
         return std::string_view{"SAL"};
+    } else if (game_type == rf::NG_TYPE_SCAV) {
+        return std::string_view{"SCAV"};
+    } else if (game_type == rf::NG_TYPE_PAY) {
+        return std::string_view{"PAY"};
     } else if (game_type == rf::NG_TYPE_UNK) {
         return std::string_view{"UNK"};
     } else {
@@ -1104,6 +1169,10 @@ std::string_view multi_game_type_prefix(const rf::NetGameType game_type) {
         return std::string_view{"gg"};
     } else if (game_type == rf::NG_TYPE_SAL) {
         return std::string_view{"ctf"};
+    } else if (game_type == rf::NG_TYPE_SCAV) {
+        return std::string_view{"scav"};
+    } else if (game_type == rf::NG_TYPE_PAY) {
+        return std::string_view{"pay"};
     } else if (game_type == rf::NG_TYPE_UNK) {
         // No real level-name prefix for unknown game types; "dm" is the safest fallback.
         return std::string_view{"dm"};
@@ -1161,7 +1230,8 @@ bool multi_game_type_uses_any_level(rf::NetGameType game_type)
         || game_type == rf::NetGameType::NG_TYPE_BAG
         || game_type == rf::NetGameType::NG_TYPE_TBAG
         || game_type == rf::NetGameType::NG_TYPE_WO
-        || game_type == rf::NetGameType::NG_TYPE_PIT;
+        || game_type == rf::NetGameType::NG_TYPE_PIT
+        || game_type == rf::NetGameType::NG_TYPE_SCAV;
 }
 
 // True if the level filename starts with any standard MP gametype prefix. Used
@@ -1211,6 +1281,43 @@ int multi_num_spawned_players() {
     });
 }
 
+bool multi_local_player_is_spectating()
+{
+    // The listen-server host runs the match itself and gets no match state packets.
+    return multi_spectate_is_spectating() || (!rf::is_server && vote_client_spectating_match());
+}
+
+int multi_count_participants(int* num_bots)
+{
+    int count = 0;
+    int bots = 0;
+    for (const rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if (!player.is_non_participant()) {
+            ++count;
+            bots += player.is_bot;
+        }
+    }
+    if (num_bots) {
+        *num_bots = bots;
+    }
+    return count;
+}
+
+std::optional<float> multi_time_left()
+{
+    const float time_left = rf::multi_time_limit - rf::level.time;
+    if ((rf::level.flags & rf::LEVEL_LOADED) && rf::multi_time_limit > 0.0f && time_left > 0.0f && !gt_uses_rounds()) {
+        return time_left;
+    }
+    return std::nullopt;
+}
+
+std::string_view level_display_name()
+{
+    const char* const name = rf::level.name.c_str();
+    return name[0] ? std::string_view{name} : std::string_view{rf::level.filename.c_str()};
+}
+
 void configure_custom_gametype_listen_server_settings() {
     // reset to defaults
     g_alpine_server_config = AlpineServerConfig{};
@@ -1232,11 +1339,10 @@ void configure_custom_gametype_listen_server_settings() {
     // Always allow these visual options on listen servers
     g_alpine_server_config.allow_fullbright_meshes = true;
     g_alpine_server_config.allow_lightmaps_only = true;
-    g_alpine_server_config.allow_unlimited_fps = true;
     g_alpine_server_config.allow_outlines = true;
 }
 
-void start_level_in_multi(std::string filename) {
+void start_level_in_multi(std::string filename, std::optional<rf::NetGameType> game_type) {
 
     auto [is_valid, valid_filename] = is_level_name_valid(filename);
 
@@ -1252,17 +1358,22 @@ void start_level_in_multi(std::string filename) {
         rf::netgame.geomod_limit = 64;
         rf::netgame.max_captures = 5;
         rf::netgame.flags = 0; // no broadcast to tracker
-        rf::netgame.type = string_istarts_with(filename, "ctf") ? rf::NetGameType::NG_TYPE_CTF
+        rf::netgame.type = game_type ? *game_type
+            : string_istarts_with(filename, "ctf") ? rf::NetGameType::NG_TYPE_CTF
             : string_istarts_with(filename, "koth") ? rf::NetGameType::NG_TYPE_KOTH
             : string_istarts_with(filename, "dc") ? rf::NetGameType::NG_TYPE_DC
             : string_istarts_with(filename, "rev") ? rf::NetGameType::NG_TYPE_REV
             : string_istarts_with(filename, "run") ? rf::NetGameType::NG_TYPE_RUN
             : string_istarts_with(filename, "esc") ? rf::NetGameType::NG_TYPE_ESC
+            : string_istarts_with(filename, "pay") ? rf::NetGameType::NG_TYPE_PAY
             : rf::NetGameType::NG_TYPE_DM;
         rf::netgame.name = "Alpine Faction Test Server";
         rf::netgame.password = "password";
 
         configure_custom_gametype_listen_server_settings();
+        if (rf::netgame.type == rf::NetGameType::NG_TYPE_SCAV) {
+            rf::netgame.max_captures = g_alpine_server_config_active_rules.scavenger.cap_limit;
+        }
 
         rf::set_in_mp_flag();
         rf::multi_start(0, 0);
@@ -1279,6 +1390,23 @@ CodeInjection multi_customize_listen_server_settings_patch {
     },
 };
 
+void start_local_multi_game(std::string_view filename, std::optional<rf::NetGameType> game_type)
+{
+    auto [is_valid, valid_filename] = is_level_name_valid(filename);
+    if (!is_valid) {
+        rf::console::print("Level '{}' is not available!", filename);
+        return;
+    }
+    start_levelm_load_sequence(valid_filename, game_type);
+    rf::gameseq_set_state(rf::GS_MAIN_MENU, true);
+    if (game_type) {
+        rf::console::print("Starting local {} game on {}", multi_game_type_name(*game_type), valid_filename);
+    }
+    else {
+        rf::console::print("Starting local multiplayer game on {}", valid_filename);
+    }
+}
+
 ConsoleCommand2 levelm_cmd{
     "levelm",
     [](std::string filename) {
@@ -1286,14 +1414,7 @@ ConsoleCommand2 levelm_cmd{
             rf::console::print("This command is not available on dedicated servers");
             return;
         }
-        auto [is_valid, valid_filename] = is_level_name_valid(filename);
-        if (!is_valid) {
-            rf::console::print("Level '{}' is not available!", filename);
-            return;
-        }
-        start_levelm_load_sequence(valid_filename);
-        rf::gameseq_set_state(rf::GS_MAIN_MENU, true);
-        rf::console::print("Starting local multiplayer game on {}", valid_filename);
+        start_local_multi_game(filename, std::nullopt);
     },
     "Start a new local multiplayer game on the specified level",
     "levelm <filename>",
@@ -1349,7 +1470,7 @@ ConsoleCommand2 dbg_bot_cmd{
     "dbg_bot",
     [](std::optional<int> enabled) {
         if (enabled.has_value()) {
-            g_alpine_game_config.dbg_bot = enabled.value() != 0;
+            setting_console_set("dbg_bot", enabled.value() != 0 ? "1" : "0");
         }
         rf::console::print(
             "Bot debug console logging is {}.",
@@ -1360,9 +1481,19 @@ ConsoleCommand2 dbg_bot_cmd{
     "dbg_bot [0|1]",
 };
 
-void mp_send_handicap_request(bool force) {
-    if (force || g_alpine_game_config.desired_handicap > 0) {
+static int g_last_sent_handicap = 0;
+
+void mp_send_handicap_request(bool on_join)
+{
+    if (!rf::is_multi || rf::is_server) {
+        return;
+    }
+    if (on_join) {
+        g_last_sent_handicap = 0;
+    }
+    if (g_alpine_game_config.desired_handicap != g_last_sent_handicap) {
         af_send_handicap_request(static_cast<uint8_t>(g_alpine_game_config.desired_handicap));
+        g_last_sent_handicap = g_alpine_game_config.desired_handicap;
     }
 }
 
@@ -1370,8 +1501,7 @@ ConsoleCommand2 set_handicap_cmd{
     "mp_handicap",
     [](std::optional<int> new_handicap) {
         if (new_handicap) {
-            g_alpine_game_config.set_desired_handicap(new_handicap.value());
-            mp_send_handicap_request(true);
+            setting_console_set("desired_handicap", std::to_string(new_handicap.value()));
         }
         rf::console::print("Your desired damage reduction handicap is {}. It will only be applied in servers that support this feature.", g_alpine_game_config.desired_handicap);
     },
@@ -1415,7 +1545,7 @@ void multi_limbo_just_joined_handle_input(const int key) {
     }
 }
 
-bool g_multi_limbo_just_joined_req_leave = false;
+bool g_gameseq_defer_new_level = false;
 
 void multi_limbo_just_joined_do_frame() {
     rf::game_poll(multi_limbo_just_joined_handle_input);
@@ -1442,7 +1572,7 @@ void multi_limbo_just_joined_do_frame() {
         rf::multi_chat_say_render();
     }
 
-    const std::string_view text = g_multi_limbo_just_joined_req_leave
+    const std::string_view text = g_gameseq_defer_new_level
         ? "LOADING..."
         : "BETWEEN LEVELS...";
     const auto [text_w, text_h] = rf::gr::get_string_size(text, rf::ui::large_font);
@@ -1466,23 +1596,15 @@ void multi_limbo_just_joined_do_frame() {
     if (rf::control_config_check_pressed(&controls, rf::CC_ACTION_MP_STATS, nullptr)) {
         rf::scoreboard_render_internal(true);
     }
-
-    if (g_multi_limbo_just_joined_req_leave) {
-        if (!multi_next_level_exists()) {
-            rf::gameseq_set_state(rf::GS_MULTI_LEVEL_DOWNLOAD, false);
-            multi_level_download_manager_start(rf::level.next_level_filename);
-        } else {
-            rf::gameseq_set_state(rf::GS_NEW_LEVEL, false);
-        }
-        g_multi_limbo_just_joined_req_leave = false;
-    }
 }
 
-CodeInjection rf_do_frame_dim_screen_patch{
+CodeInjection rf_do_frame_dim_screen_and_render_loading_text_patch{
     0x004B2E26,
     [] (auto& regs) {
-        const rf::GameState state = rf::gameseq_get_state();
-        if (state == rf::GS_MULTI_LIMBO_JUST_JOINED) {
+        // If our top state is `GS_MULTI_LIMBO_JUST_JOINED`, jump to `game_flip`,
+        // because we do not want to dim our screen, and `multi_limbo_just_joined_do_frame`
+        // draws "LOADING...".
+        if (regs.esi == rf::GS_MULTI_LIMBO_JUST_JOINED) {
             regs.eip = 0x004B2E3F;
         }
     },
@@ -1490,7 +1612,7 @@ CodeInjection rf_do_frame_dim_screen_patch{
 
 void multi_do_patch()
 {
-    rf_do_frame_dim_screen_patch.install();
+    rf_do_frame_dim_screen_and_render_loading_text_patch.install();
     multi_limbo_init.install();
     multi_start_injection.install();
 
@@ -1520,6 +1642,8 @@ void multi_do_patch()
 
     // Set custom listen server settings based on gametype
     multi_customize_listen_server_settings_patch.install();
+    entity_turn_weapon_on_riot_stick_fire_wait_injection.install();
+    weapon_get_fire_wait_ms_hook.install();
 
     multi_kill_do_patch();
     kill_attribution_do_patch();
@@ -1549,6 +1673,8 @@ void multi_do_patch()
     get_debugbot_cmd_line_param();
     get_noquit_cmd_line_param();
     get_awpgen_cmd_line_param();
+    get_awpgen_fine_cmd_line_param();
+    get_awpgen_coarse_cmd_line_param();
     g_client_bot_launch_enabled = is_client_bot_requested_from_cmdline() || is_client_debugbot_requested_from_cmdline();
     g_client_bot_debug_render_enabled = is_client_debugbot_requested_from_cmdline();
     if (is_headless_mode()) {
@@ -1565,6 +1691,7 @@ void multi_do_patch()
     mapm_cmd.register_cmd();
     set_handicap_cmd.register_cmd();
     dbg_bot_cmd.register_cmd();
+    bot_vehicle_nav_apply_patches();
 }
 
 void multi_after_full_game_init()

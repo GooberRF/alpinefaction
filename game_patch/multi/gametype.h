@@ -12,6 +12,10 @@
 
 // forward declarations
 struct EventCapturePointHandler;
+namespace rf
+{
+    struct Event;
+}
 
 static const char* const multi_rfl_prefixes[] = {
     // "m_",
@@ -21,7 +25,8 @@ static const char* const multi_rfl_prefixes[] = {
     "dc",
     "rev",
     "run",
-    "esc"};
+    "esc",
+    "pay"};
 
 enum class HillOwner : int
 {
@@ -145,6 +150,20 @@ inline HillOwner opposite(HillOwner o)
                                        : HillOwner::HO_Neutral;
 }
 
+// KOTH has one; the other hill modes and Payload's checkpoints at most this
+inline constexpr int max_hills = 32;
+
+inline HillOwner team_hill_owner(int team)
+{
+    return team == 0 ? HillOwner::HO_Red : HillOwner::HO_Blue;
+}
+
+// -1 for neutral
+inline int hill_owner_team(HillOwner owner)
+{
+    return owner == HillOwner::HO_Red ? 0 : owner == HillOwner::HO_Blue ? 1 : -1;
+}
+
 static inline int rate_to_step(int rate_per_sec, int dt_ms)
 {
     // clamp so we dont skip past boundaries on long frames
@@ -169,7 +188,14 @@ extern KothInfo g_koth_info;
 // Containment and liveness tests the hill frame code itself runs, so anything asking "was this
 // player on that hill" agrees with the capture logic by construction.
 bool player_inside_hill_trigger(const HillInfo& h, const rf::Player& p);
+// The point form of its shapes. Where capture uses the stock object tests, which overlap a box trigger with the
+// player's bounds, this tests the point against the trigger's own sphere or box, so it only approximates capture.
+bool point_inside_hill_trigger(const HillInfo& h, const rf::Vector3& pos);
 bool player_is_countable(rf::Player& p);
+
+bool obj_inside_trigger(const rf::Trigger* t, const rf::Object* o);
+
+std::vector<rf::Player*> players_from_ids(const std::vector<uint8_t>& ids);
 
 bool multi_game_type_is_team_type(rf::NetGameType game_type);
 bool multi_game_type_has_hills(rf::NetGameType game_type);
@@ -187,6 +213,8 @@ bool gt_is_pit();
 bool gt_is_wipeout();
 bool gt_is_gungame();
 bool gt_is_salvage();
+bool gt_is_scavenger();
+bool gt_is_payload();
 const char* multi_gametype_help_text(rf::NetGameType game_type);
 
 // Score is driven by gametype-specific logic rather than directly by frags.
@@ -196,8 +224,14 @@ bool gt_type_uses_rounds(rf::NetGameType game_type);
 bool rev_all_points_permalocked();
 bool esc_all_points_owned_by_one_team();
 bool esc_team_can_attack_hill(const HillInfo& hill, HillOwner team);
+// The team can take the point now: it is unlocked and not the team's own, and in ESC the next along its lane. REV's
+// points are red's to take.
+bool control_point_team_can_capture_hill(const HillInfo& hill, HillOwner team);
 int multi_koth_get_red_team_score();
 int multi_koth_get_blue_team_score();
+void multi_get_team_scores(rf::NetGameType type, int& red, int& blue);
+// Team type's red/blue standing for deciding its winner: the higher side won, equal is a tie.
+void multi_get_winner_scores(rf::NetGameType type, int& red, int& blue);
 void multi_koth_set_red_team_score(int score);
 void multi_koth_set_blue_team_score(int score);
 int koth_get_hill_handler_uid(const HillInfo& hill);
@@ -206,6 +240,9 @@ HillInfo* koth_find_hill_by_handler(const EventCapturePointHandler* handler);
 HillInfo* koth_find_hill_by_handler_uid(int handler_uid);
 bool koth_set_capture_point_owner(EventCapturePointHandler* handler, int owner, bool announce = true);
 rf::Trigger* koth_resolve_trigger_from_uid(int uid);
+// The trigger a Capture_Point_Handler event captures in, whatever the game type: its trigger uid, else the first
+// trigger it links to.
+rf::Trigger* koth_capture_point_handler_trigger(const rf::Event& handler);
 float koth_box_cylinder_radius(const rf::Trigger* trigger);
 bool koth_capture_point_handler_uses_cylinder(int handler_uid, int trigger_uid = -1);
 void koth_force_broadcast_all_hill_states();
