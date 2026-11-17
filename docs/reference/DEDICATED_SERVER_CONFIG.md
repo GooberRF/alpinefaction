@@ -280,7 +280,7 @@ If neither the rotation nor `allowed_levels` names a level, `glass_house.rfl` is
 | `auto_team_balance` | Boolean | `false` | During play, move players when the team sizes differ by 2 or more on three checks in a row (checked every 15 seconds). Not used during matches. |
 | `ideal_player_count` | Integer | `32` | Target player count that bots fill up to, 1-32. At 32, bots are never removed to make room. |
 | `saving_enabled` | Boolean | game type | Let players save and load their position. On by default only in RUN. |
-| `flag_dropping` | Boolean | `true` | Let CTF flag carriers drop the flag. |
+| `flag_dropping` | Boolean | `true` | Let flag carriers drop the flag in CTF and SAL, and the cartridge in SCAV. |
 | `flag_captures_while_stolen` | Boolean | `false` | Let a team capture while its own CTF flag is stolen. |
 | `bag_multiple_spawns` | Boolean | `true` | Spawn the BAG/TBAG bag at a random home, picked again each time it returns. The homes are the level's `Bag` objects, or its super item spots when it has no `Bag` objects and more than one super item. Otherwise, as when off. Off, the bag always spawns at the first `Bag` object, else a built-in spot for some stock and community levels, else the highest priority super item, else the player start. |
 | `pvp_damage_modifier` | Number | game type | Multiplier for damage between players, 0-100. `1.0` everywhere except RUN (`0.0`). |
@@ -335,7 +335,7 @@ Loadout entry keys:
 | --- | --- | --- | --- |
 | `enabled` | Boolean | `false` | Add overtime when the time limit runs out on a tie. The other keys are read only when this is true. |
 | `time` | Integer | `5` | Overtime length in minutes, 0-60. |
-| `tie_when_flag_stolen` | Boolean | `false` | CTF: treat the game as tied while a flag is stolen. |
+| `tie_when_flag_stolen` | Boolean | `false` | CTF, SAL and SCAV: treat the game as tied while a team one capture behind carries the flag (the cartridge in SCAV). |
 | `tie_when_hill_contested` | Boolean | `true` | KOTH: treat the game as tied while a hill is contested. |
 
 ### `rounds`
