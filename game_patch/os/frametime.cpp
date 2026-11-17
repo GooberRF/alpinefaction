@@ -12,10 +12,15 @@
 #include "../rf/entity.h"
 #include "../rf/os/frametime.h"
 #include "../multi/multi.h"
+#include "../multi/netmeter.h"
+#include "../multi/vehicles/vehicle.h"
+#include "../multi/vehicles/vehicle_physics.h"
 #include "../main/main.h"
 #include "../misc/alpine_settings.h"
 #include "../hud/hud.h"
+#include "../hud/minimap.h"
 #include <xlog/xlog.h>
+#include "../misc/settings_registry.h"
 
 static float g_frametime_history[1024];
 static int g_frametime_history_index = 0;
@@ -26,9 +31,10 @@ static int frametime_hud_counter_base_y()
 {
     int y = 10;
     if (rf::gameseq_in_gameplay()) {
-        y = g_alpine_game_config.big_hud ? 110 : 60;
-        if (hud_weapons_is_double_ammo()) {
-            y += g_alpine_game_config.big_hud ? 80 : 40;
+        const int gap = g_alpine_game_config.big_hud ? 10 : 6;
+        y = std::max(g_alpine_game_config.big_hud ? 110 : 60, hud_ammo_counter_bottom_y() + gap);
+        if (const auto minimap = minimap_panel_rect()) {
+            y = std::max(y, minimap->y + minimap->size + gap);
         }
     }
     return y;
@@ -51,10 +57,25 @@ static bool frametime_speed_meter_visible()
     return rf::entity_from_handle(player->entity_handle) != nullptr;
 }
 
+// A seated rider is motionless; read the hull, whose velocity a local or server body may hold instead.
+static rf::Vector3 frametime_speed_meter_velocity(const rf::Entity* entity)
+{
+    const rf::Entity* const hull = rf::is_multi ? vehicle_ridden_hull(entity) : nullptr;
+    if (!hull) {
+        return entity->p_data.vel;
+    }
+    rf::Vector3 vel{};
+    if (vehicle_physics_driven_velocity(hull->handle, &vel)
+        || vehicle_physics_server_velocity(hull->handle, &vel)) {
+        return vel;
+    }
+    return hull->p_data.vel;
+}
+
 static void frametime_render_speed_meter(int y)
 {
     rf::Entity* const entity = rf::entity_from_handle(rf::local_player->entity_handle);
-    const rf::Vector3& velocity = entity->p_data.vel;
+    const rf::Vector3 velocity = frametime_speed_meter_velocity(entity);
     float horizontal_speed = std::sqrt(velocity.x * velocity.x + velocity.z * velocity.z);
     float speed_mps = std::clamp(horizontal_speed, 0.0f, 9999.9f);
     std::string text = std::format("{:.2f}", speed_mps);
@@ -169,6 +190,39 @@ static void frametime_render_ping_display(int y)
     rf::gr::string_aligned(rf::gr::ALIGN_RIGHT, value_anchor, y, text.c_str(), font_id);
 }
 
+static bool frametime_netmeter_visible()
+{
+    return netmeter_enabled() && !is_hud_effectively_hidden() && rf::is_multi && !rf::is_server;
+}
+
+static void frametime_render_netmeter(int y)
+{
+    const NetMeterStats stats = netmeter_get_stats();
+    rf::gr::set_color(0, 255, 0, 255);
+    const int value_anchor = rf::gr::screen_width() - 20;
+    const int label_offset = g_alpine_game_config.big_hud ? 125 : 65;
+    const int line_gap = frametime_hud_counter_line_gap();
+    int font_id = hud_get_default_font();
+
+    auto draw_row = [&](int row_y, const char* label, float value) {
+        auto text = std::format("{:7.1f}", value);
+        rf::gr::string_aligned(rf::gr::ALIGN_RIGHT, value_anchor - label_offset, row_y, label, font_id);
+        rf::gr::string_aligned(rf::gr::ALIGN_RIGHT, value_anchor, row_y, text.c_str(), font_id);
+    };
+    draw_row(y, "Net In:", stats.in_rate);
+    draw_row(y + line_gap, "Jitter:", stats.in_jitter);
+    draw_row(y + 2 * line_gap, "Max Gap:", stats.in_max_gap);
+    draw_row(y + 3 * line_gap, "Missed %:", stats.in_missed);
+    draw_row(y + 4 * line_gap, "Stale:", stats.in_stale);
+    draw_row(y + 5 * line_gap, "Net Out:", stats.out_rate);
+    draw_row(y + 6 * line_gap, "Jitter:", stats.out_jitter);
+    draw_row(y + 7 * line_gap, "Interp:", stats.interp_delay);
+    draw_row(y + 8 * line_gap, "In KB/s:", stats.in_kbps);
+    draw_row(y + 9 * line_gap, "Out KB/s:", stats.out_kbps);
+}
+
+static constexpr int netmeter_rows = 10;
+
 int frametime_hud_counter_stack_bottom_y()
 {
     int y = frametime_hud_counter_base_y();
@@ -181,6 +235,9 @@ int frametime_hud_counter_stack_bottom_y()
     }
     if (frametime_ping_display_visible()) {
         y += line_gap;
+    }
+    if (frametime_netmeter_visible()) {
+        y += netmeter_rows * line_gap;
     }
     return y;
 }
@@ -200,6 +257,10 @@ void frametime_render_ui()
     }
     if (frametime_ping_display_visible()) {
         frametime_render_ping_display(y);
+        y += line_gap;
+    }
+    if (frametime_netmeter_visible()) {
+        frametime_render_netmeter(y);
     }
 
     frametime_render_graph();
@@ -208,7 +269,7 @@ void frametime_render_ui()
 ConsoleCommand2 fps_counter_cmd{
     "ui_show_fps",
     []() {
-        g_alpine_game_config.fps_counter = !g_alpine_game_config.fps_counter;
+        setting_console_set("fps_counter", "toggle");
         rf::console::print("FPS counter display is {}", g_alpine_game_config.fps_counter ? "enabled" : "disabled");
     },
     "Toggle FPS counter",
@@ -219,7 +280,7 @@ ConsoleCommand2 fps_counter_average_cmd{
     "ui_fpsavg",
     [](std::optional<int> window_ms) {
         if (window_ms) {
-            g_alpine_game_config.set_fps_counter_average_ms(window_ms.value());
+            setting_console_set("fps_counter_average_ms", std::to_string(window_ms.value()));
         }
 
         rf::console::print(
@@ -232,7 +293,7 @@ ConsoleCommand2 fps_counter_average_cmd{
 ConsoleCommand2 ping_display_cmd{
     "ui_show_ping",
     []() {
-        g_alpine_game_config.ping_display = !g_alpine_game_config.ping_display;
+        setting_console_set("ping_display", "toggle");
         rf::console::print("Ping counter display is {}", g_alpine_game_config.ping_display ? "enabled" : "disabled");
     },
     "Toggle ping counter",
@@ -242,7 +303,7 @@ ConsoleCommand2 ping_display_cmd{
 ConsoleCommand2 speed_display_cmd{
     "ui_show_speed",
     []() {
-        g_alpine_game_config.speed_display = !g_alpine_game_config.speed_display;
+        setting_console_set("speed_display", "toggle");
         rf::console::print("Speed display is {}", g_alpine_game_config.speed_display ? "enabled" : "disabled");
     },
     "Toggle speed meter display",
@@ -274,16 +335,8 @@ void apply_maximum_fps()
     unsigned max_fps;
 
     if (rf::is_dedicated_server) {
-        max_fps = g_alpine_game_config.server_max_fps;
-    }
-    else if (rf::is_multi) {
-        const auto& server_info_opt = get_af_server_info();
-        if (rf::is_server || (server_info_opt && server_info_opt->unlimited_fps)) {
-            max_fps = g_alpine_game_config.max_fps;
-        }
-        else {
-            max_fps = std::clamp(g_alpine_game_config.max_fps, g_alpine_game_config.min_fps_limit, g_alpine_game_config.max_fps_limit_mp);
-        }
+        // Tied to the net rate tier so the send interval divides the frame (see sv_bandwidth)
+        max_fps = g_alpine_game_config.server_net_rate_tier().server_fps;
     }
     else {
         max_fps = g_alpine_game_config.max_fps;
@@ -308,16 +361,11 @@ ConsoleCommand2 max_fps_cmd{
     [] (const std::optional<int> limit_opt) {
         if (limit_opt) {
             if (rf::is_dedicated_server) {
-                const unsigned int old_v = g_alpine_game_config.server_max_fps;
-                g_alpine_game_config.set_server_max_fps(*limit_opt);
-                if (g_alpine_game_config.server_max_fps != old_v) {
-                    g_alpine_server_config.printed_cfg.clear();
-                    g_alpine_server_config.signal_cfg_changed = true;
-                }
+                rf::console::print("maxfps follows sv_bandwidth on dedicated servers (currently {})",
+                                   g_alpine_game_config.server_net_rate_tier().server_fps);
             } else {
-                g_alpine_game_config.set_max_fps(*limit_opt);
+                setting_console_set("max_fps", std::to_string(*limit_opt));
             }
-            apply_maximum_fps();
         }
         rf::console::print("Maximal FPS: {:.1f}", get_maximum_fps());
     },

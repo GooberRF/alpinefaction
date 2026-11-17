@@ -17,6 +17,10 @@
 #include "../rf/level.h"
 #include "../rf/cutscene.h"
 #include "../multi/multi.h"
+#include "../ui/extras_menu.h"
+#include "../ui/multi_pause_menu.h"
+#include "../ui/settings_menu.h"
+#include "misc.h"
 
 static std::unique_ptr<std::byte* []> g_screenshot_scanlines_buf;
 
@@ -153,8 +157,14 @@ CodeInjection gameplay_render_frame_display_full_screen_image_injection{
 
 static FunHook<void(rf::GameState, bool)> rf_do_state_hook{
     0x004B1E70,
-    [](rf::GameState state, bool paused) {
-        if (state == rf::GS_MULTI_LIMBO_JUST_JOINED) {
+    [] (const rf::GameState state, const bool paused) {
+        if (state == rf::GS_OPTIONS_MENU && !legacy_menus_enabled()) {
+            settings_menu_do_frame(paused);
+        } else if (state == rf::GS_EXTRAS_MENU && !legacy_menus_enabled()) {
+            extras_menu_do_frame(paused);
+        } else if (state == rf::GS_MAIN_MENU && multi_pause_menu_is_active()) {
+            multi_pause_menu_do_frame(paused);
+        } else if (state == rf::GS_MULTI_LIMBO_JUST_JOINED) {
             multi_limbo_just_joined_do_frame();
         } else if (state == rf::GS_MULTI_LEVEL_DOWNLOAD) {
             multi_level_download_do_frame();
@@ -186,6 +196,37 @@ CodeInjection gameplay_render_frame_death_letterbox_injection{
         regs.edi = letterbox_clip_height();
     },
 };
+
+bool gameseq_is_stacked(const rf::GameState state) {
+    for (int i = 0; i <= rf::gameseq_stack_top_index; ++i) {
+        if (rf::gameseq_state_stack[i] == state) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Does not include `gameseq_state_stack`'s top state.
+bool gameseq_is_deep_stacked(const rf::GameState state) {
+    for (int i = 0; i < rf::gameseq_stack_top_index; ++i) {
+        if (rf::gameseq_state_stack[i] == state) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool gameseq_is_visible() {
+    const rf::GameState state = rf::gameseq_get_state();
+    return state != rf::GS_NONE
+        && state != rf::GS_NEW_LEVEL
+        && state != rf::GS_QUICK_SAVE
+        && state != rf::GS_QUICK_RESTORE
+        && state != rf::GS_LEVEL_TRANSITION
+        && state != rf::GS_QUIT_GAME
+        && state != rf::GS_FRAMERATE_TEST_END
+        && state != rf::GS_MULTI_GETTING_STATE_INFO;
+}
 
 void game_apply_patch()
 {

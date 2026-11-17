@@ -1,12 +1,24 @@
 #include "waypoints.h"
+#include "waypoints_internal.h"
 #include "waypoints_utils.h"
+#include "waypoints_terrain.h"
+#include "waypoints_vehicle.h"
 #include "alpine_settings.h"
+#include "alpine_terrain.h"
 #include "level.h"
+#include "vpackfile.h"
+#include "../multi/bots/bot_navigation_routes.h"
 #include "../multi/bots/bot_waypoint_route.h"
+#include "../multi/bots/server_bots.h"
 #include "../main/main.h"
 #include "../multi/gametype.h"
 #include "../multi/multi.h"
+#include "../multi/payload.h"
 #include "../multi/salvage.h"
+#include "../multi/scavenger.h"
+#include "../multi/vehicles/vehicle.h"
+#include "../multi/vehicles/vehicle_physics.h"
+#include "../debug/debug.h"
 #include "../os/console.h"
 #include <xlog/xlog.h>
 #include "../rf/collide.h"
@@ -28,13 +40,16 @@
 #include "../rf/trigger.h"
 #include "../object/object.h"
 #include "../object/mover.h"
+#include "../object/zipline.h"
 #include "../graphics/gr.h"
+#include "../hud/route_arrows.h"
 #include <common/utils/string-utils.h>
 #include <patch_common/FunHook.h>
 #include <algorithm>
 #include <array>
 #include <cctype>
 #include <charconv>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -45,8 +60,11 @@
 #include <format>
 #include <sstream>
 #include <limits>
+#include <numbers>
+#include <numeric>
 #include <optional>
 #include <random>
+#include <ranges>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -60,9 +78,13 @@ std::vector<WaypointTargetDefinition> g_waypoint_targets;
 std::vector<WpCacheNode> g_cache_nodes;
 WpCacheNode* g_cache_root = nullptr;
 bool g_cache_dirty = true;
+// The tree holds [1, g_cache_indexed_end). The temporary nodes after it are scanned, so their churn keeps the tree.
+int g_cache_indexed_end = 1;
 std::unordered_map<int, std::vector<int>> g_waypoints_by_type;
 int g_waypoints_by_type_total = 0;
 bool g_has_loaded_wpt = false;
+// Loaded only for the spawn route arrows on a client without bots
+bool g_waypoints_for_route_arrows = false;
 int g_last_awp_source = 0; // 0=not_found, 1=user_maps, 2=vpp
 bool g_missing_awp_from_level_init = false;
 bool g_awp_download_pending = false;
@@ -70,13 +92,18 @@ int g_awp_load_retries_remaining = 0;
 rf::Timestamp g_awp_load_retry_timer;
 bool g_drop_waypoints = true;
 int g_waypoint_revision = 0;
+// The graph's [header] gen_mode, written only when not standard.
+WaypointGenerationMode g_awp_generation_mode = WaypointGenerationMode::standard;
+// Bumped on every change to the nodes, their links or the bridge-zone state that gates links.
+int g_waypoint_graph_version = 0;
+// Like g_waypoint_graph_version, but changes confined to temporary nodes leave it alone: their own links, the links
+// persistent nodes make to them, and a borrowed slot, which still counts as holding the link it lent.
+int g_waypoint_persistent_graph_version = 0;
+// Bumped whenever nodes are removed or renumbered, which invalidates any index over node positions.
+int g_waypoint_layout_version = 0;
 std::vector<std::string> g_waypoint_authors{};
 
 int g_next_waypoint_target_uid = 1;
-
-// Cached list of invisible upward-facing faces for supplemental ground detection.
-// Built once at generation start to avoid per-trace room iteration overhead.
-std::vector<rf::GFace*> g_invisible_floor_faces;
 
 std::unordered_map<int, int> g_last_drop_waypoint_by_entity{};
 std::unordered_map<int, int> g_last_lift_uid_by_entity{};
@@ -98,7 +125,7 @@ bool waypoint_has_link_to(int from, int to);
 rf::Mover* find_mover_by_uid(int mover_uid);
 void update_ctf_dropped_flag_temporary_waypoints();
 void update_salvage_flag_temporary_waypoint();
-bool is_waypoint_bot_mode_active();
+void update_scavenger_zone_temporary_waypoint();
 bool are_waypoint_commands_enabled_for_local_client();
 bool is_ctf_mode_for_waypoints();
 int get_ctf_flag_object_uid(bool red_flag);
@@ -117,7 +144,7 @@ constexpr int kWaypointWorldTraceFlags = rf::CF_ANY_HIT | rf::CF_PROCESS_INVISIB
 FunHook<void(rf::Vector3*, float)> glass_remove_floating_shards_hook{
     0x00492400,
     [](rf::Vector3* pos, float radius) {
-        // drop crater waypoints locally for bot clients and autolink them to the grid
+        // drop crater waypoints for bots and autolink them to the grid
         if (pos && is_waypoint_bot_mode_active()) {
             on_geomod_crater_created(*pos, radius);
         }
@@ -200,11 +227,25 @@ rf::Vector3 get_entity_feet_pos(const rf::Entity& entity)
     return entity.pos;
 }
 
-void invalidate_cache()
+static void waypoints_mark_graph_changed(const bool persistent = true)
+{
+    ++g_waypoint_graph_version;
+    if (persistent) {
+        ++g_waypoint_persistent_graph_version;
+    }
+}
+
+void invalidate_spatial_cache()
 {
     g_cache_root = nullptr;
     g_cache_nodes.clear();
     g_cache_dirty = true;
+}
+
+void invalidate_cache()
+{
+    waypoints_mark_graph_changed();
+    invalidate_spatial_cache();
     g_waypoints_by_type_total = 0;
 }
 
@@ -232,12 +273,36 @@ void add_waypoint_author_if_missing(std::string_view author_name)
 
 bool is_waypoint_bot_mode_active()
 {
+    return client_bot_launch_enabled()
+        || ((rf::is_dedicated_server || rf::is_server) && server_bots_configured());
+}
+
+bool is_waypoint_local_bot_mode_active()
+{
     return client_bot_launch_enabled();
+}
+
+// Automatic waypoint dropping from player movement: the -bot client's learning, or the editor.
+bool is_waypoint_recording_active()
+{
+    return is_waypoint_local_bot_mode_active() || g_alpine_game_config.waypoints_edit_mode;
 }
 
 bool are_waypoint_commands_enabled_for_local_client()
 {
     return is_waypoint_bot_mode_active() || g_alpine_game_config.waypoints_edit_mode;
+}
+
+// A client without bots loads the graph for the spawn route arrows, never over a file a host is editing
+static bool waypoints_wanted_for_route_arrows()
+{
+    return !is_waypoint_bot_mode_active() && !g_alpine_game_config.waypoints_edit_mode
+        && route_arrows_wanted_for_level();
+}
+
+static bool waypoints_loaded_for_route_arrows_only()
+{
+    return g_waypoints_for_route_arrows && !are_waypoint_commands_enabled_for_local_client();
 }
 
 bool ensure_waypoint_command_enabled(std::string_view command_name)
@@ -262,7 +327,7 @@ void waypoint_log(std::format_string<Args...> fmt, Args&&... args)
 
     // log with xlog
     xlog::info("{}", message);
-    if (is_waypoint_bot_mode_active() || !g_alpine_game_config.waypoints_edit_mode) {
+    if (is_waypoint_local_bot_mode_active() || !g_alpine_game_config.waypoints_edit_mode) {
         return;
     }
 
@@ -276,7 +341,7 @@ void waypoint_log(std::string_view message)
         return;
     }
     rf::console::print("{}", message);
-    if (is_waypoint_bot_mode_active()
+    if (is_waypoint_local_bot_mode_active()
         || !g_alpine_game_config.waypoints_edit_mode) {
         return;
     }
@@ -295,6 +360,10 @@ bool is_ctf_mode_for_waypoints()
 
 rf::Vector3 get_ctf_flag_pos_world(bool red_flag)
 {
+    // The engine's flag position getters return the flag's base, wherever the flag is.
+    if (const rf::Object* flag_obj = red_flag ? rf::ctf_red_flag_item : rf::ctf_blue_flag_item) {
+        return flag_obj->pos;
+    }
     rf::Vector3 pos{};
     if (red_flag) {
         rf::multi_ctf_get_red_flag_pos(&pos);
@@ -462,6 +531,12 @@ WaypointType waypoint_type_from_int(int raw_type)
             return WaypointType::bag;
         case static_cast<int>(WaypointType::salvage_flag):
             return WaypointType::salvage_flag;
+        case static_cast<int>(WaypointType::vehicle_factory):
+            return WaypointType::vehicle_factory;
+        case static_cast<int>(WaypointType::zipline_entrance):
+            return WaypointType::zipline_entrance;
+        case static_cast<int>(WaypointType::zipline_exit):
+            return WaypointType::zipline_exit;
         default:
             return static_cast<WaypointType>(raw_type);
     }
@@ -513,6 +588,12 @@ std::string_view waypoint_type_name(WaypointType type)
             return "bag";
         case WaypointType::salvage_flag:
             return "salvage_flag";
+        case WaypointType::vehicle_factory:
+            return "vehicle_factory";
+        case WaypointType::zipline_entrance:
+            return "zipline_entrance";
+        case WaypointType::zipline_exit:
+            return "zipline_exit";
         default:
             return "unknown";
     }
@@ -926,13 +1007,25 @@ int find_conveyer_push_region_uid_at_point(const rf::Vector3& point)
 
 float waypoint_link_radius_from_trigger(const rf::Trigger& trigger)
 {
-    if (trigger.type == 0) { // sphere
+    if (trigger.type == rf::TRIGGER_SHAPE_SPHERE) {
         return sanitize_waypoint_link_radius(std::fabs(trigger.radius));
     }
-    if (trigger.type == 1) { // box
+    if (trigger.type == rf::TRIGGER_SHAPE_BOX) {
         return sanitize_waypoint_link_radius(trigger.box_size.len() * 0.5f);
     }
     return kWaypointLinkRadius;
+}
+
+float trigger_bounding_radius(const rf::Trigger& trigger)
+{
+    const float reach =
+        trigger.type == rf::TRIGGER_SHAPE_BOX ? trigger.box_size.len() * 0.5f : std::fabs(trigger.radius);
+    return std::isfinite(reach) ? reach : 0.0f;
+}
+
+bool mover_brush_passes_through(const rf::Object& brush)
+{
+    return brush.type == rf::OT_MOVER_BRUSH && (brush.obj_flags & rf::OF_WEAPON_ONLY_COLLIDE) != 0;
 }
 
 bool try_build_bridge_zone_state(int zone_uid, WaypointBridgeZoneState& out_state)
@@ -1023,6 +1116,7 @@ int remove_waypoint_links_from_to(int from, int to)
     for (int i = write_index; i < kMaxWaypointLinks; ++i) {
         node.links[i] = 0;
     }
+    waypoints_mark_graph_changed();
     return removed;
 }
 
@@ -1036,6 +1130,7 @@ int remove_waypoint_links_from_all(int from)
     const int removed = node.num_links;
     node.num_links = 0;
     node.links.fill(0);
+    waypoints_mark_graph_changed();
     return removed;
 }
 
@@ -1104,6 +1199,17 @@ bool conveyer_outbound_link_allowed(const WaypointNode& from_node, const Waypoin
     return dot > 0.0f;
 }
 
+// An entrance's link to its own ride's exit; any other link of it is walked.
+bool waypoint_is_zipline_ride(const WaypointNode& from_node, const int to)
+{
+    if (from_node.type != WaypointType::zipline_entrance || to <= 0 || to >= static_cast<int>(g_waypoints.size())) {
+        return false;
+    }
+    const auto& to_node = g_waypoints[to];
+    return to_node.type == WaypointType::zipline_exit && to_node.identifier == from_node.identifier
+        && to_node.subtype == from_node.subtype;
+}
+
 bool waypoint_link_types_allowed(const WaypointNode& from_node, const WaypointNode& to_node)
 {
     return tele_entrance_outbound_link_allowed(from_node, to_node)
@@ -1166,6 +1272,25 @@ bool waypoint_link_blocked_by_bridge_zone_state(const int from_waypoint_uid, con
         || !waypoint_uid_enabled_by_bridge_zone_state(to_waypoint_uid);
 }
 
+bool waypoint_link_blocked_by_runtime_state(const int from_waypoint_uid, const int to_waypoint_uid)
+{
+    const auto& from_node = g_waypoints[from_waypoint_uid];
+    return waypoint_link_blocked_by_bridge_zone_state(from_waypoint_uid, to_waypoint_uid)
+        || (from_node.ride_closed && waypoint_is_zipline_ride(from_node, to_waypoint_uid));
+}
+
+int count_waypoint_inbound_links(int waypoint_uid, bool persistent_sources_only = false)
+{
+    int count = 0;
+    for (int i = 1; i < static_cast<int>(g_waypoints.size()); ++i) {
+        const auto& node = g_waypoints[i];
+        if (node.valid && !(persistent_sources_only && node.temporary) && waypoint_link_exists(node, waypoint_uid)) {
+            ++count;
+        }
+    }
+    return count;
+}
+
 void link_waypoint(int from, int to)
 {
     if (from <= 0 || to <= 0 || from >= static_cast<int>(g_waypoints.size()) ||
@@ -1182,12 +1307,47 @@ void link_waypoint(int from, int to)
     if (waypoint_link_exists(node, to)) {
         return;
     }
+    const bool persistent = !node.temporary && !g_waypoints[to].temporary;
     if (node.num_links < kMaxWaypointLinks) {
+        waypoints_mark_graph_changed(persistent);
         node.links[node.num_links++] = to;
         return;
     }
-    std::uniform_int_distribution<int> dist(0, kMaxWaypointLinks - 1);
-    node.links[dist(g_rng)] = to;
+    int replace_slot = -1;
+    if (g_waypoints[to].temporary) {
+        // A temporary node only displaces another temporary node's link, so persistent links survive temporaries.
+        int best_score = 0;
+        for (int slot = 0; slot < kMaxWaypointLinks; ++slot) {
+            const int link = node.links[slot];
+            if (link <= 0 || link >= static_cast<int>(g_waypoints.size())) {
+                continue;
+            }
+            const auto& linked = g_waypoints[link];
+            if (!linked.temporary || linked.borrowed_link_from == from) {
+                continue;
+            }
+            const int score = linked.type == WaypointType::crater
+                ? std::numeric_limits<int>::max()
+                : count_waypoint_inbound_links(link) - 1;
+            if (score > best_score) {
+                best_score = score;
+                replace_slot = slot;
+            }
+        }
+        if (replace_slot < 0) {
+            return;
+        }
+    }
+    else {
+        std::uniform_int_distribution<int> dist(0, kMaxWaypointLinks - 1);
+        replace_slot = dist(g_rng);
+        // Never evict an entrance's ride: nothing else would ever link it back.
+        if (waypoint_is_zipline_ride(node, node.links[replace_slot])) {
+            replace_slot = (replace_slot + 1) % kMaxWaypointLinks;
+        }
+    }
+    waypoints_mark_graph_changed(persistent);
+    node.links[replace_slot] = to;
 }
 
 bool is_player_grounded(const rf::Entity& entity)
@@ -1262,19 +1422,155 @@ void build_waypoint_cell_map(WaypointCellMap& out_map, float cell_size)
     }
 }
 
-bool trace_ground_below_point(const rf::Vector3& pos, float max_downward_dist, rf::Vector3* out_hit_point)
+namespace
+{
+// Invisible upward faces that the world trace misses (e.g. detail brush ramps over stairs), bucketed on an xz grid
+// so a ground probe only tests the faces whose bounds contain it.
+class InvisibleFloorFaces
+{
+public:
+    void build();
+    void clear();
+    bool empty() const;
+    const std::vector<rf::GFace*>& faces_at(float x, float z) const;
+
+private:
+    static constexpr int kMaxCellsPerAxis = 64;
+
+    int cell_x(float x) const;
+    int cell_z(float z) const;
+
+    std::vector<std::vector<rf::GFace*>> cells_;
+    int cells_x_ = 0;
+    int cells_z_ = 0;
+    rf::Vector3 min_{};
+    rf::Vector3 max_{};
+    float inv_cell_size_ = 1.0f;
+};
+
+void InvisibleFloorFaces::build()
+{
+    clear();
+    if (!rf::level.geometry) {
+        return;
+    }
+    std::vector<rf::GFace*> faces;
+    const auto finite = [](const rf::Vector3& v) {
+        return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
+    };
+    for (int ri = 0; ri < rf::level.geometry->all_rooms.size(); ++ri) {
+        auto* room = rf::level.geometry->all_rooms[ri];
+        if (!room) continue;
+        for (auto* face = room->face_list.first(); face; face = room->face_list.next(face)) {
+            // Bounds that are not finite (a corrupt level) can't be bucketed or tested.
+            if (face->attributes.is_invisible()
+                && !face->attributes.is_liquid()
+                && face->plane.normal.y > 0.1f
+                && face->edge_loop
+                && finite(face->bounding_box_min)
+                && finite(face->bounding_box_max)) {
+                faces.push_back(face);
+            }
+        }
+    }
+    if (faces.empty()) {
+        return;
+    }
+
+    min_ = faces.front()->bounding_box_min;
+    max_ = faces.front()->bounding_box_max;
+    for (const auto* face : faces) {
+        min_ = point_min(min_, face->bounding_box_min);
+        max_ = point_max(max_, face->bounding_box_max);
+    }
+    const float extent = std::max(max_.x - min_.x, max_.z - min_.z);
+    if (!std::isfinite(extent)) {
+        return;
+    }
+    inv_cell_size_ = 1.0f / std::max(extent / kMaxCellsPerAxis, 1.0f);
+    cells_x_ = static_cast<int>(std::floor((max_.x - min_.x) * inv_cell_size_)) + 1;
+    cells_z_ = static_cast<int>(std::floor((max_.z - min_.z) * inv_cell_size_)) + 1;
+    cells_.resize(static_cast<size_t>(cells_x_) * cells_z_);
+    for (auto* face : faces) {
+        for (int z = cell_z(face->bounding_box_min.z); z <= cell_z(face->bounding_box_max.z); ++z) {
+            for (int x = cell_x(face->bounding_box_min.x); x <= cell_x(face->bounding_box_max.x); ++x) {
+                cells_[static_cast<size_t>(z) * cells_x_ + x].push_back(face);
+            }
+        }
+    }
+}
+
+void InvisibleFloorFaces::clear()
+{
+    cells_.clear();
+    cells_x_ = 0;
+    cells_z_ = 0;
+}
+
+bool InvisibleFloorFaces::empty() const
+{
+    return cells_.empty();
+}
+
+// Cell lookup is monotonic, so a point inside a face's bounds always lands in one of the cells that face was put in.
+const std::vector<rf::GFace*>& InvisibleFloorFaces::faces_at(float x, float z) const
+{
+    static const std::vector<rf::GFace*> no_faces;
+    if (cells_.empty() || !(x >= min_.x && x <= max_.x && z >= min_.z && z <= max_.z)) {
+        return no_faces;
+    }
+    return cells_[static_cast<size_t>(cell_z(z)) * cells_x_ + cell_x(x)];
+}
+
+int InvisibleFloorFaces::cell_x(float x) const
+{
+    return std::clamp(static_cast<int>(std::floor((x - min_.x) * inv_cell_size_)), 0, cells_x_ - 1);
+}
+
+int InvisibleFloorFaces::cell_z(float z) const
+{
+    return std::clamp(static_cast<int>(std::floor((z - min_.z) * inv_cell_size_)), 0, cells_z_ - 1);
+}
+
+// Built for a generation run and kept for the ground traces made after it, until the graph is cleared.
+InvisibleFloorFaces g_invisible_floor_faces;
+
+// 0x00498E80 hits pass-through mover brushes too; only a trace that stops at one is retaken for the nearest solid hit.
+// Without CF_ANY_HIT it shortens the segment to each hit, so the one it returns is the nearest.
+bool collide_linesegment_walkable_world(
+    const rf::Vector3& from, const rf::Vector3& to, rf::PCollisionOut& out, int flags = kWaypointWorldTraceFlags)
+{
+    rf::Vector3 p0 = from;
+    rf::Vector3 p1 = to;
+    if (!rf::collide_linesegment_world(p0, p1, flags, &out)) {
+        return false;
+    }
+    const rf::Object* hit_obj = out.obj_handle >= 0 ? rf::obj_from_handle(out.obj_handle) : nullptr;
+    if (!hit_obj || !mover_brush_passes_through(*hit_obj)) {
+        return true;
+    }
+    if (!vphys_collide_solid_segment(from, to, rf::CF_PROCESS_INVISIBLE_FACES, out)) {
+        out = rf::PCollisionOut{};
+        out.obj_handle = -1;
+        return false;
+    }
+    return true;
+}
+} // namespace
+
+bool trace_ground_below_point(const rf::Vector3& pos, float max_downward_dist, rf::Vector3* out_hit_point, bool nearest)
 {
     if (max_downward_dist <= 0.0f) {
         return false;
     }
 
-    // Primary trace: collide_linesegment_world checks level solid + mover brushes.
+    // Primary trace: level solid + mover brushes players collide with.
     rf::Vector3 p0 = pos;
     rf::Vector3 p1 = pos - rf::Vector3{0.0f, max_downward_dist, 0.0f};
     rf::PCollisionOut collision{};
     collision.obj_handle = -1;
-    bool world_hit = rf::collide_linesegment_world(
-        p0, p1, kWaypointWorldTraceFlags, &collision);
+    const int flags = nearest ? kWaypointWorldTraceFlags & ~rf::CF_ANY_HIT : kWaypointWorldTraceFlags;
+    bool world_hit = collide_linesegment_walkable_world(p0, p1, collision, flags);
 
     // Supplemental check: test cached invisible faces that the standard collision
     // misses (e.g. detail brush ramps over staircases). Only accepts hits above
@@ -1286,7 +1582,7 @@ bool trace_ground_below_point(const rf::Vector3& pos, float max_downward_dist, r
         const float pz = pos.z;
         float best_y = world_hit ? collision.hit_point.y : ray_bot;
 
-        for (auto* face : g_invisible_floor_faces) {
+        for (auto* face : g_invisible_floor_faces.faces_at(px, pz)) {
             if (px < face->bounding_box_min.x || px > face->bounding_box_max.x
                 || pz < face->bounding_box_min.z || pz > face->bounding_box_max.z
                 || ray_bot > face->bounding_box_max.y || ray_top < face->bounding_box_min.y) {
@@ -1353,11 +1649,7 @@ float trace_upward_clearance_from_floor_hit(
     rf::Vector3 p1 = floor_hit_pos + rf::Vector3{0.0f, max_upward_dist, 0.0f};
     rf::PCollisionOut collision{};
     collision.obj_handle = -1;
-    if (!rf::collide_linesegment_world(
-            p0,
-            p1,
-            kWaypointWorldTraceFlags,
-            &collision)) {
+    if (!collide_linesegment_walkable_world(p0, p1, collision)) {
         return max_upward_dist;
     }
 
@@ -1772,6 +2064,7 @@ void update_bridge_zone_states()
         if (!zone.timer.valid() || zone.timer.elapsed()) {
             zone.on = false;
             zone.timer.invalidate();
+            waypoints_mark_graph_changed();
         }
     }
 }
@@ -1791,7 +2084,11 @@ void activate_bridge_zones_for_trigger_uid(int trigger_uid)
             continue;
         }
 
-        zone.on = true;
+        // Re-triggering a zone that is on only extends its timer; the gating is unchanged.
+        if (!zone.on) {
+            zone.on = true;
+            waypoints_mark_graph_changed();
+        }
         const int duration_ms = bridge_zone_duration_ms(zone);
         if (duration_ms > 0) {
             zone.timer.set(duration_ms);
@@ -1804,6 +2101,7 @@ void activate_bridge_zones_for_trigger_uid(int trigger_uid)
 
 void refresh_all_waypoint_zone_refs()
 {
+    waypoints_mark_graph_changed();
     for (int i = 1; i < static_cast<int>(g_waypoints.size()); ++i) {
         auto& node = g_waypoints[i];
         if (!node.valid) {
@@ -1854,20 +2152,55 @@ int add_waypoint_zone_definition(WaypointZoneDefinition zone)
     return static_cast<int>(g_waypoint_zones.size()) - 1;
 }
 
+// Gives the lender back the link its slot held before the temporary node borrowed it.
+void restore_borrowed_waypoint_link(int waypoint_uid)
+{
+    auto& node = g_waypoints[waypoint_uid];
+    const int from = node.borrowed_link_from;
+    const int target = node.borrowed_link_target;
+    node.borrowed_link_from = 0;
+    node.borrowed_link_target = 0;
+    if (!is_waypoint_uid_valid(from) || !is_waypoint_uid_valid(target)) {
+        return;
+    }
+    auto& from_node = g_waypoints[from];
+    if (waypoint_link_exists(from_node, target)) {
+        // The lent slot is dropped instead of restored, so the persistent links change.
+        waypoints_mark_graph_changed();
+        return;
+    }
+    for (int slot = 0; slot < from_node.num_links; ++slot) {
+        if (from_node.links[slot] == waypoint_uid) {
+            from_node.links[slot] = target;
+            waypoints_mark_graph_changed(false);
+            return;
+        }
+    }
+    if (from_node.num_links < kMaxWaypointLinks) {
+        from_node.links[from_node.num_links++] = target;
+        waypoints_mark_graph_changed();
+    }
+}
+
 bool remove_waypoint_by_uid(int waypoint_uid)
 {
     if (!is_waypoint_uid_valid(waypoint_uid)) {
         return false;
     }
 
+    restore_borrowed_waypoint_link(waypoint_uid);
     auto& node = g_waypoints[waypoint_uid];
+    const bool temporary = node.temporary;
     node.valid = false;
     node.num_links = 0;
     node.links.fill(0);
     node.zones.clear();
 
     remap_waypoints();
-    sanitize_waypoint_links_against_geometry();
+    // Removing a temporary node leaves the persistent links as they were, and the remap drops the links to it.
+    if (!temporary) {
+        sanitize_waypoint_links_against_geometry();
+    }
     return true;
 }
 
@@ -1889,6 +2222,7 @@ int clear_waypoint_zone_definitions()
     for (int i = 1; i < static_cast<int>(g_waypoints.size()); ++i) {
         g_waypoints[i].zones.clear();
     }
+    waypoints_mark_graph_changed();
     return removed;
 }
 
@@ -2198,7 +2532,7 @@ int resolve_waypoint_target_uid(std::optional<int> preferred_uid = std::nullopt)
     return allocate_waypoint_target_uid();
 }
 
-int add_waypoint_target(const rf::Vector3& pos, WaypointTargetType type, std::optional<int> preferred_uid = std::nullopt)
+int add_waypoint_target(const rf::Vector3& pos, WaypointTargetType type, std::optional<int> preferred_uid)
 {
     WaypointTargetDefinition target{};
     target.uid = resolve_waypoint_target_uid(preferred_uid);
@@ -2343,13 +2677,19 @@ float waypoint_auto_link_detection_radius(const WaypointNode& node)
     }
 }
 
-int find_jump_pad_waypoint_in_radius(const rf::Vector3& pos)
+// The jump pad or tele entrance whose auto-link radius covers pos, nearest first; on a tie the lower index of a type
+// wins, and a jump pad beats a tele entrance. indices must be ascending.
+template<typename WaypointIndices>
+int find_special_waypoint_in_radius(const rf::Vector3& pos, const WaypointIndices& indices)
 {
-    float best_dist_sq = std::numeric_limits<float>::max();
-    int best_index = 0;
-    for (int i = 1; i < static_cast<int>(g_waypoints.size()); ++i) {
+    int closest_jump_pad = 0;
+    int closest_tele_entrance = 0;
+    float jump_pad_dist_sq = std::numeric_limits<float>::max();
+    float tele_entrance_dist_sq = std::numeric_limits<float>::max();
+    for (const int i : indices) {
         const auto& node = g_waypoints[i];
-        if (!node.valid || node.type != WaypointType::jump_pad) {
+        const bool jump_pad = node.type == WaypointType::jump_pad;
+        if (!node.valid || (!jump_pad && node.type != WaypointType::tele_entrance)) {
             continue;
         }
 
@@ -2359,79 +2699,443 @@ int find_jump_pad_waypoint_in_radius(const rf::Vector3& pos)
             continue;
         }
 
-        if (dist_sq < best_dist_sq) {
-            best_dist_sq = dist_sq;
-            best_index = i;
+        int& closest = jump_pad ? closest_jump_pad : closest_tele_entrance;
+        float& closest_dist_sq = jump_pad ? jump_pad_dist_sq : tele_entrance_dist_sq;
+        if (dist_sq < closest_dist_sq) {
+            closest_dist_sq = dist_sq;
+            closest = i;
         }
     }
-    return best_index;
-}
-
-int find_tele_entrance_waypoint_in_radius(const rf::Vector3& pos)
-{
-    float best_dist_sq = std::numeric_limits<float>::max();
-    int best_index = 0;
-    for (int i = 1; i < static_cast<int>(g_waypoints.size()); ++i) {
-        const auto& node = g_waypoints[i];
-        if (!node.valid || node.type != WaypointType::tele_entrance) {
-            continue;
-        }
-
-        const float radius = waypoint_auto_link_detection_radius(node);
-        const float dist_sq = distance_sq(pos, node.pos);
-        if (dist_sq > radius * radius) {
-            continue;
-        }
-
-        if (dist_sq < best_dist_sq) {
-            best_dist_sq = dist_sq;
-            best_index = i;
-        }
-    }
-    return best_index;
-}
-
-int find_special_waypoint_in_radius(const rf::Vector3& pos)
-{
-    const int closest_jump_pad = find_jump_pad_waypoint_in_radius(pos);
-    const int closest_tele_entrance = find_tele_entrance_waypoint_in_radius(pos);
     if (closest_jump_pad <= 0) {
         return closest_tele_entrance;
     }
     if (closest_tele_entrance <= 0) {
         return closest_jump_pad;
     }
-    return distance_sq(pos, g_waypoints[closest_tele_entrance].pos)
-            < distance_sq(pos, g_waypoints[closest_jump_pad].pos)
-        ? closest_tele_entrance
-        : closest_jump_pad;
+    return tele_entrance_dist_sq < jump_pad_dist_sq ? closest_tele_entrance : closest_jump_pad;
 }
+
+int find_special_waypoint_in_radius(const rf::Vector3& pos)
+{
+    return find_special_waypoint_in_radius(
+        pos, std::views::iota(1, std::max(1, static_cast<int>(g_waypoints.size()))));
+}
+
+// ─── Generation run state ───
+
+namespace
+{
+constexpr std::chrono::minutes kWaypointGenerateTimeBudget{60};
+constexpr int kWaypointGenerateNoSeeds = -1;
+constexpr int kWaypointGenerateTimedOut = -2;
+
+// Spatial index over g_waypoints for one generation run. Generation only appends nodes, so they are indexed lazily
+// on the next query; anything that removes or renumbers nodes makes it start over.
+class GenerationWaypointIndex
+{
+public:
+    // Same as closest_waypoint(pos, radius) > 0.
+    bool any_within(const rf::Vector3& pos, float radius);
+    // Whether a valid node other than `skip` stands less than radius away horizontally and less than half_height
+    // vertically.
+    bool any_within_cylinder(const rf::Vector3& pos, float radius, float half_height, int skip);
+    // Same as find_nearest_waypoint(pos, radius, 0).
+    int nearest(const rf::Vector3& pos, float radius);
+    // Same as find_special_waypoint_in_radius(pos).
+    int special_in_radius(const rf::Vector3& pos);
+    // Calls visit(index) for a superset of the nodes within radius of pos, in no particular order, until it
+    // returns true. Returns whether it did.
+    template<typename Visitor>
+    bool any_near(const rf::Vector3& pos, float radius, Visitor&& visit);
+    // Every node so far, invalid ones included, bucketed by kCellSize in ascending index order.
+    const WaypointCellMap& cells();
+
+    static constexpr float kCellSize = kWaypointLinkRadius;
+
+private:
+    // Absorbs float rounding in the cell lookup, so no node at the edge of the radius is skipped.
+    static constexpr float kQueryPadding = 0.01f;
+
+    void sync();
+
+    WaypointCellMap cells_;
+    std::vector<int> special_indices_;
+    int indexed_count_ = 1;
+    int layout_version_ = g_waypoint_layout_version;
+};
+
+void GenerationWaypointIndex::sync()
+{
+    if (layout_version_ != g_waypoint_layout_version || indexed_count_ > static_cast<int>(g_waypoints.size())) {
+        cells_.clear();
+        special_indices_.clear();
+        indexed_count_ = 1;
+        layout_version_ = g_waypoint_layout_version;
+    }
+    for (; indexed_count_ < static_cast<int>(g_waypoints.size()); ++indexed_count_) {
+        const auto& node = g_waypoints[indexed_count_];
+        cells_[waypoint_cell_coord_from_pos(node.pos, kCellSize)].push_back(indexed_count_);
+        if (node.type == WaypointType::jump_pad || node.type == WaypointType::tele_entrance) {
+            special_indices_.push_back(indexed_count_);
+        }
+    }
+}
+
+template<typename Visitor>
+bool GenerationWaypointIndex::any_near(const rf::Vector3& pos, float radius, Visitor&& visit)
+{
+    sync();
+    const float reach = radius + kQueryPadding;
+    const auto min_cell = waypoint_cell_coord_from_pos(pos - rf::Vector3{reach, reach, reach}, kCellSize);
+    const auto max_cell = waypoint_cell_coord_from_pos(pos + rf::Vector3{reach, reach, reach}, kCellSize);
+    for (int x = min_cell.x; x <= max_cell.x; ++x) {
+        for (int y = min_cell.y; y <= max_cell.y; ++y) {
+            for (int z = min_cell.z; z <= max_cell.z; ++z) {
+                const auto it = cells_.find(WaypointCellCoord{x, y, z});
+                if (it == cells_.end()) {
+                    continue;
+                }
+                for (const int i : it->second) {
+                    if (visit(i)) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    return false;
+}
+
+bool GenerationWaypointIndex::any_within(const rf::Vector3& pos, float radius)
+{
+    const float radius_sq = radius * radius;
+    return any_near(pos, radius, [&](const int i) {
+        const auto& node = g_waypoints[i];
+        return node.valid && distance_sq(pos, node.pos) < radius_sq;
+    });
+}
+
+bool GenerationWaypointIndex::any_within_cylinder(
+    const rf::Vector3& pos, float radius, float half_height, const int skip)
+{
+    const float radius_sq = radius * radius;
+    return any_near(pos, std::max(radius, half_height), [&](const int i) {
+        const auto& node = g_waypoints[i];
+        const float dx = node.pos.x - pos.x;
+        const float dz = node.pos.z - pos.z;
+        return i != skip && node.valid && dx * dx + dz * dz < radius_sq
+            && std::fabs(node.pos.y - pos.y) < half_height;
+    });
+}
+
+int GenerationWaypointIndex::nearest(const rf::Vector3& pos, float radius)
+{
+    float best_dist_sq = radius * radius;
+    int best_index = 0;
+    any_near(pos, radius, [&](const int i) {
+        const auto& node = g_waypoints[i];
+        if (!node.valid) {
+            return false;
+        }
+        const float dist_sq = distance_sq(pos, node.pos);
+        if (dist_sq < best_dist_sq || (dist_sq == best_dist_sq && best_index > 0 && i < best_index)) {
+            best_dist_sq = dist_sq;
+            best_index = i;
+        }
+        return false;
+    });
+    return best_index;
+}
+
+const WaypointCellMap& GenerationWaypointIndex::cells()
+{
+    sync();
+    return cells_;
+}
+
+int GenerationWaypointIndex::special_in_radius(const rf::Vector3& pos)
+{
+    sync();
+    return find_special_waypoint_in_radius(pos, special_indices_);
+}
+
+// A fine step on a coarse stride or link may rise or fall this much at most.
+constexpr float kCoarseMaxStepRise = 0.5f;
+
+// The wider spacing a coarse generation run floods open ground with, away from geometry and points of interest.
+class GenerationCoarseFlood
+{
+public:
+    static constexpr int kStrideSteps = 4;
+    static constexpr float kStride = kStrideSteps * kWaypointGenerateProbeStepDistance;
+    // Above the chord of strides 45 deg apart and below one stride, so open stride nodes settle 60 deg apart.
+    static constexpr float kSpacing = 3.5f * kWaypointRadius;
+    // A stride node's links reach its neighbours with the slack the terrain lattice's joins have.
+    static constexpr float kLinkReach = kStride + 2.0f * kWaypointRadius;
+    // Nodes nearer in height than standing room cannot be on separate floors.
+    static constexpr float kSpacingHalfHeight = kWaypointGenerateStandingHeadroom;
+    // Fine nodes cover a point of interest and one fine link around it.
+    static constexpr float kInterestMargin = kWaypointLinkRadius;
+    // Over a damaging liquid only nodes level with its surface stay fine; a floor laid above it is open ground, and a
+    // stride cannot step down from it to the surface.
+    static constexpr float kLiquidSurfaceInterestMargin = kWaypointGenerateGroundOffset + kCoarseMaxStepRise;
+
+    // existing_graph: adding to a graph a coarse run made, whose open ground is already covered at the coarse spacing.
+    void enable_flood(const bool existing_graph)
+    {
+        flood_ = true;
+        existing_graph_ = existing_graph;
+    }
+    bool flood_enabled() const
+    {
+        return flood_;
+    }
+    bool existing_graph() const
+    {
+        return existing_graph_;
+    }
+    // Pruning would thin the stride links and their joins like a lattice.
+    bool keeps_link(int from, int to) const
+    {
+        return flood_
+            && distance_sq(g_waypoints[from].pos, g_waypoints[to].pos) > kWaypointLinkRadius * kWaypointLinkRadius;
+    }
+    void collect_points_of_interest(const WaypointTerrainLattice& lattice);
+    bool near_point_of_interest(const rf::Vector3& pos) const;
+    void note_node(int index, bool open, bool stride, int source);
+    // An RF2 geomod tunnel seed: the only way into what lies behind geoable brushes until they are blasted.
+    void note_tunnel_seed(int index);
+    bool is_open(int index) const
+    {
+        return index < static_cast<int>(flags_.size()) && (flags_[index] & kOpenFlag) != 0;
+    }
+    bool is_stride_node(int index) const
+    {
+        return index < static_cast<int>(flags_.size()) && (flags_[index] & kStrideFlag) != 0;
+    }
+    bool is_tunnel_seed(int index) const
+    {
+        return index < static_cast<int>(flags_.size()) && (flags_[index] & kTunnelSeedFlag) != 0;
+    }
+    // The node the flood placed it from, 0 for nodes it did not place.
+    int source_of(int index) const
+    {
+        return index < static_cast<int>(sources_.size()) ? sources_[index] : 0;
+    }
+    int stride_nodes() const
+    {
+        return stride_nodes_;
+    }
+    int fine_nodes() const
+    {
+        return fine_nodes_;
+    }
+    int points_of_interest() const
+    {
+        return static_cast<int>(interest_boxes_.size());
+    }
+
+private:
+    static constexpr std::uint8_t kOpenFlag = 1;
+    static constexpr std::uint8_t kStrideFlag = 2;
+    static constexpr std::uint8_t kTunnelSeedFlag = 4;
+
+    std::vector<std::pair<rf::Vector3, rf::Vector3>> interest_boxes_;
+    std::vector<std::uint8_t> flags_;
+    std::vector<int> sources_;
+    int stride_nodes_ = 0;
+    int fine_nodes_ = 0;
+    bool flood_ = false;
+    bool existing_graph_ = false;
+};
+
+void GenerationCoarseFlood::collect_points_of_interest(const WaypointTerrainLattice& lattice)
+{
+    const rf::Vector3 margin{kInterestMargin, kInterestMargin, kInterestMargin};
+    interest_boxes_.clear();
+    auto add_point = [&](const rf::Vector3& pos) { interest_boxes_.emplace_back(pos - margin, pos + margin); };
+    // A fresh run has only its seeds so far; an existing graph's seeds are re-derived as a fresh run makes them.
+    for (int i = 1; i < static_cast<int>(g_waypoints.size()); ++i) {
+        const auto& node = g_waypoints[i];
+        if (node.valid && !lattice.is_coarse(i)
+            && (!existing_graph_ || (waypoint_type_is_special(node.type) && !node.temporary))) {
+            add_point(node.pos);
+        }
+    }
+    if (existing_graph_) {
+        for (const rf::Vector3& pos : generation_objective_seed_positions()) {
+            add_point(pos);
+        }
+    }
+    for_each_waypoint_generation_obstacle(
+        [&](const rf::Vector3& box_min, const rf::Vector3& box_max, const bool liquid_top) {
+            rf::Vector3 top = box_max + margin;
+            if (liquid_top) {
+                top.y = box_max.y + kLiquidSurfaceInterestMargin;
+            }
+            interest_boxes_.emplace_back(box_min - margin, top);
+        });
+}
+
+void GenerationCoarseFlood::note_tunnel_seed(const int index)
+{
+    if (index >= static_cast<int>(flags_.size())) {
+        flags_.resize(index + 1, 0);
+        sources_.resize(index + 1, 0);
+    }
+    flags_[index] = kTunnelSeedFlag;
+}
+
+bool GenerationCoarseFlood::near_point_of_interest(const rf::Vector3& pos) const
+{
+    return std::any_of(interest_boxes_.begin(), interest_boxes_.end(), [&pos](const auto& box) {
+        return pos.x >= box.first.x && pos.x <= box.second.x && pos.y >= box.first.y && pos.y <= box.second.y
+            && pos.z >= box.first.z && pos.z <= box.second.z;
+    });
+}
+
+void GenerationCoarseFlood::note_node(const int index, const bool open, const bool stride, const int source)
+{
+    if (index >= static_cast<int>(flags_.size())) {
+        flags_.resize(index + 1, 0);
+        sources_.resize(index + 1, 0);
+    }
+    flags_[index] = static_cast<std::uint8_t>((open ? kOpenFlag : 0) | (stride ? kStrideFlag : 0));
+    sources_[index] = source;
+    stride_nodes_ += stride ? 1 : 0;
+    fine_nodes_ += stride ? 0 : 1;
+}
+
+// State of one generation run, owned by whoever runs the stages: the node index, stage timing and the time budget.
+class WaypointGenerationContext
+{
+public:
+    using Clock = std::chrono::steady_clock;
+
+    explicit WaypointGenerationContext(Clock::time_point deadline);
+    // Logs the stage that ends here with its time and the graph size, then starts the next one.
+    void enter_stage(std::string_view stage);
+    void finish();
+    // Polled by the long loops, which stop their stage once it returns true. Also logs progress every few seconds
+    // and tells the watchdog the main thread is still busy rather than hung.
+    bool out_of_time(int done, int total);
+    bool timed_out() const;
+
+    GenerationWaypointIndex index;
+    WaypointTerrainLattice lattice;
+    GenerationCoarseFlood coarse;
+
+private:
+    static constexpr auto kProgressLogInterval = std::chrono::seconds{5};
+
+    static float seconds_between(Clock::time_point from, Clock::time_point to);
+
+    Clock::time_point start_;
+    Clock::time_point stage_start_;
+    Clock::time_point deadline_;
+    Clock::time_point next_progress_log_;
+    std::string_view stage_;
+    bool timed_out_ = false;
+};
+
+WaypointGenerationContext::WaypointGenerationContext(const Clock::time_point deadline) :
+    start_{Clock::now()}, stage_start_{start_}, deadline_{deadline}, next_progress_log_{start_ + kProgressLogInterval}
+{
+}
+
+float WaypointGenerationContext::seconds_between(const Clock::time_point from, const Clock::time_point to)
+{
+    return std::chrono::duration<float>(to - from).count();
+}
+
+void WaypointGenerationContext::enter_stage(const std::string_view stage)
+{
+    finish();
+    stage_ = stage;
+    stage_start_ = Clock::now();
+}
+
+void WaypointGenerationContext::finish()
+{
+    if (stage_.empty()) {
+        return;
+    }
+    int nodes = 0;
+    int links = 0;
+    for (int i = 1; i < static_cast<int>(g_waypoints.size()); ++i) {
+        if (g_waypoints[i].valid) {
+            ++nodes;
+            links += g_waypoints[i].num_links;
+        }
+    }
+    const auto now = Clock::now();
+    xlog::info(
+        "[Waypoints] generation stage {}: {:.1f} s, {} nodes, {} links, {} targets ({:.1f} s total)", stage_,
+        seconds_between(stage_start_, now), nodes, links, g_waypoint_targets.size(), seconds_between(start_, now));
+    stage_ = {};
+}
+
+bool WaypointGenerationContext::out_of_time(const int done, const int total)
+{
+    if (timed_out_) {
+        return true;
+    }
+    debug_unresponsive_do_update();
+    const auto now = Clock::now();
+    if (now >= deadline_) {
+        timed_out_ = true;
+        xlog::error(
+            "[Waypoints] generation ran out of time in stage {} after {:.0f} s ({}/{})", stage_,
+            seconds_between(start_, now), done, total);
+        return true;
+    }
+    if (now >= next_progress_log_) {
+        next_progress_log_ = now + kProgressLogInterval;
+        xlog::info(
+            "[Waypoints] generation stage {}: {}/{}, {} nodes, {:.0f} s", stage_, done, total,
+            g_waypoints.size() - 1, seconds_between(start_, now));
+    }
+    return false;
+}
+
+bool WaypointGenerationContext::timed_out() const
+{
+    return timed_out_;
+}
+} // namespace
 
 bool get_mover_lift_path_delta(const rf::Mover& mover, rf::Vector3& out_delta);
 
-int find_lift_uid_below_waypoint(const rf::Vector3& pos)
+// The mover whose brush is the walkable floor under pos, if any.
+static rf::Mover* find_mover_below_waypoint(const rf::Vector3& pos)
 {
     constexpr float kLiftTraceDistance = 4.0f;
     rf::Vector3 p0 = pos;
     rf::Vector3 p1 = pos - rf::Vector3{0.0f, kLiftTraceDistance, 0.0f};
     rf::PCollisionOut collision{};
     collision.obj_handle = -1;
-    const bool hit = rf::collide_linesegment_world(
-        p0,
-        p1,
-        kWaypointWorldTraceFlags,
-        &collision);
+    const bool hit = collide_linesegment_walkable_world(p0, p1, collision);
     if (!hit || collision.obj_handle < 0) {
-        return -1;
+        return nullptr;
     }
     rf::Object* hit_obj = rf::obj_from_handle(collision.obj_handle);
     if (!hit_obj || hit_obj->type != rf::OT_MOVER_BRUSH) {
-        return -1;
+        return nullptr;
     }
+    return mover_find_by_mover_brush(static_cast<rf::MoverBrush*>(hit_obj));
+}
 
-    auto* mover_brush = static_cast<rf::MoverBrush*>(hit_obj);
-    rf::Mover* mover = mover_find_by_mover_brush(mover_brush);
-    if (!mover) {
+// A payload cart runs along its track, so it is no lift, and a node on it would be left in the air.
+static bool waypoint_stands_on_payload_cart(const rf::Vector3& pos)
+{
+    const rf::Mover* mover = find_mover_below_waypoint(pos);
+    return mover && payload_is_cart(mover->handle);
+}
+
+// The uid of the mover under a node (from find_mover_below_waypoint) if it is a lift, or -1.
+static int lift_uid_of_mover_below(const rf::Mover* mover)
+{
+    if (!mover || payload_is_cart(mover->handle)) {
         return -1;
     }
 
@@ -2630,7 +3334,7 @@ void seed_waypoint_zones_from_damaging_liquid_rooms()
         if (!room || room->uid < 0 || !room->contains_liquid) {
             continue;
         }
-        if (room->liquid_type != 2 && room->liquid_type != 3) {
+        if (room->liquid_type != rf::LIQUID_LAVA && room->liquid_type != rf::LIQUID_ACID) {
             continue;
         }
 
@@ -3108,7 +3812,7 @@ bool can_link_waypoint_indices(int from, int to)
     if (!waypoint_link_types_allowed(from_node, to_node)) {
         return false;
     }
-    if (from_node.type == WaypointType::tele_entrance) {
+    if (from_node.type == WaypointType::tele_entrance || waypoint_is_zipline_ride(from_node, to)) {
         return true;
     }
 
@@ -3169,6 +3873,7 @@ bool can_link_waypoint_indices_autogen(int from, int to)
 bool waypoint_type_requires_floor_supported_midpoint_for_autogen_link(WaypointType type)
 {
     switch (type) {
+        case WaypointType::vehicle_factory:
         case WaypointType::std:
         case WaypointType::std_new:
         case WaypointType::item:
@@ -3178,6 +3883,8 @@ bool waypoint_type_requires_floor_supported_midpoint_for_autogen_link(WaypointTy
         case WaypointType::tele_entrance:
         case WaypointType::tele_exit:
         case WaypointType::conveyer:
+        case WaypointType::zipline_entrance:
+        case WaypointType::zipline_exit:
             return true;
         default:
             return false;
@@ -3309,7 +4016,10 @@ void on_geomod_crater_created(const rf::Vector3& crater_pos, float crater_radius
         return;
     }
 
-    remove_realized_waypoint_targets(crater_pos, crater_radius);
+    // A listen host editing waypoints keeps its targets: the next waypoints_save writes them.
+    if (!(g_alpine_game_config.waypoints_edit_mode && !rf::is_dedicated_server)) {
+        remove_realized_waypoint_targets(crater_pos, crater_radius);
+    }
 
     const int crater_index = add_waypoint(
         crater_pos,
@@ -3404,6 +4114,7 @@ void on_geomod_crater_created(const rf::Vector3& crater_pos, float crater_radius
                 crater_node.links[write++] = crater_node.links[read];
             }
             crater_node.num_links = write;
+            waypoints_mark_graph_changed(!crater_node.temporary);
         }
     }
 }
@@ -3419,6 +4130,7 @@ void link_temporary_waypoint_like_crater(int waypoint_uid)
     const float link_radius_sq =
         sanitize_waypoint_link_radius(temp_waypoint.link_radius)
         * sanitize_waypoint_link_radius(temp_waypoint.link_radius);
+    std::vector<std::pair<float, int>> clear_sources{};
     for (int i = 1; i < static_cast<int>(g_waypoints.size()); ++i) {
         if (i == waypoint_uid) {
             continue;
@@ -3428,16 +4140,56 @@ void link_temporary_waypoint_like_crater(int waypoint_uid)
         if (!node.valid) {
             continue;
         }
-        if (distance_sq(waypoint_pos, node.pos) > link_radius_sq) {
+        const float dist_sq = distance_sq(waypoint_pos, node.pos);
+        if (dist_sq > link_radius_sq) {
             continue;
         }
 
         if (waypoint_upward_link_allowed(waypoint_pos, node.pos, kWaypointGenerateMaxInclineDeg)) {
             link_waypoint_if_clear(waypoint_uid, i);
         }
-        if (waypoint_upward_link_allowed(node.pos, waypoint_pos, kWaypointGenerateMaxInclineDeg)) {
-            link_waypoint_if_clear(i, waypoint_uid);
+        if (waypoint_upward_link_allowed(node.pos, waypoint_pos, kWaypointGenerateMaxInclineDeg)
+            && link_waypoint_if_clear(i, waypoint_uid)) {
+            clear_sources.emplace_back(dist_sq, i);
         }
+    }
+
+    // An objective node no persistent neighbour has room to link to borrows a slot so it stays reachable.
+    if (g_waypoints[waypoint_uid].type == WaypointType::crater
+        || count_waypoint_inbound_links(waypoint_uid, true) > 0) {
+        return;
+    }
+    std::sort(clear_sources.begin(), clear_sources.end());
+    for (const auto& [dist_sq, from] : clear_sources) {
+        auto& from_node = g_waypoints[from];
+        if (from_node.temporary || from_node.type == WaypointType::jump_pad) {
+            continue;
+        }
+        int borrow_slot = -1;
+        for (int slot = 0; slot < from_node.num_links; ++slot) {
+            const int link = from_node.links[slot];
+            if (link <= 0 || link >= static_cast<int>(g_waypoints.size()) || g_waypoints[link].temporary
+                || waypoint_is_zipline_ride(from_node, link)) {
+                continue;
+            }
+            const bool continues_to_link = waypoint_link_exists(g_waypoints[waypoint_uid], link);
+            if (!continues_to_link && count_waypoint_inbound_links(link, true) <= 1) {
+                continue;
+            }
+            borrow_slot = slot;
+            if (continues_to_link) {
+                break;
+            }
+        }
+        if (borrow_slot < 0) {
+            continue;
+        }
+        auto& node = g_waypoints[waypoint_uid];
+        node.borrowed_link_from = from;
+        node.borrowed_link_target = from_node.links[borrow_slot];
+        from_node.links[borrow_slot] = waypoint_uid;
+        waypoints_mark_graph_changed(false);
+        return;
     }
 }
 
@@ -3546,33 +4298,34 @@ bool waypoints_find_bag_waypoint(int& out_waypoint, rf::Vector3& out_pos)
     return true;
 }
 
-// Salvage: there is at most one neutral flag waypoint at any time.
-int find_temporary_salvage_flag_waypoint()
+// Salvage: there is at most one temporary node per subtype at any time.
+int find_temporary_salvage_flag_waypoint(WaypointSalvageFlagSubtype subtype = WaypointSalvageFlagSubtype::flag)
 {
     for (int waypoint_uid = 1; waypoint_uid < static_cast<int>(g_waypoints.size()); ++waypoint_uid) {
         const auto& node = g_waypoints[waypoint_uid];
         if (!node.valid || !node.temporary) continue;
-        if (node.type != WaypointType::salvage_flag) continue;
+        if (node.type != WaypointType::salvage_flag || node.subtype != static_cast<int>(subtype)) continue;
         return waypoint_uid;
     }
     return 0;
 }
 
-void remove_temporary_salvage_flag_waypoints()
+void remove_temporary_salvage_flag_waypoints(WaypointSalvageFlagSubtype subtype = WaypointSalvageFlagSubtype::flag)
 {
     while (true) {
-        const int waypoint_uid = find_temporary_salvage_flag_waypoint();
+        const int waypoint_uid = find_temporary_salvage_flag_waypoint(subtype);
         if (waypoint_uid <= 0) break;
         remove_waypoint_by_uid(waypoint_uid);
     }
 }
 
-int create_temporary_salvage_flag_waypoint(const rf::Vector3& flag_pos)
+int create_temporary_salvage_flag_waypoint(
+    const rf::Vector3& flag_pos, WaypointSalvageFlagSubtype subtype = WaypointSalvageFlagSubtype::flag)
 {
     const int waypoint_uid = add_waypoint(
         flag_pos,
         WaypointType::salvage_flag,
-        0,
+        static_cast<int>(subtype),
         false,
         true,
         kSalvageFlagWaypointLinkRadius,
@@ -3622,6 +4375,347 @@ bool waypoints_find_salvage_flag_waypoint(int& out_waypoint, rf::Vector3& out_po
     return true;
 }
 
+namespace
+{
+constexpr float kVehicleBoardingEyeAboveWaypoint = 0.6f;
+constexpr float kVehicleBoardingRangeMargin = 1.2f;
+constexpr float kVehicleHullFallbackHalfWidth = 1.5f;
+// Boarding spots are probed on rings this far past the hull's half width, at this many bearings each, for a floor
+// within the probe depth under a point the lift above the hull's origin.
+constexpr std::array<float, 3> kVehicleBoardingRingOffsets{0.9f, 1.6f, 2.4f};
+constexpr int kVehicleBoardingRingBearings = 8;
+constexpr float kVehicleBoardingProbeLift = 0.5f;
+constexpr float kVehicleBoardingProbeDepth = 3.0f;
+constexpr float kHullWaypointReplaceDistance = 3.0f;
+constexpr float kHullWaypointStillDistance = 0.5f;
+constexpr int kHullWaypointStillMs = 1000;
+constexpr int kHullWaypointIdleMs = 15000;
+// A hull with no boarding spot is searched again only this often while it stands still.
+constexpr int kHullWaypointRetryMs = 1000;
+
+struct HullWaypointTrack
+{
+    rf::Vector3 placed_hull_pos{};
+    rf::Vector3 moved_hull_pos{};
+    rf::Timestamp still_timer{};
+    rf::Timestamp idle_timer{};
+    rf::Vector3 retry_hull_pos{};
+    rf::Timestamp retry_timer{};
+};
+
+std::unordered_map<int, HullWaypointTrack> g_hull_waypoint_tracks;
+
+int find_vehicle_waypoint(const WaypointVehicleSubtype subtype, const int identifier)
+{
+    for (const int waypoint_uid : waypoints_get_by_type(WaypointType::vehicle_factory)) {
+        const auto& node = g_waypoints[waypoint_uid];
+        if (node.valid && node.type == WaypointType::vehicle_factory && node.subtype == static_cast<int>(subtype)
+            && node.identifier == identifier
+            && (node.temporary || subtype != WaypointVehicleSubtype::parked_hull)) {
+            return waypoint_uid;
+        }
+    }
+    return 0;
+}
+
+bool find_vehicle_boarding_spot(
+    const rf::Vector3& center, const bool turret, const float use_radius, const bool require_foot_link,
+    rf::Vector3& out_pos)
+{
+    const float base_radius = turret ? 0.0f : kVehicleHullFallbackHalfWidth;
+    const float max_eye_dist = use_radius + kVehicleBoardingRangeMargin;
+    if (!(max_eye_dist > 0.0f)) {
+        return false;
+    }
+    for (const float ring_offset : kVehicleBoardingRingOffsets) {
+        const float ring_radius = base_radius + ring_offset;
+        for (int i = 0; i < kVehicleBoardingRingBearings; ++i) {
+            const float angle = static_cast<float>(i)
+                * (2.0f * std::numbers::pi_v<float> / static_cast<float>(kVehicleBoardingRingBearings));
+            const rf::Vector3 probe = center
+                + rf::Vector3{std::sin(angle) * ring_radius, kVehicleBoardingProbeLift, std::cos(angle) * ring_radius};
+            rf::Vector3 floor_pos{};
+            if (!trace_ground_below_point(probe, kVehicleBoardingProbeDepth, &floor_pos)) {
+                continue;
+            }
+            const rf::Vector3 spot = floor_pos + rf::Vector3{0.0f, kWaypointGenerateGroundOffset, 0.0f};
+            const rf::Vector3 eye = spot + rf::Vector3{0.0f, kVehicleBoardingEyeAboveWaypoint, 0.0f};
+            // Not "greater than": a NaN use radius must refuse every spot.
+            if (!(eye.distance_to(center) <= max_eye_dist) || !can_link_waypoints(eye, center)) {
+                continue;
+            }
+            if (require_foot_link) {
+                const int foot = closest_waypoint(spot, kWaypointLinkRadius);
+                if (foot <= 0 || !can_link_waypoints(spot, g_waypoints[foot].pos)) {
+                    continue;
+                }
+            }
+            out_pos = spot;
+            return true;
+        }
+    }
+    if (!require_foot_link) {
+        return false;
+    }
+    // No floor beside the hull (a sub in the water, a hull on a pad or in a pit): the plain or swim node nearest it
+    // whose eye reaches it over a clear line, as a player boards from a dock, a ledge or swimming.
+    int best = 0;
+    float best_dist_sq = max_eye_dist * max_eye_dist;
+    for (int i = 1; i < static_cast<int>(g_waypoints.size()); ++i) {
+        const auto& node = g_waypoints[i];
+        if (!node.valid || node.temporary
+            || (node.type != WaypointType::std && node.type != WaypointType::std_new
+                && node.type != WaypointType::water)) {
+            continue;
+        }
+        const rf::Vector3 eye = node.pos + rf::Vector3{0.0f, kVehicleBoardingEyeAboveWaypoint, 0.0f};
+        const float dist_sq = distance_sq(eye, center);
+        if (dist_sq <= best_dist_sq && can_link_waypoints(eye, center)) {
+            best = i;
+            best_dist_sq = dist_sq;
+        }
+    }
+    if (best <= 0) {
+        return false;
+    }
+    out_pos = g_waypoints[best].pos;
+    return true;
+}
+
+bool find_factory_boarding_spot(
+    const AlpineVehicleFactoryInfo& factory, const bool require_foot_link, rf::Vector3& out_pos)
+{
+    const int entity_type = rf::entity_lookup_type(factory.vehicle_class.c_str());
+    if (entity_type < 0 || entity_type >= rf::num_entity_types) {
+        return false;
+    }
+    const rf::EntityInfo& info = rf::entity_types[entity_type];
+    return find_vehicle_boarding_spot(
+        factory.pos, info.use_function == rf::ENTITY_USE_TURRET, info.use_radius, require_foot_link, out_pos);
+}
+
+int add_vehicle_waypoint(
+    const rf::Vector3& pos, const WaypointVehicleSubtype subtype, const int identifier, const bool temporary)
+{
+    return add_waypoint(
+        pos, WaypointType::vehicle_factory, static_cast<int>(subtype), false, true, kWaypointLinkRadius, identifier,
+        nullptr, false, static_cast<int>(WaypointDroppedSubtype::normal), temporary);
+}
+
+void seed_vehicle_factory_waypoints(std::vector<int>& seeded_indices, std::vector<int>& auto_link_source_indices)
+{
+    for (int i = 0; const AlpineVehicleFactoryInfo* factory = vehicle_factory(i); ++i) {
+        rf::Vector3 spot{};
+        if (!find_factory_boarding_spot(*factory, false, spot)) {
+            continue;
+        }
+        const int waypoint_uid = add_vehicle_waypoint(spot, WaypointVehicleSubtype::factory, factory->uid, false);
+        seeded_indices.push_back(waypoint_uid);
+        auto_link_source_indices.push_back(waypoint_uid);
+    }
+}
+
+// An AWP made without the factory nodes gets temporary ones, so foot bots can still reach the hulls.
+void ensure_vehicle_factory_waypoints()
+{
+    if (!vehicle_level_has_factories()) {
+        return;
+    }
+    for (int i = 0; const AlpineVehicleFactoryInfo* factory = vehicle_factory(i); ++i) {
+        if (find_vehicle_waypoint(WaypointVehicleSubtype::factory, factory->uid) > 0) {
+            continue;
+        }
+        rf::Vector3 spot{};
+        if (!find_factory_boarding_spot(*factory, true, spot)) {
+            if (g_alpine_game_config.dbg_bot) {
+                xlog::info("[Waypoints] vehicle factory uid {} has no reachable boarding spot", factory->uid);
+            }
+            continue;
+        }
+        link_temporary_waypoint_like_crater(
+            add_vehicle_waypoint(spot, WaypointVehicleSubtype::factory, factory->uid, true));
+    }
+}
+
+void update_hull_temporary_waypoints()
+{
+    for (auto it = g_hull_waypoint_tracks.begin(); it != g_hull_waypoint_tracks.end();) {
+        rf::Entity* const hull = rf::entity_from_handle(it->first);
+        const bool gone = !hull || rf::entity_is_dying(hull) || !vehicle_is_synced_entity_type(hull);
+        if (!gone && !it->second.idle_timer.elapsed()) {
+            ++it;
+            continue;
+        }
+        if (const int waypoint_uid = find_vehicle_waypoint(WaypointVehicleSubtype::parked_hull, it->first);
+            waypoint_uid > 0) {
+            remove_waypoint_by_uid(waypoint_uid);
+        }
+        it = g_hull_waypoint_tracks.erase(it);
+    }
+}
+
+constexpr float kZiplineEntranceProbeDepth = 6.0f;
+constexpr float kZiplineExitProbeDepth = 8.0f;
+// A ride is costed as the distance a bot would run in the same time, plus the stop to take hold.
+constexpr float kZiplineRouteFootSpeed = 8.0f;
+constexpr float kZiplineRouteGrabCost = 3.0f;
+constexpr float kZiplineClosedRouteCost = 100000.0f;
+constexpr int kZiplineRideStateIntervalMs = 250;
+
+rf::Timestamp g_zipline_ride_state_timer;
+
+int zipline_dir_subtype(const int dir)
+{
+    return dir > 0 ? 0 : 1;
+}
+
+int zipline_subtype_dir(const int subtype)
+{
+    return subtype == zipline_dir_subtype(1) ? 1 : -1;
+}
+
+bool find_zipline_entrance_spot(const ZiplineBotRoute& route, rf::Vector3& out_spot)
+{
+    for (const rf::Vector3& grab : route.grab_points) {
+        rf::Vector3 floor_pos{};
+        if (!trace_ground_below_point(grab, kZiplineEntranceProbeDepth, &floor_pos)) {
+            continue;
+        }
+        const rf::Vector3 spot = floor_pos + rf::Vector3{0.0f, kWaypointGenerateGroundOffset, 0.0f};
+        if (zipline_bot_reaches_line(spot, grab, true)) {
+            out_spot = spot;
+            return true;
+        }
+    }
+    return false;
+}
+
+void seed_zipline_waypoints(std::vector<int>& seeded_indices, std::vector<int>& auto_link_source_indices)
+{
+    std::vector<ZiplineBotRoute> routes;
+    zipline_collect_bot_routes(routes);
+    for (const ZiplineBotRoute& route : routes) {
+        rf::Vector3 entrance_spot{};
+        rf::Vector3 exit_floor{};
+        if (!find_zipline_entrance_spot(route, entrance_spot)
+            || !trace_ground_below_point(route.landing_pos, kZiplineExitProbeDepth, &exit_floor)) {
+            continue;
+        }
+        const rf::Vector3 exit_spot = exit_floor + rf::Vector3{0.0f, kWaypointGenerateGroundOffset, 0.0f};
+        const int subtype = zipline_dir_subtype(route.dir);
+        const int entrance = add_waypoint(
+            entrance_spot, WaypointType::zipline_entrance, subtype, false, true, kWaypointLinkRadius, route.rope_uid);
+        const int exit = add_waypoint(
+            exit_spot, WaypointType::zipline_exit, subtype, false, true, kWaypointLinkRadius, route.rope_uid);
+        link_waypoint(entrance, exit);
+        for (const int waypoint_uid : {entrance, exit}) {
+            seeded_indices.push_back(waypoint_uid);
+            auto_link_source_indices.push_back(waypoint_uid);
+        }
+    }
+}
+
+// A ride whose line is switched off, or has been carried away from its entrance, is left out of routes like a bridge
+// zone that is off.
+void update_zipline_ride_states()
+{
+    if (!is_waypoint_bot_mode_active()
+        || (g_zipline_ride_state_timer.valid() && !g_zipline_ride_state_timer.elapsed())) {
+        return;
+    }
+    g_zipline_ride_state_timer.set(kZiplineRideStateIntervalMs);
+    bool changed = false;
+    for (const int waypoint_uid : waypoints_get_by_type(WaypointType::zipline_entrance)) {
+        auto& node = g_waypoints[waypoint_uid];
+        const bool closed =
+            !zipline_bot_ride_open(node.identifier, zipline_subtype_dir(node.subtype), node.pos, nullptr);
+        changed = changed || closed != node.ride_closed;
+        node.ride_closed = closed;
+    }
+    if (changed) {
+        waypoints_mark_graph_changed();
+    }
+}
+} // namespace
+
+bool waypoints_find_vehicle_factory_waypoint(const int factory_uid, int& out_waypoint, rf::Vector3& out_pos)
+{
+    const int waypoint_uid = find_vehicle_waypoint(WaypointVehicleSubtype::factory, factory_uid);
+    if (waypoint_uid <= 0) {
+        return false;
+    }
+    out_waypoint = waypoint_uid;
+    out_pos = g_waypoints[waypoint_uid].pos;
+    return true;
+}
+
+int waypoints_ensure_hull_waypoint(const rf::Entity& hull)
+{
+    if (!is_waypoint_bot_mode_active() || !(rf::level.flags & rf::LEVEL_LOADED) || !hull.info) {
+        return 0;
+    }
+    HullWaypointTrack& track = g_hull_waypoint_tracks[hull.handle];
+    track.idle_timer.set(kHullWaypointIdleMs);
+    const int existing = find_vehicle_waypoint(WaypointVehicleSubtype::parked_hull, hull.handle);
+    if (existing > 0) {
+        // Every re-placement bumps the graph version, which drops the cached forward distance fields.
+        if (hull.pos.distance_to(track.placed_hull_pos) <= kHullWaypointReplaceDistance) {
+            track.still_timer.invalidate();
+            return existing;
+        }
+        if (!track.still_timer.valid() || hull.pos.distance_to(track.moved_hull_pos) > kHullWaypointStillDistance) {
+            track.moved_hull_pos = hull.pos;
+            track.still_timer.set(kHullWaypointStillMs);
+            return existing;
+        }
+        if (!track.still_timer.elapsed()) {
+            return existing;
+        }
+        remove_waypoint_by_uid(existing);
+    }
+    track.still_timer.invalidate();
+    if (track.retry_timer.valid() && !track.retry_timer.elapsed()
+        && hull.pos.distance_to(track.retry_hull_pos) <= kHullWaypointStillDistance) {
+        return 0;
+    }
+    rf::Vector3 spot{};
+    if (!find_vehicle_boarding_spot(hull.pos, vehicle_hull_is_turret(&hull), hull.info->use_radius, true, spot)) {
+        track.retry_hull_pos = hull.pos;
+        track.retry_timer.set(kHullWaypointRetryMs);
+        return 0;
+    }
+    track.placed_hull_pos = hull.pos;
+    const int waypoint_uid = add_vehicle_waypoint(spot, WaypointVehicleSubtype::parked_hull, hull.handle, true);
+    link_temporary_waypoint_like_crater(waypoint_uid);
+    return waypoint_uid;
+}
+
+bool waypoints_get_zipline_ride(const int from, const int to, int32_t* rope_uid, int* dir, float* route_cost)
+{
+    if (!is_waypoint_uid_valid(from) || !is_waypoint_uid_valid(to)
+        || !waypoint_is_zipline_ride(g_waypoints[from], to)) {
+        return false;
+    }
+    const auto& entrance = g_waypoints[from];
+    if (rope_uid) {
+        *rope_uid = entrance.identifier;
+    }
+    if (dir) {
+        *dir = zipline_subtype_dir(entrance.subtype);
+    }
+    if (route_cost) {
+        float ride_seconds = 0.0f;
+        // Prices out a line already closed when the edges are built but not yet marked ride_closed. No cheaper than
+        // the straight distance, which the route search's estimate counts on.
+        *route_cost = zipline_bot_ride_open(entrance.identifier, zipline_subtype_dir(entrance.subtype), entrance.pos,
+                                            &ride_seconds)
+            ? std::max(ride_seconds * kZiplineRouteFootSpeed + kZiplineRouteGrabCost,
+                       (g_waypoints[to].pos - entrance.pos).len())
+            : kZiplineClosedRouteCost;
+    }
+    return true;
+}
+
 void update_ctf_dropped_flag_temporary_waypoint_for_team(bool red_flag)
 {
     const bool dropped_by_runtime_state = is_ctf_flag_dropped(red_flag);
@@ -3659,15 +4753,12 @@ void update_ctf_dropped_flag_temporary_waypoint_for_team(bool red_flag)
 
 void update_ctf_dropped_flag_temporary_waypoints()
 {
-    if (!is_waypoint_bot_mode_active()) {
-        g_ctf_dropped_flag_packet_hints[0].active = false;
-        g_ctf_dropped_flag_packet_hints[1].active = false;
-        remove_temporary_ctf_flag_waypoints(true);
-        remove_temporary_ctf_flag_waypoints(false);
+    // Same reasoning as the salvage flag node below; level init also clears the packet hints.
+    if (!is_ctf_mode_for_waypoints()) {
         return;
     }
 
-    if (!is_ctf_mode_for_waypoints()) {
+    if (!is_waypoint_bot_mode_active()) {
         g_ctf_dropped_flag_packet_hints[0].active = false;
         g_ctf_dropped_flag_packet_hints[1].active = false;
         remove_temporary_ctf_flag_waypoints(true);
@@ -3687,10 +4778,12 @@ void update_ctf_dropped_flag_temporary_waypoints()
 // packet-driven calls is at most one frame of lag on a transition.
 void update_salvage_flag_temporary_waypoint()
 {
-    if (!(rf::level.flags & rf::LEVEL_LOADED)) {
+    // Every level load clears the graph and the game type is fixed for the level, so outside these modes there is
+    // no node to remove, and the scan for one is O(N) per frame.
+    if (!(rf::level.flags & rf::LEVEL_LOADED) || !salvage_framework_active()) {
         return;
     }
-    if (!is_waypoint_bot_mode_active() || !gt_is_salvage()) {
+    if (!is_waypoint_bot_mode_active()) {
         remove_temporary_salvage_flag_waypoints();
         return;
     }
@@ -3721,6 +4814,60 @@ void update_salvage_flag_temporary_waypoint()
     }
 }
 
+// Only a zone with no level node inside gets one, so routes end inside the zone rather than beside it.
+void update_scavenger_zone_temporary_waypoint()
+{
+    constexpr auto kZoneSubtype = WaypointSalvageFlagSubtype::scavenger_zone;
+    // Same reasoning as the salvage flag node above.
+    if (!gt_is_scavenger()) {
+        return;
+    }
+    rf::Vector3 zone_pos{};
+    if (!is_waypoint_bot_mode_active() || !scavenger_get_zone(&zone_pos)) {
+        remove_temporary_salvage_flag_waypoints(kZoneSubtype);
+        return;
+    }
+
+    const int existing = find_temporary_salvage_flag_waypoint(kZoneSubtype);
+    if (existing > 0) {
+        if (distance_sq(g_waypoints[existing].pos, zone_pos) <= 0.0001f) {
+            return;
+        }
+        remove_waypoint_by_uid(existing);
+    }
+    if (closest_waypoint(zone_pos, scavenger_get_zone_radius()) <= 0) {
+        create_temporary_salvage_flag_waypoint(zone_pos, kZoneSubtype);
+    }
+}
+
+static bool waypoints_link_passes_geometry(const int from, const int to)
+{
+    const int waypoint_total = static_cast<int>(g_waypoints.size());
+    if (from <= 0 || from >= waypoint_total || !g_waypoints[from].valid) {
+        return false;
+    }
+    if (can_link_waypoint_indices(from, to)) {
+        return true;
+    }
+    // Preserve links that intentionally pass through geometry:
+    // - Jump pad outbound links (trajectory-based, parabolic path)
+    // - Downward drop links (bot walks off a ledge and falls)
+    const auto& node = g_waypoints[from];
+    const bool is_jump_pad_link = node.type == WaypointType::jump_pad;
+    const bool is_drop_link = to > 0
+        && to < waypoint_total
+        && g_waypoints[to].valid
+        && (node.pos.y - g_waypoints[to].pos.y) >= 2.0f
+        && !waypoint_has_link_to(to, from);
+    return is_jump_pad_link || is_drop_link;
+}
+
+bool waypoints_prune_blocked_link(const int from, const int to)
+{
+    return waypoints_loaded_for_route_arrows_only() && !waypoints_link_passes_geometry(from, to)
+        && remove_waypoint_links_from_to(from, to) > 0;
+}
+
 void sanitize_waypoint_links_against_geometry()
 {
     int removed_links = 0;
@@ -3735,20 +4882,9 @@ void sanitize_waypoint_links_against_geometry()
         int write_index = 0;
         for (int read_index = 0; read_index < node.num_links; ++read_index) {
             const int link = node.links[read_index];
-            if (!can_link_waypoint_indices(index, link)) {
-                // Preserve links that intentionally pass through geometry:
-                // - Jump pad outbound links (trajectory-based, parabolic path)
-                // - Downward drop links (bot walks off a ledge and falls)
-                const bool is_jump_pad_link = node.type == WaypointType::jump_pad;
-                const bool is_drop_link = link > 0
-                    && link < waypoint_total
-                    && g_waypoints[link].valid
-                    && (node.pos.y - g_waypoints[link].pos.y) >= 2.0f
-                    && !waypoint_has_link_to(link, index);
-                if (!is_jump_pad_link && !is_drop_link) {
-                    ++removed_links;
-                    continue;
-                }
+            if (!waypoints_link_passes_geometry(index, link)) {
+                ++removed_links;
+                continue;
             }
 
             bool duplicate = false;
@@ -3768,6 +4904,7 @@ void sanitize_waypoint_links_against_geometry()
         node.num_links = write_index;
     }
 
+    waypoints_mark_graph_changed();
     if (removed_links > 0) {
         xlog::info("Pruned {} blocked or invalid waypoint links", removed_links);
     }
@@ -3809,7 +4946,13 @@ int add_waypoint(
         node.zones = collect_waypoint_zone_refs(pos, source_object);
     }
     g_waypoints.push_back(node);
-    invalidate_cache();
+    if (temporary) {
+        waypoints_mark_graph_changed(false);
+        g_waypoints_by_type_total = 0;
+    }
+    else {
+        invalidate_cache();
+    }
     int index = static_cast<int>(g_waypoints.size()) - 1;
     if (link_to_nearest) {
         link_waypoint_to_nearest(index, bidirectional_link);
@@ -3817,11 +4960,11 @@ int add_waypoint(
     return index;
 }
 
-std::vector<int> gather_indices()
+std::vector<int> gather_indices(const int end)
 {
     std::vector<int> indices;
-    indices.reserve(g_waypoints.size());
-    for (int i = 1; i < static_cast<int>(g_waypoints.size()); ++i) {
+    indices.reserve(end);
+    for (int i = 1; i < end; ++i) {
         if (g_waypoints[i].valid) {
             indices.push_back(i);
         }
@@ -3871,11 +5014,22 @@ WpCacheNode* build_cache(std::vector<int>& indices, int depth)
 
 void ensure_cache()
 {
-    if (!g_cache_dirty) {
+    // Past this many, scanning the unindexed tail costs more than a rebuild saves.
+    constexpr int kMaxUnindexedWaypoints = 256;
+    const int waypoint_total = static_cast<int>(g_waypoints.size());
+    if (!g_cache_dirty && waypoint_total - g_cache_indexed_end <= kMaxUnindexedWaypoints) {
         return;
     }
+    int indexed_end = waypoint_total;
+    while (indexed_end > 1 && g_waypoints[indexed_end - 1].temporary) {
+        --indexed_end;
+    }
+    if (waypoint_total - indexed_end > kMaxUnindexedWaypoints) {
+        indexed_end = waypoint_total;
+    }
+    g_cache_indexed_end = indexed_end;
     g_cache_nodes.clear();
-    std::vector<int> indices = gather_indices();
+    std::vector<int> indices = gather_indices(indexed_end);
     // IMPORTANT: reserve enough capacity upfront so build_cache() never triggers
     // a reallocation. build_cache() stores raw WpCacheNode* pointers (left/right)
     // into g_cache_nodes during recursion — any reallocation would invalidate them.
@@ -3948,6 +5102,17 @@ int closest_waypoint(const rf::Vector3& pos, float radius)
     int best_index = 0;
     float best_dist_sq = radius_sq;
     closest_recursive(g_cache_root, pos, radius_sq, best_index, best_dist_sq);
+    for (int i = g_cache_indexed_end; i < static_cast<int>(g_waypoints.size()); ++i) {
+        const auto& wp = g_waypoints[i];
+        if (!wp.valid) {
+            continue;
+        }
+        const float dist_sq = distance_sq(pos, wp.pos);
+        if (dist_sq <= radius_sq && dist_sq < best_dist_sq) {
+            best_dist_sq = dist_sq;
+            best_index = i;
+        }
+    }
     return best_index;
 }
 
@@ -4011,28 +5176,6 @@ static std::string get_awp_bare_filename(const std::string& rfl_filename)
     return std::string{get_filename_without_ext(rfl_filename.c_str())} + ".awp";
 }
 
-// Try to read an AWP file's content from the VPP packfile system.
-// Returns the file content as a string, or empty if not found.
-static std::string read_awp_from_vpp(const std::string& bare_awp_filename)
-{
-    rf::File file;
-    if (file.open(bare_awp_filename.c_str()) != 0) {
-        return {};
-    }
-    const int file_size = file.size();
-    if (file_size <= 0) {
-        file.close();
-        return {};
-    }
-    std::string content(static_cast<size_t>(file_size), '\0');
-    const int bytes_read = file.read(content.data(), file_size);
-    file.close();
-    if (bytes_read != file_size) {
-        return {};
-    }
-    return content;
-}
-
 enum class AwpSource
 {
     not_found,
@@ -4057,7 +5200,7 @@ static std::pair<AwpSource, toml::table> parse_awp_file(
     }
 
     // Second: try loading from alpinefaction.vpp (or other loaded VPPs).
-    std::string vpp_content = read_awp_from_vpp(bare_awp_filename);
+    std::string vpp_content = read_game_file(bare_awp_filename.c_str()).value_or(std::string{});
     if (!vpp_content.empty()) {
         try {
             return {AwpSource::vpp, toml::parse(vpp_content, bare_awp_filename)};
@@ -4122,7 +5265,7 @@ int get_local_awp_revision(const std::string& rfl_filename)
 
     // Second: try VPP.
     const std::string bare_filename = get_awp_bare_filename(rfl_filename);
-    std::string vpp_content = read_awp_from_vpp(bare_filename);
+    std::string vpp_content = read_game_file(bare_filename.c_str()).value_or(std::string{});
     if (!vpp_content.empty()) {
         std::istringstream vpp_stream(std::move(vpp_content));
         return scan_awp_revision_from_content(vpp_stream);
@@ -4155,7 +5298,7 @@ void seed_waypoints_from_objects()
                 continue;
             }
 
-            const std::string_view item_name = item->name.c_str();
+            const std::string_view item_name = item->info ? item->info->cls_name.c_str() : item->name.c_str();
 
             if (auto ctf_subtype = get_default_grid_ctf_flag_subtype(item_name); ctf_subtype) {
                 const int waypoint_index = add_waypoint(
@@ -4173,23 +5316,22 @@ void seed_waypoints_from_objects()
         }
         obj = obj->next_obj;
     }
+    // Spawns can be disabled at runtime (hill state, Respawn_Point_State); the graph needs all of them.
     for (const auto& rp : get_alpine_respawn_points()) {
-        if (rp.enabled) {
-            WaypointRespawnSubtype subtype = WaypointRespawnSubtype::neutral;
-            if (rp.red_team && rp.blue_team) {
-                subtype = WaypointRespawnSubtype::all_teams;
-            }
-            else if (rp.red_team) {
-                subtype = WaypointRespawnSubtype::red_team;
-            }
-            else if (rp.blue_team) {
-                subtype = WaypointRespawnSubtype::blue_team;
-            }
-            const int waypoint_index = add_waypoint(
-                rp.position, WaypointType::respawn, static_cast<int>(subtype), false, true, kWaypointLinkRadius, rp.uid);
-            seeded_indices.push_back(waypoint_index);
-            auto_link_source_indices.push_back(waypoint_index);
+        WaypointRespawnSubtype subtype = WaypointRespawnSubtype::neutral;
+        if (rp.red_team && rp.blue_team) {
+            subtype = WaypointRespawnSubtype::all_teams;
         }
+        else if (rp.red_team) {
+            subtype = WaypointRespawnSubtype::red_team;
+        }
+        else if (rp.blue_team) {
+            subtype = WaypointRespawnSubtype::blue_team;
+        }
+        const int waypoint_index = add_waypoint(
+            rp.position, WaypointType::respawn, static_cast<int>(subtype), false, true, kWaypointLinkRadius, rp.uid);
+        seeded_indices.push_back(waypoint_index);
+        auto_link_source_indices.push_back(waypoint_index);
     }
     for (int i = 0; i < rf::level.pushers.size(); ++i) {
         auto* push_region = rf::level.pushers[i];
@@ -4269,18 +5411,28 @@ void seed_waypoints_from_objects()
 
     seed_waypoints_from_teleport_events(&seeded_indices, &auto_link_source_indices);
     seed_waypoints_from_legacy_teleporters(&seeded_indices, &auto_link_source_indices);
+    seed_vehicle_factory_waypoints(seeded_indices, auto_link_source_indices);
+    seed_zipline_waypoints(seeded_indices, auto_link_source_indices);
     auto_link_default_seeded_waypoints(seeded_indices, auto_link_source_indices);
 }
 
 void clear_waypoints()
 {
+    ++g_waypoint_layout_version;
+    g_awp_generation_mode = WaypointGenerationMode::standard;
     g_waypoints.clear();
     g_waypoints.push_back({});
+    g_hull_waypoint_tracks.clear();
+    g_zipline_ride_state_timer.invalidate();
     g_waypoint_zones.clear();
     g_waypoint_targets.clear();
     g_waypoint_authors.clear();
     g_next_waypoint_target_uid = 1;
     g_invisible_floor_faces.clear();
+    waypoints_vehicle_clear();
+    // Indices into the graph being replaced.
+    g_last_drop_waypoint_by_entity.clear();
+    waypoints_utils_on_waypoints_cleared();
     invalidate_cache();
 }
 
@@ -4299,11 +5451,13 @@ std::vector<int> collect_generation_seed_waypoint_indices()
     std::vector<int> seed_indices{};
     seed_indices.reserve(g_waypoints.size());
 
-    static constexpr std::array<WaypointType, 4> kSeedTypeOrder{
+    static constexpr std::array<WaypointType, 6> kSeedTypeOrder{
         WaypointType::ctf_flag,
         WaypointType::item,
         WaypointType::respawn,
         WaypointType::tele_exit,
+        WaypointType::vehicle_factory,
+        WaypointType::zipline_exit,
     };
 
     for (const auto seed_type : kSeedTypeOrder) {
@@ -4493,7 +5647,7 @@ int seed_climb_region_waypoints_for_autogen(
     return created_waypoints;
 }
 
-int seed_ladder_waypoints_for_autogen(int max_new_waypoints)
+int seed_ladder_waypoints_for_autogen(WaypointGenerationContext& ctx, int max_new_waypoints)
 {
     if (max_new_waypoints <= 0 || rf::level.ladders.empty()) {
         return 0;
@@ -4503,7 +5657,9 @@ int seed_ladder_waypoints_for_autogen(int max_new_waypoints)
     std::unordered_set<const rf::ClimbRegion*> seen_regions{};
     seen_regions.reserve(rf::level.ladders.size());
 
-    for (int i = 0; i < rf::level.ladders.size() && created_waypoints < max_new_waypoints; ++i) {
+    for (int i = 0; i < rf::level.ladders.size() && created_waypoints < max_new_waypoints
+                    && !ctx.out_of_time(i, rf::level.ladders.size());
+         ++i) {
         const rf::ClimbRegion* climb_region = rf::level.ladders[i];
         if (!climb_region || !seen_regions.insert(climb_region).second) {
             continue;
@@ -4538,8 +5694,8 @@ std::vector<WaterRoomInfo> collect_swimmable_water_rooms()
         if (!room || room->uid < 0 || !room->contains_liquid) {
             continue;
         }
-        if (room->liquid_type != 1) {
-            continue; // Only water (1), skip lava (2) and acid (3)
+        if (room->liquid_type != rf::LIQUID_WATER) {
+            continue;
         }
         if (room->liquid_depth < kWaypointGenerateMinSwimmableDepth) {
             continue; // Too shallow — ground waypoints suffice
@@ -4570,6 +5726,92 @@ const WaterRoomInfo* find_water_room_at_point(
         }
     }
     return nullptr;
+}
+
+constexpr float kControlPointSeedMaxReach = kWaypointLinkRadius * 8.0f;
+constexpr float kPayloadTrackSeedSpacing = kWaypointLinkRadius * 0.75f;
+constexpr float kPayloadTrackSeedMaxDrop = kWaypointLinkRadius * 2.0f;
+
+static bool generation_seed_spot_excluded(const rf::Vector3& seed_pos, const std::vector<WaterRoomInfo>& water_rooms)
+{
+    rf::Vector3 climb_query = seed_pos;
+    return does_radius_overlap_instant_death_zone(seed_pos, kWaypointRadius)
+        || find_water_room_at_point(seed_pos, water_rooms)
+        || rf::level_point_in_climb_region(&climb_query);
+}
+
+// The cart crosses its whole track, so the floor along it seeds the flood too: a stretch of track reached only past
+// the cart is still connected. Under the cart's brushes there is no headroom, so no seed goes there.
+static void append_payload_track_seed_positions(
+    std::vector<rf::Vector3>& positions,
+    const std::vector<WaterRoomInfo>& water_rooms)
+{
+    if (!payload_active()) {
+        return;
+    }
+    const float total = payload_total_length();
+    const int samples = static_cast<int>(std::ceil(total / kPayloadTrackSeedSpacing));
+    for (int i = 0; i <= samples; ++i) {
+        const rf::Vector3 track_pos = payload_track_point(total * static_cast<float>(i) / std::max(samples, 1));
+        rf::Vector3 floor_pos{};
+        if (!trace_ground_below_point(track_pos, kPayloadTrackSeedMaxDrop, &floor_pos)
+            || trace_upward_clearance_from_floor_hit(floor_pos, kWaypointGenerateStandingHeadroom)
+                <= kWaypointGenerateMinHeadroom) {
+            continue;
+        }
+        const rf::Vector3 seed_pos = floor_pos + rf::Vector3{0.0f, kWaypointGenerateGroundOffset, 0.0f};
+        if (waypoint_stands_on_payload_cart(seed_pos) || generation_seed_spot_excluded(seed_pos, water_rooms)) {
+            continue;
+        }
+        positions.push_back(seed_pos);
+    }
+}
+
+// A control point may be reachable from no other seed, so the floor under each one seeds the flood too.
+std::vector<rf::Vector3> generation_objective_seed_positions()
+{
+    std::vector<rf::Vector3> positions{};
+    const auto water_rooms = collect_swimmable_water_rooms();
+    append_payload_track_seed_positions(positions, water_rooms);
+    for (const auto& zone : g_waypoint_zones) {
+        if (zone.type != WaypointZoneType::control_point
+            || resolve_waypoint_zone_source(zone) != WaypointZoneSource::trigger_uid) {
+            continue;
+        }
+        const rf::Object* const trigger_obj = rf::obj_lookup_from_uid(zone.trigger_uid);
+        if (!trigger_obj || trigger_obj->type != rf::OT_TRIGGER) {
+            continue;
+        }
+        const auto& trigger = *static_cast<const rf::Trigger*>(trigger_obj);
+        const float reach = std::min(trigger_bounding_radius(trigger), kControlPointSeedMaxReach);
+        rf::Vector3 floor_pos{};
+        if (!trace_ground_below_point(trigger.pos, reach + kBridgeWaypointMaxGroundDistance, &floor_pos)
+            || trace_upward_clearance_from_floor_hit(floor_pos, kWaypointGenerateStandingHeadroom)
+                <= kWaypointGenerateMinHeadroom) {
+            continue;
+        }
+        const rf::Vector3 seed_pos = floor_pos + rf::Vector3{0.0f, kWaypointGenerateGroundOffset, 0.0f};
+        // The trace can land below the hill (a pit, a lower room), or where the flood would never put a node.
+        const rf::Vector3 floor_point = floor_pos + rf::Vector3{0.0f, 0.1f, 0.0f};
+        if ((!waypoint_zone_contains_point(zone, seed_pos, nullptr)
+             && !waypoint_zone_contains_point(zone, floor_point, nullptr))
+            || generation_seed_spot_excluded(seed_pos, water_rooms)) {
+            continue;
+        }
+        positions.push_back(seed_pos);
+    }
+    return positions;
+}
+
+static void seed_control_point_waypoints_for_autogen(std::vector<int>& seed_indices)
+{
+    for (const rf::Vector3& seed_pos : generation_objective_seed_positions()) {
+        if (const int existing = closest_waypoint(seed_pos, kWaypointRadius); existing > 0) {
+            seed_indices.push_back(existing);
+            continue;
+        }
+        seed_indices.push_back(add_waypoint(seed_pos, WaypointType::std_new, 0, false, true));
+    }
 }
 
 int allocate_new_water_identifier()
@@ -4611,7 +5853,44 @@ bool water_room_has_nearby_waypoint(const WaterRoomInfo& info, float proximity)
     return false;
 }
 
+bool link_waypoint_if_clear_no_replace(int from, int to);
+
+// The valid nodes other than `skip` and the lattice's own within radius of pos, nearest first, by squared distance.
+static void nearby_fine_waypoints(WaypointGenerationContext& ctx, const rf::Vector3& pos, const float radius,
+                                  const int skip, std::vector<std::pair<float, int>>& out)
+{
+    out.clear();
+    ctx.index.any_near(pos, radius, [&](const int i) {
+        const float dist_sq = distance_sq(pos, g_waypoints[i].pos);
+        if (i != skip && g_waypoints[i].valid && !ctx.lattice.is_coarse(i) && dist_sq <= radius * radius) {
+            out.emplace_back(dist_sq, i);
+        }
+        return false;
+    });
+    std::sort(out.begin(), out.end());
+}
+
+// Links a new water node both ways to the nodes already placed around it, nearest first, for spacings the link stage
+// does not reach. At most two of them may be ground nodes, which still need their slots for each other.
+static void link_water_waypoint_to_neighbors(WaypointGenerationContext& ctx, const int index, const float radius)
+{
+    constexpr int kMaxGroundLinks = 2;
+    std::vector<std::pair<float, int>> nearby{};
+    nearby_fine_waypoints(ctx, g_waypoints[index].pos, radius, index, nearby);
+    int ground_links = 0;
+    for (const auto& [dist_sq, other] : nearby) {
+        const bool ground = g_waypoints[other].type != WaypointType::water;
+        if (ground && ground_links >= kMaxGroundLinks) {
+            continue;
+        }
+        bool linked = link_waypoint_if_clear_no_replace(index, other);
+        linked = link_waypoint_if_clear_no_replace(other, index) || linked;
+        ground_links += (ground && linked) ? 1 : 0;
+    }
+}
+
 int seed_water_room_waypoints(
+    WaypointGenerationContext& ctx,
     const WaterRoomInfo& info,
     const std::vector<WaterRoomInfo>& all_water_rooms,
     int water_identifier,
@@ -4622,9 +5901,14 @@ int seed_water_room_waypoints(
     }
 
     const auto* room = info.room;
-    // Water waypoints are spaced 3x further apart than standard waypoints.
+    // Water waypoints are spaced 3x further apart than standard waypoints, and twice that again in a room reaching
+    // over lattice terrain, where they are linked as they are placed.
     constexpr float kWaterStepScale = 3.0f;
-    const float step = std::max(kWaypointGenerateProbeStepDistance * kWaterStepScale, kWaypointLinkRadiusEpsilon);
+    constexpr float kTerrainWaterStepScale = 2.0f;
+    const bool terrain_water = ctx.lattice.overlaps_terrain(room->bbox_min, room->bbox_max);
+    const float step = std::max(
+        kWaypointGenerateProbeStepDistance * kWaterStepScale * (terrain_water ? kTerrainWaterStepScale : 1.0f),
+        kWaypointLinkRadiusEpsilon);
     // Link radius must cover diagonal neighbors (step * sqrt(3) ≈ step * 1.74).
     const float water_link_radius = step * 2.0f;
 
@@ -4687,13 +5971,15 @@ int seed_water_room_waypoints(
     // Place seed waypoints, starting from near the surface and expanding downward.
     int created_waypoints = 0;
 
-    for (const auto& candidate : candidates) {
-        if (created_waypoints >= max_new_waypoints) {
+    for (int candidate_index = 0; candidate_index < static_cast<int>(candidates.size()); ++candidate_index) {
+        if (created_waypoints >= max_new_waypoints
+            || ctx.out_of_time(candidate_index, static_cast<int>(candidates.size()))) {
             break;
         }
+        const auto& candidate = candidates[candidate_index];
 
-        // Verify point is actually inside the water volume.
-        if (!find_water_room_at_point(candidate.pos, all_water_rooms)) {
+        // Verify point is actually inside the water volume, and not in the terrain a water room's box holds.
+        if (!find_water_room_at_point(candidate.pos, all_water_rooms) || ctx.lattice.under_terrain(candidate.pos)) {
             continue;
         }
 
@@ -4706,7 +5992,7 @@ int seed_water_room_waypoints(
         }
 
         // Skip if there's already a waypoint nearby.
-        if (find_nearest_waypoint(candidate.pos, step, 0) > 0) {
+        if (ctx.index.any_within(candidate.pos, step)) {
             continue;
         }
 
@@ -4715,7 +6001,7 @@ int seed_water_room_waypoints(
         // Candidates are sorted surface-first, so early placements link to ground
         // waypoints and deeper ones link to already-placed water waypoints above.
         {
-            const int nearest = find_nearest_waypoint(candidate.pos, water_link_radius, 0);
+            const int nearest = ctx.index.nearest(candidate.pos, water_link_radius);
             if (nearest <= 0 || !can_link_waypoints(candidate.pos, g_waypoints[nearest].pos)) {
                 continue;
             }
@@ -4734,6 +6020,10 @@ int seed_water_room_waypoints(
             static_cast<int>(WaypointDroppedSubtype::normal));
         if (wp_index > 0) {
             ++created_waypoints;
+            if (terrain_water) {
+                constexpr float kNeighborReach = 1.5f;
+                link_water_waypoint_to_neighbors(ctx, wp_index, step * kNeighborReach);
+            }
         }
     }
 
@@ -4771,7 +6061,7 @@ bool water_room_is_walkable_from_ground(const WaterRoomInfo& info, float proximi
     return false;
 }
 
-int seed_water_waypoints_for_autogen(int max_new_waypoints)
+int seed_water_waypoints_for_autogen(WaypointGenerationContext& ctx, int max_new_waypoints)
 {
     if (max_new_waypoints <= 0) {
         return 0;
@@ -4796,6 +6086,7 @@ int seed_water_waypoints_for_autogen(int max_new_waypoints)
 
         const int water_identifier = allocate_new_water_identifier();
         created_waypoints += seed_water_room_waypoints(
+            ctx,
             info,
             water_rooms,
             water_identifier,
@@ -4905,6 +6196,7 @@ void link_lift_exit_outbound_to_nearby_waypoints(int lift_exit_index)
 }
 
 int generate_lift_path_waypoints_for_autogen(
+    WaypointGenerationContext& ctx,
     const std::unordered_map<int, std::vector<int>>& lift_entrances_by_uid,
     int max_new_waypoints)
 {
@@ -4916,8 +6208,10 @@ int generate_lift_path_waypoints_for_autogen(
     const float step_distance = std::max(kWaypointRadius, kWaypointLinkRadiusEpsilon);
     const float duplicate_radius = kWaypointRadius * 0.5f;
 
+    int lifts_done = 0;
     for (const auto& [lift_uid, entrance_indices] : lift_entrances_by_uid) {
-        if (created_waypoints >= max_new_waypoints) {
+        if (created_waypoints >= max_new_waypoints
+            || ctx.out_of_time(lifts_done++, static_cast<int>(lift_entrances_by_uid.size()))) {
             break;
         }
         if (entrance_indices.empty()) {
@@ -4999,7 +6293,65 @@ int generate_lift_path_waypoints_for_autogen(
     return created_waypoints;
 }
 
-int generate_waypoints_from_seed_probes(const std::vector<int>& seed_indices)
+// Walks from `from` towards (to.x, to.z) in fine steps, so a coarse stride or link never spans what fine steps would
+// have resolved (a step over kCoarseMaxStepRise, a hole, no headroom, glass, water). out_end is where the last step
+// stands.
+static bool coarse_ground_walkable(
+    const rf::Vector3& from, const rf::Vector3& to, const std::vector<WaterRoomInfo>& water_rooms,
+    rf::Vector3& out_end)
+{
+    // Absorbs float rounding, so a stride of exactly kStrideSteps fine steps takes that many.
+    constexpr float kStepCountSlack = 0.01f;
+    const rf::Vector3 delta{to.x - from.x, 0.0f, to.z - from.z};
+    const int steps = std::max(
+        1, static_cast<int>(std::ceil(delta.len() / kWaypointGenerateProbeStepDistance - kStepCountSlack)));
+    const rf::Vector3 step = delta * (1.0f / static_cast<float>(steps));
+    rf::Vector3 node = from;
+    for (int i = 0; i < steps; ++i) {
+        rf::Vector3 floor_pos{};
+        if (!trace_ground_below_point(node + step, kBridgeWaypointMaxGroundDistance, &floor_pos)) {
+            return false;
+        }
+        const rf::Vector3 next = floor_pos + rf::Vector3{0.0f, kWaypointGenerateGroundOffset, 0.0f};
+        if (std::fabs(next.y - node.y) > kCoarseMaxStepRise
+            || trace_upward_clearance_from_floor_hit(floor_pos, kWaypointGenerateStandingHeadroom)
+                < kWaypointGenerateStandingHeadroom
+            || ground_is_breakable_glass(next, kBridgeWaypointMaxGroundDistance)
+            || find_water_room_at_point(next, water_rooms)) {
+            return false;
+        }
+        node = next;
+    }
+    out_end = node;
+    return true;
+}
+
+// For a node at `from` probing at strides: whether one stride along dir is walkable and clear. If so, out_probe is
+// where its last step stands.
+static bool coarse_stride_clear(
+    const rf::Vector3& from, const rf::Vector3& dir, const std::vector<WaterRoomInfo>& water_rooms,
+    rf::Vector3& out_probe)
+{
+    rf::Vector3 end{};
+    if (!coarse_ground_walkable(from, from + dir * GenerationCoarseFlood::kStride, water_rooms, end)
+        || !can_link_waypoints(from, end)) {
+        return false;
+    }
+    out_probe = end;
+    return true;
+}
+
+// Drops farther out than the ground ring are found by the strides themselves.
+static bool coarse_open_at(const WaypointGenerationContext& ctx, const rf::Vector3& pos, const float headroom)
+{
+    constexpr float kGroundRadius = 2.0f * kWaypointGenerateEdgeClearance;
+    return headroom >= kWaypointGenerateStandingHeadroom && !ctx.coarse.near_point_of_interest(pos)
+        && !ctx.lattice.on_bare_terrain(pos)
+        && waypoint_has_horizontal_geometry_clearance(pos, GenerationCoarseFlood::kStride)
+        && waypoint_has_ground_edge_clearance(pos, kGroundRadius, kWaypointGenerateEdgeProbeCount, 1);
+}
+
+int generate_waypoints_from_seed_probes(WaypointGenerationContext& ctx, const std::vector<int>& seed_indices)
 {
     if (seed_indices.empty()) {
         return 0;
@@ -5007,17 +6359,26 @@ int generate_waypoints_from_seed_probes(const std::vector<int>& seed_indices)
 
     std::deque<int> probe_frontier{};
     probe_frontier.insert(probe_frontier.end(), seed_indices.begin(), seed_indices.end());
+    // The ground around anything on open terrain is reachable only through the lattice.
+    const auto& lattice_edge = ctx.lattice.edge_nodes();
+    probe_frontier.insert(probe_frontier.end(), lattice_edge.begin(), lattice_edge.end());
     std::unordered_set<int> expanded_indices{};
     expanded_indices.reserve(seed_indices.size() * 2);
     std::unordered_map<int, std::vector<int>> lift_entrances_by_uid{};
     const auto active_water_rooms = collect_swimmable_water_rooms();
-    int created_waypoints = seed_ladder_waypoints_for_autogen(kWaypointGenerateMaxCreatedWaypoints);
+    int created_waypoints = seed_ladder_waypoints_for_autogen(ctx, kWaypointGenerateMaxCreatedWaypoints);
+    if (ctx.coarse.flood_enabled()) {
+        ctx.coarse.collect_points_of_interest(ctx.lattice);
+    }
     constexpr float kDegToRad = 0.01745329252f;
     const int direction_count = std::max(
         1,
         static_cast<int>(std::round(360.0f / std::max(kWaypointGenerateProbeAngleStepDeg, 1.0f))));
 
-    while (!probe_frontier.empty() && created_waypoints < kWaypointGenerateMaxCreatedWaypoints) {
+    while (!probe_frontier.empty() && created_waypoints < kWaypointGenerateMaxCreatedWaypoints
+           && !ctx.out_of_time(
+               static_cast<int>(expanded_indices.size()),
+               static_cast<int>(expanded_indices.size() + probe_frontier.size()))) {
         const int source_index = probe_frontier.front();
         probe_frontier.pop_front();
 
@@ -5037,16 +6398,53 @@ int generate_waypoints_from_seed_probes(const std::vector<int>& seed_indices)
                 lift_entrances_by_uid, source_node.identifier, source_index);
         }
         const rf::Vector3 source_pos = source_node.pos;
+        // A lattice node probes where its missing hex neighbours would stand, beyond the open terrain.
+        std::array<rf::Vector3, 6> lattice_offsets{};
+        const bool lattice_source = ctx.lattice.is_coarse(source_index);
+        const bool bare_terrain_source = !lattice_source && ctx.lattice.on_bare_terrain(source_pos);
+        const bool open_source = !lattice_source && !bare_terrain_source && ctx.coarse.is_open(source_index);
+        const int probe_count = lattice_source
+            ? ctx.lattice.unlinked_neighbor_offsets(source_index, lattice_offsets)
+            : direction_count;
 
-        for (int direction_idx = 0; direction_idx < direction_count; ++direction_idx) {
-            const float angle_deg = static_cast<float>(direction_idx) * kWaypointGenerateProbeAngleStepDeg;
-            const float angle_rad = angle_deg * kDegToRad;
-            const rf::Vector3 dir{
-                std::cos(angle_rad),
-                0.0f,
-                std::sin(angle_rad),
-            };
-            const rf::Vector3 probe_pos = source_pos + dir * kWaypointGenerateProbeStepDistance;
+        // A direction whose stride is rejected anywhere below is probed again at the fine step.
+        bool stride_rejected = false;
+        for (int direction_idx = 0; direction_idx < probe_count || stride_rejected; ++direction_idx) {
+            const bool fine_retry = stride_rejected;
+            if (fine_retry) {
+                --direction_idx;
+            }
+            stride_rejected = false;
+            rf::Vector3 dir{};
+            float step = bare_terrain_source ? kWaypointGenerateBareTerrainProbeStepDistance
+                                              : kWaypointGenerateProbeStepDistance;
+            rf::Vector3 probe_pos{};
+            bool stride = false;
+            if (lattice_source) {
+                const rf::Vector3& offset = lattice_offsets[direction_idx];
+                step = std::hypot(offset.x, offset.z);
+                dir = rf::Vector3{offset.x, 0.0f, offset.z} * (1.0f / step);
+                probe_pos = source_pos + offset;
+            }
+            else {
+                const float angle_deg = static_cast<float>(direction_idx) * kWaypointGenerateProbeAngleStepDeg;
+                const float angle_rad = angle_deg * kDegToRad;
+                dir = rf::Vector3{
+                    std::cos(angle_rad),
+                    0.0f,
+                    std::sin(angle_rad),
+                };
+                probe_pos = source_pos + dir * step;
+                if (bare_terrain_source) {
+                    ctx.lattice.lift_probe_to_surface(probe_pos);
+                }
+                else if (open_source && !fine_retry
+                         && coarse_stride_clear(source_pos, dir, active_water_rooms, probe_pos)) {
+                    step = GenerationCoarseFlood::kStride;
+                    stride = true;
+                    stride_rejected = true;
+                }
+            }
 
             rf::Vector3 floor_pos{};
             if (!trace_ground_below_point(probe_pos, kBridgeWaypointMaxGroundDistance, &floor_pos)) {
@@ -5093,15 +6491,14 @@ int generate_waypoints_from_seed_probes(const std::vector<int>& seed_indices)
                 // In RF2-style geomod, if only geoable brushes block, tunnel through
                 // and continue probing on the other side. Don't create a waypoint here
                 // (it's inside/near the brush), but probe further in this direction.
-                if (AlpineLevelProperties::instance().rf2_style_geomod
+                if (!stride && AlpineLevelProperties::instance().rf2_style_geomod
                     && segment_blocked_only_by_geoable_brushes(source_pos, candidate_pos)) {
                     // Probe beyond the brush: keep stepping in the same direction
                     // until we find a valid position on the other side.
                     constexpr int kMaxTunnelSteps = 3;
                     for (int tunnel_step = 1; tunnel_step <= kMaxTunnelSteps; ++tunnel_step) {
                         const rf::Vector3 tunnel_probe =
-                            source_pos + dir * kWaypointGenerateProbeStepDistance
-                                * static_cast<float>(1 + tunnel_step);
+                            source_pos + dir * step * static_cast<float>(1 + tunnel_step);
 
                         rf::Vector3 tunnel_floor{};
                         if (!trace_ground_below_point(tunnel_probe, kBridgeWaypointMaxGroundDistance, &tunnel_floor)) {
@@ -5122,7 +6519,8 @@ int generate_waypoints_from_seed_probes(const std::vector<int>& seed_indices)
 
                         // Found valid ground on the other side — add as a seed
                         // for further probing (no link back through the brush).
-                        if (closest_waypoint(tunnel_candidate, kWaypointRadius) > 0) {
+                        if (ctx.lattice.covers(tunnel_candidate)
+                            || ctx.index.any_within(tunnel_candidate, kWaypointRadius)) {
                             break; // Already a waypoint here.
                         }
                         if (does_radius_overlap_instant_death_zone(tunnel_candidate, kWaypointRadius)) {
@@ -5139,6 +6537,9 @@ int generate_waypoints_from_seed_probes(const std::vector<int>& seed_indices)
                             0, false, true,
                             kWaypointLinkRadius, -1, nullptr, true,
                             static_cast<int>(WaypointDroppedSubtype::normal));
+                        if (ctx.coarse.flood_enabled()) {
+                            ctx.coarse.note_tunnel_seed(tunnel_wp);
+                        }
                         probe_frontier.push_back(tunnel_wp);
                         ++created_waypoints;
                         break; // One seed on the other side is enough.
@@ -5146,6 +6547,32 @@ int generate_waypoints_from_seed_probes(const std::vector<int>& seed_indices)
                 }
 
                 continue;
+            }
+            if (ctx.lattice.covers(candidate_pos)) {
+                continue;
+            }
+            // The duplicate test is cheap and pure, so it runs before the clearance traces. A special node in range
+            // takes the candidate's place, linked only once the traces pass.
+            const int closest_special = ctx.index.special_in_radius(candidate_pos);
+            const bool link_to_special = closest_special > 0 && closest_special != source_index;
+            // Bare terrain is probed sparser, but never so sparse that a denser source rules out its own probes.
+            const float duplicate_radius = ctx.lattice.on_bare_terrain(candidate_pos)
+                ? std::min(step, kWaypointGenerateBareTerrainProbeStepDistance)
+                : kWaypointRadius;
+            if (!link_to_special && ctx.index.any_within(candidate_pos, duplicate_radius)) {
+                continue;
+            }
+            // Open ground probed from open ground, or anywhere in a graph whose open ground is covered already, keeps
+            // the coarse spacing.
+            std::optional<bool> candidate_open;
+            if ((open_source || ctx.coarse.existing_graph()) && !link_to_special
+                && ctx.index.any_within_cylinder(
+                    candidate_pos, GenerationCoarseFlood::kSpacing, GenerationCoarseFlood::kSpacingHalfHeight,
+                    source_index)) {
+                candidate_open = coarse_open_at(ctx, candidate_pos, upward_clearance);
+                if (*candidate_open) {
+                    continue;
+                }
             }
             if (!waypoint_has_horizontal_geometry_clearance(candidate_pos, kWaypointGenerateWallClearance)) {
 
@@ -5156,14 +6583,9 @@ int generate_waypoints_from_seed_probes(const std::vector<int>& seed_indices)
                 continue;
             }
 
-            if (const int closest_special = find_special_waypoint_in_radius(candidate_pos);
-                closest_special > 0 && closest_special != source_index) {
+            if (link_to_special) {
                 link_waypoint_if_clear_autogen(source_index, closest_special);
-
-                continue;
-            }
-
-            if (closest_waypoint(candidate_pos, kWaypointRadius) > 0) {
+                stride_rejected = false;
                 continue;
             }
 
@@ -5194,7 +6616,11 @@ int generate_waypoints_from_seed_probes(const std::vector<int>& seed_indices)
             if (upward_clearance < kWaypointGenerateStandingHeadroom) {
                 generated_movement_subtype = static_cast<int>(WaypointDroppedSubtype::crouch_needed);
             }
-            if (const int lift_uid_below = find_lift_uid_below_waypoint(candidate_pos); lift_uid_below >= 0) {
+            const rf::Mover* const mover_below = find_mover_below_waypoint(candidate_pos);
+            if (mover_below && payload_is_cart(mover_below->handle)) {
+                continue;
+            }
+            if (const int lift_uid_below = lift_uid_of_mover_below(mover_below); lift_uid_below >= 0) {
                 generated_type = WaypointType::lift_entrance;
                 generated_identifier = lift_uid_below;
                 generated_movement_subtype = static_cast<int>(WaypointDroppedSubtype::normal);
@@ -5220,6 +6646,12 @@ int generate_waypoints_from_seed_probes(const std::vector<int>& seed_indices)
                 add_lift_entrance_generation_candidate(
                     lift_entrances_by_uid, generated_identifier, waypoint_index);
             }
+            if (ctx.coarse.flood_enabled()) {
+                const bool open = generated_type == WaypointType::std_new
+                    && (candidate_open ? *candidate_open : coarse_open_at(ctx, candidate_pos, upward_clearance));
+                ctx.coarse.note_node(waypoint_index, open, stride, source_index);
+            }
+            stride_rejected = false;
             probe_frontier.push_back(waypoint_index);
             ++created_waypoints;
 
@@ -5229,8 +6661,24 @@ int generate_waypoints_from_seed_probes(const std::vector<int>& seed_indices)
         }
     }
 
+    if (created_waypoints >= kWaypointGenerateMaxCreatedWaypoints) {
+        std::unordered_set<int> unexpanded{};
+        for (const int index : probe_frontier) {
+            if (!expanded_indices.contains(index)) {
+                unexpanded.insert(index);
+            }
+        }
+        waypoint_log(
+            "Waypoint generation hit the {}-node cap with {} probe sources not yet expanded",
+            kWaypointGenerateMaxCreatedWaypoints, unexpanded.size());
+    }
+    if (ctx.timed_out()) {
+        return created_waypoints;
+    }
+
     if (created_waypoints < kWaypointGenerateMaxCreatedWaypoints) {
         created_waypoints += generate_lift_path_waypoints_for_autogen(
+            ctx,
             lift_entrances_by_uid,
             kWaypointGenerateMaxCreatedWaypoints - created_waypoints);
     }
@@ -5238,8 +6686,9 @@ int generate_waypoints_from_seed_probes(const std::vector<int>& seed_indices)
     // Seed water waypoints for water rooms reachable from ground waypoints.
     // Must run after ground generation so we have ground waypoints to check against.
     if (created_waypoints < kWaypointGenerateMaxCreatedWaypoints && !active_water_rooms.empty()) {
+        ctx.enter_stage("water");
         created_waypoints += seed_water_waypoints_for_autogen(
-            kWaypointGenerateMaxCreatedWaypoints - created_waypoints);
+            ctx, kWaypointGenerateMaxCreatedWaypoints - created_waypoints);
     }
 
     return created_waypoints;
@@ -5247,21 +6696,12 @@ int generate_waypoints_from_seed_probes(const std::vector<int>& seed_indices)
 
 bool link_waypoint_if_clear_no_replace(int from, int to)
 {
-    if (!can_link_waypoint_indices_autogen(from, to)) {
+    if (from <= 0 || from >= static_cast<int>(g_waypoints.size())) {
         return false;
     }
-    if (!autogen_directional_link_allowed(from, to)) {
-        return false;
-    }
-    if (link_segment_passes_through_death_zone(g_waypoints[from].pos, g_waypoints[to].pos)) {
-        return false;
-    }
-    if (trace_segment_hits_breakable_glass(g_waypoints[from].pos, g_waypoints[to].pos)) {
-        return false;
-    }
-
+    // Cheap graph-only rejections first; the traces below are the expensive part.
     auto& node = g_waypoints[from];
-    if (waypoint_link_exists(node, to)) {
+    if (node.num_links >= kMaxWaypointLinks || waypoint_link_exists(node, to)) {
         return false;
     }
     for (int link_idx = 0; link_idx < node.num_links; ++link_idx) {
@@ -5277,11 +6717,22 @@ bool link_waypoint_if_clear_no_replace(int from, int to)
             return false;
         }
     }
-    if (node.num_links >= kMaxWaypointLinks) {
+
+    if (!can_link_waypoint_indices_autogen(from, to)) {
+        return false;
+    }
+    if (!autogen_directional_link_allowed(from, to)) {
+        return false;
+    }
+    if (link_segment_passes_through_death_zone(g_waypoints[from].pos, g_waypoints[to].pos)) {
+        return false;
+    }
+    if (trace_segment_hits_breakable_glass(g_waypoints[from].pos, g_waypoints[to].pos)) {
         return false;
     }
 
     node.links[node.num_links++] = to;
+    waypoints_mark_graph_changed();
     return true;
 }
 
@@ -5303,6 +6754,7 @@ bool add_waypoint_link_no_replace(int from, int to)
     }
 
     node.links[node.num_links++] = to;
+    waypoints_mark_graph_changed();
     return true;
 }
 
@@ -5420,17 +6872,52 @@ bool remove_waypoint_link_no_replace(int from, int to)
         if (node.num_links >= 0 && node.num_links < kMaxWaypointLinks) {
             node.links[node.num_links] = 0;
         }
+        waypoints_mark_graph_changed();
         return true;
     }
     return false;
 }
 
-int prune_redundant_generated_links()
+// Lattice nodes of this run, or terrain nodes of the run that made the graph, which already linked, pruned and
+// rerouted them.
+static bool generated_lattice_pair(const WaypointGenerationContext& ctx, const int a, const int b)
+{
+    return (ctx.lattice.is_coarse(a) && ctx.lattice.is_coarse(b)) || (g_waypoints[a].terrain && g_waypoints[b].terrain);
+}
+
+// The walk incline between two generated nodes. Between terrain nodes the route rule lifts the step cap, so there a
+// rise over the cap also needs the ground between them within the incline.
+bool generated_link_within_incline(
+    const WaypointGenerationContext& ctx, const rf::Vector3& from, const rf::Vector3& to)
+{
+    return waypoint_link_within_incline(from, to, kWaypointGenerateMaxInclineDeg)
+        && (std::fabs(to.y - from.y) <= kRouteMaxUpwardStepHeight || ctx.lattice.ground_walkable(from, to));
+}
+
+// Flags the standard nodes from index `first` on that are lattice nodes or stand on bare terrain. Returns how many
+// it flagged.
+static int flag_terrain_waypoints(const WaypointGenerationContext& ctx, const int first)
+{
+    int flagged = 0;
+    for (int i = first; i < static_cast<int>(g_waypoints.size()); ++i) {
+        auto& node = g_waypoints[i];
+        if (node.valid && waypoint_type_is_standard(node.type)) {
+            node.terrain = ctx.lattice.is_coarse(i) || ctx.lattice.on_bare_terrain(node.pos);
+            flagged += node.terrain ? 1 : 0;
+        }
+    }
+    return flagged;
+}
+
+int prune_redundant_generated_links(WaypointGenerationContext& ctx)
 {
     int removed_links = 0;
     const int waypoint_count = static_cast<int>(g_waypoints.size());
 
     for (int from = 1; from < waypoint_count; ++from) {
+        if (ctx.out_of_time(from, waypoint_count)) {
+            break;
+        }
         auto& from_node = g_waypoints[from];
         if (!from_node.valid) {
             continue;
@@ -5449,6 +6936,10 @@ int prune_redundant_generated_links()
                 if (to <= 0 || to >= waypoint_count || !g_waypoints[to].valid) {
                     continue;
                 }
+                if (generated_lattice_pair(ctx, from, to) || ctx.coarse.keeps_link(from, to)
+                    || waypoint_is_zipline_ride(from_node, to)) {
+                    continue;
+                }
 
                 bool redundant = false;
                 const bool is_bidirectional = waypoint_has_link_to(to, from);
@@ -5460,7 +6951,9 @@ int prune_redundant_generated_links()
                         || !g_waypoints[intermediate].valid) {
                         continue;
                     }
-                    if (!waypoint_has_link_to(intermediate, to)) {
+                    // A ride is no stand-in for walking: the line can be switched off.
+                    if (!waypoint_has_link_to(intermediate, to) || waypoint_is_zipline_ride(from_node, intermediate)
+                        || waypoint_is_zipline_ride(g_waypoints[intermediate], to)) {
                         continue;
                     }
                     // Forward path from→intermediate→to exists.
@@ -5492,12 +6985,16 @@ int prune_redundant_generated_links()
     return removed_links;
 }
 
-int reroute_links_through_intermediate_waypoints(const WaypointCellMap& cell_map, float cell_size)
+int reroute_links_through_intermediate_waypoints(
+    WaypointGenerationContext& ctx, const WaypointCellMap& cell_map, float cell_size)
 {
     int rerouted_links = 0;
     const int waypoint_count = static_cast<int>(g_waypoints.size());
 
     for (int from = 1; from < waypoint_count; ++from) {
+        if (ctx.out_of_time(from, waypoint_count)) {
+            break;
+        }
         auto& from_node = g_waypoints[from];
         if (!from_node.valid) {
             continue;
@@ -5519,7 +7016,8 @@ int reroute_links_through_intermediate_waypoints(const WaypointCellMap& cell_map
             if (to <= 0 || to >= waypoint_count || !g_waypoints[to].valid) {
                 continue;
             }
-            if (!waypoint_has_link_to(from, to)) {
+            if (!waypoint_has_link_to(from, to) || generated_lattice_pair(ctx, from, to)
+                || waypoint_is_zipline_ride(from_node, to)) {
                 continue;
             }
 
@@ -5534,6 +7032,9 @@ int reroute_links_through_intermediate_waypoints(const WaypointCellMap& cell_map
             }
 
             const int through = through_opt.value();
+            if (waypoint_is_zipline_ride(from_node, through) || waypoint_is_zipline_ride(g_waypoints[through], to)) {
+                continue;
+            }
             const bool need_from_to_through = !waypoint_has_link_to(from, through);
             const bool need_through_to_to = !waypoint_has_link_to(through, to);
 
@@ -5571,6 +7072,8 @@ int reroute_links_through_intermediate_waypoints(const WaypointCellMap& cell_map
 
 struct GeneratedWaypointLinkStats
 {
+    int lattice_edge_links = 0;
+    int stride_links = 0;
     int bidirectional_links = 0;
     int downward_links = 0;
     int pass_through_links_rerouted = 0;
@@ -5630,21 +7133,274 @@ int find_intermediate_waypoint_on_segment(int from, int to)
     return best_index;
 }
 
-GeneratedWaypointLinkStats link_generated_waypoint_grid()
+// Lattice and stride joins a fine node takes before the fine pass, which needs the rest of its slots.
+constexpr int kMaxCoarseJoinsPerFineNode = 3;
+
+// Joins the lattice's edge nodes to the nearest fine nodes around them. Runs before the fine nodes link to each other,
+// so those next to the lattice still have slots for it.
+static int link_terrain_lattice_edges(
+    WaypointGenerationContext& ctx, std::unordered_map<int, int>& lattice_links_by_fine_node)
+{
+    const float reach = ctx.lattice.spacing() + 2.0f * kWaypointRadius;
+    const auto& edge_nodes = ctx.lattice.edge_nodes();
+    std::vector<std::pair<float, int>> nearby{};
+    int links_added = 0;
+    for (int n = 0; n < static_cast<int>(edge_nodes.size()); ++n) {
+        if (ctx.out_of_time(n, static_cast<int>(edge_nodes.size()))) {
+            break;
+        }
+        const int coarse = edge_nodes[n];
+        const rf::Vector3 coarse_pos = g_waypoints[coarse].pos;
+        nearby_fine_waypoints(ctx, coarse_pos, reach, -1, nearby);
+        for (const auto& [dist_sq, fine] : nearby) {
+            if (g_waypoints[coarse].num_links >= kMaxWaypointLinks) {
+                break;
+            }
+            int& fine_lattice_links = lattice_links_by_fine_node[fine];
+            if (fine_lattice_links >= kMaxCoarseJoinsPerFineNode) {
+                continue;
+            }
+            const auto& fine_node = g_waypoints[fine];
+            const bool fine_can_link =
+                fine_node.num_links < kMaxWaypointLinks && !waypoint_link_exists(fine_node, coarse);
+            if ((!fine_can_link && waypoint_link_exists(g_waypoints[coarse], fine))
+                || !ctx.lattice.join_walkable(coarse_pos, fine_node.pos)) {
+                continue;
+            }
+            const rf::Vector3& fine_pos = fine_node.pos;
+            bool linked = false;
+            if (generated_link_within_incline(ctx, coarse_pos, fine_pos)) {
+                linked = link_waypoint_if_clear_no_replace(coarse, fine);
+                linked = link_waypoint_if_clear_no_replace(fine, coarse) || linked;
+            }
+            else if (coarse_pos.y > fine_pos.y) {
+                linked = link_waypoint_if_clear_no_replace(coarse, fine);
+            }
+            else {
+                linked = link_waypoint_if_clear_no_replace(fine, coarse);
+            }
+            if (linked) {
+                ++fine_lattice_links;
+                ++links_added;
+            }
+        }
+    }
+    return links_added;
+}
+
+// Links one pair of generated nodes, through a node lying on the segment between them if there is one: both ways
+// between ladder nodes, within or into water and within the walk incline, else downward only. Returns whether it added
+// a link.
+static bool link_generated_waypoint_pair(
+    WaypointGenerationContext& ctx, const int i, const int j, const WaypointCellMap& cell_map,
+    GeneratedWaypointLinkStats& stats)
+{
+    constexpr float kCellSize = GenerationWaypointIndex::kCellSize;
+    const auto& node_a = g_waypoints[i];
+    const auto& node_b = g_waypoints[j];
+    const bool ladder_pair =
+        node_a.type == WaypointType::ladder && node_b.type == WaypointType::ladder;
+    const bool water_pair =
+        node_a.type == WaypointType::water && node_b.type == WaypointType::water;
+    const bool water_transition =
+        (node_a.type == WaypointType::water) != (node_b.type == WaypointType::water);
+    bool added = false;
+
+    const auto through_opt =
+        find_waypoint_intersecting_link_segment(i, j, cell_map, kCellSize);
+    if (through_opt) {
+        const int through = through_opt.value();
+        auto link_split = [&](const int from, const int to, int& stat_counter) {
+            bool split_added = false;
+            if (link_waypoint_if_clear_no_replace(from, through)) {
+                split_added = true;
+            }
+            if (link_waypoint_if_clear_no_replace(through, to)) {
+                split_added = true;
+            }
+            if (split_added) {
+                ++stat_counter;
+                added = true;
+            }
+        };
+
+        if (ladder_pair || water_pair || water_transition
+            || generated_link_within_incline(ctx, node_a.pos, node_b.pos)) {
+            link_split(i, j, stats.bidirectional_links);
+            link_split(j, i, stats.bidirectional_links);
+        }
+        else if (node_a.pos.y > node_b.pos.y) {
+            link_split(i, j, stats.downward_links);
+        }
+        else if (node_b.pos.y > node_a.pos.y) {
+            link_split(j, i, stats.downward_links);
+        }
+        return added;
+    }
+
+    auto link = [&](const int from, const int to, int& stat_counter) {
+        if (link_waypoint_if_clear_no_replace(from, to)) {
+            ++stat_counter;
+            added = true;
+        }
+    };
+    if (ladder_pair || water_pair || water_transition) {
+        link(i, j, stats.bidirectional_links);
+        link(j, i, stats.bidirectional_links);
+    }
+    else if (generated_link_within_incline(ctx, node_a.pos, node_b.pos)) {
+        link(i, j, stats.bidirectional_links);
+        link(j, i, stats.bidirectional_links);
+    }
+    else if (node_a.pos.y > node_b.pos.y) {
+        link(i, j, stats.downward_links);
+    }
+    else if (node_b.pos.y > node_a.pos.y) {
+        link(j, i, stats.downward_links);
+    }
+    return added;
+}
+
+// Whether `from` already links to a node within 30 deg of its heading to `to`. Stride links are made nearest
+// first, so this keeps one link per heading.
+static bool stride_link_heading_taken(const int from, const int to)
+{
+    // cos(30 deg)
+    constexpr float kHeadingSectorCos = 0.86603f;
+    const auto& node = g_waypoints[from];
+    const rf::Vector3 heading{g_waypoints[to].pos.x - node.pos.x, 0.0f, g_waypoints[to].pos.z - node.pos.z};
+    const float heading_len = heading.len();
+    if (heading_len <= kWaypointLinkRadiusEpsilon) {
+        return false;
+    }
+    for (int l = 0; l < node.num_links; ++l) {
+        const int link = node.links[l];
+        if (link <= 0 || link >= static_cast<int>(g_waypoints.size())) {
+            continue;
+        }
+        const rf::Vector3 taken{g_waypoints[link].pos.x - node.pos.x, 0.0f, g_waypoints[link].pos.z - node.pos.z};
+        const float taken_len = taken.len();
+        if (taken_len > kWaypointLinkRadiusEpsilon
+            && heading.dot_prod(taken) > kHeadingSectorCos * heading_len * taken_len) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Links one pair the coarse flood walked, a stride node first. Returns whether it added a link.
+static bool link_coarse_flood_pair(
+    WaypointGenerationContext& ctx, const int stride_node, const int other, const WaypointCellMap& cell_map,
+    GeneratedWaypointLinkStats& stats, std::unordered_map<int, int>& joins_by_fine_node)
+{
+    if (!link_generated_waypoint_pair(ctx, stride_node, other, cell_map, stats)) {
+        return false;
+    }
+    joins_by_fine_node[other] += ctx.coarse.is_stride_node(other) ? 0 : 1;
+    return true;
+}
+
+// Links every stride node, then every fine node the flood placed from a stride node, to its source, over ground the
+// flood walked. Runs first, while their slots are free. Returns how many pairs it linked.
+static int link_coarse_flood_sources(
+    WaypointGenerationContext& ctx, const WaypointCellMap& cell_map, GeneratedWaypointLinkStats& stats,
+    std::unordered_map<int, int>& joins_by_fine_node)
+{
+    if (!ctx.coarse.flood_enabled()) {
+        return 0;
+    }
+    const int waypoint_count = static_cast<int>(g_waypoints.size());
+    int pairs_linked = 0;
+    for (const bool stride_children : {true, false}) {
+        for (int i = 1; i < waypoint_count; ++i) {
+            if (ctx.out_of_time(i, waypoint_count)) {
+                return pairs_linked;
+            }
+            const int source = ctx.coarse.source_of(i);
+            if (source <= 0 || !g_waypoints[i].valid || !g_waypoints[source].valid) {
+                continue;
+            }
+            if (stride_children && ctx.coarse.is_stride_node(i)) {
+                pairs_linked += link_coarse_flood_pair(ctx, i, source, cell_map, stats, joins_by_fine_node) ? 1 : 0;
+            }
+            else if (!stride_children && !ctx.coarse.is_stride_node(i) && ctx.coarse.is_stride_node(source)) {
+                pairs_linked += link_coarse_flood_pair(ctx, source, i, cell_map, stats, joins_by_fine_node) ? 1 : 0;
+            }
+        }
+    }
+    return pairs_linked;
+}
+
+// Joins every stride node to the other nodes around it before the fine pass, which skips them, nearest first: one
+// link per heading, so a stride node beside a row of fine nodes keeps slots for its other neighbours, and only a few
+// joins per fine node. Returns how many pairs it linked.
+static int link_coarse_stride_waypoints(
+    WaypointGenerationContext& ctx, const WaypointCellMap& cell_map, GeneratedWaypointLinkStats& stats,
+    std::unordered_map<int, int>& joins_by_fine_node)
+{
+    if (!ctx.coarse.flood_enabled()) {
+        return 0;
+    }
+    const int waypoint_count = static_cast<int>(g_waypoints.size());
+    const auto water_rooms = collect_swimmable_water_rooms();
+    std::vector<std::pair<float, int>> nearby{};
+    int pairs_linked = 0;
+    for (int i = 1; i < waypoint_count; ++i) {
+        if (ctx.out_of_time(i, waypoint_count)) {
+            break;
+        }
+        if (!g_waypoints[i].valid || !ctx.coarse.is_stride_node(i)) {
+            continue;
+        }
+        nearby_fine_waypoints(ctx, g_waypoints[i].pos, GenerationCoarseFlood::kLinkReach, i, nearby);
+        for (const auto& [dist_sq, j] : nearby) {
+            const auto& node = g_waypoints[i];
+            const auto& other = g_waypoints[j];
+            if (node.num_links >= kMaxWaypointLinks) {
+                break;
+            }
+            // Water and ladder nodes link within their own reach in the fine pass and the water stage.
+            if (other.type == WaypointType::water || other.type == WaypointType::ladder) {
+                continue;
+            }
+            const bool other_stride = ctx.coarse.is_stride_node(j);
+            rf::Vector3 end{};
+            if (waypoint_link_exists(node, j) || waypoint_link_exists(other, i)
+                || (!other_stride && joins_by_fine_node[j] >= kMaxCoarseJoinsPerFineNode)
+                || stride_link_heading_taken(i, j) || (other_stride && stride_link_heading_taken(j, i))
+                || !can_link_waypoints(node.pos, other.pos)
+                || !coarse_ground_walkable(node.pos, other.pos, water_rooms, end)
+                || std::fabs(end.y - other.pos.y) > kCoarseMaxStepRise) {
+                continue;
+            }
+            pairs_linked += link_coarse_flood_pair(ctx, i, j, cell_map, stats, joins_by_fine_node) ? 1 : 0;
+        }
+    }
+    return pairs_linked;
+}
+
+GeneratedWaypointLinkStats link_generated_waypoint_grid(WaypointGenerationContext& ctx)
 {
     GeneratedWaypointLinkStats stats{};
-    const float link_radius_sq = kWaypointLinkRadius * kWaypointLinkRadius;
     const int waypoint_count = static_cast<int>(g_waypoints.size());
-    WaypointCellMap cell_map{};
-    build_waypoint_cell_map(cell_map, kWaypointLinkRadius);
+    constexpr float kCellSize = GenerationWaypointIndex::kCellSize;
+    const WaypointCellMap& cell_map = ctx.index.cells();
+    std::unordered_map<int, int> joins_by_fine_node{};
+    stats.stride_links = link_coarse_flood_sources(ctx, cell_map, stats, joins_by_fine_node);
+    stats.lattice_edge_links = link_terrain_lattice_edges(ctx, joins_by_fine_node);
+    stats.stride_links += link_coarse_stride_waypoints(ctx, cell_map, stats, joins_by_fine_node);
 
     for (int i = 1; i < waypoint_count; ++i) {
+        if (ctx.out_of_time(i, waypoint_count)) {
+            return stats;
+        }
         const auto& node_a = g_waypoints[i];
-        if (!node_a.valid) {
+        // Lattice and stride nodes are joined to the fine nodes around them already.
+        if (!node_a.valid || ctx.lattice.is_coarse(i) || ctx.coarse.is_stride_node(i)) {
             continue;
         }
 
-        const WaypointCellCoord cell = waypoint_cell_coord_from_pos(node_a.pos, kWaypointLinkRadius);
+        const WaypointCellCoord cell = waypoint_cell_coord_from_pos(node_a.pos, kCellSize);
         for (int dx = -1; dx <= 1; ++dx) {
             for (int dy = -1; dy <= 1; ++dy) {
                 for (int dz = -1; dz <= 1; ++dz) {
@@ -5659,7 +7415,8 @@ GeneratedWaypointLinkStats link_generated_waypoint_grid()
                             continue;
                         }
                         const auto& node_b = g_waypoints[j];
-                        if (!node_b.valid) {
+                        if (!node_b.valid || ctx.lattice.is_coarse(j) || ctx.coarse.is_stride_node(j)
+                            || generated_lattice_pair(ctx, i, j)) {
                             continue;
                         }
 
@@ -5671,80 +7428,16 @@ GeneratedWaypointLinkStats link_generated_waypoint_grid()
                             continue;
                         }
 
-                        const bool ladder_pair =
-                            node_a.type == WaypointType::ladder && node_b.type == WaypointType::ladder;
-                        const bool water_pair =
-                            node_a.type == WaypointType::water && node_b.type == WaypointType::water;
-                        const bool water_transition =
-                            (node_a.type == WaypointType::water) != (node_b.type == WaypointType::water);
-
-                        const auto through_opt =
-                            find_waypoint_intersecting_link_segment(i, j, cell_map, kWaypointLinkRadius);
-                        if (through_opt) {
-                            const int through = through_opt.value();
-                            auto link_split = [&](const int from, const int to, int& stat_counter) {
-                                bool split_added = false;
-                                if (link_waypoint_if_clear_no_replace(from, through)) {
-                                    split_added = true;
-                                }
-                                if (link_waypoint_if_clear_no_replace(through, to)) {
-                                    split_added = true;
-                                }
-                                if (split_added) {
-                                    ++stat_counter;
-                                }
-                            };
-
-                            if (ladder_pair || water_pair || water_transition
-                                || waypoint_link_within_incline(node_a.pos, node_b.pos, kWaypointGenerateMaxInclineDeg)) {
-                                link_split(i, j, stats.bidirectional_links);
-                                link_split(j, i, stats.bidirectional_links);
-                            }
-                            else if (node_a.pos.y > node_b.pos.y) {
-                                link_split(i, j, stats.downward_links);
-                            }
-                            else if (node_b.pos.y > node_a.pos.y) {
-                                link_split(j, i, stats.downward_links);
-                            }
-                            continue;
-                        }
-
-                        if (ladder_pair || water_pair || water_transition) {
-                            if (link_waypoint_if_clear_no_replace(i, j)) {
-                                ++stats.bidirectional_links;
-                            }
-                            if (link_waypoint_if_clear_no_replace(j, i)) {
-                                ++stats.bidirectional_links;
-                            }
-                            continue;
-                        }
-
-                        if (waypoint_link_within_incline(node_a.pos, node_b.pos, kWaypointGenerateMaxInclineDeg)) {
-                            if (link_waypoint_if_clear_no_replace(i, j)) {
-                                ++stats.bidirectional_links;
-                            }
-                            if (link_waypoint_if_clear_no_replace(j, i)) {
-                                ++stats.bidirectional_links;
-                            }
-                        }
-                        else if (node_a.pos.y > node_b.pos.y) {
-                            if (link_waypoint_if_clear_no_replace(i, j)) {
-                                ++stats.downward_links;
-                            }
-                        }
-                        else if (node_b.pos.y > node_a.pos.y) {
-                            if (link_waypoint_if_clear_no_replace(j, i)) {
-                                ++stats.downward_links;
-                            }
-                        }
+                        link_generated_waypoint_pair(ctx, i, j, cell_map, stats);
                     }
                 }
             }
         }
     }
 
-    stats.pass_through_links_rerouted = reroute_links_through_intermediate_waypoints(cell_map, kWaypointLinkRadius);
-    stats.redundant_links_pruned = prune_redundant_generated_links();
+    stats.pass_through_links_rerouted =
+        reroute_links_through_intermediate_waypoints(ctx, cell_map, kCellSize);
+    stats.redundant_links_pruned = prune_redundant_generated_links(ctx);
 
     return stats;
 }
@@ -5752,6 +7445,7 @@ GeneratedWaypointLinkStats link_generated_waypoint_grid()
 bool waypoint_type_is_special(WaypointType type)
 {
     switch (type) {
+        case WaypointType::vehicle_factory:
         case WaypointType::item:
         case WaypointType::respawn:
         case WaypointType::jump_pad:
@@ -5759,6 +7453,8 @@ bool waypoint_type_is_special(WaypointType type)
         case WaypointType::tele_entrance:
         case WaypointType::tele_exit:
         case WaypointType::conveyer:
+        case WaypointType::zipline_entrance:
+        case WaypointType::zipline_exit:
             return true;
         default:
             return false;
@@ -5767,12 +7463,15 @@ bool waypoint_type_is_special(WaypointType type)
 
 // Post-generation cleanup: run the same autolink logic used by the editor autolink button
 // on every special waypoint, ensuring they are fully connected to the generated grid.
-int auto_link_special_waypoints_post_generation()
+int auto_link_special_waypoints_post_generation(WaypointGenerationContext& ctx)
 {
     int links_added = 0;
     const int waypoint_count = static_cast<int>(g_waypoints.size());
 
     for (int i = 1; i < waypoint_count; ++i) {
+        if (ctx.out_of_time(i, waypoint_count)) {
+            break;
+        }
         const auto& node = g_waypoints[i];
         if (!node.valid || !waypoint_type_is_special(node.type)) {
             continue;
@@ -6149,10 +7848,13 @@ int link_jump_pad_to_trajectory_destinations(int jump_pad_index)
 }
 
 // Create trajectory-based outbound links for all jump pad waypoints.
-int link_jump_pads_to_trajectory_destinations()
+int link_jump_pads_to_trajectory_destinations(WaypointGenerationContext& ctx)
 {
     int total_links = 0;
     for (int i = 1; i < static_cast<int>(g_waypoints.size()); ++i) {
+        if (ctx.out_of_time(i, static_cast<int>(g_waypoints.size()))) {
+            break;
+        }
         const auto& node = g_waypoints[i];
         if (!node.valid || node.type != WaypointType::jump_pad) {
             continue;
@@ -6160,6 +7862,13 @@ int link_jump_pads_to_trajectory_destinations()
         total_links += link_jump_pad_to_trajectory_destinations(i);
     }
     return total_links;
+}
+
+// A geoable detail brush a blast can open a path through. Terrain chunks are geoable but far too
+// thick for that.
+static bool is_blastable_geoable_room(const rf::GRoom* room)
+{
+    return room->is_detail && room->is_geoable && !alpine_terrain_is_chunk_room(room);
 }
 
 // Check if any detail brush blocks the line segment.
@@ -6196,7 +7905,7 @@ bool trace_segment_hits_detail_brush(const rf::Vector3& from, const rf::Vector3&
         }
 
         if (collision.face && collision.face->which_room && collision.face->which_room->is_detail) {
-            if (!skip_geoable || !collision.face->which_room->is_geoable) {
+            if (!skip_geoable || !is_blastable_geoable_room(collision.face->which_room)) {
                 return true;
             }
         }
@@ -6229,8 +7938,7 @@ bool trace_segment_blocked_by_geoable_brush(const rf::Vector3& from, const rf::V
     }
     return collision.face
         && collision.face->which_room
-        && collision.face->which_room->is_detail
-        && collision.face->which_room->is_geoable;
+        && is_blastable_geoable_room(collision.face->which_room);
 }
 
 // Check if the ONLY geometry blocking a segment is geoable detail brushes.
@@ -6267,8 +7975,7 @@ bool segment_blocked_only_by_geoable_brushes(const rf::Vector3& from, const rf::
         }
 
         if (collision.face && collision.face->which_room) {
-            if (collision.face->which_room->is_detail
-                && collision.face->which_room->is_geoable) {
+            if (is_blastable_geoable_room(collision.face->which_room)) {
                 // Geoable brush — skip past it and continue tracing.
                 hit_any_geoable = true;
             }
@@ -6698,7 +8405,7 @@ bool waypoints_trace_breakable_glass_from_camera(
 
 void waypoints_on_glass_shattered(const rf::GFace* face)
 {
-    if (!face || !face->which_room || g_waypoint_targets.empty()) {
+    if (!face || !face->which_room || g_waypoint_targets.empty() || waypoints_loaded_for_route_arrows_only()) {
         return;
     }
 
@@ -6917,7 +8624,7 @@ constexpr float kLedgeDropLandingSearchRadius = 4.0f;
 constexpr float kLedgeDropMinHeight = 2.0f;
 constexpr int kLedgeDropDirectionCount = 8;
 
-int generate_ledge_drop_links()
+int generate_ledge_drop_links(WaypointGenerationContext& ctx)
 {
     const int waypoint_count = static_cast<int>(g_waypoints.size());
     if (waypoint_count <= 2) {
@@ -6934,17 +8641,23 @@ int generate_ledge_drop_links()
     int no_target_count = 0;
 
     for (int wp = 1; wp < waypoint_count; ++wp) {
+        if (ctx.out_of_time(wp, waypoint_count)) {
+            break;
+        }
         const auto& node = g_waypoints[wp];
         if (!node.valid) {
             continue;
         }
-        // Only standard waypoints should generate drop links.
-        if (node.type != WaypointType::std && node.type != WaypointType::std_new) {
+        // Only standard waypoints should generate drop links; the lattice stands on open terrain only.
+        if ((node.type != WaypointType::std && node.type != WaypointType::std_new) || ctx.lattice.is_coarse(wp)) {
             continue;
         }
         if (node.num_links >= kMaxWaypointLinks) {
             continue;
         }
+        rf::Vector3 node_floor_hit{};
+        const bool node_floor_found =
+            trace_ground_below_point(node.pos, kBridgeWaypointMaxGroundDistance, &node_floor_hit);
 
         for (int dir = 0; dir < kLedgeDropDirectionCount; ++dir) {
             const float angle_rad = static_cast<float>(dir) * angle_step * kDegToRad;
@@ -6971,9 +8684,8 @@ int generate_ledge_drop_links()
             // like a railing or lip would block the player from walking off the edge.
             {
                 constexpr float kLipProbeHeight = 0.51f;
-                rf::Vector3 floor_hit{};
-                if (trace_ground_below_point(node.pos, kBridgeWaypointMaxGroundDistance, &floor_hit)) {
-                    rf::Vector3 lip_start = floor_hit + rf::Vector3{0.0f, kLipProbeHeight, 0.0f};
+                if (node_floor_found) {
+                    rf::Vector3 lip_start = node_floor_hit + rf::Vector3{0.0f, kLipProbeHeight, 0.0f};
                     rf::Vector3 lip_end = lip_start + probe_dir * kLedgeDropProbeDistance;
                     rf::GCollisionOutput lip_collision{};
                     if (rf::collide_linesegment_level_solid(
@@ -6991,22 +8703,20 @@ int generate_ledge_drop_links()
                 const float seg_len_sq = seg.dot_prod(seg);
                 bool passes_through_waypoint = false;
                 if (seg_len_sq > kWaypointLinkRadiusEpsilon * kWaypointLinkRadiusEpsilon) {
-                    for (int other = 1; other < waypoint_count; ++other) {
-                        if (other == wp || !g_waypoints[other].valid) {
-                            continue;
-                        }
-                        const rf::Vector3 to_other = g_waypoints[other].pos - node.pos;
-                        const float t = to_other.dot_prod(seg) / seg_len_sq;
-                        if (t <= 0.0f || t >= 1.0f) {
-                            continue;
-                        }
-                        const rf::Vector3 closest = node.pos + seg * t;
-                        const float dist_sq = distance_sq(g_waypoints[other].pos, closest);
-                        if (dist_sq < kWaypointRadius * kWaypointRadius) {
-                            passes_through_waypoint = true;
-                            break;
-                        }
-                    }
+                    passes_through_waypoint = ctx.index.any_near(
+                        node.pos, kLedgeDropProbeDistance + kWaypointRadius, [&](const int other) {
+                            if (other == wp || other >= waypoint_count || !g_waypoints[other].valid) {
+                                return false;
+                            }
+                            const rf::Vector3 to_other = g_waypoints[other].pos - node.pos;
+                            const float t = to_other.dot_prod(seg) / seg_len_sq;
+                            if (t <= 0.0f || t >= 1.0f) {
+                                return false;
+                            }
+                            const rf::Vector3 closest = node.pos + seg * t;
+                            const float dist_sq = distance_sq(g_waypoints[other].pos, closest);
+                            return dist_sq < kWaypointRadius * kWaypointRadius;
+                        });
                 }
                 if (passes_through_waypoint) {
                     continue;
@@ -7088,29 +8798,24 @@ int generate_ledge_drop_links()
 
             ++landings_found;
 
-            // Find the closest waypoint near the landing point.
+            // Find the closest waypoint near the landing point; on equal distances the lower index wins.
             int best_target = -1;
             float best_dist_sq = landing_search_sq;
-            for (int candidate = 1; candidate < waypoint_count; ++candidate) {
-                if (candidate == wp) {
-                    continue;
+            ctx.index.any_near(landing_pos, kLedgeDropLandingSearchRadius, [&](const int candidate) {
+                if (candidate == wp || candidate >= waypoint_count) {
+                    return false;
                 }
                 const auto& cand_node = g_waypoints[candidate];
                 if (!cand_node.valid
                     || cand_node.type == WaypointType::lift_body
                     || cand_node.type == WaypointType::ladder) {
-                    continue;
+                    return false;
                 }
                 if (landing_is_water) {
                     // For water landings, prefer the water waypoint closest to
                     // the surface (highest Y) near the landing position.
                     if (cand_node.type != WaypointType::water) {
-                        continue;
-                    }
-                    const float d = distance_sq(landing_pos, cand_node.pos);
-                    if (d < best_dist_sq) {
-                        best_dist_sq = d;
-                        best_target = candidate;
+                        return false;
                     }
                 }
                 else {
@@ -7118,15 +8823,16 @@ int generate_ledge_drop_links()
                     // height difference is too large (would be on a different floor).
                     const float height_diff = std::fabs(landing_pos.y - cand_node.pos.y);
                     if (height_diff > kLedgeDropMinHeight) {
-                        continue;
-                    }
-                    const float d = distance_sq(landing_pos, cand_node.pos);
-                    if (d < best_dist_sq) {
-                        best_dist_sq = d;
-                        best_target = candidate;
+                        return false;
                     }
                 }
-            }
+                const float d = distance_sq(landing_pos, cand_node.pos);
+                if (d < best_dist_sq || (d == best_dist_sq && best_target > 0 && candidate < best_target)) {
+                    best_dist_sq = d;
+                    best_target = candidate;
+                }
+                return false;
+            });
 
             if (best_target <= 0) {
                 ++no_target_count;
@@ -7166,7 +8872,7 @@ int generate_ledge_drop_links()
     return links_added;
 }
 
-int generate_explosion_targets_for_autogen()
+int generate_explosion_targets_for_autogen(WaypointGenerationContext& ctx)
 {
     constexpr float kMaxPairDistance = kWaypointLinkRadius * 2.0f;
     constexpr float kMaxPairDistanceSq = kMaxPairDistance * kMaxPairDistance;
@@ -7203,6 +8909,9 @@ int generate_explosion_targets_for_autogen()
     candidates.reserve(1024);
 
     for (int from = 1; from < waypoint_count; ++from) {
+        if (ctx.out_of_time(from, waypoint_count)) {
+            return 0;
+        }
         const auto& from_node = g_waypoints[from];
         if (!from_node.valid) {
             continue;
@@ -7219,7 +8928,8 @@ int generate_explosion_targets_for_autogen()
                     }
 
                     for (int to : it->second) {
-                        if (to <= from) {
+                        // Only open terrain lies between two lattice nodes.
+                        if (to <= from || (ctx.lattice.is_coarse(from) && ctx.lattice.is_coarse(to))) {
                             continue;
                         }
 
@@ -7313,7 +9023,11 @@ int generate_explosion_targets_for_autogen()
     });
 
     int created_targets = 0;
+    int candidates_done = 0;
     for (const auto& candidate : candidates) {
+        if (ctx.out_of_time(candidates_done++, static_cast<int>(candidates.size()))) {
+            break;
+        }
         bool too_close_to_existing_target = false;
         for (const auto& existing_pos : existing_target_positions) {
             if (distance_sq(existing_pos, candidate.target_pos) <= kTargetSpacingSq) {
@@ -7336,7 +9050,7 @@ int generate_explosion_targets_for_autogen()
     return created_targets;
 }
 
-int generate_shatter_targets_for_autogen()
+int generate_shatter_targets_for_autogen(WaypointGenerationContext& ctx)
 {
     constexpr float kMaxPairDistance = kWaypointLinkRadius * 2.0f;
     constexpr float kMaxPairDistanceSq = kMaxPairDistance * kMaxPairDistance;
@@ -7371,6 +9085,9 @@ int generate_shatter_targets_for_autogen()
     candidate_by_glass_room.reserve(128);
 
     for (int from = 1; from < waypoint_count; ++from) {
+        if (ctx.out_of_time(from, waypoint_count)) {
+            return 0;
+        }
         const auto& from_node = g_waypoints[from];
         if (!from_node.valid) {
             continue;
@@ -7387,7 +9104,8 @@ int generate_shatter_targets_for_autogen()
                     }
 
                     for (int to : it->second) {
-                        if (to <= from) {
+                        // Only open terrain lies between two lattice nodes.
+                        if (to <= from || (ctx.lattice.is_coarse(from) && ctx.lattice.is_coarse(to))) {
                             continue;
                         }
 
@@ -7460,17 +9178,142 @@ int generate_shatter_targets_for_autogen()
     return created_targets;
 }
 
+// [[v]]: one table per vehicle node, its position p as world floats, its type k, ground size s, radius r, flags f,
+// outgoing links l as [node, size] pairs (node = index into [[v]]) and a landing exit x.
+static void save_vehicle_layer(toml::table& root)
+{
+    toml::array nodes{};
+    for (const VehicleWaypointNode& node : waypoints_vehicle_layer().nodes) {
+        toml::table entry{
+            {"p", toml::array{node.pos.x, node.pos.y, node.pos.z}},
+            {"k", static_cast<int>(node.type)},
+        };
+        if (node.type == alpine_waypoint_helper::Type::ground) {
+            entry.insert("s", static_cast<int>(node.size));
+        }
+        if (node.radius != alpine_waypoint_helper::default_radius) {
+            entry.insert("r", node.radius);
+        }
+        if (node.flags != 0) {
+            entry.insert("f", static_cast<int>(node.flags));
+        }
+        if (!node.links.empty()) {
+            toml::array links{};
+            for (const VehicleWaypointLink& link : node.links) {
+                links.push_back(toml::array{link.to, static_cast<int>(link.size)});
+            }
+            entry.insert("l", links);
+        }
+        if (node.has_exit) {
+            // Rounded as the foot node's own position is on every save, so the exit follows its node.
+            const rf::Vector3 exit = decompress_waypoint_pos(compress_waypoint_pos(node.exit_pos));
+            entry.insert("x", toml::array{exit.x, exit.y, exit.z});
+        }
+        nodes.push_back(entry);
+    }
+    root.insert("v", nodes);
+}
+
+// Finite, and clamped into the level as generation and the editor place nodes.
+static std::optional<rf::Vector3> parse_vehicle_layer_pos(const toml::array* values)
+{
+    if (!values || values->size() != 3 || !std::all_of(values->begin(), values->end(), [](const toml::node& v) {
+            return v.is_number();
+        })) {
+        return std::nullopt;
+    }
+    const rf::Vector3 out = parse_vec3_floats(*values).value_or(rf::Vector3{});
+    if (!std::isfinite(out.x) || !std::isfinite(out.y) || !std::isfinite(out.z)) {
+        return std::nullopt;
+    }
+    return waypoints_vehicle_clamp_to_level(out);
+}
+
+// A malformed node or exit drops the whole layer: indices into it would no longer line up. What generation and the
+// editor never make (a landing ground node, a size on an air node, a link across types) is dropped quietly.
+static bool load_vehicle_layer(const toml::table& root)
+{
+    namespace awh = alpine_waypoint_helper;
+    const auto* nodes = root["v"].as_array();
+    if (!nodes || nodes->empty()) {
+        return false;
+    }
+    const int count = static_cast<int>(nodes->size());
+    if (count > kMaxVehicleWaypointNodes) {
+        xlog::warn("[Waypoints] vehicle layer has {} nodes, past the {} node limit; ignored", count,
+                   kMaxVehicleWaypointNodes);
+        return false;
+    }
+    VehicleWaypointLayer layer;
+    layer.nodes.reserve(count);
+    for (int i = 0; i < count; ++i) {
+        const auto* entry = (*nodes)[i].as_table();
+        const auto pos = entry ? parse_vehicle_layer_pos(entry->get_as<toml::array>("p")) : std::nullopt;
+        const auto* type_node = entry ? entry->get("k") : nullptr;
+        const int64_t raw_type = type_node && type_node->is_integer() ? type_node->value_or(int64_t{-1}) : -1;
+        const auto* exit_node = entry ? entry->get_as<toml::array>("x") : nullptr;
+        const auto exit = parse_vehicle_layer_pos(exit_node);
+        if (!pos || raw_type < 0 || raw_type > awh::type_max || (exit_node && !exit)) {
+            xlog::warn("[Waypoints] vehicle layer node {} is malformed; the layer is ignored", i);
+            return false;
+        }
+        VehicleWaypointNode node;
+        node.pos = *pos;
+        node.type = static_cast<awh::Type>(raw_type);
+        const bool ground = node.type == awh::Type::ground;
+        if (const auto* size_node = entry->get("s"); size_node && size_node->is_integer() && ground) {
+            const int64_t raw_size = size_node->value_or(int64_t{awh::size_class_max});
+            node.size = static_cast<awh::SizeClass>(std::clamp<int64_t>(raw_size, 0, awh::size_class_max));
+        }
+        if (const auto* radius_node = entry->get("r"); radius_node && radius_node->is_number()) {
+            node.radius = awh::sanitize_radius(static_cast<float>(radius_node->value_or(double{awh::default_radius})));
+        }
+        if (const auto* flags_node = entry->get("f"); flags_node && flags_node->is_integer() && !ground) {
+            node.flags = static_cast<uint8_t>(flags_node->value_or(int64_t{0}) & awh::flag_landing);
+        }
+        if (const auto* links = entry->get_as<toml::array>("l")) {
+            for (const toml::node& link_node : *links) {
+                const auto* pair = link_node.as_array();
+                if (!pair || pair->size() != 2 || !(*pair)[0].is_integer() || !(*pair)[1].is_integer()) {
+                    continue;
+                }
+                const int64_t to = (*pair)[0].value_or(int64_t{-1});
+                const int64_t size = std::clamp<int64_t>((*pair)[1].value_or(int64_t{0}), 0, awh::size_class_max);
+                const bool repeated = std::any_of(node.links.begin(), node.links.end(),
+                                                  [to](const VehicleWaypointLink& l) { return l.to == to; });
+                if (to >= 0 && to < count && to != i && !repeated && node.links.size() < awh::max_links) {
+                    node.links.push_back({static_cast<int>(to), static_cast<awh::SizeClass>(size)});
+                }
+            }
+        }
+        if (exit && node.landing()) {
+            node.has_exit = true;
+            node.exit_pos = *exit;
+        }
+        layer.nodes.push_back(std::move(node));
+    }
+    for (VehicleWaypointNode& node : layer.nodes) {
+        std::erase_if(node.links, [&](const VehicleWaypointLink& link) {
+            return layer.nodes[link.to].type != node.type;
+        });
+    }
+    waypoints_vehicle_set_layer(std::move(layer));
+    return true;
+}
+
 bool save_waypoints()
 {
     if (g_waypoints.size() <= 1) {
         return false;
     }
 
+    // Temporary nodes aren't saved and the loader numbers nodes by position, so stored references are renumbered.
+    std::vector<int> saved_uids(g_waypoints.size(), 0);
     int persistent_waypoint_count = 0;
     for (int i = 1; i < static_cast<int>(g_waypoints.size()); ++i) {
         const auto& node = g_waypoints[i];
         if (node.valid && !node.temporary) {
-            ++persistent_waypoint_count;
+            saved_uids[i] = ++persistent_waypoint_count;
         }
     }
     if (persistent_waypoint_count <= 0) {
@@ -7501,7 +9344,9 @@ bool save_waypoints()
     }
 
     const int revision = g_waypoint_revision + 1;
-    const bool preserve_std_new_types = is_waypoint_bot_mode_active();
+    // Edit mode keeps editor semantics: the editor's drops save as std.
+    const bool preserve_std_new_types = is_waypoint_bot_mode_active() && !g_alpine_game_config.waypoints_edit_mode;
+    const bool has_vehicle_layer = !waypoints_vehicle_layer().nodes.empty();
     toml::table header{
         {"revision", revision},
         {"awp_ver", kWptVersion},
@@ -7510,6 +9355,9 @@ bool save_waypoints()
         {"saved_at", std::string{time_buf}},
         {"author", authors},
     };
+    if (g_awp_generation_mode != WaypointGenerationMode::standard) {
+        header.insert("gen_mode", std::string{waypoint_generation_mode_name(g_awp_generation_mode)});
+    }
     toml::array nodes;
     for (int i = 1; i < static_cast<int>(g_waypoints.size()); ++i) {
         const auto& node = g_waypoints[i];
@@ -7520,7 +9368,16 @@ bool save_waypoints()
         toml::array pos{compressed_pos.x, compressed_pos.y, compressed_pos.z};
         toml::array links;
         for (int link = 0; link < node.num_links; ++link) {
-            links.push_back(node.links[link]);
+            int linked = node.links[link];
+            // A borrowed slot saves the link it displaced.
+            if (linked > 0 && linked < static_cast<int>(g_waypoints.size())
+                && g_waypoints[linked].borrowed_link_from == i
+                && !waypoint_link_exists(node, g_waypoints[linked].borrowed_link_target)) {
+                linked = g_waypoints[linked].borrowed_link_target;
+            }
+            if (const int linked_uid = remap_waypoint_uid(saved_uids, linked); linked_uid > 0) {
+                links.push_back(linked_uid);
+            }
         }
         int saved_type = waypoint_type_to_save_value(node.type, preserve_std_new_types);
         toml::table entry{
@@ -7543,6 +9400,9 @@ bool save_waypoints()
         }
         if (node.identifier != -1) {
             entry.insert("i", node.identifier);
+        }
+        if (node.terrain) {
+            entry.insert("h", true);
         }
         if (!node.zones.empty()) {
             toml::array zone_refs{};
@@ -7593,13 +9453,9 @@ bool save_waypoints()
                 && !zone.bridge_waypoint_uids.empty()) {
                 toml::array bridge_waypoint_uids{};
                 for (const int waypoint_uid : zone.bridge_waypoint_uids) {
-                    if (waypoint_uid <= 0 || waypoint_uid >= static_cast<int>(g_waypoints.size())) {
-                        continue;
+                    if (const int bridge_uid = remap_waypoint_uid(saved_uids, waypoint_uid); bridge_uid > 0) {
+                        bridge_waypoint_uids.push_back(bridge_uid);
                     }
-                    if (!g_waypoints[waypoint_uid].valid) {
-                        continue;
-                    }
-                    bridge_waypoint_uids.push_back(waypoint_uid);
                 }
                 if (!bridge_waypoint_uids.empty()) {
                     zone_entry.insert("w", bridge_waypoint_uids);
@@ -7618,13 +9474,9 @@ bool save_waypoints()
 
             toml::array waypoint_uids{};
             for (int waypoint_uid : target.waypoint_uids) {
-                if (waypoint_uid <= 0 || waypoint_uid >= static_cast<int>(g_waypoints.size())) {
-                    continue;
+                if (const int saved_uid = remap_waypoint_uid(saved_uids, waypoint_uid); saved_uid > 0) {
+                    waypoint_uids.push_back(saved_uid);
                 }
-                if (!g_waypoints[waypoint_uid].valid) {
-                    continue;
-                }
-                waypoint_uids.push_back(waypoint_uid);
             }
 
             toml::table target_entry{
@@ -7639,6 +9491,9 @@ bool save_waypoints()
         }
         root.insert("t", targets);
     }
+    if (has_vehicle_layer) {
+        save_vehicle_layer(root);
+    }
     std::ofstream file(filename);
     if (!file.is_open()) {
         xlog::error("Failed to open waypoint file for write {}", filename.string());
@@ -7650,7 +9505,8 @@ bool save_waypoints()
     return true;
 }
 
-bool load_waypoints(bool include_std_new_waypoints = true)
+// Without `sanitize`, blocked links stay in the graph for whoever reads it to test, as the route arrows do
+bool load_waypoints(bool include_std_new_waypoints = true, bool sanitize = true)
 {
     clear_waypoints();
     auto disk_path = get_waypoint_filename();
@@ -7666,16 +9522,30 @@ bool load_waypoints(bool include_std_new_waypoints = true)
     }
     g_waypoint_revision = 0;
     std::optional<uint32_t> header_checksum;
+    int awp_version = kWptVersion;
     if (const auto* header = root["header"].as_table()) {
         if (const auto* revision_node = header->get("revision"); revision_node && revision_node->is_number()) {
             g_waypoint_revision = static_cast<int>(revision_node->value_or(g_waypoint_revision));
+        }
+        if (const auto* version_node = header->get("awp_ver"); version_node && version_node->is_integer()) {
+            awp_version = static_cast<int>(version_node->value_or(int64_t{kWptVersion}));
         }
         const auto* checksum_node = header->get("level_checksum");
         if ((!checksum_node || !checksum_node->is_number()) && header->get("checksum")) {
             checksum_node = header->get("checksum");
         }
         if (checksum_node && checksum_node->is_number()) {
-            header_checksum = static_cast<uint32_t>(checksum_node->value_or(0));
+            header_checksum = static_cast<uint32_t>(checksum_node->value_or(int64_t{0}));
+        }
+        if (const auto* mode_node = header->get("gen_mode")) {
+            if (const auto mode_name = mode_node->value<std::string>(); mode_name) {
+                const auto mode = parse_waypoint_generation_mode(*mode_name);
+                if (!mode) {
+                    xlog::warn(
+                        "[Waypoints] unknown gen_mode '{}' in {}, treating it as default", *mode_name, bare_filename);
+                }
+                g_awp_generation_mode = mode.value_or(WaypointGenerationMode::standard);
+            }
         }
 
         if (const auto* author_node = header->get("author")) {
@@ -7698,7 +9568,11 @@ bool load_waypoints(bool include_std_new_waypoints = true)
             }
         }
     }
-    if (g_alpine_game_config.waypoints_edit_mode && !is_waypoint_bot_mode_active()
+    if (awp_version > kWptVersion) {
+        xlog::warn("[Waypoints] waypoint file {} is version {}, newer than this build reads ({})", bare_filename,
+                   awp_version, kWptVersion);
+    }
+    if (g_alpine_game_config.waypoints_edit_mode && !is_waypoint_local_bot_mode_active()
         && header_checksum && *header_checksum != rf::level.checksum) {
         waypoint_log("Level checksum mismatch for {}: file {}, level {}",
             bare_filename, *header_checksum, rf::level.checksum);
@@ -7849,6 +9723,9 @@ bool load_waypoints(bool include_std_new_waypoints = true)
             skipped_std_new_waypoints = true;
             continue;
         }
+        if (const auto* terrain_node = node_tbl->get("h")) {
+            node.terrain = waypoints_level_has_terrain() && terrain_node->value_or(false);
+        }
         const auto* links = node_tbl->get_as<toml::array>("l");
         if (!links) {
             links = node_tbl->get_as<toml::array>("links");
@@ -7960,7 +9837,11 @@ bool load_waypoints(bool include_std_new_waypoints = true)
         remap_waypoints();
     }
     normalize_all_zone_bridge_waypoint_refs();
-    sanitize_waypoint_links_against_geometry();
+    if (sanitize) {
+        sanitize_waypoint_links_against_geometry();
+    }
+    ensure_vehicle_factory_waypoints();
+    waypoints_vehicle_on_awp_loaded(load_vehicle_layer(root));
     g_has_loaded_wpt = true;
     return true;
 }
@@ -7992,41 +9873,50 @@ void mark_invalid_waypoints()
 
 void remap_waypoints()
 {
+    ++g_waypoint_layout_version;
     std::vector<int> remap(g_waypoints.size(), 0);
     std::vector<WaypointNode> new_nodes;
     new_nodes.reserve(g_waypoints.size());
     new_nodes.push_back(g_waypoints[0]);
     int next_index = 1;
+    int first_removed = 0;
+    // Removing only temporary nodes, with nothing persistent behind them, keeps every persistent index.
+    bool persistent_changed = false;
     for (int i = 1; i < static_cast<int>(g_waypoints.size()); ++i) {
         if (g_waypoints[i].valid) {
+            persistent_changed = persistent_changed || (first_removed > 0 && !g_waypoints[i].temporary);
             remap[i] = next_index++;
-            new_nodes.push_back(g_waypoints[i]);
+            new_nodes.push_back(std::move(g_waypoints[i]));
+        }
+        else {
+            first_removed = first_removed > 0 ? first_removed : i;
+            persistent_changed = persistent_changed || !g_waypoints[i].temporary;
         }
     }
     for (int i = 1; i < static_cast<int>(new_nodes.size()); ++i) {
         auto& node = new_nodes[i];
         int write_idx = 0;
         for (int j = 0; j < node.num_links; ++j) {
-            int link = node.links[j];
-            if (link <= 0 || link >= static_cast<int>(remap.size())) {
-                continue;
-            }
-            int remapped = remap[link];
+            const int remapped = remap_waypoint_uid(remap, node.links[j]);
             if (remapped > 0) {
                 node.links[write_idx++] = remapped;
             }
         }
         node.num_links = write_idx;
+        if (node.borrowed_link_from > 0) {
+            node.borrowed_link_from = remap_waypoint_uid(remap, node.borrowed_link_from);
+            node.borrowed_link_target = remap_waypoint_uid(remap, node.borrowed_link_target);
+        }
     }
     g_waypoints = std::move(new_nodes);
+    for (auto& entry : g_last_drop_waypoint_by_entity) {
+        entry.second = remap_waypoint_uid(remap, entry.second);
+    }
     for (auto& target : g_waypoint_targets) {
         std::vector<int> remapped_waypoint_uids{};
         remapped_waypoint_uids.reserve(target.waypoint_uids.size());
         for (int waypoint_uid : target.waypoint_uids) {
-            if (waypoint_uid <= 0 || waypoint_uid >= static_cast<int>(remap.size())) {
-                continue;
-            }
-            const int remapped_waypoint_uid = remap[waypoint_uid];
+            const int remapped_waypoint_uid = remap_waypoint_uid(remap, waypoint_uid);
             if (remapped_waypoint_uid > 0) {
                 remapped_waypoint_uids.push_back(remapped_waypoint_uid);
             }
@@ -8043,10 +9933,7 @@ void remap_waypoints()
         std::vector<int> remapped_bridge_waypoint_uids{};
         remapped_bridge_waypoint_uids.reserve(zone.bridge_waypoint_uids.size());
         for (int waypoint_uid : zone.bridge_waypoint_uids) {
-            if (waypoint_uid <= 0 || waypoint_uid >= static_cast<int>(remap.size())) {
-                continue;
-            }
-            const int remapped_waypoint_uid = remap[waypoint_uid];
+            const int remapped_waypoint_uid = remap_waypoint_uid(remap, waypoint_uid);
             if (remapped_waypoint_uid > 0) {
                 remapped_bridge_waypoint_uids.push_back(remapped_waypoint_uid);
             }
@@ -8054,7 +9941,12 @@ void remap_waypoints()
         normalize_zone_bridge_waypoint_refs(remapped_bridge_waypoint_uids);
         zone.bridge_waypoint_uids = std::move(remapped_bridge_waypoint_uids);
     }
-    invalidate_cache();
+    waypoints_utils_on_waypoints_remapped(remap);
+    waypoints_mark_graph_changed(first_removed == 0 || persistent_changed);
+    if (first_removed == 0 || first_removed < g_cache_indexed_end) {
+        invalidate_spatial_cache();
+    }
+    g_waypoints_by_type_total = 0;
 }
 
 void clean_waypoints()
@@ -8066,7 +9958,7 @@ void clean_waypoints()
 
 bool should_navigate()
 {
-    if (!are_waypoint_commands_enabled_for_local_client()) {
+    if (!is_waypoint_recording_active()) {
         return false;
     }
     return g_drop_waypoints || g_has_loaded_wpt;
@@ -8074,7 +9966,7 @@ bool should_navigate()
 
 bool should_drop()
 {
-    if (!are_waypoint_commands_enabled_for_local_client()) {
+    if (!is_waypoint_recording_active()) {
         return false;
     }
     return g_drop_waypoints || !g_has_loaded_wpt;
@@ -8086,7 +9978,7 @@ bool should_skip_local_bot_waypoint_drop()
         return false;
     }
 
-    return rf::local_player->is_bot || is_waypoint_bot_mode_active();
+    return rf::local_player->is_bot || is_waypoint_local_bot_mode_active();
 }
 
 void prune_drop_trackers(const std::unordered_set<int>& active_entity_handles)
@@ -8169,7 +10061,14 @@ void navigate_entity(int entity_handle, rf::Entity& entity, bool allow_drop)
             last_lift_uid = -1;
         }
         else {
-            const int lift_uid_below = find_lift_uid_below_waypoint(pos);
+            const rf::Mover* const mover_below = find_mover_below_waypoint(pos);
+            if (mover_below && payload_is_cart(mover_below->handle)) {
+                // No node on the cart, and no link across the stretch it carried its rider.
+                last_drop_waypoint = 0;
+                last_lift_uid = -1;
+                return;
+            }
+            const int lift_uid_below = lift_uid_of_mover_below(mover_below);
             if (lift_uid_below >= 0) {
                 drop_type = (last_lift_uid == lift_uid_below) ? WaypointType::lift_body : WaypointType::lift_entrance;
                 identifier = lift_uid_below;
@@ -8251,6 +10150,11 @@ void navigate()
             clear_drop_trackers_for_entity(local_entity_handle);
             return;
         }
+        if (entity->host_handle != -1) {
+            clear_drop_trackers_for_entity(local_entity_handle);
+            prune_drop_trackers(active_entity_handles);
+            return;
+        }
         active_entity_handles.insert(local_entity_handle);
         navigate_entity(local_entity_handle, *entity, true);
         prune_drop_trackers(active_entity_handles);
@@ -8273,7 +10177,7 @@ void navigate()
         }
 
         auto* entity = rf::entity_from_handle(player.entity_handle);
-        if (!entity) {
+        if (!entity || entity->host_handle != -1) {
             clear_drop_trackers_for_entity(player.entity_handle);
             continue;
         }
@@ -8351,7 +10255,7 @@ ConsoleCommand2 waypoint_load_all_cmd{
 ConsoleCommand2 waypoint_edit_cmd{
     "waypoints_edit",
     [](std::optional<bool> enabled) {
-        if (is_waypoint_bot_mode_active()) {
+        if (is_waypoint_local_bot_mode_active()) {
             rf::console::print("waypoints_edit is not used in -bot mode.");
             return;
         }
@@ -8364,6 +10268,13 @@ ConsoleCommand2 waypoint_edit_cmd{
         }
 
         if (request_enable && !g_alpine_game_config.waypoints_edit_mode) {
+            // Hand the editor a sanitized graph and stop the arrows' pending download from reloading over the edits
+            if (waypoints_loaded_for_route_arrows_only()) {
+                sanitize_waypoint_links_against_geometry();
+                g_waypoints_for_route_arrows = false;
+                g_awp_load_retries_remaining = 0;
+                g_awp_load_retry_timer.invalidate();
+            }
             g_alpine_game_config.waypoints_edit_mode = true;
             waypoint_log("Waypoint editing enabled");
         }
@@ -8453,51 +10364,189 @@ ConsoleCommand2 waypoint_reset_cmd{
     "waypoints_reset",
 };
 
-// Run the full waypoint generation pipeline: reset grid, generate from seeds, link, and log results.
-// Returns the number of generated waypoints, or -1 if no seeds were found.
-int run_waypoint_generation_pipeline()
+// A lattice or stride patch the rest of the graph never reached (a plateau ringed by cliffs) only misleads route
+// searches, so every node of a component holding lattice or stride nodes but no special node, zoned node or geomod
+// tunnel seed is dropped. Returns how many.
+static int drop_unanchored_coarse_components(WaypointGenerationContext& ctx)
 {
-    reset_waypoints_to_default_grid();
-
-    // Build cache of invisible upward-facing faces for supplemental ground detection.
-    // These are faces the standard collision system misses (e.g. detail brush ramps).
-    // Must be built AFTER reset_waypoints_to_default_grid which clears the cache.
-    if (rf::level.geometry) {
-        for (int ri = 0; ri < rf::level.geometry->all_rooms.size(); ++ri) {
-            auto* room = rf::level.geometry->all_rooms[ri];
-            if (!room) continue;
-            for (auto* face = room->face_list.first(); face; face = room->face_list.next(face)) {
-                if (face->attributes.is_invisible()
-                    && !face->attributes.is_liquid()
-                    && face->plane.normal.y > 0.1f
-                    && face->edge_loop) {
-                    g_invisible_floor_faces.push_back(face);
-                }
+    const int waypoint_count = static_cast<int>(g_waypoints.size());
+    std::vector<int> parent(waypoint_count);
+    std::iota(parent.begin(), parent.end(), 0);
+    auto find = [&parent](int i) {
+        while (parent[i] != i) {
+            parent[i] = parent[parent[i]];
+            i = parent[i];
+        }
+        return i;
+    };
+    for (int i = 1; i < waypoint_count; ++i) {
+        const auto& node = g_waypoints[i];
+        if (!node.valid) {
+            continue;
+        }
+        for (int l = 0; l < node.num_links; ++l) {
+            const int link = node.links[l];
+            if (link > 0 && link < waypoint_count && g_waypoints[link].valid) {
+                parent[find(i)] = find(link);
             }
         }
     }
+    std::vector<std::uint8_t> anchored(waypoint_count, 0);
+    std::vector<std::uint8_t> has_coarse(waypoint_count, 0);
+    for (int i = 1; i < waypoint_count; ++i) {
+        const auto& node = g_waypoints[i];
+        if (!node.valid) {
+            continue;
+        }
+        const int root = find(i);
+        if (waypoint_type_is_special(node.type) || !node.zones.empty() || ctx.coarse.is_tunnel_seed(i)) {
+            anchored[root] = 1;
+        }
+        if (ctx.lattice.is_coarse(i) || ctx.coarse.is_stride_node(i)) {
+            has_coarse[root] = 1;
+        }
+    }
+    int dropped = 0;
+    for (int i = 1; i < waypoint_count; ++i) {
+        auto& node = g_waypoints[i];
+        const int root = find(i);
+        if (node.valid && has_coarse[root] && !anchored[root]) {
+            node.valid = false;
+            node.num_links = 0;
+            ++dropped;
+        }
+    }
+    if (dropped > 0) {
+        waypoints_mark_graph_changed();
+    }
+    return dropped;
+}
 
-    const auto seed_indices = collect_generation_seed_waypoint_indices();
+std::string_view waypoint_generation_mode_name(const WaypointGenerationMode mode)
+{
+    switch (mode) {
+        case WaypointGenerationMode::coarse:
+            return "coarse";
+        case WaypointGenerationMode::fine:
+            return "fine";
+        default:
+            return "default";
+    }
+}
+
+std::optional<WaypointGenerationMode> parse_waypoint_generation_mode(const std::string_view name)
+{
+    if (string_iequals(name, "default")) {
+        return WaypointGenerationMode::standard;
+    }
+    if (string_iequals(name, "coarse")) {
+        return WaypointGenerationMode::coarse;
+    }
+    if (string_iequals(name, "fine")) {
+        return WaypointGenerationMode::fine;
+    }
+    return std::nullopt;
+}
+
+WaypointGenerationMode waypoints_generation_mode()
+{
+    return g_awp_generation_mode;
+}
+
+// Run the full waypoint generation pipeline: reset grid, generate from seeds, link, and log results.
+// Returns the number of generated waypoints, kWaypointGenerateNoSeeds, or kWaypointGenerateTimedOut once the
+// deadline passes (the partial graph is then replaced by the default grid, so it can never be saved).
+int run_waypoint_generation_pipeline(
+    const std::chrono::steady_clock::time_point deadline, const WaypointGenerationMode mode)
+{
+    WaypointGenerationContext ctx{deadline};
+    ctx.enter_stage("seeds");
+    reset_waypoints_to_default_grid();
+    // After the reset, which clears it.
+    g_invisible_floor_faces.build();
+    const bool level_has_terrain = waypoints_level_has_terrain();
+
+    auto seed_indices = collect_generation_seed_waypoint_indices();
+    seed_control_point_waypoints_for_autogen(seed_indices);
     if (seed_indices.empty()) {
+        ctx.finish();
         waypoint_log("No seed waypoints found for generation");
-        return -1;
+        return kWaypointGenerateNoSeeds;
     }
 
-    const int generated_count = generate_waypoints_from_seed_probes(seed_indices);
-    const auto link_stats = link_generated_waypoint_grid();
-    const int special_links_added = auto_link_special_waypoints_post_generation();
-    const int jump_pad_trajectory_links = link_jump_pads_to_trajectory_destinations();
-    const int ledge_drop_links = generate_ledge_drop_links();
-    const int generated_explosion_target_count = generate_explosion_targets_for_autogen();
-    const int generated_shatter_target_count = generate_shatter_targets_for_autogen();
-
-    if (generated_count >= kWaypointGenerateMaxCreatedWaypoints) {
+    int generated_count = 0;
+    GeneratedWaypointLinkStats link_stats{};
+    int special_links_added = 0;
+    int jump_pad_trajectory_links = 0;
+    int ledge_drop_links = 0;
+    int generated_explosion_target_count = 0;
+    int generated_shatter_target_count = 0;
+    const auto run_stage = [&ctx](const std::string_view stage, const auto& run) {
+        if (!ctx.timed_out()) {
+            ctx.enter_stage(stage);
+            run();
+        }
+    };
+    int dropped_island_nodes = 0;
+    if (mode != WaypointGenerationMode::fine && level_has_terrain) {
+        run_stage("terrain lattice", [&] {
+            ctx.lattice.build([&ctx](const int done, const int total) { return ctx.out_of_time(done, total); });
+        });
+    }
+    if (mode == WaypointGenerationMode::coarse) {
+        ctx.coarse.enable_flood(false);
+    }
+    run_stage("flood", [&] { generated_count = generate_waypoints_from_seed_probes(ctx, seed_indices); });
+    run_stage("links", [&] {
+        link_stats = link_generated_waypoint_grid(ctx);
+        if ((ctx.lattice.active() || ctx.coarse.flood_enabled()) && !ctx.timed_out()) {
+            dropped_island_nodes = drop_unanchored_coarse_components(ctx);
+        }
+    });
+    run_stage("special links", [&] { special_links_added = auto_link_special_waypoints_post_generation(ctx); });
+    run_stage("jump pads", [&] { jump_pad_trajectory_links = link_jump_pads_to_trajectory_destinations(ctx); });
+    run_stage("ledge drops", [&] { ledge_drop_links = generate_ledge_drop_links(ctx); });
+    run_stage("explosion targets", [&] {
+        generated_explosion_target_count = generate_explosion_targets_for_autogen(ctx);
+    });
+    run_stage("shatter targets", [&] { generated_shatter_target_count = generate_shatter_targets_for_autogen(ctx); });
+    // Last: its landing exits are looked for on the finished foot graph.
+    const bool vehicle_layer_wanted = waypoints_vehicle_generation_wanted();
+    VehicleWaypointGenerationStats vehicle_stats{};
+    if (vehicle_layer_wanted) {
+        run_stage("vehicle layer", [&] {
+            vehicle_stats = waypoints_vehicle_generate(
+                [&ctx](const int done, const int total) { return ctx.out_of_time(done, total); });
+        });
+    }
+    ctx.finish();
+    if (ctx.timed_out()) {
+        reset_waypoints_to_default_grid();
         waypoint_log(
-            "Waypoint generation hit creation cap of {} nodes",
-            kWaypointGenerateMaxCreatedWaypoints);
+            "Waypoint generation ran out of its {} minute budget; the partial graph was discarded",
+            kWaypointGenerateTimeBudget.count());
+        return kWaypointGenerateTimedOut;
+    }
+
+    g_awp_generation_mode = mode;
+    if (ctx.lattice.covering()) {
+        const int terrain_nodes = flag_terrain_waypoints(ctx, 1);
+        generated_count += ctx.lattice.node_count();
+        waypoint_log(
+            "Terrain lattice: {} nodes at {:.2f} u spacing, {} edge links; {} terrain nodes; dropped {} unreachable",
+            ctx.lattice.node_count(), ctx.lattice.spacing(), link_stats.lattice_edge_links, terrain_nodes,
+            dropped_island_nodes);
+    }
+    generated_count -= dropped_island_nodes;
+    if (ctx.coarse.flood_enabled()) {
+        waypoint_log(
+            "Coarse flood: {} stride nodes ({:.2f} u strides, {} pairs linked), {} fine nodes, {} points of interest; "
+            "dropped {} unreachable",
+            ctx.coarse.stride_nodes(), GenerationCoarseFlood::kStride, link_stats.stride_links,
+            ctx.coarse.fine_nodes(), ctx.coarse.points_of_interest(), dropped_island_nodes);
     }
     waypoint_log(
-        "Generated {} waypoints from {} ctf_flag/item/respawn/tele_exit seeds",
+        "Generated {} waypoints from {} seeds",
         generated_count,
         static_cast<int>(seed_indices.size()));
     waypoint_log(
@@ -8529,6 +10578,21 @@ int run_waypoint_generation_pipeline()
             "Ledge drop pass added {} downward links",
             ledge_drop_links);
     }
+    // An entrance on a ledge or crate under the line has no way in; moving it in the editor fixes the ride.
+    int zipline_rides = 0;
+    std::string unreachable_entrances;
+    for (const int waypoint_uid : waypoints_get_by_type(WaypointType::zipline_entrance)) {
+        ++zipline_rides;
+        if (count_waypoint_inbound_links(waypoint_uid) == 0) {
+            unreachable_entrances += std::format(" {}", waypoint_uid);
+        }
+    }
+    if (zipline_rides > 0) {
+        waypoint_log("Zip lines: {} rides", zipline_rides);
+    }
+    if (!unreachable_entrances.empty()) {
+        waypoint_log("Zip line entrance waypoints nothing links to:{}", unreachable_entrances);
+    }
     if (generated_explosion_target_count > 0) {
         waypoint_log(
             "Generated {} explosion targets from blocked waypoint pairs",
@@ -8539,13 +10603,25 @@ int run_waypoint_generation_pipeline()
             "Generated {} shatter targets from breakable-glass blocked waypoint pairs",
             generated_shatter_target_count);
     }
+    if (vehicle_layer_wanted) {
+        waypoint_log(
+            "Vehicle layer: {} nodes, {} directed links, {} one-way ground links; networks: {} ground, {} air, {} "
+            "water; {} stacked helpers merged; dropped {} helpers and {} links (see the log); {} helpers of a kind no "
+            "factory spawns and {} links to them, to dropped helpers or to other objects unused; landing exits {}/{}",
+            vehicle_stats.nodes, vehicle_stats.links, vehicle_stats.one_way_ground_links,
+            vehicle_stats.networks[static_cast<int>(alpine_waypoint_helper::Type::ground)],
+            vehicle_stats.networks[static_cast<int>(alpine_waypoint_helper::Type::air)],
+            vehicle_stats.networks[static_cast<int>(alpine_waypoint_helper::Type::water)], vehicle_stats.merged_helpers,
+            vehicle_stats.dropped_helpers, vehicle_stats.dropped_links, vehicle_stats.unused_helpers,
+            vehicle_stats.skipped_links, vehicle_stats.landing_exits, vehicle_stats.landing_nodes);
+    }
 
     return generated_count;
 }
 
 ConsoleCommand2 waypoint_generate_cmd{
     "waypoints_generate",
-    []() {
+    [](std::optional<std::string> mode) {
         if (!ensure_waypoint_command_enabled("waypoints_generate")) {
             return;
         }
@@ -8553,10 +10629,22 @@ ConsoleCommand2 waypoint_generate_cmd{
             rf::console::print("No level loaded");
             return;
         }
-        run_waypoint_generation_pipeline();
+        // A regeneration keeps the mode the loaded graph was made with.
+        WaypointGenerationMode gen_mode = waypoints_generation_mode();
+        if (mode) {
+            const auto parsed = parse_waypoint_generation_mode(*mode);
+            if (!parsed) {
+                rf::console::print("Unknown mode '{}'; use default, coarse or fine", *mode);
+                return;
+            }
+            gen_mode = *parsed;
+        }
+        run_waypoint_generation_pipeline(std::chrono::steady_clock::now() + kWaypointGenerateTimeBudget, gen_mode);
     },
-    "Generate a walk-probe waypoint grid from respawn/item waypoints",
-    "waypoints_generate",
+    "Generate a walk-probe waypoint grid from respawn/item waypoints. default lays a coarse lattice over open Alpine "
+    "terrain and probes the rest finely, coarse also probes other open ground at a wider spacing (points of interest "
+    "stay fine), fine probes everything finely; with no mode it uses the loaded graph's mode",
+    "waypoints_generate [default|coarse|fine]",
 };
 
 ConsoleCommand2 waypoint_zone_add_cmd{
@@ -9092,16 +11180,18 @@ struct AwpgenContext
     int frames_since_level_loaded = 0;
     std::chrono::steady_clock::time_point start_time;
     int existing_revision = -1;
+    WaypointGenerationMode mode = WaypointGenerationMode::standard;
 };
 
 static AwpgenContext g_awpgen;
 static bool g_awpgen_active = false;
 
-void waypoints_start_awpgen(const std::string& rfl_filename)
+void waypoints_start_awpgen(const std::string& rfl_filename, const WaypointGenerationMode mode)
 {
     g_awpgen_active = true;
     g_awpgen.state = AwpgenState::waiting_for_level_load;
     g_awpgen.rfl_filename = rfl_filename;
+    g_awpgen.mode = mode;
     g_awpgen.frames_since_level_loaded = 0;
     g_awpgen.start_time = std::chrono::steady_clock::now();
 
@@ -9121,11 +11211,11 @@ static void awpgen_do_frame()
     }
 
     const auto elapsed = std::chrono::steady_clock::now() - g_awpgen.start_time;
-    if (elapsed > std::chrono::minutes(60)) {
-        xlog::error("-awpgen: timed out after 60 minutes, quitting");
+    if (elapsed > kWaypointGenerateTimeBudget) {
+        xlog::error("-awpgen: timed out after {} minutes, quitting", kWaypointGenerateTimeBudget.count());
         g_awpgen.state = AwpgenState::idle;
         g_awpgen_active = false;
-        rf::gameseq_set_state(rf::GS_QUITING, false);
+        rf::gameseq_set_state(rf::GS_QUIT_GAME, false);
         return;
     }
 
@@ -9142,7 +11232,8 @@ static void awpgen_do_frame()
     if (g_awpgen.state == AwpgenState::ready_to_generate) {
         xlog::info("-awpgen: generating waypoints for {}", g_awpgen.rfl_filename);
 
-        const int generated_count = run_waypoint_generation_pipeline();
+        const int generated_count = run_waypoint_generation_pipeline(
+            g_awpgen.start_time + kWaypointGenerateTimeBudget, g_awpgen.mode);
 
         // Restore the existing revision so save_waypoints writes revision+1
         if (g_awpgen.existing_revision >= 0) {
@@ -9159,10 +11250,20 @@ static void awpgen_do_frame()
                 xlog::error("-awpgen: failed to save waypoints for {}", g_awpgen.rfl_filename);
             }
         }
+        else if (generated_count == kWaypointGenerateTimedOut) {
+            xlog::error(
+                "-awpgen: timed out after {} minutes generating {}, nothing saved",
+                kWaypointGenerateTimeBudget.count(), g_awpgen.rfl_filename);
+        }
+        else {
+            xlog::error(
+                "-awpgen: failed to generate waypoints for {} ({})", g_awpgen.rfl_filename,
+                generated_count == kWaypointGenerateNoSeeds ? "no seeds" : "no nodes");
+        }
 
         g_awpgen.state = AwpgenState::idle;
         g_awpgen_active = false;
-        rf::gameseq_set_state(rf::GS_QUITING, false);
+        rf::gameseq_set_state(rf::GS_QUIT_GAME, false);
         return;
     }
 }
@@ -9187,9 +11288,34 @@ void waypoints_init()
     waypoint_delete_cmd.register_cmd();
 }
 
+// Builds the spatial index and the route graph, with the floor probes of its ledge links, while the level loads
+// rather than at the first spawn. It must follow anything that invalidates them, such as invalidate_cache.
+static void warm_waypoints_for_route_arrows()
+{
+    if (g_has_loaded_wpt) {
+        ensure_cache();
+        bot_waypoint_route_warm();
+    }
+}
+
+static void load_waypoints_for_route_arrows()
+{
+    g_waypoints_for_route_arrows = true;
+    g_has_loaded_wpt = load_waypoints(true, false);
+}
+
+static void start_awp_download_for_level()
+{
+    waypoints_set_awp_download_pending(true);
+    if (!start_awp_download_for_installed_map(std::string{rf::level.filename.c_str()}, 3)) {
+        waypoints_set_awp_download_pending(false);
+    }
+}
+
 void waypoints_level_init()
 {
     g_missing_awp_from_level_init = false;
+    g_waypoints_for_route_arrows = false;
     if (is_waypoint_bot_mode_active()) {
         if (g_awp_download_pending) {
             // AWP download is in progress — defer load_waypoints until it resolves
@@ -9205,6 +11331,11 @@ void waypoints_level_init()
             }
         }
     }
+    else if (waypoints_wanted_for_route_arrows()) {
+        // Nothing is seeded for the arrows, so a level without an AWP gets none. A local AWP loads now, without
+        // waiting for the download, which reloads it only with a newer revision.
+        load_waypoints_for_route_arrows();
+    }
     else {
         clear_waypoints();
         g_has_loaded_wpt = false;
@@ -9215,18 +11346,53 @@ void waypoints_level_init()
     g_ctf_dropped_flag_packet_hints[1].active = false;
     invalidate_cache();
     waypoints_utils_level_init();
+    if (g_waypoints_for_route_arrows) {
+        warm_waypoints_for_route_arrows();
+    }
+}
+
+void waypoints_level_init_with_awp_download()
+{
+    // Cancel any in-flight AWP download from a previous map
+    cancel_awp_download();
+
+    // Bots and the route arrows: start the async AWP download before waypoints_level_init, so for bots it sees the
+    // pending flag and defers load_waypoints until the download resolves. Never over a file a host is editing.
+    if ((rf::is_multi && is_waypoint_bot_mode_active()
+            && (rf::is_dedicated_server || !g_alpine_game_config.waypoints_edit_mode))
+        || waypoints_wanted_for_route_arrows()) {
+        start_awp_download_for_level();
+    }
+
+    waypoints_level_init();
+}
+
+void waypoints_on_route_arrows_toggled()
+{
+    // A graph loaded otherwise, such as the editor's, is kept: reloading would drop its edits
+    if (!(rf::level.flags & rf::LEVEL_LOADED) || g_waypoints_for_route_arrows || g_waypoints.size() > 1
+        || !waypoints_wanted_for_route_arrows()) {
+        return;
+    }
+    if (!g_awp_download_pending) {
+        start_awp_download_for_level();
+    }
+    load_waypoints_for_route_arrows();
+    warm_waypoints_for_route_arrows();
 }
 
 void waypoints_level_reset()
 {
     clear_waypoints();
     g_has_loaded_wpt = false;
+    g_waypoints_for_route_arrows = false;
     g_missing_awp_from_level_init = false;
     g_awp_download_pending = false;
     g_awp_load_retries_remaining = 0;
     g_awp_load_retry_timer.invalidate();
     g_last_drop_waypoint_by_entity.clear();
     g_last_lift_uid_by_entity.clear();
+    bot_nav_clear_ledge_link_cache();
     waypoints_utils_level_reset();
 }
 
@@ -9253,8 +11419,12 @@ void waypoints_set_awp_download_pending(bool pending)
 void waypoints_on_awp_download_resolved()
 {
     g_awp_download_pending = false;
-    if (is_waypoint_bot_mode_active()) {
-        g_has_loaded_wpt = load_waypoints(true);
+    if (waypoints_loaded_for_route_arrows_only() && g_has_loaded_wpt
+        && get_local_awp_revision(std::string{rf::level.filename.c_str()}) == g_waypoint_revision) {
+        return;
+    }
+    if (is_waypoint_bot_mode_active() || waypoints_loaded_for_route_arrows_only()) {
+        g_has_loaded_wpt = load_waypoints(true, is_waypoint_bot_mode_active());
         if (!g_has_loaded_wpt) {
             // If load failed but the AWP file exists on disk (e.g., another process is
             // mid-rename), schedule frame-based retries instead of blocking the main thread.
@@ -9266,6 +11436,9 @@ void waypoints_on_awp_download_resolved()
             }
         }
         g_missing_awp_from_level_init = !g_has_loaded_wpt;
+        if (waypoints_loaded_for_route_arrows_only()) {
+            warm_waypoints_for_route_arrows();
+        }
         // Don't seed from objects here — bots either load an AWP or sit out
     }
 }
@@ -9301,7 +11474,7 @@ void waypoints_do_frame()
         awpgen_do_frame();
     }
 
-    if (!is_waypoint_bot_mode_active()
+    if (!is_waypoint_local_bot_mode_active()
         && g_alpine_game_config.waypoints_edit_mode
         && is_multiplayer_client()) {
         g_alpine_game_config.waypoints_edit_mode = false;
@@ -9311,13 +11484,17 @@ void waypoints_do_frame()
     }
 
     // Retry loading AWP if a previous attempt failed (e.g., file race between bot processes)
-    if (g_awp_load_retries_remaining > 0 && g_awp_load_retry_timer.valid() && g_awp_load_retry_timer.elapsed()) {
+    if (g_awp_load_retries_remaining > 0 && g_awp_load_retry_timer.valid() && g_awp_load_retry_timer.elapsed()
+        && (is_waypoint_bot_mode_active() || waypoints_loaded_for_route_arrows_only())) {
         g_awp_load_retries_remaining--;
-        g_has_loaded_wpt = load_waypoints(true);
+        g_has_loaded_wpt = load_waypoints(true, is_waypoint_bot_mode_active());
         if (g_has_loaded_wpt) {
             g_awp_load_retries_remaining = 0;
             g_awp_load_retry_timer.invalidate();
             g_missing_awp_from_level_init = false;
+            if (waypoints_loaded_for_route_arrows_only()) {
+                warm_waypoints_for_route_arrows();
+            }
         }
         else if (g_awp_load_retries_remaining > 0) {
             g_awp_load_retry_timer.set(50);
@@ -9336,6 +11513,9 @@ void waypoints_do_frame()
     update_bridge_zone_states();
     update_ctf_dropped_flag_temporary_waypoints();
     update_salvage_flag_temporary_waypoint();
+    update_scavenger_zone_temporary_waypoint();
+    update_hull_temporary_waypoints();
+    update_zipline_ride_states();
     waypoints_utils_do_frame();
 
     if (!are_waypoint_commands_enabled_for_local_client()) {
@@ -9355,7 +11535,7 @@ void waypoints_do_frame()
 
 void waypoints_render_debug()
 {
-    if (!(rf::level.flags & rf::LEVEL_LOADED)) {
+    if (!(rf::level.flags & rf::LEVEL_LOADED) || waypoints_loaded_for_route_arrows_only()) {
         return;
     }
     waypoints_utils_render_debug();
@@ -9570,10 +11750,35 @@ int waypoints_send_probe(int waypoint_uid)
     }
 
     const std::vector<int> seed_indices{waypoint_uid};
-    const int generated_count = generate_waypoints_from_seed_probes(seed_indices);
-    if (generated_count > 0) {
-        link_generated_waypoint_grid();
-        auto_link_special_waypoints_post_generation();
+    WaypointGenerationContext ctx{std::chrono::steady_clock::now() + kWaypointGenerateTimeBudget};
+    // A coarse graph keeps its spacing: open ground it covers already is not flooded finely again.
+    if (waypoints_generation_mode() == WaypointGenerationMode::coarse) {
+        ctx.coarse.enable_flood(true);
+    }
+    // A graph made with a terrain lattice keeps it: open terrain stays covered by its lattice nodes, bare terrain is
+    // probed sparsely, and its terrain links are neither pruned nor rerouted.
+    if (waypoints_generation_mode() != WaypointGenerationMode::fine && waypoints_level_has_terrain()) {
+        ctx.enter_stage("probe terrain masks");
+        ctx.lattice.build_for_existing_lattice(
+            [&ctx](const int done, const int total) { return ctx.out_of_time(done, total); });
+    }
+    const int first_new = static_cast<int>(g_waypoints.size());
+    ctx.enter_stage("probe");
+    const int generated_count = generate_waypoints_from_seed_probes(ctx, seed_indices);
+    if (generated_count > 0 && !ctx.timed_out()) {
+        ctx.enter_stage("probe links");
+        link_generated_waypoint_grid(ctx);
+        ctx.enter_stage("probe special links");
+        auto_link_special_waypoints_post_generation(ctx);
+        if (ctx.lattice.covering()) {
+            flag_terrain_waypoints(ctx, first_new);
+        }
+    }
+    ctx.finish();
+    if (ctx.timed_out()) {
+        waypoint_log(
+            "Probe ran out of its {} minute budget; the waypoints made so far were kept",
+            kWaypointGenerateTimeBudget.count());
     }
     return generated_count;
 }
@@ -9870,6 +12075,16 @@ int waypoints_closest(const rf::Vector3& pos, float radius)
     return closest_waypoint(pos, radius);
 }
 
+int waypoints_graph_version()
+{
+    return g_waypoint_graph_version;
+}
+
+int waypoints_persistent_graph_version()
+{
+    return g_waypoint_persistent_graph_version;
+}
+
 int waypoints_count()
 {
     return static_cast<int>(g_waypoints.size());
@@ -9993,6 +12208,12 @@ bool waypoints_get_link_radius(int index, float& out_link_radius)
     return true;
 }
 
+bool waypoints_is_terrain_node(int index)
+{
+    return index > 0 && index < static_cast<int>(g_waypoints.size()) && g_waypoints[index].valid
+        && g_waypoints[index].terrain;
+}
+
 int waypoints_get_links(int index, std::array<int, kMaxWaypointLinks>& out_links)
 {
     out_links.fill(0);
@@ -10013,12 +12234,71 @@ int waypoints_get_links(int index, std::array<int, kMaxWaypointLinks>& out_links
             || !g_waypoints[link].valid) {
             continue;
         }
-        if (waypoint_link_blocked_by_bridge_zone_state(index, link)) {
+        if (waypoint_link_blocked_by_runtime_state(index, link)) {
             continue;
         }
         out_links[count++] = link;
     }
     return count;
+}
+
+int waypoints_get_persistent_links(const int index, std::array<int, kMaxWaypointLinks>& out_links)
+{
+    out_links.fill(0);
+    if (!is_waypoint_uid_valid(index) || g_waypoints[index].temporary) {
+        return 0;
+    }
+
+    const auto& node = g_waypoints[index];
+    int count = 0;
+    for (int i = 0; i < node.num_links; ++i) {
+        int link = node.links[i];
+        if (!is_waypoint_uid_valid(link)) {
+            continue;
+        }
+        if (g_waypoints[link].temporary) {
+            if (g_waypoints[link].borrowed_link_from != index) {
+                continue;
+            }
+            link = g_waypoints[link].borrowed_link_target;
+            if (!is_waypoint_uid_valid(link) || g_waypoints[link].temporary) {
+                continue;
+            }
+        }
+        if (waypoint_link_blocked_by_runtime_state(index, link)) {
+            continue;
+        }
+        out_links[count++] = link;
+    }
+    return count;
+}
+
+void waypoints_get_temporary_overlay(std::vector<int>& out_temporary, std::vector<int>& out_linking_persistent)
+{
+    out_temporary.clear();
+    out_linking_persistent.clear();
+    const int waypoint_total = static_cast<int>(g_waypoints.size());
+    for (int i = 1; i < waypoint_total; ++i) {
+        if (g_waypoints[i].valid && g_waypoints[i].temporary) {
+            out_temporary.push_back(i);
+        }
+    }
+    if (out_temporary.empty()) {
+        return;
+    }
+    for (int i = 1; i < waypoint_total; ++i) {
+        const auto& node = g_waypoints[i];
+        if (!node.valid || node.temporary) {
+            continue;
+        }
+        for (int slot = 0; slot < node.num_links; ++slot) {
+            const int link = node.links[slot];
+            if (link > 0 && link < waypoint_total && g_waypoints[link].temporary) {
+                out_linking_persistent.push_back(i);
+                break;
+            }
+        }
+    }
 }
 
 bool waypoints_has_direct_link(int from, int to)
@@ -10036,7 +12316,7 @@ bool waypoints_has_direct_link(int from, int to)
 
     for (int i = 0; i < node.num_links; ++i) {
         if (node.links[i] == to) {
-            return !waypoint_link_blocked_by_bridge_zone_state(from, to);
+            return !waypoint_link_blocked_by_runtime_state(from, to);
         }
     }
 

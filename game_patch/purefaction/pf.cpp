@@ -1,7 +1,6 @@
 #include <cstddef>
 #include <cstring>
 #include <cassert>
-#include <algorithm>
 #include <array>
 #include <common/config/BuildConfig.h>
 #include <common/utils/list-utils.h>
@@ -21,7 +20,7 @@ void pf_send_reliable_packet(rf::Player* player, const void* data, int len)
     // buffer before sending
     rf::multi_io_send_buffered_reliable_packets(player);
     // Buffer data in a reliable packet
-    rf::multi_io_send_reliable(player, data, len, 0);
+    rf::multi_io_send_reliable(player, data, len, false);
     // RF stops reading reliable packets after encountering the first unknown type so flush buffer after sending
     rf::multi_io_send_buffered_reliable_packets(player);
 #else // unreliable
@@ -74,10 +73,7 @@ void send_pf_player_stats_packet(rf::Player* player)
             }
         });
         out_stats.is_pure = static_cast<uint8_t>(pure_status);
-        // Clamped: converting an out-of-range float to an unsigned type is undefined, and
-        // accuracy is a ratio of two independently maintained counters.
-        out_stats.accuracy =
-            static_cast<uint8_t>(std::clamp(player_stats.calc_accuracy(), 0.0f, 1.0f) * 100.f);
+        out_stats.accuracy = player_stats.calc_accuracy_percent();
         out_stats.streak_max = player_stats.max_streak;
         out_stats.streak_current = player_stats.current_streak;
         out_stats.kills = player_stats.num_kills;
@@ -158,6 +154,7 @@ static void process_pf_player_stats_packet(const void* data, size_t len, [[ mayb
             }
             stats.max_streak = in_stats.streak_max;
             stats.current_streak = in_stats.streak_current;
+            stats.reported_accuracy = in_stats.accuracy;
             stats.num_kills = in_stats.kills;
             stats.num_deaths = in_stats.deaths;
             // A pre-1.4 server sends the hardcoded 0 this slot used to carry, which is the

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include "math/plane.h"
 #include "math/quaternion.h"
 #include "gr/gr.h"
@@ -46,6 +47,9 @@ namespace rf
         VifLodMesh *vu;
     };
     static_assert(sizeof(V3dMesh) == 0x90);
+    static_assert(offsetof(V3dMesh, num_materials) == 0x84);
+    static_assert(offsetof(V3dMesh, materials) == 0x88);
+    static_assert(offsetof(V3dMesh, vu) == 0x8C);
 
     struct WeightIndexArray
     {
@@ -108,8 +112,18 @@ namespace rf
         void *render_cache;
 #endif
     };
+    static_assert(offsetof(VifMesh, flags) == 0x40);
+
+    enum V3dLodFlags : uint8_t
+    {
+        V3D_LOD_COLLIDE_MOST_DETAILED = 0x10,
+    };
 
     constexpr int VIF_FACE_DOUBLE_SIDED = 0x20;
+
+    // VifMesh::flags (+0x40), read off the LAST LOD by the mesh collision entry 0x0054DAA0: set
+    // means the trace uses the most detailed LOD instead of the least detailed one.
+    constexpr int VIF_COLLIDE_LOD0 = 0x10;
 
     struct VifLodMesh
     {
@@ -124,6 +138,12 @@ namespace rf
         void *render_cache;
 #endif
     };
+    static_assert(offsetof(VifLodMesh, meshes) == 0x4);
+
+    // Read by LOD selection (0x0052FA40): the most detailed level distance may pick (from the detail setting),
+    // and whether every mesh stays at level 0 (set while a cutscene plays, 0x0052FC60).
+    static auto& vif_min_lod = addr_as_ref<int>(0x01C45254);
+    static auto& vif_lod_full_detail = addr_as_ref<bool>(0x01C45258);
 
     struct MeshRenderParams
     {

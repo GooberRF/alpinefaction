@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include "vtypes.h"
 #include "mfc_types.h"
@@ -11,19 +12,77 @@ struct TextureCategory {
 };
 static_assert(sizeof(TextureCategory) == 0xC, "TextureCategory size mismatch!");
 
-// Partial layout of the texture mode sidebar panel
-struct TextureModePanel {
-    char pad_0[0x94];
-    int category_index;         // 0x94 — selected category array index
-    int custom_path_handle;     // 0x98 — VFS path handle for custom texture enumeration
-    char pad_9c[0x08];
-    void* texture_manager;      // 0xA4 — pointer to texture manager (category array at +0x7C)
+// A stock category's name and the texture files listed in it (CDedLevel::texture_groups).
+struct TextureGroup
+{
+    VString name;
+    VArray<VString> textures;
 };
-static_assert(offsetof(TextureModePanel, category_index) == 0x94);
-static_assert(offsetof(TextureModePanel, custom_path_handle) == 0x98);
-static_assert(offsetof(TextureModePanel, texture_manager) == 0xA4);
+static_assert(sizeof(TextureGroup) == 0x14);
 
-// ─── Texture browser modal panel (FUN_0046fd10 — refresh-list dialog) ──────
+struct BitmapPreviewDialog;
+
+// The Texture tab (template 0xE6) of the Red Preferences dialog, which owns the texture categories.
+struct TextureManager
+{
+    char pad_0[0x5C];
+    BitmapPreviewDialog* default_ceiling_texture; // 0x5C
+    BitmapPreviewDialog* default_wall_texture;    // 0x60
+    BitmapPreviewDialog* default_floor_texture;   // 0x64
+    DedIntSpinner* pixels_per_meter;              // 0x68
+    char pad_6c[0x7C - 0x6C];
+    VArray<TextureCategory*> categories; // 0x7C
+    VArray<VString> folder_names;        // 0x88 — indexed by a stock category's path_handle
+};
+static_assert(sizeof(TextureManager) == 0x94);
+static_assert(offsetof(TextureManager, default_ceiling_texture) == 0x5C);
+static_assert(offsetof(TextureManager, default_wall_texture) == 0x60);
+static_assert(offsetof(TextureManager, default_floor_texture) == 0x64);
+static_assert(offsetof(TextureManager, pixels_per_meter) == 0x68);
+static_assert(offsetof(TextureManager, categories) == 0x7C);
+static_assert(offsetof(TextureManager, folder_names) == 0x88);
+
+// The General tab (template 0xE4) of the Red Preferences dialog.
+struct GeneralPrefsPage
+{
+    char pad_00[0x98];
+    int prompt_for_save;               // 0x98
+    char pad_9c[0xD8 - 0x9C];
+    int grid_enabled;                  // 0xD8
+    DedIntSpinner* autosave_minutes;   // 0xDC
+    DedFloatSpinner* nav_point_height; // 0xE0
+    char pad_e4[0xF4 - 0xE4];
+};
+static_assert(sizeof(GeneralPrefsPage) == 0xF4);
+static_assert(offsetof(GeneralPrefsPage, prompt_for_save) == 0x98);
+static_assert(offsetof(GeneralPrefsPage, grid_enabled) == 0xD8);
+static_assert(offsetof(GeneralPrefsPage, autosave_minutes) == 0xDC);
+static_assert(offsetof(GeneralPrefsPage, nav_point_height) == 0xE0);
+
+// CMainFrame::preferences_dlg: the "Red Preferences" dialog, whose tabs are separate child dialogs.
+struct PreferencesDialog : CDialog
+{
+    CWnd tree;                       // 0x5C — the tab list (CTreeCtrl 0x554)
+    GeneralPrefsPage* general;       // 0x98
+    TextureManager* texture_manager; // 0x9C — the Texture tab
+    EditorColorPrefs* visual;        // 0xA0
+    CWnd* current_page;              // 0xA4
+    RECT cutscene_dialog_rect;       // 0xA8 — seeds CDedLevel's; -1 for the default placement
+    RECT brush_clip_dialog_rect;     // 0xB8
+
+    // The three tabs' stock values, including the stock texture categories; the rects are left alone.
+    void set_defaults()
+    {
+        AddrCaller{0x0046AD00}.this_call(this);
+    }
+};
+static_assert(offsetof(PreferencesDialog, tree) == 0x5C);
+static_assert(offsetof(PreferencesDialog, general) == 0x98);
+static_assert(offsetof(PreferencesDialog, texture_manager) == 0x9C);
+static_assert(offsetof(PreferencesDialog, visual) == 0xA0);
+static_assert(offsetof(PreferencesDialog, current_page) == 0xA4);
+static_assert(offsetof(PreferencesDialog, cutscene_dialog_rect) == 0xA8);
+static_assert(offsetof(PreferencesDialog, brush_clip_dialog_rect) == 0xB8);
 
 struct TextureListNode {
     TextureListNode* next;      // 0x00
@@ -45,6 +104,35 @@ struct TextureListSentinel {
     TextureListNode* tail;      // = &self when empty
 };
 
+// Partial layout of the texture mode sidebar panel
+struct TextureModePanel {
+    char pad_0[0x5C];
+    TextureListSentinel textures;    // 0x5C — the selected category's files
+    char pad_64[0x94 - 0x64];
+    int category_index;         // 0x94 — selected category array index
+    int custom_path_handle;     // 0x98 — VFS path handle for custom texture enumeration
+    char pad_9c[0x08];
+    TextureManager* texture_manager; // 0xA4
+    TextureMapType map_type;         // 0xA8 — set from the map combo (FUN_00445660)
+    ResizeMapDialog* resize_map;     // 0xAC
+    BitmapPreviewDialog* preview;    // 0xB0 — the selected texture, which Apply puts on faces
+};
+static_assert(offsetof(TextureModePanel, textures) == 0x5C);
+static_assert(offsetof(TextureModePanel, category_index) == 0x94);
+static_assert(offsetof(TextureModePanel, custom_path_handle) == 0x98);
+static_assert(offsetof(TextureModePanel, texture_manager) == 0xA4);
+static_assert(offsetof(TextureModePanel, map_type) == 0xA8);
+static_assert(offsetof(TextureModePanel, resize_map) == 0xAC);
+static_assert(offsetof(TextureModePanel, preview) == 0xB0);
+
+// FUN_00483e80: the main frame's Texture mode panel
+inline TextureModePanel* texture_mode_panel()
+{
+    return AddrCaller{0x00483E80}.c_call<TextureModePanel*>();
+}
+
+// ─── Texture browser modal panel (FUN_0046fd10 — refresh-list dialog) ──────
+
 // CBitmapPreviewDialog (RED template 217): a 120x120 child dialog whose OnPaint
 // (0x0044c1b0) renders bm_handle through the editor renderer. Every stock bitmap picker
 // owns one, and the browser reports its result through the one it holds.
@@ -59,13 +147,14 @@ struct TextureBrowserPanel {
     TextureListSentinel master_list;    // 0x278 — currently-displayed entries
     char pad_280[0x30];
     BitmapPreviewDialog* preview;       // 0x2b0 — seeded before DoModal, holds the pick after
-    void* category_holder;              // 0x2b4 — VArray<TextureCategory*> at +0x7C
-    char pad_2b8[0x04];
+    TextureManager* texture_manager;    // 0x2b4
+    int display_size;                   // 0x2b8 — Display Size selection
     uint8_t listbox_dirty;              // 0x2bc — non-zero forces listbox repaint
 };
 static_assert(offsetof(TextureBrowserPanel, master_list) == 0x278);
 static_assert(offsetof(TextureBrowserPanel, preview) == 0x2b0);
-static_assert(offsetof(TextureBrowserPanel, category_holder) == 0x2b4);
+static_assert(offsetof(TextureBrowserPanel, texture_manager) == 0x2b4);
+static_assert(offsetof(TextureBrowserPanel, display_size) == 0x2b8);
 static_assert(offsetof(TextureBrowserPanel, listbox_dirty) == 0x2bc);
 
 // Run the stock texture browser the way EmitterPropertiesDialog::OnBrowseForBitmap
@@ -73,11 +162,37 @@ static_assert(offsetof(TextureBrowserPanel, listbox_dirty) == 0x2bc);
 // handle the user picked. Returns -1 when the browser is unavailable or was cancelled.
 int texture_browser_pick(const char* folder, int current_bm);
 
-inline VArray<TextureCategory*>* texture_browser_categories(TextureBrowserPanel* panel)
+// The name of the category holding `filename`, matched without its extension, as texture mode finds
+// it; null when no category does.
+const char* texture_category_of(const char* filename);
+
+// Adds the user_maps\textures subdirectory categories once the stock ones are in place at startup.
+void texture_categories_loaded(TextureManager* texture_manager);
+
+// FUN_0046fd10: rebuilds the browser's list through the validator and lays it out again
+inline void texture_browser_refresh(TextureBrowserPanel* panel)
 {
-    return reinterpret_cast<VArray<TextureCategory*>*>(
-        static_cast<char*>(panel->category_holder) + 0x7C);
+    AddrCaller{0x0046fd10}.this_call(panel);
 }
+
+// FUN_0046fc50: sizes the thumbnail grid to its view and draws it. With reset it sets the scroll range again and goes
+// to the top, else it scrolls by a WM_VSCROLL code (SB_THUMBPOSITION to scroll_pos).
+inline void texture_browser_relayout(TextureBrowserPanel* panel, bool reset, int scroll_code, int scroll_pos)
+{
+    AddrCaller{0x0046fc50}.this_call(panel, static_cast<int>(reset), scroll_code, scroll_pos);
+}
+
+// A materials.tbl material, as the browser's Material filter lists them
+struct TextureBrowserMaterial {
+    VString name;
+    VArray<VString> bitmap_prefixes;    // 0x8
+};
+static_assert(offsetof(TextureBrowserMaterial, bitmap_prefixes) == 0x8);
+static auto& texture_browser_materials = addr_as_ref<VArray<TextureBrowserMaterial*>>(0x006ca3c8);
+// The Name filter's text (256 bytes, the Material filter's selection right after it)
+static auto& texture_browser_filter = addr_as_ref<char[256]>(0x006ca408);
+// The Material filter's selection, 0 for All
+static auto& texture_browser_material_index = addr_as_ref<int>(0x006ca508);
 
 // FUN_004712d0: __thiscall returning the file-scan flags byte (5 or 6) for this panel.
 // Bit 0 selects sort-by-name; passed straight to texture_browser_scan_path.
@@ -104,7 +219,13 @@ constexpr size_t MAX_TEXTURE_NAME_LEN = 31;
 
 struct BitmapEntry {
     static constexpr int TYPE_USER = 3;
+    static constexpr int FORMAT_8_PALETTED = 1;
+    static constexpr int FORMAT_8_ALPHA = 2;
+    static constexpr int FORMAT_565_RGB = 3;
+    static constexpr int FORMAT_4444_ARGB = 4;
+    static constexpr int FORMAT_1555_ARGB = 5;
     static constexpr int FORMAT_888_RGB = 6;
+    static constexpr int FORMAT_8888_ARGB = 7;
 
     char name[32];                  // 0x00
     int name_checksum;              // 0x20
@@ -136,9 +257,10 @@ struct BitmapEntry {
     int resolution_level;           // 0x68
 
     inline static auto& load = addr_as_ref<int(const char* filename, int a2)>(0x004BBC30);
-    inline static auto& handle_to_index = addr_as_ref<int(int bm_handle)>(0x004BB990);
+    // The handle of the visible entry with this name, or -1; never loads.
+    inline static auto& find = addr_as_ref<int(const char* filename)>(0x004BBAD0);
+    // rf::bm::num_cache_slots + 1 buckets
     inline static auto& hash_table = addr_as_ref<BitmapEntry**>(0x014cfc24);
-    inline static auto& hash_table_size_m1 = addr_as_ref<int>(0x0057dbb0);
     inline static auto& entries = addr_as_ref<BitmapEntry*>(0x014cfc4c);
 };
 static_assert(sizeof(BitmapEntry) == 0x6C);
@@ -151,8 +273,26 @@ static_assert(offsetof(BitmapEntry, next) == 0x54);
 static_assert(offsetof(BitmapEntry, prev) == 0x58);
 static_assert(offsetof(BitmapEntry, total_bytes_for_all_levels) == 0x60);
 
+// The game's rf::bm::bitmaps
+namespace rf::bm
+{
+    static auto& bitmaps = reinterpret_cast<rf::bm::BitmapEntry*&>(::BitmapEntry::entries);
+}
+
 // ─── D3D texture cache ──────────────────────────────────────────────────────
 
 static auto& gr_d3d_mark_texture_dirty = addr_as_ref<void(int bm_handle)>(0x004F6000);
 
+// Null unless Direct3D is the renderer and the bitmap has an index.
+inline GrTextureSlot* gr_texture_slot_of(int bm_handle)
+{
+    if (bm_handle < 0 || gr_api != gr_api_d3d || !gr_texture_slots) {
+        return nullptr;
+    }
+    const int index = rf::bm::get_cache_slot(bm_handle);
+    return index < 0 ? nullptr : &gr_texture_slots[index];
+}
+
 void reload_custom_textures();
+// Re-reads a bitmap from disk into its existing (or a newly loaded) entry, keeping the handle.
+bool reload_bitmap_in_place(const char* filename);

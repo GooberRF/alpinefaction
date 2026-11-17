@@ -2,7 +2,7 @@
 #define SrcRootDir ".."
 #define BinDir "..\build\Release\bin"
 #define PatchesDir "patches\output"
-#define AppVer "1.4.0_Lupin"
+#define AppVer "1.5.0_Trillium"
 
 [Setup]
 AppId={{005AA7-D71920-FFC72C-4B6E-82D3-9F7B12A3C8D1}}
@@ -17,6 +17,7 @@ UninstallDisplayIcon={app}\AlpineFactionLauncher.exe
 DefaultDirName={autopf}\Alpine Faction
 DefaultGroupName=Alpine Faction
 DisableWelcomePage=no
+LicenseFile={#SrcRootDir}\resources\terms.txt
 OutputBaseFilename=AlpineFaction-{#AppVer}-setup
 Compression=lzma2/max
 SolidCompression=yes
@@ -42,6 +43,7 @@ Source: "{#BinDir}\AlpineFaction.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BinDir}\d3d8to9.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BinDir}\alpinefaction.vpp"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BinDir}\licensing-info.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#BinDir}\terms.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SrcRootDir}\LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SrcRootDir}\resources\RED.exe.manifest"; DestDir: "{code:GetGameDir}"; Flags: ignoreversion; Tasks: redvisualstyles
 ; RTPatch patches (extracted from official 1.20 patches)
@@ -67,6 +69,13 @@ Name: "{code:GetGameDir}\mods"; Permissions: users-modify
 Name: "{code:GetGameDir}\client_mods"; Permissions: users-modify
 Name: "{code:GetGameDir}\screenshots"; Permissions: users-modify
 Name: "{code:GetGameDir}\logs"; Permissions: users-modify
+
+; Large address aware copy of RED.exe written by the launcher
+[UninstallDelete]
+Type: files; Name: "{code:GetGameDir}\RED_laa.exe"
+Type: files; Name: "{code:GetGameDir}\RED_laa.exe.manifest"
+Type: files; Name: "{code:GetGameDir}\RED_laa.exe.tmp"
+Type: files; Name: "{code:GetGameDir}\RED_laa.exe.manifest.tmp"
 
 [Icons]
 Name: "{group}\Alpine Faction"; Filename: "{app}\AlpineFactionLauncher.exe"

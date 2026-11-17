@@ -1,9 +1,11 @@
 #pragma once
 
+#include <cstddef>
 #include "../os/timestamp.h"
 #include "../math/vector.h"
 #include "../math/matrix.h"
 #include "../gr/gr.h"
+#include "../os/string.h"
 
 namespace rf
 {
@@ -69,6 +71,10 @@ namespace rf
         WA_CUSTOM_START = 0xA,
         WA_CUSTOM_LEAVE = 0xB,
     };
+    constexpr int num_weapon_actions = WA_CUSTOM_LEAVE + 1;
+
+    // weapons.tbl "+Action" names, indexed by WeaponAction
+    static auto& weapon_action_names = addr_as_ref<const char* const[num_weapon_actions]>(0x005A0B00);
 
     static auto& player_fpgun_action_anim_exists = addr_as_ref<bool(int weapon_class, WeaponAction action)>(0x004A9EC0);
     static auto& player_fpgun_action_anim_is_playing = addr_as_ref<bool(Player* pp, WeaponAction action)>(0x004AD8C0);
@@ -80,6 +86,9 @@ namespace rf
     static auto& player_fpgun_process = addr_as_ref<void(Player* player)>(0x004AA6D0);
     static auto& player_fpgun_is_zoomed = addr_as_ref<bool(Player* player)>(0x004ACE90);
     static auto& player_fpgun_render_ir = addr_as_ref<void(Player* player)>(0x004AEEF0);
+    // World position of the current weapon's fpgun muzzle tag; false when it has none.
+    static auto& player_fpgun_get_muzzle_tag_pos =
+        addr_as_ref<bool(Player* player, Vector3* out_pos, Matrix3* out_orient)>(0x004AD6D0);
     static auto& player_fpgun_set_next_state_anim  = addr_as_ref<void(Player* player, int anim_index)>(0x004AA560);
     static auto& player_fpgun_is_in_state_anim = addr_as_ref<bool(Player* player, int anim_index)>(0x004A9520);
     static auto& player_fpgun_is_in_custom_anim = addr_as_ref<bool(Player* player)>(0x004ADB60);
@@ -90,4 +99,19 @@ namespace rf
     static auto& player_fpgun_add_shield_decal = addr_as_ref<void(Player* player, Clutter* shield, PCollisionOut* collide_out)>(0x004A7110);
     static auto& player_fpgun_delete_shield_decals = addr_as_ref<void(Player* player)>(0x004A70E0);
     static auto& fpgun_riot_shield_breaking = addr_as_ref<bool>(0x007CAB58);
+
+    // fpgun.tbl entry
+    struct FpgunArms
+    {
+        String name;        // +0x00
+        String model;       // +0x08
+        int arm_bitmaps[9]; // +0x10: hand, forearm, bicep, then the _blue and the _red variant of each
+    };
+    static_assert(sizeof(FpgunArms) == 0x34);
+    static_assert(offsetof(FpgunArms, model) == 0x8);
+    static_assert(offsetof(FpgunArms, arm_bitmaps) == 0x10);
+
+    // The fpgun.tbl loader (0x004A9560) stops at 256 entries
+    static auto& fpgun_arms = addr_as_ref<FpgunArms[256]>(0x007C76E0);
+    static auto& num_fpgun_arms = addr_as_ref<int>(0x007CAB4C);
 }

@@ -51,6 +51,9 @@ struct SalvageInfo
 
 extern SalvageInfo g_salvage_info;
 
+// Salvage and Scavenger share this module's neutral flag: true when either is the game type.
+bool salvage_framework_active();
+
 void salvage_level_init();
 void salvage_level_init_post();
 void salvage_do_frame();
@@ -60,9 +63,13 @@ void salvage_client_do_frame();
 void salvage_on_entity_will_die(rf::Entity* ep);
 void salvage_on_player_disconnect(rf::Player* player);
 void salvage_handle_drop_flag_request(rf::Player* player);
+// Forced drop at the carrier's feet, recorded as a death drop: no flag_dropping rule gate, because
+// the cause is not the player asking. A no-op unless this player is the carrier.
+void salvage_force_drop_flag(rf::Player* player);
 
 // Reverts, then (re)applies the class-wide overrides Salvage puts on the flag_red
-// item class: IIF_SPINS_IN_MULTI and the Salvage flag mesh. Must run after the
+// item class: IIF_SPINS_IN_MULTI and the Salvage flag mesh, or under Scavenger the
+// cartridge mesh and its static mesh type. Must run after the
 // engine's multi_ctf_level_init (which clears the spin bit) and before any flag
 // item is created.
 void salvage_apply_flag_class_overrides();
@@ -86,13 +93,17 @@ rf::Player* salvage_get_carrier();
 bool salvage_player_is_carrier(const rf::Player* player);
 const rf::Vector3& salvage_get_spawn_pos();
 bool salvage_spawn_is_known(); // false until the server has resolved/replicated the home
+// True while the flag has a home but no item: item_create keeps one pool slot free for it.
+bool salvage_reserves_item_slot(int item_type);
 // Nothing about the bases is replicated: both sides resolve them from the
 // level-placed base items. Servers do it eagerly at level init and lazily on
 // first use before that; clients only lazily.
 bool salvage_get_base_positions(rf::Vector3* out_red, rf::Vector3* out_blue);
-// Base the local player's team delivers to. False when there is no local player
-// or the level is missing a base.
-bool salvage_get_local_team_base_pos(rf::Vector3* out_pos);
+// Base the given team delivers to. False when the level is missing a base.
+bool salvage_get_team_base_pos(int team, rf::Vector3* out_pos);
+// Where the given team's carrier scores: its base under Salvage, the shared zone under Scavenger. False while
+// that is not known.
+bool salvage_get_delivery_pos(int team, rf::Vector3* out_pos);
 
 // Milliseconds left on whichever timer the current state is running, or 0.
 int salvage_get_time_left_ms();
@@ -107,15 +118,14 @@ bool salvage_get_flag_pos(rf::Vector3* out_pos);
 bool salvage_is_flag_item(const rf::Item* item);
 bool salvage_viewer_is_carrier_first_person();
 // The flag's mesh and world transform for the renderer's x-ray outline. The flag is
-// a .vfx (MESH_TYPE_ANIM_FX) mesh, so this hands over the VMesh rather than a
-// VifLodMesh like the bagman queries do. False when there is nothing to outline:
+// a .vfx (MESH_TYPE_ANIM_FX) mesh, or a static mesh for the Scavenger cartridge, so
+// this hands over the VMesh and the caller picks the path by its type. False when there is nothing to outline:
 // no flag item yet, a state with no flag in the world, or the viewer is the carrier
 // looking out of their own eyes.
 bool salvage_query_flag_outline(rf::VMesh** out_vmesh, rf::Vector3* out_pos, rf::Matrix3* out_orient);
 // True when item_render drew the flag this frame; false means it was portal-culled and
-// its spin (and the engine's cached chunk transforms) went unadvanced.
+// the engine's cached chunk transforms went unrefreshed.
 bool salvage_flag_was_rendered_this_frame();
-void salvage_tick_flag_spin();
 // Glues the carried flag item to the carrier's $prop_flag, the same alignment
 // stock CTF performs in multi_ctf_move_flags. Runs on both sides: the attachment
 // is local and derives entirely from the replicated carrier entity.
@@ -125,6 +135,9 @@ void salvage_play_return_sound();
 // (AtSpawn/Dropped). Client-side and per-frame: delete + recreate, exactly like
 // bagman_update_dynamic_light. Ticked from hud_world_do_frame.
 void salvage_update_dynamic_light();
+// Advances pulse_phase by one frame and returns the stock pickup-light intensity, or a negative
+// value when the stock pulse constants are unusable. Shared by the Scavenger zone light.
+float salvage_advance_pickup_light_pulse(float& pulse_phase);
 
 // Server -> client state replication.
 void salvage_broadcast_state();
@@ -133,12 +146,25 @@ void salvage_force_state_sync_to(rf::Player* player);
 // Applied by af_process_salvage_state_packet on clients. flag_pos is the server's
 // authoritative flag item position: the item is no longer recreated on each
 // transition, so clients need it to place a dropped flag.
-void salvage_apply_state_from_packet(uint8_t state, uint8_t carrier_player_id, uint16_t time_left_ms,
+// False when the packet was rejected (unknown state).
+bool salvage_apply_state_from_packet(uint8_t state, uint8_t carrier_player_id, uint16_t time_left_ms,
                                      uint16_t red_caps, uint16_t blue_caps, const rf::Vector3& spawn_pos,
                                      const rf::Vector3& flag_pos);
 
 // Server-side transition entry points invoked from the engine hooks.
 void salvage_on_flag_touch(rf::Player* player, rf::Item* item);
 void salvage_on_base_touch(rf::Player* player, rf::Item* item);
+
+// Engine entry points for Scavenger, which owns the flag's spawn policy. All server-side; the
+// caller broadcasts afterwards.
+void salvage_set_spawn(const rf::Vector3& pos, const rf::Matrix3& orient);
+void salvage_enter_delayed(int delay_ms);
+// AtSpawn at the current spawn, moving the existing flag item there or creating one.
+void salvage_respawn_at_home();
+// Scores a capture for the player's team, kills the flag item and enters Delayed.
+void salvage_capture_flag(rf::Player* player, const rf::Vector3& pos);
+void salvage_remove_level_ctf_flags();
+// The carrier's entity while it is alive, else null.
+rf::Entity* salvage_get_alive_carrier_entity();
 
 void salvage_do_patch();

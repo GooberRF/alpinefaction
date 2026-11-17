@@ -51,6 +51,8 @@ enum class MutatorId : uint8_t
     Pogo = 18,
     Dodging = 19,
     Crits = 20,
+    JoinBots = 21,
+    ItemReplace = 22,
 };
 
 struct MutatorOptionChoice
@@ -110,6 +112,14 @@ struct MutatorInfo
 
 void mutators_do_patch();
 void apply_mutators_from_toml(const toml::array& mutators_arr, AlpineServerConfigRules& rules);
+// The canonical name of the mutator a [[rules.mutators]] entry switches off with enabled = false.
+std::optional<std::string> mutator_disabled_by_entry(const toml::node& entry);
+// True when the entry declares the mutator `canonical_name`, enabled or not.
+bool mutator_entry_names(const toml::node& entry, std::string_view canonical_name);
+// The same mutators in force under `game_type` with the same option values, an omitted option counting
+// as its default.
+bool mutator_declarations_equivalent(const std::vector<MutatorDeclaration>& a,
+                                     const std::vector<MutatorDeclaration>& b, rf::NetGameType game_type);
 void mutators_level_init_post();
 void mutators_do_frame();
 void mutators_update_low_gravity();
@@ -141,6 +151,7 @@ void mutators_on_player_destroy(rf::Player* player);
 bool mutators_skiing_active();
 bool mutators_dodging_active();
 bool mutators_pogo_active();
+bool mutators_scrapyard_gibs_active();
 
 // ---------------------------------------------------------------------------
 // Critical Hits mutator
@@ -194,8 +205,7 @@ void crits_on_weapon_created(rf::Weapon* wp, int parent_handle);
 void crits_on_deferred_created(rf::Weapon* wp, int parent_handle);
 void crits_on_object_dead(rf::Object* objp);
 // The crit detonation sound; returns the blast-radius scale the caller must apply to the
-// explosion. Called from every player-attributed explosion_apply_radius_damage call site: two
-// are hooked here, the third is driven by weapon.cpp.
+// explosion. Called from weapon.cpp's apply_radius_damage call-site hooks.
 float crits_on_explosion(const rf::Vector3* pos, float radius);
 // Continuous fire (flamethrower stream, taser, drill): the engine re-enters the fire path on its
 // own instead of once per shot, so these roll on a cadence and stamp a crit window. `weapon_on`
@@ -248,11 +258,6 @@ std::optional<std::string> mutators_active_labels_string(const AlpineServerConfi
 // rotation entry's type, else Run for a quirks-table run map, else the base type if it
 // can host the level, else the filename prefix's type, else the base type.
 rf::NetGameType resolve_level_default_game_type(std::string_view level_filename);
-
-// Rules for `game_type` built without inheriting any other game type's fields.
-// `mutators` is applied last, in MUTATOR_APPLY_ORDER.
-AlpineServerConfigRules build_derived_server_rules(rf::NetGameType game_type,
-                                                   const std::vector<MutatorDeclaration>& mutators);
 
 // Rules a level/match vote (or a manual level load) installs. `gametype` falls back
 // to resolve_level_default_game_type.

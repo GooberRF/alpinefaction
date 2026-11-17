@@ -16,6 +16,14 @@ namespace rf
 // True when the jetpack should be running for the local session: the server
 // mutator in multiplayer, the `jetpack` console command in single player.
 bool jetpacks_are_active();
+// The mutator or command above, or `ep` holding the Jetpack powerup.
+bool jetpack_is_active_for(const rf::Entity* ep);
+// True while any entity may be flying, which is when the jetpack has per-frame work to do.
+bool jetpacks_in_play();
+// True when the fuel gauge can show for the local or spectated player.
+bool jetpack_gauge_may_show();
+// The Jetpack powerup was picked up by, or has left, the entity.
+void jetpack_on_powerup_changed(int entity_handle, bool granted);
 void jetpack_level_init();
 void jetpack_do_frame();
 // Drops every viewer-side fuel estimate, so the spectate gauge waits for a fresh anchor.
@@ -41,6 +49,8 @@ void jetpack_render_attachment(rf::Entity* ep);
 // reveal and the first-use keybind hint). Drawn from the multiplayer HUD render
 // path in multiplayer, and from the shared hud_render path in single player.
 void jetpack_render_hud();
+// Screen y of the fuel gauge's label top, where the gauge draws when shown.
+int jetpack_fuel_gauge_label_top_y();
 
 // Registers the single player `jetpack` console command.
 void jetpack_apply_patch();

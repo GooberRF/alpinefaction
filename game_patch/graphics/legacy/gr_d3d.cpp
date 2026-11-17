@@ -9,6 +9,7 @@
 #include <common/error/d3d-error.h>
 #include <common/config/BuildConfig.h>
 #include <xlog/xlog.h>
+#include <common/utils/display-utils.h>
 #include <common/utils/os-utils.h>
 #include "../../rf/gr/gr.h"
 #include "../../rf/gr/gr_font.h"
@@ -23,6 +24,7 @@
 #include "../gr.h"
 #include "../gr_internal.h"
 #include "gr_d3d_internal.h"
+#include "../../misc/settings_registry.h"
 
 extern void monitor_refresh_all();
 
@@ -295,26 +297,35 @@ CodeInjection d3d_index_buffer_usage_patch{
 
 #endif // D3D_HW_VERTEX_PROCESSING
 
+static bool anisotropic_filtering_active()
+{
+    return rf::gr::d3d::device_caps.MaxAnisotropy > 0 && g_alpine_game_config.anisotropic_filtering
+        && !rf::is_dedicated_server;
+}
+
+static void setup_max_anisotropy()
+{
+    DWORD anisotropy_level = std::min(rf::gr::d3d::device_caps.MaxAnisotropy, 16ul);
+    rf::gr::d3d::device->SetTextureStageState(0, D3DTSS_MAXANISOTROPY, anisotropy_level);
+    rf::gr::d3d::device->SetTextureStageState(1, D3DTSS_MAXANISOTROPY, anisotropy_level);
+}
+
 void gr_d3d_update_texture_filtering()
 {
     if (g_alpine_game_config.nearest_texture_filtering) {
         // use linear filtering for lightmaps because otherwise it looks bad
         set_texture_min_mag_filter_in_code(D3DTEXF_POINT, D3DTEXF_LINEAR);
     }
-    else if (rf::gr::d3d::device_caps.MaxAnisotropy > 0 && g_game_config.anisotropic_filtering && !rf::is_dedicated_server) {
+    else if (anisotropic_filtering_active()) {
         // Anisotropic texture filtering
         set_texture_min_mag_filter_in_code(D3DTEXF_ANISOTROPIC, D3DTEXF_ANISOTROPIC);
+        // The level otherwise stays at the device default of 1 when this is turned on in game
+        if (rf::gr::d3d::device) {
+            setup_max_anisotropy();
+        }
     } else {
         set_texture_min_mag_filter_in_code(D3DTEXF_LINEAR, D3DTEXF_LINEAR);
     }
-}
-
-DWORD setup_max_anisotropy()
-{
-    DWORD anisotropy_level = std::min(rf::gr::d3d::device_caps.MaxAnisotropy, 16ul);
-    rf::gr::d3d::device->SetTextureStageState(0, D3DTSS_MAXANISOTROPY, anisotropy_level);
-    rf::gr::d3d::device->SetTextureStageState(1, D3DTSS_MAXANISOTROPY, anisotropy_level);
-    return anisotropy_level;
 }
 
 CallHook<void()> gr_d3d_init_buffers_gr_d3d_flip_hook{
@@ -334,7 +345,7 @@ CallHook<void()> gr_d3d_init_buffers_gr_d3d_flip_hook{
             rf::gr::set_texture_mip_filter(!rf::local_player->settings.bilinear_filtering);
         }
 
-        if (rf::gr::d3d::device_caps.MaxAnisotropy > 0 && g_game_config.anisotropic_filtering) {
+        if (anisotropic_filtering_active()) {
             setup_max_anisotropy();
         }
     },
@@ -407,9 +418,7 @@ ConsoleCommand2 r_antialiasing_mode_cmd{
             constexpr std::string_view MSAA_PREFIX = "msaax";
             if (string_iequals(*mode, "none")) {
                 if (g_alpine_game_config.sample_count != 1) {
-                    rf::gr::d3d::pp.MultiSampleType = D3DMULTISAMPLE_NONE;
-                    g_alpine_game_config.sample_count = 1;
-                    g_reset_device_req = true;
+                    setting_console_set("sample_count", "1");
                     rf::console::print("Anti-aliasing mode is none");
                 } else {
                     rf::console::print("Anti-aliasing mode is already none");
@@ -434,10 +443,7 @@ ConsoleCommand2 r_antialiasing_mode_cmd{
                     if (!gr_d3d_supports_sample_count(value)) {
                         rf::console::print("MSAAx{} is an unsupported mode!", value);
                     } else {
-                        rf::gr::d3d::pp.MultiSampleType =
-                            static_cast<D3DMULTISAMPLE_TYPE>(value);
-                        g_alpine_game_config.sample_count = value;
-                        g_reset_device_req = true;
+                        setting_console_set("sample_count", std::to_string(value));
                         rf::console::print("Anti-aliasing mode is MSAAx{}", value);
                     }
                 } else {
@@ -467,17 +473,12 @@ ConsoleCommand2 r_antialiasing_cmd{
         if (g_alpine_game_config.sample_count != 1) {
             // Currently on -> remember the level and switch to none
             g_aa_restore_sample_count = g_alpine_game_config.sample_count;
-            g_alpine_game_config.sample_count = 1;
-            rf::gr::d3d::pp.MultiSampleType = D3DMULTISAMPLE_NONE;
-            g_reset_device_req = true;
+            setting_console_set("sample_count", "1");
             rf::console::print("Anti-aliasing is disabled");
         } else if (g_aa_restore_sample_count >= 2
                    && gr_d3d_supports_sample_count(g_aa_restore_sample_count)) {
             // Currently off -> restore the level we last turned off from
-            g_alpine_game_config.sample_count = g_aa_restore_sample_count;
-            rf::gr::d3d::pp.MultiSampleType =
-                static_cast<D3DMULTISAMPLE_TYPE>(g_alpine_game_config.sample_count);
-            g_reset_device_req = true;
+            setting_console_set("sample_count", std::to_string(g_aa_restore_sample_count));
             rf::console::print(
                 "Anti-aliasing is enabled (MSAAx{})",
                 g_alpine_game_config.sample_count
@@ -580,9 +581,8 @@ CodeInjection gr_d3d_init_device_injection{
     0x00546368,
     []() {
         gr_d3d_update_texture_filtering();
-        if (rf::gr::d3d::device_caps.MaxAnisotropy > 0 && g_game_config.anisotropic_filtering && !rf::is_dedicated_server) {
-            DWORD anisotropy_level = setup_max_anisotropy();
-            xlog::info("Anisotropic Filtering enabled (level: {})", anisotropy_level);
+        if (anisotropic_filtering_active()) {
+            xlog::info("Anisotropic Filtering enabled (level: {})", std::min(rf::gr::d3d::device_caps.MaxAnisotropy, 16ul));
         }
     },
 };
@@ -787,6 +787,25 @@ CodeInjection gr_d3d_init_load_library_injection{
     },
 };
 
+CodeInjection gr_d3d_init_adapter_injection{
+    0x00545A2C,
+    [] {
+        // The adapter heading the chosen display, never the stock Selected Video Card value
+        unsigned adapter = D3DADAPTER_DEFAULT;
+        const auto& display = gr_get_display();
+        if (display) {
+            auto get_adapter_monitor = [](unsigned i) { return rf::gr::d3d::d3d->GetAdapterMonitor(i); };
+            adapter = find_adapter_for_display(*display, rf::gr::d3d::d3d->GetAdapterCount(), get_adapter_monitor)
+                .value_or(D3DADAPTER_DEFAULT);
+        }
+        rf::gr::d3d::adapter_idx = adapter;
+        D3DADAPTER_IDENTIFIER8 identifier{};
+        rf::gr::d3d::d3d->GetAdapterIdentifier(adapter, D3DENUM_NO_WHQL_LEVEL, &identifier);
+        xlog::info("[Display] D3D adapter {}: {} for display {}", adapter, identifier.Description,
+            display ? display->friendly_name : "unknown");
+    },
+};
+
 CodeInjection gr_d3d_device_lost_injection{
     0x00545042,
     [] {
@@ -825,8 +844,7 @@ bool gr_d3d_is_d3d8to9()
 void gr_d3d_bitmap_float(int bitmap_handle, float x, float y, float w, float h,
                          float sx, float sy, float sw, float sh, bool flip_x, bool flip_y, rf::gr::Mode mode)
 {
-    auto& gr_d3d_get_num_texture_sections = addr_as_ref<int(int bm_handle)>(0x0055CA60);
-    if (gr_d3d_get_num_texture_sections(bitmap_handle) != 1) {
+    if (rf::gr::d3d::get_num_texture_sections(bitmap_handle) != 1) {
         // If bitmap is sectioned fall back to the old implementation...
         rf::gr::bitmap_scaled(bitmap_handle,
             static_cast<int>(x), static_cast<int>(y), static_cast<int>(w), static_cast<int>(h),
@@ -878,6 +896,45 @@ void gr_d3d_bitmap_float(int bitmap_handle, float x, float y, float w, float h,
     verts[3].u1 = u_left;
     verts[3].v1 = v_bottom;
     rf::gr::tmapper(std::size(verts_ptrs), verts_ptrs, rf::gr::TMAP_FLAG_TEXTURED, mode);
+}
+
+void gr_d3d_poly_2d(int bitmap_handle, int nv, const rf::gr::Vertex* vertices, rf::gr::Mode mode)
+{
+    constexpr int max_verts = 32;
+    if (nv < 3 || nv > max_verts) {
+        return;
+    }
+    if (bitmap_handle >= 0) {
+        // Only the state/texture setup pages the bitmap in (via 0x0055CAD0); set_texture just
+        // records the handle, and the section count is stale until paging has run.
+        rf::gr::d3d::set_state_and_texture(mode, bitmap_handle, -1);
+        if (rf::gr::d3d::get_num_texture_sections(bitmap_handle) != 1) {
+            static bool warned = false;
+            if (!warned) {
+                warned = true;
+                xlog::warn("[gr] gr_poly_2d: bitmap {} is too large for one texture on this renderer, not drawn",
+                           bitmap_handle);
+            }
+            return;
+        }
+        rf::gr::set_texture(bitmap_handle, -1);
+    }
+    else {
+        // tmapper pages the last gr::set_texture handle; stock gr_rect clears it the same way.
+        rf::gr::set_texture(-1, -1);
+    }
+
+    rf::gr::Vertex verts[max_verts];
+    rf::gr::Vertex* verts_ptrs[max_verts];
+    for (int i = 0; i < nv; ++i) {
+        verts[i] = vertices[i];
+        verts[i].sx = rf::gr::screen.offset_x + vertices[i].sx;
+        verts[i].sy = rf::gr::screen.offset_y + vertices[i].sy;
+        verts[i].sw = 1.0f;
+        verts_ptrs[i] = &verts[i];
+    }
+    const auto flags = bitmap_handle >= 0 ? rf::gr::TMAP_FLAG_TEXTURED : static_cast<rf::gr::TMapperFlags>(0);
+    rf::gr::tmapper(nv, verts_ptrs, flags, mode);
 }
 
 void gr_d3d_apply_patch()
@@ -996,6 +1053,7 @@ void gr_d3d_apply_patch()
 
     // Use d3d8to9 instead of d3d8
     gr_d3d_init_load_library_injection.install();
+    gr_d3d_init_adapter_injection.install();
 
     // Release default pool resources
     gr_d3d_device_lost_injection.install();

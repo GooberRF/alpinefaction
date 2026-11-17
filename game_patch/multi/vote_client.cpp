@@ -3,6 +3,7 @@
 #include <string_view>
 #include <utility>
 #include <xlog/xlog.h>
+#include <common/utils/byte-io.h>
 #include <common/utils/string-utils.h>
 #include "vote_client.h"
 #include "alpine_packets.h"
@@ -44,6 +45,9 @@ struct VoteOptionsCache
 VoteOptionsCache g_vote_options;
 std::optional<ActiveVoteState> g_active_vote;
 
+// af_sreq_match_state
+uint8_t g_match_state = 0;
+
 // Session mutator set pushed by the server (af_sreq_active_mutators).
 std::optional<std::vector<VoteMutatorDecl>> g_active_mutators;
 uint32_t g_active_mutators_revision = 0;
@@ -64,109 +68,11 @@ void vote_options_stream_discard(std::string_view reason)
     g_vote_options.stream_bytes.shrink_to_fit();
 }
 
-// Bounds-checked little-endian reader over the reassembled blob.
-class BlobReader
-{
-public:
-    BlobReader(const uint8_t* data, size_t len) : m_data(data), m_len(len) {}
-
-    [[nodiscard]] bool ok() const { return m_ok; }
-
-    uint8_t u8()
-    {
-        if (!m_ok || 1 > m_len - m_pos) {
-            m_ok = false;
-            return 0;
-        }
-        return m_data[m_pos++];
-    }
-
-    uint16_t u16()
-    {
-        if (!m_ok || 2 > m_len - m_pos) {
-            m_ok = false;
-            return 0;
-        }
-        uint16_t value = 0;
-        std::memcpy(&value, m_data + m_pos, sizeof(value));
-        m_pos += sizeof(value);
-        return value;
-    }
-
-    uint32_t u32()
-    {
-        if (!m_ok || 4 > m_len - m_pos) {
-            m_ok = false;
-            return 0;
-        }
-        uint32_t value = 0;
-        std::memcpy(&value, m_data + m_pos, sizeof(value));
-        m_pos += sizeof(value);
-        return value;
-    }
-
-    int32_t i32()
-    {
-        if (!m_ok || 4 > m_len - m_pos) {
-            m_ok = false;
-            return 0;
-        }
-        int32_t value = 0;
-        std::memcpy(&value, m_data + m_pos, sizeof(value));
-        m_pos += sizeof(value);
-        return value;
-    }
-
-    float f32()
-    {
-        if (!m_ok || 4 > m_len - m_pos) {
-            m_ok = false;
-            return 0.0f;
-        }
-        float value = 0.0f;
-        std::memcpy(&value, m_data + m_pos, sizeof(value));
-        m_pos += sizeof(value);
-        return value;
-    }
-
-    std::string str()
-    {
-        const uint8_t len = u8();
-        if (!m_ok || len > m_len - m_pos) {
-            m_ok = false;
-            return {};
-        }
-        std::string value(reinterpret_cast<const char*>(m_data + m_pos), len);
-        m_pos += len;
-        return value;
-    }
-
-    [[nodiscard]] size_t remaining() const { return m_ok ? m_len - m_pos : 0; }
-    [[nodiscard]] const uint8_t* cur() const { return m_data + m_pos; }
-
-    // Step over a length-prefixed descriptor body (or its unparsed tail). The
-    // caller has already checked `n <= remaining()`.
-    void skip(size_t n)
-    {
-        if (!m_ok || n > m_len - m_pos) {
-            m_ok = false;
-            return;
-        }
-        m_pos += n;
-    }
-
-private:
-    const uint8_t* m_data;
-    size_t m_len;
-    size_t m_pos = 0;
-    bool m_ok = true;
-};
-
 // One option_descriptor body. Returns false when the option cannot be
 // represented — an unknown option TYPE, or a malformed body. The caller then
 // omits the option and the server's own default applies to any vote that doesn't
 // mention it, so the mutator stays fully usable.
-bool parse_option_descriptor(BlobReader& r, VoteMutatorOptionSchema& out)
+bool parse_option_descriptor(ByteReader& r, VoteMutatorOptionSchema& out)
 {
     out.id = r.u8();
     out.name = r.str();
@@ -219,7 +125,7 @@ bool parse_option_descriptor(BlobReader& r, VoteMutatorOptionSchema& out)
 // One mutator_descriptor body. Returns false when the descriptor itself is
 // malformed, in which case the whole mutator is dropped (the rest of the blob is
 // still intact because the descriptor is length-prefixed).
-bool parse_mutator_descriptor(BlobReader& r, VoteMutatorSchema& out)
+bool parse_mutator_descriptor(ByteReader& r, VoteMutatorSchema& out)
 {
     out.id = r.u8();
     out.name = r.str();
@@ -235,7 +141,7 @@ bool parse_mutator_descriptor(BlobReader& r, VoteMutatorSchema& out)
         if (!r.ok() || body_len > r.remaining()) {
             return false; // the declared option count doesn't fit the body
         }
-        BlobReader body{r.cur(), body_len};
+        ByteReader body{r.cur(), body_len};
         VoteMutatorOptionSchema opt;
         if (parse_option_descriptor(body, opt)) {
             out.options.push_back(std::move(opt));
@@ -257,7 +163,7 @@ bool parse_mutator_descriptor(BlobReader& r, VoteMutatorSchema& out)
 // One option value inside a declaration body. Values are packed back to back, so
 // an unknown TYPE makes everything after it unreadable and the caller drops the
 // whole declaration rather than just this value.
-bool parse_declaration_value(BlobReader& r, VoteMutatorDeclValue& out)
+bool parse_declaration_value(ByteReader& r, VoteMutatorDeclValue& out)
 {
     out.option_id = r.u8();
     const uint8_t type_raw = r.u8();
@@ -294,7 +200,7 @@ bool parse_declaration_value(BlobReader& r, VoteMutatorDeclValue& out)
 // One declaration body. Returns false when it cannot be decoded, in which case
 // the caller drops that mutator alone - the rest of the set is still intact
 // because every declaration is length-prefixed.
-bool parse_declaration(BlobReader& r, VoteMutatorDecl& out)
+bool parse_declaration(ByteReader& r, VoteMutatorDecl& out)
 {
     out.mutator_id = r.u8();
     const uint8_t value_count = r.u8();
@@ -318,7 +224,7 @@ bool parse_declaration(BlobReader& r, VoteMutatorDecl& out)
 // A whole declaration set (the config-declared mutators of one rules scope).
 // Returns false only when the set itself is unreadable - a truncated count or a
 // declaration length that overruns what is left.
-bool parse_declaration_set(BlobReader& r, std::vector<VoteMutatorDecl>& out)
+bool parse_declaration_set(ByteReader& r, std::vector<VoteMutatorDecl>& out)
 {
     const uint8_t decl_count = r.u8();
     if (!r.ok()) {
@@ -331,7 +237,7 @@ bool parse_declaration_set(BlobReader& r, std::vector<VoteMutatorDecl>& out)
         if (!r.ok() || body_len > r.remaining()) {
             return false;
         }
-        BlobReader body{r.cur(), body_len};
+        ByteReader body{r.cur(), body_len};
         VoteMutatorDecl decl;
         if (parse_declaration(body, decl)) {
             out.push_back(std::move(decl));
@@ -347,7 +253,7 @@ bool parse_declaration_set(BlobReader& r, std::vector<VoteMutatorDecl>& out)
 
 bool parse_vote_options_blob(const uint8_t* data, size_t len, VoteOptionsData& out)
 {
-    BlobReader r{data, len};
+    ByteReader r{data, len};
 
     const uint8_t version = r.u8();
     if (!r.ok()) {
@@ -383,7 +289,7 @@ bool parse_vote_options_blob(const uint8_t* data, size_t len, VoteOptionsData& o
             return false;
         }
         // Bounded to the body, so a bad inner length can't reach the next entry.
-        BlobReader body{r.cur(), body_len};
+        ByteReader body{r.cur(), body_len};
         VoteGametypeInfo gt;
         gt.id = body.u8();
         gt.is_team_type = (body.u8() & AF_VOTE_GAMETYPE_FLAG_TEAM) != 0;
@@ -419,7 +325,7 @@ bool parse_vote_options_blob(const uint8_t* data, size_t len, VoteOptionsData& o
             xlog::warn("vote options: truncated blob in the mutator section ({} bytes)", len);
             return false;
         }
-        BlobReader body{r.cur(), body_len};
+        ByteReader body{r.cur(), body_len};
         VoteMutatorSchema mutator;
         if (parse_mutator_descriptor(body, mutator)) {
             parsed.mutators.push_back(std::move(mutator));
@@ -445,7 +351,7 @@ bool parse_vote_options_blob(const uint8_t* data, size_t len, VoteOptionsData& o
             xlog::warn("vote options: truncated blob in the level section ({} bytes)", len);
             return false;
         }
-        BlobReader body{r.cur(), body_len};
+        ByteReader body{r.cur(), body_len};
         VoteLevelInfo level;
         level.filename = body.str();
         level.natural_gametype = body.u8();
@@ -495,7 +401,7 @@ bool parse_vote_options_blob(const uint8_t* data, size_t len, VoteOptionsData& o
             xlog::debug("vote options: truncated base mutator section; the vote panel will pre-select nothing");
         }
         else {
-            BlobReader body{r.cur(), base_len};
+            ByteReader body{r.cur(), base_len};
             if (parse_declaration_set(body, parsed.base_mutator_decls) && body.ok()) {
                 parsed.base_mutator_decls_present = true;
             }
@@ -581,7 +487,7 @@ uint32_t vote_active_mutators_revision()
 
 void vote_active_mutators_on_received(const uint8_t* data, size_t len)
 {
-    BlobReader r{data, len};
+    ByteReader r{data, len};
     std::vector<VoteMutatorDecl> decls;
     if (!parse_declaration_set(r, decls)) {
         xlog::warn("vote options: unparseable active mutator set ({} bytes); keeping the previous one", len);
@@ -666,7 +572,7 @@ uint8_t vote_match_current_level_gametype(const VoteOptionsData& options)
         }
     }
 
-    if (running == static_cast<uint8_t>(rf::NG_TYPE_DM) && offers_team_dm) {
+    if (offers_team_dm) {
         return team_dm;
     }
     // Nothing offered at all leaves it to the server, exactly as an empty cycler
@@ -687,7 +593,39 @@ bool vote_options_is_type_enabled(AfVoteType type)
     if (bit >= 32) {
         return false;
     }
-    return (g_vote_options.data.enabled_vote_mask & (1u << bit)) != 0;
+    const bool advertised = (g_vote_options.data.enabled_vote_mask & (1u << bit)) != 0;
+
+    // Mirrors VoteMgr::StartVote's live-match rules
+    if (g_match_state & AF_MATCH_STATE_LIVE) {
+        if (!(g_match_state & AF_MATCH_STATE_PARTICIPANT)) {
+            return false;
+        }
+        switch (type) {
+            case AfVoteType::Surrender:
+            case AfVoteType::CancelMatch:
+                return true;
+            case AfVoteType::Extend:
+                return advertised;
+            default:
+                return false;
+        }
+    }
+    return advertised;
+}
+
+bool vote_client_spectating_match()
+{
+    return (g_match_state & AF_MATCH_STATE_LIVE) && !(g_match_state & AF_MATCH_STATE_PARTICIPANT);
+}
+
+bool vote_client_match_live()
+{
+    return (g_match_state & AF_MATCH_STATE_LIVE) != 0;
+}
+
+void vote_client_on_match_state(uint8_t flags)
+{
+    g_match_state = flags;
 }
 
 void vote_options_request_if_needed()
@@ -935,6 +873,7 @@ void vote_client_reset()
     g_vote_options = VoteOptionsCache{};
     g_active_mutators.reset();
     g_active_mutators_revision = 0;
+    g_match_state = 0;
     // Also drop the HUD prompt: without this a vote left running on the server we
     // just left would keep its notification up across a reconnect elsewhere.
     remove_hud_vote_notification();

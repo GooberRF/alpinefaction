@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <optional>
 #include <vector>
+#include "alpine_packets.h"
 
 namespace rf
 {
@@ -23,17 +24,20 @@ public:
 private:
     std::optional<int> prev_;
     bool prev_hit_counted_ = false;
+    int prev_vehicle_shot_class_ = -1;
     bool active_ = false;
 };
 
 // What the server determined actually killed a player. Mirrors the kill-info wire payload
 // minus the victim id, which is the map key on both sides of the wire.
+// Unpacked: damage_type and vehicle_class share one wire byte.
 struct KillAttribution
 {
     uint8_t killer_player_id = 0xFF;
     uint8_t weapon_type = 0xFF; // 0xFF = unknown, callers fall back to the held-weapon heuristic
     uint8_t flags = 0;          // af_kill_info_flags
-    uint8_t damage_type = 0xFF;
+    uint8_t damage_type = af_kill_damage_type_unknown;
+    uint8_t vehicle_class = 0;  // VehicleDamageClass, meaningful only with AF_KILL_FLAG_VEHICLE
     std::vector<uint8_t> assist_player_ids; // most recent contributor first
 };
 
@@ -72,6 +76,9 @@ bool kill_attribution_in_splash_scope();
 // hit however many players it damages. Fails closed when no scope is open.
 bool kill_attribution_splash_hit_consume();
 
+// The VehicleDamageClass of the vehicle that fired the current SplashWeaponScope's projectile, or -1.
+int kill_attribution_vehicle_shot_class();
+
 
 // True when `weapon_type` is safe to use as an index into rf::weapon_types. Matters because
 // the index reaches display code over the wire, where nothing constrains it.
@@ -84,11 +91,18 @@ bool kill_attribution_is_melee_weapon(int weapon_type);
 
 // Combat chain feeding the assist list. Called for every PvP hit that did real damage.
 void kill_attribution_note_pvp_damage(uint8_t victim_player_id, uint8_t attacker_player_id);
-// Drains the victim's chain, dropping the killer and the victim themselves.
-std::vector<uint8_t> kill_attribution_take_assists(uint8_t victim_player_id, uint8_t killer_player_id);
+// A player damaged the vehicle `rider_player_id` was riding; a candidate for that hull's blast only.
+void kill_attribution_note_hull_damage(uint8_t rider_player_id, uint8_t attacker_player_id,
+                                       int hull_handle);
+// Drains the victim's chain, dropping the killer and the victim themselves. `blast_hull_handle`
+// names the hull whose destruction is killing him, or -1.
+std::vector<uint8_t> kill_attribution_take_assists(uint8_t victim_player_id, uint8_t killer_player_id,
+                                                   int blast_hull_handle);
 
+// vehicle_class: VehicleDamageClass of the killing vehicle, or -1 (the caller sets AF_KILL_FLAG_VEHICLE).
 void kill_attribution_record(uint8_t killed_player_id, uint8_t killer_player_id, int weapon_type,
-                             uint8_t flags, int damage_type, std::vector<uint8_t> assist_player_ids);
+                             uint8_t flags, int damage_type, int vehicle_class,
+                             std::vector<uint8_t> assist_player_ids);
 
 // For the kill-info packet. Non-consuming, because print_kill_message reads the same record
 // afterwards for the server console line, but each recorded death is only ever returned once:

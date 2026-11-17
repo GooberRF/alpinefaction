@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Alpine Faction: shipped copy is drawn in white so the engine can tint it to any palette colour at draw time. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+  <path d="M7 11 L7 7 A5 5 0 0 1 17 7 L17 11"
+        fill="none" stroke="#ffffff" stroke-width="2"/>
+  <rect x="4" y="11" width="16" height="10" fill="none" stroke="#ffffff" stroke-width="2"/>
+  <circle cx="12" cy="16" r="2" fill="#ffffff"/>
+</svg>

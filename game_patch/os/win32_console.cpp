@@ -211,15 +211,20 @@ void win32_console_output(const char* text, [[maybe_unused]] const rf::Color* co
     size_t pos = 0;
     while (pos < text_sv.size()) {
         std::string color;
+        size_t search_pos = pos;
         if (text_sv.substr(pos, color_prefix.size()) == color_prefix) {
             size_t color_name_pos = pos + color_prefix.size();
             size_t color_suffix_pos = text_sv.find(color_suffix, color_name_pos);
             if (color_suffix_pos != std::string_view::npos) {
                 color = text_sv.substr(color_name_pos, color_suffix_pos - color_name_pos);
                 pos = color_suffix_pos + color_suffix.size();
+                search_pos = pos;
+            }
+            else {
+                search_pos = color_name_pos;
             }
         }
-        size_t end_pos = text_sv.find(color_prefix, pos);
+        size_t end_pos = text_sv.find(color_prefix, search_pos);
         if (end_pos == std::string_view::npos) {
             end_pos = text_sv.size();
         }

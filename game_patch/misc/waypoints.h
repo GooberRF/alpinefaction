@@ -5,16 +5,19 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include "../rf/math/vector.h"
 #include "../rf/os/timestamp.h"
 
 namespace rf
 {
     struct Object;
+    struct Entity;
     struct GFace;
+    struct Trigger;
 }
 
-constexpr int kWptVersion = 1;
+constexpr int kWptVersion = 2;
 constexpr int kMaxWaypointLinks = 6;
 constexpr float kWaypointRadius = 4.0f / 3.0f;
 constexpr float kWaypointLinkRadius = kWaypointRadius * 3.0f;
@@ -28,8 +31,18 @@ constexpr float kRespawnAutoLinkRangeScale = 1.0f;
 constexpr float kBridgeWaypointMaxGroundDistance = 1.5f;
 constexpr float kWaypointGenerateProbeAngleStepDeg = 15.0f;
 constexpr float kWaypointGenerateProbeStepDistance = kWaypointRadius;
+// Bare Alpine terrain (nothing but terrain near its surface) beside the coarse terrain lattice needs no full density.
+constexpr float kWaypointGenerateBareTerrainProbeStepDistance = 2.0f * kWaypointGenerateProbeStepDistance;
 constexpr float kWaypointGenerateGroundOffset = 1.0f;
 constexpr float kWaypointGenerateMaxInclineDeg = 45.0f;
+// tan(kWaypointGenerateMaxInclineDeg)
+constexpr float kWaypointGenerateMaxInclineRise = 1.0f;
+static_assert(kWaypointGenerateMaxInclineDeg == 45.0f, "kWaypointGenerateMaxInclineRise must follow the incline");
+// The highest rise a route climbs over one link, except between terrain nodes.
+constexpr float kRouteMaxUpwardStepHeight = 1.5f;
+// The floor change one walk sample may make whatever its spacing, as two stair risers can fall within one; matches the
+// drop the movement edge probe refuses to walk off.
+constexpr float kWalkDirectMaxStep = 1.0f;
 constexpr float kWaypointGenerateWallClearance = 0.5f;
 constexpr float kWaypointGenerateEdgeClearance = 1.0f;
 constexpr float kWaypointGenerateMinHeadroom = 1.375f;
@@ -74,6 +87,10 @@ enum class WaypointType : int
     water = 14,
     bag = 15,
     salvage_flag = 16,
+    vehicle_factory = 17,
+    // Identifier = rope uid, subtype 0 rides toward the target end, 1 back.
+    zipline_entrance = 18,
+    zipline_exit = 19,
 };
 
 enum class WaypointDroppedSubtype : int
@@ -108,6 +125,19 @@ enum class WaypointCtfFlagSubtype : int
 {
     red = 0,
     blue = 1,
+};
+
+enum class WaypointSalvageFlagSubtype : int
+{
+    flag = 0,
+    scavenger_zone = 1,
+};
+
+// identifier: the factory uid, or the parked hull's object handle.
+enum class WaypointVehicleSubtype : int
+{
+    factory = 0,
+    parked_hull = 1,
 };
 
 enum class WaypointZoneType : int
@@ -161,6 +191,14 @@ struct WaypointNode
     std::vector<int> zones{};
     float link_radius = kWaypointLinkRadius;
     bool temporary = false;
+    // Stands on bare Alpine terrain. The generator links two such nodes over more than a step only where the ground
+    // between them stays within the walk incline.
+    bool terrain = false;
+    // A temporary node with no free inbound slot borrows one from a full neighbour, restored on removal.
+    int borrowed_link_from = 0;
+    int borrowed_link_target = 0;
+    // A zip line entrance whose line cannot be taken right now (switched off, or moved out of reach).
+    bool ride_closed = false;
     bool valid = true;
 };
 
@@ -203,20 +241,30 @@ struct WpCacheNode
 
 // Downward world trace used by waypoint generation to find the floor under a
 // point. Also used by Salvage to snap a computed midpoint to the ground.
-bool trace_ground_below_point(const rf::Vector3& pos, float max_downward_dist, rf::Vector3* out_hit_point = nullptr);
+// `nearest` takes the highest floor in reach rather than any one the trace meets, which on a grating over a floor can
+// be the floor below; generation keeps the any-hit trace so the graphs it builds stay as they are.
+bool trace_ground_below_point(
+    const rf::Vector3& pos, float max_downward_dist, rf::Vector3* out_hit_point = nullptr, bool nearest = false);
 
 void waypoints_init();
 int get_local_awp_revision(const std::string& rfl_filename);
 std::optional<std::string> get_waypoint_dir();
 void waypoints_do_frame();
 void waypoints_render_debug();
+// Bots in this process (a -bot client, or a server with server bots) need waypoints.
+bool is_waypoint_bot_mode_active();
+// This process is a -bot client: the local player is the bot.
+bool is_waypoint_local_bot_mode_active();
 void waypoints_level_init();
+// waypoints_level_init, starting the bots' AWP auto-download first.
+void waypoints_level_init_with_awp_download();
 void waypoints_level_reset();
 bool waypoints_missing_awp_from_level_init();
 bool waypoints_awp_download_pending();
 bool waypoints_awp_load_retry_pending();
 void waypoints_set_awp_download_pending(bool pending);
 void waypoints_on_awp_download_resolved();
+void waypoints_on_route_arrows_toggled();
 void waypoints_on_limbo_enter();
 void waypoints_on_trigger_activated(int trigger_uid);
 void waypoints_on_glass_shattered(const rf::GFace* face);
@@ -230,6 +278,14 @@ bool waypoints_find_bag_waypoint(int& out_waypoint, rf::Vector3& out_pos);
 void waypoints_on_salvage_flag_world_pos(const rf::Vector3& flag_pos);
 void waypoints_on_salvage_flag_carried();
 bool waypoints_find_salvage_flag_waypoint(int& out_waypoint, rf::Vector3& out_pos);
+// Where a bot boards the hull of the factory with this uid from.
+bool waypoints_find_vehicle_factory_waypoint(int factory_uid, int& out_waypoint, rf::Vector3& out_pos);
+// A temporary boarding node next to a hull standing away from its factory; re-placed only once the hull has moved
+// and come to rest, and dropped when the hull goes or nobody has asked for it for a while. 0 if there is no spot.
+int waypoints_ensure_hull_waypoint(const rf::Entity& hull);
+// Whether from -> to is a zip line ride, open or not: the line, its direction (+1 toward the target end) and its route
+// cost.
+bool waypoints_get_zipline_ride(int from, int to, int32_t* rope_uid, int* dir, float* route_cost);
 
 bool waypoints_get_bridge_zone_state(int zone_uid, WaypointBridgeZoneState& out_state);
 bool waypoints_find_nearest_inactive_bridge_zone(const rf::Vector3& from_pos, WaypointBridgeZoneState& out_state);
@@ -247,7 +303,14 @@ bool waypoints_get_target_by_uid(int target_uid, WaypointTargetDefinition& out_t
 bool waypoints_link_has_target_type(int from_waypoint, int to_waypoint, WaypointTargetType type);
 
 int waypoints_closest(const rf::Vector3& pos, float radius);
+// Inside the trigger's sphere, or its oriented box
+bool point_inside_trigger_zone(const rf::Trigger& trigger, const rf::Vector3& point);
 int waypoints_count();
+// Changes whenever the waypoint graph or the link gating changes.
+int waypoints_graph_version();
+// Changes like waypoints_graph_version, except for changes confined to temporary nodes. Persistent indices and
+// waypoints_get_persistent_links stay valid while it holds.
+int waypoints_persistent_graph_version();
 bool waypoints_get_pos(int index, rf::Vector3& out_pos);
 bool waypoints_get_type_subtype(int index, int& out_type, int& out_subtype);
 const std::vector<int>& waypoints_get_by_type(WaypointType type);
@@ -255,9 +318,18 @@ bool waypoints_get_movement_subtype(int index, int& out_movement_subtype);
 bool waypoints_get_identifier(int index, int& out_identifier);
 bool waypoints_get_temporary(int index, bool& out_temporary);
 bool waypoints_get_link_radius(int index, float& out_link_radius);
+bool waypoints_is_terrain_node(int index);
 int waypoints_get_links(int index, std::array<int, kMaxWaypointLinks>& out_links);
+// A persistent node's links to persistent nodes, with a slot lent to a temporary node read as the link it held.
+// None for a temporary node.
+int waypoints_get_persistent_links(int index, std::array<int, kMaxWaypointLinks>& out_links);
+// The temporary nodes, and the persistent nodes with a link to one.
+void waypoints_get_temporary_overlay(std::vector<int>& out_temporary, std::vector<int>& out_linking_persistent);
 bool waypoints_has_direct_link(int from, int to);
 bool waypoints_link_is_clear(int from, int to);
+// On a graph loaded for the route arrows alone, which skips sanitize_waypoint_links_against_geometry, removes the link
+// if that sanitize would have; true when it did
+bool waypoints_prune_blocked_link(int from, int to);
 void sanitize_waypoint_links_against_geometry();
 
 int add_waypoint(
@@ -270,4 +342,22 @@ bool link_waypoint_if_clear(int from, int to);
 bool can_link_waypoints(const rf::Vector3& a, const rf::Vector3& b);
 int closest_waypoint(const rf::Vector3& pos, float radius);
 void on_geomod_crater_created(const rf::Vector3& crater_pos, float crater_radius = 0.0f);
-void waypoints_start_awpgen(const std::string& rfl_filename);
+
+// How a waypoint generation run spaces the nodes it places.
+enum class WaypointGenerationMode
+{
+    // A coarse lattice over open Alpine terrain, fine probing everywhere else.
+    standard,
+    // As standard, and open ground elsewhere is probed at a wider spacing. Points of interest stay fine.
+    coarse,
+    // Fine probing everywhere, Alpine terrain included.
+    fine,
+};
+constexpr int kWaypointGenerationModeCount = 3;
+static_assert(static_cast<int>(WaypointGenerationMode::fine) + 1 == kWaypointGenerationModeCount);
+// "default", "coarse" or "fine".
+std::string_view waypoint_generation_mode_name(WaypointGenerationMode mode);
+std::optional<WaypointGenerationMode> parse_waypoint_generation_mode(std::string_view name);
+// The mode the loaded graph was generated in; standard when it does not say.
+WaypointGenerationMode waypoints_generation_mode();
+void waypoints_start_awpgen(const std::string& rfl_filename, WaypointGenerationMode mode);

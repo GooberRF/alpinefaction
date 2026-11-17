@@ -22,8 +22,11 @@ struct AlpineEventDialog
 enum class AlpineDedEventID : int
 {
     // Stock events referenced by Alpine patches
+    Music_Start = 22,
     Play_Animation = 25,
+    Play_Sound = 26,
     Swap_Textures = 38,
+    Switch = 39,
     Switch_Model = 40,
     Display_Fullscreen_Image = 84,
 
@@ -86,7 +89,15 @@ enum class AlpineDedEventID : int
     ATX_Play,
     ATX_Pause,
     ATX_Set_Frame_Time,
-    Weather_Region_State
+    Weather_Region_State,
+    Display_Projection,
+    Climbing_Region_State,
+    When_Destroyed,
+    Rope_State,
+    Mesh_Set_Scale,
+    Payload_Handler,
+    Payload_Checkpoint,
+    When_Setup_Ends
 };
 
 constexpr int af_ded_event_to_int(AlpineDedEventID event_id) noexcept
@@ -110,7 +121,8 @@ enum FieldType
     FIELD_BOOL1 = 1007,
     FIELD_BOOL2 = 1008,
     FIELD_STR1 = 1009,
-    FIELD_STR2 = 1010
+    FIELD_STR2 = 1010,
+    FIELD_EVENT_TYPE = 1011
 };
 
 // Field configuration for each event_type
@@ -122,4 +134,4 @@ struct FieldConfig
     std::map<FieldType, bool> dropdownSaveIndex;
 };
 
-static auto OpenLinksDialog = reinterpret_cast<void(__thiscall*)(void* this_)>(0x004073D0);
+static auto links_list_add_string = reinterpret_cast<void(__thiscall*)(void* this_, const char* text)>(0x0045A1A0);

@@ -1,14 +1,15 @@
 #include <cstring>
 #include <cmath>
 #include <algorithm>
+#include <limits>
 #include <xlog/xlog.h>
 #include <common/utils/list-utils.h>
 #include <common/utils/string-utils.h>
 #include "gr_d3d11.h"
 #include "gr_d3d11_entity_shadow.h"
-#include "gr_d3d11_context.h"
-#include "gr_d3d11_shader.h"
-#include "gr_d3d11_mesh.h"
+#include <common/gr_d3d11/gr_d3d11_context.h>
+#include <common/gr_d3d11/gr_d3d11_shader.h>
+#include <common/gr_d3d11/gr_d3d11_mesh.h>
 #include "../../rf/entity.h"
 #include "../../rf/corpse.h"
 #include "../../rf/item.h"
@@ -21,6 +22,7 @@
 #include "../../rf/multi.h"
 #include "../../rf/os/frametime.h"
 #include "../../misc/alpine_settings.h"
+#include "../gr.h"
 #include "../../hud/multi_spectate.h"
 #include "../../multi/salvage.h"
 
@@ -33,6 +35,12 @@ namespace gr::d3d11
         GpuMatrix4x4 proj_mat;
     };
     static_assert(sizeof(ShadowViewProjData) % 16 == 0);
+
+    // Widening of a caster's box in shadow map texels: the PCF reach in standard_ps.hlsl (2.5 texel spread x longest
+    // pcf_offsets 1.045) plus the bilinear footprint, with margin
+    static constexpr float caster_box_reach_texels = 5.0f;
+    // Covers the float difference between the shadow vertex shaders and the CPU projection of a caster's bounds
+    static constexpr float caster_box_depth_margin = 1e-4f;
 
     static void normalize_vec3(float& x, float& y, float& z)
     {
@@ -287,14 +295,31 @@ namespace gr::d3d11
         xlog::info("Shadow map resized: {}x{}", current_resolution_, current_resolution_);
     }
 
+    void EntityShadowRenderer::get_light_dir(float& x, float& y, float& z)
+    {
+        x = default_light_dir_x;
+        y = default_light_dir_y;
+        z = default_light_dir_z;
+        const SunLightState sun = gr_get_sun_state();
+        if (sun.enabled && sun.drives_shadowmap_dir && sun.travel_dir.y < 0.0f) {
+            x = sun.travel_dir.x;
+            y = sun.travel_dir.y;
+            z = sun.travel_dir.z;
+        }
+        normalize_vec3(x, y, z);
+    }
+
     void EntityShadowRenderer::build_shadow_view_proj(ID3D11DeviceContext* context, const rf::Vector3& camera_pos)
     {
         current_camera_pos_ = camera_pos;
 
-        float ld_x = light_dir_x;
-        float ld_y = light_dir_y;
-        float ld_z = light_dir_z;
-        normalize_vec3(ld_x, ld_y, ld_z);
+        float ld_x, ld_y, ld_z;
+        get_light_dir(ld_x, ld_y, ld_z);
+        // the pixel shader has to bias along the direction this matrix was built from, and the map
+        // is kept across frames that never rebuild it, so the direction is kept with it
+        shadow_light_dir_[0] = ld_x;
+        shadow_light_dir_[1] = ld_y;
+        shadow_light_dir_[2] = ld_z;
 
         float up_x = 0.0f, up_y = 1.0f, up_z = 0.0f;
         if (std::abs(ld_y) > 0.99f) {
@@ -480,6 +505,7 @@ namespace gr::d3d11
         ID3D11RenderTargetView* null_rtv = nullptr;
         context->OMSetRenderTargets(1, &null_rtv, shadow_dsv_);
         context->ClearDepthStencilView(shadow_dsv_, D3D11_CLEAR_DEPTH, 1.0f, 0);
+        num_caster_boxes_ = 0;
 
         render_entity_shadow(context, render_context);
         if (g_alpine_game_config.shadow_corpses) {
@@ -542,7 +568,10 @@ namespace gr::d3d11
                 rf::V3dMesh* v3d_mesh = ci->base_character->character_meshes[0].mesh;
                 if (!v3d_mesh || !v3d_mesh->vu) continue;
 
-                mesh_renderer_.draw_shadow_character_mesh(v3d_mesh->vu, entity.pos, entity.orient, ci, shadow_character_vs, context);
+                ShadowCasterBounds bounds{shadow_vp_matrix_};
+                mesh_renderer_.draw_shadow_character_mesh(v3d_mesh->vu, entity.pos, entity.orient, ci,
+                                                          shadow_character_vs, context, bounds);
+                add_caster_box(bounds);
                 ID3D11Buffer* vp_cb[] = { shadow_vp_cbuffer_ };
                 context->VSSetConstantBuffers(1, 1, vp_cb);
             }
@@ -550,11 +579,14 @@ namespace gr::d3d11
                 auto* v3d = static_cast<rf::V3d*>(vmesh->instance);
                 if (!v3d || v3d->num_meshes < 1 || !v3d->meshes) continue;
 
+                ShadowCasterBounds bounds{shadow_vp_matrix_};
                 for (int m = 0; m < v3d->num_meshes; ++m) {
                     rf::VifLodMesh* lod_mesh = v3d->meshes[m].vu;
                     if (!lod_mesh) continue;
-                    mesh_renderer_.draw_shadow_v3d_mesh(lod_mesh, entity.pos, entity.orient, shadow_standard_vs, context);
+                    mesh_renderer_.draw_shadow_v3d_mesh(lod_mesh, entity.pos, entity.orient, shadow_standard_vs,
+                                                        context, bounds);
                 }
+                add_caster_box(bounds);
                 ID3D11Buffer* vp_cb[] = { shadow_vp_cbuffer_ };
                 context->VSSetConstantBuffers(1, 1, vp_cb);
             }
@@ -589,7 +621,10 @@ namespace gr::d3d11
                 rf::V3dMesh* v3d_mesh = ci->base_character->character_meshes[0].mesh;
                 if (!v3d_mesh || !v3d_mesh->vu) continue;
 
-                mesh_renderer_.draw_shadow_character_mesh(v3d_mesh->vu, corpse.pos, corpse.orient, ci, shadow_character_vs, context);
+                ShadowCasterBounds bounds{shadow_vp_matrix_};
+                mesh_renderer_.draw_shadow_character_mesh(v3d_mesh->vu, corpse.pos, corpse.orient, ci,
+                                                          shadow_character_vs, context, bounds);
+                add_caster_box(bounds);
                 ID3D11Buffer* vp_cb[] = { shadow_vp_cbuffer_ };
                 context->VSSetConstantBuffers(1, 1, vp_cb);
             }
@@ -597,11 +632,14 @@ namespace gr::d3d11
                 auto* v3d = static_cast<rf::V3d*>(vmesh->instance);
                 if (!v3d || v3d->num_meshes < 1 || !v3d->meshes) continue;
 
+                ShadowCasterBounds bounds{shadow_vp_matrix_};
                 for (int m = 0; m < v3d->num_meshes; ++m) {
                     rf::VifLodMesh* lod_mesh = v3d->meshes[m].vu;
                     if (!lod_mesh) continue;
-                    mesh_renderer_.draw_shadow_v3d_mesh(lod_mesh, corpse.pos, corpse.orient, shadow_standard_vs, context);
+                    mesh_renderer_.draw_shadow_v3d_mesh(lod_mesh, corpse.pos, corpse.orient, shadow_standard_vs,
+                                                        context, bounds);
                 }
+                add_caster_box(bounds);
                 ID3D11Buffer* vp_cb[] = { shadow_vp_cbuffer_ };
                 context->VSSetConstantBuffers(1, 1, vp_cb);
             }
@@ -671,11 +709,14 @@ namespace gr::d3d11
                 auto* v3d = static_cast<rf::V3d*>(vmesh->instance);
                 if (!v3d || v3d->num_meshes < 1 || !v3d->meshes) continue;
 
+                ShadowCasterBounds bounds{shadow_vp_matrix_};
                 for (int m = 0; m < v3d->num_meshes; ++m) {
                     rf::VifLodMesh* lod_mesh = v3d->meshes[m].vu;
                     if (!lod_mesh) continue;
-                    mesh_renderer_.draw_shadow_v3d_mesh(lod_mesh, item.pos, orient, shadow_standard_vs, context);
+                    mesh_renderer_.draw_shadow_v3d_mesh(lod_mesh, item.pos, orient, shadow_standard_vs, context,
+                                                        bounds);
                 }
+                add_caster_box(bounds);
                 ID3D11Buffer* vp_cb[] = { shadow_vp_cbuffer_ };
                 context->VSSetConstantBuffers(1, 1, vp_cb);
             }
@@ -717,6 +758,7 @@ namespace gr::d3d11
                 DF_GR_D3D11_CHECK_HR(context->Map(vfx_shadow_vb_, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped));
                 auto* gpu_verts = static_cast<GpuVertex*>(mapped.pData);
 
+                ShadowCasterBounds bounds{shadow_vp_matrix_};
                 int vert_idx = 0;
                 for (int c = 0; c < vfx_geo->num_sfxo_chunks; ++c) {
                     rf::VfxSfxoRenderObj& render_obj = sfxo_instances[c];
@@ -737,6 +779,7 @@ namespace gr::d3d11
                                 gv.y = positions[vi].y;
                                 gv.z = positions[vi].z;
                             }
+                            bounds.add(orient.transform_vector(rf::Vector3{gv.x, gv.y, gv.z}) + item.pos);
                         }
                     }
                 }
@@ -757,6 +800,7 @@ namespace gr::d3d11
                 ID3D11Buffer* vb = vfx_shadow_vb_;
                 context->IASetVertexBuffers(0, 1, &vb, &stride, &vb_offset);
                 context->Draw(total_verts, 0);
+                add_caster_box(bounds);
 
                 // Invalidate render_context VB cache so subsequent static mesh draws rebind correctly
                 render_context.set_vertex_buffer(vfx_shadow_vb_, sizeof(GpuVertex), 0);
@@ -766,6 +810,46 @@ namespace gr::d3d11
                 context->VSSetConstantBuffers(1, 1, vp_cb);
             }
         }
+    }
+
+    void EntityShadowRenderer::add_caster_box(const ShadowCasterBounds& bounds)
+    {
+        const BoundingBox& ndc = bounds.ndc();
+        if (ndc.empty) {
+            return;
+        }
+        // NDC y points up and shadow map v down
+        const float reach = caster_box_reach_texels / static_cast<float>(current_resolution_);
+        const std::array<float, 4> rect{
+            ndc.min.x * 0.5f + 0.5f - reach,
+            0.5f - ndc.max.y * 0.5f - reach,
+            ndc.max.x * 0.5f + 0.5f + reach,
+            0.5f - ndc.min.y * 0.5f + reach,
+        };
+        const float depth = ndc.min.z - caster_box_depth_margin;
+
+        if (num_caster_boxes_ < max_caster_boxes) {
+            caster_rects_[num_caster_boxes_] = rect;
+            caster_depths_[num_caster_boxes_] = depth;
+            ++num_caster_boxes_;
+            return;
+        }
+        auto area = [](const std::array<float, 4>& r) { return (r[2] - r[0]) * (r[3] - r[1]); };
+        auto merged = [&rect](const std::array<float, 4>& r) {
+            return std::array<float, 4>{
+                std::min(r[0], rect[0]), std::min(r[1], rect[1]), std::max(r[2], rect[2]), std::max(r[3], rect[3])};
+        };
+        int best = 0;
+        float best_growth = std::numeric_limits<float>::max();
+        for (int i = 0; i < num_caster_boxes_; ++i) {
+            const float growth = area(merged(caster_rects_[i])) - area(caster_rects_[i]);
+            if (growth < best_growth) {
+                best_growth = growth;
+                best = i;
+            }
+        }
+        caster_rects_[best] = merged(caster_rects_[best]);
+        caster_depths_[best] = std::min(caster_depths_[best], depth);
     }
 
     void EntityShadowRenderer::bind_shadow_resources(ID3D11DeviceContext* context)
@@ -786,10 +870,6 @@ namespace gr::d3d11
             shadows_active = false;
         }
 
-        // Compute normalized light direction for PS normal bias
-        float ld_x = light_dir_x, ld_y = light_dir_y, ld_z = light_dir_z;
-        normalize_vec3(ld_x, ld_y, ld_z);
-
         int dist_preset = std::clamp(g_alpine_game_config.shadow_distance, 0, num_shadow_distance_presets - 1);
 
         ShadowConstantBuffer data{};
@@ -798,9 +878,10 @@ namespace gr::d3d11
         data.shadow_fade_start = shadow_distance_presets[dist_preset].fade_start;
         data.shadow_fade_end = shadow_distance_presets[dist_preset].fade_end;
         data.shadow_enabled = shadows_active ? 1.0f : 0.0f;
-        data.shadow_light_dir[0] = ld_x;
-        data.shadow_light_dir[1] = ld_y;
-        data.shadow_light_dir[2] = ld_z;
+        // the direction shadow_vp_matrix_ was built from, not whatever it is now
+        data.shadow_light_dir[0] = shadow_light_dir_[0];
+        data.shadow_light_dir[1] = shadow_light_dir_[1];
+        data.shadow_light_dir[2] = shadow_light_dir_[2];
         data.shadow_normal_offset = 0.08f;
         data.shadow_texel_size = 1.0f / static_cast<float>(current_resolution_);
         data.shadow_depth_range = current_depth_range_;
@@ -810,6 +891,11 @@ namespace gr::d3d11
         data.shadow_pcf_taps = static_cast<float>(preset.pcf_taps);
         data.shadow_debug = debug_enabled ? 1.0f : 0.0f;
         data.shadow_soft_edges = preset.soft_edges ? 1.0f : 0.0f;
+        data.shadow_num_casters = static_cast<float>(num_caster_boxes_);
+        for (int i = 0; i < num_caster_boxes_; ++i) {
+            data.shadow_caster_rects[i] = caster_rects_[i];
+            data.shadow_caster_depths[i] = {caster_depths_[i], 0.0f, 0.0f, 0.0f};
+        }
 
         D3D11_MAPPED_SUBRESOURCE mapped;
         DF_GR_D3D11_CHECK_HR(context->Map(shadow_cbuffer_, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped));

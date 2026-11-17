@@ -37,6 +37,7 @@
 #include "demo/demo.h"
 #include "../misc/alpine_settings.h"
 #include "../misc/waypoints.h"
+#include "../misc/settings_registry.h"
 
 // Resolution of the blurred edge-fill bitmap (box-filter downscale of the map image)
 constexpr int edge_fill_blur_size = 64;
@@ -313,6 +314,12 @@ static bool level_file_exists(const std::string& filename)
     return file.find(filename.c_str());
 }
 
+// Bots always download; normal clients require the setting; dedis without server bots never auto-download
+static bool level_download_wants_awp()
+{
+    return is_waypoint_bot_mode_active() || (!rf::is_dedicated_server && g_alpine_game_config.autodl_download_awps);
+}
+
 bool download_level_if_missing(std::string filename)
 {
     if (filename.rfind('.') == std::string::npos) {
@@ -363,9 +370,7 @@ bool download_level_if_missing(std::string filename)
         }
 
         // Download AWP file if available (non-fatal)
-        // Bot clients always download; normal clients require the setting; dedis never auto-download
-        if (level_info->awp_info.has_value() && !rf::is_dedicated_server
-            && (client_bot_launch_enabled() || g_alpine_game_config.autodl_download_awps)) {
+        if (level_info->awp_info.has_value() && level_download_wants_awp()) {
             try {
                 if (try_download_and_extract_awp(filename, level_info->awp_info.value())) {
                     rf::console::print("--> AWP waypoint file downloaded for {}\n", filename);
@@ -418,6 +423,8 @@ public:
         std::atomic<bool> awp_downloaded{false};
         std::atomic<bool> awp_attempted{false};
         std::atomic<bool> work_done{false};
+        // Set before the worker starts: bot state belongs to the main thread.
+        bool download_awp = false;
         std::string error;
     };
 
@@ -522,10 +529,8 @@ void LevelDownloadWorker::operator()()
             remove(temp_filename.c_str());
 
             // Download AWP file if available (non-fatal)
-            // Bot clients always download; normal clients require the setting; dedis never auto-download
             if (!shared_data_->abort_flag && shared_data_->level_info->awp_info.has_value()
-                && !rf::is_dedicated_server
-                && (client_bot_launch_enabled() || g_alpine_game_config.autodl_download_awps)) {
+                && shared_data_->download_awp) {
                 shared_data_->awp_attempted = true;
                 shared_data_->awp_downloading = true;
                 try {
@@ -589,6 +594,7 @@ public:
         listener_(std::move(listener))
     {
         shared_data_ = std::make_shared<LevelDownloadWorker::SharedData>();
+        shared_data_->download_awp = level_download_wants_awp();
         thread_ = std::thread(LevelDownloadWorker{std::move(level_filename), shared_data_});
     }
 
@@ -607,7 +613,7 @@ public:
             }
         }
         // Release bitmaps if not shutting down (bitmap system may be torn down during exit)
-        if (rf::gameseq_get_state() != rf::GS_QUITING) {
+        if (rf::gameseq_get_state() != rf::GS_QUIT_GAME) {
             if (image_bm_ != -1) {
                 rf::bm::release(image_bm_);
             }
@@ -1074,7 +1080,11 @@ public:
             return;
         }
         xlog::trace("Changing game state to GS_NEW_LEVEL");
-        rf::gameseq_set_state(rf::GS_NEW_LEVEL, false);
+        if (rf::gameseq_get_state() == rf::GS_MULTI_LEVEL_DOWNLOAD) {
+            rf::gameseq_set_state(rf::GS_NEW_LEVEL, false);
+        } else {
+            g_gameseq_defer_new_level = true;
+        }
     }
 };
 
@@ -1376,33 +1386,41 @@ bool multi_next_level_exists() {
     return file.find(rf::level.next_level_filename);
 }
 
-CallHook<void(rf::GameState, bool)> process_enter_limbo_packet_gameseq_set_next_state_hook{
+CallHook<void(rf::GameState, bool)> process_enter_limbo_packet_gameseq_set_state_hook{
     0x0047C091,
-    [](rf::GameState state, bool force) {
+    [] (const rf::GameState state, const bool force) {
         xlog::trace("Enter limbo");
-        if (rf::gameseq_get_state() == rf::GS_MULTI_LEVEL_DOWNLOAD) {
-            // Level changes before we finish downloading the previous one
-            // Do not enter the limbo game state because it would crash the game if there is currently no level loaded
-            // Instead stay in the level download state until we get the leave limbo packet and download the correct level
+        if (gameseq_is_stacked(rf::GS_MULTI_LEVEL_DOWNLOAD)) {
+            // Do not enter `GS_MULTI_LIMBO`, because we would crash, if no level is loaded.
             LevelDownloadManager::instance().abort();
-        }
-        else {
-            process_enter_limbo_packet_gameseq_set_next_state_hook.call_target(state, force);
+            // Enter `GS_MULTI_LIMBO_JUST_JOINED`, so as to draw "BETWEEN LEVELS..." etc.
+            rf::gameseq_set_state(rf::GS_MULTI_LIMBO_JUST_JOINED, false);
+        } else if (rf::gameseq_get_pending_state() == rf::GS_GAMEPLAY) {
+            // Force a transition, in case we are a SINGLE frame after
+            // `multi_getting_state_info_do_frame`, because it sets `GS_GAMEPLAY`.
+            rf::gameseq_set_state(state, true);
+        } else {
+            rf::gameseq_set_state(state, force);
         }
     },
 };
 
 CallHook<void(rf::GameState, bool)> process_leave_limbo_packet_gameseq_set_next_state_hook{
     0x0047C24F,
-    [](rf::GameState state, bool force) {
+    [] (const rf::GameState state, const bool force) {
         xlog::trace("Leave limbo - next level: {}", rf::level.next_level_filename);
         if (!multi_next_level_exists()) {
             rf::gameseq_set_state(rf::GS_MULTI_LEVEL_DOWNLOAD, false);
             multi_level_download_manager_start(rf::level.next_level_filename);
-        } else if (rf::gameseq_get_state() == rf::GS_MULTI_LIMBO_JUST_JOINED) {
-            g_multi_limbo_just_joined_req_leave = true;
+        } else if (gameseq_is_stacked(rf::GS_MULTI_LIMBO)
+            || gameseq_is_stacked(rf::GS_MULTI_LIMBO_JUST_JOINED)
+            || gameseq_is_deep_stacked(rf::GS_MULTI_LEVEL_DOWNLOAD))
+        {
+            // `gameseq_set_state` switches, immediately before `rf_do_frame` can
+            // dim our screen, and draw "LOADING...", so defer transition.
+            g_gameseq_defer_new_level = true;
         } else {
-            process_leave_limbo_packet_gameseq_set_next_state_hook.call_target(state, force);
+            rf::gameseq_set_state(state, force);
         }
     },
 };
@@ -1414,7 +1432,7 @@ void multi_level_download_manager_start(std::string filename) {
         .start(std::move(filename), std::move(listener));
 }
 
-CallHook<void(rf::GameState, bool)> game_new_game_gameseq_set_next_state_hook{
+CallHook<void(rf::GameState, bool)> game_new_game_gameseq_set_state_hook{
     0x00436959,
     [] (const rf::GameState state, const bool force) {
         if (rf::is_multi && !rf::is_server) {
@@ -1429,7 +1447,7 @@ CallHook<void(rf::GameState, bool)> game_new_game_gameseq_set_next_state_hook{
             }
         } else {
         DEFAULT:
-            game_new_game_gameseq_set_next_state_hook.call_target(state, force);
+            rf::gameseq_set_state(state, force);
         }
     },
 };
@@ -1439,7 +1457,7 @@ CodeInjection join_failed_injection{
     []() {
         if (client_bot_launch_enabled() && g_alpine_game_config.bot_quit_when_disconnected) {
             xlog::info("Bot failed to join server - auto-quitting (BotQuitWhenDisconnected=1)");
-            rf::gameseq_set_state(rf::GS_QUITING, false);
+            rf::gameseq_set_state(rf::GS_QUIT_GAME, false);
             return;
         }
         set_jump_to_multi_server_list(true);
@@ -1485,7 +1503,7 @@ ConsoleCommand2 download_level_force_cmd{
 ConsoleCommand2 autodl_blur_background_cmd{
     "autodl_blur_background",
     []() {
-        g_alpine_game_config.autodl_blur_background = !g_alpine_game_config.autodl_blur_background;
+        setting_console_set("autodl_blur_background", "toggle");
         rf::console::print("Autodownload blur background is {}",
             g_alpine_game_config.autodl_blur_background ? "enabled" : "disabled");
     },
@@ -1496,7 +1514,7 @@ ConsoleCommand2 autodl_blur_background_cmd{
 ConsoleCommand2 autodl_download_awps_cmd{
     "autodl_download_awps",
     []() {
-        g_alpine_game_config.autodl_download_awps = !g_alpine_game_config.autodl_download_awps;
+        setting_console_set("autodl_download_awps", "toggle");
         rf::console::print("Autodownload AWP waypoint files: {}",
             g_alpine_game_config.autodl_download_awps ? "enabled" : "disabled");
     },
@@ -1645,28 +1663,7 @@ void poll_awp_download()
     // Check if this result is for the current level (may have changed during download)
     bool is_current_level = string_iequals(target_map, rf::level.filename.c_str());
 
-    if (waypoints_awp_download_pending()) {
-        if (is_current_level) {
-            waypoints_on_awp_download_resolved();
-            if (result == AwpDownloadResult::success) {
-                rf::console::print("AWP waypoint file downloaded and loaded\n");
-            }
-            else if (result == AwpDownloadResult::failed) {
-                rf::console::print("AWP waypoint file download failed\n");
-            }
-            else if (result == AwpDownloadResult::map_not_found) {
-                rf::console::print("No AWP available: map was not found on FactionFiles\n");
-            }
-        }
-        else {
-            // Stale result from a different map — only clear the pending flag
-            // without reloading waypoints (they were already loaded for the current map)
-            waypoints_set_awp_download_pending(false);
-            xlog::info("AWP download result discarded (map changed from {} to {})",
-                target_map, rf::level.filename.c_str());
-        }
-    }
-    else {
+    const auto announce_background_result = [&]() {
         if (result == AwpDownloadResult::success) {
             rf::console::print("AWP waypoint file downloaded in background\n");
         }
@@ -1681,14 +1678,45 @@ void poll_awp_download()
                 rf::console::print("No AWP available via autodl for this map\n");
             }
         }
+    };
+
+    if (waypoints_awp_download_pending()) {
+        if (is_current_level) {
+            waypoints_on_awp_download_resolved();
+            if (is_waypoint_bot_mode_active()) {
+                if (result == AwpDownloadResult::success) {
+                    rf::console::print("AWP waypoint file downloaded and loaded\n");
+                }
+                else if (result == AwpDownloadResult::failed) {
+                    rf::console::print("AWP waypoint file download failed\n");
+                }
+                else if (result == AwpDownloadResult::map_not_found) {
+                    rf::console::print("No AWP available: map was not found on FactionFiles\n");
+                }
+            }
+            else if (level_download_wants_awp() || was_force) {
+                // Announced as a background download; one made only for the route arrows stays silent
+                announce_background_result();
+            }
+        }
+        else {
+            // Stale result from a different map — only clear the pending flag
+            // without reloading waypoints (they were already loaded for the current map)
+            waypoints_set_awp_download_pending(false);
+            xlog::info("AWP download result discarded (map changed from {} to {})",
+                target_map, rf::level.filename.c_str());
+        }
+    }
+    else {
+        announce_background_result();
     }
 }
 
 void level_download_do_patch()
 {
     join_failed_injection.install();
-    game_new_game_gameseq_set_next_state_hook.install();
-    process_enter_limbo_packet_gameseq_set_next_state_hook.install();
+    game_new_game_gameseq_set_state_hook.install();
+    process_enter_limbo_packet_gameseq_set_state_hook.install();
     process_leave_limbo_packet_gameseq_set_next_state_hook.install();
 }
 

@@ -5,6 +5,9 @@ else()
 endif()
 
 function(add_packfile packfile_name)
+    if(NOT ALPINE_BUILD_PACKFILE)
+        return()
+    endif()
 
     list(TRANSFORM ARGN REPLACE "([^:]*):.*" "\\1" OUTPUT_VARIABLE input_deps)
     list(TRANSFORM ARGN REPLACE "[^:]*:(.*)" "\\1" OUTPUT_VARIABLE input_paths)
@@ -12,7 +15,7 @@ function(add_packfile packfile_name)
     add_custom_command(
         OUTPUT ${CMAKE_BINARY_DIR}/bin/${packfile_name}
         COMMAND ${VPP_TOOL} -c ${CMAKE_BINARY_DIR}/bin/${packfile_name} ${input_paths}
-        DEPENDS ${input_deps}
+        DEPENDS ${input_deps} ${input_paths}
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
     )
     add_custom_target(${packfile_name} ALL DEPENDS ${CMAKE_BINARY_DIR}/bin/${packfile_name})
@@ -25,6 +28,7 @@ add_packfile(alpinefaction.vpp
     tables/af_level_quirks.tbl
     tables/alpine_npc_subtitles_en.toml
     tables/alpine_cutscene_subtitles_en.toml
+    tables/af_reference.toml
 
     # waypoint files
     waypoints/dm01.awp
@@ -76,6 +80,7 @@ add_packfile(alpinefaction.vpp
     tables/CTF_EuropaOneOutpost_info.tbl
     tables/dm-SpecialForces_info.tbl
     tables/Dm-NukeTown2050_info.tbl
+    tables/dm-halloween_info.tbl
     tables/DM-Catan-Hill_info.tbl
     tables/DM-Catan-Mountain_info.tbl
     tables/DM-Catan-Field_info.tbl
@@ -87,13 +92,20 @@ add_packfile(alpinefaction.vpp
     tables/dm-RFU4-GraveyardRM_info.tbl
     tables/dm_Galileo2Starliner1-2_info.tbl
     tables/dm_Galileo2StarlinerNS_info.tbl
+    tables/DMDarkrunII_info.tbl
 
     sounds/af_achievement1.wav
     sounds/af_pinglocation1.wav
     sounds/af_hitsound1.wav
     sounds/af_spray1.ogg
     sounds/af_award1.ogg
+    sounds/af_jeep_horn.ogg
+    sounds/af_fighter_scrape_loop.wav
+    sounds/af_zipline_loop1.wav
     sounds/af_killsound1.wav
+    sounds/af_haste_pickup1.wav
+    sounds/af_haste_jump1.wav
+    sounds/af_vampire_pickup1.wav
     sounds/af_radmsg_000.ogg
     sounds/af_radmsg_001.ogg
     sounds/af_radmsg_002.ogg
@@ -183,6 +195,10 @@ add_packfile(alpinefaction.vpp
     images/af_wh_sal_take.tga
     images/af_wh_sal_base_blue.tga
     images/af_wh_sal_base_red.tga
+    images/af_wh_medallion_red.tga
+    images/af_wh_medallion_blue.tga
+    images/af_wh_medallion_neutral.tga
+    images/af_wh_medallion_lock.tga
     images/afsbi_spawned.tga
     images/afsbi_spawned_1.tga
     images/afsbi_dead.tga
@@ -193,6 +209,12 @@ add_packfile(alpinefaction.vpp
     images/afsbi_brow_1.tga
     images/afsbi_idle.tga
     images/afsbi_idle_1.tga
+    images/afsbi_btn_mute.tga
+    images/afsbi_btn_kick.tga
+    images/afsbi_btn_ban.tga
+    images/afsbi_btn_swap.tga
+    images/afsbi_btn_spec.tga
+    images/afsbi_btn_ready.tga
     images/scope_zoom_corner256_red.tga
     images/128blackcircle.tga
     images/ass2_scope_circle.tga
@@ -248,6 +270,20 @@ add_packfile(alpinefaction.vpp
     images/hud_miniflag_sal.vbm
     images/hud_microflag_sal.vbm
     images/hud_flag_sal.vbm
+    images/hud_miniflag_scav_1.tga
+    images/hud_miniflag_scav.tga
+    images/hud_microflag_scav.tga
+    images/hud_flag_scav.tga
+    images/hud_pow_damage.tga
+    images/hud_pow_damage_1.tga
+    images/hud_pow_invuln.tga
+    images/hud_pow_invuln_1.tga
+    images/hud_pow_haste_0.tga
+    images/hud_pow_haste_1.tga
+    images/hud_pow_vampire_0.tga
+    images/hud_pow_vampire_1.tga
+    images/hud_pow_jetpack_0.tga
+    images/hud_pow_jetpack_1.tga
     images/CTFflag-afgr.tga
     images/noclip_ammo_bar_1.tga
     images/Icon_EAX.tga
@@ -256,6 +292,10 @@ add_packfile(alpinefaction.vpp
     images/Icon_AFCorona.tga
     images/Icon_AFBag.tga
     images/Icon_AFWeather.tga
+    images/Icon_AFProjection.tga
+    images/Icon_AFRope.tga
+    images/Icon_AFTerrain.tga
+    images/Icon_AFDirLight.tga
     images/af_gbrsnowfl01.tga
     images/radar_dish.tga
     images/score_aflogo.tga
@@ -276,10 +316,92 @@ add_packfile(alpinefaction.vpp
     images/dec_af_csp09.tga
     images/dec_af_csp10.tga
     images/af-jetpack1skin1.tga
+    images/af_armorshard1_tex.tga
+    images/af_haste1_metal.tga
+    images/af_haste1_glass.tga
+    images/af_haste1_frame.tga
+    images/af_vampire1_shell.tga
+    images/af_vampire1_orb.tga
+    images/af_vampire1_teeth.tga
+    images/af_healthshard1_shell.tga
+    images/af_healthshard1_gauze.tga
+    images/af_menu_cap.svg
+    images/af_connector.svg
+    images/af_arrows.svg
+    images/af_search_icon.svg
+    images/af_reset_icon.svg
+    images/af_revert_icon.svg
+    images/af_close_icon.svg
+    images/af_padlock_icon.svg
+    images/af_scavpumap1.dds
+    images/af_jeeptire1.tga
+    images/af_apctread1.atx
+    images/af_apctreadbm.tga
+    images/af_drilltread1.atx
+    images/cocpit_armor_digit4.tga
+    images/caustics/af_caust00.png
+    images/caustics/af_caust01.png
+    images/caustics/af_caust02.png
+    images/caustics/af_caust03.png
+    images/caustics/af_caust04.png
+    images/caustics/af_caust05.png
+    images/caustics/af_caust06.png
+    images/caustics/af_caust07.png
+    images/caustics/af_caust08.png
+    images/caustics/af_caust09.png
+    images/caustics/af_caust10.png
+    images/caustics/af_caust11.png
+    images/caustics/af_caust12.png
+    images/caustics/af_caust13.png
+    images/caustics/af_caust14.png
+    images/caustics/af_caust15.png
+    images/vehicle_teams/APC_Low_red.tga
+    images/vehicle_teams/APC_P01_red.tga
+    images/vehicle_teams/APC_P02_red.tga
+    images/vehicle_teams/APC_P03_red.tga
+    images/vehicle_teams/APC_P04_red.tga
+    images/vehicle_teams/Driller01_P01_blue.tga
+    images/vehicle_teams/Driller01_P01_red.tga
+    images/vehicle_teams/Driller01_P02_blue.tga
+    images/vehicle_teams/Driller01_P02_red.tga
+    images/vehicle_teams/Driller01_P04_blue.tga
+    images/vehicle_teams/Driller01_P04_red.tga
+    images/vehicle_teams/Driller01_P06_blue.tga
+    images/vehicle_teams/Driller01_P06_red.tga
+    images/vehicle_teams/Driller01_P07_blue.tga
+    images/vehicle_teams/Driller01_P07_red.tga
+    images/vehicle_teams/Driller01_P09_blue.tga
+    images/vehicle_teams/Driller01_P09_red.tga
+    images/vehicle_teams/Driller01_P10_blue.tga
+    images/vehicle_teams/Driller01_P10_red.tga
+    images/vehicle_teams/Fighter01_P01_blue.tga
+    images/vehicle_teams/Fighter01_P01_red.tga
+    images/vehicle_teams/Fighter01_P02_blue.tga
+    images/vehicle_teams/Fighter01_P02_red.tga
+    images/vehicle_teams/Fighter01_P03_blue.tga
+    images/vehicle_teams/Fighter01_P03_red.tga
+    images/vehicle_teams/Fighter_LOD2_blue.tga
+    images/vehicle_teams/Fighter_LOD2_red.tga
+    images/vehicle_teams/Jeep01_P01_blue.tga
+    images/vehicle_teams/Jeep01_P01_red.tga
+    images/vehicle_teams/Jeep01_P02_blue.tga
+    images/vehicle_teams/Jeep01_P02_red.tga
+    images/vehicle_teams/Sub_LOD2_blue.tga
+    images/vehicle_teams/Sub_LOD2_red.tga
+    images/vehicle_teams/Sub_P01_blue.tga
+    images/vehicle_teams/Sub_P01_red.tga
+    images/vehicle_teams/Sub_P02_blue.tga
+    images/vehicle_teams/Sub_P02_red.tga
+    images/vehicle_teams/Sub_P03_blue.tga
+    images/vehicle_teams/Sub_P03_red.tga
+    images/vehicle_teams/Sub_P04_blue.tga
+    images/vehicle_teams/Sub_P04_red.tga
 
     fonts/biggerfont.vf
     fonts/regularfont.ttf
     fonts/boldfont.ttf
+    fonts/consolefont.ttf
+    fonts/consolefont-bold.ttf
 
     meshes/Hendrix.v3c
     meshes/Generator_Small01.v3m
@@ -295,24 +417,68 @@ add_packfile(alpinefaction.vpp
     meshes/meatchunk4.v3m
     meshes/meatchunk5.v3m
     meshes/af_pickup-bag.v3m
+    meshes/af-scavpumap1.v3m
     meshes/af-jetpack1.v3m
     meshes/AFSALflag1.vfx
     meshes/af-jg1.v3m
+    meshes/af_Jeep01.v3m
+    meshes/af_Jeep01T.v3m
+    meshes/af_jeep_gun.v3m
+    meshes/af_APC.v3m
+    meshes/af_Driller01.v3m
+    meshes/af_APC.vfx
+    meshes/af_fighter01.vfx
+    meshes/af_Fighter01m.v3m
+    meshes/af_Sub_Mini01.v3m
+    meshes/af_Sub_Mini01T.v3m
+    meshes/af_Jeep01_debris.v3m
+    meshes/af_APC_debris.v3m
+    meshes/af_Driller01_debris.v3m
+    meshes/af_Fighter01_debris.v3m
+    meshes/af_turret_plain_debris.v3m
+    meshes/af_sub_debris.v3m
+    meshes/af_zipline1.v3m
+    meshes/af_armorshard1.v3m
+    meshes/af_haste1.v3m
+    meshes/af_vampire1.v3m
+    meshes/af_healthshard1.v3m
+
+    animations/af_female_jeep_driver.rfa
+    animations/af_female_jeep_gunner.rfa
+    animations/af_female_on_turret.rfa
+    animations/af_merc_jeep_driver.rfa
+    animations/af_merc_jeep_gunner.rfa
+    animations/af_merc_on_turret.rfa
+    animations/af_civilian_jeep_driver.rfa
+    animations/af_civilian_jeep_gunner.rfa
+    animations/af_civilian_on_turret.rfa
 
     standard_vs:${CMAKE_BINARY_DIR}/shaders/standard_vs.bin
     character_vs:${CMAKE_BINARY_DIR}/shaders/character_vs.bin
     transformed_vs:${CMAKE_BINARY_DIR}/shaders/transformed_vs.bin
+    editor_lightmap_vs:${CMAKE_BINARY_DIR}/shaders/editor_lightmap_vs.bin
+    particle_vs:${CMAKE_BINARY_DIR}/shaders/particle_vs.bin
+    particle_stretched_vs:${CMAKE_BINARY_DIR}/shaders/particle_stretched_vs.bin
+    weather_vs:${CMAKE_BINARY_DIR}/shaders/weather_vs.bin
     shadow_standard_vs:${CMAKE_BINARY_DIR}/shaders/shadow_standard_vs.bin
     shadow_character_vs:${CMAKE_BINARY_DIR}/shaders/shadow_character_vs.bin
     outline_character_vs:${CMAKE_BINARY_DIR}/shaders/outline_character_vs.bin
     outline_standard_vs:${CMAKE_BINARY_DIR}/shaders/outline_standard_vs.bin
     standard_ps:${CMAKE_BINARY_DIR}/shaders/standard_ps.bin
     standard_nogas_ps:${CMAKE_BINARY_DIR}/shaders/standard_nogas_ps.bin
+    terrain_ps:${CMAKE_BINARY_DIR}/shaders/terrain_ps.bin
+    terrain_nogas_ps:${CMAKE_BINARY_DIR}/shaders/terrain_nogas_ps.bin
+    decoration_vs:${CMAKE_BINARY_DIR}/shaders/decoration_vs.bin
+    decoration_ps:${CMAKE_BINARY_DIR}/shaders/decoration_ps.bin
+    decoration_nogas_ps:${CMAKE_BINARY_DIR}/shaders/decoration_nogas_ps.bin
     ui_ps:${CMAKE_BINARY_DIR}/shaders/ui_ps.bin
+    ui_sdf_ps:${CMAKE_BINARY_DIR}/shaders/ui_sdf_ps.bin
     shadow_debug_ps:${CMAKE_BINARY_DIR}/shaders/shadow_debug_ps.bin
     outline_ps:${CMAKE_BINARY_DIR}/shaders/outline_ps.bin
     gamma_vs:${CMAKE_BINARY_DIR}/shaders/gamma_vs.bin
     gamma_ps:${CMAKE_BINARY_DIR}/shaders/gamma_ps.bin
+    scenefx_ps:${CMAKE_BINARY_DIR}/shaders/scenefx_ps.bin
+    depth_resolve_ps:${CMAKE_BINARY_DIR}/shaders/depth_resolve_ps.bin
 )
 
 # Copy licensing-info.txt
@@ -323,4 +489,14 @@ add_custom_command(
 )
 add_custom_target(LicensingInfoTxt ALL DEPENDS ${CMAKE_BINARY_DIR}/bin/licensing-info.txt)
 
-add_subdirectory(shaders)
+# Copy terms.txt
+add_custom_command(
+    OUTPUT ${CMAKE_BINARY_DIR}/bin/terms.txt
+    COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/terms.txt ${CMAKE_BINARY_DIR}/bin/terms.txt
+    MAIN_DEPENDENCY ${CMAKE_CURRENT_SOURCE_DIR}/terms.txt
+)
+add_custom_target(TermsTxt ALL DEPENDS ${CMAKE_BINARY_DIR}/bin/terms.txt)
+
+if(ALPINE_BUILD_PACKFILE)
+    add_subdirectory(shaders)
+endif()

@@ -75,6 +75,14 @@ void HttpSession::set_receive_timeout(unsigned long timeout_ms)
         THROW_WIN32_ERROR();
 }
 
+// WinINet defaults to 5, which silently multiplies the connect timeout by 5 per attempt.
+void HttpSession::set_connect_retries(unsigned long retries)
+{
+    if (!InternetSetOptionA(m_inet, INTERNET_OPTION_CONNECT_RETRIES, const_cast<unsigned long*>(&retries),
+                        sizeof(retries)))
+        THROW_WIN32_ERROR();
+}
+
 HttpRequest::HttpRequest(std::string_view url, const char* method, HttpSession& session)
 {
     ParsedUrl parsed_url = parse_http_url(url);

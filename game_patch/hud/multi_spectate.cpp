@@ -5,6 +5,7 @@
 #include "hud.h"
 #include "hud_internal.h"
 #include "multi_scoreboard.h"
+#include "../graphics/gr.h"
 #include "../input/input.h"
 #include "../os/console.h"
 #include "../rf/entity.h"
@@ -31,7 +32,10 @@
 #include "../misc/player.h"
 #include "../misc/alpine_settings.h"
 #include "../multi/gametype.h"
+#include "../multi/obj_interp_history.h"
+#include "../multi/powerups.h"
 #include "../multi/saved_info.h"
+#include "../multi/vehicles/vehicle.h"
 #include <common/config/BuildConfig.h>
 #include <xlog/xlog.h>
 #include <algorithm>
@@ -41,6 +45,7 @@
 #include <optional>
 #include <vector>
 #include "../rf/os/frametime.h"
+#include <common/utils/int-utils.h>
 #include <common/utils/list-utils.h>
 #include <toml++/toml.hpp>
 #include "../rf/input.h"
@@ -51,6 +56,8 @@
 #include <shlwapi.h>
 #include <windows.h>
 #include "../multi/alpine_packets.h"
+#include "../misc/settings_registry.h"
+#include "../object/zipline.h"
 
 static rf::Player* g_spectate_mode_target;
 static rf::Camera* g_old_target_camera = nullptr;
@@ -60,7 +67,7 @@ static rf::Player* g_spectate_freelook_saved_target = nullptr;
 
 // Two spectate groups, each with its own submode. The "attached" group watches a player
 // (first or third person); the "detached" group is a free camera (free look or static).
-// The Attach bind swaps between groups; Change Spectate View flips the submode in the group.
+// The Attach bind swaps between groups; Change View flips the submode in the group.
 enum class SpectateViewMode
 {
     first_person,
@@ -111,6 +118,15 @@ static constexpr float k_spectate_orbit_distance = 4.5f;
 static constexpr float k_spectate_orbit_focus_height = 1.0f;
 static constexpr float k_spectate_orbit_pitch_limit = 1.4f; // ~80 degrees
 
+// Third person over-the-shoulder camera. The boom length is pulled in instantly by level geometry
+// and eased back out when clear.
+static constexpr float k_spectate_shoulder_distance = 2.2f;
+static constexpr float k_spectate_shoulder_right = 0.6f;
+static constexpr float k_spectate_shoulder_up = 0.2f;
+static constexpr float k_spectate_shoulder_ease_rate = 8.0f;
+static constexpr float k_spectate_camera_radius = 0.2f;
+static float g_spectate_shoulder_boom = k_spectate_shoulder_distance;
+
 // Free look stepped zoom: tapping "next" (primary attack) steps through these FOV divisors and wraps.
 static constexpr float k_spectate_freelook_zoom_steps[] = {1.0f, 2.0f, 4.0f};
 static int g_spectate_freelook_zoom_index = 0;
@@ -130,6 +146,11 @@ bool multi_spectate_is_third_person_orbit()
 {
     return g_spectate_mode_enabled && g_spectate_view_mode == SpectateViewMode::third_person
         && g_spectate_third_person_orbit;
+}
+
+bool multi_spectate_is_third_person()
+{
+    return g_spectate_mode_enabled && g_spectate_view_mode == SpectateViewMode::third_person;
 }
 
 bool multi_spectate_is_static()
@@ -162,6 +183,23 @@ void multi_spectate_reset_action_anim_edge_state()
     g_prev_weapon_type = -1;
 }
 
+// A demo seek landed mid-reload: marking the edge seen keeps the per-frame detector from restarting the anim
+void multi_spectate_resume_reload_anim(rf::Entity* entity, float elapsed_secs)
+{
+    rf::Player* target = g_spectate_mode_target;
+    if (!g_spectate_mode_enabled || !target || target == rf::local_player || !entity
+        || entity->handle != target->entity_handle || !target->weapon_mesh_handle) {
+        return;
+    }
+    const int weapon_type = entity->ai.current_primary_weapon;
+    if (weapon_type >= 0 && weapon_type < rf::num_weapon_types
+        && rf::player_fpgun_action_anim_exists(weapon_type, rf::WA_RELOAD)) {
+        rf::player_fpgun_play_anim(target, rf::WA_RELOAD);
+        demo_playback_vmesh_catch_up(target->weapon_mesh_handle, elapsed_secs, nullptr, nullptr);
+    }
+    g_prev_is_reloading = true;
+}
+
 void player_fpgun_set_player(rf::Player* pp);
 
 static void spectate_apply_player_view_mode();
@@ -169,6 +207,7 @@ static void spectate_init_orbit(rf::Camera* camera);
 static void spectate_populate_default_binds();
 static void spectate_save_afl();
 static void spectate_delete_current_dropped_camera();
+static void spectate_exit_static();
 
 static void set_camera_target(rf::Player* player)
 {
@@ -220,9 +259,26 @@ static bool state_animation_is_crouch(int state)
 // Hook entity_set_next_state_anim to remap non-crouch animations to crouch
 // variants for the spectated entity when it's crouching. This prevents the
 // movement state machine from constantly overriding the crouch animation.
+// Zip line riders are posed here too.
+//
+// SINGLE OWNER of 0x0042A580: the vehicles module needs its early-out here, not a second FunHook.
 FunHook<void(rf::Entity*, int, float)> spectate_entity_set_next_state_anim_hook{
     0x0042A580,
     [](rf::Entity* entity, int state_anim_index, float transition_time) {
+        if (zipline_entity_is_riding(entity)) {
+            state_anim_index = rf::ENTITY_STATE_FREEFALL;
+        }
+        // A seated rider whose character lacks the seated anims re-requests the state every frame and
+        // never finishes. Seat-locked MP riders only, or an SP NPC would freeze mid STAND->WALK.
+        const bool turret_rider = vehicle_is_turret_rider_state(entity, state_anim_index);
+        if ((turret_rider || vehicle_rider_pose_is_seat_locked(entity))
+            && state_anim_index > rf::ENTITY_STATE_STAND
+            && state_anim_index <= rf::ENTITY_STATE_CUSTOM
+            && entity->state_anims[state_anim_index].vmesh_anim_index == -1
+            && (entity->current_state_anim == rf::ENTITY_STATE_STAND
+                || entity->next_state_anim == rf::ENTITY_STATE_STAND)) {
+            return;
+        }
         if (g_spectate_mode_enabled && g_spectate_mode_target && rf::entity_is_crouching(entity)
             && entity->current_state_anim != rf::ENTITY_STATE_FREEFALL) {
             rf::Entity* target = rf::entity_from_handle(g_spectate_mode_target->entity_handle);
@@ -296,6 +352,7 @@ void multi_spectate_set_target_player(rf::Player* player)
     bool entering_player_spectate = (player != rf::local_player);
 
     if (entering_player_spectate) {
+        spectate_exit_static();
         g_local_queued_delayed_spawn = false;
         stop_draw_respawn_timer_notification();
     }
@@ -423,6 +480,24 @@ bool multi_spectate_is_first_person()
     return spectate_first_person_render_active();
 }
 
+bool multi_spectate_view_is_first_person_of(const rf::Entity* ep)
+{
+    if (!ep || !rf::local_player) {
+        return false;
+    }
+    if (multi_spectate_is_spectating()) {
+        if (!multi_spectate_is_first_person()) {
+            return false;
+        }
+        rf::Player* target = multi_spectate_get_target_player();
+        return target && ep->handle == target->entity_handle;
+    }
+    if (ep->handle != rf::local_player->entity_handle) {
+        return false;
+    }
+    return !rf::local_player->cam || rf::camera_get_mode(*rf::local_player->cam) == rf::CAMERA_FIRST_PERSON;
+}
+
 bool multi_spectate_is_following_player()
 {
     return g_spectate_mode_enabled;
@@ -502,6 +577,7 @@ static void spectate_apply_player_view_mode()
         player_fpgun_set_player(rf::local_player);
 #endif
         rf::camera_enter_third_person(camera);
+        g_spectate_shoulder_boom = k_spectate_shoulder_distance;
         if (g_spectate_view_mode == SpectateViewMode::third_person && g_spectate_third_person_orbit)
             spectate_init_orbit(camera);
     }
@@ -697,8 +773,43 @@ static void spectate_drop_freelook_camera()
         static_cast<int>(g_spectate_dropped_cameras.size()), spectate_static_camera_count());
 }
 
+// Start free look at a given view. The free look camera rebuilds its view from control_data every
+// frame (phb.y = yaw, eye_phb.x = RF's non-linear pitch, + = up) and moves from p_data.pos.
+static void spectate_place_freelook_camera(rf::Entity* ce, const rf::Vector3& pos, const rf::Matrix3& view)
+{
+    const rf::Vector3& f = view.fvec;
+    // From rvec (cos(yaw), 0, -sin(yaw)): fvec loses the heading when looking straight up/down
+    const float yaw = std::atan2(-view.rvec.z, view.rvec.x);
+    // Inverse of the engine's fvec ~ (k sin(yaw), sin(pitch), k cos(yaw)) with k = 1 - |sin(pitch)|
+    const float h = std::sqrt(f.x * f.x + f.z * f.z);
+    float pitch = std::copysign(1.5707964f, f.y);
+    if (h > 1e-6f) {
+        const float t = std::abs(f.y) / h;
+        pitch = std::copysign(std::asin(t / (1.0f + t)), f.y);
+    }
+    rf::Matrix3 body;
+    body.set_from_angles(0.0f, 0.0f, yaw);
+
+    ce->pos = pos;
+    ce->eye_pos = pos;
+    ce->p_data.pos = pos;
+    ce->p_data.next_pos = pos;
+    ce->orient = body;
+    ce->p_data.orient = body;
+    ce->p_data.next_orient = body;
+    ce->eye_orient = view;
+    ce->control_data.phb.set(0.0f, yaw, 0.0f);
+    ce->control_data.eye_phb.set(pitch, 0.0f, 0.0f);
+    ce->control_data.delta_phb.zero();
+    ce->control_data.delta_eye_phb.zero();
+    ce->p_data.vel.zero();
+    ce->set_room(nullptr);
+    ce->update_room();
+}
+
 // Transition from the current spectate view to `to`, handling target binding/unbinding.
-static void spectate_set_view_mode(SpectateViewMode to)
+// `keep_view`: a player view -> free look switch starts free look at the view on screen.
+static void spectate_set_view_mode(SpectateViewMode to, bool keep_view = false)
 {
     if (!rf::local_player || !rf::local_player->cam)
         return;
@@ -741,14 +852,21 @@ static void spectate_set_view_mode(SpectateViewMode to)
     }
     else {
         // Entering a free view (free look or static) - release any player target.
+        rf::Camera* cam = rf::local_player->cam;
+        keep_view = keep_view && from_player && to == SpectateViewMode::freelook && cam->camera_entity;
+        const rf::Vector3 view_pos = keep_view ? rf::camera_get_pos(cam) : rf::Vector3{};
+        const rf::Matrix3 view_orient = keep_view ? rf::camera_get_orient(cam) : rf::Matrix3{};
         if (from_player) {
             g_spectate_freelook_saved_target = g_spectate_mode_target;
             spectate_unbind_target();
             g_spectate_mode_enabled = false;
             g_spectate_mode_target = rf::local_player;
         }
-        if (to == SpectateViewMode::freelook)
+        if (to == SpectateViewMode::freelook) {
             multi_spectate_enter_freelook();
+            if (keep_view && cam->mode == rf::CAMERA_FREELOOK && cam->camera_entity)
+                spectate_place_freelook_camera(cam->camera_entity, view_pos, view_orient);
+        }
         else
             spectate_enter_static();
     }
@@ -759,6 +877,7 @@ SpectateCameraState multi_spectate_get_camera_state()
     SpectateCameraState state;
     state.attached = g_spectate_mode_enabled && spectate_is_player_view(g_spectate_view_mode);
     state.third_person = g_spectate_view_mode == SpectateViewMode::third_person;
+    state.static_index = g_spectate_static_active ? g_spectate_static_index : -1;
     return state;
 }
 
@@ -766,6 +885,12 @@ void multi_spectate_apply_camera_state(const SpectateCameraState& state, rf::Pla
 {
     if (!state.attached || !target || target == rf::local_player || target->is_non_participant()) {
         multi_spectate_enter_freelook();
+        if (state.static_index >= 0 && state.static_index < spectate_static_camera_count()) {
+            g_spectate_detached_submode = SpectateViewMode::static_cam;
+            spectate_set_view_mode(SpectateViewMode::static_cam);
+            g_spectate_static_index = state.static_index;
+            spectate_apply_static_index();
+        }
         return;
     }
     // set_target_player handles entering attached spectate from a free view (defaults
@@ -792,7 +917,7 @@ void multi_spectate_toggle_attach()
     if (attached) {
         g_spectate_attached_submode = g_spectate_view_mode;   // remember first/third
         g_spectate_last_attached = false;
-        spectate_set_view_mode(g_spectate_detached_submode);  // restore free/static
+        spectate_set_view_mode(g_spectate_detached_submode, true); // restore free/static
     }
     else {
         g_spectate_detached_submode = g_spectate_static_active
@@ -803,7 +928,7 @@ void multi_spectate_toggle_attach()
     }
 }
 
-// Change Spectate View bind: flip the submode within the active group.
+// Change View bind while spectating: flip the submode within the active group.
 void multi_spectate_change_view()
 {
     if (!multi_spectate_is_spectating())
@@ -883,10 +1008,10 @@ static void spectate_delete_current_dropped_camera()
 // saw at T - (their ping + their client's interp delay). Realign by evaluating every
 // other player entity's interp ring that far in the past, so the crosshair lines up with
 // targets the way the shooter saw them - the same rewind the server's lag compensation
-// applied when it validated their hits. The ring holds real received history (20
-// keyframes, ~500ms at 40 netfps), so this stays smooth. Projectiles/corpses/
-// movers are not biased: tracers must leave the (un-delayed) POV muzzle, and alignment
-// only matters against players.
+// applied when it validated their hits. The ring holds real received history (the
+// engine's 20 keyframes plus AF's deeper obj_interp_history, ~3s), so this stays
+// smooth. Projectiles/corpses/movers are not biased: tracers must leave the (un-delayed)
+// POV muzzle, and alignment only matters against players.
 //
 
 static int g_povcomp_override_ms = -1; // >= 0: fixed delay instead of ping-derived
@@ -894,13 +1019,8 @@ static int g_povcomp_override_ms = -1; // >= 0: fixed delay instead of ping-deri
 // frame so the world glides on target/ping changes
 static float g_povcomp_applied_ms = 0.0f;
 
-constexpr int povcomp_max_ms = 450; // interp ring depth bounds usable delay anyway
+constexpr int povcomp_max_ms = 1000; // obj_interp_history depth bounds usable delay anyway
 constexpr float povcomp_slew_ms_per_s = 300.0f;
-
-// The engine anchors each ring's interp_time at 2.2x the average sample-arrival interval
-// behind the newest keyframe (flt_59F50C), so the target's client viewed remote entities
-// ~ping + 2.2 * update interval in the past relative to the server timeline.
-constexpr float povcomp_interp_headroom = 2.2f;
 
 static int povcomp_desired_ms()
 {
@@ -914,15 +1034,14 @@ static int povcomp_desired_ms()
         return 0;
     int desired = g_povcomp_override_ms;
     if (desired < 0) {
-        // The server's netfps isn't known client-side; the measured average arrival
-        // interval of the target's own ring is the same cadence their client observed
-        float interval_ms = 25.0f; // fallback: netfps 40
+        // The target's client viewed remote entities ~ping + interp delay in the past. The server's netfps may be
+        // stale or unknown, so estimate the delay from our ring of the target (its jitter only approximates theirs)
+        float delay_ms = obj_interp_target_delay_ms(25.0f, 0.0f); // fallback: netfps 40
         rf::Entity* target_entity = rf::entity_from_handle(target->entity_handle);
         if (target_entity && target_entity->obj_interp && target_entity->obj_interp->num_frames() >= 2) {
-            interval_ms = std::clamp(target_entity->obj_interp->arrive_time_avg_diff,
-                                     1000.0f / 300.0f, 1000.0f / 12.0f);
+            delay_ms = obj_interp_target_delay_ms(target_entity->obj_interp);
         }
-        desired = target->net_data->ping + static_cast<int>(povcomp_interp_headroom * interval_ms);
+        desired = target->net_data->ping + static_cast<int>(delay_ms);
     }
     return std::clamp(desired, 0, povcomp_max_ms);
 }
@@ -947,21 +1066,15 @@ static void povcomp_do_frame()
     }
 }
 
-// Clamp the bias so the biased evaluation time stays within the ring's recorded
-// span. interp_time and time_array are 16-bit server ms ticks; blind subtraction
-// near a numeric wrap would read as ~65s in the future and trip determine_frame's
-// 5000ms staleness cutoff. time_array[0] is always the oldest sample (insertion
-// shifts the arrays down when full). Returns 0 when biasing is unsafe this frame.
-static uint16_t povcomp_safe_bias(rf::ObjInterp* interp, int desired_ms)
+// Clamp the bias to the evaluable span (engine ring or deeper history); 0 when biasing is unsafe this frame
+static uint16_t povcomp_safe_bias(rf::ObjInterp* interp, const rf::Entity* entity, int desired_ms)
 {
-    // flags bit 0 = ring empty/unanchored: set by Clear(), cleared once a sample
-    // anchors interp_time (frame_start skips processing while it is set)
-    if ((interp->flags & 1) != 0 || interp->num < 2)
+    if ((interp->flags & rf::OIF_REANCHOR) != 0 || interp->num < 2)
         return 0; // ring unusable; the stock path holds the current pos anyway
-    const auto avail = static_cast<uint16_t>(interp->interp_time - interp->time_array[0]);
-    if (avail > 0x1388)
+    const int avail = wrapped_diff16(interp->interp_time, obj_interp_oldest_tick(entity));
+    if (avail <= 0)
         return 0; // stale/wrapped ring - leave it to the stock staleness handling
-    return static_cast<uint16_t>(std::min<int>(desired_ms, avail));
+    return static_cast<uint16_t>(std::min(desired_ms, avail));
 }
 
 static int povcomp_bias_for(rf::Entity* entity)
@@ -989,7 +1102,7 @@ static void povcomp_interp_call(rf::Entity* entity, auto& hook)
     }
     rf::ObjInterp* interp = entity->obj_interp;
     const int desired = interp ? povcomp_bias_for(entity) : 0;
-    const uint16_t bias = desired > 0 ? povcomp_safe_bias(interp, desired) : 0;
+    const uint16_t bias = desired > 0 ? povcomp_safe_bias(interp, entity, desired) : 0;
     if (bias == 0) {
         hook.call_target(entity);
         return;
@@ -1021,11 +1134,11 @@ static ConsoleCommand2 spectate_povcomp_cmd{
     [](std::optional<std::string> arg) {
         if (arg) {
             if (*arg == "on" || *arg == "auto") {
-                g_alpine_game_config.spectate_povcomp = true;
+                setting_console_set("spectate_povcomp", "1");
                 g_povcomp_override_ms = -1;
             }
             else if (*arg == "off") {
-                g_alpine_game_config.spectate_povcomp = false;
+                setting_console_set("spectate_povcomp", "0");
             }
             else {
                 int value = 0;
@@ -1034,7 +1147,7 @@ static ConsoleCommand2 spectate_povcomp_cmd{
                     rf::console::print("Usage: spectate_povcomp [on|off|<delay ms>]");
                     return;
                 }
-                g_alpine_game_config.spectate_povcomp = true;
+                setting_console_set("spectate_povcomp", "1");
                 g_povcomp_override_ms = std::clamp(value, 0, povcomp_max_ms);
             }
         }
@@ -1053,13 +1166,76 @@ static ConsoleCommand2 spectate_povcomp_cmd{
     "spectate_povcomp [on|off|<delay ms>]",
 };
 
-// Per-frame camera positioning for third-person orbit (called from camera_do_frame_hook). Returns
-// true if it positioned the camera, so the stock per-frame third-person logic is skipped.
+// How far the camera can travel from `from` toward `to` before level geometry, keeping
+// k_spectate_camera_radius clear of the hit.
+static float spectate_camera_clear_distance(const rf::Vector3& from, const rf::Vector3& to)
+{
+    const rf::Vector3 delta = to - from;
+    const float full = delta.len();
+    if (full < 0.001f)
+        return full;
+    const rf::Vector3 dir = delta / full;
+    rf::Vector3 p0 = from;
+    rf::Vector3 p1 = from + dir * (full + k_spectate_camera_radius);
+    rf::GCollisionOutput col{};
+    if (!rf::collide_linesegment_level_solid(p0, p1, rf::CF_PROCESS_INVISIBLE_FACES, &col))
+        return full;
+    return std::clamp((col.hit_point - from).len() - k_spectate_camera_radius, 0.0f, full);
+}
+
+static void spectate_set_camera_entity(rf::Entity* ce, const rf::Vector3& pos, const rf::Matrix3& orient)
+{
+    ce->pos = pos;
+    ce->orient = orient;
+    ce->eye_pos = pos;
+    ce->eye_orient = orient;
+    ce->set_room(nullptr);
+    ce->update_room();
+}
+
+void multi_spectate_povcomp_frame(rf::Camera* camera)
+{
+    if (rf::local_player && camera == rf::local_player->cam && camera->camera_entity)
+        povcomp_do_frame();
+}
+
+void multi_spectate_consume_look_deltas(float& dpitch, float& dyaw)
+{
+    // While we're a dead spectator nothing else pumps mouse_get_delta, so the raw delta accumulator
+    // stays empty. Pump it here, then read it. In Raw/Modern mouse mode the hook fills the accumulator
+    // (read via consume_raw_mouse_deltas); Classic mode returns the raw pixel delta in mdx/mdy instead.
+    int mdx = 0, mdy = 0, mdz = 0;
+    rf::mouse_get_delta(mdx, mdy, mdz);
+    dpitch = 0.0f;
+    dyaw = 0.0f;
+    if (!rf::keep_mouse_centered) {
+        return; // a free cursor belongs to an overlay, not the view
+    }
+    consume_raw_mouse_deltas(dpitch, dyaw, false);
+    if (dpitch == 0.0f && dyaw == 0.0f && (mdx != 0 || mdy != 0)) {
+        const float sens = rf::local_player->settings.controls.mouse_sensitivity;
+        constexpr float classic_scale = 0.0035f;
+        float fy = static_cast<float>(mdy);
+        if (rf::local_player->settings.controls.axes[1].invert)
+            fy = -fy;
+        dpitch = -fy * sens * classic_scale;
+        dyaw = static_cast<float>(mdx) * sens * classic_scale;
+    }
+}
+
+void multi_spectate_reseed_orbit()
+{
+    if (rf::local_player && rf::local_player->cam && rf::local_player->cam->camera_entity)
+        spectate_init_orbit(rf::local_player->cam);
+}
+
+// Per-frame camera positioning for third person (over-the-shoulder and orbit), called from
+// camera_do_frame_hook. Returns true if it positioned the camera, so the stock per-frame
+// third-person logic is skipped.
 bool multi_spectate_camera_do_frame(rf::Camera* camera)
 {
     if (!rf::local_player || camera != rf::local_player->cam || !camera->camera_entity)
         return false;
-    povcomp_do_frame();
     rf::Entity* ce = camera->camera_entity;
 
     // Static spectate on a player-dropped camera (level .rfl cameras are drawn by the engine's
@@ -1070,17 +1246,12 @@ bool multi_spectate_camera_do_frame(rf::Camera* camera)
         const int di = g_spectate_static_index - rf::fixed_camera_count;
         if (di >= 0 && di < static_cast<int>(g_spectate_dropped_cameras.size())) {
             const SpectateStaticCamera& sc = g_spectate_dropped_cameras[di];
-            ce->pos = sc.pos;
-            ce->orient = sc.orient;
-            ce->eye_pos = sc.pos;
-            ce->eye_orient = sc.orient;
-            ce->set_room(nullptr);
-            ce->update_room();
+            spectate_set_camera_entity(ce, sc.pos, sc.orient);
             return true;
         }
     }
 
-    // Third-person orbit is only driven during active gameplay; at round end let the engine run
+    // Third person is only driven during active gameplay; at round end let the engine run
     // its own endgame fixed-camera flyby.
     if (rf::gameseq_get_state() != rf::GS_GAMEPLAY)
         return false;
@@ -1089,32 +1260,12 @@ bool multi_spectate_camera_do_frame(rf::Camera* camera)
         rf::Entity* target = g_spectate_mode_target
             ? rf::entity_from_handle(g_spectate_mode_target->entity_handle)
             : nullptr;
-        if (!target) {
-            // Target dead/gone this frame - drain the mouse accumulator so motion during the dead
-            // interval doesn't bank up and snap the view on respawn; hold the camera in place.
-            int mdx = 0, mdy = 0, mdz = 0;
-            rf::mouse_get_delta(mdx, mdy, mdz);
-            float dpitch = 0.0f, dyaw = 0.0f;
-            consume_raw_mouse_deltas(dpitch, dyaw, false);
-            return true;
-        }
-
-        // While we're a dead third-person spectator nothing else pumps mouse_get_delta, so the raw
-        // delta accumulator stays empty. Pump it here, then read it. In Raw/Modern mouse mode the
-        // hook fills the accumulator (read via consume_raw_mouse_deltas); Classic mode returns the
-        // raw pixel delta in mdx/mdy instead.
-        int mdx = 0, mdy = 0, mdz = 0;
-        rf::mouse_get_delta(mdx, mdy, mdz);
         float dpitch = 0.0f, dyaw = 0.0f;
-        consume_raw_mouse_deltas(dpitch, dyaw, false);
-        if (dpitch == 0.0f && dyaw == 0.0f && (mdx != 0 || mdy != 0)) {
-            const float sens = rf::local_player->settings.controls.mouse_sensitivity;
-            constexpr float classic_scale = 0.0035f;
-            float fy = static_cast<float>(mdy);
-            if (rf::local_player->settings.controls.axes[1].invert)
-                fy = -fy;
-            dpitch = -fy * sens * classic_scale;
-            dyaw = static_cast<float>(mdx) * sens * classic_scale;
+        multi_spectate_consume_look_deltas(dpitch, dyaw);
+        if (!target) {
+            // Target dead/gone this frame - the drain above keeps motion during the dead interval from
+            // banking up and snapping the view on respawn; hold the camera in place.
+            return true;
         }
 
         g_spectate_orbit_yaw += dyaw;
@@ -1132,17 +1283,42 @@ bool multi_spectate_camera_do_frame(rf::Camera* camera)
             std::sin(g_spectate_orbit_pitch),
             std::cos(g_spectate_orbit_pitch) * std::cos(g_spectate_orbit_yaw),
         };
-        rf::Vector3 cam_pos = focus - look_dir * k_spectate_orbit_distance;
+        const float distance = spectate_camera_clear_distance(focus, focus - look_dir * k_spectate_orbit_distance);
+        const rf::Vector3 cam_pos = focus - look_dir * distance;
 
         rf::Matrix3 orient;
         orient.make_quick(look_dir);
 
-        ce->pos = cam_pos;
-        ce->orient = orient;
-        ce->eye_pos = cam_pos;
-        ce->eye_orient = orient;
-        ce->set_room(nullptr);
-        ce->update_room();
+        spectate_set_camera_entity(ce, cam_pos, orient);
+        return true;
+    }
+
+    if (g_spectate_mode_enabled && g_spectate_view_mode == SpectateViewMode::third_person
+        && camera->mode == rf::CAMERA_THIRD_PERSON) {
+        rf::Entity* target = g_spectate_mode_target
+            ? rf::entity_from_handle(g_spectate_mode_target->entity_handle)
+            : nullptr;
+        if (!target)
+            return true; // target dead/gone this frame - hold the camera in place
+
+        // Shoulder offset uses the horizontal right vector and world up, so pitch swings the camera
+        // around the shoulder pivot.
+        const rf::Matrix3& aim = target->eye_orient;
+        rf::Vector3 right{aim.rvec.x, 0.0f, aim.rvec.z};
+        const float right_len = right.len();
+        right = right_len > 0.001f ? right / right_len : aim.rvec;
+        const rf::Vector3 shoulder = right * k_spectate_shoulder_right + rf::Vector3{0.0f, k_spectate_shoulder_up, 0.0f};
+        const float shoulder_clear = spectate_camera_clear_distance(target->eye_pos, target->eye_pos + shoulder);
+        const rf::Vector3 pivot = target->eye_pos + shoulder * (shoulder_clear / shoulder.len());
+
+        const float allowed = spectate_camera_clear_distance(pivot, pivot - aim.fvec * k_spectate_shoulder_distance);
+        if (allowed < g_spectate_shoulder_boom)
+            g_spectate_shoulder_boom = allowed;
+        else
+            g_spectate_shoulder_boom += (allowed - g_spectate_shoulder_boom)
+                * std::min(1.0f, rf::frametime * k_spectate_shoulder_ease_rate);
+
+        spectate_set_camera_entity(ce, pivot - aim.fvec * g_spectate_shoulder_boom, aim);
         return true;
     }
 
@@ -1264,6 +1440,10 @@ void multi_spectate_on_destroy_player(rf::Player* player)
         }
     }
 
+    if (g_local_player_spectators.erase(player)) {
+        build_local_player_spectators_strings();
+    }
+
     if (player != rf::local_player) {
         // Drop any numpad binds pointing at the leaving player so they can't dangle.
         for (int i = 0; i < k_spectate_numpad_count; ++i) {
@@ -1293,7 +1473,7 @@ void multi_spectate_on_destroy_player(rf::Player* player)
 FunHook<void(rf::Player*)> render_reticle_hook{
     0x0043A2C0,
     [](rf::Player* player) {
-        if (rf::gameseq_get_state() == rf::GS_MULTI_LIMBO)
+        if (rf::gameseq_get_state() == rf::GS_MULTI_LIMBO || !hud_element_visible(HudElement::reticle))
             return;
         if (spectate_first_person_render_active())
             render_reticle_hook.call_target(g_spectate_mode_target);
@@ -1309,7 +1489,8 @@ FunHook<void(rf::Player*)> hud_weapons_render_hook{
         if (rf::gameseq_get_state() == rf::GS_MULTI_LIMBO)
             return;
         // only show ammo counters in AF 1.1+ servers because ammo is not synced in legacy servers
-        if (g_spectate_mode_enabled && is_server_minimum_af_version(1, 1) && !rf::player_is_dead(g_spectate_mode_target))
+        if (g_spectate_mode_enabled && (rf::is_server || is_server_minimum_af_version(1, 1))
+            && !rf::player_is_dead(g_spectate_mode_target))
             hud_weapons_render_hook.call_target(g_spectate_mode_target);
         else
             hud_weapons_render_hook.call_target(player);
@@ -1392,7 +1573,7 @@ ConsoleCommand2 spectate_cmd{
 static ConsoleCommand2 spectate_mode_minimal_ui_cmd{
     "spectate_minui",
     []() {
-        g_alpine_game_config.spectate_mode_minimal_ui = !g_alpine_game_config.spectate_mode_minimal_ui;
+        setting_console_set("spectate_mode_minimal_ui", "toggle");
         rf::console::print("Spectate mode minimal UI is {}",
                            g_alpine_game_config.spectate_mode_minimal_ui ? "enabled" : "disabled");
     },
@@ -1411,7 +1592,7 @@ static ConsoleCommand2 spectate_mode_follow_killer_cmd{
 static ConsoleCommand2 spectate_cameras_cmd{
     "spectate_cameras",
     []() {
-        g_alpine_game_config.spectate_show_camera_meshes = !g_alpine_game_config.spectate_show_camera_meshes;
+        setting_console_set("spectate_show_camera_meshes", "toggle");
         rf::console::print("Static camera meshes in free look spectate are {}",
             g_alpine_game_config.spectate_show_camera_meshes ? "shown" : "hidden");
     },
@@ -1531,20 +1712,6 @@ static void spectate_populate_default_binds()
     }
 }
 
-static bool spectate_project_to_screen(const rf::Vector3& world_pos, float& sx, float& sy)
-{
-    rf::gr::Vertex v{};
-    if (!rf::gr::rotate_vertex(&v, &world_pos)) { // 0 => in front of the camera
-        rf::gr::project_vertex(&v);
-        if (v.flags & rf::gr::VF_PROJECTED) {
-            sx = v.sx;
-            sy = v.sy;
-            return true;
-        }
-    }
-    return false;
-}
-
 // Returns the numpad bind suffix for a player for the nameplate, e.g. " (1, 3)" (or "" if none).
 static std::string spectate_player_bind_suffix(const rf::Player* player)
 {
@@ -1604,7 +1771,7 @@ static void spectate_render_camera_mesh(const rf::Vector3& pos, const rf::Matrix
     }
 
     float sx = 0.0f, sy = 0.0f;
-    if (spectate_project_to_screen(label_pos, sx, sy)) {
+    if (gr_project_world_to_screen(label_pos, sx, sy)) {
         rf::gr::set_color(0xFF, 0xF0, 0x50, 0xFF);
         rf::gr::string_aligned(rf::gr::ALIGN_CENTER, static_cast<int>(sx), static_cast<int>(sy),
             label.c_str(), hud_get_default_font());
@@ -1619,6 +1786,8 @@ static void spectate_render_camera_mesh(const rf::Vector3& pos, const rf::Matrix
 static CodeInjection spectate_render_camera_meshes_patch{
     0x00432000,
     []() {
+        // entity_render skips the body seen in first person, so its trolley is drawn here.
+        zipline_render_first_person();
         if (!g_alpine_game_config.spectate_show_camera_meshes || !multi_spectate_is_freelook()
             || spectate_static_camera_count() <= 0 || !g_spectate_camera_mesh
             || !rf::local_player || !rf::local_player->cam) {
@@ -1678,8 +1847,8 @@ void multi_spectate_process_bind_input()
     // Middle mouse toggles third-person orbit (attached third person only). mouse_was_button_pressed
     // is a pure read (the engine refreshes the per-frame button snapshot itself), so this is one
     // toggle per physical click.
-    const bool mmb_pressed = rf::mouse_was_button_pressed(2) > 0;
-    if (mmb_pressed && !typing && g_spectate_mode_enabled
+    const bool mmb_pressed = rf::mouse_was_button_pressed(2);
+    if (mmb_pressed && !typing && !multi_scoreboard_cursor_active() && g_spectate_mode_enabled
         && g_spectate_view_mode == SpectateViewMode::third_person) {
         g_spectate_third_person_orbit = !g_spectate_third_person_orbit;
         spectate_apply_player_view_mode();
@@ -1816,7 +1985,7 @@ FunHook<void(rf::Entity*, bool)> entity_play_attack_anim_spectate_hook{
     0x0042C3C0,
     [](rf::Entity* entity, bool alt_fire) {
         entity_play_attack_anim_spectate_hook.call_target(entity, alt_fire);
-        if (!g_spectate_mode_enabled || !g_spectate_mode_target || !entity || rf::is_server)
+        if (!g_spectate_mode_enabled || !g_spectate_mode_target || !entity || rf::is_dedicated_server)
             return;
         rf::Entity* target = rf::entity_from_handle(g_spectate_mode_target->entity_handle);
         if (entity != target || g_spectate_mode_target == rf::local_player)
@@ -2116,14 +2285,10 @@ static void draw_with_shadow(int x, int y, int shadow_dx, int shadow_dy, rf::Col
 }
 
 // Renders powerup icons to the left of the spectate nameplate bar.
-// Detects powerup state from entity_flags2 which are already synced by the stock netcode.
+// Detects stock powerup state from entity_flags2 which are already synced by the stock netcode.
 static void render_spectate_powerup_icons(rf::Entity* entity, int bar_x, int bar_y, int bar_h)
 {
     if (!entity)
-        return;
-
-    // Bagman has no powerup HUD icons
-    if (gt_is_bagman_any())
         return;
 
     // Load bitmaps once
@@ -2131,29 +2296,27 @@ static void render_spectate_powerup_icons(rf::Entity* entity, int bar_x, int bar
     static int bm_amp = rf::bm::load("hud_pow_damage.tga", -1, true);
 
     // Collect active powerups right-to-left (rightmost icon is closest to bar)
-    int active_bms[2];
-    int count = 0;
-    if ((entity->entity_flags2 & rf::EF2_POWERUP_DAMAGE_AMP) != 0 && bm_amp >= 0)
-        active_bms[count++] = bm_amp;
-    if ((entity->entity_flags2 & rf::EF2_POWERUP_INVULNERABLE) != 0 && bm_invuln >= 0)
-        active_bms[count++] = bm_invuln;
-
-    if (count == 0)
-        return;
+    std::vector<int> active_bms;
+    // Bagman has no stock powerup HUD icons
+    if (!gt_is_bagman_any()) {
+        if ((entity->entity_flags2 & rf::EF2_POWERUP_DAMAGE_AMP) != 0 && bm_amp >= 0)
+            active_bms.push_back(bm_amp);
+        if ((entity->entity_flags2 & rf::EF2_POWERUP_INVULNERABLE) != 0 && bm_invuln >= 0)
+            active_bms.push_back(bm_invuln);
+    }
+    powerup_append_hud_icons(entity, active_bms);
 
     float scale = g_alpine_game_config.big_hud ? 2.0f : 1.0f;
     int gap = static_cast<int>(4 * scale);
 
-    // Measure icon size (both bitmaps are the same dimensions)
-    int bm_w = 0, bm_h = 0;
-    rf::bm::get_dimensions(active_bms[0], &bm_w, &bm_h);
-    int icon_w = static_cast<int>(bm_w * scale);
-    int icon_h = static_cast<int>(bm_h * scale);
-
     // Place icons to the left of the nameplate bar, right-aligned toward bar_x
     int icon_x = bar_x - gap;
 
-    for (int i = 0; i < count; ++i) {
+    for (int bm : active_bms) {
+        int bm_w = 0, bm_h = 0;
+        rf::bm::get_dimensions(bm, &bm_w, &bm_h);
+        int icon_w = static_cast<int>(bm_w * scale);
+        int icon_h = static_cast<int>(bm_h * scale);
         icon_x -= icon_w;
 
         // Vertically center icon on the nameplate bar
@@ -2161,7 +2324,7 @@ static void render_spectate_powerup_icons(rf::Entity* entity, int bar_x, int bar
 
         // Draw icon
         rf::gr::set_color(255, 255, 255, 255);
-        hud_scaled_bitmap(active_bms[i], icon_x, icon_y, scale);
+        hud_scaled_bitmap(bm, icon_x, icon_y, scale);
 
         icon_x -= gap;
     }
@@ -2178,6 +2341,7 @@ static int spectate_bottom_left_hud_top()
     case rf::NG_TYPE_DC:
     case rf::NG_TYPE_ESC:
     case rf::NG_TYPE_REV:
+    case rf::NG_TYPE_PAY:
         // The control-point strip stacks above the scores box; its top is tracked while the
         // team-scores HUD renders. Fall back to the bottom margin if it hasn't been set yet.
         return g_multi_hud_cp_strip_y > 0 ? g_multi_hud_cp_strip_y : clip_h - 10;
@@ -2198,7 +2362,9 @@ static int spectate_bottom_left_hud_top()
     case rf::NG_TYPE_CTF:
     case rf::NG_TYPE_TEAMDM:
     case rf::NG_TYPE_TBAG:
+    case rf::NG_TYPE_WO:
     case rf::NG_TYPE_SAL:
+    case rf::NG_TYPE_SCAV:
         return clip_h - (big ? 80 : 55) - 10;
     default:
         return clip_h; // no bottom-left cluster
@@ -2208,7 +2374,8 @@ static int spectate_bottom_left_hud_top()
 static int spectate_raise_hints_above_hud(int hints_y, int line_count, int line_h)
 {
     const int block_bottom = hints_y + line_count * line_h;
-    const int max_bottom = spectate_bottom_left_hud_top() - line_h; // keep a one-line gap
+    // Keep a one-line gap
+    const int max_bottom = std::min(spectate_bottom_left_hud_top(), demo_controls_ui_top_y()) - line_h;
     if (block_bottom > max_bottom) {
         return max_bottom - line_count * line_h;
     }
@@ -2223,6 +2390,8 @@ struct DemoPlaybackHintBinds
     std::string rewind;
     std::string forward;
     std::string pause;
+    std::string mark;
+    std::string jump;
 };
 
 // Appends the demo playback control hints (demo controls popup + its keyboard
@@ -2238,10 +2407,22 @@ static int append_demo_playback_hints(std::pair<const char*, const char*>* hints
     binds.forward = get_action_bind_name(
         get_af_control(rf::AlpineControlConfigAction::AF_ACTION_VOTE_NO)).c_str();
     binds.pause = get_action_bind_name(rf::ControlConfigAction::CC_ACTION_RELOAD).c_str();
-    hints[nh++] = {binds.popup.c_str(), "Demo Controls"};
-    hints[nh++] = {binds.rewind.c_str(), "Rewind 10s"};
-    hints[nh++] = {binds.forward.c_str(), "Forward 10s"};
-    hints[nh++] = {binds.pause.c_str(), "Pause / Resume"};
+    binds.mark = get_action_bind_name(rf::ControlConfigAction::CC_ACTION_QUICK_SAVE).c_str();
+    binds.jump = get_action_bind_name(rf::ControlConfigAction::CC_ACTION_QUICK_LOAD).c_str();
+    if (demo_controls_ui_is_open()) {
+        // The expanded panel's buttons show the other shortcuts, but jumping to the
+        // custom marker has no button
+        hints[nh++] = {binds.popup.c_str(), "Compact Demo Controls"};
+    }
+    else {
+        hints[nh++] = {binds.popup.c_str(), "Expand Demo Controls"};
+        hints[nh++] = {binds.rewind.c_str(), "Rewind 10s"};
+        hints[nh++] = {binds.forward.c_str(), "Forward 10s"};
+        hints[nh++] = {binds.pause.c_str(), "Pause / Resume"};
+        hints[nh++] = {binds.mark.c_str(), "Set Marker"};
+    }
+    if (demo_controls_ui_has_custom_marker())
+        hints[nh++] = {binds.jump.c_str(), "Jump to Marker"};
     return nh;
 }
 
@@ -2258,6 +2439,45 @@ static void draw_spectate_hints(const std::pair<const char*, const char*>* hints
     }
 }
 
+void hud_draw_control_hints(const std::pair<const char*, const char*>* hints, int count)
+{
+    const int font = hud_get_default_font();
+    const int font_h = rf::gr::get_font_height(font);
+    const bool big = g_alpine_game_config.big_hud;
+    // The binds are right-aligned on left_x: pushed right as far as a long one (e.g. "Caps Lock") needs.
+    int widest = 0;
+    for (int i = 0; i < count; ++i) {
+        widest = std::max(widest, rf::gr::get_string_size(hints[i].first, font).first);
+    }
+    const int left_x = std::max(big ? 120 : 70, widest + (big ? 16 : 8));
+    const int right_x = left_x + (big ? 20 : 10);
+    int y = rf::gr::screen_height() - (big ? 200 : 120) + font_h * 2;
+    y = spectate_raise_hints_above_hud(y, count, font_h);
+    draw_spectate_hints(hints, count, left_x, right_x, y, font, font_h);
+}
+
+static int spectate_plaque_padding_y()
+{
+    return g_alpine_game_config.big_hud ? 4 : 2;
+}
+
+static int spectate_plaque_padding_x()
+{
+    return g_alpine_game_config.big_hud ? 24 : 16;
+}
+
+static int spectate_plaque_line_gap()
+{
+    return g_alpine_game_config.big_hud ? 2 : 1;
+}
+
+static int spectate_name_plaque_height()
+{
+    const int small_font_h = rf::gr::get_font_height(hud_get_small_font());
+    const int large_font_h = rf::gr::get_font_height(hud_get_large_font());
+    return small_font_h + large_font_h + spectate_plaque_padding_y() * 2 + spectate_plaque_line_gap();
+}
+
 // Top y of the "Spectating: <name>" plaque at the bottom of the screen (same
 // math as the plaque draw below, using font heights for the two text lines).
 // The mode-label block anchors here: at this position in non-follow modes
@@ -2265,12 +2485,206 @@ static void draw_spectate_hints(const std::pair<const char*, const char*>* hints
 // label away from the HUD notification slot under the chat box.
 static int spectate_name_plaque_top_y()
 {
-    const int small_font_h = rf::gr::get_font_height(hud_get_small_font());
-    const int large_font_h = rf::gr::get_font_height(hud_get_large_font());
-    const int padding_y = g_alpine_game_config.big_hud ? 4 : 2;
-    const int line_gap = g_alpine_game_config.big_hud ? 2 : 1;
-    const int bar_h = small_font_h + large_font_h + padding_y * 2 + line_gap;
-    return rf::gr::screen_height() - (g_alpine_game_config.big_hud ? 15 : 10) - bar_h;
+    return rf::gr::screen_height() - (g_alpine_game_config.big_hud ? 15 : 10) - spectate_name_plaque_height();
+}
+
+namespace
+{
+struct SpectatePlaqueText
+{
+    std::string label;
+    std::string title;
+    rf::Color title_color{255, 255, 255, 255};
+    bool bot = false;
+};
+} // namespace
+
+static SpectatePlaqueText spectate_target_plaque_text(std::string label, bool with_binds = true)
+{
+    SpectatePlaqueText text;
+    text.label = std::move(label);
+    text.title = g_spectate_mode_target->name.c_str();
+    if (with_binds) {
+        text.title += spectate_player_bind_suffix(g_spectate_mode_target);
+    }
+    if (multi_is_team_game_type()) {
+        text.title_color = g_spectate_mode_target->team ? rf::Color{0x34, 0x4E, 0xA7, 0xFF}
+                                                        : rf::Color{0xA7, 0x00, 0x00, 0xFF};
+    }
+    else {
+        text.title_color = {0xFF, 0x88, 0x22, 0xFF};
+    }
+    text.bot = g_spectate_mode_target->is_bot;
+    return text;
+}
+
+static int spectate_plaque_text_width(const SpectatePlaqueText& text)
+{
+    int title_w = rf::gr::get_string_size(text.title, hud_get_large_font()).first;
+    if (text.bot) {
+        title_w += rf::gr::get_string_size(" BOT", hud_get_small_font()).first;
+    }
+    return std::max(title_w, rf::gr::get_string_size(text.label, hud_get_small_font()).first);
+}
+
+static void draw_spectate_plaque_text(const SpectatePlaqueText& text, int center_x, int top_y)
+{
+    const int small_font = hud_get_small_font();
+    const int large_font = hud_get_large_font();
+    const int label_y = top_y + spectate_plaque_padding_y();
+    int name_y = label_y + rf::gr::get_font_height(small_font) + spectate_plaque_line_gap();
+
+    if (text.label.empty()) {
+        name_y = top_y + (spectate_name_plaque_height() - rf::gr::get_font_height(large_font)) / 2;
+    }
+    else {
+        rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xFF);
+        rf::gr::string_aligned(rf::gr::ALIGN_CENTER, center_x, label_y, text.label.c_str(), small_font);
+    }
+    int title_w = rf::gr::get_string_size(text.title, large_font).first;
+    if (text.bot) {
+        title_w += rf::gr::get_string_size(" BOT", small_font).first;
+    }
+    rf::gr::set_color(text.title_color);
+    rf::gr::string_aligned(rf::gr::ALIGN_LEFT, center_x - title_w / 2, name_y, text.title.c_str(), large_font);
+    if (text.bot) {
+        rf::gr::set_color(255, 250, 205, 255);
+        int bot_y = name_y + (rf::gr::get_font_height(large_font) - rf::gr::get_font_height(small_font)) / 2;
+        rf::gr::string(rf::gr::current_string_x, bot_y, " BOT", small_font);
+    }
+}
+
+static std::string spectate_view_label()
+{
+    std::string label = g_spectate_view_mode == SpectateViewMode::first_person
+        ? "First Person"
+        : (g_spectate_third_person_orbit ? "Third Person (Orbit)" : "Third Person");
+    if (g_povcomp_applied_ms >= 1.0f) {
+        label += "  [povcomp ~" + std::to_string(static_cast<int>(g_povcomp_applied_ms)) + "ms]";
+    }
+    return label;
+}
+
+static std::string spectate_static_camera_label()
+{
+    std::string label = "Camera " + std::to_string(g_spectate_static_index + 1)
+        + " of " + std::to_string(spectate_static_camera_count());
+    if (g_spectate_static_index >= rf::fixed_camera_count)
+        label += " (dropped)";
+    return label;
+}
+
+int multi_spectate_nameplate_top_y()
+{
+    return spectate_name_plaque_top_y();
+}
+
+int multi_spectate_nameplate_height()
+{
+    return spectate_name_plaque_height();
+}
+
+static std::optional<SpectatePlaqueText> nameplate_row_text(bool bare)
+{
+    // Minimal UI drops the view / camera detail, as it does the stock mode label
+    const bool minimal = g_alpine_game_config.spectate_mode_minimal_ui;
+    const auto label = [&](const char* lead, const std::string& detail) -> std::string {
+        if (minimal) {
+            return bare ? std::string{} : std::string{lead};
+        }
+        return bare ? detail : "Spectating - " + detail;
+    };
+    SpectatePlaqueText text;
+    if (multi_spectate_is_static()) {
+        text.label = label("Spectating", spectate_static_camera_label());
+        text.title = "Static Camera";
+    }
+    else if (multi_spectate_is_freelook()) {
+        text.label = bare ? "" : "Spectating";
+        text.title = "Free Look";
+    }
+    else if (g_spectate_mode_enabled && g_spectate_mode_target) {
+        text = spectate_target_plaque_text(label("Spectating:", spectate_view_label()), !bare);
+    }
+    else {
+        return std::nullopt;
+    }
+    return text;
+}
+
+int multi_spectate_nameplate_row_width(bool bare)
+{
+    const auto text = nameplate_row_text(bare);
+    if (!text) {
+        return 0;
+    }
+    return std::min(spectate_plaque_text_width(*text) + spectate_plaque_padding_x() * 2,
+                    rf::gr::screen_width() - 20);
+}
+
+void multi_spectate_render_nameplate_row(int center_x, int top_y, bool bare)
+{
+    const auto row_text = nameplate_row_text(bare);
+    if (!row_text) {
+        return;
+    }
+    const SpectatePlaqueText& text = *row_text;
+    rf::Entity* entity = nullptr;
+    if (!multi_spectate_is_static() && !multi_spectate_is_freelook()) {
+        entity = rf::entity_from_handle(g_spectate_mode_target->entity_handle);
+    }
+    draw_spectate_plaque_text(text, center_x, top_y);
+    const int text_left = center_x - spectate_plaque_text_width(text) / 2 - spectate_plaque_padding_x();
+    render_spectate_powerup_icons(entity, text_left, top_y, spectate_name_plaque_height());
+}
+
+static void render_spectate_name_plaque(rf::Entity* entity)
+{
+    const int scr_w = rf::gr::screen_width();
+    int small_font = hud_get_small_font();
+    int small_font_h = rf::gr::get_font_height(small_font);
+    const int line_gap = spectate_plaque_line_gap();
+
+    const SpectatePlaqueText plaque = spectate_target_plaque_text("Spectating:");
+    const int bar_h = spectate_name_plaque_height();
+    int bar_w = std::min(spectate_plaque_text_width(plaque) + spectate_plaque_padding_x() * 2, scr_w - 20);
+    int bar_x = (scr_w - bar_w) / 2;
+    int bar_y = spectate_name_plaque_top_y();
+    rf::gr::set_color(0, 0, 0x00, 150);
+    rf::gr::rect(bar_x, bar_y, bar_w, bar_h);
+    draw_spectate_plaque_text(plaque, bar_x + bar_w / 2, bar_y);
+
+    render_spectate_powerup_icons(entity, bar_x, bar_y, bar_h);
+
+    // Draw next/prev player hints flanking the nameplate bar
+    if (!g_alpine_game_config.spectate_mode_minimal_ui && !g_remote_server_cfg_popup.is_active()
+        && !vote_panel_is_gameplay_overlay_active()) {
+        std::string prev_player_text =
+            get_action_bind_name(rf::ControlConfigAction::CC_ACTION_SECONDARY_ATTACK);
+        std::string next_player_text =
+            get_action_bind_name(rf::ControlConfigAction::CC_ACTION_PRIMARY_ATTACK);
+
+        int nav_gap = g_alpine_game_config.big_hud ? 16 : 10;
+
+        int nav_content_h = small_font_h * 2 + line_gap;
+        int nav_y = bar_y + (bar_h - nav_content_h) / 2;
+
+        // Left side: previous player
+        int prev_x = bar_x - nav_gap;
+        rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xC0);
+        rf::gr::string_aligned(rf::gr::ALIGN_RIGHT, prev_x, nav_y, prev_player_text.c_str(), small_font);
+        rf::gr::set_color(0xFF, 0xFF, 0xFF, 0x80);
+        rf::gr::string_aligned(rf::gr::ALIGN_RIGHT, prev_x, nav_y + small_font_h + line_gap, "Previous Player",
+                               small_font);
+
+        // Right side: next player
+        int next_x = bar_x + bar_w + nav_gap;
+        rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xC0);
+        rf::gr::string_aligned(rf::gr::ALIGN_LEFT, next_x, nav_y, next_player_text.c_str(), small_font);
+        rf::gr::set_color(0xFF, 0xFF, 0xFF, 0x80);
+        rf::gr::string_aligned(rf::gr::ALIGN_LEFT, next_x, nav_y + small_font_h + line_gap, "Next Player",
+                               small_font);
+    }
 }
 
 void multi_spectate_render() {
@@ -2285,40 +2699,34 @@ void multi_spectate_render() {
     spectate_render_bind_dialog();
 
     if (multi_spectate_is_static()) {
-        if (!g_alpine_game_config.spectate_mode_minimal_ui && !g_remote_server_cfg_popup.is_active() && !vote_panel_is_gameplay_overlay_active() && !demo_controls_ui_is_open()) {
+        if (!g_alpine_game_config.spectate_mode_minimal_ui && !g_remote_server_cfg_popup.is_active()
+            && !vote_panel_is_gameplay_overlay_active()) {
             int medium_font = hud_get_default_font();
-            int medium_font_h = rf::gr::get_font_height(medium_font);
             int large_font = hud_get_large_font();
             int scr_w = rf::gr::screen_width();
-            int scr_h = rf::gr::screen_height();
 
             rf::Color white_clr{255, 255, 255, 255};
             rf::Color shadow_clr{0, 0, 0, 128};
 
             // No name plaque in static-camera view — the mode label block takes
-            // the plaque's spot at the bottom of the screen.
-            int title_x = scr_w / 2;
-            int title_y = spectate_name_plaque_top_y();
-            draw_with_shadow(
-                title_x, title_y, 2, 2, white_clr, shadow_clr,
-                [=](int x, int y) {
-                    rf::gr::string_aligned(rf::gr::ALIGN_CENTER, x, y, "STATIC CAMERA", large_font);
-                }
-            );
+            // the plaque's spot at the bottom of the screen (the demo panel's
+            // nameplate row shows it instead during playback).
+            if (!demo_controls_ui_draws_nameplate()) {
+                int title_x = scr_w / 2;
+                int title_y = spectate_name_plaque_top_y();
+                draw_with_shadow(
+                    title_x, title_y, 2, 2, white_clr, shadow_clr,
+                    [=](int x, int y) {
+                        rf::gr::string_aligned(rf::gr::ALIGN_CENTER, x, y, "STATIC CAMERA", large_font);
+                    }
+                );
 
-            // Current-camera subtitle just below the title.
-            int large_font_h = rf::gr::get_font_height(large_font);
-            std::string cam_subtitle = "Camera " + std::to_string(g_spectate_static_index + 1)
-                + " of " + std::to_string(spectate_static_camera_count());
-            if (g_spectate_static_index >= rf::fixed_camera_count)
-                cam_subtitle += " (dropped)";
-            rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xB0);
-            rf::gr::string_aligned(rf::gr::ALIGN_CENTER, title_x, title_y + large_font_h,
-                cam_subtitle.c_str(), medium_font);
-
-            int hints_y = scr_h - (g_alpine_game_config.big_hud ? 200 : 120) + medium_font_h * 2;
-            int hints_left_x = g_alpine_game_config.big_hud ? 120 : 70;
-            int hints_right_x = g_alpine_game_config.big_hud ? 140 : 80;
+                // Current-camera subtitle just below the title.
+                int large_font_h = rf::gr::get_font_height(large_font);
+                rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xB0);
+                rf::gr::string_aligned(rf::gr::ALIGN_CENTER, title_x, title_y + large_font_h,
+                    spectate_static_camera_label().c_str(), medium_font);
+            }
 
             std::string attach_text = get_action_bind_name(
                 get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_ATTACH));
@@ -2348,36 +2756,33 @@ void multi_spectate_render() {
             if (!demo_playback_active())
                 hints[nh++] = {exit_spec_text.c_str(), "Exit Spectate Mode"};
             nh = append_demo_playback_hints(hints, nh, demo_binds);
-            hints_y = spectate_raise_hints_above_hud(hints_y, nh, medium_font_h);
-            draw_spectate_hints(hints, nh, hints_left_x, hints_right_x, hints_y, medium_font, medium_font_h);
+            hud_draw_control_hints(hints, nh);
         }
         return;
     }
 
     if (multi_spectate_is_freelook()) {
-        if (!g_alpine_game_config.spectate_mode_minimal_ui && !g_remote_server_cfg_popup.is_active() && !vote_panel_is_gameplay_overlay_active() && !demo_controls_ui_is_open()) {
-            int medium_font = hud_get_default_font();
-            int medium_font_h = rf::gr::get_font_height(medium_font);
+        if (!g_alpine_game_config.spectate_mode_minimal_ui && !g_remote_server_cfg_popup.is_active()
+            && !vote_panel_is_gameplay_overlay_active()) {
             int large_font = hud_get_large_font();
             int scr_w = rf::gr::screen_width();
-            int scr_h = rf::gr::screen_height();
 
             rf::Color white_clr{255, 255, 255, 255};
             rf::Color shadow_clr{0, 0, 0, 128};
 
             // No name plaque in free look — the mode label takes the plaque's
-            // spot at the bottom of the screen.
-            int title_x = scr_w / 2;
-            int title_y = spectate_name_plaque_top_y();
-            draw_with_shadow(
-                title_x, title_y, 2, 2, white_clr, shadow_clr,
-                [=](int x, int y) {
-                    rf::gr::string_aligned(rf::gr::ALIGN_CENTER, x, y, "FREELOOK SPECTATE", large_font);
-                }
-            );
-
-            int hints_left_x = g_alpine_game_config.big_hud ? 120 : 70;
-            int hints_right_x = g_alpine_game_config.big_hud ? 140 : 80;
+            // spot at the bottom of the screen (the demo panel's nameplate row
+            // shows it instead during playback).
+            if (!demo_controls_ui_draws_nameplate()) {
+                int title_x = scr_w / 2;
+                int title_y = spectate_name_plaque_top_y();
+                draw_with_shadow(
+                    title_x, title_y, 2, 2, white_clr, shadow_clr,
+                    [=](int x, int y) {
+                        rf::gr::string_aligned(rf::gr::ALIGN_CENTER, x, y, "FREELOOK SPECTATE", large_font);
+                    }
+                );
+            }
 
             std::string attach_text = get_action_bind_name(
                 get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_ATTACH)
@@ -2408,9 +2813,7 @@ void multi_spectate_render() {
             if (!demo_playback_active())
                 hints[nh++] = {exit_spec_text.c_str(), "Exit Spectate Mode"};
             nh = append_demo_playback_hints(hints, nh, demo_binds);
-            int hints_y = scr_h - (g_alpine_game_config.big_hud ? 200 : 120) + medium_font_h * 2;
-            hints_y = spectate_raise_hints_above_hud(hints_y, nh, medium_font_h);
-            draw_spectate_hints(hints, nh, hints_left_x, hints_right_x, hints_y, medium_font, medium_font_h);
+            hud_draw_control_hints(hints, nh);
         }
         return;
     }
@@ -2437,11 +2840,12 @@ void multi_spectate_render() {
             const rf::NetGameType game_type = rf::multi_get_game_type();
             const bool is_ctf = game_type == rf::NG_TYPE_CTF;
             const bool is_tdm = game_type == rf::NG_TYPE_TEAMDM;
-            const bool is_sal = game_type == rf::NG_TYPE_SAL;
+            const bool is_sal = game_type == rf::NG_TYPE_SAL || game_type == rf::NG_TYPE_SCAV;
             const bool is_koth = game_type == rf::NG_TYPE_KOTH;
             const bool is_dc = game_type == rf::NG_TYPE_DC;
             const bool is_esc = game_type == rf::NG_TYPE_ESC;
             const bool is_rev = game_type == rf::NG_TYPE_REV;
+            const bool is_pay = game_type == rf::NG_TYPE_PAY;
             const bool is_run = game_type == rf::NG_TYPE_RUN;
 
             const int font_h = rf::gr::get_font_height(medium_font);
@@ -2449,7 +2853,7 @@ void multi_spectate_render() {
                 const int low_death_bar_y =
                     rf::gr::clip_height()
                     - static_cast<int>(rf::gr::clip_height() * .125f);
-                if (is_koth || is_dc || is_esc || is_rev) {
+                if (is_koth || is_dc || is_esc || is_rev || is_pay) {
                     return g_alpine_game_config.death_bars
                         ? std::min(g_multi_hud_cp_strip_y, low_death_bar_y)
                         : g_multi_hud_cp_strip_y;
@@ -2486,43 +2890,38 @@ void multi_spectate_render() {
 
     if (!g_alpine_game_config.spectate_mode_minimal_ui) {
         // Title + view subtitle sit as a block just above the name plaque at
-        // the bottom of the screen (out of the HUD notification's way).
+        // the bottom of the screen (out of the HUD notification's way). The demo
+        // panel's nameplate row carries the view label instead.
         int title_x = scr_w / 2;
         int title_y = spectate_name_plaque_top_y()
             - (large_font_h + medium_font_h)
             - (g_alpine_game_config.big_hud ? 10 : 6);
-        draw_with_shadow(
-            title_x,
-            title_y,
-            2,
-            2,
-            white_clr,
-            shadow_clr,
-            [=] (int x, int y) {
-                rf::gr::string_aligned(
-                    rf::gr::ALIGN_CENTER,
-                    x,
-                    y,
-                    "SPECTATE MODE",
-                    large_font
-                );
-            }
-        );
+        if (!demo_controls_ui_draws_nameplate()) {
+            draw_with_shadow(
+                title_x,
+                title_y,
+                2,
+                2,
+                white_clr,
+                shadow_clr,
+                [=] (int x, int y) {
+                    rf::gr::string_aligned(
+                        rf::gr::ALIGN_CENTER,
+                        x,
+                        y,
+                        "SPECTATE MODE",
+                        large_font
+                    );
+                }
+            );
 
-        // Current-view subtitle just below the title.
-        std::string view_subtitle = g_spectate_view_mode == SpectateViewMode::first_person
-            ? "First Person"
-            : (g_spectate_third_person_orbit ? "Third Person (Orbit)" : "Third Person");
-        if (g_povcomp_applied_ms >= 1.0f) {
-            view_subtitle += "  [povcomp ~" + std::to_string(static_cast<int>(g_povcomp_applied_ms)) + "ms]";
+            // Current-view subtitle just below the title.
+            rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xB0);
+            rf::gr::string_aligned(rf::gr::ALIGN_CENTER, title_x, title_y + large_font_h,
+                spectate_view_label().c_str(), medium_font);
         }
-        rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xB0);
-        rf::gr::string_aligned(rf::gr::ALIGN_CENTER, title_x, title_y + large_font_h,
-            view_subtitle.c_str(), medium_font);
 
-        if (!g_remote_server_cfg_popup.is_active() && !vote_panel_is_gameplay_overlay_active() && !demo_controls_ui_is_open()) {
-            int hints_left_x = g_alpine_game_config.big_hud ? 120 : 70;
-            int hints_right_x = g_alpine_game_config.big_hud ? 140 : 80;
+        if (!g_remote_server_cfg_popup.is_active() && !vote_panel_is_gameplay_overlay_active()) {
             std::string attach_text = get_action_bind_name(
                 get_af_control(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_ATTACH)
             );
@@ -2552,113 +2951,15 @@ void multi_spectate_render() {
             if (!demo_playback_active())
                 hints[nh++] = {exit_spec_text.c_str(), "Exit Spectate Mode"};
             nh = append_demo_playback_hints(hints, nh, demo_binds);
-            int hints_y = scr_h - (g_alpine_game_config.big_hud ? 200 : 120) + medium_font_h * 2;
-            hints_y = spectate_raise_hints_above_hud(hints_y, nh, medium_font_h);
-            draw_spectate_hints(hints, nh, hints_left_x, hints_right_x, hints_y, medium_font, medium_font_h);
+            hud_draw_control_hints(hints, nh);
         }
-    }
-
-    int small_font = hud_get_small_font();
-    int small_font_h = rf::gr::get_font_height(small_font);
-
-    const std::string target_name_str = std::string(g_spectate_mode_target->name.c_str())
-        + spectate_player_bind_suffix(g_spectate_mode_target);
-    const char* target_name = target_name_str.c_str();
-    const char* spectating_label = "Spectating:";
-    const auto [spectating_label_w, spectating_label_h] =
-        rf::gr::get_string_size(spectating_label, small_font);
-    auto [target_name_w, target_name_h] =
-        rf::gr::get_string_size(target_name, large_font);
-    const auto [bot_w, bot_h] = rf::gr::get_string_size(" BOT", small_font);
-    const bool is_bot = g_spectate_mode_target->is_bot;
-    if (is_bot) {
-        target_name_w += bot_w;
-    }
-
-    const int padding_y = g_alpine_game_config.big_hud ? 4 : 2;
-    const int padding_x = g_alpine_game_config.big_hud ? 24 : 16;
-    const int line_gap = g_alpine_game_config.big_hud ? 2 : 1;
-    const int bar_h = spectating_label_h + target_name_h + (padding_y * 2) + line_gap;
-
-    int max_bar_w = scr_w - 20;
-    int content_w = std::max(target_name_w, spectating_label_w);
-    int bar_w = std::min(content_w + padding_x * 2, max_bar_w);
-
-    int bar_x = (scr_w - bar_w) / 2;
-    // Shared with the mode-label anchor so the two can't drift apart. Numerically
-    // identical to the old `scr_h - (big?15:10) - bar_h` here, since single-line
-    // get_string_size heights equal the font heights the helper uses.
-    int bar_y = spectate_name_plaque_top_y();
-    rf::gr::set_color(0, 0, 0x00, 150);
-    rf::gr::rect(bar_x, bar_y, bar_w, bar_h);
-
-    const int label_y = bar_y + padding_y;
-    const int name_y = label_y + spectating_label_h + line_gap;
-
-    rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xFF);
-    rf::gr::string_aligned(
-        rf::gr::ALIGN_CENTER,
-        bar_x + bar_w / 2,
-        label_y,
-        spectating_label,
-        small_font
-    );
-    if (multi_is_team_game_type()) {
-        if (g_spectate_mode_target->team) {
-            rf::gr::set_color(0x34, 0x4E, 0xA7, 0xFF);
-        }
-        else {
-            rf::gr::set_color(0xA7, 0x00, 0x00, 0xFF);
-        }
-    }
-    else {
-        rf::gr::set_color(0xFF, 0x88, 0x22, 0xFF);
-    }
-    const int x = target_name_w / -2 + (bar_x + bar_w / 2);
-    rf::gr::string_aligned(
-        rf::gr::ALIGN_LEFT,
-        x,
-        name_y,
-        target_name,
-        large_font
-    );
-    if (is_bot) {
-        const rf::gr::Color saved_color = rf::gr::screen.current_color;
-        rf::gr::set_color(255, 250, 205, 255);
-        int bot_y = name_y + (rf::gr::get_font_height(large_font) - rf::gr::get_font_height(small_font)) / 2;
-        rf::gr::string(rf::gr::current_string_x, bot_y, " BOT", small_font);
-        rf::gr::set_color(saved_color);
     }
 
     rf::Entity* entity = rf::entity_from_handle(g_spectate_mode_target->entity_handle);
 
-    render_spectate_powerup_icons(entity, bar_x, bar_y, bar_h);
-
-    // Draw next/prev player hints flanking the nameplate bar
-    if (!g_alpine_game_config.spectate_mode_minimal_ui && !g_remote_server_cfg_popup.is_active() && !vote_panel_is_gameplay_overlay_active() && !demo_controls_ui_is_open()) {
-        std::string prev_player_text =
-            get_action_bind_name(rf::ControlConfigAction::CC_ACTION_SECONDARY_ATTACK);
-        std::string next_player_text =
-            get_action_bind_name(rf::ControlConfigAction::CC_ACTION_PRIMARY_ATTACK);
-
-        int nav_gap = g_alpine_game_config.big_hud ? 16 : 10;
-
-        int nav_content_h = small_font_h * 2 + line_gap;
-        int nav_y = bar_y + (bar_h - nav_content_h) / 2;
-
-        // Left side: previous player
-        int prev_x = bar_x - nav_gap;
-        rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xC0);
-        rf::gr::string_aligned(rf::gr::ALIGN_RIGHT, prev_x, nav_y, prev_player_text.c_str(), small_font);
-        rf::gr::set_color(0xFF, 0xFF, 0xFF, 0x80);
-        rf::gr::string_aligned(rf::gr::ALIGN_RIGHT, prev_x, nav_y + small_font_h + line_gap, "Previous Player", small_font);
-
-        // Right side: next player
-        int next_x = bar_x + bar_w + nav_gap;
-        rf::gr::set_color(0xFF, 0xFF, 0xFF, 0xC0);
-        rf::gr::string_aligned(rf::gr::ALIGN_LEFT, next_x, nav_y, next_player_text.c_str(), small_font);
-        rf::gr::set_color(0xFF, 0xFF, 0xFF, 0x80);
-        rf::gr::string_aligned(rf::gr::ALIGN_LEFT, next_x, nav_y + small_font_h + line_gap, "Next Player", small_font);
+    // During demo playback the controls panel draws the nameplate in its bottom row
+    if (!demo_controls_ui_draws_nameplate()) {
+        render_spectate_name_plaque(entity);
     }
 
     if (!entity) {

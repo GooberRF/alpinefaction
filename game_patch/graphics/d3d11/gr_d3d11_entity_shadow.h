@@ -1,14 +1,17 @@
 #pragma once
 
+#include <array>
+#include <cstddef>
 #include <d3d11.h>
 #include <common/ComPtr.h>
-#include "gr_d3d11_transform.h"
+#include <common/gr_d3d11/gr_d3d11_transform.h>
 
 namespace gr::d3d11
 {
     class ShaderManager;
     class MeshRenderer;
     class RenderContext;
+    class ShadowCasterBounds;
     // Shadow distance presets: camera distance at which shadows fade
     struct ShadowDistancePreset
     {
@@ -62,10 +65,13 @@ namespace gr::d3d11
         static constexpr float shadow_projection_fade_start = 1.0f;
         static constexpr float shadow_projection_fade_end = 3.0f;
 
-        // Static light direction (nearly overhead, slight offset)
-        static constexpr float light_dir_x = 0.15f;
-        static constexpr float light_dir_y = -1.0f;
-        static constexpr float light_dir_z = 0.1f;
+        // Default light direction (nearly overhead, slight offset)
+        static constexpr float default_light_dir_x = 0.15f;
+        static constexpr float default_light_dir_y = -1.0f;
+        static constexpr float default_light_dir_z = 0.1f;
+
+        // Normalized travel direction of the shadow-casting light for the current frame
+        static void get_light_dir(float& x, float& y, float& z);
 
         EntityShadowRenderer(ID3D11Device* device, ShaderManager& shader_manager, MeshRenderer& mesh_renderer);
         ~EntityShadowRenderer();
@@ -80,6 +86,9 @@ namespace gr::d3d11
         void render_debug_overlay(ID3D11DeviceContext* context);
 
         static bool debug_enabled;
+
+        // MAX_SHADOW_CASTERS in standard_ps.hlsl
+        static constexpr int max_caster_boxes = 16;
 
     private:
         struct ShadowConstantBuffer
@@ -98,14 +107,20 @@ namespace gr::d3d11
             float shadow_pcf_taps;
             float shadow_debug;
             float shadow_soft_edges;
-            float pad;
+            float shadow_num_casters;
+            std::array<std::array<float, 4>, max_caster_boxes> shadow_caster_rects;
+            std::array<std::array<float, 4>, max_caster_boxes> shadow_caster_depths;
         };
+        static_assert(offsetof(ShadowConstantBuffer, shadow_num_casters) == 124);
+        static_assert(offsetof(ShadowConstantBuffer, shadow_caster_rects) == 128);
+        static_assert(offsetof(ShadowConstantBuffer, shadow_caster_depths) == 128 + 16 * max_caster_boxes);
         static_assert(sizeof(ShadowConstantBuffer) % 16 == 0);
 
         void build_shadow_view_proj(ID3D11DeviceContext* context, const rf::Vector3& camera_pos);
         void render_entity_shadow(ID3D11DeviceContext* context, RenderContext& render_context);
         void render_corpse_shadow(ID3D11DeviceContext* context, RenderContext& render_context);
         void render_item_shadow(ID3D11DeviceContext* context, RenderContext& render_context);
+        void add_caster_box(const ShadowCasterBounds& bounds);
         ID3D11Device* device_;
         ShaderManager& shader_manager_;
         MeshRenderer& mesh_renderer_;
@@ -131,10 +146,16 @@ namespace gr::d3d11
         ComPtr<ID3D11Buffer> vfx_shadow_vb_;
         int vfx_shadow_vb_capacity_ = 0;
 
-        // Cached shadow VP matrix for the current frame
+        // Cached shadow VP matrix for the current frame, and the light direction it was built from
         GpuMatrix4x4 shadow_vp_matrix_;
+        float shadow_light_dir_[3] = {default_light_dir_x, default_light_dir_y, default_light_dir_z};
         rf::Vector3 current_camera_pos_;
         float current_depth_range_ = 200.0f;
+
+        // Caster boxes of the current shadow map, reused with it on lagged frames like shadow_vp_matrix_
+        std::array<std::array<float, 4>, max_caster_boxes> caster_rects_{};
+        std::array<float, max_caster_boxes> caster_depths_{};
+        int num_caster_boxes_ = 0;
 
         // Debug overlay resources (lazy-initialized)
         ComPtr<ID3D11Buffer> debug_vb_;

@@ -163,5 +163,4 @@ void render_obj_debug_ui();
 void debug_unresponsive_apply_patches();
 void debug_unresponsive_init();
 void debug_unresponsive_cleanup();
-void debug_unresponsive_do_update();
 void debug_cmd_multi_init();

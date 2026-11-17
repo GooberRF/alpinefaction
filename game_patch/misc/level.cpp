@@ -8,20 +8,45 @@
 #include "../os/console.h"
 #include "../rf/multi.h"
 #include "../rf/level.h"
+#include "../rf/math/ix.h"
 #include "../rf/file/file.h"
 #include "../rf/mover.h"
 #include "level.h"
+#include "alpine_terrain.h"
+#include "alpine_terrain_decorations.h"
 #include "misc.h"
 #include "player.h"
+#include "../multi/payload.h"
 #include "../multi/server.h"
+#include "../multi/vehicles/vehicle_physics.h"
 #include "../object/alpine_corona.h"
 #include "../object/alpine_bag.h"
+#include "../object/alpine_projection_camera.h"
+#include "../object/alpine_rope.h"
+#include "../object/alpine_dir_light.h"
+#include "../object/alpine_waypoint_helper.h"
 #include "../object/mover.h"
 #include "../hud/hud_world.h"
+#include "../hud/minimap.h"
+#include "../sound/sound.h"
+#include "../graphics/af_lightmap.h"
+#include "../graphics/d3d11/gr_d3d11_hooks.h"
 #include "../graphics/weather.h"
+#include "../graphics/scene_capture.h"
+#include "../multi/multi.h"
 
 static std::vector<GasRegionInfo> g_gas_regions;
 static std::vector<GasRegionTransition> g_gas_region_transitions;
+
+struct ClimbRegionEntry {
+    rf::ClimbRegion* region;
+    int32_t uid;
+};
+static std::vector<ClimbRegionEntry> g_climb_regions;
+static std::vector<rf::ClimbRegion*> g_disabled_climb_regions;
+
+// The fog near clip the level file sets; Set_Fog_Far_Clip can move the far clip below it and back
+static float g_level_fog_near_clip = 0.0f;
 
 CodeInjection level_read_data_check_restore_status_patch{
     0x00461195,
@@ -86,16 +111,6 @@ CodeInjection level_read_moving_group_lift_patch{
     }
 };
 
-CodeInjection level_load_items_crash_fix{
-    0x0046519F,
-    [](auto& regs) {
-        void* item = regs.eax;
-        if (item == nullptr) {
-            regs.eip = 0x004651C6;
-        }
-    },
-};
-
 CallHook<void(rf::Vector3*, float, float, float, float, bool, int, int)> level_read_geometry_header_light_add_directional_hook{
     0x004619E1,
     [](rf::Vector3 *dir, float intensity, float r, float g, float b, bool is_dynamic, int casts_shadow, int dropoff_type) {
@@ -110,14 +125,57 @@ CodeInjection level_load_init_patch{
     []() {
         AlpineLevelProperties::instance() = {};
         DashLevelProps::instance() = {};
+        g_level_fog_near_clip = 0.0f;
         alpine_mesh_clear_state();
         alpine_corona_clear_state();
         alpine_bag_clear_state();
+        vehicle_factory_clear_state();
+        alpine_projection_camera_clear_state();
+        alpine_rope_clear_state();
+        alpine_dir_light_clear_state();
+        alpine_waypoint_helper_clear_state();
+        alpine_terrain_decorations_clear_state();
+        alpine_terrain_clear_state();
+        gr::d3d11::release_terrain_gpu();
         gas_region_clear_state();
+        climb_region_clear_state();
         weather_clear_regions();
+        minimap_level_reset();
+        af_lightmap_level_reset();
+        projector_clear_all();
         alpine_mover_clear_hold_open();
+        alpine_mover_path_clear_state();
         hud_world_level_unload();
         set_headlamp_toggle_enabled(AlpineLevelProperties::instance().starts_with_headlamp);
+    },
+};
+
+void level_shutdown()
+{
+    climb_region_clear_state();
+    weather_clear_regions();
+    af_lightmap_level_reset();
+    projector_clear_all();
+    alpine_rope_clear_state();
+    alpine_dir_light_clear_state();
+    alpine_waypoint_helper_clear_state();
+    alpine_terrain_decorations_clear_state();
+    alpine_terrain_clear_state();
+    gr::d3d11::release_terrain_gpu();
+    alpine_mesh_free_collision_proxies();
+    vehicle_physics_level_reset(); // the Bullet world keys on GRoom*, so it goes before the rooms
+    snd_level_looping_reset(); // the stock close that follows stops every channel, so nothing still plays the loop
+    payload_level_close();
+}
+
+// Reached from quit-to-menu and leaving for the multiplayer menu (via game_shutdown), the
+// level to level transition, a failed load, and game exit — always before the engine
+// releases the level's bitmaps and while the renderer is still up.
+FunHook<void()> level_close_hook{
+    0x0045C880,
+    [] {
+        level_shutdown();
+        level_close_hook.call_target();
     },
 };
 
@@ -128,17 +186,31 @@ CodeInjection level_load_chunk_patch{
         rf::File& file = addr_as_ref<rf::File>(regs.esp + 0x2B0 - 0x278);
         auto chunk_len = addr_as_ref<std::size_t>(regs.esp + 0x2B0 - 0x2A0);
 
+        if (chunk_id == stock_lightmaps_chunk_id) {
+            af_lightmap_note_stock_lightmaps();
+        }
+
         // handling for alpine level props chunk
         if (chunk_id == alpine_props_chunk_id) {
             AlpineLevelProperties::instance().deserialize(file, chunk_len);
             set_headlamp_toggle_enabled(AlpineLevelProperties::instance().starts_with_headlamp);
+            // Refused the way an unsupported version is: the string lands in level_load's error buffer
+            // and the failure path unwinds. The props chunk precedes every alpine object chunk.
+            if (level_refused_without_d3d11(AlpineLevelProperties::instance().require_d3d11,
+                                            rf::is_dedicated_server, is_headless_mode(),
+                                            g_game_config.renderer == GameConfig::Renderer::d3d11)) {
+                char* error_info = *reinterpret_cast<char**>(regs.esp + 0x2B0 + 0xC);
+                std::strcpy(error_info, "This level requires the D3D11 renderer");
+                regs.eip = 0x004608CC;
+                return;
+            }
             regs.eip = 0x004608EF; // loop back to begin next chunk
         }
 
         // handling for alpine mesh objects chunk
         if (chunk_id == alpine_mesh_chunk_id) {
             xlog::debug("[Level] Loading alpine mesh chunk: len={}", chunk_len);
-            alpine_mesh_load_chunk(file, chunk_len);
+            alpine_mesh_load_chunk(file, chunk_len, file.get_version());
             regs.eip = 0x004608EF;
         }
 
@@ -163,6 +235,58 @@ CodeInjection level_load_chunk_patch{
             regs.eip = 0x004608EF;
         }
 
+        // handling for alpine vehicle factory objects chunk
+        if (chunk_id == alpine_vehicle_factory_chunk_id) {
+            xlog::debug("[Level] Loading alpine vehicle factory chunk: len={}", chunk_len);
+            vehicle_factory_load_chunk(file, chunk_len);
+            regs.eip = 0x004608EF;
+        }
+
+        // handling for alpine projection camera objects chunk
+        if (chunk_id == alpine_projection_camera_chunk_id) {
+            xlog::debug("[Level] Loading alpine projection camera chunk: len={}", chunk_len);
+            alpine_projection_camera_load_chunk(file, chunk_len);
+            regs.eip = 0x004608EF;
+        }
+
+        // handling for alpine rope objects chunk
+        if (chunk_id == alpine_rope_emitter_chunk_id) {
+            xlog::debug("[Level] Loading alpine rope chunk: len={}", chunk_len);
+            alpine_rope_load_chunk(file, chunk_len);
+            regs.eip = 0x004608EF;
+        }
+
+        // handling for alpine terrain chunk
+        if (chunk_id == alpine_terrain_chunk_id) {
+            xlog::debug("[Level] Loading alpine terrain chunk: len={}", chunk_len);
+            alpine_terrain_load_chunk(file, chunk_len);
+            regs.eip = 0x004608EF;
+        }
+
+        // handling for alpine directional light objects chunk
+        if (chunk_id == alpine_directional_light_chunk_id) {
+            xlog::debug("[Level] Loading alpine directional light chunk: len={}", chunk_len);
+            alpine_dir_light_load_chunk(file, chunk_len, file.get_version());
+            regs.eip = 0x004608EF;
+        }
+
+        if (chunk_id == alpine_waypoint_helper_chunk_id) {
+            xlog::debug("[Level] Loading alpine waypoint helper chunk: len={}", chunk_len);
+            alpine_waypoint_helper_load_chunk(file, chunk_len);
+            regs.eip = 0x004608EF;
+        }
+
+        if (chunk_id == alpine_mover_path_chunk_id) {
+            xlog::debug("[Level] Loading alpine mover path chunk: len={}", chunk_len);
+            if (file.check_version(306)) {
+                alpine_mover_path_load_chunk(file, chunk_len);
+            }
+            else {
+                file.seek(chunk_len, rf::File::seek_cur);
+            }
+            regs.eip = 0x004608EF;
+        }
+
         // handling for dash faction level props chunk, safe up to v1
         if (chunk_id == dash_level_props_chunk_id) {
             auto version = file.read<std::uint32_t>();
@@ -172,6 +296,46 @@ CodeInjection level_load_chunk_patch{
                 file.seek(chunk_len - 4, rf::File::seek_cur);
             }
             regs.eip = 0x004608EF;
+        }
+    },
+};
+
+// After the geometry section is read, cursor just past the surface records the bake fingerprinted.
+// Terrains resolve here, before the object chunks whose clutter samples their light.
+CodeInjection level_read_geometry_fingerprint_patch{
+    0x00460C6A,
+    [](auto& regs) {
+        auto& file = addr_as_ref<rf::File>(regs.esp + 0x2B0 - 0x278);
+        af_lightmap_init_synthesized_page();
+        af_lightmap_capture_surface_fingerprint(file);
+        alpine_terrain_resolve_rooms();
+    },
+};
+
+// "ADD ESP,0xC; MOV ECX,ESI; MOV EDI,EAX" right after the movers section reads a mover's solid:
+// EAX = the solid, EBX = the mover uid, ESI = the memory VFile, its cursor just past the surface records.
+CodeInjection level_read_mover_solid_patch{
+    0x00463CC7,
+    [](auto& regs) {
+        af_lightmap_capture_mover(static_cast<int>(regs.ebx),
+                                  reinterpret_cast<rf::GSolid*>(static_cast<uintptr_t>(regs.eax)),
+                                  addr_as_ref<rf::VFile>(regs.esi));
+    },
+};
+
+// "CMP EAX,0x2000", the head of the second chunk dispatcher. Everything written after the
+// geometry section, the alpine lightmaps included, arrives here rather than at 0x00460912.
+CodeInjection level_load_post_geometry_chunk_patch{
+    0x00460D5E,
+    [](auto& regs) {
+        int chunk_id = regs.eax;
+        rf::File& file = addr_as_ref<rf::File>(regs.esp + 0x2B0 - 0x278);
+        auto chunk_len = addr_as_ref<std::size_t>(regs.esp + 0x2B0 - 0x2A0);
+
+        if (chunk_id == alpine_lightmaps_chunk_id) {
+            xlog::debug("[Level] Loading alpine lightmaps chunk: len={}", chunk_len);
+            af_lightmap_load_chunk(file, chunk_len);
+            regs.eip = 0x00460D3B; // loop back to begin next chunk
         }
     },
 };
@@ -230,6 +394,33 @@ FunHook<void(rf::File*)> level_read_mp_respawns_hook{
                 blue,
                 true
             );
+        }
+    },
+};
+
+// gr_fog_set (0x0050E020) keeps the previous near/far pair when near > far, so fog would stop following the level.
+// Below RFL 306 the near clip has no effect, and stock behaviour stays as it is.
+void level_sanitize_fog_near_clip()
+{
+    if (!level_rfl_version_at_least(306)) {
+        return;
+    }
+    const float near_clip = g_level_fog_near_clip;
+    const float far_clip = rf::level.distance_fog_far_clip;
+    const bool usable = near_clip == 0.0f
+        || (std::isfinite(near_clip) && near_clip > 0.0f && (!(far_clip > 0.0f) || near_clip < far_clip));
+    rf::level.distance_fog_near_clip = usable ? near_clip : 0.0f;
+}
+
+CallHook<void(rf::File*)> level_read_geometry_header_hook{
+    0x00460943,
+    [](rf::File* file) {
+        level_read_geometry_header_hook.call_target(file);
+        g_level_fog_near_clip = rf::level.distance_fog_near_clip;
+        level_sanitize_fog_near_clip();
+        if (rf::level.distance_fog_near_clip != g_level_fog_near_clip) {
+            xlog::warn("[Level] Fog near clip {} is not below the far clip {}, using 0", g_level_fog_near_clip,
+                       rf::level.distance_fog_far_clip);
         }
     },
 };
@@ -300,6 +491,69 @@ void gas_region_clear_state()
 {
     g_gas_regions.clear();
     g_gas_region_transitions.clear();
+}
+
+// Runs inside the stock climbing region chunk loader.
+CodeInjection climb_region_load_uid_patch{
+    0x00462EAF,
+    [](auto& regs) {
+        rf::ClimbRegion* region = regs.edi;
+        if (region) {
+            g_climb_regions.push_back({region, static_cast<int32_t>(regs.eax)});
+        }
+    },
+};
+
+// Faithful reimplementation of the stock query.
+FunHook<rf::ClimbRegion*(rf::Vector3*)> level_point_in_climb_region_hook{
+    0x0045CCA0,
+    [](rf::Vector3* point) -> rf::ClimbRegion* {
+        for (int i = 0; i < rf::level.ladders.size(); ++i) {
+            rf::ClimbRegion* region = rf::level.ladders[i];
+            if (!region) {
+                continue;
+            }
+            if (!g_disabled_climb_regions.empty() &&
+                std::find(g_disabled_climb_regions.begin(), g_disabled_climb_regions.end(), region) !=
+                    g_disabled_climb_regions.end()) {
+                continue;
+            }
+            if (rf::ix_point_in_box_oriented(*point, region->pos, region->orient, region->extents)) {
+                return region;
+            }
+        }
+        return nullptr;
+    },
+};
+
+void climb_region_clear_state()
+{
+    g_climb_regions.clear();
+    g_disabled_climb_regions.clear();
+}
+
+rf::ClimbRegion* climb_region_get_by_uid(int uid)
+{
+    for (const auto& entry : g_climb_regions) {
+        if (entry.uid == uid) return entry.region;
+    }
+    return nullptr;
+}
+
+void climb_region_set_enabled(int uid, bool enabled)
+{
+    auto* region = climb_region_get_by_uid(uid);
+    if (!region) return;
+
+    auto it = std::find(g_disabled_climb_regions.begin(), g_disabled_climb_regions.end(), region);
+    if (enabled) {
+        if (it != g_disabled_climb_regions.end()) {
+            g_disabled_climb_regions.erase(it);
+        }
+    }
+    else if (it == g_disabled_climb_regions.end()) {
+        g_disabled_climb_regions.push_back(region);
+    }
 }
 
 const std::vector<GasRegionInfo>& gas_region_get_all()
@@ -425,15 +679,18 @@ void level_apply_patch()
     level_read_moving_group_travel_time_patch.install();
     level_read_moving_group_lift_patch.install();
 
-    // Fix item_create null result handling in RFL loading (affects multiplayer only)
-    level_load_items_crash_fix.install();
-
     // Fix dedicated server crash when loading level that uses directional light
     level_read_geometry_header_light_add_directional_hook.install();
 
     // Load new rfl chunks
     level_load_init_patch.install();
     level_load_chunk_patch.install();
+    level_read_geometry_fingerprint_patch.install();
+    level_read_mover_solid_patch.install();
+    level_load_post_geometry_chunk_patch.install();
+
+    // Release level scoped module state when the engine tears the level down
+    level_close_hook.install();
 
     // Load MP respawns
     level_read_mp_respawns_hook.install();
@@ -441,6 +698,15 @@ void level_apply_patch()
     // Allow level hardness 0 for version 304+ levels
     level_load_hardness_zero_patch.install();
 
+    // Fog near clip at or past the far clip in 306+ levels
+    level_read_geometry_header_hook.install();
+
     // Hook stock gas region loader to capture gas region data for volumetric fog
     gas_region_load_hook.install();
+
+    // Climbing region uid capture and the Climbing_Region_State disable check
+    climb_region_load_uid_patch.install();
+    level_point_in_climb_region_hook.install();
+
+    alpine_terrain_decorations_apply_patch();
 }

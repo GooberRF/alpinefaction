@@ -30,6 +30,16 @@ namespace rf
             AddrCaller{0x004FCFA0}.this_call(this, &forward_vector);
         }
 
+        void rotate_about_local_x(float angle)
+        {
+            AddrCaller{0x004FD240}.this_call(this, angle);
+        }
+
+        void rotate_about_local_z(float angle)
+        {
+            AddrCaller{0x004FD310}.this_call(this, angle);
+        }
+
         void rand_quick()
         {
             Vector3 fvec;

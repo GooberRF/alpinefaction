@@ -13,3 +13,5 @@ void gungame_on_player_kill(rf::Player* killer, rf::Player* killed);
 void gungame_on_player_spawn(rf::Player* player);
 void gungame_on_player_disconnect(rf::Player* player);
 int gungame_spawn_weapon_for(rf::Player* player);
+// Server: the number of weapon levels, the last gg_levelup's level
+int gungame_level_count();

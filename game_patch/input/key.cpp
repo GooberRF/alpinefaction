@@ -1,13 +1,17 @@
 #include <cctype>
+#include <cstring>
 #include <patch_common/FunHook.h>
 #include <patch_common/CodeInjection.h>
 #include <patch_common/AsmWriter.h>
 #include <xlog/xlog.h>
+#include "bind_context.h"
 #include "../hud/multi_spectate.h"
 #include "../hud/hud.h"
 #include "../misc/player.h"
 #include "../misc/achievements.h"
 #include "../misc/alpine_settings.h"
+#include "../misc/misc.h"
+#include "../misc/settings_registry.h"
 #include "../misc/waypoints_utils.h"
 #include "../multi/multi.h"
 #include "../multi/demo/demo.h"
@@ -26,6 +30,7 @@
 #include "../multi/pit.h"
 #include "../multi/sprays.h"
 #include "../multi/vote_client.h"
+#include "../multi/vehicles/vehicle_physics.h"
 #include "../misc/vote_panel.h"
 #include "../os/console.h"
 #include "input.h"
@@ -42,15 +47,45 @@ rf::String get_action_bind_name(int action)
     else if (config_item.mouse_btn_id >= 0) {
         rf::control_config_get_mouse_button_name(&name, config_item.mouse_btn_id);
     }
+    else if (ctrl_is_extra_mouse_scan(config_item.scan_codes[1])) {
+        rf::control_config_get_key_name(&name, config_item.scan_codes[1]);
+    }
     else {
         name = "?";
     }
     return name;
 }
 
+std::string get_action_bind_name_or(int action, const char* fallback)
+{
+    const rf::String bind = get_action_bind_name(action);
+    const char* name = bind.c_str();
+    return (!name || !*name || std::strcmp(name, "?") == 0) ? std::string{fallback} : std::string{name};
+}
+
 rf::ControlConfigAction get_af_control(rf::AlpineControlConfigAction alpine_control)
 {
     return static_cast<rf::ControlConfigAction>(starting_alpine_control_index + static_cast<int>(alpine_control));
+}
+
+int alpine_control_start_index()
+{
+    return starting_alpine_control_index;
+}
+
+// A bound Caps Lock is toggled by gameplay presses, so its state says nothing about the text being typed.
+static bool caps_lock_is_bound()
+{
+    const int count = bind_context_binding_count();
+    for (int c = 0; c < static_cast<int>(BindContextId::_count); ++c) {
+        for (int i = 0; i < count; ++i) {
+            const BindOverride bind = bind_context_effective(static_cast<BindContextId>(c), i);
+            if (bind.scan_codes[0] == rf::KEY_CAPSLOCK || bind.scan_codes[1] == rf::KEY_CAPSLOCK) {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 FunHook<int(int16_t)> key_to_ascii_hook{
@@ -93,6 +128,11 @@ FunHook<int(int16_t)> key_to_ascii_hook{
         }
         if (key & rf::KEY_CTRLED) {
             key_state[VK_CONTROL] = 0x80;
+        }
+        // HACKFIX.  Must be set for `ToUnicode` to produce capitalized letters.
+        if ((GetKeyState(VK_CAPITAL) & 1)
+            && (g_alpine_game_config.bound_caps_lock_capitalizes || !caps_lock_is_bound())) {
+            key_state[VK_CAPITAL] = 1;
         }
         int scan_code = key & 0x7F;
         auto vk = MapVirtualKeyA(scan_code, MAPVK_VSC_TO_VK);
@@ -181,7 +221,7 @@ FunHook<rf::Key()> key_get_hook{
         if ((key & rf::KEY_MASK) == rf::KEY_ESC
             && key & rf::KEY_SHIFTED
             && g_alpine_game_config.quick_exit) {
-            rf::gameseq_set_state(rf::GameState::GS_QUITING, false);
+            rf::gameseq_set_state(rf::GameState::GS_QUIT_GAME, false);
         MAYBE_CANCEL_BINK:
             // If we are playing a video, cancel it.
             const int bink_handle = addr_as_ref<int>(0x018871E4);
@@ -195,8 +235,7 @@ FunHook<rf::Key()> key_get_hook{
 ConsoleCommand2 key_quick_exit_cmd{
     "key_quick_exit",
     [] {
-        g_alpine_game_config.quick_exit =
-            !g_alpine_game_config.quick_exit;
+        setting_console_set("quick_exit", "toggle");
         rf::console::print(
             "Shift+Esc to quit out of Red Faction is {}",
             g_alpine_game_config.quick_exit ? "enabled" : "disabled"
@@ -284,12 +323,14 @@ CodeInjection control_config_init_patch{
                                        rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_ATTACH);
         alpine_control_config_add_item(ccp, "Toggle Spectate", false, rf::KEY_DIVIDE, -1, -1,
                                        rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE);
-        alpine_control_config_add_item(ccp, "Change Spectate View", false, rf::KEY_SEMICOL, -1, -1,
+        alpine_control_config_add_item(ccp, "Change View", false, rf::KEY_SEMICOL, -1, -1,
                                        rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_CHANGE_VIEW);
         alpine_control_config_add_item(ccp, "Spray", 0, rf::KEY_Z, -1, -1,
                                        rf::AlpineControlConfigAction::AF_ACTION_SPRAY);
         alpine_control_config_add_item(ccp, "Call Vote Menu", false, rf::KEY_F4, -1, -1,
                                        rf::AlpineControlConfigAction::AF_ACTION_VOTE_MENU);
+        alpine_control_config_add_item(ccp, "Show Map", false, rf::KEY_Q, -1, -1,
+                                       rf::AlpineControlConfigAction::AF_ACTION_BIG_MAP);
     },
 };
 
@@ -341,6 +382,9 @@ static void execute_alive_alpine_control(int action_index)
 // until they send the end event; older servers only understand the chat command.
 static void cast_local_vote(bool is_yes_vote)
 {
+    if (vote_client_spectating_match()) {
+        return;
+    }
     if (is_server_minimum_af_version(1, 4)) {
         af_send_vote_cast(is_yes_vote);
         vote_state_mark_local_voted();
@@ -467,8 +511,8 @@ CodeInjection player_execute_action_patch3{
                 toggle_chat_menu(ChatMenuType::Spectate);
             } else if (alpine_action_index
                 == static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_REMOTE_SERVER_CFG)
-                && is_server_minimum_af_version(1, 2)
-                && !demo_playback_active()) {
+                && (demo_playback_active() ? demo_playback_server_cfg() != nullptr
+                                           : is_server_minimum_af_version(1, 2))) {
                 if (vote_panel_is_gameplay_overlay_active()) {
                     vote_panel_close();
                 }
@@ -488,9 +532,12 @@ CodeInjection player_execute_action_patch3{
                 multi_spectate_toggle_attach();
             } else if (alpine_action_index
                 == static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_CHANGE_VIEW)
-                && !rf::is_dedicated_server
-                && multi_spectate_is_spectating()) {
-                multi_spectate_change_view();
+                && !rf::is_dedicated_server) {
+                if (multi_spectate_is_spectating()) {
+                    multi_spectate_change_view();
+                } else {
+                    vehicle_physics_camera_toggle_view();
+                }
             } else if (alpine_action_index
                 == static_cast<int>(rf::AlpineControlConfigAction::AF_ACTION_SPECTATE_TOGGLE)
                 && !rf::is_dedicated_server) {
@@ -613,9 +660,7 @@ FunHook<void(int, int, int)> key_msg_handler_hook{
 FunHook<void(int)> options_controls_record_binding_hook{
     0x0044FE60,
     [](int key) {
-        bool is_extra_mouse_scan = key >= CTRL_EXTRA_MOUSE_SCAN_BASE
-            && key < CTRL_EXTRA_MOUSE_SCAN_BASE + CTRL_EXTRA_MOUSE_SCAN_COUNT;
-        if (is_extra_mouse_scan || key == rf::KEY_LALT || key == rf::KEY_RALT) {
+        if (ctrl_is_extra_mouse_scan(key) || key == rf::KEY_LALT || key == rf::KEY_RALT) {
             rf::ui::options_controls_assign_binding(key, -1);
             rf::ui::options_controls_stop_waiting_for_key();
             return;
@@ -640,7 +685,6 @@ void key_apply_patch()
     // Support non-US keyboard layouts
     key_to_ascii_hook.install();
     get_key_name_hook.install();
-    key_name_in_options_patch.install();
 
     // Disable broken numlock handling
     write_mem<int8_t>(0x004B14B2 + 1, 0);
@@ -656,6 +700,9 @@ void key_apply_patch()
     // Num pads need a patch to support `PgUp`, `PgDown`, `End`, and `Home`.
     key_msg_handler_hook.install();
 
-    // Allow binding Alt keys and extra mouse buttons in the controls options panel
-    options_controls_record_binding_hook.install();
+    if (legacy_menus_enabled()) {
+        key_name_in_options_patch.install();
+        // Allow binding Alt keys and extra mouse buttons in the controls options panel
+        options_controls_record_binding_hook.install();
+    }
 }

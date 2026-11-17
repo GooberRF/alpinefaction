@@ -2,8 +2,10 @@
 
 #ifdef _MSC_VER
 #define FASTCALL_LAMBDA
+#define STDCALL_LAMBDA
 #else
 #define FASTCALL_LAMBDA __attribute__((fastcall))
+#define STDCALL_LAMBDA __attribute__((stdcall))
 #endif
 
 // For generic types that are functors, delegate to its 'operator()'

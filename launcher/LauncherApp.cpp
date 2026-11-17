@@ -160,8 +160,21 @@ std::wstring build_demo_confirm_text(const DemoDisplayInfo& info)
 std::string demo_game_type_name(int32_t game_type)
 {
     static const char* const names[] = {
-        "Deathmatch", "Capture the Flag", "Team Deathmatch", "King of the Hill", "Damage Control",
-        "Revolt", "Run", "Escalation", "Bagman", "Team Bagman", "Pit", "Wipeout", "Gun Game", "Salvage",
+        "Deathmatch",
+        "Capture the Flag",
+        "Team Deathmatch",
+        "King of the Hill",
+        "Damage Control",
+        "Revolt",
+        "Run",
+        "Escalation",
+        "Bagman",
+        "Team Bagman",
+        "Pit",
+        "Wipeout",
+        "Gun Game",
+        "Salvage",
+        "Scavenger",
     };
     if (game_type < 0 || game_type >= static_cast<int32_t>(ARRAYSIZE(names)))
         return {};
@@ -565,10 +578,20 @@ int LauncherApp::Run()
             "-demo file   Starts game immediately and plays specified demo file\n"
             "-play-demo file  Shows demo info and asks before playing it\n"
             "-editor      Starts level editor immediately\n"
+            "-d3d11, -d3d9  Level editor renderer for this session, overriding the editor's Preferences\n"
+            "-bake in.rfl -bakeout out.rfl  Runs Build Geometry and bakes lighting for in.rfl in the editor, "
+            "writes the result to out.rfl and exits; progress goes to out.rfl.log\n"
+            "-buildonly   With -bake, skips the lighting bake and saves straight after Build Geometry\n"
             "-exe-path     Override patched executable file location\n"
             "args...      Additional arguments passed to game or editor\n",
             "Alpine Faction Launcher Help", MB_OK | MB_ICONINFORMATION);
         return 0;
+    }
+
+    if (m_cmd_line_info.HasBadBakeArg()) {
+        Message(nullptr, "-bake requires an input level: -bake in.rfl -bakeout out.rfl",
+            "Alpine Faction Launcher", MB_OK | MB_ICONERROR);
+        return 1;
     }
 
     // Migrate config from old version
@@ -605,7 +628,7 @@ int LauncherApp::Run()
 
 bool LauncherApp::ValidateAFLinkToken(const std::string& fflink_token)
 {
-    xlog::info("Attempting to validate FactionFiles token: {}...", fflink_token);
+    xlog::info("Attempting to validate FactionFiles token...");
 
     std::string verify_url = "https://link.factionfiles.com/aflauncher/v1/link_check.php?token=" + fflink_token;
     //xlog::info("AFLink validity check URL: {}", verify_url);

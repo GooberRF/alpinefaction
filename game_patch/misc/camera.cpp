@@ -1,6 +1,7 @@
 #include <cassert>
 #include <algorithm>
 #include <cmath>
+#include <optional>
 #include <xlog/xlog.h>
 #include <patch_common/AsmWriter.h>
 #include <patch_common/CodeInjection.h>
@@ -19,14 +20,17 @@
 #include "../misc/vote_panel.h"
 #include "../misc/spray_picker.h"
 #include "../multi/multi.h"
+#include "../multi/vehicles/vehicle_physics.h"
 #include "../rf/player/player.h"
 #include "../rf/player/camera.h"
 #include "../rf/player/control_config.h"
 #include "../rf/os/console.h"
 #include "../rf/os/frametime.h"
 #include "player.h"
+#include "../hud/multi_scoreboard.h"
 #include "../hud/multi_spectate.h"
 #include "../hud/remote_server_cfg_ui.h"
+#include "../misc/settings_registry.h"
 
 constexpr auto screen_shake_fps = 150.0f;
 static float g_camera_shake_factor = 0.6f;
@@ -125,9 +129,7 @@ CallHook<rf::CameraMode(rf::Camera*)> camera_get_mode_emit_sound_hook{
 ConsoleCommand2 disable_weaphake_cmd{
     "cl_weapshake",
     []() {
-        g_alpine_game_config.try_disable_weapon_shake = !g_alpine_game_config.try_disable_weapon_shake;
-
-        evaluate_restrict_disable_ss();
+        setting_console_set("weapon_shake", "toggle");
 
         rf::console::print("Camera shake from weapon fire is {}",
                            g_alpine_game_config.try_disable_weapon_shake
@@ -140,7 +142,7 @@ ConsoleCommand2 disable_weaphake_cmd{
 ConsoleCommand2 force_disable_camerashake_cmd{
     "sp_camerashake",
     []() {
-        g_alpine_game_config.screen_shake_force_off = !g_alpine_game_config.screen_shake_force_off;
+        setting_console_set("screen_shake_sp", "toggle");
 
         rf::console::print("All instances of camera shake are {}being forcefully turned off in single player.",
                            g_alpine_game_config.screen_shake_force_off
@@ -177,7 +179,7 @@ CodeInjection camera_create_for_player_freelook_camera_patch{
 static bool freelook_wheel_captured_by_overlay()
 {
     return vote_panel_is_gameplay_overlay_active() || spray_picker_is_open() ||
-        g_remote_server_cfg_popup.is_active();
+        g_remote_server_cfg_popup.is_active() || multi_scoreboard_cursor_active();
 }
 
 CodeInjection free_camera_do_frame_patch{
@@ -215,6 +217,53 @@ CodeInjection free_camera_do_frame_patch{
             }
         }
     },
+};
+
+// Freelook camera velocity is an explicit-Euler drag integration: vel += (A - drag*vel)*dt, so the
+// target velocity is A/drag and the time constant 1/drag. Scaling both by 1/slide keeps the target
+// speed and shrinks the time constant; capping drag at 1/dt makes slide 0 an exact one-frame snap.
+CodeInjection freelook_camera_slide_patch{
+    0x0049F7C3,
+    [](auto& regs) {
+        const float slide = g_alpine_game_config.freelook_cam_slide;
+        if (slide == 1.0f) {
+            return;
+        }
+        rf::Entity* ep = regs.esi;
+        rf::Camera* cam = rf::local_player ? rf::local_player->cam : nullptr;
+        if (!cam || cam->camera_entity != ep || cam->mode != rf::CameraMode::CAMERA_FREELOOK) {
+            return;
+        }
+        const float dt = ep->p_data.frame_time_left;
+        float& drag = addr_as_ref<float>(regs.esp + 0xC);
+        rf::Vector3& accel = addr_as_ref<rf::Vector3>(regs.esp + 0x10);
+        if (dt <= 0.0f || drag <= 0.0f) {
+            return;
+        }
+        if (ep->p_data.flags & rf::PF_ACCEL_APPLIED) {
+            // repeat dispatch within the frame carries no input; hold velocity instead of decaying it
+            accel.zero();
+            drag = 0.0f;
+            return;
+        }
+        const float max_drag = 1.0f / dt;
+        const float new_drag = slide <= 0.0f ? max_drag : std::min(drag / slide, max_drag);
+        accel *= new_drag / drag;
+        drag = new_drag;
+    },
+};
+
+ConsoleCommand2 freelook_slide_cmd{
+    "cl_freelookslide",
+    [](std::optional<float> scale_opt) {
+        if (scale_opt) {
+            setting_console_set("freelook_cam_slide", std::to_string(*scale_opt));
+        }
+        rf::console::print("Freelook camera slide scale is {:.2f} (0 = no slide, 1 = default)",
+                           g_alpine_game_config.freelook_cam_slide);
+    },
+    "Scale the acceleration/deceleration slide of the freelook camera.",
+    "cl_freelookslide [0.0-1.0]",
 };
 
 // In the freelook camera control processing, crouch moves the camera down because it has
@@ -376,9 +425,10 @@ static float convert_pitch_delta_to_non_linear_space(
 }
 
 // Applies raw/modern mouse deltas and linear pitch correction at the entity
-// control injection point. For the player entity, this is where accumulated raw
-// mouse deltas are consumed (freelook camera deltas are consumed earlier in
-// mouse_get_delta_hook since the freelook camera has a separate control path).
+// control injection point. For the entity the local player's controls drive (his own,
+// or the turret or hull he is attached to), this is where accumulated raw mouse deltas
+// are consumed (freelook camera deltas are consumed earlier in mouse_get_delta_hook
+// since the freelook camera has a separate control path).
 CodeInjection linear_pitch_patch{
     0x0049DEC9,
     [](auto& regs) {
@@ -392,11 +442,18 @@ CodeInjection linear_pitch_patch{
 
         // Consume accumulated raw mouse deltas (Raw/Modern mode only).
         // In Classic mode the accumulators are empty and this is a no-op.
-        if (g_alpine_game_config.mouse_scale != 0) {
+        // Server bots and turrets manned by bots take this path too and must not eat the local look.
+        rf::Entity* const lpe = rf::local_player_entity;
+        const bool drives_local_look = entity == lpe || (lpe && lpe->host_handle == entity->handle);
+        if (g_alpine_game_config.mouse_scale != 0 && drives_local_look) {
             float mouse_pitch = 0.0f, mouse_yaw = 0.0f;
             consume_raw_mouse_deltas(mouse_pitch, mouse_yaw, true);
             pitch_delta += mouse_pitch;
             yaw_delta += mouse_yaw;
+        }
+
+        if (vehicle_physics_camera_take_rider_look(entity, pitch_delta, yaw_delta)) {
+            return;
         }
 
         // Apply linear pitch correction to combined delta
@@ -419,7 +476,7 @@ ConsoleCommand2 linear_pitch_cmd{
 #ifdef DEBUG
         linear_pitch_test();
 #endif
-        g_alpine_game_config.mouse_linear_pitch = !g_alpine_game_config.mouse_linear_pitch;
+        setting_console_set("mouse_linear_pitch", "toggle");
         rf::console::print("Linear pitch is {}", g_alpine_game_config.mouse_linear_pitch ? "enabled" : "disabled");
     },
     "Toggles mouse linear pitch angle",
@@ -534,6 +591,12 @@ FunHook<void(rf::Camera*)> camera_do_frame_hook{
             // Disengage and fall back to stock behaviour.
             g_static_camera_mode = AlpineStaticCameraMode::None;
         }
+        multi_spectate_povcomp_frame(camera);
+        // The vehicle orbit camera (passengers, third-person drivers and jeep gunners, and a third-person
+        // spectator of any of them) positions the camera itself, so it must run ahead of spectate below.
+        if (vehicle_physics_camera_do_frame(camera)) {
+            return;
+        }
         // Third-person orbit spectate positions the camera itself each frame.
         if (multi_spectate_camera_do_frame(camera)) {
             return;
@@ -611,6 +674,10 @@ void camera_do_patch()
     // Freelook camera accel and modifier
     camera_create_for_player_freelook_camera_patch.install();
     free_camera_do_frame_patch.install();
+
+    // Freelook camera slide scale
+    freelook_camera_slide_patch.install();
+    freelook_slide_cmd.register_cmd();
 
     // Allow jump button to move freelook camera up vertically
     freelook_camera_jump_vertical_patch.install();

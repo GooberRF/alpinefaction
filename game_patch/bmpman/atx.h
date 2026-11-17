@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <common/atx/spec.h>
 #include "../rf/bmpman.h"
 
 // ATX is a text-based (TOML) container that bundles a list of existing texture files
@@ -33,6 +34,9 @@ void unlock_atx_bitmap(rf::bm::BitmapEntry& bm_entry);
 // through to the stock material logic in that case).
 std::optional<uint8_t> atx_material_override(const rf::bm::BitmapEntry& bm_entry);
 
+// Null when none. Valid until atx_level_reset.
+const AtxSpec::Detail* atx_detail_texture(const rf::bm::BitmapEntry& bm_entry);
+
 // Called from bm_free_entry_hook for TYPE_ATX bitmaps. Removes this handle from the
 // controller's tracking set so subsequent dirty marks don't reach a freed handle. Does NOT
 // release the controller or its child bm handles — multiple bm_entries can share one
@@ -46,11 +50,39 @@ void atx_do_frame();
 // Drop all controllers and release child handles. Called at level load to reset state.
 void atx_level_reset();
 
-// Event control entry points. `handle` is the .atx filename without extension (case-insensitive).
-// Returns false (with a warning) when the controller hasn't been loaded yet — these entry
-// points do NOT lazy-load. The texture must be referenced through the bm system at least once
-// before any event can manipulate it, otherwise frame changes wouldn't reach a GPU surface anyway.
+// Canonical registry key for a raw handle: path dropped, lowercased, and one recognized texture
+// extension removed.
+std::string atx_canonical_handle(const std::string& handle);
+// Takes a canonical key. True if that texture has been referenced through the bm system and has a
+// controller. Silent — callers that want a diagnostic emit their own.
+bool atx_has_controller(const std::string& canonical_key);
 bool atx_set_frame(const std::string& handle, int frame_index);
 bool atx_play(const std::string& handle);
 bool atx_pause(const std::string& handle);
 bool atx_set_frame_time(const std::string& handle, int frame_time_ms);
+bool atx_set_live_feed(const std::string& canonical_key, int bm_handle);
+bool atx_clear_live_feed(const std::string& canonical_key, int expected_bm);
+
+namespace atx_detail
+{
+    // Controllers with a live feed — non-zero for as long as any projection is on. The common
+    // case is none at all, which is what lets the per-draw resolve and the renderer's texture
+    // cache invalidation both early-out.
+    extern int g_live_feed_count;
+    int lookup_live_feed(int bm_handle);
+}
+
+// True while any ATX is showing a live feed.
+inline bool atx_any_live_feed()
+{
+    return atx_detail::g_live_feed_count > 0;
+}
+
+// Called per draw from the D3D11 texture manager. Returns -1 when the handle has no feed.
+inline int atx_lookup_live_feed(int bm_handle)
+{
+    if (atx_detail::g_live_feed_count == 0) {
+        return -1;
+    }
+    return atx_detail::lookup_live_feed(bm_handle);
+}

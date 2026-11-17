@@ -290,7 +290,7 @@ int gr_d3d_create_texture(int bm_handle, rf::gr::d3d::Texture& tslot) {
     g_currently_creating_texture_for_bitmap = -1;
 
     if (result != 1) {
-        xlog::warn("Failed to load texture '{}'", rf::bm::get_filename(bm_handle));
+        xlog::warn("Failed to load texture '{}'", string_escape_control_chars(rf::bm::get_filename(bm_handle)));
         // Note: callers of this function expects zero result on failure
         return 0;
     }

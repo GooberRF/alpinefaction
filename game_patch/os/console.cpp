@@ -4,6 +4,7 @@
 #include "../misc/misc.h"
 #include "../misc/alpine_settings.h"
 #include "../multi/multi.h"
+#include "../multi/demo/demo_ui.h"
 #include "../rf/player/player.h"
 #include "../rf/gameseq.h"
 #include "../rf/input.h"
@@ -25,13 +26,12 @@
 #include <ctime>
 #include <string_view>
 
-// ConsoleDrawClientConsole uses 200 bytes long buffer for: "] ", user input and '\0'
-constexpr int max_cmd_line_len = 200 - 2 - 1;
-
 rf::console::Command* g_commands_buffer[CMD_LIMIT];
 
 static std::ofstream g_console_log;
 static std::string g_console_log_path;
+// Latched once, like legacy_menus_enabled(): the launcher config is reloaded mid-session.
+static bool g_legacy_console = false;
 
 void console_run_script(const char* filename)
 {
@@ -116,7 +116,9 @@ FunHook<int()> gameseq_process_hook{
     0x00434230,
     []() {
         int menu_id = gameseq_process_hook.call_target();
-        if (menu_id == rf::GS_MULTI_LIMBO) // hide cursor when changing level - hackfixed in RF by changing rendering logic
+        // hide cursor when changing level - hackfixed in RF by changing rendering logic. The demo
+        // controls panel stays usable on the limbo scoreboard and keeps its cursor.
+        if (menu_id == rf::GS_MULTI_LIMBO && !demo_controls_ui_is_open())
             rf::mouse_set_visible(false);
         else if (menu_id == rf::GS_MAIN_MENU)
             rf::mouse_set_visible(true);
@@ -235,6 +237,9 @@ static FunHook<void(const char*, const rf::Color*)> console_output_hook{
                 out_text = clamped.c_str();
             }
             console_output_hook.call_target(out_text, color);
+            if (text && !g_legacy_console) {
+                console_ui_add_output(text, color);
+            }
         }
         std::string_view text_view = text ? std::string_view{text} : std::string_view{};
         console_log_write(text_view);
@@ -264,11 +269,12 @@ static FunHook<void()> console_draw_client_hook{
         // Fixes console rendering in endgame state
         rf::gr::reset_clip();
 
-        const rf::GameState state = rf::gameseq_get_state();
-        if (state != rf::GS_QUITING
-            && state != rf::GS_NEW_LEVEL
-            && state != rf::GS_MULTI_GETTING_STATE_INFO) {
+        // With the new console, the original only steps the open/close animation (see apply_patches).
+        if (gameseq_is_visible()) {
             console_draw_client_hook.call_target();
+            if (!g_legacy_console) {
+                console_ui_render();
+            }
         }
     },
 };
@@ -291,6 +297,11 @@ void console_clear_input()
     rf::console::cmd_line[0] = '\0';
     rf::console::cmd_line_len = 0;
     rf::console::history_current_index = 0;
+}
+
+bool legacy_console_enabled()
+{
+    return g_legacy_console;
 }
 
 static CodeInjection console_handle_input_injection{
@@ -332,6 +343,15 @@ void apply_console_history_setting() {
     rf::console::console_keep_history = g_alpine_game_config.save_console_history;
 }
 
+void apply_console_color_setting() {
+    auto [r, g, b, a] = extract_color_components(g_alpine_game_config.console_color);
+    write_mem<u32>(0x005098D1, a);
+    write_mem<u8>(0x005098D6, b);
+    write_mem<u8>(0x005098D8, g);
+    write_mem<u8>(0x005098DA, r);
+    rf::console::background_color.set(r, g, b, a);
+}
+
 extern void console_commands_apply_patches();
 extern void console_auto_complete_apply_patches();
 extern void console_commands_init();
@@ -342,11 +362,7 @@ void console_apply_patches()
     write_mem_ptr(0x004B2534, "-- " PRODUCT_NAME " Initializing --\n");
 
     // Console background color
-    constexpr rf::Color console_color{0x27, 0x4E, 0x69, 0xC0};
-    write_mem<u32>(0x005098D1, console_color.alpha);
-    write_mem<u8>(0x005098D6, console_color.blue);
-    write_mem<u8>(0x005098D8, console_color.green);
-    write_mem<u8>(0x005098DA, console_color.red);
+    apply_console_color_setting();
 
     // Support unsigned hexadecimal arguments.
     AsmWriter{0x0050B0B0}.call(std::strtoul);
@@ -383,14 +399,24 @@ void console_apply_patches()
     console_draw_server_hook.install();
     console_put_char_new_line_hook.install();
 
+    g_legacy_console = g_game_config.legacy_console;
+
     // Additional key handling
     console_handle_input_injection.install();
+    if (!g_legacy_console) {
+        console_ui_apply_patches();
+    }
 
     // Improve history handling
     console_handle_input_history_injection.install();
 
     // Reset clip window before rendering console
     console_draw_client_hook.install();
+    if (!g_legacy_console) {
+        // Replacement console renderer (console_ui.cpp). Stock draw keeps its animation step, then
+        // jumps to its epilogue before drawing anything (no registers pushed yet at 0x0050AC6B).
+        AsmWriter(0x0050AC6B).jmp(0x0050AE47);
+    }
 
     apply_console_history_setting();
     console_commands_apply_patches();

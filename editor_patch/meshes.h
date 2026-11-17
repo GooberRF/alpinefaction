@@ -98,6 +98,11 @@ static constexpr int VFX_MAX_CHAIN_VERTICES = 1000000;
 void meshes_init_paths();
 void reload_custom_meshes();
 
+// Make a file just written to disk openable by bare name without waiting for a rescan. Only a file
+// in a registered search path that accepts its extension can be registered, which is also the only
+// place the engine could ever have opened it from. Returns true if the file is now registered.
+bool register_written_file(const char* full_path);
+
 // Find a mesh file (.v3m, .v3c, .vfx, .rfa) on disk by searching mesh directories:
 // user_maps\meshes, red\meshes, and every subdirectory of either (any depth).
 // Returns the full absolute path, or empty string if not found.

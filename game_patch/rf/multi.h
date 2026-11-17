@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <format>
 #include <functional>
 #include <patch_common/MemUtils.h>
@@ -18,6 +19,8 @@ namespace rf
     // Forward declarations
     struct Player;
     struct Entity;
+    struct EntityInfo;
+    struct Object;
 
     // nw/psnet
 
@@ -58,6 +61,18 @@ namespace rf
     static auto& net_port = addr_as_ref<unsigned short>(0x01B587D4);
     static const auto& net_stats_update = addr_as_ref<void()>(0x00528580);
     static const auto& net_stats_add = addr_as_ref<void(int, int, int, int)>(0x005286A0);
+    // psnet stats: 30 one-second slots of bytes per (payload | header-approx, recv | send,
+    // unreliable | reliable); net_stats_slot is the slot being accumulated (capped at 29, the
+    // arrays shift down once a second after that), so slot - 1 is the last complete second
+    static auto& net_stats_slot = addr_as_ref<int>(0x01B46ED8);
+    static auto& net_stats_recv_unrel = addr_as_ref<int[30]>(0x01B46EDC);
+    static auto& net_stats_recv_rel = addr_as_ref<int[30]>(0x01B46DE8);
+    static auto& net_stats_recv_hdr_unrel = addr_as_ref<int[30]>(0x01B46E60);
+    static auto& net_stats_recv_hdr_rel = addr_as_ref<int[30]>(0x01B46CF0);
+    static auto& net_stats_send_unrel = addr_as_ref<int[30]>(0x01B47970);
+    static auto& net_stats_send_rel = addr_as_ref<int[30]>(0x01B46C78);
+    static auto& net_stats_send_hdr_unrel = addr_as_ref<int[30]>(0x01B478F8);
+    static auto& net_stats_send_hdr_rel = addr_as_ref<int[30]>(0x01B46D70);
     static const auto& net_packet_queue_push =
         addr_as_ref<void(void*, const void*, int, const NetAddr*)>(0x00528950);
     static auto& net_packet_queues = addr_as_ref<uint8_t[3][0x1050C]>(0x01B15950);
@@ -155,6 +170,8 @@ namespace rf
         NG_TYPE_WO = 11,    // Wipeout, as of AF v1.4
         NG_TYPE_GG = 12, // Gun Game, as of AF v1.4
         NG_TYPE_SAL = 13,   // Salvage, as of AF v1.4
+        NG_TYPE_SCAV = 14,  // Scavenger, as of AF v1.5
+        NG_TYPE_PAY = 15,   // Payload, as of AF v1.5
         // Sentinel: UNK must always be the last entry.
         NG_TYPE_UNK
     };
@@ -185,6 +202,12 @@ namespace rf
         NPF_LIMBO = 0x20,
         NPF_BLUE_TEAM = 0x80,
         NPF_RCON_HOLDER = 0x100
+    };
+
+    enum NetPlayerState : int {
+        NETPLAYER_STATE_WAITING = 0x0,
+        NETPLAYER_STATE_SYNC = 0x1,
+        NETPLAYER_STATE_IN_GAME = 0x2,
     };
 
     struct NetGameInfo
@@ -234,6 +257,19 @@ namespace rf
     };
     static_assert(sizeof(NetReliableSocketStatus) == 4);
 
+    // obj_update row flags byte.
+    enum ObjUpdateFlags
+    {
+        OUF_POS_ROT_ANIM = 0x01,
+        OUF_CONNECTION_COUNTER = 0x02,
+        OUF_WEAPON_TYPE = 0x04,
+        OUF_WEAPON_LAG_COMP = 0x08,
+        OUF_ALT_FIRE = 0x10,
+        OUF_HEALTH_ARMOR = 0x20,
+        OUF_FIRE = 0x40,
+        OUF_ARMOR_STATE = 0x80,
+    };
+
     #pragma pack(push, 1)
     struct NetReliableSocket {
         void* sbuffers[75];
@@ -261,12 +297,17 @@ namespace rf
     constexpr size_t max_packet_size = 512;
 
     static auto& multi_get_game_type = addr_as_ref<NetGameType()>(0x00470770);
+    // What the stock friendly-fire gate in obj_damage consults (call at 0x004893A8): netgame.flags
+    // bit 9 alone, never the 0x240 pair the config writes.
+    static auto& multi_is_team_damage_on = addr_as_ref<bool()>(0x004826B0);
     static auto& multi_io_send = addr_as_ref<void(Player *player, const void *packet, int len)>(0x00479370);
     static auto& multi_io_send_reliable =
-        addr_as_ref<void(Player *player, const void *data, int len, int not_limbo)>(0x00479480);
+        addr_as_ref<void(Player *player, const void *data, int len, bool require_in_game)>(0x00479480);
     static auto& multi_io_send_reliable_to_all =
-        addr_as_ref<void(const void *data, int len, int a4)>(0x004795A0);
+        addr_as_ref<void(const void *data, int len, bool require_in_game)>(0x004795A0);
     static auto& multi_io_send_buffered_reliable_packets = addr_as_ref<void(Player *pp)>(0x004796C0);
+    // Reliable; a null player sends to every in-game client
+    static auto& send_team_scores_packet = addr_as_ref<void(Player* player)>(0x00472130);
     static auto& multi_find_player_by_addr = addr_as_ref<Player*(const NetAddr& addr)>(0x00484850);
     static auto& multi_find_player_by_id = addr_as_ref<Player*(uint8_t id)>(0x00484890);
     static auto& multi_time_limit = addr_as_ref<float>(0x0064EC4C);
@@ -277,6 +318,7 @@ namespace rf
     static auto& multi_server_flags = addr_as_ref<NetGameFlags>(0x0064EC40);
     static auto& multi_game_type = addr_as_ref<int>(0x0064EC3C);
     static auto& multi_level_switch_queued = addr_as_ref<int>(0x0064EC64);
+    static auto& multi_server_addr = addr_as_ref<NetAddr>(0x0064EC5C); // client: address of the joined server
     static auto& ctf_flag_cooldown_timestamp = addr_as_ref<Timestamp>(0x006C74F4);
     static auto& multi_ctf_drop_flag = addr_as_ref<void(Player* pp)>(0x00473F40);
     static auto& multi_ctf_get_red_team_score = addr_as_ref<uint8_t()>(0x00475020);
@@ -324,15 +366,30 @@ namespace rf
         uint32_t ip, uint16_t port, const char* name, const char* level,
         const char* mod, int players, int max_players, int game_type, int flags)>(0x0044DD50);
     static auto& multi_entity_is_female = addr_as_ref<bool(int mp_character_idx)>(0x004762C0);
+    // multi_powerup_add types. The super pair is applied at once; only the first two are timed.
+    enum MultiPowerupType
+    {
+        MULTI_POWERUP_INVULNERABILITY = 0,
+        MULTI_POWERUP_DAMAGE_AMP = 1,
+        MULTI_POWERUP_SUPER_ARMOR = 2,
+        MULTI_POWERUP_SUPER_HEALTH = 3,
+    };
     static auto& multi_powerup_has_player = addr_as_ref<bool(Player* pp, int powerup_type)>(0x004802B0);
     static auto& multi_powerup_get_time_until = addr_as_ref<int(Player* pp, int powerup_type)>(0x004802D0);
     static auto& multi_powerup_add = addr_as_ref<void(Player* pp, int powerup_type, int time_ms)>(0x00480050);
+    // The stock powerup an item class name gives, -1 for none
+    static auto& multi_powerup_type_from_name = addr_as_ref<int(const String* name)>(0x00480010);
     static auto& multi_powerup_remove = addr_as_ref<void(Player* pp, int powerup_type)>(0x004801F0);
     static auto& multi_powerup_remove_all_for_player = addr_as_ref<void(Player* pp)>(0x00480310);
     static auto& send_reload_packet = addr_as_ref<void(Entity* ep, int weapon_type, int ammo, int clip_ammo)>(0x00485B50);
     static auto& send_obj_kill_packet = addr_as_ref<void(Entity* killed_entity, Item* item, int* a3)>(0x0047E8C0);
     static auto& send_obj_update_packet = addr_as_ref<void()>(0x0047E5B0); // client -> server
     static auto& send_obj_update_packet_timestamp = addr_as_ref<TimestampRealtime>(0x006FB424);
+    // Signature of every process_*_packet handler multi_io_process_packets dispatches to
+    using MultiIoPacketHandler = void(char* data, const NetAddr& addr);
+    // data points past the 3-byte header; reads records until the 0xFFFFFFFF terminator
+    static auto& process_obj_update_packet = addr_as_ref<MultiIoPacketHandler>(0x0047DF90);
+    static auto& multi_pack_obj_update_data = addr_as_ref<int(Player* pp, Object* obj, uint8_t* out)>(0x0047DB20);
     static auto& send_item_create_packet = addr_as_ref<void(Item* item, Player* recipient, int16_t level_item_index)>(0x00479A20);
     static auto& send_item_apply_packet = addr_as_ref<void(Player* to, int item_handle, int entity_handle, int weapon, int ammo, int clip_ammo)>(0x00479810);
     static auto& send_respawn_req_packet = addr_as_ref<void(uint32_t multi_character, uint8_t player_id)>(0x004809D0); // client -> server
@@ -349,6 +406,18 @@ namespace rf
     static auto& multi_alloc_player_id = addr_as_ref<uint8_t()>(0x0046EF00);
     static auto& multi_player_left_game = addr_as_ref<void(Player* player)>(0x0046E9D0);
     static auto& update_player_rate = addr_as_ref<void(Player* player)>(0x0047E7D0);
+    // `rate` command value in bytes/s; seeds each player's net_data->max_update_rate
+    static auto& client_rate = addr_as_ref<int>(0x0059EFF8);
+    static auto& send_rate_packet = addr_as_ref<void(int player_id, int rate)>(0x00480700); // client -> server
+    // Announces p to every other connected player (packet 0x05, carries net_data->flags).
+    static auto& send_new_player_packet = addr_as_ref<void __cdecl(Player* p)>(0x0047A460);
+    static auto& send_left_game_packet = addr_as_ref<void __cdecl(uint8_t player_id, uint8_t reason)>(0x0047BAE0);
+
+    // Server-side handlers of client requests (AF validates both in their FunHooks)
+    static auto& multi_select_weapon_server_side =
+        addr_as_ref<void __cdecl(Player* pp, Entity* ep, int weapon_type)>(0x004858D0);
+    static auto& multi_process_remote_weapon_fire =
+        addr_as_ref<void __cdecl(Entity* ep, int weapon_type, Vector3& pos, Matrix3& orient, bool alt_fire)>(0x0047D220);
     // Client-side: reset by process_obj_update_packet; drives the broken-connection icon,
     // the 20s timeout popup and the sim pause.
     static auto& multi_connection_broken_timestamp = addr_as_ref<Timestamp>(0x0064ECA8);
@@ -368,20 +437,27 @@ namespace rf
     
     struct MpCharacterInfo
     {
-        int screen_name_id;
+        int image_handle;
         int entity_type;
         int anim_entity_type;
         char name[30];
         char padding[2];
-        int image_handle;
+        const char* screen_name;
         char skin_name[16];
         int custom_fpgun[64];
     };
     static_assert(sizeof(MpCharacterInfo) == 0x140);
+    static_assert(offsetof(MpCharacterInfo, screen_name) == 0x2C);
+    static_assert(offsetof(MpCharacterInfo, skin_name) == 0x30);
+    static_assert(offsetof(MpCharacterInfo, custom_fpgun) == 0x40);
 
     constexpr int MAX_MP_CHARACTERS = 31;
     static auto& mp_characters = addr_as_ref<MpCharacterInfo[MAX_MP_CHARACTERS]>(0x006C75A0);
     static auto& num_multi_characters = addr_as_ref<int>(0x006C9C60);
+    // player_create_entity's (0x004A4130) team-skin builders for a character in the "default" skin.
+    static auto& mp_character_lacks_team_skins =
+        addr_as_ref<bool(MpCharacterInfo* character, EntityInfo* info)>(0x004A4540);
+    static auto& mp_character_add_team_skins = addr_as_ref<void(MpCharacterInfo* character, Object* obj)>(0x004A45A0);
     static auto& simultaneous_ping = addr_as_ref<uint32_t>(0x00599CD8);
     static auto& tracker_addr = addr_as_ref<NetAddr>(0x006FC550);
     static auto& tracker_hostname = addr_as_ref<char[64]>(0x0059F4B4);
@@ -401,9 +477,13 @@ namespace rf
     static auto& scoreboard_render_internal = addr_as_ref<void(bool netgame_scoreboard)>(0x00470880);
     static auto& multiplayer_walk_speed = addr_as_ref<float>(0x0059458C);
     static auto& multiplayer_crouch_walk_speed = addr_as_ref<float>(0x00594590);
+    // Sends local_player's current name; multiplayer only.
+    static auto& send_name_change_packet = addr_as_ref<void()>(0x0046EA00);
     static auto& send_glass_kill_packet = addr_as_ref<void(int room_uid, Vector3* break_pos, Vector3* explosion_pos, bool explosion)>(0x00472250);
 
     constexpr int multi_max_player_id = 256;
+    // Players the engine handles at once: the client scoreboard's player array (0x00470880) overflows beyond it.
+    constexpr int multi_max_player_slots = 32;
 }
 
 template <>

@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cmath>
 #include <patch_common/CallHook.h>
 #include <patch_common/FunHook.h>
 #include <patch_common/CodeInjection.h>
@@ -14,10 +15,97 @@
 #include "../main/main.h"
 #include "../misc/alpine_settings.h"
 #include "../misc/misc.h"
+#include "../os/os.h"
+#include "../rf/os/frametime.h"
+#include "../multi/vehicles/vehicle.h"
+#include "../multi/vehicles/vehicle_physics.h"
+#include "hud.h"
 #include "hud_internal.h"
+#include "multi_spectate.h"
 
 float g_hud_ammo_scale = 1.0f;
 bool g_displaying_custom_reticle = false;
+
+// The Machine Pistol Special's row under the main widget (0x0043B1D5).
+constexpr int hud_second_ammo_slot_offset_y = 45;
+
+// Unscaled pixels, like the ammo widget's own bitmaps.
+constexpr int hud_refill_bar_width = 36;
+constexpr int hud_refill_bar_height = 6;
+constexpr int hud_refill_bar_gap = 6;
+// The vehicle health bars' look (vehicle_markers.cpp).
+constexpr float hud_refill_bar_back_alpha = 0.45f;
+constexpr float hud_refill_bar_fill_alpha = 0.75f;
+
+namespace
+{
+    // Per weapon slot; only the viewed hull's bars are ever drawn.
+    HudVehicleBarFade g_hud_refill_bars[2];
+} // namespace
+
+static void hud_ammo_bitmap_size(int bmh, int& w, int& h);
+
+static bool hud_ammo_is_driven_class(const rf::Entity* hull)
+{
+    const int vdc = vehicle_damage_class(hull);
+    return vdc == VDC_APC || vdc == VDC_FIGHTER || vdc == VDC_SUB;
+}
+
+// The APC, fighter or sub this rider drives; the ammo widgets show its primary and any secondary.
+static rf::Entity* hud_ammo_driven_hull(rf::Entity* rider)
+{
+    if (!rf::is_multi) {
+        return nullptr;
+    }
+    rf::Entity* hull = vehicle_ridden_hull(rider);
+    if (!hull || !hud_ammo_is_driven_class(hull) || vehicle_firing_seat_occupant(hull) != rider) {
+        return nullptr;
+    }
+    return hull;
+}
+
+static bool hud_ammo_hull_has_secondary(const rf::Entity* hull)
+{
+    return vehicle_weapon_ammo(hull, hull->ai.current_secondary_weapon) >= 0;
+}
+
+// Left of the no-clip row, centred on its signal light; dy is the row's offset.
+static void hud_render_vehicle_refill_bar(const rf::Entity* hull, int slot, int dy)
+{
+    float progress = 1.0f;
+    const bool charging = vehicle_hud_ammo_refill_progress(hull, slot, progress);
+    const float alpha = g_hud_refill_bars[slot].update(hull->handle, charging);
+    if (alpha <= 0.0f) {
+        return;
+    }
+    if (!charging) {
+        progress = 1.0f;
+    }
+
+    int signal_w = 0;
+    int signal_h = 0;
+    hud_ammo_bitmap_size(rf::hud_ammo_signal_green_bmh, signal_w, signal_h);
+    const int w = std::max(8, static_cast<int>(std::lround(hud_refill_bar_width * g_hud_ammo_scale)));
+    const int h = std::max(3, static_cast<int>(std::lround(hud_refill_bar_height * g_hud_ammo_scale)));
+    const int gap = static_cast<int>(std::lround(hud_refill_bar_gap * g_hud_ammo_scale));
+    const int row_left = std::min({rf::hud_coords[rf::hud_ammo_bar_position_no_clip].x,
+                                   rf::hud_coords[rf::hud_ammo_signal_position_no_clip].x,
+                                   rf::hud_coords[rf::hud_ammo_icon_position_no_clip].x});
+    const int x = std::max(0, row_left - gap - w);
+    const int y = rf::hud_coords[rf::hud_ammo_signal_position_no_clip].y + dy + (signal_h - h) / 2;
+
+    rf::ubyte r, g, b, a;
+    hud_vehicle_bar_fill_color(progress, r, g, b, a);
+    const int fill_w = std::clamp(static_cast<int>(std::lround(w * progress)), 0, w);
+    if (fill_w > 0) {
+        rf::gr::set_color(r, g, b, static_cast<rf::ubyte>(255.0f * hud_refill_bar_fill_alpha * alpha));
+        rf::gr::rect(x, y, fill_w, h);
+    }
+    if (fill_w < w) {
+        rf::gr::set_color(0, 0, 0, static_cast<rf::ubyte>(255.0f * hud_refill_bar_back_alpha * alpha));
+        rf::gr::rect(x + fill_w, y, w - fill_w, h);
+    }
+}
 
 CallHook<void(int, int, int, rf::gr::Mode)> hud_render_ammo_gr_bitmap_hook{
     {
@@ -45,13 +133,18 @@ CallHook<void(int, int, int, rf::gr::Mode)> render_reticle_gr_bitmap_hook{
         0x0043A4FE,
     },
     [](int bm_handle, int x, int y, rf::gr::Mode mode) {
+        float aim_dx = 0.0f;
+        float aim_dy = 0.0f;
+        if (!vehicle_physics_camera_reticle_offset(&aim_dx, &aim_dy)) {
+            return;
+        }
         float base_scale = g_alpine_game_config.big_hud ? 2.0f : 1.0f;
         float scale = base_scale * g_alpine_game_config.get_reticle_scale();
         int clip_w = rf::gr::clip_width();
         int clip_h = rf::gr::clip_height();
 
-        x = static_cast<int>((x - clip_w / 2.0F) * scale + clip_w / 2.0F);
-        y = static_cast<int>((y - clip_h / 2.0F) * scale + clip_h / 2.0F);
+        x = static_cast<int>((x - clip_w / 2.0F) * scale + clip_w / 2.0F + aim_dx);
+        y = static_cast<int>((y - clip_h / 2.0F) * scale + clip_h / 2.0F + aim_dy);
 
         hud_scaled_bitmap(bm_handle, x, y, scale, mode);
     },
@@ -186,7 +279,41 @@ FunHook<void(rf::Entity*, int)> hud_render_ammo_no_clip_hook{
     0x0043ADD0,
     [](rf::Entity* entity, int weapon_type) {
         hud_render_ammo_no_clip_hook.call_target(entity, weapon_type);
+        // Only the firing seat's paths hand this widget a hull: the jeep gunner's, a turret's, and ours.
+        if (rf::is_multi && vehicle_damage_class(entity) >= 0) {
+            hud_render_vehicle_refill_bar(entity, 0, 0);
+        }
+        if (rf::is_multi && hud_ammo_is_driven_class(entity)) {
+            if (hud_ammo_hull_has_secondary(entity)) {
+                constexpr rf::HudItem no_clip_items[] = {
+                    rf::hud_ammo_bar_position_no_clip,
+                    rf::hud_ammo_signal_position_no_clip,
+                    rf::hud_ammo_icon_position_no_clip,
+                    rf::hud_ammo_in_inv_ul_region_coord_no_clip,
+                };
+                const int dy = static_cast<int>(hud_second_ammo_slot_offset_y * g_hud_ammo_scale);
+                for (auto item : no_clip_items) {
+                    rf::hud_coords[item].y += dy;
+                }
+                hud_render_ammo_no_clip_hook.call_target(entity, entity->ai.current_secondary_weapon);
+                for (auto item : no_clip_items) {
+                    rf::hud_coords[item].y -= dy;
+                }
+                hud_render_vehicle_refill_bar(entity, 1, dy);
+            }
+            return;
+        }
         hud_render_weapon_name_label(weapon_type);
+    },
+};
+
+CallHook<bool(rf::Entity*)> hud_weapons_render_jeep_gunner_hook{
+    {
+        0x0043B0E6,
+        0x0043B128,
+    },
+    [](rf::Entity* ep) {
+        return hud_weapons_render_jeep_gunner_hook.call_target(ep) || hud_ammo_driven_hull(ep) != nullptr;
     },
 };
 
@@ -216,10 +343,57 @@ void hud_weapons_set_big(bool is_big)
 }
 
 
+static void hud_ammo_bitmap_size(int bmh, int& w, int& h)
+{
+    w = 0;
+    h = 0;
+    if (bmh >= 0) {
+        rf::bm::get_dimensions(bmh, &w, &h);
+    }
+    w = static_cast<int>(std::round(w * g_hud_ammo_scale));
+    h = static_cast<int>(std::round(h * g_hud_ammo_scale));
+}
+
+// Union of the clip, power and no-clip layouts, so the result does not change with the weapon; plus the
+// second row while one is drawn.
+int hud_ammo_counter_bottom_y()
+{
+    auto bm_bottom = [](rf::HudItem item, int bmh) {
+        int w, h;
+        hud_ammo_bitmap_size(bmh, w, h);
+        return rf::hud_coords[item].y + h;
+    };
+    auto text_bottom = [](rf::HudItem ul, rf::HudItem wh) {
+        return rf::hud_coords[ul].y + rf::hud_coords[wh].y;
+    };
+    return std::max({
+        bm_bottom(rf::hud_ammo_bar, rf::hud_ammo_bar_bmh),
+        bm_bottom(rf::hud_ammo_bar, rf::hud_ammo_bar_power_bmh),
+        bm_bottom(rf::hud_ammo_signal, rf::hud_ammo_signal_green_bmh),
+        bm_bottom(rf::hud_ammo_bar_position_no_clip, rf::hud_noclip_ammo_bar_bmh),
+        bm_bottom(rf::hud_ammo_signal_position_no_clip, rf::hud_ammo_signal_green_bmh),
+        text_bottom(rf::hud_ammo_in_clip_text_ul_region_coord, rf::hud_ammo_in_clip_text_width_and_height),
+        text_bottom(rf::hud_ammo_in_inv_text_ul_region_coord, rf::hud_ammo_in_inv_text_width_and_height),
+        text_bottom(rf::hud_ammo_in_inv_ul_region_coord_no_clip, rf::hud_ammo_in_inv_text_width_and_height_no_clip),
+        text_bottom(rf::hud_ammo_in_clip_ul_coord, rf::hud_ammo_in_clip_width_and_height),
+    }) + (hud_weapons_is_double_ammo() ? static_cast<int>(hud_second_ammo_slot_offset_y * g_hud_ammo_scale) : 0);
+}
+
+int hud_ammo_counter_right_x()
+{
+    int bar_w, bar_h, noclip_w, noclip_h;
+    hud_ammo_bitmap_size(rf::hud_ammo_bar_bmh, bar_w, bar_h);
+    hud_ammo_bitmap_size(rf::hud_noclip_ammo_bar_bmh, noclip_w, noclip_h);
+    return std::max(rf::hud_coords[rf::hud_ammo_bar].x + bar_w,
+                    rf::hud_coords[rf::hud_ammo_bar_position_no_clip].x + noclip_w);
+}
+
 bool hud_weapons_is_double_ammo()
 {
     if (rf::is_multi) {
-        return false;
+        rf::Player* pp = multi_spectate_is_following_player() ? multi_spectate_get_target_player() : rf::local_player;
+        rf::Entity* hull = pp ? hud_ammo_driven_hull(rf::entity_from_handle(pp->entity_handle)) : nullptr;
+        return hull && hud_ammo_hull_has_secondary(hull);
     }
     rf::Entity* entity = rf::entity_from_handle(rf::local_player->entity_handle);
     if (!entity) {
@@ -271,6 +445,7 @@ void hud_weapons_apply_patches()
     hud_render_ammo_gr_bitmap_hook.install();
     hud_render_ammo_hook.install();
     hud_render_ammo_no_clip_hook.install();
+    hud_weapons_render_jeep_gunner_hook.install();
 
     // reticle color and scale
     render_reticle_gr_bitmap_hook.install();

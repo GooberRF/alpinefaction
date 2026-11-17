@@ -34,13 +34,15 @@ void InjectingProcessLauncher::wait_for_process_initialization(uintptr_t entry_p
     FlushInstructionCache(m_process.get_handle(), entry_point_ptr, 2);
     // Resume main thread
     m_thread.resume();
-    // Wait until main thread reaches the entry point
+    // Wait until main thread reaches the entry point. A running thread's context is unreliable, so each check
+    // suspends it first, and it stays suspended once there.
     CONTEXT context;
     const uint64_t start_ticks = GetTickCount64();
-    do {
+    while (true) {
         Sleep(50);
         context.ContextFlags = CONTEXT_CONTROL;
         try {
+            m_thread.suspend();
             m_thread.get_context(&context);
         }
         catch (const Win32Error&) {
@@ -48,15 +50,18 @@ void InjectingProcessLauncher::wait_for_process_initialization(uintptr_t entry_p
                 throw ProcessTerminatedError();
             throw;
         }
-
         if (context.Eip == entry_point) {
+            if (const uint64_t elapsed = GetTickCount64() - start_ticks; elapsed >= 2000) {
+                xlog::info("Main thread reached the entry point after {} ms", elapsed);
+            }
             break;
         }
-    } while (GetTickCount64() - start_ticks < timeout);
-    if (context.Eip != entry_point)
-        THROW_EXCEPTION("timeout");
-    // Suspend main thread
-    m_thread.suspend();
+        if (GetTickCount64() - start_ticks >= timeout) {
+            xlog::error("Main thread at {:x}, entry point {:x}", context.Eip, entry_point);
+            THROW_EXCEPTION("timeout");
+        }
+        m_thread.resume();
+    }
     // Revert changes to entry point
     m_process.write_mem(entry_point_ptr, buf, 2);
     FlushInstructionCache(m_process.get_handle(), entry_point_ptr, 2);
@@ -79,8 +84,15 @@ InjectingProcessLauncher::InjectingProcessLauncher(
     m_process = Process{process_info.hProcess};
     m_thread = Thread{process_info.hThread};
 
-    xlog::info("Finding entry-point");
-    uintptr_t entry_point = get_pe_file_entrypoint(app_name);
-    xlog::info("Waiting for process initialization");
-    wait_for_process_initialization(entry_point, timeout);
+    try {
+        xlog::info("Finding entry-point");
+        uintptr_t entry_point = get_pe_file_entrypoint(app_name);
+        xlog::info("Waiting for process initialization");
+        wait_for_process_initialization(entry_point, timeout);
+    }
+    catch (...) {
+        // A constructor that throws never runs the destructor, which ends the unresumed process otherwise.
+        terminate_if_running();
+        throw;
+    }
 }

@@ -94,9 +94,20 @@ int count_team_waiting(int team)
     return n;
 }
 
+void report_round_survivors()
+{
+    std::vector<rf::Player*> survivors;
+    for (rf::Player& p : SinglyLinkedList{rf::player_list}) {
+        if (player_has_alive_entity(&p)) {
+            survivors.push_back(&p);
+        }
+    }
+    afstats::note_round_survivors(survivors);
+}
+
 int match_win_threshold()
 {
-    return rounds_get_max() / 2 + 1;
+    return g_alpine_server_config_active_rules.rounds.wins_to_take_match();
 }
 
 bool match_is_decided()
@@ -138,6 +149,7 @@ void wipeout_on_round_begin()
 
     g_internal_spawn_in_progress = true;
     int spawned = 0;
+    std::vector<rf::Player*> participants;
     for (rf::Player& p : SinglyLinkedList{rf::player_list}) {
         if (p.is_non_participant()) continue;
 
@@ -169,6 +181,10 @@ void wipeout_on_round_begin()
             // their next death-respawn correctly clusters on teammates.
             p.wipeout_spawned_this_round = true;
         }
+        // The spawn hook refuses some players (benched bots, restricted clients, non-match players).
+        if (player_has_alive_entity(&p)) {
+            participants.push_back(&p);
+        }
     }
     g_internal_spawn_in_progress = false;
 
@@ -178,9 +194,8 @@ void wipeout_on_round_begin()
     xlog::info("Wipeout: round {} begin, {} spawned (R {} - B {})",
                g_info.rounds_completed + 1, spawned, g_info.red_team_score, g_info.blue_team_score);
 
-    // Report the round. Wipeout has no fixed contestant set, so empty participants
-    // means "all active players in the game".
-    afstats::on_round_start({});
+    // Report the round with the players put into it; a late joiner sits it out.
+    afstats::on_round_start(participants);
 }
 
 bool wipeout_should_end_round(rf::Player** out_winner)
@@ -205,6 +220,8 @@ bool wipeout_should_end_round(rf::Player** out_winner)
     if (red_alive == 0 && blue_alive == 0) g_pending_winner_team = -1;
     else g_pending_winner_team = (red_alive > 0) ? rf::TEAM_RED : rf::TEAM_BLUE;
 
+    // Taken on the scan that decides the round; on_round_end runs a frame later.
+    report_round_survivors();
     return true;
 }
 
@@ -323,6 +340,7 @@ rf::Player* wipeout_resolve_timeout_winner()
     if (red_alive > blue_alive) g_pending_winner_team = rf::TEAM_RED;
     else if (blue_alive > red_alive) g_pending_winner_team = rf::TEAM_BLUE;
     else g_pending_winner_team = -1;
+    report_round_survivors();
     return nullptr;
 }
 

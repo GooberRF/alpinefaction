@@ -5,6 +5,9 @@
 #include <string>
 #include <vector>
 
+// Stock bitmap type
+constexpr int EDITOR_BM_TYPE_TGA = 0x2;
+
 // Editor-side bitmap format extensions
 constexpr int EDITOR_BM_TYPE_STB = 0x12;
 constexpr int EDITOR_BM_TYPE_DDS = 0x10;
@@ -18,6 +21,10 @@ void install_editor_bitmap_loader_hooks();
 
 // Parse an ATX file and return the list of texture filenames it references
 std::vector<std::string> parse_atx_dependencies(const char* atx_filename);
+
+// Returns the .atx sibling that supercedes a legacy texture name, or an empty string when
+// there is none. .atx is first in the supercede chain, so an existing sibling always wins.
+std::string find_atx_sibling(const char* requested_name);
 
 // Clear the editor's ATX→frame[0] and legacy-name→sibling redirect caches. Safe to call
 // from texture-reload paths to pick up edits to .atx files made on disk during a session.

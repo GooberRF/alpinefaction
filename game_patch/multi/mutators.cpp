@@ -1,11 +1,14 @@
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <deque>
 #include <format>
+#include <functional>
 #include <map>
 #include <optional>
 #include <random>
 #include <set>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_set>
@@ -22,8 +25,10 @@
 #include "kill.h"
 #include "kill_attribution.h"
 #include "alpine_packets.h"
+#include "powerups.h"
 #include "server.h"
 #include "demo/demo.h"
+#include "bots/server_bots.h"
 #include "../sound/sound.h"
 #include "../rf/weapon.h"
 #include "../rf/item.h"
@@ -38,6 +43,7 @@
 #include "../rf/os/timestamp.h"
 #include "../rf/physics.h"
 #include "../rf/gr/gr.h"
+#include "../object/zipline.h"
 #include "../rf/sound/sound.h"
 #include "../os/console.h"
 #include "../os/os.h"
@@ -46,6 +52,8 @@
 #include "../misc/player.h"
 #include "../misc/alpine_options.h"
 #include "../misc/alpine_settings.h"
+#include "../misc/settings_registry.h"
+#include "../fflink/afstats_events.h"
 
 // Spawn reserve for a no-clip "infinite ammo" weapon. Firing draws from reserve,
 // but we suppress the per-shot decrement, so this is purely the (constant) number
@@ -152,7 +160,7 @@ static void apply_rails(AlpineServerConfigRules& r, const toml::table& opts)
         int idx = rf::weapon_lookup_type(v->c_str());
         if (idx >= 0)
             featured = idx;
-        else
+        else if (!g_rules_parse_quiet)
             rf::console::print("  [WARN] oneweapon mutator: unknown featured_weapon '{}', using rail gun\n",
                                clamp_for_console(*v));
     }
@@ -267,7 +275,8 @@ static void apply_super_rail(AlpineServerConfigRules& r, const toml::table& /*op
 {
     const int rail = rf::rail_gun_weapon_type;
     if (rail < 0 || rail >= rf::num_weapon_types) {
-        rf::console::print("  [WARN] Super Rail mutator: the loaded tables have no rail gun\n");
+        if (!g_rules_parse_quiet)
+            rf::console::print("  [WARN] Super Rail mutator: the loaded tables have no rail gun\n");
         return;
     }
 
@@ -297,15 +306,17 @@ static void apply_flaming_enemies(AlpineServerConfigRules& r, const toml::table&
 }
 
 // Gibbing: overkill deaths explode into gibs.
-static void apply_gibbing(AlpineServerConfigRules& r, const toml::table& /*opts*/)
+static void apply_gibbing(AlpineServerConfigRules& r, const toml::table& opts)
 {
     r.gibbing.enabled = true;
+    r.gibbing.scrapyard = opts["scrapyard"].value_or(false);
 }
 
 // Jetpacks: every player wears a jetpack and can thrust upward in midair.
-static void apply_jetpacks(AlpineServerConfigRules& r, const toml::table& /*opts*/)
+static void apply_jetpacks(AlpineServerConfigRules& r, const toml::table& opts)
 {
     r.mutators.jetpacks_enabled = true;
+    r.mutators.jetpack_explode = opts["explode"].value_or(false);
 }
 
 // Humans vs. Bots: in a team game type, bots are held on Blue and humans on Red.
@@ -316,17 +327,9 @@ static void apply_humans_vs_bots(AlpineServerConfigRules& r, const toml::table& 
 
 // Delayed Supers: super-tier items start hidden and only begin their normal
 // respawn timer once it first elapses.
-static const char* const DELAYED_SUPERS_ITEMS[] = {
-    "Multi Super Health",
-    "Multi Super Armor",
-    "Multi Invulnerability",
-    "Multi Damage Amplifier",
-    "shoulder_cannon",
-};
-
 static void apply_delayed_supers(AlpineServerConfigRules& r, const toml::table& /*opts*/)
 {
-    for (const char* name : DELAYED_SUPERS_ITEMS)
+    for (const char* name : super_item_class_names)
         r.delayed_items.add(name);
 
     // Only delay the rail gun pickup when Super Rail is also active; applied
@@ -372,7 +375,7 @@ static void apply_score_limit_override(AlpineServerConfigRules& r, const toml::t
     if (!v)
         return;
     const int value = static_cast<int>(std::clamp<int64_t>(*v, 1, INT32_MAX));
-    if (!r.set_score_limit(r.game_type, value)) {
+    if (!r.set_score_limit(r.game_type, value) && !g_rules_parse_quiet) {
         rf::console::print("  [WARN] Score Limit Override: this game type has no score limit\n");
     }
 }
@@ -383,6 +386,198 @@ static void apply_ideal_player_count_override(AlpineServerConfigRules& r, const 
     if (auto v = opts["ideal_players"].value<int64_t>())
         r.set_ideal_player_count(static_cast<int>(std::clamp<int64_t>(*v, 1, INT32_MAX)));
 }
+
+// Bot skill presets offered by Join Bots, as {UI label, preset name}.
+static const MutatorOptionChoice JOIN_BOTS_SKILLS[] = {
+    {"Beginner", "beginner"},
+    {"Easy", "easy"},
+    {"Average", "average"},
+    {"Hard", "hard"},
+    {"Expert", "expert"},
+    {"Nightmare", "nightmare"},
+};
+static constexpr uint8_t JOIN_BOTS_DEFAULT_SKILL = 2;
+// Bot personality presets offered by Join Bots, as {UI label, preset name}. Random rolls once per bot.
+static const MutatorOptionChoice JOIN_BOTS_PERSONALITIES[] = {
+    {"Balanced", "balanced"},
+    {"Aggressive", "aggressive"},
+    {"Defensive", "defensive"},
+    {"Tactician", "tactician"},
+    {"Berserker", "berserker"},
+    {"Objective", "objective"},
+    {"Sniper", "sniper"},
+    {"Guerrilla", "guerrilla"},
+    {"Collector", "collector"},
+    {"Brawler", "brawler"},
+    {"Destroyer", "destroyer"},
+    {"Random", "random"},
+};
+static constexpr uint8_t JOIN_BOTS_DEFAULT_PERSONALITY = 0;
+static constexpr int JOIN_BOTS_DEFAULT_COUNT = 2;
+static constexpr int JOIN_BOTS_MAX_COUNT = 8;
+
+template<std::size_t N>
+static std::string join_bots_choice(
+    const toml::table& opts,
+    const char* key,
+    const MutatorOptionChoice (&choices)[N],
+    const uint8_t default_choice)
+{
+    const std::string& fallback = choices[default_choice].value;
+    const auto v = opts[key].value<std::string>();
+    if (!v) {
+        return fallback;
+    }
+    const auto it = std::ranges::find_if(choices, [&](const MutatorOptionChoice& c) {
+        return string_iequals(*v, c.value);
+    });
+    if (it != std::end(choices)) {
+        return it->value;
+    }
+    if (!g_rules_parse_quiet) {
+        rf::console::print("  [WARN] Join Bots: unknown {} '{}', using {}\n", key, clamp_for_console(*v), fallback);
+    }
+    return fallback;
+}
+
+// Join Bots: server bots that join for the level, or fill a match (see server_bots_sync_join_bots).
+static void apply_join_bots(AlpineServerConfigRules& r, const toml::table& opts)
+{
+    r.mutators.join_bots = static_cast<int>(
+        std::clamp<int64_t>(opts["bots"].value_or(int64_t{JOIN_BOTS_DEFAULT_COUNT}), 1, JOIN_BOTS_MAX_COUNT));
+    r.mutators.join_bots_skill = join_bots_choice(opts, "skill", JOIN_BOTS_SKILLS, JOIN_BOTS_DEFAULT_SKILL);
+    r.mutators.join_bots_personality =
+        join_bots_choice(opts, "personality", JOIN_BOTS_PERSONALITIES, JOIN_BOTS_DEFAULT_PERSONALITY);
+}
+
+// Item Replacement: fixed sets of item swaps, each switched on by its own option and added to item_replacements.
+namespace
+{
+
+struct ItemReplaceSet
+{
+    const char* option; // toml key
+    const char* label;  // shown in the client UI and the vote line
+    std::span<const char* const> originals;
+    const char* replacement; // empty removes the item
+};
+
+struct ItemReplaceClash
+{
+    size_t first;
+    size_t second;
+    const char* item;
+};
+
+constexpr const char* ITEM_REPLACE_DAMAGE_AMP[] = {"Multi Damage Amplifier"};
+constexpr const char* ITEM_REPLACE_INVULN[] = {"Multi Invulnerability"};
+constexpr const char* ITEM_REPLACE_SUPER_ARMOR[] = {"Multi Super Armor"};
+constexpr const char* ITEM_REPLACE_HASTE =
+    alpine_powerup_item_classes[static_cast<size_t>(AlpinePowerup::haste)].class_name;
+constexpr const char* ITEM_REPLACE_VAMPIRE =
+    alpine_powerup_item_classes[static_cast<size_t>(AlpinePowerup::vampire)].class_name;
+// Not super_item_class_names, which also holds the Fusion pickup.
+constexpr const char* ITEM_REPLACE_SUPERS[] = {
+    ITEM_REPLACE_DAMAGE_AMP[0],
+    ITEM_REPLACE_INVULN[0],
+    ITEM_REPLACE_HASTE,
+    ITEM_REPLACE_VAMPIRE,
+    alpine_powerup_item_classes[static_cast<size_t>(AlpinePowerup::jetpack)].class_name,
+    ITEM_REPLACE_SUPER_ARMOR[0],
+    "Multi Super Health",
+};
+
+// A set's index is its option id, a frozen wire value: append only.
+constexpr ItemReplaceSet ITEM_REPLACE_SETS[] = {
+    {"amp_to_haste", "Amp to Haste", ITEM_REPLACE_DAMAGE_AMP, ITEM_REPLACE_HASTE},
+    {"amp_to_vampire", "Amp to Vampire", ITEM_REPLACE_DAMAGE_AMP, ITEM_REPLACE_VAMPIRE},
+    {"invuln_to_vampire", "Invuln to Vampire", ITEM_REPLACE_INVULN, ITEM_REPLACE_VAMPIRE},
+    {"invuln_to_haste", "Invuln to Haste", ITEM_REPLACE_INVULN, ITEM_REPLACE_HASTE},
+    {"superarmor_to_amp", "Super Armor to Amp", ITEM_REPLACE_SUPER_ARMOR, ITEM_REPLACE_DAMAGE_AMP[0]},
+    {"no_supers", "No supers", ITEM_REPLACE_SUPERS, ""},
+};
+
+using ItemReplaceSelection = std::array<bool, std::size(ITEM_REPLACE_SETS)>;
+
+// The first item two switched-on sets replace with different things.
+std::optional<ItemReplaceClash> item_replace_clash(const ItemReplaceSelection& on)
+{
+    for (size_t a = 0; a < on.size(); ++a) {
+        if (!on[a]) {
+            continue;
+        }
+        for (size_t b = a + 1; b < on.size(); ++b) {
+            if (!on[b] || string_iequals(ITEM_REPLACE_SETS[a].replacement, ITEM_REPLACE_SETS[b].replacement)) {
+                continue;
+            }
+            for (const char* item : ITEM_REPLACE_SETS[a].originals) {
+                if (std::ranges::any_of(ITEM_REPLACE_SETS[b].originals,
+                                        [item](const char* other) { return string_iequals(item, other); })) {
+                    return ItemReplaceClash{a, b, item};
+                }
+            }
+        }
+    }
+    return std::nullopt;
+}
+
+void apply_item_replace(AlpineServerConfigRules& r, const toml::table& opts)
+{
+    // A narrower scope's redeclaration replaces the sets a broader one switched on, as other mutators' options do.
+    // An entry an explicit item_replacements key has changed since is left alone.
+    for (const auto& [original, replacement] : r.mutators.item_replace_entries) {
+        if (const auto it = r.item_replacements.find(original);
+            it != r.item_replacements.end() && it->second == replacement) {
+            r.item_replacements.erase(it);
+        }
+    }
+    r.mutators.item_replace_entries.clear();
+
+    bool any_on = false;
+    std::map<std::string_view, size_t> written; // original -> the set that wrote it
+    for (size_t i = 0; i < std::size(ITEM_REPLACE_SETS); ++i) {
+        const ItemReplaceSet& set = ITEM_REPLACE_SETS[i];
+        if (!opts[set.option].value_or(false)) {
+            continue;
+        }
+        any_on = true;
+        for (const char* original : set.originals) {
+            // Sets apply in order, so a later one overrides an earlier one's swap.
+            if (const auto it = written.find(original); it != written.end() && !g_rules_parse_quiet
+                && !string_iequals(ITEM_REPLACE_SETS[it->second].replacement, set.replacement)) {
+                rf::console::print("  [WARN] Item Replacement: '{}' overrides '{}' for {}\n", set.option,
+                                   ITEM_REPLACE_SETS[it->second].option, original);
+            }
+            // A TC mod's tables may lack one of the items.
+            if (r.add_item_replacement(original, set.replacement)) {
+                written[original] = i;
+                r.mutators.item_replace_entries[original] = set.replacement;
+            }
+            else if (!g_rules_parse_quiet) {
+                rf::console::print(
+                    "  [WARN] Item Replacement: '{}' skips {}, as the loaded tables lack an item it names\n",
+                    set.option, original);
+            }
+        }
+    }
+    if (!any_on && !g_rules_parse_quiet) {
+        rf::console::print("  [WARN] Item Replacement: no replacement sets are switched on\n");
+    }
+}
+
+// Every switched-on set of a declaration, an option it leaves out counting as off.
+ItemReplaceSelection item_replace_selection(const MutatorDeclaration& decl)
+{
+    ItemReplaceSelection on{};
+    for (size_t i = 0; i < on.size(); ++i) {
+        const auto it = decl.options.find(ITEM_REPLACE_SETS[i].option);
+        const bool* value = it != decl.options.end() ? std::get_if<bool>(&it->second) : nullptr;
+        on[i] = value && *value;
+    }
+    return on;
+}
+
+} // namespace
 
 // ============================================================================
 // Registry + application order
@@ -410,6 +605,14 @@ static const MutatorOptionDef VAMPIRE_OPTIONS[] = {
     {1, "full_lifesteal", "Full lifesteal", MutatorOptionType::Bool},
 };
 
+static const MutatorOptionDef GIBBING_OPTIONS[] = {
+    {0, "scrapyard", "Scrapyard mode", MutatorOptionType::Bool},
+};
+
+static const MutatorOptionDef JETPACKS_OPTIONS[] = {
+    {0, "explode", "Jetpacks explode", MutatorOptionType::Bool},
+};
+
 static const MutatorOptionDef SCORE_LIMIT_OPTIONS[] = {
     {0, "score_limit", "Score limit", MutatorOptionType::Int},
 };
@@ -417,6 +620,21 @@ static const MutatorOptionDef SCORE_LIMIT_OPTIONS[] = {
 static const MutatorOptionDef IDEAL_PLAYERS_OPTIONS[] = {
     {0, "ideal_players", "Ideal players", MutatorOptionType::Int},
 };
+
+static const MutatorOptionDef JOIN_BOTS_OPTIONS[] = {
+    {0, "bots", "Bots (1-8)", MutatorOptionType::Int},
+    {1, "skill", "Skill", MutatorOptionType::Choice},
+    {2, "personality", "Personality", MutatorOptionType::Choice},
+};
+
+static constexpr auto ITEM_REPLACE_OPTIONS = [] {
+    std::array<MutatorOptionDef, std::size(ITEM_REPLACE_SETS)> options{};
+    for (size_t i = 0; i < options.size(); ++i) {
+        options[i] = {static_cast<uint8_t>(i), ITEM_REPLACE_SETS[i].option, ITEM_REPLACE_SETS[i].label,
+                      MutatorOptionType::Bool};
+    }
+    return options;
+}();
 
 struct MutatorDef
 {
@@ -456,8 +674,8 @@ static const MutatorDef MUTATORS[] = {
     {MutatorId::SuperRail, "superrail", "Super Rail", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_super_rail, nullptr, 0},
     {MutatorId::BigCraters, "bigcraters", "Big Craters", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_big_craters, nullptr, 0},
     {MutatorId::FlamingEnemies, "flamingenemies", "Flaming Enemies", 4, &apply_flaming_enemies, nullptr, 0},
-    {MutatorId::Gibbing, "gibbing", "Gibbing", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_gibbing, nullptr, 0},
-    {MutatorId::Jetpacks, "jetpacks", "Jetpacks", 4, &apply_jetpacks, nullptr, 0},
+    {MutatorId::Gibbing, "gibbing", "Gibbing", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_gibbing, GIBBING_OPTIONS, std::size(GIBBING_OPTIONS)},
+    {MutatorId::Jetpacks, "jetpacks", "Jetpacks", 4, &apply_jetpacks, JETPACKS_OPTIONS, std::size(JETPACKS_OPTIONS)},
     {MutatorId::HumansVsBots, "humansvsbots", "Humans vs. Bots", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_humans_vs_bots, nullptr, 0, MutatorGametypeReq::TeamOnly},
     {MutatorId::DelayedSupers, "delayedsupers", "Delayed Supers", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_delayed_supers, nullptr, 0},
     {MutatorId::WeirdGunGame, "weirdgungame", "Weird Gun Game", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_weird_gungame, nullptr, 0, MutatorGametypeReq::GunGameOnly},
@@ -467,11 +685,15 @@ static const MutatorDef MUTATORS[] = {
     {MutatorId::Pogo, "pogo", "Pogo", 4, &apply_pogo, nullptr, 0},
     {MutatorId::ScoreLimitOverride, "scorelimit", "Score Limit Override", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_score_limit_override, SCORE_LIMIT_OPTIONS, std::size(SCORE_LIMIT_OPTIONS), MutatorGametypeReq::HasScoreLimit, "Score Limit", "score_limit"},
     {MutatorId::IdealPlayerCountOverride, "idealplayers", "Ideal Player Count Override", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_ideal_player_count_override, IDEAL_PLAYERS_OPTIONS, std::size(IDEAL_PLAYERS_OPTIONS), MutatorGametypeReq::BotsSupported, "Ideal Players", "ideal_players"},
+    {MutatorId::JoinBots, "joinbots", "Join Bots", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_join_bots, JOIN_BOTS_OPTIONS, std::size(JOIN_BOTS_OPTIONS), MutatorGametypeReq::BotsSupported, nullptr, "bots"},
+    {MutatorId::ItemReplace, "itemreplace", "Item Replacement", MUTATOR_NO_CLIENT_REQUIREMENT, &apply_item_replace, ITEM_REPLACE_OPTIONS.data(), ITEM_REPLACE_OPTIONS.size()},
 };
 
 // Hardcoded order in which simultaneously-active mutators are applied. Later
 // entries win where they overlap.
 static const MutatorId MUTATOR_APPLY_ORDER[] = {
+    MutatorId::JoinBots,
+    MutatorId::ItemReplace,
     MutatorId::Pogo,
     MutatorId::Dodging,
     MutatorId::Skiing,
@@ -560,7 +782,7 @@ static const MutatorDef* find_mutator_by_id(MutatorId id)
 // it silently becomes a key of the mutator instead of the rules section).
 static bool is_known_mutator_option(const MutatorDef& def, std::string_view key)
 {
-    if (key == "name")
+    if (key == "name" || key == "enabled")
         return true;
     for (size_t i = 0; i < def.num_options; ++i) {
         if (key == def.options[i].name)
@@ -706,6 +928,17 @@ const std::vector<MutatorInfo>& mutators_get_registry()
             else if (def.id == MutatorId::IdealPlayerCountOverride && opt.name == "ideal_players") {
                 opt.default_int = g_alpine_server_config_active_rules.ideal_player_count;
             }
+            else if (def.id == MutatorId::JoinBots && opt.name == "bots") {
+                opt.default_int = JOIN_BOTS_DEFAULT_COUNT;
+            }
+            else if (def.id == MutatorId::JoinBots && opt.name == "skill") {
+                opt.choices.assign(std::begin(JOIN_BOTS_SKILLS), std::end(JOIN_BOTS_SKILLS));
+                opt.default_choice = JOIN_BOTS_DEFAULT_SKILL;
+            }
+            else if (def.id == MutatorId::JoinBots && opt.name == "personality") {
+                opt.choices.assign(std::begin(JOIN_BOTS_PERSONALITIES), std::end(JOIN_BOTS_PERSONALITIES));
+                opt.default_choice = JOIN_BOTS_DEFAULT_PERSONALITY;
+            }
 
             info.options.push_back(std::move(opt));
         }
@@ -754,12 +987,14 @@ void apply_mutators_from_toml(const toml::array& mutators_arr, AlpineServerConfi
     for (const auto& node : mutators_arr) {
         const toml::table* tbl = node.as_table();
         if (!tbl) {
-            rf::console::print("  [WARN] each [[rules.mutators]] entry must be a table with a 'name'\n");
+            if (!g_rules_parse_quiet)
+                rf::console::print("  [WARN] each [[rules.mutators]] entry must be a table with a 'name'\n");
             continue;
         }
         auto name = (*tbl)["name"].value<std::string>();
         if (!name) {
-            rf::console::print("  [WARN] a mutators entry is missing its 'name'\n");
+            if (!g_rules_parse_quiet)
+                rf::console::print("  [WARN] a mutators entry is missing its 'name'\n");
             continue;
         }
         // Config-supplied names are clamped before being interpolated: the engine
@@ -769,7 +1004,8 @@ void apply_mutators_from_toml(const toml::array& mutators_arr, AlpineServerConfi
 
         const MutatorDef* def = find_mutator_by_name(*name);
         if (!def) {
-            rf::console::print("  [WARN] unknown mutator '{}'\n", name_for_msg);
+            if (!g_rules_parse_quiet)
+                rf::console::print("  [WARN] unknown mutator '{}'\n", name_for_msg);
             continue;
         }
 
@@ -778,11 +1014,16 @@ void apply_mutators_from_toml(const toml::array& mutators_arr, AlpineServerConfi
         // [[rules.mutators]] header in the TOML.
         for ([[maybe_unused]] const auto& [k, v] : *tbl) {
             const std::string_view key = k.str();
-            if (!is_known_mutator_option(*def, key))
+            if (!is_known_mutator_option(*def, key) && !g_rules_parse_quiet)
                 rf::console::print("  [WARN] mutator '{}': unexpected key '{}'. In TOML, keys after [[rules.mutators]] belong to the mutator, not [rules] — move base-rule keys above the mutators array.\n",
                     name_for_msg, clamp_for_console(key));
         }
 
+        // enabled = false switches off a mutator a broader scope declared (see mutator_disabled_by_entry).
+        if (!(*tbl)["enabled"].value<bool>().value_or(true)) {
+            declared.erase(def->id);
+            continue;
+        }
         declared[def->id] = *tbl; // a later declaration of the same mutator wins
     }
 
@@ -844,6 +1085,79 @@ void apply_mutators_from_toml(const toml::array& mutators_arr, AlpineServerConfi
             [&](const MutatorDeclaration& d) { return string_iequals(d.name, def->name); }), decls.end());
         decls.push_back(std::move(decl));
     }
+}
+
+std::optional<std::string> mutator_disabled_by_entry(const toml::node& entry)
+{
+    const toml::table* tbl = entry.as_table();
+    if (!tbl || (*tbl)["enabled"].value<bool>().value_or(true)) {
+        return std::nullopt;
+    }
+    const MutatorDef* def = find_mutator_by_name((*tbl)["name"].value_or<std::string>(""));
+    return def ? std::optional<std::string>{def->name} : std::nullopt;
+}
+
+bool mutator_entry_names(const toml::node& entry, std::string_view canonical_name)
+{
+    const toml::table* tbl = entry.as_table();
+    const MutatorDef* def = tbl ? find_mutator_by_name((*tbl)["name"].value_or<std::string>("")) : nullptr;
+    return def && string_iequals(def->name, canonical_name);
+}
+
+// An option a declaration leaves out takes its registry default, the value the vote panel shows.
+static bool mutator_option_matches(const MutatorOptionInfo& opt, const MutatorDeclaration& a,
+                                   const MutatorDeclaration& b)
+{
+    const auto value_of = [&](const MutatorDeclaration& d) -> MutatorOptionValue {
+        if (auto it = d.options.find(opt.name); it != d.options.end())
+            return it->second;
+        switch (opt.type) {
+            case MutatorOptionType::Bool:
+                return opt.default_bool;
+            case MutatorOptionType::Int:
+                return opt.default_int;
+            case MutatorOptionType::Float:
+                return opt.default_float;
+            case MutatorOptionType::Choice:
+                return opt.default_choice < opt.choices.size() ? opt.choices[opt.default_choice].value : std::string{};
+            case MutatorOptionType::String:
+                return opt.default_string;
+        }
+        return {};
+    };
+    const MutatorOptionValue va = value_of(a);
+    const MutatorOptionValue vb = value_of(b);
+    const auto* sa = std::get_if<std::string>(&va);
+    const auto* sb = std::get_if<std::string>(&vb);
+    if (sa && sb)
+        return string_iequals(*sa, *sb);
+    return va == vb;
+}
+
+bool mutator_declarations_equivalent(const std::vector<MutatorDeclaration>& a,
+                                     const std::vector<MutatorDeclaration>& b, rf::NetGameType game_type)
+{
+    // A declaration the game type cannot use is recorded but never applied, and never voted.
+    const auto in_force = [game_type](const MutatorDeclaration& d) {
+        const MutatorInfo* info = mutators_find_by_name(d.name);
+        return info && mutator_gametype_mask_allows(info->valid_gametype_mask, static_cast<uint8_t>(game_type));
+    };
+    if (std::count_if(a.begin(), a.end(), in_force) != std::count_if(b.begin(), b.end(), in_force))
+        return false;
+    for (const MutatorDeclaration& da : a) {
+        if (!in_force(da))
+            continue;
+        const auto db = std::find_if(b.begin(), b.end(),
+            [&](const MutatorDeclaration& d) { return string_iequals(d.name, da.name) && in_force(d); });
+        if (db == b.end())
+            return false;
+        const MutatorInfo* info = mutators_find_by_name(da.name);
+        for (const MutatorOptionInfo& opt : info->options) {
+            if (!mutator_option_matches(opt, da, *db))
+                return false;
+        }
+    }
+    return true;
 }
 
 toml::array mutator_declarations_to_toml_array(const std::vector<MutatorDeclaration>& declarations)
@@ -934,6 +1248,17 @@ std::optional<std::string> mutators_build_declarations_from_vote(
             }
         }
 
+        if (info->id == MutatorId::ItemReplace) {
+            const ItemReplaceSelection on = item_replace_selection(decl);
+            if (std::ranges::none_of(on, std::identity{})) {
+                return std::format("pick at least one {} set", info->label);
+            }
+            if (const auto clash = item_replace_clash(on)) {
+                return std::format("'{}' and '{}' both replace {}", ITEM_REPLACE_SETS[clash->first].label,
+                                   ITEM_REPLACE_SETS[clash->second].label, clash->item);
+            }
+        }
+
         out.push_back(std::move(decl));
     }
 
@@ -941,10 +1266,23 @@ std::optional<std::string> mutators_build_declarations_from_vote(
 }
 
 // The bracketed detail for one mutator's vote line, or empty when it has none.
-// Only the option named by vote_detail_option is shown; a Choice resolves to its
-// short UI label ("Rail") rather than the raw TOML value ("rail_gun").
+// Only the option named by vote_detail_option is shown, except that Item Replacement
+// lists every set it switches on; a Choice resolves to its short UI label ("Rail")
+// rather than the raw TOML value ("rail_gun").
 static std::string mutator_vote_detail(const MutatorDef& def, const MutatorDeclaration& decl)
 {
+    // Every switched-on set: a voter needs them all to know what the vote changes.
+    if (def.id == MutatorId::ItemReplace) {
+        std::string sets;
+        const ItemReplaceSelection on = item_replace_selection(decl);
+        for (size_t i = 0; i < on.size(); ++i) {
+            if (on[i]) {
+                sets += std::format("{}{}", sets.empty() ? "" : ", ", ITEM_REPLACE_SETS[i].label);
+            }
+        }
+        return sets;
+    }
+
     if (!def.vote_detail_option)
         return {};
 
@@ -1017,10 +1355,8 @@ rf::NetGameType resolve_level_default_game_type(std::string_view level_filename)
 {
     const std::string normalized = normalize_level_filename(level_filename);
 
-    for (const auto& entry : g_alpine_server_config.levels) {
-        if (string_iequals(entry.level_filename, normalized))
-            return entry.rule_overrides.game_type;
-    }
+    if (const int index = rotation_index_for_level(normalized); index >= 0)
+        return g_alpine_server_config.levels[index].rule_overrides.game_type;
 
     // Run maps carry no prefix, so the quirks table is the only thing that identifies
     // them. Behind the rotation lookup, which the operator meant.
@@ -1037,43 +1373,6 @@ rf::NetGameType resolve_level_default_game_type(std::string_view level_filename)
         return *from_prefix;
 
     return base_gt;
-}
-
-AlpineServerConfigRules build_derived_server_rules(rf::NetGameType game_type,
-                                                   const std::vector<MutatorDeclaration>& mutators)
-{
-    const auto& cfg = g_alpine_server_config;
-
-    // Nothing to derive: the fully layered base rules ARE the answer. Rebuilding would
-    // apply the mutators last and lose the keys-over-mutators layering.
-    if (game_type == cfg.base_rules.game_type && mutators == cfg.base_rules.mutators.declarations) {
-        return cfg.base_rules;
-    }
-
-    // Every runtime derivation replays a set the config parse already reported on.
-    const RulesParseQuietGuard quiet;
-
-    AlpineServerConfigRules rules;
-    if (game_type == cfg.base_rules.game_type) {
-        // The operator's keys already sit on this game type's defaults in parse order.
-        rules = cfg.base_rules_no_mutators;
-    }
-    else {
-        // Never from another game type's materialized rules: they carry fields
-        // apply_defaults_for_game_type does not claim back.
-        rules = cfg.base_rules_keys_only;
-        rules.game_type = game_type;
-        apply_defaults_for_game_type(game_type, rules);
-    }
-
-    // Applied AFTER the base keys, the reverse of the config parse: a voted layer has
-    // to win over what it was layered onto.
-    if (!mutators.empty()) {
-        const toml::array arr = mutator_declarations_to_toml_array(mutators);
-        apply_mutators_from_toml(arr, rules);
-    }
-
-    return rules;
 }
 
 std::optional<std::string> mutators_active_labels_string(const AlpineServerConfigRules& rules)
@@ -1095,7 +1394,7 @@ ManualRulesOverride load_vote_rules_override(
 {
     const rf::NetGameType game_type = gametype.value_or(resolve_level_default_game_type(level_filename));
 
-    AlpineServerConfigRules rules = build_derived_server_rules(game_type, mutators);
+    AlpineServerConfigRules rules = build_level_rules(level_filename, game_type, &mutators);
 
     ManualRulesOverride result;
     // Reported from what actually applied rather than from what was voted.
@@ -1232,6 +1531,17 @@ bool mutators_pogo_active()
     // Server informs the client via SIF_POGO.
     const auto& info = get_af_server_info();
     return info.has_value() && info->pogo;
+}
+
+bool mutators_scrapyard_gibs_active()
+{
+    if (!rf::is_multi)
+        return false;
+    if (rf::is_server)
+        return g_alpine_server_config_active_rules.gibbing.scrapyard;
+    // Server informs the client via SIF_SCRAPYARD_GIBS.
+    const auto& info = get_af_server_info();
+    return info.has_value() && info->scrapyard_gibs;
 }
 
 static bool any_movement_mutator_active()
@@ -1626,22 +1936,27 @@ CallHook<void(rf::Entity*)> ski_ground_move_hook{
     },
 };
 
-// Slam and rigid-body impact fall damage: immunity insingle player and multiplayer
-// when movement mutators are active. Note 0x004A0C28 (landing) fall damage is not
-// hooked, because we want it to still apply.
+// Slam and rigid-body impact fall damage: immunity in single player and multiplayer
+// when movement mutators are active, for the local player and server bots (simulated
+// on the server), and around a zip line ride. Note 0x004A0C28 (landing) fall damage is
+// not hooked, because we want it to still apply.
 CallHook<void __cdecl(rf::Entity*, float)> ski_fall_damage_hook{
     {0x0049D4B6, 0x0049DE23, 0x0049DE39},
     [](rf::Entity* ep, float impact) {
-        if (ep && ep == rf::local_player_entity && any_movement_mutator_active())
+        if (ep && ((any_movement_mutator_active() && (ep == rf::local_player_entity || server_bot_from_entity(ep)))
+                   || zipline_slam_immune(ep)))
             return;
         ski_fall_damage_hook.call_target(ep, impact);
     },
 };
 
-// Shared by multiple movement mutators to fix getting stuck in the floor.
+// Shared by multiple movement mutators to fix getting stuck in the floor; zip line riders
+// replace it outright.
 CallHook<void(rf::Entity*)> ski_air_move_hook{
     0x0049F6AD,
     [](rf::Entity* ep) {
+        if (g_move_replay_depth == 0 && zipline_air_move(ep))
+            return;
         if (g_move_replay_depth > 0 || !any_movement_mutator_active()
             || ep != rf::local_player_entity) {
             ski_air_move_hook.call_target(ep);
@@ -1766,7 +2081,7 @@ void mutators_level_init_post()
             // Composed on top of the policy, not instead of it: Vampire removes
             // the standard health/armour pickups from whatever set the policy
             // would otherwise keep.
-            if (m.hide_health_armor_pickups && is_standard_health_or_armor_item(info))
+            if (m.hide_health_armor_pickups && (is_standard_health_or_armor_item(info) || item_type_is_alpine_shard(i)))
                 continue;
 
             if (m.pickup_policy == PickupPolicy::Normal) {
@@ -1908,10 +2223,6 @@ void mutators_on_pvp_damage(rf::Player* attacker, rf::Player* victim, float effe
     if (!rf::is_server || !rf::is_multi)
         return;
 
-    const auto& m = g_alpine_server_config_active_rules.mutators;
-    if (!m.vampire_enabled)
-        return;
-
     // Prevent Vampire healing from self damage.
     if (!attacker || !victim || attacker == victim)
         return;
@@ -1927,11 +2238,22 @@ void mutators_on_pvp_damage(rf::Player* attacker, rf::Player* victim, float effe
     if (!ep || !ep->info || rf::entity_is_dying(ep))
         return;
 
+    // The Vampire powerup is full lifesteal, which no mutator ratio exceeds.
+    const auto& m = g_alpine_server_config_active_rules.mutators;
+    const float heal_ratio = powerup_is_active(ep, AlpinePowerup::vampire) ? VAMPIRE_FULL_LIFESTEAL_RATIO
+        : m.vampire_enabled ? m.vampire_heal_ratio : 0.0f;
+    if (!(heal_ratio > 0.0f))
+        return;
+
     const float max_life_limit = std::max(ep->life, ep->info->max_life);
     const float max_armor_limit = std::max(ep->armor, ep->info->max_armor);
 
     // Same logic effective health kill reward uses.
-    distribute_effective_health(ep, effective_damage * m.vampire_heal_ratio, max_life_limit, max_armor_limit);
+    const float healed =
+        distribute_effective_health(ep, effective_damage * heal_ratio, max_life_limit, max_armor_limit);
+    if (healed > 0.0f) {
+        afstats::on_lifesteal(attacker, healed);
+    }
 }
 
 // Super Drain tick: one global timer drains every alive player's health and
@@ -2264,6 +2586,7 @@ static const char* const FLAME_EXTINGUISH_HEALTH_ITEMS[] = {
     "Medical Kit",
     "First Aid Kit",
     "Multi Super Health",
+    alpine_powerup_item_classes[static_cast<size_t>(AlpinePowerup::health_shard)].class_name,
 };
 
 void mutators_on_item_picked_up(rf::Item* item, rf::Entity* entity)
@@ -2632,10 +2955,9 @@ CritWeaponScope::~CritWeaponScope()
 }
 
 // A crit-tagged projectile announces its own detonation, whether or not it craters, damages
-// anyone, or just hits a wall. Driven from the three player-attributed call sites of
-// explosion_apply_radius_damage - the function itself opens on an x87 instruction and cannot be
-// hooked - all three of which run under CritWeaponScope. Each is the terminal detonation of one
-// weapon (the weapon is flagged dead on the way out), so one blast is one sound.
+// anyone, or just hits a wall. Called from weapon.cpp's call-site hooks, all of which run under
+// CritWeaponScope. Each is the terminal detonation of one weapon (the weapon is flagged dead on the
+// way out), so one blast is one sound.
 float crits_on_explosion(const rf::Vector3* pos, float radius)
 {
     // The radius gates it: weapon_hit_level makes this call for bullets too, with no blast.
@@ -2644,20 +2966,6 @@ float crits_on_explosion(const rf::Vector3* pos, float radius)
     broadcast_sound_packet_3d(*pos, stock_sound_id::jolt_01);
     return crit_radius_scale();
 }
-
-// The third site, 0x004C53A8 in weapon_hit_level, is already taken by weapon.cpp's
-// weapon_hit_wall_obj_apply_radius_damage_hook - two CallHooks on one address would fight over
-// it - so that one calls crits_on_explosion directly instead.
-CallHook<void(rf::Vector3*, float, float, int, int)> crits_explosion_hook{
-    {
-        0x004C62F5, // weapon_hit_obj, impact splash
-        0x004C6C94, // weapon_move_one, fuse / detonator / lifetime expiry
-    },
-    [](rf::Vector3* pos, float damage, float radius, int killer_handle, int damage_type) {
-        const float scale = crits_on_explosion(pos, radius);
-        crits_explosion_hook.call_target(pos, damage, radius * scale, killer_handle, damage_type);
-    },
-};
 
 // Only the weapons whose projectile flies long enough to be worth telegraphing: rockets,
 // grenades, remote charges, fusion. Bullets are covered by the impact/victim layer instead -
@@ -2706,11 +3014,15 @@ static void crits_send_shot_to_shooter(rf::Player* shooter, int weapon_type)
             static_cast<uint8_t>(weapon_type), shooter);
     }
 
-    // A listen host cannot spectate, so every spectator here is a real client.
     for (auto& player : SinglyLinkedList{rf::player_list}) {
-        if (!player.net_data || player.spectatee.value_or(nullptr) != shooter)
+        if (!player.net_data || !player_is_spectating(player, shooter))
             continue;
-        if (is_player_minimum_af_client_version(&player, 1, 4, 0)) {
+        // A spectating listen host, as crits_on_crit_shot treats a spectator.
+        if (&player == rf::local_player) {
+            if (multi_spectate_is_first_person())
+                crits_flash_reticle(crit_glow_color_for(shooter));
+        }
+        else if (is_player_minimum_af_client_version(&player, 1, 4, 0)) {
             af_send_crit_shot_packet(shooter->net_data->player_id,
                 static_cast<uint8_t>(weapon_type), &player);
         }
@@ -2998,7 +3310,7 @@ void crits_client_render_reticle_flash()
 ConsoleCommand2 crit_reticle_flash_cmd{
     "mp_crit_flash",
     []() {
-        g_alpine_game_config.crit_reticle_flash = !g_alpine_game_config.crit_reticle_flash;
+        setting_console_set("crit_reticle_flash", "toggle");
         rf::console::print("Crit reticle flashes are {}", g_alpine_game_config.crit_reticle_flash ? "enabled" : "disabled");
     },
     "Toggles the reticle flash shown when you fire a critical hit",
@@ -3314,7 +3626,6 @@ void mutators_do_patch()
 
     // Critical Hits
     entity_fire_weapon_hook.install();
-    crits_explosion_hook.install();
 
     // Flaming Enemies
     entity_fire_destroy_hook.install();

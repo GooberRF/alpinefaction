@@ -5,7 +5,7 @@
 
 void clear_waypoint_route();
 bool is_following_waypoint_link(const rf::Entity& entity);
-bool start_recovery_anchor_reroute(const rf::Entity& entity, int avoid_waypoint);
+bool start_recovery_anchor_reroute(const rf::Entity& entity, int avoid_waypoint, bool rejoin_route = false);
 void clear_synthetic_movement_controls();
 void reset_client_bot_state();
 

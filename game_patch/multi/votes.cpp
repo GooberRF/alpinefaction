@@ -30,6 +30,7 @@
 #include "server.h"
 #include "alpine_packets.h"
 #include "../misc/vpackfile.h"
+#include "bots/server_bots.h"
 
 MatchInfo g_match_info;
 
@@ -53,6 +54,7 @@ enum class VoteType
     Previous,
     Match,
     CancelMatch,
+    Surrender,
     Unknown
 };
 
@@ -68,6 +70,7 @@ static AfVoteType vote_type_to_wire(VoteType type)
         case VoteType::Random: return AfVoteType::Random;
         case VoteType::Previous: return AfVoteType::Previous;
         case VoteType::CancelMatch: return AfVoteType::CancelMatch;
+        case VoteType::Surrender: return AfVoteType::Surrender;
         default: return AfVoteType::Kick;
     }
 }
@@ -205,7 +208,13 @@ public:
 
     bool add_player_vote(bool is_yes_vote, rf::Player* source)
     {
-        if (players_who_voted.count(source) == 1) {
+        if (!is_audience(source)) {
+            send_vote_reject_msg("No vote in progress!", source);
+        }
+        else if (!is_voter_in_scope(source)) {
+            send_vote_reject_msg("Only players in the current match can vote.", source);
+        }
+        else if (players_who_voted.count(source) == 1) {
             send_vote_reject_msg("You already voted!", source);
         }
         else {
@@ -237,19 +246,22 @@ public:
         if (passed_time_sec >= vote_config.time_limit_seconds) {
             VoteTally tally = compute_tally();
 
-            if (!vote_config.ignore_nonvoters) {
+            if (!vote_config.ignore_nonvoters || g_match_info.match_active) {
                 tally.no += tally.remaining;
             }
 
             broadcast_vote_legacy_msg("Vote timed out!");
-            finish_vote(tally.yes > tally.no, AfVoteResult::TimedOut);
+            finish_vote(requires_unanimity() ? tally.no == 0 && tally.remaining == 0 && tally.yes > 0
+                                             : tally.yes > tally.no,
+                        AfVoteResult::TimedOut);
             return false;
         }
         if (passed_time_sec >= vote_config.time_limit_seconds / 2 && !reminder_sent) {
             const auto current_player_list = get_clients(false, false);
 
             for (rf::Player* player : current_player_list) {
-                if (players_who_voted.find(player) == players_who_voted.end()) {
+                if (is_voter_in_scope(player) && players_who_voted.find(player) == players_who_voted.end()
+                    && !is_listen_server_host(player)) {
                     if (player->version_info.software != ClientSoftware::AlpineFaction) { // don't send reminder pings to alpine clients
                         af_send_automated_chat_msg("Send message \"/vote yes\" or \"/vote no\" to vote.", player);
                     }
@@ -262,6 +274,10 @@ public:
 
     bool try_cancel_vote(rf::Player* source)
     {
+        if (!is_audience(source)) {
+            send_vote_reject_msg("No vote in progress!", source);
+            return false;
+        }
         if (owner != source) {
             send_vote_reject_msg("You cannot cancel a vote you didn't start!", source);
             return false;
@@ -281,7 +297,8 @@ public:
     // Bring a player who joined mid-vote up to date.
     void send_start_state_to(rf::Player* player)
     {
-        if (!player || !player_uses_vote_packets(player) || !player_meets_alpine_restrict(player)) {
+        if (!player || !player_uses_vote_packets(player) || !player_meets_alpine_restrict(player)
+            || !is_audience(player)) {
             return;
         }
 
@@ -334,7 +351,7 @@ public:
         for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
             // Same filter as the start event: a client that never got a start
             // event must not get updates or an end event either.
-            if (player_uses_vote_packets(&player) && player_meets_alpine_restrict(&player)) {
+            if (player_uses_vote_packets(&player) && player_meets_alpine_restrict(&player) && is_audience(&player)) {
                 af_send_vote_state_end(&player, result, passed, detail);
             }
         }
@@ -369,6 +386,22 @@ protected:
     virtual void on_accepted() {}
     virtual void on_rejected() {}
 
+    [[nodiscard]] virtual bool is_voter_in_scope(rf::Player* p) const
+    {
+        return !g_match_info.match_active || is_player_in_match(p);
+    }
+
+    // Players who are told about the vote at all
+    [[nodiscard]] virtual bool is_audience([[maybe_unused]] rf::Player* p) const
+    {
+        return true;
+    }
+
+    [[nodiscard]] virtual bool requires_unanimity() const
+    {
+        return false;
+    }
+
     static uint8_t clamp_to_u8(int value)
     {
         return static_cast<uint8_t>(std::clamp(value, 0, 255));
@@ -378,9 +411,9 @@ protected:
     // events; their sniffing contract depends on these exact strings. The console
     // line matches af_broadcast_automated_chat_msg so dedicated server output is
     // unchanged, and the packet is built once for the whole broadcast.
-    static void broadcast_vote_legacy_msg(std::string_view msg)
+    void broadcast_vote_legacy_msg(std::string_view msg) const
     {
-        af_broadcast_vote_legacy_chat_msg(msg);
+        af_broadcast_vote_legacy_chat_msg(msg, [this](rf::Player* p) { return is_audience(p); });
     }
 
     // Ends the vote for everyone: the legacy chat line (which is also the server
@@ -395,7 +428,7 @@ protected:
     void broadcast_vote_update(const VoteTally& tally)
     {
         for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
-            if (player_uses_vote_packets(&player) && player_meets_alpine_restrict(&player)) {
+            if (player_uses_vote_packets(&player) && player_meets_alpine_restrict(&player) && is_audience(&player)) {
                 af_send_vote_state_update(&player, clamp_to_u8(tally.yes), clamp_to_u8(tally.no),
                                           clamp_to_u8(tally.remaining));
             }
@@ -431,7 +464,7 @@ protected:
         const VoteTally tally = compute_tally();
 
         for (rf::Player* player : get_clients(false, false)) {
-            if (!player || is_listen_server_host(player)) {
+            if (!player || is_listen_server_host(player) || !is_audience(player)) {
                 continue;
             }
 
@@ -453,6 +486,7 @@ protected:
             }
 
             af_send_automated_chat_msg(player->version_info.software == ClientSoftware::AlpineFaction
+                                               || !is_voter_in_scope(player)
                                            ? msg_alpine
                                            : msg_non_alpine,
                                        player);
@@ -476,7 +510,8 @@ protected:
         pending_outcome = is_accepted ? Outcome::Accepted : Outcome::Rejected;
     }
 
-    static bool is_eligible_voter(rf::Player* const p) {
+    bool is_eligible_voter(rf::Player* const p) const
+    {
         if (!p) {
             return false;
         }
@@ -486,7 +521,8 @@ protected:
         if (p->is_non_participant()
             || p->is_bot
             || player_is_idle(p)
-            || !player_meets_alpine_restrict(p)) {
+            || !player_meets_alpine_restrict(p)
+            || !is_voter_in_scope(p)) {
             return false;
         }
         return true;
@@ -524,6 +560,14 @@ protected:
     bool check_for_early_vote_finish()
     {
         const VoteTally tally = compute_tally();
+
+        if (requires_unanimity()) {
+            if (tally.no > 0 || tally.remaining == 0) {
+                finish_vote(tally.no == 0 && tally.yes > 0);
+                return false;
+            }
+            return true;
+        }
 
         const bool can_pass = tally.yes > tally.no + tally.remaining;
         const bool can_fail = tally.no > tally.yes + tally.remaining;
@@ -744,14 +788,47 @@ static std::optional<rf::NetGameType> title_gametype(std::optional<rf::NetGameTy
     return std::nullopt;
 }
 
-// An explicit voted set replaces the baseline; a chat vote names none and inherits.
-static std::vector<MutatorDeclaration> effective_vote_mutators(
-    const std::vector<MutatorDeclaration>& voted, bool voted_set_is_explicit)
+// A match's Join Bots leave at least one slot to a human and must all fit on the server
+static bool join_bots_match_vote_allowed(const AlpineServerConfigRules& rules, int team_size, rf::Player* source)
+{
+    const int bots = rules.mutators.join_bots;
+    if (bots <= 0) {
+        return true;
+    }
+    if (bots > 2 * team_size - 1) {
+        send_vote_reject_msg(std::format("Cannot start vote: a {0}v{0} match has room for at most {1} Join Bots.",
+                                         team_size, 2 * team_size - 1), source);
+        return false;
+    }
+    if (2 * team_size > rf::netgame.max_players) {
+        send_vote_reject_msg(std::format("Cannot start vote: a {0}v{0} match doesn't fit in this server's {1} slots.",
+                                         team_size, rf::netgame.max_players), source);
+        return false;
+    }
+    // Configured bots make way for these, players don't
+    int players = 0;
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        players += (server_bot_from_player(&player) || player.is_observer()) ? 0 : 1;
+    }
+    if (players + bots > rf::netgame.max_players) {
+        send_vote_reject_msg(std::format("Cannot start vote: the server has no room for {} Join Bots.", bots), source);
+        return false;
+    }
+    if (rules.mutators.humans_vs_bots_enabled) {
+        send_vote_reject_msg("Cannot start vote: Join Bots can't fill a Humans vs. Bots match.", source);
+        return false;
+    }
+    return true;
+}
+
+// An explicit voted set replaces the baseline; a chat vote names none and gets the level's own.
+static std::vector<MutatorDeclaration> effective_vote_mutators(const std::vector<MutatorDeclaration>& voted,
+    bool voted_set_is_explicit, std::string_view level_name, rf::NetGameType game_type)
 {
     if (voted_set_is_explicit) {
         return voted;
     }
-    return g_alpine_server_config_active_rules.mutators.declarations;
+    return build_level_rules(level_name, game_type, nullptr).mutators.declarations;
 }
 
 struct VoteMatch : public Vote
@@ -803,11 +880,6 @@ struct VoteMatch : public Vote
             return false;
         }
 
-        if (!multi_game_type_is_team_type(g_alpine_server_config.base_rules.game_type)) {
-            send_vote_reject_msg("Cannot start vote: server base game type is not a team game type.", source);
-            return false;
-        }
-
         // The match must end up on a team game type — evaluated against what will
         // actually apply, not the base rules.
         if (!multi_game_type_is_team_type(effective_game_type)) {
@@ -816,11 +888,15 @@ struct VoteMatch : public Vote
         }
 
         const std::vector<MutatorDeclaration> effective_mutators =
-            effective_vote_mutators(m_mutators, m_mutators_explicit);
-        // Always derived, like a level vote: never the rotation slot's own rules.
+            effective_vote_mutators(m_mutators, m_mutators_explicit, m_level_name, effective_game_type);
+        // Built like a level vote: the level's rotation slot settings with the voted game type and mutators.
         m_manual_rules_override =
             load_vote_rules_override(m_level_name, effective_mutators, effective_game_type);
+        if (!join_bots_match_vote_allowed(m_manual_rules_override.rules, m_team_size, source)) {
+            return false;
+        }
         m_manual_rules_override.explicit_session = m_gametype.has_value() || m_mutators_explicit;
+        m_manual_rules_override.match = true;
         m_mutator_labels = mutators_join_labels(effective_mutators, effective_game_type);
         m_title_gametype = title_gametype(m_gametype, effective_game_type);
 
@@ -950,6 +1026,61 @@ struct VoteCancelMatch : public Vote
         return g_alpine_server_config.vote_match;
     }
 };
+
+namespace
+{
+// Hidden from everyone but the caller's team in the match
+struct VoteSurrender : public Vote
+{
+    int m_team;
+
+    explicit VoteSurrender(int team) : m_team(team) {}
+
+    VoteType get_type() const override
+    {
+        return VoteType::Surrender;
+    }
+
+    [[nodiscard]] std::string get_title() const override
+    {
+        return "SURRENDER THE MATCH";
+    }
+
+    [[nodiscard]] std::string get_outcome_text(bool accepted) const override
+    {
+        return accepted ? "Vote passed: your team has surrendered the match." : Vote::get_outcome_text(false);
+    }
+
+    void on_accepted() override
+    {
+        afstats::note_game_end_type(afstats::GameEndType::map_change_vote);
+        surrender_match(m_team);
+    }
+
+    [[nodiscard]] std::string get_detail() const override { return std::to_string(m_team); }
+
+    [[nodiscard]] bool is_voter_in_scope(rf::Player* p) const override
+    {
+        return p && is_player_in_match(p) && p->team == m_team;
+    }
+
+    [[nodiscard]] bool is_audience(rf::Player* p) const override
+    {
+        return is_voter_in_scope(p);
+    }
+
+    [[nodiscard]] bool requires_unanimity() const override
+    {
+        return true;
+    }
+
+    // No config section of its own; only vote_match's time limit applies
+    [[nodiscard]] const VoteConfig& get_config() const override
+    {
+        return g_alpine_server_config.vote_match;
+    }
+};
+} // namespace
 
 
 struct VoteKick : public Vote
@@ -1136,7 +1267,7 @@ struct VoteLevel : public Vote
         }
 
         const std::vector<MutatorDeclaration> effective_mutators =
-            effective_vote_mutators(m_mutators, m_mutators_explicit);
+            effective_vote_mutators(m_mutators, m_mutators_explicit, m_level_name, effective_game_type);
         m_manual_rules_override =
             load_vote_rules_override(m_level_name, effective_mutators, effective_game_type);
         m_manual_rules_override.explicit_session = m_gametype.has_value() || m_mutators_explicit;
@@ -1425,7 +1556,28 @@ public:
 
         auto vote = std::make_unique<T>(std::forward<Args>(args)...);
 
-        if (!vote->get_config().enabled) {
+        // Players' only way to end a live match, so Surrender and Cancel Match skip the enabled check during one
+        const VoteType type = vote->get_type();
+        if (g_match_info.match_active) {
+            if (type != VoteType::Surrender && type != VoteType::CancelMatch && type != VoteType::Extend) {
+                send_vote_reject_msg("Only surrender, cancel match and extend votes can be called during a match.",
+                                     source);
+                return false;
+            }
+            if (type == VoteType::Extend && !vote->get_config().enabled) {
+                send_vote_reject_msg("This vote type is disabled!", source);
+                return false;
+            }
+            if (!is_player_in_match(source)) {
+                send_vote_reject_msg("Only players in the current match can call votes.", source);
+                return false;
+            }
+        }
+        else if (type == VoteType::Surrender) {
+            send_vote_reject_msg("Surrender votes can only be called during a match.", source);
+            return false;
+        }
+        else if (!vote->get_config().enabled) {
             send_vote_reject_msg("This vote type is disabled!", source);
             return false;
         }
@@ -1759,14 +1911,7 @@ static uint32_t build_enabled_vote_mask()
     uint32_t mask = 0;
     if (cfg.vote_kick.enabled) mask |= bit(AfVoteType::Kick);
     if (cfg.vote_level.enabled) mask |= bit(AfVoteType::Level);
-    // VoteMatch::validate refuses every match on a server whose base game type is
-    // not a team type, so Match is not advertised there rather than being offered
-    // and always rejected. CancelMatch stays advertised: a live match can outlast a
-    // config change to a non-team base type, and the vote panel is its only caller.
-    if (cfg.vote_match.enabled) {
-        if (multi_game_type_is_team_type(cfg.base_rules.game_type)) mask |= bit(AfVoteType::Match);
-        mask |= bit(AfVoteType::CancelMatch);
-    }
+    if (cfg.vote_match.enabled) mask |= bit(AfVoteType::Match) | bit(AfVoteType::CancelMatch);
     if (cfg.vote_extend.enabled) mask |= bit(AfVoteType::Extend);
     if (cfg.vote_restart.enabled) mask |= bit(AfVoteType::Restart);
     if (cfg.vote_next.enabled) mask |= bit(AfVoteType::Next);
@@ -1800,7 +1945,7 @@ static void build_vote_options_blob(std::vector<uint8_t>& blob)
             blob_u8(blob, static_cast<uint8_t>(i));
             blob_u8(blob, multi_game_type_is_team_type(game_type) ? AF_VOTE_GAMETYPE_FLAG_TEAM : 0);
             blob_str(blob, multi_game_type_name(game_type));
-            blob_i32(blob, g_alpine_server_config_active_rules.get_score_limit(game_type).value_or(0));
+            blob_i32(blob, build_level_rules({}, game_type, nullptr).get_score_limit(game_type).value_or(0));
         });
     }
 
@@ -1882,13 +2027,8 @@ static void build_vote_options_blob(std::vector<uint8_t>& blob)
 
             // Which mutator set the panel pre-selects for this level.
             const std::vector<MutatorDeclaration>* level_decls = nullptr;
-            for (const auto& entry : g_alpine_server_config.levels) {
-                // Same lookup as resolve_level_default_game_type: first match wins.
-                if (string_iequals(entry.level_filename, level)) {
-                    level_decls = &entry.rule_overrides.mutators.declarations;
-                    break;
-                }
-            }
+            if (const int index = rotation_index_for_level(level); index >= 0)
+                level_decls = &g_alpine_server_config.levels[index].rule_overrides.mutators.declarations;
             const auto& base_decls = g_alpine_server_config.base_rules.mutators.declarations;
             if (!level_decls || *level_decls == base_decls) {
                 blob_u8(blob, static_cast<uint8_t>(AfVoteLevelBaseline::InheritBase));
@@ -1977,7 +2117,7 @@ void server_vote_handle_options_request(rf::Player* sender, bool has_cache, uint
 
     // The client told us what it already has. This is the case a plain
     // once-per-generation guard cannot distinguish: a cfg change that does not
-    // affect the vote schema (sv_netfps, maxfps) sets signal_cfg_changed, which
+    // affect the vote schema (sv_bandwidth) sets signal_cfg_changed, which
     // marks every client's cache stale, but leaves the generation alone. Answering
     // with silence is what stops a needless identical re-download.
     if (has_cache && known_generation == generation) {
@@ -2005,7 +2145,8 @@ void server_vote_handle_options_request(rf::Player* sender, bool has_cache, uint
 static bool check_voter_eligibility(rf::Player* sender)
 {
     if (is_listen_server_host(sender)) {
-        return false; // silently: the host has no vote UI to reply to
+        send_vote_reject_msg("The listen server host cannot vote.", sender);
+        return false;
     }
     if (sender->version_info.software == ClientSoftware::Browser || sender->is_bot) {
         send_vote_reject_msg("Browsers and bots are not allowed to vote!", sender, true);
@@ -2067,6 +2208,9 @@ bool handle_vote_command(std::string_view vote_args, rf::Player* sender)
     else if (vote_name == "extend" || vote_name == "ext") {
         params.type = AfVoteType::Extend;
     }
+    else if (vote_name == "surrender") {
+        params.type = AfVoteType::Surrender;
+    }
     else {
         return false; // not a vote command; caller reports it as unrecognized
     }
@@ -2106,7 +2250,7 @@ static bool resolve_vote_gametype(uint8_t wire_value, rf::Player* sender, std::o
         out = std::nullopt;
         return true;
     }
-    if (wire_value > static_cast<uint8_t>(rf::NG_TYPE_SAL)) {
+    if (wire_value > static_cast<uint8_t>(rf::NG_TYPE_PAY)) {
         send_vote_reject_msg("Cannot start vote: this server does not support that game type.", sender);
         return false;
     }
@@ -2213,6 +2357,9 @@ void handle_vote_call_packet(rf::Player* sender, AfVoteCallParams&& params)
             break;
         case AfVoteType::CancelMatch:
             g_vote_mgr.StartVote<VoteCancelMatch>(sender);
+            break;
+        case AfVoteType::Surrender:
+            g_vote_mgr.StartVote<VoteSurrender>(sender, sender->team);
             break;
         default:
             xlog::warn("handle_vote_call_packet: unhandled vote type {}", static_cast<int>(params.type));

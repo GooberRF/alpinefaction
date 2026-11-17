@@ -1,4 +1,5 @@
 #include <windows.h>
+#include <cstring>
 #include <cwchar>
 #include <cwctype>
 #include <patch_common/FunHook.h>
@@ -50,7 +51,7 @@ LRESULT WINAPI wnd_proc(HWND wnd_handle, UINT msg, WPARAM w_param, LPARAM l_para
     }
 
     switch (msg) {
-    case WM_ACTIVATE:
+    case WM_ACTIVATE: {
         if (is_headless_mode()) {
             // In headless mode, the console window will have focus and WM_ACTIVATE for the
             // hidden game window may report inactive. Keep active state pinned so client
@@ -59,22 +60,21 @@ LRESULT WINAPI wnd_proc(HWND wnd_handle, UINT msg, WPARAM w_param, LPARAM l_para
             return 0;
         }
 
+        const bool active = LOWORD(w_param) != WA_INACTIVE;
+        const bool minimized = HIWORD(w_param) != 0;
+        rf::is_main_wnd_active = active && !minimized;
+
         if (!rf::is_dedicated_server) {
-            // Show cursor if window is not active
-            if (w_param) {
-                ShowCursor(FALSE);
-                while (ShowCursor(FALSE) >= 0)
-                    ;
+            if (rf::is_main_wnd_active) {
+                while (ShowCursor(FALSE) >= 0) {}
             }
             else {
-                ShowCursor(TRUE);
-                while (ShowCursor(TRUE) < 0)
-                    ;
+                while (ShowCursor(TRUE) < 0) {}
             }
         }
 
-        rf::is_main_wnd_active = w_param;
-        return 0;
+        return DefWindowProcA(wnd_handle, msg, w_param, l_param);
+    }
 
     case WM_WINDOWPOSCHANGING:
         if (is_headless_mode() && l_param) {
@@ -269,6 +269,45 @@ void wnd_set_flash(const HWND hwnd) {
         .dwTimeout = 0
     };
     FlashWindowEx(&flash);
+}
+
+std::string read_clipboard_text(std::size_t max_len)
+{
+    std::string out;
+    if (!OpenClipboard(nullptr)) {
+        return out;
+    }
+    if (HANDLE data = GetClipboardData(CF_TEXT)) {
+        if (const auto* text = static_cast<const char*>(GlobalLock(data))) {
+            out.assign(text, strnlen(text, std::min<std::size_t>(GlobalSize(data), max_len)));
+            GlobalUnlock(data);
+        }
+    }
+    CloseClipboard();
+    return out;
+}
+
+void write_clipboard_text(std::string_view text)
+{
+    // EmptyClipboard makes the opening window the owner; with no window, SetClipboardData fails.
+    if (!OpenClipboard(rf::main_wnd)) {
+        return;
+    }
+    EmptyClipboard();
+    if (HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, text.size() + 1)) {
+        if (auto* dst = static_cast<char*>(GlobalLock(mem))) {
+            std::memcpy(dst, text.data(), text.size());
+            dst[text.size()] = 0;
+            GlobalUnlock(mem);
+            if (SetClipboardData(CF_TEXT, mem)) {
+                mem = nullptr;
+            }
+        }
+        if (mem) {
+            GlobalFree(mem);
+        }
+    }
+    CloseClipboard();
 }
 
 static FunHook<void()> os_close_hook{

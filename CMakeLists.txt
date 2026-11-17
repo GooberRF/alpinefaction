@@ -10,6 +10,8 @@ set(CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+option(ALPINE_BUILD_PACKFILE "Compile the shaders and build alpinefaction.vpp" ON)
+
 # Set our target version to Windows 7.
 add_compile_definitions(
     _WIN32_WINNT=0x0601
@@ -35,10 +37,19 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 if(MSVC)
     add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
     add_compile_options(/arch:SSE2)
+    # MSBuild compiles a project's sources serially without /MP. Ninja already parallelizes per file.
+    if(CMAKE_GENERATOR MATCHES "Visual Studio")
+        add_compile_options(/MP)
+    endif()
     # Statically link Microsoft's CRT.
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 else()
-    add_compile_options(-msse2)
+    # RF.exe calls our hooks with a 4-byte aligned stack, so GCC must not assume its ABI default
+    # of 16, or aligned locals (Bullet's btVector3/btTransform) get no realignment prologue.
+    add_compile_options(-msse2 -mincoming-stack-boundary=2)
+    # Likewise the 32-bit Windows heap only aligns to 8, as MSVC assumes, so 16-aligned types
+    # (the D3D11 RenderContext) must take the aligned operator new.
+    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-faligned-new=8>)
 endif()
 
 # Macros

@@ -30,7 +30,7 @@ struct VsOutput
     float3 norm : NORMAL;
     float4 color : COLOR;
     float2 uv0 : TEXCOORD0;
-    float2 uv1 : TEXCOORD1;
+    float3 uv1 : TEXCOORD1;
     float4 world_pos_and_depth : TEXCOORD2;
 };
 
@@ -57,7 +57,7 @@ VsOutput main(VsInput input)
     output.pos = mul(float4(view_pos, 1), proj_mat);
     output.norm = normalize(world_norm);
     output.uv0 = input.uv0;
-    output.uv1 = float2(0, 0);
+    output.uv1 = float3(0, 0, -1);
     output.color = input.color;
     output.world_pos_and_depth = float4(world_pos, view_pos.z);
     return output;

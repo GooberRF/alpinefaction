@@ -1,10 +1,10 @@
 #include <algorithm>
 #include <cmath>
 #include <format>
-#include <patch_common/FunHook.h>
 #include "demo.h"
 #include "demo_internal.h"
 #include "../gametype.h"
+#include "../powerups.h"
 #include "../../hud/hud.h"
 #include "../../hud/hud_internal.h"
 #include "../../hud/remote_server_cfg_ui.h"
@@ -20,6 +20,7 @@
 #include "../../rf/multi.h"
 #include "../../rf/object.h"
 #include "../../rf/os/console.h"
+#include "../../misc/settings_registry.h"
 
 // Powerup respawn timers for demo playback. Clients never run item_check_for_respawns
 // and the server's item_update visibility bitmap (250 ms cadence) hides/unhides items
@@ -55,9 +56,16 @@ namespace
         TrackedItem slots[max_slots_per_type] = {};
     };
 
+    constexpr const AlpinePowerupItemClass& haste_class =
+        alpine_powerup_item_classes[static_cast<size_t>(AlpinePowerup::haste)];
+    constexpr const AlpinePowerupItemClass& vampire_class =
+        alpine_powerup_item_classes[static_cast<size_t>(AlpinePowerup::vampire)];
+
     TrackedType g_tracked_types[] = {
         {.cls_name = "Multi Damage Amplifier", .bitmap_filename = "hud_pow_damage.tga"},
         {.cls_name = "Multi Invulnerability", .bitmap_filename = "hud_pow_invuln.tga"},
+        {.cls_name = haste_class.class_name, .bitmap_filename = haste_class.hud_icon_filename},
+        {.cls_name = vampire_class.class_name, .bitmap_filename = vampire_class.hud_icon_filename},
     };
 
     // Adopts untracked items of this type - first max_slots_per_type in list order
@@ -126,32 +134,25 @@ namespace
         }
     }
 
-    using MultiIoPacketHandler = void(char* data, const rf::NetAddr& addr);
-
-    // The item_update bitmap is the only channel through which a spectator learns about
-    // level-item pickups/respawns, so its handler is the natural edge-detection point.
-    // Correct through seek fast-forward bursts too: the pump advances the demo clock
-    // per-record before feeding. Pure passthrough outside demo playback.
-    FunHook<MultiIoPacketHandler> process_item_update_packet_hook{
-        0x0047A220,
-        [](char* data, const rf::NetAddr& addr) {
-            process_item_update_packet_hook.call_target(data, addr);
-            if (demo_playback_active() && !gt_is_bagman_any()) {
-                update_tracker();
-            }
-        },
-    };
-
     ConsoleCommand2 spectate_powerups_cmd{
         "spectate_powerups",
         []() {
-            g_alpine_game_config.demo_powerup_timers = !g_alpine_game_config.demo_powerup_timers;
+            setting_console_set("demo_powerup_timers", "toggle");
             rf::console::print("Demo playback powerup respawn timers are {}",
                                g_alpine_game_config.demo_powerup_timers ? "enabled" : "disabled");
         },
         "Toggle powerup respawn timers during demo playback",
         "spectate_powerups",
     };
+}
+
+// Correct through seek fast-forward bursts too: the pump advances the demo clock
+// per-record before feeding.
+void demo_powerup_timers_on_item_update()
+{
+    if (demo_playback_active() && !gt_is_bagman_any()) {
+        update_tracker();
+    }
 }
 
 void demo_powerup_timers_reset()
@@ -233,6 +234,5 @@ void demo_powerup_timers_render()
 
 void demo_powerup_timers_do_patch()
 {
-    process_item_update_packet_hook.install();
     spectate_powerups_cmd.register_cmd();
 }

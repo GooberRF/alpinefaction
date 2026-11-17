@@ -78,4 +78,9 @@ namespace rf
         rf::Vector3* p1,
         rf::Vector3* p2,
         rf::Vector3* intercept)>(0x00508B70);
+
+    // Contact set collide_object_world accumulates before averaging (16 x PCollisionOut)
+    constexpr int world_contact_max = 16;
+    static auto& g_world_contacts = addr_as_ref<rf::PCollisionOut[world_contact_max]>(0x007C6A80);
+    static auto& g_world_contact_count = addr_as_ref<int>(0x007C6A68);
 }

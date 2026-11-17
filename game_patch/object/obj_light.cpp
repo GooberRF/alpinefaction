@@ -16,13 +16,16 @@
 #include "../rf/level.h"
 #include "../rf/clutter.h"
 #include "../rf/v3d.h"
+#include "../rf/character.h"
 #include "../rf/gr/gr.h"
-#include "../graphics/d3d11/gr_d3d11_mesh.h"
+#include <common/gr_d3d11/gr_d3d11_mesh.h>
+#include "../graphics/d3d11/gr_d3d11_hooks.h"
 #include "../rf/multi.h"
 #include "../rf/crt.h"
 #include "../os/console.h"
 #include "../main/main.h"
 #include "../multi/multi.h"
+#include "../misc/settings_registry.h"
 
 void gr_light_use_static(bool use_static);
 
@@ -38,8 +41,13 @@ void obj_mesh_lighting_alloc_one(rf::Object* objp)
 {
     if ((objp->type != rf::OT_ITEM && objp->type != rf::OT_CLUTTER && objp->type != rf::OT_DEBRIS) ||
         !objp->vmesh ||
-        (objp->obj_flags & rf::OF_DELAYED_DELETE) ||
-        rf::vmesh_get_type(objp->vmesh) != rf::MESH_TYPE_STATIC) {
+        (objp->obj_flags & rf::OF_DELAYED_DELETE)) {
+        return;
+    }
+    // Alpine "Mesh" clutter can be a character (v3c) mesh; the stock bake supports those too
+    auto mesh_type = rf::vmesh_get_type(objp->vmesh);
+    if (mesh_type != rf::MESH_TYPE_STATIC &&
+        !(mesh_type == rf::MESH_TYPE_CHARACTER && objp->type == rf::OT_CLUTTER)) {
         return;
     }
     assert(objp->mesh_lighting_data == nullptr);
@@ -83,6 +91,12 @@ void recalc_mesh_static_lighting()
     rf::obj_light_free();
     rf::obj_light_alloc();
     rf::obj_light_calculate();
+
+    if (is_d3d11()) {
+        // The baked vertex colors moved, so cached GPU vertex color buffers are stale
+        gr::d3d11::on_static_vertex_color_state_changed();
+        gr::d3d11::on_character_fullbright_state_changed();
+    }
 }
 
 void evaluate_fullbright_meshes()
@@ -199,9 +213,7 @@ ConsoleCommand2 mesh_lighting_cmd{
     "r_meshlighting",
     [](std::optional<int> mode_opt) {
         if (mode_opt) {
-            g_alpine_game_config.mesh_lighting_mode = std::clamp(mode_opt.value(), 0, 2);
-            recalc_mesh_static_lighting();
-            gr::d3d11::evaluate_mesh_lighting(rf::level.filename);
+            setting_console_set("mesh_lighting_mode", std::to_string(mode_opt.value()));
         }
         rf::console::print("Mesh lighting: {} (mode {})", mesh_lighting_mode_name(g_alpine_game_config.mesh_lighting_mode), g_alpine_game_config.mesh_lighting_mode);
         if (g_alpine_game_config.mesh_lighting_mode == 2 && gr::d3d11::level_uses_vertex_lighting()) {
@@ -216,7 +228,7 @@ ConsoleCommand2 dynamic_light_ndotl_cmd{
     "r_dynamiclightndotl",
     [](std::optional<float> value_opt) {
         if (value_opt) {
-            g_alpine_game_config.set_dynamic_light_ndotl(value_opt.value());
+            setting_console_set("dynamic_light_ndotl", std::to_string(value_opt.value()));
         }
         rf::console::print("Dynamic light N-L on world geometry: {:.2f} (0.0 = stock, 1.0 = full N-L, D3D11 only)",
             g_alpine_game_config.dynamic_light_ndotl);
@@ -229,9 +241,7 @@ ConsoleCommand2 pixel_light_overbright_cmd{
     "r_pixellightoverbright",
     [](std::optional<float> value_opt) {
         if (value_opt) {
-            g_alpine_game_config.set_pixel_light_overbright(value_opt.value());
-            // Re-evaluate cached state so the change takes effect immediately
-            gr::d3d11::evaluate_pixel_light_overbright(rf::level.filename);
+            setting_console_set("pixel_light_overbright", std::to_string(value_opt.value()));
         }
         rf::console::print("Pixel light overbright range: {:.2f}",
             g_alpine_game_config.pixel_light_overbright);
@@ -246,9 +256,7 @@ ConsoleCommand2 pixel_light_overbright_cmd{
 ConsoleCommand2 ignore_tbl_vertex_lighting_cmd{
     "cl_ignore_tbl_vertex_lighting",
     []() {
-        g_alpine_game_config.ignore_tbl_vertex_lighting = !g_alpine_game_config.ignore_tbl_vertex_lighting;
-        gr::d3d11::evaluate_mesh_lighting(rf::level.filename);
-        recalc_mesh_static_lighting();
+        setting_console_set("ignore_tbl_vertex_lighting", "toggle");
         rf::console::printf("Ignore TBL vertex lighting override: %s", g_alpine_game_config.ignore_tbl_vertex_lighting ? "enabled" : "disabled");
     },
     "Toggle ignoring per-map vertex lighting overrides from mapname_info.tbl.",
@@ -257,8 +265,7 @@ ConsoleCommand2 ignore_tbl_vertex_lighting_cmd{
 ConsoleCommand2 ignore_tbl_pixel_light_overbright_cmd{
     "cl_ignore_tbl_pixel_light_overbright",
     []() {
-        g_alpine_game_config.ignore_tbl_pixel_light_overbright = !g_alpine_game_config.ignore_tbl_pixel_light_overbright;
-        gr::d3d11::evaluate_pixel_light_overbright(rf::level.filename);
+        setting_console_set("ignore_tbl_pixel_light_overbright", "toggle");
         rf::console::printf("Ignore TBL pixel light overbright override: %s", g_alpine_game_config.ignore_tbl_pixel_light_overbright ? "enabled" : "disabled");
     },
     "Toggle ignoring per-map pixel light overbright overrides from mapname_info.tbl.",
@@ -289,9 +296,7 @@ void evaluate_restrict_disable_muzzle_flash()
 ConsoleCommand2 muzzle_flash_cmd{
     "r_muzzleflash",
     []() {
-        g_alpine_game_config.try_disable_muzzle_flash_lights = !g_alpine_game_config.try_disable_muzzle_flash_lights;
-
-        evaluate_restrict_disable_muzzle_flash();
+        setting_console_set("muzzle_flash_lights", "toggle");
 
         rf::console::print("Muzzle flash lights are {}",
                            g_alpine_game_config.try_disable_muzzle_flash_lights
@@ -304,9 +309,7 @@ ConsoleCommand2 muzzle_flash_cmd{
 ConsoleCommand2 fullbright_models_cmd{
     "r_fullbright",
     []() {
-        g_alpine_game_config.try_fullbright_characters = !g_alpine_game_config.try_fullbright_characters;
-
-        evaluate_fullbright_meshes();
+        setting_console_set("fullbright_characters", "toggle");
 
         rf::console::print("Fullbright character meshes are {}", g_alpine_game_config.try_fullbright_characters ?
 			"enabled. In multiplayer, this will only apply if the server allows it." : "disabled.");
@@ -323,6 +326,48 @@ CodeInjection debris_render_set_vertex_colors_patch{
             auto* params = reinterpret_cast<rf::MeshRenderParams*>(static_cast<uintptr_t>(regs.esp) + 0xC);
             params->vertex_colors = static_cast<rf::ubyte*>(obj->mesh_lighting_data);
         }
+    }
+};
+
+static_assert(offsetof(rf::CharacterInstance, base_character) == 0x1D50);
+static_assert(offsetof(rf::Character, character_meshes) + offsetof(rf::CharacterMesh, v3d_file) == 0x19C0);
+static_assert(offsetof(rf::V3d, num_meshes) == 0x48);
+static_assert(offsetof(rf::V3d, meshes) == 0x4C);
+static_assert(offsetof(rf::MeshRenderParams, vertex_colors) == 0x1C);
+
+// Replaces the stock per-LOD vertex color lookup at 0x0052FB4C (13 bytes, resumes at 0x0052FB59)
+CodeInjection vif_render_resolve_lod_vertex_colors_patch{
+    0x0052FB4C,
+    [](auto& regs) {
+        auto* params = reinterpret_cast<rf::MeshRenderParams*>(static_cast<uintptr_t>(regs.esi));
+        if (params->vertex_colors) {
+            const int lod = regs.ebp;
+            // Static meshes arrive with vertex_colors already pointing at the submesh block's LOD table
+            auto* lod_colors = reinterpret_cast<rf::ubyte* const*>(params->vertex_colors);
+            auto* ci = reinterpret_cast<rf::CharacterInstance*>(static_cast<uintptr_t>(regs.ebx));
+            if (ci) {
+                // Character meshes get the raw block list instead, so find this submesh's block
+                auto* lod_mesh = reinterpret_cast<const rf::VifLodMesh*>(static_cast<uintptr_t>(regs.edi));
+                lod_colors = nullptr;
+                if (const rf::Character* character = ci->base_character) {
+                    const rf::V3d& v3d = character->character_meshes[0].v3d_file;
+                    const rf::ubyte* block = params->vertex_colors;
+                    for (int i = 0; i < v3d.num_meshes; ++i) {
+                        if (v3d.meshes[i].vu == lod_mesh) {
+                            lod_colors = reinterpret_cast<rf::ubyte* const*>(block + 4);
+                            break;
+                        }
+                        const int block_size = *reinterpret_cast<const int*>(block);
+                        if (block_size <= 0) {
+                            break;
+                        }
+                        block += block_size;
+                    }
+                }
+            }
+            params->vertex_colors = lod_colors && lod >= 0 && lod < 3 ? lod_colors[lod] : nullptr;
+        }
+        regs.eip = 0x0052FB59;
     }
 };
 
@@ -345,6 +390,9 @@ void obj_light_apply_patch()
 
     // Set vertex colors for debris meshes so they receive proper lighting instead of being fullbright
     debris_render_set_vertex_colors_patch.install();
+
+    // Stock only resolves baked vertex colors per submesh for static meshes, not for character meshes
+    vif_render_resolve_lod_vertex_colors_patch.install();
 
     // Allow dynamic lights in levels
     dynamic_light_load_patch.install(); // in LevelLight__load

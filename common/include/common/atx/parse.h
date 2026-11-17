@@ -6,8 +6,10 @@
 //   - Valid TOML syntax (toml++ parses it)
 //   - At least one [[frame]]
 //   - Each frame has a non-empty `file` that doesn't end in .atx (no nesting)
+//   - Frame `file` and `alpha_mask` are at most ATX_MAX_FILENAME_LEN characters
 //   - animation_mode is in range (0–3); out-of-range warns and falls back to default
 //   - Numeric fields clamped to ATX_MIN_FRAME_TIME_MS
+//   - [detail]: an enabled section names a non-.atx texture; scale and strength are clamped to their limits
 //
 // What this does NOT do (caller's responsibility):
 //   - File IO (caller supplies the bytes)
@@ -19,6 +21,7 @@
 // Header-only and engine-agnostic. Each consumer just needs toml++ on the include path.
 
 #include <algorithm>
+#include <cmath>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -68,10 +71,50 @@ inline std::optional<AtxSpec> parse_atx(std::string_view toml_bytes, std::string
             if (!v->empty()) spec.header.format = *v;
         }
         if (auto v = (*hdr)[ATX_KEY_ALPHA_MASK].value<std::string>()) {
+            if (v->size() > ATX_MAX_FILENAME_LEN) {
+                xlog::warn("ATX '{}': alpha_mask '{}' longer than {} characters",
+                           source_name, *v, ATX_MAX_FILENAME_LEN);
+                return std::nullopt;
+            }
             if (!v->empty()) spec.header.alpha_mask = *v;
         }
         if (auto v = (*hdr)[ATX_KEY_MATERIAL].value<std::string>()) {
             if (!v->empty()) spec.header.material = *v;
+        }
+    }
+
+    // A malformed [detail] is dropped; it must not fail the texture
+    if (const auto* det = tbl.get_as<toml::table>(ATX_TABLE_DETAIL)) {
+        AtxSpec::Detail d;
+        if (auto v = (*det)[ATX_KEY_DETAIL_ENABLED].value<bool>()) {
+            d.enabled = *v;
+        }
+        if (auto v = (*det)[ATX_KEY_DETAIL_TEXTURE].value<std::string>()) {
+            d.texture = *v;
+        }
+        if (auto v = (*det)[ATX_KEY_DETAIL_SCALE].value<double>(); v && std::isfinite(*v)) {
+            d.scale = static_cast<float>(std::clamp(*v, double{ATX_MIN_DETAIL_SCALE}, double{ATX_MAX_DETAIL_SCALE}));
+        }
+        if (auto v = (*det)[ATX_KEY_DETAIL_STRENGTH].value<double>(); v && std::isfinite(*v)) {
+            d.strength = static_cast<float>(std::clamp(*v, 0.0, double{ATX_MAX_DETAIL_STRENGTH}));
+        }
+        if (!d.enabled) {
+            d.texture.clear();
+            spec.detail = std::move(d);
+        }
+        else if (d.texture.empty()) {
+            xlog::warn("ATX '{}': [detail] has no 'texture', ignoring it", source_name);
+        }
+        else if (string_iends_with(d.texture, ".atx")) {
+            xlog::warn("ATX '{}': nested .atx is not allowed (detail texture '{}'), ignoring it",
+                       source_name, d.texture);
+        }
+        else if (d.texture.size() > ATX_MAX_FILENAME_LEN) {
+            xlog::warn("ATX '{}': detail texture '{}' longer than {} characters, ignoring it",
+                       source_name, d.texture, ATX_MAX_FILENAME_LEN);
+        }
+        else {
+            spec.detail = std::move(d);
         }
     }
 
@@ -99,6 +142,11 @@ inline std::optional<AtxSpec> parse_atx(std::string_view toml_bytes, std::string
         if (string_iends_with(f.filename, ".atx")) {
             xlog::warn("ATX '{}': nested .atx is not allowed (frame '{}')",
                        source_name, f.filename);
+            return std::nullopt;
+        }
+        if (f.filename.size() > ATX_MAX_FILENAME_LEN) {
+            xlog::warn("ATX '{}': frame file '{}' longer than {} characters",
+                       source_name, f.filename, ATX_MAX_FILENAME_LEN);
             return std::nullopt;
         }
         if (auto v = (*frame_tbl)[ATX_KEY_FRAME_TIME_OVR].value<int64_t>()) {

@@ -31,10 +31,14 @@
 #include "awards.h"
 #include "sprays.h"
 #include "gungame.h"
+#include "bagman.h"
 #include "../misc/player.h"
 #include "../misc/misc.h"
 #include "kill.h"
 #include "kill_attribution.h"
+#include "../misc/settings_registry.h"
+#include "vehicles/vehicle.h"
+#include "bots/server_bots.h"
 
 bool kill_messages = true;
 
@@ -59,7 +63,10 @@ void multi_kill_set_pending_attribution(const KillInfoPayload& payload,
     pending.attr.killer_player_id = payload.killer_player_id;
     pending.attr.weapon_type = payload.weapon_type;
     pending.attr.flags = payload.flags;
-    pending.attr.damage_type = payload.damage_type;
+    // The vehicle nibble is ignored without the flag, so a sender cannot leak a class id.
+    pending.attr.damage_type = payload.damage_type & af_kill_damage_type_mask;
+    pending.attr.vehicle_class = (payload.flags & AF_KILL_FLAG_VEHICLE)
+        ? static_cast<uint8_t>(payload.damage_type >> af_kill_vehicle_class_shift) : 0;
     auto& assists = pending.attr.assist_player_ids;
     assists.reserve(std::min<size_t>(assist_player_ids.size(), af_kill_info_max_assists));
     for (uint8_t assist_id : assist_player_ids) {
@@ -105,6 +112,10 @@ FunHook<void()> multi_level_init_hook{
                 player.death_time.reset();
                 if (player.is_bot) {
                     player.is_spawn_disabled = true;
+                }
+                // multi_change_level reset every player to WAITING; no state_info_req ever comes from a server bot.
+                if (server_bot_from_player(&player)) {
+                    player.net_data->state = rf::NETPLAYER_STATE_IN_GAME;
                 }
             }
         }
@@ -164,18 +175,19 @@ static std::optional<KillAttribution> get_kill_attribution(rf::Player* killed_pl
     return attr;
 }
 
-// Lowercased display name of the attributed weapon, or empty when there is nothing worth
-// showing (no attribution, a melee kill, or an index this build cannot resolve).
+// Display name of whatever did the killing, or empty when there is nothing worth showing.
 static std::string attribution_weapon_name(const std::optional<KillAttribution>& attr)
 {
     if (!attr || (attr->flags & AF_KILL_FLAG_MELEE)) {
         return {};
     }
-    const int weapon_type = attr->weapon_type;
-    if (!kill_attribution_is_valid_weapon_type(weapon_type)) {
-        return {};
+    if (kill_attribution_is_valid_weapon_type(attr->weapon_type)) {
+        return string_to_lower(rf::weapon_types[attr->weapon_type].display_name);
     }
-    return string_to_lower(rf::weapon_types[weapon_type].display_name);
+    if ((attr->flags & AF_KILL_FLAG_VEHICLE) && attr->vehicle_class < VDC_COUNT) {
+        return vehicle_class_display_name(attr->vehicle_class);
+    }
+    return {}; // no weapon, and no vehicle class this build has a name for
 }
 
 // True when the server would have told us what killed this player, so silence is an answer
@@ -253,16 +265,14 @@ static bool attribution_credits_player(const std::optional<KillAttribution>& att
         != attr->assist_player_ids.end();
 }
 
-// Assist highlighting applies only where the assist detail is actually shown.
 static bool attribution_highlights_local(const std::optional<KillAttribution>& attr,
-                                         bool is_third_party_kill, rf::Player* spectate_target)
+                                         rf::Player* spectate_target)
 {
     if (!g_alpine_game_config.highlight_assisted_kills) {
         return false;
     }
-    return is_third_party_kill
-        && (attribution_credits_player(attr, rf::local_player)
-            || attribution_credits_player(attr, spectate_target));
+    return attribution_credits_player(attr, rf::local_player)
+        || attribution_credits_player(attr, spectate_target);
 }
 
 void print_kill_message(rf::Player* killed_player, rf::Player* killer_player)
@@ -277,29 +287,38 @@ void print_kill_message(rf::Player* killed_player, rf::Player* killer_player)
     const std::string attr_weapon_name = attribution_weapon_name(attr);
     const bool is_melee_kill = kill_was_melee(attr, killer_entity);
 
+    rf::Player* spectate_target = multi_spectate_is_following_player() ? multi_spectate_get_target_player() : nullptr;
+
     // Trailing detail shared by the chat line and the killfeed segment.
     const bool is_third_party_kill = killer_player && killer_player != killed_player;
-    // Assist credit goes on every non-suicide kill message, first person included. The weapon
-    // clause is observer-only: the first-person lines already name the weapon themselves.
-    const std::string assists_text = is_third_party_kill ? assist_suffix(attr) : std::string{};
+    // Assist credit goes on every kill message, suicides, world deaths and first person included.
+    // The weapon clause is observer-only: the first-person lines already name the weapon themselves.
+    const std::string assists_text = assist_suffix(attr);
     std::string kill_detail_suffix;
-    if (is_third_party_kill) {
-        if (!attr_weapon_name.empty()) {
-            kill_detail_suffix = "'s " + attr_weapon_name;
-        }
-        kill_detail_suffix += assists_text;
+    if (is_third_party_kill && !attr_weapon_name.empty()) {
+        kill_detail_suffix = "'s " + attr_weapon_name;
     }
+    kill_detail_suffix += assists_text;
 
     if (!killer_player) {
-        color_id = rf::ChatMsgColor::default_;
+        color_id = attribution_highlights_local(attr, spectate_target)
+            ? rf::ChatMsgColor::white_white : rf::ChatMsgColor::default_;
         mui_msg = null_to_empty(rf::strings::was_killed_mysteriously);
-        msg = rf::String::format("{}{}", killed_player->name, mui_msg);
+        msg = rf::String::format("{}{}{}", killed_player->name, mui_msg, assists_text);
     }
     else if (killed_player == rf::local_player) {
         color_id = rf::ChatMsgColor::white_white;
         if (killer_player == killed_player) {
             mui_msg = null_to_empty(rf::strings::you_killed_yourself);
-            msg = rf::String::format("{}", mui_msg);
+            // Keep the string's closing '!' last, like the other first-person lines.
+            std::string line = mui_msg;
+            if (!line.empty() && line.back() == '!') {
+                line.insert(line.size() - 1, assists_text);
+            }
+            else {
+                line += assists_text;
+            }
+            msg = rf::String::format("{}", line);
         }
         else if (is_melee_kill) {
             mui_msg = null_to_empty(rf::strings::you_just_got_beat_down_by);
@@ -341,16 +360,15 @@ void print_kill_message(rf::Player* killed_player, rf::Player* killer_player)
         msg = rf::String::format("{}{}{}!", mui_msg, killed_player->name, assists_text);
     }
     else {
-        rf::Player* spectate_target = multi_spectate_is_following_player() ? multi_spectate_get_target_player() : nullptr;
         color_id = (killed_player == spectate_target || killer_player == spectate_target
-                    || attribution_highlights_local(attr, is_third_party_kill, spectate_target))
+                    || attribution_highlights_local(attr, spectate_target))
             ? rf::ChatMsgColor::white_white : rf::ChatMsgColor::default_;
         if (killer_player == killed_player) {
             if (rf::multi_entity_is_female(killed_player->settings.multi_character))
                 mui_msg = null_to_empty(rf::strings::was_killed_by_her_own_hand);
             else
                 mui_msg = null_to_empty(rf::strings::was_killed_by_his_own_hand);
-            msg = rf::String::format("{}{}", killed_player->name, mui_msg);
+            msg = rf::String::format("{}{}{}", killed_player->name, mui_msg, assists_text);
         }
         else {
             if (is_melee_kill)
@@ -363,12 +381,13 @@ void print_kill_message(rf::Player* killed_player, rf::Player* killer_player)
     }
 
     if (g_alpine_game_config.killfeed_enabled) {
+        killfeed_print_to_console(msg.c_str(), static_cast<int>(color_id));
         bool is_team_mode = multi_is_team_game_type();
-        rf::Player* spectate_target = multi_spectate_is_following_player() ? multi_spectate_get_target_player() : nullptr;
+        const char* trailing = kill_detail_suffix.empty() ? nullptr : kill_detail_suffix.c_str();
         // An assister counts as involved: same line as everyone else, just in white.
         bool is_local = (killed_player == rf::local_player || killer_player == rf::local_player
                          || killed_player == spectate_target || killer_player == spectate_target
-                         || attribution_highlights_local(attr, is_third_party_kill, spectate_target));
+                         || attribution_highlights_local(attr, spectate_target));
 
         if (is_local) {
             // Local player involved: show full message in white
@@ -379,7 +398,7 @@ void print_kill_message(rf::Player* killed_player, rf::Player* killer_player)
             killfeed_add_kill(killed_player->name, killed_player->team,
                               nullptr, 0,
                               null_to_empty(rf::strings::was_killed_mysteriously),
-                              false, is_team_mode);
+                              false, is_team_mode, trailing);
         }
         else if (killer_player == killed_player) {
             // Self-kill: "PlayerName was killed by his/her own hand"
@@ -390,7 +409,7 @@ void print_kill_message(rf::Player* killed_player, rf::Player* killer_player)
                 self_verb = null_to_empty(rf::strings::was_killed_by_his_own_hand);
             killfeed_add_kill(killed_player->name, killed_player->team,
                               nullptr, 0,
-                              self_verb, false, is_team_mode);
+                              self_verb, false, is_team_mode, trailing);
         }
         else {
             // Third-party kill: "KilledName verb KillerName"
@@ -401,8 +420,7 @@ void print_kill_message(rf::Player* killed_player, rf::Player* killer_player)
                 verb = null_to_empty(rf::strings::was_killed_by);
             killfeed_add_kill(killed_player->name, killed_player->team,
                               killer_player->name, killer_player->team,
-                              verb, false, is_team_mode,
-                              kill_detail_suffix.empty() ? nullptr : kill_detail_suffix.c_str());
+                              verb, false, is_team_mode, trailing);
         }
     }
     else {
@@ -411,15 +429,28 @@ void print_kill_message(rf::Player* killed_player, rf::Player* killer_player)
     }
 }
 
-void distribute_effective_health(rf::Entity* ep, float amount, float max_life_cap, float max_armor_cap)
+bool apply_effective_health_reward(rf::Player* player, float amount)
 {
-    if (!ep || amount <= 0.0f) return;
+    if (!player || amount <= 0.0f) return false;
+    rf::Entity* ep = rf::entity_from_handle(player->entity_handle);
+    if (!ep || ep->life <= 0.0f) return false;
+
+    const float max_life_cap = std::max(ep->life, ep->info->max_life);
+    const float max_armor_cap = std::max(ep->armor, ep->info->max_armor);
+    distribute_effective_health(ep, amount, max_life_cap, max_armor_cap);
+    return true;
+}
+
+float distribute_effective_health(rf::Entity* ep, float amount, float max_life_cap, float max_armor_cap)
+{
+    if (!ep || amount <= 0.0f) return 0.0f;
 
     const float life_to_add = std::min(amount, std::max(0.0f, max_life_cap - ep->life));
     const float armor_to_add = std::min((amount - life_to_add) / 2.0f, std::max(0.0f, max_armor_cap - ep->armor));
 
     ep->life += life_to_add;
     ep->armor += armor_to_add;
+    return life_to_add + armor_to_add * 2.0f;
 }
 
 void multi_apply_kill_reward(rf::Player* player)
@@ -469,19 +500,25 @@ void on_player_kill(rf::Player* killed_player, rf::Player* killer_player)
 
     if (killer_player) {
         auto* killer_stats = static_cast<PlayerStatsNew*>(killer_player->stats);
-        const bool score_from_kills = !gt_uses_custom_scoring();
+        // Bagman scores frags on top of bag time; a client mirrors that only for servers that award it.
+        const bool frags_score = !gt_uses_custom_scoring()
+            || (gt_is_bagman_any() && (rf::is_server || is_server_minimum_af_version(1, 5)));
         if (killer_player != killed_player) {
-            if (score_from_kills) {
+            if (frags_score) {
                 // No score for team kills for individual or team
                 const bool team_kill = multi_is_team_game_type() && killer_player->team == killed_player->team;
                 if (!team_kill) {
                     rf::player_add_score(killer_player, 1);
+                    if (gt_is_tbag()) {
+                        bagman_add_team_score(killer_player, 1);
+                    }
                 }
             }
             killer_stats->inc_kills();
         }
         else {
-            if (score_from_kills) {
+            // Custom-scored modes keep suicides free: their score tracks the objective, not a frag balance.
+            if (!gt_uses_custom_scoring()) {
                 rf::player_add_score(killer_player, -1);
 
                 // decrement TDM team score on self kill in match mode servers
@@ -535,7 +572,7 @@ ConsoleCommand2 kill_messages_cmd{
 ConsoleCommand2 ui_assist_names_cmd{
     "ui_assist_names",
     [] {
-        g_alpine_game_config.show_assist_names = !g_alpine_game_config.show_assist_names;
+        setting_console_set("show_assist_names", "toggle");
         rf::console::print("Assists in kill messages are {}",
                            g_alpine_game_config.show_assist_names ? "enabled" : "disabled");
     },
@@ -546,7 +583,7 @@ ConsoleCommand2 ui_assist_names_cmd{
 ConsoleCommand2 ui_assist_highlight_cmd{
     "ui_assist_highlight",
     [] {
-        g_alpine_game_config.highlight_assisted_kills = !g_alpine_game_config.highlight_assisted_kills;
+        setting_console_set("highlight_assisted_kills", "toggle");
         rf::console::print("Highlighting of kills you assisted is {}",
                            g_alpine_game_config.highlight_assisted_kills ? "enabled" : "disabled");
     },

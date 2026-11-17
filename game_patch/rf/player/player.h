@@ -14,6 +14,8 @@
 #include "../../os/os.h"
 #include "../../purefaction/pf_packets.h"
 #include "../multi.h"
+#include "../../multi/obj_update_delta.h"
+#include <array>
 #include <limits>
 #include <map>
 
@@ -49,6 +51,15 @@ struct ClientVersionInfoProfile {
     bool is_d3d11 = false;
 };
 
+// A timed powerup a player holds, from its powerup_event start to its end.
+struct AfstatsPowerupHold {
+    bool open = false;
+    int64_t start_ms = 0;
+    uint32_t kills = 0;
+    float damage = 0.0f;
+    float healed = 0.0f;
+};
+
 // Per-game, per-player counters for the FactionFiles event stream. Reset at
 // every game start; serialized whole into the game_end / player_leave summary
 // block. Score and caps are read live from the engine at summary time instead of
@@ -71,6 +82,15 @@ struct AfstatsGameCounters {
     int64_t time_played_ms = 0;
     int64_t time_spectating_ms = 0;
     int64_t time_idle_ms = 0;
+    // Summed from frame times, so kept fractional until reported
+    double payload_push_ms = 0.0;
+    double payload_block_ms = 0.0;
+    // Vampire mutator and powerup, in effective health
+    float lifesteal_healed = 0.0f;
+    // Hull life restored with melee repairs
+    float vehicle_repaired = 0.0f;
+    // Indexed by the powerup_event registry
+    std::array<AfstatsPowerupHold, 5> powerup_holds{};
     int64_t ping_sum = 0;
     uint32_t ping_samples = 0;
     // The same, but only over the current player_pings window: sampled every frame and
@@ -124,6 +144,8 @@ struct PlayerAdditionalData {
     // Client-side variables.
     std::optional<pf_pure_status> received_pf_status{};
     bool is_muted = false;
+    // A client only learns a remote player's character from their entity_create.
+    bool multi_character_known = false;
 
     // Smoothed view angular velocity feeding fpgun aim sway, in rad/s.
     float sway_pitch_vel = 0.0f;
@@ -132,6 +154,8 @@ struct PlayerAdditionalData {
     // Server-side variables.
     bool in_grace_period = true;
     ClientVersionInfoProfile version_info{};
+    bool delta_obj_update = false; // agreed at join: client asked and the server offered it
+    obj_update_delta::Sender delta_sender{};
     std::optional<std::chrono::steady_clock::time_point> death_time{};
     std::optional<std::chrono::steady_clock::time_point> spectate_start_time{};
 
@@ -139,6 +163,8 @@ struct PlayerAdditionalData {
     // Floor rate limit for broadcast 3d world sounds (broadcast_sound_packet_3d).
     std::optional<int64_t> last_world_sound_ms{};
     std::optional<int64_t> last_spray_ms{};
+    // Floor rate limit for Haste jumps: those a client reports, and those a server relays.
+    std::optional<int64_t> last_haste_jump_ms{};
     // Floor rate limit for af_req_stats_pssk so a client cannot flood the handler.
     std::optional<int64_t> last_pssk_ms{};
     // Separate floor for the af_req_stats_pssk rejection warns, so a rejected packet
@@ -174,6 +200,10 @@ struct PlayerAdditionalData {
     std::optional<rf::Player*> spectatee{};
     bool remote_server_cfg_sent = false;
 
+    // First level item index not yet replicated after send_state_info, or -1. Everything
+    // from here on is pending except CTF items, which are never deferred.
+    int next_pending_level_item = -1;
+
     // Floor rate limit for af_req_vote_options: the blob is streamed over the
     // deferred reliable queue, so a client must not be able to spam it.
     rf::TimestampRealtime vote_options_req_timer{};
@@ -185,6 +215,9 @@ struct PlayerAdditionalData {
 
     // Rate limit for vote rejection replies.
     rf::TimestampRealtime vote_reject_msg_timer{};
+
+    // af_match_state_flags last sent to this player; a new client starts with none set.
+    uint8_t match_state_sent = 0;
 
     // Server side rail gun reload cooldown, used for force_rail_reload
     // needed because entity_is_reloading is unreliable on server
@@ -236,6 +269,8 @@ namespace rf
     struct PlayerNetData;
     struct AiInfo;
     struct Camera;
+    struct Object;
+    struct Entity;
 
     /* Settings */
 
@@ -340,6 +375,7 @@ namespace rf
     {
         PF_HIDE_FROM_CAMERA = 0x10,
         PF_KILL_AFTER_BLACKOUT = 0x200,
+        PF_IN_ENCLOSED_VEHICLE = 0x400, // set while boarding a $Use: "vehicle" entity, not turrets
         PF_END_LEVEL_AFTER_BLACKOUT = 0x1000,
     };
 
@@ -398,6 +434,7 @@ namespace rf
         PlayerNetData *net_data;
     };
     static_assert(sizeof(PlayerBase) == 0x1204);
+    static_assert(offsetof(PlayerBase, weapon_mesh_handle) == 0x34);
 
     struct Player
         : PlayerBase
@@ -409,6 +446,11 @@ namespace rf
 
     static auto& player_list = addr_as_ref<Player*>(0x007C75CC);
     static auto& local_player = addr_as_ref<Player*>(0x007C75D4);
+    static auto& render_player = addr_as_ref<Player*>(0x007C763C); // player whose view is being rendered.
+    // Over the LOCAL players array: obj is one's entity, or the host that entity rides.
+    static auto& obj_is_local_player_or_mount = addr_as_ref<bool(Object* obj)>(0x0048AA30);
+    // The local player obj_is_local_player_or_mount matched, or null.
+    static auto& player_from_local_obj_or_mount = addr_as_ref<Player*(Object* obj)>(0x0048AA90);
 
     // Allocates the Player (Alpine-extended size via patch at 0x004A3329) together with its
     // PlayerNetData (reliable_socket = -1, buffers zeroed) and links it into player_list.
@@ -418,6 +460,9 @@ namespace rf
     static auto& player_delete = addr_as_ref<void(Player* player)>(0x004A35C0);
 
     static auto& player_from_entity_handle = addr_as_ref<Player*(int entity_handle)>(0x004A3740);
+    // Trims, validates and commits a name to local_player; false when empty or longer than 20 characters
+    // (with a message), or silently with no local player.
+    static auto& player_change_name = addr_as_ref<bool(String::Pod name)>(0x004A7540);
     static auto& player_is_undercover = addr_as_ref<bool()>(0x004B0580);
     static auto& player_undercover_alarm_is_on = addr_as_ref<bool()>(0x004B05F0);
     static auto& player_is_dead = addr_as_ref<bool(const Player *player)>(0x004A4920);
@@ -443,7 +488,24 @@ namespace rf
     static auto& game_get_gore_level = addr_as_ref<int()>(0x00436A20);
     static auto& game_set_gore_level = addr_as_ref<void(int gore_setting)>(0x00436A10);
     static auto& player_settings_apply_graphics_options = addr_as_ref<void(Player* player)>(0x004A8D20);
+    // Both are part of the vanilla boarding sequence (0x004A1DD8): zero the fpgun pivot data for
+    // the cockpit view, then drop any active zoom.
+    static auto& player_cockpit_reset = addr_as_ref<void(Player* player)>(0x004A8670);
+    static auto& player_cockpit_process = addr_as_ref<void(Player* player)>(0x004A77A0);
+    static auto& player_cockpit_render = addr_as_ref<void(Player* player)>(0x004A7860);
+    // The driller's view_left/view_rear/view_right camera pose for cockpit_data.camera_index 1-3.
+    static auto& player_cockpit_get_view = addr_as_ref<void(Player* player, Entity* vehicle, Vector3* out_pos,
+                                                            Matrix3* out_orient)>(0x004A8690);
+    static auto& player_fpgun_reset_zoom = addr_as_ref<void(Player* player)>(0x004AD8A0);
+    // ((int)floor(value * weight + eps)) % 10 + 1, a 1-based cockpit VFX digit frame; 1 for a negative value.
+    static auto& cockpit_vfx_digit_frame = addr_as_ref<int __cdecl(int value, float weight)>(0x004A7EB0);
+    // Cockpit digit strip bitmaps (apc_digits.vbm, Fighter01_digits.vbm), -1 until 0x004A7E00 / 0x004A7D80 load them.
+    static auto& cockpit_digit_strip_base = addr_as_ref<int>(0x005A068C);
+    static auto& cockpit_digit_strip_base_fighter = addr_as_ref<int>(0x005A073C);
     static auto& local_screen_flash = addr_as_ref<void(Player* pp, uint8_t r, uint8_t g, uint8_t b, uint8_t a)>(0x00416450);
+    // 4-way mask (1 front, 2 left, 4 back, 8 right) of a hit travelling along dir, in pp's entity frame.
+    static auto& player_damage_dir_mask = addr_as_ref<unsigned(Player* pp, const Vector3* dir)>(0x004A5A20);
+    static auto& player_start_hud_damage_indicators = addr_as_ref<void(Player* pp, unsigned dir_mask)>(0x004A5AF0);
     static auto& g_player_flashlight_intensity = addr_as_ref<float>(0x005A00FC);
     static auto& g_player_flashlight_range = addr_as_ref<float>(0x005A0108);
 }

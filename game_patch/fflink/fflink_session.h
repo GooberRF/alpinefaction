@@ -38,6 +38,10 @@ std::string get_gssk();
 // a well-formed GSK is configured and FactionFiles has not hard-rejected it.
 bool afstats_server_enabled();
 
+// The text `sv_fflink_status` prints, as one newline-joined string with no trailing
+// newline, so the rcon handler can return it to the caller.
+std::string build_fflink_status_output();
+
 // Register console commands and any other one-time setup for the session subsystem.
 // Called from fflink::do_patch().
 void session_do_patch();

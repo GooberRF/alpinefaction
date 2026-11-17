@@ -14,6 +14,9 @@ struct ControlInputInjection
 
 using ControlInputInjectionFn = ControlInputInjection (*)(rf::ControlConfig* ccp, rf::ControlConfigAction action);
 
+// Returns true if `action` must be reported as held down for `ccp`.
+using ControlInputDownFn = bool (*)(rf::ControlConfig* ccp, rf::ControlConfigAction action);
+
 // Installs both hooks. Called once at startup like the rest of game_patch/input.
 void control_input_filter_apply_patch();
 
@@ -22,9 +25,10 @@ void control_input_filter_apply_patch();
 // until then. Callers are responsible for registering only once.
 void control_input_filter_add_veto(ControlInputVetoFn veto);
 
-// Injection applies to control_config_check_pressed only, matching the single
-// function bots used to hook. Nothing injects into control_is_control_down.
+// A press injection applies to control_config_check_pressed only; a down injection to
+// control_is_control_down only. A veto overrides both.
 void control_input_filter_add_press_injection(ControlInputInjectionFn injection);
+void control_input_filter_add_down_injection(ControlInputDownFn injection);
 
 // control_config_check_pressed with every veto and injection bypassed, for a
 // participant that needs the engine's raw reading of an action it itself vetoes.
