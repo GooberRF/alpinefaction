@@ -36,6 +36,15 @@ cbuffer RenderModeBuffer : register(b0)
     float draw_room_uid;        // room this draw belongs to, -1 when it has none
     float liquid_surface;       // this draw is the liquid surface pass
     float fog_near;             // view depth the fog starts at, 0 below RFL 306
+    float2 _pad0;
+    // Side-scroller occlusion
+    float ss_fade_strength;
+    float ss_radius;
+    float ss_is_detail;
+    float ss_num_entities;
+    float4 ss_entity_pos[16];
+    float3 ss_camera_pos;
+    float _pad1;
 };
 
 struct PointLight {
@@ -308,6 +317,7 @@ float decoration_cutout_alpha(float a, float2 uv)
     float mip = 0.5f * log2(max(dot(texel_dx, texel_dx), dot(texel_dy, texel_dy)));
     return a * (1.0f + max(mip, 0.0f) * 0.25f);
 }
+#endif
 
 static const float bayer4x4[16] = {
      0.0f,  8.0f,  2.0f, 10.0f,
@@ -315,7 +325,6 @@ static const float bayer4x4[16] = {
      3.0f, 11.0f,  1.0f,  9.0f,
     15.0f,  7.0f, 13.0f,  5.0f,
 };
-#endif
 
 // One medium over the fragment: dim by its transmittance, then add its in-scatter where the
 // draw mode allows fog. Apply the farther medium first so each in-scatter is dimmed by the
@@ -1132,6 +1141,35 @@ float4 main(VsOutput input) : SV_TARGET
 #else
     clip(target.a - alpha_test);
 #endif
+
+    // Side-scroller occlusion: dithered transparency for detail/mover geometry near entities.
+    // For each entity, a cylinder is oriented along the entity-to-camera axis so that
+    // geometry between the entity and camera gets dithered regardless of viewing angle.
+    if (ss_fade_strength > 0.0f && ss_is_detail > 0.5f) {
+        float3 world_pos = input.world_pos_and_depth.xyz;
+        float max_fade = 0.0f;
+        for (int ei = 0; ei < (int)ss_num_entities; ++ei) {
+            float3 entity_pos = ss_entity_pos[ei].xyz;
+            float3 axis = ss_camera_pos - entity_pos;
+            float axis_len = length(axis);
+            if (axis_len < 0.001f) continue;
+            float3 axis_dir = axis / axis_len;
+            float3 to_pixel = world_pos - entity_pos;
+            float proj = dot(to_pixel, axis_dir);
+            // Only affect pixels between entity and camera (along the axis)
+            if (proj < 0.0f || proj > axis_len) continue;
+            float3 perp = to_pixel - proj * axis_dir;
+            float dist = length(perp);
+            if (dist < ss_radius) {
+                float fade = ss_fade_strength * saturate(1.0f - dist / ss_radius);
+                max_fade = max(max_fade, fade);
+            }
+        }
+        if (max_fade > 0.0f) {
+            uint2 ss_cell = (uint2)input.pos.xy & 3u;
+            clip(bayer4x4[ss_cell.y * 4u + ss_cell.x] / 16.0f - max_fade);
+        }
+    }
 
     float3 light_color;
 #ifdef INSTANCE_LIGHT

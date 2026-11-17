@@ -63,6 +63,20 @@ namespace gr::d3d11::engine
     // Null when the binary has no mover brushes
     rf::MoverBrush* mover_brush_list();
 
+    // Side-scroller occlusion: detail and mover geometry between the camera and nearby entities is dithered out
+    static constexpr int max_side_scroller_occluders = 16;
+    struct SideScrollerOcclusion
+    {
+        float fade_strength; // 0.0 = fully opaque, 0.5 = 50% dithered
+        float radius;        // cylinder radius perpendicular to entity-camera axis
+        int num_entities;
+        rf::Vector3 entity_pos[max_side_scroller_occluders];
+        rf::Vector3 camera_pos;
+    };
+    bool side_scroller_occlusion_active();
+    // False when it is off
+    bool side_scroller_occlusion(SideScrollerOcclusion& out);
+
     SunLightState sun_state();
     const std::vector<GasRegionInfo>& gas_regions();
     const std::vector<AlpineDirLight>& dir_lights();

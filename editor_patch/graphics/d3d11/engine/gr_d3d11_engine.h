@@ -387,6 +387,16 @@ namespace gr::d3d11::engine
         return {};
     }
 
+    inline bool side_scroller_occlusion_active()
+    {
+        return false;
+    }
+
+    inline bool side_scroller_occlusion([[maybe_unused]] SideScrollerOcclusion& out)
+    {
+        return false;
+    }
+
     inline rf::MoverBrush* mover_brush_list()
     {
         return nullptr;
