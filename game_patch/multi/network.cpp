@@ -35,6 +35,7 @@
 #include <patch_common/ShortTypes.h>
 #include <patch_common/StaticBufferResizePatch.h>
 #include "network.h"
+#include "server_query.h"
 #include "tracker.h"
 #include "multi.h"
 #include "demo/demo.h"
@@ -44,6 +45,7 @@
 #include "netmeter.h"
 #include "server.h"
 #include "server_internal.h"
+#include "listen_server_setup.h"
 #include "salvage.h"
 #include "scavenger.h"
 #include "vehicles/vehicle.h"
@@ -95,6 +97,7 @@
 #include "../fflink/fflink_session.h"
 #include "../misc/settings_registry.h"
 #include "../object/zipline.h"
+#include "../ui/menu_scene.h"
 
 // NET_IFINDEX_UNSPECIFIED is not defined in MinGW headers
 #ifndef NET_IFINDEX_UNSPECIFIED
@@ -126,8 +129,7 @@ static int source_client_net_fps(const rf::Entity* ep)
     return static_cast<int>(af_1_5 ? AlpineGameSettings::client_net_rate : AlpineGameSettings::legacy_client_net_rate);
 }
 
-// Popup shown when the user attempts to join a server whose game type this build doesn't recognize.
-static void show_unsupported_game_type_popup()
+void show_unsupported_game_type_popup()
 {
     rf::ui::popup_message(
         "Update Required",
@@ -854,18 +856,11 @@ std::vector<uint8_t> af_game_info_ext_v2::serialize_to_wire() const
     return buf;
 }
 
-// Fully replaces the stock process_game_info_packet handler.
-// Parses stock fields with bounds checking (fixing buffer overflows in the stock code),
-// updates the server browser entry, and parses the AF extension inline.
+// Fully replaces the stock process_game_info_packet handler: bounds-checked parsing (the stock code
+// overflows its buffers) and the AF extension.
 FunHook<MultiIoPacketHandler> process_game_info_packet_hook{
     0x0047B2A0,
     [](char* data, const rf::NetAddr& addr) {
-        const auto* payload = reinterpret_cast<const uint8_t*>(data);
-        uint64_t key = addr_key(addr);
-
-        // Clear stale AF extra on any parse failure
-        auto clear_extra = [&]() { g_server_browser_extra.erase(key); };
-
         // Read payload length from the sub-packet header immediately before the payload
         uint16_t payload_len;
         std::memcpy(&payload_len, data - 2, sizeof(payload_len));
@@ -874,142 +869,22 @@ FunHook<MultiIoPacketHandler> process_game_info_packet_hook{
         if (multi_io_subpacket_remaining(data, subpkt_remaining) && subpkt_remaining < payload_len) {
             payload_len = static_cast<uint16_t>(subpkt_remaining);
         }
-        const uint8_t* end = payload + payload_len;
-
-        if (payload_len < 1) { clear_extra(); return; }
-
-        const uint8_t* r = payload;
-        uint8_t version = *r++;
-        if (version != RF_VER_10_11 && version != RF_VER_12 && version != RF_VER_13) {
-            // use <incompatible version> for any servers that don't match
-            // rf 1.0, 1.1, 1.2, or 1.3 protocol version (should never happen)
+        const std::optional<GameInfoAnswer> info =
+            parse_game_info({reinterpret_cast<const uint8_t*>(data), payload_len});
+        if (info && !info->compatible) {
             rf::multi_join_game_add_server(
-                addr.ip_addr.inner, addr.port,
-                rf::strings::incompatible_version, "", "", 0, 0, 0, 0);
-            clear_extra();
-            return;
+                addr.ip_addr.inner, addr.port, rf::strings::incompatible_version, "", "", 0, 0, 0, 0);
         }
-
-        // Helper: read a null-terminated string safely into dst, advance r past the terminator
-        auto read_string = [&](char* dst, size_t dst_size) -> bool {
-            const uint8_t* start = r;
-            while (r < end && *r != '\0') ++r;
-            if (r >= end) return false;
-            size_t len = std::min(static_cast<size_t>(r - start), dst_size - 1);
-            std::memcpy(dst, start, len);
-            dst[len] = '\0';
-            ++r; // skip null terminator
-            return true;
-        };
-
-        // Parse stock fields: name\0 + game_type(1) + players(1) + max_players(1) + level\0 + mod\0 + flags(1)
-        char name[256]{};
-        if (!read_string(name, sizeof(name))) { clear_extra(); return; }
-        if (end - r < 3) { clear_extra(); return; }
-        // Values from newer-protocol servers show as UNK
-        const uint8_t raw_game_type = *r++;
-        const bool unknown_game_type = raw_game_type >= RF_GT_UNK;
-        const uint8_t game_type = std::min<uint8_t>(raw_game_type, RF_GT_UNK);
-        uint8_t players = *r++;
-        uint8_t max_players = *r++;
-
-        char level_name[256]{};
-        char mod_name[256]{};
-        if (!read_string(level_name, sizeof(level_name))) { clear_extra(); return; }
-        if (!read_string(mod_name, sizeof(mod_name))) { clear_extra(); return; }
-        if (r >= end) { clear_extra(); return; }
-        uint8_t flags = *r++;
-
-        rf::multi_join_game_add_server(
-            addr.ip_addr.inner, addr.port,
-            name, level_name, mod_name,
-            players, max_players, game_type, flags);
-
-        // Parse AF extension if present: [sig][ver*4][af_flags][filename\0][bot_counts*4]
-        constexpr size_t pre_sz = af_game_info_ext_v2::wire_pre_fname_size;
-        constexpr size_t post_sz = af_game_info_ext_v2::wire_post_fname_size;
-        bool parsed = false;
-
-        if (static_cast<size_t>(end - r) >= pre_sz + 1 + post_sz) {
-            uint32_t sig;
-            std::memcpy(&sig, r, sizeof(sig));
-
-            // r[4] = 19 matches the deprecated AF 1.3 beta format
-            if (sig == ALPINE_FACTION_SIGNATURE && r[4] != 19) {
-                AFGameInfoExtra extra{};
-                const uint8_t* ext_r = r + sizeof(sig);
-                extra.version_major = *ext_r++;
-                extra.version_minor = *ext_r++;
-                extra.version_patch = *ext_r++;
-                extra.version_type = *ext_r++;
-                std::memcpy(&extra.af_flags, ext_r, sizeof(extra.af_flags));
-                ext_r += sizeof(extra.af_flags);
-
-                const uint8_t* fname_start = ext_r;
-                const uint8_t* fname_limit = end - post_sz;
-                while (ext_r < fname_limit && *ext_r != '\0') ++ext_r;
-                if (ext_r < fname_limit) {
-                    extra.level_filename.assign(
-                        reinterpret_cast<const char*>(fname_start), ext_r - fname_start);
-                    ++ext_r;
-                    extra.num_bots = *ext_r++;
-                    extra.num_human_players = *ext_r++;
-                    extra.num_browsers = *ext_r++;
-                    extra.num_total_clients = *ext_r++;
-                    extra.unknown_game_type = unknown_game_type;
-                    g_server_browser_extra[key] = std::move(extra);
-                    parsed = true;
-                }
-            }
+        else if (info) {
+            rf::multi_join_game_add_server(
+                addr.ip_addr.inner, addr.port, info->name.c_str(), info->level.c_str(), info->mod.c_str(),
+                info->players, info->max_players, info->game_type, info->flags);
         }
-
-        // DEPRECATED: AF 1.3 beta compat — remove when no 1.3 beta servers remain.
-        // Old wire format: [sig][ext_size(2)][ext_version(1)][ver*4][af_flags][bot_counts*4][filename\0][AFFooter]
-        if (!parsed && static_cast<size_t>(end - r) >= 19 + 1 + sizeof(AFFooter)) {
-            uint32_t sig;
-            std::memcpy(&sig, r, sizeof(sig));
-            if (sig == ALPINE_FACTION_SIGNATURE && r[4] == 19) {
-                AFGameInfoExtra extra{};
-                const uint8_t* ext_r = r + sizeof(sig);
-                ext_r += 3; // skip ext_size(2) + ext_version(1)
-                extra.version_major = *ext_r++;
-                extra.version_minor = *ext_r++;
-                extra.version_patch = *ext_r++;
-                extra.version_type = *ext_r++;
-                std::memcpy(&extra.af_flags, ext_r, sizeof(extra.af_flags));
-                ext_r += sizeof(extra.af_flags);
-                extra.num_bots = *ext_r++;
-                extra.num_human_players = *ext_r++;
-                extra.num_browsers = *ext_r++;
-                extra.num_total_clients = *ext_r++;
-                const uint8_t* fname_start = ext_r;
-                const uint8_t* footer_start = end - sizeof(AFFooter);
-                while (ext_r < footer_start && *ext_r != '\0') ++ext_r;
-                if (ext_r < footer_start)
-                    extra.level_filename.assign(
-                        reinterpret_cast<const char*>(fname_start), ext_r - fname_start);
-                extra.unknown_game_type = unknown_game_type;
-                g_server_browser_extra[key] = std::move(extra);
-                parsed = true;
-            }
-        }
-
-        if (!parsed) {
-            if (unknown_game_type) {
-                // No AF extension on the wire, but the server is reporting a
-                // game type this build doesn't recognize.
-                // This should never be possible under normal circumstances,
-                // but the guard is very cheap and safer.
-                g_server_browser_extra[key].unknown_game_type = true;
-            }
-            else {
-                clear_extra();
-            }
-        }
+        update_server_browser_extra(addr, info ? &*info : nullptr);
 
         // Update netgame name if this is from the connected server
-        if (addr == rf::netgame.server_addr) {
-            rf::netgame.name = name;
+        if (info && info->compatible && addr == rf::netgame.server_addr) {
+            rf::netgame.name = info->name.c_str();
         }
     },
 };
@@ -1980,8 +1855,7 @@ std::pair<std::unique_ptr<std::byte[]>, size_t> append_af_tail(const std::byte* 
 CallHook<int(const rf::NetAddr*, std::byte*, size_t)> send_game_info_req_packet_hook{
     0x0047B470,
     [](const rf::NetAddr* addr, std::byte* data, size_t len) {
-        // version 4: server sends extension with bot counts and proper versioning
-        AFGameInfoReq core{ALPINE_FACTION_SIGNATURE, 4};
+        AFGameInfoReq core{ALPINE_FACTION_SIGNATURE, af_game_info_req_ext_ver};
         auto [buf, new_len] = append_af_tail(data, len, &core, sizeof(core));
         return send_game_info_req_packet_hook.call_target(addr, buf.get(), new_len);
     },
@@ -3170,6 +3044,7 @@ bool try_to_auto_forward_port(int port)
 FunHook<void(int, rf::NetAddr*)> multi_start_hook{
     0x0046D5B0,
     [](int is_client, rf::NetAddr *serv_addr) {
+        menu_scene_stop();
         if (!rf::net_port && !is_client) {
             // If no port was specified and this is a server recreate the socket and bind it to port 7755
             xlog::info("Recreating socket using TCP port 7755");
@@ -3433,6 +3308,7 @@ FunHook<void()> multi_stop_hook{
         }
 
         multi_stop_hook.call_target();
+        listen_server_on_multi_stop();
 
         // Re-evaluate footstep state after leaving multiplayer
         evaluate_footsteps();
@@ -4551,6 +4427,57 @@ void clear_server_browser_extra()
     g_server_browser_extra.clear();
 }
 
+void update_server_browser_extra(const rf::NetAddr& addr, const GameInfoAnswer* info)
+{
+    const uint64_t key = addr_key(addr);
+    if (info && info->compatible && info->af) {
+        g_server_browser_extra[key] = *info->af;
+    }
+    else if (info && info->compatible && info->unknown_game_type) {
+        g_server_browser_extra[key].unknown_game_type = true;
+    }
+    else {
+        g_server_browser_extra.erase(key);
+    }
+}
+
+std::string server_players_label(const AFGameInfoExtra* af, int players, int max_players)
+{
+    if (af && af->num_bots > 0) {
+        return std::format("{}+{}/{}", af->num_human_players, af->num_bots, max_players);
+    }
+    return std::format("{}/{}", af ? af->num_human_players : players, max_players);
+}
+
+int server_players_compare(const AFGameInfoExtra* a, int players_a, const AFGameInfoExtra* b, int players_b)
+{
+    const auto descending = [](const auto& x, const auto& y) { return x == y ? 0 : (x > y ? -1 : 1); };
+    if (a && b) {
+        return descending(std::pair{a->num_human_players, a->num_bots}, std::pair{b->num_human_players, b->num_bots});
+    }
+    if (!a && !b) {
+        return descending(players_a, players_b);
+    }
+    // A legacy server counts its bots as players, so the AF one's total is the comparable count.
+    const int total_a = a ? a->num_human_players + a->num_bots : players_a;
+    const int total_b = b ? b->num_human_players + b->num_bots : players_b;
+    if (const int c = descending(total_a, total_b); c != 0) {
+        return c;
+    }
+    return a ? -1 : 1;
+}
+
+std::string server_clients_label(const AFGameInfoExtra& af)
+{
+    const auto plural = [](int n) { return n == 1 ? "" : "s"; };
+    const int clients = af.num_total_clients;
+    const int humans = af.num_human_players;
+    const int bots = af.num_bots;
+    const int browsers = af.num_browsers;
+    return std::format("{} client{}: {} player{}, {} bot{}, {} browser{}", clients, plural(clients), humans,
+                       plural(humans), bots, plural(bots), browsers, plural(browsers));
+}
+
 // Kill the zero-timeout select() that stock net_send runs before every sendto.
 // No-op for valid traffic. Helps mitigate performance issues on dedicated servers running via
 // Wine. Under Wine >= 6.12 each select() is a full wineserver round trip, so returning 1
@@ -4599,6 +4526,50 @@ FunHook<void()> net_receive_packets_hook{
     },
 };
 
+// Stock's net_init_socket gives up as soon as bind fails (the port is taken), leaving the socket blocking and unbound
+// and the error only in a local buffer. The first send then binds it implicitly, and the receive pump above, which
+// relies on the socket being non-blocking, waits for a packet forever. A dedicated server, unreachable on any other
+// port, quits; a game binds any free port and runs the setup stock skipped (0x00528FD5 on). A socket that cannot be
+// bound at all is closed, so sending and receiving fail instead of blocking.
+static void net_socket_recover_failed_bind(unsigned short port)
+{
+    const auto sock = static_cast<SOCKET>(rf::net_udp_socket);
+    sockaddr_in local{};
+    int local_len = sizeof(local);
+    if (getsockname(sock, reinterpret_cast<sockaddr*>(&local), &local_len) == 0 && local.sin_port != 0) {
+        return;
+    }
+    const auto close_socket = [&] {
+        closesocket(sock);
+        rf::net_udp_socket = -1;
+    };
+    if (rf::is_dedicated_server) {
+        xlog::error("[Net] UDP port {} is in use; the server cannot start", port);
+        rf::console::print("UDP port {} is in use by another program; the server cannot start.", port);
+        close_socket();
+        rf::close_app_req = 1;
+        return;
+    }
+    local = {};
+    local.sin_family = AF_INET;
+    local.sin_addr.s_addr = htonl(INADDR_ANY);
+    local_len = sizeof(local);
+    if (bind(sock, reinterpret_cast<const sockaddr*>(&local), sizeof(local)) != 0
+        || getsockname(sock, reinterpret_cast<sockaddr*>(&local), &local_len) != 0) {
+        xlog::error("[Net] Cannot bind the game's UDP socket ({})", WSAGetLastError());
+        close_socket();
+        return;
+    }
+    rf::net_port = ntohs(local.sin_port);
+    xlog::warn("[Net] UDP port {} is in use; using port {}", port, rf::net_port);
+    rf::console::print("UDP port {} is in use by another program; using port {}.", port, rf::net_port);
+    rf::net_socket_configure(rf::net_udp_socket);
+    const BOOL broadcast = TRUE;
+    setsockopt(sock, SOL_SOCKET, SO_BROADCAST, reinterpret_cast<const char*>(&broadcast), sizeof(broadcast));
+    rf::net_rel_sockets_reset();
+    rf::net_initialized = 1;
+}
+
 // Stock socket setup caps SO_RCVBUF at 32 KB, which overflows within a few hundred ms
 // at 30-player packet rates and triggers reliable-retransmit cascades. Raise it to 256 KB after
 // init (deliberately bounded so a post-stall backlog of stale packets stays small). Linux clamps
@@ -4607,6 +4578,9 @@ FunHook<void(unsigned short)> net_init_socket_hook{
     0x00528F10,
     [](unsigned short port) {
         net_init_socket_hook.call_target(port);
+        if (rf::net_udp_socket != -1) {
+            net_socket_recover_failed_bind(port);
+        }
         if (rf::net_udp_socket != -1) {
             int rcvbuf = 0x40000; // 256 KB
             if (setsockopt(static_cast<SOCKET>(rf::net_udp_socket), SOL_SOCKET, SO_RCVBUF,

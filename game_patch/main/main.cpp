@@ -90,6 +90,7 @@
 #include "../multi/bots/bot_main.h"
 #include "../multi/bots/bot_vehicle_nav.h"
 #include "../ui/reference_data.h"
+#include "../ui/menu_scene.h"
 
 GameConfig g_game_config;
 AlpineCoreConfig g_alpine_system_config;
@@ -150,6 +151,7 @@ CodeInjection after_full_game_init_hook{
             if (!rf::is_dedicated_server) {
                 // Every table and packfile is in by now, and the lists never change after.
                 reference_data_load();
+                menu_scene_load_config();
             }
         }
         execute_startup_scripts();
@@ -164,6 +166,7 @@ CodeInjection cleanup_game_hook{
     []() {
         // Set abort flag so AWP download future exits quickly and doesn't block static destruction
         cancel_awp_download();
+        menu_scene_stop();
         discord_presence_shutdown();
         debug_cleanup();
     },
@@ -226,6 +229,13 @@ FunHook<int()> rf_do_frame_hook{
     },
 };
 
+void render_level_world_effects()
+{
+    weather_render();
+    alpine_rope_render();
+    alpine_terrain_decorations_render_legacy();
+}
+
 CodeInjection after_level_render_hook{
     0x00432375,
     []() {
@@ -235,9 +245,7 @@ CodeInjection after_level_render_hook{
 #if !defined(NDEBUG) && defined(HAS_EXPERIMENTAL)
         experimental_render_in_game();
 #endif
-        weather_render();
-        alpine_rope_render();
-        alpine_terrain_decorations_render_legacy();
+        render_level_world_effects();
         crits_client_render();
         vehicle_tracers_render();
         haste_trails_render();
@@ -396,6 +404,8 @@ FunHook<void(bool)> level_init_post_hook{
     [](bool transition) {
         level_init_post_hook.call_target(transition);
         xlog::info("Level loaded: {}{}", rf::level.filename, transition ? " (transition)" : "");
+        // The menu scene gets the level's own content, not the session, HUD and player state of a game.
+        const bool menu_scene = menu_scene_active();
 
         // Create corona objects (clutter + glare pairs) now that geometry is loaded
         alpine_corona_create_all();
@@ -404,29 +414,31 @@ FunHook<void(bool)> level_init_post_hook{
         alpine_rope_level_init();
         zipline_level_init();
 
-        // Flow 2A: bots and the spawn route arrows start their AWP download before the waypoints load
-        waypoints_level_init_with_awp_download();
-        if (is_waypoint_bot_mode_active()) {
-            bot_vehicle_nav_level_init();
-        }
+        if (!menu_scene) {
+            // Flow 2A: bots and the spawn route arrows start their AWP download before the waypoints load
+            waypoints_level_init_with_awp_download();
+            if (is_waypoint_bot_mode_active()) {
+                bot_vehicle_nav_level_init();
+            }
 
-        // Flow 2B: Normal clients with autodl_download_awps — fire-and-forget AWP download, unless the route arrows
-        // already started one
-        if (rf::is_multi && !is_waypoint_bot_mode_active() && !rf::is_dedicated_server
-            && g_alpine_game_config.autodl_download_awps && !waypoints_awp_download_pending()) {
-            start_awp_download_for_installed_map(std::string{rf::level.filename.c_str()}, 1);
-        }
+            // Flow 2B: Normal clients with autodl_download_awps — fire-and-forget AWP download, unless the route
+            // arrows already started one
+            if (rf::is_multi && !is_waypoint_bot_mode_active() && !rf::is_dedicated_server
+                && g_alpine_game_config.autodl_download_awps && !waypoints_awp_download_pending()) {
+                start_awp_download_for_installed_map(std::string{rf::level.filename.c_str()}, 1);
+            }
 
-        apply_maximum_fps(); // set maximum FPS based on game state
-        process_queued_spawn_points_from_items();
-        populate_world_hud_sprite_events();
-        populate_fullscreen_overlay_events();
-        reset_achievement_state_info();
-        multi_level_init_post_gametypes();
-        // After gametype init so the demo snapshot includes koth/bagman/salvage/pit state
-        demo_server_on_level_init_post();
+            apply_maximum_fps(); // set maximum FPS based on game state
+            process_queued_spawn_points_from_items();
+            populate_world_hud_sprite_events();
+            populate_fullscreen_overlay_events();
+            reset_achievement_state_info();
+            multi_level_init_post_gametypes();
+            // After gametype init so the demo snapshot includes koth/bagman/salvage/pit state
+            demo_server_on_level_init_post();
+            server_bots_on_level_init();
+        }
         gib_flames_level_init();
-        server_bots_on_level_init();
         shell_casings_level_init();
         // Multiplayer resets the jetpack from its own level-init injection.
         if (!rf::is_multi) {

@@ -7,11 +7,19 @@
 // common/cache_pack.h), so a level is only downloaded once.
 // Main thread only.
 
-// Bitmap handle of the level's preview (out_w/out_h get its size), or -1 while it is still
-// loading or when FactionFiles has none. The first call for a level queues the load; a few
-// levels load at once, and a failed one is not retried this session. The handle is only valid
-// for the current frame: bitmaps not drawn for a while are released and rebuilt from the cache.
-int map_thumbnail_get(const std::string& level_filename, int* out_w, int* out_h);
-
-// Releases the bitmaps; a later map_thumbnail_get rebuilds them from the disk cache.
+// Releases the bitmaps; a later draw rebuilds them from the disk cache.
 void map_thumbnails_release_bitmaps();
+
+// The level's preview cropped to fill `w` x `h` (draw space), or a dark fill while there is none. The first draw of a
+// level queues its load; a few levels load at once, and a failed one is not retried this session.
+void map_thumbnail_draw(const std::string& level_filename, int x, int y, int w, int h);
+// True once the level is known to have no preview.
+bool map_thumbnail_missing(const std::string& level_filename);
+
+// FactionFiles' listing of a level, asked once a session in the background.
+struct MapLevelInfo
+{
+    std::string author;
+};
+// Null while it is being asked, or when FactionFiles does not list the level.
+const MapLevelInfo* map_level_info_get(const std::string& level_filename);

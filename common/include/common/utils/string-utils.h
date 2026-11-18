@@ -143,6 +143,14 @@ inline bool string_icontains(std::string_view str, std::string_view infix)
     return it != str.end();
 }
 
+// Every space-separated word of the query has to appear somewhere, in any order.
+template<typename Fn>
+bool all_words_match(std::string_view query, Fn&& word_matches)
+{
+    const std::vector<std::string_view> words = string_split(query);
+    return !words.empty() && std::all_of(words.begin(), words.end(), word_matches);
+}
+
 inline std::string string_replace(const std::string_view& str, const std::string_view& search, const std::string_view& replacement)
 {
     std::size_t pos = 0;

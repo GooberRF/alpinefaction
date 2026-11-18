@@ -17,6 +17,7 @@
 #include <format>
 #include <sstream>
 #include <numeric>
+#include <span>
 #include <string_view>
 #include <thread>
 #include <tuple>
@@ -27,6 +28,7 @@
 #include <toml++/toml.hpp>
 #include "server.h"
 #include "server_internal.h"
+#include "dedi_cfg.h"
 #include "alpine_packets.h"
 #include "network.h"
 #include "multi.h"
@@ -60,6 +62,7 @@
 #include <common/utils/os-utils.h>
 
 bool g_dedicated_launched_from_ads = false; // was the server launched from an ads file?
+static bool g_listen_server_config = false; // is a listen server running a Host Game setup?
 std::string g_ads_config_name = "";
 bool g_ads_minimal_server_info = false;     // print only minimal server info when launching
 bool g_ads_full_console_log = false;        // log full console output to file
@@ -87,6 +90,41 @@ const std::vector<std::string> g_legacy_rcon_allowed_commands = {
     "sv_timelimit",
     "unban_last"
 };
+
+bool server_config_active()
+{
+    return g_dedicated_launched_from_ads || g_listen_server_config;
+}
+
+bool listen_server_config_active()
+{
+    return g_listen_server_config;
+}
+
+void listen_server_allow_visual_options()
+{
+    g_alpine_server_config.allow_fullbright_meshes = true;
+    g_alpine_server_config.allow_lightmaps_only = true;
+    g_alpine_server_config.allow_outlines = true;
+}
+
+std::string_view bot_team_config_name(int team)
+{
+    if (team == rf::TEAM_RED) {
+        return "red";
+    }
+    return team == rf::TEAM_BLUE ? "blue" : "auto";
+}
+
+std::optional<int> bot_team_from_config_name(std::string_view name)
+{
+    for (const int team : {-1, static_cast<int>(rf::TEAM_RED), static_cast<int>(rf::TEAM_BLUE)}) {
+        if (string_iequals(name, bot_team_config_name(team))) {
+            return team;
+        }
+    }
+    return std::nullopt;
+}
 
 rf::CmdLineParam& get_ads_cmd_line_param()
 {
@@ -133,6 +171,15 @@ void handle_log_param()
 void handle_nodl_param()
 {
     g_ads_skip_map_download = get_nodl_cmd_line_param().found();
+}
+
+static std::optional<float> finite_float(const toml::table& t, std::string_view key)
+{
+    const toml::node* node = t.get(key);
+    const auto v = node ? toml_finite_float(*node) : std::nullopt;
+    if (!v && node && node->value<float>() && !g_rules_parse_quiet)
+        rf::console::print("  [WARN] '{}' is not a finite number and was ignored\n", key);
+    return v;
 }
 
 static RoundConfig parse_rounds_config(const toml::table& t, RoundConfig c)
@@ -187,7 +234,7 @@ static SpawnLifeConfig parse_spawn_life_config(const toml::table& t, SpawnLifeCo
         c.enabled = *x;
 
     if (c.enabled) {
-        if (auto v = t["value"].value<float>())
+        if (auto v = finite_float(t, "value"))
             c.set_value(*v);
     }
 
@@ -200,7 +247,7 @@ static SpawnDelayConfig parse_spawn_delay_config(const toml::table& t, SpawnDela
         c.enabled = *x;
 
     if (c.enabled) {
-        if (auto v = t["base_seconds"].value<float>())
+        if (auto v = finite_float(t, "base_seconds"))
             c.set_base_value(*v);
         if (auto x = t["wave_respawns"].value<bool>())
             c.wave_respawns = *x;
@@ -215,7 +262,7 @@ static GibConfig parse_gib_config(const toml::table& t, GibConfig c)
         c.enabled = *x;
 
     if (c.enabled) {
-        if (auto v = t["damage_threshold"].value<float>())
+        if (auto v = finite_float(t, "damage_threshold"))
             c.set_damage_threshold(*v);
         if (auto v = t["all_damage_types"].value<bool>())
             c.all_damage = *v;
@@ -282,7 +329,7 @@ static SpawnProtectionConfig parse_spawn_protection_config(const toml::table& t,
         c.enabled = *x;
 
     if (c.enabled) {
-        if (auto v = t["duration"].value<float>())
+        if (auto v = finite_float(t, "duration"))
             c.set_duration(*v);
         if (auto v = t["use_powerup"].value<bool>())
             c.use_powerup = *v;
@@ -328,11 +375,11 @@ static NewSpawnLogicConfig parse_spawn_logic_config(const toml::table& t, NewSpa
 
 static KillRewardConfig parse_kill_reward_config(const toml::table& t, KillRewardConfig c)
 {
-    if (auto x = t["health"].value<float>())
+    if (auto x = finite_float(t, "health"))
         c.kill_reward_health = *x;
-    if (auto x = t["armor"].value<float>())
+    if (auto x = finite_float(t, "armor"))
         c.kill_reward_armor = *x;
-    if (auto x = t["effective_health"].value<float>())
+    if (auto x = finite_float(t, "effective_health"))
         c.kill_reward_effective_health = *x;
     if (auto x = t["health_is_super"].value<bool>())
         c.kill_reward_health_super = *x;
@@ -595,7 +642,7 @@ struct RulesParseOptions
 
 static void apply_rules_keys_from_toml(const toml::table& t, AlpineServerConfigRules& o)
 {
-    if (auto v = t["time_limit"].value<float>())
+    if (auto v = finite_float(t, "time_limit"))
         o.set_time_limit(*v);
     if (auto v = t["overtime"].as_table())
         o.overtime = parse_overtime_config(*v);
@@ -620,39 +667,39 @@ static void apply_rules_keys_from_toml(const toml::table& t, AlpineServerConfigR
         o.bagman.set_bag_score_limit(*v);
     if (auto v = t["tbag_score_limit"].value<int>())
         o.bagman.set_tbag_score_limit(*v);
-    if (auto v = t["bag_return_time"].value<float>())
+    if (auto v = finite_float(t, "bag_return_time"))
         o.bagman.set_bag_return_time(*v);
-    if (auto v = t["bag_spawn_delay"].value<float>())
+    if (auto v = finite_float(t, "bag_spawn_delay"))
         o.bagman.set_bag_spawn_delay(*v);
     if (auto v = t["bag_multiple_spawns"].value<bool>())
         o.bagman.bag_multiple_spawns = *v;
     if (auto v = t["sal_cap_limit"].value<int>())
         o.salvage.set_cap_limit(*v);
-    if (auto v = t["sal_flag_spawn_delay"].value<float>())
+    if (auto v = finite_float(t, "sal_flag_spawn_delay"))
         o.salvage.set_flag_spawn_delay(*v);
-    if (auto v = t["sal_flag_capture_respawn_delay"].value<float>())
+    if (auto v = finite_float(t, "sal_flag_capture_respawn_delay"))
         o.salvage.set_flag_capture_respawn_delay(*v);
-    if (auto v = t["sal_flag_return_time"].value<float>())
+    if (auto v = finite_float(t, "sal_flag_return_time"))
         o.salvage.set_flag_return_time(*v);
     if (auto v = t["scav_cap_limit"].value<int>())
         o.scavenger.set_cap_limit(*v);
-    if (auto v = t["scav_cartridge_spawn_delay"].value<float>())
+    if (auto v = finite_float(t, "scav_cartridge_spawn_delay"))
         o.scavenger.set_objective_spawn_delay(*v);
-    if (auto v = t["scav_cartridge_capture_respawn_delay"].value<float>())
+    if (auto v = finite_float(t, "scav_cartridge_capture_respawn_delay"))
         o.scavenger.set_objective_capture_respawn_delay(*v);
-    if (auto v = t["scav_cartridge_return_time"].value<float>())
+    if (auto v = finite_float(t, "scav_cartridge_return_time"))
         o.scavenger.set_objective_return_time(*v);
-    if (auto v = t["scav_target_timeout"].value<float>())
+    if (auto v = finite_float(t, "scav_target_timeout"))
         o.scavenger.set_zone_timeout(*v);
-    if (auto v = t["scav_target_radius"].value<float>())
+    if (auto v = finite_float(t, "scav_target_radius"))
         o.scavenger.set_zone_radius(*v);
-    if (auto v = t["pay_checkpoint_time_bonus"].value<float>())
+    if (auto v = finite_float(t, "pay_checkpoint_time_bonus"))
         o.payload.set_checkpoint_time_bonus(*v);
-    if (auto v = t["pay_overtime_grace"].value<float>())
+    if (auto v = finite_float(t, "pay_overtime_grace"))
         o.payload.set_overtime_grace(*v);
-    if (auto v = t["pay_heal_per_tick"].value<float>())
+    if (auto v = finite_float(t, "pay_heal_per_tick"))
         o.payload.set_heal_per_tick(*v);
-    if (auto v = t["pay_setup_time"].value<float>())
+    if (auto v = finite_float(t, "pay_setup_time"))
         o.payload.set_setup_time(*v);
     for (const auto& [key, field] : {
              std::pair{"pay_attacker_respawn_extra", &o.payload.attacker_respawn.base},
@@ -662,7 +709,7 @@ static void apply_rules_keys_from_toml(const toml::table& t, AlpineServerConfigR
              std::pair{"pay_defender_respawn_per_checkpoint", &o.payload.defender_respawn.per_checkpoint},
              std::pair{"pay_defender_respawn_final_stretch", &o.payload.defender_respawn.final_stretch},
          }) {
-        if (auto v = t[key].value<float>())
+        if (auto v = finite_float(t, key))
             PayloadConfig::set_respawn_extra(*field, *v);
     }
     if (auto v = t["geo_limit"].value<int>())
@@ -692,9 +739,9 @@ static void apply_rules_keys_from_toml(const toml::table& t, AlpineServerConfigR
         o.flag_dropping = *v;
     if (auto v = t["flag_captures_while_stolen"].value<bool>())
         o.flag_captures_while_stolen = *v;
-    if (auto v = t["flag_return_time"].value<float>())
+    if (auto v = finite_float(t, "flag_return_time"))
         o.set_flag_return_time(*v);
-    if (auto v = t["pvp_damage_modifier"].value<float>())
+    if (auto v = finite_float(t, "pvp_damage_modifier"))
         o.set_pvp_damage_modifier(*v);
     if (auto v = t["drop_amps"].value<bool>())
         o.drop_amps = *v;
@@ -918,7 +965,7 @@ static VoteConfig parse_vote_config(const toml::table& t)
     if (v.enabled) {
         if (auto x = t["ignore_nonvoters"].value<bool>())
             v.ignore_nonvoters = *x;
-        if (auto x = t["time"].value<float>())
+        if (auto x = finite_float(t, "time"))
             v.set_time_limit_seconds(*x);
     }
     return v;
@@ -949,12 +996,12 @@ static InactivityConfig parse_inactivity_config(const toml::table &t)
     if (o.enabled) {
         if (auto v = t["kick_after_warning"].value<bool>())
             o.kick_after_warning = *v;
-        if (auto v = t["new_player_grace"].value<float>())
+        if (auto v = finite_float(t, "new_player_grace"))
             o.set_new_player_grace(*v);
-        if (auto v = t["allowed_inactive"].value<float>())
+        if (auto v = finite_float(t, "allowed_inactive"))
             o.set_allowed_inactive(*v);
         if (o.kick_after_warning) {
-            if (auto v = t["warning_duration"].value<float>())
+            if (auto v = finite_float(t, "warning_duration"))
                 o.set_warning_duration(*v);
             if (auto v = t["kick_message"].value<std::string>())
                 o.kick_message = *v;
@@ -1101,7 +1148,7 @@ static std::vector<toml::table> g_parsing_base_scope_tables;
 static std::vector<toml::table> g_level_scope_tables;
 static std::vector<toml::table> g_parsing_level_scope_tables;
 
-static AlpineServerConfigRules build_rules_over_base(const std::vector<toml::table>& base_tables,
+static AlpineServerConfigRules build_rules_over_base(std::span<const toml::table> base_tables,
     rf::NetGameType game_type, const RulesParseOptions& opts)
 {
     AlpineServerConfigRules rules;
@@ -1136,7 +1183,7 @@ static std::vector<std::string> level_disabled_mutators(const toml::table* lvl_t
 
 // `game_type`'s defaults, the base settings, then the level's own; a voted mutator set replaces
 // every base and level mutator and is applied last, so it wins over the keys it lands on.
-static AlpineServerConfigRules build_scope_rules(const std::vector<toml::table>& base_tables,
+static AlpineServerConfigRules build_scope_rules(std::span<const toml::table> base_tables,
     const toml::table* lvl_tbl, rf::NetGameType game_type, const std::vector<MutatorDeclaration>* voted_mutators,
     bool report_level_problems)
 {
@@ -1194,6 +1241,13 @@ AlpineServerConfigRules build_level_rules(std::string_view level_filename, rf::N
     if (!voted_mutators || mutator_declarations_equivalent(*voted_mutators, natural.mutators.declarations, game_type))
         return natural;
     return build_scope_rules(g_base_scope_tables, lvl_tbl, game_type, voted_mutators, false);
+}
+
+AlpineServerConfigRules build_config_scope_rules(const toml::table& base_tbl, const toml::table* level_tbl)
+{
+    const rf::NetGameType base_game_type = scope_game_type(base_tbl, rf::NetGameType::NG_TYPE_DM);
+    const rf::NetGameType game_type = level_tbl ? scope_game_type(*level_tbl, base_game_type) : base_game_type;
+    return build_scope_rules({&base_tbl, 1}, level_tbl, game_type, nullptr, false);
 }
 
 void reset_base_scope_tables()
@@ -1285,8 +1339,8 @@ static void parse_bot_config_table(ServerBotConfig& bot_cfg, const toml::table& 
                 continue;
             }
             float fval = 0.0f;
-            if (auto fv = val.value<double>()) {
-                fval = static_cast<float>(*fv);
+            if (auto fv = toml_finite_float(val)) {
+                fval = *fv;
             }
             else if (auto iv = val.value<int64_t>()) {
                 fval = static_cast<float>(*iv);
@@ -1308,8 +1362,8 @@ static void parse_bot_config_table(ServerBotConfig& bot_cfg, const toml::table& 
                 continue;
             }
             float fval = 0.0f;
-            if (auto fv = val.value<double>()) {
-                fval = static_cast<float>(*fv);
+            if (auto fv = toml_finite_float(val)) {
+                fval = *fv;
             }
             else if (auto iv = val.value<int64_t>()) {
                 fval = static_cast<float>(*iv);
@@ -1641,11 +1695,28 @@ static void apply_config_table_in_order(
                 if (pass == ParsePass::Core)
                     apply_known_array_in_order(cfg, key, *arr, allow_missing_levels);
             }
+            else if (key == "bot_teams") {
+                if (pass == ParsePass::Core) {
+                    cfg.bot_teams.clear();
+                    for (const auto& elem : *arr) {
+                        const auto team = bot_team_from_config_name(elem.value_or<std::string>(""));
+                        if (!team) {
+                            rf::console::print("  [WARN] a bot_teams entry is not auto, red or blue; using auto.\n");
+                        }
+                        cfg.bot_teams.push_back(team.value_or(-1));
+                    }
+                }
+            }
             else if (key == "bot_profiles") {
                 if (pass == ParsePass::Core) {
+                    // An entry that fails to load keeps its place as a default bot, so bot_teams still lines up.
                     for (const auto& elem : *arr) {
                         auto profile_path_str = elem.value<std::string>();
-                        if (!profile_path_str) continue;
+                        if (!profile_path_str) {
+                            rf::console::print("  [WARN] a bot_profiles entry is not a file name; using defaults.\n");
+                            cfg.bot_configs.emplace_back();
+                            continue;
+                        }
 
                         fs::path resolved_path = base_dir / *profile_path_str;
                         try {
@@ -1667,6 +1738,7 @@ static void apply_config_table_in_order(
                         catch (const toml::parse_error& err) {
                             rf::console::print("  [ERROR] failed to parse bot profile '{}': {}\n",
                                 resolved_path.generic_string(), err.description());
+                            cfg.bot_configs.emplace_back();
                         }
                     }
                 }
@@ -1703,17 +1775,61 @@ static void apply_config_table_in_order(
     }
 }
 
-void load_ads_server_config(std::string ads_config_name, bool allow_missing_levels)
+// Fills `cfg` and the parsing scope tables from a config's root table; install_server_config puts them in force.
+static void parse_server_config_table(AlpineServerConfig& cfg, const toml::table& root, const fs::path& base_dir,
+    bool allow_missing_levels)
 {
-    rf::console::print("Loading and applying server configuration from {}...\n\n", ads_config_name);
-
-    AlpineServerConfig cfg;     // start from defaults
-
     // Seed the game type defaults before parsing so an explicit game_type
     // layers on top of them.
     g_parsing_base_scope_tables.clear();
     g_parsing_level_scope_tables.clear();
     apply_defaults_for_game_type(cfg.base_rules.game_type, cfg.base_rules);
+
+    // config pass
+    apply_config_table_in_order(cfg, root, base_dir, ParsePass::Core, allow_missing_levels);
+    // Rebuilt from the base game type's own defaults: the parse seeded DM's, whose fields the base
+    // game type's defaults may not all claim back.
+    cfg.base_rules = build_rules_over_base(g_parsing_base_scope_tables, cfg.base_rules.game_type, {});
+    // level pass
+    apply_config_table_in_order(cfg, root, base_dir, ParsePass::Levels, allow_missing_levels);
+}
+
+static void install_server_config(AlpineServerConfig&& cfg)
+{
+    g_alpine_server_config = std::move(cfg);
+    g_base_scope_tables = std::move(g_parsing_base_scope_tables);
+    g_level_scope_tables = std::move(g_parsing_level_scope_tables);
+    clear_rcon_profile_sessions();
+    server_bots_reset_roster(g_alpine_server_config.server_bots);
+}
+
+void install_listen_server_config(const toml::table& root, const std::vector<toml::table>& bot_profiles)
+{
+    AlpineServerConfig cfg;
+    parse_server_config_table(cfg, root, {}, false);
+    for (const toml::table& profile : bot_profiles) {
+        ServerBotConfig bot_cfg;
+        parse_bot_config_table(bot_cfg, profile);
+        cfg.bot_configs.push_back(std::move(bot_cfg));
+    }
+    install_server_config(std::move(cfg));
+    listen_server_allow_visual_options();
+    g_listen_server_config = true;
+}
+
+void clear_listen_server_config()
+{
+    g_listen_server_config = false;
+    g_alpine_server_config = AlpineServerConfig{};
+    reset_base_scope_tables();
+    g_alpine_server_config_active_rules = AlpineServerConfigRules{};
+}
+
+void load_ads_server_config(std::string ads_config_name, bool allow_missing_levels)
+{
+    rf::console::print("Loading and applying server configuration from {}...\n\n", ads_config_name);
+
+    AlpineServerConfig cfg;     // start from defaults
 
     toml::table root;
     try {
@@ -1732,13 +1848,7 @@ void load_ads_server_config(std::string ads_config_name, bool allow_missing_leve
         rf::console::print("  [WARN] failed to canonicalize {}: {}\n", ads_config_name, err.what());
     }
 
-    // config pass
-    apply_config_table_in_order(cfg, root, root_path.parent_path(), ParsePass::Core, allow_missing_levels);
-    // Rebuilt from the base game type's own defaults: the parse seeded DM's, whose fields the base
-    // game type's defaults may not all claim back.
-    cfg.base_rules = build_rules_over_base(g_parsing_base_scope_tables, cfg.base_rules.game_type, {});
-    // level pass
-    apply_config_table_in_order(cfg, root, root_path.parent_path(), ParsePass::Levels, allow_missing_levels);
+    parse_server_config_table(cfg, root, root_path.parent_path(), allow_missing_levels);
 
     // build a legacy rcon profile if rcon_password was specified
     if (!cfg.rcon_password.empty()) {
@@ -1773,11 +1883,7 @@ void load_ads_server_config(std::string ads_config_name, bool allow_missing_leve
 
     rf::console::print("\n");
 
-    g_alpine_server_config = std::move(cfg);
-    g_base_scope_tables = std::move(g_parsing_base_scope_tables);
-    g_level_scope_tables = std::move(g_parsing_level_scope_tables);
-    clear_rcon_profile_sessions();
-    server_bots_reset_roster(g_alpine_server_config.server_bots);
+    install_server_config(std::move(cfg));
 }
 
 static void download_missing_server_levels()
@@ -2471,6 +2577,16 @@ void print_alpine_dedicated_server_config_info(std::string& output, bool verbose
                    g_alpine_game_config.server_net_rate_tier().server_fps);
     std::format_to(iter, "  Max players:                           {}\n", netgame.max_players);
     std::format_to(iter, "  Server bots:                           {}\n", cfg.server_bots);
+    if (!cfg.bot_teams.empty()) {
+        std::string teams;
+        for (const int team : cfg.bot_teams) {
+            if (!teams.empty()) {
+                teams += ", ";
+            }
+            teams += bot_team_config_name(team);
+        }
+        std::format_to(iter, "  Bot profile teams:                     {}\n", teams);
+    }
     std::format_to(iter, "  Levels in rotation:                    {}\n", cfg.levels.size());
     std::format_to(iter, "  Dynamic rotation:                      {}\n", cfg.dynamic_rotation);
     std::format_to(iter, "  Demos:\n");
@@ -2705,6 +2821,16 @@ void rebuild_rotation_from_cfg()
     }
 }
 
+void start_rotation_from_cfg()
+{
+    if (g_alpine_server_config.dynamic_rotation && !g_alpine_server_config.levels.empty()) {
+        shuffle_level_array();
+    }
+    else {
+        rebuild_rotation_from_cfg();
+    }
+}
+
 void load_and_print_alpine_dedicated_server_config(std::string ads_config_name, bool on_launch) {
     auto& netgame = rf::netgame;
     auto& cfg = g_alpine_server_config;
@@ -2727,12 +2853,7 @@ void load_and_print_alpine_dedicated_server_config(std::string ads_config_name, 
 
     apply_alpine_dedicated_server_rules(netgame, cfg.base_rules); // base rules
 
-    if (g_alpine_server_config.dynamic_rotation && !cfg.levels.empty()) {
-        shuffle_level_array();
-    }
-    else {
-        rebuild_rotation_from_cfg();
-    }
+    start_rotation_from_cfg();
 
     if (netgame.levels.empty()) {
         rf::console::print("----> No valid level files were specified!\n");
@@ -2746,7 +2867,7 @@ void load_and_print_alpine_dedicated_server_config(std::string ads_config_name, 
 }
 
 bool apply_game_type_for_current_level() {
-    if (!g_dedicated_launched_from_ads)
+    if (!server_config_active())
         return false;
 
     auto &netgame = rf::netgame;
@@ -3056,23 +3177,23 @@ void launch_alpine_dedicated_server() {
 ConsoleCommand2 print_server_config_cmd{
     "sv_printconfig",
     []() {
-        if (g_dedicated_launched_from_ads) {
+        if (server_config_active()) {
             std::string output{};
             print_alpine_dedicated_server_config_info(output, true);
             rf::console::print("{}", output.c_str());
         }
         else {
-            rf::console::print("This command is only available for Alpine Faction dedicated servers launched with the -ads switch.\n");
+            rf::console::print("This command is only available on servers running a server config.\n");
         }
     },
-    "Print the current server configuration. Only available for ADS dedicated servers.",
+    "Print the current server configuration. Only available on ADS dedicated servers and Host Game listen servers.",
 };
 
 ConsoleCommand2 print_level_rules_cmd{
     "sv_printrules",
     [](std::optional<std::string> maybe_filename) {
-        if (!g_dedicated_launched_from_ads) {
-            rf::console::print("This command is only available for Alpine Faction dedicated servers launched with the -ads switch.\n");
+        if (!server_config_active()) {
+            rf::console::print("This command is only available on servers running a server config.\n");
             return;
         }
 

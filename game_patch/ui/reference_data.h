@@ -46,3 +46,5 @@ const char* reference_area_label(ReferenceArea area);
 // screen name, else the table name, else nullptr.
 int mp_character_count();
 const char* mp_character_caption(int index);
+// The character the player settings pick, or -1 without a local player or characters.
+int mp_character_selected();

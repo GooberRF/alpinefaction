@@ -270,9 +270,6 @@ struct AlpineFactionJoinReqPacketExt // used for stashed data during join proces
 template<>
 struct EnableEnumBitwiseOperators<AlpineFactionJoinReqPacketExt::Flags> : std::true_type {};
 
-// Bits of AFGameInfoExtra::af_flags, produced by AFGameInfoFlags::game_info_flags_to_uint32().
-constexpr uint32_t AF_GI_FLAG_STATS_ENABLED = 1u << 9;
-
 // Per-server extra data parsed from the AF game_info v2 extension
 struct AFGameInfoExtra
 {
@@ -280,7 +277,7 @@ struct AFGameInfoExtra
     uint8_t version_minor = 0;
     uint8_t version_patch = 0;
     uint8_t version_type = 0;
-    uint32_t af_flags = 0;
+    uint32_t af_flags = 0; // AF_GI_FLAG_*
     std::string level_filename;
     uint8_t num_bots = 0;
     uint8_t num_human_players = 0;
@@ -313,6 +310,15 @@ constexpr int k_max_player_name_len = 31;
 // Look up AF extra data for a server by address. Returns nullptr if not found.
 const AFGameInfoExtra* get_server_browser_extra(const rf::NetAddr& addr);
 void clear_server_browser_extra();
+struct GameInfoAnswer;
+// Records a server's AF data for the join path, or forgets it for nullptr or an incompatible answer.
+void update_server_browser_extra(const rf::NetAddr& addr, const GameInfoAnswer* info);
+// The server lists' player count: "humans+bots/max" for an AF server with bots, else "players/max".
+std::string server_players_label(const AFGameInfoExtra* af, int players, int max_players);
+// The server lists' players order, negative when `a` comes first: humans then bots, more first.
+int server_players_compare(const AFGameInfoExtra* a, int players_a, const AFGameInfoExtra* b, int players_b);
+// "N clients: N players, N bots, N browsers"
+std::string server_clients_label(const AFGameInfoExtra& af);
 
 bool packet_check_whitelist(int packet_type);
 void handle_vote_or_ready_up_msg(std::string_view msg);
@@ -331,6 +337,8 @@ void set_local_player_roles(std::vector<std::pair<uint8_t, uint8_t>> roles);
 void send_player_roles_to(rf::Player* player);
 void server_player_roles_do_frame();
 void multi_disconnect_from_server();
+// The "Update Required" popup for a server whose game type this build does not know.
+void show_unsupported_game_type_popup();
 void server_apply_net_rate();
 void server_set_net_rate(unsigned netfps);
 void apply_client_rate();

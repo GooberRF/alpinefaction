@@ -18,7 +18,12 @@
 #include "../rf/cutscene.h"
 #include "../multi/multi.h"
 #include "../ui/extras_menu.h"
-#include "../ui/multi_pause_menu.h"
+#include "../ui/create_game_menu.h"
+#include "../ui/game_menu.h"
+#include "../ui/menu_scene.h"
+#include "../ui/message_log_menu.h"
+#include "../ui/multi_menu.h"
+#include "../ui/save_load_menu.h"
 #include "../ui/settings_menu.h"
 #include "misc.h"
 
@@ -158,12 +163,24 @@ CodeInjection gameplay_render_frame_display_full_screen_image_injection{
 static FunHook<void(rf::GameState, bool)> rf_do_state_hook{
     0x004B1E70,
     [] (const rf::GameState state, const bool paused) {
+        // A transparent state runs the one beneath it too.
+        if (state == rf::gameseq_get_state()) {
+            menu_scene_do_frame(state);
+        }
         if (state == rf::GS_OPTIONS_MENU && !legacy_menus_enabled()) {
             settings_menu_do_frame(paused);
         } else if (state == rf::GS_EXTRAS_MENU && !legacy_menus_enabled()) {
             extras_menu_do_frame(paused);
-        } else if (state == rf::GS_MAIN_MENU && multi_pause_menu_is_active()) {
-            multi_pause_menu_do_frame(paused);
+        } else if ((state == rf::GS_MULTI_MENU || state == rf::GS_MULTI_SERVER_LIST) && !legacy_menus_enabled()) {
+            multi_menu_do_frame(paused);
+        } else if (state == rf::GS_MULTI_CREATE_GAME && !legacy_menus_enabled()) {
+            create_game_menu_do_frame(paused);
+        } else if (state == rf::GS_MAIN_MENU && game_menu_is_active()) {
+            game_menu_do_frame(paused);
+        } else if ((state == rf::GS_SAVE_GAME_MENU || state == rf::GS_LOAD_GAME_MENU) && !legacy_menus_enabled()) {
+            save_load_menu_do_frame(paused);
+        } else if (state == rf::GS_MESSAGE_LOG && !legacy_menus_enabled()) {
+            message_log_menu_do_frame(paused);
         } else if (state == rf::GS_MULTI_LIMBO_JUST_JOINED) {
             multi_limbo_just_joined_do_frame();
         } else if (state == rf::GS_MULTI_LEVEL_DOWNLOAD) {

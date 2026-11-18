@@ -35,6 +35,7 @@
 #include "../rf/multi.h"
 #include "../rf/os/os.h"
 #include "../rf/player/player.h"
+#include "../ui/menu_scene.h"
 
 namespace
 {
@@ -533,7 +534,7 @@ json build_activity()
     const rf::GameState state = rf::gameseq_get_state();
     // Esc pushes the main menu over gameplay as the pause menu.
     const bool paused = gameseq_is_stacked(rf::GS_MAIN_MENU) && gameseq_is_deep_stacked(rf::GS_GAMEPLAY);
-    if ((rf::level.flags & rf::LEVEL_LOADED) && (state != rf::GS_MAIN_MENU || paused)) {
+    if ((rf::level.flags & rf::LEVEL_LOADED) && !menu_scene_active() && (state != rf::GS_MAIN_MENU || paused)) {
         update_session("single", std::nullopt);
         const char* const mod = rf::mod_param.found() ? rf::mod_param.get_arg() : nullptr;
         activity["details"] = activity_str(std::format("{} \xB7 {}", mod && mod[0] ? mod : "Single player",

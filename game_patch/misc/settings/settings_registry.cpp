@@ -17,6 +17,7 @@
 #include "../../rf/os/console.h"
 #include "../../rf/multi.h"
 #include "../../rf/player/player.h"
+#include "../../ui/menu_scene.h"
 
 namespace
 {
@@ -269,7 +270,7 @@ const char* setting_disabled_reason(const SettingRow& row)
     if ((row.flags & SF_NOT_DEDICATED) && rf::is_dedicated_server) {
         return "not available on a dedicated server";
     }
-    if ((row.flags & SF_NOT_WHILE_IN_GAME) && (rf::level.flags & rf::LEVEL_LOADED)) {
+    if ((row.flags & SF_NOT_WHILE_IN_GAME) && (rf::level.flags & rf::LEVEL_LOADED) && !menu_scene_active()) {
         return "cannot be changed while a level is loaded";
     }
     if ((row.flags & SF_NEEDS_LOCAL_PLAYER) && !rf::local_player) {
@@ -666,4 +667,10 @@ const char* player_name_warning(const std::string& text)
         return "20 characters maximum";
     }
     return nullptr;
+}
+
+bool player_name_configured(std::string_view name)
+{
+    // Stock's own literal, not a localized string; its join request (0x0047AA40) sends it for an empty name too.
+    return !name.empty() && name != "Default";
 }

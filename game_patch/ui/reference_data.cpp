@@ -24,6 +24,7 @@
 #include "../rf/file/file.h"
 #include "../rf/item.h"
 #include "../rf/multi.h"
+#include "../rf/player/player.h"
 #include "../rf/weapon.h"
 
 namespace
@@ -594,6 +595,15 @@ void reference_data_load()
 int mp_character_count()
 {
     return std::clamp(rf::num_multi_characters, 0, rf::MAX_MP_CHARACTERS);
+}
+
+int mp_character_selected()
+{
+    const int count = mp_character_count();
+    if (!rf::local_player || count <= 0) {
+        return -1;
+    }
+    return std::clamp(rf::local_player->settings.multi_character, 0, count - 1);
 }
 
 const char* mp_character_caption(int index)

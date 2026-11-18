@@ -151,6 +151,8 @@ namespace rf
     // Load a static v3m/v3d mesh (mesh_type==1 -> MESH_TYPE_STATIC). path_id may be 0xFFFFFFFF.
     static auto& vmesh_load = addr_as_ref<VMesh*(const char* filename, int mesh_type, int path_id)>(0x00502880);
     static auto& vmesh_free = addr_as_ref<void(VMesh* vmesh)>(0x00502B10);
+    // Frees the static meshes kept between levels; game_load_level runs it before each load.
+    static auto& vmesh_static_cache_purge = addr_as_ref<void()>(0x005043D0);
     // Returns prop-point index, or -1 if not found.
     static auto& vmesh_lookup_prop_point = addr_as_ref<int(VMesh* vmesh, const char* name)>(0x00503220);
     // Number of submeshes (V3d::num_meshes for a static mesh).

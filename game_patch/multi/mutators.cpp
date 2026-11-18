@@ -717,18 +717,22 @@ static const MutatorId MUTATOR_APPLY_ORDER[] = {
     MutatorId::IdealPlayerCountOverride,
 };
 
+uint32_t gametype_mask_where(bool (*pred)(rf::NetGameType))
+{
+    uint32_t mask = 0;
+    for (int i = 0; i < static_cast<int>(rf::NG_TYPE_UNK); ++i) {
+        if (pred(static_cast<rf::NetGameType>(i)))
+            mask |= 1u << i;
+    }
+    return mask;
+}
+
 // Resolve a static requirement to the concrete set of game types it permits.
-static uint32_t gametype_mask_for_req(MutatorGametypeReq req)
+uint32_t mutator_gametype_mask_for_req(MutatorGametypeReq req)
 {
     switch (req) {
-        case MutatorGametypeReq::TeamOnly: {
-            uint32_t mask = 0;
-            for (int i = 0; i < static_cast<int>(rf::NG_TYPE_UNK); ++i) {
-                if (multi_game_type_is_team_type(static_cast<rf::NetGameType>(i)))
-                    mask |= 1u << i;
-            }
-            return mask;
-        }
+        case MutatorGametypeReq::TeamOnly:
+            return gametype_mask_where(multi_game_type_is_team_type);
         case MutatorGametypeReq::GunGameOnly:
             return 1u << static_cast<int>(rf::NG_TYPE_GG);
         case MutatorGametypeReq::HasScoreLimit: {
@@ -840,7 +844,7 @@ static const char* weapon_short_label(std::string_view display_name, std::string
 // One Weapon redirects every weapon/ammo pickup onto the featured weapon's own
 // pickup, so a weapon without one would leave players stuck with the baton.
 // Not relevant in the stock game but could be in TC mods.
-static std::vector<MutatorOptionChoice> build_featured_weapon_choices()
+std::vector<MutatorOptionChoice> mutators_pickup_weapon_choices()
 {
     std::vector<MutatorOptionChoice> choices;
     for (int wt = 0; wt < rf::num_weapon_types; ++wt) {
@@ -890,7 +894,7 @@ const std::vector<MutatorInfo>& mutators_get_registry()
         info.name = def.name;
         info.label = def.label;
         info.min_client_minor_version = def.min_client_minor_version;
-        info.valid_gametype_mask = gametype_mask_for_req(def.gametype_req);
+        info.valid_gametype_mask = mutator_gametype_mask_for_req(def.gametype_req);
 
         for (size_t i = 0; i < def.num_options; ++i) {
             const MutatorOptionDef& opt_def = def.options[i];
@@ -901,7 +905,7 @@ const std::vector<MutatorInfo>& mutators_get_registry()
             opt.type = opt_def.type;
 
             if (def.id == MutatorId::Rails && opt.name == "featured_weapon") {
-                opt.choices = build_featured_weapon_choices();
+                opt.choices = mutators_pickup_weapon_choices();
                 const std::string rail_name =
                     (rf::rail_gun_weapon_type >= 0 && rf::rail_gun_weapon_type < rf::num_weapon_types)
                         ? rf::weapon_types[rf::rail_gun_weapon_type].name.c_str()
@@ -1038,7 +1042,7 @@ void apply_mutators_from_toml(const toml::array& mutators_arr, AlpineServerConfi
         // A mutator that does nothing in this scope's game type is not applied
         // and is left out of the displayed labels, declaration is still recorded.
         const bool available = mutator_gametype_mask_allows(
-            gametype_mask_for_req(def->gametype_req), static_cast<uint8_t>(rules.game_type));
+            mutator_gametype_mask_for_req(def->gametype_req), static_cast<uint8_t>(rules.game_type));
 
         auto& labels = rules.mutators.active_labels;
         labels.erase(std::remove(labels.begin(), labels.end(), def->label), labels.end());
@@ -1059,26 +1063,9 @@ void apply_mutators_from_toml(const toml::array& mutators_arr, AlpineServerConfi
         decl.name = def->name;
         for (size_t i = 0; i < def->num_options; ++i) {
             const MutatorOptionDef& opt = def->options[i];
-            const auto node = it->second[opt.name];
-            switch (opt.type) {
-                case MutatorOptionType::Bool:
-                    if (auto v = node.value<bool>())
-                        decl.options[opt.name] = *v;
-                    break;
-                case MutatorOptionType::Int:
-                    if (auto v = node.value<int64_t>())
-                        decl.options[opt.name] = static_cast<int32_t>(*v);
-                    break;
-                case MutatorOptionType::Float:
-                    if (auto v = node.value<double>())
-                        decl.options[opt.name] = static_cast<float>(*v);
-                    break;
-                case MutatorOptionType::Choice:
-                case MutatorOptionType::String:
-                    if (auto v = node.value<std::string>())
-                        decl.options[opt.name] = *v;
-                    break;
-            }
+            const toml::node* node = it->second.get(opt.name);
+            if (auto v = node ? toml_option_value(*node, opt.type) : std::nullopt)
+                decl.options[opt.name] = std::move(*v);
         }
         auto& decls = rules.mutators.declarations;
         decls.erase(std::remove_if(decls.begin(), decls.end(),
@@ -1104,6 +1091,23 @@ bool mutator_entry_names(const toml::node& entry, std::string_view canonical_nam
     return def && string_iequals(def->name, canonical_name);
 }
 
+MutatorOptionValue mutator_option_default(const MutatorOptionInfo& opt)
+{
+    switch (opt.type) {
+        case MutatorOptionType::Bool:
+            return opt.default_bool;
+        case MutatorOptionType::Int:
+            return opt.default_int;
+        case MutatorOptionType::Float:
+            return opt.default_float;
+        case MutatorOptionType::Choice:
+            return opt.default_choice < opt.choices.size() ? opt.choices[opt.default_choice].value : std::string{};
+        case MutatorOptionType::String:
+            return opt.default_string;
+    }
+    return {};
+}
+
 // An option a declaration leaves out takes its registry default, the value the vote panel shows.
 static bool mutator_option_matches(const MutatorOptionInfo& opt, const MutatorDeclaration& a,
                                    const MutatorDeclaration& b)
@@ -1111,19 +1115,7 @@ static bool mutator_option_matches(const MutatorOptionInfo& opt, const MutatorDe
     const auto value_of = [&](const MutatorDeclaration& d) -> MutatorOptionValue {
         if (auto it = d.options.find(opt.name); it != d.options.end())
             return it->second;
-        switch (opt.type) {
-            case MutatorOptionType::Bool:
-                return opt.default_bool;
-            case MutatorOptionType::Int:
-                return opt.default_int;
-            case MutatorOptionType::Float:
-                return opt.default_float;
-            case MutatorOptionType::Choice:
-                return opt.default_choice < opt.choices.size() ? opt.choices[opt.default_choice].value : std::string{};
-            case MutatorOptionType::String:
-                return opt.default_string;
-        }
-        return {};
+        return mutator_option_default(opt);
     };
     const MutatorOptionValue va = value_of(a);
     const MutatorOptionValue vb = value_of(b);
@@ -1160,6 +1152,48 @@ bool mutator_declarations_equivalent(const std::vector<MutatorDeclaration>& a,
     return true;
 }
 
+std::optional<MutatorOptionValue> toml_option_value(const toml::node& node, MutatorOptionType type)
+{
+    switch (type) {
+        case MutatorOptionType::Bool:
+            if (auto v = node.value<bool>())
+                return *v;
+            break;
+        case MutatorOptionType::Int:
+            if (auto v = node.value<int32_t>())
+                return *v;
+            break;
+        case MutatorOptionType::Float:
+            if (auto v = toml_finite_float(node))
+                return *v;
+            break;
+        case MutatorOptionType::Choice:
+        case MutatorOptionType::String:
+            if (auto v = node.value<std::string>())
+                return *v;
+            break;
+    }
+    return std::nullopt;
+}
+
+std::optional<float> toml_finite_float(const toml::node& node)
+{
+    const auto v = node.value<float>();
+    return v && std::isfinite(*v) ? v : std::nullopt;
+}
+
+void toml_insert_option_value(toml::table& tbl, std::string_view key, const MutatorOptionValue& value)
+{
+    if (const auto* v = std::get_if<bool>(&value))
+        tbl.insert_or_assign(key, *v);
+    else if (const auto* v = std::get_if<int32_t>(&value))
+        tbl.insert_or_assign(key, static_cast<int64_t>(*v));
+    else if (const auto* v = std::get_if<float>(&value))
+        tbl.insert_or_assign(key, static_cast<double>(*v));
+    else if (const auto* v = std::get_if<std::string>(&value))
+        tbl.insert_or_assign(key, *v);
+}
+
 toml::array mutator_declarations_to_toml_array(const std::vector<MutatorDeclaration>& declarations)
 {
     toml::array arr;
@@ -1167,14 +1201,7 @@ toml::array mutator_declarations_to_toml_array(const std::vector<MutatorDeclarat
         toml::table tbl;
         tbl.insert_or_assign("name", decl.name);
         for (const auto& [key, value] : decl.options) {
-            if (const auto* v = std::get_if<bool>(&value))
-                tbl.insert_or_assign(key, *v);
-            else if (const auto* v = std::get_if<int32_t>(&value))
-                tbl.insert_or_assign(key, static_cast<int64_t>(*v));
-            else if (const auto* v = std::get_if<float>(&value))
-                tbl.insert_or_assign(key, static_cast<double>(*v));
-            else if (const auto* v = std::get_if<std::string>(&value))
-                tbl.insert_or_assign(key, *v);
+            toml_insert_option_value(tbl, key, value);
         }
         arr.push_back(std::move(tbl));
     }
@@ -1325,7 +1352,7 @@ static std::string join_labels(const std::vector<MutatorDeclaration>& declaratio
         // Same availability test apply_mutators_from_toml runs, so the line can never
         // name a mutator the game type drops.
         if (def && game_type
-            && !mutator_gametype_mask_allows(gametype_mask_for_req(def->gametype_req),
+            && !mutator_gametype_mask_allows(mutator_gametype_mask_for_req(def->gametype_req),
                                              static_cast<uint8_t>(*game_type)))
             continue;
 

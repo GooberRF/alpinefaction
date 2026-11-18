@@ -245,6 +245,11 @@ namespace rf
         {
             AddrCaller{0x004D2E10}.this_call(this);
         }
+
+        void clear_rooms_visited_this_frame()
+        {
+            AddrCaller{0x004D2F80}.this_call(this);
+        }
     };
     static_assert(sizeof(GSolid) == 0x378);
 
@@ -765,6 +770,8 @@ namespace rf
     static auto& geomod_push_nearby_entities = addr_as_ref<bool(Vector3* pos)>(0x004C0160);
     static auto& g_decal_add = addr_as_ref<GDecal*(GDecalCreateInfo* dci)>(0x004D52E0);
     static auto& g_decal_destroy = addr_as_ref<void(GDecal*)>(0x004D6C50);
+    // Fades and expires decals; the main view runs it once per frame
+    static auto& g_decal_do_frame = addr_as_ref<void()>(0x004D51E0);
     // Live decals, linked through GDecal::next
     static auto& g_decal_list = addr_as_ref<GDecal*>(0x00C4D56C);
     // The faces the orientation pass 0x004D5DA0 took for a decal, which 0x004D6910 then clips it to

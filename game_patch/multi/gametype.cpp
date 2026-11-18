@@ -2015,7 +2015,7 @@ static void koth_client_predict_tick(int dt_ms)
 }
 
 void koth_force_broadcast_all_hill_states() {
-    if (!rf::is_multi || !rf::is_dedicated_server || !rf::is_server || !multi_is_game_type_with_hills())
+    if (!rf::is_multi || !rf::is_server || !multi_is_game_type_with_hills())
         return;
 
     for (auto& h : g_koth_info.hills) {

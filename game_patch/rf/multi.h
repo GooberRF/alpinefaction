@@ -59,6 +59,11 @@ namespace rf
     // psnet_rel_connect_to_server (0x0052A4B0)
     static auto& net_rel_last_connect_socket = addr_as_ref<int>(0x005A6608);
     static auto& net_port = addr_as_ref<unsigned short>(0x01B587D4);
+    // net_init_socket's setup after a successful bind: broadcast, non-blocking and the receive buffer, the reliable
+    // sockets, and the flag the reliable sockets check
+    static const auto& net_socket_configure = addr_as_ref<void __cdecl(int sock)>(0x00528CB0);
+    static const auto& net_rel_sockets_reset = addr_as_ref<int()>(0x00528EE0);
+    static auto& net_initialized = addr_as_ref<int>(0x01B587CC);
     static const auto& net_stats_update = addr_as_ref<void()>(0x00528580);
     static const auto& net_stats_add = addr_as_ref<void(int, int, int, int)>(0x005286A0);
     // psnet stats: 30 one-second slots of bytes per (payload | header-approx, recv | send,
@@ -461,6 +466,9 @@ namespace rf
     static auto& simultaneous_ping = addr_as_ref<uint32_t>(0x00599CD8);
     static auto& tracker_addr = addr_as_ref<NetAddr>(0x006FC550);
     static auto& tracker_hostname = addr_as_ref<char[64]>(0x0059F4B4);
+    // Nonzero once the tracker is reachable.
+    static auto& tracker_init = addr_as_ref<int()>(0x00482AE0);
+    static auto& tracker_do_broadcast_server = addr_as_ref<void()>(0x00483130);
     static auto& rcon_password = addr_as_ref<char[20]>(0x0064ECD0);
 
     enum ChatSayType {

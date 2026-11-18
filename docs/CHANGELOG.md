@@ -27,15 +27,9 @@ Version 1.5.0 (Trillium): Not yet released
   - Mirror `Terrain Tools` brush strokes across the terrain's X and/or Z axis, with movable mirror lines
   - Up to 4 detail overlays (leaves, debris) and 8 mesh decoration layers per terrain (grass, rocks, bushes)
   - `Geoable` terrains are carved by RF2-style geomod craters, with their own underside and crater textures
-- Replace the stock options screens with a fully new options menu
-  - Context-specific bindings for vehicles, spectator, and demo playback
-  - `af_set` and `af_get` console commands to read and write any setting by name
-  - Draw menus from resolution-independent vector artwork
-  - Redraw the extras menu in the same style, with the demo browser as one of its panels
-  - Redraw the in-game multiplayer menu in the same style, with a `Player` panel for picking your name and character
-  - Add `Use deprecated legacy menus` launcher option to use the stock menus instead
 - Add server-side bots, which run inside the dedicated or listen server process in addition to (or instead of) bot clients
   - `server_bots` ADS option (0-31) sets how many server bots join; they use the `bot_profiles` profiles and follow `ideal_player_count` like bot clients
+  - Add `bot_teams` ADS option to put the server bots using each bot profile on a chosen team
   - Add `sv_bot_add [profile_index] [red|blue]`, `sv_bot_remove <name|all>` and `sv_bot_list` server console commands, which also work through rcon
 - Add new powerups `Haste`, `Vampire`, `Jetpack`, `Health Shard`, and `Armor Shard`
 - Add new multiplayer game types:
@@ -43,6 +37,22 @@ Version 1.5.0 (Trillium): Not yet released
   - Payload (`PAY`)
 
 [@GooberRF](https://github.com/GooberRF) & [@nickalreadyinuse](https://github.com/nickalreadyinuse)
+- Replace the stock menus with new ones drawn from resolution-independent vector artwork
+  - Add a fully new options menu, with context-specific bindings for vehicles, spectator, and demo playback
+  - Add `af_set` and `af_get` console commands to read and write any setting by name
+  - Redraw the main menu, the single player pause, new game, save and load menus, the message log, and the game's popups
+  - Allow deleting saved games from the save and load menus
+  - Redraw the extras menu, with the demo browser as one of its panels
+  - Redraw the in-game multiplayer menu, with a `Player` panel for picking your name and character and `Join` to switch servers
+  - Add a new server browser with a details card showing each server's players
+  - Add a new `Host Game` screen that sets server rules, per-level rules, bots and mutators
+  - Run games hosted from `Host Game` with the same server rules as a dedicated server
+  - Save `Host Game` setups in the dedicated server config format
+  - Move the vote panel onto the new menus as the `Call Vote` menu
+  - Show the path to the current menu along the top of the screen, with clickable steps and your character's portrait to open the `Player` panel
+  - Show a level running live behind the main menu, toggleable with `ui_menu_background` (Direct3D 11 renderer only)
+  - Show the game behind the in-game menus instead of the Mars background (Direct3D 11 renderer only)
+  - Add `Use deprecated legacy menus` launcher option to use the stock menus instead
 - Add multiplayer vehicles and turrets
   - Jeeps, APCs, drillers, fighters, submarines, and stationary turrets, spawned by the new `Vehicle Factory` object
   - Simulate vehicle physics with the Bullet physics engine
@@ -253,6 +263,8 @@ Version 1.5.0 (Trillium): Not yet released
 - Disable EAX sound by default
 - Add `Item Replacement` mutator, with sets that swap super pickups for other powerups or remove them
 - Add `bag_multiple_spawns` dedicated server config option to spawn the Bagman bag at a random `Bag` object or super item spot each time it returns
+- Add `connect` console command to join a server by address
+- Add `dbg_camera_pos` console command to print the camera's position and angles
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Revamp the in-game console with a new font, search, mouse text selection and inline command suggestions
@@ -445,6 +457,10 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix exploding grenades setting off their thrower's remote charges on clients in multiplayer
 - Fix game and level editor crashing when a decal lies on a face with many vertices
 - Fix decals on faces with many vertices showing only partly (Direct3D 11 renderer only)
+- Fix a listen server host's first spawn on each level ignoring the server's spawn rules
+- Fix random crashes when AI follows a waypoint list that refers to a missing node (e.g. `L5S2`)
+- Fix the game freezing in multiplayer when its UDP port is already in use
+- Fix an open crash report dialog keeping the crashed game's network ports and files in use
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize

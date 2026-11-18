@@ -14,6 +14,12 @@ extern bool g_character_meshes_are_fullbright;
 void misc_init();
 // The launcher's "Use deprecated legacy menus", as it was when the game started.
 bool legacy_menus_enabled();
+// The main menu's version label, its clicks, and the easter egg three of them start.
+std::string main_menu_version_text();
+void main_menu_version_clicked();
+// The menus' seasonal effect (snow, and af_main_menu.toml's seasonal level) is on.
+bool main_menu_seasonal_effect_active();
+void main_menu_render_egg();
 void set_jump_to_multi_server_list(bool jump);
 void set_jump_to_demo_browser(bool jump);
 void start_join_multi_game_sequence(const rf::NetAddr& addr, const std::string& password);

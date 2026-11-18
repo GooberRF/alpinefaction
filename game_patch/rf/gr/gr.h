@@ -437,6 +437,7 @@ namespace rf::gr
     static auto& light_set_ambient = addr_as_ref<void(float r, float g, float b)>(0x004D8CE0);
     static auto& light_frame_begin = addr_as_ref<void()>(0x004D8050); // empty in the retail build
     static auto& light_filter_for_camera = addr_as_ref<void()>(0x005174D0);
+    static auto& fog_set = addr_as_ref<void(int on, int r, int g, int b, float near_dist, float far_dist)>(0x0050E020);
     static auto& line_arrow = addr_as_ref<void(float x1, float y1, float z1, float x2, float y2, float z2, int r, int g, int b)>(0x00516AD0);
     static auto& cursor_3d = addr_as_ref<void(Vector3* pos, Matrix3* orient, float scale)>(0x00516B10);
     static auto& string_render_into_bitmap = addr_as_ref<void(int x, int y, int bm_handle, const char* s, int font)>(0x005203A0);

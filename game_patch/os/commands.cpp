@@ -440,15 +440,20 @@ ConsoleCommand2 af_get_cmd{
     "af_get <key>",
 };
 
+void entities_go_berserk()
+{
+    for (auto& entity : DoublyLinkedList{rf::entity_list}) {
+        if (&entity != rf::local_player_entity) {
+            rf::ai_go_berserk(&entity.ai, 3600.0f, true);
+        }
+    }
+}
+
 ConsoleCommand2 dbg_berserk_cmd{
     "dbg_berserk",
     []() {
         if (!rf::is_multi) {
-            for (auto& entity : DoublyLinkedList{rf::entity_list}) {
-                if (&entity && &entity != rf::local_player_entity) {
-                    rf::ai_go_berserk(&entity.ai, 3600.0f, true);
-                }
-            }
+            entities_go_berserk();
         }
     },
     "Make all entities go berserk",

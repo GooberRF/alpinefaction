@@ -5,6 +5,7 @@
 
 namespace rf
 {
+    struct Player;
 
     struct ClutterInfo
     {
@@ -123,6 +124,8 @@ namespace rf
     }
     static auto& monitor_list = addr_as_ref<Monitor>(0x005C98A8);
     static auto& monitor_render_in_progress = addr_as_ref<bool>(0x005C98E4);
+    static auto& monitor_render_all = addr_as_ref<void(Player* player)>(0x004121D0);
+    static auto& clutter_render_all_clocks = addr_as_ref<void()>(0x00411160);
 
     static auto& clutter_restore_mesh = addr_as_ref<void(Clutter *clutter, const char *mesh_name)>(0x00410ED0);
     static auto& clutter_damage = addr_as_ref<void(Clutter* cp, float damage, int responsible_entity_handle, int damage_type, PCollisionOut* collide_out)>(0x00410270);

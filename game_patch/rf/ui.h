@@ -1,9 +1,12 @@
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
 #include <patch_common/MemUtils.h>
 #include "gr/gr_font.h"
 #include "gr/gr.h"
 #include "multi.h"
+#include "os/array.h"
 
 namespace rf::ui
 {
@@ -236,21 +239,59 @@ namespace rf::ui
     static auto& popup_set_text = addr_as_ref<void(const char *text)>(0x00455A50);
     static auto& popup_get_input = addr_as_ref<void(char* string, int max_len)>(0x004566A0);
     static auto& popup_is_active = addr_as_ref<bool()>(0x00456680);
+    // A popup button and what its on_click runs once it has closed the popup.
+    struct PopupButton
+    {
+        Button button;
+        PopupCallbackPtr callback;
+    };
+    static_assert(sizeof(PopupButton) == 0x48);
+    static_assert(offsetof(PopupButton, callback) == 0x44);
+    static auto& popup_title = addr_as_ref<Label>(0x006428F0);
+    // popup_set_text breaks the text into these.
+    static auto& popup_text_lines = addr_as_ref<Label[3]>(0x00642978);
+    // Enabled only for popup_message's input form.
+    static auto& popup_input_box = addr_as_ref<InputBox>(0x00642A68);
+    // What Enter presses: a button's index, or popup_input_gadget, which presses button 0.
+    static auto& popup_current_gadget = addr_as_ref<int>(0x00642AE8);
+    inline constexpr int popup_input_gadget = 4;
+    // Filled from 0; the rest are disabled.
+    static auto& popup_buttons = addr_as_ref<PopupButton[4]>(0x00642B20);
 
     static auto& mainmenu_quit_game_confirmed = addr_as_ref<void()>(0x00443CB0);
-    // Main menu buttons that act in a game too.
+    // The main menu's buttons in stock's column order, which is mainmenu_button_action's numbering.
     enum MainMenuButton
     {
+        MAIN_MENU_BUTTON_NEW_GAME = 0, // with its training choice
+        MAIN_MENU_BUTTON_SAVE = 1,
+        MAIN_MENU_BUTTON_LOAD = 2,
+        MAIN_MENU_BUTTON_MULTI = 3,
         MAIN_MENU_BUTTON_OPTIONS = 4,
         MAIN_MENU_BUTTON_RETURN = 5,
+        MAIN_MENU_BUTTON_EXTRAS = 6,
         MAIN_MENU_BUTTON_QUIT = 7, // with its confirmation
     };
     static auto& mainmenu_button_action = addr_as_ref<void(MainMenuButton button)>(0x004438C0);
+    // New Game's choices: each starts a new game at its level, l1s1.rfl or train01.rfl.
+    static auto& mainmenu_new_game_skip_training = addr_as_ref<void()>(0x00443B10);
+    static auto& mainmenu_new_game_training = addr_as_ref<void()>(0x00443A80);
+    // The main menu's MULTIPLAYER and EXTRAS buttons: each queues its state. The first also ends a game that
+    // is not beneath the menu.
+    static auto& mainmenu_open_multi_menu = addr_as_ref<void()>(0x00443C20);
+    static auto& mainmenu_open_extras = addr_as_ref<void()>(0x00443C70);
+    // The MULTIPLAYER button's action without its sound: the network checks, then mainmenu_open_multi_menu, or a
+    // popup in its place: an error, or one whose continue button calls it.
+    static auto& mainmenu_multi_click = addr_as_ref<void()>(0x00443B70);
     // Set by the main menu's init while a game runs beneath it, which turns it into the in-game menu.
     static auto& mainmenu_game_beneath = addr_as_ref<bool>(0x0063C11C);
     static auto& menu_draw_background = addr_as_ref<void()>(0x00442CE0);
     static auto& menu_draw_side_bars = addr_as_ref<void()>(0x00442DB0);
     static auto& menu_background_bitmap = addr_as_ref<int>(0x00598FEC); // mars_background.tga, -1 if missing
+    // The menu music. level_load sets main_menu_music_stopped, and the main menu's init then restarts it.
+    static auto& main_menu_music_filename = addr_as_ref<String>(0x0063C110);
+    static auto& main_menu_music_sig = addr_as_ref<int>(0x005990F8);
+    static auto& main_menu_music_stopped = addr_as_ref<int>(0x005990FC);
+    static auto& main_menu_music_play = addr_as_ref<bool(const char* filename)>(0x00443230);
 
     // Stock Extras button on_click handlers.
     static auto& extras_credits_click = addr_as_ref<void(int x, int y)>(0x0043EC70);
@@ -312,11 +353,17 @@ namespace rf::ui
     static auto& options_controls_assign_binding = addr_as_ref<void(int scan_code, int mouse_btn_id)>(0x0044FFD0);
     static auto& options_controls_stop_waiting_for_key = addr_as_ref<void()>(0x0044FC00);
 
+    // multi
+    // The JOIN GAME button: queues GS_MULTI_SERVER_LIST.
+    static auto& multi_menu_join_game_on_click = addr_as_ref<void()>(0x00448B70);
+
     // multi -> create game
     static auto& create_game_map_list_up_on_click = addr_as_ref<void(int x, int y)>(0x004451F0);
     static auto& create_game_map_list_down_on_click = addr_as_ref<void(int x, int y)>(0x00445260);
     static auto& create_game_options_current_gadget = addr_as_ref<int>(0x0063CA8C);
     static auto& create_game_current_tab = addr_as_ref<int>(0x0063F850);
+    // The level name in an RFL's header; false when the file is not a level. The callee destroys `filename`.
+    static auto& create_game_get_level_name = addr_as_ref<bool(String::Pod filename, String& name)>(0x00446140);
 
     // multi -> join server (server browser)
     struct ServerListEntry
@@ -335,6 +382,41 @@ namespace rf::ui
     };
     static_assert(sizeof(ServerListEntry) == 0x6C, "invalid size");
 
+    enum ServerListRecordFlags : uint32_t
+    {
+        SERVER_LIST_RECORD_DEDICATED = 0x1,
+        SERVER_LIST_RECORD_PASSWORD = 0x2,
+    };
+
+    // A favlist.adr / svrlist.adr record (multi_join_game_get_server_data 0x0044ADA0, read and written by
+    // multi_join_game_load_list 0x0044B610 / multi_join_game_save_list 0x0044BA60).
+#pragma pack(push, 1)
+    struct ServerListRecord
+    {
+        uint32_t ip; // host byte order
+        uint16_t port;
+        uint16_t padding;
+        char name[32];
+        char level[32];
+        char mod[16];
+        int32_t game_type;
+        uint8_t players;
+        uint8_t max_players;
+        int16_t ping;
+        uint32_t flags; // ServerListRecordFlags
+    };
+#pragma pack(pop)
+    static_assert(sizeof(ServerListRecord) == 100);
+    static_assert(offsetof(ServerListRecord, port) == 0x04);
+    static_assert(offsetof(ServerListRecord, name) == 0x08);
+    static_assert(offsetof(ServerListRecord, level) == 0x28);
+    static_assert(offsetof(ServerListRecord, mod) == 0x48);
+    static_assert(offsetof(ServerListRecord, game_type) == 0x58);
+    static_assert(offsetof(ServerListRecord, players) == 0x5C);
+    static_assert(offsetof(ServerListRecord, max_players) == 0x5D);
+    static_assert(offsetof(ServerListRecord, ping) == 0x5E);
+    static_assert(offsetof(ServerListRecord, flags) == 0x60);
+
     static auto& join_game_server_list_up_on_click = addr_as_ref<void(int x, int y)>(0x0044B4C0);
     static auto& join_game_server_list_down_on_click = addr_as_ref<void(int x, int y)>(0x0044B520);
     static auto& join_game_current_gadget = addr_as_ref<int>(0x0063EE78);
@@ -348,15 +430,35 @@ namespace rf::ui
     static auto& server_browser_filter_type = addr_as_ref<int>(0x0063F22C);
     static auto& server_browser_filter_cycler = addr_as_ref<Cycler>(0x0063F0C0);
 
+    // A saved game in the Load Game and Save Game lists, which list the savegame folder's .svl files newest first.
+    struct SavegameListEntry
+    {
+        char filename[260]; // with its extension
+        int write_time;     // a 32-bit time_t
+        float game_time;    // seconds
+    };
+    static_assert(sizeof(SavegameListEntry) == 0x10C);
+    static_assert(offsetof(SavegameListEntry, write_time) == 0x104);
+    static_assert(offsetof(SavegameListEntry, game_time) == 0x108);
+
     // load game
     static auto& load_game_up_on_click = addr_as_ref<void(int x, int y)>(0x0043F8C0);
     static auto& load_game_down_on_click = addr_as_ref<void(int x, int y)>(0x0043F940);
     static auto& load_game_current_gadget = addr_as_ref<int>(0x0063B810);
+    // Appends the saved games whose header reads; the caller empties the list first.
+    static auto& load_game_build_list = addr_as_ref<void()>(0x004406D0);
+    static auto& load_game_list = addr_as_ref<VArray<SavegameListEntry>>(0x0063B9B0);
+    static auto& load_game_sel_idx = addr_as_ref<int>(0x0063B9C8);
+    // Loads the selected entry when its header reads: its level to load, then GS_NEW_LEVEL.
+    static auto& load_game_load_click = addr_as_ref<void()>(0x0043F5F0);
 
     // save game
     static auto& save_game_up_on_click = addr_as_ref<void(int x, int y)>(0x00441240);
     static auto& save_game_down_on_click = addr_as_ref<void(int x, int y)>(0x004412D0);
     static auto& save_game_current_gadget = addr_as_ref<int>(0x0063BCB8);
+    // As load_game_build_list.
+    static auto& save_game_build_list = addr_as_ref<void()>(0x00440D00);
+    static auto& save_game_list = addr_as_ref<VArray<SavegameListEntry>>(0x0063BCC0);
 
     // message log panel
     static auto& message_log_up_on_click = addr_as_ref<void(int x, int y)>(0x00454F80);

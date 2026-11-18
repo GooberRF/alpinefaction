@@ -34,6 +34,7 @@
 #include "../main/main.h"
 #include <common/gr_d3d11/gr_d3d11_mesh.h>
 #include "../sound/sound.h"
+#include "../ui/menu_scene.h"
 #include "object.h"
 
 bool event_debug_enabled;
@@ -269,10 +270,35 @@ CallHook<int(rf::AiPathInfo*)> ai_path_release_on_load_level_event_crash_fix{
     },
 };
 
+// Waypoint lists warned about this level, once each, as the AI retries every frame.
+static std::unordered_set<const void*> g_warned_waypoint_lists;
+
+// Starting an AI along its waypoint list (0x0040A9B0, every path from a list entry to a node) reads the node at the
+// entry's index without a bounds check, and stock L5S2's list GdSubBay3 holds -1: the word before the node array was
+// taken for a node, and writing to it crashed at random (0x004CECAC). Such an entry fails the start, as the
+// function's own checks do (0x0040AACA).
+CodeInjection ai_waypoint_node_index_check{
+    0x0040AA31,
+    [](auto& regs) {
+        const int node_index = regs.eax;
+        const rf::GSolid* const solid = rf::g_level_solid;
+        if (solid && node_index >= 0 && node_index < solid->nodes.nodes.size()) {
+            return;
+        }
+        const auto* list_name = static_cast<const rf::String*>(regs.ecx);
+        if (g_warned_waypoint_lists.insert(list_name).second) {
+            xlog::warn("[AI] Waypoint list '{}' in {} refers to node {}, which does not exist; AI ignores the list",
+                       list_name->c_str(), rf::level.filename.c_str(), node_index);
+        }
+        regs.eip = 0x0040AACA;
+    },
+};
+
 FunHook<void()> event_level_init_post_hook{
     0x004BD890,
     []() {
         event_level_init_post_hook.call_target();
+        g_warned_waypoint_lists.clear();
         if (string_iequals(rf::level.filename, "L5S2.rfl")) {
             // HACKFIX: make Set_Liquid_Depth events properties in lava control room more sensible
             xlog::trace("Changing Set_Liquid_Depth events in this level...");
@@ -599,6 +625,9 @@ static void __fastcall event_play_sound_turn_on(rf::PlaySoundEvent* event);
 FunHook<decltype(event_play_sound_turn_on)> event_play_sound_turn_on_hook{0x004BA440, event_play_sound_turn_on};
 static void __fastcall event_play_sound_turn_on(rf::PlaySoundEvent* event)
 {
+    if (menu_scene_active()) {
+        return;
+    }
     if (play_sound_event_loops(event)) {
         // Same lookup as the create function (0x004B7CA6), which finds the existing entry
         event->sound_handle = rf::snd_get_handle(event->sound_file.c_str(), event->min_dist, 1.0f, 1.0f);
@@ -811,6 +840,7 @@ void apply_event_patches()
     // Fix crash after level change (Load_Level event) caused by GNavNode pointers in AiPathInfo not being cleared for entities
     // being taken from the previous level
     ai_path_release_on_load_level_event_crash_fix.install();
+    ai_waypoint_node_index_check.install();
 
     // Fix Message event crash on dedicated server
     EventMessage__turn_on_hook.install();

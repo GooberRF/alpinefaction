@@ -311,3 +311,5 @@ constexpr size_t player_name_field_len = 31;
 bool player_name_char_allowed(char c);
 // Why `text` cannot be committed as the player name, or nullptr when it can.
 const char* player_name_warning(const std::string& text);
+// Set by the player rather than left as the name stock's player_allocate (0x004A3310) gives every player.
+bool player_name_configured(std::string_view name);

@@ -1,17 +1,18 @@
 #pragma once
 
-// Modal "CALL VOTE" panel.
+// The Call Vote menu over the game: opening, closing and feeding it the frame.
 
+// A client on a server, which is where votes are called.
+bool vote_panel_available();
 // Closes the overlay if it is up (restores mouse mode, arms the attack swallow).
 void vote_panel_close();
 // Bindable control: opens/closes the overlay during a multiplayer game.
 void vote_panel_toggle_gameplay();
 // True while the overlay is up; drives HUD/chat/input suppression.
 bool vote_panel_is_gameplay_overlay_active();
-// True while a panel text box has focus, i.e. keystrokes are being typed into the
-// panel. Anything that reads key state directly (rather than through the control
-// config, which the panel's veto already covers) has to consult this the same way
-// it consults console/chat visibility.
+// True while a text box or a dialog of the overlay takes the keys. Anything that reads
+// key state directly (rather than through the control config, which the overlay's veto
+// already covers) has to consult this the same way it consults console/chat visibility.
 bool vote_panel_is_capturing_text();
 // Drop the whole form (leaving a server).
 void vote_panel_reset();

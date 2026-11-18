@@ -165,5 +165,8 @@ namespace rf
     // MSVC passes the 8 bytes inline, so the engine would read garbage and free a garbage pointer.
     static auto& level_set_level_to_load = addr_as_ref<void(String::Pod filename, String::Pod state_filename)>(0x0045E2E0);
     static auto& game_new_game = addr_as_ref<void()>(0x00436950);
+    // 0 on success; a failed load closes the level itself.
+    static auto& level_load = addr_as_ref<int(String& filename, String& state_filename, char* error)>(0x0045C540);
+    static auto& level_close = addr_as_ref<void()>(0x0045C880);
 
 }

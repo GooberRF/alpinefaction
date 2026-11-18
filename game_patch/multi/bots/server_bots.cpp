@@ -581,21 +581,21 @@ ServerBot* pick_server_bot_to_evict(const bool configured_only = false)
 
 void server_bot_create(const ServerBotRosterEntry& entry)
 {
-    const int bot_team = (entry.team == rf::TEAM_RED || entry.team == rf::TEAM_BLUE)
-        ? entry.team
+    const auto& configs = g_alpine_server_config.bot_configs;
+    const int num_configs = static_cast<int>(configs.size());
+    const int profile = (entry.profile_index >= 0 && entry.profile_index < num_configs)
+        ? entry.profile_index
+        : g_bot_profile_slots.least_used_slot(num_configs);
+    const int profile_team = multi_is_team_game_type() ? g_alpine_server_config.bot_team_for_profile(profile) : -1;
+    const int bot_team = (entry.team == rf::TEAM_RED || entry.team == rf::TEAM_BLUE) ? entry.team
+        : profile_team >= 0 ? profile_team
         : pick_team_for_new_server_bot();
     rf::Player* const pp = rf::player_allocate(false);
     if (!pp) {
         return;
     }
-
-    const auto& configs = g_alpine_server_config.bot_configs;
-    const int num_configs = static_cast<int>(configs.size());
-    if (entry.profile_index >= 0 && entry.profile_index < num_configs) {
-        g_bot_profile_slots.assign_explicit(pp, entry.profile_index);
-    }
-    else {
-        g_bot_profile_slots.assign_slot(pp, num_configs);
+    if (profile >= 0) {
+        g_bot_profile_slots.assign_explicit(pp, profile);
     }
     const ServerBotConfig default_config{};
     const ServerBotConfig& config = server_bot_config_for(pp, default_config);
@@ -713,14 +713,6 @@ void server_bots_reconcile(const bool in_gameplay)
         g_server_bot_create_timer.set(k_server_bot_create_interval_ms);
         server_bot_create(*entry);
     }
-}
-
-std::string_view server_bot_team_name(const int team)
-{
-    if (team == rf::TEAM_RED) {
-        return "red";
-    }
-    return team == rf::TEAM_BLUE ? "blue" : "auto";
 }
 
 std::string server_bot_profile_label(const int profile_index)
@@ -889,7 +881,7 @@ std::string server_bots_build_list_output()
         const ServerBot* const bot = server_bot_for_roster_entry(entry.id);
         if (!bot) {
             std::format_to(std::back_inserter(output), "- (waiting for a free slot) | Profile: {} | Team: {}{}\n",
-                server_bot_profile_label(entry.profile_index), server_bot_team_name(entry.team),
+                server_bot_profile_label(entry.profile_index), bot_team_config_name(entry.team),
                 entry.join_bot ? " | Join Bots" : "");
             continue;
         }
@@ -897,7 +889,7 @@ std::string server_bots_build_list_output()
         std::format_to(std::back_inserter(output),
             "- {} | Profile: {} | Team: {} | State: {} | Score: {} | Ping: 0{}\n", player.name,
             server_bot_profile_label(g_bot_profile_slots.get_slot(&player)),
-            team_mode ? server_bot_team_name(player.team) : std::string_view{"-"}, server_bot_state_name(player),
+            team_mode ? bot_team_config_name(player.team) : std::string_view{"-"}, server_bot_state_name(player),
             server_bot_score(player), entry.join_bot ? " | Join Bots" : "");
     }
     return output;

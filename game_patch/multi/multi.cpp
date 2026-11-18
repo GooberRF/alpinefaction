@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <format>
 #include <regex>
 #include <xlog/xlog.h>
 #include <winsock2.h>
@@ -10,6 +11,7 @@
 #include <patch_common/AsmWriter.h>
 #include <common/version/version.h>
 #include <common/utils/list-utils.h>
+#include <common/utils/string-utils.h>
 #include <common/rfproto.h>
 #include "multi.h"
 #include "demo/demo.h"
@@ -20,7 +22,11 @@
 #include "kill_attribution.h"
 #include "awards.h"
 #include "server_internal.h"
+#include "server_browser_data.h"
+#include "server_switch.h"
+#include "dedi_cfg.h"
 #include "gametype.h"
+#include "listen_server_setup.h"
 #include "rounds.h"
 #include "salvage.h"
 #include "vehicles/vehicle.h"
@@ -42,6 +48,7 @@
 #include "../misc/misc.h"
 #include "../misc/alpine_options.h"
 #include "../misc/alpine_settings.h"
+#include "../misc/vpackfile.h"
 #include "../misc/waypoints.h"
 #include "../rf/os/os.h"
 #include "../rf/event.h"
@@ -438,6 +445,7 @@ FunHook<void()> multi_limbo_init{
 CodeInjection multi_start_injection{
     0x0046D5B0,
     []() {
+        listen_server_on_multi_start();
         void debug_multi_init();
         debug_multi_init();
         void reset_restricted_cmds_on_init_multi();
@@ -1140,6 +1148,11 @@ std::string_view multi_game_type_name_short(const rf::NetGameType game_type) {
     }
 }
 
+std::string multi_game_type_maps_label(std::optional<rf::NetGameType> game_type)
+{
+    return game_type ? std::format("{} maps", multi_game_type_name_short(*game_type)) : std::string{"All maps"};
+}
+
 std::string_view multi_game_type_prefix(const rf::NetGameType game_type) {
     if (game_type == rf::NG_TYPE_DM) {
         return std::string_view{"dm"};
@@ -1265,6 +1278,23 @@ bool multi_level_name_matches_game_type(std::string_view level_filename, rf::Net
     return multi_level_name_has_game_type_prefix(map_name, game_type);
 }
 
+std::vector<std::string> multi_installed_levels(const std::function<bool(const char*)>& listed)
+{
+    std::vector<std::string> levels;
+    vpackfile_find_matching_files(StringMatcher().suffix(".rfl"), [&](const char* name) {
+        if (listed(name)) {
+            levels.emplace_back(name);
+        }
+    });
+    // The packfile lookup table iterates in hash order.
+    std::sort(levels.begin(), levels.end(), [](const std::string& a, const std::string& b) {
+        return string_to_lower(a) < string_to_lower(b);
+    });
+    levels.erase(std::unique(levels.begin(), levels.end(),
+        [](const std::string& a, const std::string& b) { return string_iequals(a, b); }), levels.end());
+    return levels;
+}
+
 // A level name with ".rfl" appended when it is missing.
 std::string normalize_level_filename(std::string_view name)
 {
@@ -1273,6 +1303,14 @@ std::string normalize_level_filename(std::string_view name)
         out += ".rfl";
     }
     return out;
+}
+
+std::string level_filename_without_ext(std::string_view filename)
+{
+    if (string_iends_with(filename, ".rfl")) {
+        filename.remove_suffix(4);
+    }
+    return std::string{filename};
 }
 
 int multi_num_spawned_players() {
@@ -1320,9 +1358,7 @@ std::string_view level_display_name()
 
 void configure_custom_gametype_listen_server_settings() {
     // reset to defaults
-    g_alpine_server_config = AlpineServerConfig{};
-    reset_base_scope_tables();
-    g_alpine_server_config_active_rules = AlpineServerConfigRules{};
+    clear_listen_server_config();
     set_upcoming_game_type(rf::netgame.type);
 
     auto& rules = g_alpine_server_config_active_rules;
@@ -1336,10 +1372,20 @@ void configure_custom_gametype_listen_server_settings() {
         rules.gibbing.enabled = true;
     }
 
-    // Always allow these visual options on listen servers
-    g_alpine_server_config.allow_fullbright_meshes = true;
-    g_alpine_server_config.allow_lightmaps_only = true;
-    g_alpine_server_config.allow_outlines = true;
+    listen_server_allow_visual_options();
+}
+
+void multi_start_listen_server(int max_players, int flags)
+{
+    rf::set_in_mp_flag();
+    rf::multi_start(0, nullptr);
+    // multi_start resets both.
+    rf::netgame.max_players = max_players;
+    rf::netgame.flags = flags;
+    rf::multi_hud_clear_chat();
+    rf::local_player->net_data->flags |= rf::NPF_IS_HOST;
+    rf::multi_load_next_level();
+    rf::multi_init_server();
 }
 
 void start_level_in_multi(std::string filename, std::optional<rf::NetGameType> game_type) {
@@ -1357,7 +1403,6 @@ void start_level_in_multi(std::string filename, std::optional<rf::NetGameType> g
         rf::netgame.max_kills = 30;
         rf::netgame.geomod_limit = 64;
         rf::netgame.max_captures = 5;
-        rf::netgame.flags = 0; // no broadcast to tracker
         rf::netgame.type = game_type ? *game_type
             : string_istarts_with(filename, "ctf") ? rf::NetGameType::NG_TYPE_CTF
             : string_istarts_with(filename, "koth") ? rf::NetGameType::NG_TYPE_KOTH
@@ -1375,11 +1420,8 @@ void start_level_in_multi(std::string filename, std::optional<rf::NetGameType> g
             rf::netgame.max_captures = g_alpine_server_config_active_rules.scavenger.cap_limit;
         }
 
-        rf::set_in_mp_flag();
-        rf::multi_start(0, 0);
-        rf::multi_hud_clear_chat();
-        rf::multi_load_next_level();
-        rf::multi_init_server();
+        constexpr int max_players = 32; // what multi_start sets
+        multi_start_listen_server(max_players, 0); // no flags: no broadcast to tracker
     }
 }
 
@@ -1652,6 +1694,8 @@ void multi_do_patch()
     faction_files_do_patch();
     level_download_do_patch();
     network_init();
+    server_switch_apply_patch();
+    server_browser_apply_patch();
     demo_do_patch();
     multi_tdm_apply_patch();
     vehicle_apply_patches();

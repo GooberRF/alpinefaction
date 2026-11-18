@@ -48,45 +48,12 @@ enum class UiPass
     Draw,
 };
 
-// Every colour and metric the widgets use. Defaults are the vote panel's palette.
+// Every color and metric the widgets use.
 struct UiStyle
 {
-    // Chrome
-    rf::Color header{255, 215, 0, 255};
-
-    // Text
-    rf::Color text_normal{230, 230, 230, 255};
-    rf::Color text_hover{255, 255, 255, 255};
-    rf::Color text_disabled{130, 130, 130, 255};
-    rf::Color label{255, 255, 255, 255};
-    rf::Color label_secondary{210, 210, 210, 255};
     rf::Color body_text{215, 215, 215, 255};
 
-    // Button
-    rf::Color button_fill{45, 45, 45, 255};
-    rf::Color button_fill_hover{70, 70, 70, 255};
-    rf::Color button_border{150, 150, 150, 255};
-    rf::Color button_border_disabled{100, 100, 100, 255};
-    rf::Color button_active_fill{35, 90, 60, 255};
-    rf::Color button_active_fill_hover{50, 115, 80, 255};
-    rf::Color button_active_border{120, 230, 120, 255};
-    rf::Color button_active_text{255, 255, 255, 255};
-
-    // Checkbox
-    rf::Color check_border{170, 170, 170, 255};
-    rf::Color check_border_disabled{100, 100, 100, 255};
-    rf::Color check_mark{120, 230, 120, 255};
-    rf::Color check_mark_disabled{85, 135, 85, 255};
-
-    // Cycler
-    rf::Color cycler_border{150, 150, 150, 255};
-
-    // Lists
-    rf::Color list_bg{8, 8, 8, 235};
-    rf::Color list_border{120, 120, 120, 255};
-    rf::Color list_selected_bg{35, 90, 60, 255};
-    rf::Color list_hover_bg{70, 70, 70, 255};
-    rf::Color list_selected_text{160, 255, 190, 255};
+    // Scrollbar
     rf::Color scrollbar{100, 255, 200, 255};
     rf::Color scrollbar_track{0, 0, 0, 0};
     rf::Color scrollbar_hover{160, 255, 220, 255};
@@ -101,10 +68,6 @@ struct UiStyle
     rf::Color input_text{255, 255, 255, 255};
     rf::Color input_text_disabled{120, 120, 120, 255};
 
-    // Danger affordances (close button, delete zones)
-    rf::Color danger_fill{150, 40, 40, 255};
-    rf::Color danger_border{220, 120, 120, 255};
-
     // Toasts
     rf::Color toast_bg{20, 20, 20, 235};
     rf::Color toast_border{120, 230, 120, 255};
@@ -115,10 +78,6 @@ struct UiStyle
     // Metrics, in reference-resolution pixels unless the name says otherwise.
     float text_pad = 6.0f;
     int text_pad_min = 3;
-    float check_text_gap = 5.0f;
-    int check_text_gap_min = 3;
-    float cycler_arrow_w = 16.0f;
-    int cycler_arrow_w_min = 10;
     float scrollbar_w = 6.0f;
     int scrollbar_w_min = 3;
     // Length of a step box at each end of a scroll region's gutter. The thumb travels between
@@ -142,6 +101,7 @@ bool ui_char_filter_filename(char c); // alnum plus - _ . space
 bool ui_char_filter_numeric(char c);  // digits plus - .
 bool ui_char_filter_digit(char c);
 bool ui_char_filter_hex(char c);
+bool ui_char_filter_printable(char c); // printable ASCII
 
 // Formatting for the numeric widgets. A printf-style string would have to be a runtime format for
 // std::format, so the pieces are spelled out instead.
@@ -181,6 +141,14 @@ struct UiDescriptionState
     {
         id = new_id;
         pinned = true;
+    }
+
+    // For a popup or dialog that a pinning click opened, as it closes. The pass it closes in keeps the text, as the
+    // rows built before the close could not take the hover.
+    void unpin()
+    {
+        pinned = false;
+        seen_this_pass = true;
     }
 
     void end_pass()
@@ -232,6 +200,7 @@ public:
     int my = 0;
     bool click = false;
     bool rclick = false;
+    bool mclick = false;
     int wheel = 0;
     bool lmb_down = false;
 
@@ -248,7 +217,7 @@ public:
     // -------- host feed --------
     // Called once per frame, before the hit-test pass, with that frame's input edges.
     void begin_frame(int mouse_x, int mouse_y, int wheel_delta, bool lmb_is_down,
-                     bool lmb_was_pressed, bool rmb_was_pressed = false);
+                     bool lmb_was_pressed, bool rmb_was_pressed = false, bool mmb_was_pressed = false);
     // The draw pass runs later in the frame and re-reads the cursor; edges stay consumed.
     void set_mouse_pos(int mouse_x, int mouse_y);
 
@@ -282,7 +251,7 @@ public:
     }
 
     // -------- hover --------
-    // Honours the active scroll viewport and an open popup's modality.
+    // Honors the active scroll viewport and an open popup's modality.
     [[nodiscard]] bool hover(const UiRect& r, UiId id = 0) const;
     // Latched per pass by the widgets; drives the optional hover blip and, while the mouse is the
     // live input device, moves the keyboard focus without showing the ring.
@@ -316,10 +285,23 @@ public:
     {
         return focus_visible_;
     }
+    // A modal seats the focus on its default and gives the screen's back as it closes.
+    void set_focus(UiId id, bool visible)
+    {
+        focus_id_ = id;
+        focus_visible_ = visible;
+    }
     // Tab / Shift+Tab (0x100F) / Up / Down / Left / Right / Enter against the previous frame's
     // registration order; Left / Right only reach an Adjustable widget. While a popup is open the
     // arrows and Enter go to its owner and Tab closes it. Returns true when the key was consumed.
     bool handle_nav_key(rf::Key key);
+    // The focused widget is still on screen: registered in the previous pass.
+    [[nodiscard]] bool focus_registered() const
+    {
+        return find_focus() != nullptr;
+    }
+    // The focused widget is one Left / Right adjust.
+    [[nodiscard]] bool focus_adjustable() const;
     // One-shot results a widget picks up in the hit-test pass.
     bool consume_activation(UiId id);
     int consume_adjust(UiId id); // -1, 0 or +1
@@ -340,9 +322,19 @@ public:
     // Runs the commit callback (if any) and drops the focus. String boxes edit live, so for them
     // this only drops focus.
     void release_text_focus(bool commit);
+    // Drops the keys the focused box has not applied yet, for a host replacing its text.
+    void clear_pending_keys()
+    {
+        pending_.clear();
+    }
     // Set from a box's gained_focus branch; called with true on ENTER / click-away / focus loss and
     // with false on ESC, before the focus is cleared.
     void set_text_commit_callback(std::function<void(bool commit)> fn);
+    // The focused box has a commit callback. Each keeps the edit only on a commit, so ESC throws it away.
+    [[nodiscard]] bool has_text_commit() const
+    {
+        return static_cast<bool>(text_commit_);
+    }
 
     // -------- binding capture --------
     void begin_key_capture(UiId id);
@@ -378,7 +370,8 @@ public:
 
     // -------- toasts --------
     void push_toast(std::string text);
-    void draw_toasts(int font);
+    // Stacked down the right edge from `top`.
+    void draw_toasts(int font, int top = 0);
 
     // -------- description pane state --------
     UiDescriptionState& description()
@@ -425,6 +418,7 @@ private:
         float age = 0.0f;
     };
 
+    [[nodiscard]] const Focusable* find_focus() const;
     void apply_pending_keys();
     void queue_key(PendingKey key);
     void push_char(char c);
@@ -486,14 +480,12 @@ private:
 };
 
 // ---------------------------------------------------------------------------
-// Geometry / colour helpers
+// Geometry helpers
 // ---------------------------------------------------------------------------
 
 bool ui_hover(const UiContext& ctx, const UiRect& r, UiId id = 0);
 // Absolute rect -> coordinates to draw at under the active clip window.
 UiRect ui_draw_rect(const UiContext& ctx, const UiRect& r);
-void ui_set_header_color(const UiContext& ctx);
-void ui_set_text_color(const UiContext& ctx, bool enabled, bool hovered);
 
 // ---------------------------------------------------------------------------
 // Text measurement / wrapping
@@ -521,25 +513,6 @@ void ui_play_error();
 // Widgets. Every one returns its result in the hit-test pass only.
 // ---------------------------------------------------------------------------
 
-void ui_draw_label(const UiContext& ctx, const UiRect& r, const char* text, int font,
-                   bool secondary = false);
-
-bool ui_button(UiContext& ctx, const UiRect& r, const char* text, int font, bool enabled = true,
-               bool active = false);
-
-bool ui_checkbox(UiContext& ctx, const UiRect& r, bool checked, const char* text, int font,
-                 bool enabled = true);
-
-int ui_cycler_arrow_width(const UiContext& ctx);
-int ui_cycler_value_width(const UiContext& ctx, const UiRect& r);
-// "< value >"; returns -1, 0 or +1.
-int ui_cycler(UiContext& ctx, const UiRect& r, const char* value, int font);
-
-int ui_listbox_row_height(int font);
-// Returns the clicked index, else -1.
-int ui_listbox(UiContext& ctx, const UiRect& r, const std::vector<std::string>& items, int sel,
-               float& scroll, int font);
-
 UiTextInputResult ui_text_input(UiContext& ctx, const UiRect& r, UiId id, std::string& text,
                                 size_t max_len, UiCharFilter allow_char, const char* hint, int font,
                                 bool enabled = true);
@@ -548,9 +521,6 @@ void ui_drop_text_focus_under_console(UiContext& ctx);
 
 // A focusable widget scrolled out of view: the keyboard focus can still step onto it. True when Enter took it.
 bool ui_offscreen_activatable(UiContext& ctx, UiId id);
-
-// Top-right "X". Returns true on the click; the caller decides what closing means.
-bool ui_close_button(UiContext& ctx, const UiRect& r, int font);
 
 // ---------------------------------------------------------------------------
 // Scroll regions

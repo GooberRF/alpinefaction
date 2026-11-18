@@ -20,6 +20,7 @@
 #include "../main/main.h"
 #include "../os/console.h"
 #include "../misc/vpackfile.h"
+#include "../ui/menu_scene.h"
 
 static int g_cutscene_bg_sound_sig = -1;
 static int g_custom_sound_entry_start = -1;
@@ -291,6 +292,9 @@ static int snd_play_3d_instance(int handle, const rf::Vector3& pos, float volume
 
     // Upper-bound guard
     if (!rf::sound_enabled || handle < 0 || handle >= rf::g_num_sounds) {
+        return -1;
+    }
+    if (menu_scene_active()) {
         return -1;
     }
     if (rf::snd_load_hint(handle) != 0) {

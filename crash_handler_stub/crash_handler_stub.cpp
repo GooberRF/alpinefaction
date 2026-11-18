@@ -31,9 +31,21 @@ void CrashHandlerStubProcessException(PEXCEPTION_POINTERS exception_ptrs, DWORD 
         if (!event_handle)
             break;
 
-        STARTUPINFOW startup_info;
+        // Only these two are inherited: the game's sockets and files would otherwise stay open in the crash
+        // handler, its UDP port held while the crash dialog stays up. On the stack: the heap may be what crashed.
+        HANDLE inherited[] = {process_handle, event_handle};
+        alignas(8) char attribute_list_buf[256];
+        auto* const attribute_list = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attribute_list_buf);
+        SIZE_T attribute_list_size = sizeof(attribute_list_buf);
+        const bool list_ready = InitializeProcThreadAttributeList(attribute_list, 1, 0, &attribute_list_size);
+        const bool limited = list_ready
+            && UpdateProcThreadAttribute(attribute_list, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherited,
+                                         sizeof(inherited), nullptr, nullptr);
+
+        STARTUPINFOEXW startup_info;
         ZeroMemory(&startup_info, sizeof(startup_info));
-        startup_info.cb = sizeof(startup_info);
+        startup_info.StartupInfo.cb = sizeof(startup_info);
+        startup_info.lpAttributeList = attribute_list;
 
         WCHAR cmd_line[256];
         std::swprintf(cmd_line, std::size(cmd_line), L"%ls\\CrashHandler.exe 0x%p 0x%p %lu 0x%p 0x%p", g_module_path,
@@ -41,7 +53,20 @@ void CrashHandlerStubProcessException(PEXCEPTION_POINTERS exception_ptrs, DWORD 
         xlog::infof("Running crash handler: %ls", cmd_line);
 
         PROCESS_INFORMATION proc_info;
-        if (!CreateProcessW(nullptr, cmd_line, nullptr, nullptr, TRUE, 0, nullptr, nullptr, &startup_info, &proc_info)) {
+        BOOL created = limited
+            && CreateProcessW(nullptr, cmd_line, nullptr, nullptr, TRUE, EXTENDED_STARTUPINFO_PRESENT, nullptr,
+                              nullptr, &startup_info.StartupInfo, &proc_info);
+        if (list_ready) {
+            DeleteProcThreadAttributeList(attribute_list);
+        }
+        // A report that keeps the game's handles open beats no report.
+        if (!created) {
+            xlog::errorf("Cannot limit the handles CrashHandler inherits (error %lu)", GetLastError());
+            startup_info.StartupInfo.cb = sizeof(startup_info.StartupInfo);
+            created = CreateProcessW(nullptr, cmd_line, nullptr, nullptr, TRUE, 0, nullptr, nullptr,
+                                     &startup_info.StartupInfo, &proc_info);
+        }
+        if (!created) {
             xlog::errorf("Failed to start CrashHandler process - CreateProcessW %ls failed with error %lu", cmd_line, GetLastError());
             break;
         }

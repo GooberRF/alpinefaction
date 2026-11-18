@@ -21,6 +21,7 @@
 #include <winsock2.h>
 #include "server.h"
 #include "server_internal.h"
+#include "dedi_cfg.h"
 #include "alpine_packets.h"
 #include "obj_update_delta.h"
 #include "demo/demo.h"
@@ -74,6 +75,7 @@
 #include "../rf/collide.h"
 #include "../fflink/afstats_events.h"
 #include "../fflink/fflink_session.h"
+#include "../ui/menu_scene.h"
 #include "projectile_lag_comp.h"
 #include "obj_interp_history.h"
 
@@ -139,6 +141,15 @@ BotProfileSlotTracker g_bot_profile_slots;
 
 int BotProfileSlotTracker::assign_slot(const rf::Player* player, int num_profiles)
 {
+    const int slot = least_used_slot(num_profiles);
+    if (slot >= 0) {
+        assignments[player] = slot;
+    }
+    return slot;
+}
+
+int BotProfileSlotTracker::least_used_slot(int num_profiles) const
+{
     if (num_profiles <= 0) return -1;
 
     std::vector<int> counts(num_profiles, 0);
@@ -154,8 +165,6 @@ int BotProfileSlotTracker::assign_slot(const rf::Player* player, int num_profile
             best_slot = i;
         }
     }
-
-    assignments[player] = best_slot;
     return best_slot;
 }
 
@@ -850,8 +859,8 @@ CodeInjection multi_limbo_leave_pre_patch{
 
 void shuffle_level_array()
 {
-    // ADS servers, shuffle the level+rules array (SSOT) and then sync the netgame levels array
-    if (!g_dedicated_launched_from_ads)
+    // Servers running a config shuffle the level+rules array (SSOT) and then sync the netgame levels array
+    if (!server_config_active())
         return;
 
     auto& cfg = g_alpine_server_config;
@@ -866,7 +875,7 @@ void shuffle_level_array()
 
 static std::pair<bool, int> find_rotation_index_for_level(std::string_view level_name)
 {
-    if (!g_dedicated_launched_from_ads)
+    if (!server_config_active())
         return {false, -1};
 
     const int index = rotation_index_for_level(level_name);
@@ -973,7 +982,8 @@ bool multi_set_gametype_alpine(std::string_view gametype_name)
 ConsoleCommand2 sv_game_type_cmd{
     "sv_gametype",
     [](std::optional<std::string> new_game_type, std::optional<std::string> level_name) {
-        if (!rf::is_dedicated_server) {
+        // A Host Game host switches in place, as a dedicated server does, and keeps its setup.
+        if (!rf::is_dedicated_server && !listen_server_config_active()) {
             if (rf::is_multi && !rf::is_server && !demo_playback_active()) {
                 rf::console::print("Connected to a server: use rcon sv_gametype to change its game type.\n");
                 return;
@@ -990,7 +1000,7 @@ ConsoleCommand2 sv_game_type_cmd{
             start_local_multi_game(level_name.value(), resolved_type);
             return;
         }
-        if (g_dedicated_launched_from_ads) {
+        if (server_config_active()) {
             if (rf::gameseq_get_state() != rf::GameState::GS_GAMEPLAY) {
                 rf::console::print("You cannot change the game type while between levels.\n");
                 return;
@@ -1048,8 +1058,8 @@ ConsoleCommand2 sv_game_type_cmd{
             rf::console::print("This command is only available for Alpine Faction dedicated servers launched with the -ads switch.\n");
         }
     },
-    "Load a specific gametype. On an ADS dedicated server, loads the level if specified, otherwise restarts the "
-    "current level. Elsewhere, starts a local game on the level, like levelm.",
+    "Load a specific gametype. On an ADS dedicated server or a server hosted from Host Game, loads the level if "
+    "specified, otherwise restarts the current level. Elsewhere, starts a local game on the level, like levelm.",
     "sv_gametype <dm|tdm|ctf|koth|dc|rev|run|esc|bag|tbag|pit|wo|gg|sal|scav> [level]",
 };
 
@@ -2454,14 +2464,14 @@ FunHook<void()> multi_kill_local_player_hook{
 CallHook<int(const char*)> item_lookup_type_hook{
     0x00465102,
     [](const char* cls_name) {
-        if (rf::is_dedicated_server) {
+        if (server_config_active()) {
             // support item replacement mapping
             auto it = g_alpine_server_config_active_rules.item_replacements.find(cls_name);
             if (it != g_alpine_server_config_active_rules.item_replacements.end())
                 cls_name = it->second.c_str();
         }
         int type_index = item_lookup_type_hook.call_target(cls_name);
-        if (rf::is_dedicated_server) {
+        if (server_config_active()) {
             // Mutator pickup redirection.
             type_index = mutators_redirect_item_index(type_index);
         }
@@ -2487,7 +2497,7 @@ CodeInjection player_create_entity_find_default_weapon_injection{
                 regs.eip = 0x004A43DF;
             }
         }
-        else if (rf::is_dedicated_server && !gt_is_gungame()) {
+        else if (server_config_active() && !gt_is_gungame()) {
             regs.eax = rf::weapon_lookup_type(
                 g_alpine_server_config_active_rules.default_player_weapon.weapon_name.data());
             regs.eip = 0x004A43DF;
@@ -3327,7 +3337,8 @@ bool player_spawn_blocked_by_game(const rf::Player* const player)
 }
 
 void update_player_active_status(rf::Player* const player) {
-    if (rf::is_dedicated_server && g_alpine_server_config.inactivity_config.enabled) {
+    // A listen host is never marked idle.
+    if (server_config_active() && player != rf::local_player && g_alpine_server_config.inactivity_config.enabled) {
         player->idle.kick_timer.invalidate();
         player->idle.check_timer
             .set(g_alpine_server_config.inactivity_config.allowed_inactive_ms);
@@ -3716,28 +3727,83 @@ static rf::ubyte hvb_team_for_player(const rf::Player* player)
     return player->is_bot ? rf::TEAM_BLUE : rf::TEAM_RED;
 }
 
+// The Alpine steps before a server-side spawn. False for a player who takes no part, and so is not spawned.
+static bool server_prepare_player_spawn(rf::Player* player)
+{
+    update_player_active_status(player); // active pulse on spawn
+
+    if (g_alpine_server_config_active_rules.force_character.enabled) {
+        player->settings.multi_character = g_alpine_server_config_active_rules.force_character.character_index;
+    }
+    else if (player->reported_multi_character >= 0) {
+        // No forced character: honor the character the client reported.
+        player->settings.multi_character = player->reported_multi_character;
+    }
+    if (player->is_non_participant() || player->is_spectator) {
+        return false;
+    }
+    // Humans vs. Bots: correct a stray team before spawn point selection.
+    if (humans_vs_bots_active() && player->team != hvb_team_for_player(player)) {
+        assign_player_to_team(player, hvb_team_for_player(player));
+    }
+    return true;
+}
+
+// The Alpine steps once a server-side spawn has created the player's entity.
+static void server_on_player_spawned(rf::Player* player)
+{
+    if (auto* ep = rf::entity_from_handle(player->entity_handle)) {
+        if (g_alpine_server_config_active_rules.spawn_life.enabled) {
+            ep->life = g_alpine_server_config_active_rules.spawn_life.value;
+        }
+        if (g_alpine_server_config_active_rules.spawn_armour.enabled) {
+            ep->armor = g_alpine_server_config_active_rules.spawn_armour.value;
+        }
+        // Fresh entity, so any riot shield break suppression from the life
+        // that just ended can never apply to them again.
+        riot_shield_on_player_spawn(player);
+        afstats::on_spawn(player, ep->pos);
+        af_send_rope_states_to(player, true);
+    }
+
+    // inform newly spawned players of their loadout
+    if (rf::is_server
+        && (g_alpine_server_config_active_rules.spawn_loadout_is_active()
+            // no loadouts when gungame is on
+            && !gt_is_gungame())
+        // Must match the spawn injection's condition: if it did not replace the
+        // stock grant, the client's own is correct and must not be reconciled away.
+        && spawn_loadout_has_enabled_weapon(player)
+    ) {
+        const auto& loadout = spawn_loadout_for_player(player);
+
+        // Add each weapon in the loadout to the player on the server
+        for (auto const& e : loadout) {
+            if (!e.enabled) {
+                continue;
+            }
+            af_give_loadout_weapon(player, e.index, e.reserve_ammo);
+
+            // if remote charge, we also need to add the detonator
+            if (e.index == rf::remote_charge_weapon_type) {
+                if (auto ep = rf::entity_from_handle(player->entity_handle))
+                    rf::ai_add_weapon(&ep->ai, rf::remote_charge_det_weapon_type, 0);
+            }
+        }
+
+        af_send_just_spawned_loadout(player, loadout);
+    }
+
+    if (g_match_info.pre_match_active) {
+        update_pre_match_powerups(player);
+    }
+}
+
 FunHook<void(rf::Player*)> multi_spawn_player_server_side_hook{
     0x00480820,
     [](rf::Player* player) {
-        update_player_active_status(player); // active pulse on spawn
-
-        if (g_alpine_server_config_active_rules.force_character.enabled) {
-            player->settings.multi_character =
-                g_alpine_server_config_active_rules.force_character.character_index;
-        }
-        else if (player->reported_multi_character >= 0) {
-            // No forced character: honour the character the client reported.
-            player->settings.multi_character = player->reported_multi_character;
-        }
-        if (player->is_non_participant()) {
+        if (!server_prepare_player_spawn(player)) {
             return;
-        }
-        if (player->is_spectator) {
-            return;
-        }
-        // Humans vs. Bots: correct a stray team before spawn point selection.
-        if (humans_vs_bots_active() && player->team != hvb_team_for_player(player)) {
-            assign_player_to_team(player, hvb_team_for_player(player));
         }
         if (!check_can_player_spawn(player)) {
             return;
@@ -3778,56 +3844,33 @@ FunHook<void(rf::Player*)> multi_spawn_player_server_side_hook{
 
         multi_spawn_player_server_side_hook.call_target(player);
 
-        if (player) {
-            if (auto* ep = rf::entity_from_handle(player->entity_handle)) {
-                if (g_alpine_server_config_active_rules.spawn_life.enabled) {
-                    ep->life = g_alpine_server_config_active_rules.spawn_life.value;
-                }
-                if (g_alpine_server_config_active_rules.spawn_armour.enabled) {
-                    ep->armor = g_alpine_server_config_active_rules.spawn_armour.value;
-                }
-                if (gt_is_gungame()) {
-                    gungame_on_player_spawn(player);
-                }
-                // Fresh entity, so any riot shield break suppression from the life
-                // that just ended can never apply to them again.
-                riot_shield_on_player_spawn(player);
-                afstats::on_spawn(player, ep->pos);
-                af_send_rope_states_to(player, true);
-            }
+        // Not in server_on_player_spawned: at level load, Gun Game's init grants the host's weapon.
+        gungame_on_player_spawn(player);
+        server_on_player_spawned(player);
+    },
+};
 
-            // inform newly spawned players of their loadout
-            if (rf::is_server
-                && (g_alpine_server_config_active_rules.spawn_loadout_is_active()
-                    // no loadouts when gungame is on
-                    && !gt_is_gungame())
-                // Must match the spawn injection's condition: if it did not replace the
-                // stock grant, the client's own is correct and must not be reconciled away.
-                && spawn_loadout_has_enabled_weapon(player)
-            ) {
-                const auto& loadout = spawn_loadout_for_player(player);
+// level_load creates a listen host's entity itself, skipping multi_spawn_player_server_side.
+CallHook<void(rf::Vector3*, rf::Matrix3*, rf::Player*)> level_load_host_respawn_point_hook{
+    0x0045C78E,
+    [](rf::Vector3* pos, rf::Matrix3* orient, rf::Player* player) {
+        server_prepare_player_spawn(player);
+        level_load_host_respawn_point_hook.call_target(pos, orient, player);
+    },
+};
 
-                // Add each weapon in the loadout to the player on the server
-                for (auto const& e : loadout) {
-                    if (!e.enabled) {
-                        continue;
-                    }
-                    af_give_loadout_weapon(player, e.index, e.reserve_ammo);
-
-                    // if remote charge, we also need to add the detonator
-                    if (e.index == rf::remote_charge_weapon_type) {
-                        if (auto ep = rf::entity_from_handle(player->entity_handle))
-                            rf::ai_add_weapon(&ep->ai, rf::remote_charge_det_weapon_type, 0);
-                    }
-                }
-
-                af_send_just_spawned_loadout(player, loadout);
-            }
+CallHook<rf::Entity*(rf::Player*, int, const rf::Vector3*, const rf::Matrix3*, int)> level_load_create_host_entity_hook{
+    0x0045C807,
+    [](rf::Player* player, int entity_type, const rf::Vector3* pos, const rf::Matrix3* orient, int multi_character) {
+        if (menu_scene_active()) {
+            return static_cast<rf::Entity*>(nullptr);
         }
-
-        if (g_match_info.pre_match_active) {
-            update_pre_match_powerups(player);
+        rf::Entity* const ep =
+            level_load_create_host_entity_hook.call_target(player, entity_type, pos, orient, multi_character);
+        if (rf::is_multi && rf::is_server) {
+            server_on_player_spawned(player);
         }
+        return ep;
     },
 };
 
@@ -3970,11 +4013,6 @@ CallHook<rf::Weapon*(int, int, rf::Vector3*, rf::Matrix3*, int, int)>
     },
 };
 
-struct DefaultBotIdentity {
-    const char* name;
-    const char* character;
-};
-
 static constexpr DefaultBotIdentity k_default_bot_identities[] = {
     {"Parker",      "scientist_parker"},
     {"Riot Guard",  "riot_guard"},
@@ -3990,6 +4028,11 @@ static constexpr DefaultBotIdentity k_default_bot_identities[] = {
     {"Scientist",   "scientist"},
     {"Franklin",    "medic1"},
 };
+
+std::span<const DefaultBotIdentity> default_bot_identities()
+{
+    return k_default_bot_identities;
+}
 
 static bool player_name_in_use(std::string_view name, const rf::Player* self)
 {
@@ -4969,6 +5012,10 @@ bool server_is_match_mode_enabled()
 FunHook<void()> multi_check_for_round_end_hook{
     0x0046E7C0,
     []() {
+        // Before the first level loads, level.time and the scores are still the last level's.
+        if (!(rf::level.flags & rf::LEVEL_LOADED)) {
+            return;
+        }
         if (g_match_info.pre_match_active) {
             return; // round can't end during pre-match
         }
@@ -5505,7 +5552,7 @@ void process_queued_spawn_points_from_items()
 {
     const auto& logic = g_alpine_server_config_active_rules.spawn_logic;
 
-    if (!rf::is_dedicated_server || !logic.dynamic_respawns || logic.dynamic_respawn_items.empty()) {
+    if (!server_config_active() || !logic.dynamic_respawns || logic.dynamic_respawn_items.empty()) {
         return;
     }
 
@@ -5546,7 +5593,7 @@ CallHook<rf::Item*(int, const char*, int, int, const rf::Vector3*, rf::Matrix3*,
         }
 
         const auto& logic = g_alpine_server_config_active_rules.spawn_logic;
-        if (rf::is_dedicated_server && logic.dynamic_respawns) {
+        if (server_config_active() && logic.dynamic_respawns) {
             // look up this item in the vector
             auto itcfg = std::find_if(logic.dynamic_respawn_items.begin(), logic.dynamic_respawn_items.end(),
                                       [&](auto const& cfg) { return cfg.item_name == cls_name; });
@@ -6005,6 +6052,8 @@ void server_init()
 
     // Support forcing player character
     multi_spawn_player_server_side_hook.install();
+    level_load_host_respawn_point_hook.install();
+    level_load_create_host_entity_hook.install();
 
     // Accuracy: the legacy scoreboard/PF//stats counters and the afstats stream are fed from the
     // same sites so they can never disagree. The lag comp fire hook counts nothing - it only

@@ -4,6 +4,8 @@ Alpine Faction dedicated servers are configured with a single TOML file, called 
 
 While this reference document covers all of the available settings, the easiest way to configure a dedicated server is to use the web-based [Alpine Faction Server Configuration Utility](https://dedi.alpinefaction.com/).
 
+The in-game Host Game screen saves its setups as configs in this format, in the `saved\servers` folder of the Red Faction game directory. It can load any config placed there whose name is at most 64 characters of letters, digits, spaces, `-` and `_`, does not start or end with a space, and is not a reserved Windows device name (`CON`, `PRN`, `AUX`, `NUL`, `COM1` to `COM9`, `LPT1` to `LPT9`). It reads at most 64 `bot_profiles` entries, and keeps at most 33 beyond the first `server_bots`, which leaves room for a full roster of bots. Each of the `server_bots` bots gets a profile of its own, so a profile that several bots share is saved back once for each of them. When a setup's `[base]` does not set `geo_limit`, Host Game uses a `geo_limit` of 128 there; a level that sets its own `geo_limit` still uses its own.
+
 ## Starting a server
 
 Start a dedicated server by passing the config file to the launcher with `-ads`:
@@ -90,7 +92,8 @@ In the tables below, a Number key takes an integer or a decimal value, and an In
 | `rcon_password` | String | `""` | Legacy rcon password, truncated to 15 characters. Unless an `[[rcon_profiles]]` entry uses the same password, it creates a profile named `legacy` limited to `gt`, `kick`, `level`, `sv_pass`, `map`, `ban`, `ban_ip`, `map_ext`, `map_rest`, `map_next`, `map_rand`, `map_prev`, `sv_caplimit`, `sv_fraglimit`, `sv_gametype`, `sv_geolimit`, `sv_timelimit` and `unban_last`. |
 | `bot_shared_secret` | Integer | `0` | Secret (0-4294967295) that bot clients must present to be recognized as bots. `0` disables bot client authentication. |
 | `server_bots` | Integer | `0` | Number of server-side bots (run inside the server process), clamped to 0-31. They use the `bot_profiles` profiles and follow `ideal_player_count`. |
-| `bot_profiles` | Array of strings | `[]` | Bot profile files, relative to this config file's folder. Each joining bot takes the profile used by the fewest current bots (the earliest one on a tie), so profiles are shared out evenly. See [Bot profile files](#bot-profile-files). |
+| `bot_profiles` | Array of strings | `[]` | Bot profile files, relative to this config file's folder. An entry that is not a file name, or a file that cannot be read, still takes its place in the list, as a default bot. Each joining bot takes the profile used by the fewest current bots (the earliest one on a tie), so profiles are shared out evenly. See [Bot profile files](#bot-profile-files). |
+| `bot_teams` | Array of strings | `[]` | The team for each entry of `bot_profiles`, in the same order: `"auto"`, `"red"` or `"blue"`, case-insensitive. In team game types, a server bot that takes a profile joins that profile's team; `"auto"`, an unknown value or a missing entry lets the server pick the weaker team. Humans vs. Bots still puts every bot on Blue. |
 | `fflink_gsk` | String | `""` | FactionFiles game server key, used for stats tracking and demo uploads. If FactionFiles rejects the key at startup, the server refuses to start. Ignored with `-nogsk`. |
 | `upnp` | Boolean | `false` | Try to forward the server port with UPnP. |
 | `demo_auto_record` | Boolean | `false` | Record every level to an `.afd` demo in the `demos` folder. Recordings with no player connected are discarded. With match mode, only live matches are recorded. |
@@ -137,10 +140,10 @@ Marks players who stop playing as idle and can kick them.
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
 | `enabled` | Boolean | `true` | Track inactive players. The other keys are read only when this is true. |
-| `new_player_grace` | Number | `120` | Seconds a newly joined player is exempt (minimum 1). |
-| `allowed_inactive` | Number | `60` | Seconds of inactivity before a player is marked idle (minimum 1). |
+| `new_player_grace` | Number | `120` | Seconds a newly joined player is exempt, 1-86400. |
+| `allowed_inactive` | Number | `60` | Seconds of inactivity before a player is marked idle, 1-86400. |
 | `kick_after_warning` | Boolean | `false` | Warn idle players, then kick them if they do not respawn in time. |
-| `warning_duration` | Number | `10` | Seconds between the warning and the kick (minimum 1). Read only when `kick_after_warning` is true. |
+| `warning_duration` | Number | `10` | Seconds between the warning and the kick, 1-86400. Read only when `kick_after_warning` is true. |
 | `kick_message` | String | `"You have been marked as idle due to inactivity! You will be kicked from the game unless you respawn in the next 10 seconds."` | Warning text. Read only when `kick_after_warning` is true. |
 
 ## `[damage_notifications]`
@@ -206,7 +209,7 @@ These are read only when `enabled` is true.
 | --- | --- | --- | --- |
 | `allowed_levels` | Array of strings | `[]` | Levels players may vote for. `.rfl` is added when missing. Missing levels are downloaded at startup unless `-nodl` is used. |
 | `add_rotation_to_allowed_levels` | Boolean | `true` | Also allow every rotation level. |
-| `add_installed_to_allowed_levels` | Boolean | `false` | Also allow every installed level whose filename starts with a game type prefix, including levels installed while the server runs. |
+| `add_installed_to_allowed_levels` | Boolean | `false` | Also allow every installed level whose filename starts with a game type prefix, including levels installed while the server runs. They follow the configured levels in alphabetical order, ignoring case. |
 | `only_allow_gametype_prefix` | Boolean | `false` | Accept a level for a voted game type only if the filename has that game type's prefix (or the game type is the level's own default). |
 
 If neither the rotation nor `allowed_levels` names a level, `glass_house.rfl` is the only votable level.
@@ -245,7 +248,7 @@ If neither the rotation nor `allowed_levels` names a level, `glass_house.rfl` is
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `flag_return_time` | Number | `25` | Seconds before a dropped CTF flag returns (minimum 1). |
+| `flag_return_time` | Number | `25` | Seconds before a dropped CTF flag returns, 1-86400. |
 | `bag_return_time` | Number | `7.5` | Seconds before a dropped BAG/TBAG bag returns, 1-60. |
 | `bag_spawn_delay` | Number | `7.5` | Seconds before the BAG/TBAG bag spawns, 0-60. |
 | `sal_flag_spawn_delay` | Number | `15` | Seconds before the SAL flag spawns, 0-60. |
@@ -390,7 +393,7 @@ How the server picks a respawn point. The defaults match the stock game.
 | `always_avoid_last` | Boolean | `false` | Never reuse the player's previous respawn point. |
 | `always_use_furthest` | Boolean | `false` | Always pick the point furthest from other players. |
 | `only_avoid_enemies` | Boolean | `false` | Ignore teammates when measuring distance to other players. |
-| `dynamic_respawns` | Boolean | `false` | Create extra respawn points at the positions of chosen items. Dedicated servers only. |
+| `dynamic_respawns` | Boolean | `false` | Create extra respawn points at the positions of chosen items. Only on servers running a config: dedicated servers, and listen servers started from Host Game. |
 | `dynamic_respawn_items` | Array of tables | `[]` | Items that create respawn points. Whenever a `spawn_selection` table is read while `dynamic_respawns` is true, the list is rebuilt from that table alone, so a level that sets any `spawn_selection` key must repeat this list. Entry keys: `item_name` (String, items.tbl name) and `min_respawn_points` (Integer, default `8`): points are created only while the level has fewer respawn points than this; `0` means always. |
 
 ### `kill_rewards`

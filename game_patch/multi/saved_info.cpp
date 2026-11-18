@@ -31,17 +31,26 @@ namespace
         std::string map = std::string{get_filename_without_ext(strip_path_components(rf::level.filename.c_str()))};
         if (map.empty())
             return {};
-        auto dir = std::format("{}\\saved", rf::root_path);
+        const std::string dir = saved_dir_path(create_dir);
+        if (dir.empty()) {
+            return {};
+        }
         if (dir.size() + map.size() + 16 > rf::max_path_len) {
             xlog::error("saved-info path is too long!");
             return {};
         }
-        if (create_dir && !CreateDirectoryA(dir.c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS) {
-            xlog::error("Failed to create saved directory, error {}", GetLastError());
-            return {};
-        }
         return std::format("{}\\{}_saved.afl", dir, map);
     }
+}
+
+std::string saved_dir_path(bool create_dir)
+{
+    auto dir = std::format("{}\\saved", rf::root_path);
+    if (create_dir && !CreateDirectoryA(dir.c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS) {
+        xlog::error("Failed to create saved directory, error {}", GetLastError());
+        return {};
+    }
+    return dir;
 }
 
 std::optional<toml::table> saved_info_read()
