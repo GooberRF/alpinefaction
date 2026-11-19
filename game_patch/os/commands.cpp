@@ -168,6 +168,7 @@ ConsoleCommand2 level_info_cmd{
             rf::console::print("- Legacy cyclic timers: {}", level_props.legacy_cyclic_timers);
             rf::console::print("- Legacy movers: {}", level_props.legacy_movers);
             rf::console::print("- Starts with headlamp: {}", level_props.starts_with_headlamp);
+            rf::console::print("- Players start with jetpacks: {}", level_props.players_start_with_jetpacks);
             rf::console::print("- Override static mesh ambient light scale: {}", level_props.override_static_mesh_ambient_light_modifier);
             rf::console::print("- Mesh static ambient light scale: {}", level_props.static_mesh_ambient_light_modifier);
 

@@ -28,9 +28,6 @@ namespace gr::d3d11
         constexpr DXGI_FORMAT scene_depth_srv_format = DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
         constexpr DXGI_FORMAT scene_depth_dsv_format = DXGI_FORMAT_D24_UNORM_S8_UINT;
 
-        // slack so adjacent rooms leave no seam; the top face is contracted instead (liquid_surface_epsilon)
-        constexpr float liquid_box_epsilon = 0.05f;
-
         // Keeps the liquid surface polygon outside the volume, so a grazing ray cannot tint it
         constexpr float liquid_surface_epsilon = 0.01f;
 
@@ -279,7 +276,7 @@ namespace gr::d3d11
         state_.blended_color = state_.color;
         state_.blended_alpha = state_.alpha;
         state_.blended_visibility = state_.visibility;
-        state_.blended_surface_y = state_.surface_y;
+        state_.blended_surface_y = state_.dark_surface_y;
         state_.blended_over_fog_color = state_.over_fog_color;
         state_.blended_over_fog_far = state_.over_fog_far;
     }
@@ -328,6 +325,7 @@ namespace gr::d3d11
             // Keeps mode != 0 in step with the shader's liq_mode > 0.5
             state_.mode = liquid_room->liquid_type > 0 ? liquid_room->liquid_type : 0;
             state_.surface_y = liquid_room->bbox_min.y + liquid_room->liquid_depth;
+            state_.dark_surface_y = std::min(state_.surface_y, liquid_room->bbox_max.y);
             state_.color = {
                 liquid_room->liquid_color.red / 255.0f,
                 liquid_room->liquid_color.green / 255.0f,
@@ -392,7 +390,7 @@ namespace gr::d3d11
                 };
                 state_.blended_alpha = mix(state_.blended_alpha, state_.alpha);
                 state_.blended_visibility = mix(state_.blended_visibility, state_.visibility);
-                state_.blended_surface_y = mix(state_.blended_surface_y, state_.surface_y);
+                state_.blended_surface_y = mix(state_.blended_surface_y, state_.dark_surface_y);
                 state_.blended_over_fog_color = {
                     mix(state_.blended_over_fog_color.x, state_.over_fog_color.x),
                     mix(state_.blended_over_fog_color.y, state_.over_fog_color.y),

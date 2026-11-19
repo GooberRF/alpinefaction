@@ -1574,6 +1574,7 @@ constexpr LevelTabControl level_tab_controls[] = {
     {IDC_LIGHTMAP_COMPRESSION, LevelTab::lightmaps},
 
     {IDC_STARTS_WITH_HEADLAMP, LevelTab::gameplay},
+    {IDC_PLAYERS_START_WITH_JETPACKS, LevelTab::gameplay},
     {IDC_VEHICLE_FLIGHT_CEILING_ENABLE, LevelTab::gameplay},
     {IDC_VEHICLE_FLIGHT_CEILING_LABEL, LevelTab::gameplay},
     {IDC_VEHICLE_FLIGHT_CEILING, LevelTab::gameplay},
@@ -2327,6 +2328,7 @@ CodeInjection CLevelDialog_OnInitDialog_patch{
         CheckDlgButton(hdlg, IDC_LEGACY_CYCLIC_TIMERS, alpine_level_props.legacy_cyclic_timers ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hdlg, IDC_LEGACY_MOVERS, alpine_level_props.legacy_movers ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hdlg, IDC_STARTS_WITH_HEADLAMP, alpine_level_props.starts_with_headlamp ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hdlg, IDC_PLAYERS_START_WITH_JETPACKS, alpine_level_props.players_start_with_jetpacks ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hdlg, IDC_OVERRIDE_MESH_AMBIENT_LIGHT_MODIFIER, alpine_level_props.override_static_mesh_ambient_light_modifier ? BST_CHECKED : BST_UNCHECKED);
         char buffer[32];
         std::snprintf(buffer, sizeof(buffer), "%.3f", alpine_level_props.static_mesh_ambient_light_modifier);
@@ -2398,6 +2400,7 @@ CodeInjection CLevelDialog_OnOK_patch{
         alpine_level_props.legacy_cyclic_timers = IsDlgButtonChecked(hdlg, IDC_LEGACY_CYCLIC_TIMERS) == BST_CHECKED;
         alpine_level_props.legacy_movers = IsDlgButtonChecked(hdlg, IDC_LEGACY_MOVERS) == BST_CHECKED;
         alpine_level_props.starts_with_headlamp = IsDlgButtonChecked(hdlg, IDC_STARTS_WITH_HEADLAMP) == BST_CHECKED;
+        alpine_level_props.players_start_with_jetpacks = IsDlgButtonChecked(hdlg, IDC_PLAYERS_START_WITH_JETPACKS) == BST_CHECKED;
         alpine_level_props.override_static_mesh_ambient_light_modifier = IsDlgButtonChecked(hdlg, IDC_OVERRIDE_MESH_AMBIENT_LIGHT_MODIFIER) == BST_CHECKED;
         char buffer[64] = {};
         GetDlgItemTextA(hdlg, IDC_MESH_AMBIENT_LIGHT_MODIFIER, buffer, static_cast<int>(sizeof(buffer)));

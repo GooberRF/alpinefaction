@@ -2,9 +2,12 @@
 
 #include <cstddef>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace rf
 {
+    struct GFace;
     struct Debris;
     struct Object;
     struct Player;
@@ -54,6 +57,23 @@ void entity_rate_limit_on_entity_delete(int handle);
 void entity_rate_limit_clear();
 bool level_allows_extra_items();
 float liquid_depth_update_surface_y(const rf::GRoom* room);
+bool liquid_depth_update_moving_surface_y(const rf::GRoom* room, float& out_y);
+// The highest the room's liquid surface reaches, now or once a Set_Liquid_Depth event aimed at it runs
+float liquid_depth_update_max_surface_y(const rf::GRoom* room);
+
+// While alive, the liquid faces of each room whose liquid is moving have their planes at the surface's current height,
+// for stock code that projects onto the face a sweep hit
+class MovingLiquidFacePlanes
+{
+public:
+    MovingLiquidFacePlanes();
+    ~MovingLiquidFacePlanes();
+    MovingLiquidFacePlanes(const MovingLiquidFacePlanes&) = delete;
+    MovingLiquidFacePlanes& operator=(const MovingLiquidFacePlanes&) = delete;
+
+private:
+    std::vector<std::pair<rf::GFace*, float>> saved_offsets_;
+};
 
 constexpr size_t old_obj_limit = 1024;
 constexpr size_t obj_limit = 65536;

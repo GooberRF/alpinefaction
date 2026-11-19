@@ -63,6 +63,7 @@ namespace gr::d3d11
     {
         int mode = 0;               // 0 = camera room has no liquid, else GRoom::liquid_type (1 water, 2 lava, 3 acid)
         float surface_y = 0.0f;
+        float dark_surface_y = 0.0f;    // surface_y capped at the room's top, which a filled room's depth can overshoot
         rf::Vector3 color{1.0f, 1.0f, 1.0f};
         float alpha = 0.0f;
         float visibility = 1.0f;

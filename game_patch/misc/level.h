@@ -110,6 +110,7 @@ struct AlpineLevelProperties
     bool require_d3d11 = false; // refuse the level on the other renderers
     float camera_far_clip = 0.0f; // 0 = the stock far clip (fog far clip, else gr::default_wfar)
     payload::LevelRules payload_rules;
+    bool players_start_with_jetpacks = false; // every player wears a jetpack, as with the Jetpacks mutator
 
     // should match SanitizeSunProperties in editor_patch\level.h
     // A level file can carry anything; these floats end up in the lights constant buffer and in the
@@ -441,6 +442,9 @@ struct AlpineLevelProperties
             }
             rules.sanitize();
             payload_rules = rules;
+            if (!reader.read_bytes(&u8, sizeof(u8)))
+                return;
+            players_start_with_jetpacks = (u8 != 0);
         }
     }
 };
