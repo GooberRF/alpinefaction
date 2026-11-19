@@ -100,6 +100,7 @@ constexpr BagHomeEntry kBagHomePositions[] = {
     { "dm_corpsesxroads_2.rfl", -55.0f, -23.0f, -21.50f },
     { "dm_corpsesxroad-v2.rfl", -55.0f, -23.0f, -21.50f },
     { "dm_corpses_crossroads.rfl", -55.0f, -23.0f, -21.50f },
+    { "pdmtaowsnow.rfl", 0.50f, -0.75f, 0.00f },
 };
 
 std::optional<rf::Vector3> lookup_hardcoded_bag_home(std::string_view filename)
@@ -277,17 +278,18 @@ void resolve_bag_spawn_from_placed_item()
             homes.push_back({bags.front().pos, bags.front().orient});
         }
     }
-    else if (multiple_spawns && super_item_homes.size() > 1) {
-        // Multiple bag spawns without Bag objects: every super item spot.
-        homes = std::move(super_item_homes);
-    }
     else if (auto override_pos = lookup_hardcoded_bag_home(rf::level.filename.c_str())) {
         // Priority 2: hardcoded bag positions for specific RFLs.
         homes.push_back({*override_pos, rf::identity_matrix});
     }
     else if (!super_item_homes.empty()) {
-        // Priority 3: the highest priority super item.
-        homes.push_back(super_item_homes.front());
+        // Priority 3: every super item spot for multiple bag spawns, else the highest priority one.
+        if (multiple_spawns) {
+            homes = std::move(super_item_homes);
+        }
+        else {
+            homes.push_back(super_item_homes.front());
+        }
     }
     else {
         // Last resort: the level's player start position.

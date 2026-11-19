@@ -282,7 +282,7 @@ If neither the rotation nor `allowed_levels` names a level, `glass_house.rfl` is
 | `saving_enabled` | Boolean | game type | Let players save and load their position. On by default only in RUN. |
 | `flag_dropping` | Boolean | `true` | Let flag carriers drop the flag in CTF and SAL, and the cartridge in SCAV. |
 | `flag_captures_while_stolen` | Boolean | `false` | Let a team capture while its own CTF flag is stolen. |
-| `bag_multiple_spawns` | Boolean | `true` | Spawn the BAG/TBAG bag at a random home, picked again each time it returns. The homes are the level's `Bag` objects, or its super item spots when it has no `Bag` objects and more than one super item. Otherwise, as when off. Off, the bag always spawns at the first `Bag` object, else a built-in spot for some stock and community levels, else the highest priority super item, else the player start. |
+| `bag_multiple_spawns` | Boolean | `true` | Spawn the BAG/TBAG bag at a random home, picked again each time it returns. The homes are the level's `Bag` objects. Without any, a built-in spot for some stock and community levels is the only home, else every super item spot is one. Off, the bag always spawns at the first `Bag` object, else the built-in spot, else the highest priority super item. With none of these, it spawns at the player start. |
 | `pvp_damage_modifier` | Number | game type | Multiplier for damage between players, 0-100. `1.0` everywhere except RUN (`0.0`). |
 | `drop_amps` | Boolean | `false` | Players drop their damage amplifier, invulnerability, Alpine Haste, Alpine Vampire and Alpine Jetpack when they die. |
 | `drop_weapons` | Boolean | `true` | Players drop their weapon when they die. Off in PIT, GG, WO and SCAV. |

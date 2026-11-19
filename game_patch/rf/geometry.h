@@ -77,6 +77,7 @@ namespace rf
         FACE_SCROLL_TEXTURE = 0x10,
         FACE_FULL_BRIGHT = 0x20,
         FACE_SEE_THRU = 0x40,
+        FACE_SHOOT_THRU = 0x80,
         FACE_INVISIBLE = 0x2000,
         // Set when 0x004D00B0 splits an edge of a face with FACE_HAS_LEVEL_DECAL; 0x004DBBB0 then
         // recomputes the face's decal UVs.
@@ -402,6 +403,11 @@ namespace rf
         bool is_see_thru() const
         {
             return (flags & FACE_SEE_THRU) != 0;
+        }
+
+        bool is_shoot_thru() const
+        {
+            return (flags & FACE_SHOOT_THRU) != 0;
         }
 
         bool is_invisible() const

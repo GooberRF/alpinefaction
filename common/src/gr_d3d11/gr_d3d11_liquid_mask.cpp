@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <bit>
 #include <cmath>
+#include <limits>
 #include <numeric>
 #include <tuple>
 #include <xlog/xlog.h>
@@ -41,6 +42,7 @@ namespace gr::d3d11
             unknown,
             inside,
             outside,
+            same_liquid,
         };
 
         struct Box
@@ -58,6 +60,7 @@ namespace gr::d3d11
             // Rooms whose space counts as this room's, and the rooms it is told apart from
             std::vector<const rf::GRoom*> inside_rooms;
             std::vector<const rf::GRoom*> outside_rooms;
+            std::vector<const rf::GRoom*> same_liquid_rooms;
             float cell;
             std::array<int, 3> dims;
             std::array<int, 3> atlas_offset;
@@ -75,12 +78,9 @@ namespace gr::d3d11
             return room->bbox_min.y + room->liquid_depth;
         }
 
-        // A neighbouring room of the same liquid is the same body of it, unless its surface is lower and
-        // leaves air under this room's surface
         bool same_liquid(const rf::GRoom* room, const rf::GRoom* other)
         {
-            return is_liquid_room(other) && other->liquid_type == room->liquid_type
-                && surface_y(other) >= surface_y(room);
+            return is_liquid_room(other) && other->liquid_type == room->liquid_type;
         }
 
         // Places the plans in order, each in the smallest free box that holds it, and splits what that box has
@@ -208,11 +208,11 @@ namespace gr::d3d11
             return i > 0.0f ? static_cast<int>(std::min(i, float(n))) : 0;
         }
 
-        // Gives the cells whose centres lie in the room the state. The room's faces, its portals among them,
-        // enclose it, so a row of cells along x is in the room past an odd number of them. False when its faces
-        // take too many steps or crossings to resolve, or the build has run out of steps.
-        bool mark_room(const Plan& plan, const rf::GRoom* room, CellState state, std::vector<CellState>& states,
-                       size_t& build_steps)
+        // Gives the cells whose centers lie in the room the state, or outside from state_top up. The room's faces,
+        // its portals among them, enclose it, so a row of cells along x is in the room past an odd number of them.
+        // False when its faces take too many steps or crossings to resolve, or the build has run out of steps.
+        bool mark_room(const Plan& plan, const rf::GRoom* room, CellState state, float state_top,
+                       std::vector<CellState>& states, size_t& build_steps)
         {
             const auto [nx, ny, nz] = plan.dims;
             const rf::Vector3& origin = plan.domain.min;
@@ -350,6 +350,8 @@ namespace gr::d3d11
                 if (build_steps > max_build_steps) {
                     return false;
                 }
+                const float center_y = origin.y + (row % ny + 0.5f) * plan.cell + row_jitter_y;
+                const CellState row_state = center_y < state_top ? state : CellState::outside;
                 for (int x = 0; x < nx; ++x) {
                     const float centre_x = origin.x + (x + 0.5f) * plan.cell;
                     for (; next < crossings.size() && crossings[next].first == row
@@ -357,8 +359,8 @@ namespace gr::d3d11
                         in_room = !in_room;
                     }
                     CellState& cell_state = states[size_t(row) * nx + x];
-                    if (in_room && (state == CellState::inside || cell_state == CellState::unknown)) {
-                        cell_state = state;
+                    if (in_room && (row_state == CellState::inside || cell_state == CellState::unknown)) {
+                        cell_state = row_state;
                     }
                 }
                 while (next < crossings.size() && crossings[next].first == row) {
@@ -432,9 +434,9 @@ namespace gr::d3d11
                 continue;
             }
             // Only the liquid under the surface is fogged or casts caustics, so only rooms overlapping the box under
-            // it count. The box is unexpanded, so a room that merely touches it is no overlap.
-            const float surface = surface_y(room);
-            Plan plan{room, {room->bbox_max, room->bbox_min}, room->bbox_max.y, {room}, {}, 0.0f, {}, {}};
+            // the highest it reaches count. The box is unexpanded, so a room that merely touches it is no overlap.
+            const float top = engine::liquid_max_surface_y(room);
+            Plan plan{room, {room->bbox_max, room->bbox_min}, room->bbox_max.y, {room}, {}, {}, 0.0f, {}, {}};
             for (rf::GRoom* other : all_rooms) {
                 if (!other || other == room || other->is_detail) {
                     continue;
@@ -445,23 +447,25 @@ namespace gr::d3d11
                     {std::min(room->bbox_max.x, other->bbox_max.x), std::min(room->bbox_max.y, other->bbox_max.y),
                      std::min(room->bbox_max.z, other->bbox_max.z)},
                 };
-                if (!(overlap.min.x < overlap.max.x && overlap.min.y < std::min(overlap.max.y, surface)
+                if (!(overlap.min.x < overlap.max.x && overlap.min.y < std::min(overlap.max.y, top)
                       && overlap.min.z < overlap.max.z)) {
                     continue;
                 }
-                if (same_liquid(room, other)) {
-                    plan.inside_rooms.push_back(other);
-                    continue;
-                }
-                plan.outside_rooms.push_back(other);
+                (same_liquid(room, other) ? plan.same_liquid_rooms : plan.outside_rooms).push_back(other);
                 plan.domain.min = {std::min(plan.domain.min.x, overlap.min.x),
                                    std::min(plan.domain.min.y, overlap.min.y),
                                    std::min(plan.domain.min.z, overlap.min.z)};
                 plan.domain.max = {std::max(plan.domain.max.x, overlap.max.x),
-                                   std::max(plan.domain.max.y, std::min(overlap.max.y, surface)),
+                                   std::max(plan.domain.max.y, std::min(overlap.max.y, top)),
                                    std::max(plan.domain.max.z, overlap.max.z)};
             }
-            if (!plan.outside_rooms.empty()) {
+            if (!plan.outside_rooms.empty() || !plan.same_liquid_rooms.empty()) {
+                // The fog box counts as inside past the domain, so the domain covers the box's slack too, which
+                // can reach into a room this one wraps around
+                plan.domain.min = {plan.domain.min.x - liquid_box_epsilon, plan.domain.min.y - liquid_box_epsilon,
+                                   plan.domain.min.z - liquid_box_epsilon};
+                plan.domain.max.x += liquid_box_epsilon;
+                plan.domain.max.z += liquid_box_epsilon;
                 plans.push_back(std::move(plan));
             }
             if (plans.size() > max_plans) {
@@ -501,9 +505,16 @@ namespace gr::d3d11
 
             // A cell centre in no room is in solid
             states.assign(size_t(nx) * ny * nz, CellState::unknown);
+            const float plan_surface = surface_y(plan.room);
+            const float plan_max_surface = engine::liquid_max_surface_y(plan.room);
             auto mark_rooms = [&](const std::vector<const rf::GRoom*>& rooms, CellState state) {
                 for (const rf::GRoom* room : rooms) {
-                    if (!mark_room(plan, room, state, states, build_steps)) {
+                    // Above its surface, a room of the same liquid that this one is above, or can rise higher than,
+                    // is air like any other room
+                    const bool lower = state == CellState::same_liquid
+                        && (surface_y(room) < plan_surface || engine::liquid_max_surface_y(room) < plan_max_surface);
+                    const float state_top = lower ? surface_y(room) : std::numeric_limits<float>::infinity();
+                    if (!mark_room(plan, room, state, state_top, states, build_steps)) {
                         if (build_steps > max_build_steps) {
                             xlog::warn("[Liquid] volume mask build hit its work limit at liquid room {}; it and the "
                                        "rest keep their boxes", plan.room->uid);
@@ -518,7 +529,8 @@ namespace gr::d3d11
                 return true;
             };
             plan.masked = mark_rooms(plan.inside_rooms, CellState::inside)
-                && mark_rooms(plan.outside_rooms, CellState::outside);
+                && mark_rooms(plan.outside_rooms, CellState::outside)
+                && mark_rooms(plan.same_liquid_rooms, CellState::same_liquid);
             if (!plan.masked) {
                 continue;
             }
@@ -543,9 +555,14 @@ namespace gr::d3d11
                     for (int x = 0; x < nx; ++x) {
                         CellState state = states[index(x, y, z)];
                         if (state == CellState::unknown) {
-                            state = count_neighbours(states, x, y, z, CellState::outside)
-                                > count_neighbours(states, x, y, z, CellState::inside)
-                                ? CellState::outside : CellState::inside;
+                            const int outside = count_neighbours(states, x, y, z, CellState::outside);
+                            const int same = count_neighbours(states, x, y, z, CellState::same_liquid);
+                            if (std::max(outside, same) > count_neighbours(states, x, y, z, CellState::inside)) {
+                                state = same > outside ? CellState::same_liquid : CellState::outside;
+                            }
+                            else {
+                                state = CellState::inside;
+                            }
                         }
                         resolved[index(x, y, z)] = state;
                     }
@@ -553,14 +570,19 @@ namespace gr::d3d11
             }
 
             // Cells next to another room are marked half inside: the fog ignores them, so filtering never
-            // carries it into that room, while caustics still reach the wall
+            // carries it into that room, while caustics still reach the wall. Against a room of the same liquid, its
+            // first cells are half inside instead, so one room's fog fades out where the other's fades in.
             const auto [ox, oy, oz] = plan.atlas_offset;
             for (int z = 0; z < nz; ++z) {
                 for (int y = 0; y < ny; ++y) {
                     for (int x = 0; x < nx; ++x) {
                         uint8_t value = 0;
-                        if (resolved[index(x, y, z)] == CellState::inside) {
+                        const CellState state = resolved[index(x, y, z)];
+                        if (state == CellState::inside) {
                             value = count_neighbours(resolved, x, y, z, CellState::outside) ? 128 : 255;
+                        }
+                        else if (state == CellState::same_liquid) {
+                            value = count_neighbours(resolved, x, y, z, CellState::inside) ? 128 : 0;
                         }
                         atlas[size_t(oz + z) * slice_pitch + size_t(oy + y) * row_pitch + size_t(ox + x)] = value;
                     }

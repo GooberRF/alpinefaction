@@ -3,6 +3,7 @@
 #include <vector>
 #include <optional>
 #include <memory>
+#include <unordered_map>
 #include <span>
 #include <d3d11.h>
 #include <common/ComPtr.h>
@@ -19,6 +20,7 @@ namespace gr::d3d11
     class GRenderCacheBuilder;
     class RoomRenderCache;
     class GRenderCache;
+    class MovingLiquidSurface;
 
     enum class FaceRenderType { opaque, alpha, liquid };
 
@@ -120,6 +122,8 @@ namespace gr::d3d11
         void before_render(const rf::Vector3& pos, const rf::Matrix3& orient);
         void after_render();
         void render_room_faces(rf::GSolid* solid, rf::GRoom* room, FaceRenderType render_type);
+        // Draws the surface of a room whose liquid is moving; false leaves it to the room's cache
+        bool render_moving_liquid_surface(rf::GRoom* room, float surface_y);
         void render_detail(rf::GSolid* solid, rf::GRoom* room, bool alpha);
         void render_terrain(GRenderCache& cache);
         void render_dynamic_decals(rf::GRoom** rooms, int num_rooms);
@@ -166,6 +170,7 @@ namespace gr::d3d11
         std::vector<std::unique_ptr<GRenderCache>> detail_render_cache_;
         std::unordered_map<rf::GSolid*, std::unique_ptr<GRenderCache>> mover_render_cache_;
         std::vector<rf::GRoom*> geo_cache_rooms_;
+        std::unordered_map<const rf::GRoom*, std::unique_ptr<MovingLiquidSurface>> moving_liquid_;
         SolidCacheOptions cache_options_;
         D3D11_CULL_MODE cull_mode_ = D3D11_CULL_BACK;
     };

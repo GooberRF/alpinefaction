@@ -152,6 +152,16 @@ namespace gr::d3d11::engine
         return liquid_depth_update_surface_y(room);
     }
 
+    inline bool liquid_surface_moving(const rf::GRoom* room, float& out_y)
+    {
+        return liquid_depth_update_moving_surface_y(room, out_y);
+    }
+
+    inline float liquid_max_surface_y(const rf::GRoom* room)
+    {
+        return liquid_depth_update_max_surface_y(room);
+    }
+
     inline DistanceFog level_distance_fog()
     {
         if (rf::level.distance_fog_far_clip > 0.0f) {

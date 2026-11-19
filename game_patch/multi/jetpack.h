@@ -13,9 +13,13 @@ namespace rf
 // the server only advertises the mutator and relays thrust on/off state so the
 // steam and engine sound show up for everybody.
 
-// True when the jetpack should be running for the local session: the server
-// mutator in multiplayer, the `jetpack` console command in single player.
+// True when the jetpack should be running for the local session: the level's
+// "Players start with jetpacks" property, else the server mutator in multiplayer
+// or the `jetpack` console command in single player.
 bool jetpacks_are_active();
+// True when a back shot or a fire death gibs a jetpack wearer: the level property
+// always does, the Jetpacks mutator only with its `explode` option.
+bool jetpack_explode_active();
 // The mutator or command above, or `ep` holding the Jetpack powerup.
 bool jetpack_is_active_for(const rf::Entity* ep);
 // True while any entity may be flying, which is when the jetpack has per-frame work to do.

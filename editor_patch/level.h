@@ -1013,6 +1013,7 @@ struct AlpineLevelProperties
     float camera_far_clip = 0.0f; // 0 = the stock far clip (fog far clip, else 275)
     bool alpha_tested_occlusion = false; // see-through faces and alpha mesh triangles occlude by texel alpha
     payload::LevelRules payload_rules;
+    bool players_start_with_jetpacks = false; // every player wears a jetpack, as with the Jetpacks mutator
 
     // Alpine mesh objects (stored separately from stock object VArrays)
     std::vector<DedMesh*> mesh_objects;
@@ -1181,6 +1182,7 @@ struct AlpineLevelProperties
         camera_far_clip = 0.0f;
         alpha_tested_occlusion = false;
         payload_rules = {};
+        players_start_with_jetpacks = false;
         for (auto* m : mesh_objects) {
             DestroyDedMesh(m);
         }
@@ -1328,6 +1330,7 @@ struct AlpineLevelProperties
         for (const float* field : payload::LevelRules::file_fields(payload_rules)) {
             file.write<float>(*field);
         }
+        file.write<std::uint8_t>(players_start_with_jetpacks ? 1u : 0u);
     }
 
     void Deserialize(rf::File& file, std::size_t chunk_len)
@@ -1607,6 +1610,9 @@ struct AlpineLevelProperties
             }
             rules.sanitize();
             payload_rules = rules;
+            if (!read_bytes(&u8, sizeof(u8)))
+                return;
+            players_start_with_jetpacks = (u8 != 0);
         }
     }
 };
