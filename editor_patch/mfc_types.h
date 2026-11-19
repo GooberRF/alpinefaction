@@ -13,6 +13,7 @@
 #include <string>
 #include <vector>
 #include <common/terrain/alpine_terrain.h>
+#include <common/alpine_ambience_region.h>
 #include <common/alpine_dir_light.h>
 #include <common/alpine_waypoint_helper.h>
 #include <common/rope_curve.h>
@@ -194,6 +195,7 @@ enum class DedObjectType : int
     DED_DIRECTIONAL_LIGHT = 0x20, // Alpine 1.5
     DED_SUN_ARROW = 0x21, // editor-only viewport handle for the level sun, never serialized
     DED_WAYPOINT_HELPER = 0x22, // Alpine 1.5
+    DED_AMBIENCE_REGION = 0x23, // Alpine 1.5
 };
 
 struct Vector3
@@ -844,6 +846,21 @@ struct DedWaypointHelper : DedObject
     uint8_t flags = 0;
     uint8_t size_class = static_cast<uint8_t>(alpine_waypoint_helper::SizeClass::driller);
     float radius = alpine_waypoint_helper::default_radius;
+};
+
+struct DedAmbienceRegion : DedObject
+{
+    uint8_t shape = static_cast<uint8_t>(alpine_ambience_region::Shape::box);
+    float width = alpine_ambience_region::default_size;
+    float height = alpine_ambience_region::default_size;
+    float depth = alpine_ambience_region::default_size;
+    float radius = alpine_ambience_region::default_radius;
+    std::string sound;
+    float volume = alpine_ambience_region::default_volume;
+    float fade_distance = alpine_ambience_region::default_fade_distance;
+    float fade_time = alpine_ambience_region::default_fade_time;
+    bool initially_enabled = true;
+    bool always_show_range = false;
 };
 
 // flags bits, shared with the game runtime's rope_flag_* constants

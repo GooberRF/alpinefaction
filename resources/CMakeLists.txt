@@ -294,6 +294,7 @@ add_packfile(alpinefaction.vpp
     images/Icon_AFRope.tga
     images/Icon_AFTerrain.tga
     images/Icon_AFDirLight.tga
+    images/Icon_AFAmbience.tga
     images/af_gbrsnowfl01.tga
     images/radar_dish.tga
     images/score_aflogo.tga

@@ -37,6 +37,7 @@
 #include "../multi/vehicles/physics/ragdoll.h"
 #include "../multi/vehicles/vehicle.h"
 #include "../graphics/weather.h"
+#include "../sound/ambience_region.h"
 #include "../misc/alpine_options.h"
 #include "../misc/misc.h"
 #include "../misc/achievements.h"
@@ -640,6 +641,9 @@ CodeInjection mover_process_post_patch{
 
                     // check for a weather region
                     weather_move_region(linked_uid, anchor_pos);
+
+                    // check for an ambience region
+                    ambience_region_move(linked_uid, anchor_pos);
                 }
             }
 
@@ -698,6 +702,9 @@ CodeInjection mover_process_post_patch{
 
                     // check for a weather region
                     weather_move_region(linked_uid, anchor_pos, event->orient);
+
+                    // check for an ambience region
+                    ambience_region_move(linked_uid, anchor_pos, event->orient);
                 }
             }
         }

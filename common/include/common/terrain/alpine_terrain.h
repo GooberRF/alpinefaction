@@ -29,6 +29,7 @@
 #include <cmath>
 #include <algorithm>
 #include <bit>
+#include <common/utils/math-utils.h>
 
 namespace alpine_terrain
 {
@@ -767,11 +768,7 @@ inline bool finite_in(float v, float lo, float hi)
     return std::isfinite(v) && v >= lo && v <= hi;
 }
 
-// v clamped into [lo, hi], or def when v is not finite.
-inline float clamp_finite(float v, float lo, float hi, float def)
-{
-    return std::isfinite(v) ? std::clamp(v, lo, hi) : def;
-}
+using ::clamp_finite;
 
 inline bool texture_name_valid(const char* name, std::size_t len)
 {

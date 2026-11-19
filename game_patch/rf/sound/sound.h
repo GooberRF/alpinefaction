@@ -136,6 +136,7 @@ namespace rf
     static auto snd_pc_get_duration = addr_as_ref<float(int handle)>(0x00544760);
     static auto snd_pc_change_listener = addr_as_ref<void(const Vector3& pos, const Vector3& vel, const Matrix3& orient)>(0x00543480);
     static auto snd_pc_calc_volume_3d = addr_as_ref<float(int handle, const Vector3& pos, float vol_scale)>(0x00543C20);
+    static auto snd_pc_calc_max_range = addr_as_ref<float(float min_range, float rolloff, float volume)>(0x00544960);
     static auto snd_pc_load_hint = addr_as_ref<int(int handle, bool skip_data_loading, bool is_bluebeard_btz)>(0x00543760);
     static auto snd_pc_calc_play_volume = addr_as_ref<float(int handle, float vol_scale)>(0x00543A60);
     static auto snd_pc_is_ds3d_enabled = addr_as_ref<bool()>(0x00544750);
