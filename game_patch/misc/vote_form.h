@@ -1,6 +1,8 @@
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
+#include <iterator>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -27,6 +29,11 @@ struct VoteTypeInfo
 
 // The Extend tab's listed lengths, in minutes; any other is typed.
 inline constexpr int vote_extend_presets[] = {5, 10, 15, 20, 30, 60};
+// Leaving typed entry falls back to the default, which the list must show.
+static_assert(std::ranges::find(vote_extend_presets, af_vote_extend_default_minutes) != std::end(vote_extend_presets));
+static_assert(std::ranges::all_of(vote_extend_presets, [](int minutes) {
+    return minutes >= af_vote_extend_min_minutes && minutes <= af_vote_extend_max_minutes;
+}));
 
 // One tab. Every tab but Rotation covers exactly one vote type.
 struct VoteTab

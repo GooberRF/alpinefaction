@@ -128,7 +128,7 @@ enum class ServerSortColumn : uint8_t
     name,
     game_type,
     map,
-    players, // server_players_compare
+    players, // players_ranks
     ping,
 };
 

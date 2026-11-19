@@ -315,7 +315,8 @@ struct GameInfoAnswer;
 void update_server_browser_extra(const rf::NetAddr& addr, const GameInfoAnswer* info);
 // The server lists' player count: "humans+bots/max" for an AF server with bots, else "players/max".
 std::string server_players_label(const AFGameInfoExtra* af, int players, int max_players);
-// The server lists' players order, negative when `a` comes first: humans then bots, more first.
+// The legacy server list's players order, negative when `a` comes first: all players, then humans, more first. The
+// new browser ranks its whole list instead (players_ranks in server_browser_data.cpp).
 int server_players_compare(const AFGameInfoExtra* a, int players_a, const AFGameInfoExtra* b, int players_b);
 // "N clients: N players, N bots, N browsers"
 std::string server_clients_label(const AFGameInfoExtra& af);

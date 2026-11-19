@@ -167,6 +167,10 @@ static FunHook<void(rf::GameState, bool)> rf_do_state_hook{
         if (state == rf::gameseq_get_state()) {
             menu_scene_do_frame(state);
         }
+        // Stock pushes the Multi menu over the main menu as transparent (0x00443C20). The main menu's background
+        // beneath would be a second render of the live level, which the Multi menu's own then paints over.
+        main_menu_set_background_hidden(state == rf::GS_MAIN_MENU && rf::gameseq_get_state() == rf::GS_MULTI_MENU
+                                        && !legacy_menus_enabled());
         if (state == rf::GS_OPTIONS_MENU && !legacy_menus_enabled()) {
             settings_menu_do_frame(paused);
         } else if (state == rf::GS_EXTRAS_MENU && !legacy_menus_enabled()) {
@@ -191,6 +195,7 @@ static FunHook<void(rf::GameState, bool)> rf_do_state_hook{
         } else {
             rf_do_state_hook.call_target(state, paused);
         }
+        main_menu_set_background_hidden(false);
     },
 };
 

@@ -289,9 +289,20 @@ CallHook<int(int, int, float, float)> mainmenu_slide_in_sound_hook{
     },
 };
 
+static bool g_background_hidden = false;
+
+void main_menu_set_background_hidden(bool hidden)
+{
+    g_background_hidden = hidden;
+}
+
 FunHook<void()> menu_draw_background_hook{
     0x00442CE0,
     []() {
+        // Also keeps the snow from stepping twice a frame.
+        if (g_background_hidden) {
+            return;
+        }
         if (!menu_scene_draw_background()) {
             menu_draw_background_hook.call_target();
         }

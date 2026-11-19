@@ -19,6 +19,7 @@
 #include "../misc/settings_registry.h"
 #include "../misc/vpackfile.h"
 #include "../multi/demo/demo.h"
+#include "../object/object.h"
 #include "../os/console.h"
 #include "../rf/ai.h"
 #include "../rf/clutter.h"
@@ -253,6 +254,7 @@ void render_world(const rf::Vector3 pos, const rf::Matrix3 orient, const float f
     rf::gr::set_color(255, 255, 255, 255);
     // The Direct3D 11 shadow maps replace the blob shadows above quality 0.
     if (g_alpine_game_config.shadow_quality <= 0) {
+        const MovingLiquidFacePlanes liquid_planes;
         rf::obj_shadow_render_all();
     }
     rf::clutter_render_all_clocks();

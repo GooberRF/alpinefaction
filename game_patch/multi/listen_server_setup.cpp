@@ -2,8 +2,10 @@
 #include <cctype>
 #include <filesystem>
 #include <format>
+#include <optional>
 #include <set>
 #include <sstream>
+#include <string>
 #include <utility>
 #include <common/utils/os-utils.h>
 #include <common/utils/string-utils.h>
@@ -333,6 +335,21 @@ fs::path servers_dir(bool create)
     return dir;
 }
 
+// A path part as text, or none when it holds a character outside ASCII: narrowing such a part throws where the code
+// page has no mapping for it, and no setup or profile name has one.
+std::optional<std::string> ascii_path_text(const fs::path& part)
+{
+    const std::wstring wide = part.wstring();
+    std::string text;
+    for (const wchar_t c : wide) {
+        if (c >= 0x80) {
+            return std::nullopt;
+        }
+        text += static_cast<char>(c);
+    }
+    return text;
+}
+
 bool write_toml(const fs::path& path, const toml::table& tbl)
 {
     std::ostringstream out;
@@ -381,10 +398,12 @@ bool save_setup(const ListenServerSetup& setup, std::string_view name)
     }
     // Only once the config no longer names them.
     if (fs::is_directory(bots_dir, ec)) {
-        for (const fs::directory_entry& entry : fs::directory_iterator{bots_dir, ec}) {
-            const fs::path& path = entry.path();
-            if (string_iequals(path.extension().string(), ".toml") && !written.contains(path.filename().string())) {
-                fs::remove(path, ec);
+        for (fs::directory_iterator it{bots_dir, ec}, end; !ec && it != end; it.increment(ec)) {
+            const std::optional<std::string> file = ascii_path_text(it->path().filename());
+            const std::optional<std::string> ext = ascii_path_text(it->path().extension());
+            if (file && ext && string_iequals(*ext, ".toml") && !written.contains(*file)) {
+                std::error_code remove_ec;
+                fs::remove(it->path(), remove_ec);
             }
         }
         if (profiles.empty()) {
@@ -442,6 +461,11 @@ std::optional<ListenServerSetup> load_setup(std::string_view name, std::vector<s
             }
             catch (const toml::parse_error& err) {
                 warnings.push_back(std::format("Bot profile {} could not be read: {}", *path, err.description()));
+                profiles.emplace_back();
+            }
+            // A path the code page cannot convert, in a hand-edited config.
+            catch (const std::exception&) {
+                warnings.push_back(std::format("Bot profile {} could not be read.", *path));
                 profiles.emplace_back();
             }
         }
@@ -1146,12 +1170,13 @@ std::vector<std::string> listen_server_saved_setups()
     if (dir.empty() || !fs::is_directory(dir, ec)) {
         return names;
     }
-    for (const fs::directory_entry& entry : fs::directory_iterator{dir, ec}) {
-        const fs::path& path = entry.path();
-        const std::string stem = path.stem().string();
-        if (entry.is_regular_file(ec) && string_iequals(path.extension().string(), ".toml")
-            && listen_server_setup_name_valid(stem)) {
-            names.push_back(stem);
+    for (fs::directory_iterator it{dir, ec}, end; !ec && it != end; it.increment(ec)) {
+        const std::optional<std::string> stem = ascii_path_text(it->path().stem());
+        const std::optional<std::string> ext = ascii_path_text(it->path().extension());
+        std::error_code type_ec;
+        if (stem && ext && it->is_regular_file(type_ec) && string_iequals(*ext, ".toml")
+            && listen_server_setup_name_valid(*stem)) {
+            names.push_back(*stem);
         }
     }
     std::sort(names.begin(), names.end(), string_iless);

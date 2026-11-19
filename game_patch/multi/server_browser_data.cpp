@@ -8,6 +8,7 @@
 #include <exception>
 #include <format>
 #include <fstream>
+#include <functional>
 #include <iterator>
 #include <memory>
 #include <thread>
@@ -187,7 +188,7 @@ int compare_column(const ServerBrowserEntry& a, const ServerBrowserEntry& b, Ser
     case ServerSortColumn::map:
         return compare_text(a.level, b.level);
     case ServerSortColumn::players:
-        return server_players_compare(a.af ? &*a.af : nullptr, a.players, b.af ? &*b.af : nullptr, b.players);
+        return 0; // ranked over the whole view: players_ranks
     case ServerSortColumn::ping:
         return a.ping_ms == b.ping_ms ? 0 : (a.ping_ms < b.ping_ms ? -1 : 1);
     }
@@ -254,16 +255,61 @@ bool server_entry_passes_filter(const ServerBrowserEntry& entry, const ServerFil
     return true;
 }
 
-int server_entry_compare(const ServerBrowserEntry& a, const ServerBrowserEntry& b, ServerSortColumn column,
-                         bool reverse)
+// The players order, as a rank for each entry of `view` (indexed like `entries`, lower first): AF servers by humans
+// then bots, more first; legacy servers by their count; each legacy server right before the first AF server whose
+// humans and bots add up to fewer than its count, as it may count bots of its own. Ranked over the whole view because
+// no rule between two servers can keep all three without a loop: an AF server with more humans but fewer in all than
+// another and a legacy count between their totals. There the legacy server goes ahead of both.
+std::vector<std::pair<int, int>> players_ranks(std::span<const ServerBrowserEntry> entries, std::span<const int> view)
+{
+    std::vector<std::pair<int, int>> groups; // AF humans and bots, most first
+    int max_count = 0;
+    for (const int i : view) {
+        if (const auto& af = entries[i].af) {
+            groups.emplace_back(af->num_human_players, af->num_bots);
+        }
+        else {
+            max_count = std::max(max_count, entries[i].players);
+        }
+    }
+    std::ranges::sort(groups, std::greater{});
+    groups.erase(std::unique(groups.begin(), groups.end()), groups.end());
+    // For each legacy count, the first group with fewer in all, the group count for none.
+    const int num_groups = static_cast<int>(groups.size());
+    std::vector<int> first_fewer(max_count + 1, num_groups);
+    for (int g = 0; g < num_groups; ++g) {
+        for (int count = groups[g].first + groups[g].second + 1; count <= max_count; ++count) {
+            if (first_fewer[count] == num_groups) {
+                first_fewer[count] = g;
+            }
+        }
+    }
+    // An AF group's place, or the place before one, then a legacy count, more first.
+    std::vector<std::pair<int, int>> ranks(entries.size());
+    for (const int i : view) {
+        if (const auto& af = entries[i].af) {
+            const std::pair<int, int> key{af->num_human_players, af->num_bots};
+            const auto group = std::ranges::lower_bound(groups, key, std::greater{});
+            ranks[i] = {2 * static_cast<int>(group - groups.begin()) + 1, 0};
+        }
+        else {
+            const int count = std::max(entries[i].players, 0);
+            ranks[i] = {2 * first_fewer[count], -count};
+        }
+    }
+    return ranks;
+}
+
+// `column_cmp` is the sort column's order of `a` and `b`, negative when `a` comes first.
+int server_entry_compare(const ServerBrowserEntry& a, const ServerBrowserEntry& b, int column_cmp, bool reverse)
 {
     const bool answered_a = a.ping_ms >= 0;
     const bool answered_b = b.ping_ms >= 0;
     if (answered_a != answered_b) {
         return answered_a ? -1 : 1;
     }
-    if (const int c = compare_column(a, b, column); c != 0) {
-        return reverse ? -c : c;
+    if (column_cmp != 0) {
+        return reverse ? -column_cmp : column_cmp;
     }
     if (const int c = compare_text(a.name, b.name); c != 0) {
         return c;
@@ -1112,8 +1158,12 @@ std::vector<int> server_browser_view(std::span<const ServerBrowserEntry> entries
             view.push_back(static_cast<int>(i));
         }
     }
+    const std::vector<std::pair<int, int>> ranks =
+        column == ServerSortColumn::players ? players_ranks(entries, view) : std::vector<std::pair<int, int>>{};
     std::stable_sort(view.begin(), view.end(), [&](int a, int b) {
-        return server_entry_compare(entries[a], entries[b], column, reverse) < 0;
+        const int c = ranks.empty() ? compare_column(entries[a], entries[b], column)
+                                    : (ranks[a] == ranks[b] ? 0 : (ranks[a] < ranks[b] ? -1 : 1));
+        return server_entry_compare(entries[a], entries[b], c, reverse) < 0;
     });
     return view;
 }

@@ -8,6 +8,7 @@
 #include <thread>
 #include <mutex>
 #include <cmath>
+#include <tuple>
 #include <utility>
 #include <vector>
 #include <deque>
@@ -4466,20 +4467,17 @@ std::string server_players_label(const AFGameInfoExtra* af, int players, int max
 
 int server_players_compare(const AFGameInfoExtra* a, int players_a, const AFGameInfoExtra* b, int players_b)
 {
-    const auto descending = [](const auto& x, const auto& y) { return x == y ? 0 : (x > y ? -1 : 1); };
-    if (a && b) {
-        return descending(std::pair{a->num_human_players, a->num_bots}, std::pair{b->num_human_players, b->num_bots});
-    }
-    if (!a && !b) {
-        return descending(players_a, players_b);
-    }
-    // A legacy server counts its bots as players, so the AF one's total is the comparable count.
-    const int total_a = a ? a->num_human_players + a->num_bots : players_a;
-    const int total_b = b ? b->num_human_players + b->num_bots : players_b;
-    if (const int c = descending(total_a, total_b); c != 0) {
-        return c;
-    }
-    return a ? -1 : 1;
+    // One key for every pair, so the order stays consistent: all players, as a legacy server may count bots of its own,
+    // then humans, more first; AF first on a tie.
+    const auto key = [](const AFGameInfoExtra* af, int players) -> std::tuple<int, int, int> {
+        if (af) {
+            return {af->num_human_players + af->num_bots, af->num_human_players, 1};
+        }
+        return {players, 0, 0};
+    };
+    const auto key_a = key(a, players_a);
+    const auto key_b = key(b, players_b);
+    return key_a == key_b ? 0 : (key_a > key_b ? -1 : 1);
 }
 
 std::string server_clients_label(const AFGameInfoExtra& af)

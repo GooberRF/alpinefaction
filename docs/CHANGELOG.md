@@ -466,7 +466,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix dedicated server configs accepting out-of-range or non-finite time values
 - Fix clients of a King of the Hill listen server missing the final hill states when a round ends
 - Fix an open crash report dialog keeping the crashed game's network ports and files in use
-- Fix the game sometimes hanging on exit with the Direct3D 9 renderer and anti-aliasing enabled
+- Fix the game sometimes hanging on exit with anti-aliasing enabled (Direct3D 9 renderer only)
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize

@@ -19,6 +19,8 @@ std::string main_menu_version_text();
 void main_menu_version_clicked();
 // The menus' seasonal effect (snow, and af_main_menu.toml's seasonal level) is on.
 bool main_menu_seasonal_effect_active();
+// While set, the menu background draws nothing: a frame run beneath a menu that paints its own over it.
+void main_menu_set_background_hidden(bool hidden);
 void main_menu_render_egg();
 void set_jump_to_multi_server_list(bool jump);
 void set_jump_to_demo_browser(bool jump);
