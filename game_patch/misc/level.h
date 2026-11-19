@@ -111,6 +111,7 @@ struct AlpineLevelProperties
     float camera_far_clip = 0.0f; // 0 = the stock far clip (fog far clip, else gr::default_wfar)
     payload::LevelRules payload_rules;
     bool players_start_with_jetpacks = false; // every player wears a jetpack, as with the Jetpacks mutator
+    float crater_texture_ppm = 0.0f; // 0 = default; $Crater Texture PPM in mapname_info.tbl overrides it
 
     // should match SanitizeSunProperties in editor_patch\level.h
     // A level file can carry anything; these floats end up in the lights constant buffer and in the
@@ -445,6 +446,10 @@ struct AlpineLevelProperties
             if (!reader.read_bytes(&u8, sizeof(u8)))
                 return;
             players_start_with_jetpacks = (u8 != 0);
+            if (!reader.read_bytes(&crater_texture_ppm, sizeof(crater_texture_ppm)))
+                return;
+            if (!std::isfinite(crater_texture_ppm) || crater_texture_ppm < 0.0f)
+                crater_texture_ppm = 0.0f;
         }
     }
 };

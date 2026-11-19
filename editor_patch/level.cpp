@@ -1507,6 +1507,9 @@ constexpr LevelTabControl level_tab_controls[] = {
     {IDC_LEVEL_GEOMOD_TEXTURE_LABEL, LevelTab::general},
     {IDC_LEVEL_GEOMOD_TEXTURE, LevelTab::general},
     {IDC_LEVEL_GEOMOD_TEXTURE_BROWSE, LevelTab::general},
+    {IDC_LEVEL_CRATER_TEXTURE_PPM_LABEL, LevelTab::general},
+    {IDC_LEVEL_CRATER_TEXTURE_PPM, LevelTab::general},
+    {IDC_LEVEL_CRATER_TEXTURE_PPM_HINT, LevelTab::general},
     {IDC_LEVEL_HARDNESS_LABEL, LevelTab::general},
     {IDC_LEVEL_HARDNESS, LevelTab::general},
     {IDC_LEVEL_HARDNESS_SPIN, LevelTab::general},
@@ -2334,6 +2337,7 @@ CodeInjection CLevelDialog_OnInitDialog_patch{
         std::snprintf(buffer, sizeof(buffer), "%.3f", alpine_level_props.static_mesh_ambient_light_modifier);
         SetDlgItemTextA(hdlg, IDC_MESH_AMBIENT_LIGHT_MODIFIER, buffer);
         CheckDlgButton(hdlg, IDC_RF2_STYLE_GEOMOD, alpine_level_props.rf2_style_geomod ? BST_CHECKED : BST_UNCHECKED);
+        alpine_dlg_set_float_field_exact(hdlg, IDC_LEVEL_CRATER_TEXTURE_PPM, alpine_level_props.crater_texture_ppm);
         CheckDlgButton(hdlg, IDC_VEHICLE_FLIGHT_CEILING_ENABLE, alpine_level_props.vehicle_flight_ceiling_enabled ? BST_CHECKED : BST_UNCHECKED);
         char ceiling_buffer[32];
         std::snprintf(ceiling_buffer, sizeof(ceiling_buffer), "%.3f", alpine_level_props.vehicle_flight_ceiling);
@@ -2413,6 +2417,7 @@ CodeInjection CLevelDialog_OnOK_patch{
             alpine_level_props.static_mesh_ambient_light_modifier = modifier;
         }
         alpine_level_props.rf2_style_geomod = IsDlgButtonChecked(hdlg, IDC_RF2_STYLE_GEOMOD) == BST_CHECKED;
+        read_dlg_float(hdlg, IDC_LEVEL_CRATER_TEXTURE_PPM, alpine_level_props.crater_texture_ppm, 0.0f, FLT_MAX);
         alpine_level_props.vehicle_flight_ceiling_enabled = IsDlgButtonChecked(hdlg, IDC_VEHICLE_FLIGHT_CEILING_ENABLE) == BST_CHECKED;
         read_dlg_float(hdlg, IDC_VEHICLE_FLIGHT_CEILING, alpine_level_props.vehicle_flight_ceiling, -FLT_MAX, FLT_MAX);
         payload::LevelRules& payload_rules = alpine_level_props.payload_rules;

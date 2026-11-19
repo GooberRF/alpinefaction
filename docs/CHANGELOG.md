@@ -79,6 +79,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Add flames to gib chunks thrown by exploding entities, toggleable with `cl_gibflames`
 - Add `Jetpacks explode` option to the Jetpacks mutator
 - Add `Players start with jetpacks` setting to level properties in level editor
+- Add `Texture PPM` setting to the GeoMod section of level properties in level editor, as an alternative to `$Crater Texture PPM` in `mapname_info.tbl`
 - Ignore `item_replacements` entries whose `replacement` names an unknown item
 - Add `Scrapyard mode` option to the Gibbing mutator
 - Add underwater rendering effects — animated caustics, depth-based water fog with a waterline, screen tint/vignette and distortion — with quality levels 0-3 via `r_underwater` (Direct3D 11 renderer only)
