@@ -422,8 +422,8 @@ const char* bind_context_description(BindContextId ctx)
     }
 }
 
-// The device the columns describe. Only the keyboard/mouse pair has a runtime; the other two
-// are selectable but every cap is inert.
+// The device the columns describe. Only the keyboard/mouse pair has a runtime; the other two,
+// whose caps are inert, are not offered until 1.6 (see the device strip).
 enum class BindDevice
 {
     Keyboard,
@@ -2472,9 +2472,11 @@ void build_bindings_header(UiContext& ctx, const UiRect& line, const Fonts& font
         ctx_total += ctx_w[i];
     }
 
-    constexpr int dev_count = static_cast<int>(BindDevice::_count);
-    static const char* const dev_long[dev_count] = {"KEYBOARD", "CONTROLLER", "VR"};
-    static const char* const dev_short[dev_count] = {"KB", "PAD", "VR"};
+    // Controller and VR bindings are planned for 1.6; until then the keyboard alone is offered, which needs no strip.
+    // constexpr int dev_count = static_cast<int>(BindDevice::_count);
+    constexpr int dev_count = 1;
+    static const char* const dev_long[] = {"KEYBOARD", "CONTROLLER", "VR"};
+    static const char* const dev_short[] = {"KB", "PAD", "VR"};
     const char* const* dev_labels = dev_long;
     int dev_font = fonts.caption_bold;
     int dev_w[dev_count];
@@ -2500,9 +2502,10 @@ void build_bindings_header(UiContext& ctx, const UiRect& line, const Fonts& font
     // their floor the device strip goes away entirely rather than squeezing the useful one.
     const int ctx_min = rf::gr::get_string_size(std::string_view{"..."}, fonts.caption_bold).first
         + strip_tab_chrome(ctx);
-    int ctx_left = avail_x0 + dev_total + strip_gap;
-    bool show_devices = true;
-    if (ctx_left + std::min(ctx_total, ctx_min * ctx_count) > avail_x1) {
+    // A single device needs no strip.
+    bool show_devices = dev_count > 1;
+    int ctx_left = show_devices ? avail_x0 + dev_total + strip_gap : avail_x0;
+    if (show_devices && ctx_left + std::min(ctx_total, ctx_min * ctx_count) > avail_x1) {
         show_devices = false;
         ctx_left = avail_x0;
     }
