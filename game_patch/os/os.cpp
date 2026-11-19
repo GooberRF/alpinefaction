@@ -229,7 +229,9 @@ bool is_client_bot_requested_from_cmdline()
     if (rf::is_dedicated_server) {
         return false;
     }
-    return raw_command_line_has_switch(L"-bot");
+    // The command line never changes, and is_headless_mode is called on hot paths
+    static const bool requested = raw_command_line_has_switch(L"-bot");
+    return requested;
 }
 
 bool is_client_debugbot_requested_from_cmdline()
@@ -237,7 +239,8 @@ bool is_client_debugbot_requested_from_cmdline()
     if (rf::is_dedicated_server) {
         return false;
     }
-    return raw_command_line_has_switch(L"-debugbot");
+    static const bool requested = raw_command_line_has_switch(L"-debugbot");
+    return requested;
 }
 
 bool headless_bot_requested_from_raw_cmdline()
@@ -252,7 +255,8 @@ bool awpgen_requested_from_raw_cmdline()
     if (rf::is_dedicated_server) {
         return false;
     }
-    return raw_command_line_has_switch(L"-awpgen");
+    static const bool requested = raw_command_line_has_switch(L"-awpgen");
+    return requested;
 }
 
 bool headless_requested_from_raw_cmdline()

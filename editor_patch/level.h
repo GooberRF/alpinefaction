@@ -1016,6 +1016,7 @@ struct AlpineLevelProperties
     bool alpha_tested_occlusion = false; // see-through faces and alpha mesh triangles occlude by texel alpha
     payload::LevelRules payload_rules;
     bool players_start_with_jetpacks = false; // every player wears a jetpack, as with the Jetpacks mutator
+    float crater_texture_ppm = 0.0f; // 0 = default; $Crater Texture PPM in mapname_info.tbl overrides it
 
     // Alpine mesh objects (stored separately from stock object VArrays)
     std::vector<DedMesh*> mesh_objects;
@@ -1187,6 +1188,7 @@ struct AlpineLevelProperties
         alpha_tested_occlusion = false;
         payload_rules = {};
         players_start_with_jetpacks = false;
+        crater_texture_ppm = 0.0f;
         for (auto* m : mesh_objects) {
             DestroyDedMesh(m);
         }
@@ -1340,6 +1342,7 @@ struct AlpineLevelProperties
             file.write<float>(*field);
         }
         file.write<std::uint8_t>(players_start_with_jetpacks ? 1u : 0u);
+        file.write<float>(crater_texture_ppm);
     }
 
     void Deserialize(rf::File& file, std::size_t chunk_len)
@@ -1622,6 +1625,10 @@ struct AlpineLevelProperties
             if (!read_bytes(&u8, sizeof(u8)))
                 return;
             players_start_with_jetpacks = (u8 != 0);
+            if (!read_bytes(&crater_texture_ppm, sizeof(crater_texture_ppm)))
+                return;
+            if (!std::isfinite(crater_texture_ppm) || crater_texture_ppm < 0.0f)
+                crater_texture_ppm = 0.0f;
         }
     }
 };

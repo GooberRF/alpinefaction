@@ -99,8 +99,8 @@ Licenses:
   CC-BY 4.0:     https://creativecommons.org/licenses/by/4.0/
   CC-BY-NC 4.0:  https://creativecommons.org/licenses/by-nc/4.0/
 
-daveincamas <https://freesound.org/people/daveincamas/>:
-  * af_zipline_loop1.wav (CC-BY-NC 4.0: https://freesound.org/s/208729/)
+daveincamas <https://freesound.org/people/daveincamas/> & henderda <https://freesound.org/people/henderda/>:
+  * af_zipline_loop1.wav (mixed; CC-BY-NC 4.0: https://freesound.org/s/208729/ & CC-BY 3.0: https://freesound.org/s/57744/)
 
 Drummyfish <https://opengameart.org/users/drummyfish>:
   Jetpack (CC0: https://opengameart.org/content/oldschool-afps-weapons/):
