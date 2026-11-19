@@ -257,7 +257,7 @@ Colors are hex `RRGGBB` or `RRGGBBAA`, or comma-separated `R,G,B[,A]` values in 
 | `cl_server_browser_details` | `[bool]` | Shows a card with a server's details and players when hovering over or selecting it in the server browser. Default: on. |
 | `cl_sprays` | | Toggles showing players' sprays. Default: on. |
 | `connect` | `<ip[:port]> [password]` | Joins a server (port 7755 when none is given), leaving the multiplayer game in progress after the same mod check and confirmation as the server browser. Refused during a single player game or demo playback. Host names are not accepted. |
-| `disconnect` | | Disconnects from the current server. |
+| `disconnect` | | Disconnects from the current server, or ends the game you are hosting. Not on a dedicated server. |
 | `mp_character` | `[index]` | Prints or sets your multiplayer character by index. |
 | `mp_handicap` | `[percent]` | Sets your damage reduction handicap (0-99) and sends it to the server. Only applied on servers that support it. Default: 0. |
 | `mp_playercount` | | Prints the number of players. Multiplayer only. |

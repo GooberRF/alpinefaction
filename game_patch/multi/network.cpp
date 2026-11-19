@@ -3273,9 +3273,17 @@ namespace
     }
 }
 
+// A disconnect asked for, run from the networking frame after its packet loop (multi_io_do_frame_hook), where the
+// engine's own connection loss stops the session (0x0046E980). A bot control packet asks in the middle of the packet
+// loop, and a typed command after the state's frame, whose flip may still draw outlines from the character data
+// multi_stop releases.
+static bool g_disconnect_pending = false;
+
 FunHook<void()> multi_stop_hook{
     0x0046E2C0,
     [] {
+        // However the session ends, a disconnect asked for in it must not end the next one.
+        g_disconnect_pending = false;
         // Clear a stale demo-browser jump latch (M9) on any non-demo stop so it can't
         // stay stuck (while set, rf_state_is_closed_hook forces every state closed). A
         // demo teardown keeps it armed: demo_playback_active() is still true here, the
@@ -3337,19 +3345,35 @@ FunHook<void()> multi_stop_hook{
     },
 };
 
+static void multi_disconnect_now()
+{
+    g_disconnect_pending = false;
+    if (!rf::is_multi) {
+        return;
+    }
+    xlog::info("Disconnecting from server");
+    rf::multi_stop();
+    // multi_stop_hook may have already set GS_QUIT_GAME for bot auto-quit.
+    // Unless a bot is auto-quitting, leave for the menus, forced as at 0x0046E980: GS_END_GAME's game_shutdown closes
+    // the level.
+    if (!client_bot_launch_enabled() || !g_alpine_game_config.bot_quit_when_disconnected) {
+        rf::gameseq_set_state(rf::GS_END_GAME, true);
+    }
+}
+
 void multi_disconnect_from_server()
 {
     if (!rf::is_multi) {
         rf::console::print("Not connected to a server");
         return;
     }
-    xlog::info("Disconnecting from server");
-    rf::multi_stop();
-    // multi_stop_hook may have already set GS_QUIT_GAME for bot auto-quit.
-    // Only transition to main menu for non-bot clients.
-    if (!client_bot_launch_enabled() || !g_alpine_game_config.bot_quit_when_disconnected) {
-        rf::gameseq_set_state(rf::GS_MAIN_MENU, false);
+    // It has no menus to leave for, and the rest of the networking frame would take the client's path, which reads
+    // the local player a dedicated server lacks.
+    if (rf::is_dedicated_server) {
+        rf::console::print("A dedicated server cannot disconnect; use quit to stop it");
+        return;
     }
+    g_disconnect_pending = true;
 }
 
 ConsoleCommand2 disconnect_cmd{
@@ -4381,6 +4405,10 @@ FunHook<void()> multi_io_do_frame_hook{
     [] {
         multi_io_do_frame_hook.call_target();
 
+        if (g_disconnect_pending) {
+            multi_disconnect_now();
+            return;
+        }
         if (!rf::is_server) {
             demo_playback_do_frame();
             return;

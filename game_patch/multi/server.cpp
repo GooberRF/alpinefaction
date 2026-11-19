@@ -489,10 +489,14 @@ std::string build_info_command_output() {
     int seconds = int(total_sec % 60);
 
     output += "====================================================\n";
-    if (rf::level.flags & rf::LEVEL_LOADED) {
+    // The menus' live background is not a level the player is in.
+    if ((rf::level.flags & rf::LEVEL_LOADED) && !menu_scene_active()) {
         std::format_to(std::back_inserter(output), "{}: {} by {} ({})\n", rf::strings::level_name, rf::level.name, rf::level.author, rf::level.filename);
         std::format_to(std::back_inserter(output), "{}:  {} {}, {}h {}m {}s\n", rf::strings::level_time, days, rf::strings::days, hours, minutes, seconds);
-        std::format_to(std::back_inserter(output), "{}: {}\n", "Game type", multi_game_type_name(rf::netgame.type));
+        // netgame keeps the last session's game type outside multiplayer.
+        if (rf::is_multi) {
+            std::format_to(std::back_inserter(output), "{}: {}\n", "Game type", multi_game_type_name(rf::netgame.type));
+        }
     }
     else {
         output += "No level loaded\n";

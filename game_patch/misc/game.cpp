@@ -56,7 +56,12 @@ FunHook<void(char*)> game_print_screen_hook{
         auto* tm = std::localtime(&now);
         char time_str[32];
         std::strftime(time_str, sizeof(time_str), "%Y%m%d_%H%M%S", tm);
-        auto level_filename = std::string{get_filename_without_ext(rf::level.filename.c_str())};
+        // Only a level the player is in names the shot. The menus' live background isn't one, and stock level_close
+        // leaves the filename behind.
+        const bool in_level = (rf::level.flags & rf::LEVEL_LOADED) && !menu_scene_active();
+        const std::string level_name =
+            in_level ? std::string{get_filename_without_ext(rf::level.filename.c_str())} : std::string{};
+        const std::string level_suffix = level_name.empty() ? "" : "_" + level_name;
         auto* dot_ext = dump_tga ? ".tga" : ".jpg";
         auto screenshots_dir = get_screenshots_dir();
         if (!screenshots_dir) {
@@ -69,11 +74,11 @@ FunHook<void(char*)> game_print_screen_hook{
             if (counter == 1) {
                 // Don't include the counter here
                 std::snprintf(pending_screenshot_filename, sizeof(pending_screenshot_filename) - 4,
-                    "%s\\%s_%s", screenshots_dir.value().c_str(), time_str, level_filename.c_str());
+                    "%s\\%s%s", screenshots_dir.value().c_str(), time_str, level_suffix.c_str());
             } else {
                 // Filename conflict - include a counter
                 std::snprintf(pending_screenshot_filename, sizeof(pending_screenshot_filename) - 4,
-                    "%s\\%s_%d_%s", screenshots_dir.value().c_str(), time_str, counter, level_filename.c_str());
+                    "%s\\%s_%d%s", screenshots_dir.value().c_str(), time_str, counter, level_suffix.c_str());
             }
             auto filename_with_ext = std::string{pending_screenshot_filename} + dot_ext;
             bool exists = file.find(filename_with_ext.c_str());

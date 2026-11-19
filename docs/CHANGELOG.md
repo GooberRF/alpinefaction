@@ -468,6 +468,9 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix clients of a King of the Hill listen server missing the final hill states when a round ends
 - Fix an open crash report dialog keeping the crashed game's network ports and files in use
 - Fix the game sometimes hanging on exit with anti-aliasing enabled (Direct3D 9 renderer only)
+- Fix screenshots taken in the menus being named after the last level played
+- Fix `disconnect` console command not fully leaving the game
+- Fix `info` console command showing the last server's game type outside multiplayer
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize
