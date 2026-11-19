@@ -184,9 +184,10 @@ const Config* pick_config()
     return g_normal_config ? &*g_normal_config : nullptr;
 }
 
+// Legacy menus always show the stock Mars background.
 bool background_wanted()
 {
-    return g_alpine_game_config.main_menu_background == background_live_level;
+    return g_alpine_game_config.main_menu_background == background_live_level && !legacy_menus_enabled();
 }
 
 // The credits keep the scene loaded but draw their own screen.
@@ -265,6 +266,9 @@ void render_world(const rf::Vector3 pos, const rf::Matrix3 orient, const float f
     // The menus' 2D rects take the lit path, which would add the lights uploaded for the level.
     rf::gr::num_relevant_lights = 0;
     gr::d3d11::clear_mesh_lights();
+    // Drawn now, under the menu. Left for flip(), they would draw over it, after a stock popup's choice (Quit:
+    // multi_stop unloads the multiplayer characters) may have freed the meshes they point at.
+    gr::d3d11::flush_scene_outlines();
     rf::gr::reset_clip();
 }
 
@@ -284,7 +288,7 @@ rf::Vector3 carry(const rf::Vector3& dir, const rf::Matrix3& from, const rf::Mat
 // so the view follows the camera.
 bool draw_game_beneath()
 {
-    if (!g_game_view || !background_wanted() || !is_d3d11() || legacy_menus_enabled()
+    if (!g_game_view || !background_wanted() || !is_d3d11()
         || !(rf::level.flags & rf::LEVEL_LOADED) || !gameseq_is_deep_stacked(rf::GS_GAMEPLAY)) {
         return false;
     }

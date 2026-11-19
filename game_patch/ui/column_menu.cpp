@@ -322,13 +322,18 @@ void ColumnMenu::key(int key)
         ui_.push_key(static_cast<rf::Key>(key));
         return;
     }
+    const int code = key & rf::KEY_MASK;
     if (ColumnPanel* modal = modal_panel()) {
-        if (!modal->modal_key(ui_, key)) {
+        // Esc closes an open dropdown, not the dialog it is in.
+        if (code == rf::KEY_ESC && ui_.popup_id() != 0) {
+            ui_.close_popup();
+            ui_play_click();
+        }
+        else if (ui_.popup_id() != 0 || !modal->modal_key(ui_, key)) {
             ui_.handle_nav_key(static_cast<rf::Key>(key));
         }
         return;
     }
-    const int code = key & rf::KEY_MASK;
     ColumnPanel* open = open_panel_now();
     if (code == rf::KEY_ESC) {
         if (ui_.popup_id() != 0) {
@@ -341,6 +346,11 @@ void ColumnMenu::key(int key)
             return;
         }
         pending_ = esc_action_;
+        return;
+    }
+    // An open dropdown owns the keys, so no hotkey acts on the screen under it.
+    if (ui_.popup_id() != 0) {
+        ui_.handle_nav_key(static_cast<rf::Key>(key));
         return;
     }
     if (open && open->key(ui_, key)) {
@@ -426,8 +436,16 @@ void ColumnMenu::draw(bool backdrop)
     menu_run_draw(
         ui_,
         [this](UiContext& ctx) {
+            ColumnPanel* const modal = modal_panel();
+            // The screen under a dialog takes no input, so nothing on it lights up under the cursor.
+            const int mouse_x = ctx.mx;
+            const int mouse_y = ctx.my;
+            if (popup_.active() || modal || rf::ui::popup_is_active()) {
+                ctx.set_mouse_pos(-1, -1);
+            }
             build(ctx);
-            if (ColumnPanel* modal = modal_panel()) {
+            ctx.set_mouse_pos(mouse_x, mouse_y);
+            if (modal) {
                 modal->build_modal(ctx);
             }
             popup_.build(ctx);

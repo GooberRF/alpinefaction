@@ -46,7 +46,7 @@ std::vector<ColumnButton> make_multi_buttons()
         buttons.push_back(
             ColumnButton{action_id(MultiAction::JoinGame), menu_stock_label(rf::strings::join), rf::KEY_J, true});
     }
-    // Hidden where F4 is: on a listen host or in a demo.
+    // Hidden where F4 is unavailable: on a listen host or in a demo.
     if (vote_panel_available()) {
         buttons.push_back(ColumnButton{action_id(MultiAction::CallVote), "CALL VOTE", rf::KEY_V});
     }

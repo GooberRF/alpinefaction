@@ -2,9 +2,10 @@
 #include <cctype>
 #include <filesystem>
 #include <format>
-#include <fstream>
 #include <set>
+#include <sstream>
 #include <utility>
+#include <common/utils/os-utils.h>
 #include <common/utils/string-utils.h>
 #include <xlog/xlog.h>
 #include "listen_server_setup.h"
@@ -334,10 +335,13 @@ fs::path servers_dir(bool create)
 
 bool write_toml(const fs::path& path, const toml::table& tbl)
 {
-    std::ofstream out{path, std::ios::trunc};
+    std::ostringstream out;
     out << tbl << '\n';
-    if (!out) {
-        xlog::error("[ListenServer] Failed to write {}", path.string());
+    try {
+        write_file_replacing(path.string(), out.str());
+    }
+    catch (const std::exception& e) {
+        xlog::error("[ListenServer] Failed to write {}: {}", path.string(), e.what());
         return false;
     }
     return true;
@@ -372,6 +376,10 @@ bool save_setup(const ListenServerSetup& setup, std::string_view name)
         written.insert(std::move(file));
     }
 
+    if (!write_toml(dir / std::format("{}.toml", name), setup.to_config_table(profile_paths))) {
+        return false;
+    }
+    // Only once the config no longer names them.
     if (fs::is_directory(bots_dir, ec)) {
         for (const fs::directory_entry& entry : fs::directory_iterator{bots_dir, ec}) {
             const fs::path& path = entry.path();
@@ -383,8 +391,7 @@ bool save_setup(const ListenServerSetup& setup, std::string_view name)
             fs::remove(bots_dir, ec); // only goes when nothing else is in it
         }
     }
-
-    return write_toml(dir / std::format("{}.toml", name), setup.to_config_table(profile_paths));
+    return true;
 }
 
 const toml::node* root_key(const toml::table& root, std::string_view key)
@@ -1048,6 +1055,8 @@ ListenServerStartResult start_listen_server(const ListenServerSetup& setup)
     }
     // Ends whatever game state is left; its multi_stop clears any previous listen config.
     rf::game_shutdown();
+    // A level or rules override from the previous session's commands or votes must not apply to this one.
+    set_manually_loaded_level(false);
 
     std::vector<toml::table> profiles;
     for (const ListenServerBot& bot : setup.bot_profiles()) {
@@ -1145,9 +1154,7 @@ std::vector<std::string> listen_server_saved_setups()
             names.push_back(stem);
         }
     }
-    std::sort(names.begin(), names.end(), [](const std::string& a, const std::string& b) {
-        return string_to_lower(a) < string_to_lower(b);
-    });
+    std::sort(names.begin(), names.end(), string_iless);
     return names;
 }
 

@@ -6,6 +6,7 @@
 #include <string_view>
 #include <utility>
 #include <vector>
+#include <common/utils/int-utils.h>
 #include <patch_common/FunHook.h>
 #include "menu_popup.h"
 #include "menu_shell.h"
@@ -255,6 +256,39 @@ void stock_popup_set_text(const char* text)
     stock_popup_set_text_hook.call_target(text);
 }
 
+// Stock steps its buttons to the next with Up or Shift+Tab and to the previous with Down or Tab, the reverse of
+// MenuPopup's. Turned around to match, with Left and Right added for the row they are drawn in here, except in the
+// input box, which stock hands the keys it does not use.
+void stock_popup_key(int key);
+FunHook<decltype(stock_popup_key)> stock_popup_key_hook{0x00456430, stock_popup_key};
+void stock_popup_key(int key)
+{
+    const bool typing = rf::ui::popup_current_gadget == rf::ui::popup_input_gadget;
+    if (typing && (key == rf::KEY_LEFT || key == rf::KEY_RIGHT)) {
+        stock_popup_key_hook.call_target(key);
+        return;
+    }
+    switch (key) {
+        case rf::KEY_RIGHT:
+        case rf::KEY_DOWN:
+            key = rf::KEY_UP;
+            break;
+        case rf::KEY_LEFT:
+        case rf::KEY_UP:
+            key = rf::KEY_DOWN;
+            break;
+        case rf::KEY_TAB:
+            key = rf::KEY_TAB | rf::KEY_SHIFTED;
+            break;
+        case rf::KEY_TAB | rf::KEY_SHIFTED:
+            key = rf::KEY_TAB;
+            break;
+        default:
+            break;
+    }
+    stock_popup_key_hook.call_target(key);
+}
+
 void stock_popup_process_mouse();
 FunHook<decltype(stock_popup_process_mouse)> stock_popup_process_mouse_hook{0x00455B00, stock_popup_process_mouse};
 void stock_popup_process_mouse()
@@ -398,7 +432,35 @@ bool MenuPopup::key(UiContext& ctx, int key)
             }
         }
     }
-    ctx.handle_nav_key(static_cast<rf::Key>(key));
+    // Stepped here, not by the context: until a pass has listed the popup's widgets it would step through the screen's.
+    // The arrows go along the row of buttons; Tab also reaches the box.
+    const int count = static_cast<int>(buttons_.size());
+    const bool tab = code == rf::KEY_TAB;
+    int step = 0;
+    if (tab) {
+        step = (key & rf::KEY_SHIFTED) != 0 ? -1 : 1;
+    }
+    else if (code == rf::KEY_RIGHT || code == rf::KEY_DOWN) {
+        step = 1;
+    }
+    else if (code == rf::KEY_LEFT || code == rf::KEY_UP) {
+        step = -1;
+    }
+    if (step != 0 && count > 0) {
+        const int box = tab && input_ ? 1 : 0; // slot 0 is the box
+        const int current = current_button(ctx);
+        // With nothing current, the first step lands on the first slot or the last.
+        const int from = current >= 0 ? current + box : (step > 0 ? -1 : 0);
+        const int next = wrap_step(from, step, count + box);
+        if (next < box) {
+            focus_input_ = true;
+            // Enter from the box presses the default, so that is the button lit.
+            ctx.set_focus(default_ >= 0 && default_ < count ? button_id(default_) : 0, false);
+        }
+        else {
+            ctx.set_focus(button_id(next - box), true);
+        }
+    }
     return true;
 }
 
@@ -466,6 +528,7 @@ void menu_popup_apply_patch()
         return;
     }
     stock_popup_set_text_hook.install();
+    stock_popup_key_hook.install();
     stock_popup_process_mouse_hook.install();
     stock_popup_render_hook.install();
 }

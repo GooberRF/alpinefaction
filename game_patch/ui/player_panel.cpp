@@ -5,6 +5,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <common/utils/int-utils.h>
 #include <common/utils/string-utils.h>
 #include "player_panel.h"
 #include "menu_shell.h"
@@ -95,7 +96,7 @@ void build_team_toggle(UiContext& ctx, const UiRect& bar, const MenuFonts& fonts
                                          !g_portrait_view, ui_id("team_toggle"), skin::txt_hi, skin::txt);
     if (step != 0) {
         const int count = static_cast<int>(team_choices.size());
-        g_team_choice = (g_team_choice + step + count) % count;
+        g_team_choice = wrap_step(g_team_choice, step, count);
         ui_play_click();
     }
 }

@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <common/utils/int-utils.h>
 #include <common/utils/string-utils.h>
 #include "form_view.h"
 #include "settings_skin.h"
@@ -166,7 +167,7 @@ bool form_choice(UiContext& ctx, const FormLine& line, UiId id, const std::vecto
     if (delta == 0 || !line.enabled) {
         return false;
     }
-    index = (shown + delta + count) % count;
+    index = wrap_step(shown, delta, count);
     ui_play_click();
     return true;
 }

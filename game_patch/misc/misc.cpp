@@ -298,7 +298,8 @@ FunHook<void(rf::GameState, rf::GameState)> rf_init_state_hook{
             return;
         }
 
-        if (state == rf::GS_MAIN_MENU && !g_join_mp_game_seq_data && !g_levelm_filename) {
+        if (state == rf::GS_MAIN_MENU && !g_join_mp_game_seq_data && !g_levelm_filename
+            && !demo_playback_restart_pending()) {
             menu_scene_maybe_start();
         }
         rf_init_state_hook.call_target(state, old_state);

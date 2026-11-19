@@ -1287,11 +1287,8 @@ std::vector<std::string> multi_installed_levels(const std::function<bool(const c
         }
     });
     // The packfile lookup table iterates in hash order.
-    std::sort(levels.begin(), levels.end(), [](const std::string& a, const std::string& b) {
-        return string_to_lower(a) < string_to_lower(b);
-    });
-    levels.erase(std::unique(levels.begin(), levels.end(),
-        [](const std::string& a, const std::string& b) { return string_iequals(a, b); }), levels.end());
+    std::sort(levels.begin(), levels.end(), string_iless);
+    levels.erase(std::unique(levels.begin(), levels.end(), string_iequals), levels.end());
     return levels;
 }
 

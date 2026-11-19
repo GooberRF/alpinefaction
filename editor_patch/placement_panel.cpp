@@ -206,11 +206,6 @@ HTREEITEM g_forced_tree_item = nullptr;
 
 // ─── Class lists and meshes ─────────────────────────────────────────────────
 
-bool string_iless(const std::string& a, const std::string& b)
-{
-    return _stricmp(a.c_str(), b.c_str()) < 0;
-}
-
 // The classes the object tree lists for a stock type (0x00443610 lists the templates with listed_in_tree, by
 // class_name).
 std::vector<std::string> stock_classes(DedObjectType type)

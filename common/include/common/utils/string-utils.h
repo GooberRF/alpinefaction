@@ -104,6 +104,25 @@ inline bool string_iequals(std::string_view left, std::string_view right)
     });
 }
 
+// Negative, zero or positive as `left` sorts before, with or after `right`, ignoring case
+inline int string_icompare(std::string_view left, std::string_view right)
+{
+    const size_t n = std::min(left.size(), right.size());
+    for (size_t i = 0; i < n; ++i) {
+        const int a = std::tolower(static_cast<unsigned char>(left[i]));
+        const int b = std::tolower(static_cast<unsigned char>(right[i]));
+        if (a != b) {
+            return a < b ? -1 : 1;
+        }
+    }
+    return left.size() == right.size() ? 0 : (left.size() < right.size() ? -1 : 1);
+}
+
+inline bool string_iless(std::string_view left, std::string_view right)
+{
+    return string_icompare(left, right) < 0;
+}
+
 inline bool string_starts_with(std::string_view str, std::string_view prefix)
 {
     return str.starts_with(prefix);

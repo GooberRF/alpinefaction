@@ -48,10 +48,12 @@ constexpr int desc_gametype = 1001;
 constexpr int desc_filter = 1002;
 constexpr int desc_manual = 1003;
 constexpr int desc_level_name = 1004;
-constexpr int desc_rotation_action = 1005;
+constexpr int desc_extend_manual = 1005;
 constexpr int desc_preserve = 1006;
 constexpr int desc_current_mutators = 1007;
 constexpr int desc_base_mutators = 1008;
+// Plus the rotation action's index; kept last.
+constexpr int desc_rotation_actions = 1009;
 
 // The tabs, SAVED and BACK: more than the large buttons hold.
 static_assert(vote_form_max_tabs + 2 <= menu_panel_slots);
@@ -130,6 +132,12 @@ const char* row_description(int id, const VoteOptionsData* options, const char* 
             return "Vote for a level by its file name, for one the list does not show.";
         case desc_level_name:
             return "The file name of the level to vote for.";
+        case desc_extend_manual: {
+            static const std::string text =
+                std::format("Vote for a length the list does not show, from {} to {} minutes.",
+                            af_vote_extend_min_minutes, af_vote_extend_max_minutes);
+            return text.c_str();
+        }
         case desc_preserve:
             return "Keep the game type and mutators the session runs now.";
         case desc_current_mutators:
@@ -610,40 +618,58 @@ void build_rotation_tab(UiContext& ctx, const MenuPanel& panel, const VoteOption
     VoteForm& form = vote_form();
     const FormFonts ff = form_fonts(fonts);
     const FormPanelAreas areas = form_panel_areas(ctx, panel, true);
-    const int row_h = skin_px(ctx, skin::row_h);
     const int count = static_cast<int>(tab.types.size());
     form.rotation_index = std::clamp(form.rotation_index, 0, count - 1);
 
-    const UiRect view = form_rows_view(ctx, areas.body);
-    FormScroll scroll = form_scroll_begin(ctx, view, 2 * row_h, g_form_scroll, row_h * 3, ui_id("vote_form"));
-    int y = scroll.region.start_y();
-    {
-        const UiId id = ui_id("vote_rotation_action");
-        if (const auto rect = form_scroll_row(ctx, scroll, view.x, y, row_h, id, UiFocusKind::Adjustable)) {
-            const FormLine line = form_row(ctx, FormRow{.rect = *rect, .id = id, .label = "Action",
-                                                        .desc_id = desc_rotation_action},
-                                           ff);
-            std::vector<std::string> labels;
-            for (const VoteTypeInfo* type : tab.types) {
-                labels.emplace_back(type->label);
-            }
-            form_choice(ctx, line, id, labels, form.rotation_index, ff.body);
+    // The actions as a list, as the Level tab's levels, so all of them show at once.
+    const int x = areas.body.x;
+    const int list_w = std::clamp(areas.body.w * 2 / 5, ctx.scaled(240.0f), ctx.scaled(520.0f));
+    const int header_h = ctx.scaled(form_sub_header_h);
+    form_draw_sub_header(ctx, UiRect{x, areas.body.y, list_w, header_h}, "Action", ff.body_bold);
+    const int list_row_h = skin_list_row_h(ctx, fonts.body);
+    // Every action fits, so the list never scrolls.
+    const UiRect well{x, areas.body.y + header_h, list_w, count * list_row_h + ctx.scaled(8.0f)};
+    float scroll = 0.0f;
+    UiId scrolled_to = 0;
+    const SkinScrollList list{
+        .count = count,
+        .row_h = list_row_h,
+        .id_name = "vote_rotation",
+        .row_id_name = "vote_rotation",
+        .font = fonts.body,
+    };
+    skin_scroll_list(ctx, well, list, scroll, scrolled_to, [&](const SkinScrollListRow& row) {
+        if (!row.in_view) {
+            return;
         }
-    }
-    // Only offered on a server that reads the flag.
-    if (options.rotation_preserve_supported) {
-        const UiId id = ui_id("vote_rotation_preserve");
-        if (const auto rect = form_scroll_row(ctx, scroll, view.x, y, row_h, id, UiFocusKind::Adjustable)) {
-            const FormRow row{
-                .rect = *rect, .id = id, .label = "Preserve game type and mutators", .desc_id = desc_preserve};
-            const FormLine line = form_row(ctx, row, ff);
-            form_toggle(ctx, line, id, form.rotation_preserve, ff.body);
+        const SkinListRow r = skin_list_row(ctx, row.rect, row.index == form.rotation_index, row.id);
+        describe(ctx, row.rect, row.id, desc_rotation_actions + row.index);
+        if (ctx.draw) {
+            draw_row_text(ctx, r, tab.types[row.index]->label, 0, r.lit ? skin::txt_hi : skin::txt, fonts.body);
         }
-    }
-    form_scroll_end(ctx, scroll, g_form_scrolled_to);
+        else if ((r.clicked || r.activated) && row.index != form.rotation_index) {
+            form.rotation_index = row.index;
+            ui_play_click();
+        }
+    });
 
+    // Only offered on a server that reads the flag. Under the list, as the Level tab's manual entry under its own.
+    if (options.rotation_preserve_supported) {
+        const char* label = "Preserve game type and mutators";
+        const UiId id = ui_id("vote_rotation_preserve");
+        const UiRect lamp{x, well.y + well.h + ctx.scaled(12.0f), skin_lamp_toggle_width(ctx, label, fonts.body),
+                          skin_px(ctx, skin::widget_h)};
+        describe(ctx, lamp, id, desc_preserve);
+        if (skin_lamp_toggle(ctx, lamp, label, form.rotation_preserve, fonts.body, id)) {
+            form.rotation_preserve = !form.rotation_preserve;
+        }
+    }
+
+    // A row the cursor or keyboard is on describes its action; otherwise the picked one's shows.
+    const int described = ctx.description().id - desc_rotation_actions;
     const VoteTypeInfo* type = vote_tab_type(tab);
-    build_description(ctx, areas.desc, &options, type ? type->description : "", fonts);
+    const VoteTypeInfo* shown = described >= 0 && described < count ? tab.types[described] : type;
+    build_description(ctx, areas.desc, &options, shown ? shown->description : "", fonts);
     if (type) {
         build_vote_footer(ctx, areas.footer, options, type->type, fonts);
     }
@@ -652,23 +678,82 @@ void build_rotation_tab(UiContext& ctx, const MenuPanel& panel, const VoteOption
 void build_extend_tab(UiContext& ctx, const MenuPanel& panel, const VoteOptionsData& options, const VoteTypeInfo& type,
                       const MenuFonts& fonts)
 {
+    VoteForm& form = vote_form();
     const FormFonts ff = form_fonts(fonts);
     const FormPanelAreas areas = form_panel_areas(ctx, panel, true);
-    const int row_h = skin_px(ctx, skin::row_h);
-    const UiRect view = form_rows_view(ctx, areas.body);
-    FormScroll scroll = form_scroll_begin(ctx, view, row_h, g_form_scroll, row_h * 3, ui_id("vote_form"));
-    int y = scroll.region.start_y();
-    const UiId id = ui_id("vote_extend_minutes");
-    if (const auto rect = form_scroll_row(ctx, scroll, view.x, y, row_h, id, UiFocusKind::Text)) {
-        const std::string label =
-            std::format("Minutes ({}-{})", af_vote_extend_min_minutes, af_vote_extend_max_minutes);
-        const FormLine line = form_row(ctx, FormRow{.rect = *rect, .id = id, .label = label.c_str()}, ff);
-        const std::string minutes = std::to_string(vote_form().extend_minutes);
-        const FormTextSpec spec{.max_len = 2, .filter = ui_char_filter_digit, .hint = ""};
-        form_number_text(ctx, line, id, minutes, minutes, spec, ff.body, g_prev_text_focus,
-                         [](const std::string& text) { vote_form_set_extend_minutes(text); });
+    const int count = static_cast<int>(std::size(vote_extend_presets));
+
+    // The common lengths as a list, as the Rotation tab's actions; any other is typed below it.
+    const int x = areas.body.x;
+    const int list_w = std::clamp(areas.body.w * 2 / 5, ctx.scaled(240.0f), ctx.scaled(520.0f));
+    const int header_h = ctx.scaled(form_sub_header_h);
+    form_draw_sub_header(ctx, UiRect{x, areas.body.y, list_w, header_h}, "Minutes", ff.body_bold);
+    const int list_row_h = skin_list_row_h(ctx, fonts.body);
+    // Every length fits, so the list never scrolls.
+    const UiRect well{x, areas.body.y + header_h, list_w, count * list_row_h + ctx.scaled(8.0f)};
+    float scroll = 0.0f;
+    UiId scrolled_to = 0;
+    const SkinScrollList list{
+        .count = count,
+        .row_h = list_row_h,
+        .id_name = "vote_extend",
+        .row_id_name = "vote_extend",
+        .font = fonts.body,
+    };
+    skin_scroll_list(ctx, well, list, scroll, scrolled_to, [&](const SkinScrollListRow& row) {
+        if (!row.in_view) {
+            return;
+        }
+        const int minutes = vote_extend_presets[row.index];
+        const bool picked = !form.extend_manual && minutes == form.extend_minutes;
+        const SkinListRow r = skin_list_row(ctx, row.rect, picked, row.id);
+        if (ctx.draw) {
+            draw_row_text(ctx, r, std::format("{} minutes", minutes), 0, r.lit ? skin::txt_hi : skin::txt, fonts.body);
+        }
+        else if (r.clicked || r.activated) {
+            form.extend_manual = false;
+            form.extend_minutes = minutes;
+            ui_play_click();
+        }
+    });
+
+    const int field_h = skin_px(ctx, skin::widget_h);
+    const int box_y = well.y + well.h + ctx.scaled(12.0f);
+    const char* label = "Enter minutes manually";
+    const UiId box_id = ui_id("vote_extend_manual");
+    const UiRect lamp{x, box_y, std::min(list_w, skin_lamp_toggle_width(ctx, label, fonts.body)), field_h};
+    describe(ctx, lamp, box_id, desc_extend_manual);
+    if (skin_lamp_toggle(ctx, lamp, label, form.extend_manual, fonts.body, box_id)) {
+        form.extend_manual = !form.extend_manual;
+        // Back on the list, a typed length it does not show would be voted for with no row picked.
+        if (!form.extend_manual
+            && std::ranges::find(vote_extend_presets, form.extend_minutes) == std::end(vote_extend_presets)) {
+            form.extend_minutes = af_vote_extend_default_minutes;
+        }
     }
-    form_scroll_end(ctx, scroll, g_form_scrolled_to);
+    const UiId field_id = ui_id("vote_extend_minutes");
+    const UiRect field{x, box_y + field_h + ctx.scaled(8.0f), list_w, field_h};
+    describe(ctx, field, field_id, desc_extend_manual);
+    // Out of typing, the box shows the length the vote sends: a typed 0 or 99 clamped, an emptied box the last one.
+    if (!ctx.draw && ctx.focused_text_id() != field_id) {
+        form.extend_text = std::to_string(form.extend_minutes);
+    }
+    const std::string hint = std::format("{}-{}", af_vote_extend_min_minutes, af_vote_extend_max_minutes);
+    if (skin_field(ctx, field, field_id, form.extend_text, 2, ui_char_filter_digit, hint.c_str(), fonts.body,
+                   form.extend_manual)) {
+        vote_form_set_extend_minutes(form.extend_text);
+    }
+
+    // What the vote is weighed against: the round's time left now and once it passes.
+    if (const std::optional<float> left = multi_time_left(); left && ctx.draw) {
+        const auto clock = [](int seconds) { return std::format("{}:{:02}", seconds / 60, seconds % 60); };
+        const int now = static_cast<int>(*left);
+        const std::string text = std::format("Time left: {}, {} after the vote passes", clock(now),
+                                             clock(now + form.extend_minutes * 60));
+        const UiRect d = ui_draw_rect(ctx, UiRect{x, field.y + field.h + ctx.scaled(20.0f), list_w, field_h});
+        rf::gr::set_color(skin::ink_status);
+        rf::gr::string(d.x, d.y + (d.h - rf::gr::get_font_height(fonts.body)) / 2, text.c_str(), fonts.body);
+    }
     build_description(ctx, areas.desc, &options, type.description, fonts);
     build_vote_footer(ctx, areas.footer, options, type.type, fonts);
 }

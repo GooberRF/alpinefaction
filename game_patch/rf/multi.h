@@ -59,6 +59,8 @@ namespace rf
     // psnet_rel_connect_to_server (0x0052A4B0)
     static auto& net_rel_last_connect_socket = addr_as_ref<int>(0x005A6608);
     static auto& net_port = addr_as_ref<unsigned short>(0x01B587D4);
+    // From -port or the registry at startup, 0 when none was given
+    static auto& net_configured_port = addr_as_ref<unsigned short>(0x0059CDE4);
     // net_init_socket's setup after a successful bind: broadcast, non-blocking and the receive buffer, the reliable
     // sockets, and the flag the reliable sockets check
     static const auto& net_socket_configure = addr_as_ref<void __cdecl(int sock)>(0x00528CB0);

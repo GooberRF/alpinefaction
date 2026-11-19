@@ -458,9 +458,12 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix game and level editor crashing when a decal lies on a face with many vertices
 - Fix decals on faces with many vertices showing only partly (Direct3D 11 renderer only)
 - Fix a listen server host's first spawn on each level ignoring the server's spawn rules
-- Fix random crashes when AI follows a waypoint list that refers to a missing node (e.g. `L5S2`)
+- Fix random crashes when AI follows a waypoint list that refers to a missing node, such as on `L5S2`
 - Fix the game freezing in multiplayer when its UDP port is already in use
+- Fix dedicated server configs accepting out-of-range or non-finite time values
+- Fix clients of a King of the Hill listen server missing the final hill states when a round ends
 - Fix an open crash report dialog keeping the crashed game's network ports and files in use
+- Fix the game sometimes hanging on exit with the Direct3D 9 renderer and anti-aliasing enabled
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize

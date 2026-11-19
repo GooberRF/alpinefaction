@@ -368,6 +368,7 @@ void build_form(const VoteOptionsData& options)
     g_form.manual_level_name.clear();
     g_form.team_size = 4;
     g_form.extend_minutes = af_vote_extend_default_minutes;
+    g_form.extend_manual = false;
     g_form.level_scroll = 0.0f;
     g_form.kick_scroll = 0.0f;
 
@@ -394,13 +395,6 @@ void build_form(const VoteOptionsData& options)
     g_form.mutators_touched = false;
     pin_mutator_baseline_context();
     reset_gametype_selection();
-}
-
-// Case-insensitive ordering for the level list.
-bool level_name_less(const std::string& a, const std::string& b)
-{
-    return std::lexicographical_compare(a.begin(), a.end(), b.begin(), b.end(),
-        [](unsigned char l, unsigned char r) { return std::tolower(l) < std::tolower(r); });
 }
 
 uint8_t selected_gametype(const VoteOptionsData& options, bool team_only)
@@ -693,6 +687,8 @@ void load_saved_vote_into_form(const SavedVote& vote, const VoteOptionsData& opt
         g_form.extend_minutes = std::clamp(static_cast<int>(vote.extend_minutes),
             static_cast<int>(af_vote_extend_min_minutes),
             static_cast<int>(af_vote_extend_max_minutes));
+        g_form.extend_manual = std::ranges::find(vote_extend_presets, g_form.extend_minutes)
+            == std::end(vote_extend_presets);
     }
 
     // Only Level and Match carry mutators. An Extend entry has none, so it must
@@ -1047,14 +1043,10 @@ const VoteLevelList& vote_form_level_list(const VoteOptionsData& options, bool i
         }
 
         // Alphabetical rather than the blob order (rotation order, then extras).
-        std::sort(levels.begin(), levels.end(), level_name_less);
+        std::sort(levels.begin(), levels.end(), string_iless);
         // The blob can list the same file twice (rotation entry + vote-allowed
         // extra); two identical rows would both resolve to the first by name.
-        levels.erase(std::unique(levels.begin(), levels.end(),
-                         [](const std::string& a, const std::string& b) {
-                             return !level_name_less(a, b) && !level_name_less(b, a);
-                         }),
-            levels.end());
+        levels.erase(std::unique(levels.begin(), levels.end(), string_iequals), levels.end());
 
         cache.items.clear();
         cache.items.reserve(levels.size() + 1);

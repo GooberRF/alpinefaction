@@ -2,6 +2,7 @@
 #include <cctype>
 #include <cmath>
 #include <format>
+#include <common/utils/int-utils.h>
 #include <common/utils/string-utils.h>
 #include "ui_kit.h"
 #include "../hud/hud_internal.h"
@@ -498,7 +499,7 @@ bool UiContext::handle_nav_key(rf::Key key)
             }
         }
         const int count = static_cast<int>(prev_focusables_.size());
-        index = index < 0 ? (step > 0 ? 0 : count - 1) : (index + step + count) % count;
+        index = index < 0 ? (step > 0 ? 0 : count - 1) : wrap_step(index, step, count);
         focus_id_ = prev_focusables_[index].id;
         focus_visible_ = true;
         return true;

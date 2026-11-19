@@ -32,6 +32,9 @@ namespace gr::d3d11 {
     // Uploads rf::gr::relevant_lights and the ambient light as they are now, for code that changed them outside
     // the renderer's own gather, and forgets the mesh bounds the gather set.
     void clear_mesh_lights();
+    // Draws every outline a scene drawn outside gameplay left pending, which flip() would otherwise draw from pointers
+    // into meshes the frame may have freed by then.
+    void flush_scene_outlines();
     // While set, meshes draw with rf::gr::relevant_lights as they are instead of gathering the level's lights at
     // the mesh, for a mesh shown apart from the level such as a menu preview. Returns the previous setting.
     bool set_skip_mesh_light_gather(bool skip);

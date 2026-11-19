@@ -1,7 +1,6 @@
 #include <winsock2.h>
 #include <algorithm>
 #include <atomic>
-#include <cctype>
 #include <chrono>
 #include <cstddef>
 #include <cstring>
@@ -162,25 +161,12 @@ size_t count_entries(bool ServerBrowserEntry::* flag)
 
 // ─── Sorting and filtering ───
 
-int compare_icase(std::string_view a, std::string_view b)
-{
-    const size_t n = std::min(a.size(), b.size());
-    for (size_t i = 0; i < n; ++i) {
-        const int ca = std::tolower(static_cast<unsigned char>(a[i]));
-        const int cb = std::tolower(static_cast<unsigned char>(b[i]));
-        if (ca != cb) {
-            return ca < cb ? -1 : 1;
-        }
-    }
-    return a.size() == b.size() ? 0 : (a.size() < b.size() ? -1 : 1);
-}
-
 int compare_text(std::string_view a, std::string_view b)
 {
     if (a.empty() != b.empty()) {
         return a.empty() ? 1 : -1;
     }
-    return compare_icase(a, b);
+    return string_icompare(a, b);
 }
 
 std::string_view game_type_short_name(const ServerBrowserEntry& entry)
@@ -194,10 +180,10 @@ int compare_column(const ServerBrowserEntry& a, const ServerBrowserEntry& b, Ser
     case ServerSortColumn::name:
         return compare_text(a.name, b.name);
     case ServerSortColumn::game_type:
-        if (const int c = compare_icase(game_type_short_name(a), game_type_short_name(b)); c != 0) {
+        if (const int c = string_icompare(game_type_short_name(a), game_type_short_name(b)); c != 0) {
             return c;
         }
-        return compare_icase(a.mod, b.mod);
+        return string_icompare(a.mod, b.mod);
     case ServerSortColumn::map:
         return compare_text(a.level, b.level);
     case ServerSortColumn::players:

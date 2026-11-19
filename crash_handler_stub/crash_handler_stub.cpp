@@ -41,6 +41,7 @@ void CrashHandlerStubProcessException(PEXCEPTION_POINTERS exception_ptrs, DWORD 
         const bool limited = list_ready
             && UpdateProcThreadAttribute(attribute_list, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherited,
                                          sizeof(inherited), nullptr, nullptr);
+        DWORD limit_error = limited ? 0 : GetLastError();
 
         STARTUPINFOEXW startup_info;
         ZeroMemory(&startup_info, sizeof(startup_info));
@@ -56,12 +57,15 @@ void CrashHandlerStubProcessException(PEXCEPTION_POINTERS exception_ptrs, DWORD 
         BOOL created = limited
             && CreateProcessW(nullptr, cmd_line, nullptr, nullptr, TRUE, EXTENDED_STARTUPINFO_PRESENT, nullptr,
                               nullptr, &startup_info.StartupInfo, &proc_info);
+        if (limited && !created) {
+            limit_error = GetLastError();
+        }
         if (list_ready) {
             DeleteProcThreadAttributeList(attribute_list);
         }
         // A report that keeps the game's handles open beats no report.
         if (!created) {
-            xlog::errorf("Cannot limit the handles CrashHandler inherits (error %lu)", GetLastError());
+            xlog::errorf("Cannot limit the handles CrashHandler inherits (error %lu)", limit_error);
             startup_info.StartupInfo.cb = sizeof(startup_info.StartupInfo);
             created = CreateProcessW(nullptr, cmd_line, nullptr, nullptr, TRUE, 0, nullptr, nullptr,
                                      &startup_info.StartupInfo, &proc_info);

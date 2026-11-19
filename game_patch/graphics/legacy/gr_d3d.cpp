@@ -821,6 +821,8 @@ CodeInjection gr_d3d_close_injection{
     0x0054527A,
     []() {
         gr_d3d_capture_close();
+        // Before the device goes. Left to the map's destructor at DLL unload, the release can hang in the driver.
+        g_d3d_msaa_surfaces.clear();
         gr_d3d_gamma_reset();
     },
 };

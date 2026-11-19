@@ -25,6 +25,9 @@ struct VoteTypeInfo
     const char* description;
 };
 
+// The Extend tab's listed lengths, in minutes; any other is typed.
+inline constexpr int vote_extend_presets[] = {5, 10, 15, 20, 30, 60};
+
 // One tab. Every tab but Rotation covers exactly one vote type.
 struct VoteTab
 {
@@ -61,6 +64,9 @@ struct VoteForm
     int gametype_index = 0; // index into vote_selectable_gametypes(); the form always picks a concrete type
     int team_size = 4;
     int extend_minutes = af_vote_extend_default_minutes;
+    // Typed instead of picked from vote_extend_presets.
+    bool extend_manual = false;
+    std::string extend_text; // the box's text; shows extend_minutes while not being typed in
     std::vector<VoteMutatorSelection> mutators;
 
     // Re-derived whenever its context moves, but only until the player touches it.

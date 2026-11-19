@@ -3041,16 +3041,29 @@ bool try_to_auto_forward_port(int port)
     return true;
 }
 
+// 0 when the game's socket is closed or not bound yet
+static unsigned short net_socket_bound_port()
+{
+    sockaddr_in local{};
+    int local_len = sizeof(local);
+    if (getsockname(static_cast<SOCKET>(rf::net_udp_socket), reinterpret_cast<sockaddr*>(&local), &local_len) != 0) {
+        return 0;
+    }
+    return ntohs(local.sin_port);
+}
+
 FunHook<void(int, rf::NetAddr*)> multi_start_hook{
     0x0046D5B0,
     [](int is_client, rf::NetAddr *serv_addr) {
         menu_scene_stop();
-        if (!rf::net_port && !is_client) {
-            // If no port was specified and this is a server recreate the socket and bind it to port 7755
-            xlog::info("Recreating socket using TCP port 7755");
+        // A server belongs on the configured port, or 7755 when none was given. A socket elsewhere, not moved yet or
+        // fallen back to a free port when that one was taken, is recreated on it.
+        const unsigned short server_port = rf::net_configured_port ? rf::net_configured_port : 7755;
+        if (!is_client && net_socket_bound_port() != server_port) {
+            xlog::info("Recreating socket using UDP port {}", server_port);
             shutdown(rf::net_udp_socket, 1);
             closesocket(rf::net_udp_socket);
-            rf::net_init_socket(7755);
+            rf::net_init_socket(server_port);
         }
         multi_start_hook.call_target(is_client, serv_addr);
     },
@@ -4529,16 +4542,14 @@ FunHook<void()> net_receive_packets_hook{
 // Stock's net_init_socket gives up as soon as bind fails (the port is taken), leaving the socket blocking and unbound
 // and the error only in a local buffer. The first send then binds it implicitly, and the receive pump above, which
 // relies on the socket being non-blocking, waits for a packet forever. A dedicated server, unreachable on any other
-// port, quits; a game binds any free port and runs the setup stock skipped (0x00528FD5 on). A socket that cannot be
+// port, quits; a game binds any free port and runs the setup stock skipped (0x00528FD3 on). A socket that cannot be
 // bound at all is closed, so sending and receiving fail instead of blocking.
 static void net_socket_recover_failed_bind(unsigned short port)
 {
-    const auto sock = static_cast<SOCKET>(rf::net_udp_socket);
-    sockaddr_in local{};
-    int local_len = sizeof(local);
-    if (getsockname(sock, reinterpret_cast<sockaddr*>(&local), &local_len) == 0 && local.sin_port != 0) {
+    if (net_socket_bound_port() != 0) {
         return;
     }
+    const auto sock = static_cast<SOCKET>(rf::net_udp_socket);
     const auto close_socket = [&] {
         closesocket(sock);
         rf::net_udp_socket = -1;
@@ -4550,17 +4561,15 @@ static void net_socket_recover_failed_bind(unsigned short port)
         rf::close_app_req = 1;
         return;
     }
-    local = {};
-    local.sin_family = AF_INET;
-    local.sin_addr.s_addr = htonl(INADDR_ANY);
-    local_len = sizeof(local);
-    if (bind(sock, reinterpret_cast<const sockaddr*>(&local), sizeof(local)) != 0
-        || getsockname(sock, reinterpret_cast<sockaddr*>(&local), &local_len) != 0) {
+    sockaddr_in any{};
+    any.sin_family = AF_INET;
+    any.sin_addr.s_addr = htonl(INADDR_ANY);
+    if (bind(sock, reinterpret_cast<const sockaddr*>(&any), sizeof(any)) != 0) {
         xlog::error("[Net] Cannot bind the game's UDP socket ({})", WSAGetLastError());
         close_socket();
         return;
     }
-    rf::net_port = ntohs(local.sin_port);
+    rf::net_port = net_socket_bound_port();
     xlog::warn("[Net] UDP port {} is in use; using port {}", port, rf::net_port);
     rf::console::print("UDP port {} is in use by another program; using port {}.", port, rf::net_port);
     rf::net_socket_configure(rf::net_udp_socket);
@@ -4622,7 +4631,7 @@ void network_init()
     AsmWriter(0x00528F24).nop(2);
 
     // Default port: 0
-    write_mem<u16>(0x0059CDE4, 0);
+    rf::net_configured_port = 0;
     write_mem<i32>(0x004B159D + 1, 0); // TODO: add setting in launcher
 
     // Do not overwrite multi_entity in Single Player

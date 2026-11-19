@@ -61,16 +61,6 @@ namespace rf
 
     static auto& get_language = addr_as_ref<int()>(0x004B0920);
 
-    // Values under the game's registry key; `folder` names a subkey, or nullptr for the key itself.
-    // Reading returns 0 when the value exists, else stores `default_value` in `value`.
-    static auto& os_config_read_uint =
-        addr_as_ref<int(const char* folder, const char* name, unsigned* value, unsigned default_value)>(0x0052B990);
-    static auto& os_config_write_uint = addr_as_ref<void(const char* folder, const char* name, unsigned value)>(0x0052B9C0);
-    // `value` takes up to 1024 bytes.
-    static auto& os_config_read_string =
-        addr_as_ref<int(const char* folder, const char* name, char* value, const char* default_value)>(0x0052B8A0);
-    static auto& os_config_write_string = addr_as_ref<void(const char* folder, const char* name, const char* value)>(0x0052B960);
-
     static auto& cmdline_args = addr_as_ref<CmdArg[50]>(0x01AED368);
     static auto& cmdline_num_args = addr_as_ref<int>(0x01AED514);
 
