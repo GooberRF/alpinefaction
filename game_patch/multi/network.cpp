@@ -86,6 +86,7 @@
 #include "../misc/waypoints.h"
 #include "../object/object.h"
 #include "../graphics/weather.h"
+#include "../sound/ambience_region.h"
 #include "../graphics/scene_capture.h"
 #include "../os/console.h"
 #include "../purefaction/pf.h"
@@ -3416,6 +3417,7 @@ FunHook<void()> multi_stop_hook{
         gungame_on_multi_shutdown(); // after the vehicle revert: weapons.tbl overrides restore LIFO
         mutators_on_multi_shutdown(); // put the level's own gravity back
         weather_clear_regions(); // weather regions belong to the level being left
+        ambience_region_clear_state();
         minimap_level_reset();
         projector_clear_all(); // Display_Projection feeds and their render targets are level-scoped
         riot_shield_on_multi_level_init(); // drop any pending riot shield break suppressions

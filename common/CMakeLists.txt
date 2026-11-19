@@ -5,6 +5,7 @@ set(SRCS
     include/common/payload.h
     include/common/rope_curve.h
     include/common/alpine_mesh_scale.h
+    include/common/alpine_ambience_region.h
     include/common/alpine_camera_far_clip.h
     include/common/alpine_dir_light.h
     include/common/alpine_gas_region.h

@@ -28,6 +28,7 @@
 #include "../object/mover.h"
 #include "../hud/hud_world.h"
 #include "../hud/minimap.h"
+#include "../sound/ambience_region.h"
 #include "../sound/sound.h"
 #include "../graphics/af_lightmap.h"
 #include "../graphics/d3d11/gr_d3d11_hooks.h"
@@ -140,6 +141,7 @@ CodeInjection level_load_init_patch{
         gas_region_clear_state();
         climb_region_clear_state();
         weather_clear_regions();
+        ambience_region_clear_state();
         minimap_level_reset();
         af_lightmap_level_reset();
         projector_clear_all();
@@ -154,6 +156,7 @@ void level_shutdown()
 {
     climb_region_clear_state();
     weather_clear_regions();
+    ambience_region_clear_state();
     af_lightmap_level_reset();
     projector_clear_all();
     alpine_rope_clear_state();
@@ -273,6 +276,12 @@ CodeInjection level_load_chunk_patch{
         if (chunk_id == alpine_waypoint_helper_chunk_id) {
             xlog::debug("[Level] Loading alpine waypoint helper chunk: len={}", chunk_len);
             alpine_waypoint_helper_load_chunk(file, chunk_len);
+            regs.eip = 0x004608EF;
+        }
+
+        if (chunk_id == alpine_ambience_region_chunk_id) {
+            xlog::debug("[Level] Loading alpine ambience region chunk: len={}", chunk_len);
+            ambience_region_load_chunk(file, chunk_len);
             regs.eip = 0x004608EF;
         }
 

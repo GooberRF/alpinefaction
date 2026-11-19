@@ -62,6 +62,8 @@ set(SRCS
     bag.h
     weather_region.cpp
     weather_region.h
+    ambience_region.cpp
+    ambience_region.h
     vehicle_factory.cpp
     vehicle_factory.h
     projection_camera.cpp

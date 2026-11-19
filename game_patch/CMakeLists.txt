@@ -474,6 +474,8 @@ set(SRCS
     ui/reference_data.cpp
     ui/reference_menu.h
     ui/reference_menu.cpp
+    sound/ambience_region.cpp
+    sound/ambience_region.h
     sound/sound.cpp
     sound/sound.h
     sound/sound_ds.cpp

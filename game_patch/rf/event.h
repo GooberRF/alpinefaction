@@ -396,7 +396,8 @@ namespace rf
         Mesh_Set_Scale,
         Payload_Handler,
         Payload_Checkpoint,
-        When_Setup_Ends
+        When_Setup_Ends,
+        Ambience_Region_State
     };
 
     std::vector<rf::Event*> find_all_events_by_type(rf::EventType event_type);
