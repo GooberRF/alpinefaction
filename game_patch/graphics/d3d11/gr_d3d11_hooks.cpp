@@ -37,6 +37,7 @@
 #include "gr_d3d11_hooks.h"
 #include "../gr_ghost_mesh.h"
 #include "../../misc/settings_registry.h"
+#include "../../object/object.h"
 #include <common/gr_d3d11/gr_d3d11_terrain.h>
 #include <common/gr_d3d11/gr_d3d11_liquid.h>
 #include <common/gr_d3d11/gr_d3d11_mesh.h>
@@ -1262,6 +1263,8 @@ namespace gr::d3d11
             if (g_alpine_game_config.shadow_quality > 0) {
                 return; // D3D11 shadow mapping handles shadows at quality > 0
             }
+            // A blob shadow is laid on the plane of the face its drop test hits
+            const MovingLiquidFacePlanes liquid_planes;
             obj_shadow_render_all_hook.call_target();
         },
     };

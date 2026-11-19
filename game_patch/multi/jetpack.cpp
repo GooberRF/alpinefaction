@@ -34,6 +34,7 @@
 #include "../hud/hud_internal.h"
 #include "../hud/multi_spectate.h"
 #include "../misc/alpine_settings.h"
+#include "../misc/level.h"
 #include "../object/zipline.h"
 
 constexpr float JETPACK_BURN_TIME_S = 5.0f;
@@ -809,8 +810,12 @@ int jetpack_fuel_gauge_label_top_y()
 
 bool jetpacks_are_active()
 {
+    // Every client and the server load the level, so each reads this for itself
+    if (AlpineLevelProperties::instance().players_start_with_jetpacks) {
+        return true;
+    }
     if (!rf::is_multi) {
-        // Single player: the `jetpack` console command, nothing else. This is the
+        // Otherwise in single player, only the `jetpack` console command. This is the
         // only place the flag is ever read, which is what keeps it inert in
         // multiplayer regardless of what a previous single player session left it at.
         return g_jetpack_sp_enabled;
@@ -820,6 +825,13 @@ bool jetpacks_are_active()
     }
     const auto& info = get_af_server_info();
     return info.has_value() && info->jetpacks;
+}
+
+bool jetpack_explode_active()
+{
+    const auto& mutators = g_alpine_server_config_active_rules.mutators;
+    return AlpineLevelProperties::instance().players_start_with_jetpacks
+        || (mutators.jetpacks_enabled && mutators.jetpack_explode);
 }
 
 bool jetpack_is_active_for(const rf::Entity* ep)

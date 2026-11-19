@@ -33,6 +33,7 @@
 #include "gametype.h"
 #include "mutators.h"
 #include "powerups.h"
+#include "jetpack.h"
 #include "bagman.h"
 #include "rounds.h"
 #include "pit.h"
@@ -1957,8 +1958,7 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
                     damage > gibbing.damage_threshold &&            // big damage (default 100.0)
                     (gibbing.all_damage || damage_type == 3);       // explosive
                 const bool jetpack_explode_gib =
-                    rules.mutators.jetpacks_enabled &&
-                    rules.mutators.jetpack_explode &&
+                    jetpack_explode_active() &&
                     // the jetpack was shot
                     ((direct_weapon_hit &&
                       !kill_attribution_is_melee_weapon(damage_ctx.weapon_type) &&
