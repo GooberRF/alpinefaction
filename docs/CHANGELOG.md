@@ -295,6 +295,11 @@ Version 1.5.0 (Trillium): Not yet released
 [@AL2009man](https://github.com/AL2009man)
 - Use a 0-10 range for the `Mouse sensitivity` slider when `ms_scale` is Modern
 
+[@jyh9521](https://github.com/jyh9521)
+- Add subtitles for spoken voice lines and for the in-engine cutscenes, neither of which had any in the original game
+  - Driven by optional TOML tables in a packfile, looked up per language, so a translation can supply its own
+  - English tables included: the level dialogue text the game already ships but never displays, plus transcriptions of the ambient lines that have no text anywhere
+
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
 - Fix phantom visual flag mesh being visible after Salvage flag is picked up on rare occasions

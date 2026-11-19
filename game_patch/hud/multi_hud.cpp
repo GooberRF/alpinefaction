@@ -52,6 +52,7 @@
 #include "../os/console.h"
 #include "hud_internal.h"
 #include "hud.h"
+#include "subtitles.h"
 #include "multi_scoreboard.h"
 #include "remote_server_cfg_ui.h"
 #include "../misc/player.h"
@@ -2396,6 +2397,7 @@ CallHook<void(int *dx, int *dy, int *dz)> control_config_get_mouse_delta_hook{
     }
 };
 
+
 FunHook<void()> hud_msg_render_hook{
     0x004382D0,
     [] {
@@ -2403,6 +2405,7 @@ FunHook<void()> hud_msg_render_hook{
             && hud_element_visible(HudElement::messages)) {
             hud_msg_render_hook.call_target();
         }
+        subtitles_render();
     },
 };
 
