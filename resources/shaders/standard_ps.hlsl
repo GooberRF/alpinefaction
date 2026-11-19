@@ -387,6 +387,11 @@ float3 apply_colorblind(float3 color)
 #define ARRAY_GRAD(g) (g)
 #endif
 
+// Caustics stop just below the surface, so geometry flush with it never picks them up
+static const float caustic_surface_cutoff = 0.02f;
+// Depth below the cutoff over which caustics ramp in; a hard start reads as a second waterline
+static const float caustic_edge_fade = 0.25f;
+
 // One triplanar plane: two drifting layers, each blended across two animation frames.
 float caustic_sample_plane(float2 p, float2 drift, float s0, float s1, float sf,
                            float2 dpdx, float2 dpdy)
@@ -696,7 +701,7 @@ float4 finish_fragment(VsOutput input, float4 target, float3 tex0_rgb, float3 li
                     in_volume = liquid_mask_at(v.mask, wp + mask_dir * (0.5f / v.mask.inv_cell)) > 0.25f;
                 }
             }
-            bool inside = in_volume && wp.y < v.surface_y - 0.02f;
+            bool inside = in_volume && wp.y < v.surface_y - caustic_surface_cutoff;
             if (inside && mask == 0.0f) { mask = 1.0f; depth = v.surface_y - wp.y; tint = v.color; }
         }
         float  slice = frac(caustic_time * caustic_speed) * 16.0f;
@@ -728,7 +733,8 @@ float4 finish_fragment(VsOutput input, float4 target, float3 tex0_rgb, float3 li
             float  c_mix = c_xz * tw.y + c_zy * tw.x + c_xy * tw.z;
             float  c = saturate((c_mix - caustic_floor) / max(1.0f - caustic_floor, 0.001f));
             c = pow(c, caustic_exponent);
-            float atten  = saturate(1.0f - depth / max(caustic_depth_fade, 0.01f));
+            float atten  = saturate(1.0f - depth / max(caustic_depth_fade, 0.01f))
+                         * saturate((depth - caustic_surface_cutoff) / caustic_edge_fade);
             float facing = saturate(norm.y) * 0.75f + 0.25f;
             float lit    = saturate(dot(light_color, float3(0.2126f, 0.7152f, 0.0722f)) * 2.0f);
             light_color += tint * (c * caustic_intensity * caustic_above_water * atten * facing * lit);
