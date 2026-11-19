@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <limits>
 #include <string>
+#include <common/utils/math-utils.h>
 
 namespace alpine_dir_light
 {
@@ -119,10 +120,7 @@ inline bool is_finite(const Vec3& v)
 
 // ─── Sanitisation ────────────────────────────────────────────────────────────
 
-inline float clamp_finite(float v, float lo, float hi, float fallback)
-{
-    return std::isfinite(v) ? std::clamp(v, lo, hi) : fallback;
-}
+using ::clamp_finite;
 
 inline float normalize_degrees(float deg)
 {

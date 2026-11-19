@@ -84,6 +84,8 @@ Version 1.5.0 (Trillium): Not yet released
 - Add `Display_Projection` event and `Projection Camera` object for rendering live camera views onto ATX textures (Direct3D 11 renderer only)
 - Add `Rope_State` event to switch `Rope Emitter` objects on and off at runtime
 - Add `Rope Emitter` object for ropes, cables, power lines, and zip lines that players and bots can ride, with optional decorations
+- Add `Ambience Region` object that plays a looping, non-directional sound while the player is inside it
+- Add `Ambience_Region_State` event to switch `Ambience Region` objects on and off at runtime
 - Add flames to gib chunks thrown by exploding entities, toggleable with `cl_gibflames`
 - Add `Jetpacks explode` option to the Jetpacks mutator
 - Add `Players start with jetpacks` setting to level properties in level editor

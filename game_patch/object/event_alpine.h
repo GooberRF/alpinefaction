@@ -35,6 +35,7 @@
 #include "../rf/glare.h"
 #include "../graphics/gr.h"
 #include "../graphics/weather.h"
+#include "../sound/ambience_region.h"
 #include "alpine_rope.h"
 #include "alpine_dir_light.h"
 #include "../misc/level.h"
@@ -3265,6 +3266,24 @@ struct EventWeatherRegionState : rf::Event
     {
         for (const auto& linked_uid : this->links) {
             weather_set_region_enabled(linked_uid, false);
+        }
+    }
+};
+
+// id 167 — Ambience_Region_State: enable/disable the ambience regions this event links to.
+struct EventAmbienceRegionState : rf::Event
+{
+    void turn_on() override
+    {
+        for (const auto& linked_uid : this->links) {
+            ambience_region_set_enabled(linked_uid, true);
+        }
+    }
+
+    void turn_off() override
+    {
+        for (const auto& linked_uid : this->links) {
+            ambience_region_set_enabled(linked_uid, false);
         }
     }
 };

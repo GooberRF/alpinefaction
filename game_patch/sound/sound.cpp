@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <vector>
 #include <common/utils/string-utils.h>
+#include "ambience_region.h"
 #include "sound.h"
 #include "../rf/sound/sound.h"
 #include "../rf/sound/sound_ds.h"
@@ -587,11 +588,35 @@ void snd_level_looping_init(const std::unordered_set<std::string>& filenames)
     }
 }
 
-// Catches an entry created after its file was named, and one returned by name from an earlier level.
+// Entries created by snd_get_handle_2d whose range and volume no caller has given yet. An entry keeps what its first
+// caller passed for the whole session, so these wait for the next caller's instead.
+static std::vector<int> g_unclaimed_sound_handles;
+
+// Writes what 0x00543580 writes when it creates an entry.
+static void snd_claim_unclaimed(int handle, float min_range, float base_volume, float rolloff, int unk)
+{
+    auto it = std::find(g_unclaimed_sound_handles.begin(), g_unclaimed_sound_handles.end(), handle);
+    if (it == g_unclaimed_sound_handles.end()) {
+        return;
+    }
+    g_unclaimed_sound_handles.erase(it);
+    auto& sound = rf::sounds[handle];
+    sound.volume = base_volume;
+    sound.field34_always0 = unk;
+    sound.min_range = min_range > 0.0f ? min_range : 1.0f;
+    sound.rolloff = rolloff;
+    sound.max_range = rf::snd_pc_calc_max_range(sound.min_range, sound.rolloff, sound.volume);
+}
+
+// Gives an unclaimed entry its first real caller's settings. For level looping, catches an entry created after its
+// file was named, and one returned by name from an earlier level.
 FunHook<int(const char*, float, float, float, int)> snd_pc_get_by_name_hook{
     0x00543580,
     [](const char* filename, float min_range, float base_volume, float rolloff, int unk) {
         int handle = snd_pc_get_by_name_hook.call_target(filename, min_range, base_volume, rolloff, unk);
+        if (handle >= 0 && !g_unclaimed_sound_handles.empty()) {
+            snd_claim_unclaimed(handle, min_range, base_volume, rolloff, unk);
+        }
         if (handle >= 0 && filename && !g_level_looping_sounds.empty()) {
             std::string name = string_to_lower(filename);
             if (g_level_looping_sounds.contains(name)) {
@@ -601,6 +626,20 @@ FunHook<int(const char*, float, float, float, int)> snd_pc_get_by_name_hook{
         return handle;
     },
 };
+
+int snd_get_handle_2d(const char* filename)
+{
+    if (!rf::sound_enabled) {
+        return -1;
+    }
+    // Straight to the engine, so asking again for an unclaimed entry leaves it unclaimed
+    const int count_before = rf::g_num_sounds;
+    const int handle = snd_pc_get_by_name_hook.call_target(filename, 1.0f, 1.0f, 1.0f, 0);
+    if (handle >= count_before) {
+        g_unclaimed_sound_handles.push_back(handle);
+    }
+    return handle;
+}
 
 FunHook<void(const rf::Vector3&, const rf::Vector3&, const rf::Matrix3&)> snd_update_sounds_hook{
      0x00505EC0,
@@ -635,6 +674,10 @@ FunHook<void(const rf::Vector3&, const rf::Vector3&, const rf::Matrix3&)> snd_up
 
         snd_update_sound_instances(camera_pos);
         snd_update_ambient_sounds(camera_pos);
+        // The menus' live level stays as quiet as snd_play_3d_instance keeps its other sounds.
+        if (!menu_scene_active()) {
+            ambience_region_update(camera_pos);
+        }
     },
 };
 

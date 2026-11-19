@@ -516,6 +516,8 @@ set(SRCS
     ui/reference_menu.cpp
     ui/menu_scene.h
     ui/menu_scene.cpp
+    sound/ambience_region.cpp
+    sound/ambience_region.h
     sound/sound.cpp
     sound/sound.h
     sound/sound_ds.cpp

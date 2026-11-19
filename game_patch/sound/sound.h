@@ -29,6 +29,9 @@ int get_jeep_horn_sound_id();
 // A snd_play/snd_play_3d instance that is still playing its own sound; stock snd_is_playing answers for
 // whatever has since reused the slot.
 bool snd_instance_is_playing(int instance_handle);
+// snd_get_handle for a user with no use for the entry's range and volume. An entry this creates takes those from the
+// next caller that asks for the file, as though that caller had created it.
+int snd_get_handle_2d(const char* filename);
 // snd_play_3d looping whatever the sound's record says: a stock file a level may also play once.
 int snd_play_3d_looping(int handle, const rf::Vector3& pos, float volume, int group);
 // Plays a playing instance at ratio times its recorded rate (DirectSound only).
