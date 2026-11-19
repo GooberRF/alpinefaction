@@ -76,6 +76,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Add `Rope Emitter` object for ropes, cables, power lines, and zip lines that players and bots can ride, with optional decorations
 - Add flames to gib chunks thrown by exploding entities, toggleable with `cl_gibflames`
 - Add `Jetpacks explode` option to the Jetpacks mutator
+- Add `Players start with jetpacks` setting to level properties in level editor
 - Ignore `item_replacements` entries whose `replacement` names an unknown item
 - Add `Scrapyard mode` option to the Gibbing mutator
 - Add underwater rendering effects — animated caustics, depth-based water fog with a waterline, screen tint/vignette and distortion — with quality levels 0-3 via `r_underwater` (Direct3D 11 renderer only)
@@ -166,7 +167,7 @@ Version 1.5.0 (Trillium): Not yet released
   - Raise the particle emitter limit from 128 to 8192
   - Render particles, plankton, rain and snow on the GPU with instancing, and simulate rain and snow motion on the GPU (Direct3D 11 renderer only), toggleable with `dbg_particlegpu`
   - Add `dbg_particles` overlay and `dbg_particles_log` to measure particle performance, and `dbg_particlewarmup` to toggle replaying a hidden particle emitter when it comes back into view
-- Improve performance while a `Set_Liquid_Depth` event is moving a liquid surface, adjustable with `r_liquidsurface`
+- Improve performance while a `Set_Liquid_Depth` event is moving a liquid surface
 - Raise the pitch of hit sounds as consecutive hits land, toggleable with `cl_hitsounds_streakpitch`
 - Raise the limit of simultaneously playing sounds from 64 to 127
 - Ejected shell casings now bounce off the level and play their impact sounds instead of falling through it, toggleable with `cl_shellcollide`, and last 2 seconds by default, adjustable with `cl_shelllifetime`

@@ -10,9 +10,13 @@
 
 namespace gr::d3d11
 {
-    // Which part of a liquid room's box really is that room. Only rooms whose box overlaps another room's
-    // under the surface (not detail, not the same body of liquid) get one; elsewhere the box is exact, since
-    // space in it is either the room or solid.
+    // Slack a liquid room's fog box has past the room's box, so adjacent rooms leave no seam; the top face is
+    // contracted instead (liquid_surface_epsilon). The mask covers it too.
+    constexpr float liquid_box_epsilon = 0.05f;
+
+    // Which part of a liquid room's box really is that room. Only rooms whose box overlaps another room's under
+    // the highest surface it reaches (not detail) get one; elsewhere the box is exact, since space in it is
+    // either the room or solid.
     struct alignas(16) LiquidMaskGPUData
     {
         std::array<float, 3> origin;       float inv_cell;

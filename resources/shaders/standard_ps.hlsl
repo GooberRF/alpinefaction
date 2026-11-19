@@ -865,9 +865,10 @@ float4 finish_fragment(VsOutput input, float4 target, float3 tex0_rgb, float3 li
         else {
             // Clip the eye->pixel segment against every nearby liquid room of the camera room's
             // type, each capped at its own surface plane and masked to the room itself, and add the
-            // segments. Boxes of neighbouring rooms of one liquid still overlap and count twice
-            // there. A single box would end the fogged length at the camera room's walls and step
-            // at every boundary; without any box the surface plane would extend level-wide.
+            // segments. Where a room has no mask, boxes of neighboring rooms of one liquid still
+            // overlap and count twice. A single box would end the fogged length at the camera
+            // room's walls and step at every boundary; without any box the surface plane would
+            // extend level-wide.
             float3 seg_vec = liq_pixel_pos - liq_eye_pos;
             float geo_len = length(seg_vec);
             float3 seg_dir = seg_vec / max(geo_len, 1e-6f);

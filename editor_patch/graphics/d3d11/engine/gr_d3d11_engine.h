@@ -372,6 +372,16 @@ namespace gr::d3d11::engine
         return room->bbox_min.y + room->liquid_depth;
     }
 
+    inline bool liquid_surface_moving([[maybe_unused]] const rf::GRoom* room, [[maybe_unused]] float& out_y)
+    {
+        return false;
+    }
+
+    inline float liquid_max_surface_y(const rf::GRoom* room)
+    {
+        return liquid_surface_y(room);
+    }
+
     inline DistanceFog level_distance_fog()
     {
         return {rf::Color{0, 0, 0, 0}, 0.0f, 0.0f};
