@@ -33,23 +33,29 @@ pos = [-39.173, -2.175, -23.655]
 pitch = -13.60
 heading = 50.34
 
+# Registration desk
+[[live_level_normal.shot]]
+pos = [-7.093, -3.512, -1.884]
+pitch = -10.14
+heading = 131.71
+
+# Elevators
+[[live_level_normal.shot]]
+pos = [-70.739, -1.503, -11.568]
+pitch = 12.10
+heading = 48.91
+
+# Behind registration desk
+[[live_level_normal.shot]]
+pos = [-1.378, -2.598, -14.940]
+pitch = 3.73
+heading = 27.40
+
 # Tech room
 [[live_level_normal.shot]]
-pos = [-24.191, -4.825, -16.647]
-pitch = 13.09
-heading = 51.35
-
-# Stairs and windows
-[[live_level_normal.shot]]
-pos = [-2.855, -0.522, -0.847]
-pitch = -0.90
-heading = 33.44
-
-# Upper
-[[live_level_normal.shot]]
-pos = [2.515, 3.277, -3.483]
-pitch = 12.59
-heading = 117.89
+pos = [-24.597, -5.055, -13.663]
+pitch = 6.15
+heading = 70.60
 
 [live_level_seasonal]
 level = "L10S2.rfl"
