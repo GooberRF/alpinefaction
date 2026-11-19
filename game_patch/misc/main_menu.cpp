@@ -250,7 +250,7 @@ FunHook<int(const int&, const int&)> server_list_cmp_func_hook{
             return has_ping1 ? -1 : 1;
         }
 
-        // Custom player count sorting: use human count from AF 1.3+ servers
+        // Player count sorting: AF servers' humans and bots against other servers' counts (server_players_compare)
         if (rf::ui::server_browser_sort_column == 4) {
             const auto& e1 = server_list[index1];
             const auto& e2 = server_list[index2];
