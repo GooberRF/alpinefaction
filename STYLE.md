@@ -103,6 +103,7 @@ here as closely as possible.
 - One line per change, in the version's `Major features`, `Minor features, changes, and enhancements`
   or `Bug fixes` section, under the author's `[@name](https://github.com/name)` line. For joint work,
   join the authors' links with `&`.
+- Add a new line at the end of the author's list in that section, not at the top.
 - Start with a verb in the imperative: `Add`, `Make`, `Allow`, `Speed up`, `Remove`. A bug fix starts
   with `Fix`. No trailing full stop.
 - Name the user-visible effect, not how it was done. Keep it to one short sentence. Leave out
