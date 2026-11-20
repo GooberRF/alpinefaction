@@ -287,6 +287,7 @@ namespace rf::ui
     static auto& menu_draw_background = addr_as_ref<void()>(0x00442CE0);
     static auto& menu_draw_side_bars = addr_as_ref<void()>(0x00442DB0);
     static auto& menu_background_bitmap = addr_as_ref<int>(0x00598FEC); // mars_background.tga, -1 if missing
+    static auto& menu_background_scroll_speed = addr_as_ref<float>(0x00598FFC); // texels per second, 15.0
     // The menu music. level_load sets main_menu_music_stopped, and the main menu's init then restarts it.
     static auto& main_menu_music_filename = addr_as_ref<String>(0x0063C110);
     static auto& main_menu_music_sig = addr_as_ref<int>(0x005990F8);

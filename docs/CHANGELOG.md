@@ -471,6 +471,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix screenshots taken in the menus being named after the last level played
 - Fix `disconnect` console command not fully leaving the game
 - Fix `info` console command showing the last server's game type outside multiplayer
+- Fix the Mars menu background being stretched on widescreen displays, and support custom `mars_background.tga` images of any size
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize

@@ -16,6 +16,7 @@
 #include "../rf/ui.h"
 #include "../rf/gr/gr.h"
 #include "../rf/gr/gr_font.h"
+#include "../rf/bmpman.h"
 #include "../rf/input.h"
 #include "../rf/multi.h"
 #include "../rf/sound/sound.h"
@@ -318,18 +319,61 @@ FunHook<void()> menu_draw_background_hook{
     },
 };
 
+// The stock image repeats its first 640 columns at its end, bar its cross-faded first 60. Any other image is
+// taken to join up at its own edges.
+constexpr int stock_background_w = 1920;
+constexpr int stock_background_h = 480;
+constexpr float stock_background_overlap = 640.0f;
+constexpr float stock_background_fade = 60.0f;
+
+static float g_menu_background_x = 0.0f;
+
 CodeInjection menu_draw_background_injection{
     0x00442D5C,
     [](auto& regs) {
-        auto& menu_background_x = addr_as_ref<float>(0x0063C074);
+        regs.eip = 0x00442D94;
+
+        int bm_w, bm_h;
+        rf::bm::get_dimensions(rf::ui::menu_background_bitmap, &bm_w, &bm_h);
+        if (bm_w <= 0 || bm_h <= 0) {
+            return;
+        }
+        const float image_w = static_cast<float>(bm_w);
+        const float image_h = static_cast<float>(bm_h);
+        const float screen_w = static_cast<float>(rf::gr::screen.max_w);
+        const float screen_h = static_cast<float>(rf::gr::screen.max_h);
+
+        // Show the image's full height, with a window as wide as the screen's aspect ratio needs
+        float src_h = image_h;
+        float src_w = src_h * screen_w / screen_h;
+        if (src_w > image_w) {
+            src_w = image_w;
+            src_h = src_w * screen_h / screen_w;
+        }
+
+        const float image_scale = image_h / stock_background_h;
+        const bool stock_layout = bm_w == stock_background_w && bm_h == stock_background_h;
+        const float overlap = stock_layout ? stock_background_overlap * image_scale : 0.0f;
+        const float loop_start = stock_layout ? stock_background_fade * image_scale : 0.0f;
+        const float period = image_w - overlap;
+        g_menu_background_x += rf::ui::menu_background_scroll_speed * image_scale * rf::frametime;
+        if (g_menu_background_x >= loop_start + period) {
+            g_menu_background_x = loop_start + std::fmod(g_menu_background_x - loop_start, period);
+        }
+
+        // A window running past the right edge continues from where the image repeats
+        const float src_y = (image_h - src_h) * 0.5f;
+        const float first_w = std::min(src_w, image_w - g_menu_background_x);
+        const float first_screen_w = screen_w * first_w / src_w;
 
         rf::gr::set_color(255, 255, 255, 255);
         // Use function that accepts float sx
-        //for (int i = 0; i < 100; ++i)
-        gr_bitmap_scaled_float(rf::ui::menu_background_bitmap, 0.0f, 0.0f,
-            static_cast<float>(rf::gr::screen.max_w), static_cast<float>(rf::gr::screen.max_h),
-            menu_background_x, 0.0f, 640.0f, 480.0f, false, false, rf::gr::bitmap_clamp_mode);
-        regs.eip = 0x00442D94;
+        gr_bitmap_scaled_float(rf::ui::menu_background_bitmap, 0.0f, 0.0f, first_screen_w, screen_h,
+            g_menu_background_x, src_y, first_w, src_h, false, false, rf::gr::bitmap_clamp_mode);
+        if (first_w < src_w) {
+            gr_bitmap_scaled_float(rf::ui::menu_background_bitmap, first_screen_w, 0.0f, screen_w - first_screen_w,
+                screen_h, overlap, src_y, src_w - first_w, src_h, false, false, rf::gr::bitmap_clamp_mode);
+        }
     },
 };
 
