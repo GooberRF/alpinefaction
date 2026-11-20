@@ -297,6 +297,7 @@ struct AlpineGameSettings
     {
         damage_flash = std::clamp(value, min_damage_flash, max_damage_flash);
     }
+    bool hide_disabled_fall_damage_feedback = true;
     bool spectate_damage_screen_flash = true;
     bool explosion_weapon_flash_lights = true;
     bool explosion_env_flash_lights = true;

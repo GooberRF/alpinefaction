@@ -213,6 +213,19 @@ const SettingRow rows[] = {
         .console_cmd = "cl_damageflash",
     },
     {
+        .id = "hide_disabled_fall_damage_feedback",
+        .key = "HideDisabledFallDamageFeedback",
+        .label = "Hide no-damage falls",
+        .tooltip = "Skip the hit indicators and screen shake from hard landings when the server has fall damage "
+                   "disabled.",
+        .category = Cat::Hud,
+        .subcategory = "Core",
+        .widget = Wid::Toggle,
+        .access = AccBool{&AGS::hide_disabled_fall_damage_feedback},
+        .flags = SF_MP_ONLY,
+        .console_cmd = "cl_hidenofalldamage",
+    },
+    {
         .id = "death_bars",
         .key = "DeathBars",
         .label = "Death bars",

@@ -722,6 +722,29 @@ FunHook<void(rf::Player*, unsigned)> player_start_hud_damage_indicators_hook{
     },
 };
 
+// Fall damage (0x0049CD80) plays its hit indicators and camera shake locally whether or not the
+// server deals the damage. Stock obj_apply_damage drops fall damage when neither flag is set, and
+// clients get the server's flags in join_accept (Alpine servers resync later changes).
+CodeInjection fall_damage_feedback_injection{
+    0x0049CEDF,
+    [](auto& regs) {
+        if (g_alpine_game_config.hide_disabled_fall_damage_feedback && rf::is_multi
+            && (rf::netgame.flags & (rf::NG_FLAG_FALL_DAMAGE | rf::NG_FLAG_REAL_FALL_DAMAGE)) == 0) {
+            regs.eip = 0x0049CF34;
+        }
+    },
+};
+
+ConsoleCommand2 hide_disabled_fall_damage_feedback_cmd{
+    "cl_hidenofalldamage",
+    []() {
+        setting_console_set("hide_disabled_fall_damage_feedback", "toggle");
+        rf::console::print("Fall feedback on servers without fall damage is {}",
+                           g_alpine_game_config.hide_disabled_fall_damage_feedback ? "hidden" : "shown");
+    },
+    "Toggle hiding fall damage feedback on servers with fall damage disabled",
+};
+
 ConsoleCommand2 damage_screen_flash_cmd{
     "cl_damageflash",
     [](std::optional<int> level_opt) {
@@ -1207,6 +1230,7 @@ void player_do_patch()
 
     // Directional feed for the damage vignette
     player_start_hud_damage_indicators_hook.install();
+    fall_damage_feedback_injection.install();
 
     // Stretch driller cockpit when using a wide-screen
     player_cockpit_vmesh_render_hook.install();
@@ -1220,6 +1244,7 @@ void player_do_patch()
 
     // Commands
     damage_screen_flash_cmd.register_cmd();
+    hide_disabled_fall_damage_feedback_cmd.register_cmd();
     spectate_damage_screen_flash_cmd.register_cmd();
     weapon_explosion_flash_lights_cmd.register_cmd();
     env_explosion_flash_lights_cmd.register_cmd();

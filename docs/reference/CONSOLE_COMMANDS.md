@@ -104,6 +104,7 @@ Commands marked "D3D11 only" only have an effect with the Direct3D 11 renderer.
 | `cl_giblifetimems` | `[milliseconds]` | Sets gib lifetime (1000-15000 ms). Default: 7000. |
 | `cl_gibvelocityscale` | `[scale]` | Sets gib velocity scale (3-100). Default: 15. |
 | `cl_gorelevel` | `[level]` | Sets gore level, `0` (minimal) to `2` (maximum). |
+| `cl_hidenofalldamage` | | Toggles hiding the hit indicators and screen shake from hard landings in multiplayer when the server has fall damage disabled. Default: on. |
 | `cl_legacy_bob` | | Toggles the original weapon bob, which stutters while running. Default: off. |
 | `cl_magazines` | `[bool]` | Toggles magazines ejected when you reload. Default: on. |
 | `cl_particlecollidelod` | | Toggles testing cosmetic particle collision less often with camera distance. Default: on. |
