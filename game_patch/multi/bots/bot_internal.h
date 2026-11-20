@@ -931,6 +931,13 @@ struct BotCandidateLos
     rf::Timestamp timer{};
 };
 
+struct BotSpawnGrace
+{
+    int entity_handle = -1;
+    rf::Timestamp timer{};
+    bool provoked = false;
+};
+
 inline constexpr int kBotRouteDangerSlots = 6;
 
 struct BotRouteDanger
@@ -1035,6 +1042,9 @@ struct BotState
     std::array<BotCandidateLos, kSelectorLosCandidates + 1> candidate_los{};
     int preferred_enemy_handle = -1;
     rf::Timestamp preferred_enemy_lock_timer{};
+    // Primed by the first sweep, so players already alive when the bot starts get no grace.
+    std::vector<BotSpawnGrace> spawn_grace{};
+    bool spawn_grace_primed = false;
     int recovery_anchor_waypoint = 0;
     int recovery_avoid_waypoint = 0;
     bool recovery_pending_reroute = false;
