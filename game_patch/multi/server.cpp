@@ -4463,6 +4463,14 @@ static void balance_teams()
     rf::ubyte first_team = std::uniform_int_distribution<int>(rf::TEAM_RED, rf::TEAM_BLUE)(g_rng);
     rf::ubyte second_team = (first_team == rf::TEAM_RED) ? rf::TEAM_BLUE : rf::TEAM_RED;
 
+    // level_load creates a listen host's entity, with its team skins, before this runs, so keep them on their team
+    if (const auto host = std::ranges::find(humans, rf::local_player); host != humans.end()) {
+        const bool host_picks_first = (host - humans.begin()) % 2 == 0;
+        if ((host_picks_first ? first_team : second_team) != (*host)->team) {
+            std::swap(first_team, second_team);
+        }
+    }
+
     for (size_t i = 0; i < humans.size(); ++i) {
         rf::ubyte team = (i % 2 == 0) ? first_team : second_team;
         assign_player_to_team(humans[i], team);

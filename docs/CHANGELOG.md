@@ -477,6 +477,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix `info` console command showing the last server's game type outside multiplayer
 - Fix the scoreboard showing the last joined server's name during demo playback
 - Fix the Mars menu background being stretched on widescreen displays, and support custom `mars_background.tga` images of any size
+- Fix listen server host sometimes starting a team game with the other team's arm and player model colors
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize
