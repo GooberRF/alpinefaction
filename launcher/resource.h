@@ -158,26 +158,6 @@
 #define IDC_FFLINK_STATUS_TEXT          3086
 #define IDC_FFLINK_PROGRESS_BAR         3087
 
-// FFLink reminder prompt
-#define IDD_FFLINK_REMINDER             2001
-#define IDC_MESSAGE_TEXT                2003
-#define IDC_LEARN_MORE_BUTTON           2004
-#define IDC_CONTINUE_BUTTON             2005
-#define IDC_VBAR1                       2006
-#define IDC_VBAR2                       2007
-#define IDB_DIVIDER                     2008
-#define IDC_WELCOME_TEXT                2009
-#define IDC_FLI_1                       2010
-#define IDB_FLI_1                       2011
-#define IDC_FLI_2                       2012
-#define IDB_FLI_2                       2013
-#define IDC_FLI_3                       2014
-#define IDB_FLI_3                       2015
-#define IDC_FLI_4                       2016
-#define IDB_FLI_4                       2017
-#define IDC_DISCORD_BUTTON              2018
-#define IDC_ACCOUNT_LINK_BUTTON         2019
-
 
 // Next default values for new objects
 //

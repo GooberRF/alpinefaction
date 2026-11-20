@@ -418,7 +418,7 @@ code = "GG"
 description = """
 Free-for-all weapon progression. Each kill advances you to the next weapon. The weapons are grouped into tiers that
 always run in the same order, but each player gets their own random order within each tier. After the last tier
-come two one-kill levels, the Control Baton and then the Fusion Rocket Launcher.
+comes a one-kill Control Baton level, followed by a one-kill Fusion Rocket Launcher level on some servers.
 
 There are no item pickups, weapons are never dropped and ammunition is unlimited. You cannot change
 weapons yourself. Every kill restores some health, and reaching a new weapon and passing it in the same life earns a random powerup as a rampage reward.

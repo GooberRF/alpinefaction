@@ -960,7 +960,7 @@ struct AlpineServerConfigRules
     bool gungame_rampage_rewards = true;
     std::vector<std::vector<std::string>> gungame_tiers; // uses built-in tiers if not specified
     std::string gungame_final_weapon = "Riot Stick";
-    bool gungame_end_with_fusion = true;
+    bool gungame_end_with_fusion = false;
     bool geo_chunk_physics = true;
     bool clear_stale_movement_input = false;
     MutatorConfig mutators;

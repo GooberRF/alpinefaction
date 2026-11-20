@@ -197,7 +197,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Turn on `Level > Rebuild with hole lines` by default in the level editor and remember the setting
 - Speed up selecting and deselecting large numbers of brushes, faces, vertices and objects in the level editor, and drawing the viewports while many objects or vertices are selected
 - Speed up loading and duplicating groups with complex brushes in the level editor
-- End the Gun Game progression with a one-kill Fusion level after the one-kill final weapon, toggleable with `gg_end_with_fusion`
+- Add `gg_end_with_fusion` option to end the Gun Game progression with a one-kill Fusion level after the one-kill final weapon
 - Add `-nogsk` command line argument to make dedicated servers ignore `fflink_gsk` and skip FactionFiles registration
 - Implement shared Direct3D 11 renderer for game and level editor
 - Reduce the CPU time bots spend choosing goals and planning routes, and stop bots from repeatedly searching for routes to destinations they cannot reach
@@ -274,6 +274,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Make a dedicated server quit with an error when its UDP port is already in use, instead of hanging
 - Make the `disconnect` console command return to the multiplayer server list
 - Make lower skill bots leave a newly spawned player alone for a few seconds unless they shoot at or near the bot or carry an objective, adjustable with the `spawn_grace_ms` skill override
+- Redesign the launcher's first launch, What's New, and recommended renderer popups
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Revamp the in-game console with a new font, search, mouse text selection and inline command suggestions

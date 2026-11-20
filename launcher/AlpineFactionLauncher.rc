@@ -65,12 +65,6 @@ IDR_ICON                ICON                    "res/AF.ico"
 
 IDB_HEADER              BITMAP                  "res/header.bmp"
 
-// first launch window bitmaps
-IDB_FLI_1               BITMAP                  "res/fli1.bmp"
-IDB_FLI_2               BITMAP                  "res/fli2.bmp"
-IDB_FLI_3               BITMAP                  "res/fli3.bmp"
-IDB_FLI_4               BITMAP                  "res/fli4.bmp"
-
 // main window buttons
 IDB_PLAY_NORMAL         BITMAP                  "res/play_normal.bmp"
 IDB_PLAY_HOVER          BITMAP                  "res/play_hover.bmp"
@@ -115,8 +109,6 @@ IDB_SM4_PRESSED         BITMAP                  "res/smb4_normal.bmp"
 IDB_FFLINK_NORMAL       BITMAP                  "res/fflink_normal.bmp"
 IDB_FFLINK_HOVER        BITMAP                  "res/fflink_hover.bmp"
 IDB_FFLINK_PRESSED      BITMAP                  "res/fflink_pressed.bmp"
-
-IDB_DIVIDER             BITMAP                  "res/divider.bmp"
 
 
 /////////////////////////////////////////////////////////////////////////////
@@ -237,34 +229,6 @@ BEGIN
     CONTROL         "<a href=""https://github.com/GooberRF/alpinefaction"">Source code</a>",IDC_SRC_LINK,"SysLink",WS_TABSTOP,12,82,100,8
     CONTROL         "<a>Licensing information</a>",IDC_LICENSE_LINK,"SysLink",WS_TABSTOP,12,94,100,8
     DEFPUSHBUTTON   "OK",IDOK,62,110,50,14
-END
-
-IDD_FFLINK_REMINDER DIALOGEX 0, 0, 380, 192
-STYLE DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
-CAPTION "Alpine Faction First Launch"
-FONT 8, "MS Shell Dlg"
-BEGIN
-    CONTROL IDB_DIVIDER,IDC_VBAR1,"Static",SS_BITMAP|SS_REALSIZECONTROL,125,40,2,120
-    CONTROL IDB_DIVIDER,IDC_VBAR2,"Static",SS_BITMAP|SS_REALSIZECONTROL,250,40,2,120
-
-    CONTROL IDB_FLI_1,IDC_FLI_1,"Static",SS_BITMAP,6,40,176,65
-    CONTROL IDB_FLI_2,IDC_FLI_2,"Static",SS_BITMAP,131,40,176,65
-    CONTROL IDB_FLI_3,IDC_FLI_3,"Static",SS_BITMAP,257,40,176,65
-    CONTROL IDB_FLI_4,IDC_FLI_4,"Static",SS_BITMAP,257,122,176,65
-
-    LTEXT "Welcome to Alpine Faction!",IDC_WELCOME_TEXT,0,4,380,20, SS_CENTER | WS_VISIBLE
-
-    LTEXT "Join the FactionFiles Discord,\ncommunity hub for Red Faction.\n\nEveryone is welcome!", IDC_STATIC, 2, 88, 120, 50, SS_CENTER
-    PUSHBUTTON "Join the Discord", IDC_DISCORD_BUTTON, 31, 140, 64, 16, WS_TABSTOP    
-
-    LTEXT "Browse over 5000 levels and mods\n+\nLink this client to your FactionFiles account for access to achievements and other optional features.", IDC_STATIC, 128, 88, 120, 50, SS_CENTER
-    PUSHBUTTON "FactionFiles.com", IDC_LEARN_MORE_BUTTON, 155, 140, 64, 16, WS_TABSTOP
-    PUSHBUTTON "How to link your account", IDC_ACCOUNT_LINK_BUTTON, 140, 160, 96, 16, WS_TABSTOP    
-
-    LTEXT "Customize Alpine Faction settings.\n\nClick the gear icon in the launcher.", IDC_STATIC, 255, 88, 120, 25, SS_CENTER
-
-    LTEXT "Before you start playing, we recommend...", IDC_STATIC, 0, 18, 380, 20, SS_CENTER | WS_VISIBLE    
-    DEFPUSHBUTTON "Continue...", IDC_CONTINUE_BUTTON, 308, 168, 64, 16, WS_TABSTOP //285
 END
 
 // Download progress window

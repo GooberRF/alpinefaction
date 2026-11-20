@@ -163,7 +163,6 @@ bool GameConfig::visit_vars(T&& visitor, bool is_save)
     result &= visitor(alpine_faction_key, "FFLink Token", fflink_token);
     result &= visitor(alpine_faction_key, "FFLink Username", fflink_username);
     result &= visitor(alpine_faction_key, "AF Stats PSK", afstats_psk);
-    result &= visitor(alpine_faction_key, "Already Saw First Launch Window", suppress_first_launch_window);
     result &= visitor(alpine_faction_key, "Already Saw FF Link Prompt", suppress_ff_link_prompt);
 
     return result;

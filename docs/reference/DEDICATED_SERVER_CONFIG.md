@@ -304,7 +304,7 @@ If neither the rotation nor `allowed_levels` names a level, `glass_house.rfl` is
 | `gg_rampage_rewards` | Boolean | `true` | Reward players who advance through several weapons in one life. |
 | `gg_tiers` | Array of arrays of strings | built-in tiers | Weapon progression. Each inner array is one tier of weapons.tbl names; tiers are played in order, and each player gets each tier in a random order. Unknown names are skipped and empty tiers dropped. If nothing resolves, the built-in tiers are used. |
 | `gg_final_weapon` | String | `"Riot Stick"` | Weapon for the final level. An unknown name falls back to the Riot Stick. |
-| `gg_end_with_fusion` | Boolean | `true` | After the final weapon, add a one-kill Fusion Rocket Launcher level. |
+| `gg_end_with_fusion` | Boolean | `false` | After the final weapon, add a one-kill Fusion Rocket Launcher level. |
 
 ### Spawn loadout lists
 
