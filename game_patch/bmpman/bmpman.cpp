@@ -39,6 +39,18 @@ std::string_view bm_strip_texture_ext(std::string_view filename)
     return filename;
 }
 
+std::string bm_resolve_supersede_filename(const char* filename)
+{
+    std::string base{bm_strip_texture_ext(filename)};
+    for (const char* ext : {".atx", ".dds", ".png", ".jpg", ".jpeg"}) {
+        auto candidate = base + ext;
+        if (vpackfile_supercede_allowed(filename, candidate.c_str())) {
+            return candidate;
+        }
+    }
+    return filename;
+}
+
 // Applies the stock TGA pixel loaders' (0x0055A6D0, 0x0055ABF0) checks up front, because bm_lock
 // allocates the pixel buffer from the header dimensions before those loaders reject the file.
 static bool tga_header_loadable(const char* filename, int path_id)

@@ -317,6 +317,7 @@ Version 1.5.0 (Trillium): Not yet released
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
 - Fix phantom visual flag mesh being visible after Salvage flag is picked up on rare occasions
+- Fix custom reticles in `png`, `jpg`, `dds`, or `atx` format being tinted green like stock reticles
 - Fix a fatal error in fullscreen when Windows takes the game out of exclusive fullscreen while it keeps focus (Direct3D 11 renderer only)
 - Fix a fatal error or broken rendering when switching away from or back to the game in fullscreen if the anti-aliasing level in the settings file isn't supported (Direct3D 11 renderer only)
 - Fix liquid surfaces in a sky room not rendering (Direct3D 11 renderer only)

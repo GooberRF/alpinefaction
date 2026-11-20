@@ -22,6 +22,7 @@
 #include "../multi/projectile_lag_comp.h"
 #include "../misc/misc.h"
 #include "../misc/alpine_settings.h"
+#include "../bmpman/bmpman.h"
 #include "../misc/settings_registry.h"
 #include "alpine_rope.h"
 
@@ -60,6 +61,12 @@ CodeInjection weapons_tbl_buffer_overflow_fix_2{
     },
 };
 
+// Checks the file actually loaded, which may be a PNG/DDS/ATX sibling of the tbl's TGA.
+static bool reticle_file_is_customized(const std::string& filename)
+{
+    return !file_loaded_from_alpinefaction_vpp(bm_resolve_supersede_filename(filename.c_str()).c_str());
+}
+
 CodeInjection weapon_init_track_reticle_bitmap_injection{
     0x004C6756,
     [] {
@@ -76,8 +83,8 @@ CodeInjection weapon_init_track_reticle_bitmap_injection{
                 auto bm_filename_base = string_remove_any_suffix_before_extension(bm_filename, {"_0", "_1"});
                 auto bm_filename_0 = string_add_suffix_before_extension(bm_filename_base, "_0");
                 auto bm_filename_1 = string_add_suffix_before_extension(bm_filename_base, "_1");
-                bool customized_0 = !file_loaded_from_alpinefaction_vpp(bm_filename_0.c_str());
-                bool customized_1 = !file_loaded_from_alpinefaction_vpp(bm_filename_1.c_str());
+                bool customized_0 = reticle_file_is_customized(bm_filename_0);
+                bool customized_1 = reticle_file_is_customized(bm_filename_1);
 
                 //xlog::warn("weap {} ({}), bmh {}, bmf {}, custom? 0:{} 1:{}", i, rf::weapon_types[i].name, bm_handle, bm_filename_base, customized_0, customized_1);
 
@@ -96,8 +103,8 @@ CodeInjection weapon_init_track_reticle_bitmap_injection{
                     auto bm_filename_base = string_remove_any_suffix_before_extension(bm_filename, {"_0", "_1"});
                     auto bm_filename_0 = string_add_suffix_before_extension(bm_filename_base, "_0");
                     auto bm_filename_1 = string_add_suffix_before_extension(bm_filename_base, "_1");
-                    bool customized_0 = !file_loaded_from_alpinefaction_vpp(bm_filename_0.c_str());
-                    bool customized_1 = !file_loaded_from_alpinefaction_vpp(bm_filename_1.c_str());
+                    bool customized_0 = reticle_file_is_customized(bm_filename_0);
+                    bool customized_1 = reticle_file_is_customized(bm_filename_1);
 
                     //xlog::warn("LOCKED{}, bmh {}, bmf {}, custom? 0:{} 1:{}", i, bm_locked_handle, bm_filename_base, customized_0, customized_1);
 
