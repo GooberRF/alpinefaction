@@ -1415,7 +1415,7 @@ static void apply_known_key_in_order(AlpineServerConfig& cfg, const std::string&
     }
     else if (key == "server_name") {
         if (auto v = node.value<std::string>())
-            cfg.server_name = *v;
+            cfg.server_name = v->substr(0, k_max_server_name_len);
     }
     else if (key == "max_players") {
         if (auto v = node.value<int>())

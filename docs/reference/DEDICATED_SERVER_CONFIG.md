@@ -86,7 +86,7 @@ In the tables below, a Number key takes an integer or a decimal value, and an In
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
 | `ads_version` | Integer | `2` | Config format version. Read, but not used for anything. |
-| `server_name` | String | `"Alpine Faction Server"` | Name shown in server browsers. |
+| `server_name` | String | `"Alpine Faction Server"` | Name shown in server browsers. Truncated to 127 characters. |
 | `max_players` | Integer | `8` | Player slots, clamped to 1-32. |
 | `password` | String | `""` | Join password. Empty means no password. Truncated to 16 characters. |
 | `rcon_password` | String | `""` | Legacy rcon password, truncated to 15 characters. Unless an `[[rcon_profiles]]` entry uses the same password, it creates a profile named `legacy` limited to `gt`, `kick`, `level`, `sv_pass`, `map`, `ban`, `ban_ip`, `map_ext`, `map_rest`, `map_next`, `map_rand`, `map_prev`, `sv_caplimit`, `sv_fraglimit`, `sv_gametype`, `sv_geolimit`, `sv_timelimit` and `unban_last`. |

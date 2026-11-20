@@ -269,6 +269,10 @@ Version 1.5.0 (Trillium): Not yet released
 - Add `bag_multiple_spawns` dedicated server config option to spawn the Bagman bag at a random `Bag` object or super item spot each time it returns
 - Add `connect` console command to join a server by address
 - Add `dbg_camera_pos` console command to print the camera's position and angles
+- Make an unreadable entry in `bot_profiles` use a default bot profile instead of being skipped
+- Improve validation of the `server_name` dedicated server config option
+- Make a dedicated server quit with an error when its UDP port is already in use, instead of hanging
+- Make the `disconnect` console command return to the multiplayer server list
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Revamp the in-game console with a new font, search, mouse text selection and inline command suggestions
@@ -471,6 +475,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix screenshots taken in the menus being named after the last level played
 - Fix `disconnect` console command not fully leaving the game
 - Fix `info` console command showing the last server's game type outside multiplayer
+- Fix the scoreboard showing the last joined server's name during demo playback
 - Fix the Mars menu background being stretched on widescreen displays, and support custom `mars_background.tga` images of any size
 
 [@is-this-c](https://github.com/is-this-c)

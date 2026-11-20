@@ -50,15 +50,6 @@ void close_console()
     }
 }
 
-std::string server_display_name(const rf::NetAddr& addr)
-{
-    const int index = server_browser_find(addr);
-    if (index >= 0 && !server_browser_entries()[index].name.empty()) {
-        return server_browser_entries()[index].name;
-    }
-    return std::format("{}", addr);
-}
-
 ConsoleCommand2 connect_cmd{
     "connect",
     [](std::string address, std::optional<std::string> password) {
@@ -112,7 +103,7 @@ ConsoleCommand2 connect_cmd{
             return;
         }
         close_console();
-        g_console_join = ConsoleJoin{*addr, pw, server_join_confirmation(server_display_name(*addr))};
+        g_console_join = ConsoleJoin{*addr, pw, server_join_confirmation(server_browser_display_name(*addr))};
         const char* choices[2] = {"CANCEL", "JOIN"};
         void (*callbacks[2])() = {console_join_canceled, console_join_confirmed};
         int keys[2] = {rf::KEY_ESC, rf::KEY_J};
@@ -171,10 +162,7 @@ void server_join(const rf::NetAddr& addr, const std::string& password)
     }
     start_join_multi_game_sequence(addr, password);
     if (rf::is_multi) {
-        // The engine's own way out of a game, as a lost connection takes it.
-        rf::multi_stop();
-        rf::gameseq_set_state(rf::GS_END_GAME, true);
-        rf::multi_clear_current_server_addr();
+        multi_disconnect_from_server();
     }
     else {
         // The jump to the server list runs from the main menu's init.

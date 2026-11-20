@@ -1508,6 +1508,8 @@ namespace
         set_jump_to_demo_browser(false);      // a new session supersedes any armed exit navigation
         g_ctx.pending_seek_ms = seek_ms;
         rf::set_in_mp_flag(); // in_mp_game: makes multi_do_frame/our pump run every frame
+        // The recording has no game info answer to name the session, so it would keep the last server's name
+        rf::netgame.name = g_ctx.reader.header().server_name.c_str();
         if (already_in_server_list) {
             multi_join_game(demo_playback_addr, {});
         }

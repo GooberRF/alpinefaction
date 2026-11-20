@@ -117,6 +117,8 @@ bool server_browser_busy();
 const std::vector<ServerBrowserEntry>& server_browser_entries();
 // -1 when not listed.
 int server_browser_find(const rf::NetAddr& addr);
+// The listed name, else the address.
+std::string server_browser_display_name(const rf::NetAddr& addr);
 // False when the favorites are full (adding) or the server is not listed.
 bool server_browser_set_favorite(const rf::NetAddr& addr, bool favorite);
 AddServerResult server_browser_add_server(std::string_view text);

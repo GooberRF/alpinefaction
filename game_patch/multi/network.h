@@ -306,6 +306,8 @@ int multi_num_players_waiting_for_reliable_socket();
 
 // Longest player name on the wire: clients receive names into 32-byte buffers (g_buffer_overflow_patches).
 constexpr int k_max_player_name_len = 31;
+// Longest advertised server name, kept well inside the unchecked 256 and 512-byte buffers stock peers copy it into.
+constexpr int k_max_server_name_len = 127;
 
 // Look up AF extra data for a server by address. Returns nullptr if not found.
 const AFGameInfoExtra* get_server_browser_extra(const rf::NetAddr& addr);

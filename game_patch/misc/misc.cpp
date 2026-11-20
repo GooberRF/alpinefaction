@@ -25,6 +25,7 @@
 #include "../multi/demo/demo.h"
 #include "../multi/demo/demo_browser.h"
 #include "../multi/listen_server_setup.h"
+#include "../multi/server_browser_data.h"
 #include "../multi/server.h"
 #include "../rf/gr/gr.h"
 #include "../rf/player/player.h"
@@ -186,6 +187,10 @@ bool multi_join_game(const rf::NetAddr& addr, const std::string& password)
 
     rf::String password2{password.c_str()};
     g_join_mp_game_seq_data.reset();
+    // As stock's JOIN button, so the session has the server's name until its game info answer arrives.
+    if (!demo_playback_active()) {
+        rf::netgame.name = server_browser_display_name(addr).c_str();
+    }
     multi_set_current_server_addr(addr);
     send_join_req_packet(addr, rf::local_player->name, password2, rf::local_player->net_data->max_update_rate);
     return true;

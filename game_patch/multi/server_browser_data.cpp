@@ -39,7 +39,7 @@ constexpr size_t max_lan_entries = 0x200;
 constexpr int max_in_flight = 16;
 constexpr int max_attempts = 2;
 constexpr std::chrono::milliseconds request_gap{20};
-constexpr std::chrono::milliseconds answer_timeout{2000};
+constexpr std::chrono::milliseconds answer_timeout{5000};
 constexpr std::chrono::milliseconds lan_window{2000};
 constexpr std::chrono::seconds dns_timeout{4};
 constexpr std::chrono::seconds tracker_timeout{10};
@@ -1104,6 +1104,15 @@ int server_browser_find(const rf::NetAddr& addr)
 {
     const auto it = g_index.find(addr);
     return it != g_index.end() ? it->second : -1;
+}
+
+std::string server_browser_display_name(const rf::NetAddr& addr)
+{
+    const int index = server_browser_find(addr);
+    if (index >= 0 && !g_entries[index].name.empty()) {
+        return g_entries[index].name;
+    }
+    return std::format("{}", addr);
 }
 
 bool server_browser_set_favorite(const rf::NetAddr& addr, bool favorite)

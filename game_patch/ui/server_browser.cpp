@@ -844,7 +844,7 @@ void ServerBrowserPanel::request_join(int entry)
         return;
     }
     const rf::NetAddr addr = e.addr;
-    const std::string name = e.has_info && !e.name.empty() ? e.name : std::format("{}", addr);
+    const std::string name = server_browser_display_name(addr);
     if (e.passworded) {
         popup_.open_input(rf::strings::enter_password, "", "", 32, ui_char_filter_printable, "JOIN",
                           [this, addr, name](int button, const std::string& text) {
