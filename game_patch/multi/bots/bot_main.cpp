@@ -2963,6 +2963,7 @@ void bot_context_reset_idle(BotContext& ctx)
     ctx.state.console_status_timer.invalidate();
     // server_config_received is kept: the server sends the bot config once per join, not per level.
     bot_perception_manager_reset_tracking();
+    bot_perception_manager_reset_spawn_grace();
 }
 
 void client_bot_do_frame()
@@ -3121,6 +3122,7 @@ void bot_run_frame(BotContext& ctx)
     const bool is_dying = rf::player_is_dying(local_player);
     bot_chat_manager_update_frame(ctx, *local_player);
     update_bot_spawn_state(*local_player);
+    bot_perception_manager_update_spawn_grace(*local_player);
 
     rf::Entity* local_entity = bot_entity();
 

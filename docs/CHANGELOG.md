@@ -273,6 +273,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Improve validation of the `server_name` dedicated server config option
 - Make a dedicated server quit with an error when its UDP port is already in use, instead of hanging
 - Make the `disconnect` console command return to the multiplayer server list
+- Make lower skill bots leave a newly spawned player alone for a few seconds unless they shoot at or near the bot or carry an objective, adjustable with the `spawn_grace_ms` skill override
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Revamp the in-game console with a new font, search, mouse text selection and inline command suggestions

@@ -1204,6 +1204,7 @@ enum class af_skill_field : uint8_t
     aim_settle_error = 0x14,
     aim_settle_ms = 0x15,
     aim_error_hold_ms = 0x16,
+    spawn_grace_ms = 0x17,
 };
 
 #pragma pack(pop)

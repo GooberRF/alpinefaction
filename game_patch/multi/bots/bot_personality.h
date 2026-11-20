@@ -121,6 +121,9 @@ struct BotSkillProfile
     float semi_auto_click_interval_scale = 3.0f;
     // Share (0-1) of the aim's lag behind a moving target that it leads by.
     float aim_prediction = 0.0f;
+    // Milliseconds a newly spawned human enemy goes unnoticed unless it attacks or fires near the bot, or carries an
+    // objective.
+    float spawn_grace_ms = 1500.0f;
     std::vector<float> weapon_skill_weights{};
 };
 
