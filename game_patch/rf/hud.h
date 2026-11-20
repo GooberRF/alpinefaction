@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
 #include <patch_common/MemUtils.h>
 #include "os/timestamp.h"
 #include "os/string.h"
@@ -123,6 +125,8 @@ namespace rf
         char message[256];
         Timestamp fully_visible_timestamp;
     };
+    static_assert(sizeof(HudPersonaInfo) == 0x128);
+    static_assert(offsetof(HudPersonaInfo, image_handle) == 0x18);
 
     static auto& hud_persona_alpha = addr_as_ref<float>(0x00597290);
     static auto& hud_persona_target_alpha = addr_as_ref<float>(0x0059728C);
@@ -130,7 +134,22 @@ namespace rf
     static auto& hud_default_color = addr_as_ref<Color>(0x00637554);
     static auto& hud_msg_bg_color = addr_as_ref<Color>(0x006379EC);
     static auto& hud_msg_color = addr_as_ref<Color>(0x006373B4);
+    static auto& num_hud_personas = addr_as_ref<int>(0x006384CC);
     static auto& hud_personas_info = addr_as_ref<HudPersonaInfo[10]>(0x006384D0);
+
+    // The message log: a ring of the last persona messages, saved with the game.
+    struct LoggedMessage
+    {
+        char text[260];
+        int16_t persona; // a hud_personas_info index, negative for none
+        int16_t height;
+    };
+    static_assert(sizeof(LoggedMessage) == 0x108);
+    static_assert(offsetof(LoggedMessage, persona) == 0x104);
+    static_assert(offsetof(LoggedMessage, height) == 0x106);
+    static auto& logged_messages = addr_as_ref<LoggedMessage[80]>(0x007ED96E);
+    static auto& num_logged_messages = addr_as_ref<int>(0x007F2BF0);
+    static auto& latest_logged_message = addr_as_ref<int>(0x007F2BF4);
     static auto& hud_persona_image_gr_mode = addr_as_ref<gr::Mode>(0x01775B18);
 
     struct WeaponCycle

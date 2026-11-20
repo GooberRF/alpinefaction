@@ -7,6 +7,7 @@
 #include <vector>
 #include <common/utils/string-utils.h>
 #include "reference_menu.h"
+#include "column_menu.h"
 #include "menu_shell.h"
 #include "reference_data.h"
 #include "settings_skin.h"
@@ -17,9 +18,6 @@
 #include "../rf/gr/gr_font.h"
 #include "../rf/input.h"
 #include "../rf/localize.h"
-#include "../rf/sound/sound.h"
-#include "../rf/ui.h"
-#include "../sound/sound.h"
 
 namespace
 {
@@ -32,17 +30,16 @@ constexpr std::array<ReferenceArea, reference_area_count> area_order{
 };
 constexpr std::array<rf::Key, reference_area_count> area_hotkeys{rf::KEY_W, rf::KEY_V, rf::KEY_G, rf::KEY_P};
 
+// The column's Back slot, after the areas.
+constexpr int back_action = reference_area_count;
+
 using Fonts = MenuFonts;
 
-UiContext g_ui;
+ColumnMenu g_menu;
 bool g_active = false;
-bool g_closing = false;
-// 0 = off canvas, 1 = seated. Rises on entry, falls again once Back/ESC is taken.
-float g_slide = 0.0f;
-// The panel's slide out and back in on an area change; the change lands at the turn.
-float g_switch = 0.0f;
-std::optional<ReferenceArea> g_switch_to;
+// The area on screen, which an area change replaces once its panel has slid out, and the one the column picked.
 ReferenceArea g_area = ReferenceArea::weapons;
+ReferenceArea g_picked = ReferenceArea::weapons;
 // Per area, kept across visits within a session.
 std::array<int, reference_area_count> g_selected{};
 std::array<float, reference_area_count> g_list_scroll{};
@@ -50,7 +47,6 @@ float g_detail_scroll = 0.0f;
 UiId g_list_scrolled_to = 0;
 
 // Taken by the hit-test pass, acted on after it.
-std::optional<int> g_pending_column;
 int g_pending_row = -1;
 
 MeshPreview g_preview;
@@ -74,28 +70,6 @@ const ReferenceEntry* current_entry()
     const std::vector<ReferenceEntry>& entries = current_entries();
     const int sel = g_selected[area_index(g_area)];
     return sel >= 0 && sel < static_cast<int>(entries.size()) ? &entries[sel] : nullptr;
-}
-
-void request_close()
-{
-    g_closing = true;
-}
-
-void show_area(ReferenceArea area)
-{
-    if (g_switch_to) {
-        // Picking the panel's own area again turns a slide-out around.
-        if (area == g_area) {
-            g_switch_to.reset();
-        }
-        else {
-            g_switch_to = area;
-        }
-        return;
-    }
-    if (area != g_area) {
-        g_switch_to = area;
-    }
 }
 
 void select_row(int row)
@@ -420,111 +394,89 @@ void build_area_panel(UiContext& ctx, const MenuPanel& panel, const Fonts& fonts
     build_detail(ctx, UiRect{x + list_w + gap, body_y, w - list_w - gap, body_h}, fonts);
 }
 
-void build_screen(UiContext& ctx)
+void commit_row()
 {
-    const MenuFrame frame = menu_frame(ctx, g_slide);
-    const MenuLayout& lay = frame.lay;
-    const Fonts& fonts = frame.fonts;
-    const int panel_dx = frame.enter_dx + static_cast<int>(g_switch * static_cast<float>(frame.slide_w));
-    const int top = frame.top;
-
-    if (ctx.draw) {
-        menu_draw_title_bar(ctx, lay.panel_x + frame.enter_dx, lay.panel_r + frame.enter_dx,
-                            lay.rail_right + frame.enter_dx, frame.canvas_y, "REFERENCE", fonts.title);
-    }
-
-    std::array<MenuColumnItem, reference_area_count> items;
-    for (int i = 0; i < reference_area_count; ++i) {
-        items[i] = MenuColumnItem{reference_area_label(area_order[i]), area_order[i] == g_area};
-    }
-    const int clicked = menu_build_column(ctx, lay, lay.column_x + frame.col_dx, top, items,
-                                          menu_stock_label(rf::strings::back).c_str(), fonts.column, "reference_area");
-    if (clicked >= 0 && !ctx.draw) {
-        g_pending_column = clicked;
-    }
-
-    const MenuPanel panel = menu_panel(ctx, lay, panel_dx, top, frame.canvas_y);
-    if (ctx.draw) {
-        menu_draw_panel(ctx, panel);
-        const int button_h = menu_button_h(ctx);
-        const auto slot = std::ranges::find(area_order, g_area) - area_order.begin();
-        menu_draw_connector(ctx, panel, top + static_cast<int>(slot) * button_h + button_h / 2);
-    }
-    // A panel on its way out is only painted: anything done on it would land on the area about to replace it.
-    if (ctx.draw || !g_switch_to) {
-        build_area_panel(ctx, panel, fonts);
-    }
-
-    // Stock draws its side bars over its menus.
-    if (ctx.draw) {
-        rf::gr::reset_clip();
-        rf::ui::menu_draw_side_bars();
-    }
-}
-
-void commit_pending()
-{
-    if (const std::optional<int> column = std::exchange(g_pending_column, std::nullopt)) {
-        ui_play_click();
-        if (*column >= reference_area_count) {
-            request_close();
-            return;
-        }
-        show_area(area_order[*column]);
-    }
     const int row = std::exchange(g_pending_row, -1);
-    if (row >= 0 && !g_switch_to && row != g_selected[area_index(g_area)]) {
+    if (row >= 0 && row != g_selected[area_index(g_area)]) {
         select_row(row);
         ui_play_click();
     }
 }
 
-void __cdecl key_callback(int key)
+class AreaPanel final : public ColumnPanel
 {
-    const int code = key & rf::KEY_MASK;
-    if (code == rf::KEY_ESC) {
-        ui_play_click();
-        request_close();
-        return;
+public:
+    explicit AreaPanel(ReferenceArea area) : area_{area} {}
+    [[nodiscard]] ReferenceArea area() const
+    {
+        return area_;
     }
-    // Hotkeys need no modifier held, as stock's do.
-    if (key == code) {
-        if (code == rf::KEY_B) {
-            ui_play_click();
-            request_close();
-            return;
-        }
-        for (int i = 0; i < reference_area_count; ++i) {
-            if (code == area_hotkeys[i]) {
-                ui_play_click();
-                show_area(area_order[i]);
-                return;
-            }
-        }
+    [[nodiscard]] bool is_open() const override
+    {
+        return g_picked == area_;
     }
-    g_ui.handle_nav_key(static_cast<rf::Key>(key));
+    void open() override
+    {
+        g_picked = area_;
+    }
+    // One area is always picked; picking another is what closes this one.
+    void close() override {}
+    // Esc leaves the screen.
+    bool back() override
+    {
+        return false;
+    }
+    void build(UiContext& ctx, const MenuPanel& panel, const MenuFonts& fonts) override
+    {
+        build_area_panel(ctx, panel, fonts);
+    }
+    void commit() override
+    {
+        commit_row();
+    }
+
+private:
+    ReferenceArea area_;
+};
+
+std::array<AreaPanel, reference_area_count> g_area_panels{
+    AreaPanel{area_order[0]},
+    AreaPanel{area_order[1]},
+    AreaPanel{area_order[2]},
+    AreaPanel{area_order[3]},
+};
+
+AreaPanel& area_panel(ReferenceArea area)
+{
+    return g_area_panels[std::ranges::find(area_order, area) - area_order.begin()];
 }
 
-void handle_input()
+void run_column_action(int action)
 {
-    menu_run_hit_test(g_ui, key_callback, build_screen);
-    commit_pending();
+    if (!g_menu.jump_action()) {
+        ui_play_click();
+    }
+    if (action == back_action) {
+        g_menu.request_close();
+        return;
+    }
+    // Picking the panel's own area again turns a slide-out around.
+    g_menu.open_panel(&area_panel(area_order[action]));
+}
+
+void __cdecl key_callback(int key)
+{
+    g_menu.key(key);
 }
 
 void advance_animation()
 {
-    const float step = menu_slide_step();
-    g_slide = g_closing ? std::max(0.0f, g_slide - step) : std::min(1.0f, g_slide + step);
-    if (g_switch_to) {
-        g_switch = std::min(1.0f, g_switch + step);
-        if (g_switch >= 1.0f) {
-            g_area = *g_switch_to;
-            g_switch_to.reset();
-            g_detail_scroll = 0.0f;
-        }
-    }
-    else {
-        g_switch = std::max(0.0f, g_switch - step);
+    g_menu.step();
+    // The area changes at the turn of the slide.
+    const auto* shown = static_cast<const AreaPanel*>(g_menu.shown_panel());
+    if (shown && shown->area() != g_area) {
+        g_area = shown->area();
+        g_detail_scroll = 0.0f;
     }
 }
 
@@ -555,16 +507,19 @@ void render_preview()
 void reference_menu_open()
 {
     g_active = true;
-    g_closing = false;
-    g_slide = 0.0f;
-    g_switch = 0.0f;
-    g_switch_to.reset();
     g_detail_scroll = 0.0f;
     g_list_scrolled_to = 0;
-    g_pending_column.reset();
     g_pending_row = -1;
-    menu_ui_reset(g_ui);
-    rf::snd_play(stock_sound_id::menu_slide_in, 0, 0.0f, 1.0f);
+    std::vector<ColumnButton> buttons;
+    for (int i = 0; i < reference_area_count; ++i) {
+        buttons.push_back(ColumnButton{i, reference_area_label(area_order[i]), area_hotkeys[i], true});
+    }
+    g_menu.enter("REFERENCE", std::move(buttons),
+                 ColumnButton{back_action, menu_stock_label(rf::strings::back), rf::KEY_B}, back_action);
+    for (int i = 0; i < reference_area_count; ++i) {
+        g_menu.add_panel(&g_area_panels[i], i);
+    }
+    g_menu.seat_panel(&area_panel(g_area));
 }
 
 bool reference_menu_is_active()
@@ -577,42 +532,25 @@ void reference_menu_do_frame(bool paused)
     advance_animation();
 
     // paused = 1 means a stock popup owns input this frame; it renders after us and on top.
-    if (!paused && !g_closing) {
-        handle_input();
+    if (!paused) {
+        if (const std::optional<int> action = g_menu.input(key_callback)) {
+            run_column_action(*action);
+        }
     }
 
     // Before any of the frame's 2D: the preview switches the render target.
     render_preview();
 
-    menu_run_draw(g_ui, build_screen);
+    g_menu.draw();
 
-    if (g_closing && g_slide <= 0.0f) {
+    if (g_menu.is_closed()) {
         reference_menu_release();
     }
-}
-
-bool reference_menu_host_frame(bool& pending, float& slide, bool closing, bool paused)
-{
-    // Until it has slid away again the screen owns the frame; the host's column then slides back in.
-    if (g_active) {
-        reference_menu_do_frame(paused);
-        return true;
-    }
-    const float step = menu_slide_step();
-    slide = closing || pending ? std::max(0.0f, slide - step) : std::min(1.0f, slide + step);
-    if (pending && slide <= 0.0f) {
-        pending = false;
-        reference_menu_open();
-        reference_menu_do_frame(paused);
-        return true;
-    }
-    return false;
 }
 
 void reference_menu_release()
 {
     g_active = false;
-    g_closing = false;
     g_preview.release();
     g_preview_entry = nullptr;
     g_preview_rect = UiRect{};

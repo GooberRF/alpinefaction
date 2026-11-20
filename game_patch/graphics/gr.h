@@ -27,6 +27,7 @@ void gr_bitmap_scaled_float(int bitmap_handle, float x, float y, float w, float 
 // Convex screen-space fan; sx/sy are clip-relative, u1/v1 used when bitmap_handle >= 0, colour from gr::set_color.
 void gr_poly_2d(int bitmap_handle, int nv, const rf::gr::Vertex* vertices, rf::gr::Mode mode);
 float gr_scale_fov_hor_plus(float horizontal_fov);
+float gr_scale_world_fov(float horizontal_fov);
 bool gr_3d_bitmap_oriented_wh(const rf::Vector3* pnt, const rf::Matrix3* M, float half_w, float half_h, rf::gr::Mode mode);
 // A strip through `rows` points, row i spanning pos[i] - side[i] to pos[i] + side[i] in four columns: transparent edges
 // around an opaque middle `band` of the half-width, at alpha[i]. It faces the eye where side = direction x (eye - pos).

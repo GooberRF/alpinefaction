@@ -23,6 +23,7 @@
 #include "alpine_settings.h"
 #include "misc.h"
 #include "waypoints.h"
+#include "../ui/menu_scene.h"
 
 bool achievement_system_initialized = false;
 bool synced_with_ff = false;
@@ -416,7 +417,7 @@ void AchievementManager::show_notification(Achievement& achievement)
 
 // forcefully grant achievement
 void grant_achievement(AchievementName achievement, int count) {
-    if (achievement_system_initialized) {
+    if (achievement_system_initialized && !menu_scene_active()) {
         AchievementManager::get_instance().grant_achievement(achievement, count);
     }    
 }
@@ -435,7 +436,7 @@ void grant_achievement_bomb_defuse(AchievementName achievement) {
 }
 
 void log_kill(int entity_uid, const std::string& class_name, int damage_type, int likely_weapon) {
-    if (!achievement_system_initialized) {
+    if (!achievement_system_initialized || menu_scene_active()) {
         return;
     }
 
@@ -469,7 +470,7 @@ void log_kill(int entity_uid, const std::string& class_name, int damage_type, in
 }
 
 void log_use(int used_uid, int type) {
-    if (!achievement_system_initialized) {
+    if (!achievement_system_initialized || menu_scene_active()) {
         return;
     }
 
@@ -629,7 +630,7 @@ bool is_achievement_system_initialized() {
 
 // handler for achivements awarded by specific trigger activation
 void achievement_check_trigger(rf::Trigger* trigger) {
-    if (!trigger) {
+    if (!trigger || menu_scene_active()) {
         return;
     }
 
@@ -779,7 +780,7 @@ void achievement_check_trigger(rf::Trigger* trigger) {
 
 // handler for achivements awarded by specific event activation
 void achievement_check_event(rf::Event* event) {
-    if (!event) {
+    if (!event || menu_scene_active()) {
         return;
     }
 
@@ -862,7 +863,7 @@ void achievement_check_event(rf::Event* event) {
 
 // handler for achivements awarded by specific entities dying
 void achievement_check_entity_death(rf::Entity* entity) {
-    if (!entity) {
+    if (!entity || menu_scene_active()) {
         return;
     }
 
@@ -964,7 +965,7 @@ void achievement_check_entity_death(rf::Entity* entity) {
 
 // handler for achivements awarded by clutter dying
 void achievement_check_clutter_death(rf::Clutter* clutter) {
-    if (!clutter) {
+    if (!clutter || menu_scene_active()) {
         return;
     }
 
@@ -1000,7 +1001,7 @@ void achievement_check_clutter_death(rf::Clutter* clutter) {
 
 // handler for achivements awarded by items being picked up
 void achievement_check_item_picked_up(rf::Item* item) {
-    if (!item) {
+    if (!item || menu_scene_active()) {
         return;
     }
 

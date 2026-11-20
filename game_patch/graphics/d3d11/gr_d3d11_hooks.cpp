@@ -789,6 +789,13 @@ namespace gr::d3d11
         }
     }
 
+    void flush_scene_outlines()
+    {
+        if (renderer) {
+            renderer->flush_scene_outlines();
+        }
+    }
+
     bool set_skip_mesh_light_gather(bool skip)
     {
         return std::exchange(skip_mesh_light_gather, skip);

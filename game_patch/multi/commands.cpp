@@ -58,7 +58,7 @@ void restart_current_level_configured()
 
     const std::string filename = rf::level.filename.c_str();
 
-    if (g_dedicated_launched_from_ads) {
+    if (server_config_active()) {
         const rf::NetGameType configured = resolve_level_default_game_type(filename);
         // Explicit so a game type the session voted in cannot survive as the
         // still-queued upcoming type.

@@ -27,6 +27,7 @@ add_packfile(alpinefaction.vpp
     tables/events.tbl
     tables/af_level_quirks.tbl
     tables/af_reference.toml
+    tables/af_main_menu.toml
 
     # waypoint files
     waypoints/dm01.awp
@@ -325,6 +326,9 @@ add_packfile(alpinefaction.vpp
     images/af_healthshard1_shell.tga
     images/af_healthshard1_gauze.tga
     images/af_menu_cap.svg
+    images/af_menu_cap_tall.svg
+    images/af_menu_plate.svg
+    images/af_menu_plate_tall.svg
     images/af_connector.svg
     images/af_arrows.svg
     images/af_search_icon.svg
@@ -332,6 +336,7 @@ add_packfile(alpinefaction.vpp
     images/af_revert_icon.svg
     images/af_close_icon.svg
     images/af_padlock_icon.svg
+    images/af_edit_icon.svg
     images/af_scavpumap1.dds
     images/af_jeeptire1.tga
     images/af_apctread1.atx

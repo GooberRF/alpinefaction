@@ -1,10 +1,12 @@
 #include "../../main/main.h"
+#include "../../ui/menu_scene.h"
 #include "settings_rows.h"
 
 namespace
 {
 
 const char* const labels_seasonal[] = {"Off", "Auto (December)", "Always"};
+const char* const labels_main_menu_background[] = {"Mars", "Live level"};
 const char* const labels_server_cfg_layout[] = {"Right / boxes",  "Right / lines", "Right / compact",
                                                 "Left / boxes",   "Left / lines",  "Left / compact"};
 
@@ -13,13 +15,28 @@ const SettingRow rows[] = {
         .id = "seasonal_effect",
         .key = "SeasonalEffect",
         .label = "Menu snow",
-        .tooltip = "Snow on the main menu (Auto = 11-31 December).",
+        .tooltip = "Snow on the main menu, and the live background's seasonal level (Auto = 11-31 December).",
         .category = Cat::Interface,
         .subcategory = "Menus",
         .widget = Wid::Enum,
         .access = AccInt{&AGS::seasonal_effect},
         .flags = SF_HIDDEN,
         ENUM_LABELS(labels_seasonal),
+    },
+    {
+        .id = "main_menu_background",
+        .key = "MainMenuBackground",
+        .label = "Menu background",
+        .tooltip = "Show the Mars backdrop behind the menus, or a live level: the game in progress, or a level running "
+                   "behind the main menu.",
+        .category = Cat::Interface,
+        .subcategory = "Menus",
+        .widget = Wid::Enum,
+        .access = AccInt{&AGS::main_menu_background, nullptr, 0, 1},
+        .flags = SF_D3D11_ONLY,
+        .apply = menu_scene_on_setting_changed,
+        ENUM_LABELS(labels_main_menu_background),
+        .console_cmd = "ui_menu_background",
     },
     {
         .id = "remote_server_cfg_display_mode",

@@ -205,6 +205,7 @@ Commands marked "D3D11 only" only have an effect with the Direct3D 11 renderer.
 | `ui_fpsavg` | `[milliseconds]` | Sets the FPS counter averaging window (0-60000 ms, 0 = update every frame). Default: 100. |
 | `ui_gamefeed` | | Toggles showing game event messages in a separate feed instead of chat. Default: off. |
 | `ui_gametype_help` | | Toggles the game type help notification shown when spawning on a server. Default: on. |
+| `ui_menu_background` | `[0-1]` | Sets what the menus show behind them: `0` the Mars backdrop, `1` a live level. Outside a game that is a level running live, chosen by `af_main_menu.toml` (the Mars backdrop when that level cannot be loaded); in a game it is the game itself, frozen in single player (the Mars backdrop while the view is underwater or no level is loaded). D3D11 only. Default: 1. |
 | `ui_minisb_dm` | | Toggles the mini scoreboard in Deathmatch. Default: on. |
 | `ui_playernames` | | Toggles names of targeted players. Default: on. |
 | `ui_realarmor` | | Toggles showing armor as real values (1:1 with effective health) instead of classic (2:1). Default: off. |
@@ -251,8 +252,12 @@ Colors are hex `RRGGBB` or `RRGGBBAA`, or comma-separated `R,G,B[,A]` values in 
 
 | Command | Arguments | Description |
 | --- | --- | --- |
+| `cl_confirm_server_switch` | `[bool]` | Asks before leaving a game to join another server from the server browser or with `connect`. A listen server host is always asked, since leaving ends the game for everyone. Default: on. |
+| `cl_server_browser_auto_refresh` | `[bool]` | Re-queries the server whose details the server browser shows, and re-pings the list when the browser is reopened. Off, server data only changes on Refresh All, Get Servers, a tab switch, Add Server (which pings the server it adds), or a reopen after the browser was closed mid-refresh; the details card still asks a server for its players once as it comes up. Default: on. |
+| `cl_server_browser_details` | `[bool]` | Shows a card with a server's details and players when hovering over or selecting it in the server browser. Default: on. |
 | `cl_sprays` | | Toggles showing players' sprays. Default: on. |
-| `disconnect` | | Disconnects from the current server. |
+| `connect` | `<ip[:port]> [password]` | Joins a server (port 7755 when none is given), leaving the multiplayer game in progress after the same mod check and confirmation as the server browser. Refused during a single player game or demo playback. Host names are not accepted. |
+| `disconnect` | | Disconnects from the current server, or ends the game you are hosting. Not on a dedicated server. |
 | `mp_character` | `[index]` | Prints or sets your multiplayer character by index. |
 | `mp_handicap` | `[percent]` | Sets your damage reduction handicap (0-99) and sends it to the server. Only applied on servers that support it. Default: 0. |
 | `mp_playercount` | | Prints the number of players. Multiplayer only. |
@@ -349,8 +354,8 @@ Colors are hex `RRGGBB` or `RRGGBBAA`, or comma-separated `R,G,B[,A]` values in 
 | `sv_loadpackfiles` | | Loads packfiles added to `user_maps\` since the server started. Dedicated only. Allowed via rcon for full-admin rcon profiles only. |
 | `sv_mute_chat` | `<player>` | Toggles a server-wide chat mute on a player, held by IP until they are unmuted or the server restarts. Server only. Allowed via rcon. |
 | `sv_pass` | `[password]` | Sets the server password, or removes it when run without one. Server only. Allowed via rcon. |
-| `sv_printconfig` | | Prints the current server configuration. ADS only. |
-| `sv_printrules` | `[filename]` | Prints the rules for a level in the rotation, or the active rules for the current level. ADS only. |
+| `sv_printconfig` | | Prints the current server configuration. ADS only, or a listen server started from Host Game. |
+| `sv_printrules` | `[filename]` | Prints the rules for a level in the rotation, or the active rules for the current level. ADS only, or a listen server started from Host Game. |
 | `sv_rconpass` | `[password]` | Sets the rcon password (up to 16 characters), or removes it when run without one. Dedicated only. |
 | `sv_record` | | Starts or stops server-side demo recording for the current level. Server only. |
 | `sv_restrict_status` | | Shows the current Alpine restriction checks and expected join verdicts. Server only. |
@@ -359,7 +364,7 @@ Colors are hex `RRGGBB` or `RRGGBBAA`, or comma-separated `R,G,B[,A]` values in 
 | `sv_toggle_ready` | `<player>` | Toggles a player's ready status during match ready-up. Server only. Allowed via rcon. |
 | `unban_last` | | Unbans the last banned player. Server only. Allowed via rcon. |
 
-`sv_gametype`: on an ADS dedicated server, `sv_gametype <type> <level>` loads the level on that game type, `sv_gametype <type>` restarts the current level on it, and `sv_gametype` alone prints the current game type. It cannot run between levels. On a client that is not connected (or is playing a demo), both arguments are required and it starts a local game like `levelm`. While connected to a server, use `rcon sv_gametype` instead. On other dedicated servers it is refused.
+`sv_gametype`: on an ADS dedicated server or a server hosted from Host Game, `sv_gametype <type> <level>` loads the level on that game type, `sv_gametype <type>` restarts the current level on it, and `sv_gametype` alone prints the current game type. It cannot run between levels, and a server hosted from Host Game keeps its setup. On a client that is not connected (or is playing a demo), both arguments are required and it starts a local game like `levelm`. While connected to a server, use `rcon sv_gametype` instead. On other dedicated servers it is refused.
 
 Rcon: on Alpine Faction servers, rcon only runs commands from a fixed list, further limited by the rcon profile of the player who logged in. Besides the commands marked above, the list contains the stock `info`, `say`, `kick`, `ban`, `ban_ip` and `level` commands.
 
@@ -433,6 +438,7 @@ Zone types (or their numeric id): `control_point` (`cp`), `damaging_liquid_room`
 | `dbg_achievement` | `<uid>` | Looks up an achievement by UID. |
 | `dbg_berserk` | | Makes all entities go berserk. Single player only. |
 | `dbg_bot` | `[0\|1]` | Toggles bot debug console logging. Default: off. |
+| `dbg_camera_pos` | | Prints the camera's position, pitch and heading in degrees, in the form `af_main_menu.toml` shots take. |
 | `dbg_collision_pairs` | | Prints object collision pair pool statistics. |
 | `dbg_consolehistory` | | Toggles keeping console history between game launches. |
 | `dbg_events` | | Toggles printing event debug information. Default: off. |

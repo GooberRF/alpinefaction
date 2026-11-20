@@ -248,6 +248,8 @@ bool trace_ground_below_point(
 
 void waypoints_init();
 int get_local_awp_revision(const std::string& rfl_filename);
+// An installed waypoint file, on disk or in a packfile, that bots on the level could load.
+bool waypoints_level_has_awp(const std::string& rfl_filename);
 std::optional<std::string> get_waypoint_dir();
 void waypoints_do_frame();
 void waypoints_render_debug();

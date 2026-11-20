@@ -1,12 +1,10 @@
 #pragma once
 
-// The in-game multiplayer menu: stock's main menu state while a multiplayer game runs beneath it.
+// The in-game multiplayer menu's MULTI column, handed off to in the pause column's place.
 
-// After stock's main menu init: takes the state when it is the in-game multiplayer menu.
-void multi_pause_menu_on_main_menu_init();
-// From that init until the state closes.
+void multi_pause_menu_open();
+// From the open until its exit animation is done.
 bool multi_pause_menu_is_active();
 void multi_pause_menu_do_frame(bool paused);
-bool multi_pause_menu_is_closed();
-// For a state closed without asking multi_pause_menu_is_closed, as a forced change does.
+// Closes it without animating, for a state closed under it.
 void multi_pause_menu_release();

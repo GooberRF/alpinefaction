@@ -24,6 +24,8 @@
 #include "../multi/multi.h"
 #include "../multi/demo/demo.h"
 #include "../multi/demo/demo_browser.h"
+#include "../multi/listen_server_setup.h"
+#include "../multi/server_browser_data.h"
 #include "../multi/server.h"
 #include "../rf/gr/gr.h"
 #include "../rf/player/player.h"
@@ -42,9 +44,16 @@
 #include "../fflink/afstats_client.h"
 #include "waypoints.h"
 #include "settings_registry.h"
+#include "../ui/column_menu.h"
+#include "../ui/create_game_menu.h"
 #include "../ui/extras_menu.h"
-#include "../ui/multi_pause_menu.h"
+#include "../ui/game_menu.h"
+#include "../ui/message_log_menu.h"
+#include "../ui/multi_menu.h"
+#include "../ui/menu_scene.h"
+#include "../ui/menu_popup.h"
 #include "../ui/reference_menu.h"
+#include "../ui/save_load_menu.h"
 #include "../ui/settings_menu.h"
 
 void achievements_apply_patch();
@@ -73,6 +82,7 @@ struct JoinMpGameData
 bool g_in_mp_game = false;
 bool g_jump_to_multi_server_list = false;
 bool g_jump_to_demo_browser = false;
+bool g_jump_to_create_game = false;
 std::optional<JoinMpGameData> g_join_mp_game_seq_data;
 std::optional<std::string> g_levelm_filename;
 std::optional<rf::NetGameType> g_levelm_game_type;
@@ -177,6 +187,10 @@ bool multi_join_game(const rf::NetAddr& addr, const std::string& password)
 
     rf::String password2{password.c_str()};
     g_join_mp_game_seq_data.reset();
+    // As stock's JOIN button, so the session has the server's name until its game info answer arrives.
+    if (!demo_playback_active()) {
+        rf::netgame.name = server_browser_display_name(addr).c_str();
+    }
     multi_set_current_server_addr(addr);
     send_join_req_packet(addr, rf::local_player->name, password2, rf::local_player->net_data->max_update_rate);
     return true;
@@ -194,15 +208,49 @@ FunHook<void(rf::GameState, rf::GameState, bool)> rf_close_state_hook{
             g_gameseq_defer_new_level = false;
         }
 
-        if (immediately && state == rf::GS_MAIN_MENU && multi_pause_menu_is_active()) {
-            multi_pause_menu_release();
+        if (immediately && state == rf::GS_MAIN_MENU && game_menu_is_active()) {
+            game_menu_release();
+        }
+        // Stock's close would write ListLAN from a screen it never built, and slide its panels.
+        if (!legacy_menus_enabled() && state == rf::GS_MULTI_CREATE_GAME) {
+            create_game_menu_on_close(immediately);
+            return;
+        }
+        if (!legacy_menus_enabled() && (state == rf::GS_MULTI_MENU || state == rf::GS_MULTI_SERVER_LIST)) {
+            multi_menu_on_close(state, new_state);
+            // The column stays on into the browser's state, so stock's slide-out would be wrong.
+            if (state == rf::GS_MULTI_MENU && new_state == rf::GS_MULTI_SERVER_LIST) {
+                return;
+            }
         }
         rf_close_state_hook.call_target(state, new_state, immediately);
     }
 };
 
-// The stock inits of the menus Alpine draws itself would build panels that are never shown.
-static bool enter_alpine_menu(rf::GameState state)
+// Stock's Multi menu close plays its slide-out; a jump passing through has had the screen it started from play one.
+CallHook<int(int, int, float, float)> multi_menu_close_slide_out_sound_hook{
+    0x00448EB1,
+    [](int handle, int group, float pan, float volume) {
+        if (!legacy_menus_enabled() && multi_menu_passed_by_jump()) {
+            return -1;
+        }
+        return multi_menu_close_slide_out_sound_hook.call_target(handle, group, pan, volume);
+    },
+};
+
+// Stock's server list close would write ListLAN, the legacy screens' choice, from a screen it never built.
+CallHook<void(const char*, const char*, unsigned)> multi_join_game_close_write_list_lan_hook{
+    0x0044D0DF,
+    [](const char* folder, const char* name, unsigned value) {
+        if (legacy_menus_enabled()) {
+            multi_join_game_close_write_list_lan_hook.call_target(folder, name, value);
+        }
+    },
+};
+
+// The stock inits of the menus Alpine draws itself would build panels that are never shown. Stock's server list
+// init would also load its own lists and query the tracker.
+static bool enter_alpine_menu(rf::GameState state, rf::GameState old_state)
 {
     if (legacy_menus_enabled()) {
         return false;
@@ -215,20 +263,51 @@ static bool enter_alpine_menu(rf::GameState state)
         extras_menu_enter();
         return true;
     }
+    if (state == rf::GS_MULTI_MENU) {
+        multi_menu_enter(old_state);
+        return true;
+    }
+    if (state == rf::GS_MULTI_SERVER_LIST) {
+        multi_menu_enter_server_list();
+        return true;
+    }
+    if (state == rf::GS_MULTI_CREATE_GAME) {
+        create_game_menu_enter();
+        return true;
+    }
+    if (state == rf::GS_SAVE_GAME_MENU || state == rf::GS_LOAD_GAME_MENU) {
+        save_load_menu_enter(state);
+        return true;
+    }
+    if (state == rf::GS_MESSAGE_LOG) {
+        message_log_menu_enter();
+        return true;
+    }
     return false;
 }
+
+static void menu_jump_step(rf::GameState& state, rf::GameState& old_state, void (*open_next)());
 
 FunHook<void(rf::GameState, rf::GameState)> rf_init_state_hook{
     0x004B1AC0,
     [] (rf::GameState state, rf::GameState old_state) {
-        if (enter_alpine_menu(state)) {
+        if (!menu_scene_state(state)) {
+            menu_scene_stop();
+        }
+        // A jump runs only within the menus, so one left once the game is back, as after a level change, is stale.
+        if (state == rf::GS_GAMEPLAY) {
+            column_menu_cancel_jump();
+        }
+        if (enter_alpine_menu(state, old_state)) {
+            demo_playback_on_state_init(std::to_underlying(state));
             return;
         }
 
-        rf_init_state_hook.call_target(state, old_state);
-        if (state == rf::GS_MAIN_MENU && !g_jump_to_multi_server_list && !g_jump_to_demo_browser) {
-            multi_pause_menu_on_main_menu_init();
+        if (state == rf::GS_MAIN_MENU && !g_join_mp_game_seq_data && !g_levelm_filename
+            && !demo_playback_restart_pending()) {
+            menu_scene_maybe_start();
         }
+        rf_init_state_hook.call_target(state, old_state);
 
         xlog::trace(
             "state: {}, old_state: {}, g_jump_to_multi_server_list: {}",
@@ -239,6 +318,13 @@ FunHook<void(rf::GameState, rf::GameState)> rf_init_state_hook{
 
         const bool exiting_game = state == rf::GS_MAIN_MENU
             && (old_state == rf::GS_END_GAME || old_state == rf::GS_NEW_LEVEL);
+        // Taken at every main menu, so it cannot outlive the end of the session that set it.
+        const bool hosted_session_ended = state == rf::GS_MAIN_MENU && listen_server_take_return_to_create_game();
+        if (exiting_game && hosted_session_ended && !legacy_menus_enabled() && !g_jump_to_multi_server_list
+            && !g_jump_to_demo_browser) {
+            g_in_mp_game = false;
+            g_jump_to_create_game = true;
+        }
         if (exiting_game && g_in_mp_game) {
             g_in_mp_game = false;
             // Exiting demo playback lands on the demo browser (flag set by the demo
@@ -248,23 +334,21 @@ FunHook<void(rf::GameState, rf::GameState)> rf_init_state_hook{
             }
         }
 
+        // After the jumps are known: a jump leaves the main menu within this init.
+        if (state == rf::GS_MAIN_MENU) {
+            game_menu_on_main_menu_init(g_jump_to_multi_server_list || g_jump_to_demo_browser
+                                        || g_jump_to_create_game);
+        }
+
         if (g_jump_to_multi_server_list) {
             if (state == rf::GS_MAIN_MENU) {
                 xlog::trace("jump to mp menu!");
                 set_sound_enabled(false);
-                AddrCaller{0x00443C20}.c_call(); // open_multi_menu
-                rf::rf_close_state(state, old_state, false);
-                old_state = state;
-                state = rf::gameseq_process_deferred_change();
-                rf_init_state_hook.call_target(state, old_state);
+                menu_jump_step(state, old_state, rf::ui::mainmenu_open_multi_menu);
             }
 
             if (state == rf::GS_MULTI_MENU) {
-                AddrCaller{0x00448B70}.c_call(); // on_mp_join_game_btn_click
-                rf::rf_close_state(state, old_state, false);
-                old_state = state;
-                state = rf::gameseq_process_deferred_change();
-                rf_init_state_hook.call_target(state, old_state);
+                menu_jump_step(state, old_state, rf::ui::multi_menu_join_game_on_click);
             }
 
             if (state == rf::GS_MULTI_SERVER_LIST) {
@@ -284,24 +368,36 @@ FunHook<void(rf::GameState, rf::GameState)> rf_init_state_hook{
             }
         }
 
-        // Same close-and-advance machinery as the server-list jump above, but landing
-        // on the Extras menu with the demo browser open (demo playback exit)
+        if (g_jump_to_create_game) {
+            if (state == rf::GS_MAIN_MENU) {
+                set_sound_enabled(false);
+                menu_jump_step(state, old_state, rf::ui::mainmenu_open_multi_menu);
+            }
+
+            if (state == rf::GS_MULTI_MENU) {
+                menu_jump_step(state, old_state, [] {
+                    rf::gameseq_push_state(rf::GS_MULTI_CREATE_GAME, false, false);
+                });
+            }
+
+            if (state == rf::GS_MULTI_CREATE_GAME) {
+                g_jump_to_create_game = false;
+                set_sound_enabled(true);
+            }
+        }
+
+        // The server list jump's machinery, landing on the Extras menu with the demo browser open (demo playback
+        // exit)
         if (g_jump_to_demo_browser) {
             if (state == rf::GS_MAIN_MENU) {
                 set_sound_enabled(false);
-                // mainmenu_do_open_multi_menu performs this cleanup before leaving a
-                // post-game main menu; mainmenu_open_extras lacks it because the stock
-                // Extras button is never reachable with game state left behind
-                if (!rf::ui::mainmenu_game_beneath) {
-                    rf::game_shutdown();
-                }
-                AddrCaller{0x00443C70}.c_call(); // mainmenu_open_extras
-                rf::rf_close_state(state, old_state, false);
-                old_state = state;
-                state = rf::gameseq_process_deferred_change();
-                if (!enter_alpine_menu(state)) {
-                    rf_init_state_hook.call_target(state, old_state);
-                }
+                menu_jump_step(state, old_state, [] {
+                    // The MULTIPLAYER button's cleanup of a post-game main menu, which EXTRAS lacks.
+                    if (!rf::ui::mainmenu_game_beneath) {
+                        rf::game_shutdown();
+                    }
+                    rf::ui::mainmenu_open_extras();
+                });
             }
 
             if (state == rf::GS_EXTRAS_MENU) {
@@ -316,30 +412,51 @@ FunHook<void(rf::GameState, rf::GameState)> rf_init_state_hook{
     },
 };
 
+// One step of a menu jump: `open_next` queues the next state, and this frame closes into it.
+static void menu_jump_step(rf::GameState& state, rf::GameState& old_state, void (*open_next)())
+{
+    open_next();
+    rf::rf_close_state(state, rf::gameseq_get_pending_state(), false);
+    old_state = state;
+    state = rf::gameseq_process_deferred_change();
+    if (!enter_alpine_menu(state, old_state)) {
+        rf_init_state_hook.call_target(state, old_state);
+    }
+}
+
 FunHook<bool(int)> rf_state_is_closed_hook{
     0x004B1DD0,
     [](int state) {
         const bool alpine_options = state == rf::GS_OPTIONS_MENU && !legacy_menus_enabled();
-        if (g_jump_to_multi_server_list || g_jump_to_demo_browser) {
+        if (g_jump_to_multi_server_list || g_jump_to_demo_browser || g_jump_to_create_game) {
             if (alpine_options) {
                 settings_menu_abandon();
             }
             if (state == rf::GS_EXTRAS_MENU) {
                 reference_menu_release();
             }
-            if (state == rf::GS_MAIN_MENU && multi_pause_menu_is_active()) {
-                multi_pause_menu_release();
+            if (state == rf::GS_MAIN_MENU && game_menu_is_active()) {
+                game_menu_release();
             }
             return true;
         }
         if (alpine_options) {
             return settings_menu_is_closed();
         }
-        if (state == rf::GS_MAIN_MENU && multi_pause_menu_is_active()) {
-            return multi_pause_menu_is_closed();
+        if (state == rf::GS_MAIN_MENU && game_menu_is_active()) {
+            return game_menu_is_closed();
+        }
+        if ((state == rf::GS_SAVE_GAME_MENU || state == rf::GS_LOAD_GAME_MENU) && !legacy_menus_enabled()) {
+            return save_load_menu_is_closed();
         }
         if (state == rf::GS_EXTRAS_MENU && !legacy_menus_enabled()) {
             return extras_menu_is_closed();
+        }
+        if ((state == rf::GS_MULTI_MENU || state == rf::GS_MULTI_SERVER_LIST) && !legacy_menus_enabled()) {
+            return multi_menu_is_closed();
+        }
+        if (state == rf::GS_MULTI_CREATE_GAME && !legacy_menus_enabled()) {
+            return create_game_menu_is_closed();
         }
         return rf_state_is_closed_hook.call_target(state);
     },
@@ -704,7 +821,7 @@ CallHook level_init_pre_console_output_hook{
     []() {
         if (rf::is_multi) {
             // server delayed gametype swap
-            if (rf::is_dedicated_server && g_dedicated_launched_from_ads) {
+            if (server_config_active()) {
                 apply_game_type_for_current_level();
                 rf::netgame.type = get_upcoming_game_type();
                 clear_explicit_upcoming_game_type_request();
@@ -883,6 +1000,8 @@ void misc_init()
     AsmWriter(0x0041AE47, 0x0041AE4C).nop();
 
     rf_close_state_hook.install();
+    multi_menu_close_slide_out_sound_hook.install();
+    multi_join_game_close_write_list_lan_hook.install();
 
     // Open server list menu instead of main menu when leaving multiplayer game
     rf_init_state_hook.install();
@@ -983,6 +1102,8 @@ void misc_init()
     game_apply_patch();
     character_apply_patch();
     level_apply_patch();
+    menu_scene_apply_patch();
+    menu_popup_apply_patch();
     misc_string_apply_patch();
     waypoints_init();
 }

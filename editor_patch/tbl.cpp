@@ -1,5 +1,6 @@
 #include "tbl.h"
 #include <stdexcept>
+#include <common/utils/string-utils.h>
 #include "vtypes.h"
 #include <xlog/xlog.h>
 
@@ -426,9 +427,7 @@ std::vector<std::string> entity_tbl_class_names_with_use(std::initializer_list<i
             names.push_back(kv.second.class_name);
         }
     }
-    std::sort(names.begin(), names.end(), [](const std::string& a, const std::string& b) {
-        return _stricmp(a.c_str(), b.c_str()) < 0;
-    });
+    std::sort(names.begin(), names.end(), string_iless);
     return names;
 }
 

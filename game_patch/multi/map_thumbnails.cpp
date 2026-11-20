@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -36,6 +37,9 @@ namespace
     constexpr int jpeg_quality = 90;
     // Far above any thumbnail; keeps an entry written by another tool within decode_downscaled's int
     constexpr uint32_t max_cached_size = 8 * 1024 * 1024;
+    // Remote servers name the levels asked for, so the per-level maps stop growing here
+    constexpr size_t max_levels = 1024;
+    constexpr int max_info_lookups = 2;
 
     struct Job
     {
@@ -45,8 +49,10 @@ namespace
         std::vector<uint32_t> argb; // empty = no usable image
         int w = 0;
         int h = 0;
-        bool stored = false;  // added to the disk cache
-        bool dropped = false; // its cached image was unusable and left the disk cache
+        bool stored = false;    // added to the disk cache
+        bool dropped = false;   // its cached image was unusable and left the disk cache
+        bool looked_up = false; // asked FactionFiles for the listing, which `info` holds if it has one
+        std::optional<MapLevelInfo> info;
         std::atomic<bool> done = false;
     };
 
@@ -67,8 +73,24 @@ namespace
         int last_used_frame = 0;
     };
 
+    struct InfoJob
+    {
+        std::string level_filename;
+        std::optional<MapLevelInfo> info;
+        std::atomic<bool> done = false;
+    };
+
+    struct LevelInfoEntry
+    {
+        bool known = false;
+        bool asked = false;
+        std::optional<MapLevelInfo> info;
+    };
+
     // Keyed by lowercase level filename
     std::unordered_map<std::string, Thumb> g_thumbs;
+    std::unordered_map<std::string, LevelInfoEntry> g_level_infos;
+    std::vector<std::shared_ptr<InfoJob>> g_info_jobs;
     std::deque<std::string> g_queue;
     std::vector<std::shared_ptr<Job>> g_jobs;
     int g_num_bitmaps = 0;
@@ -76,6 +98,15 @@ namespace
     std::mutex g_decode_mutex;
     // Bumped by map_thumbnails_release_bitmaps so a job finishing afterwards doesn't build a bitmap
     unsigned g_generation = 0;
+
+    template<typename Map>
+    typename Map::mapped_type* find_or_add(Map& map, const std::string& key)
+    {
+        if (const auto it = map.find(key); it != map.end()) {
+            return &it->second;
+        }
+        return map.size() < max_levels ? &map[key] : nullptr;
+    }
 
     void decode_downscaled(Job& job, const std::vector<unsigned char>& encoded)
     {
@@ -326,9 +357,13 @@ namespace
     void download(Job& job)
     {
         const std::string& name = job.level_filename;
+        job.looked_up = true;
         try {
             FactionFilesClient client;
             const auto info = client.find_map(name.c_str());
+            if (info) {
+                job.info = MapLevelInfo{info->author};
+            }
             if (info && !info->image_url.empty()) {
                 const std::vector<unsigned char> encoded = client.fetch_image(info->image_url);
                 if (!encoded.empty()) {
@@ -419,6 +454,12 @@ namespace
             if (job.stored) {
                 g_cached_names.insert(job.level_filename);
             }
+            if (job.looked_up) {
+                if (LevelInfoEntry* entry = find_or_add(g_level_infos, job.level_filename)) {
+                    entry->known = true;
+                    entry->info = job.info;
+                }
+            }
             Thumb& thumb = g_thumbs[job.level_filename];
             if (job.argb.empty()) {
                 thumb.state = Thumb::State::unavailable;
@@ -496,38 +537,84 @@ namespace
         }
     }
 
+    void look_up_info(const std::shared_ptr<InfoJob>& job)
+    {
+        try {
+            FactionFilesClient client;
+            if (const auto info = client.find_map(job->level_filename.c_str())) {
+                job->info = MapLevelInfo{info->author};
+            }
+        }
+        catch (const std::exception& e) {
+            xlog::debug("[MapThumb] no level info for {}: {}", job->level_filename, e.what());
+        }
+        job->done.store(true, std::memory_order_release);
+    }
+
+    // On every pump and lookup, so a finished lookup frees its slot whichever level is asked for next.
+    void collect_info_jobs()
+    {
+        std::erase_if(g_info_jobs, [](const std::shared_ptr<InfoJob>& job) {
+            if (!job->done.load(std::memory_order_acquire)) {
+                return false;
+            }
+            if (LevelInfoEntry* entry = find_or_add(g_level_infos, job->level_filename)) {
+                entry->info = std::move(job->info);
+                entry->known = true;
+                entry->asked = false;
+            }
+            return true;
+        });
+    }
+
     void pump()
     {
         if (!g_cache_loaded) {
             load_cache();
         }
         collect_finished_jobs();
+        collect_info_jobs();
         evict_bitmaps();
         start_jobs();
         save_cache_if_idle();
     }
+
+    // Only valid for the current frame: bitmaps not drawn for a while are released and rebuilt from the cache.
+    int thumbnail_bitmap(const std::string& level_filename, int& out_w, int& out_h)
+    {
+        if (level_filename.empty()) {
+            return -1;
+        }
+        g_browser_closed = false;
+        std::string key = string_to_lower(level_filename);
+        Thumb* thumb = find_or_add(g_thumbs, key);
+        if (thumb) {
+            thumb->last_used_frame = rf::frame_count;
+            if (thumb->state == Thumb::State::idle) {
+                thumb->state = Thumb::State::queued;
+                g_queue.push_back(std::move(key));
+            }
+        }
+        pump();
+        if (!thumb || thumb->state != Thumb::State::ready) {
+            return -1;
+        }
+        out_w = thumb->w;
+        out_h = thumb->h;
+        return thumb->bm;
+    }
 }
 
-int map_thumbnail_get(const std::string& level_filename, int* out_w, int* out_h)
+bool map_thumbnail_missing(const std::string& level_filename)
 {
     if (level_filename.empty()) {
-        return -1;
+        return true;
     }
-    g_browser_closed = false;
-    std::string key = string_to_lower(level_filename);
-    Thumb& thumb = g_thumbs[key];
-    thumb.last_used_frame = rf::frame_count;
-    if (thumb.state == Thumb::State::idle) {
-        thumb.state = Thumb::State::queued;
-        g_queue.push_back(std::move(key));
+    const auto it = g_thumbs.find(string_to_lower(level_filename));
+    if (it == g_thumbs.end()) {
+        return g_thumbs.size() >= max_levels;
     }
-    pump();
-    if (thumb.state != Thumb::State::ready) {
-        return -1;
-    }
-    *out_w = thumb.w;
-    *out_h = thumb.h;
-    return thumb.bm;
+    return it->second.state == Thumb::State::unavailable;
 }
 
 void map_thumbnails_release_bitmaps()
@@ -547,4 +634,59 @@ void map_thumbnails_release_bitmaps()
             thumb.state = Thumb::State::idle;
         }
     }
+}
+
+void map_thumbnail_draw(const std::string& level_filename, int x, int y, int w, int h)
+{
+    if (w <= 0 || h <= 0) {
+        return;
+    }
+    int img_w = 0, img_h = 0;
+    const int bm = thumbnail_bitmap(level_filename, img_w, img_h);
+    if (bm == -1 || img_w <= 0 || img_h <= 0) {
+        rf::gr::set_color(10, 10, 10, 255);
+        rf::gr::rect(x, y, w, h);
+        return;
+    }
+    int sx = 0, sy = 0, sw = img_w, sh = img_h;
+    if (img_w * h > w * img_h) {
+        sw = img_h * w / h;
+        sx = (img_w - sw) / 2;
+    }
+    else {
+        sh = img_w * h / w;
+        sy = (img_h - sh) / 2;
+    }
+    rf::gr::set_color(255, 255, 255, 255);
+    rf::gr::bitmap_scaled(bm, x, y, w, h, sx, sy, sw, sh);
+}
+
+const MapLevelInfo* map_level_info_get(const std::string& level_filename)
+{
+    if (level_filename.empty()) {
+        return nullptr;
+    }
+    collect_info_jobs();
+    const std::string key = string_to_lower(level_filename);
+    LevelInfoEntry* entry = find_or_add(g_level_infos, key);
+    if (!entry) {
+        return nullptr;
+    }
+    // A thumbnail's download reads the same listing, so only a level whose image comes from the disk cache needs its
+    // own lookup.
+    if (!entry->known && !entry->asked && g_cached_names.contains(key)
+        && static_cast<int>(g_info_jobs.size()) < max_info_lookups) {
+        auto job = std::make_shared<InfoJob>();
+        job->level_filename = key;
+        try {
+            std::thread{look_up_info, job}.detach();
+            g_info_jobs.push_back(std::move(job));
+            entry->asked = true;
+        }
+        catch (const std::exception& e) {
+            xlog::warn("[MapThumb] failed to start the level info lookup for {}: {}", level_filename, e.what());
+            entry->known = true;
+        }
+    }
+    return entry->info ? &*entry->info : nullptr;
 }

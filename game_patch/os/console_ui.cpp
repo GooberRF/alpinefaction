@@ -20,6 +20,7 @@
 #include "../rf/player/player.h"
 #include "../rf/sound/sound.h"
 #include "../sound/sound.h"
+#include "../ui/menu_scene.h"
 #include <common/config/GameConfig.h>
 #include <common/utils/string-utils.h>
 #include <patch_common/CallHook.h>
@@ -550,7 +551,7 @@ std::string build_statusline()
             parts.emplace_back(rf::local_player->team == rf::TEAM_RED ? "Team Red" : "Team Blue");
         }
     }
-    if (rf::level.flags & rf::LEVEL_LOADED) {
+    if ((rf::level.flags & rf::LEVEL_LOADED) && !menu_scene_active()) {
         parts.emplace_back(level_display_name());
     }
     if (rf::is_multi) {

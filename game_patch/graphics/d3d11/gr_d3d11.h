@@ -72,6 +72,7 @@ namespace gr::d3d11
         void set_far_clip(bool enabled);
         void flip();
         void flush_outlines_before_fpgun();
+        void flush_scene_outlines();
         void texture_save_cache();
         void texture_flush_cache(bool force);
         void texture_flush_non_user_cache();

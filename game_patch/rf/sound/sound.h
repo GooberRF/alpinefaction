@@ -122,6 +122,8 @@ namespace rf
     static auto snd_calculate_2d_from_3d_info = addr_as_ref<void(int handle, const Vector3& pos, float* pan, float* volume, float vol_multiplier)>(0x00505740);
     static auto snd_update_sounds = addr_as_ref<void(const Vector3& camera_pos, const Vector3& camera_vel, const Matrix3& camera_orient)>(0x00505EC0);
     static auto snd_music_play = addr_as_ref<int(char* filename, float volume)>(0x00505C90);
+    // Sets the EAX listener's room level to -10000 mB, as the menus run; once until a level sets it again.
+    static auto snd_eax_room_off = addr_as_ref<void()>(0x00527CD0);
     static auto snd_get_handle = addr_as_ref<int(const char* filename, float min_range, float base_volume, float rolloff)>(0x005054B0);
 
     static auto snd_pc_play = addr_as_ref<int(int handle, float vol_scale, float pan, float unused, bool is_final_volume)>(0x005439D0);

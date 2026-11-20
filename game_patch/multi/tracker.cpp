@@ -7,13 +7,16 @@
 #include <chrono>
 #include <cstdint>
 #include <exception>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <winsock2.h>
 #include <windns.h>
 #include <xlog/xlog.h>
 #include <patch_common/CallHook.h>
 #include <patch_common/FunHook.h>
+#include <common/utils/string-utils.h>
 #include "tracker.h"
 #include "network.h"
 #include "server_internal.h"
@@ -56,10 +59,15 @@ struct TrackerDnsState
 
 static TrackerDnsState g_tracker_dns;
 
-static void tracker_dns_resolve_worker(std::string host, uint32_t current_ip)
+static bool g_tracker_ready = false;
+
+TrackerDnsAnswer tracker_dns_resolve(const std::string& host, uint32_t current_ip)
 {
-    uint32_t ip = 0;
-    uint32_t ttl_s = 0;
+    TrackerDnsAnswer answer;
+    if (const uint32_t numeric = inet_addr(host.c_str()); numeric != INADDR_NONE) {
+        answer.ip = ntohl(numeric);
+        return answer;
+    }
 
     PDNS_RECORDA records = nullptr;
     if (DnsQuery_A(host.c_str(), DNS_TYPE_A, DNS_QUERY_STANDARD, nullptr, &records, nullptr) == ERROR_SUCCESS) {
@@ -97,16 +105,29 @@ static void tracker_dns_resolve_worker(std::string host, uint32_t current_ip)
         }
         DnsRecordListFree(records, DnsFreeRecordList);
 
-        ip = match_ip != 0 ? match_ip : first_ip;
-        ttl_s = match_ip != 0 ? match_ttl_s : first_ttl_s;
+        answer.ip = match_ip != 0 ? match_ip : first_ip;
+        answer.ttl_s = match_ip != 0 ? match_ttl_s : first_ttl_s;
         // An aliased name expires with the shortest TTL in its chain, not with the address record
-        if (ip != 0) {
-            ttl_s = std::min(ttl_s, cname_ttl_s);
+        if (answer.ip != 0) {
+            answer.ttl_s = std::min(answer.ttl_s, cname_ttl_s);
         }
     }
+    return answer;
+}
 
-    g_tracker_dns.result_ttl_s.store(ttl_s);
-    g_tracker_dns.result_ip.store(ip);
+std::optional<rf::NetAddr> tracker_resolved_addr(std::string_view host)
+{
+    if (!g_tracker_ready || !string_iequals(host, rf::tracker_hostname)) {
+        return std::nullopt;
+    }
+    return rf::tracker_addr;
+}
+
+static void tracker_dns_resolve_worker(std::string host, uint32_t current_ip)
+{
+    const TrackerDnsAnswer answer = tracker_dns_resolve(host, current_ip);
+    g_tracker_dns.result_ttl_s.store(answer.ttl_s);
+    g_tracker_dns.result_ip.store(answer.ip);
     g_tracker_dns.result_ready.store(true);
     g_tracker_dns.in_flight.store(false);
 }
@@ -115,6 +136,9 @@ FunHook<int()> tracker_init_hook{
     0x00482AE0,
     []() {
         int result = tracker_init_hook.call_target();
+        if (result != 0) {
+            g_tracker_ready = true;
+        }
         // The engine initializes only once but its callers do not, so never re-arm and clobber the backoff
         if (result != 0 && !g_tracker_dns.active.load()) {
             // A numeric address has no DNS record that can expire, so only hostnames are worth

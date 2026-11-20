@@ -93,6 +93,11 @@ enum class MutatorGametypeReq : uint8_t
     BotsSupported, // excludes the types bots cannot play
 };
 
+// The game types `pred` holds for, as a game type mask.
+uint32_t gametype_mask_where(bool (*pred)(rf::NetGameType));
+// The game types a requirement permits.
+uint32_t mutator_gametype_mask_for_req(MutatorGametypeReq req);
+
 struct MutatorInfo
 {
     MutatorId id = MutatorId::Instagib;
@@ -227,6 +232,10 @@ void crits_client_render_reticle_flash();
 const std::vector<MutatorInfo>& mutators_get_registry();
 const MutatorInfo* mutators_find_by_id(MutatorId id);
 const MutatorInfo* mutators_find_by_name(std::string_view name);
+// The value an option takes when a declaration leaves it out.
+MutatorOptionValue mutator_option_default(const MutatorOptionInfo& opt);
+// Weapons that have a pickup, as the featured weapon choices list them.
+std::vector<MutatorOptionChoice> mutators_pickup_weapon_choices();
 
 // Highest min_client_minor_version among the mutators these declarations put in
 // force, or MUTATOR_NO_CLIENT_REQUIREMENT when none of them needs client-side
@@ -235,6 +244,11 @@ int mutators_min_client_minor_version(const std::vector<MutatorDeclaration>& dec
 
 // Declarations -> TOML, the shape apply_mutators_from_toml consumes.
 toml::array mutator_declarations_to_toml_array(const std::vector<MutatorDeclaration>& declarations);
+void toml_insert_option_value(toml::table& tbl, std::string_view key, const MutatorOptionValue& value);
+// nullopt when the node is not of the type, or is a non-finite float.
+std::optional<MutatorOptionValue> toml_option_value(const toml::node& node, MutatorOptionType type);
+// nullopt when the node is not a number a float holds, or is nan or inf, which TOML allows.
+std::optional<float> toml_finite_float(const toml::node& node);
 
 // Validate packet-supplied mutator selections against the registry and turn them
 // into declarations. Returns an error string on failure, std::nullopt on success.

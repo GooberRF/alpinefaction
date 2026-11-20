@@ -35,6 +35,7 @@
 #include "../graphics/weather.h"
 #include "../graphics/scene_capture.h"
 #include "../multi/multi.h"
+#include "../ui/menu_scene.h"
 
 static std::vector<GasRegionInfo> g_gas_regions;
 static std::vector<GasRegionTransition> g_gas_region_transitions;
@@ -177,6 +178,7 @@ void level_shutdown()
 FunHook<void()> level_close_hook{
     0x0045C880,
     [] {
+        menu_scene_on_level_closed();
         level_shutdown();
         level_close_hook.call_target();
     },

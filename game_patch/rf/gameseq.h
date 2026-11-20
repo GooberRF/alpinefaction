@@ -63,4 +63,9 @@ namespace rf
 
     static auto& game_shutdown = addr_as_ref<void()>(0x004359E0);
     static auto& game_paused = addr_as_ref<bool>(0x00637086);
+    // game_shutdown does nothing while this is clear
+    static auto& game_initialized = addr_as_ref<bool>(0x00637089);
+    static auto& game_level_init_pre = addr_as_ref<void(bool transition)>(0x00435A90);
+    static auto& game_level_init_post = addr_as_ref<void(bool transition)>(0x00435DF0);
+    static auto& gameplay_sim_frame = addr_as_ref<void()>(0x00433260);
 }

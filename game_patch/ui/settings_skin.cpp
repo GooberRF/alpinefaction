@@ -2,6 +2,7 @@
 #include <cmath>
 #include <format>
 #include <limits>
+#include <common/utils/string-utils.h>
 #include "settings_skin.h"
 #include "../bmpman/bmpman.h"
 #include "../graphics/gr.h"
@@ -383,45 +384,6 @@ void skin_bevel_field(const UiContext& ctx, int x, int y, int w, int h)
     fill(x + w - t, y + t, t, h - t, skin::bevel_lo);
 }
 
-void skin_icon(const char* name, int x, int y, int size, rf::Color tint)
-{
-    if (size <= 0) {
-        return;
-    }
-    const int bmh = svg_bitmap(name, size, size);
-    if (bmh == -1) {
-        return;
-    }
-    rf::gr::set_color(tint);
-    rf::gr::bitmap(bmh, x, y, skin_bitmap_mode);
-}
-
-enum class SkinArrow
-{
-    Left,
-    Right,
-    Up,
-    Down,
-    UpOutline,
-    DownOutline,
-};
-
-void skin_arrow(SkinArrow arrow, int x, int y, int size, rf::Color tint)
-{
-    // af_arrows is a strip of square cells in SkinArrow order, rasterised so one cell is `size`.
-    constexpr int cells = 6;
-    if (size <= 0) {
-        return;
-    }
-    const int bmh = svg_bitmap("af_arrows", cells * size, size);
-    if (bmh == -1) {
-        return;
-    }
-    rf::gr::set_color(tint);
-    rf::gr::bitmap_scaled(bmh, x, y, size, size, static_cast<int>(arrow) * size, 0, size, size, false, false,
-                          skin_bitmap_mode);
-}
-
 struct CyclerParts
 {
     UiRect left;
@@ -572,6 +534,35 @@ constexpr float picker_key_step = 0.02f;
 
 } // namespace
 
+void skin_icon(const char* name, int x, int y, int size, rf::Color tint)
+{
+    if (size <= 0) {
+        return;
+    }
+    const int bmh = svg_bitmap(name, size, size);
+    if (bmh == -1) {
+        return;
+    }
+    rf::gr::set_color(tint);
+    rf::gr::bitmap(bmh, x, y, skin_bitmap_mode);
+}
+
+void skin_arrow(SkinArrow arrow, int x, int y, int size, rf::Color tint)
+{
+    // af_arrows is a strip of square cells in SkinArrow order, rasterized so one cell is `size`.
+    constexpr int cells = 6;
+    if (size <= 0) {
+        return;
+    }
+    const int bmh = svg_bitmap("af_arrows", cells * size, size);
+    if (bmh == -1) {
+        return;
+    }
+    rf::gr::set_color(tint);
+    rf::gr::bitmap_scaled(bmh, x, y, size, size, static_cast<int>(arrow) * size, 0, size, size, false, false,
+                          skin_bitmap_mode);
+}
+
 int skin_px(const UiContext& ctx, float reference_px)
 {
     if (reference_px <= 0.0f) {
@@ -611,6 +602,18 @@ int skin_button_width(const UiContext& ctx, const char* text, int font, float mi
 {
     const int needed = rf::gr::get_string_size(text ? text : "", font).first + 2 * skin_px(ctx, 14.0f);
     return std::max(skin_px(ctx, min_ref_w), needed);
+}
+
+int skin_cycler_width(const UiContext& ctx, int value_w)
+{
+    // As skin_cycler lays it out: an arrow and a gap at each end, the value inset in the plate.
+    return 2 * (skin_px(ctx, skin::cycler_arrow) + skin_px(ctx, skin::cycler_gap)) + skin_px(ctx, 20.0f) + value_w;
+}
+
+void skin_draw_text(int x, int y, const std::string& text, int font, rf::Color color)
+{
+    rf::gr::set_color(color);
+    rf::gr::string(x, y, text.c_str(), font);
 }
 
 UiStyle settings_menu_style()
@@ -737,7 +740,7 @@ void skin_popup(const UiContext& ctx, const UiRect& dialog, const UiRect& band, 
 // ---------------------------------------------------------------------------
 
 bool skin_button(UiContext& ctx, const UiRect& r, const char* text, int font, SkinButton kind,
-                 bool enabled, UiId id)
+                 bool enabled, UiId id, bool lit)
 {
     const bool hovered = enabled && ui_hover(ctx, r, id);
     if (hovered) {
@@ -749,8 +752,8 @@ bool skin_button(UiContext& ctx, const UiRect& r, const char* text, int font, Sk
 
     if (ctx.draw) {
         const UiRect d = ui_draw_rect(ctx, r);
-        const bool lit = enabled && (hovered || focus_shown(ctx, id));
-        if (lit) {
+        const bool glow = enabled && (lit || hovered || focus_shown(ctx, id));
+        if (glow) {
             red_glow(d);
         }
         else {
@@ -767,7 +770,7 @@ bool skin_button(UiContext& ctx, const UiRect& r, const char* text, int font, Sk
             text_x = d.x + lamp_w + (d.w - lamp_w) / 2;
             text_w = d.w - lamp_w - 2 * pad;
         }
-        rf::gr::set_color(!enabled ? skin::txt_dim : (lit ? skin::txt_hi : skin::txt));
+        rf::gr::set_color(!enabled ? skin::txt_dim : (glow ? skin::txt_hi : skin::txt));
         const SkinText label = skin_fit_text(ctx, text ? text : "", font, text_w);
         rf::gr::string_aligned(rf::gr::ALIGN_CENTER, text_x,
                                d.y + (d.h - font_h(label.font)) / 2, label.text.c_str(), label.font);
@@ -780,55 +783,66 @@ bool skin_button(UiContext& ctx, const UiRect& r, const char* text, int font, Sk
     return hovered && ctx.click;
 }
 
-int skin_menu_button_label_w(const UiContext& ctx, int w, int label_inset)
+int skin_menu_button_label_w(const UiContext& ctx, int w)
 {
-    // The visible well left of the end cap, less a pad each side.
-    return std::max(0, w - label_inset - skin_px(ctx, skin::menu_cap_w) - 2 * skin_px(ctx, 12.0f));
+    // The face left of the end cap, less a pad each side.
+    return std::max(0, w - skin_px(ctx, skin::menu_cap_w) - 2 * skin_px(ctx, 12.0f));
 }
 
-bool skin_menu_button(UiContext& ctx, const UiRect& r, int hidden_w, int label_inset, const char* label, int font,
-                      bool selected, bool arrow, UiId id)
+bool skin_menu_button(UiContext& ctx, const UiRect& r, int hidden_w, const char* label, int font, bool selected,
+                      bool arrow, bool tall, UiId id, bool enabled)
 {
     // The part under the bar still takes clicks, as stock's buttons do.
-    const bool hovered = ui_hover(ctx, UiRect{r.x - hidden_w, r.y, r.w + hidden_w, r.h}, id);
+    const bool hovered = enabled && ui_hover(ctx, UiRect{r.x - hidden_w, r.y, r.w + hidden_w, r.h}, id);
     if (hovered) {
         ctx.note_hovered(id);
     }
-    ctx.register_focusable(id, UiFocusKind::Activate);
+    if (enabled) {
+        ctx.register_focusable(id, UiFocusKind::Activate);
+    }
 
     if (ctx.draw) {
-        const bool focused = focus_shown(ctx, id);
+        const bool focused = enabled && focus_shown(ctx, id);
         const bool lit = selected || hovered || focused;
         const UiRect d = ui_draw_rect(ctx, r);
         const int cap_w = skin_px(ctx, skin::menu_cap_w);
         const int cap_x = d.x + d.w - cap_w;
         const int x0 = d.x - hidden_w;
+        const int face_x = d.x;
         // The rails run on under the cap body, as on stock button.tga.
         const int rail_h = std::max(2, d.h * 12 / 100);
-        const UiRect well{x0, d.y + rail_h, cap_x - x0, d.h - 2 * rail_h};
+        const UiRect face{face_x, d.y + rail_h, cap_x - face_x, d.h - 2 * rail_h};
         if (lit) {
-            red_glow(well);
+            red_glow(face);
         }
         else {
-            fill(well.x, well.y, well.w, well.h, rf::Color{0x12, 0x07, 0x03, 158});
+            fill(face.x, face.y, face.w, face.h, rf::Color{0x12, 0x07, 0x03, 158});
         }
+        // The plate shows between the bar and the face.
+        const int plate_w = skin_px(ctx, skin::menu_plate_w);
+        skin_sized_chrome(tall ? "af_menu_plate_tall" : "af_menu_plate",
+                          UiRect{face_x - plate_w, face.y, plate_w, face.h});
         const int rail_w = cap_x + skin_px(ctx, skin::menu_cap_body_w) - x0;
         skin_steel_plate(ctx, x0, d.y, rail_w, rail_h);
         skin_steel_plate(ctx, x0, d.y + d.h - rail_h, rail_w, rail_h);
-        // af_menu_cap stacks four 72x78 caps 86 apart: arrow, arrow lit, plain, plain lit.
+        // Each sheet stacks four caps 8 apart: arrow, arrow lit, plain, plain lit. af_menu_cap's are 72x78,
+        // af_menu_cap_tall's 72x143.
         const int state = (arrow ? 0 : 2) + (lit ? 1 : 0);
-        skin_sheet_blit(ctx, "af_menu_cap", skin::menu_cap_w, 336.0f * skin::menu_cap_scale, cap_x, d.y, 0.0f,
-                        86.0f * skin::menu_cap_scale * static_cast<float>(state), skin::menu_cap_w,
-                        skin::menu_button_h);
+        const float cap_h = tall ? skin::menu_button_tall_h : skin::menu_button_h;
+        const float gap = 8.0f * skin::menu_cap_scale;
+        // Tall slots and their cap round apart; centered, the cap's brackets meet the connector at the slot's middle.
+        const int cap_y = d.y + (d.h - skin_px(ctx, cap_h)) / 2;
+        skin_sheet_blit(ctx, tall ? "af_menu_cap_tall" : "af_menu_cap", skin::menu_cap_w, 4.0f * cap_h + 3.0f * gap,
+                        cap_x, cap_y, 0.0f, (cap_h + gap) * static_cast<float>(state), skin::menu_cap_w, cap_h);
         // The selected button is already lit, so keyboard focus on it needs its own mark.
         if (focused && selected) {
-            skin_focus_ring(ctx, d.x, d.y, d.w, d.h);
+            skin_focus_ring(ctx, face_x, d.y, d.x + d.w - face_x, d.h);
         }
 
-        const int well_cx = (d.x + label_inset + cap_x) / 2;
-        const int max_w = skin_menu_button_label_w(ctx, d.w, label_inset);
+        const int well_cx = (face_x + cap_x) / 2;
+        const int max_w = skin_menu_button_label_w(ctx, d.w);
         const std::string_view text{label ? label : ""};
-        rf::gr::set_color(lit ? skin::txt_hi : skin::txt);
+        rf::gr::set_color(!enabled ? skin::txt_dim : lit ? skin::txt_hi : skin::txt);
         if (rf::gr::get_string_size(text, font).first <= max_w) {
             rf::gr::string_aligned(rf::gr::ALIGN_CENTER, well_cx, d.y + (d.h - font_h(font)) / 2,
                                    std::string{text}.c_str(), font);
@@ -860,7 +874,7 @@ bool skin_menu_button(UiContext& ctx, const UiRect& r, int hidden_w, int label_i
         return false;
     }
 
-    if (ctx.consume_activation(id)) {
+    if (enabled && ctx.consume_activation(id)) {
         return true;
     }
     return hovered && ctx.click;
@@ -969,6 +983,38 @@ int skin_cycler(UiContext& ctx, const UiRect& r, const char* value, int font, bo
     return (hr || hm) ? 1 : 0;
 }
 
+bool skin_lamp_toggle(UiContext& ctx, const UiRect& r, const char* label, bool on, int font, UiId id)
+{
+    const bool hovered = ui_hover(ctx, r, id);
+    if (hovered) {
+        ctx.note_hovered(id);
+    }
+    ctx.register_focusable(id, UiFocusKind::Activate);
+    if (ctx.draw) {
+        const UiRect d = ui_draw_rect(ctx, r);
+        const bool focused = focus_shown(ctx, id);
+        skin_led(ctx, d.x + skin_px(ctx, 8.0f), d.y + d.h / 2, 7.0f, 16.0f, on);
+        const int text_x = d.x + skin_px(ctx, 20.0f);
+        skin_draw_text(text_x, d.y + (d.h - font_h(font)) / 2,
+                       ui_fit_end(label, d.x + d.w - skin_px(ctx, 8.0f) - text_x, font), font,
+                       hovered || focused || on ? skin::ink_title : skin::ink_status);
+        if (focused) {
+            skin_focus_ring(ctx, d.x, d.y, d.w, d.h);
+        }
+        return false;
+    }
+    if (ctx.consume_activation(id) || (hovered && ctx.click)) {
+        ui_play_toggle(!on);
+        return true;
+    }
+    return false;
+}
+
+int skin_lamp_toggle_width(const UiContext& ctx, const char* label, int font)
+{
+    return skin_px(ctx, 20.0f) + rf::gr::get_string_size(label, font).first + skin_px(ctx, 8.0f);
+}
+
 bool skin_dropdown(UiContext& ctx, const UiRect& r, const std::vector<std::string>& items, int& sel,
                    int font, bool enabled, UiId id, bool hot)
 {
@@ -986,13 +1032,22 @@ bool skin_dropdown(UiContext& ctx, const UiRect& r, const std::vector<std::strin
     const int list_h = shown_rows * row_h + 2 * pad;
     const int below = r.y + r.h + skin_px(ctx, 2.0f);
     const bool fits = below + list_h <= screen_h;
-    const UiRect list{r.x, fits ? below : std::max(0, r.y - list_h), r.w, list_h};
 
     bool open = ctx.popup_open_for(id);
     if (open && !enabled && !ctx.draw) {
         ctx.close_popup();
         open = false;
     }
+    // The open list is as wide as its widest entry, out to the left of a narrower box, and kept on the screen.
+    const int text_x = skin_px(ctx, 28.0f);
+    int list_w = r.w;
+    if (open) {
+        for (const std::string& item : items) {
+            list_w = std::max(list_w, text_x + rf::gr::get_string_size(item, font).first + skin_px(ctx, 20.0f));
+        }
+        list_w = std::min(list_w, rf::gr::screen_width());
+    }
+    const UiRect list{std::max(0, r.x + r.w - list_w), fits ? below : std::max(0, r.y - list_h), list_w, list_h};
     const bool hovered = enabled && ui_hover(ctx, r, id);
     if (hovered) {
         ctx.note_hovered(id);
@@ -1069,7 +1124,7 @@ bool skin_dropdown(UiContext& ctx, const UiRect& r, const std::vector<std::strin
             const int my = ctx.my;
             const float scale = ctx.scale();
             ctx.push_overlay([list, rows, selected, first, scrollable, bar_t, bar_frac, font, row_h,
-                              pad, mx, my, scale]() {
+                              pad, mx, my, scale, text_x]() {
                 const rf::Color opaque{skin::popup.red, skin::popup.green, skin::popup.blue, 255};
                 fill(list.x, list.y, list.w, list.h, opaque);
                 frame(list.x, list.y, list.w, list.h, scaled_px(scale, 1.0f), skin::border);
@@ -1086,9 +1141,8 @@ bool skin_dropdown(UiContext& ctx, const UiRect& r, const std::vector<std::strin
                         selection_bar(scale, 0, dy, list.w - 2 * pad, row_h);
                     }
                     rf::gr::set_color(row_selected || row_hovered ? skin::txt_hi : skin::txt);
-                    rf::gr::string(scaled_px(scale, 28.0f),
-                                   dy + (row_h - rf::gr::get_font_height(font)) / 2,
-                                   rows[i].c_str(), font);
+                    const std::string text = ui_fit_end(rows[i], list.w - 2 * pad - text_x, font);
+                    rf::gr::string(text_x, dy + (row_h - rf::gr::get_font_height(font)) / 2, text.c_str(), font);
                 }
                 rf::gr::set_clip(save_x, save_y, save_w, save_h);
                 if (scrollable) {
@@ -1632,7 +1686,22 @@ bool skin_field(UiContext& ctx, const UiRect& r, UiId id, std::string& text, siz
     return false;
 }
 
-bool skin_search_box(UiContext& ctx, const UiRect& r, UiId id, std::string& text, int font)
+void skin_field_face(const UiContext& ctx, const UiRect& r, std::string_view text, int font, bool caret)
+{
+    const UiRect d = ui_draw_rect(ctx, r);
+    skin_bevel_field(ctx, d.x, d.y, d.w, d.h);
+    const int pad = skin_px(ctx, 10.0f);
+    const int ty = d.y + (d.h - font_h(font)) / 2;
+    const std::string shown = hud_fit_string(text, d.w - 2 * pad, nullptr, font);
+    rf::gr::set_color(skin::txt_hi);
+    rf::gr::string(d.x + pad, ty, shown.c_str(), font);
+    if (caret) {
+        const int tw = rf::gr::get_string_size(shown, font).first;
+        fill(d.x + pad + tw + skin_px(ctx, 2.0f), ty, skin_px(ctx, 2.0f), font_h(font), skin::txt_hi);
+    }
+}
+
+bool skin_search_box(UiContext& ctx, const UiRect& r, UiId id, std::string& text, int font, const char* hint)
 {
     const int icon = skin_px(ctx, 20.0f);
     const int pad = skin_px(ctx, 12.0f);
@@ -1653,8 +1722,7 @@ bool skin_search_box(UiContext& ctx, const UiRect& r, UiId id, std::string& text
             ui_play_click();
             return true;
         }
-        const UiTextInputResult res = ui_text_input(ctx, r, id, text, 40, ui_char_filter_filename,
-                                                    "Search options...", font, true);
+        const UiTextInputResult res = ui_text_input(ctx, r, id, text, 40, ui_char_filter_filename, hint, font, true);
         if (res.gained_focus) {
             ui_play_click();
         }
@@ -1668,9 +1736,9 @@ bool skin_search_box(UiContext& ctx, const UiRect& r, UiId id, std::string& text
     skin_icon("af_search_icon", d.x + pad, d.y + (d.h - icon) / 2, icon,
               editing || !text.empty() ? skin::txt : skin::txt_dim);
     if (text.empty() && !editing) {
-        const SkinText hint = skin_fit_text(ctx, "Search options...", font, di.w);
+        const SkinText fitted = skin_fit_text(ctx, hint, font, di.w);
         rf::gr::set_color(skin::txt_hint);
-        rf::gr::string(di.x, d.y + (d.h - font_h(hint.font)) / 2, hint.text.c_str(), hint.font);
+        rf::gr::string(di.x, d.y + (d.h - font_h(fitted.font)) / 2, fitted.text.c_str(), fitted.font);
     }
     else {
         rf::gr::set_color(skin::txt_hi);
@@ -1836,6 +1904,11 @@ SkinListRow skin_list_row(UiContext& ctx, const UiRect& r, bool selected, UiId i
     return row;
 }
 
+int skin_list_row_h(const UiContext& ctx, int font)
+{
+    return std::max(skin_px(ctx, skin::list_row_h), font_h(font) + skin_px(ctx, 10.0f));
+}
+
 void skin_scroll_list(UiContext& ctx, const UiRect& well, const SkinScrollList& list, float& scroll, UiId& scrolled_to,
                       const std::function<void(const SkinScrollListRow&)>& build_row)
 {
@@ -1847,7 +1920,9 @@ void skin_scroll_list(UiContext& ctx, const UiRect& well, const SkinScrollList& 
         skin_slot(ctx, well.x, well.y, well.w, well.h);
     }
 
-    const int content_h = list.count * list.row_h;
+    const std::vector<std::string_view> note =
+        list.empty_text ? string_split(list.empty_text, '\n') : std::vector<std::string_view>{};
+    const int content_h = (list.count + static_cast<int>(note.size())) * list.row_h;
     const UiId list_id = ui_id(list.id_name);
     UiScrollRegion region = ui_scroll_begin(ctx, view, content_h, scroll, list.row_h, list_id, true);
     std::optional<UiRect> focus_rect;
@@ -1866,11 +1941,14 @@ void skin_scroll_list(UiContext& ctx, const UiRect& well, const SkinScrollList& 
         }
         build_row(row);
     }
-    if (ctx.draw && list.empty_text) {
-        const UiRect d = ui_draw_rect(ctx, UiRect{view.x, view.y + list.count * list.row_h, row_w, list.row_h});
+    if (ctx.draw) {
         rf::gr::set_color(skin::txt_hint);
-        rf::gr::string_aligned(rf::gr::ALIGN_CENTER, d.x + d.w / 2, d.y + (d.h - font_h(list.font)) / 2,
-                               list.empty_text, list.font);
+        for (int i = 0; i < static_cast<int>(note.size()); ++i) {
+            const int y = region.start_y() + (list.count + i) * list.row_h;
+            const UiRect d = ui_draw_rect(ctx, UiRect{view.x, y, row_w, list.row_h});
+            rf::gr::string_aligned(rf::gr::ALIGN_CENTER, d.x + d.w / 2, d.y + (d.h - font_h(list.font)) / 2,
+                                   ui_fit_end(note[i], row_w - s(16.0f), list.font).c_str(), list.font);
+        }
     }
     ui_scroll_end(ctx, region);
 

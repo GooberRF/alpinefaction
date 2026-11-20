@@ -59,6 +59,10 @@ namespace skin
 
     inline constexpr rf::Color lamp_red{0xFF, 0x2A, 0x2A, 255};
     inline constexpr rf::Color warn{0xFF, 0x8C, 0x78, 255};
+    inline constexpr rf::Color good{0x6C, 0xD8, 0x5A, 255};
+
+    inline constexpr rf::Color team_red{0xFF, 0x5A, 0x5A, 255};
+    inline constexpr rf::Color team_blue{0x64, 0x8C, 0xFF, 255};
 
     inline constexpr rf::Color scroll_box{0x18, 0x20, 0x10, 255};
     inline constexpr rf::Color scroll_box_edge{0x30, 0x48, 0x18, 255};
@@ -78,6 +82,11 @@ namespace skin
     inline constexpr float menu_cap_w = 72.0f * menu_cap_scale;
     // The cap's steel body, without the brackets that stick out past it.
     inline constexpr float menu_cap_body_w = 57.0f * menu_cap_scale;
+    // Stock's button height, six to the span of eleven small ones: af_menu_cap_tall is the cap authored 143 tall,
+    // drawn at the same scale.
+    inline constexpr float menu_button_tall_h = 143.0f * menu_cap_scale;
+    // af_menu_plate's width. Only its right end shows, the button's frame between the left bar and its face.
+    inline constexpr float menu_plate_w = 100.0f;
     // Every row's control fills this width, so the controls form one column with both edges aligned.
     inline constexpr float control_w = 300.0f;
     inline constexpr float widget_h = 34.0f;
@@ -133,6 +142,9 @@ struct SkinText
 SkinText skin_fit_text(const UiContext& ctx, std::string_view text, int font, int max_w);
 // Width a slot button needs to hold `text`, never narrower than `min_ref_w` reference pixels.
 int skin_button_width(const UiContext& ctx, const char* text, int font, float min_ref_w);
+// Width a cycler needs to show a value `value_w` draw pixels wide at its own size.
+int skin_cycler_width(const UiContext& ctx, int value_w);
+void skin_draw_text(int x, int y, const std::string& text, int font, rf::Color color);
 
 // Brushed steel for the large plates, the panel frame and the title bar, as stock's are.
 // `shaded` gives the darker steel of their end block and channel.
@@ -152,8 +164,20 @@ void skin_led(const UiContext& ctx, int cx, int cy, float w_ref, float h_ref, bo
 void skin_selection_bar(const UiContext& ctx, int x, int y, int w, int h);
 // Keyboard focus where the stock highlight alone would be ambiguous.
 void skin_focus_ring(const UiContext& ctx, int x, int y, int w, int h);
-// A whole chrome SVG rasterised at exactly `r`'s draw-space size.
+// A whole chrome SVG rasterized at exactly `r`'s draw-space size.
 void skin_sized_chrome(const char* name, const UiRect& r);
+// A white icon sheet `size` square, tinted.
+void skin_icon(const char* name, int x, int y, int size, rf::Color tint);
+enum class SkinArrow
+{
+    Left,
+    Right,
+    Up,
+    Down,
+    UpOutline,
+    DownOutline,
+};
+void skin_arrow(SkinArrow arrow, int x, int y, int size, rf::Color tint);
 // The stock popup: a near-opaque black panel with a thin grey edge, and a black title band with
 // a lit LED beside the title. `dialog` and `band` are draw space.
 void skin_popup(const UiContext& ctx, const UiRect& dialog, const UiRect& band, const char* title, int font);
@@ -163,17 +187,18 @@ void skin_popup(const UiContext& ctx, const UiRect& dialog, const UiRect& band, 
 // (hovered or focused), which brightens the value the widget shows.
 // ---------------------------------------------------------------------------
 
+// `lit` shows it highlighted without the hover, as a popup's default button is.
 bool skin_button(UiContext& ctx, const UiRect& r, const char* text, int font, SkinButton kind,
-                 bool enabled, UiId id);
-// One stock menu button. `r` is the part left visible, which is the hit area; the well carries
-// on `hidden_w` further left, under the side bar. `selected` lights it like the highlight does;
-// `arrow` marks a button that opens a panel. The label is centred between the end cap and
-// `label_inset` (<= 0) left of `r`, where the bar's narrower body leaves the well showing, and takes
-// two lines when one cannot hold it.
-bool skin_menu_button(UiContext& ctx, const UiRect& r, int hidden_w, int label_inset, const char* label, int font,
-                      bool selected, bool arrow, UiId id);
+                 bool enabled, UiId id, bool lit = false);
+// One stock menu button. `r` is the hit and layout rect, its face from `r.x`; clicks reach `hidden_w` further left,
+// under the left bar, where the plate carries on. `selected` lights it like the
+// highlight does; `arrow` marks a button that opens a panel. The label is centered on the face, left
+// of the end cap, and takes two lines when one cannot hold it. Disabled, it is dimmed and takes
+// nothing. `tall` draws the stock-height cap and plate, for a button skin::menu_button_tall_h high.
+bool skin_menu_button(UiContext& ctx, const UiRect& r, int hidden_w, const char* label, int font, bool selected,
+                      bool arrow, bool tall, UiId id, bool enabled);
 // Widest label line a menu button `w` wide holds.
-int skin_menu_button_label_w(const UiContext& ctx, int w, int label_inset);
+int skin_menu_button_label_w(const UiContext& ctx, int w);
 // Icon-only affordance (per-row reset, search clear).
 bool skin_icon_button(UiContext& ctx, const UiRect& r, const char* icon, rf::Color tint,
                       rf::Color tint_hover, UiId id);
@@ -183,6 +208,9 @@ int skin_cycler(UiContext& ctx, const UiRect& r, const char* value, int font, bo
                 bool hot);
 bool skin_dropdown(UiContext& ctx, const UiRect& r, const std::vector<std::string>& items, int& sel,
                    int font, bool enabled, UiId id, bool hot);
+// A compact On / Off for the steel: a lamp, lit while `on`, and its label. True when clicked or Enter pressed on it.
+bool skin_lamp_toggle(UiContext& ctx, const UiRect& r, const char* label, bool on, int font, UiId id);
+int skin_lamp_toggle_width(const UiContext& ctx, const char* label, int font);
 struct SkinCyclerRects
 {
     UiRect label;
@@ -238,7 +266,10 @@ bool skin_color_chip(UiContext& ctx, const UiRect& r, std::optional<uint32_t> rg
 bool skin_field(UiContext& ctx, const UiRect& r, UiId id, std::string& text, size_t max_len,
                 UiCharFilter filter, const char* hint, int font, bool enabled,
                 bool invalid = false, const char* warn_text = nullptr);
-bool skin_search_box(UiContext& ctx, const UiRect& r, UiId id, std::string& text, int font);
+bool skin_search_box(UiContext& ctx, const UiRect& r, UiId id, std::string& text, int font,
+                     const char* hint = "Search options...");
+// A text field's look alone, for a box whose typing the engine owns. Draw pass only.
+void skin_field_face(const UiContext& ctx, const UiRect& r, std::string_view text, int font, bool caret);
 
 // One key or mouse cap of a binding row. `activated` starts a capture, `cleared` unbinds; the
 // small x only appears while the cap is hovered or focused and something is bound. `inherited`
@@ -266,9 +297,12 @@ struct SkinListRow
     UiRect draw;            // `r` in draw space
 };
 SkinListRow skin_list_row(UiContext& ctx, const UiRect& r, bool selected, UiId id);
+// A list row tall enough for `font`.
+int skin_list_row_h(const UiContext& ctx, int font);
 
 // A scrolling list of rows of one height in the black well `well`, each row's id `ui_id(row_id_name, i)`.
-// `empty_text`, when set, is centred in the row after the last.
+// `empty_text`, when set, follows the rows and scrolls with them, each '\n'-separated line centered in a row of its
+// own.
 struct SkinScrollList
 {
     int count = 0;

@@ -317,6 +317,7 @@ namespace rf
     static_assert(offsetof(RailBeam, prev) == 0x4C);
     // Circular; 0x004C2570 links each new beam in as the head's prev
     static auto& rail_beam_list = addr_as_ref<RailBeam*>(0x0085C770);
+    static auto& rail_beam_render_all = addr_as_ref<void()>(0x004C2650);
 
     enum WeaponState
     {

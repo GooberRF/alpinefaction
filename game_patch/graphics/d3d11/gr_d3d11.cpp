@@ -1706,6 +1706,13 @@ namespace gr::d3d11
         mesh_renderer_->reset_static_vertex_color_tracking();
     }
 
+    void Renderer::flush_scene_outlines()
+    {
+        // In the order a frame reaches them, so an outline queued by its draw is not drawn again as a culled one.
+        flush_outlines_before_2d();
+        outline_renderer_->flush_forced_xray(*mesh_renderer_);
+    }
+
     void Renderer::clear_mesh_lights()
     {
         render_context_->update_lights();

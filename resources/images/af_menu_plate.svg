@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Alpine Faction settings chrome: menu_plate - the steel plate at the left of a menu button, between its rails, that the left bar's edge sits on; only its right end shows, and the face and label start right of it. Authored 100x58, the small button's height between its rails, and drawn stretched to it. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 58" width="100" height="58">
+  <defs>
+    <linearGradient id="mp-steelh" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#76767e"/>
+      <stop offset="0.6" stop-color="#b0b0b6"/>
+      <stop offset="0.88" stop-color="#d4d4d8"/>
+      <stop offset="1" stop-color="#8a8a90"/>
+    </linearGradient>
+  </defs>
+  <rect x="-1" y="0.75" width="98.25" height="56.5" fill="url(#mp-steelh)" stroke="#2e2e33" stroke-width="1.5"/>
+  <rect x="93" y="3" width="1.2" height="52" fill="#e4e4e8"/>
+  <rect x="97.25" y="0" width="2.75" height="58" fill="#1a1a1c"/>
+</svg>

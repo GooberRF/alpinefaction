@@ -13,7 +13,6 @@
 #include <vector>
 #include <windows.h>
 #include <xlog/xlog.h>
-#include <common/utils/string-utils.h>
 #include <patch_common/CodeInjection.h>
 #include <patch_common/FunHook.h>
 #include <patch_common/MemUtils.h>
@@ -382,14 +381,6 @@ namespace
         return buf;
     }
 
-    std::string level_display_name(const std::string& level_filename)
-    {
-        if (string_iends_with(level_filename, ".rfl")) {
-            return level_filename.substr(0, level_filename.size() - 4);
-        }
-        return level_filename;
-    }
-
     std::vector<ScoreLine> build_score_lines(const DemoDetails& details)
     {
         std::vector<ScoreLine> lines;
@@ -574,28 +565,6 @@ namespace
         rf::gr::string_aligned(rf::gr::ALIGN_CENTER, x + w / 2, y + (h - fh) / 2, label, font);
     }
 
-    void draw_level_thumbnail(const std::string& level_filename, int x, int y, int w, int h)
-    {
-        int img_w = 0, img_h = 0;
-        const int bm = map_thumbnail_get(level_filename, &img_w, &img_h);
-        if (bm == -1 || img_w <= 0 || img_h <= 0) {
-            rf::gr::set_color(10, 10, 10, 255);
-            rf::gr::rect(x, y, w, h);
-            return;
-        }
-        int sx = 0, sy = 0, sw = img_w, sh = img_h;
-        if (img_w * h > w * img_h) {
-            sw = img_h * w / h;
-            sx = (img_w - sw) / 2;
-        }
-        else {
-            sh = img_w * h / w;
-            sy = (img_h - sh) / 2;
-        }
-        rf::gr::set_color(255, 255, 255, 255);
-        rf::gr::bitmap_scaled(bm, x, y, w, h, sx, sy, sw, sh);
-    }
-
     struct PreviewStyle
     {
         int text_pad;
@@ -633,19 +602,17 @@ namespace
         int y = pane.y + st.text_pad;
 
         const int thumb_h = std::min(w * 9 / 16, st.max_thumb_h);
-        draw_level_thumbnail(hdr.level_filename, x, y, w, thumb_h);
-        const int caption_h = fh + 2 * st.gap;
-        const int caption_y = y + thumb_h - caption_h;
-        rf::gr::set_color(0, 0, 0, 170);
-        rf::gr::rect(x, caption_y, w, caption_h);
-        int type_w = 0;
-        const std::string type_str = hud_fit_string(entry.type_name, w / 2, &type_w, font);
-        rf::gr::set_color(st.secondary);
-        rf::gr::string_aligned(rf::gr::ALIGN_RIGHT, x + w - st.text_pad, caption_y + st.gap, type_str.c_str(), font);
-        const std::string level_str = hud_fit_string(level_display_name(hdr.level_filename),
-            w - type_w - 3 * st.text_pad, nullptr, font);
-        rf::gr::set_color(st.value);
-        rf::gr::string(x + st.text_pad, caption_y + st.gap, level_str.c_str(), font);
+        const std::string level_name = level_filename_without_ext(hdr.level_filename);
+        const MenuLevelCaption caption{
+            .level = level_name,
+            .type = entry.type_name,
+            .font = font,
+            .cap_h = fh + 2 * st.gap,
+            .pad = st.text_pad,
+            .level_color = st.value,
+            .type_color = st.secondary,
+        };
+        menu_draw_level_preview(hdr.level_filename, UiRect{x, y, w, thumb_h}, caption);
         y += thumb_h + 2 * st.gap;
 
         const DemoDetails* details = entry.details ? &*entry.details : nullptr;
@@ -972,7 +939,7 @@ namespace
         const int sub_y = top + body_h + s(2.0f);
         int stamp_w = 0;
         if (entry.valid) {
-            draw_level_thumbnail(entry.header.level_filename, thumb_x, d.y + thumb_inset, thumb_w, thumb_h);
+            map_thumbnail_draw(entry.header.level_filename, thumb_x, d.y + thumb_inset, thumb_w, thumb_h);
             // Sized from the widest digits so every row's name stops at the same place.
             const std::size_t space = entry.date_str.find(' ');
             const std::string date = entry.date_str.empty() ? std::string{"-"} : entry.date_str.substr(0, space);
@@ -994,7 +961,7 @@ namespace
             return PanelHit::none;
         }
         // Fitted from the end, so the level name gives way before the game type does.
-        const std::string sub = entry.type_short + ": " + level_display_name(entry.header.level_filename);
+        const std::string sub = entry.type_short + ": " + level_filename_without_ext(entry.header.level_filename);
         rf::gr::string(text_x, sub_y, ui_fit_end(sub, text_w, fonts.caption).c_str(), fonts.caption);
         return PanelHit::none;
     }
@@ -1129,6 +1096,11 @@ void demo_browser_open()
     reload_entries();
 }
 
+bool demo_browser_in_subfolder()
+{
+    return !g_current_dir.empty();
+}
+
 void demo_browser_back()
 {
     if (!g_current_dir.empty()) {
@@ -1175,11 +1147,6 @@ void demo_browser_build_panel(UiContext& ctx, const MenuPanel& panel, const Menu
     if (skin_button(ctx, UiRect{x + w - play_w, footer_y, play_w, footer_h}, "PLAY", fonts.column,
             SkinButton::Secondary, playable, ui_id("demo_play"))) {
         g_panel_play = true;
-    }
-    if (ctx.draw && !g_current_dir.empty()) {
-        rf::gr::set_color(skin::ink_status);
-        rf::gr::string(x, footer_y + (footer_h - rf::gr::get_font_height(fonts.caption)) / 2,
-            "Esc goes up a folder", fonts.caption);
     }
 }
 
@@ -1342,10 +1309,10 @@ void demo_browser_render()
             column(lo.col_level_x, lo.col_level_w, "unreadable");
             continue;
         }
-        draw_level_thumbnail(entry.header.level_filename, dx + lo.thumb_inset, dy + lo.thumb_inset, lo.thumb_w,
+        map_thumbnail_draw(entry.header.level_filename, dx + lo.thumb_inset, dy + lo.thumb_inset, lo.thumb_w,
             lo.thumb_h);
         rf::gr::set_color(190, 190, 190, 255);
-        column(lo.col_level_x, lo.col_level_w, level_display_name(entry.header.level_filename));
+        column(lo.col_level_x, lo.col_level_w, level_filename_without_ext(entry.header.level_filename));
         column(lo.col_type_x, lo.col_type_w, entry.type_short);
         column(lo.col_date_x, lo.col_date_w, entry.date_str.empty() ? std::string{"-"} : entry.date_str);
     }

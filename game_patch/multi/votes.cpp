@@ -29,7 +29,6 @@
 #include "mutators.h"
 #include "server.h"
 #include "alpine_packets.h"
-#include "../misc/vpackfile.h"
 #include "bots/server_bots.h"
 
 MatchInfo g_match_info;
@@ -689,16 +688,7 @@ void vote_level_refresh_allowed_maps()
     };
 
     if (cfg.add_installed_to_allowed_levels) {
-        // Sorted before appending: the packfile lookup table iterates in hash
-        // order, and an alphabetical map list is what players expect to scroll.
-        std::vector<std::string> installed;
-        vpackfile_find_matching_files(StringMatcher().suffix(".rfl"), [&](const char* name) {
-            if (level_matches_votable_prefix(name)) {
-                installed.emplace_back(name);
-            }
-        });
-        std::sort(installed.begin(), installed.end());
-        for (const auto& name : installed) {
+        for (const auto& name : multi_installed_levels(level_matches_votable_prefix)) {
             add(name);
         }
     }

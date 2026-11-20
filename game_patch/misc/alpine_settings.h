@@ -432,6 +432,7 @@ struct AlpineGameSettings
     bool autosave = true;
     bool af_branding = true;
     int seasonal_effect = 1; // 0=none, 1=auto, 2=always_snow
+    int main_menu_background = 1; // 0=Mars, 1=live level
     bool player_join_beep = false;
     bool player_join_flash = true;
     bool discord_rich_presence = true;
@@ -654,6 +655,16 @@ struct AlpineGameSettings
         else
             multiplayer_tracker = "rfgt.factionfiles.com";
     }
+    // A listen server host is asked whatever this says.
+    bool confirm_server_switch = true;
+    bool server_browser_help_seen = false;
+    bool server_browser_details = true;
+    // Re-queries the server the browser looks at, and re-pings the list as the browser opens.
+    bool server_browser_auto_refresh = true;
+    // What Host Game starts each launch with; the rest of its setup is not kept between launches.
+    std::string create_game_server_name; // empty: stock's unnamed server name
+    std::string create_game_password; // empty: no password
+    bool create_game_lan_only = false;
 
     // Bytes/s budget pre-1.5 servers scale their send rate to this client by (the `rate` command)
     unsigned client_rate = 200000u;

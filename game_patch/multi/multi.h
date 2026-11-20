@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <expected>
 #include <optional>
+#include <functional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -237,10 +238,15 @@ void multi_hide_level_items(const std::vector<int>& allowed_item_type_indices, b
 void start_level_in_multi(std::string filename, std::optional<rf::NetGameType> game_type = std::nullopt);
 // Leaves the current game and hosts a local listen server on the level, as levelm does.
 void start_local_multi_game(std::string_view filename, std::optional<rf::NetGameType> game_type);
+// Hosts a listen server on the netgame's levels, as stock Create Game's start (0x0044E380) does; its name,
+// password, levels and type must already be set.
+void multi_start_listen_server(int max_players, int flags);
 std::optional<std::string> multi_ban_unban_last();
 std::string_view multi_game_type_name(rf::NetGameType game_type);
 std::string_view multi_game_type_name_upper(rf::NetGameType game_type);
 std::string_view multi_game_type_name_short(rf::NetGameType game_type);
+// A map list's game type filter: "All maps" without a type.
+std::string multi_game_type_maps_label(std::optional<rf::NetGameType> game_type);
 std::string_view multi_game_type_prefix(rf::NetGameType game_type);
 // The inverse of multi_game_type_prefix: the game type a filename's prefix names.
 std::optional<rf::NetGameType> multi_game_type_for_level_prefix(std::string_view level_filename);
@@ -250,7 +256,10 @@ bool multi_level_name_matches_any_mp_prefix(const char* filename);
 // any-level game types. The predicate the vote gate and the vote blob's per-level
 // mask share; level default resolution can answer outside it (see multi.cpp).
 bool multi_level_name_matches_game_type(std::string_view level_filename, rf::NetGameType game_type);
+// Installed levels that `listed` accepts, sorted by name.
+std::vector<std::string> multi_installed_levels(const std::function<bool(const char*)>& listed);
 std::string normalize_level_filename(std::string_view name); // appends ".rfl" when it is missing
+std::string level_filename_without_ext(std::string_view filename); // drops a trailing ".rfl"
 [[nodiscard]] int multi_num_spawned_players();
 bool multi_local_player_is_spectating();
 int multi_count_participants(int* num_bots = nullptr);

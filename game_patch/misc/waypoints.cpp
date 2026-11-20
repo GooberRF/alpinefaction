@@ -5176,6 +5176,17 @@ static std::string get_awp_bare_filename(const std::string& rfl_filename)
     return std::string{get_filename_without_ext(rfl_filename.c_str())} + ".awp";
 }
 
+// The places parse_awp_file reads from.
+bool waypoints_level_has_awp(const std::string& rfl_filename)
+{
+    std::error_code ec;
+    if (std::filesystem::exists(get_waypoint_filename_for_rfl(rfl_filename), ec)) {
+        return true;
+    }
+    rf::File file;
+    return file.find(get_awp_bare_filename(rfl_filename).c_str());
+}
+
 enum class AwpSource
 {
     not_found,
