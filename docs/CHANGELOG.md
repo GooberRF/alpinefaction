@@ -51,6 +51,7 @@ Version 1.5.0 (Trillium): Not yet released
   - Move the vote panel onto the new menus as the `Call Vote` menu
   - Show the path to the current menu along the top of the screen, with clickable steps and your character's portrait to open the `Player` panel
   - Show a level running live behind the main menu, toggleable with `ui_menu_background` (Direct3D 11 renderer only)
+  - Add `Menu music` option to choose the music that plays in the menus
   - Show the game behind the in-game menus instead of the Mars background (Direct3D 11 renderer only)
   - Add `Use deprecated legacy menus` launcher option to use the stock menus instead
 - Add multiplayer vehicles and turrets

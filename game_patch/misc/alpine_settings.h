@@ -434,6 +434,7 @@ struct AlpineGameSettings
     bool af_branding = true;
     int seasonal_effect = 1; // 0=none, 1=auto, 2=always_snow
     int main_menu_background = 1; // 0=Mars, 1=live level
+    int main_menu_music = 0; // index into main_menu_music_labels, 0=game.tbl's track
     bool player_join_beep = false;
     bool player_join_flash = true;
     bool discord_rich_presence = true;

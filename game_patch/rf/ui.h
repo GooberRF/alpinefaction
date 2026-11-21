@@ -293,6 +293,7 @@ namespace rf::ui
     static auto& main_menu_music_sig = addr_as_ref<int>(0x005990F8);
     static auto& main_menu_music_stopped = addr_as_ref<int>(0x005990FC);
     static auto& main_menu_music_play = addr_as_ref<bool(const char* filename)>(0x00443230);
+    static auto& main_menu_music_stop = addr_as_ref<void()>(0x00443E90);
 
     // Stock Extras button on_click handlers.
     static auto& extras_credits_click = addr_as_ref<void(int x, int y)>(0x0043EC70);

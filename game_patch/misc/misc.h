@@ -19,6 +19,12 @@ std::string main_menu_version_text();
 void main_menu_version_clicked();
 // The menus' seasonal effect (snow, and af_main_menu.toml's seasonal level) is on.
 bool main_menu_seasonal_effect_active();
+// The menu music choices; Default is game.tbl's track. New tracks append, as the setting stores the index.
+inline constexpr const char* main_menu_music_labels[] = {
+    "Default", "PS2", "ClockWerk", "Faction", "Ghost in the Machine", "Grinder", "MooGroov", "Neology",
+    "Self Destruct Sequence", "Storm", "Tribes", "Tension", "Zatso", "Trilogy",
+};
+void main_menu_music_on_setting_changed();
 // While set, the menu background draws nothing: a frame run beneath a menu that paints its own over it.
 void main_menu_set_background_hidden(bool hidden);
 void main_menu_render_egg();

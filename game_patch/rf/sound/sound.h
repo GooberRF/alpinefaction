@@ -135,6 +135,7 @@ namespace rf
     static auto snd_pc_set_pan = addr_as_ref<void(int sig, float pan)>(0x00544450);
     static auto snd_pc_get_by_id = addr_as_ref<int(int handle, Sound** sound)>(0x00544700);
     static auto snd_pc_find_by_name = addr_as_ref<int(const char* filename)>(0x00544A70);
+    static auto snd_pc_file_exists = addr_as_ref<bool(const char* filename)>(0x00544680);
     static auto snd_pc_get_duration = addr_as_ref<float(int handle)>(0x00544760);
     static auto snd_pc_change_listener = addr_as_ref<void(const Vector3& pos, const Vector3& vel, const Matrix3& orient)>(0x00543480);
     static auto snd_pc_calc_volume_3d = addr_as_ref<float(int handle, const Vector3& pos, float vol_scale)>(0x00543C20);

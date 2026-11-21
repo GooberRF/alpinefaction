@@ -1,5 +1,6 @@
 #include "../../main/main.h"
 #include "../../ui/menu_scene.h"
+#include "../misc.h"
 #include "settings_rows.h"
 
 namespace
@@ -37,6 +38,19 @@ const SettingRow rows[] = {
         .apply = menu_scene_on_setting_changed,
         ENUM_LABELS(labels_main_menu_background),
         .console_cmd = "ui_menu_background",
+    },
+    {
+        .id = "main_menu_music",
+        .key = "MainMenuMusic",
+        .label = "Menu music",
+        .tooltip = "The music that plays in the menus.",
+        .category = Cat::Interface,
+        .subcategory = "Menus",
+        .widget = Wid::Enum,
+        .access = AccInt{&AGS::main_menu_music, nullptr, 0, static_cast<int>(std::size(main_menu_music_labels)) - 1},
+        .flags = SF_NOT_WHILE_IN_GAME,
+        .apply = main_menu_music_on_setting_changed,
+        ENUM_LABELS(main_menu_music_labels),
     },
     {
         .id = "remote_server_cfg_display_mode",

@@ -18,9 +18,11 @@
 #include "../rf/gr/gr_font.h"
 #include "../rf/bmpman.h"
 #include "../rf/input.h"
+#include "../rf/level.h"
 #include "../rf/multi.h"
 #include "../rf/sound/sound.h"
 #include "../rf/sound/sound_ds.h"
+#include "../rf/os/console.h"
 #include "../rf/os/frametime.h"
 #include "../rf/os/os.h"
 #include "../main/main.h"
@@ -398,6 +400,39 @@ CodeInjection main_menu_set_music_injection{
     },
 };
 
+constexpr const char* main_menu_music_files[] = {
+    nullptr, "music2.wav", "ClockWerk.wav", "Faction_Ext.wav", "Ghost_in_the_Machine.wav", "Grinder.wav",
+    "MooGroov.wav", "Neology.wav", "Self_Destruct_Sequence_Ext.wav", "Storm.wav", "Tribes_Ext.wav", "Tension_Ext.wav",
+    "Zatso.wav", "Trilogy.wav",
+};
+static_assert(std::size(main_menu_music_files) == std::size(main_menu_music_labels));
+
+// Plays the chosen track instead of game.tbl's. A missing file would send snd_music_play to the stock CD check.
+CallHook<int(const char*, float)> main_menu_music_play_hook{
+    0x00443246,
+    [](const char* filename, float volume) {
+        const int choice = g_alpine_game_config.main_menu_music;
+        if (choice > 0 && choice < static_cast<int>(std::size(main_menu_music_files))) {
+            filename = main_menu_music_files[choice];
+        }
+        if (!rf::snd_pc_file_exists(filename)) {
+            rf::console::print("Menu music {} not found", filename);
+            return -1;
+        }
+        return main_menu_music_play_hook.call_target(filename, volume);
+    },
+};
+
+void main_menu_music_on_setting_changed()
+{
+    // Only the menus' own level leaves the menu music as all that plays. af_set reaches here past the row's lock.
+    if (rf::is_dedicated_server || ((rf::level.flags & rf::LEVEL_LOADED) && !menu_scene_active())) {
+        return;
+    }
+    rf::ui::main_menu_music_stop();
+    rf::ui::main_menu_music_play(rf::ui::main_menu_music_filename.c_str());
+}
+
 FunHook<void()> main_menu_stop_music_hook{
     0x00443E90,
     []() {
@@ -739,6 +774,7 @@ void apply_main_menu_patches()
     // Fix music being unstoppable after opening the menu
     main_menu_set_music_injection.install();
     main_menu_stop_music_hook.install();
+    main_menu_music_play_hook.install();
 
     // Fixes for MP music desync when going into the menu
     game_music_play_hook.install(); //save sig of last Music_Start
