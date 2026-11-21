@@ -21,6 +21,7 @@
 #include "../graphics/gr.h"
 #include "../rf/bmpman.h"
 #include "../rf/file/file.h"
+#include "../rf/gameseq.h"
 #include "../rf/gr/gr.h"
 #include "../rf/os/frametime.h"
 
@@ -640,7 +641,8 @@ void atx_free(rf::bm::BitmapEntry& bm_entry)
 
 void atx_do_frame()
 {
-    if (g_controllers.empty()) return;
+    // Frozen with the rest of the level while single player is paused
+    if (g_controllers.empty() || rf::game_paused) return;
     const float dt_s = rf::frametime;
     if (dt_s <= 0.0f) return;
 

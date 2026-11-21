@@ -311,3 +311,10 @@ bool setting_format_ini_value(const SettingRow& row, rf::Player* player, std::st
 // the engine.
 std::string setting_sanitize_player_name(std::string_view value);
 constexpr size_t player_name_max_len = 20;
+// A name box's own cap is the ini's; the engine's commit is stricter.
+constexpr size_t player_name_field_len = 31;
+bool player_name_char_allowed(char c);
+// Why `text` cannot be committed as the player name, or nullptr when it can.
+const char* player_name_warning(const std::string& text);
+// Set by the player rather than left as the name stock's player_allocate (0x004A3310) gives every player.
+bool player_name_configured(std::string_view name);

@@ -2,19 +2,24 @@
 #include <array>
 #include <charconv>
 #include <cmath>
+#include <cstddef>
 #include <format>
 #include <optional>
+#include <span>
 #include <string>
 #include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 #include <common/utils/string-utils.h>
+#include "column_menu.h"
+#include "form_view.h"
 #include "menu_shell.h"
+#include "reference_data.h"
 #include "settings_menu.h"
 #include "settings_skin.h"
 #include "ui_kit.h"
-#include "../graphics/ui_draw.h"
 #include "../input/bind_context.h"
 #include "../input/gamepad.h"
 #include "../input/input.h"
@@ -27,6 +32,7 @@
 #include "../rf/gr/gr_font.h"
 #include "../rf/input.h"
 #include "../rf/level.h"
+#include "../rf/localize.h"
 #include "../rf/multi.h"
 #include "../rf/os/console.h"
 #include "../rf/os/frametime.h"
@@ -39,11 +45,8 @@ namespace
 {
 
 static_assert(static_cast<int>(SettingCategory::_count) + 1 <= menu_panel_slots);
-// Left inset of a row's label and right inset of its controls.
-constexpr float row_inset = 32.0f;
 
-// The category column, top to bottom. The longest labels take the top slots, beside the side
-// bar's flat stretch and clear of the brackets lower down.
+// The category column, top to bottom.
 constexpr std::array<SettingCategory, static_cast<std::size_t>(SettingCategory::_count)> category_order{
     SettingCategory::Multiplayer, SettingCategory::Gameplay, SettingCategory::Graphics,
     SettingCategory::Interface,   SettingCategory::Hud,      SettingCategory::Audio,
@@ -133,23 +136,6 @@ struct GridPicker
     bool caption_line;
 };
 
-int character_count()
-{
-    return std::clamp(rf::num_multi_characters, 0, rf::MAX_MP_CHARACTERS);
-}
-
-const char* character_caption(int index)
-{
-    if (index < 0 || index >= character_count()) {
-        return nullptr;
-    }
-    const rf::MpCharacterInfo& info = rf::mp_characters[index];
-    if (info.screen_name && info.screen_name[0] != '\0') {
-        return info.screen_name;
-    }
-    return info.name[0] != '\0' ? info.name : nullptr;
-}
-
 constexpr GridPicker spray_picker{
     .row_id = "selected_spray_index",
     .title = "SELECT SPRAY",
@@ -168,11 +154,11 @@ constexpr GridPicker character_picker{
     .empty_text = "No multiplayer characters are installed.",
     .tile_w = skin::portrait_tile,
     .tile_h = skin::portrait_tile,
-    .count = character_count,
+    .count = mp_character_count,
     .bitmap = [](int i) {
-        return i >= 0 && i < character_count() ? rf::mp_characters[i].image_handle : -1;
+        return i >= 0 && i < mp_character_count() ? rf::mp_characters[i].image_handle : -1;
     },
-    .caption = character_caption,
+    .caption = mp_character_caption,
     .caption_line = true,
 };
 
@@ -192,6 +178,7 @@ const GridPicker* picker_for_row(const SettingRow& row)
 const SettingRow* g_picker_row = nullptr;
 const GridPicker* g_picker = nullptr;
 float g_picker_scroll = 0.0f;
+UiId g_picker_scrolled_to = 0;
 
 // The colour modal: the row it edits, the value it opened with and the pick in progress. `rgba`
 // is what APPLY writes; `hsva` keeps the hue through greys, where RGB alone would lose it. An
@@ -225,28 +212,6 @@ struct RowState
 };
 
 std::unordered_map<const SettingRow*, RowState> g_row_state;
-
-// Options sits on the main menu, which sits on gameplay or limbo.
-int state_under_menu()
-{
-    const int top = rf::gameseq_stack_top_index;
-    if (top < 2 || top >= static_cast<int>(std::size(rf::gameseq_state_stack))) {
-        return -1;
-    }
-    return rf::gameseq_state_stack[top - 2];
-}
-
-bool level_is_running()
-{
-    const int under = state_under_menu();
-    return (rf::level.flags & rf::LEVEL_LOADED)
-        && (under == rf::GS_GAMEPLAY || under == rf::GS_MULTI_LIMBO);
-}
-
-bool in_limbo()
-{
-    return state_under_menu() == rf::GS_MULTI_LIMBO;
-}
 
 void remember_category_scroll()
 {
@@ -294,7 +259,6 @@ void request_close()
 
 struct Fonts
 {
-    int title = -1;
     int heading = -1;
     int section = -1;
     int body = -1;
@@ -417,35 +381,15 @@ void write_row(const SettingRow& row, const std::string& value)
 // Text rows
 // ---------------------------------------------------------------------------
 
-bool char_filter_player_name(char c)
+FormTextSpec text_row_config(const SettingRow& row, const std::string& text)
 {
-    // player_change_name would substitute both.
-    return c >= 0x20 && c < 0x7F && c != '%' && c != '\\';
-}
-
-struct TextRowConfig
-{
-    UiCharFilter filter = ui_char_filter_filename;
-    size_t max_len = 63;
-    const char* hint = "";
-    const char* warn = nullptr; // non-null while the field content cannot be committed
-};
-
-TextRowConfig text_row_config(const SettingRow& row, const std::string& text)
-{
-    TextRowConfig cfg;
+    FormTextSpec cfg;
     const std::string_view id{row.id};
     if (id == "player_name") {
-        cfg.filter = char_filter_player_name;
-        cfg.max_len = 31; // the ini cap; the engine's own commit is stricter, see below
+        cfg.filter = player_name_char_allowed;
+        cfg.max_len = player_name_field_len;
         cfg.hint = "Player";
-        const std::string clean = setting_sanitize_player_name(text);
-        if (clean.empty()) {
-            cfg.warn = "Enter a name";
-        }
-        else if (clean.size() > player_name_max_len) {
-            cfg.warn = "20 characters maximum";
-        }
+        cfg.warn = player_name_warning(text);
     }
     return cfg;
 }
@@ -1178,21 +1122,13 @@ void weapon_pref_move(int direction)
 // Badges
 // ---------------------------------------------------------------------------
 
-struct Badge
-{
-    const char* text;
-    rf::Color color;
-    const char* icon;
-    bool lamp;
-};
-
 // MP / SP / HOST say where a setting applies, not whether it can be edited.
-int collect_badges(const SettingRow& row, Badge* out, int max_badges)
+int collect_badges(const SettingRow& row, FormBadge* out, int max_badges)
 {
     int n = 0;
     const auto add = [&](const char* text, rf::Color color, const char* icon, bool lamp) {
         if (n < max_badges) {
-            out[n++] = Badge{text, color, icon, lamp};
+            out[n++] = FormBadge{text, color, icon, lamp};
         }
     };
     // A read only row cannot be edited from here, so a timing chip would promise an apply that
@@ -1249,7 +1185,6 @@ struct Entry
     float ref_h = skin::row_h;    // reference-canvas height
 };
 
-constexpr float sub_header_ref_h = 40.0f;
 constexpr float bind_header_ref_h = 30.0f;
 constexpr float bind_group_ref_h = 34.0f;
 
@@ -1312,7 +1247,7 @@ std::vector<Entry> build_category_entries(SettingCategory category)
         if (row->subcategory && *row->subcategory
             && (!last_sub || std::string_view{last_sub} != row->subcategory)) {
             last_sub = row->subcategory;
-            entries.push_back(Entry{EntryKind::SubHeader, last_sub, nullptr, nullptr, -1, sub_header_ref_h});
+            entries.push_back(Entry{EntryKind::SubHeader, last_sub, nullptr, nullptr, -1, form_sub_header_h});
         }
         const std::string_view id{row->id};
         // Two rows are whole blocks rather than a label plus one widget.
@@ -1327,14 +1262,6 @@ std::vector<Entry> build_category_entries(SettingCategory category)
         entries.push_back(Entry{EntryKind::Row, nullptr, row, nullptr, -1, skin::row_h});
     }
     return entries;
-}
-
-// Every space-separated word of the query has to appear somewhere, in any order.
-template<typename Fn>
-bool all_words_match(std::string_view query, Fn&& word_matches)
-{
-    const std::vector<std::string_view> words = string_split(query);
-    return !words.empty() && std::all_of(words.begin(), words.end(), word_matches);
 }
 
 bool row_matches(const SettingRow& row, std::string_view query)
@@ -1367,7 +1294,7 @@ std::vector<Entry> build_search_entries(std::string_view query, std::vector<std:
             }
             if (!captioned) {
                 entries.push_back(Entry{EntryKind::SubHeader, setting_category_name(category),
-                                        nullptr, nullptr, -1, sub_header_ref_h});
+                                        nullptr, nullptr, -1, form_sub_header_h});
                 captioned = true;
             }
             crumbs.push_back(row->subcategory && *row->subcategory
@@ -1392,7 +1319,7 @@ std::vector<Entry> build_search_entries(std::string_view query, std::vector<std:
             if (!captioned) {
                 entries.push_back(Entry{EntryKind::SubHeader,
                                         g_bind_device == BindDevice::Controller ? "Controller bindings" : "Key bindings",
-                                        nullptr, nullptr, -1, sub_header_ref_h});
+                                        nullptr, nullptr, -1, form_sub_header_h});
                 captioned = true;
             }
             entries.push_back(Entry{EntryKind::Bind, nullptr, nullptr, nullptr, i, skin::bind_row_h});
@@ -1453,13 +1380,6 @@ int panel_slider_readout_w(const UiContext& ctx, const std::vector<Entry>& entri
     return out;
 }
 
-UiRect right_rect(const UiContext& ctx, int right, const UiRect& row, float w_ref, float h_ref)
-{
-    const int w = skin_px(ctx, w_ref);
-    const int h = h_ref > 0.0f ? skin_px(ctx, h_ref) : row.h;
-    return UiRect{right - w, row.y + (row.h - h) / 2, w, h};
-}
-
 // Writes a numeric widget's edit through once the hit-test pass has run it.
 void commit_row_float(const UiContext& ctx, const SettingRow& row, RowState& state, bool enabled, bool integral)
 {
@@ -1471,16 +1391,16 @@ void commit_row_float(const UiContext& ctx, const SettingRow& row, RowState& sta
 
 // A picture index (spray, character) is picked in the modal grid, not from a list of labels; the
 // row's box names the current pick and opens the grid.
-void do_picker_row_widget(UiContext& ctx, const SettingRow& row, const GridPicker& picker, const UiRect& row_rect,
-                          int ctl_right, const Fonts& fonts, bool enabled, UiId id, bool hot)
+void do_picker_row_widget(UiContext& ctx, const SettingRow& row, const GridPicker& picker, const FormLine& line,
+                          const Fonts& fonts, UiId id)
 {
-    const UiRect r = right_rect(ctx, ctl_right, row_rect, skin::control_w, skin::widget_h);
     const int index = static_cast<int>(std::lround(row_float(row, -1.0f)));
     const char* caption = index >= 0 && index < picker.count() ? picker.caption(index) : nullptr;
-    if (skin_select_box(ctx, r, caption && caption[0] != '\0' ? caption : "-", fonts.body, enabled, id, hot)) {
+    if (form_select_box(ctx, line, id, caption && caption[0] != '\0' ? caption : "-", fonts.body)) {
         g_picker = &picker;
         g_picker_row = &row;
         g_picker_scroll = 0.0f;
+        g_picker_scrolled_to = 0;
         g_modal = Modal::GridPicker;
         ui_play_click();
     }
@@ -1513,17 +1433,14 @@ const ActionChoices& action_choices()
 }
 
 // An action index, chosen by name from the live binding table, or None.
-void do_action_choice_widget(UiContext& ctx, const SettingRow& row, const UiRect& row_rect, int ctl_right, int font,
-                             bool enabled, UiId id, bool hot)
+void do_action_choice_widget(UiContext& ctx, const SettingRow& row, const FormLine& line, int font, UiId id)
 {
     const ActionChoices& choices = action_choices();
     const int value = static_cast<int>(std::lround(row_float(row, -1.0f)));
     const auto found = std::find(choices.actions.begin(), choices.actions.end(), value);
-    const int pos = found != choices.actions.end() ? static_cast<int>(found - choices.actions.begin()) : -1;
-    int sel = pos;
-    const UiRect r = right_rect(ctx, ctl_right, row_rect, skin::control_w, skin::widget_h);
-    if (skin_dropdown(ctx, r, choices.items, sel, font, enabled, id, hot) && enabled && sel != pos) {
-        write_row(row, std::to_string(choices.actions[sel]));
+    int pos = found != choices.actions.end() ? static_cast<int>(found - choices.actions.begin()) : -1;
+    if (form_dropdown(ctx, line, id, choices.items, pos, font)) {
+        write_row(row, std::to_string(choices.actions[pos]));
     }
 }
 
@@ -1535,9 +1452,18 @@ bool is_controller_debug_action(std::string_view action)
     return action == "gyro_reset_partial" || action == "gyro_reset_full" || action == "joy_reset";
 }
 
-void do_row_widget(UiContext& ctx, const SettingRow& row, const UiRect& row_rect, int ctl_right,
-                   const Fonts& fonts, int slider_readout_w, bool enabled, bool sync_pass, bool hot)
+// Most enums with at most this many offered values cycle in place.
+constexpr int cycler_max_options = 4;
+
+bool is_controller_debug_action(std::string_view action)
 {
+    return action == "gyro_reset_partial" || action == "gyro_reset_full" || action == "joy_reset";
+}
+
+void do_row_widget(UiContext& ctx, const SettingRow& row, const FormLine& line, const Fonts& fonts,
+                   int slider_readout_w, bool sync_pass)
+{
+    const bool enabled = line.enabled;
     const UiId id = ui_id(row.id);
     // A row first seen in a pass that may not sync (the search box holds the text focus while
     // results appear) must still start from the stored value, not a zeroed state.
@@ -1550,11 +1476,9 @@ void do_row_widget(UiContext& ctx, const SettingRow& row, const UiRect& row_rect
         case SettingWidget::Toggle: {
             const bool stored = setting_get_as_string(row) == "1";
             const bool inverted = (row.flags & SF_INVERTED) != 0;
-            const bool shown = inverted ? !stored : stored;
-            const UiRect r = right_rect(ctx, ctl_right, row_rect, skin::control_w, skin::widget_h);
-            if (skin_cycler(ctx, r, shown ? "On" : "Off", font, enabled, id, hot) != 0) {
-                write_row(row, (inverted ? shown : !shown) ? "1" : "0");
-                ui_play_toggle(!shown);
+            bool shown = inverted ? !stored : stored;
+            if (form_toggle(ctx, line, id, shown, font)) {
+                write_row(row, (inverted ? !shown : shown) ? "1" : "0");
             }
             break;
         }
@@ -1571,15 +1495,12 @@ void do_row_widget(UiContext& ctx, const SettingRow& row, const UiRect& row_rect
             const bool integral = is_integral_row(row);
             const UiNumberFormat fmt = row_number_format(presentation);
             if (ranged) {
-                const int w = skin_px(ctx, skin::control_w);
-                const UiRect r{ctl_right - w, row_rect.y, w, row_rect.h};
-                skin_slider(ctx, r, state.f, lo, hi, integral && step <= 0.0f ? 1.0f : step, presentation.ui_nudge,
-                            fmt, font, slider_readout_w, enabled, id, hot);
+                form_slider(ctx, line, id, state.f, lo, hi, integral && step <= 0.0f ? 1.0f : step,
+                            presentation.ui_nudge, fmt, font, slider_readout_w);
             }
             else {
                 // No bounded range to draw a track for.
-                const UiRect r = right_rect(ctx, ctl_right, row_rect, skin::control_w, skin::widget_h);
-                skin_stepper(ctx, r, state.f, -1.0e9f, 1.0e9f, 1.0f, fmt, font, enabled, id, integral, hot);
+                form_stepper(ctx, line, id, state.f, -1.0e9f, 1.0e9f, 1.0f, fmt, font, integral);
             }
             if ((row.flags & SF_COMMIT_ON_RELEASE) && ctx.captured_id() == id) {
                 state.held = true;
@@ -1599,19 +1520,18 @@ void do_row_widget(UiContext& ctx, const SettingRow& row, const UiRect& row_rect
                 state.f = row_float(row, 0.0f);
                 state.stored_f = state.f;
             }
-            const UiRect r = right_rect(ctx, ctl_right, row_rect, skin::control_w, skin::widget_h);
-            skin_stepper(ctx, r, state.f, lo, hi, step > 0.0f ? step : 1.0f, row_number_format(row),
-                         font, enabled, id, integral, hot);
+            form_stepper(ctx, line, id, state.f, lo, hi, step > 0.0f ? step : 1.0f, row_number_format(row), font,
+                         integral);
             commit_row_float(ctx, row, state, enabled, integral);
             break;
         }
         case SettingWidget::Enum: {
             if (const GridPicker* picker = picker_for_row(row)) {
-                do_picker_row_widget(ctx, row, *picker, row_rect, ctl_right, fonts, enabled, id, hot);
+                do_picker_row_widget(ctx, row, *picker, line, fonts, id);
                 break;
             }
             if (row.flags & SF_ACTION_CHOICE) {
-                do_action_choice_widget(ctx, row, row_rect, ctl_right, font, enabled, id, hot);
+                do_action_choice_widget(ctx, row, line, font, id);
                 break;
             }
             if (!row.enum_labels || row.enum_count <= 0) {
@@ -1623,8 +1543,7 @@ void do_row_widget(UiContext& ctx, const SettingRow& row, const UiRect& row_rect
                 float hi = 1.0e9f;
                 float step = 1.0f;
                 setting_ui_range(row, lo, hi, step);
-                const UiRect r = right_rect(ctx, ctl_right, row_rect, skin::control_w, skin::widget_h);
-                skin_stepper(ctx, r, state.f, lo, hi, 1.0f, UiNumberFormat{}, font, enabled, id, true, hot);
+                form_stepper(ctx, line, id, state.f, lo, hi, 1.0f, UiNumberFormat{}, font, true);
                 commit_row_float(ctx, row, state, enabled, true);
                 break;
             }
@@ -1644,8 +1563,8 @@ void do_row_widget(UiContext& ctx, const SettingRow& row, const UiRect& row_rect
             if (count <= cycler_max_options && pos >= 0
                 && std::string_view{row.id} != "gamepad_gyro_autocalibration"
                 && std::string_view{row.id} != "gamepad_gyro_ratcheting") {
-                const UiRect r = right_rect(ctx, ctl_right, row_rect, skin::control_w, skin::widget_h);
-                const int delta = skin_cycler(ctx, r, row.enum_labels[offered[pos]], font, enabled, id, hot);
+                const UiRect r = right_rect(ctx, line.ctl_right, line.rect, skin::control_w, skin::widget_h);
+                const int delta = skin_cycler(ctx, r, row.enum_labels[offered[pos]], font, enabled, id, line.hot);
                 if (delta != 0 && enabled) {
                     pos = (pos + delta + count) % count;
                     write_row(row, std::to_string(setting_enum_value(row, offered[pos])));
@@ -1658,10 +1577,8 @@ void do_row_widget(UiContext& ctx, const SettingRow& row, const UiRect& row_rect
                 for (const int i : offered) {
                     items.emplace_back(row.enum_labels[i]);
                 }
-                const UiRect r = right_rect(ctx, ctl_right, row_rect, skin::control_w, skin::widget_h);
-                int sel = pos;
-                if (skin_dropdown(ctx, r, items, sel, font, enabled, id, hot) && enabled && sel != pos) {
-                    write_row(row, std::to_string(setting_enum_value(row, offered[sel])));
+                if (form_choice(ctx, line, id, items, pos, font)) {
+                    write_row(row, std::to_string(setting_enum_value(row, offered[pos])));
                 }
             }
             break;
@@ -1673,8 +1590,8 @@ void do_row_widget(UiContext& ctx, const SettingRow& row, const UiRect& row_rect
                 state.stored_color = state.color;
             }
             // An optional colour is cleared back to "no override" by the row's reset icon.
-            const UiRect r = right_rect(ctx, ctl_right, row_rect, skin::control_w, 0.0f);
-            if (skin_swatch(ctx, r, state.color, fonts.caption, enabled, id, hot)) {
+            const UiRect r = form_control_rect(ctx, line, skin::control_w, 0.0f);
+            if (skin_swatch(ctx, r, state.color, fonts.caption, enabled, id, line.hot)) {
                 // An optional colour with no override has nothing to start from; white is neutral.
                 const uint32_t start = state.color.value_or(0xFFFFFFFFu);
                 g_color_pick = ColorPick{&row, state.color.has_value(), !state.color.has_value(), start, start,
@@ -1697,9 +1614,7 @@ void do_row_widget(UiContext& ctx, const SettingRow& row, const UiRect& row_rect
                 state.f = row_float(row, 1.0f);
                 state.stored_f = state.f;
             }
-            const UiRect r = right_rect(ctx, ctl_right, row_rect, skin::control_w, skin::widget_h);
-            skin_stepper(ctx, r, state.f, 0.1f, 10.0f, 0.05f, UiNumberFormat{2, 1.0f, ""},
-                         font, enabled, id, false, hot);
+            form_stepper(ctx, line, id, state.f, 0.1f, 10.0f, 0.05f, UiNumberFormat{2, 1.0f, ""}, font, false);
             commit_row_float(ctx, row, state, enabled, false);
             break;
         }
@@ -1709,25 +1624,15 @@ void do_row_widget(UiContext& ctx, const SettingRow& row, const UiRect& row_rect
             }
             // The buffer is already up to date here: UiContext::apply_pending_keys ran at the top
             // of the pass, so the validation below sees exactly what the field will draw.
-            const TextRowConfig cfg = text_row_config(row, state.text);
-            const UiRect r = right_rect(ctx, ctl_right, row_rect, skin::control_w, 32.0f);
-            skin_field(ctx, r, id, state.text, cfg.max_len, cfg.filter, cfg.hint, fonts.body, enabled,
-                       enabled && cfg.warn != nullptr, cfg.warn);
-            // The value is committed when the box releases the focus (Enter, click away, the row
-            // scrolling out of the pass), never per keystroke: player_name commits through the
-            // engine and notifies the server.
-            if (!ctx.draw && enabled && ctx.focused_text_id() == id && g_prev_text_focus != id) {
-                const SettingRow* target = &row;
-                RowState* buffer = &state;
-                ctx.set_text_commit_callback([target, buffer](bool commit) {
-                    if (!commit) {
-                        return;
-                    }
-                    if (text_row_config(*target, buffer->text).warn == nullptr) {
-                        write_row(*target, buffer->text);
-                    }
-                });
-            }
+            // player_name commits through the engine and notifies the server, so never per keystroke.
+            const SettingRow* target = &row;
+            RowState* buffer = &state;
+            form_text(ctx, line, id, state.text, text_row_config(row, state.text), fonts.body, g_prev_text_focus,
+                      [target, buffer] {
+                          if (text_row_config(*target, buffer->text).warn == nullptr) {
+                              write_row(*target, buffer->text);
+                          }
+                      });
             break;
         }
         case SettingWidget::Action: {
@@ -1737,7 +1642,7 @@ void do_row_widget(UiContext& ctx, const SettingRow& row, const UiRect& row_rect
                 const int w = skin_button_width(ctx, "RESET BINDINGS", fonts.body_bold, skin::control_w - 30.0f)
                             + skin_px(ctx, 30.0f);
                 const int h = skin_px(ctx, 44.0f);
-                const UiRect r{ctl_right - w, row_rect.y + (row_rect.h - h) / 2, w, h};
+                const UiRect r{line.ctl_right - w, line.rect.y + (line.rect.h - h) / 2, w, h};
                 if (skin_button(ctx, r, "RESET BINDINGS", fonts.body_bold, SkinButton::Danger,
                                 enabled && bind_rows_live(), id)) {
                     g_modal = Modal::ResetBindings;
@@ -1763,12 +1668,7 @@ void do_row_widget(UiContext& ctx, const SettingRow& row, const UiRect& row_rect
         }
         case SettingWidget::Label: {
             if (ctx.draw) {
-                const UiRect d = ui_draw_rect(ctx, row_rect);
-                rf::gr::set_color(hot ? skin::ink_title : skin::ink_status);
-                rf::gr::string_aligned(rf::gr::ALIGN_RIGHT,
-                    d.x + (ctl_right - row_rect.x),
-                    d.y + (d.h - rf::gr::get_font_height(font)) / 2,
-                    setting_get_as_string(row).c_str(), font);
+                form_value_text(ctx, line, setting_get_as_string(row).c_str(), font);
             }
             break;
         }
@@ -1776,7 +1676,7 @@ void do_row_widget(UiContext& ctx, const SettingRow& row, const UiRect& row_rect
         case SettingWidget::ListReorder: {
             // Both expand into a block of their own inside their category; a search hit just
             // offers the jump.
-            const UiRect r = right_rect(ctx, ctl_right, row_rect, skin::control_w, 44.0f);
+            const UiRect r = form_control_rect(ctx, line, skin::control_w, 44.0f);
             if (skin_button(ctx, r, "OPEN", fonts.body_bold, SkinButton::Secondary, enabled, id)) {
                 g_switch_to = row.category;
                 ui_play_click();
@@ -1794,107 +1694,29 @@ bool row_widget_enabled(const SettingRow& row)
     return setting_disabled_reason(row) == nullptr && (bespoke_widget || setting_has_setter(row));
 }
 
-// The keyboard-focused row carries the stock list selection, faded out well before the controls.
-// Any other row sits over a ridge, as stock's panel rows do.
-void draw_row_backing(const UiContext& ctx, const UiRect& d, bool focused)
-{
-    if (focused) {
-        const int inset = skin_px(ctx, 3.0f);
-        skin_selection_bar(ctx, d.x, d.y + inset, std::min(d.w, skin_px(ctx, 900.0f)), d.h - 2 * inset);
-        return;
-    }
-    const int pad = skin_px(ctx, row_inset);
-    skin_ridge(ctx, d.x + pad / 2, d.y + d.h - std::max(1, skin_px(ctx, 1.0f)), d.w - pad);
-}
-
-// A row label: dark ink on the steel, white on the focused row's selection glow.
-rf::Color row_label_color(bool enabled, bool hot, bool focused)
-{
-    if (!enabled) {
-        return skin::ink_dim;
-    }
-    if (focused) {
-        return skin::txt_hi;
-    }
-    return hot ? skin::ink_title : skin::ink_status;
-}
-
 void do_row(UiContext& ctx, const SettingRow& row, const UiRect& row_rect, const char* crumb,
             const Fonts& fonts, int slider_readout_w, bool sync_state)
 {
-    const bool enabled = row_widget_enabled(row);
-    const bool modified = setting_is_modified_from_default(row);
-    const UiId id = ui_id(row.id);
-    const int pad = skin_px(ctx, row_inset);
-    const int gap = skin_px(ctx, 12.0f);
-    const int reset_w = skin_px(ctx, skin::icon_size);
-
-    const bool hovered = ui_hover(ctx, row_rect);
-    const bool focused = ctx.focus_visible() && ctx.focus_id() == id;
-    if (!ctx.draw) {
-        if (hovered || focused) {
-            ctx.description().hover(desc_id_for(row));
-        }
-        // A click anywhere on the row pins its description until the strip moves on.
-        if (hovered && ctx.click) {
-            ctx.description().pin(desc_id_for(row));
-        }
+    FormBadge badges[8];
+    const int badge_count = ctx.draw ? collect_badges(row, badges, 8) : 0;
+    const FormRow form{
+        .rect = row_rect,
+        .id = ui_id(row.id),
+        .label = row.label,
+        .crumb = crumb,
+        .enabled = row_widget_enabled(row),
+        .modified = setting_is_modified_from_default(row),
+        .reset_id = ui_id("rowreset", desc_id_for(row)),
+        .badges = std::span{badges, static_cast<std::size_t>(badge_count)},
+        .desc_id = desc_id_for(row),
+    };
+    const FormLine line = form_row(ctx, form, FormFonts{fonts.body, fonts.body_bold, fonts.caption});
+    if (line.reset) {
+        setting_reset_to_default(row);
+        note_rows_changed();
+        ui_play_click();
     }
-
-    if (ctx.draw) {
-        const UiRect d = ui_draw_rect(ctx, row_rect);
-        draw_row_backing(ctx, d, focused);
-
-        int tx = d.x + pad;
-        if (modified) {
-            // In the margin, so the label stays in line with the others; clear of the focus LED.
-            const int dot = skin_px(ctx, 8.0f);
-            ui_rounded_rect(static_cast<float>(tx - skin_px(ctx, 6.0f) - dot),
-                            static_cast<float>(d.y + (d.h - dot) / 2), static_cast<float>(dot),
-                            static_cast<float>(dot), static_cast<float>(dot) * 0.5f, skin::amber);
-        }
-        // Search results stack the label over a "Category > Subcategory" crumb.
-        const int label_h = rf::gr::get_font_height(fonts.body);
-        const int label_y = crumb ? d.y + d.h / 2 - label_h - skin_px(ctx, 2.0f)
-                                  : d.y + (d.h - label_h) / 2;
-        rf::gr::set_color(row_label_color(enabled, hovered || modified, focused));
-        rf::gr::string(tx, label_y, row.label, fonts.body);
-        if (crumb) {
-            rf::gr::set_color(focused ? skin::txt : skin::ink_hint);
-            rf::gr::string(tx, d.y + d.h / 2 + skin_px(ctx, 2.0f), crumb, fonts.caption);
-        }
-        tx += rf::gr::get_string_size(row.label, fonts.body).first + gap;
-
-        Badge badges[8];
-        const int badge_count = collect_badges(row, badges, 8);
-        const int badge_h = skin_px(ctx, skin::badge_h);
-        // Beside the label: centred on the row, or on the label line when a crumb sits under it.
-        const int badge_y = crumb ? row_rect.y + (label_y - d.y) + (label_h - badge_h) / 2
-                                  : row_rect.y + (row_rect.h - badge_h) / 2;
-        for (int i = 0; i < badge_count; ++i) {
-            const int w = skin_badge_width(ctx, badges[i].text, fonts.caption, badges[i].lamp
-                                                                                || badges[i].icon);
-            const UiRect br{row_rect.x + (tx - d.x), badge_y, w, badge_h};
-            skin_badge(ctx, br, badges[i].text, badges[i].color, fonts.caption, badges[i].icon,
-                       badges[i].lamp);
-            tx += w + skin_px(ctx, 8.0f);
-        }
-    }
-
-    const int ctl_right = row_rect.x + row_rect.w - pad;
-    const UiRect reset_rect{ctl_right - reset_w, row_rect.y + (row_rect.h - reset_w) / 2, reset_w,
-                            reset_w};
-    if (modified && enabled) {
-        if (skin_icon_button(ctx, reset_rect, "af_reset_icon", skin::amber, skin::ink_title,
-                             ui_id("rowreset", desc_id_for(row)))) {
-            setting_reset_to_default(row);
-            note_rows_changed();
-            ui_play_click();
-        }
-    }
-
-    do_row_widget(ctx, row, row_rect, ctl_right - reset_w - gap, fonts, slider_readout_w, enabled, sync_state,
-                  hovered || focused);
+    do_row_widget(ctx, row, line, fonts, slider_readout_w, sync_state);
 }
 
 // ---------------------------------------------------------------------------
@@ -1984,7 +1806,7 @@ int do_segment_strip(UiContext& ctx, const UiRect& r, const StripTab* tabs, cons
 
 void bind_columns(const UiContext& ctx, const UiRect& r, int& key_x, int& mouse_x, int& col_w)
 {
-    const int pad = skin_px(ctx, row_inset);
+    const int pad = skin_px(ctx, form_row_inset);
     col_w = skin_px(ctx, skin::bind_col_w);
     mouse_x = r.x + r.w - pad - col_w;
     key_x = mouse_x - col_w;
@@ -2012,24 +1834,12 @@ void draw_bind_header(const UiContext& ctx, const UiRect& r, const Fonts& fonts)
         col1 = "LEFT HAND";
         col2 = "RIGHT HAND";
     }
-    rf::gr::string(d.x + skin_px(ctx, row_inset), dy, "ACTION", fonts.caption);
+    rf::gr::string(d.x + skin_px(ctx, form_row_inset), dy, "ACTION", fonts.caption);
     rf::gr::string(d.x + (key_x - r.x), dy, col1, fonts.caption);
     rf::gr::string(d.x + (mouse_x - r.x), dy, col2, fonts.caption);
     rf::gr::set_color(skin::border_dim);
-    rf::gr::rect(d.x + skin_px(ctx, row_inset), d.y + d.h - std::max(1, skin_px(ctx, 1.0f)),
-                 d.w - 2 * skin_px(ctx, row_inset), std::max(1, skin_px(ctx, 1.0f)));
-}
-
-void draw_sub_header(const UiContext& ctx, const UiRect& r, const char* header, const Fonts& fonts)
-{
-    if (!ctx.draw) {
-        return;
-    }
-    const UiRect d = ui_draw_rect(ctx, r);
-    skin_led(ctx, d.x + skin_px(ctx, 12.0f), d.y + d.h / 2, 7.0f, 22.0f, true);
-    rf::gr::set_color(skin::ink_title);
-    rf::gr::string(d.x + skin_px(ctx, row_inset), d.y + (d.h - rf::gr::get_font_height(fonts.body_bold)) / 2,
-                   string_to_upper(header ? header : "").c_str(), fonts.body_bold);
+    rf::gr::rect(d.x + skin_px(ctx, form_row_inset), d.y + d.h - std::max(1, skin_px(ctx, 1.0f)),
+                 d.w - 2 * skin_px(ctx, form_row_inset), std::max(1, skin_px(ctx, 1.0f)));
 }
 
 // Context override affordance: gold chip plus the revert arrow, which drops the override of the
@@ -2160,7 +1970,7 @@ void do_bind_row(UiContext& ctx, const UiRect& r, int index, const Fonts& fonts)
         do_pad_bind_row(ctx, r, index, fonts);
         return;
     }
-    const int pad = skin_px(ctx, row_inset);
+    const int pad = skin_px(ctx, form_row_inset);
     int key_x = 0;
     int mouse_x = 0;
     int col_w = 0;
@@ -2186,8 +1996,8 @@ void do_bind_row(UiContext& ctx, const UiRect& r, int index, const Fonts& fonts)
 
     if (ctx.draw) {
         const UiRect d = ui_draw_rect(ctx, r);
-        draw_row_backing(ctx, d, focused);
-        rf::gr::set_color(row_label_color(true, hovered, focused));
+        form_draw_row_backing(ctx, d, focused);
+        rf::gr::set_color(form_label_color(true, hovered, focused));
         const int label_w = std::max(0, (key_x - r.x) - pad - skin_px(ctx, 12.0f));
         rf::gr::string(d.x + pad, d.y + (d.h - rf::gr::get_font_height(fonts.body)) / 2,
                        ui_fit_middle(bind_action_name(index), label_w, fonts.body).c_str(),
@@ -2266,7 +2076,7 @@ void do_bind_row(UiContext& ctx, const UiRect& r, int index, const Fonts& fonts)
 
 void do_reorder_block(UiContext& ctx, const UiRect& r, const SettingRow& row, const Fonts& fonts)
 {
-    const int pad = skin_px(ctx, row_inset);
+    const int pad = skin_px(ctx, form_row_inset);
     const int label_h = skin_px(ctx, skin::row_h);
     const int list_row_h = skin_px(ctx, skin::list_row_h);
     // Wide enough for MOVE DOWN, so both buttons' labels take the same size.
@@ -2288,7 +2098,7 @@ void do_reorder_block(UiContext& ctx, const UiRect& r, const SettingRow& row, co
 
     if (ctx.draw) {
         const UiRect d = ui_draw_rect(ctx, UiRect{r.x, r.y, r.w, label_h});
-        rf::gr::set_color(row_label_color(enabled, hovered, false));
+        rf::gr::set_color(form_label_color(enabled, hovered, false));
         rf::gr::string(d.x + pad, d.y + (label_h - rf::gr::get_font_height(fonts.body)) / 2,
                        row.label, fonts.body);
         const UiRect dl = ui_draw_rect(ctx, list);
@@ -2366,26 +2176,6 @@ const char* category_summary(SettingCategory category)
         case SettingCategory::Multiplayer: return "Identity, handicap, sprays, hosting and FactionFiles account.";
         default: return "";
     }
-}
-
-std::string status_strip_text()
-{
-    if (!level_is_running()) {
-        return {};
-    }
-    if (in_limbo()) {
-        return "ROUND ENDED";
-    }
-    if (!rf::is_multi) {
-        return "GAME PAUSED";
-    }
-    return std::format("CONNECTED TO {} - GAME CONTINUES", rf::netgame.name.c_str());
-}
-
-// The status sits on the steel title bar, so it is dark lettering like the title.
-rf::Color status_strip_color()
-{
-    return in_limbo() ? skin::ink_alert : skin::ink_status;
 }
 
 // Hidden rows such as the detail preset follow visible edits and are reverted with them, but are
@@ -2622,30 +2412,19 @@ void modal_confirmed(UiContext& ctx)
     g_modal = Modal::None;
 }
 
-constexpr rf::Color modal_dim{0, 0, 0, 191};
-
-void draw_modal_dim()
+void build_modal(UiContext& ctx, const Fonts& fonts)
 {
-    rf::gr::set_color(modal_dim);
-    rf::gr::rect(0, 0, rf::gr::clip_width(), rf::gr::clip_height());
-}
-
-void build_modal(UiContext& ctx, int canvas_x, int canvas_y, const Fonts& fonts)
-{
-    const auto cx = [&](float v) { return canvas_x + static_cast<int>(v * ctx.scale()); };
-    const auto cy = [&](float v) { return canvas_y + static_cast<int>(v * ctx.scale()); };
     const auto s = [&](float v) { return skin_px(ctx, v); };
 
     const ModalCopy copy = modal_copy();
-    const char* title = copy.title;
     const std::string& body = copy.body;
     const std::string& note = copy.note;
     const char* confirm = copy.confirm;
 
-    const UiRect dialog{cx(580.0f), cy(400.0f), s(760.0f), s(280.0f)};
+    const MenuDialog frame = menu_dialog(ctx, s(760.0f), s(280.0f), copy.title, fonts.section);
+    const UiRect& dialog = frame.frame;
+    const UiRect& band = frame.band;
     const int pad = s(14.0f);
-    const int edge = s(1.0f);
-    const UiRect band{dialog.x + edge, dialog.y + edge, dialog.w - 2 * edge, s(56.0f)};
     const UiRect body_box{dialog.x + pad, band.y + band.h + s(12.0f), dialog.w - 2 * pad, s(120.0f)};
     const int btn_h = s(44.0f);
     const int btn_y = body_box.y + body_box.h + s(14.0f);
@@ -2655,8 +2434,6 @@ void build_modal(UiContext& ctx, int canvas_x, int canvas_y, const Fonts& fonts)
     const UiRect cancel_rect{confirm_rect.x - s(16.0f) - cancel_w, btn_y, cancel_w, btn_h};
 
     if (ctx.draw) {
-        draw_modal_dim();
-        skin_popup(ctx, dialog, band, title, fonts.section);
         rf::gr::set_color(skin::txt_hi);
         // The body names a context or category, so its length varies; it shrinks to fit like a label.
         const SkinText fitted = skin_fit_text(ctx, body, fonts.body, body_box.w - 2 * s(24.0f));
@@ -2679,37 +2456,31 @@ void build_modal(UiContext& ctx, int canvas_x, int canvas_y, const Fonts& fonts)
     }
 }
 
-void build_grid_picker_modal(UiContext& ctx, int canvas_x, int canvas_y, const Fonts& fonts)
+void close_modal(UiContext& ctx)
+{
+    // A picker opens from a click on its row, which pinned the row's description; as a dropdown's list does, it takes
+    // the pin with it.
+    if (g_modal == Modal::GridPicker || g_modal == Modal::ColorPicker) {
+        ctx.description().unpin();
+    }
+    g_modal = Modal::None;
+}
+
+void build_grid_picker_modal(UiContext& ctx, const Fonts& fonts)
 {
     const auto s = [&](float v) { return skin_px(ctx, v); };
     const GridPicker& picker = *g_picker;
     const int count = picker.count();
-    const int tile_w = s(picker.tile_w);
-    const int tile_h = s(picker.tile_h)
-        + (picker.caption_line ? skin_picker_caption_h(ctx, fonts.caption) : 0);
-    const int gap = s(12.0f);
 
-    const int dialog_w = s(1000.0f);
-    const int dialog_h = s(760.0f);
-    const UiRect dialog{canvas_x + (static_cast<int>(menu_ref_w * ctx.scale()) - dialog_w) / 2,
-                        canvas_y + (static_cast<int>(menu_ref_h * ctx.scale()) - dialog_h) / 2, dialog_w,
-                        dialog_h};
+    const MenuDialog frame = menu_dialog(ctx, s(1000.0f), s(760.0f), picker.title, fonts.section);
+    const UiRect& dialog = frame.frame;
+    const UiRect& band = frame.band;
     const int pad = s(24.0f);
-    const int band_h = s(56.0f);
     const int footer_h = s(68.0f);
-    const int edge = s(1.0f);
-    const UiRect band{dialog.x + edge, dialog.y + edge, dialog.w - 2 * edge, band_h};
-    const UiRect grid_view{dialog.x + pad, band.y + band.h + s(12.0f), dialog.w - 2 * pad,
-                           dialog.h - edge - band_h - s(12.0f) - footer_h - pad};
-
-    const int cols = std::clamp((grid_view.w + gap) / std::max(1, tile_w + gap), 2, 6);
-    const int rows = count > 0 ? (count + cols - 1) / cols : 0;
-    const int content_h = rows * (tile_h + gap) + gap;
-    const int grid_w = cols * tile_w + (cols - 1) * gap;
+    const int top = band.y + band.h + s(12.0f);
+    const UiRect grid_view{dialog.x + pad, top, dialog.w - 2 * pad, dialog.y + dialog.h - footer_h - pad - top};
 
     if (ctx.draw) {
-        draw_modal_dim();
-        skin_popup(ctx, dialog, band, picker.title, fonts.section);
         skin_slot(ctx, grid_view.x, grid_view.y, grid_view.w, grid_view.h);
         if (count == 0) {
             rf::gr::set_color(skin::txt_hint);
@@ -2721,43 +2492,34 @@ void build_grid_picker_modal(UiContext& ctx, int canvas_x, int canvas_y, const F
     const int selected = g_picker_row
         ? static_cast<int>(std::lround(row_float(*g_picker_row, -1.0f)))
         : -1;
-    int chosen = -1;
-
-    UiScrollRegion region = ui_scroll_begin(ctx, grid_view, content_h, g_picker_scroll, tile_h + gap,
-                                            ui_id("picker_grid"), true);
-    for (int i = 0; i < count; ++i) {
-        const int col = i % cols;
-        const int row = i / cols;
-        const UiRect r{grid_view.x + (grid_view.w - grid_w) / 2 + col * (tile_w + gap),
-                       region.start_y() + gap + row * (tile_h + gap), tile_w, tile_h};
-        if (r.y + tile_h < grid_view.y || r.y > grid_view.y + grid_view.h) {
-            continue;
-        }
-        if (skin_picker_tile(ctx, r, picker.bitmap(i), i, i == selected, picker.caption(i),
-                             picker.caption_line, fonts.caption, ui_id("picker", i))) {
-            chosen = i;
-        }
-    }
-    ui_scroll_end(ctx, region);
-
-    if (ctx.draw) {
-        skin_scrollbar(ctx, grid_view, content_h, g_picker_scroll,
-                       ctx.captured_id() == ui_id("picker_grid"));
-    }
+    const SkinPickerGrid grid{
+        .count = count,
+        .selected = selected,
+        .tile_w = picker.tile_w,
+        .tile_h = picker.tile_h,
+        .bitmap = picker.bitmap,
+        .caption = picker.caption,
+        .caption_line = picker.caption_line,
+        .font = fonts.caption,
+        .min_cols = 2,
+        .max_cols = 6,
+        .id_name = "picker",
+    };
+    const int chosen = skin_picker_grid(ctx, grid_view, grid, g_picker_scroll, g_picker_scrolled_to);
 
     const int btn_h = s(44.0f);
     const UiRect close{dialog.x + dialog.w - pad - s(200.0f), dialog.y + dialog.h - pad - btn_h,
                        s(200.0f), btn_h};
     if (skin_button(ctx, close, "CLOSE", fonts.body_bold, SkinButton::Secondary, true,
                     ui_id("picker_close"))) {
-        g_modal = Modal::None;
+        close_modal(ctx);
         ui_play_click();
     }
 
     if (chosen >= 0 && g_picker_row) {
         write_row(*g_picker_row, std::to_string(chosen));
         ui_play_click();
-        g_modal = Modal::None;
+        close_modal(ctx);
     }
 }
 
@@ -2768,19 +2530,15 @@ constexpr uint32_t color_presets[] = {
 
 // Hue/saturation/value plus alpha, with the old and new colours side by side. Nothing is written
 // until APPLY; CANCEL and ESC leave the row as it was.
-void build_color_picker_modal(UiContext& ctx, int canvas_x, int canvas_y, const Fonts& fonts)
+void build_color_picker_modal(UiContext& ctx, const Fonts& fonts)
 {
     const auto s = [&](float v) { return skin_px(ctx, v); };
     ColorPick& pick = g_color_pick;
 
-    const int dialog_w = s(900.0f);
-    const int dialog_h = s(540.0f);
-    const UiRect dialog{canvas_x + (static_cast<int>(menu_ref_w * ctx.scale()) - dialog_w) / 2,
-                        canvas_y + (static_cast<int>(menu_ref_h * ctx.scale()) - dialog_h) / 2, dialog_w,
-                        dialog_h};
+    const MenuDialog frame = menu_dialog(ctx, s(900.0f), s(540.0f), "SELECT COLOR", fonts.section);
+    const UiRect& dialog = frame.frame;
+    const UiRect& band = frame.band;
     const int pad = s(24.0f);
-    const int edge = s(1.0f);
-    const UiRect band{dialog.x + edge, dialog.y + edge, dialog.w - 2 * edge, s(56.0f)};
     const int top = band.y + band.h + pad;
     const int area_h = s(360.0f);
     const UiRect sv{dialog.x + pad, top, s(360.0f), area_h};
@@ -2803,8 +2561,6 @@ void build_color_picker_modal(UiContext& ctx, int canvas_x, int canvas_y, const 
     const int btn_y = dialog.y + dialog.h - pad - btn_h;
 
     if (ctx.draw) {
-        draw_modal_dim();
-        skin_popup(ctx, dialog, band, "SELECT COLOR", fonts.section);
         const int title_w = rf::gr::get_string_size("SELECT COLOR", fonts.section).first;
         const SkinText label = skin_fit_text(ctx, pick.row->label, fonts.body,
                                              std::max(0, band.w - title_w - s(84.0f)));
@@ -2884,7 +2640,7 @@ void build_color_picker_modal(UiContext& ctx, int canvas_x, int canvas_y, const 
     const UiRect cancel_rect{apply_rect.x - s(16.0f) - cancel_w, btn_y, cancel_w, btn_h};
     if (skin_button(ctx, cancel_rect, "CANCEL", fonts.body_bold, SkinButton::Secondary, true,
                     ui_id("color_cancel"))) {
-        g_modal = Modal::None;
+        close_modal(ctx);
         ui_play_click();
     }
     if (skin_button(ctx, apply_rect, "APPLY", fonts.body_bold, SkinButton::Secondary, true,
@@ -2892,7 +2648,7 @@ void build_color_picker_modal(UiContext& ctx, int canvas_x, int canvas_y, const 
         if (!pick.unset) {
             write_row(*pick.row, format_hex_color_string(pick.rgba));
         }
-        g_modal = Modal::None;
+        close_modal(ctx);
         ui_play_click();
     }
 }
@@ -2956,20 +2712,6 @@ void register_offscreen_focus(UiContext& ctx, const Entry& entry)
     }
 }
 
-void draw_title_bar(const UiContext& ctx, int x, int right, int clear_r, int canvas_y, const Fonts& fonts)
-{
-    const UiRect free = menu_draw_title_bar(ctx, x, right, clear_r, canvas_y, "Options", fonts.title);
-    const std::string status = status_strip_text();
-    if (status.empty()) {
-        return;
-    }
-    const SkinText fitted = skin_fit_text(ctx, status, fonts.caption_bold, free.w);
-    rf::gr::set_color(status_strip_color());
-    rf::gr::string_aligned(rf::gr::ALIGN_RIGHT, free.x + free.w,
-                           free.y + free.h / 2 - rf::gr::get_font_height(fitted.font) / 2, fitted.text.c_str(),
-                           fitted.font);
-}
-
 void build_category_column(UiContext& ctx, const MenuLayout& lay, int col_x, int col_y, const Fonts& fonts)
 {
     constexpr int category_count = static_cast<int>(SettingCategory::_count);
@@ -3007,13 +2749,9 @@ int build_header_controls(UiContext& ctx, const UiRect& line, const Fonts& fonts
 {
     const auto s = [&](float v) { return skin_px(ctx, v); };
     const char* adv_text = "Show advanced";
-    const int adv_text_w = rf::gr::get_string_size(adv_text, fonts.body).first;
     // A short On / Off cycler: the rows' column width does not fit beside the search box.
-    const int adv_w = s(2.0f * (skin::cycler_arrow + skin::cycler_gap) + 80.0f);
-    const UiRect adv_toggle{line.x + line.w - adv_w, line.y + (line.h - s(skin::widget_h)) / 2, adv_w,
-                            s(skin::widget_h)};
-    const UiRect adv_label{adv_toggle.x - s(14.0f) - adv_text_w, line.y, adv_text_w + s(14.0f), line.h};
-    const UiRect search{adv_label.x - s(28.0f) - s(340.0f), line.y + (line.h - s(44.0f)) / 2, s(340.0f), s(44.0f)};
+    const SkinCyclerRects adv = skin_header_cycler_rects(ctx, line, adv_text, 80.0f, fonts.body);
+    const UiRect search{adv.label.x - s(28.0f) - s(340.0f), line.y + (line.h - s(44.0f)) / 2, s(340.0f), s(44.0f)};
 
     if (skin_search_box(ctx, search, ui_id("search"), g_search, fonts.body)) {
         if (!g_search.empty() && !g_search_holds_panel) {
@@ -3030,20 +2768,8 @@ int build_header_controls(UiContext& ctx, const UiRect& line, const Fonts& fonts
     }
 
     const bool show_advanced = g_alpine_game_config.show_advanced_settings;
-    const bool label_hovered = ui_hover(ctx, adv_label);
-    if (ctx.draw) {
-        const bool lit = label_hovered || (ctx.focus_visible() && ctx.focus_id() == ui_id("show_advanced"));
-        rf::gr::set_color(lit ? skin::ink_title : skin::ink_status);
-        rf::gr::string(adv_label.x, line.y + (line.h - rf::gr::get_font_height(fonts.body)) / 2, adv_text,
-                       fonts.body);
-    }
-    bool flip_advanced = skin_cycler(ctx, adv_toggle, show_advanced ? "On" : "Off", fonts.body, true,
-                                     ui_id("show_advanced"), label_hovered) != 0;
-    // The label is part of the control too.
-    if (!ctx.draw && !flip_advanced && ctx.click && label_hovered) {
-        flip_advanced = true;
-    }
-    if (flip_advanced) {
+    if (skin_labeled_cycler(ctx, adv.label, adv.toggle, adv_text, show_advanced ? "On" : "Off", fonts.body, true,
+                            ui_id("show_advanced"), skin::ink_title, skin::ink_status) != 0) {
         // A view preference, not a setting change: its baseline follows it, so it never counts.
         if (const SettingRow* row = settings_find("show_advanced_settings")) {
             setting_set_from_string(*row, show_advanced ? "0" : "1");
@@ -3091,9 +2817,11 @@ void build_bindings_header(UiContext& ctx, const UiRect& line, const Fonts& font
         ctx_total += ctx_w[i];
     }
 
-    constexpr int dev_count = static_cast<int>(BindDevice::_count);
-    static const char* const dev_long[dev_count] = {"KEYBOARD", "CONTROLLER", "VR"};
-    static const char* const dev_short[dev_count] = {"KB", "PAD", "VR"};
+    // Controller and VR bindings are planned for 1.6; until then the keyboard alone is offered, which needs no strip.
+    // constexpr int dev_count = static_cast<int>(BindDevice::_count);
+    constexpr int dev_count = 1;
+    static const char* const dev_long[] = {"KEYBOARD", "CONTROLLER", "VR"};
+    static const char* const dev_short[] = {"KB", "PAD", "VR"};
     const char* const* dev_labels = dev_long;
     int dev_font = fonts.caption_bold;
     int dev_w[dev_count];
@@ -3119,9 +2847,10 @@ void build_bindings_header(UiContext& ctx, const UiRect& line, const Fonts& font
     // their floor the device strip goes away entirely rather than squeezing the useful one.
     const int ctx_min = rf::gr::get_string_size(std::string_view{"..."}, fonts.caption_bold).first
         + strip_tab_chrome(ctx);
-    int ctx_left = avail_x0 + dev_total + strip_gap;
-    bool show_devices = true;
-    if (ctx_left + std::min(ctx_total, ctx_min * ctx_count) > avail_x1) {
+    // A single device needs no strip.
+    bool show_devices = dev_count > 1;
+    int ctx_left = show_devices ? avail_x0 + dev_total + strip_gap : avail_x0;
+    if (show_devices && ctx_left + std::min(ctx_total, ctx_min * ctx_count) > avail_x1) {
         show_devices = false;
         ctx_left = avail_x0;
     }
@@ -3171,35 +2900,34 @@ void build_content(UiContext& ctx, const UiRect& view, const std::vector<Entry>&
     const auto s = [&](float v) { return ctx.scaled(v); };
 
     const int row_h = s(skin::row_h);
+    const int crumb_h = form_crumb_line_h(ctx, fonts.caption);
+    // A crumb's line takes the font's own height, which need not track the reference canvas.
+    const auto entry_h = [&](const Entry& entry) { return s(entry.ref_h) + (entry.crumb ? crumb_h : 0); };
     int content_h = 0;
     for (const Entry& entry : entries) {
-        content_h += s(entry.ref_h);
+        content_h += entry_h(entry);
     }
 
-    UiScrollRegion region = ui_scroll_begin(ctx, view, content_h, g_content_scroll, row_h * 3,
-        ui_id("content"), true);
-
-    const int gutter = std::max(ctx.style.scrollbar_w_min, ctx.scaled(ctx.style.scrollbar_w));
-    const int inner_w = view.w - gutter - s(8.0f);
+    FormScroll scroll = form_scroll_begin(ctx, view, content_h, g_content_scroll, row_h * 3, ui_id("content"));
+    const int inner_w = scroll.inner_w;
     const int slider_readout_w = panel_slider_readout_w(ctx, entries,
         searching ? std::nullopt : std::optional{g_category}, fonts.body);
-    std::optional<UiRect> focus_rect;
-    int y = region.start_y();
+    int y = scroll.region.start_y();
     for (const Entry& entry : entries) {
-        const int h = s(entry.ref_h);
+        const int h = entry_h(entry);
         const UiRect rect{view.x, y, inner_w, h};
         y += h;
         if (entry_owns_focus(entry, ctx.focus_id())) {
-            focus_rect = rect;
+            scroll.focus_rect = rect;
         }
-        if (rect.y + h < view.y || rect.y > view.y + view.h) {
+        if (form_scroll_culled(scroll, rect)) {
             // Still reachable by keyboard: the focus can step onto it and scroll it into view.
             register_offscreen_focus(ctx, entry);
             continue;
         }
         switch (entry.kind) {
             case EntryKind::SubHeader:
-                draw_sub_header(ctx, rect, entry.header, fonts);
+                form_draw_sub_header(ctx, rect, entry.header, fonts.body_bold);
                 break;
             case EntryKind::Row:
                 do_row(ctx, *entry.row, rect, entry.crumb, fonts, slider_readout_w, sync_state);
@@ -3208,7 +2936,7 @@ void build_content(UiContext& ctx, const UiRect& view, const std::vector<Entry>&
                 draw_bind_header(ctx, rect, fonts);
                 break;
             case EntryKind::BindGroup:
-                draw_sub_header(ctx, rect, entry.header, fonts);
+                form_draw_sub_header(ctx, rect, entry.header, fonts.body_bold);
                 break;
             case EntryKind::Bind:
                 do_bind_row(ctx, rect, entry.bind_index, fonts);
@@ -3224,23 +2952,14 @@ void build_content(UiContext& ctx, const UiRect& view, const std::vector<Entry>&
         const std::string empty = searching ? std::format("No results for \"{}\"", g_search)
                                             : std::string{"Nothing to configure here."};
         rf::gr::set_color(skin::ink_hint);
-        rf::gr::string(d.x + s(row_inset), d.y + s(24.0f), empty.c_str(), fonts.body);
+        rf::gr::string(d.x + s(form_row_inset), d.y + s(24.0f), empty.c_str(), fonts.body);
     }
 
-    ui_scroll_end(ctx, region);
-
-    ui_scroll_focus_into_view(ctx, view, focus_rect, g_content_scroll, g_scrolled_to_focus);
-
-    if (ctx.draw) {
-        skin_scrollbar(ctx, view, content_h, g_content_scroll, ctx.captured_id() == ui_id("content"));
-    }
+    form_scroll_end(ctx, scroll, g_scrolled_to_focus);
 }
 
 void draw_description_strip(UiContext& ctx, const UiRect& desc, const Fonts& fonts)
 {
-    const auto s = [&](float v) { return ctx.scaled(v); };
-
-    skin_slot(ctx, desc.x, desc.y, desc.w, desc.h);
     // A hovered or pinned registry row, else the category summary. Blocks that are not
     // registry rows supply their own line.
     const SettingRow* desc_row = desc_row_from_id(ctx.description().id);
@@ -3270,18 +2989,7 @@ void draw_description_strip(UiContext& ctx, const UiRect& desc, const Fonts& fon
     else {
         text = category_summary(g_category);
     }
-    const int caption_h = rf::gr::get_font_height(fonts.caption);
-    const int line_h = std::max(1, caption_h + s(6.0f));
-    // In line with the row labels above, which start row_inset into a view 16 left of the strip.
-    const int text_x = desc.x + s(row_inset - 16.0f);
-    const int text_w = std::max(1, desc.x + desc.w - s(18.0f) - text_x);
-    const int max_lines = std::max(1, (desc.h - 2 * s(12.0f)) / line_h);
-    const int lines = std::clamp(static_cast<int>(ui_wrap_text(text, text_w, fonts.caption).size()),
-                                 1, max_lines);
-    const int block_h = lines * line_h;
-    const int text_y = desc.y + (desc.h - block_h) / 2;
-    rf::gr::set_color(skin::txt);
-    ui_draw_wrapped(ctx, UiRect{text_x, text_y, text_w, block_h}, text, fonts.caption, line_h);
+    form_draw_description(ctx, desc, text, fonts.caption);
 }
 
 void build_panel_footer(UiContext& ctx, const UiRect& line, bool searching, const Fonts& fonts)
@@ -3320,33 +3028,27 @@ void build_panel_footer(UiContext& ctx, const UiRect& line, bool searching, cons
 
 void build_screen(UiContext& ctx, int canvas_y, const Fonts& fonts, bool sync_state)
 {
-    const float scale = ctx.scale();
-    const auto s = [&](float v) { return static_cast<int>(v * scale); };
+    const MenuFrame frame = menu_frame(ctx, g_slide);
+    const MenuLayout& lay = frame.lay;
+    const auto s = [&](float v) { return ctx.scaled(v); };
     const auto cy = [&](float v) { return canvas_y + s(v); };
-    const MenuLayout lay = menu_layout(ctx);
-
-    const int slide_w = rf::gr::clip_width() - lay.panel_x;
-    const int enter_dx = static_cast<int>((1.0f - g_slide) * static_cast<float>(slide_w));
-    const int panel_dx = enter_dx + static_cast<int>(g_switch * static_cast<float>(slide_w));
-    const int col_dx = -static_cast<int>((1.0f - g_slide) * static_cast<float>(lay.column_x + lay.column_w));
-
-    const int button_h = menu_button_h(ctx);
-    const int top = cy(menu_column_y);
+    const int panel_dx = frame.enter_dx + static_cast<int>(g_switch * static_cast<float>(frame.slide_w));
+    const int top = frame.top;
 
     if (ctx.draw) {
-        draw_title_bar(ctx, lay.panel_x + enter_dx, lay.panel_r + enter_dx, lay.rail_right + enter_dx, canvas_y,
-                       fonts);
+        menu_draw_title_bar(ctx, lay.panel_x + frame.enter_dx, lay.panel_r + frame.enter_dx, canvas_y,
+                            menu_stock_label(rf::strings::options).c_str());
     }
 
-    build_category_column(ctx, lay, lay.column_x + col_dx, top, fonts);
+    build_category_column(ctx, lay, lay.column_x + frame.col_dx, top, fonts);
 
-    const MenuPanel panel = menu_panel(ctx, lay, panel_dx, top);
-    const UiRect& inset = panel.inset;
+    const MenuPanel panel = menu_panel(ctx, lay, panel_dx, top, canvas_y);
     if (ctx.draw) {
         menu_draw_panel(ctx, panel);
         // Search results belong to no category, so nothing is connected.
         if (g_search.empty()) {
-            menu_draw_connector(ctx, panel, top + category_slot(g_category) * button_h + button_h / 2);
+            menu_draw_connector(ctx, panel,
+                                top + menu_slot_mid_y(ctx, MenuButtonSize::Small, category_slot(g_category)));
         }
     }
     // A panel on its way out is only painted: anything done on it would land on the category
@@ -3357,7 +3059,7 @@ void build_screen(UiContext& ctx, int canvas_y, const Fonts& fonts, bool sync_st
 
     const int content_x = panel.content_x;
     const int content_r = panel.content_r;
-    const UiRect header{content_x, cy(menu_panel_header_y), content_r - content_x, s(menu_panel_header_h)};
+    const UiRect& header = panel.header;
     const int title_right = build_header_controls(ctx, header, fonts);
     const bool searching = !g_search.empty();
 
@@ -3369,15 +3071,14 @@ void build_screen(UiContext& ctx, int canvas_y, const Fonts& fonts, bool sync_st
 
     if (ctx.draw) {
         draw_header_title(ctx, header, title_right, searching, match_count, fonts);
-        skin_ridge(ctx, inset.x + s(8.0f), header.y + header.h + s(1.0f), inset.w - s(16.0f));
+        menu_draw_panel_ridge(ctx, panel);
     }
 
     // The header line has no room left beside the search box, so Bindings takes a second one.
     float view_top = menu_panel_body_y;
     if (!searching && g_category == SettingCategory::Bindings && bind_context_controls() != nullptr) {
-        build_bindings_header(ctx, UiRect{content_x, cy(menu_panel_body_y), content_r - content_x, s(36.0f)},
-                              fonts);
-        view_top = 262.0f;
+        build_bindings_header(ctx, UiRect{content_x, cy(menu_panel_body_y), content_r - content_x, s(36.0f)}, fonts);
+        view_top = menu_panel_body_y + 44.0f;
     }
     else if (!ctx.draw) {
         // No strips on screen means no way to see or change what is being edited, so the edit
@@ -3386,31 +3087,60 @@ void build_screen(UiContext& ctx, int canvas_y, const Fonts& fonts, bool sync_st
         g_bind_device = BindDevice::Keyboard;
     }
 
-    const int footer_y = inset.y + inset.h - s(menu_panel_footer_inset);
-    const int desc_y = footer_y - s(74.0f);
-    // The rows start left of the content edge so a focused row's LED lines up with the headers'.
-    const UiRect view{content_x - s(16.0f), cy(view_top), content_r - content_x + s(16.0f),
-                      desc_y - s(8.0f) - cy(view_top)};
-    build_content(ctx, view, entries, searching, fonts, sync_state);
+    const FormPanelAreas areas = form_panel_areas(ctx, panel, true);
+    // From cy() rather than the body's y plus an offset, which can round a pixel apart.
+    const int body_y = cy(view_top);
+    const UiRect body{areas.body.x, body_y, areas.body.w, areas.body.y + areas.body.h - body_y};
+    build_content(ctx, form_rows_view(ctx, body), entries, searching, fonts, sync_state);
     if (ctx.draw) {
-        draw_description_strip(ctx, UiRect{content_x, desc_y, content_r - content_x, s(66.0f)}, fonts);
+        draw_description_strip(ctx, areas.desc, fonts);
     }
-    build_panel_footer(ctx, UiRect{content_x, footer_y, content_r - content_x, s(menu_panel_footer_h)}, searching,
-                       fonts);
+    build_panel_footer(ctx, areas.footer, searching, fonts);
+}
+
+// The menus above, `crumbs` from menu_crumbs, then Options and the panel's category, or its search.
+std::vector<std::string> frame_path(std::vector<std::string> crumbs)
+{
+    std::vector<std::string> path = std::move(crumbs);
+    path.push_back(menu_stock_label(rf::strings::options));
+    path.push_back(g_search.empty() ? string_to_upper(setting_category_name(g_category)) : "SEARCH");
+    return path;
+}
+
+// The menus above Options, and the player, unless a dialog or a listening key cap takes the clicks or the menu is
+// sliding.
+MenuStripLinks frame_links(Modal modal, std::size_t crumbs)
+{
+    if (modal != Modal::None || g_closing || g_slide < 1.0f || g_capture.row >= 0 || rf::ui::popup_is_active()) {
+        return {};
+    }
+    return MenuStripLinks{crumbs, menu_player_reachable()};
+}
+
+// A dialog dims the hint bar, and takes the keys itself. The exit animation takes none.
+std::vector<MenuHint> frame_hints(const UiContext& ctx, Modal modal)
+{
+    std::vector<MenuHint> hints;
+    if (rf::ui::popup_is_active() || g_closing) {
+        return hints;
+    }
+    // A listening key cap takes every key, Esc as its cancel.
+    if (g_capture.row >= 0) {
+        hints.push_back({"ESC", "Cancel"});
+    }
+    else if (modal == Modal::None) {
+        menu_add_nav_hints(ctx, hints, g_search.empty() ? "Back" : "Clear search");
+    }
+    return hints;
 }
 
 void settings_menu_build(UiContext& ctx)
 {
-    const int screen_w = rf::gr::clip_width();
-    const int screen_h = rf::gr::clip_height();
     const float scale = menu_screen_scale();
     ctx.set_scale(scale);
-
-    const int canvas_x = (screen_w - static_cast<int>(menu_ref_w * scale)) / 2;
-    const int canvas_y = (screen_h - static_cast<int>(menu_ref_h * scale)) / 2;
+    const int canvas_y = (rf::gr::clip_height() - static_cast<int>(menu_ref_h * scale)) / 2;
 
     Fonts fonts;
-    fonts.title = menu_font(true, 46.0f, scale);
     fonts.heading = menu_font(true, 32.0f, scale);
     fonts.section = menu_font(true, 24.0f, scale);
     fonts.body = menu_font(false, 20.0f, scale);
@@ -3439,24 +3169,24 @@ void settings_menu_build(UiContext& ctx)
     const bool screen_interactive = modal == Modal::None && !g_closing;
     if (ctx.draw || screen_interactive) {
         build_screen(ctx, canvas_y, fonts, sync_state);
-    }
-    // Stock draws its side bars over its menus; the dialogs, and their dim, go over the bars.
-    if (ctx.draw) {
-        rf::gr::reset_clip();
-        rf::ui::menu_draw_side_bars();
+        // Under the dialogs and their dim.
+        if (ctx.draw) {
+            const std::vector<std::string> crumbs = menu_crumbs({});
+            menu_draw_frame(ctx, frame_path(crumbs), frame_hints(ctx, modal), frame_links(modal, crumbs.size()));
+        }
     }
     if (modal == Modal::GridPicker) {
         if (g_picker) {
-            build_grid_picker_modal(ctx, canvas_x, canvas_y, fonts);
+            build_grid_picker_modal(ctx, fonts);
         }
     }
     else if (modal == Modal::ColorPicker) {
         if (g_color_pick.row) {
-            build_color_picker_modal(ctx, canvas_x, canvas_y, fonts);
+            build_color_picker_modal(ctx, fonts);
         }
     }
     else if (modal != Modal::None) {
-        build_modal(ctx, canvas_x, canvas_y, fonts);
+        build_modal(ctx, fonts);
     }
 
     if (!ctx.draw) {
@@ -3485,7 +3215,7 @@ void __cdecl settings_menu_key_callback(int key)
 
     if ((key & rf::KEY_MASK) == rf::KEY_ESC) {
         if (g_modal != Modal::None) {
-            g_modal = Modal::None;
+            close_modal(g_ui);
             ui_play_click();
             return;
         }
@@ -3516,13 +3246,9 @@ void settings_menu_input()
     // The console reads the same key queue a focused box drains, so a box would type into both -
     // and the menu pump skips the key loop entirely while it is open, which would leave a capture
     // listening with nothing able to end it.
-    if (rf::console::console_is_visible()) {
-        if (g_ui.focused_text_id() != 0) {
-            g_ui.release_text_focus(true);
-        }
-        if (g_capture.row >= 0) {
-            g_ui.cancel_key_capture();
-        }
+    ui_drop_text_focus_under_console(g_ui);
+    if (rf::console::console_is_visible() && g_capture.row >= 0) {
+        g_ui.cancel_key_capture();
     }
 
     const int wheel = rf::mouse_dz;
@@ -3536,6 +3262,10 @@ void settings_menu_input()
     bind_poll_capture_mouse(wheel);
     const bool capturing = g_capture.row >= 0;
 
+    // As drawn last frame, before the pass's clicks change it.
+    const std::vector<std::string> crumbs = menu_crumbs({});
+    const std::vector<std::string> path = frame_path(crumbs);
+    const MenuStripLinks links = frame_links(g_modal, crumbs.size());
     g_ui.begin_frame(x, y, capturing ? 0 : wheel, !capturing && rf::mouse_button_is_down(0),
         !capturing && rf::mouse_was_button_pressed(0) != 0,
         !capturing && rf::mouse_was_button_pressed(1) != 0);
@@ -3548,6 +3278,18 @@ void settings_menu_input()
     settings_menu_build(g_ui);
     g_ui.end_pass();
     write_committed_values();
+
+    // A step of the path, or the player, goes back up the menus, Options closing as for Back.
+    if (const int link = menu_strip_click(g_ui, path, links); link != -1) {
+        if (link == menu_strip_player) {
+            column_menu_jump_to_player();
+        }
+        else {
+            column_menu_jump_to_step(static_cast<std::size_t>(link));
+        }
+        ui_play_click();
+        request_close();
+    }
 
     // The click or Enter that opened a capture is still visible to the counters this frame; the
     // capture only starts listening on the next one.
@@ -3611,6 +3353,7 @@ void settings_menu_enter()
     g_picker_row = nullptr;
     g_picker = nullptr;
     g_picker_scroll = 0.0f;
+    g_picker_scrolled_to = 0;
     g_color_pick = ColorPick{};
     g_baseline.clear();
     for (const SettingRow& row : settings_registry_all()) {
@@ -3620,10 +3363,8 @@ void settings_menu_enter()
     g_changed.clear();
     // The context first: reset() releases a text focus, and a stale commit callback would still
     // be holding a pointer into g_row_state.
-    g_ui.reset();
+    menu_ui_reset(g_ui);
     g_row_state.clear();
-    g_ui.style = settings_menu_style();
-    g_ui.set_hover_sound_enabled(true);
 }
 
 void settings_menu_push_toast(const char* text)
@@ -3640,19 +3381,9 @@ void settings_menu_do_frame(bool paused)
         settings_menu_input();
     }
 
-    rf::gr::reset_clip();
-    rf::ui::menu_draw_background();
-
-    int x = 0;
-    int y = 0;
-    int z = 0;
-    rf::mouse_get_pos(x, y, z);
-    g_ui.set_mouse_pos(x, y);
-    g_ui.begin_pass(UiPass::Draw);
-    settings_menu_build(g_ui);
-    g_ui.end_pass();
-    g_ui.draw_overlays();
-    g_ui.draw_toasts(menu_font(false, 17.0f, menu_screen_scale()));
+    menu_run_draw(g_ui, settings_menu_build);
+    // Below the path strip.
+    g_ui.draw_toasts(menu_font(false, 17.0f, menu_screen_scale()), skin_px(g_ui, menu_strip_h));
     rf::gr::reset_clip();
 }
 

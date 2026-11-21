@@ -2,11 +2,13 @@
 #include "bot_chat_manager.h"
 #include "bot_combat.h"
 #include "bot_context.h"
+#include "bot_personality.h"
 #include "bot_utils.h"
 #include "bot_vehicle.h"
 #include "../gametype.h"
 #include "../multi.h"
 #include "../network.h"
+#include "../powerups.h"
 #include "../server.h"
 #include "../server_internal.h"
 #include "../demo/demo.h"
@@ -68,6 +70,7 @@ struct ServerBot
 
     BotContext ctx;
     int roster_id = 0;
+    afstats::BotSource source = afstats::BotSource::config;
     float think_wait = 0.0f;
     PendingThrow pending_throw;
     WeaponHold fire_anim;
@@ -90,6 +93,7 @@ struct ServerBotRosterEntry
     bool join_bot = false;
     std::string skill; // Join Bots only: the preset that replaces the profile's skill
     std::string personality; // Join Bots only: the preset that replaces the profile's personality
+    bool from_command = false; // sv_bot_add rather than the config's server_bots
 };
 
 std::vector<std::unique_ptr<ServerBot>> g_server_bots;
@@ -196,7 +200,7 @@ int server_bot_hold_left(ServerBot::WeaponHold& hold, const rf::Entity& ep)
 void server_bot_note_fire_anim(ServerBot& bot, const rf::Entity& ep, const int weapon_type, const bool alt_fire)
 {
     server_bot_set_hold(bot.fire_anim, ep, weapon_type,
-        fpgun_action_anim_ms(weapon_type, alt_fire ? rf::WA_ALT_FIRE : rf::WA_FIRE));
+        haste_scale_ms(&ep, fpgun_action_anim_ms(weapon_type, alt_fire ? rf::WA_ALT_FIRE : rf::WA_FIRE)));
 }
 
 bool server_bot_weapon_reloading(ServerBot& bot, rf::Entity& ep)
@@ -215,7 +219,7 @@ void server_bot_reload(ServerBot& bot, rf::Player& pp, const int weapon_type)
     }
     const int engine_ms = static_cast<int>(
         rf::weapon_types[weapon_type].clip_reload_time_secs * k_client_reload_ms_per_clip_reload_sec);
-    const int reload_ms = std::max(engine_ms, fpgun_action_anim_ms(weapon_type, rf::WA_RELOAD));
+    const int reload_ms = haste_scale_ms(ep, std::max(engine_ms, fpgun_action_anim_ms(weapon_type, rf::WA_RELOAD)));
     server_bot_set_hold(bot.client_reload, *ep, weapon_type, server_bot_hold_left(bot.fire_anim, *ep) + reload_ms);
 }
 
@@ -245,7 +249,7 @@ void server_bot_throw(ServerBot& bot, rf::Entity& ep, const int weapon_type, con
 {
     rf::entity_play_attack_anim(&ep, alt_fire);
     server_bot_note_fire_anim(bot, ep, weapon_type, alt_fire);
-    const int delay_ms = bot_weapon_create_delay_ms(weapon_type, alt_fire);
+    const int delay_ms = haste_scale_ms(&ep, bot_weapon_create_delay_ms(weapon_type, alt_fire));
     if (delay_ms <= 0) {
         server_bot_fire(ep, weapon_type, alt_fire);
         return;
@@ -329,11 +333,11 @@ void server_bot_apply_fire(ServerBot& bot, rf::Player& pp, rf::Entity& ep, const
         server_bot_note_fire_anim(bot, ep, weapon_type, alt_fire);
     }
     if (!thrown && rf::weapon_is_semi_automatic(weapon_type)) {
-        ep.ai.next_fire_primary.set(bot_semi_auto_min_interval_ms(weapon_type));
+        ep.ai.next_fire_primary.set(haste_scale_ms(&ep, bot_semi_auto_min_interval_ms(weapon_type)));
     }
     // Thrown weapons leave through the remote-fire handler, which never re-arms the fire wait.
     else if (!ep.ai.next_fire_primary.valid() || ep.ai.next_fire_primary.elapsed()) {
-        ep.ai.next_fire_primary.set(rf::weapon_get_fire_wait_ms(weapon_type, alt_fire));
+        ep.ai.next_fire_primary.set(haste_scale_ms(&ep, rf::weapon_get_fire_wait_ms(weapon_type, alt_fire)));
     }
 }
 
@@ -473,7 +477,7 @@ void server_bots_process_removals()
             rf::multi_ctf_drop_flag(player);
         }
         rf::multi_powerup_remove_all_for_player(player);
-        afstats::note_leave_reason(player, afstats::LeaveReason::quit);
+        afstats::note_leave_reason(player, afstats::LeaveReason::bot_removed);
         rf::send_left_game_packet(player_id, RF_LR_NORMAL);
         rf::multi_player_left_game(player);
     }
@@ -495,10 +499,11 @@ bool server_bot_roster_has_entry(const int roster_id)
 }
 
 void server_bot_roster_add(const int profile_index, const int team, const bool join_bot = false,
-                           const std::string& skill = {}, const std::string& personality = {})
+                           const std::string& skill = {}, const std::string& personality = {},
+                           const bool from_command = false)
 {
     g_server_bot_roster.push_back(
-        {profile_index, team, g_next_server_bot_roster_id++, join_bot, skill, personality});
+        {profile_index, team, g_next_server_bot_roster_id++, join_bot, skill, personality, from_command});
 }
 
 const ServerBotRosterEntry* server_bot_roster_entry(const int roster_id)
@@ -576,21 +581,21 @@ ServerBot* pick_server_bot_to_evict(const bool configured_only = false)
 
 void server_bot_create(const ServerBotRosterEntry& entry)
 {
-    const int bot_team = (entry.team == rf::TEAM_RED || entry.team == rf::TEAM_BLUE)
-        ? entry.team
+    const auto& configs = g_alpine_server_config.bot_configs;
+    const int num_configs = static_cast<int>(configs.size());
+    const int profile = (entry.profile_index >= 0 && entry.profile_index < num_configs)
+        ? entry.profile_index
+        : g_bot_profile_slots.least_used_slot(num_configs);
+    const int profile_team = multi_is_team_game_type() ? g_alpine_server_config.bot_team_for_profile(profile) : -1;
+    const int bot_team = (entry.team == rf::TEAM_RED || entry.team == rf::TEAM_BLUE) ? entry.team
+        : profile_team >= 0 ? profile_team
         : pick_team_for_new_server_bot();
     rf::Player* const pp = rf::player_allocate(false);
     if (!pp) {
         return;
     }
-
-    const auto& configs = g_alpine_server_config.bot_configs;
-    const int num_configs = static_cast<int>(configs.size());
-    if (entry.profile_index >= 0 && entry.profile_index < num_configs) {
-        g_bot_profile_slots.assign_explicit(pp, entry.profile_index);
-    }
-    else {
-        g_bot_profile_slots.assign_slot(pp, num_configs);
+    if (profile >= 0) {
+        g_bot_profile_slots.assign_explicit(pp, profile);
     }
     const ServerBotConfig default_config{};
     const ServerBotConfig& config = server_bot_config_for(pp, default_config);
@@ -632,6 +637,10 @@ void server_bot_create(const ServerBotRosterEntry& entry)
     bot->ctx.player = pp;
     bot->ctx.is_server_bot = true;
     bot->roster_id = entry.id;
+    // Kept on the bot, as its roster entry can be erased while it is still in the game.
+    bot->source = entry.join_bot ? afstats::BotSource::join_bots
+        : entry.from_command ? afstats::BotSource::command
+        : afstats::BotSource::config;
     // Bots created together think on different frames.
     bot->think_wait = k_server_bot_think_interval * std::fmod(static_cast<float>(entry.id) * 0.618034f, 1.0f);
     server_bot_apply_config(bot->ctx, config, entry.skill, entry.personality);
@@ -706,14 +715,6 @@ void server_bots_reconcile(const bool in_gameplay)
     }
 }
 
-std::string_view server_bot_team_name(const int team)
-{
-    if (team == rf::TEAM_RED) {
-        return "red";
-    }
-    return team == rf::TEAM_BLUE ? "blue" : "auto";
-}
-
 std::string server_bot_profile_label(const int profile_index)
 {
     return profile_index >= 0 ? std::to_string(profile_index) : std::string{"auto"};
@@ -762,7 +763,7 @@ bool server_bots_add_to_roster(const int profile_index, const int team)
         return false;
     }
     const bool was_configured = server_bots_configured();
-    server_bot_roster_add(profile_index, team);
+    server_bot_roster_add(profile_index, team, false, {}, {}, true);
     server_bot_roster_on_changed(was_configured);
     return true;
 }
@@ -880,7 +881,7 @@ std::string server_bots_build_list_output()
         const ServerBot* const bot = server_bot_for_roster_entry(entry.id);
         if (!bot) {
             std::format_to(std::back_inserter(output), "- (waiting for a free slot) | Profile: {} | Team: {}{}\n",
-                server_bot_profile_label(entry.profile_index), server_bot_team_name(entry.team),
+                server_bot_profile_label(entry.profile_index), bot_team_config_name(entry.team),
                 entry.join_bot ? " | Join Bots" : "");
             continue;
         }
@@ -888,7 +889,7 @@ std::string server_bots_build_list_output()
         std::format_to(std::back_inserter(output),
             "- {} | Profile: {} | Team: {} | State: {} | Score: {} | Ping: 0{}\n", player.name,
             server_bot_profile_label(g_bot_profile_slots.get_slot(&player)),
-            team_mode ? server_bot_team_name(player.team) : std::string_view{"-"}, server_bot_state_name(player),
+            team_mode ? bot_team_config_name(player.team) : std::string_view{"-"}, server_bot_state_name(player),
             server_bot_score(player), entry.join_bot ? " | Join Bots" : "");
     }
     return output;
@@ -903,6 +904,19 @@ ServerBot* server_bot_from_player(const rf::Player* player)
         return bot->ctx.player == player;
     });
     return it != g_server_bots.end() ? it->get() : nullptr;
+}
+
+std::optional<ServerBotStatsInfo> server_bot_stats_info(const rf::Player* player)
+{
+    ServerBot* const bot = server_bot_from_player(player);
+    if (!bot) {
+        return std::nullopt;
+    }
+    return ServerBotStatsInfo{
+        .source = bot->source,
+        .personality = bot_personality_get(bot->ctx).name,
+        .skill = bot_skill_profile_get(bot->ctx).name,
+    };
 }
 
 ServerBot* server_bot_from_entity(const rf::Entity* entity)

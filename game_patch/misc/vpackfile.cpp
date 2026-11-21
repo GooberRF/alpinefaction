@@ -588,6 +588,12 @@ bool file_loaded_from_alpinefaction_vpp(const char* filename)
     return false;
 }
 
+bool file_loaded_from_tc_mod(const char* filename)
+{
+    rf::VPackfileEntry* entry = vpackfile_find_new(filename);
+    return entry && entry->parent->is_mods;
+}
+
 CodeInjection vpackfile_open_check_seek_result_injection{
     0x0052C301,
     [](auto& regs) {
@@ -876,4 +882,30 @@ std::string vpackfile_load_user_maps_packfiles()
         return "No new packfiles found in user_maps\\";
     }
     return std::format("Loaded {} new packfile(s) from user_maps\\", loaded);
+}
+
+std::optional<std::string> read_game_file(const char* filename, int max_size)
+{
+    rf::File file;
+    if (file.open(filename) != 0) {
+        return std::nullopt;
+    }
+    const int size = file.size();
+    std::optional<std::string> content;
+    if (size >= 0 && size <= max_size) {
+        content.emplace(static_cast<std::size_t>(size), '\0');
+        int total_read = 0;
+        while (total_read < size) {
+            const int num_read = file.read(content->data() + total_read, size - total_read);
+            if (num_read <= 0) {
+                break;
+            }
+            total_read += num_read;
+        }
+        if (total_read != size) {
+            content.reset();
+        }
+    }
+    file.close();
+    return content;
 }

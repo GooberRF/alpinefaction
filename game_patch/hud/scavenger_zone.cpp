@@ -2,11 +2,10 @@
 #include <cmath>
 #include <cstdint>
 #include "scavenger_zone.h"
+#include "hud_world.h"
 #include "zone_marker.h"
 #include "../multi/scavenger.h"
-#include "../os/os.h"
 #include "../rf/multi.h"
-#include "../rf/os/frametime.h"
 
 namespace
 {
@@ -31,6 +30,7 @@ struct ZoneVisualState
     bool capture_burst_active = false;
     ZoneMarkerBurst capture_burst;
     float pulse_phase = 0.0f;
+    int64_t pulse_ms = 0; // where pulse_phase was last advanced
 };
 
 ZoneVisualState g_zone_visual;
@@ -71,7 +71,7 @@ void scavenger_zone_render()
         return;
     }
 
-    const int64_t now_ms = timer::get_i64(1000);
+    const int64_t now_ms = world_hud_clock_ms();
     track_zone_changes(view, now_ms);
     auto& vis = g_zone_visual;
 
@@ -80,7 +80,9 @@ void scavenger_zone_render()
         : 0.0f;
     const rf::Color base = zone_marker_lerp_color(kScavZoneColorIdle, kScavZoneColorUrgent, urgency);
     const float pulse_period = kPulsePeriodIdleS + (kPulsePeriodUrgentS - kPulsePeriodIdleS) * urgency;
-    vis.pulse_phase = std::fmod(vis.pulse_phase + rf::frametime / pulse_period, 1.0f);
+    vis.pulse_phase =
+        std::fmod(vis.pulse_phase + static_cast<float>(now_ms - vis.pulse_ms) / 1000.0f / pulse_period, 1.0f);
+    vis.pulse_ms = now_ms;
     const float brightness = zone_marker_pulse_brightness(vis.pulse_phase);
 
     if (vis.capture_burst_active) {

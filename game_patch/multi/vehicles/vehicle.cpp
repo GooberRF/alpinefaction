@@ -17,6 +17,8 @@
 #include "vehicle_spawn.h"
 #include "vehicle_tracers.h"
 #include "vehicle_fx.h"
+#include "vehicle_trails.h"
+#include "vehicle_debris.h"
 #include "../alpine_packets.h"
 #include "../demo/demo.h"
 #include "../multi.h"
@@ -95,13 +97,24 @@ namespace
     constexpr float vehicle_auto_return_pad_radius = 10.0f; // no auto-return this close to its factory
     constexpr float vehicle_auto_return_leave_radius = 12.0f; // hysteresis: the timer restarts only past this
 
+    bool is_vehicle_use_function(int use_function)
+    {
+        return use_function == rf::ENTITY_USE_VEHICLE || use_function == rf::ENTITY_USE_TURRET;
+    }
+
+    bool entity_type_in_range(int entity_type_index)
+    {
+        return entity_type_index >= 0 && entity_type_index < rf::num_entity_types
+            && entity_type_index < rf::MAX_ENTITY_TYPES;
+    }
+
     bool is_synced_use_function(int use_function)
     {
         // A MP level without factories has no synced hulls; its level-placed turrets stay stock props.
         if (rf::is_multi && !vehicle_level_has_factories()) {
             return false;
         }
-        return use_function == rf::ENTITY_USE_VEHICLE || use_function == rf::ENTITY_USE_TURRET;
+        return is_vehicle_use_function(use_function);
     }
 
     // Indexed by VehicleDamageClass; already cased for use after a possessive ("Bob's APC").
@@ -145,7 +158,12 @@ namespace
 
 int vehicle_damage_class_from_type(int entity_type)
 {
-    if (!vehicle_is_synced_entity_type(entity_type)) {
+    return vehicle_is_synced_entity_type(entity_type) ? vehicle_class_from_type(entity_type) : -1;
+}
+
+int vehicle_class_from_type(int entity_type)
+{
+    if (!vehicle_is_vehicle_entity_type(entity_type)) {
         return -1;
     }
     return vehicle_damage_class_from_info(rf::entity_types[entity_type]);
@@ -358,8 +376,6 @@ rf::Entity* vehicle_driver_entity(const rf::Entity* vehicle)
 
 rf::Player* vehicle_seat_occupant_player(const rf::Entity* vehicle, int seat)
 {
-    // The entity hop is load bearing: player_from_entity_handle does not validate, so a stale seat
-    // handle fed to it straight would match a live row.
     rf::Entity* occupant = rf::entity_from_handle(vehicle_seat_leech(vehicle, seat));
     return occupant ? rf::player_from_entity_handle(occupant->handle) : nullptr;
 }
@@ -449,11 +465,14 @@ bool vehicle_is_flyer(rf::Entity* ep)
 
 bool vehicle_is_synced_entity_type(int entity_type_index)
 {
-    if (entity_type_index < 0 || entity_type_index >= rf::num_entity_types
-        || entity_type_index >= rf::MAX_ENTITY_TYPES) {
-        return false;
-    }
-    return is_synced_use_function(rf::entity_types[entity_type_index].use_function);
+    return entity_type_in_range(entity_type_index)
+        && is_synced_use_function(rf::entity_types[entity_type_index].use_function);
+}
+
+bool vehicle_is_vehicle_entity_type(int entity_type_index)
+{
+    return entity_type_in_range(entity_type_index)
+        && is_vehicle_use_function(rf::entity_types[entity_type_index].use_function);
 }
 
 bool vehicle_is_synced_entity_type(const rf::Entity* ep)
@@ -492,6 +511,9 @@ void vehicle_client_do_frame()
         vehicle_update_jeep_wheels();
         vehicle_update_treads();
         vehicle_fx_do_frame();
+        vehicle_trails_do_frame();
+        vehicle_hit_flash_do_frame();
+        vehicle_debris_do_frame();
         vehicle_hazard_client_do_frame();
         // Ahead of the engine frame the hook wraps (0x004B2D90), so the cockpit is stepped first.
         vehicle_process_spectated_cockpit();
@@ -707,7 +729,7 @@ namespace
 
     // The Bullet body is released first so nothing fights the death animation. The blow is unattributed: it
     // goes to a hit from the last vehicle_hit_credit_s, or one a drown or strand scuttle named first.
-    void vehicle_server_scuttle(rf::Entity* ep, float damage)
+    void vehicle_server_scuttle(rf::Entity* ep, float damage, afstats::VehicleEndCause cause)
     {
         const int handle = ep->handle;
         g_vehicle_state.kinematics.erase(handle);
@@ -715,7 +737,17 @@ namespace
         g_vehicle_state.void_timer.erase(handle);
         g_vehicle_state.coast_memory.erase(handle);
         vehicle_physics_server_release(handle);
+        // Ahead of the blow, which settles the cause of a hull it kills.
+        VehicleState* st = vehicle_hull_state(handle);
+        if (st) {
+            st->stats.end_cause = cause;
+        }
         rf::obj_damage(handle, damage, -1, -1, rf::DT_ENERGY, nullptr, -1, 0);
+        // A blow that did not kill must not name a later death.
+        const rf::Entity* survivor = rf::entity_from_handle(handle);
+        if (st && survivor && survivor->life > 0.0f) {
+            st->stats.end_cause.reset();
+        }
     }
 } // namespace
 
@@ -889,6 +921,9 @@ void vehicle_level_init(bool load_assets)
     vehicle_markers_level_init();
     vehicle_tracers_level_init();
     vehicle_fx_level_init(load_assets);
+    vehicle_trails_clear();
+    vehicle_hit_flash_clear();
+    vehicle_debris_clear();
     // The bm cache is rebuilt per level, so a handle resolved for the last one means nothing here.
     vehicle_tread_runtime_reset();
     vehicle_ammo_regen_runtime_reset();
@@ -923,7 +958,7 @@ void vehicle_do_frame()
             if (leech_handle == -1 || rf::entity_from_handle(leech_handle)) {
                 continue;
             }
-            vehicle_server_free_seat(ep, i, leech_handle);
+            vehicle_server_free_seat(ep, i, leech_handle, afstats::VehicleSeatReason::orphan_release);
         }
 
         // Only the current driver's machine ever clears the flag.
@@ -957,7 +992,7 @@ void vehicle_do_frame()
             ep->life = std::max(ep->life - drain, last_life);
             if (ep->life <= last_life || drained_s >= 2.0f * vehicle_hazard_drain_s) {
                 vehicle_note_hazard_destroyer(ep, hazard_s + vehicle_hit_credit_s);
-                vehicle_server_scuttle(ep, vehicle_scuttle_lethal_damage(ep));
+                vehicle_server_scuttle(ep, vehicle_scuttle_lethal_damage(ep), afstats::VehicleEndCause::hazard);
                 continue;
             }
         }
@@ -976,7 +1011,7 @@ void vehicle_do_frame()
             held = nothing_below ? held + rf::frametime : 0.0f;
             if (held >= vehicle_void_time) {
                 // The flat amount, not the victim-sized one: a void fall has no rider left to free.
-                vehicle_server_scuttle(ep, vehicle_drown_damage);
+                vehicle_server_scuttle(ep, vehicle_drown_damage, afstats::VehicleEndCause::void_fall);
                 continue;
             }
         }
@@ -1012,7 +1047,7 @@ void vehicle_do_frame()
             else if (now - hull_state->unoccupied_since_ms
                      >= static_cast<int64_t>(vehicle_unoccupied_destroy_s) * 1000) {
                 // The drown kill, so the factory respawn follows by the same route.
-                vehicle_server_scuttle(ep, vehicle_scuttle_lethal_damage(ep));
+                vehicle_server_scuttle(ep, vehicle_scuttle_lethal_damage(ep), afstats::VehicleEndCause::idle_return);
                 continue;
             }
         }
@@ -1122,5 +1157,6 @@ void vehicle_apply_patches()
     vehicle_spawn_install();
     vehicle_tracers_install();
     vehicle_fx_install();
+    vehicle_debris_install();
     vehicle_horn_install();
 }

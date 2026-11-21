@@ -128,6 +128,9 @@ namespace rf::gr
 
     static auto& num_relevant_lights = addr_as_ref<int>(0x00C9687C);
 
+    // Radius of the multiplayer Damage Amp and Invulnerability holder lights.
+    static auto& powerup_light_radius = addr_as_ref<float>(0x0059479C);
+
     // Bumped by light_create_point, light_delete and the light property setters (not light_alloc,
     // which only resets the filter). gr_light_find_all_by_gsolid (0x004D9870) caches its per-solid
     // light list under this key, so anything that changes a light in place must bump it and then

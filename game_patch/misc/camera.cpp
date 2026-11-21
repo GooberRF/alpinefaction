@@ -1,6 +1,7 @@
 #include <cassert>
 #include <algorithm>
 #include <cmath>
+#include <numbers>
 #include <optional>
 #include <xlog/xlog.h>
 #include <patch_common/AsmWriter.h>
@@ -722,6 +723,31 @@ ConsoleCommand2 camera5_cmd{
     "Freeze the camera in place, following your character (tripod).",
 };
 
+// Printed in af_main_menu.toml's shot form; the angles invert Matrix3::set_from_angles(pitch, 0, heading).
+ConsoleCommand2 dbg_camera_pos_cmd{
+    "dbg_camera_pos",
+    []() {
+        if (!(rf::level.flags & rf::LEVEL_LOADED) || !rf::local_player || !rf::local_player->cam
+            || !rf::local_player->cam->camera_entity) {
+            rf::console::print("No camera");
+            return;
+        }
+        const rf::Vector3 pos = rf::camera_get_pos(rf::local_player->cam);
+        const rf::Vector3 fvec = rf::camera_get_orient(rf::local_player->cam).fvec;
+        constexpr float rad_to_deg = 180.0f / std::numbers::pi_v<float>;
+        const float pitch = std::asin(std::clamp(-fvec.y, -1.0f, 1.0f)) * rad_to_deg;
+        float heading = std::atan2(fvec.x, fvec.z) * rad_to_deg;
+        if (heading < 0.0f) {
+            heading += 360.0f;
+        }
+        rf::console::print("# {}", rf::level.filename.c_str());
+        rf::console::print("pos = [{:.3f}, {:.3f}, {:.3f}]", pos.x, pos.y, pos.z);
+        rf::console::print("pitch = {:.2f}", pitch);
+        rf::console::print("heading = {:.2f}", heading);
+    },
+    "Print the camera's position, pitch and heading (degrees; positive pitch looks down, heading 0 is +Z)",
+};
+
 void camera_do_patch()
 {
     // Maintain third person camera mode if set
@@ -768,4 +794,5 @@ void camera_do_patch()
     camera_do_frame_hook.install();
     camera4_cmd.register_cmd();
     camera5_cmd.register_cmd();
+    dbg_camera_pos_cmd.register_cmd();
 }

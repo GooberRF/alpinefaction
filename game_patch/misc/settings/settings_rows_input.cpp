@@ -903,6 +903,20 @@ const SettingRow rows[] = {
     },
 };
 
+    // VR input are planned for 1.6; their sections come back with it.
+    // },
+    // {
+    //     .id = "vr_placeholder",
+    //     .label = "VR",
+    //     .tooltip = "VR input is not available in this build.",
+    //     .category = Cat::Input,
+    //     .subcategory = "VR",
+    //     .widget = Wid::Label,
+    //     .access = AccNone{},
+    //     .flags = SF_READ_ONLY,
+    //     .persistence = Pers::None,
+    // },  
+
 } // namespace
 
 std::span<const SettingRow> settings_rows_input()

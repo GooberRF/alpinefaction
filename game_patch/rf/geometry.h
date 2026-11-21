@@ -77,6 +77,7 @@ namespace rf
         FACE_SCROLL_TEXTURE = 0x10,
         FACE_FULL_BRIGHT = 0x20,
         FACE_SEE_THRU = 0x40,
+        FACE_SHOOT_THRU = 0x80,
         FACE_INVISIBLE = 0x2000,
         // Set when 0x004D00B0 splits an edge of a face with FACE_HAS_LEVEL_DECAL; 0x004DBBB0 then
         // recomputes the face's decal UVs.
@@ -245,6 +246,11 @@ namespace rf
         {
             AddrCaller{0x004D2E10}.this_call(this);
         }
+
+        void clear_rooms_visited_this_frame()
+        {
+            AddrCaller{0x004D2F80}.this_call(this);
+        }
     };
     static_assert(sizeof(GSolid) == 0x378);
 
@@ -402,6 +408,11 @@ namespace rf
         bool is_see_thru() const
         {
             return (flags & FACE_SEE_THRU) != 0;
+        }
+
+        bool is_shoot_thru() const
+        {
+            return (flags & FACE_SHOOT_THRU) != 0;
         }
 
         bool is_invisible() const
@@ -765,6 +776,8 @@ namespace rf
     static auto& geomod_push_nearby_entities = addr_as_ref<bool(Vector3* pos)>(0x004C0160);
     static auto& g_decal_add = addr_as_ref<GDecal*(GDecalCreateInfo* dci)>(0x004D52E0);
     static auto& g_decal_destroy = addr_as_ref<void(GDecal*)>(0x004D6C50);
+    // Fades and expires decals; the main view runs it once per frame
+    static auto& g_decal_do_frame = addr_as_ref<void()>(0x004D51E0);
     // Live decals, linked through GDecal::next
     static auto& g_decal_list = addr_as_ref<GDecal*>(0x00C4D56C);
     // The faces the orientation pass 0x004D5DA0 took for a decal, which 0x004D6910 then clips it to
@@ -790,6 +803,13 @@ namespace rf
     inline void g_decal_clip_to_face(GDecal* decal, GFace* face, bool skip_if_present)
     {
         AddrCaller{0x004D6240}.c_call<void>(decal, face, skip_if_present);
+    }
+
+    // Clips the polygon `verts` by `plane` into `out` and returns its new vertex count. Each edge can emit two
+    // vertices, so `out` must hold 2 * num_verts.
+    inline int g_clip_poly_to_plane(int num_verts, const Vector3* verts, Vector3* out, const Plane* plane)
+    {
+        return AddrCaller{0x0054A1C0}.c_call<int>(num_verts, verts, out, plane);
     }
 
     // Whether `face` is near enough to `decal` for the orientation pass to take it

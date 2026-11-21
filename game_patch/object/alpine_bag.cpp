@@ -17,7 +17,7 @@ void alpine_bag_load_chunk(rf::File& file, std::size_t chunk_len)
         xlog::warn("[AlpineBag] Failed to read bag count from chunk (len={})", chunk_len);
         return;
     }
-    if (count > 100) count = 100; // hard cap — we only ever use the first
+    if (count > 100) count = 100; // hard cap
 
     xlog::info("[AlpineBag] Loading {} bag object(s) from chunk (len={})", count, chunk_len);
 
@@ -49,8 +49,7 @@ void alpine_bag_clear_state()
     g_bag_objects.clear();
 }
 
-std::optional<AlpineBagInfo> get_first_bag_object()
+const std::vector<AlpineBagInfo>& get_bag_objects()
 {
-    if (g_bag_objects.empty()) return std::nullopt;
-    return g_bag_objects.front();
+    return g_bag_objects;
 }

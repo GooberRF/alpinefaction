@@ -45,6 +45,11 @@ namespace gr::d3d11::engine
     float level_dry_far_clip();
     // The height the room's liquid surface is drawn at, which trails the liquid level while it is moving
     float liquid_surface_y(const rf::GRoom* room);
+    // True with the height the surface is at while the room's liquid is moving and the renderer is to draw the
+    // surface itself, because the engine's face is not rebuilt until the movement ends
+    bool liquid_surface_moving(const rf::GRoom* room, float& out_y);
+    // The highest the room's liquid surface can rise during the level, for what has to be ready before it does
+    float liquid_max_surface_y(const rf::GRoom* room);
 
     struct DistanceFog
     {

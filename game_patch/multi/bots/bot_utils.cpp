@@ -24,8 +24,6 @@ constexpr float kWalkDirectSampleSpacing = 1.5f;
 // Only the stretch ahead is checked; direct moves re-check it every think as the bot advances.
 constexpr float kWalkDirectMaxDistance = 12.0f;
 constexpr float kWalkDirectStepHeight = 0.6f;
-// Matches the drop the movement edge probe refuses to walk off.
-constexpr float kWalkDirectMaxStep = 1.0f;
 constexpr float kWalkDirectFloorProbeDepth = 3.0f;
 constexpr float kWalkDirectProbeMargin = 0.1f;
 constexpr float kWalkDirectLedgeMinRise = 0.25f;

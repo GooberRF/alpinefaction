@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <utility>
 #include <vector>
 #include <patch_common/AsmWriter.h>
 #include <patch_common/CallHook.h>
@@ -36,6 +37,7 @@
 #include "gr_d3d11_hooks.h"
 #include "../gr_ghost_mesh.h"
 #include "../../misc/settings_registry.h"
+#include "../../object/object.h"
 #include <common/gr_d3d11/gr_d3d11_terrain.h>
 #include <common/gr_d3d11/gr_d3d11_liquid.h>
 #include <common/gr_d3d11/gr_d3d11_mesh.h>
@@ -74,8 +76,8 @@ namespace gr::d3d11
     static StaticMeshLights g_static_mesh_lights;
     static rf::gr::Light* g_reaching_static_lights[rf::gr::max_relevant_lights];
 
-    // When true, render_v3d_vif/render_character_vif skip automatic light gathering.
-    // Used by sky room mesh rendering which pre-gathers lights at the untransformed position.
+    // When true, render_v3d_vif/render_character_vif skip automatic light gathering: for sky room meshes, which
+    // pre-gather lights at the untransformed position, and menu previews, which bring their own.
     static bool skip_mesh_light_gather = false;
 
     static void update_static_mesh_lights()
@@ -780,6 +782,25 @@ namespace gr::d3d11
         return renderer && renderer->set_render_target(bm_handle);
     }
 
+    void clear_mesh_lights()
+    {
+        if (renderer) {
+            renderer->clear_mesh_lights();
+        }
+    }
+
+    void flush_scene_outlines()
+    {
+        if (renderer) {
+            renderer->flush_scene_outlines();
+        }
+    }
+
+    bool set_skip_mesh_light_gather(bool skip)
+    {
+        return std::exchange(skip_mesh_light_gather, skip);
+    }
+
     void flush_outlines_before_fpgun()
     {
         // Called from a gameplay-side hook (player_fpgun.cpp), so unlike the gr_* vtable
@@ -1242,6 +1263,8 @@ namespace gr::d3d11
             if (g_alpine_game_config.shadow_quality > 0) {
                 return; // D3D11 shadow mapping handles shadows at quality > 0
             }
+            // A blob shadow is laid on the plane of the face its drop test hits
+            const MovingLiquidFacePlanes liquid_planes;
             obj_shadow_render_all_hook.call_target();
         },
     };

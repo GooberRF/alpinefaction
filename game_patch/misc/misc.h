@@ -14,7 +14,20 @@ extern bool g_character_meshes_are_fullbright;
 void misc_init();
 // The launcher's "Use deprecated legacy menus", as it was when the game started.
 bool legacy_menus_enabled();
-void apply_reduced_speed_in_background();
+// The main menu's version label, its clicks, and the easter egg three of them start.
+std::string main_menu_version_text();
+void main_menu_version_clicked();
+// The menus' seasonal effect (snow, and af_main_menu.toml's seasonal level) is on.
+bool main_menu_seasonal_effect_active();
+// The menu music choices; Default is game.tbl's track. New tracks append, as the setting stores the index.
+inline constexpr const char* main_menu_music_labels[] = {
+    "Default", "PS2", "ClockWerk", "Faction", "Ghost in the Machine", "Grinder", "MooGroov", "Neology",
+    "Self Destruct Sequence", "Storm", "Tribes", "Tension", "Zatso", "Trilogy",
+};
+void main_menu_music_on_setting_changed();
+// While set, the menu background draws nothing: a frame run beneath a menu that paints its own over it.
+void main_menu_set_background_hidden(bool hidden);
+void main_menu_render_egg();
 void set_jump_to_multi_server_list(bool jump);
 void set_jump_to_demo_browser(bool jump);
 void start_join_multi_game_sequence(const rf::NetAddr& addr, const std::string& password);
@@ -35,7 +48,10 @@ void initialize_achievement_manager();
 void set_levelmod_autotexture_ppm();
 void clear_explicit_upcoming_game_type_request();
 bool file_loaded_from_alpinefaction_vpp(const char* filename);
+bool file_loaded_from_tc_mod(const char* filename);
 bool weapon_reticle_is_customized(int weapon_id, bool bighud);
+// The weapon's 3rd person mesh, or "" for none or an unknown type.
+const char* weapon_third_person_mesh(int weapon_type);
 bool rocket_locked_reticle_is_customized(bool bighud);
 bool gameseq_is_stacked(rf::GameState state);
 bool gameseq_is_deep_stacked(rf::GameState state);

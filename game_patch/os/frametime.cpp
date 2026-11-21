@@ -19,6 +19,7 @@
 #include "../misc/alpine_settings.h"
 #include "../hud/hud.h"
 #include "../hud/minimap.h"
+#include "../ui/menu_shell.h"
 #include <xlog/xlog.h>
 #include "../misc/settings_registry.h"
 
@@ -29,10 +30,11 @@ static FpsCounterState g_fps_counter_state;
 
 static int frametime_hud_counter_base_y()
 {
-    int y = 10;
+    // Below the path strip of a menu over the screen.
+    int y = menu_strip_drawn_h() + 10;
     if (rf::gameseq_in_gameplay()) {
         const int gap = g_alpine_game_config.big_hud ? 10 : 6;
-        y = std::max(g_alpine_game_config.big_hud ? 110 : 60, hud_ammo_counter_bottom_y() + gap);
+        y = std::max({y, g_alpine_game_config.big_hud ? 110 : 60, hud_ammo_counter_bottom_y() + gap});
         if (const auto minimap = minimap_panel_rect()) {
             y = std::max(y, minimap->y + minimap->size + gap);
         }

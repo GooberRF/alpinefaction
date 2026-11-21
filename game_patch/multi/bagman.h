@@ -1,5 +1,6 @@
 #pragma once
 
+#include <vector>
 #include "../rf/math/vector.h"
 #include "../rf/math/matrix.h"
 #include "../rf/os/timestamp.h"
@@ -12,6 +13,10 @@ namespace rf
     struct NetAddr;
     struct VifLodMesh;
     struct VMesh;
+    namespace gr
+    {
+        struct Color;
+    }
 }
 
 enum class BagState : uint8_t
@@ -22,12 +27,19 @@ enum class BagState : uint8_t
     BS_Delayed = 3,  // initial spawn delay active; no bag item exists yet
 };
 
+struct BagHome
+{
+    rf::Vector3 pos{};
+    rf::Matrix3 orient{};
+};
+
 struct BagmanInfo
 {
     bool active = false;
     bool spawn_known = false;
     rf::Vector3 spawn_pos{}; // home
     rf::Matrix3 spawn_orient{};
+    std::vector<BagHome> homes; // spawn_pos candidates, rolled at level start and on every return
     int bag_item_type = -1;
     int bag_item_handle = -1;
     rf::Vector3 bag_pos{}; // last known
@@ -73,6 +85,8 @@ rf::VifLodMesh* static_vmesh_lod0(rf::VMesh* vmesh);
 bool bagman_query_pickup_bag_outline(rf::VifLodMesh** out_lod_mesh, rf::Vector3* out_pos, rf::Matrix3* out_orient);
 bool bagman_query_carrier_bag_outline(rf::VifLodMesh** out_lod_mesh, rf::Vector3* out_pos, rf::Matrix3* out_orient);
 rf::VMesh* bagman_get_carrier_mesh();
+// The overlay tint for `bmh` when it is the bag aura, else null.
+const rf::gr::Color* bagman_aura_tint(int bmh);
 void bagman_update_dynamic_light();
 void bagman_play_return_sound();
 

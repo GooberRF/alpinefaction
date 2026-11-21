@@ -3,10 +3,13 @@
 #include <vector>
 #include <set>
 #include <algorithm>
+#include <type_traits>
 #include <windows.h>
+#include <patch_common/CodeInjection.h>
 #include <patch_common/FunHook.h>
 #include <patch_common/MemUtils.h>
 #include <xlog/xlog.h>
+#include <common/decal_clip.h>
 #include "geometry.h"
 #include "gizmo.h"
 #include "level.h"
@@ -14,6 +17,7 @@
 #include "mover_path.h"
 #include "resources.h"
 #include "texture_mode.h"
+#include "vtypes.h"
 
 
 // Recompute a GSolid's bounding box from its face bounding boxes.
@@ -1362,6 +1366,40 @@ void __fastcall level_redo_hooked(CDedLevel* level, void* edx_unused)
     }
 }
 
+// The decal clip to a face (0x00493570) copies and clips the face in two 25-vertex stack buffers with no bound, so a
+// long edge loop overruns its return address. Clip in heap buffers instead, and skip a face the stock buffer or the
+// decal poly can't hold. No trampoline: every path sets eip past the replaced copy and clip.
+CodeInjection decal_clip_to_face_clip_injection{
+    0x0049367F,
+    [](auto& regs) {
+        rf::GFace* face = regs.edi;
+        rf::GDecal* decal = regs.ebx;
+        constexpr int max_poly_verts = std::extent_v<decltype(rf::DecalPoly::verts)>;
+        int num_face_verts = 0;
+        const auto verts =
+            decal_clip_face_verts(*face, *decal, rf::max_face_vertices, clip_poly_to_plane, num_face_verts);
+        if (verts.empty()) {
+            regs.eip = 0x00493AF2;
+            return;
+        }
+        const int num_verts = static_cast<int>(verts.size());
+        // A level decal's poly takes a UV per face vertex and never reads the clipped polygon
+        const bool level_decal = decal->flags & rf::DF_LEVEL_DECAL;
+        if (level_decal ? num_face_verts > max_poly_verts : num_verts > max_poly_verts) {
+            regs.eip = 0x00493AF2;
+            return;
+        }
+        auto* result = &addr_as_ref<rf::Vector3>(regs.esp + 0x24); // stock's first clip buffer
+        if (!level_decal) {
+            std::copy_n(verts.data(), num_verts, result);
+        }
+        regs.esi = result;
+        regs.ebp = num_verts;
+        regs.eip = 0x0049370B;
+    },
+    false,
+};
+
 void ApplyGeometryPatches()
 {
     brush_fuse_hook.install();
@@ -1369,4 +1407,5 @@ void ApplyGeometryPatches()
     level_undo_hook.install();
     level_redo_hook.install();
     solid_weld_vertices_hook.install();
+    decal_clip_to_face_clip_injection.install();
 }

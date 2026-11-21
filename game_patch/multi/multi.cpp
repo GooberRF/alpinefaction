@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <format>
 #include <regex>
 #include <xlog/xlog.h>
 #include <winsock2.h>
@@ -10,6 +11,7 @@
 #include <patch_common/AsmWriter.h>
 #include <common/version/version.h>
 #include <common/utils/list-utils.h>
+#include <common/utils/string-utils.h>
 #include <common/rfproto.h>
 #include "multi.h"
 #include "demo/demo.h"
@@ -20,13 +22,17 @@
 #include "kill_attribution.h"
 #include "awards.h"
 #include "server_internal.h"
+#include "server_browser_data.h"
+#include "server_switch.h"
+#include "dedi_cfg.h"
 #include "gametype.h"
+#include "listen_server_setup.h"
 #include "rounds.h"
 #include "salvage.h"
-#include "payload.h"
 #include "vehicles/vehicle.h"
 #include "vehicles/vehicle_physics.h"
 #include "mutators.h"
+#include "powerups.h"
 #include "vote_client.h"
 #include "bots/bot_chat_manager.h"
 #include "bots/bot_context_fwd.h"
@@ -42,6 +48,7 @@
 #include "../misc/misc.h"
 #include "../misc/alpine_options.h"
 #include "../misc/alpine_settings.h"
+#include "../misc/vpackfile.h"
 #include "../misc/waypoints.h"
 #include "../rf/os/os.h"
 #include "../rf/event.h"
@@ -411,50 +418,17 @@ FunHook<void()> multi_limbo_init{
         else if (gt != rf::NG_TYPE_RUN) { // no winner in run
             int red = 0, blue = 0;
             switch (gt) {
-            case rf::NG_TYPE_CTF: {
-                red = rf::multi_ctf_get_red_team_score();
-                blue = rf::multi_ctf_get_blue_team_score();
-                break;
-            }
-            case rf::NG_TYPE_TEAMDM: {
-                red = rf::multi_tdm_get_red_team_score();
-                blue = rf::multi_tdm_get_blue_team_score();
-                break;
-            }
+            case rf::NG_TYPE_CTF:
+            case rf::NG_TYPE_TEAMDM:
             case rf::NG_TYPE_DC:
-            case rf::NG_TYPE_KOTH: {
-                red = multi_koth_get_red_team_score();
-                blue = multi_koth_get_blue_team_score();
-                break;
-            }
+            case rf::NG_TYPE_KOTH:
             case rf::NG_TYPE_SAL:
-            case rf::NG_TYPE_SCAV: {
-                red = salvage_get_red_team_score();
-                blue = salvage_get_blue_team_score();
+            case rf::NG_TYPE_SCAV:
+            case rf::NG_TYPE_REV:
+            case rf::NG_TYPE_PAY:
+            case rf::NG_TYPE_ESC:
+                multi_get_winner_scores(gt, red, blue);
                 break;
-            }
-            case rf::NG_TYPE_REV: {
-                red = static_cast<int>(rev_all_points_permalocked());
-                blue = static_cast<int>(!rev_all_points_permalocked());
-                break;
-            }
-            case rf::NG_TYPE_PAY: {
-                const int winner = payload_winning_team();
-                red = static_cast<int>(winner == 0);
-                blue = static_cast<int>(winner == 1);
-                break;
-            }
-            case rf::NG_TYPE_ESC: {
-                for (const auto& hill : g_koth_info.hills) {
-                    if (hill.ownership == HillOwner::HO_Red) {
-                        red++;
-                    }
-                    else if (hill.ownership == HillOwner::HO_Blue) {
-                        blue++;
-                    }
-                }
-                break;
-            }
             default:
                 break;
             }
@@ -471,6 +445,7 @@ FunHook<void()> multi_limbo_init{
 CodeInjection multi_start_injection{
     0x0046D5B0,
     []() {
+        listen_server_on_multi_start();
         void debug_multi_init();
         debug_multi_init();
         void reset_restricted_cmds_on_init_multi();
@@ -568,7 +543,7 @@ void server_set_player_weapon(rf::Player* pp, rf::Entity* ep, int weapon_type)
 {
     rf::player_make_weapon_current_selection(pp, weapon_type);
     ep->ai.current_primary_weapon = weapon_type;
-    g_select_weapon_done_timestamp[pp->net_data->player_id].set(300);
+    g_select_weapon_done_timestamp[pp->net_data->player_id].set(haste_scale_ms(ep, 300));
 }
 
 bool is_remote_charge_pair(int weapon_a, int weapon_b)
@@ -693,7 +668,7 @@ FunHook<void(rf::Player*, rf::Entity*, int)> multi_select_weapon_server_side_hoo
         else {
             rf::player_make_weapon_current_selection(pp, weapon_type);
             ep->ai.current_primary_weapon = weapon_type;
-            g_select_weapon_done_timestamp[pp->net_data->player_id].set(300);
+            g_select_weapon_done_timestamp[pp->net_data->player_id].set(haste_scale_ms(ep, 300));
         }
     },
 };
@@ -744,7 +719,7 @@ void multi_reload_weapon_server_side(rf::Player* pp, int weapon_type)
                 reload_secs = 2.5f;
             }
 
-            pp->rail_gun_reload_timer.set(static_cast<int>(reload_secs * 1000.0f));
+            pp->rail_gun_reload_timer.set(haste_scale_ms(ep, static_cast<int>(reload_secs * 1000.0f)));
         }
     }
 }
@@ -906,9 +881,18 @@ bool multi_is_player_firing_too_fast(const rf::Player* const pp, const int weapo
 
     static std::vector<int> last_weapon_id(rf::multi_max_player_id, 0);
     static std::vector<int64_t> last_weapon_fire(rf::multi_max_player_id, 0);
+    static std::vector<bool> last_weapon_fire_hasted(rf::multi_max_player_id, false);
 
     const int player_id = pp->net_data->player_id;
     const int64_t now = timer::get_i64(1000);
+
+    // The client's Haste timer runs up to half a round trip behind the server's, so allow its rate for one shot after
+    // expiry.
+    const bool hasted = powerup_is_active(rf::entity_from_handle(pp->entity_handle), AlpinePowerup::haste);
+    if (hasted || last_weapon_fire_hasted[player_id]) {
+        fire_wait_ms = static_cast<int>(fire_wait_ms / haste_speed_factor);
+    }
+    last_weapon_fire_hasted[player_id] = hasted;
 
     // If weapon changed, skip interval check.
     if (last_weapon_id[player_id] != weapon_type) {
@@ -1164,6 +1148,11 @@ std::string_view multi_game_type_name_short(const rf::NetGameType game_type) {
     }
 }
 
+std::string multi_game_type_maps_label(std::optional<rf::NetGameType> game_type)
+{
+    return game_type ? std::format("{} maps", multi_game_type_name_short(*game_type)) : std::string{"All maps"};
+}
+
 std::string_view multi_game_type_prefix(const rf::NetGameType game_type) {
     if (game_type == rf::NG_TYPE_DM) {
         return std::string_view{"dm"};
@@ -1289,6 +1278,20 @@ bool multi_level_name_matches_game_type(std::string_view level_filename, rf::Net
     return multi_level_name_has_game_type_prefix(map_name, game_type);
 }
 
+std::vector<std::string> multi_installed_levels(const std::function<bool(const char*)>& listed)
+{
+    std::vector<std::string> levels;
+    vpackfile_find_matching_files(StringMatcher().suffix(".rfl"), [&](const char* name) {
+        if (listed(name)) {
+            levels.emplace_back(name);
+        }
+    });
+    // The packfile lookup table iterates in hash order.
+    std::sort(levels.begin(), levels.end(), string_iless);
+    levels.erase(std::unique(levels.begin(), levels.end(), string_iequals), levels.end());
+    return levels;
+}
+
 // A level name with ".rfl" appended when it is missing.
 std::string normalize_level_filename(std::string_view name)
 {
@@ -1297,6 +1300,14 @@ std::string normalize_level_filename(std::string_view name)
         out += ".rfl";
     }
     return out;
+}
+
+std::string level_filename_without_ext(std::string_view filename)
+{
+    if (string_iends_with(filename, ".rfl")) {
+        filename.remove_suffix(4);
+    }
+    return std::string{filename};
 }
 
 int multi_num_spawned_players() {
@@ -1344,9 +1355,7 @@ std::string_view level_display_name()
 
 void configure_custom_gametype_listen_server_settings() {
     // reset to defaults
-    g_alpine_server_config = AlpineServerConfig{};
-    reset_base_scope_tables();
-    g_alpine_server_config_active_rules = AlpineServerConfigRules{};
+    clear_listen_server_config();
     set_upcoming_game_type(rf::netgame.type);
 
     auto& rules = g_alpine_server_config_active_rules;
@@ -1360,10 +1369,20 @@ void configure_custom_gametype_listen_server_settings() {
         rules.gibbing.enabled = true;
     }
 
-    // Always allow these visual options on listen servers
-    g_alpine_server_config.allow_fullbright_meshes = true;
-    g_alpine_server_config.allow_lightmaps_only = true;
-    g_alpine_server_config.allow_outlines = true;
+    listen_server_allow_visual_options();
+}
+
+void multi_start_listen_server(int max_players, int flags)
+{
+    rf::set_in_mp_flag();
+    rf::multi_start(0, nullptr);
+    // multi_start resets both.
+    rf::netgame.max_players = max_players;
+    rf::netgame.flags = flags;
+    rf::multi_hud_clear_chat();
+    rf::local_player->net_data->flags |= rf::NPF_IS_HOST;
+    rf::multi_load_next_level();
+    rf::multi_init_server();
 }
 
 void start_level_in_multi(std::string filename, std::optional<rf::NetGameType> game_type) {
@@ -1381,7 +1400,6 @@ void start_level_in_multi(std::string filename, std::optional<rf::NetGameType> g
         rf::netgame.max_kills = 30;
         rf::netgame.geomod_limit = 64;
         rf::netgame.max_captures = 5;
-        rf::netgame.flags = 0; // no broadcast to tracker
         rf::netgame.type = game_type ? *game_type
             : string_istarts_with(filename, "ctf") ? rf::NetGameType::NG_TYPE_CTF
             : string_istarts_with(filename, "koth") ? rf::NetGameType::NG_TYPE_KOTH
@@ -1399,11 +1417,8 @@ void start_level_in_multi(std::string filename, std::optional<rf::NetGameType> g
             rf::netgame.max_captures = g_alpine_server_config_active_rules.scavenger.cap_limit;
         }
 
-        rf::set_in_mp_flag();
-        rf::multi_start(0, 0);
-        rf::multi_hud_clear_chat();
-        rf::multi_load_next_level();
-        rf::multi_init_server();
+        constexpr int max_players = 32; // what multi_start sets
+        multi_start_listen_server(max_players, 0); // no flags: no broadcast to tracker
     }
 }
 
@@ -1676,6 +1691,8 @@ void multi_do_patch()
     faction_files_do_patch();
     level_download_do_patch();
     network_init();
+    server_switch_apply_patch();
+    server_browser_apply_patch();
     demo_do_patch();
     multi_tdm_apply_patch();
     vehicle_apply_patches();

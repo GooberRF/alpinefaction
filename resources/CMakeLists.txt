@@ -26,6 +26,8 @@ add_packfile(alpinefaction.vpp
     tables/maps_af.txt
     tables/events.tbl
     tables/af_level_quirks.tbl
+    tables/af_reference.toml
+    tables/af_main_menu.toml
 
     # waypoint files
     waypoints/dm01.awp
@@ -100,6 +102,9 @@ add_packfile(alpinefaction.vpp
     sounds/af_fighter_scrape_loop.wav
     sounds/af_zipline_loop1.wav
     sounds/af_killsound1.wav
+    sounds/af_haste_pickup1.wav
+    sounds/af_haste_jump1.wav
+    sounds/af_vampire_pickup1.wav
     sounds/af_radmsg_000.ogg
     sounds/af_radmsg_001.ogg
     sounds/af_radmsg_002.ogg
@@ -268,6 +273,16 @@ add_packfile(alpinefaction.vpp
     images/hud_miniflag_scav.tga
     images/hud_microflag_scav.tga
     images/hud_flag_scav.tga
+    images/hud_pow_damage.tga
+    images/hud_pow_damage_1.tga
+    images/hud_pow_invuln.tga
+    images/hud_pow_invuln_1.tga
+    images/hud_pow_haste_0.tga
+    images/hud_pow_haste_1.tga
+    images/hud_pow_vampire_0.tga
+    images/hud_pow_vampire_1.tga
+    images/hud_pow_jetpack_0.tga
+    images/hud_pow_jetpack_1.tga
     images/CTFflag-afgr.tga
     images/noclip_ammo_bar_1.tga
     images/Icon_EAX.tga
@@ -280,6 +295,7 @@ add_packfile(alpinefaction.vpp
     images/Icon_AFRope.tga
     images/Icon_AFTerrain.tga
     images/Icon_AFDirLight.tga
+    images/Icon_AFAmbience.tga
     images/af_gbrsnowfl01.tga
     images/radar_dish.tga
     images/score_aflogo.tga
@@ -300,7 +316,19 @@ add_packfile(alpinefaction.vpp
     images/dec_af_csp09.tga
     images/dec_af_csp10.tga
     images/af-jetpack1skin1.tga
+    images/af_armorshard1_tex.tga
+    images/af_haste1_metal.tga
+    images/af_haste1_glass.tga
+    images/af_haste1_frame.tga
+    images/af_vampire1_shell.tga
+    images/af_vampire1_orb.tga
+    images/af_vampire1_teeth.tga
+    images/af_healthshard1_shell.tga
+    images/af_healthshard1_gauze.tga
     images/af_menu_cap.svg
+    images/af_menu_cap_tall.svg
+    images/af_menu_plate.svg
+    images/af_menu_plate_tall.svg
     images/af_connector.svg
     images/af_arrows.svg
     images/af_search_icon.svg
@@ -308,6 +336,7 @@ add_packfile(alpinefaction.vpp
     images/af_revert_icon.svg
     images/af_close_icon.svg
     images/af_padlock_icon.svg
+    images/af_edit_icon.svg
     images/af_scavpumap1.dds
     images/af_jeeptire1.tga
     images/af_apctread1.atx
@@ -406,7 +435,17 @@ add_packfile(alpinefaction.vpp
     meshes/af_Fighter01m.v3m
     meshes/af_Sub_Mini01.v3m
     meshes/af_Sub_Mini01T.v3m
+    meshes/af_Jeep01_debris.v3m
+    meshes/af_APC_debris.v3m
+    meshes/af_Driller01_debris.v3m
+    meshes/af_Fighter01_debris.v3m
+    meshes/af_turret_plain_debris.v3m
+    meshes/af_sub_debris.v3m
     meshes/af_zipline1.v3m
+    meshes/af_armorshard1.v3m
+    meshes/af_haste1.v3m
+    meshes/af_vampire1.v3m
+    meshes/af_healthshard1.v3m
 
     animations/af_female_jeep_driver.rfa
     animations/af_female_jeep_gunner.rfa

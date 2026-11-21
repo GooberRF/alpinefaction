@@ -17,6 +17,7 @@
 #include "../server_internal.h"
 #include "../alpine_packets.h"
 #include "../gametype.h"
+#include "../powerups.h"
 #include "../../fflink/afstats_events.h"
 #include "../../fflink/demo_upload.h"
 #include "../../fflink/fflink_session.h"
@@ -477,13 +478,13 @@ void demo_record_capture_team_scoped(const void* data, size_t len, unsigned char
 }
 
 void demo_record_pvp_damage_notify(unsigned char victim_id, float damage, bool died, bool crit,
-                                   unsigned char attacker_id, const AfDamageNotifyHull* hull)
+                                   unsigned char attacker_id, const AfDamageNotifyHull* hull, bool repair)
 {
     if (!g_state.recorder || !g_state.writer.is_open())
         return;
     // Goes through the multi_io_send tap into the file like every other recorder packet
     af_send_damage_notify_packet_for_demo(victim_id, damage, died, crit, attacker_id, g_state.recorder,
-                                          hull);
+                                          hull, repair);
 }
 
 void demo_record_crit_shot(unsigned char shooter_id, unsigned char weapon_type)
@@ -512,6 +513,12 @@ void demo_record_item_pickup(rf::Player* player, const rf::Item* item)
         kind = DemoPickupKind::damage_amp;
     else if (item->info_index == rf::item_lookup_type("Multi Invulnerability"))
         kind = DemoPickupKind::invulnerability;
+    else if (item->info_index == powerup_item_type(AlpinePowerup::haste))
+        kind = DemoPickupKind::haste;
+    else if (item->info_index == powerup_item_type(AlpinePowerup::vampire))
+        kind = DemoPickupKind::vampire;
+    else if (item->info_index == powerup_item_type(AlpinePowerup::jetpack))
+        kind = DemoPickupKind::jetpack;
     else
         return;
     g_state.writer.write_pickup(record_time_ms(), player->net_data->player_id, static_cast<uint8_t>(kind));

@@ -17,6 +17,8 @@ void console_register_command(rf::console::Command* cmd);
 rf::Player* find_best_matching_player(const char* name);
 void console_start_server_log();
 void console_run_script(const char* filename);
+// dbg_berserk: every entity but the local player's goes berserk for an hour.
+void entities_go_berserk();
 
 class DcInvalidArgTypeError : public std::exception
 {};

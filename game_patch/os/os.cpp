@@ -51,7 +51,7 @@ LRESULT WINAPI wnd_proc(HWND wnd_handle, UINT msg, WPARAM w_param, LPARAM l_para
     }
 
     switch (msg) {
-    case WM_ACTIVATE:
+    case WM_ACTIVATE: {
         if (is_headless_mode()) {
             // In headless mode, the console window will have focus and WM_ACTIVATE for the
             // hidden game window may report inactive. Keep active state pinned so client
@@ -60,22 +60,21 @@ LRESULT WINAPI wnd_proc(HWND wnd_handle, UINT msg, WPARAM w_param, LPARAM l_para
             return 0;
         }
 
+        const bool active = LOWORD(w_param) != WA_INACTIVE;
+        const bool minimized = HIWORD(w_param) != 0;
+        rf::is_main_wnd_active = active && !minimized;
+
         if (!rf::is_dedicated_server) {
-            // Show cursor if window is not active
-            if (w_param) {
-                ShowCursor(FALSE);
-                while (ShowCursor(FALSE) >= 0)
-                    ;
+            if (rf::is_main_wnd_active) {
+                while (ShowCursor(FALSE) >= 0) {}
             }
             else {
-                ShowCursor(TRUE);
-                while (ShowCursor(TRUE) < 0)
-                    ;
+                while (ShowCursor(TRUE) < 0) {}
             }
         }
 
-        rf::is_main_wnd_active = w_param;
-        return 0;
+        return DefWindowProcA(wnd_handle, msg, w_param, l_param);
+    }
 
     case WM_WINDOWPOSCHANGING:
         if (is_headless_mode() && l_param) {
@@ -230,7 +229,9 @@ bool is_client_bot_requested_from_cmdline()
     if (rf::is_dedicated_server) {
         return false;
     }
-    return raw_command_line_has_switch(L"-bot");
+    // The command line never changes, and is_headless_mode is called on hot paths
+    static const bool requested = raw_command_line_has_switch(L"-bot");
+    return requested;
 }
 
 bool is_client_debugbot_requested_from_cmdline()
@@ -238,7 +239,8 @@ bool is_client_debugbot_requested_from_cmdline()
     if (rf::is_dedicated_server) {
         return false;
     }
-    return raw_command_line_has_switch(L"-debugbot");
+    static const bool requested = raw_command_line_has_switch(L"-debugbot");
+    return requested;
 }
 
 bool headless_bot_requested_from_raw_cmdline()
@@ -253,7 +255,8 @@ bool awpgen_requested_from_raw_cmdline()
     if (rf::is_dedicated_server) {
         return false;
     }
-    return raw_command_line_has_switch(L"-awpgen");
+    static const bool requested = raw_command_line_has_switch(L"-awpgen");
+    return requested;
 }
 
 bool headless_requested_from_raw_cmdline()

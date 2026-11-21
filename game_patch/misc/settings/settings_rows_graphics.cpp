@@ -120,7 +120,6 @@ const char* const labels_shadow_distance[] = {"Lowest", "Low", "Medium", "High",
 const char* const labels_shadow_quality[] = {"Blob", "Low", "Medium", "High", "Very high", "Maximum"};
 const char* const labels_underwater_fx[] = {"Off", "Caustics", "Caustics + fog", "Full"};
 const char* const labels_detail_textures[] = {"Off", "ATX only", "ATX and automatic"};
-const char* const labels_liquid_surface_quality[] = {"Low", "Medium", "High", "Every frame"};
 
 bool sample_count_offered(const int value)
 {
@@ -166,8 +165,7 @@ const SettingRow rows[] = {
         .subcategory = "Display",
         .widget = Wid::Toggle,
         .access = AccBool{&AGS::reduced_speed_in_background},
-        .flags = SF_APPLY_ON_LOAD | SF_ADVANCED,
-        .apply = apply_reduced_speed_in_background,
+        .flags = SF_ADVANCED,
     },
     {
         .id = "sample_count",
@@ -597,20 +595,6 @@ const SettingRow rows[] = {
         .console_cmd = "cl_particlepoolsize",
         .ui_step = 2048.0f,
         .ui_zero_label = "Stock",
-    },
-    {
-        .id = "liquid_surface_quality",
-        .key = "LiquidSurfaceQuality",
-        .label = "Liquid surface updates",
-        .tooltip = "How closely a rising or falling liquid surface follows its level. Lower is faster on large levels.",
-        .category = Cat::Graphics,
-        .subcategory = "Effects",
-        .widget = Wid::Enum,
-        .access = AccInt{&AGS::liquid_surface_quality, &AGS::set_liquid_surface_quality,
-            AGS::min_liquid_surface_quality, AGS::max_liquid_surface_quality},
-        .flags = SF_ADVANCED,
-        ENUM_LABELS(labels_liquid_surface_quality),
-        .console_cmd = "r_liquidsurface",
     },
     {
         .id = "show_glares",

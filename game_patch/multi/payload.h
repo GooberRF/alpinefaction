@@ -59,7 +59,6 @@ struct PayloadNetState
     float distance = 0.0f;
     float speed = 0.0f;
     std::vector<uint8_t> pushers;
-    std::vector<uint8_t> blockers;
 };
 
 // ─── Read-only state, the same on the server and clients ─────────────────────
@@ -68,10 +67,15 @@ bool payload_active();
 int payload_attacking_team(); // 0 red, 1 blue
 int payload_defending_team();
 rf::Mover* payload_cart_mover();
+// The world box around the cart's brushes now; false with no cart or no brushes
+bool payload_cart_bounds(rf::Vector3& lo, rf::Vector3& hi);
 std::optional<rf::Vector3> payload_cart_center();
 // The Payload_Handler's name, or the default one
 const std::string& payload_cart_name();
 float payload_push_radius();
+// Seconds before an unpushed cart rolls back, or a negative value if it never does
+int payload_rollback_delay();
+bool payload_has_finale();
 // Half the height of the cart's bounds, so its centre less this is the floor it rides on
 float payload_cart_half_height();
 // The level allows it and the server heals a nonzero amount
@@ -88,6 +92,10 @@ bool payload_defenders_have_cart();
 // The cart's held at the round's start, or a client hasn't heard otherwise yet
 bool payload_in_setup();
 bool payload_in_overtime();
+// Server: payload overtime started at least once this level
+bool payload_had_overtime();
+// Server: the finale explosion is dealing its damage, so a death now is one of its kills
+bool payload_finale_blast_active();
 // Held: seconds until the hold ends. Idle: seconds until the cart starts rolling back. Else nullopt.
 std::optional<float> payload_countdown_seconds();
 // Rounded up and never below 1, as a client's countdown reaches 0 before the server's state change does
@@ -99,13 +107,14 @@ int payload_next_checkpoint_index();
 // 0-1 from the last captured checkpoint, or the track's start, to the next one, or to the track's end after the last
 float payload_next_checkpoint_progress();
 bool payload_checkpoint_captured(const PayloadCheckpoint& checkpoint);
+// Server: the seconds its capture adds to the time limit, if the game has one
+float payload_checkpoint_time_bonus(const PayloadCheckpoint& checkpoint);
 // The world position of a payload checkpoint hill (it has no trigger), or nullopt for any other hill
 std::optional<rf::Vector3> payload_checkpoint_pos(const HillInfo& hill);
-// The server's lists: attackers and defenders in the push zone
+// The server's list of attackers in the push zone
 const std::vector<uint8_t>& payload_pusher_ids();
 // The pushers up to the most that speed the cart up
 int payload_useful_pushers();
-const std::vector<uint8_t>& payload_blocker_ids();
 // Where the cart's centre is at `distance` along the track
 rf::Vector3 payload_track_point(float distance);
 // The attackers once the cart reaches the end, else the defenders; -1 outside Payload or with no usable cart

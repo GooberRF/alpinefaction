@@ -3,6 +3,8 @@
 #include <cmath>
 #include <cstdint>
 #include <numbers>
+#include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 #include <common/utils/math-utils.h>
@@ -15,6 +17,7 @@ namespace rf
     struct Entity;
     struct Object;
     struct Player;
+    struct VMesh;
     struct LevelCollisionOut;
 }
 
@@ -37,13 +40,31 @@ int vehicle_damage_class(const rf::Entity* ep);
 
 // The same row from an entity TYPE index, for a factory record that has no live hull.
 int vehicle_damage_class_from_type(int entity_type);
+// The row of any vehicle or turret type, whether or not the current level syncs it.
+int vehicle_class_from_type(int entity_type);
 
 // Display name of a VehicleDamageClass row; cased for use after a possessive ("Bob's APC").
 const char* vehicle_class_display_name(int vehicle_class);
 
+// The $Life a vehicle level gives `entity_class` in multiplayer, when it overrides entity.tbl's.
+std::optional<float> vehicle_mp_max_life(const char* entity_class);
+
+// A mesh a hull carries at one of its prop points, in hull-local space.
+struct VehicleRestAttachment
+{
+    std::string mesh_filename;
+    rf::Vector3 pos;
+    rf::Matrix3 orient;
+};
+
+// The parts (tires, screws, weapons, a jeep's gun) a hull of this entity type shows at rest, drawn outside a level.
+std::vector<VehicleRestAttachment> vehicle_rest_attachments(int entity_type, rf::VMesh* hull);
+
 // entities.tbl $Use: "vehicle" (1) or "turret" (4).
 bool vehicle_is_synced_entity_type(int entity_type_index);
 bool vehicle_is_synced_entity_type(const rf::Entity* ep);
+// The class is a vehicle or turret, whether or not the current level syncs it.
+bool vehicle_is_vehicle_entity_type(int entity_type_index);
 
 // The synced vehicle hull this rider is aboard, or null - a null rider and host_handle -1 both
 // resolve to null. Says nothing about the rider's own liveness.
@@ -286,7 +307,14 @@ bool vehicle_is_driver_obj_update_row(const rf::Player* pp, const rf::Entity* ep
 
 // The occupant that owns the vehicle's weapon: the jeep gunner, the driver otherwise.
 rf::Entity* vehicle_firing_seat_occupant(rf::Entity* vehicle);
+// Who a shot or blow parented to this vehicle is credited to: the firing seat's occupant, else the
+// driver. Null when `vehicle_handle` is no synced vehicle or both of those seats are empty.
+rf::Entity* vehicle_shot_occupant(int vehicle_handle);
+// Any seat the occupancy packet can state holds a rider.
+bool vehicle_hull_occupied(const rf::Entity* vehicle);
 int vehicle_firing_seat_index(const rf::Entity* vehicle);
+// The seat of its synced hull this rider sits in, or -1.
+int vehicle_rider_seat_index(const rf::Entity* rider);
 bool vehicle_local_owns_firing_seat(rf::Entity* ep);
 
 bool vehicle_suppress_local_fire(const rf::Player* pp);
@@ -309,10 +337,11 @@ void vehicle_apply_orient_from_packet(int vehicle_handle, uint16_t tick, int16_t
                                       int8_t steer_q);
 
 // Client: store an af_vehicle_health update, and the values the HUD shows for a vehicle. A scrape_only drop
-// gives the riders no damage flash.
+// gives the riders no damage flash; a packet flagged hurt flashes the hull here, scrape or not.
 void vehicle_store_health_from_packet(int vehicle_handle, float life, float max_life, int primary_ammo,
                                       int secondary_ammo, uint16_t primary_refill_ms, uint16_t secondary_refill_ms,
-                                      const rf::Vector3* hit_dir = nullptr, bool scrape_only = false);
+                                      const rf::Vector3* hit_dir = nullptr, bool scrape_only = false,
+                                      bool hurt = false);
 // Total ammo (clip + reserve) for one weapon type, or -1 for a weapon with no ammo pool at all.
 // Only an exact 0 means EMPTY, so a caller gating on emptiness must test == 0, never <= 0.
 int vehicle_weapon_ammo(const rf::Entity* vehicle, int weapon_type);
@@ -332,8 +361,10 @@ void vehicle_hazard_clear_client_clocks();
 bool vehicle_hud_ammo_refill_progress(const rf::Entity* vehicle, int slot_index, float& progress);
 
 // Server, from obj_damage: the per-class / per-damage-type damage scales. MUST be passed the RAW
-// killer, before vehicle_filter_obj_damage rewrites it; returns damage unchanged off the server.
-float vehicle_scale_damage(int victim_handle, int killer_handle, int damage_type, float damage);
+// killer, before vehicle_filter_obj_damage rewrites it; returns damage unchanged off the server. `pos` is
+// where the blow landed, null when obj_damage was given none.
+float vehicle_scale_damage(int victim_handle, int killer_handle, int damage_type, float damage,
+                           const rf::Vector3* pos);
 
 // The hull's per-class scale for one damage type, 1 for anything that is not a synced hull.
 float vehicle_hull_damage_multiplier(const rf::Entity* victim, int damage_type);
@@ -427,6 +458,8 @@ bool vehicle_cockpit_view_pose(rf::Vector3* out_pos, rf::Matrix3* out_orient);
 // load_assets is false when leaving multiplayer: nothing will draw what it would load.
 void vehicle_level_init(bool load_assets = true);
 void vehicle_level_init_post();
+// Server: report the hulls the level spawned with to the stats stream, once its game_start has gone out.
+void vehicle_report_level_hulls();
 void vehicle_do_frame();
 void vehicle_on_multi_shutdown();
 void vehicle_tbl_overrides_level_init_post();

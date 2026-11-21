@@ -19,6 +19,8 @@ namespace rf
     // Forward declarations
     struct Player;
     struct Entity;
+    struct EntityInfo;
+    struct Object;
 
     // nw/psnet
 
@@ -57,6 +59,13 @@ namespace rf
     // psnet_rel_connect_to_server (0x0052A4B0)
     static auto& net_rel_last_connect_socket = addr_as_ref<int>(0x005A6608);
     static auto& net_port = addr_as_ref<unsigned short>(0x01B587D4);
+    // From -port or the registry at startup, 0 when none was given
+    static auto& net_configured_port = addr_as_ref<unsigned short>(0x0059CDE4);
+    // net_init_socket's setup after a successful bind: broadcast, non-blocking and the receive buffer, the reliable
+    // sockets, and the flag the reliable sockets check
+    static const auto& net_socket_configure = addr_as_ref<void __cdecl(int sock)>(0x00528CB0);
+    static const auto& net_rel_sockets_reset = addr_as_ref<int()>(0x00528EE0);
+    static auto& net_initialized = addr_as_ref<int>(0x01B587CC);
     static const auto& net_stats_update = addr_as_ref<void()>(0x00528580);
     static const auto& net_stats_add = addr_as_ref<void(int, int, int, int)>(0x005286A0);
     // psnet stats: 30 one-second slots of bytes per (payload | header-approx, recv | send,
@@ -364,9 +373,19 @@ namespace rf
         uint32_t ip, uint16_t port, const char* name, const char* level,
         const char* mod, int players, int max_players, int game_type, int flags)>(0x0044DD50);
     static auto& multi_entity_is_female = addr_as_ref<bool(int mp_character_idx)>(0x004762C0);
+    // multi_powerup_add types. The super pair is applied at once; only the first two are timed.
+    enum MultiPowerupType
+    {
+        MULTI_POWERUP_INVULNERABILITY = 0,
+        MULTI_POWERUP_DAMAGE_AMP = 1,
+        MULTI_POWERUP_SUPER_ARMOR = 2,
+        MULTI_POWERUP_SUPER_HEALTH = 3,
+    };
     static auto& multi_powerup_has_player = addr_as_ref<bool(Player* pp, int powerup_type)>(0x004802B0);
     static auto& multi_powerup_get_time_until = addr_as_ref<int(Player* pp, int powerup_type)>(0x004802D0);
     static auto& multi_powerup_add = addr_as_ref<void(Player* pp, int powerup_type, int time_ms)>(0x00480050);
+    // The stock powerup an item class name gives, -1 for none
+    static auto& multi_powerup_type_from_name = addr_as_ref<int(const String* name)>(0x00480010);
     static auto& multi_powerup_remove = addr_as_ref<void(Player* pp, int powerup_type)>(0x004801F0);
     static auto& multi_powerup_remove_all_for_player = addr_as_ref<void(Player* pp)>(0x00480310);
     static auto& send_reload_packet = addr_as_ref<void(Entity* ep, int weapon_type, int ammo, int clip_ammo)>(0x00485B50);
@@ -442,9 +461,16 @@ namespace rf
     constexpr int MAX_MP_CHARACTERS = 31;
     static auto& mp_characters = addr_as_ref<MpCharacterInfo[MAX_MP_CHARACTERS]>(0x006C75A0);
     static auto& num_multi_characters = addr_as_ref<int>(0x006C9C60);
+    // player_create_entity's (0x004A4130) team-skin builders for a character in the "default" skin.
+    static auto& mp_character_lacks_team_skins =
+        addr_as_ref<bool(MpCharacterInfo* character, EntityInfo* info)>(0x004A4540);
+    static auto& mp_character_add_team_skins = addr_as_ref<void(MpCharacterInfo* character, Object* obj)>(0x004A45A0);
     static auto& simultaneous_ping = addr_as_ref<uint32_t>(0x00599CD8);
     static auto& tracker_addr = addr_as_ref<NetAddr>(0x006FC550);
     static auto& tracker_hostname = addr_as_ref<char[64]>(0x0059F4B4);
+    // Nonzero once the tracker is reachable.
+    static auto& tracker_init = addr_as_ref<int()>(0x00482AE0);
+    static auto& tracker_do_broadcast_server = addr_as_ref<void()>(0x00483130);
     static auto& rcon_password = addr_as_ref<char[20]>(0x0064ECD0);
 
     enum ChatSayType {

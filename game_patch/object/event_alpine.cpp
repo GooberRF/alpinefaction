@@ -116,6 +116,7 @@ FunHook<int(const rf::String* name)> event_lookup_type_hook{
                 {"Payload_Handler", 164},
                 {"Payload_Checkpoint", 165},
                 {"When_Setup_Ends", 166},
+                {"Ambience_Region_State", 167},
             };
 
             auto it = custom_event_ids.find(name->c_str());
@@ -208,6 +209,7 @@ FunHook<rf::Event*(int event_type)> event_allocate_hook{
                 {164, []() { return new EventPayloadHandler(); }},
                 {165, []() { return new EventPayloadCheckpoint(); }},
                 {166, []() { return new EventWhenSetupEnds(); }},
+                {167, []() { return new EventAmbienceRegionState(); }},
             };
 
             // find type and allocate
@@ -306,6 +308,7 @@ FunHook<void(rf::Event*)> event_deallocate_hook{
                 {164, [](rf::Event* e) { delete static_cast<EventPayloadHandler*>(e); }},
                 {165, [](rf::Event* e) { delete static_cast<EventPayloadCheckpoint*>(e); }},
                 {166, [](rf::Event* e) { delete static_cast<EventWhenSetupEnds*>(e); }},
+                {167, [](rf::Event* e) { delete static_cast<EventAmbienceRegionState*>(e); }},
             };
 
             // find type and deallocate
@@ -373,7 +376,8 @@ bool is_forward_exempt(rf::EventType event_type) {
         rf::EventType::Mesh_Set_Scale,
         rf::EventType::Payload_Handler,
         rf::EventType::Payload_Checkpoint,
-        rf::EventType::When_Setup_Ends
+        rf::EventType::When_Setup_Ends,
+        rf::EventType::Ambience_Region_State
     };
 
     // AF_Heal should be forward exempt, but this was missed when AF_Heal was added in RFL v300

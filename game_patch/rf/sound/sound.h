@@ -122,6 +122,8 @@ namespace rf
     static auto snd_calculate_2d_from_3d_info = addr_as_ref<void(int handle, const Vector3& pos, float* pan, float* volume, float vol_multiplier)>(0x00505740);
     static auto snd_update_sounds = addr_as_ref<void(const Vector3& camera_pos, const Vector3& camera_vel, const Matrix3& camera_orient)>(0x00505EC0);
     static auto snd_music_play = addr_as_ref<int(char* filename, float volume)>(0x00505C90);
+    // Sets the EAX listener's room level to -10000 mB, as the menus run; once until a level sets it again.
+    static auto snd_eax_room_off = addr_as_ref<void()>(0x00527CD0);
     static auto snd_get_handle = addr_as_ref<int(const char* filename, float min_range, float base_volume, float rolloff)>(0x005054B0);
 
     static auto snd_pc_play = addr_as_ref<int(int handle, float vol_scale, float pan, float unused, bool is_final_volume)>(0x005439D0);
@@ -133,9 +135,11 @@ namespace rf
     static auto snd_pc_set_pan = addr_as_ref<void(int sig, float pan)>(0x00544450);
     static auto snd_pc_get_by_id = addr_as_ref<int(int handle, Sound** sound)>(0x00544700);
     static auto snd_pc_find_by_name = addr_as_ref<int(const char* filename)>(0x00544A70);
+    static auto snd_pc_file_exists = addr_as_ref<bool(const char* filename)>(0x00544680);
     static auto snd_pc_get_duration = addr_as_ref<float(int handle)>(0x00544760);
     static auto snd_pc_change_listener = addr_as_ref<void(const Vector3& pos, const Vector3& vel, const Matrix3& orient)>(0x00543480);
     static auto snd_pc_calc_volume_3d = addr_as_ref<float(int handle, const Vector3& pos, float vol_scale)>(0x00543C20);
+    static auto snd_pc_calc_max_range = addr_as_ref<float(float min_range, float rolloff, float volume)>(0x00544960);
     static auto snd_pc_load_hint = addr_as_ref<int(int handle, bool skip_data_loading, bool is_bluebeard_btz)>(0x00543760);
     static auto snd_pc_calc_play_volume = addr_as_ref<float(int handle, float vol_scale)>(0x00543A60);
     static auto snd_pc_is_ds3d_enabled = addr_as_ref<bool()>(0x00544750);

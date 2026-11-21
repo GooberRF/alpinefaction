@@ -16,10 +16,13 @@
 #include "../rf/ui.h"
 #include "../rf/gr/gr.h"
 #include "../rf/gr/gr_font.h"
+#include "../rf/bmpman.h"
 #include "../rf/input.h"
+#include "../rf/level.h"
 #include "../rf/multi.h"
 #include "../rf/sound/sound.h"
 #include "../rf/sound/sound_ds.h"
+#include "../rf/os/console.h"
 #include "../rf/os/frametime.h"
 #include "../rf/os/os.h"
 #include "../main/main.h"
@@ -29,6 +32,8 @@
 #include "misc.h"
 #include "alpine_settings.h"
 #include "../multi/network.h"
+#include "../ui/column_menu.h"
+#include "../ui/menu_scene.h"
 
 constexpr int EGG_ANIM_ENTER_TIME = 2000;
 constexpr int EGG_ANIM_LEAVE_TIME = 2000;
@@ -52,7 +57,6 @@ static int g_game_music_start_sig = -1;
 namespace rf
 {
     static auto& menu_version_label = addr_as_ref<ui::Gadget>(0x0063C088);
-    static auto& main_menu_music_sig = addr_as_ref<int>(0x005990F8);
 }
 
 struct Snowflake
@@ -76,6 +80,12 @@ static bool is_snow_season()
     const int day = date_now.tm_mday;
 
     return (month == 11 && day >= 11 && day <= 31); // Dec 11 - 31
+}
+
+bool main_menu_seasonal_effect_active()
+{
+    return g_alpine_game_config.seasonal_effect == 2
+        || (g_alpine_game_config.seasonal_effect == 1 && is_snow_season());
 }
 
 static void reset_menu_snowflakes()
@@ -149,10 +159,7 @@ extern CallHook<UiLabel_Create2_Type> UiLabel_create2_version_label_hook;
 void __fastcall UiLabel_create2_version_label(rf::ui::Gadget* self, int edx, rf::ui::Gadget* parent, int x, int y, int w,
                                              int h, const char* text, int font_id)
 {
-    // if a TC mod is loaded, show the mod name on the main menu
-    std::string version_text = rf::mod_param.found()
-        ? std::format("AF {} | {}", VERSION_STR, rf::mod_param.get_arg())
-        : PRODUCT_NAME_VERSION;
+    const std::string version_text = main_menu_version_text();
     text = version_text.c_str();
     ui_get_string_size(&w, &h, text, -1, font_id);
     x = 430 - w;
@@ -172,11 +179,7 @@ CallHook<void()> main_menu_process_mouse_hook{
             rf::ui::Gadget* gadgets_to_check[1] = {&rf::menu_version_label};
             int matched = rf::ui::get_gadget_from_pos(x, y, gadgets_to_check, std::size(gadgets_to_check));
             if (matched == 0) {
-                xlog::trace("Version clicked");
-                ++g_version_click_counter;
-                if (g_version_click_counter == 3) {
-                    g_egg_anim_start = GetTickCount64();
-                }
+                main_menu_version_clicked();
             }
         }
     },
@@ -192,31 +195,54 @@ CallHook<void()> main_menu_render_hook{
     0x00443802,
     [] {
         main_menu_render_hook.call_target();
-        if (g_version_click_counter >= 3) {
-            static const int img = initiate_garden_king();
-            if (img == -1) {
-                return;
-            }
-            int w = 0, h = 0;
-            rf::bm::get_dimensions(img, &w, &h);
-            const uint64_t anim_delta_time = GetTickCount64() - g_egg_anim_start;
-            const int pos_x = (rf::gr::screen_width() - w) / 2;
-            int pos_y = rf::gr::screen_height() - h;
-            if (anim_delta_time < EGG_ANIM_ENTER_TIME) {
-                const float enter_progress = anim_delta_time / static_cast<float>(EGG_ANIM_ENTER_TIME);
-                pos_y += h - static_cast<int>(sinf(enter_progress * static_cast<float>(PI) / 2.0f) * h);
-            } else if (anim_delta_time > EGG_ANIM_ENTER_TIME + EGG_ANIM_IDLE_TIME) {
-                const uint64_t leave_delta = anim_delta_time - (EGG_ANIM_ENTER_TIME + EGG_ANIM_IDLE_TIME);
-                const float leave_progress = leave_delta / static_cast<float>(EGG_ANIM_LEAVE_TIME);
-                pos_y += static_cast<int>((1.0f - cosf(leave_progress * static_cast<float>(PI) / 2.0f)) * h);
-                if (leave_delta > EGG_ANIM_LEAVE_TIME) {
-                    g_version_click_counter = 0;
-                }
-            }
-            rf::gr::bitmap(img, pos_x, pos_y, rf::gr::bitmap_clamp_mode);
-        }
+        main_menu_render_egg();
     },
 };
+
+std::string main_menu_version_text()
+{
+    // if a TC mod is loaded, show the mod name on the main menu
+    return rf::mod_param.found() ? std::format("AF {} | {}", VERSION_STR, rf::mod_param.get_arg())
+                                 : std::string{PRODUCT_NAME_VERSION};
+}
+
+void main_menu_version_clicked()
+{
+    xlog::trace("Version clicked");
+    ++g_version_click_counter;
+    if (g_version_click_counter == 3) {
+        g_egg_anim_start = GetTickCount64();
+    }
+}
+
+void main_menu_render_egg()
+{
+    if (g_version_click_counter >= 3) {
+        static const int img = initiate_garden_king();
+        if (img == -1) {
+            return;
+        }
+        int w = 0, h = 0;
+        rf::bm::get_dimensions(img, &w, &h);
+        const uint64_t anim_delta_time = GetTickCount64() - g_egg_anim_start;
+        const int pos_x = (rf::gr::screen_width() - w) / 2;
+        int pos_y = rf::gr::screen_height() - h;
+        if (anim_delta_time < EGG_ANIM_ENTER_TIME) {
+            const float enter_progress = anim_delta_time / static_cast<float>(EGG_ANIM_ENTER_TIME);
+            pos_y += h - static_cast<int>(sinf(enter_progress * static_cast<float>(PI) / 2.0f) * h);
+        } else if (anim_delta_time > EGG_ANIM_ENTER_TIME + EGG_ANIM_IDLE_TIME) {
+            const uint64_t leave_delta = anim_delta_time - (EGG_ANIM_ENTER_TIME + EGG_ANIM_IDLE_TIME);
+            const float leave_progress = leave_delta / static_cast<float>(EGG_ANIM_LEAVE_TIME);
+            pos_y += static_cast<int>((1.0f - cosf(leave_progress * static_cast<float>(PI) / 2.0f)) * h);
+            if (leave_delta > EGG_ANIM_LEAVE_TIME) {
+                g_version_click_counter = 0;
+            }
+        }
+        // The bitmap takes the current color as a tint; whatever was drawn last must not shade it.
+        rf::gr::set_color(255, 255, 255, 255);
+        rf::gr::bitmap(img, pos_x, pos_y, rf::gr::bitmap_clamp_mode);
+    }
+}
 
 FunHook<int(const int&, const int&)> server_list_cmp_func_hook{
     0x0044A6D0,
@@ -228,30 +254,17 @@ FunHook<int(const int&, const int&)> server_list_cmp_func_hook{
             return has_ping1 ? -1 : 1;
         }
 
-        // Custom player count sorting: use human count from AF 1.3+ servers
+        // Player count sorting: AF servers' humans and bots against other servers' counts (server_players_compare)
         if (rf::ui::server_browser_sort_column == 4) {
             const auto& e1 = server_list[index1];
             const auto& e2 = server_list[index2];
             const auto* extra1 = get_server_browser_extra(e1.addr);
             const auto* extra2 = get_server_browser_extra(e2.addr);
-
-            if (extra1 && extra2) {
-                // Both AF 1.3+: compare by human players, then bots
-                auto key1 = std::pair(extra1->num_human_players, extra1->num_bots);
-                auto key2 = std::pair(extra2->num_human_players, extra2->num_bots);
-                if (key1 != key2)
-                    return key1 > key2 ? -1 : 1;
-            }
-            else if (extra1 || extra2) {
-                // AF 1.3+ vs legacy: include bots so AF total is comparable to legacy total
-                int val1 = extra1 ? extra1->num_human_players + extra1->num_bots
-                                  : static_cast<unsigned char>(e1.current_players);
-                int val2 = extra2 ? extra2->num_human_players + extra2->num_bots
-                                  : static_cast<unsigned char>(e2.current_players);
-                if (val1 != val2)
-                    return val1 > val2 ? -1 : 1;
-                // Equal counts: prefer the AF 1.3+ server
-                return extra1 ? -1 : 1;
+            if (extra1 || extra2) {
+                const int c = server_players_compare(extra1, static_cast<unsigned char>(e1.current_players), extra2,
+                                                     static_cast<unsigned char>(e2.current_players));
+                if (c != 0)
+                    return c;
             }
         }
 
@@ -268,14 +281,38 @@ FunHook<void()> mainmenu_init_hook{
     },
 };
 
+// The slide-in sound of stock's main menu init, a menu that a click on the path strip's player only passes on its way
+// to the Multi screen. The Quit popup's NO runs the same code, but never during a jump.
+CallHook<int(int, int, float, float)> mainmenu_slide_in_sound_hook{
+    0x00443577,
+    [](int handle, int group, float pan, float volume) {
+        if (column_menu_player_jump()) {
+            return -1;
+        }
+        return mainmenu_slide_in_sound_hook.call_target(handle, group, pan, volume);
+    },
+};
+
+static bool g_background_hidden = false;
+
+void main_menu_set_background_hidden(bool hidden)
+{
+    g_background_hidden = hidden;
+}
+
 FunHook<void()> menu_draw_background_hook{
     0x00442CE0,
     []() {
-        menu_draw_background_hook.call_target();
+        // Also keeps the snow from stepping twice a frame.
+        if (g_background_hidden) {
+            return;
+        }
+        if (!menu_scene_draw_background()) {
+            menu_draw_background_hook.call_target();
+        }
 
         if (g_alpine_game_config.seasonal_effect > 0) {
-            if (g_alpine_game_config.seasonal_effect == 2 ||
-                (g_alpine_game_config.seasonal_effect == 1 && is_snow_season())) {
+            if (main_menu_seasonal_effect_active()) {
                 update_and_render_menu_snow();
             }
             else {
@@ -285,18 +322,61 @@ FunHook<void()> menu_draw_background_hook{
     },
 };
 
+// The stock image repeats its first 640 columns at its end, bar its cross-faded first 60. Any other image is
+// taken to join up at its own edges.
+constexpr int stock_background_w = 1920;
+constexpr int stock_background_h = 480;
+constexpr float stock_background_overlap = 640.0f;
+constexpr float stock_background_fade = 60.0f;
+
+static float g_menu_background_x = 0.0f;
+
 CodeInjection menu_draw_background_injection{
     0x00442D5C,
     [](auto& regs) {
-        auto& menu_background_x = addr_as_ref<float>(0x0063C074);
+        regs.eip = 0x00442D94;
+
+        int bm_w, bm_h;
+        rf::bm::get_dimensions(rf::ui::menu_background_bitmap, &bm_w, &bm_h);
+        if (bm_w <= 0 || bm_h <= 0) {
+            return;
+        }
+        const float image_w = static_cast<float>(bm_w);
+        const float image_h = static_cast<float>(bm_h);
+        const float screen_w = static_cast<float>(rf::gr::screen.max_w);
+        const float screen_h = static_cast<float>(rf::gr::screen.max_h);
+
+        // Show the image's full height, with a window as wide as the screen's aspect ratio needs
+        float src_h = image_h;
+        float src_w = src_h * screen_w / screen_h;
+        if (src_w > image_w) {
+            src_w = image_w;
+            src_h = src_w * screen_h / screen_w;
+        }
+
+        const float image_scale = image_h / stock_background_h;
+        const bool stock_layout = bm_w == stock_background_w && bm_h == stock_background_h;
+        const float overlap = stock_layout ? stock_background_overlap * image_scale : 0.0f;
+        const float loop_start = stock_layout ? stock_background_fade * image_scale : 0.0f;
+        const float period = image_w - overlap;
+        g_menu_background_x += rf::ui::menu_background_scroll_speed * image_scale * rf::frametime;
+        if (g_menu_background_x >= loop_start + period) {
+            g_menu_background_x = loop_start + std::fmod(g_menu_background_x - loop_start, period);
+        }
+
+        // A window running past the right edge continues from where the image repeats
+        const float src_y = (image_h - src_h) * 0.5f;
+        const float first_w = std::min(src_w, image_w - g_menu_background_x);
+        const float first_screen_w = screen_w * first_w / src_w;
 
         rf::gr::set_color(255, 255, 255, 255);
         // Use function that accepts float sx
-        //for (int i = 0; i < 100; ++i)
-        gr_bitmap_scaled_float(rf::ui::menu_background_bitmap, 0.0f, 0.0f,
-            static_cast<float>(rf::gr::screen.max_w), static_cast<float>(rf::gr::screen.max_h),
-            menu_background_x, 0.0f, 640.0f, 480.0f, false, false, rf::gr::bitmap_clamp_mode);
-        regs.eip = 0x00442D94;
+        gr_bitmap_scaled_float(rf::ui::menu_background_bitmap, 0.0f, 0.0f, first_screen_w, screen_h,
+            g_menu_background_x, src_y, first_w, src_h, false, false, rf::gr::bitmap_clamp_mode);
+        if (first_w < src_w) {
+            gr_bitmap_scaled_float(rf::ui::menu_background_bitmap, first_screen_w, 0.0f, screen_w - first_screen_w,
+                screen_h, overlap, src_y, src_w - first_w, src_h, false, false, rf::gr::bitmap_clamp_mode);
+        }
     },
 };
 
@@ -321,10 +401,43 @@ CodeInjection main_menu_set_music_injection{
     },
 };
 
+constexpr const char* main_menu_music_files[] = {
+    nullptr, "music2.wav", "ClockWerk.wav", "Faction_Ext.wav", "Ghost_in_the_Machine.wav", "Grinder.wav",
+    "MooGroov.wav", "Neology.wav", "Self_Destruct_Sequence_Ext.wav", "Storm.wav", "Tribes_Ext.wav", "Tension_Ext.wav",
+    "Zatso.wav", "Trilogy.wav",
+};
+static_assert(std::size(main_menu_music_files) == std::size(main_menu_music_labels));
+
+// Plays the chosen track instead of game.tbl's. A missing file would send snd_music_play to the stock CD check.
+CallHook<int(const char*, float)> main_menu_music_play_hook{
+    0x00443246,
+    [](const char* filename, float volume) {
+        const int choice = g_alpine_game_config.main_menu_music;
+        if (choice > 0 && choice < static_cast<int>(std::size(main_menu_music_files))) {
+            filename = main_menu_music_files[choice];
+        }
+        if (!rf::snd_pc_file_exists(filename)) {
+            rf::console::print("Menu music {} not found", filename);
+            return -1;
+        }
+        return main_menu_music_play_hook.call_target(filename, volume);
+    },
+};
+
+void main_menu_music_on_setting_changed()
+{
+    // Only the menus' own level leaves the menu music as all that plays. af_set reaches here past the row's lock.
+    if (rf::is_dedicated_server || ((rf::level.flags & rf::LEVEL_LOADED) && !menu_scene_active())) {
+        return;
+    }
+    rf::ui::main_menu_music_stop();
+    rf::ui::main_menu_music_play(rf::ui::main_menu_music_filename.c_str());
+}
+
 FunHook<void()> main_menu_stop_music_hook{
     0x00443E90,
     []() {
-        if (rf::snd_music_sig == rf::main_menu_music_sig) {
+        if (rf::snd_music_sig == rf::ui::main_menu_music_sig) {
             main_menu_stop_music_hook.call_target();
             // Restore old sig in music sig variable so game can keep track of it (and stop it when needed)
             rf::snd_music_sig = g_game_music_sig_to_restore;
@@ -443,19 +556,8 @@ CodeInjection server_browser_idle_status_injection{
             return;
         }
 
-        std::snprintf(
-            s_server_browser_status_buf,
-            sizeof(s_server_browser_status_buf),
-            "%d client%s: %d player%s, %d bot%s, %d browser%s",
-            extra->num_total_clients,
-            extra->num_total_clients == 1 ? "" : "s",
-            extra->num_human_players,
-            extra->num_human_players == 1 ? "" : "s",
-            extra->num_bots,
-            extra->num_bots == 1 ? "" : "s",
-            extra->num_browsers,
-            extra->num_browsers == 1 ? "" : "s"
-        );
+        std::snprintf(s_server_browser_status_buf, sizeof(s_server_browser_status_buf), "%s",
+                      server_clients_label(*extra).c_str());
     },
 };
 
@@ -477,15 +579,7 @@ CallHook<int(char*, const char*, int, int)> server_browser_player_count_hook{
         if (s_player_count_entry) {
             const auto* extra = get_server_browser_extra(s_player_count_entry->addr);
             if (extra) {
-                if (extra->num_bots > 0) {
-                    return std::sprintf(buf, "%d+%d/%d",
-                        static_cast<int>(extra->num_human_players),
-                        static_cast<int>(extra->num_bots),
-                        max_players);
-                }
-                return std::sprintf(buf, "%d/%d",
-                    static_cast<int>(extra->num_human_players),
-                    max_players);
+                return std::sprintf(buf, "%s", server_players_label(extra, current_players, max_players).c_str());
             }
         }
         return server_browser_player_count_hook.call_target(buf, fmt, current_players, max_players);
@@ -505,17 +599,17 @@ FunHook<bool(int)> server_browser_filter_hook{
             case ServerBrowserFilter::Unmodded: {
                 if (entry.mod_name[0] != '\0') return false;
                 const auto* extra = get_server_browser_extra(entry.addr);
-                if (extra && (extra->af_flags & (1u << 0))) return false;
+                if (extra && (extra->af_flags & AF_GI_FLAG_MODDED_SERVER)) return false;
                 return true;
             }
             case ServerBrowserFilter::Modded: {
                 if (entry.mod_name[0] != '\0') return true;
                 const auto* extra = get_server_browser_extra(entry.addr);
-                return extra != nullptr && (extra->af_flags & (1u << 0));
+                return extra != nullptr && (extra->af_flags & AF_GI_FLAG_MODDED_SERVER);
             }
             case ServerBrowserFilter::MatchMode: {
                 const auto* extra = get_server_browser_extra(entry.addr);
-                return extra != nullptr && (extra->af_flags & (1u << 5));
+                return extra != nullptr && (extra->af_flags & AF_GI_FLAG_MATCH_MODE);
             }
         }
         return true;
@@ -697,6 +791,7 @@ void apply_main_menu_patches()
 {
     // Main menu init
     mainmenu_init_hook.install();
+    mainmenu_slide_in_sound_hook.install();
 
     // Version in Main Menu
     UiLabel_create2_version_label_hook.install();
@@ -725,6 +820,7 @@ void apply_main_menu_patches()
     // Fix music being unstoppable after opening the menu
     main_menu_set_music_injection.install();
     main_menu_stop_music_hook.install();
+    main_menu_music_play_hook.install();
 
     // Fixes for MP music desync when going into the menu
     game_music_play_hook.install(); //save sig of last Music_Start

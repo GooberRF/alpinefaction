@@ -1,22 +1,18 @@
-#include <algorithm>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
-#include <common/utils/string-utils.h>
 #include "extras_menu.h"
+#include "column_menu.h"
 #include "menu_shell.h"
-#include "settings_skin.h"
+#include "reference_menu.h"
 #include "ui_kit.h"
 #include "../misc/alpine_options.h"
 #include "../multi/demo/demo_browser.h"
 #include "../rf/gameseq.h"
-#include "../rf/gr/gr.h"
 #include "../rf/input.h"
 #include "../rf/localize.h"
-#include "../rf/multi.h"
-#include "../rf/sound/sound.h"
 #include "../rf/ui.h"
-#include "../sound/sound.h"
 
 namespace
 {
@@ -27,81 +23,79 @@ enum class ExtrasAction
     SummonerTrailer,
     GlassHouse,
     Demos,
+    Reference,
     Back,
 };
 
-struct ExtrasButton
+class DemosPanel final : public ColumnPanel
 {
-    ExtrasAction action;
-    rf::Key hotkey;
+public:
+    [[nodiscard]] bool is_open() const override
+    {
+        return demo_browser_is_open();
+    }
+    void open() override
+    {
+        demo_browser_open();
+    }
+    // Extras has no other panel to switch to.
+    void close() override {}
+    bool back() override
+    {
+        demo_browser_back();
+        return true;
+    }
+    void build(UiContext& ctx, const MenuPanel& panel, const MenuFonts& fonts) override
+    {
+        demo_browser_build_panel(ctx, panel, fonts);
+    }
+    void commit() override
+    {
+        demo_browser_commit_panel();
+    }
+    void hints(const UiContext& ctx, std::vector<MenuHint>& hints) const override
+    {
+        // As back(), unless a box or a dropdown takes Esc.
+        if (ctx.focused_text_id() != 0 || ctx.popup_id() != 0 || !demo_browser_in_subfolder()) {
+            return;
+        }
+        for (MenuHint& hint : hints) {
+            if (hint.key == "ESC") {
+                hint.label = "Up";
+            }
+        }
+    }
 };
 
-UiContext g_ui;
-bool g_closing = false;
-// 0 = fully off canvas, 1 = seated. Rises on entry, falls again once Back/ESC is taken.
-float g_slide = 0.0f;
-// The Demos panel: 0 = off the right edge, 1 = seated. Follows whether the browser is open.
-float g_panel = 0.0f;
-// Parallel: what each column button does, and how it reads.
-std::vector<ExtrasButton> g_buttons;
-std::vector<MenuColumnItem> g_items;
-std::string g_back_label;
-// Taken at the end of the input pass, so a handler that changes state or plays a video never runs
-// with the pass half built.
-std::optional<ExtrasAction> g_pending;
+ColumnMenu g_menu;
+DemosPanel g_demos;
 
-// Stock labels carry their own line breaks for stock's buttons; the column breaks them itself, at
-// single spaces.
-std::string stock_label(const char* text)
+ColumnButton button(ExtrasAction action, std::string label, rf::Key hotkey, bool opens_panel = false)
 {
-    std::string label;
-    for (const char c : string_to_upper(text)) {
-        const bool space = c == ' ' || c == '\n' || c == '\r';
-        if (!space) {
-            label += c;
-        }
-        else if (!label.empty() && label.back() != ' ') {
-            label += ' ';
-        }
-    }
-    if (!label.empty() && label.back() == ' ') {
-        label.pop_back();
-    }
-    return label;
+    return ColumnButton{static_cast<int>(action), std::move(label), hotkey, opens_panel};
 }
 
-void add_button(ExtrasAction action, std::string label, rf::Key hotkey, bool opens_panel = false)
+std::vector<ColumnButton> make_buttons()
 {
-    g_buttons.push_back({action, hotkey});
-    g_items.push_back(MenuColumnItem{std::move(label), false, opens_panel});
-}
-
-int button_slot(ExtrasAction action)
-{
-    const auto it = std::ranges::find(g_buttons, action, &ExtrasButton::action);
-    return static_cast<int>(it - g_buttons.begin());
-}
-
-void make_buttons()
-{
-    g_buttons.clear();
-    g_items.clear();
-    add_button(ExtrasAction::Credits, stock_label(rf::strings::credits), rf::KEY_C);
+    std::vector<ColumnButton> buttons;
+    buttons.push_back(button(ExtrasAction::Credits, menu_stock_label(rf::strings::credits), rf::KEY_C));
     // af_ui.tbl action 3 removes the button.
     if (get_option_or_default<int>(AlpineOptionID::SumTrailerButtonAction, -1) != 3) {
-        add_button(ExtrasAction::SummonerTrailer, stock_label(rf::strings::summoner_trailer), rf::KEY_S);
+        buttons.push_back(
+            button(ExtrasAction::SummonerTrailer, menu_stock_label(rf::strings::summoner_trailer), rf::KEY_S));
     }
-    add_button(ExtrasAction::GlassHouse, stock_label(rf::strings::glass_house), rf::KEY_G);
-    add_button(ExtrasAction::Demos, "DEMOS", rf::KEY_D, true);
-    g_back_label = stock_label(rf::strings::back);
+    buttons.push_back(button(ExtrasAction::Demos, "DEMOS", rf::KEY_D, true));
+    buttons.push_back(button(ExtrasAction::Reference, "REFERENCE", rf::KEY_R));
+    buttons.push_back(button(ExtrasAction::GlassHouse, menu_stock_label(rf::strings::glass_house), rf::KEY_G));
+    return buttons;
 }
 
 void request_close()
 {
-    if (g_closing) {
+    if (g_menu.closing()) {
         return;
     }
-    g_closing = true;
+    g_menu.request_close();
     rf::gameseq_pop_state();
 }
 
@@ -119,158 +113,57 @@ void run_action(ExtrasAction action)
             break;
         case ExtrasAction::Demos:
             // Picking the open panel's button again leaves it as it is, as Options does.
-            if (!demo_browser_is_open()) {
-                demo_browser_open();
-            }
+            g_menu.open_panel(&g_demos);
+            break;
+        case ExtrasAction::Reference:
+            g_menu.hand_off({reference_menu_open, reference_menu_is_active, reference_menu_do_frame});
             break;
         case ExtrasAction::Back:
             request_close();
             break;
     }
     // After the handler, as stock's click dispatch does, so a trailer does not pause it mid-play.
-    ui_play_click();
-}
-
-void extras_menu_build(UiContext& ctx)
-{
-    const float scale = menu_screen_scale();
-    ctx.set_scale(scale);
-    const int canvas_y = (rf::gr::clip_height() - static_cast<int>(menu_ref_h * scale)) / 2;
-    const MenuLayout lay = menu_layout(ctx);
-
-    const int slide_w = rf::gr::clip_width() - lay.panel_x;
-    const int enter_dx = static_cast<int>((1.0f - g_slide) * static_cast<float>(slide_w));
-    const int col_dx = -static_cast<int>((1.0f - g_slide) * static_cast<float>(lay.column_x + lay.column_w));
-
-    if (ctx.draw) {
-        menu_draw_title_bar(ctx, lay.panel_x + enter_dx, lay.panel_r + enter_dx, lay.rail_right + enter_dx, canvas_y,
-                            rf::strings::extras, menu_font(true, 46.0f, scale));
-    }
-
-    const int top = canvas_y + static_cast<int>(menu_column_y * scale);
-    const int demos_slot = button_slot(ExtrasAction::Demos);
-    g_items[demos_slot].selected = demo_browser_is_open();
-    const int clicked = menu_build_column(ctx, lay, lay.column_x + col_dx, top, g_items, g_back_label.c_str(),
-                                          menu_font(true, 20.0f, scale), "extras");
-    if (clicked >= 0 && !ctx.draw) {
-        g_pending = clicked < static_cast<int>(g_buttons.size()) ? g_buttons[clicked].action : ExtrasAction::Back;
-    }
-
-    // A panel on its way out is only painted.
-    if (g_panel > 0.0f && (ctx.draw || demo_browser_is_open())) {
-        const int panel_dx = enter_dx + static_cast<int>((1.0f - g_panel) * static_cast<float>(slide_w));
-        const MenuPanel panel = menu_panel(ctx, lay, panel_dx, top);
-        if (ctx.draw) {
-            menu_draw_panel(ctx, panel);
-            const int button_h = menu_button_h(ctx);
-            menu_draw_connector(ctx, panel, top + demos_slot * button_h + button_h / 2);
-        }
-        demo_browser_build_panel(ctx, panel, canvas_y);
-    }
-
-    // Stock draws its side bars over its menus.
-    if (ctx.draw) {
-        rf::gr::reset_clip();
-        rf::ui::menu_draw_side_bars();
+    if (!g_menu.jump_action()) {
+        ui_play_click();
     }
 }
 
-void __cdecl extras_menu_key_callback(int key)
+void __cdecl key_callback(int key)
 {
-    const int code = key & rf::KEY_MASK;
-    if (code == rf::KEY_ESC) {
-        if (demo_browser_is_open()) {
-            demo_browser_back();
-            ui_play_click();
-            return;
-        }
-        g_pending = ExtrasAction::Back;
-        return;
-    }
-    // Stock's own letters, with no modifier held.
-    if (key == code) {
-        if (code == rf::KEY_B) {
-            g_pending = ExtrasAction::Back;
-            return;
-        }
-        for (const ExtrasButton& button : g_buttons) {
-            if (code == button.hotkey) {
-                g_pending = button.action;
-                return;
-            }
-        }
-    }
-    g_ui.handle_nav_key(static_cast<rf::Key>(key));
-}
-
-void extras_menu_input()
-{
-    rf::game_poll(extras_menu_key_callback);
-
-    int x = 0;
-    int y = 0;
-    int z = 0;
-    rf::mouse_get_pos(x, y, z);
-    g_ui.begin_frame(x, y, rf::mouse_dz, rf::mouse_button_is_down(0), rf::mouse_was_button_pressed(0) != 0,
-                     rf::mouse_was_button_pressed(1) != 0);
-    g_ui.begin_pass(UiPass::HitTest);
-    extras_menu_build(g_ui);
-    g_ui.end_pass();
-
-    demo_browser_commit_panel();
-    if (g_pending) {
-        const ExtrasAction action = *g_pending;
-        g_pending.reset();
-        run_action(action);
-    }
+    g_menu.key(key);
 }
 
 } // namespace
 
 void extras_menu_enter()
 {
-    g_closing = false;
-    g_slide = 0.0f;
-    g_panel = 0.0f;
-    g_pending.reset();
-    make_buttons();
-    g_ui.reset();
-    g_ui.style = settings_menu_style();
-    g_ui.set_hover_sound_enabled(true);
-    rf::snd_play(stock_sound_id::menu_slide_in, 0, 0.0f, 1.0f);
+    reference_menu_release();
+    const int back = static_cast<int>(ExtrasAction::Back);
+    g_menu.enter(menu_stock_label(rf::strings::extras), make_buttons(),
+                 ColumnButton{back, menu_stock_label(rf::strings::back), rf::KEY_B}, back);
+    g_menu.add_panel(&g_demos, static_cast<int>(ExtrasAction::Demos));
 }
 
 void extras_menu_do_frame(bool paused)
 {
-    const float step = menu_slide_step();
-    g_slide = g_closing ? std::max(0.0f, g_slide - step) : std::min(1.0f, g_slide + step);
-    g_panel = demo_browser_is_open() ? std::min(1.0f, g_panel + step) : std::max(0.0f, g_panel - step);
-
-    // paused = 1 means a stock popup owns input this frame; it renders after us and on top.
-    if (!paused && !g_closing) {
-        extras_menu_input();
+    if (g_menu.host_frame(paused)) {
+        return;
     }
-
-    rf::gr::reset_clip();
-    rf::ui::menu_draw_background();
-
-    int x = 0;
-    int y = 0;
-    int z = 0;
-    rf::mouse_get_pos(x, y, z);
-    g_ui.set_mouse_pos(x, y);
-    g_ui.begin_pass(UiPass::Draw);
-    extras_menu_build(g_ui);
-    g_ui.end_pass();
-    g_ui.draw_overlays();
-    rf::gr::reset_clip();
+    // paused = 1 means a stock popup owns input this frame; it renders after us and on top.
+    if (!paused) {
+        if (const std::optional<int> action = g_menu.input(key_callback)) {
+            run_action(static_cast<ExtrasAction>(*action));
+        }
+    }
+    g_menu.draw();
 }
 
 bool extras_menu_is_closed()
 {
     // A queued state change never runs our frame again, so it cannot wait for the exit animation.
     if (rf::gameseq_get_pending_state() != 0) {
+        reference_menu_release();
         return true;
     }
-    return g_closing && g_slide <= 0.0f;
+    return g_menu.is_closed();
 }

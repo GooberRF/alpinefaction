@@ -6,6 +6,7 @@
 #include "alpine_packets.h"
 #include "bagman.h"
 #include "gametype.h"
+#include "gungame.h"
 #include "payload.h"
 #include "server_internal.h"
 #include "../rf/multi.h"
@@ -62,6 +63,7 @@ std::vector<std::pair<std::string, SettingValue>> build_gametype_settings(rf::Ne
             add("score_tick_ms", bagman_get_score_tick_ms());
             add("bag_return_time_ms", rules.bagman.bag_return_time_ms);
             add("bag_spawn_delay_ms", rules.bagman.bag_spawn_delay_ms);
+            out.emplace_back("bag_multiple_spawns", SettingValue{rules.bagman.bag_multiple_spawns});
             break;
         case rf::NG_TYPE_SAL:
             add("flag_spawn_delay_ms", rules.salvage.flag_spawn_delay_ms);
@@ -80,7 +82,8 @@ std::vector<std::pair<std::string, SettingValue>> build_gametype_settings(rf::Ne
             const payload::LevelRules pay = payload_rules();
             out.emplace_back("checkpoint_time_bonus_s", SettingValue{static_cast<double>(pay.checkpoint_time_bonus)});
             out.emplace_back("overtime_grace_s", SettingValue{static_cast<double>(pay.overtime_grace)});
-            out.emplace_back("heal_per_tick", SettingValue{static_cast<double>(pay.heal_per_second)});
+            out.emplace_back("heal_per_s",
+                             SettingValue{payload_heals() ? static_cast<double>(pay.heal_per_second) : 0.0});
             out.emplace_back("setup_time_s", SettingValue{static_cast<double>(rules.payload.setup_time)});
             for (const auto& [prefix, extras] :
                  {std::pair{"attacker", &pay.attacker_respawn}, std::pair{"defender", &pay.defender_respawn}}) {
@@ -89,8 +92,21 @@ std::vector<std::pair<std::string, SettingValue>> build_gametype_settings(rf::Ne
                 out.emplace_back(key + "per_checkpoint_s", SettingValue{static_cast<double>(extras->per_checkpoint)});
                 out.emplace_back(key + "final_stretch_s", SettingValue{static_cast<double>(extras->final_stretch)});
             }
+            add("attacking_team", payload_attacking_team());
+            out.emplace_back("push_speed", SettingValue{static_cast<double>(pay.push_speed)});
+            out.emplace_back("rollback_speed", SettingValue{static_cast<double>(pay.rollback_speed)});
+            out.emplace_back("cart_accel", SettingValue{static_cast<double>(pay.cart_accel)});
+            out.emplace_back("push_radius", SettingValue{static_cast<double>(payload_push_radius())});
+            add("rollback_delay_s", payload_rollback_delay());
+            out.emplace_back("finale", SettingValue{payload_has_finale()});
+            out.emplace_back("track_length", SettingValue{static_cast<double>(payload_total_length())});
             break;
         }
+        case rf::NG_TYPE_GG:
+            out.emplace_back("end_with_fusion", SettingValue{rules.gungame_end_with_fusion});
+            out.emplace_back("rampage_rewards", SettingValue{rules.gungame_rampage_rewards});
+            add("levels", gungame_level_count());
+            break;
         case rf::NG_TYPE_CTF:
             add("flag_return_time_ms", rules.ctf_flag_return_time_ms);
             break;
@@ -256,7 +272,24 @@ ServerSettingsRecord capture_server_settings()
         record.dynamic_respawn_items.emplace_back(sanitize_string(item.item_name, k_max_string_len),
                                                   static_cast<int64_t>(item.min_respawn_points));
     }
+    record.spawn_delay_enabled = rules.spawn_delay.enabled;
+    record.spawn_delay_base_ms = static_cast<int64_t>(rules.spawn_delay.base_value);
+    record.spawn_delay_wave_respawns = rules.spawn_delay.wave_respawns;
+    record.exposure_damage = rules.exposure_damage;
+    record.server_bots = static_cast<int64_t>(g_alpine_server_config.server_bots);
+    record.ideal_player_count = static_cast<int64_t>(rules.ideal_player_count);
+    record.bots_use_vehicles = rules.vehicles.bots_use_vehicles;
+    record.bot_max_drivers = static_cast<int64_t>(rules.vehicles.bot_max_drivers);
     return record;
+}
+
+std::vector<PayloadCheckpointRecord> capture_payload_checkpoints()
+{
+    std::vector<PayloadCheckpointRecord> out;
+    for (const PayloadCheckpoint& cp : payload_checkpoints()) {
+        out.push_back({cp.distance, cp.hold_seconds, payload_checkpoint_time_bonus(cp)});
+    }
+    return out;
 }
 
 } // namespace server_config

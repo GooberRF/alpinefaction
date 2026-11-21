@@ -1,6 +1,7 @@
 #include "../../hud/hud.h"
 #include "../../rf/hud.h"
 #include "../misc.h"
+#include "../waypoints.h"
 #include "settings_rows.h"
 
 namespace
@@ -214,6 +215,19 @@ const SettingRow rows[] = {
         ENUM_LABELS(labels_damage_flash),
         .enum_offered = damage_flash_offered,
         .console_cmd = "cl_damageflash",
+    },
+    {
+        .id = "hide_disabled_fall_damage_feedback",
+        .key = "HideDisabledFallDamageFeedback",
+        .label = "Hide no-damage falls",
+        .tooltip = "Skip the hit indicators and screen shake from hard landings when the server has fall damage "
+                   "disabled.",
+        .category = Cat::Hud,
+        .subcategory = "Core",
+        .widget = Wid::Toggle,
+        .access = AccBool{&AGS::hide_disabled_fall_damage_feedback},
+        .flags = SF_MP_ONLY,
+        .console_cmd = "cl_hidenofalldamage",
     },
     {
         .id = "death_bars",
@@ -719,13 +733,25 @@ const SettingRow rows[] = {
         .id = "world_hud_payload_tethers",
         .key = "WorldHUDPayloadTethers",
         .label = "Payload cart beams",
-        .tooltip = "Draw beams from the players pushing or blocking the Payload cart.",
+        .tooltip = "Draw beams from the players pushing the Payload cart.",
         .category = Cat::Hud,
         .subcategory = "Objectives",
         .widget = Wid::Toggle,
         .access = AccBool{&AGS::world_hud_payload_tethers},
         .flags = SF_MP_ONLY,
         .console_cmd = "cl_wh_tethers",
+    },
+    {
+        .id = "world_hud_payload_track_pulse",
+        .key = "WorldHUDPayloadTrackPulse",
+        .label = "Payload track pulses",
+        .tooltip = "Run glowing pulses along the Payload track from the cart to its end.",
+        .category = Cat::Hud,
+        .subcategory = "Objectives",
+        .widget = Wid::Toggle,
+        .access = AccBool{&AGS::world_hud_payload_track_pulse},
+        .flags = SF_MP_ONLY,
+        .console_cmd = "cl_wh_trackpulse",
     },
     {
         .id = "world_hud_payload_push_zone",
@@ -750,6 +776,37 @@ const SettingRow rows[] = {
         .access = AccBool{&AGS::world_hud_payload_cart_status},
         .flags = SF_MP_ONLY,
         .console_cmd = "cl_wh_cartstatus",
+    },
+    {
+        .id = "world_hud_route_arrows",
+        .key = "WorldHUDRouteArrows",
+        .label = "Spawn route arrows",
+        .tooltip = "Lay arrows from where you spawn toward the objective in Payload, KOTH, DC, REV and ESC.",
+        .category = Cat::Hud,
+        .subcategory = "Objectives",
+        .widget = Wid::Toggle,
+        .access = AccBool{&AGS::world_hud_route_arrows},
+        .flags = SF_MP_ONLY,
+        .apply = waypoints_on_route_arrows_toggled,
+        .console_cmd = "cl_wh_routearrows",
+    },
+    {
+        .id = "world_hud_route_arrow_time",
+        .key = "WorldHUDRouteArrowTime",
+        .label = "Spawn route arrow time",
+        .tooltip = "How long each spawn route arrow stays before it is reeled in.",
+        .category = Cat::Hud,
+        .subcategory = "Objectives",
+        .widget = Wid::Slider,
+        .access = AccFloat{&AGS::world_hud_route_arrow_time, &AGS::set_world_hud_route_arrow_time,
+            AGS::min_world_hud_route_arrow_time, AGS::max_world_hud_route_arrow_time},
+        .flags = SF_MP_ONLY,
+        .console_cmd = "cl_wh_routearrows_time",
+        .ui_min = AGS::min_world_hud_route_arrow_time,
+        .ui_max = AGS::max_world_hud_route_arrow_time,
+        .ui_step = 0.5f,
+        .ui_decimals = 1,
+        .ui_suffix = " s",
     },
     {
         .id = "control_point_outline_height_scale",

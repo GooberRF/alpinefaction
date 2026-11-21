@@ -18,7 +18,9 @@
 #include "vehicle_sync.h"
 #include "vehicle_damage.h"
 #include "vehicle_crash_tuning.h"
+#include "vehicle_debris.h"
 #include "../alpine_packets.h"
+#include "../awards.h"
 #include "../gametype.h"
 #include "../kill_attribution.h"
 #include "../server_internal.h"
@@ -247,7 +249,7 @@ namespace
     bool vehicle_repair_allowed(const rf::Entity* vehicle, int killer_handle)
     {
         if (killer_handle == -1) {
-            return false; // player_from_entity_handle does not validate, and -1 matches a live row
+            return false;
         }
         const rf::Player* repairer = rf::player_from_entity_handle(killer_handle);
         if (!repairer) {
@@ -272,7 +274,7 @@ namespace
 
     // Turn a negative-multiplier blow into life, sharing the regen's ceiling and never-resurrect
     // rule. The regen clock is left alone: a repair is not damage.
-    void vehicle_apply_repair(rf::Entity* vehicle, int killer_handle, float heal)
+    void vehicle_apply_repair(rf::Entity* vehicle, int killer_handle, float heal, const rf::Vector3* pos)
     {
         if (heal <= 0.0f || vehicle->life <= 0.0f || rf::entity_is_dying(vehicle)) {
             return;
@@ -294,6 +296,11 @@ namespace
         // Shift the watermark by exactly what was healed, not to the new life: damage that landed
         // earlier in this same frame must still read as a drop to the regen pass.
         regen.last_seen_life = std::min(regen.last_seen_life + applied, regen.spawn_max_life);
+        rf::Player* repairer = rf::player_from_entity_handle(killer_handle);
+        afstats::on_vehicle_repair(repairer, applied);
+        awards_on_vehicle_repair(repairer, applied);
+        send_hull_damage_notify(repairer, AfDamageNotifyHull{pos ? *pos : vehicle->pos, vehicle->handle}, applied,
+                                false, true);
     }
 
     // pp's entity: the one entity_handle names while it is still his, otherwise his live one.
@@ -1561,6 +1568,13 @@ namespace
             if (!rf::is_multi || !rf::is_server || !vehicle) {
                 return; // single player and clients keep the stock scan
             }
+            // The destroyer as vehicle_resolve_damage_killer credits them: nobody for an unattributed death.
+            const auto lethal = g_vehicle_state.lethal_killer.find(vehicle->handle);
+            const VehicleLethalKiller* blow =
+                lethal != g_vehicle_state.lethal_killer.end() ? &lethal->second : nullptr;
+            rf::Player* destroyer = blow && vehicle_lethal_killer_entity(*blow)
+                ? rf::multi_find_player_by_id(blow->player_id) : nullptr;
+            const AwardsVehicleBlastScope award_scope{vehicle, destroyer, blow ? blow->vehicle_class : -1};
             for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
                 rf::Entity* occupant = rf::entity_from_handle(player.entity_handle);
                 if (occupant && occupant->host_handle == vehicle->handle) {
@@ -1582,6 +1596,20 @@ namespace
                 return;
             }
             entity_damage_ignite_berserk_hook.call_target(ai, berserk_time, force);
+        },
+    };
+
+    // The hit region pick skips a player victim unless the projectile's parent is a player, and a vehicle's
+    // weapon is parented to its hull. Judge the occupant credited with the shot instead.
+    CallHook<bool(int)> hit_region_shooter_is_player_hook{
+        0x0042CE2F,
+        [](int parent_handle) {
+            if (rf::is_multi) {
+                if (const rf::Entity* occupant = vehicle_shot_occupant(parent_handle)) {
+                    return hit_region_shooter_is_player_hook.call_target(occupant->handle);
+                }
+            }
+            return hit_region_shooter_is_player_hook.call_target(parent_handle);
         },
     };
 
@@ -1630,16 +1658,9 @@ namespace
         }
 
         if (killer_handle != -1) {
-            rf::Entity* killer = vehicle_synced_entity(killer_handle);
-            if (killer) {
-                // A vehicle handle is never a valid killer for the scoreboard.
-                rf::Entity* occupant = vehicle_firing_seat_occupant(killer);
-                if (!occupant) {
-                    occupant = vehicle_driver_entity(killer);
-                }
-                if (occupant) {
-                    return occupant->handle;
-                }
+            // A vehicle handle is never a valid killer for the scoreboard.
+            if (rf::Entity* occupant = vehicle_shot_occupant(killer_handle)) {
+                return occupant->handle;
             }
             return killer_handle;
         }
@@ -1676,9 +1697,8 @@ namespace
                          it != g_vehicle_state.last_damager.end()) {
                     credit = it->second;
                 }
-                // The stock friendly-fire gate at 0x0048939F resolves its killer with
-                // player_from_entity_handle, which does not validate -1 and so matches the first player
-                // with no entity. Crediting the occupant makes the gate a no-op (killer == victim).
+                // Crediting the occupant makes the stock friendly-fire gate at 0x0048939F a no-op
+                // (killer == victim).
                 rf::Player* occupant = rf::player_from_entity_handle(victim->handle);
                 if (vehicle_team_damage_blocked(rf::player_from_entity_handle(credit), occupant)) {
                     return victim->handle;
@@ -1915,9 +1935,12 @@ void vehicle_note_hull_damage(rf::Entity* vehicle, float life_before, int killer
             if (lethal.vehicle_class < 0) {
                 lethal.vehicle_class = vehicle_occupied_damage_class(killer);
             }
-            if (lethal.vehicle_class < 0 && kill_attribution_is_valid_weapon_type(weapon_type)) {
-                lethal.weapon_type = weapon_type;
-                lethal.splash = splash;
+            if (kill_attribution_is_valid_weapon_type(weapon_type)) {
+                lethal.stats_weapon_type = weapon_type;
+                if (lethal.vehicle_class < 0) {
+                    lethal.weapon_type = weapon_type;
+                    lethal.splash = splash;
+                }
             }
         }
         return lethal;
@@ -1928,6 +1951,11 @@ void vehicle_note_hull_damage(rf::Entity* vehicle, float life_before, int killer
             vehicle_note_hazard_destroyer(vehicle, vehicle_hit_credit_s);
         }
         g_vehicle_state.lethal_killer.try_emplace(vehicle->handle, blow());
+        VehicleState* st = vehicle_hull_state(vehicle->handle);
+        if (st && !st->stats.end_cause) {
+            st->stats.end_cause = vehicle_crush_damage_is_mint(vehicle->handle) ? afstats::VehicleEndCause::crash
+                                                                                : afstats::VehicleEndCause::weapon;
+        }
     }
     else if (real_damage > 0.0f) {
         const bool stock_indicated = splash || (kill_attribution_in_projectile_impact() && weapon_type >= 0);
@@ -1939,7 +1967,7 @@ void vehicle_note_hull_damage(rf::Entity* vehicle, float life_before, int killer
         }
     }
     if (killer_handle == -1 || real_damage <= 0.0f) {
-        return; // player_from_entity_handle does not validate -1
+        return;
     }
     rf::Player* attacker = rf::player_from_entity_handle(killer_handle);
     if (!attacker || !attacker->net_data
@@ -1961,7 +1989,8 @@ void vehicle_note_hull_damage(rf::Entity* vehicle, float life_before, int killer
     }
 }
 
-float vehicle_scale_damage(int victim_handle, int killer_handle, int damage_type, float damage)
+float vehicle_scale_damage(int victim_handle, int killer_handle, int damage_type, float damage,
+                           const rf::Vector3* pos)
 {
     // Only for a blow that NAMES a killer, which keeps the table out of the module's own lethal
     // blows and level hazards (all killer -1), so a 0.0 column cannot leave a drowning hull afloat.
@@ -1982,7 +2011,7 @@ float vehicle_scale_damage(int victim_handle, int killer_handle, int damage_type
         if (mult < 0.0f) {
             // The blow is consumed here and ZERO continues down the call: obj_damage and
             // entity_damage subtract what they are handed with no sign test.
-            vehicle_apply_repair(victim, killer_handle, damage * -mult);
+            vehicle_apply_repair(victim, killer_handle, damage * -mult, pos);
             return 0.0f;
         }
         return damage * mult;
@@ -2146,7 +2175,11 @@ int vehicle_occupied_damage_class(const rf::Entity* rider)
 
 void vehicle_before_entity_die(rf::Entity* ep)
 {
-    if (!rf::is_multi || !rf::is_server || !vehicle_is_synced_entity_type(ep)) {
+    if (!rf::is_multi || !vehicle_is_synced_entity_type(ep)) {
+        return;
+    }
+    vehicle_debris_spawn(ep);
+    if (!rf::is_server) {
         return;
     }
     // entity_die frees seats with entity_detach_leech, not entity_detach_from_host, so the detach
@@ -2155,6 +2188,27 @@ void vehicle_before_entity_die(rf::Entity* ep)
     g_vehicle_state.horn.erase(ep->handle);
     // The occupancy entity_die is about to leave behind - a null hull states "nobody is aboard it".
     vehicle_broadcast_seat_occupancy(ep->handle, nullptr, -1);
+
+    // Ahead of the occupant blast, so the riders' kills follow it.
+    const VehicleState* st = vehicle_hull_state(ep->handle);
+    if (!st || st->stats.id == 0) {
+        return;
+    }
+    const afstats::VehicleEndCause cause = st->stats.end_cause.value_or(afstats::VehicleEndCause::weapon);
+    auto it = g_vehicle_state.lethal_killer.find(ep->handle);
+    const VehicleLethalKiller* lethal = it != g_vehicle_state.lethal_killer.end() && it->second.entity_handle != -1
+        ? &it->second : nullptr;
+    rf::Player* destroyer = lethal && lethal->player_id != 0xFF ? rf::multi_find_player_by_id(lethal->player_id)
+                                                                : nullptr;
+    // A scuttle is the hull going back to its factory unless a recent blow is credited with it.
+    const bool scuttled = cause == afstats::VehicleEndCause::hazard || cause == afstats::VehicleEndCause::void_fall
+        || cause == afstats::VehicleEndCause::idle_return;
+    if (scuttled && !destroyer) {
+        vehicle_stats_hull_event(ep->handle, afstats::VehicleEventKind::returned, nullptr, -1, cause);
+        return;
+    }
+    vehicle_stats_hull_event(ep->handle, afstats::VehicleEventKind::destroyed, destroyer,
+                             destroyer ? lethal->stats_weapon_type : -1, cause);
 }
 
 void vehicle_after_entity_die(rf::Entity* ep)
@@ -2163,6 +2217,8 @@ void vehicle_after_entity_die(rf::Entity* ep)
     if (!rf::is_multi || !vehicle_is_synced_entity_type(ep)) {
         return;
     }
+    // entity_die has freed the seats of the riders it blasted, after their kills.
+    vehicle_stats_sync_seats(ep->handle, afstats::VehicleSeatReason::hull_destroyed);
     vehicle_drop_combat_state(ep->handle);
     // On the EX-DRIVER's own machine nothing put PF_NET_PLAYER back on the wreck. Every machine,
     // because that one is not necessarily the server.
@@ -2311,6 +2367,7 @@ void vehicle_damage_apply_patch()
     obj_damage_vehicle_crush_injection.install();
     entity_die_occupant_kill_injection.install();
     entity_damage_ignite_berserk_hook.install();
+    hit_region_shooter_is_player_hook.install();
     geomod_rock_hit_room_hook.install();
     entity_die_corpse_create_hook.install();
     item_pickup_hook.install();

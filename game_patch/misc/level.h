@@ -8,6 +8,7 @@
 #include <unordered_set>
 #include <xlog/xlog.h>
 #include <common/rfl_chunk_reader.h>
+#include <common/alpine_ambience_region.h>
 #include <common/alpine_dir_light.h>
 #include <common/alpine_waypoint_helper.h>
 #include <common/alpine_camera_far_clip.h>
@@ -35,6 +36,7 @@ constexpr int alpine_lightmaps_chunk_id = static_cast<int>(alpine_lightmap::chun
 constexpr int alpine_directional_light_chunk_id = static_cast<int>(alpine_dir_light::chunk_id); // 0x0AFBAE0C
 constexpr int alpine_waypoint_helper_chunk_id = static_cast<int>(alpine_waypoint_helper::chunk_id); // 0x0AFBAE0D
 constexpr int alpine_mover_path_chunk_id = static_cast<int>(mover_path::chunk_id); // 0x0AFBAE0E
+constexpr int alpine_ambience_region_chunk_id = static_cast<int>(alpine_ambience_region::chunk_id); // 0x0AFBAE10
 constexpr int stock_lightmaps_chunk_id = 0x1200;
 
 // Length limit (with the terminator) for bitmap names read from untrusted alpine level chunks.
@@ -108,6 +110,8 @@ struct AlpineLevelProperties
     bool require_d3d11 = false; // refuse the level on the other renderers
     float camera_far_clip = 0.0f; // 0 = the stock far clip (fog far clip, else gr::default_wfar)
     payload::LevelRules payload_rules;
+    bool players_start_with_jetpacks = false; // every player wears a jetpack, as with the Jetpacks mutator
+    float crater_texture_ppm = 0.0f; // 0 = default; $Crater Texture PPM in mapname_info.tbl overrides it
 
     // should match SanitizeSunProperties in editor_patch\level.h
     // A level file can carry anything; these floats end up in the lights constant buffer and in the
@@ -439,6 +443,13 @@ struct AlpineLevelProperties
             }
             rules.sanitize();
             payload_rules = rules;
+            if (!reader.read_bytes(&u8, sizeof(u8)))
+                return;
+            players_start_with_jetpacks = (u8 != 0);
+            if (!reader.read_bytes(&crater_texture_ppm, sizeof(crater_texture_ppm)))
+                return;
+            if (!std::isfinite(crater_texture_ppm) || crater_texture_ppm < 0.0f)
+                crater_texture_ppm = 0.0f;
         }
     }
 };

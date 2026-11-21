@@ -4,6 +4,7 @@
 #include "demo.h"
 #include "demo_internal.h"
 #include "../gametype.h"
+#include "../powerups.h"
 #include "../../hud/hud.h"
 #include "../../hud/hud_internal.h"
 #include "../../hud/remote_server_cfg_ui.h"
@@ -55,9 +56,16 @@ namespace
         TrackedItem slots[max_slots_per_type] = {};
     };
 
+    constexpr const AlpinePowerupItemClass& haste_class =
+        alpine_powerup_item_classes[static_cast<size_t>(AlpinePowerup::haste)];
+    constexpr const AlpinePowerupItemClass& vampire_class =
+        alpine_powerup_item_classes[static_cast<size_t>(AlpinePowerup::vampire)];
+
     TrackedType g_tracked_types[] = {
         {.cls_name = "Multi Damage Amplifier", .bitmap_filename = "hud_pow_damage.tga"},
         {.cls_name = "Multi Invulnerability", .bitmap_filename = "hud_pow_invuln.tga"},
+        {.cls_name = haste_class.class_name, .bitmap_filename = haste_class.hud_icon_filename},
+        {.cls_name = vampire_class.class_name, .bitmap_filename = vampire_class.hud_icon_filename},
     };
 
     // Adopts untracked items of this type - first max_slots_per_type in list order

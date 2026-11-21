@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <vector>
+#include <common/utils/math-utils.h>
 
 namespace rope_curve
 {
@@ -54,15 +55,7 @@ inline constexpr float taut_epsilon = 1.0e-5f;
 
 // ─── Authored value guards ──────────────────────────────────────────────────
 
-// A non-finite serialized or typed value falls back instead of carrying a NaN through the clamp
-// (every comparison against a NaN is false, so std::clamp would return it unchanged).
-inline float clamp_finite(float v, float lo, float hi, float fallback)
-{
-    if (!std::isfinite(v)) {
-        return fallback;
-    }
-    return std::clamp(v, lo, hi);
-}
+using ::clamp_finite;
 
 // Quantum for the dirty checks both sides run, in units of 1/1024 m: fine enough that no visible
 // change slips past it, coarse enough that a sub-millimetre drag does not thrash the caches.

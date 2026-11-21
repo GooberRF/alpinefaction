@@ -18,6 +18,12 @@
 #include "../rf/cutscene.h"
 #include "../multi/multi.h"
 #include "../ui/extras_menu.h"
+#include "../ui/create_game_menu.h"
+#include "../ui/game_menu.h"
+#include "../ui/menu_scene.h"
+#include "../ui/message_log_menu.h"
+#include "../ui/multi_menu.h"
+#include "../ui/save_load_menu.h"
 #include "../ui/settings_menu.h"
 #include "misc.h"
 
@@ -50,7 +56,12 @@ FunHook<void(char*)> game_print_screen_hook{
         auto* tm = std::localtime(&now);
         char time_str[32];
         std::strftime(time_str, sizeof(time_str), "%Y%m%d_%H%M%S", tm);
-        auto level_filename = std::string{get_filename_without_ext(rf::level.filename.c_str())};
+        // Only a level the player is in names the shot. The menus' live background isn't one, and stock level_close
+        // leaves the filename behind.
+        const bool in_level = (rf::level.flags & rf::LEVEL_LOADED) && !menu_scene_active();
+        const std::string level_name =
+            in_level ? std::string{get_filename_without_ext(rf::level.filename.c_str())} : std::string{};
+        const std::string level_suffix = level_name.empty() ? "" : "_" + level_name;
         auto* dot_ext = dump_tga ? ".tga" : ".jpg";
         auto screenshots_dir = get_screenshots_dir();
         if (!screenshots_dir) {
@@ -63,11 +74,11 @@ FunHook<void(char*)> game_print_screen_hook{
             if (counter == 1) {
                 // Don't include the counter here
                 std::snprintf(pending_screenshot_filename, sizeof(pending_screenshot_filename) - 4,
-                    "%s\\%s_%s", screenshots_dir.value().c_str(), time_str, level_filename.c_str());
+                    "%s\\%s%s", screenshots_dir.value().c_str(), time_str, level_suffix.c_str());
             } else {
                 // Filename conflict - include a counter
                 std::snprintf(pending_screenshot_filename, sizeof(pending_screenshot_filename) - 4,
-                    "%s\\%s_%d_%s", screenshots_dir.value().c_str(), time_str, counter, level_filename.c_str());
+                    "%s\\%s_%d%s", screenshots_dir.value().c_str(), time_str, counter, level_suffix.c_str());
             }
             auto filename_with_ext = std::string{pending_screenshot_filename} + dot_ext;
             bool exists = file.find(filename_with_ext.c_str());
@@ -157,10 +168,28 @@ CodeInjection gameplay_render_frame_display_full_screen_image_injection{
 static FunHook<void(rf::GameState, bool)> rf_do_state_hook{
     0x004B1E70,
     [] (const rf::GameState state, const bool paused) {
+        // A transparent state runs the one beneath it too.
+        if (state == rf::gameseq_get_state()) {
+            menu_scene_do_frame(state);
+        }
+        // Stock pushes the Multi menu over the main menu as transparent (0x00443C20). The main menu's background
+        // beneath would be a second render of the live level, which the Multi menu's own then paints over.
+        main_menu_set_background_hidden(state == rf::GS_MAIN_MENU && rf::gameseq_get_state() == rf::GS_MULTI_MENU
+                                        && !legacy_menus_enabled());
         if (state == rf::GS_OPTIONS_MENU && !legacy_menus_enabled()) {
             settings_menu_do_frame(paused);
         } else if (state == rf::GS_EXTRAS_MENU && !legacy_menus_enabled()) {
             extras_menu_do_frame(paused);
+        } else if ((state == rf::GS_MULTI_MENU || state == rf::GS_MULTI_SERVER_LIST) && !legacy_menus_enabled()) {
+            multi_menu_do_frame(paused);
+        } else if (state == rf::GS_MULTI_CREATE_GAME && !legacy_menus_enabled()) {
+            create_game_menu_do_frame(paused);
+        } else if (state == rf::GS_MAIN_MENU && game_menu_is_active()) {
+            game_menu_do_frame(paused);
+        } else if ((state == rf::GS_SAVE_GAME_MENU || state == rf::GS_LOAD_GAME_MENU) && !legacy_menus_enabled()) {
+            save_load_menu_do_frame(paused);
+        } else if (state == rf::GS_MESSAGE_LOG && !legacy_menus_enabled()) {
+            message_log_menu_do_frame(paused);
         } else if (state == rf::GS_MULTI_LIMBO_JUST_JOINED) {
             multi_limbo_just_joined_do_frame();
         } else if (state == rf::GS_MULTI_LEVEL_DOWNLOAD) {
@@ -171,6 +200,7 @@ static FunHook<void(rf::GameState, bool)> rf_do_state_hook{
         } else {
             rf_do_state_hook.call_target(state, paused);
         }
+        main_menu_set_background_hidden(false);
     },
 };
 

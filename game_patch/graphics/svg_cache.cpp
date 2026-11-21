@@ -1,19 +1,19 @@
 #include <algorithm>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
-#include <vector>
 #include <xlog/xlog.h>
 #include <common/utils/string-utils.h>
 #include <lunasvg.h>
 #include "svg_cache.h"
 #include "../bmpman/bmpman.h"
 #include "../misc/misc.h"
+#include "../misc/vpackfile.h"
 #include "../os/os.h"
 #include "../rf/bmpman.h"
-#include "../rf/file/file.h"
 #include "../rf/gr/gr.h"
 
 namespace
@@ -111,23 +111,6 @@ namespace
         return filename;
     }
 
-    bool read_svg_file(const char* filename, std::vector<char>& out)
-    {
-        rf::File file;
-        if (file.open(filename) != 0) {
-            return false;
-        }
-        const int file_size = file.size();
-        if (file_size <= 0 || file_size > max_svg_file_size) {
-            file.close();
-            return false;
-        }
-        out.resize(static_cast<std::size_t>(file_size));
-        const int bytes_read = file.read(out.data(), file_size);
-        file.close();
-        return bytes_read == file_size;
-    }
-
     lunasvg::Document* get_document(std::string_view name)
     {
         std::string filename = svg_filename(name);
@@ -143,18 +126,17 @@ namespace
             xlog::error("[SVG] {} rejected: not from alpinefaction.vpp", filename);
         }
         else {
-            std::vector<char> data;
-            if (!read_svg_file(filename.c_str(), data)) {
+            const std::optional<std::string> data = read_game_file(filename.c_str(), max_svg_file_size);
+            if (!data || data->empty()) {
                 xlog::error("[SVG] Failed to read SVG {}", filename);
             }
             // LunaSVG resolves any <image> href that is not a data: URI as a file path (local or
             // UNC). Chrome never references anything, so a document that does is refused outright.
-            else if (std::string_view text{data.data(), data.size()};
-                     text.find("href") != std::string_view::npos || text.find("<image") != std::string_view::npos) {
+            else if (data->find("href") != std::string::npos || data->find("<image") != std::string::npos) {
                 xlog::error("[SVG] {} rejected: external references are not allowed", filename);
             }
             else {
-                doc = lunasvg::Document::loadFromData(data.data(), data.size());
+                doc = lunasvg::Document::loadFromData(data->data(), data->size());
                 if (!doc) {
                     xlog::error("[SVG] Failed to parse SVG {}", filename);
                 }

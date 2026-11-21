@@ -53,6 +53,73 @@ namespace rf
         static const auto &credits = array[983];
         static const auto &glass_house = array[985];
 
+        // main menu
+        static const auto &options = array[43];
+        static const auto &main_menu_extras = array[44];
+        static const auto &quit = array[46];
+        static const auto &multi = array[47];
+        static const auto &multiplayer = array[845];
+        static const auto &main_menu_new = array[793];
+        static const auto &main_menu_load = array[794];
+        static const auto &main_menu_save = array[827];
+        static const auto &main_menu_return = array[828];
+        static const auto &main_menu = array[823];
+
+        // new game
+        static const auto &new_game = array[42];
+        static const auto &cancel = array[202];
+        static const auto &new_game_training_advice = array[830];
+        static const auto &skip_training = array[847];
+        static const auto &go_to_training = array[848];
+
+        // save game and load game
+        static const auto &yes = array[76];
+        static const auto &no = array[77];
+        static const auto &ok = array[543];
+        static const auto &date_time_column = array[931];
+        static const auto &load = array[933];
+        static const auto &save_game = array[934];
+        static const auto &game_saved = array[935];
+        static const auto &save = array[936];
+        static const auto &cannot_save_now = array[972];
+        static const auto &load_game = array[986];
+        static const auto &name_column = array[987];
+        static const auto &game_time_column = array[988];
+        static const auto &no_filename = array[989];
+        static const auto &overwrite_save = array[990];
+        // BACK on these screens and the server list; the other menus use `back`.
+        static const auto &save_load_back = array[788];
+
+        // message log
+        static const auto &messages = array[210];
+        static const auto &no_messages = array[211];
+        static const auto &close = array[908];
+
+        // multiplayer menu and server browser
+        static const auto &join = array[732];
+        static const auto &get_servers = array[733];
+        static const auto &add_server = array[734];
+        static const auto &refresh_all = array[740];
+        static const auto &error = array[832];
+        static const auto &enter_password = array[837];
+        static const auto &enter_server_address = array[898];
+        static const auto &server_list = array[902];
+        static const auto &server_list_help = array[903];
+        static const auto &mod_not_running = array[993];
+        static const auto &mod_running = array[994];
+
+        // create game
+        static const auto &create_game_title = array[851];
+        static const auto &start = array[770];
+        static const auto &server_name = array[697];
+        static const auto &game_type = array[698];
+        static const auto &max_players = array[699];
+        static const auto &password = array[449];
+        static const auto &lan_only = array[992];
+        static const auto &add_all = array[895];
+        static const auto &unnamed_server = array[834];
+        static const auto &tracker_init_failed = array[907];
+
         // dedi config lookups
         static const auto& dedi_header = array[855];
 

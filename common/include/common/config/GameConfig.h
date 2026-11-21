@@ -56,7 +56,7 @@ struct GameConfig
     CfgVar<bool> true_color_textures = true;
 
     // Audio
-    CfgVar<bool> eax_sound = true;
+    CfgVar<bool> eax_sound = false;
 
     // Multiplayer
     CfgVar<unsigned int> force_port{
@@ -84,7 +84,6 @@ struct GameConfig
     CfgVar<std::string> fflink_token{""};
     CfgVar<std::string> fflink_username{""};
     CfgVar<std::string> afstats_psk{""};
-    CfgVar<bool> suppress_first_launch_window = false;
     CfgVar<bool> suppress_ff_link_prompt = false;
 
     bool load();

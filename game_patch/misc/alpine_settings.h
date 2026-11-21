@@ -143,6 +143,19 @@ struct AlpineGameSettings
     bool world_hud_payload_tethers = true;
     bool world_hud_payload_push_zone = true;
     bool world_hud_payload_cart_status = true;
+    bool world_hud_payload_track_pulse = true;
+    bool world_hud_route_arrows = true;
+    static constexpr float default_world_hud_route_arrow_time = 6.5f;
+    static constexpr float min_world_hud_route_arrow_time = 1.0f;
+    static constexpr float max_world_hud_route_arrow_time = 30.0f;
+    float world_hud_route_arrow_time = default_world_hud_route_arrow_time; // s each arrow stays
+    void set_world_hud_route_arrow_time(float value)
+    {
+        if (!std::isnan(value)) {
+            world_hud_route_arrow_time =
+                std::clamp(value, min_world_hud_route_arrow_time, max_world_hud_route_arrow_time);
+        }
+    }
     bool world_hud_spectate_player_labels = false;
     bool world_hud_demo_player_info = false;
     bool world_hud_demo_spawns = false;
@@ -245,6 +258,9 @@ struct AlpineGameSettings
 
     bool vehicle_tracers = true;
     bool vehicle_effects = true;
+    bool vehicle_hit_flash = true;
+    bool vehicle_debris = true;
+    bool vehicle_debris_flames = true;
     static constexpr int default_vehicle_tracer_frequency = 1;
     static constexpr int min_vehicle_tracer_frequency = 1;
     static constexpr int max_vehicle_tracer_frequency = 10;
@@ -306,6 +322,7 @@ struct AlpineGameSettings
     {
         damage_flash = std::clamp(value, min_damage_flash, max_damage_flash);
     }
+    bool hide_disabled_fall_damage_feedback = true;
     bool spectate_damage_screen_flash = true;
     bool explosion_weapon_flash_lights = true;
     bool explosion_env_flash_lights = true;
@@ -361,13 +378,6 @@ struct AlpineGameSettings
     void set_particle_sim_rate(int hz)
     {
         particle_sim_rate = std::clamp(hz, min_particle_sim_rate, max_particle_sim_rate);
-    }
-    static constexpr int min_liquid_surface_quality = 0;
-    static constexpr int max_liquid_surface_quality = 3;
-    int liquid_surface_quality = 2;
-    void set_liquid_surface_quality(int value)
-    {
-        liquid_surface_quality = std::clamp(value, min_liquid_surface_quality, max_liquid_surface_quality);
     }
     bool show_enemy_bullets = true;
     bool fps_counter = true;
@@ -484,6 +494,8 @@ struct AlpineGameSettings
     bool autosave = true;
     bool af_branding = true;
     int seasonal_effect = 1; // 0=none, 1=auto, 2=always_snow
+    int main_menu_background = 1; // 0=Mars, 1=live level
+    int main_menu_music = 0; // index into main_menu_music_labels, 0=game.tbl's track
     bool player_join_beep = false;
     bool player_join_flash = true;
     bool discord_rich_presence = true;
@@ -707,6 +719,16 @@ struct AlpineGameSettings
         else
             multiplayer_tracker = "rfgt.factionfiles.com";
     }
+    // A listen server host is asked whatever this says.
+    bool confirm_server_switch = true;
+    bool server_browser_help_seen = false;
+    bool server_browser_details = true;
+    // Re-queries the server the browser looks at, and re-pings the list as the browser opens.
+    bool server_browser_auto_refresh = true;
+    // What Host Game starts each launch with; the rest of its setup is not kept between launches.
+    std::string create_game_server_name; // empty: stock's unnamed server name
+    std::string create_game_password; // empty: no password
+    bool create_game_lan_only = false;
 
     // Bytes/s budget pre-1.5 servers scale their send rate to this client by (the `rate` command)
     unsigned client_rate = 200000u;

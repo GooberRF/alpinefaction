@@ -1,5 +1,5 @@
 Alpine Faction - Terms of Use & Notices
-Last updated: 2026-08-27
+Last updated: 2026-11-17
 
 Alpine Faction is a community modification for Red Faction. It does not
 include the game. You must own an authentic copy of Red Faction to use it; by
@@ -26,9 +26,11 @@ Map ratings you provide at the end of a multiplayer game are sent and also
 are associated with your account, along with the level, server and mod name.
 
 Auto-download: when you join a server running a level you don't have, Alpine
-Faction downloads it from FactionFiles into your user_maps\multi folder. If
-you use the client bot feature, or enable the waypoints download option, bot
-waypoint (.awp) files for those levels are downloaded as well.
+Faction downloads it from FactionFiles into your user_maps\multi folder. Bot
+waypoint (.awp) files for the levels you play are also downloaded from
+FactionFiles when a feature needs them: the client bot feature, the
+waypoints download option, or the objective route arrows shown in some game
+types (on by default).
 
 af:// links: opening an af:// link in your browser hands it to the Alpine
 Faction launcher, which can link your FactionFiles account, download and
@@ -42,7 +44,13 @@ game demos to FactionFiles. Where they do, those game demos may be associated
 with your multiplayer stats data and/or made available for public download.
 
 Crash reports are sent only if you confirm at the time of a crash. The
-launcher checks for available updates on start.
+launcher checks for available updates on start, sending only its version
+number. It never downloads or installs updates itself: if one is available,
+it asks whether you want to open the download page in your browser.
+
+The online features described above depend on services run by FactionFiles
+and the Alpine Faction team, and may be unavailable, changed or discontinued
+at any time without notice.
 
 
 YOUR RESPONSIBILITY
@@ -82,3 +90,6 @@ use of the software or related services, or content obtained through them,
 including data loss, game or account problems, and actions or negligence on
 our part or on the part of third parties (including but not limited to
 multiplayer server operators and the authors of downloaded community content).
+
+If any part of this document is found to be unenforceable, the rest of it
+still applies.

@@ -21,6 +21,7 @@
 #include "../multi/bagman.h"
 #include "../multi/payload.h"
 #include "../multi/jetpack.h"
+#include "../multi/powerups.h"
 #include "../multi/vehicles/vehicle_seats.h"
 #include "../multi/salvage.h"
 #include "../multi/wipeout.h"
@@ -61,6 +62,7 @@
 #include "../multi/bots/bot_main.h"
 #include "../multi/mutators.h"
 #include "multi_spectate.h"
+#include "route_arrows.h"
 #include "../misc/settings_registry.h"
 #include "../object/zipline.h"
 
@@ -2436,6 +2438,7 @@ CodeInjection multi_hud_render_patch{
         multi_hud_render_chat_menu();
 
         jetpack_render_hud();
+        powerups_render_hud();
         if (hud_element_visible(HudElement::reticle)) {
             crits_client_render_reticle_flash();
         }
@@ -3114,6 +3117,8 @@ void multi_hud_on_local_spawn()
         g_gungame_last_score = score;
         g_gungame_score_synced = true;
     }
+
+    route_arrows_on_local_spawn();
 }
 
 void multi_hud_reset_gametype_help()

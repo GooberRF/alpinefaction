@@ -97,7 +97,8 @@ enum class AlpineDedEventID : int
     Mesh_Set_Scale,
     Payload_Handler,
     Payload_Checkpoint,
-    When_Setup_Ends
+    When_Setup_Ends,
+    Ambience_Region_State
 };
 
 constexpr int af_ded_event_to_int(AlpineDedEventID event_id) noexcept

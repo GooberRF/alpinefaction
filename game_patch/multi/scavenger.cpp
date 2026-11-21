@@ -3,6 +3,7 @@
 #include <initializer_list>
 #include <iterator>
 #include <limits>
+#include <optional>
 #include <random>
 #include <vector>
 #include <xlog/xlog.h>
@@ -13,6 +14,7 @@
 #include "multi.h"
 #include "server_internal.h"
 #include "alpine_packets.h"
+#include "../fflink/afstats_events.h"
 #include "../main/main.h"
 #include "../misc/waypoints.h"
 #include "../rf/entity.h"
@@ -73,6 +75,8 @@ struct ScavengerInfo
     float captured_floor_y = 0.0f;
     int light_handle = -1;
     float light_pulse_phase = 0.0f;
+    // The level's first zone is placed before game_start, so zones are reported from scavenger_do_frame
+    std::optional<afstats::ScavZoneCause> unreported_zone;
 };
 
 ScavengerInfo g_scav_info;
@@ -134,12 +138,14 @@ bool zone_contains(const rf::Vector3& pos)
     return dx * dx + dz * dz <= r * r && dy >= kScavZoneCaptureMinHeight && dy <= kScavZoneCaptureMaxHeight;
 }
 
-void place_zone(int zone_index, bool captured)
+void place_zone(int zone_index, afstats::ScavZoneCause cause)
 {
     g_scav_info.zone_index = zone_index;
     const rf::Vector3& pos = g_scav_info.candidates[zone_index].pos;
-    set_zone(pos, g_alpine_server_config_active_rules.scavenger.zone_radius, trace_zone_floor_y(pos), captured);
+    set_zone(pos, g_alpine_server_config_active_rules.scavenger.zone_radius, trace_zone_floor_y(pos),
+        cause == afstats::ScavZoneCause::capture);
     g_scav_info.zone_timer.set(g_alpine_server_config_active_rules.scavenger.zone_timeout_ms);
+    g_scav_info.unreported_zone = cause;
     xlog::info("scavenger: zone roll at ({:.2f},{:.2f},{:.2f})", pos.x, pos.y, pos.z);
 }
 
@@ -187,7 +193,7 @@ int roll_zone_index(int objective_index, const rf::Vector3& anchor)
     return pick_uniform(pool);
 }
 
-void roll_positions(bool captured)
+void roll_positions(afstats::ScavZoneCause cause)
 {
     std::vector<int> pool = candidates_excluding({g_scav_info.objective_index, g_scav_info.zone_index});
     if (pool.empty()) {
@@ -199,7 +205,7 @@ void roll_positions(bool captured)
 
     g_scav_info.objective_index = objective_index;
     salvage_set_spawn(objective.pos, objective.orient);
-    place_zone(zone_index, captured);
+    place_zone(zone_index, cause);
 }
 
 // Re-rolls the zone around wherever the objective is now. True when it moved.
@@ -208,7 +214,7 @@ bool roll_zone()
     rf::Vector3 anchor = salvage_get_spawn_pos();
     salvage_get_flag_pos(&anchor);
     const int prev_zone_index = g_scav_info.zone_index;
-    place_zone(roll_zone_index(g_scav_info.objective_index, anchor), false);
+    place_zone(roll_zone_index(g_scav_info.objective_index, anchor), afstats::ScavZoneCause::timeout);
     return g_scav_info.zone_index != prev_zone_index;
 }
 
@@ -216,12 +222,12 @@ void on_zone_timeout()
 {
     switch (salvage_get_state()) {
         case SalFlagState::AtSpawn:
-            roll_positions(false);
+            roll_positions(afstats::ScavZoneCause::timeout);
             salvage_respawn_at_home();
             af_broadcast_automated_chat_msg("The cartridge and target have moved!");
             break;
         case SalFlagState::Delayed:
-            roll_positions(false);
+            roll_positions(afstats::ScavZoneCause::timeout);
             af_broadcast_automated_chat_msg("The cartridge and target have moved!");
             break;
         case SalFlagState::Carried:
@@ -266,7 +272,7 @@ void scavenger_level_init_post()
         return;
     }
 
-    roll_positions(false);
+    roll_positions(afstats::ScavZoneCause::initial);
     salvage_enter_delayed(g_alpine_server_config_active_rules.scavenger.objective_spawn_delay_ms);
     salvage_broadcast_state();
 }
@@ -283,12 +289,18 @@ void scavenger_do_frame()
     if (!g_scav_info.zone_known) return;
     if (rf::gameseq_get_state() != rf::GameState::GS_GAMEPLAY) return;
 
+    if (g_scav_info.unreported_zone) {
+        afstats::on_scav_zone(*g_scav_info.unreported_zone, g_scav_info.zone_pos, g_scav_info.zone_radius,
+            g_alpine_server_config_active_rules.scavenger.zone_timeout_ms);
+        g_scav_info.unreported_zone.reset();
+    }
+
     if (salvage_get_state() == SalFlagState::Carried) {
         rf::Player* carrier = salvage_get_carrier();
         rf::Entity* ep = salvage_get_alive_carrier_entity();
         if (carrier && ep && zone_contains(ep->pos)) {
             salvage_capture_flag(carrier, g_scav_info.zone_pos);
-            roll_positions(true);
+            roll_positions(afstats::ScavZoneCause::capture);
             salvage_broadcast_state();
             return;
         }

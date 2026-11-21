@@ -36,6 +36,7 @@
 #include "kill_attribution.h"
 #include "bagman.h"
 #include "jetpack.h"
+#include "powerups.h"
 #include "../object/alpine_rope.h"
 #include "../object/zipline.h"
 #include "pit.h"
@@ -432,7 +433,7 @@ static constexpr size_t af_damage_notify_hull_size = 3 * sizeof(float) + sizeof(
 
 // Wire tail order: fixed part, then the optional hull tail, then the caller's extra tail.
 static size_t af_build_damage_notify(std::byte* out, uint8_t player_id, int rounded_damage, bool died,
-                                     bool crit, const AfDamageNotifyHull* hull, size_t extra_tail)
+                                     bool crit, const AfDamageNotifyHull* hull, bool repair, size_t extra_tail)
 {
     af_damage_notify_packet damage_notify_packet{};
     damage_notify_packet.header.type = static_cast<uint8_t>(af_packet_type::af_damage_notify);
@@ -441,7 +442,8 @@ static size_t af_build_damage_notify(std::byte* out, uint8_t player_id, int roun
     damage_notify_packet.flags =
         (died ? AF_DAMAGE_NOTIFY_DIED : 0) |
         (crit ? AF_DAMAGE_NOTIFY_CRIT : 0) |
-        (hull ? AF_DAMAGE_NOTIFY_WORLD_POS : 0);
+        (hull ? AF_DAMAGE_NOTIFY_WORLD_POS : 0) |
+        (hull && repair ? AF_DAMAGE_NOTIFY_REPAIR : 0);
 
     size_t len = sizeof(damage_notify_packet);
     if (hull) {
@@ -463,7 +465,7 @@ static size_t af_build_damage_notify(std::byte* out, uint8_t player_id, int roun
 
 // Anchored on world_pos when given, else on the victim player's entity.
 static void af_show_damage_notify(uint8_t player_id, const rf::Vector3* world_pos, int32_t hull_handle,
-                                  uint16_t damage, bool died, bool crit)
+                                  uint16_t damage, bool died, bool crit, bool repair)
 {
     rf::Vector3 anchor{};
     if (world_pos) {
@@ -482,12 +484,15 @@ static void af_show_damage_notify(uint8_t player_id, const rf::Vector3* world_po
         anchor = entity->pos;
     }
 
-    add_damage_notify_world_hud_string(anchor, player_id, hull_handle, damage, died, crit);
-    play_local_hit_sound(player_id, hull_handle, died);
+    add_damage_notify_world_hud_string(anchor, player_id, hull_handle, damage, died, crit, repair);
+    // The repairing blow makes its own sound.
+    if (!repair) {
+        play_local_hit_sound(player_id, hull_handle, died);
+    }
 }
 
 void af_send_damage_notify_packet(uint8_t player_id, float damage, bool died, bool crit, rf::Player* player,
-                                  const AfDamageNotifyHull* hull)
+                                  const AfDamageNotifyHull* hull, bool repair)
 {
     // Send: server -> client
     if (!rf::is_server) {
@@ -507,19 +512,20 @@ void af_send_damage_notify_packet(uint8_t player_id, float damage, bool died, bo
     if (player == rf::local_player) {
         // Listen-server host: show it locally; packets to the host are never delivered.
         af_show_damage_notify(hull ? af_damage_notify_no_player : player_id, hull ? &hull->pos : nullptr,
-                              hull ? hull->handle : -1, static_cast<uint16_t>(rounded_damage), died, crit);
+                              hull ? hull->handle : -1, static_cast<uint16_t>(rounded_damage), died, crit,
+                              hull && repair);
         return;
     }
 
     std::byte packet_buf[rf::max_packet_size];
     const size_t len =
-        af_build_damage_notify(packet_buf, player_id, rounded_damage, died, crit, hull, 0);
+        af_build_damage_notify(packet_buf, player_id, rounded_damage, died, crit, hull, repair, 0);
     af_send_packet(player, packet_buf, static_cast<int>(len), false);
 }
 
 void af_send_damage_notify_packet_for_demo(uint8_t victim_id, float damage, bool died, bool crit,
                                            uint8_t attacker_id, rf::Player* recorder,
-                                           const AfDamageNotifyHull* hull)
+                                           const AfDamageNotifyHull* hull, bool repair)
 {
     // Send: server -> demo recorder only
     if (!rf::is_server || !recorder) {
@@ -533,7 +539,7 @@ void af_send_damage_notify_packet_for_demo(uint8_t victim_id, float damage, bool
 
     std::byte packet_buf[sizeof(af_damage_notify_packet) + af_damage_notify_hull_size + 1];
     const size_t len =
-        af_build_damage_notify(packet_buf, victim_id, rounded_damage, died, crit, hull, 1);
+        af_build_damage_notify(packet_buf, victim_id, rounded_damage, died, crit, hull, repair, 1);
     packet_buf[len] = static_cast<std::byte>(attacker_id);
     af_send_packet(recorder, packet_buf, static_cast<int>(len + 1), false);
 }
@@ -589,8 +595,9 @@ static void af_process_damage_notify_packet(const void* data, size_t len, const 
 
     const bool died = (damage_notify_packet.flags & AF_DAMAGE_NOTIFY_DIED) != 0;
     const bool crit = (damage_notify_packet.flags & AF_DAMAGE_NOTIFY_CRIT) != 0;
+    const bool repair = has_world_pos && (damage_notify_packet.flags & AF_DAMAGE_NOTIFY_REPAIR) != 0;
     af_show_damage_notify(damage_notify_packet.player_id, has_world_pos ? &world_pos : nullptr, hull_handle,
-                          damage_notify_packet.damage, died, crit);
+                          damage_notify_packet.damage, died, crit, repair);
 }
 
 void af_send_crit_shot_packet(uint8_t shooter_player_id, uint8_t weapon_type, rf::Player* player)
@@ -1070,6 +1077,21 @@ void serialize_payload(const EntityJetpackPayload& payload, std::byte* buf, size
     buf[offset++] = static_cast<std::byte>(payload.fuel_pct);
 }
 
+// af_sreq_powerup_state
+void serialize_payload(const PowerupStatePayload& payload, std::byte* buf, size_t& offset)
+{
+    buf[offset++] = static_cast<std::byte>(payload.player_id);
+    buf[offset++] = static_cast<std::byte>(payload.powerup_id);
+    std::memcpy(buf + offset, &payload.time_left_ms, sizeof(payload.time_left_ms));
+    offset += sizeof(payload.time_left_ms);
+}
+
+// af_sreq_haste_jump
+void serialize_payload(const HasteJumpPayload& payload, std::byte* buf, size_t& offset)
+{
+    buf[offset++] = static_cast<std::byte>(payload.player_id);
+}
+
 // af_sreq_riot_shield_state
 void serialize_payload(const RiotShieldStatePayload& payload, std::byte* buf, size_t& offset)
 {
@@ -1236,6 +1258,23 @@ void af_send_jetpack_state_request(bool on, uint8_t fuel_pct)
     packet.payload = JetpackStateReqPayload{static_cast<uint8_t>(on ? 1 : 0), fuel_pct};
 
     af_send_client_req_packet(packet, true); // reliable
+}
+
+// Haste: report that the local player jumped, for the sound on other clients.
+void af_send_haste_jump_request()
+{
+    if (!rf::is_multi || rf::is_server) {
+        return;
+    }
+
+    af_client_req_packet packet{};
+    packet.header.type = static_cast<uint8_t>(af_packet_type::af_client_req);
+    packet.header.size = sizeof(uint8_t); // req_type only
+    packet.req_type = af_client_req_type::af_req_haste_jump;
+    packet.payload = std::monostate{};
+
+    // A late resend would sound after the jump, so a lost one stays lost.
+    af_send_client_req_packet(packet);
 }
 
 // Zip lines: report that the local player grabbed or let go of a line.
@@ -1939,10 +1978,11 @@ static void af_process_client_req_packet(const void* data, size_t len, const rf:
                 xlog::warn("af_process_client_req_packet: JetpackState payload too short");
                 return;
             }
-            if (!g_alpine_server_config_active_rules.mutators.jetpacks_enabled) {
+            const bool on = bytes[offset] != 0;
+            // Switching off is never refused, so a pack whose powerup just ran out still stops thrusting.
+            if (on && !jetpack_is_active_for(rf::entity_from_handle(player->entity_handle))) {
                 return;
             }
-            const bool on = bytes[offset] != 0;
             const uint8_t fuel_pct = std::min<uint8_t>(bytes[offset + 1], 100);
             jetpack_server_on_state_request(player, on, fuel_pct);
             break;
@@ -2026,6 +2066,10 @@ static void af_process_client_req_packet(const void* data, size_t len, const rf:
             const bool riding = bytes[offset + 4] != 0;
             const int8_t dir = static_cast<int8_t>(bytes[offset + 5]) < 0 ? -1 : 1;
             zipline_server_on_state_request(player, rope_uid, riding, dir);
+            break;
+        }
+        case af_client_req_type::af_req_haste_jump: {
+            powerups_server_on_haste_jump(player);
             break;
         }
         case af_client_req_type::af_req_stats_pssk: {
@@ -2360,6 +2404,64 @@ void af_send_jetpack_state(uint32_t obj_handle, bool on, uint8_t fuel_pct)
         }
         if (is_player_minimum_af_client_version(&player, 1, 4, 0)) {
             af_send_server_req_packet(packet, &player);
+        }
+    }
+}
+
+void af_send_powerup_state(rf::Player* target, uint8_t player_id, uint8_t powerup_id, uint32_t time_left_ms)
+{
+    if (!rf::is_server) {
+        return;
+    }
+
+    af_server_req_packet packet{};
+    packet.header.type = static_cast<uint8_t>(af_packet_type::af_server_req);
+    packet.header.size = sizeof(uint8_t) + sizeof(PowerupStatePayload);
+    packet.req_type = af_server_req_type::af_sreq_powerup_state;
+    packet.payload = PowerupStatePayload{player_id, powerup_id, time_left_ms};
+
+    if (target) {
+        if (is_player_minimum_af_client_version(target, 1, 5, 0)) {
+            af_send_server_req_packet(packet, target);
+        }
+        return;
+    }
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if (&player == rf::local_player || !player.net_data || player.is_bot || player.is_browser) {
+            continue;
+        }
+        // Joining clients get the state from powerups_send_state_to in their state info.
+        if (player.net_data->state != rf::NETPLAYER_STATE_IN_GAME) {
+            continue;
+        }
+        if (is_player_minimum_af_client_version(&player, 1, 5, 0)) {
+            af_send_server_req_packet(packet, &player);
+        }
+    }
+}
+
+// Haste: relay a player's jump. The jumper is skipped because it played its own sound.
+void af_send_haste_jump(uint8_t player_id)
+{
+    if (!rf::is_server) {
+        return;
+    }
+
+    af_server_req_packet packet{};
+    packet.header.type = static_cast<uint8_t>(af_packet_type::af_server_req);
+    packet.header.size = sizeof(uint8_t) + sizeof(HasteJumpPayload);
+    packet.req_type = af_server_req_type::af_sreq_haste_jump;
+    packet.payload = HasteJumpPayload{player_id};
+
+    for (rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if (&player == rf::local_player || !player.net_data || player.is_bot || player.is_browser) {
+            continue;
+        }
+        if (player.net_data->player_id == player_id || player.net_data->state != rf::NETPLAYER_STATE_IN_GAME) {
+            continue;
+        }
+        if (is_player_minimum_af_client_version(&player, 1, 5, 0)) {
+            af_send_server_req_packet(packet, &player, false);
         }
     }
 }
@@ -3281,6 +3383,24 @@ static void af_process_server_req_packet(const void* data, size_t len, const rf:
             jetpack_on_remote_state(entity, payload.on != 0, payload.fuel_pct);
             break;
         }
+        case af_server_req_type::af_sreq_powerup_state: {
+            if (remaining < sizeof(PowerupStatePayload)) {
+                xlog::warn("af_process_server_req_packet: PowerupState payload too short");
+                return;
+            }
+            PowerupStatePayload payload{};
+            std::memcpy(&payload, bytes + offset, sizeof(payload));
+            powerups_apply_remote_state(payload.player_id, payload.powerup_id, payload.time_left_ms);
+            break;
+        }
+        case af_server_req_type::af_sreq_haste_jump: {
+            if (remaining < sizeof(HasteJumpPayload)) {
+                xlog::warn("af_process_server_req_packet: HasteJump payload too short");
+                return;
+            }
+            powerups_on_remote_haste_jump(bytes[offset]);
+            break;
+        }
         case af_server_req_type::af_sreq_riot_shield_state: {
             if (remaining < sizeof(RiotShieldStatePayload)) {
                 xlog::warn("af_process_server_req_packet: RiotShieldState payload too short");
@@ -4148,8 +4268,7 @@ static size_t build_af_payload_state_packet(std::byte (&buf)[rf::max_packet_size
 {
     const PayloadNetState net = payload_build_net_state();
     const size_t num_pushers = std::min<size_t>(net.pushers.size(), af_payload_state_max_ids);
-    const size_t num_blockers = std::min<size_t>(net.blockers.size(), af_payload_state_max_ids);
-    const size_t wire_size = sizeof(af_payload_state_packet) + num_pushers + 1 + num_blockers;
+    const size_t wire_size = sizeof(af_payload_state_packet) + num_pushers;
     if (wire_size > rf::max_packet_size) {
         xlog::error("af_payload_state: packet too large ({} > {})", wire_size, rf::max_packet_size);
         return 0;
@@ -4178,11 +4297,6 @@ static size_t build_af_payload_state_packet(std::byte (&buf)[rf::max_packet_size
     if (num_pushers) {
         std::memcpy(buf + off, net.pushers.data(), num_pushers);
         off += num_pushers;
-    }
-    buf[off++] = static_cast<std::byte>(num_blockers);
-    if (num_blockers) {
-        std::memcpy(buf + off, net.blockers.data(), num_blockers);
-        off += num_blockers;
     }
     return off;
 }
@@ -4239,7 +4353,7 @@ void af_process_payload_state_packet(const void* data, size_t len, const rf::Net
         xlog::warn("payload_state: truncated (declared={}, len={})", hdr.size, len);
         return;
     }
-    if (wire_size < sizeof(af_payload_state_packet) + 1) {
+    if (wire_size < sizeof(af_payload_state_packet)) {
         xlog::warn("payload_state: short packet ({})", wire_size);
         return;
     }
@@ -4248,20 +4362,13 @@ void af_process_payload_state_packet(const void* data, size_t len, const rf::Net
     std::memcpy(&pkt, data, sizeof(pkt));
 
     const auto* bytes = static_cast<const uint8_t*>(data);
-    size_t off = sizeof(pkt);
-    if (off + pkt.num_pushers + 1 > wire_size) {
+    const size_t off = sizeof(pkt);
+    if (pkt.num_pushers > af_payload_state_max_ids || off + pkt.num_pushers != wire_size) {
         xlog::warn("payload_state: bad pusher count {}", pkt.num_pushers);
         return;
     }
     PayloadNetState net;
     net.pushers.assign(bytes + off, bytes + off + pkt.num_pushers);
-    off += pkt.num_pushers;
-    const uint8_t num_blockers = bytes[off++];
-    if (off + num_blockers != wire_size) {
-        xlog::warn("payload_state: bad blocker count {}", num_blockers);
-        return;
-    }
-    net.blockers.assign(bytes + off, bytes + off + num_blockers);
 
     if (pkt.state > static_cast<uint8_t>(PayloadCartState::held) || !std::isfinite(pkt.distance)
         || !std::isfinite(pkt.speed)) {
@@ -4621,7 +4728,8 @@ void af_process_vehicle_health_packet(const void* data, size_t len, const rf::Ne
     vehicle_store_health_from_packet(pkt.vehicle_handle, pkt.life, pkt.max_life, pkt.primary_ammo,
                                     pkt.secondary_ammo, pkt.refill_ms[0], pkt.refill_ms[1],
                                     has_hit_dir ? &hit_dir : nullptr,
-                                    (pkt.flags & AF_VEHICLE_HEALTH_SCRAPE_ONLY) != 0);
+                                    (pkt.flags & AF_VEHICLE_HEALTH_SCRAPE_ONLY) != 0,
+                                    (pkt.flags & AF_VEHICLE_HEALTH_HURT) != 0);
 }
 
 static void build_af_vehicle_factory_state_packet(af_vehicle_factory_state_packet& pkt,

@@ -20,6 +20,7 @@ protected:
     void OnOK() override;
     BOOL OnCommand(WPARAM wparam, LPARAM lparam) override;
     LRESULT OnNotify(WPARAM wparam, LPARAM lparam) override;
+    static HRESULT CALLBACK FirstLaunchCallback(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam, LONG_PTR data);
     LRESULT OnShowFFLinkReminder(WPARAM wparam, LPARAM lparam);
     LRESULT OnShowWhatsNew(WPARAM wparam, LPARAM lparam);
     INT_PTR DialogProc(UINT msg, WPARAM wparam, LPARAM lparam) override;
@@ -32,7 +33,7 @@ private:
     void OnSupportLinkClick(int link_id);
     void OnOpenGameFolder(int folder_id);
     void OnAboutLinkClick();
-    void OnBnClickedFFLinkBtn();
+    void OnBnClickedFFLinkBtn(HWND owner = nullptr);
     LRESULT OnFFLinkComplete(WPARAM wparam, LPARAM lparam);
     LRESULT OnFFLinkCancelled(WPARAM wparam, LPARAM lparam);
     void RefreshModSelector();
@@ -40,14 +41,15 @@ private:
     void AfterLaunch();
     CEdit m_news_box;
     void FetchNews();
-    bool ShouldShowWhatsNew();
-    std::string FetchWhatsNewContent();
-    void ClearWhatsNewFlag();
+    bool ShouldDisplay(const char* value_name, bool default_value);
+    std::wstring FetchWhatsNewContent();
+    void ClearDisplayFlag(const char* value_name);
     CEdit m_about_link;
     bool m_about_link_hover = false;
 
     // FactionFiles Link
     std::string m_fflink_token;
+    HWND m_fflink_owner = nullptr; // parent window for the link flow's dialogs
     std::unique_ptr<std::thread> m_fflink_poll_thread;
     std::atomic<bool> m_fflink_polling_active{false};
     std::string m_fflink_result_username;
@@ -63,7 +65,6 @@ protected:
     ImageButton m_editor_button;
     ImageButton m_options_button;
 
-    //ImageButton m_sb1_button;
     ImageButton m_sb2_button;
     ImageButton m_sb3_button;
     ImageButton m_sb4_button;

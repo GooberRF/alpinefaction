@@ -1,0 +1,94 @@
+# The level behind the menus when Options > Interface > Menu background is "Live level".
+# The menus show the Mars background instead if the level fails to load.
+#
+# [live_level_normal] is the usual level. [live_level_seasonal] replaces it during the winter season.
+# Without a usable seasonal level the normal one runs.
+#
+# The level runs as in single player, with no player and no sound. Each shot holds a fixed camera for shot_seconds
+# (at least 1), in this file's order, and dips to black for fade_seconds at each end.
+# pos: camera position [x, y, z], in meters; it must be inside the level and out of any liquid.
+# pitch: degrees, positive looks down. heading: degrees, 0 looks along +Z and 90 along +X.
+
+[live_level_normal]
+level = "L3S1.rfl"
+berserk = false
+shot_seconds = 12.0
+fade_seconds = 1.0
+
+# Registration Center
+[[live_level_normal.shot]]
+pos = [-5.992, 1.009, 11.440]
+pitch = -0.03
+heading = 142.72
+
+# Entrance hall
+[[live_level_normal.shot]]
+pos = [-29.131, -2.596, -25.377]
+pitch = -0.32
+heading = 52.06
+
+# Security station
+[[live_level_normal.shot]]
+pos = [-39.173, -2.175, -23.655]
+pitch = -13.60
+heading = 50.34
+
+# Registration desk
+[[live_level_normal.shot]]
+pos = [-7.093, -3.512, -1.884]
+pitch = -10.14
+heading = 131.71
+
+# Elevators
+[[live_level_normal.shot]]
+pos = [-70.739, -1.503, -11.568]
+pitch = 12.10
+heading = 48.91
+
+# Behind registration desk
+[[live_level_normal.shot]]
+pos = [-1.378, -2.598, -14.940]
+pitch = 3.73
+heading = 27.40
+
+# Tech room
+[[live_level_normal.shot]]
+pos = [-24.597, -5.055, -13.663]
+pitch = 6.15
+heading = 70.60
+
+[live_level_seasonal]
+level = "L10S2.rfl"
+berserk = true
+shot_seconds = 12.0
+fade_seconds = 1.0
+
+# Bridge
+[[live_level_seasonal.shot]]
+pos = [-22.247, 19.731, 28.916]
+pitch = -3.03
+heading = 203.57
+
+# Steam
+[[live_level_seasonal.shot]]
+pos = [72.802, 15.008, -43.737]
+pitch = -0.73
+heading = 230.47
+
+# Stash
+[[live_level_seasonal.shot]]
+pos = [31.544, -5.801, -61.296]
+pitch = -3.33
+heading = 163.07
+
+# Tall cave
+[[live_level_seasonal.shot]]
+pos = [-3.407, 25.741, -53.596]
+pitch = 39.11
+heading = 123.56
+
+# Ice crack
+[[live_level_seasonal.shot]]
+pos = [23.652, -5.437, -58.957]
+pitch = 5.93
+heading = 257.02

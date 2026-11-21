@@ -1,6 +1,9 @@
 #pragma once
 
 #include <functional>
+#include <limits>
+#include <optional>
+#include <string>
 #include <common/utils/string-utils.h>
 
 enum GameLang
@@ -25,3 +28,6 @@ bool is_known_missing_stock_asset(std::string_view filename);
 // Used to normalize supercede checks across extensions for the
 // "allow clientside mods from legacy directories" option
 bool vpackfile_supercede_allowed(const char* requested_filename, const char* sibling_filename);
+
+// Reads a whole file through rf::File; nullopt if it cannot be opened, is larger than max_size or reads short.
+std::optional<std::string> read_game_file(const char* filename, int max_size = std::numeric_limits<int>::max());

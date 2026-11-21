@@ -12,7 +12,6 @@
 #include <format>
 #include "../misc/misc.h"
 #include "../misc/alpine_settings.h"
-#include "../misc/settings_registry.h"
 #include "../input/input.h"
 #include "../input/gamepad.h"
 #include "../misc/level.h"
@@ -34,8 +33,10 @@
 #include "../rf/vmesh.h"
 #include <common/config/GameConfig.h>
 #include "../main/main.h"
+#include "../multi/multi.h"
 #include <common/gr_d3d11/gr_d3d11_mesh.h>
 #include "../sound/sound.h"
+#include "../ui/menu_scene.h"
 #include "object.h"
 
 bool event_debug_enabled;
@@ -209,9 +210,16 @@ static void liquid_depth_update_room_objects(rf::GRoom* room)
     }
 }
 
-// Indexed by liquid_surface_quality; a step of 0 rebuilds every frame
-constexpr float liquid_surface_rebuild_steps[] = {0.5f, 0.1f, 0.02f, 0.0f};
-static_assert(std::size(liquid_surface_rebuild_steps) == AlpineGameSettings::max_liquid_surface_quality + 1);
+// Where the engine's liquid face is drawn, it is rebuilt each time the moving liquid has gone this far
+constexpr float liquid_surface_rebuild_step = 0.01f;
+
+// Where nothing draws the engine's liquid face, it is rebuilt only when the liquid stops: the D3D11 renderer draws a
+// moving surface itself, except in the sky room, and a dedicated server or a headless run draws nothing. Collision
+// follows the moving surface through the hooks below.
+static bool liquid_face_rebuilt_when_stopped(const rf::GRoom* room)
+{
+    return rf::is_dedicated_server || is_headless_mode() || (is_d3d11() && !room->is_sky);
+}
 
 // The depth the surface face is built at: whole steps from the start, so it can be found without state
 static float liquid_depth_update_surface_depth(const rf::LiquidDepthUpdate& update, float elapsed)
@@ -219,7 +227,7 @@ static float liquid_depth_update_surface_depth(const rf::LiquidDepthUpdate& upda
     if (elapsed >= update.duration) {
         return update.target_depth;
     }
-    const float step = liquid_surface_rebuild_steps[g_alpine_game_config.liquid_surface_quality];
+    const float step = liquid_face_rebuilt_when_stopped(update.room) ? 0.0f : liquid_surface_rebuild_step;
     const float total = update.target_depth - update.start_depth;
     if (step <= 0.0f) {
         return update.start_depth + total * elapsed / update.duration;
@@ -238,8 +246,41 @@ float liquid_depth_update_surface_y(const rf::GRoom* room)
     return room->bbox_min.y + room->liquid_depth;
 }
 
+bool liquid_depth_update_moving_surface_y(const rf::GRoom* room, float& out_y)
+{
+    if (!liquid_face_rebuilt_when_stopped(room)) {
+        return false;
+    }
+    // Up to the frame the engine finishes the update on (0x0045E440 removes it once duration < elapsed)
+    for (const rf::LiquidDepthUpdate* update : rf::liquid_depth_updates) {
+        if (update->room == room && !(update->duration < update->elapsed)) {
+            out_y = room->bbox_min.y + liquid_depth_update_surface_depth(*update, update->elapsed);
+            return true;
+        }
+    }
+    return false;
+}
+
+// Mirrors the rooms EventSetLiquidDepth_turn_on_new picks
+float liquid_depth_update_max_surface_y(const rf::GRoom* room)
+{
+    float depth = room->liquid_depth;
+    for (const rf::Event* event : rf::find_all_events_by_type(rf::EventType::Set_Liquid_Depth)) {
+        const auto* liquid_event = static_cast<const EventSetLiquidDepthHook*>(event);
+        bool targets_room = liquid_event->links.size() == 0 && liquid_event->room == room;
+        for (int room_uid : liquid_event->links) {
+            targets_room = targets_room || room_uid == room->uid;
+        }
+        if (targets_room) {
+            depth = std::max(depth, liquid_event->depth);
+        }
+    }
+    return room->bbox_min.y + depth;
+}
+
 // While the depth is changing, only rebuild the liquid surface each time the liquid has moved another step,
-// and on the final step. No trampoline: the handler makes the call itself, pops its argument and resumes after it.
+// and on the final step. Where the face is rebuilt only when the liquid stops (see above), on the final step only.
+// No trampoline: the handler makes the call itself, pops its argument and resumes after it.
 CodeInjection liquid_depth_update_apply_all_reset_liquid_injection{
     0x0045E4AC,
     [](auto& regs) {
@@ -248,8 +289,8 @@ CodeInjection liquid_depth_update_apply_all_reset_liquid_injection{
         const bool finished = (regs.ebx.value & 0xFF) != 0;
         const float prev_elapsed = update->elapsed - rf::frametime;
         const float surface_depth = liquid_depth_update_surface_depth(*update, update->elapsed);
-        if (finished || prev_elapsed <= 0.0f
-            || surface_depth != liquid_depth_update_surface_depth(*update, prev_elapsed)) {
+        if (finished || (!liquid_face_rebuilt_when_stopped(update->room)
+            && (prev_elapsed <= 0.0f || surface_depth != liquid_depth_update_surface_depth(*update, prev_elapsed)))) {
             update->room->liquid_depth = surface_depth;
             update->room->reset_liquid(solid);
             update->room->liquid_depth = update->cur_depth;
@@ -261,6 +302,179 @@ CodeInjection liquid_depth_update_apply_all_reset_liquid_injection{
     false,
 };
 
+// While a liquid moves without its face being rebuilt, the engine's liquid faces stay where they were last built. The
+// hooks below test them where the surface really is. The face's outline is the old one too, so a point on the surface
+// has to lie in the room just under it instead.
+static bool liquid_face_moving_surface_y(const rf::GFace* face, float& surface_y)
+{
+    return face->attributes.is_liquid() && face->which_room
+        && liquid_depth_update_moving_surface_y(face->which_room, surface_y);
+}
+
+static bool liquid_surface_point_in_room(const rf::GFace* face, float x, float z, float surface_y)
+{
+    rf::Vector3 probe{x, surface_y - 0.02f, z};
+    return rf::find_room(rf::level.geometry, &probe) == face->which_room;
+}
+
+// The stock ray (0x00506550) and sphere (0x005071B0) face tests, with the face's plane at surface_y
+static bool liquid_surface_sweep(const rf::GFace* face, float surface_y, const rf::Vector3& start,
+                                 const rf::Vector3& len, float radius, float& t)
+{
+    constexpr float sphere_min_radius = 1e-4f; // stock 0x005894A0
+    const float facing = face->plane.normal.y >= 0.0f ? 1.0f : -1.0f;
+    const float dist = facing * (start.y - surface_y);
+    const float approach = -facing * len.y;
+    if (dist < 0.0f || approach <= 0.0f) {
+        return false;
+    }
+    if (radius >= sphere_min_radius) {
+        if (dist < radius) {
+            t = 0.0f;
+            return true;
+        }
+        if (approach < dist - radius) {
+            return false;
+        }
+        t = (dist - radius) / approach;
+        return true;
+    }
+    if (approach < dist) {
+        return false;
+    }
+    t = dist / approach;
+    return true;
+}
+
+// The stock per-face test (0x004DEC10) of a moving liquid's face: same early filters, same output. Returns false to
+// leave the face to the stock test.
+static bool liquid_face_collide_moving(rf::GFace* face, rf::GCollisionInput* in, rf::GCollisionOutput* out)
+{
+    float surface_y;
+    if (!liquid_face_moving_surface_y(face, surface_y)) {
+        return false;
+    }
+    // A moving room's faces are the level solid's, so the transformed segment is in world space whatever the mesh space
+    // flag says
+    const bool see_thru = face->attributes.is_see_thru();
+    const bool shoot_thru = face->attributes.is_shoot_thru();
+    if (((in->flags & rf::GCF_SKIP_SEE_THRU) && see_thru) || ((in->flags & rf::GCF_SKIP_SHOOT_THRU) && shoot_thru)) {
+        return true;
+    }
+    // Liquid faces are see-thru, so a sweep that tests texel alpha keeps the stock path, which does it
+    if (((in->flags & rf::GCF_SEE_THRU_ALPHA_TEST) && see_thru)
+        || ((in->flags & rf::GCF_SHOOT_THRU_ALPHA_TEST) && shoot_thru)) {
+        return false;
+    }
+    if (!(in->flags & rf::GCF_PROCESS_PORTALS) && face->attributes.is_portal()) {
+        return true;
+    }
+    if (!(in->flags & rf::GCF_PROCESS_SKYROOM)) {
+        if (face->attributes.is_invisible() && !(in->flags & rf::GCF_PROCESS_INVISIBLE_FACES)) {
+            return true;
+        }
+        if (face->attributes.is_show_sky() && !(in->flags & rf::GCF_PROCESS_SHOW_SKY_FACES)) {
+            return true;
+        }
+    }
+
+    const rf::Vector3& start = in->start_pos_transformed;
+    const rf::Vector3& len = in->len_transformed;
+    float t;
+    if (!liquid_surface_sweep(face, surface_y, start, len, in->radius, t) || t > out->fraction) {
+        return true;
+    }
+    const float x = start.x + len.x * t;
+    const float z = start.z + len.z * t;
+    if (!liquid_surface_point_in_room(face, x, z, surface_y)) {
+        return true;
+    }
+    out->fraction = t;
+    out->hit_point = {x, surface_y, z};
+    out->normal = face->plane.normal;
+    out->field_20 = 0;
+    out->face = face;
+    ++out->num_hits;
+    return true;
+}
+
+// The two places GSolid::collide (0x004DF1C0) tests the liquid faces of liquid rooms
+CallHook<int(rf::GFace*, rf::GCollisionInput*, rf::GCollisionOutput*)> liquid_face_collide_hook{
+    {0x004DF421u, 0x004DF63Au},
+    [](rf::GFace* face, rf::GCollisionInput* in, rf::GCollisionOutput* out) {
+        if (liquid_face_collide_moving(face, in, out)) {
+            return static_cast<int>(out->num_hits > 0);
+        }
+        return liquid_face_collide_hook.call_target(face, in, out);
+    },
+};
+
+// Debris (0x00491AA0) and particles (0x00496200) test a liquid room's faces themselves. Their box test is passed the
+// face's own bounding box fields.
+CallHook<bool(const rf::Vector3*, const rf::Vector3*, const rf::Vector3*, const rf::Vector3*)>
+    liquid_room_face_box_hook{
+    {0x00491AFBu, 0x0049625Bu},
+    [](const rf::Vector3* face_min, const rf::Vector3* face_max, const rf::Vector3* seg_min,
+       const rf::Vector3* seg_max) {
+        const auto* face = reinterpret_cast<const rf::GFace*>(
+            reinterpret_cast<const char*>(face_min) - offsetof(rf::GFace, bounding_box_min));
+        float surface_y;
+        if (liquid_face_moving_surface_y(face, surface_y)) {
+            const rf::GRoom* room = face->which_room;
+            const rf::Vector3 surface_min{room->bbox_min.x, surface_y, room->bbox_min.z};
+            const rf::Vector3 surface_max{room->bbox_max.x, surface_y, room->bbox_max.z};
+            return liquid_room_face_box_hook.call_target(&surface_min, &surface_max, seg_min, seg_max);
+        }
+        return liquid_room_face_box_hook.call_target(face_min, face_max, seg_min, seg_max);
+    },
+};
+
+// Their ray test against the face
+CallHook<bool(const rf::Vector3*, const rf::Vector3*, rf::GFace*, float*)> liquid_room_face_ray_hook{
+    {0x00491B12u, 0x00496272u},
+    [](const rf::Vector3* start, const rf::Vector3* len, rf::GFace* face, float* t) {
+        float surface_y;
+        if (liquid_face_moving_surface_y(face, surface_y)) {
+            return liquid_surface_sweep(face, surface_y, *start, *len, 0.0f, *t);
+        }
+        return liquid_room_face_ray_hook.call_target(start, len, face, t);
+    },
+};
+
+// Their test of the point reached against the face's outline
+CallHook<bool __fastcall(rf::GFace*, int, const rf::Vector3*)> liquid_room_face_contains_hook{
+    {0x00491B64u, 0x004962C4u},
+    [](rf::GFace* face, int edx, const rf::Vector3* point) FASTCALL_LAMBDA {
+        float surface_y;
+        if (liquid_face_moving_surface_y(face, surface_y)) {
+            return liquid_surface_point_in_room(face, point->x, point->z, surface_y);
+        }
+        return liquid_room_face_contains_hook.call_target(face, edx, point);
+    },
+};
+
+MovingLiquidFacePlanes::MovingLiquidFacePlanes()
+{
+    for (const rf::LiquidDepthUpdate* update : rf::liquid_depth_updates) {
+        float surface_y;
+        if (!liquid_depth_update_moving_surface_y(update->room, surface_y)) {
+            continue;
+        }
+        for (rf::GFace& face : update->room->face_list) {
+            if (face.attributes.is_liquid()) {
+                saved_offsets_.emplace_back(&face, face.plane.offset);
+                face.plane.offset = -face.plane.normal.y * surface_y;
+            }
+        }
+    }
+}
+
+MovingLiquidFacePlanes::~MovingLiquidFacePlanes()
+{
+    for (auto it = saved_offsets_.rbegin(); it != saved_offsets_.rend(); ++it) {
+        it->first->plane.offset = it->second;
+    }
+}
 CallHook<int(rf::AiPathInfo*)> ai_path_release_on_load_level_event_crash_fix{
     0x004BBD99,
     [](rf::AiPathInfo* pathp) {
@@ -271,10 +485,35 @@ CallHook<int(rf::AiPathInfo*)> ai_path_release_on_load_level_event_crash_fix{
     },
 };
 
+// Waypoint lists warned about this level, once each, as the AI retries every frame.
+static std::unordered_set<const void*> g_warned_waypoint_lists;
+
+// Starting an AI along its waypoint list (0x0040A9B0, every path from a list entry to a node) reads the node at the
+// entry's index without a bounds check, and stock L5S2's list GdSubBay3 holds -1: the word before the node array was
+// taken for a node, and writing to it crashed at random (0x004CECAC). Such an entry fails the start, as the
+// function's own checks do (0x0040AACA).
+CodeInjection ai_waypoint_node_index_check{
+    0x0040AA31,
+    [](auto& regs) {
+        const int node_index = regs.eax;
+        const rf::GSolid* const solid = rf::g_level_solid;
+        if (solid && node_index >= 0 && node_index < solid->nodes.nodes.size()) {
+            return;
+        }
+        const auto* list_name = static_cast<const rf::String*>(regs.ecx);
+        if (g_warned_waypoint_lists.insert(list_name).second) {
+            xlog::warn("[AI] Waypoint list '{}' in {} refers to node {}, which does not exist; AI ignores the list",
+                       list_name->c_str(), rf::level.filename.c_str(), node_index);
+        }
+        regs.eip = 0x0040AACA;
+    },
+};
+
 FunHook<void()> event_level_init_post_hook{
     0x004BD890,
     []() {
         event_level_init_post_hook.call_target();
+        g_warned_waypoint_lists.clear();
         if (string_iequals(rf::level.filename, "L5S2.rfl")) {
             // HACKFIX: make Set_Liquid_Depth events properties in lava control room more sensible
             xlog::trace("Changing Set_Liquid_Depth events in this level...");
@@ -374,19 +613,6 @@ ConsoleCommand2 debug_event_msg_cmd{
     },
     "Print debug information for events",
     "dbg_events",
-};
-
-ConsoleCommand2 liquid_surface_quality_cmd{
-    "r_liquidsurface",
-    [](std::optional<int> level) {
-        if (level) {
-            setting_console_set("liquid_surface_quality", std::to_string(level.value()));
-        }
-        rf::console::print("Liquid surface update quality is {} (0 low, 1 medium, 2 high, 3 every frame)",
-            g_alpine_game_config.liquid_surface_quality);
-    },
-    "Set how closely a rising or falling liquid surface follows its level",
-    "r_liquidsurface [0-3]",
 };
 
 ConsoleCommand2 debug_goal_cmd{
@@ -601,6 +827,9 @@ static void __fastcall event_play_sound_turn_on(rf::PlaySoundEvent* event);
 FunHook<decltype(event_play_sound_turn_on)> event_play_sound_turn_on_hook{0x004BA440, event_play_sound_turn_on};
 static void __fastcall event_play_sound_turn_on(rf::PlaySoundEvent* event)
 {
+    if (menu_scene_active()) {
+        return;
+    }
     if (play_sound_event_loops(event)) {
         // Same lookup as the create function (0x004B7CA6), which finds the existing entry
         event->sound_handle = rf::snd_get_handle(event->sound_file.c_str(), event->min_dist, 1.0f, 1.0f);
@@ -872,10 +1101,15 @@ void apply_event_patches()
     // Fix Set_Liquid_Depth event
     AsmWriter(0x004BCBE0).jmp(&EventSetLiquidDepth_turn_on_new);
     liquid_depth_update_apply_all_reset_liquid_injection.install();
+    liquid_face_collide_hook.install();
+    liquid_room_face_box_hook.install();
+    liquid_room_face_ray_hook.install();
+    liquid_room_face_contains_hook.install();
 
     // Fix crash after level change (Load_Level event) caused by GNavNode pointers in AiPathInfo not being cleared for entities
     // being taken from the previous level
     ai_path_release_on_load_level_event_crash_fix.install();
+    ai_waypoint_node_index_check.install();
 
     // Fix Message event crash on dedicated server
     EventMessage__turn_on_hook.install();
@@ -897,5 +1131,4 @@ void apply_event_patches()
     // Register commands
     debug_event_msg_cmd.register_cmd();
     debug_goal_cmd.register_cmd();
-    liquid_surface_quality_cmd.register_cmd();
 }

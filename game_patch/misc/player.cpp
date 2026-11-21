@@ -36,6 +36,7 @@
 #include "../multi/gungame.h"
 #include "../multi/awards.h"
 #include "../multi/mutators.h"
+#include "../multi/powerups.h"
 #include "../multi/bots/server_bots.h"
 #include "../multi/vehicles/vehicle.h"
 #include "../hud/multi_spectate.h"
@@ -559,6 +560,10 @@ FunHook<void(rf::Player*, int)> player_make_weapon_current_selection_hook{
 
 void __fastcall player_execute_action_timestamp_set_new(rf::Timestamp* fire_wait_timer, int, int value)
 {
+    rf::Entity* ep = rf::local_player_entity;
+    if (ep && fire_wait_timer == &ep->ai.next_fire_primary) {
+        value = haste_scale_ms(ep, value);
+    }
     if (!fire_wait_timer->valid() || fire_wait_timer->time_until() < value) {
         fire_wait_timer->set(value);
     }
@@ -602,6 +607,17 @@ FunHook<bool(rf::Player*)> player_is_local_hook{
             return false;
         }
         return player_is_local_hook.call_target(player);
+    }
+};
+
+// Any player without an entity has entity_handle -1, so the stock lookup would resolve "no killer" to one of them.
+FunHook<rf::Player*(int)> player_from_entity_handle_hook{
+    0x004A3740,
+    [](int entity_handle) -> rf::Player* {
+        if (entity_handle == -1) {
+            return nullptr;
+        }
+        return player_from_entity_handle_hook.call_target(entity_handle);
     }
 };
 
@@ -704,6 +720,29 @@ FunHook<void(rf::Player*, unsigned)> player_start_hud_damage_indicators_hook{
             gr::d3d11::trigger_damage_vignette(dir_mask);
         }
     },
+};
+
+// Fall damage (0x0049CD80) plays its hit indicators and camera shake locally whether or not the
+// server deals the damage. Stock obj_apply_damage drops fall damage when neither flag is set, and
+// clients get the server's flags in join_accept (Alpine servers resync later changes).
+CodeInjection fall_damage_feedback_injection{
+    0x0049CEDF,
+    [](auto& regs) {
+        if (g_alpine_game_config.hide_disabled_fall_damage_feedback && rf::is_multi
+            && (rf::netgame.flags & (rf::NG_FLAG_FALL_DAMAGE | rf::NG_FLAG_REAL_FALL_DAMAGE)) == 0) {
+            regs.eip = 0x0049CF34;
+        }
+    },
+};
+
+ConsoleCommand2 hide_disabled_fall_damage_feedback_cmd{
+    "cl_hidenofalldamage",
+    []() {
+        setting_console_set("hide_disabled_fall_damage_feedback", "toggle");
+        rf::console::print("Fall feedback on servers without fall damage is {}",
+                           g_alpine_game_config.hide_disabled_fall_damage_feedback ? "hidden" : "shown");
+    },
+    "Toggle hiding fall damage feedback on servers with fall damage disabled",
 };
 
 ConsoleCommand2 damage_screen_flash_cmd{
@@ -1160,6 +1199,7 @@ void player_do_patch()
     player_execute_action_hook.install();
     player_create_entity_hook.install();
     player_is_local_hook.install();
+    player_from_entity_handle_hook.install();
 
     player_is_dying_red_bars_hook.install();
     player_is_dying_scoreboard_hook.install();
@@ -1190,6 +1230,7 @@ void player_do_patch()
 
     // Directional feed for the damage vignette
     player_start_hud_damage_indicators_hook.install();
+    fall_damage_feedback_injection.install();
 
     // Stretch driller cockpit when using a wide-screen
     player_cockpit_vmesh_render_hook.install();
@@ -1203,6 +1244,7 @@ void player_do_patch()
 
     // Commands
     damage_screen_flash_cmd.register_cmd();
+    hide_disabled_fall_damage_feedback_cmd.register_cmd();
     spectate_damage_screen_flash_cmd.register_cmd();
     weapon_explosion_flash_lights_cmd.register_cmd();
     env_explosion_flash_lights_cmd.register_cmd();

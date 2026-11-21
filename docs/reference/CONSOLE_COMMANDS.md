@@ -63,7 +63,6 @@ Commands marked "D3D11 only" only have an effect with the Direct3D 11 renderer.
 | `r_fullrangelighting` | | Toggles full range lighting. Applies on the next level load. Default: on. |
 | `r_gamma` | `[value]` | Sets gamma (0.7-2.2, the stock slider range). Default: 1.0. |
 | `r_lightmaps` | | Toggles rendering only lightmaps (no textures) on level geometry. In multiplayer, only applies if the server allows it. Default: off. |
-| `r_liquidsurface` | `[0-3]` | Sets how closely a rising or falling liquid surface (`Set_Liquid_Depth`) follows its level: `0` every 50 cm, `1` every 10 cm, `2` every 2 cm, `3` every frame. Lower is faster on large levels. Default: 2. |
 | `r_lodscale` | `[scale]` | Sets the LOD distance scale (0.1-1000). Default: 10. |
 | `r_meshlighting` | `[0-2]` | Mesh lighting: `0` ambient only, `1` vertex (legacy), `2` pixel (D3D11). A level's `_info.tbl` can force vertex lighting. Default: 2. |
 | `r_monitorscale` | `[scale]` | Sets the resolution scale of security monitors and mirrors (1-8). Reload the level to apply. Default: 2. |
@@ -105,6 +104,7 @@ Commands marked "D3D11 only" only have an effect with the Direct3D 11 renderer.
 | `cl_giblifetimems` | `[milliseconds]` | Sets gib lifetime (1000-15000 ms). Default: 7000. |
 | `cl_gibvelocityscale` | `[scale]` | Sets gib velocity scale (3-100). Default: 15. |
 | `cl_gorelevel` | `[level]` | Sets gore level, `0` (minimal) to `2` (maximum). |
+| `cl_hidenofalldamage` | | Toggles hiding the hit indicators and screen shake from hard landings in multiplayer when the server has fall damage disabled. Default: on. |
 | `cl_legacy_bob` | | Toggles the original weapon bob, which stutters while running. Default: off. |
 | `cl_magazines` | `[bool]` | Toggles magazines ejected when you reload. Default: on. |
 | `cl_particlecollidelod` | | Toggles testing cosmetic particle collision less often with camera distance. Default: on. |
@@ -237,8 +237,11 @@ Commands marked "D3D11 only" only have an effect with the Direct3D 11 renderer.
 | `cl_wh_flagoverdraw` | | Toggles drawing CTF flag world HUD sprites on top of everything. Default: on. |
 | `cl_wh_hitnumbers` | | Toggles damage numbers when you hit players in multiplayer, if the Alpine Faction server enables them. Default: on. |
 | `cl_wh_pushzone` | | Toggles the ring on the ground around the Payload cart that shows where players push it. Default: on. |
+| `cl_wh_routearrows` | | Toggles the arrows laid from where you spawn toward the objective: the cart in Payload, the hill in King of the Hill, the current point in Revolt, the frontier point in Escalation (the neutral center until it is taken), and in Damage Control the nearest point you need to visit (the enemy's, a neutral one, or yours while it is contested). Where there is room, the trail first runs a few meters the way you face, turning back in a U-turn if the route lies behind you. They follow the level's bot waypoints: in those game types the map's AWP is checked for on FactionFiles at level load, or when the arrows are turned on mid-level, which shows them from your next spawn. The trail breaks at ladders, jump pads, teleporters, lifts, zip lines, water and jumps. Default: on. |
+| `cl_wh_routearrows_time` | `[1.0-30.0]` | Sets how long each spawn route arrow stays, in seconds, before it is reeled in. Default: 6.5. |
 | `cl_wh_teamplayerlabels` | | Toggles name labels over teammates. Default: off. |
-| `cl_wh_tethers` | | Toggles the Payload beams linking the players pushing or blocking the cart to it. Default: on. |
+| `cl_wh_tethers` | | Toggles the Payload beams linking the players pushing the cart to it. Default: on. |
+| `cl_wh_trackpulse` | | Toggles the glowing pulses that run along the Payload track from the cart to its end. Default: on. |
 | `kill_messages` | | Toggles kill messages in the chat box and console. Default: on. Not saved. |
 | `mp_crit_flash` | | Toggles the reticle flash when you land a critical hit. Default: on. |
 | `mp_deathbars` | | Toggles red bars at the top and bottom of the screen while dead. Default: on. |
@@ -254,6 +257,7 @@ Commands marked "D3D11 only" only have an effect with the Direct3D 11 renderer.
 | `ui_fpsavg` | `[milliseconds]` | Sets the FPS counter averaging window (0-60000 ms, 0 = update every frame). Default: 100. |
 | `ui_gamefeed` | | Toggles showing game event messages in a separate feed instead of chat. Default: off. |
 | `ui_gametype_help` | | Toggles the game type help notification shown when spawning on a server. Default: on. |
+| `ui_menu_background` | `[0-1]` | Sets what the menus show behind them: `0` the Mars backdrop, `1` a live level. Outside a game that is a level running live, chosen by `af_main_menu.toml` (the Mars backdrop when that level cannot be loaded); in a game it is the game itself, frozen in single player (the Mars backdrop while the view is underwater or no level is loaded). D3D11 only. Default: 1. |
 | `ui_minisb_dm` | | Toggles the mini scoreboard in Deathmatch. Default: on. |
 | `ui_playernames` | | Toggles names of targeted players. Default: on. |
 | `ui_realarmor` | | Toggles showing armor as real values (1:1 with effective health) instead of classic (2:1). Default: off. |
@@ -302,8 +306,12 @@ Colors are hex `RRGGBB` or `RRGGBBAA`, or comma-separated `R,G,B[,A]` values in 
 
 | Command | Arguments | Description |
 | --- | --- | --- |
+| `cl_confirm_server_switch` | `[bool]` | Asks before leaving a game to join another server from the server browser or with `connect`. A listen server host is always asked, since leaving ends the game for everyone. Default: on. |
+| `cl_server_browser_auto_refresh` | `[bool]` | Re-queries the server whose details the server browser shows, and re-pings the list when the browser is reopened. Off, server data only changes on Refresh All, Get Servers, a tab switch, Add Server (which pings the server it adds), or a reopen after the browser was closed mid-refresh; the details card still asks a server for its players once as it comes up. Default: on. |
+| `cl_server_browser_details` | `[bool]` | Shows a card with a server's details and players when hovering over or selecting it in the server browser. Default: on. |
 | `cl_sprays` | | Toggles showing players' sprays. Default: on. |
-| `disconnect` | | Disconnects from the current server. |
+| `connect` | `<ip[:port]> [password]` | Joins a server (port 7755 when none is given), leaving the multiplayer game in progress after the same mod check and confirmation as the server browser. Refused during a single player game or demo playback. Host names are not accepted. |
+| `disconnect` | | Disconnects from the current server, or ends the game you are hosting. Not on a dedicated server. |
 | `mp_character` | `[index]` | Prints or sets your multiplayer character by index. |
 | `mp_handicap` | `[percent]` | Sets your damage reduction handicap (0-99) and sends it to the server. Only applied on servers that support it. Default: 0. |
 | `mp_playercount` | | Prints the number of players. Multiplayer only. |
@@ -326,8 +334,11 @@ Colors are hex `RRGGBB` or `RRGGBBAA`, or comma-separated `R,G,B[,A]` values in 
 | `cl_vehiclecam_pitch_smooth` | `[0.0-3.0]` | Sets how slowly the vehicle camera follows the vehicle's pitch, in seconds. Default: 0.9. |
 | `cl_vehiclecam_recenter` | `[bool]` | Eases an idle vehicle camera back behind the vehicle while it drives forward. Default: on. |
 | `cl_vehiclecam_velocity` | `[0.0-1.0]` | Sets how far the vehicle camera turns toward a land vehicle's direction of travel at speed. Default: 1.0. |
-| `cl_vehiclefx` | `[bool]` | Shows dust, sparks, spray, smoke and fire effects, with their sounds and lights, for vehicles in multiplayer. Default: on. |
+| `cl_vehicledebris` | `[bool]` | Breaks destroyed vehicles into pieces of wreckage in multiplayer. Default: on. |
+| `cl_vehicledebrisflames` | `[bool]` | Sets some of the wreckage of destroyed vehicles on fire in multiplayer. Default: on. |
+| `cl_vehiclefx` | `[bool]` | Shows dust, sparks, spray, smoke and fire effects, with their sounds and lights, and wingtip trails, for vehicles in multiplayer. Default: on. |
 | `cl_vehiclehealthbars` | `[bool]` | Shows health bars over damaged vehicles and turrets. Default: on. |
+| `cl_vehiclehitflash` | `[bool]` | Flashes a vehicle red when it takes damage in multiplayer. Default: on. |
 | `cl_vehiclehints` | `[bool]` | Shows the list of vehicle controls while riding a vehicle or turret. Default: on. |
 | `cl_vehiclehorns` | `[bool]` | Plays other players' jeep horns in multiplayer; your own always plays. Default: on. |
 | `cl_vehiclemarkers` | `[bool]` | Shows vehicle factory respawn markers and their spawn cues. Default: on. |
@@ -397,8 +408,8 @@ Colors are hex `RRGGBB` or `RRGGBBAA`, or comma-separated `R,G,B[,A]` values in 
 | `sv_loadpackfiles` | | Loads packfiles added to `user_maps\` since the server started. Dedicated only. Allowed via rcon for full-admin rcon profiles only. |
 | `sv_mute_chat` | `<player>` | Toggles a server-wide chat mute on a player, held by IP until they are unmuted or the server restarts. Server only. Allowed via rcon. |
 | `sv_pass` | `[password]` | Sets the server password, or removes it when run without one. Server only. Allowed via rcon. |
-| `sv_printconfig` | | Prints the current server configuration. ADS only. |
-| `sv_printrules` | `[filename]` | Prints the rules for a level in the rotation, or the active rules for the current level. ADS only. |
+| `sv_printconfig` | | Prints the current server configuration. ADS only, or a listen server started from Host Game. |
+| `sv_printrules` | `[filename]` | Prints the rules for a level in the rotation, or the active rules for the current level. ADS only, or a listen server started from Host Game. |
 | `sv_rconpass` | `[password]` | Sets the rcon password (up to 16 characters), or removes it when run without one. Dedicated only. |
 | `sv_record` | | Starts or stops server-side demo recording for the current level. Server only. |
 | `sv_restrict_status` | | Shows the current Alpine restriction checks and expected join verdicts. Server only. |
@@ -407,7 +418,7 @@ Colors are hex `RRGGBB` or `RRGGBBAA`, or comma-separated `R,G,B[,A]` values in 
 | `sv_toggle_ready` | `<player>` | Toggles a player's ready status during match ready-up. Server only. Allowed via rcon. |
 | `unban_last` | | Unbans the last banned player. Server only. Allowed via rcon. |
 
-`sv_gametype`: on an ADS dedicated server, `sv_gametype <type> <level>` loads the level on that game type, `sv_gametype <type>` restarts the current level on it, and `sv_gametype` alone prints the current game type. It cannot run between levels. On a client that is not connected (or is playing a demo), both arguments are required and it starts a local game like `levelm`. While connected to a server, use `rcon sv_gametype` instead. On other dedicated servers it is refused.
+`sv_gametype`: on an ADS dedicated server or a server hosted from Host Game, `sv_gametype <type> <level>` loads the level on that game type, `sv_gametype <type>` restarts the current level on it, and `sv_gametype` alone prints the current game type. It cannot run between levels, and a server hosted from Host Game keeps its setup. On a client that is not connected (or is playing a demo), both arguments are required and it starts a local game like `levelm`. While connected to a server, use `rcon sv_gametype` instead. On other dedicated servers it is refused.
 
 Rcon: on Alpine Faction servers, rcon only runs commands from a fixed list, further limited by the rcon profile of the player who logged in. Besides the commands marked above, the list contains the stock `info`, `say`, `kick`, `ban`, `ban_ip` and `level` commands.
 
@@ -454,7 +465,7 @@ Zone types (or their numeric id): `control_point` (`cp`), `damaging_liquid_room`
 | `drop_clutter` | `<class_name>` | Stock RF command. Spawns a clutter object by class name. Not in multiplayer. |
 | `drop_entity` | `<class_name>` | Stock RF command. Spawns an entity by class name. Not in multiplayer. |
 | `drop_item` | `<class_name>` | Stock RF command. Spawns an item by class name. Not in multiplayer. |
-| `jetpack` | | Toggles a jetpack for yourself. Not in multiplayer. |
+| `jetpack` | | Toggles a jetpack for yourself. Not in multiplayer. Has no visible effect on a level that already gives every player a jetpack. |
 | `pcollide` | | Toggles your collision with the world. Not in multiplayer; reset to on when a multiplayer game starts. |
 | `pogo` | | Toggles pogo: holding jump keeps hopping without losing speed. Not in multiplayer. |
 | `skifree` | | Toggles skiing and dodging. Not in multiplayer. |
@@ -481,6 +492,7 @@ Zone types (or their numeric id): `control_point` (`cp`), `damaging_liquid_room`
 | `dbg_achievement` | `<uid>` | Looks up an achievement by UID. |
 | `dbg_berserk` | | Makes all entities go berserk. Single player only. |
 | `dbg_bot` | `[0\|1]` | Toggles bot debug console logging. Default: off. |
+| `dbg_camera_pos` | | Prints the camera's position, pitch and heading in degrees, in the form `af_main_menu.toml` shots take. |
 | `dbg_collision_pairs` | | Prints object collision pair pool statistics. |
 | `dbg_consolehistory` | | Toggles keeping console history between game launches. |
 | `dbg_events` | | Toggles printing event debug information. Default: off. |

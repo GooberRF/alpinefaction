@@ -4,6 +4,7 @@
 #include <patch_common/MemUtils.h>
 #include <xlog/xlog.h>
 #include <common/utils/string-utils.h>
+#include <common/alpine_powerup_items.h>
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
@@ -30,6 +31,7 @@
 #include "vehicle_factory.h"
 #include "projection_camera.h"
 #include "waypoint_helper.h"
+#include "ambience_region.h"
 #include "rope_emitter.h"
 #include "alpine_obj.h"
 #include "alpine_spinner.h"
@@ -160,6 +162,43 @@ CodeInjection CDedLevel_construct_patch{
         g_alpine_level_props.LoadNewLevelDefaults();
     },
 };
+
+// Runs before the CDedLevel constructor sorts the class list, so appended classes sort with the stock ones.
+void __fastcall CDedLevel_load_item_classes(CDedLevel* level);
+FunHook<decltype(CDedLevel_load_item_classes)> CDedLevel_load_item_classes_hook{
+    0x0041A3D0,
+    CDedLevel_load_item_classes,
+};
+void __fastcall CDedLevel_load_item_classes(CDedLevel* level)
+{
+    CDedLevel_load_item_classes_hook.call_target(level);
+    auto& classes = level->object_classes;
+    for (const AlpinePowerupItemClass& def : alpine_powerup_item_classes) {
+        const bool defined = std::any_of(classes.data_ptr, classes.data_ptr + classes.size,
+            [&def](const DedObjectClass* cls) { return _stricmp(cls->name.c_str(), def.class_name) == 0; });
+        if (defined) {
+            continue;
+        }
+        DedItem* tmpl = DedItem::create();
+        if (!tmpl) {
+            continue;
+        }
+        DedObjectClass* cls = DedObjectClass::create();
+        if (!cls) {
+            editor_free(tmpl);
+            continue;
+        }
+        tmpl->class_mesh_filename.assign_0(def.v3d_filename);
+        tmpl->field_10 = VMESH_TYPE_STATIC;
+        tmpl->class_name.assign_0(def.class_name);
+        tmpl->listed_in_tree = 1;
+        tmpl->count = def.count;
+        tmpl->respawn_time_s = def.respawn_time_s;
+        cls->name.assign(tmpl->class_name);
+        cls->tmpl = tmpl;
+        classes.push_back(cls);
+    }
+}
 
 // Clear alpine properties when the level is reset (File > New, File > Open, document close).
 // FUN_00418960 is CDedLevel::DeleteContents (thiscall), reached via vtable[27] (FUN_0041CDF0).
@@ -332,6 +371,10 @@ CodeInjection CDedLevel_LoadLevel_patch2{
                 }
                 if (chunk_id == alpine_waypoint_helper_chunk_id) {
                     waypoint_helper_deserialize_chunk(level, file, chunk_size);
+                    regs.eip = 0x0043090C;
+                }
+                if (chunk_id == alpine_ambience_region_chunk_id) {
+                    ambience_region_deserialize_chunk(level, file, chunk_size);
                     regs.eip = 0x0043090C;
                 }
                 if (chunk_id == alpine_mover_path_chunk_id) {
@@ -1124,7 +1167,8 @@ CodeInjection skip_alpine_objects_bounds_check{
             obj->type == DedObjectType::DED_ROPE_EMITTER ||
             obj->type == DedObjectType::DED_TERRAIN ||
             obj->type == DedObjectType::DED_DIRECTIONAL_LIGHT ||
-            obj->type == DedObjectType::DED_WAYPOINT_HELPER) {
+            obj->type == DedObjectType::DED_WAYPOINT_HELPER ||
+            obj->type == DedObjectType::DED_AMBIENCE_REGION) {
             regs.eip = 0x0041dcfa;
         }
     },
@@ -1246,6 +1290,8 @@ CodeInjection CDedLevel_SaveLevel_patch{
         directional_light_serialize_chunk(level, file);
 
         waypoint_helper_serialize_chunk(level, file);
+
+        ambience_region_serialize_chunk(level, file);
 
         mover_path_serialize_chunk(level, file);
 
@@ -1461,6 +1507,9 @@ constexpr LevelTabControl level_tab_controls[] = {
     {IDC_LEVEL_GEOMOD_TEXTURE_LABEL, LevelTab::general},
     {IDC_LEVEL_GEOMOD_TEXTURE, LevelTab::general},
     {IDC_LEVEL_GEOMOD_TEXTURE_BROWSE, LevelTab::general},
+    {IDC_LEVEL_CRATER_TEXTURE_PPM_LABEL, LevelTab::general},
+    {IDC_LEVEL_CRATER_TEXTURE_PPM, LevelTab::general},
+    {IDC_LEVEL_CRATER_TEXTURE_PPM_HINT, LevelTab::general},
     {IDC_LEVEL_HARDNESS_LABEL, LevelTab::general},
     {IDC_LEVEL_HARDNESS, LevelTab::general},
     {IDC_LEVEL_HARDNESS_SPIN, LevelTab::general},
@@ -1528,6 +1577,7 @@ constexpr LevelTabControl level_tab_controls[] = {
     {IDC_LIGHTMAP_COMPRESSION, LevelTab::lightmaps},
 
     {IDC_STARTS_WITH_HEADLAMP, LevelTab::gameplay},
+    {IDC_PLAYERS_START_WITH_JETPACKS, LevelTab::gameplay},
     {IDC_VEHICLE_FLIGHT_CEILING_ENABLE, LevelTab::gameplay},
     {IDC_VEHICLE_FLIGHT_CEILING_LABEL, LevelTab::gameplay},
     {IDC_VEHICLE_FLIGHT_CEILING, LevelTab::gameplay},
@@ -2281,11 +2331,13 @@ CodeInjection CLevelDialog_OnInitDialog_patch{
         CheckDlgButton(hdlg, IDC_LEGACY_CYCLIC_TIMERS, alpine_level_props.legacy_cyclic_timers ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hdlg, IDC_LEGACY_MOVERS, alpine_level_props.legacy_movers ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hdlg, IDC_STARTS_WITH_HEADLAMP, alpine_level_props.starts_with_headlamp ? BST_CHECKED : BST_UNCHECKED);
+        CheckDlgButton(hdlg, IDC_PLAYERS_START_WITH_JETPACKS, alpine_level_props.players_start_with_jetpacks ? BST_CHECKED : BST_UNCHECKED);
         CheckDlgButton(hdlg, IDC_OVERRIDE_MESH_AMBIENT_LIGHT_MODIFIER, alpine_level_props.override_static_mesh_ambient_light_modifier ? BST_CHECKED : BST_UNCHECKED);
         char buffer[32];
         std::snprintf(buffer, sizeof(buffer), "%.3f", alpine_level_props.static_mesh_ambient_light_modifier);
         SetDlgItemTextA(hdlg, IDC_MESH_AMBIENT_LIGHT_MODIFIER, buffer);
         CheckDlgButton(hdlg, IDC_RF2_STYLE_GEOMOD, alpine_level_props.rf2_style_geomod ? BST_CHECKED : BST_UNCHECKED);
+        alpine_dlg_set_float_field_exact(hdlg, IDC_LEVEL_CRATER_TEXTURE_PPM, alpine_level_props.crater_texture_ppm);
         CheckDlgButton(hdlg, IDC_VEHICLE_FLIGHT_CEILING_ENABLE, alpine_level_props.vehicle_flight_ceiling_enabled ? BST_CHECKED : BST_UNCHECKED);
         char ceiling_buffer[32];
         std::snprintf(ceiling_buffer, sizeof(ceiling_buffer), "%.3f", alpine_level_props.vehicle_flight_ceiling);
@@ -2352,6 +2404,7 @@ CodeInjection CLevelDialog_OnOK_patch{
         alpine_level_props.legacy_cyclic_timers = IsDlgButtonChecked(hdlg, IDC_LEGACY_CYCLIC_TIMERS) == BST_CHECKED;
         alpine_level_props.legacy_movers = IsDlgButtonChecked(hdlg, IDC_LEGACY_MOVERS) == BST_CHECKED;
         alpine_level_props.starts_with_headlamp = IsDlgButtonChecked(hdlg, IDC_STARTS_WITH_HEADLAMP) == BST_CHECKED;
+        alpine_level_props.players_start_with_jetpacks = IsDlgButtonChecked(hdlg, IDC_PLAYERS_START_WITH_JETPACKS) == BST_CHECKED;
         alpine_level_props.override_static_mesh_ambient_light_modifier = IsDlgButtonChecked(hdlg, IDC_OVERRIDE_MESH_AMBIENT_LIGHT_MODIFIER) == BST_CHECKED;
         char buffer[64] = {};
         GetDlgItemTextA(hdlg, IDC_MESH_AMBIENT_LIGHT_MODIFIER, buffer, static_cast<int>(sizeof(buffer)));
@@ -2364,6 +2417,7 @@ CodeInjection CLevelDialog_OnOK_patch{
             alpine_level_props.static_mesh_ambient_light_modifier = modifier;
         }
         alpine_level_props.rf2_style_geomod = IsDlgButtonChecked(hdlg, IDC_RF2_STYLE_GEOMOD) == BST_CHECKED;
+        read_dlg_float(hdlg, IDC_LEVEL_CRATER_TEXTURE_PPM, alpine_level_props.crater_texture_ppm, 0.0f, FLT_MAX);
         alpine_level_props.vehicle_flight_ceiling_enabled = IsDlgButtonChecked(hdlg, IDC_VEHICLE_FLIGHT_CEILING_ENABLE) == BST_CHECKED;
         read_dlg_float(hdlg, IDC_VEHICLE_FLIGHT_CEILING, alpine_level_props.vehicle_flight_ceiling, -FLT_MAX, FLT_MAX);
         payload::LevelRules& payload_rules = alpine_level_props.payload_rules;
@@ -2645,6 +2699,7 @@ void ApplyLevelPatches()
 {
     // handle AlpineLevelProperties chunk
     CDedLevel_construct_patch.install();
+    CDedLevel_load_item_classes_hook.install();
     CDedLevel_DeleteContents_hook.install();
     CDedLevel_LoadLevel_patch1.install();
     CDedLevel_LoadLevel_patch2.install();

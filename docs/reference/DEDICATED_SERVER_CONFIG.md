@@ -4,6 +4,8 @@ Alpine Faction dedicated servers are configured with a single TOML file, called 
 
 While this reference document covers all of the available settings, the easiest way to configure a dedicated server is to use the web-based [Alpine Faction Server Configuration Utility](https://dedi.alpinefaction.com/).
 
+The in-game Host Game screen saves its setups as configs in this format, in the `saved\servers` folder of the Red Faction game directory. It can load any config placed there whose name is at most 64 characters of letters, digits, spaces, `-` and `_`, does not start or end with a space, and is not a reserved Windows device name (`CON`, `PRN`, `AUX`, `NUL`, `COM1` to `COM9`, `LPT1` to `LPT9`). It reads at most 64 `bot_profiles` entries, and keeps the first `server_bots` of them plus up to 33 more, which leaves room for a full roster of bots. Each of the `server_bots` bots gets a profile of its own, so a profile that several bots share is saved back once for each of them. When a setup's `[base]` does not set `geo_limit`, Host Game uses a `geo_limit` of 128 there; a level that sets its own `geo_limit` still uses its own. Settings Host Game has no option for, such as votes, inactivity and rcon profiles, are reported when a config is loaded and left out when the setup is saved, so saving over a hand-written config drops them.
+
 ## Starting a server
 
 Start a dedicated server by passing the config file to the launcher with `-ads`:
@@ -84,13 +86,14 @@ In the tables below, a Number key takes an integer or a decimal value, and an In
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
 | `ads_version` | Integer | `2` | Config format version. Read, but not used for anything. |
-| `server_name` | String | `"Alpine Faction Server"` | Name shown in server browsers. |
+| `server_name` | String | `"Alpine Faction Server"` | Name shown in server browsers. Truncated to 127 characters. |
 | `max_players` | Integer | `8` | Player slots, clamped to 1-32. |
 | `password` | String | `""` | Join password. Empty means no password. Truncated to 16 characters. |
 | `rcon_password` | String | `""` | Legacy rcon password, truncated to 15 characters. Unless an `[[rcon_profiles]]` entry uses the same password, it creates a profile named `legacy` limited to `gt`, `kick`, `level`, `sv_pass`, `map`, `ban`, `ban_ip`, `map_ext`, `map_rest`, `map_next`, `map_rand`, `map_prev`, `sv_caplimit`, `sv_fraglimit`, `sv_gametype`, `sv_geolimit`, `sv_timelimit` and `unban_last`. |
 | `bot_shared_secret` | Integer | `0` | Secret (0-4294967295) that bot clients must present to be recognized as bots. `0` disables bot client authentication. |
 | `server_bots` | Integer | `0` | Number of server-side bots (run inside the server process), clamped to 0-31. They use the `bot_profiles` profiles and follow `ideal_player_count`. |
-| `bot_profiles` | Array of strings | `[]` | Bot profile files, relative to this config file's folder. Each joining bot takes the profile used by the fewest current bots (the earliest one on a tie), so profiles are shared out evenly. See [Bot profile files](#bot-profile-files). |
+| `bot_profiles` | Array of strings | `[]` | Bot profile files, relative to this config file's folder. An entry that is not a file name, or a file that cannot be read, still takes its place in the list, as a default bot. Each joining bot takes the profile used by the fewest current bots (the earliest one on a tie), so profiles are shared out evenly. See [Bot profile files](#bot-profile-files). |
+| `bot_teams` | Array of strings | `[]` | The team for each entry of `bot_profiles`, in the same order: `"auto"`, `"red"` or `"blue"`, case-insensitive. In team game types, a server bot that takes a profile joins that profile's team; `"auto"`, an unknown value or a missing entry lets the server pick the weaker team. Humans vs. Bots still puts every bot on Blue. |
 | `fflink_gsk` | String | `""` | FactionFiles game server key, used for stats tracking and demo uploads. If FactionFiles rejects the key at startup, the server refuses to start. Ignored with `-nogsk`. |
 | `upnp` | Boolean | `false` | Try to forward the server port with UPnP. |
 | `demo_auto_record` | Boolean | `false` | Record every level to an `.afd` demo in the `demos` folder. Recordings with no player connected are discarded. With match mode, only live matches are recorded. |
@@ -137,10 +140,10 @@ Marks players who stop playing as idle and can kick them.
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
 | `enabled` | Boolean | `true` | Track inactive players. The other keys are read only when this is true. |
-| `new_player_grace` | Number | `120` | Seconds a newly joined player is exempt (minimum 1). |
-| `allowed_inactive` | Number | `60` | Seconds of inactivity before a player is marked idle (minimum 1). |
+| `new_player_grace` | Number | `120` | Seconds a newly joined player is exempt, 1-86400. |
+| `allowed_inactive` | Number | `60` | Seconds of inactivity before a player is marked idle, 1-86400. |
 | `kick_after_warning` | Boolean | `false` | Warn idle players, then kick them if they do not respawn in time. |
-| `warning_duration` | Number | `10` | Seconds between the warning and the kick (minimum 1). Read only when `kick_after_warning` is true. |
+| `warning_duration` | Number | `10` | Seconds between the warning and the kick, 1-86400. Read only when `kick_after_warning` is true. |
 | `kick_message` | String | `"You have been marked as idle due to inactivity! You will be kicked from the game unless you respawn in the next 10 seconds."` | Warning text. Read only when `kick_after_warning` is true. |
 
 ## `[damage_notifications]`
@@ -206,7 +209,7 @@ These are read only when `enabled` is true.
 | --- | --- | --- | --- |
 | `allowed_levels` | Array of strings | `[]` | Levels players may vote for. `.rfl` is added when missing. Missing levels are downloaded at startup unless `-nodl` is used. |
 | `add_rotation_to_allowed_levels` | Boolean | `true` | Also allow every rotation level. |
-| `add_installed_to_allowed_levels` | Boolean | `false` | Also allow every installed level whose filename starts with a game type prefix, including levels installed while the server runs. |
+| `add_installed_to_allowed_levels` | Boolean | `false` | Also allow every installed level whose filename starts with a game type prefix, including levels installed while the server runs. They follow the configured levels in alphabetical order, ignoring case. |
 | `only_allow_gametype_prefix` | Boolean | `false` | Accept a level for a voted game type only if the filename has that game type's prefix (or the game type is the level's own default). |
 
 If neither the rotation nor `allowed_levels` names a level, `glass_house.rfl` is the only votable level.
@@ -245,7 +248,7 @@ If neither the rotation nor `allowed_levels` names a level, `glass_house.rfl` is
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
-| `flag_return_time` | Number | `25` | Seconds before a dropped CTF flag returns (minimum 1). |
+| `flag_return_time` | Number | `25` | Seconds before a dropped CTF flag returns, 1-86400. |
 | `bag_return_time` | Number | `7.5` | Seconds before a dropped BAG/TBAG bag returns, 1-60. |
 | `bag_spawn_delay` | Number | `7.5` | Seconds before the BAG/TBAG bag spawns, 0-60. |
 | `sal_flag_spawn_delay` | Number | `15` | Seconds before the SAL flag spawns, 0-60. |
@@ -280,10 +283,11 @@ If neither the rotation nor `allowed_levels` names a level, `glass_house.rfl` is
 | `auto_team_balance` | Boolean | `false` | During play, move players when the team sizes differ by 2 or more on three checks in a row (checked every 15 seconds). Not used during matches. |
 | `ideal_player_count` | Integer | `32` | Target player count that bots fill up to, 1-32. At 32, bots are never removed to make room. |
 | `saving_enabled` | Boolean | game type | Let players save and load their position. On by default only in RUN. |
-| `flag_dropping` | Boolean | `true` | Let CTF flag carriers drop the flag. |
+| `flag_dropping` | Boolean | `true` | Let flag carriers drop the flag in CTF and SAL, and the cartridge in SCAV. |
 | `flag_captures_while_stolen` | Boolean | `false` | Let a team capture while its own CTF flag is stolen. |
+| `bag_multiple_spawns` | Boolean | `true` | Spawn the BAG/TBAG bag at a random home, picked again each time it returns. The homes are the level's `Bag` objects. Without any, a built-in spot for some stock and community levels is the only home, else every super item spot is one. Off, the bag always spawns at the first `Bag` object, else the built-in spot, else the highest priority super item. With none of these, it spawns at the player start. |
 | `pvp_damage_modifier` | Number | game type | Multiplier for damage between players, 0-100. `1.0` everywhere except RUN (`0.0`). |
-| `drop_amps` | Boolean | `false` | Players drop damage amplifiers when they die. |
+| `drop_amps` | Boolean | `false` | Players drop their damage amplifier, invulnerability, Alpine Haste, Alpine Vampire and Alpine Jetpack when they die. |
 | `drop_weapons` | Boolean | `true` | Players drop their weapon when they die. Off in PIT, GG, WO and SCAV. |
 | `no_player_collide` | Boolean | game type | Players pass through each other. On by default only in RUN. |
 | `location_pinging` | Boolean | game type | Allow location pings. On by default in KOTH, DC, REV, RUN, ESC, TBAG, SAL, WO, SCAV and PAY. |
@@ -300,7 +304,7 @@ If neither the rotation nor `allowed_levels` names a level, `glass_house.rfl` is
 | `gg_rampage_rewards` | Boolean | `true` | Reward players who advance through several weapons in one life. |
 | `gg_tiers` | Array of arrays of strings | built-in tiers | Weapon progression. Each inner array is one tier of weapons.tbl names; tiers are played in order, and each player gets each tier in a random order. Unknown names are skipped and empty tiers dropped. If nothing resolves, the built-in tiers are used. |
 | `gg_final_weapon` | String | `"Riot Stick"` | Weapon for the final level. An unknown name falls back to the Riot Stick. |
-| `gg_end_with_fusion` | Boolean | `true` | After the final weapon, add a one-kill Fusion Rocket Launcher level. |
+| `gg_end_with_fusion` | Boolean | `false` | After the final weapon, add a one-kill Fusion Rocket Launcher level. |
 
 ### Spawn loadout lists
 
@@ -322,7 +326,7 @@ Loadout entry keys:
 | Key | Type | Entry keys | Description |
 | --- | --- | --- | --- |
 | `weapon_stay_exemptions` | Array of tables | `weapon_name` (String, weapons.tbl name), `exempt` (Boolean, default `true`) | Weapons whose pickups disappear when picked up even when `weapons_stay` is on. `shoulder_cannon` (the Fusion Rocket Launcher) is exempt by default, as in the stock game. Every rules table resets that default before reading its own list, so `exempt = false` for `shoulder_cannon` only holds when it is in the last table read for a level: for a rotation level, put it in that level's `[levels.rules]`, because a value set only in `[base]` is reset. |
-| `item_replacements` | Array of tables | `original` (String), `replacement` (String) | Replace one items.tbl item with another when the level loads. An empty `replacement` removes the item. Entries with an unknown `original` are ignored. |
+| `item_replacements` | Array of tables | `original` (String), `replacement` (String) | Replace one items.tbl item with another when the level loads. An empty `replacement` removes the item. Entries with an unknown `original`, or a `replacement` naming an unknown item, are ignored. The new item follows its own `item_respawn_time_overrides`, `delayed_items` and `dynamic_respawn_items` entries, and its own respawn time unless the level gave that item a custom one. |
 | `item_respawn_time_overrides` | Array of tables | `item_name` (String), `respawn_ms` (Integer, default `0`) | Respawn time in milliseconds for an items.tbl item. Unknown items are ignored. |
 | `delayed_items` | Array of tables | `item_name` (String) | Items that start hidden when the level loads and first appear once their respawn time has passed. Unknown items are ignored. A narrower scope can add items but not remove them. |
 
@@ -334,7 +338,7 @@ Loadout entry keys:
 | --- | --- | --- | --- |
 | `enabled` | Boolean | `false` | Add overtime when the time limit runs out on a tie. The other keys are read only when this is true. |
 | `time` | Integer | `5` | Overtime length in minutes, 0-60. |
-| `tie_when_flag_stolen` | Boolean | `false` | CTF: treat the game as tied while a flag is stolen. |
+| `tie_when_flag_stolen` | Boolean | `false` | CTF, SAL and SCAV: treat the game as tied while a team one capture behind carries the flag (the cartridge in SCAV). |
 | `tie_when_hill_contested` | Boolean | `true` | KOTH: treat the game as tied while a hill is contested. |
 
 ### `rounds`
@@ -389,7 +393,7 @@ How the server picks a respawn point. The defaults match the stock game.
 | `always_avoid_last` | Boolean | `false` | Never reuse the player's previous respawn point. |
 | `always_use_furthest` | Boolean | `false` | Always pick the point furthest from other players. |
 | `only_avoid_enemies` | Boolean | `false` | Ignore teammates when measuring distance to other players. |
-| `dynamic_respawns` | Boolean | `false` | Create extra respawn points at the positions of chosen items. Dedicated servers only. |
+| `dynamic_respawns` | Boolean | `false` | Create extra respawn points at the positions of chosen items. Only on servers running a config: dedicated servers, and listen servers started from Host Game. |
 | `dynamic_respawn_items` | Array of tables | `[]` | Items that create respawn points. Whenever a `spawn_selection` table is read while `dynamic_respawns` is true, the list is rebuilt from that table alone, so a level that sets any `spawn_selection` key must repeat this list. Entry keys: `item_name` (String, items.tbl name) and `min_respawn_points` (Integer, default `8`): points are created only while the level has fewer respawn points than this; `0` means always. |
 
 ### `kill_rewards`
@@ -467,7 +471,7 @@ featured_weapon = "Shotgun"
 | `enabled` | Boolean | `true` | `false` removes a mutator that a broader scope declared (for example, a level turning off a base mutator). |
 | *options* | varies | varies | The mutator's own options, listed below. |
 
-A mutator declared more than once in the same table uses its last declaration. A level can redeclare a base mutator with different options. Active mutators are applied in a fixed order, so a later one wins where they overlap. The order is `joinbots`, `pogo`, `dodging`, `skiing`, `lowgravity`, `weirdgungame`, `humansvsbots`, `jetpacks`, `gibbing`, `flamingenemies`, `bigcraters`, `superrail`, `delayedsupers`, `armored`, `superdrain`, `vampire`, `crits`, `arena`, `oneweapon`, `instagib`, `scorelimit`, `idealplayers`. A mutator that does nothing in the scope's game type prints a warning and is not applied. Mutators marked "1.4+" need Alpine Faction 1.4 or newer clients, and the server restricts older clients while they are active.
+A mutator declared more than once in the same table uses its last declaration. A level can redeclare a base mutator with different options. Active mutators are applied in a fixed order, so a later one wins where they overlap. The order is `joinbots`, `itemreplace`, `pogo`, `dodging`, `skiing`, `lowgravity`, `weirdgungame`, `humansvsbots`, `jetpacks`, `gibbing`, `flamingenemies`, `bigcraters`, `superrail`, `delayedsupers`, `armored`, `superdrain`, `vampire`, `crits`, `arena`, `oneweapon`, `instagib`, `scorelimit`, `idealplayers`. A mutator that does nothing in the scope's game type prints a warning and is not applied. Mutators marked "1.4+" need Alpine Faction 1.4 or newer clients, and the server restricts older clients while they are active.
 
 | Identifier | Name | Effect | Options | Clients |
 | --- | --- | --- | --- | --- |
@@ -484,7 +488,7 @@ A mutator declared more than once in the same table uses its last declaration. A
 | `gibbing` | Gibbing | Turns on `gibbing`. | `scrapyard` (Boolean, default `false`: gibs are random debris instead of meat) | any |
 | `jetpacks` | Jetpacks | Every player wears a jetpack and thrusts by holding jump while falling. | `explode` (Boolean, default `false`: a direct shot in the back or burning to death gibs the wearer) | 1.4+ |
 | `humansvsbots` | Humans vs. Bots | Bots always play on Blue and humans on Red. Team game types only. | none | any |
-| `delayedsupers` | Delayed Supers | Adds Multi Super Health, Multi Super Armor, Multi Invulnerability, Multi Damage Amplifier and shoulder cannon (plus rail gun when `superrail` is active) to `delayed_items`. | none | any |
+| `delayedsupers` | Delayed Supers | Adds Multi Super Health, Multi Super Armor, Multi Invulnerability, Multi Damage Amplifier, Alpine Haste, Alpine Vampire, Alpine Jetpack and shoulder cannon (plus rail gun when `superrail` is active) to `delayed_items`. | none | any |
 | `weirdgungame` | Weird Gun Game | Replaces Gun Game's built-in progression and final weapon with unusual weapons. GG only. | none | any |
 | `lowgravity` | Low Gravity | Reduced gravity. | none | 1.4+ |
 | `skiing` | Skiing | Hold crouch to slide without ground friction. | none | 1.4+ |
@@ -493,6 +497,7 @@ A mutator declared more than once in the same table uses its last declaration. A
 | `scorelimit` | Score Limit Override | Sets the score limit of the scope's game type (in WO, the round wins needed). Not available in REV, RUN and ESC. | `score_limit` (Integer, minimum 1, then clamped to that game type's range) | any |
 | `idealplayers` | Ideal Player Count Override | Sets `ideal_player_count`. Not available in RUN. | `ideal_players` (Integer, 1-32) | any |
 | `joinbots` | Join Bots | Server bots join for the level, or fill a match's empty slots. Not available in RUN. | `bots` (Integer, 1-8, default `2`), `skill` (`beginner`, `easy`, `average`, `hard`, `expert` or `nightmare`; default `average`), `personality` (`balanced`, `aggressive`, `defensive`, `tactician`, `berserker`, `objective`, `sniper`, `guerrilla`, `collector`, `brawler`, `destroyer` or `random`; default `balanced`) | any |
+| `itemreplace` | Item Replacement | Swaps pickups when the level loads, by replacement sets switched on with its options. The swaps are added to `item_replacements`, and a level that redeclares the mutator replaces the base scope's sets. A vote must switch on at least one set and is refused when two of its sets replace the same item differently; in the config the later set in this list wins, with a warning. Swapping in Alpine Haste or Alpine Vampire restricts older clients as placed Alpine powerups do. | `amp_to_haste` (Damage Amplifier to Alpine Haste), `amp_to_vampire` (Damage Amplifier to Alpine Vampire), `invuln_to_vampire` (Invulnerability to Alpine Vampire), `invuln_to_haste` (Invulnerability to Alpine Haste), `superarmor_to_amp` (Super Armor to Damage Amplifier), `no_supers` (removes Damage Amplifier, Invulnerability, Alpine Haste, Alpine Vampire, Alpine Jetpack, Super Armor and Super Health); all Boolean, default `false` | any |
 
 ## Game types
 

@@ -10,9 +10,12 @@
 #include <common/utils/list-utils.h>
 #include "payload.h"
 #include "alpine_packets.h"
+#include "awards.h"
 #include "kill.h"
 #include "gametype.h"
 #include "server_internal.h"
+#include "demo/demo.h"
+#include "../fflink/afstats_events.h"
 #include "../hud/hud.h"
 #include "../hud/multi_spectate.h"
 #include "../misc/level.h"
@@ -132,7 +135,6 @@ struct PayloadInfo
     int next_checkpoint = 0;
     std::optional<float> countdown; // see payload_countdown_seconds
     std::vector<uint8_t> pushers;
-    std::vector<uint8_t> blockers;
     uint8_t heal_serial = 0;
     uint8_t net_sequence = 0; // the server's last sent, or the client's last applied
     bool setup = true; // until this side fires When_Setup_Ends
@@ -151,6 +153,8 @@ struct PayloadInfo
     bool rollback_announced = false;
     bool final_stretch_reached = false;
     bool end_announced = false;
+    bool had_overtime = false; // a capture bonus can end overtime, but game_end still reports it
+    bool finale_blast = false;
     // Unreliable sends may be lost, so changes are judged against the last reliable one
     std::optional<PayloadNetState> last_reliable;
     std::unordered_map<const rf::Player*, ResupplyOwed> resupply_owed;
@@ -301,11 +305,12 @@ void build_track(const rf::Mover& mover)
     }
 }
 
-void find_cart_center(const rf::Mover& mover)
+// The world box around the mover's brushes, and the first of them; false with none
+bool mover_brush_bounds(const rf::Mover& mover, rf::Vector3& lo, rf::Vector3& hi, int* first_brush = nullptr)
 {
     constexpr float big = std::numeric_limits<float>::max();
-    rf::Vector3 lo{big, big, big};
-    rf::Vector3 hi{-big, -big, -big};
+    lo = {big, big, big};
+    hi = {-big, -big, -big};
     bool any = false;
     for (const int handle : mover.brush_handles) {
         rf::Object* obj = rf::obj_from_handle(handle);
@@ -330,14 +335,22 @@ void find_cart_center(const rf::Mover& mover)
               std::min(lo.z, center.z - world_half.z)};
         hi = {std::max(hi.x, center.x + world_half.x), std::max(hi.y, center.y + world_half.y),
               std::max(hi.z, center.z + world_half.z)};
-        if (!any) {
-            g_payload.center_object_handle = handle;
-            any = true;
+        if (!any && first_brush) {
+            *first_brush = handle;
         }
+        any = true;
     }
+    return any;
+}
 
+void find_cart_center(const rf::Mover& mover)
+{
+    rf::Vector3 lo{};
+    rf::Vector3 hi{};
+    int first_brush = -1;
     rf::Vector3 center = mover.keyframes[0]->pos;
-    if (any) {
+    if (mover_brush_bounds(mover, lo, hi, &first_brush)) {
+        g_payload.center_object_handle = first_brush;
         center = (lo + hi) * 0.5f;
         g_payload.cart_half_height = 0.5f * (hi.y - lo.y);
     }
@@ -396,6 +409,8 @@ void play_finale_effect()
 
 void damage_near_finale(rf::Vector3 center)
 {
+    // The kill path runs inside obj_damage, so it can tag these deaths
+    g_payload.finale_blast = true;
     for (rf::Player& pl : SinglyLinkedList{rf::player_list}) {
         if (!player_is_countable(pl)) {
             continue;
@@ -410,6 +425,7 @@ void damage_near_finale(rf::Vector3 center)
             : 1.0f - (dist - finale_full_damage_radius) / (finale_damage_radius - finale_full_damage_radius);
         rf::obj_damage(ep->handle, finale_max_damage * falloff, -1, -1, rf::DT_EXPLOSIVE, &center, -1, 0);
     }
+    g_payload.finale_blast = false;
 }
 
 void fire_pass_events()
@@ -440,8 +456,7 @@ void capture_checkpoint(const PayloadCheckpoint& cp, bool at_end)
     }
     g_payload.hold_left = std::max(g_payload.hold_left, cp.hold_seconds);
 
-    const auto& server_bonus = g_alpine_server_config_active_rules.payload.checkpoint_time_bonus;
-    const float bonus = server_bonus ? *server_bonus : cp.time_bonus;
+    const float bonus = payload_checkpoint_time_bonus(cp);
     std::string added;
     if (rf::multi_time_limit > 0.0f && bonus > 0.0f) {
         if (!g_time_bonus || g_time_bonus->limit != rf::multi_time_limit) {
@@ -459,6 +474,11 @@ void capture_checkpoint(const PayloadCheckpoint& cp, bool at_end)
                  HudNotificationType::Generic);
 }
 
+void report(afstats::PayloadEventKind kind, int push_time_ms = -1)
+{
+    afstats::on_payload_event(kind, g_payload.distance, players_from_ids(g_payload.pushers), push_time_ms);
+}
+
 // Each side fires it for its own world, as movers aren't synced. A late joiner fires it on its first state, so the
 // doors it opens are open for the joiner too.
 void end_setup()
@@ -466,6 +486,15 @@ void end_setup()
     g_payload.setup = false;
     g_payload.setup_end_time = rf::level.time;
     rf::activate_all_events_of_type(rf::EventType::When_Setup_Ends, -1, -1, true);
+    if (rf::is_server) {
+        report(afstats::PayloadEventKind::setup_end);
+    }
+}
+
+// The cart is coasting on its last pushers' credit, with nobody pushing it now
+bool capture_credit_coasting()
+{
+    return g_payload.pushers.empty() && g_payload.capture_credit.valid() && !g_payload.capture_credit.elapsed();
 }
 
 void begin_finale()
@@ -474,6 +503,14 @@ void begin_finale()
     g_payload.distance = g_payload.total_length;
     g_payload.speed = 0.0f;
     g_payload.countdown.reset();
+    const float push_time = std::max(rf::level.time - g_payload.setup_end_time, 0.0f);
+    // Ahead of the finale's own deaths
+    report(afstats::PayloadEventKind::finale, static_cast<int>(std::lround(push_time * 1000.0f)));
+    if (g_payload.overtime) {
+        for (const uint8_t id : capture_credit_coasting() ? g_payload.last_pushers : g_payload.pushers) {
+            grant_award(rf::multi_find_player_by_id(id), AwardId::special_delivery);
+        }
+    }
     if (g_payload.finale) {
         if (const auto center = payload_cart_center()) {
             damage_near_finale(*center);
@@ -483,7 +520,7 @@ void begin_finale()
         }
     }
     g_payload.finale_end.set(finale_delay_ms);
-    const int seconds = static_cast<int>(std::lround(std::max(rf::level.time - g_payload.setup_end_time, 0.0f)));
+    const int seconds = static_cast<int>(std::lround(push_time));
     const std::string text = std::format("The cart reached the end in {:02}:{:02}! {} wins!", seconds / 60,
                                          seconds % 60, team_name(g_payload.attacking_team));
     notify_all(text, 5, HudNotificationType::GenericBig);
@@ -592,9 +629,8 @@ void maybe_broadcast()
         || now.heals != last->heals || now.setup != last->setup || now.next_checkpoint != last->next_checkpoint
         || now.countdown_seconds.has_value() != last->countdown_seconds.has_value()
         || (now.speed == 0.0f) != (last->speed == 0.0f);
-    const bool lists_due =
-        last && (now.pushers != last->pushers || now.blockers != last->blockers) && timer_due(g_payload.list_resend);
-    const bool reliable = state_changed || lists_due;
+    const bool pushers_due = last && now.pushers != last->pushers && timer_due(g_payload.list_resend);
+    const bool reliable = state_changed || pushers_due;
     const bool healed = now.heal_serial != g_payload.sent_heal_serial;
     const bool refresh = now.speed != 0.0f && timer_due(g_payload.moving_refresh);
     if (!reliable && !healed && !refresh) {
@@ -622,7 +658,6 @@ void server_tick(float dt)
     std::vector<rf::Player*> defenders;
     sample_push_zone(attackers, defenders);
     g_payload.pushers = player_ids(attackers);
-    g_payload.blockers = player_ids(defenders);
     if (!g_payload.pushers.empty()) {
         g_payload.last_pushers = g_payload.pushers;
         g_payload.capture_credit.set(capture_credit_ms);
@@ -665,6 +700,7 @@ void server_tick(float dt)
             if (!g_payload.rollback_announced) {
                 g_payload.rollback_announced = true;
                 notify_all("The cart is rolling back!", 3, HudNotificationType::Generic);
+                report(afstats::PayloadEventKind::rollback_start);
             }
         }
         else {
@@ -673,6 +709,12 @@ void server_tick(float dt)
                 g_payload.countdown = static_cast<float>(g_payload.rollback_delay) - g_payload.unpushed_seconds;
             }
         }
+    }
+    if (g_payload.state == PayloadCartState::pushing) {
+        afstats::on_payload_zone_time(attackers, false, dt);
+    }
+    else if (g_payload.state == PayloadCartState::blocked) {
+        afstats::on_payload_zone_time(defenders, true, dt);
     }
 
     // Eased so riders and client prediction never see a jump in speed
@@ -700,12 +742,14 @@ void server_tick(float dt)
         && g_payload.distance < g_payload.total_length) {
         g_payload.final_stretch_reached = true;
         notify_all("The cart is nearly there!", 3, HudNotificationType::Generic);
+        report(afstats::PayloadEventKind::final_stretch);
     }
 
     if (g_payload.overtime) {
         const bool time_up = rf::multi_time_limit > 0.0f && rf::level.time >= rf::multi_time_limit;
         if (!time_up) {
             g_payload.overtime = false;
+            report(afstats::PayloadEventKind::overtime_cleared);
         }
         // A held cart keeps overtime going as a pushed one does: the attackers can't push it
         g_payload.overtime_unpushed_seconds =
@@ -833,6 +877,12 @@ rf::Mover* payload_cart_mover()
     return payload_active() ? cart() : nullptr;
 }
 
+bool payload_cart_bounds(rf::Vector3& lo, rf::Vector3& hi)
+{
+    const rf::Mover* mover = payload_cart_mover();
+    return mover && mover_brush_bounds(*mover, lo, hi);
+}
+
 std::optional<rf::Vector3> payload_cart_center()
 {
     if (!payload_active()) {
@@ -853,6 +903,16 @@ const std::string& payload_cart_name()
 float payload_push_radius()
 {
     return g_payload.push_radius;
+}
+
+int payload_rollback_delay()
+{
+    return g_payload.rollback_delay;
+}
+
+bool payload_has_finale()
+{
+    return g_payload.finale;
 }
 
 float payload_cart_half_height()
@@ -919,6 +979,16 @@ bool payload_in_overtime()
     return g_payload.overtime;
 }
 
+bool payload_had_overtime()
+{
+    return g_payload.had_overtime;
+}
+
+bool payload_finale_blast_active()
+{
+    return g_payload.finale_blast;
+}
+
 std::optional<float> payload_countdown_seconds()
 {
     return g_payload.countdown;
@@ -951,6 +1021,11 @@ bool payload_checkpoint_captured(const PayloadCheckpoint& checkpoint)
     return hill && hill->ownership == team_hill_owner(g_payload.attacking_team);
 }
 
+float payload_checkpoint_time_bonus(const PayloadCheckpoint& checkpoint)
+{
+    return g_alpine_server_config_active_rules.payload.checkpoint_time_bonus.value_or(checkpoint.time_bonus);
+}
+
 std::optional<rf::Vector3> payload_checkpoint_pos(const HillInfo& hill)
 {
     if (!payload_active()) {
@@ -972,11 +1047,6 @@ const std::vector<uint8_t>& payload_pusher_ids()
 int payload_useful_pushers()
 {
     return std::min(static_cast<int>(g_payload.pushers.size()), payload::max_useful_pushers);
-}
-
-const std::vector<uint8_t>& payload_blocker_ids()
-{
-    return g_payload.blockers;
 }
 
 rf::Vector3 payload_track_point(float distance)
@@ -1081,7 +1151,8 @@ void payload_do_frame()
         server_tick(dt);
     }
     else {
-        client_tick(dt);
+        // A demo feeds the cart's updates in its own time, which pauses and runs at the playback speed
+        client_tick(dt * demo_playback_sim_time_scale());
     }
     fire_pass_events();
     if (!rf::is_dedicated_server) {
@@ -1105,8 +1176,10 @@ bool payload_round_over(bool time_up)
     const bool pushed = g_payload.hold_left > 0.0f || !g_payload.pushers.empty();
     if (!g_payload.overtime && pushed) {
         g_payload.overtime = true;
+        g_payload.had_overtime = true;
         g_payload.overtime_unpushed_seconds = 0.0f;
         notify_teams("OVERTIME: keep pushing!", "OVERTIME: stop the cart!", 4, HudNotificationType::GenericBig);
+        report(afstats::PayloadEventKind::overtime_start);
         return false;
     }
     if (g_payload.overtime && (pushed || g_payload.overtime_unpushed_seconds < payload_rules().overtime_grace)) {
@@ -1116,6 +1189,7 @@ bool payload_round_over(bool time_up)
         g_payload.end_announced = true;
         const std::string text = std::format("The cart was stopped! {} wins!", team_name(payload_defending_team()));
         notify_all(text, 5, HudNotificationType::GenericBig);
+        report(afstats::PayloadEventKind::stopped);
     }
     return true;
 }
@@ -1137,9 +1211,7 @@ bool payload_player_credited_for_capture(const rf::Player& player)
     if (payload_player_in_push_zone(player)) {
         return true;
     }
-    const bool coasting = g_payload.pushers.empty() && g_payload.capture_credit.valid()
-        && !g_payload.capture_credit.elapsed();
-    return coasting && player.net_data
+    return capture_credit_coasting() && player.net_data
         && std::find(g_payload.last_pushers.begin(), g_payload.last_pushers.end(), player.net_data->player_id)
             != g_payload.last_pushers.end();
 }
@@ -1199,7 +1271,6 @@ PayloadNetState payload_build_net_state()
     net.distance = g_payload.distance;
     net.speed = g_payload.speed;
     net.pushers = g_payload.pushers;
-    net.blockers = g_payload.blockers;
     return net;
 }
 
@@ -1223,7 +1294,6 @@ void payload_apply_net_state(const PayloadNetState& net)
     g_payload.next_checkpoint = std::min<int>(net.next_checkpoint, static_cast<int>(g_payload.checkpoints.size()));
     g_payload.countdown = net.countdown_seconds;
     g_payload.pushers = net.pushers;
-    g_payload.blockers = net.blockers;
     g_payload.net_distance = std::clamp(net.distance, 0.0f, g_payload.total_length);
     g_payload.net_speed = g_payload.state == PayloadCartState::finale ? 0.0f : net.speed;
     g_payload.net_age = 0.0f;

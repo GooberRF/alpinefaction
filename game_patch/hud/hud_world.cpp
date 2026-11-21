@@ -13,6 +13,7 @@
 #include "hud_world.h"
 #include "multi_spectate.h"
 #include "payload_world.h"
+#include "route_arrows.h"
 #include "world_medallion.h"
 #include "zone_marker.h"
 #include "../graphics/gr.h"
@@ -529,6 +530,24 @@ int world_hud_white_bitmap()
     return white_bm;
 }
 
+static double g_world_hud_clock_ms = 0.0;
+
+void world_hud_clock_do_frame()
+{
+    if (rf::game_paused) {
+        return;
+    }
+    const float dt = cosmetic_frame_dt();
+    if (dt > 0.0f) {
+        g_world_hud_clock_ms += static_cast<double>(dt) * 1000.0;
+    }
+}
+
+int64_t world_hud_clock_ms()
+{
+    return static_cast<int64_t>(g_world_hud_clock_ms);
+}
+
 void do_render_world_hud_rect(const rf::Vector3& pos, float vertical_offset, float horizontal_offset,
     float width_world, float height_world, WorldHUDRenderMode render_mode, bool stay_inside_fog,
     bool distance_scaling, rf::Color color)
@@ -674,7 +693,7 @@ static void render_koth_medallion_for_hill(const HillInfo& h, WorldHUDRenderMode
     const int face_bm = locked ? g_world_hud_assets.medallion_lock : world_hud_medallion_face(owner);
     const rf::Color owner_color = hud_team_color(owner);
     const float brightness = locked ? locked_brightness : 1.0f;
-    const int64_t now_ms = timer::get_i64(1000);
+    const int64_t now_ms = world_hud_clock_ms();
 
     WorldMedallionRing ring{0.0f, zone_marker_scaled_color(owner_color, medallion_track_brightness * brightness), {}};
     if (contested) {
@@ -867,7 +886,7 @@ static void render_payload_cart_medallion()
         return;
 
     const PayloadCartState state = payload_state();
-    const int64_t now_ms = timer::get_i64(1000);
+    const int64_t now_ms = world_hud_clock_ms();
     float brightness = idle_brightness;
     if (state == PayloadCartState::pushing || state == PayloadCartState::rolling_back
         || state == PayloadCartState::finale) {
@@ -1108,12 +1127,14 @@ void build_ephemeral_world_hud_strings() {
     for (const EphemeralWorldHUDString& es : ephemeral_world_hud_strings) {
         const int font = es.crit ? critical_font : dmg_font;
         rf::Vector3 string_pos = es.pos;
-        string_pos.y += .85f;
+        // A repair sits on its hit point at arm's length, where the lift and rise sized for a victim's
+        // centre would carry it off the top of the screen.
+        string_pos.y += es.repair ? 0.f : .85f;
 
         if (es.float_away) {
             // Calculate the progress of the fade effect.
             const float progress = es.timestamp.elapsed_frac();
-            string_pos.y += progress * 3.f;
+            string_pos.y += progress * (es.repair ? .5f : 3.f);
 
             // Apply wind.
             const float elapsed_sec = es.timestamp.time_since_sec();
@@ -1125,7 +1146,7 @@ void build_ephemeral_world_hud_strings() {
                 wind_amplitude * std::cos(wind_phase + es.wind_phase_offset * .8f);
         }
 
-        const std::string label = std::to_string(es.damage);
+        const std::string label = (es.repair ? "+" : "") + std::to_string(es.damage);
         const auto [text_width, text_height] = rf::gr::get_string_size(label, font);
         const int half_text_width = text_width / 2;
         const int base_text_height = rf::gr::get_font_height(base_font);
@@ -1688,6 +1709,7 @@ void hud_world_do_frame() {
         build_bag_icon();
     }
     payload_world_render();
+    route_arrows_render();
     if (rf::is_multi && multi_is_game_type_with_hills()) {
         build_koth_hill_icons();
         build_koth_hill_outlines();
@@ -1769,6 +1791,7 @@ void hud_world_level_unload()
     world_hud_sprite_events.clear();
     fullscreen_overlay_events.clear();
     payload_world_level_unload();
+    route_arrows_clear();
 }
 
 void fullscreen_overlay_do_frame()
@@ -1822,7 +1845,7 @@ void add_location_ping_world_hud_sprite(rf::Vector3 pos, std::string player_name
 }
 
 void add_damage_notify_world_hud_string(rf::Vector3 pos, uint8_t damaged_player_id, int hull_handle, uint16_t damage,
-                                       bool died, bool crit)
+                                       bool died, bool crit, bool repair)
 {
     if (!g_alpine_game_config.world_hud_damage_numbers) {
         return; // turned off
@@ -1835,8 +1858,8 @@ void add_damage_notify_world_hud_string(rf::Vector3 pos, uint8_t damaged_player_
         // Search for an existing entry with the same victim
         auto it = std::find_if(
             ephemeral_world_hud_strings.begin(), ephemeral_world_hud_strings.end(),
-            [damaged_player_id, hull_handle](const EphemeralWorldHUDString& es) {
-                return es.player_id == damaged_player_id && es.hull_handle == hull_handle;
+            [damaged_player_id, hull_handle, repair](const EphemeralWorldHUDString& es) {
+                return es.player_id == damaged_player_id && es.hull_handle == hull_handle && es.repair == repair;
             });
 
         if (it != ephemeral_world_hud_strings.end()) {
@@ -1856,10 +1879,14 @@ void add_damage_notify_world_hud_string(rf::Vector3 pos, uint8_t damaged_player_
     es.float_away = true;
     es.wind_phase_offset = wind_offset_dist(g_rng);
     es.crit = crit;
+    es.repair = repair;
 
-    // A crit keeps its own colour even under the user override: the colour is what
+    // A crit or a repair keeps its own colour even under the user override: the colour is what
     // separates it from an ordinary hit.
-    if (crit) {
+    if (repair) {
+        es.color = {64, 255, 64, 255};
+    }
+    else if (crit) {
         es.color = {255, 80, 0, 255};
     }
     else if (g_alpine_game_config.damage_notify_color_override)
@@ -1958,7 +1985,7 @@ ConsoleCommand2 worldhudpayloadtethers_cmd{
         rf::console::print("World HUD Payload tethers are {}",
                            g_alpine_game_config.world_hud_payload_tethers ? "enabled" : "disabled");
     },
-    "Toggle whether to draw Payload beams from the players pushing or blocking the cart",
+    "Toggle whether to draw Payload beams from the players pushing the cart",
     "cl_wh_tethers",
 };
 
@@ -1982,6 +2009,42 @@ ConsoleCommand2 worldhudpayloadcartstatus_cmd{
     },
     "Toggle the Payload cart's status text over its medallion, such as its pushers or countdown",
     "cl_wh_cartstatus",
+};
+
+ConsoleCommand2 worldhudpayloadtrackpulse_cmd{
+    "cl_wh_trackpulse",
+    []() {
+        setting_console_set("world_hud_payload_track_pulse", "toggle");
+        rf::console::print("World HUD Payload track pulses are {}",
+                           g_alpine_game_config.world_hud_payload_track_pulse ? "enabled" : "disabled");
+    },
+    "Toggle the glowing pulses that run along the Payload track from the cart to its end",
+    "cl_wh_trackpulse",
+};
+
+ConsoleCommand2 worldhudroutearrows_cmd{
+    "cl_wh_routearrows",
+    []() {
+        setting_console_set("world_hud_route_arrows", "toggle");
+        rf::console::print("World HUD spawn route arrows are {}",
+                           g_alpine_game_config.world_hud_route_arrows ? "enabled" : "disabled");
+    },
+    "Toggle the arrows laid from your spawn toward the objective in Payload, KOTH, DC, REV and ESC",
+    "cl_wh_routearrows",
+};
+
+ConsoleCommand2 worldhudroutearrowtime_cmd{
+    "cl_wh_routearrows_time",
+    [](std::optional<float> value) {
+        if (value) {
+            setting_console_set("world_hud_route_arrow_time", std::to_string(*value));
+        }
+        rf::console::print("World HUD spawn route arrows stay {:.1f} s (default {:.1f})",
+                           g_alpine_game_config.world_hud_route_arrow_time,
+                           AlpineGameSettings::default_world_hud_route_arrow_time);
+    },
+    "Set how long each spawn route arrow stays before it is reeled in, in seconds",
+    "cl_wh_routearrows_time [1.0-30.0]",
 };
 
 ConsoleCommand2 worldhudspectateplayerlabels_cmd{
@@ -2102,6 +2165,9 @@ void hud_world_apply_patch()
     worldhudpayloadtethers_cmd.register_cmd();
     worldhudpayloadpushzone_cmd.register_cmd();
     worldhudpayloadcartstatus_cmd.register_cmd();
+    worldhudpayloadtrackpulse_cmd.register_cmd();
+    worldhudroutearrows_cmd.register_cmd();
+    worldhudroutearrowtime_cmd.register_cmd();
     worldhudspectateplayerlabels_cmd.register_cmd();
     worldhuddemoplayerinfo_cmd.register_cmd();
     worldhuddemospawns_cmd.register_cmd();

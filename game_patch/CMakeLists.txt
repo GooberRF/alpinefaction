@@ -71,6 +71,10 @@ set(SRCS
     graphics/weather.h
     graphics/scene_capture.cpp
     graphics/scene_capture.h
+    graphics/mesh_preview.cpp
+    graphics/mesh_preview.h
+    graphics/ribbon_trail.cpp
+    graphics/ribbon_trail.h
     graphics/legacy/gr_d3d.cpp
     graphics/legacy/gr_d3d_texture.cpp
     graphics/legacy/gr_d3d_capture.cpp
@@ -120,6 +124,8 @@ set(SRCS
     hud/zone_marker.cpp
     hud/payload_world.h
     hud/payload_world.cpp
+    hud/route_arrows.h
+    hud/route_arrows.cpp
     hud/world_medallion.h
     hud/world_medallion.cpp
     hud/minimap.cpp
@@ -145,7 +151,12 @@ set(SRCS
     debug/unresponsive.cpp
     multi/alpine_packets.cpp
     multi/alpine_packets.h
+    multi/dedi_cfg.h
     multi/dedi_cfg.cpp
+    multi/listen_server_rules.h
+    multi/listen_server_rules.cpp
+    multi/listen_server_setup.h
+    multi/listen_server_setup.cpp
     multi/multi.h
     multi/multi.cpp
     multi/gametype.h
@@ -154,6 +165,10 @@ set(SRCS
     multi/bagman.cpp
     multi/jetpack.h
     multi/jetpack.cpp
+    multi/powerups.h
+    multi/powerups.cpp
+    multi/haste_trails.h
+    multi/haste_trails.cpp
     multi/rounds.h
     multi/rounds.cpp
     multi/pit.h
@@ -190,6 +205,10 @@ set(SRCS
     multi/vehicles/vehicle_tracers.cpp
     multi/vehicles/vehicle_fx.cpp
     multi/vehicles/vehicle_fx.h
+    multi/vehicles/vehicle_trails.cpp
+    multi/vehicles/vehicle_trails.h
+    multi/vehicles/vehicle_debris.cpp
+    multi/vehicles/vehicle_debris.h
     multi/vehicles/vehicle_horn.h
     multi/vehicles/vehicle_horn.cpp
     multi/vehicles/vehicle_physics.h
@@ -237,6 +256,12 @@ set(SRCS
     multi/network_debug.cpp
     multi/tracker.cpp
     multi/tracker.h
+    multi/server_query.cpp
+    multi/server_query.h
+    multi/server_browser_data.cpp
+    multi/server_browser_data.h
+    multi/server_switch.cpp
+    multi/server_switch.h
     multi/saved_info.cpp
     multi/saved_info.h
     multi/level_download.cpp
@@ -417,6 +442,8 @@ set(SRCS
     misc/spray_picker.h
     misc/vote_panel.cpp
     misc/vote_panel.h
+    misc/vote_form.cpp
+    misc/vote_form.h
     misc/saved_votes.cpp
     misc/saved_votes.h
     misc/game.cpp
@@ -461,8 +488,45 @@ set(SRCS
     ui/settings_menu.cpp
     ui/menu_shell.h
     ui/menu_shell.cpp
+    ui/column_menu.h
+    ui/column_menu.cpp
+    ui/menu_popup.h
+    ui/menu_popup.cpp
+    ui/form_view.h
+    ui/form_view.cpp
+    ui/mutator_editors.h
+    ui/mutator_editors.cpp
+    ui/vote_menu.h
+    ui/vote_menu.cpp
     ui/extras_menu.h
     ui/extras_menu.cpp
+    ui/multi_menu.h
+    ui/multi_menu.cpp
+    ui/multi_pause_menu.h
+    ui/multi_pause_menu.cpp
+    ui/game_menu.h
+    ui/game_menu.cpp
+    ui/save_load_menu.h
+    ui/save_load_menu.cpp
+    ui/message_log_menu.h
+    ui/message_log_menu.cpp
+    ui/player_panel.h
+    ui/player_panel.cpp
+    ui/server_browser.h
+    ui/server_browser.cpp
+    ui/create_game_menu.h
+    ui/create_game_menu.cpp
+    ui/create_game_internal.h
+    ui/create_game_maps.cpp
+    ui/create_game_bots.cpp
+    ui/reference_data.h
+    ui/reference_data.cpp
+    ui/reference_menu.h
+    ui/reference_menu.cpp
+    ui/menu_scene.h
+    ui/menu_scene.cpp
+    sound/ambience_region.cpp
+    sound/ambience_region.h
     sound/sound.cpp
     sound/sound.h
     sound/sound_ds.cpp

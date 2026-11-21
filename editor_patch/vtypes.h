@@ -592,6 +592,11 @@ static auto& room_setup_bbox = addr_as_ref<int __cdecl(void* room, const Vector3
 // Transforms each light in the render light list into the current local frame.
 static auto& room_lights_to_local = addr_as_ref<void __cdecl()>(0x00488BE0);
 
+// Clips the polygon `verts` by `plane` into `out` and returns its new vertex count. Each edge can emit two vertices,
+// so `out` must hold 2 * num_verts.
+static auto& clip_poly_to_plane = addr_as_ref<int __cdecl(int num_verts, const rf::Vector3* verts, rf::Vector3* out,
+                                                          const rf::Plane* plane)>(0x004EB200);
+
 // Frees every room's viewport geometry cache (FUN_0049b550 builds them), so each is rebuilt when next drawn.
 static auto& geo_cache_flush_all = addr_as_ref<void __cdecl()>(0x0049B4E0);
 // End of the viewport geometry cache pool.

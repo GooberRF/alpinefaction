@@ -13,8 +13,6 @@ set(SRCS
     faction_files.cpp
     FFLinkHelper.cpp
     FFLinkHelper.h
-    FFLinkReminderDlg.cpp
-    FFLinkReminderDlg.h
     FFLinkProgressDlg.cpp
     FFLinkProgressDlg.h
     ImageButton.h

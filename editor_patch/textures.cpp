@@ -1105,8 +1105,8 @@ static void add_sound_to_vpp_list(const char* filename, DescribeOwner describe_o
 }
 
 // Every sound file name a level holds: ambient sounds, Play_Sound, Switch and Music_Start events (str1, which
-// the game's event loader, RF.exe 0x00462150, hands on as the file name), and each moving group's start, loop,
-// stop and close sounds.
+// the game's event loader, RF.exe 0x00462150, hands on as the file name), each moving group's start, loop,
+// stop and close sounds, and ambience regions.
 static void add_level_sounds_to_vpp_list(CDedLevel& level)
 {
     // Picks up sounds and subdirectories added since startup
@@ -1127,6 +1127,10 @@ static void add_level_sounds_to_vpp_list(CDedLevel& level)
                 add_sound_to_vpp_list(evt->str1.c_str(), [obj] { return std::format("event uid {}", obj->uid); },
                                       seen);
             }
+        }
+        else if (obj->type == DedObjectType::DED_AMBIENCE_REGION) {
+            add_sound_to_vpp_list(static_cast<DedAmbienceRegion*>(obj)->sound.c_str(),
+                                  [obj] { return std::format("ambience region uid {}", obj->uid); }, seen);
         }
     }
 

@@ -168,6 +168,8 @@ ConsoleCommand2 level_info_cmd{
             rf::console::print("- Legacy cyclic timers: {}", level_props.legacy_cyclic_timers);
             rf::console::print("- Legacy movers: {}", level_props.legacy_movers);
             rf::console::print("- Starts with headlamp: {}", level_props.starts_with_headlamp);
+            rf::console::print("- Players start with jetpacks: {}", level_props.players_start_with_jetpacks);
+            rf::console::print("- Crater texture PPM: {}", level_props.crater_texture_ppm);
             rf::console::print("- Override static mesh ambient light scale: {}", level_props.override_static_mesh_ambient_light_modifier);
             rf::console::print("- Mesh static ambient light scale: {}", level_props.static_mesh_ambient_light_modifier);
 
@@ -440,15 +442,20 @@ ConsoleCommand2 af_get_cmd{
     "af_get <key>",
 };
 
+void entities_go_berserk()
+{
+    for (auto& entity : DoublyLinkedList{rf::entity_list}) {
+        if (&entity != rf::local_player_entity) {
+            rf::ai_go_berserk(&entity.ai, 3600.0f, true);
+        }
+    }
+}
+
 ConsoleCommand2 dbg_berserk_cmd{
     "dbg_berserk",
     []() {
         if (!rf::is_multi) {
-            for (auto& entity : DoublyLinkedList{rf::entity_list}) {
-                if (&entity && &entity != rf::local_player_entity) {
-                    rf::ai_go_berserk(&entity.ai, 3600.0f, true);
-                }
-            }
+            entities_go_berserk();
         }
     },
     "Make all entities go berserk",

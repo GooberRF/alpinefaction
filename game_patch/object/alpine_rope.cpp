@@ -27,7 +27,6 @@
 #include "../rf/math/vector.h"
 #include "../rf/multi.h"
 #include "../rf/object.h"
-#include "../rf/os/frametime.h"
 #include "../rf/player/player.h"
 #include "../rf/v3d.h"
 #include "../rf/vmesh.h"
@@ -51,7 +50,6 @@ constexpr uint32_t rope_flag_zipline = rope_curve::rope_flag_zipline_bit;
 constexpr float rope_sim_step = 1.0f / 60.0f;
 constexpr int rope_max_substeps = 4;
 constexpr int rope_constraint_iterations = 6;
-constexpr float rope_max_frame_delta = 0.1f;
 constexpr float rope_damping = 0.995f;
 // Fixed, not rf::phys::gravity: the static catenary the dynamic rope is seeded from assumes a
 // constant field, so a level that changes gravity must not make the two disagree.
@@ -2249,7 +2247,7 @@ void alpine_rope_do_frame()
         return;
     }
     const float time_scale = demo_playback_sim_time_scale();
-    const float dt = std::clamp(rf::frametime, 0.0f, rope_max_frame_delta) * time_scale;
+    const float dt = cosmetic_frame_dt();
     if (!(dt >= 0.0f)) {
         return; // NaN fails the comparison, which is the point
     }

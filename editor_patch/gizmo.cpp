@@ -712,6 +712,12 @@ Volume volume_of(DedObject& obj)
             v.set(weather, weather.shape == WeatherRegionShape::sphere, weather.shape == WeatherRegionShape::box);
             break;
         }
+        case DedObjectType::DED_AMBIENCE_REGION: {
+            auto& ambience = static_cast<DedAmbienceRegion&>(obj);
+            v.set(ambience, ambience.shape == static_cast<uint8_t>(alpine_ambience_region::Shape::sphere),
+                  ambience.shape == static_cast<uint8_t>(alpine_ambience_region::Shape::box));
+            break;
+        }
         case DedObjectType::DED_DIRECTIONAL_LIGHT: {
             auto& light = static_cast<DedDirectionalLight&>(obj);
             switch (light.shape) {

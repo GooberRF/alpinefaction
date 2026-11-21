@@ -39,6 +39,18 @@ std::string_view bm_strip_texture_ext(std::string_view filename)
     return filename;
 }
 
+std::string bm_resolve_supersede_filename(const char* filename)
+{
+    std::string base{bm_strip_texture_ext(filename)};
+    for (const char* ext : {".atx", ".dds", ".png", ".jpg", ".jpeg"}) {
+        auto candidate = base + ext;
+        if (vpackfile_supercede_allowed(filename, candidate.c_str())) {
+            return candidate;
+        }
+    }
+    return filename;
+}
+
 // Applies the stock TGA pixel loaders' (0x0055A6D0, 0x0055ABF0) checks up front, because bm_lock
 // allocates the pixel buffer from the header dimensions before those loaders reject the file.
 static bool tga_header_loadable(const char* filename, int path_id)
@@ -167,7 +179,13 @@ FunHook<rf::bm::Format(int, void**, void**)> bm_lock_hook{
         if (bm_entry.bm_type == rf::bm::TYPE_ATX) {
             return lock_atx_bitmap(bm_entry, pixels_out, palette_out);
         }
+        // Lock a TGA with the mip chain it was loaded with: the flag gating generated levels is clear outside levels.
+        const bool saved_level_mipmaps = rf::bm::level_mipmaps_enabled;
+        if (bm_entry.bm_type == rf::bm::TYPE_TGA && bm_entry.orig_num_levels > bm_entry.num_levels_in_ext_files) {
+            rf::bm::level_mipmaps_enabled = true;
+        }
         auto pixel_fmt = bm_lock_hook.call_target(bmh, pixels_out, palette_out);
+        rf::bm::level_mipmaps_enabled = saved_level_mipmaps;
         if (pixel_fmt == rf::bm::FORMAT_NONE) {
             *pixels_out = nullptr;
             *palette_out = nullptr;

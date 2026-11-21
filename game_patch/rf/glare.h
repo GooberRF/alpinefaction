@@ -48,6 +48,7 @@ namespace rf {
     static_assert(sizeof(Glare) == 0x2EC);
 
     static auto& glare_collide_entity = addr_as_ref<bool(Object *obj, Glare *glare, Vector3 *eye_pos)>(0x00415280);
+    static auto& glare_render_all_flares = addr_as_ref<void(bool reflections)>(0x004154F0);
 
     // Glare linked list
     static auto& glare_list = addr_as_ref<Glare>(0x005C9BA8);

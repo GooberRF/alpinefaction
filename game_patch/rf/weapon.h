@@ -208,6 +208,8 @@ namespace rf
     static_assert(offsetof(WeaponInfo, fire_wait) == 0xD0);
     static_assert(offsetof(WeaponInfo, damage_multi) == 0x10C);
     static_assert(offsetof(WeaponInfo, crater_radius) == 0x14C);
+    static_assert(offsetof(WeaponInfo, launch_foley_id) == 0x160);
+    static_assert(offsetof(WeaponInfo, alt_launch_foley_id) == 0x164);
     static_assert(offsetof(WeaponInfo, damage_radius_multi) == 0x210);
     static_assert(offsetof(WeaponInfo, max_ammo_multi) == 0x25C);
     static_assert(offsetof(WeaponInfo, flags) == 0x264);
@@ -315,6 +317,7 @@ namespace rf
     static_assert(offsetof(RailBeam, prev) == 0x4C);
     // Circular; 0x004C2570 links each new beam in as the head's prev
     static auto& rail_beam_list = addr_as_ref<RailBeam*>(0x0085C770);
+    static auto& rail_beam_render_all = addr_as_ref<void()>(0x004C2650);
 
     enum WeaponState
     {

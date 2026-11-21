@@ -145,13 +145,21 @@ namespace rf
     using CharMeshLoadActionFn = int(__thiscall*)(void* mesh_data, const char* rfa_filename, char is_state, char unused);
     static const auto character_mesh_load_action = reinterpret_cast<CharMeshLoadActionFn>(0x0051CC10);
     static auto& vmesh_create_anim_fx = addr_as_ref<VMesh*(const char *filename, int path_id)>(0x00502A60);
+    // A character mesh (.v3c / .vcm), named without its extension as obj_create_mesh (0x00489FE0) passes it, with 0
+    // for the other two arguments; `flag` = 1 also sets CHARACTER_FLAG_SET_BY_CREATE.
+    static auto& vmesh_create_character = addr_as_ref<VMesh*(const char* name, int flag, int unk)>(0x005029C0);
     // Load a static v3m/v3d mesh (mesh_type==1 -> MESH_TYPE_STATIC). path_id may be 0xFFFFFFFF.
     static auto& vmesh_load = addr_as_ref<VMesh*(const char* filename, int mesh_type, int path_id)>(0x00502880);
     static auto& vmesh_free = addr_as_ref<void(VMesh* vmesh)>(0x00502B10);
+    // Frees the static meshes kept between levels; game_load_level runs it before each load.
+    static auto& vmesh_static_cache_purge = addr_as_ref<void()>(0x005043D0);
     // Returns prop-point index, or -1 if not found.
     static auto& vmesh_lookup_prop_point = addr_as_ref<int(VMesh* vmesh, const char* name)>(0x00503220);
-    // Number of prop points on the mesh.
-    static auto& vmesh_get_num_prop_points = addr_as_ref<int(VMesh* vmesh)>(0x005034A0);
+    // Number of submeshes (V3d::num_meshes for a static mesh).
+    static auto& vmesh_get_num_submeshes = addr_as_ref<int(VMesh* vmesh)>(0x005034A0);
+    // A static submesh's offset in the mesh and its bounding radius.
+    static auto& vmesh_get_submesh_bound =
+        addr_as_ref<void(VMesh* vmesh, int submesh, Vector3* out_offset, float* out_radius)>(0x005032F0);
     static auto& vmesh_get_prop_point_transform =
         addr_as_ref<void(VMesh* vmesh, int prop_idx, Matrix3* entity_orient, Vector3* entity_pos,
                          Matrix3* out_orient, Vector3* out_pos)>(0x005034F0);

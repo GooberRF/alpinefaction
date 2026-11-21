@@ -16,6 +16,7 @@
 #include "../rf/os/frametime.h"
 #include "../rf/bmpman.h"
 #include "../rf/event.h"
+#include "../rf/gameseq.h"
 #include "../misc/level.h"
 #include "alpine_obj_common.h"
 #include "object.h"
@@ -924,6 +925,10 @@ static int alpine_mesh_create_object(const AlpineMeshInfo& info)
 
 void alpine_mesh_do_frame()
 {
+    // Frozen with the rest of the level while single player is paused
+    if (rf::game_paused) {
+        return;
+    }
     for (auto it = g_mesh_anim_states.begin(); it != g_mesh_anim_states.end(); ) {
         rf::Object* obj = rf::obj_from_handle(it->obj_handle);
         if (!obj || !obj->vmesh || obj->vmesh->type != rf::MESH_TYPE_CHARACTER

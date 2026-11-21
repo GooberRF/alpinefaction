@@ -9,7 +9,9 @@
 #include "bot_personality_manager.h"
 #include "bot_utils.h"
 #include "bot_vehicle.h"
+#include "../bagman.h"
 #include "../gametype.h"
+#include "../salvage.h"
 #include "../../rf/collide.h"
 #include "../../rf/multi.h"
 #include "../../rf/weapon.h"
@@ -97,6 +99,41 @@ bool candidate_has_los(const rf::Entity& local_entity, const rf::Entity& candida
     return slot->visible;
 }
 
+bool player_carries_objective(const rf::Player& player)
+{
+    if (rf::multi_get_game_type() == rf::NG_TYPE_CTF
+        && (rf::multi_ctf_get_red_flag_player() == &player || rf::multi_ctf_get_blue_flag_player() == &player)) {
+        return true;
+    }
+    if (gt_is_bagman_any() && g_bagman_info.state == BagState::BS_Carried && g_bagman_info.carrier == &player) {
+        return true;
+    }
+    return salvage_player_is_carrier(&player);
+}
+
+// Provocation is latched: the alert contact behind it expires well before a long grace does.
+bool hidden_by_spawn_grace(const rf::Player& candidate, const bool provoking)
+{
+    // A bot client can learn that a remote player is a bot after it has been tracked.
+    if (candidate.is_bot) {
+        return false;
+    }
+    for (BotSpawnGrace& entry : bot_state().spawn_grace) {
+        if (entry.entity_handle != candidate.entity_handle) {
+            continue;
+        }
+        if (entry.provoked || !entry.timer.valid() || entry.timer.elapsed()) {
+            return false;
+        }
+        if (provoking || player_carries_objective(candidate)) {
+            entry.provoked = true;
+            return false;
+        }
+        return true;
+    }
+    return false;
+}
+
 // resolve_weapon_type_cached and entity_has_weapon_type are defined in bot_utils.cpp
 }
 
@@ -108,6 +145,43 @@ void bot_perception_manager_reset_tracking()
     bot_state().candidate_los = {};
     bot_state().preferred_enemy_handle = -1;
     bot_state().preferred_enemy_lock_timer.invalidate();
+}
+
+void bot_perception_manager_reset_spawn_grace()
+{
+    bot_state().spawn_grace.clear();
+    bot_state().spawn_grace_primed = false;
+}
+
+void bot_perception_manager_update_spawn_grace(const rf::Player& local_player)
+{
+    BotState& state = bot_state();
+    state.spawn_grace.erase(
+        std::remove_if(
+            state.spawn_grace.begin(),
+            state.spawn_grace.end(),
+            [](const BotSpawnGrace& entry) { return !rf::entity_from_handle(entry.entity_handle); }),
+        state.spawn_grace.end());
+
+    const int grace_ms = static_cast<int>(bot_personality_manager_get_active_skill_profile().spawn_grace_ms);
+    for (const rf::Player& player : SinglyLinkedList{rf::player_list}) {
+        if (&player == &local_player || player.is_bot || !rf::entity_from_handle(player.entity_handle)) {
+            continue;
+        }
+        const bool tracked = std::any_of(
+            state.spawn_grace.begin(),
+            state.spawn_grace.end(),
+            [&](const BotSpawnGrace& entry) { return entry.entity_handle == player.entity_handle; });
+        if (tracked) {
+            continue;
+        }
+        BotSpawnGrace& entry = state.spawn_grace.emplace_back();
+        entry.entity_handle = player.entity_handle;
+        if (state.spawn_grace_primed && grace_ms > 0) {
+            entry.timer.set(grace_ms);
+        }
+    }
+    state.spawn_grace_primed = true;
 }
 
 bool bot_perception_manager_get_enemy_los_cached(
@@ -242,6 +316,13 @@ rf::Entity* bot_perception_manager_select_enemy_target(
             candidate_entity->handle,
             alert_awareness_weight,
             &alert_type);
+        const bool provoking = has_alert_awareness
+            && (alert_type == BotAlertType::damaged_by_enemy
+                || alert_type == BotAlertType::nearby_weapon_fire
+                || alert_type == BotAlertType::nearby_hull);
+        if (hidden_by_spawn_grace(candidate, provoking)) {
+            continue;
+        }
         if (!inside_fov && !in_close_awareness_range && !has_alert_awareness) {
             continue;
         }

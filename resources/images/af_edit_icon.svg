@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Alpine Faction: shipped copy is drawn in white so the engine can tint it to any palette color at draw time. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+  <line x1="16.8" y1="7.2" x2="8.64" y2="15.36" stroke="#ffffff" stroke-width="3.6"/>
+  <line x1="8.64" y1="15.36" x2="6" y2="18" stroke="#ffffff" stroke-width="1.68"/>
+  <line x1="19.2" y1="4.8" x2="18" y2="6" stroke="#ffffff" stroke-width="3.6"/>
+</svg>

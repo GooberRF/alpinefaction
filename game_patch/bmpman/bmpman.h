@@ -1,6 +1,7 @@
 #pragma once
 
 #include <functional>
+#include <string>
 #include <string_view>
 #include <xlog/xlog.h>
 #include "../rf/bmpman.h"
@@ -23,6 +24,8 @@ int bm_load_if_exists(const char* name, int unk, bool generate_mipmaps);
 // looked up under another. Path and case are left alone. The editor keeps its own narrower
 // supersede list, because RED's loader chain is not this one.
 std::string_view bm_strip_texture_ext(std::string_view filename);
+// The sibling bm_read_header_hook loads in place of filename (ATX > DDS > PNG/JPG), or filename itself.
+std::string bm_resolve_supersede_filename(const char* filename);
 
 void bm_set_dynamic(int bm_handle, bool dynamic);
 bool bm_is_dynamic(int bm_handle);

@@ -14,6 +14,7 @@
 #include "vehicle_internal.h"
 #include "vehicle_spawn.h"
 #include "../alpine_packets.h"
+#include "../awards.h"
 #include "../gametype.h"
 #include "../../misc/level.h"
 #include "../../object/alpine_obj_common.h"
@@ -104,7 +105,9 @@ namespace
         }
     }
 
-    bool vehicle_slot_try_spawn(VehicleSpawnSlot& slot, bool announce)
+    // report is false only at level init, which precedes the level's game_start: vehicle_report_level_hulls
+    // reports those hulls once it has gone out.
+    bool vehicle_slot_try_spawn(VehicleSpawnSlot& slot, bool announce, bool report = true)
     {
         if (rf::Entity* ep = vehicle_spawn_type(slot.entity_type, slot.pos, slot.orient)) {
             slot.handle = ep->handle;
@@ -119,11 +122,17 @@ namespace
             // entity_create uprighted the factory's matrix, so this is the facing the hull spawned with.
             st.yaw_base = vehicle_quantize_angle(vehicle_make_orient_phb(ep->orient).y);
             st.yaw_rel = 0.0f;
+            st.stats = VehicleStatsHull{};
+            st.stats.id = ++g_vehicle_state.last_stats_id;
+            st.stats.vehicle_class = vehicle_damage_class(ep);
             if (announce) {
                 vehicle_slot_announce(slot);
                 // Nothing else states a fresh hull's team and lock; the join sweep covers a
                 // silent level-init spawn.
                 vehicle_broadcast_seat_occupancy(ep->handle, ep, -1);
+            }
+            if (report) {
+                vehicle_stats_hull_event(ep->handle, afstats::VehicleEventKind::spawn);
             }
             return true;
         }
@@ -218,8 +227,13 @@ void vehicle_on_hull_boarded(rf::Entity* vehicle, const rf::Entity* rider)
         if (pp) {
             const int team = pp->team == 1 ? 1 : 0;
             if (st->team != team) {
+                // Taken from the other team rather than claimed from nobody.
+                if (st->team != -1 && !vehicle_hull_is_turret(vehicle)) {
+                    awards_on_vehicle_claimed(pp, vehicle->handle);
+                }
                 st->team = team;
                 st->lock_to_team = false;
+                vehicle_stats_hull_event(vehicle->handle, afstats::VehicleEventKind::claimed, pp);
             }
         }
     }
@@ -230,6 +244,30 @@ void vehicle_on_hull_boarded(rf::Entity* vehicle, const rf::Entity* rider)
     // The factory's TAKEN announcement.
     slot->entered_once = true;
     vehicle_slot_announce(*slot);
+}
+
+void vehicle_stats_hull_event(int vehicle_handle, afstats::VehicleEventKind kind, const rf::Player* player,
+                              int weapon_type, afstats::VehicleEndCause cause)
+{
+    const VehicleState* st = rf::is_server ? vehicle_hull_state(vehicle_handle) : nullptr;
+    const rf::Entity* ep = vehicle_synced_entity(vehicle_handle);
+    if (!st || st->stats.id == 0 || !ep) {
+        return;
+    }
+    afstats::on_vehicle_event(kind, st->stats.id, st->stats.vehicle_class, st->team, player, weapon_type, cause,
+                              ep->pos);
+}
+
+void vehicle_report_level_hulls()
+{
+    if (!rf::is_multi || !rf::is_server) {
+        return;
+    }
+    for (const VehicleSpawnSlot& slot : g_vehicle_state.factories) {
+        if (slot.handle != -1) {
+            vehicle_stats_hull_event(slot.handle, afstats::VehicleEventKind::spawn);
+        }
+    }
 }
 
 int vehicle_factory_index_by_uid(int uid)
@@ -515,7 +553,7 @@ void vehicle_level_init_post()
     // then gets every slot's state from the state-info sweep (vehicle_send_factory_states_to).
     for (VehicleSpawnSlot& slot : g_vehicle_state.factories) {
         if (g_vehicle_factories[slot.factory_index].active_by_default) {
-            vehicle_slot_try_spawn(slot, false);
+            vehicle_slot_try_spawn(slot, false, false);
             continue;
         }
         slot.respawn_timer.set(slot.factory_delay_ms);
@@ -628,7 +666,6 @@ namespace
     // REPOINTED rather than the bytes overwritten - the stock literal has no room to grow into.
     constexpr uintptr_t jeep_gun_mesh_push_imm32 = 0x00423A45;
     constexpr uint32_t jeep_gun_mesh_stock_string = 0x00595AD8; // "jeep_gun.v3d" in .rdata
-    constexpr char af_jeep_gun_mesh_filename[] = "af_jeep_gun.v3m";
     bool g_jeep_gun_mesh_repointed = false;
 
     // Seated clips appended to $EntityAnimType state lists as if entity.tbl listed them: entity_create
@@ -753,6 +790,16 @@ namespace
         }
     }
 } // namespace
+
+std::optional<float> vehicle_mp_max_life(const char* entity_class)
+{
+    for (const VehicleEntityOverride& o : vehicle_entity_overrides) {
+        if (string_iequals(o.name, entity_class)) {
+            return o.max_life;
+        }
+    }
+    return std::nullopt;
+}
 
 void vehicle_tbl_overrides_revert()
 {

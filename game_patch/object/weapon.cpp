@@ -18,9 +18,11 @@
 #include "../multi/multi.h"
 #include "../multi/kill_attribution.h"
 #include "../multi/mutators.h"
+#include "../multi/powerups.h"
 #include "../multi/projectile_lag_comp.h"
 #include "../misc/misc.h"
 #include "../misc/alpine_settings.h"
+#include "../bmpman/bmpman.h"
 #include "../misc/settings_registry.h"
 #include "../input/rumble.h"
 #include "../misc/settings_registry.h"
@@ -61,6 +63,12 @@ CodeInjection weapons_tbl_buffer_overflow_fix_2{
     },
 };
 
+// Checks the file actually loaded, which may be a PNG/DDS/ATX sibling of the tbl's TGA.
+static bool reticle_file_is_customized(const std::string& filename)
+{
+    return !file_loaded_from_alpinefaction_vpp(bm_resolve_supersede_filename(filename.c_str()).c_str());
+}
+
 CodeInjection weapon_init_track_reticle_bitmap_injection{
     0x004C6756,
     [] {
@@ -77,8 +85,8 @@ CodeInjection weapon_init_track_reticle_bitmap_injection{
                 auto bm_filename_base = string_remove_any_suffix_before_extension(bm_filename, {"_0", "_1"});
                 auto bm_filename_0 = string_add_suffix_before_extension(bm_filename_base, "_0");
                 auto bm_filename_1 = string_add_suffix_before_extension(bm_filename_base, "_1");
-                bool customized_0 = !file_loaded_from_alpinefaction_vpp(bm_filename_0.c_str());
-                bool customized_1 = !file_loaded_from_alpinefaction_vpp(bm_filename_1.c_str());
+                bool customized_0 = reticle_file_is_customized(bm_filename_0);
+                bool customized_1 = reticle_file_is_customized(bm_filename_1);
 
                 //xlog::warn("weap {} ({}), bmh {}, bmf {}, custom? 0:{} 1:{}", i, rf::weapon_types[i].name, bm_handle, bm_filename_base, customized_0, customized_1);
 
@@ -97,8 +105,8 @@ CodeInjection weapon_init_track_reticle_bitmap_injection{
                     auto bm_filename_base = string_remove_any_suffix_before_extension(bm_filename, {"_0", "_1"});
                     auto bm_filename_0 = string_add_suffix_before_extension(bm_filename_base, "_0");
                     auto bm_filename_1 = string_add_suffix_before_extension(bm_filename_base, "_1");
-                    bool customized_0 = !file_loaded_from_alpinefaction_vpp(bm_filename_0.c_str());
-                    bool customized_1 = !file_loaded_from_alpinefaction_vpp(bm_filename_1.c_str());
+                    bool customized_0 = reticle_file_is_customized(bm_filename_0);
+                    bool customized_1 = reticle_file_is_customized(bm_filename_1);
 
                     //xlog::warn("LOCKED{}, bmh {}, bmf {}, custom? 0:{} 1:{}", i, bm_locked_handle, bm_filename_base, customized_0, customized_1);
 
@@ -115,6 +123,13 @@ bool weapon_reticle_is_customized(int weapon_id, bool bighud) {
 
     const uint8_t mask = weapon_reticle_custom_mask[weapon_id];
     return (mask & (bighud ? 0x2 : 0x1)) != 0;
+}
+
+const char* weapon_third_person_mesh(int weapon_type)
+{
+    return weapon_type >= 0 && weapon_type < rf::num_weapon_types
+        ? rf::weapon_types[weapon_type].third_person_vmesh_filename.c_str()
+        : "";
 }
 
 bool rocket_locked_reticle_is_customized(bool bighud) {
@@ -178,6 +193,20 @@ CodeInjection muzzle_flash_light_not_disabled_fix{
         rf::Timestamp* primary_muzzle_timestamp = regs.ecx;
         if (!primary_muzzle_timestamp->valid()) {
             regs.eip = 0x0041E969;
+        }
+    },
+};
+
+// weapon_move_one, on a multiplayer server: a weapon's fuse or lifetime explosion is followed by a remote charge kill
+// packet that has every client set off all of its owner's remote charges. Stock sends it for grenades and the other
+// weapons that explode this way too, so a thrown grenade blew up its thrower's charges on every client but not on the
+// server.
+CodeInjection weapon_explode_remote_charge_kill_fix{
+    0x004C6CAC,
+    [](auto& regs) {
+        rf::Weapon* weapon = regs.esi;
+        if (!(weapon->info->flags & rf::WTF_REMOTE_CHARGE)) {
+            regs.eip = 0x004C6CB9;
         }
     },
 };
@@ -401,10 +430,10 @@ bool should_apply_click_limiter() {
 // default fire wait 500ms like pistol and PR in stock weapons.tbl
 int get_semi_auto_fire_wait_override() {
     if (rf::is_multi && get_af_server_info().has_value()) {
-        return get_af_server_info()->semi_auto_cooldown.value_or(90);
+        return get_af_server_info()->semi_auto_cooldown.value_or(default_semi_auto_fire_wait_ms);
     }
     else {
-        return 90;
+        return default_semi_auto_fire_wait_ms;
     }
 }
 
@@ -429,6 +458,7 @@ CodeInjection entity_fire_primary_weapon_semi_auto_patch {
         if (rf::obj_is_player(entity) && rf::weapon_is_semi_automatic(weapon_type) && fire_wait == 500) {
             regs.eax = get_semi_auto_fire_wait_override();
         }
+        regs.eax = haste_scale_ms(entity, regs.eax);
 
         // apply first shot accuracy if 2x the weapon's fire wait has elapsed since the last shot
         // Note this also disables the difficulty-based rapid fire spread increase for the pistol in SP
@@ -525,6 +555,9 @@ void apply_weapon_patches()
     // Fix muzzle flash light sometimes not getting disabled (e.g. when weapon is switched during riot stick attack
     // in multiplayer)
     muzzle_flash_light_not_disabled_fix.install();
+
+    // Fix exploding grenades setting off their thrower's remote charges on clients in multiplayer
+    weapon_explode_remote_charge_kill_fix.install();
 
     // Fix weapon being auto-switched to previous one after respawn even when auto-switch is disabled
     process_create_entity_packet_switch_weapon_fix.install();

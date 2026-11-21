@@ -2,10 +2,13 @@
 #include <cctype>
 #include <cmath>
 #include <format>
+#include <common/utils/int-utils.h>
+#include <common/utils/string-utils.h>
 #include "ui_kit.h"
 #include "../hud/hud_internal.h"
 #include "../os/os.h"
 #include "../rf/gr/gr_font.h"
+#include "../rf/os/console.h"
 #include "../rf/os/frametime.h"
 #include "../rf/sound/sound.h"
 #include "../sound/sound.h"
@@ -39,11 +42,6 @@ int font_height(int font)
 int text_pad(const UiContext& ctx)
 {
     return std::max(ctx.style.text_pad_min, ctx.scaled(ctx.style.text_pad));
-}
-
-int scrollbar_width(const UiContext& ctx)
-{
-    return std::max(ctx.style.scrollbar_w_min, ctx.scaled(ctx.style.scrollbar_w));
 }
 
 void ui_play_hover()
@@ -84,24 +82,6 @@ UiRect ui_draw_rect(const UiContext& ctx, const UiRect& r)
     return UiRect{r.x - ctx.origin_x, r.y - ctx.origin_y, r.w, r.h};
 }
 
-void ui_set_header_color(const UiContext& ctx)
-{
-    apply_color(ctx.style.header);
-}
-
-void ui_set_text_color(const UiContext& ctx, bool enabled, bool hovered)
-{
-    if (!enabled) {
-        apply_color(ctx.style.text_disabled);
-    }
-    else if (hovered) {
-        apply_color(ctx.style.text_hover);
-    }
-    else {
-        apply_color(ctx.style.text_normal);
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Character filters and formatting
 // ---------------------------------------------------------------------------
@@ -125,6 +105,11 @@ bool ui_char_filter_digit(char c)
 bool ui_char_filter_hex(char c)
 {
     return std::isxdigit(static_cast<unsigned char>(c)) != 0;
+}
+
+bool ui_char_filter_printable(char c)
+{
+    return c >= 0x20 && c <= 0x7E;
 }
 
 std::string ui_format_number(float value, const UiNumberFormat& fmt)
@@ -157,6 +142,25 @@ std::string ui_fit_middle(std::string_view text, int max_w, int font)
         std::string candidate{text.substr(0, left)};
         candidate += "...";
         candidate += std::string{text.substr(text.size() - right, right)};
+        if (rf::gr::get_string_size(candidate, font).first <= max_w) {
+            return candidate;
+        }
+    }
+    return std::string{"..."};
+}
+
+std::string ui_fit_end(std::string_view text, int max_w, int font, bool trim_spaces)
+{
+    if (text.empty() || rf::gr::get_string_size(text, font).first <= max_w) {
+        return std::string{text};
+    }
+    for (size_t keep = text.size(); keep > 0; --keep) {
+        const std::string_view kept = trim_spaces ? rtrim(text.substr(0, keep)) : text.substr(0, keep);
+        if (kept.empty()) {
+            continue;
+        }
+        std::string candidate{kept};
+        candidate += "...";
         if (rf::gr::get_string_size(candidate, font).first <= max_w) {
             return candidate;
         }
@@ -290,7 +294,7 @@ void ui_play_error()
 // ---------------------------------------------------------------------------
 
 void UiContext::begin_frame(int mouse_x, int mouse_y, int wheel_delta, bool lmb_is_down,
-                            bool lmb_was_pressed, bool rmb_was_pressed)
+                            bool lmb_was_pressed, bool rmb_was_pressed, bool mmb_was_pressed)
 {
     mouse_moved_ = mouse_x != prev_mx_ || mouse_y != prev_my_;
     prev_mx_ = mouse_x;
@@ -302,6 +306,7 @@ void UiContext::begin_frame(int mouse_x, int mouse_y, int wheel_delta, bool lmb_
     lmb_down = lmb_is_down;
     click = lmb_was_pressed;
     rclick = rmb_was_pressed;
+    mclick = mmb_was_pressed;
 
     if (!lmb_down) {
         captured_id_ = 0;
@@ -330,6 +335,7 @@ void UiContext::begin_pass(UiPass pass_kind)
         // Edges belong to the hit-test pass; the draw pass never acts on them.
         click = false;
         rclick = false;
+        mclick = false;
         wheel = 0;
         analog_scroll = 0.0f;
         return;
@@ -495,7 +501,7 @@ bool UiContext::handle_nav_key(rf::Key key)
             }
         }
         const int count = static_cast<int>(prev_focusables_.size());
-        index = index < 0 ? (step > 0 ? 0 : count - 1) : (index + step + count) % count;
+        index = index < 0 ? (step > 0 ? 0 : count - 1) : wrap_step(index, step, count);
         focus_id_ = prev_focusables_[index].id;
         focus_visible_ = true;
         return true;
@@ -511,9 +517,7 @@ bool UiContext::handle_nav_key(rf::Key key)
         return true;
     }
     if (code == rf::KEY_LEFT || code == rf::KEY_RIGHT) {
-        const auto focused = std::find_if(prev_focusables_.begin(), prev_focusables_.end(),
-            [this](const Focusable& f) { return f.id == focus_id_; });
-        if (focused == prev_focusables_.end() || focused->kind != UiFocusKind::Adjustable) {
+        if (!focus_adjustable()) {
             return false;
         }
         adjust_id_ = focus_id_;
@@ -522,6 +526,19 @@ bool UiContext::handle_nav_key(rf::Key key)
         return true;
     }
     return false;
+}
+
+const UiContext::Focusable* UiContext::find_focus() const
+{
+    const auto focused = std::find_if(prev_focusables_.begin(), prev_focusables_.end(),
+        [this](const Focusable& f) { return f.id == focus_id_; });
+    return focus_id_ != 0 && focused != prev_focusables_.end() ? &*focused : nullptr;
+}
+
+bool UiContext::focus_adjustable() const
+{
+    const Focusable* focused = find_focus();
+    return focused && focused->kind == UiFocusKind::Adjustable;
 }
 
 bool UiContext::consume_activation(UiId id)
@@ -729,9 +746,12 @@ void UiContext::open_popup(UiId id)
 void UiContext::close_popup()
 {
     popup_id_ = 0;
+    // The click that opened it pinned its row's description, which must not outlast it.
+    description_.unpin();
     if (!draw) {
         click = false;
         rclick = false;
+        mclick = false;
     }
 }
 
@@ -761,7 +781,7 @@ void UiContext::push_toast(std::string text)
     toasts_.push_back(Toast{std::move(text), 0.0f});
 }
 
-void UiContext::draw_toasts(int font)
+void UiContext::draw_toasts(int font, int top)
 {
     if (toasts_.empty()) {
         return;
@@ -782,7 +802,7 @@ void UiContext::draw_toasts(int font)
     const int line_h = font_height(font);
     const int h = line_h + 2 * pad;
     const int margin = std::max(6, scaled(16.0f));
-    int y = margin;
+    int y = top + margin;
     for (const auto& toast : toasts_) {
         const int w = rf::gr::get_string_size(toast.text, font).first + 2 * pad;
         const int x = rf::gr::clip_width() - margin - w;
@@ -835,221 +855,10 @@ void UiContext::clear_repeat(UiId id)
 // Widgets
 // ---------------------------------------------------------------------------
 
-void ui_draw_label(const UiContext& ctx, const UiRect& r, const char* text, int font, bool secondary)
+bool ui_offscreen_activatable(UiContext& ctx, UiId id)
 {
-    apply_color(secondary ? ctx.style.label_secondary : ctx.style.label);
-    const UiRect d = ui_draw_rect(ctx, r);
-    rf::gr::string(d.x, d.y, text, font);
-}
-
-bool ui_button(UiContext& ctx, const UiRect& r, const char* text, int font, bool enabled, bool active)
-{
-    const bool hovered = enabled && ui_hover(ctx, r);
-
-    if (ctx.draw) {
-        const UiRect d = ui_draw_rect(ctx, r);
-        // Active reuses the green the listbox selection and checkbox ticks use.
-        if (active) {
-            apply_color(hovered ? ctx.style.button_active_fill_hover : ctx.style.button_active_fill);
-        }
-        else {
-            apply_color(hovered ? ctx.style.button_fill_hover : ctx.style.button_fill);
-        }
-        rf::gr::rect(d.x, d.y, d.w, d.h);
-        if (active) {
-            apply_color(ctx.style.button_active_border);
-        }
-        else {
-            apply_color(enabled ? ctx.style.button_border : ctx.style.button_border_disabled);
-        }
-        hud_rect_border(d.x, d.y, d.w, d.h, 1);
-        if (active) {
-            apply_color(ctx.style.button_active_text);
-        }
-        else {
-            ui_set_text_color(ctx, enabled, hovered);
-        }
-        rf::gr::string_aligned(rf::gr::ALIGN_CENTER, d.x + d.w / 2,
-            d.y + (d.h - font_height(font)) / 2, text, font);
-        return false;
-    }
-
-    return hovered && ctx.click;
-}
-
-bool ui_checkbox(UiContext& ctx, const UiRect& r, bool checked, const char* text, int font, bool enabled)
-{
-    const bool hovered = enabled && ui_hover(ctx, r);
-
-    if (ctx.draw) {
-        const UiRect d = ui_draw_rect(ctx, r);
-        const int box = std::min(d.h - 2, font_height(font));
-        const int by = d.y + (d.h - box) / 2;
-        apply_color(hovered ? ctx.style.button_fill_hover : ctx.style.button_fill);
-        rf::gr::rect(d.x, by, box, box);
-        apply_color(enabled ? ctx.style.check_border : ctx.style.check_border_disabled);
-        hud_rect_border(d.x, by, box, box, 1);
-        if (checked) {
-            // Muted tick for a pinned/non-interactive checkbox.
-            apply_color(enabled ? ctx.style.check_mark : ctx.style.check_mark_disabled);
-            rf::gr::rect(d.x + 2, by + 2, box - 4, box - 4);
-        }
-        ui_set_text_color(ctx, enabled, hovered);
-        rf::gr::string(d.x + box + std::max(ctx.style.check_text_gap_min, ctx.scaled(ctx.style.check_text_gap)),
-            d.y + (d.h - font_height(font)) / 2, text, font);
-        return false;
-    }
-
-    return hovered && ctx.click;
-}
-
-int ui_cycler_arrow_width(const UiContext& ctx)
-{
-    return std::max(ctx.style.cycler_arrow_w_min, ctx.scaled(ctx.style.cycler_arrow_w));
-}
-
-int ui_cycler_value_width(const UiContext& ctx, const UiRect& r)
-{
-    return std::max(0, r.w - 2 * ui_cycler_arrow_width(ctx));
-}
-
-int ui_cycler(UiContext& ctx, const UiRect& r, const char* value, int font)
-{
-    const int arrow_w = ui_cycler_arrow_width(ctx);
-    const UiRect left{r.x, r.y, arrow_w, r.h};
-    const UiRect right{r.x + r.w - arrow_w, r.y, arrow_w, r.h};
-    const UiRect middle{r.x + arrow_w, r.y, r.w - 2 * arrow_w, r.h};
-
-    const bool hover_left = ui_hover(ctx, left);
-    const bool hover_right = ui_hover(ctx, right);
-    const bool hover_mid = ui_hover(ctx, middle);
-
-    if (ctx.draw) {
-        const UiRect d = ui_draw_rect(ctx, r);
-        const UiRect dl = ui_draw_rect(ctx, left);
-        const UiRect dr = ui_draw_rect(ctx, right);
-        const UiRect dm = ui_draw_rect(ctx, middle);
-
-        apply_color(hover_mid ? ctx.style.button_fill_hover : ctx.style.button_fill);
-        rf::gr::rect(d.x, d.y, d.w, d.h);
-        apply_color(ctx.style.cycler_border);
-        hud_rect_border(d.x, d.y, d.w, d.h, 1);
-
-        const int text_y = d.y + (d.h - font_height(font)) / 2;
-        ui_set_text_color(ctx, true, hover_left);
-        rf::gr::string_aligned(rf::gr::ALIGN_CENTER, dl.x + dl.w / 2, text_y, "<", font);
-        ui_set_text_color(ctx, true, hover_right);
-        rf::gr::string_aligned(rf::gr::ALIGN_CENTER, dr.x + dr.w / 2, text_y, ">", font);
-
-        ui_set_text_color(ctx, true, hover_mid);
-        if (ctx.clip_active) {
-            // Already inside a scroll region's clip window, and set_clip replaces rather than
-            // nests, so rely on that clip plus the caller's fit_middle() sizing.
-            rf::gr::string_aligned(rf::gr::ALIGN_CENTER, dm.x + dm.w / 2,
-                dm.y + (dm.h - font_height(font)) / 2, value, font);
-        }
-        else {
-            int save_x = 0, save_y = 0, save_w = 0, save_h = 0;
-            rf::gr::get_clip(&save_x, &save_y, &save_w, &save_h);
-            rf::gr::set_clip(dm.x, dm.y, dm.w, dm.h);
-            // set_clip moved the drawing origin, so draw relative to the clip window.
-            rf::gr::string_aligned(rf::gr::ALIGN_CENTER, dm.w / 2,
-                (dm.h - font_height(font)) / 2, value, font);
-            rf::gr::set_clip(save_x, save_y, save_w, save_h);
-        }
-        return 0;
-    }
-
-    // Right-click anywhere on the widget steps backwards, so a value can be walked either way
-    // without aiming for the small left arrow.
-    if (ctx.rclick && (hover_left || hover_right || hover_mid)) {
-        return -1;
-    }
-    if (!ctx.click) {
-        return 0;
-    }
-    if (hover_left) {
-        return -1;
-    }
-    if (hover_right || hover_mid) {
-        return 1;
-    }
-    return 0;
-}
-
-int ui_listbox_row_height(int font)
-{
-    return font_height(font) + 2;
-}
-
-int ui_listbox(UiContext& ctx, const UiRect& r, const std::vector<std::string>& items, int sel,
-               float& scroll, int font)
-{
-    const int row_h = ui_listbox_row_height(font);
-    const int total_h = static_cast<int>(items.size()) * row_h;
-    const float max_scroll = static_cast<float>(std::max(0, total_h - r.h));
-    const bool inside = ui_hover(ctx, r);
-
-    if (!ctx.draw && inside && ctx.wheel != 0) {
-        scroll += (ctx.wheel > 0 ? -1.0f : 1.0f) * static_cast<float>(row_h * 3);
-    }
-    scroll = std::clamp(scroll, 0.0f, max_scroll);
-
-    if (!ctx.draw) {
-        if (inside && ctx.click) {
-            const int index = (ctx.my - r.y + static_cast<int>(scroll)) / row_h;
-            if (index >= 0 && index < static_cast<int>(items.size())) {
-                return index;
-            }
-        }
-        return -1;
-    }
-
-    const UiRect d = ui_draw_rect(ctx, r);
-    apply_color(ctx.style.list_bg);
-    rf::gr::rect(d.x, d.y, d.w, d.h);
-    apply_color(ctx.style.list_border);
-    hud_rect_border(d.x, d.y, d.w, d.h, 1);
-
-    int save_x = 0, save_y = 0, save_w = 0, save_h = 0;
-    rf::gr::get_clip(&save_x, &save_y, &save_w, &save_h);
-    // set_clip takes absolute screen coordinates and replaces the window entirely.
-    rf::gr::set_clip(r.x, r.y, r.w, r.h);
-    for (int i = 0; i < static_cast<int>(items.size()); ++i) {
-        const int iy = r.y + i * row_h - static_cast<int>(scroll);
-        if (iy + row_h < r.y || iy > r.y + r.h) {
-            continue;
-        }
-        // Drawing coords are relative to the clip window origin.
-        const int dy = iy - r.y;
-        const bool hovered = inside && ctx.my >= iy && ctx.my < iy + row_h;
-        if (i == sel) {
-            apply_color(ctx.style.list_selected_bg);
-            rf::gr::rect(0, dy, r.w, row_h);
-        }
-        else if (hovered) {
-            apply_color(ctx.style.list_hover_bg);
-            rf::gr::rect(0, dy, r.w, row_h);
-        }
-        if (i == sel) {
-            apply_color(ctx.style.list_selected_text);
-        }
-        else {
-            apply_color(hovered ? ctx.style.text_hover : ctx.style.text_normal);
-        }
-        rf::gr::string(3, dy + 1, items[i].c_str(), font);
-    }
-    rf::gr::set_clip(save_x, save_y, save_w, save_h);
-
-    if (max_scroll > 0.0f) {
-        const float ratio = scroll / max_scroll;
-        const int bar_w = scrollbar_width(ctx);
-        const int bar_h = std::max(bar_w, r.h * r.h / std::max(1, total_h));
-        const int bar_y = d.y + static_cast<int>(ratio * (r.h - bar_h));
-        apply_color(ctx.style.scrollbar);
-        rf::gr::rect(d.x + r.w - bar_w, bar_y, bar_w, bar_h);
-    }
-    return -1;
+    ctx.register_focusable(id, UiFocusKind::Activate);
+    return !ctx.draw && ctx.consume_activation(id);
 }
 
 UiTextInputResult ui_text_input(UiContext& ctx, const UiRect& r, UiId id, std::string& text,
@@ -1122,23 +931,11 @@ UiTextInputResult ui_text_input(UiContext& ctx, const UiRect& r, UiId id, std::s
     return res;
 }
 
-bool ui_close_button(UiContext& ctx, const UiRect& r, int font)
+void ui_drop_text_focus_under_console(UiContext& ctx)
 {
-    const bool hovered = ui_hover(ctx, r);
-
-    if (ctx.draw) {
-        const UiRect d = ui_draw_rect(ctx, r);
-        apply_color(hovered ? ctx.style.danger_fill : ctx.style.button_fill);
-        rf::gr::rect(d.x, d.y, d.w, d.h);
-        apply_color(hovered ? ctx.style.danger_border : ctx.style.button_border);
-        hud_rect_border(d.x, d.y, d.w, d.h, 1);
-        ui_set_text_color(ctx, true, hovered);
-        rf::gr::string_aligned(rf::gr::ALIGN_CENTER, d.x + d.w / 2,
-            d.y + (d.h - font_height(font)) / 2, "X", font);
-        return false;
+    if (rf::console::console_is_visible() && ctx.focused_text_id() != 0) {
+        ctx.release_text_focus(true);
     }
-
-    return hovered && ctx.click;
 }
 
 // ---------------------------------------------------------------------------
@@ -1266,10 +1063,15 @@ void ui_scroll_focus_into_view(const UiContext& ctx, const UiRect& view, const s
     scrolled_to = ctx.focus_id();
 }
 
+int ui_scrollbar_width(const UiContext& ctx)
+{
+    return std::max(ctx.style.scrollbar_w_min, ctx.scaled(ctx.style.scrollbar_w));
+}
+
 UiScrollbarGeometry ui_scrollbar_geometry(const UiContext& ctx, const UiRect& view, int content_h, float scroll)
 {
     UiScrollbarGeometry g;
-    const int bar_w = scrollbar_width(ctx);
+    const int bar_w = ui_scrollbar_width(ctx);
     const int cap = std::min(ctx.scaled(ctx.style.scrollbar_cap), view.h / 4);
     g.gutter = UiRect{view.x + view.w - bar_w, view.y, bar_w, view.h};
     g.track = UiRect{g.gutter.x, view.y + cap, bar_w, std::max(0, view.h - 2 * cap)};

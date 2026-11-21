@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../../fflink/afstats_events.h"
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -34,6 +36,14 @@ std::vector<rf::Player*> server_bots_join_bot_players();
 
 ServerBot* server_bot_from_player(const rf::Player* player);
 ServerBot* server_bot_from_entity(const rf::Entity* entity);
+struct ServerBotStatsInfo
+{
+    afstats::BotSource source;
+    // The presets it plays with: "random" resolved, and a Join Bots preset in place of the profile's.
+    const char* personality;
+    const char* skill;
+};
+std::optional<ServerBotStatsInfo> server_bot_stats_info(const rf::Player* player);
 // A server bot's reload also lasts as long as it would on a player's client.
 bool server_bot_is_reloading(const rf::Player& pp, rf::Entity& ep);
 void server_bot_reload(rf::Player& pp, int weapon_type);

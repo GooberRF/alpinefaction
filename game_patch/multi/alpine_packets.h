@@ -85,6 +85,8 @@ enum af_damage_notify_flags : uint8_t
     AF_DAMAGE_NOTIFY_CRIT = 1 << 1,
     // Victim is not a player: player_id is af_damage_notify_no_player and the hull tail follows
     AF_DAMAGE_NOTIFY_WORLD_POS = 1 << 2,
+    // Life restored to a hull rather than damage dealt; always sent with AF_DAMAGE_NOTIFY_WORLD_POS
+    AF_DAMAGE_NOTIFY_REPAIR = 1 << 3,
 };
 
 // Not a valid player id, so an older client's multi_find_player_by_id answers null for it.
@@ -152,6 +154,7 @@ enum class af_client_req_type : uint8_t
     af_req_vehicle_crush = 0xD, // Alpine 1.5 (13 bytes: VehicleCrushReqPayload)
     af_req_zipline_state = 0xE, // Alpine 1.5 (6 bytes: rope_uid, riding, dir)
     af_req_rcon_player_action = 0xF, // Alpine 1.5 (2 bytes: RconPlayerActionReqPayload)
+    af_req_haste_jump = 0x10,   // Alpine 1.5 (no additional data)
 };
 
 // Frozen wire constants, values can NEVER be reordered or changed.
@@ -496,6 +499,8 @@ enum class af_server_req_type : uint8_t
     af_sreq_rcon_state = 0x11,         // Alpine 1.5 (variable: is_holder, command count, commands)
     af_sreq_force_spectate = 0x12,     // Alpine 1.5 (1 byte: 1 = enter spectate, 0 = leave)
     af_sreq_player_roles = 0x13,       // Alpine 1.5 (variable: count, {player_id, af_player_role_flags})
+    af_sreq_powerup_state = 0x14,      // Alpine 1.5 (6 bytes: player_id, powerup_id, time_left_ms)
+    af_sreq_haste_jump = 0x15,         // Alpine 1.5 (1 byte: player_id)
 };
 
 struct ShouldGibPayload
@@ -596,7 +601,7 @@ struct EntityOnFirePayload
 };
 static_assert(sizeof(EntityOnFirePayload) == 5);
 
-// Used by the Jetpacks mutator. Purely visual: the thrusting client already
+// Used by jetpacks (mutator or powerup). Purely visual: the thrusting client already
 // applied its own physics, this only drives the effects on every other client.
 struct EntityJetpackPayload
 {
@@ -615,6 +620,23 @@ struct ZiplineStatePayload
     int32_t rope_uid = -1;
 };
 static_assert(sizeof(ZiplineStatePayload) == 7);
+
+// Timed powerups are server authoritative. time_left_ms 0 means the powerup ended.
+struct PowerupStatePayload
+{
+    uint8_t player_id = 0;
+    uint8_t powerup_id = 0; // AlpinePowerup
+    uint32_t time_left_ms = 0;
+};
+static_assert(sizeof(PowerupStatePayload) == 6);
+
+// A hasted player jumped. Movement is clientside, so a client's jumps are reported to the server, which relays them for
+// the sound.
+struct HasteJumpPayload
+{
+    uint8_t player_id = 0;
+};
+static_assert(sizeof(HasteJumpPayload) == 1);
 
 // Riot shield durability is server authoritative.
 struct RiotShieldStatePayload
@@ -647,7 +669,8 @@ static_assert(sizeof(ReserveAmmoPayload) == 3);
 using af_server_req_payload = std::variant<ShouldGibPayload, TeleportEntityPayload, SprayPayload,
                                            ReadyPromptPayload, PitQueueStatePayload, EntityOnFirePayload,
                                            EntityJetpackPayload, RiotShieldStatePayload, AwardPayload,
-                                           MatchStatePayload, ZiplineStatePayload, ReserveAmmoPayload>;
+                                           MatchStatePayload, ZiplineStatePayload, ReserveAmmoPayload,
+                                           PowerupStatePayload, HasteJumpPayload>;
 
 struct af_server_req_packet
 {
@@ -774,7 +797,7 @@ struct af_scavenger_state_packet
 static_assert(sizeof(af_scavenger_state_packet) == 59);
 static_assert(offsetof(af_scavenger_state_packet, zone_x) == sizeof(af_salvage_state_packet));
 
-// The Payload cart, server -> client. Sent reliably on every change (pusher lists at most every 100 ms) and
+// The Payload cart, server -> client. Sent reliably on every change (the pusher list at most every 100 ms) and
 // unreliably while the cart moves or after a heal tick, so the client extrapolates distance with speed in between.
 constexpr uint8_t af_payload_state_flag_overtime = 0x1;
 constexpr uint8_t af_payload_state_flag_heals = 0x2;
@@ -793,7 +816,7 @@ struct af_payload_state_packet
     float distance;            // along the track
     float speed;               // signed, m/s
     uint8_t num_pushers;
-    // uint8_t pusher_ids[num_pushers], uint8_t num_blockers, uint8_t blocker_ids[num_blockers] appended on the wire
+    // uint8_t pusher_ids[num_pushers] appended on the wire
 };
 static_assert(sizeof(af_payload_state_packet) == sizeof(RF_GamePacketHeader) + 16);
 
@@ -885,6 +908,8 @@ enum af_vehicle_health_flags : uint8_t
 {
     // Every blow noted on the hull since the last packet was scrape damage: the riders get no damage flash.
     AF_VEHICLE_HEALTH_SCRAPE_ONLY = 0x1,
+    // The hull lost life, to anything, since the last streamed packet: it flashes.
+    AF_VEHICLE_HEALTH_HURT = 0x2,
 };
 
 // Hull angles the stock obj_update row has no slot for; tick keys them to the matching ObjInterp keyframe.
@@ -1179,6 +1204,7 @@ enum class af_skill_field : uint8_t
     aim_settle_error = 0x14,
     aim_settle_ms = 0x15,
     aim_error_hold_ms = 0x16,
+    spawn_grace_ms = 0x17,
 };
 
 #pragma pack(pop)
@@ -1225,13 +1251,13 @@ void af_send_ping_location_packet_to_all(rf::Vector3* pos, uint8_t player_id);
 static void af_process_ping_location_packet(const void* data, size_t len, const rf::NetAddr& addr);
 // hull non-null replaces the victim player id with a non-player victim's position and handle
 void af_send_damage_notify_packet(uint8_t player_id, float damage, bool died, bool crit, rf::Player* player,
-                                  const AfDamageNotifyHull* hull = nullptr);
+                                  const AfDamageNotifyHull* hull = nullptr, bool repair = false);
 // Demo-recorder variant: same payload plus a trailing attacker id, so playback can
 // filter notifications down to the player currently being spectated. Live clients
 // never receive this form (their copy is implicitly "attacker = you").
 void af_send_damage_notify_packet_for_demo(uint8_t victim_id, float damage, bool died, bool crit,
                                            uint8_t attacker_id, rf::Player* recorder,
-                                           const AfDamageNotifyHull* hull = nullptr);
+                                           const AfDamageNotifyHull* hull = nullptr, bool repair = false);
 static void af_process_damage_notify_packet(const void* data, size_t len, const rf::NetAddr& addr);
 void af_send_crit_shot_packet(uint8_t shooter_player_id, uint8_t weapon_type, rf::Player* player);
 static void af_process_crit_shot_packet(const void* data, size_t len, const rf::NetAddr& addr);
@@ -1254,6 +1280,10 @@ void af_send_zipline_state(uint8_t player_id, int32_t rope_uid, bool riding, int
 // spawn, by when the one-shot trigger replays (unreliable, unordered with this) have long landed.
 void af_send_rope_states_to(rf::Player* player, bool ziplines_only);
 void af_send_riot_shield_state(uint32_t obj_handle, float life, const rf::Vector3& impact_pos);
+// target nullptr: every client.
+void af_send_powerup_state(rf::Player* target, uint8_t player_id, uint8_t powerup_id, uint32_t time_left_ms);
+void af_send_haste_jump_request();
+void af_send_haste_jump(uint8_t player_id);
 void af_send_award(rf::Player* player, uint8_t award_id, uint8_t victim_player_id);
 void af_send_reserve_ammo(rf::Player* player, int weapon_type, int reserve);
 void af_send_award_for_demo(rf::Player* recorder, uint8_t award_id, uint8_t victim_player_id, uint8_t earner_id);

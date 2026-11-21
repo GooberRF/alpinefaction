@@ -3,6 +3,9 @@
 
 #include <windows.h>
 #include <algorithm>
+#include <cmath>
+#include <cstring>
+#include <limits>
 #include <vector>
 #include <unordered_map>
 #include <map>
@@ -706,6 +709,54 @@ namespace gr::d3d11
         }
     }
 
+    // A level decal poly holds UVs for at most 25 face vertices and a longer face gets none, so derive them as stock's
+    // decal clip does, tiling shift included. Returns false when the poly holds them.
+    static bool derive_level_decal_uvs(const rf::DecalPoly& dp, std::vector<rf::Vector2>& uvs)
+    {
+        const rf::GDecal& decal = *dp.my_decal;
+        float u_scale = 1.0f;
+        float v_scale = 1.0f;
+        if (decal.flags & rf::DF_TILING_U) {
+            u_scale = decal.width.x / decal.width.y * decal.tiling_scale;
+        }
+        else if (decal.flags & rf::DF_TILING_V) {
+            v_scale = decal.width.y / decal.width.x * decal.tiling_scale;
+        }
+        uvs.clear();
+        auto fvert = dp.face->edge_loop;
+        while (fvert && static_cast<int>(uvs.size()) < rf::max_face_vertices) {
+            const rf::Vector3& pos = fvert->vertex->pos;
+            uvs.push_back({-decal.decal_poly_planes[5].distance_to_point(pos) / decal.width.x * u_scale,
+                           -decal.decal_poly_planes[0].distance_to_point(pos) / decal.width.y * v_scale});
+            fvert = fvert->next;
+            if (fvert == dp.face->edge_loop) {
+                break;
+            }
+        }
+        if (uvs.size() <= std::size(dp.uvs)) {
+            return false;
+        }
+        // Stock shifts only v when both tilings are set
+        const int tiling = decal.flags & (rf::DF_TILING_U | rf::DF_TILING_V);
+        if (tiling) {
+            const bool shift_u = tiling == rf::DF_TILING_U;
+            float min_coord = std::numeric_limits<float>::max();
+            bool out_of_range = false;
+            for (const rf::Vector2& uv : uvs) {
+                const float coord = shift_u ? uv.x : uv.y;
+                out_of_range = out_of_range || !(coord >= 0.0f && coord <= 1.0f);
+                min_coord = std::min(min_coord, coord);
+            }
+            if (out_of_range) {
+                const float shift = static_cast<float>(static_cast<int>(std::floor(min_coord)));
+                for (rf::Vector2& uv : uvs) {
+                    (shift_u ? uv.x : uv.y) -= shift;
+                }
+            }
+        }
+        return true;
+    }
+
     // The edge lines of the face fan just appended at vb_data[first, end), as absolute vertex indices
     static void append_face_edges(std::vector<uint32_t>& edge_ib, std::size_t first, std::size_t end)
     {
@@ -779,6 +830,7 @@ namespace gr::d3d11
                 );
             }
         }
+        std::vector<rf::Vector2> derived_uvs;
         for (auto& e : batched_decal_polys_) {
             const GRenderCacheBuilder::DecalPolyBatchKey& key = e.first;
             auto& dps = e.second;
@@ -793,9 +845,12 @@ namespace gr::d3d11
                 auto face = dp->face;
                 if (!face->edge_loop) continue;
                 const AfFacePlacement placement = texture_2 != -1 ? af_face_placement(face) : AfFacePlacement{};
-                emit_face_fan(face, vb_data, ib_data, base_vertex, static_cast<int>(std::size(dp->uvs)),
-                    [dp] {
-                        xlog::error("build decal: face has more vertices than decal uvs capacity ({})", std::size(dp->uvs));
+                const bool derived = derive_level_decal_uvs(*dp, derived_uvs);
+                const rf::Vector2* uvs = derived ? derived_uvs.data() : dp->uvs;
+                const int num_uvs = static_cast<int>(derived ? derived_uvs.size() : std::size(dp->uvs));
+                emit_face_fan(face, vb_data, ib_data, base_vertex, num_uvs,
+                    [num_uvs] {
+                        xlog::error("build decal: face has more vertices than decal uvs capacity ({})", num_uvs);
                     },
                     [&](GpuVertex& gpu_vert, rf::GFaceVertex* fvert, int fvert_index) {
                         gpu_vert.x = fvert->vertex->pos.x;
@@ -804,8 +859,8 @@ namespace gr::d3d11
                         rf::Vector3 normal = calculate_face_vertex_normal(fvert, face);
                         gpu_vert.norm = {normal.x, normal.y, normal.z};
                         gpu_vert.diffuse = diffuse;
-                        gpu_vert.u0 = dp->uvs[fvert_index].x;
-                        gpu_vert.v0 = dp->uvs[fvert_index].y;
+                        gpu_vert.u0 = uvs[fvert_index].x;
+                        gpu_vert.v0 = uvs[fvert_index].y;
                         gpu_vert.u0_pan_speed = 0.0f;
                         gpu_vert.v0_pan_speed = 0.0f;
                         af_vertex_lightmap(placement, fvert, gpu_vert);
@@ -990,6 +1045,375 @@ namespace gr::d3d11
         if (state_ == 1) {
             state_ = 2;
         }
+    }
+
+    // The surface of a room whose liquid is moving, cut out of the room's own faces each frame. The engine's face is
+    // only rebuilt when the movement ends: that is a boolean over the level, followed by a rebuild of the room's cache.
+    class MovingLiquidSurface
+    {
+    public:
+        // Takes the material from the room's liquid face; invalid when it has none
+        explicit MovingLiquidSurface(rf::GRoom* room);
+        bool valid() const
+        {
+            return valid_;
+        }
+        // Fills the vertices for the surface at height y; false when it is too large to draw this way
+        bool build(rf::GRoom* room, float y);
+        bool empty() const
+        {
+            return inds_.empty();
+        }
+        bool upload(ID3D11Device* device, ID3D11DeviceContext* context);
+        void render(RenderContext& render_context);
+
+    private:
+        // Where the plane cuts a face, from lower z to higher
+        struct Segment
+        {
+            float x0, z0, x1, z1;
+        };
+        struct XZ
+        {
+            float x, z;
+        };
+        struct Crossing
+        {
+            float bottom, top;
+        };
+
+        static constexpr size_t max_vertices = 1 << 20;
+        // Slabs thinner than this are skipped: nothing is visible between them and the next
+        static constexpr float min_slab = 1e-5f;
+
+        void add_face_segments(const rf::GFace& face, float y);
+        void fill_slabs(float y);
+        void emit_trapezoid(float y, float z_bottom, float z_top, const Crossing& left, const Crossing& right);
+        void emit_vertex(float x, float y, float z, float normal_sign);
+        static float x_at(const Segment& s, float z);
+        static void ensure_buffer(ID3D11Device* device, ComPtr<ID3D11Buffer>& buffer, size_t& capacity,
+                                  size_t needed, size_t element_size, UINT bind_flag);
+
+        bool valid_ = false;
+        int bitmap_ = -1;
+        rf::gr::Mode mode_ = determine_face_mode(FaceRenderType::liquid, false, false);
+        rf::Vector3 normal_{};
+        // The face's texture coordinates as an affine function of (x, z) from (origin_x_, origin_z_)
+        float origin_x_ = 0.0f, origin_z_ = 0.0f;
+        float u_origin_ = 0.0f, v_origin_ = 0.0f;
+        float u_dx_ = 0.0f, u_dz_ = 0.0f, v_dx_ = 0.0f, v_dz_ = 0.0f;
+        // The face's winding in (x, z)
+        bool flip_ = false;
+
+        std::vector<XZ> points_;
+        std::vector<Segment> segments_;
+        std::vector<float> slab_zs_;
+        std::vector<size_t> active_;
+        std::vector<Crossing> crossings_;
+        std::vector<GpuVertex> verts_;
+        std::vector<uint32_t> inds_;
+        ComPtr<ID3D11Buffer> vertex_buffer_;
+        ComPtr<ID3D11Buffer> index_buffer_;
+        size_t vertex_capacity_ = 0;
+        size_t index_capacity_ = 0;
+    };
+
+    MovingLiquidSurface::MovingLiquidSurface(rf::GRoom* room)
+    {
+        const rf::GFace* liquid_face = nullptr;
+        for (rf::GFace& face : room->face_list) {
+            if (face.attributes.is_liquid() && face.edge_loop) {
+                liquid_face = &face;
+                break;
+            }
+        }
+        if (!liquid_face) {
+            return;
+        }
+        bitmap_ = liquid_face->attributes.bitmap_id;
+        normal_ = liquid_face->plane.normal;
+
+        std::vector<const rf::GFaceVertex*> loop;
+        const rf::GFaceVertex* fvert = liquid_face->edge_loop;
+        while (fvert && static_cast<int>(loop.size()) < rf::max_face_vertices) {
+            loop.push_back(fvert);
+            fvert = fvert->next;
+            if (fvert == liquid_face->edge_loop) {
+                break;
+            }
+        }
+        if (loop.size() < 3) {
+            return;
+        }
+
+        // The winding the face has, so the triangles are culled as the face's would be
+        double area = 0.0;
+        for (size_t i = 0; i < loop.size(); ++i) {
+            const rf::Vector3& a = loop[i]->vertex->pos;
+            const rf::Vector3& b = loop[(i + 1) % loop.size()]->vertex->pos;
+            area += static_cast<double>(a.x) * b.z - static_cast<double>(b.x) * a.z;
+        }
+        flip_ = area < 0.0;
+
+        // The texture coordinates are planar over the surface: fit them to the farthest vertex from the first, and
+        // the one furthest off the line between them
+        const rf::GFaceVertex* v0 = loop[0];
+        const rf::Vector3& p0 = v0->vertex->pos;
+        const rf::GFaceVertex* v1 = nullptr;
+        float best_dist = 0.0f;
+        for (const rf::GFaceVertex* v : loop) {
+            const float dx = v->vertex->pos.x - p0.x;
+            const float dz = v->vertex->pos.z - p0.z;
+            const float dist = dx * dx + dz * dz;
+            if (dist > best_dist) {
+                best_dist = dist;
+                v1 = v;
+            }
+        }
+        if (!v1) {
+            return;
+        }
+        const float ax = v1->vertex->pos.x - p0.x;
+        const float az = v1->vertex->pos.z - p0.z;
+        const rf::GFaceVertex* v2 = nullptr;
+        float det = 0.0f;
+        for (const rf::GFaceVertex* v : loop) {
+            const float cross = ax * (v->vertex->pos.z - p0.z) - az * (v->vertex->pos.x - p0.x);
+            if (std::abs(cross) > std::abs(det)) {
+                det = cross;
+                v2 = v;
+            }
+        }
+        if (!v2 || std::abs(det) < 1e-6f) {
+            return;
+        }
+        const float bx = v2->vertex->pos.x - p0.x;
+        const float bz = v2->vertex->pos.z - p0.z;
+        const auto solve = [&](float c0, float c1, float c2, float& d_dx, float& d_dz) {
+            const float da = c1 - c0;
+            const float db = c2 - c0;
+            d_dx = (da * bz - az * db) / det;
+            d_dz = (ax * db - da * bx) / det;
+        };
+        solve(v0->texture_u, v1->texture_u, v2->texture_u, u_dx_, u_dz_);
+        solve(v0->texture_v, v1->texture_v, v2->texture_v, v_dx_, v_dz_);
+        origin_x_ = p0.x;
+        origin_z_ = p0.z;
+        u_origin_ = v0->texture_u;
+        v_origin_ = v0->texture_v;
+        valid_ = true;
+    }
+
+    float MovingLiquidSurface::x_at(const Segment& s, float z)
+    {
+        // The endpoints exactly, so faces that share one meet there in every slab
+        if (z == s.z0) {
+            return s.x0;
+        }
+        if (z == s.z1) {
+            return s.x1;
+        }
+        return s.x0 + (s.x1 - s.x0) * (z - s.z0) / (s.z1 - s.z0);
+    }
+
+    // Where the horizontal plane at y cuts the face. A vertex at y counts as above it, so a vertex on the plane never
+    // makes a crossing of its own, and an edge shared by two faces is cut the same way by both.
+    void MovingLiquidSurface::add_face_segments(const rf::GFace& face, float y)
+    {
+        points_.clear();
+        const rf::GFaceVertex* const first = face.edge_loop;
+        if (!first) {
+            return;
+        }
+        const rf::GFaceVertex* fvert = first;
+        int num_fverts = 0;
+        do {
+            const rf::GFaceVertex* next = fvert->next;
+            if (!next) {
+                break;
+            }
+            rf::Vector3 a = fvert->vertex->pos;
+            rf::Vector3 b = next->vertex->pos;
+            if ((a.y >= y) != (b.y >= y)) {
+                // Lower end first, so both faces compute the same point
+                if (a.y > b.y || (a.y == b.y && (a.x > b.x || (a.x == b.x && a.z > b.z)))) {
+                    std::swap(a, b);
+                }
+                const float t = (y - a.y) / (b.y - a.y);
+                points_.push_back({a.x + (b.x - a.x) * t, a.z + (b.z - a.z) * t});
+            }
+            fvert = next;
+        } while (fvert != first && ++num_fverts < rf::max_face_vertices);
+
+        if (points_.size() < 2) {
+            return;
+        }
+        if (points_.size() > 2) {
+            // A concave face is cut in several pieces: pair the crossings along the line the plane cuts it on
+            float dir_x = face.plane.normal.z;
+            float dir_z = -face.plane.normal.x;
+            if (std::abs(dir_x) + std::abs(dir_z) < 1e-6f) {
+                dir_x = 1.0f;
+                dir_z = 0.0f;
+            }
+            std::sort(points_.begin(), points_.end(), [&](const XZ& l, const XZ& r) {
+                return l.x * dir_x + l.z * dir_z < r.x * dir_x + r.z * dir_z;
+            });
+        }
+        for (size_t i = 0; i + 1 < points_.size(); i += 2) {
+            Segment s{points_[i].x, points_[i].z, points_[i + 1].x, points_[i + 1].z};
+            if (s.z0 == s.z1) {
+                continue;
+            }
+            if (s.z0 > s.z1) {
+                std::swap(s.x0, s.x1);
+                std::swap(s.z0, s.z1);
+            }
+            segments_.push_back(s);
+        }
+    }
+
+    void MovingLiquidSurface::emit_vertex(float x, float y, float z, float normal_sign)
+    {
+        GpuVertex& v = verts_.emplace_back();
+        v.x = x;
+        v.y = y;
+        v.z = z;
+        v.norm = {normal_.x * normal_sign, normal_.y * normal_sign, normal_.z * normal_sign};
+        v.diffuse = -1;
+        const float dx = x - origin_x_;
+        const float dz = z - origin_z_;
+        v.u0 = u_origin_ + u_dx_ * dx + u_dz_ * dz;
+        v.v0 = v_origin_ + v_dx_ * dx + v_dz_ * dz;
+        v.u0_pan_speed = 0.0f;
+        v.v0_pan_speed = 0.0f;
+        v.u1 = 0.0f;
+        v.v1 = 0.0f;
+        v.lm_chart = -1.0f;
+    }
+
+    void MovingLiquidSurface::emit_trapezoid(float y, float z_bottom, float z_top, const Crossing& left,
+                                             const Crossing& right)
+    {
+        // Counter-clockwise in (x, z) here, which is the unflipped winding
+        const uint32_t order[6] = {0, 1, 2, 0, 2, 3};
+        const uint32_t flipped[6] = {0, 2, 1, 0, 3, 2};
+        // The engine keeps a flipped copy of the face, which is what shows the surface from below
+        for (const bool back : {false, true}) {
+            const auto base = static_cast<uint32_t>(verts_.size());
+            const float sign = back ? -1.0f : 1.0f;
+            emit_vertex(left.bottom, y, z_bottom, sign);
+            emit_vertex(right.bottom, y, z_bottom, sign);
+            emit_vertex(right.top, y, z_top, sign);
+            emit_vertex(left.top, y, z_top, sign);
+            for (uint32_t i : flip_ != back ? flipped : order) {
+                inds_.push_back(base + i);
+            }
+        }
+    }
+
+    // The even-odd fill of the segments, one trapezoid between each pair of neighbouring crossings of a slab: the
+    // region the room's walls enclose at this height, with no loops to chain
+    void MovingLiquidSurface::fill_slabs(float y)
+    {
+        std::sort(segments_.begin(), segments_.end(), [](const Segment& l, const Segment& r) { return l.z0 < r.z0; });
+        slab_zs_.clear();
+        for (const Segment& s : segments_) {
+            slab_zs_.push_back(s.z0);
+            slab_zs_.push_back(s.z1);
+        }
+        std::sort(slab_zs_.begin(), slab_zs_.end());
+        slab_zs_.erase(std::unique(slab_zs_.begin(), slab_zs_.end()), slab_zs_.end());
+
+        active_.clear();
+        size_t next = 0;
+        for (size_t i = 0; i + 1 < slab_zs_.size(); ++i) {
+            const float z_bottom = slab_zs_[i];
+            const float z_top = slab_zs_[i + 1];
+            while (next < segments_.size() && segments_[next].z0 <= z_bottom) {
+                active_.push_back(next++);
+            }
+            // Every segment still active spans the slab, as the z values are all segments' ends
+            active_.erase(std::remove_if(active_.begin(), active_.end(),
+                                         [&](size_t s) { return segments_[s].z1 <= z_bottom; }),
+                          active_.end());
+            if (z_top - z_bottom < min_slab || active_.size() < 2) {
+                continue;
+            }
+            crossings_.clear();
+            for (size_t s : active_) {
+                crossings_.push_back({x_at(segments_[s], z_bottom), x_at(segments_[s], z_top)});
+            }
+            std::sort(crossings_.begin(), crossings_.end(), [](const Crossing& l, const Crossing& r) {
+                return l.bottom + l.top < r.bottom + r.top;
+            });
+            for (size_t c = 0; c + 1 < crossings_.size(); c += 2) {
+                emit_trapezoid(y, z_bottom, z_top, crossings_[c], crossings_[c + 1]);
+            }
+            if (verts_.size() > max_vertices) {
+                return;
+            }
+        }
+    }
+
+    bool MovingLiquidSurface::build(rf::GRoom* room, float y)
+    {
+        verts_.clear();
+        inds_.clear();
+        segments_.clear();
+        for (rf::GFace& face : room->face_list) {
+            if (!face.attributes.is_liquid()) {
+                add_face_segments(face, y);
+            }
+        }
+        fill_slabs(y);
+        return verts_.size() <= max_vertices;
+    }
+
+    void MovingLiquidSurface::ensure_buffer(ID3D11Device* device, ComPtr<ID3D11Buffer>& buffer, size_t& capacity,
+                                            size_t needed, size_t element_size, UINT bind_flag)
+    {
+        if (buffer && capacity >= needed) {
+            return;
+        }
+        capacity = std::max({needed, capacity * 2, static_cast<size_t>(1024)});
+        CD3D11_BUFFER_DESC desc{static_cast<UINT>(element_size * capacity), bind_flag, D3D11_USAGE_DYNAMIC,
+                                D3D11_CPU_ACCESS_WRITE};
+        DF_GR_D3D11_CHECK_HR(device->CreateBuffer(&desc, nullptr, &buffer));
+    }
+
+    bool MovingLiquidSurface::upload(ID3D11Device* device, ID3D11DeviceContext* context)
+    {
+        ensure_buffer(device, vertex_buffer_, vertex_capacity_, verts_.size(), sizeof(GpuVertex),
+                      D3D11_BIND_VERTEX_BUFFER);
+        ensure_buffer(device, index_buffer_, index_capacity_, inds_.size(), sizeof(uint32_t),
+                      D3D11_BIND_INDEX_BUFFER);
+        const auto write = [&](ID3D11Buffer* buffer, const void* data, size_t size) {
+            D3D11_MAPPED_SUBRESOURCE mapped{};
+            if (FAILED(context->Map(buffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
+                return false;
+            }
+            std::memcpy(mapped.pData, data, size);
+            context->Unmap(buffer, 0);
+            return true;
+        };
+        return write(vertex_buffer_, verts_.data(), verts_.size() * sizeof(GpuVertex))
+            && write(index_buffer_, inds_.data(), inds_.size() * sizeof(uint32_t));
+    }
+
+    // As GRenderCache::render draws a liquid batch
+    void MovingLiquidSurface::render(RenderContext& render_context)
+    {
+        render_context.set_vertex_buffer(vertex_buffer_, sizeof(GpuVertex));
+        render_context.set_index_buffer(index_buffer_, DXGI_FORMAT_R32_UINT);
+        render_context.set_suppress_texture_uv_scale(true);
+        RenderContext::ScopedPicmipActive picmip_scope{render_context, render_context.picmip_active()};
+        render_context.set_mode(mode_, {255, 255, 255, 255}, rf::gr::show_lightmaps);
+        const int detail_material =
+            engine::detail_material(engine::DetailDraw::liquid_surface, mode_.get_alpha_blend(), bitmap_);
+        render_context.set_textures(bitmap_, -1, true, detail_material);
+        render_context.draw_indexed(static_cast<int>(inds_.size()), 0, 0);
+        render_context.set_suppress_texture_uv_scale(false);
     }
 
     SolidRenderer::SolidRenderer(ComPtr<ID3D11Device> device, ShaderManager& shader_manager,
@@ -1312,6 +1736,7 @@ namespace gr::d3d11
         detail_render_cache_.clear();
         mover_render_cache_.clear();
         geo_cache_rooms_.clear();
+        moving_liquid_.clear();
         rf::geo_cache_num_rooms = 0;
         decoration_chunks_.clear();
         decoration_chunk_rooms_.clear();
@@ -1492,8 +1917,40 @@ namespace gr::d3d11
         // always alpha blended with fog allowed - what the shader's distance opacity assumes.
         render_context_.set_liquid_surface(true);
         before_render(rf::zero_vector, rf::identity_matrix);
-        render_room_faces(solid, room, FaceRenderType::liquid);
+        float surface_y = 0.0f;
+        if (engine::liquid_surface_moving(room, surface_y)) {
+            if (!render_moving_liquid_surface(room, surface_y)) {
+                render_room_faces(solid, room, FaceRenderType::liquid);
+            }
+        }
+        else {
+            if (!moving_liquid_.empty()) {
+                moving_liquid_.erase(room);
+            }
+            render_room_faces(solid, room, FaceRenderType::liquid);
+        }
         render_context_.set_liquid_surface(false);
+    }
+
+    bool SolidRenderer::render_moving_liquid_surface(rf::GRoom* room, float surface_y)
+    {
+        // Kept for as long as the liquid moves, so the face the material comes from is looked up once
+        std::unique_ptr<MovingLiquidSurface>& surface = moving_liquid_[room];
+        if (!surface) {
+            surface = std::make_unique<MovingLiquidSurface>(room);
+        }
+        if (!surface->valid() || !surface->build(room, surface_y)) {
+            return false;
+        }
+        if (surface->empty()) {
+            return true;
+        }
+        render_context_.set_draw_room_uid(room->is_detail ? -1 : room->uid);
+        if (!surface->upload(device_, context_)) {
+            return false;
+        }
+        surface->render(render_context_);
+        return true;
     }
 
     void SolidRenderer::render_solid(rf::GSolid* solid, rf::GRoom** rooms, int num_rooms)

@@ -4,6 +4,7 @@
 #include <string_view>
 #include <string>
 #include <set>
+#include <span>
 #include <map>
 #include <optional>
 #include <variant>
@@ -28,6 +29,19 @@ namespace rf
 }
 
 struct AfVoteCallParams; // alpine_packets.h
+struct AfDamageNotifyHull; // alpine_packets.h
+
+// Bits of AFGameInfoExtra::af_flags.
+constexpr uint32_t AF_GI_FLAG_MODDED_SERVER = 1u << 0;
+constexpr uint32_t AF_GI_FLAG_ALPINE_ONLY = 1u << 1;
+constexpr uint32_t AF_GI_FLAG_REJECT_LEGACY_CLIENTS = 1u << 2;
+constexpr uint32_t AF_GI_FLAG_CLICK_LIMITER = 1u << 3;
+constexpr uint32_t AF_GI_FLAG_NO_PLAYER_COLLIDE = 1u << 4;
+constexpr uint32_t AF_GI_FLAG_MATCH_MODE = 1u << 5;
+constexpr uint32_t AF_GI_FLAG_SAVING_ENABLED = 1u << 6;
+constexpr uint32_t AF_GI_FLAG_GAUSSIAN_SPREAD = 1u << 7;
+constexpr uint32_t AF_GI_FLAG_DAMAGE_NOTIFICATIONS = 1u << 8;
+constexpr uint32_t AF_GI_FLAG_STATS_ENABLED = 1u << 9;
 
 // used for game_info packets
 struct AFGameInfoFlags
@@ -45,16 +59,16 @@ struct AFGameInfoFlags
 
     uint32_t game_info_flags_to_uint32() const
     {
-        return (static_cast<uint32_t>(modded_server)            << 0) |
-               (static_cast<uint32_t>(alpine_only)              << 1) |
-               (static_cast<uint32_t>(reject_legacy_clients)    << 2) |
-               (static_cast<uint32_t>(click_limiter)            << 3) |
-               (static_cast<uint32_t>(no_player_collide)        << 4) |
-               (static_cast<uint32_t>(match_mode)               << 5) |
-               (static_cast<uint32_t>(saving_enabled)           << 6) |
-               (static_cast<uint32_t>(gaussian_spread)          << 7) |
-               (static_cast<uint32_t>(damage_notifications)     << 8) |
-               (static_cast<uint32_t>(stats_enabled)            << 9);
+        return (modded_server ? AF_GI_FLAG_MODDED_SERVER : 0u)
+            | (alpine_only ? AF_GI_FLAG_ALPINE_ONLY : 0u)
+            | (reject_legacy_clients ? AF_GI_FLAG_REJECT_LEGACY_CLIENTS : 0u)
+            | (click_limiter ? AF_GI_FLAG_CLICK_LIMITER : 0u)
+            | (no_player_collide ? AF_GI_FLAG_NO_PLAYER_COLLIDE : 0u)
+            | (match_mode ? AF_GI_FLAG_MATCH_MODE : 0u)
+            | (saving_enabled ? AF_GI_FLAG_SAVING_ENABLED : 0u)
+            | (gaussian_spread ? AF_GI_FLAG_GAUSSIAN_SPREAD : 0u)
+            | (damage_notifications ? AF_GI_FLAG_DAMAGE_NOTIFICATIONS : 0u)
+            | (stats_enabled ? AF_GI_FLAG_STATS_ENABLED : 0u);
     }
 };
 
@@ -63,6 +77,11 @@ enum class ParsePass
     Core,
     Levels
 };
+
+// A day. Clamping to it in float keeps a huge configured time from overflowing the int conversion or a timestamp.
+// The setters clamp as std::max(lo, std::min(v, hi)), which in this argument order (unlike std::clamp) also turns NaN
+// into the minimum.
+constexpr float k_max_config_timer_ms = 86400000.0f;
 
 struct SpawnProtectionConfig
 {
@@ -91,15 +110,15 @@ struct InactivityConfig
     
     void set_new_player_grace(float in_time)
     {
-        new_player_grace_ms = static_cast<int>(std::max(in_time * 1000.0f, 1000.0f));
+        new_player_grace_ms = static_cast<int>(std::max(1000.0f, std::min(in_time * 1000.0f, k_max_config_timer_ms)));
     }
     void set_allowed_inactive(float in_time)
     {
-        allowed_inactive_ms = static_cast<int>(std::max(in_time * 1000.0f, 1000.0f));
+        allowed_inactive_ms = static_cast<int>(std::max(1000.0f, std::min(in_time * 1000.0f, k_max_config_timer_ms)));
     }
     void set_warning_duration(float in_time)
     {
-        warning_duration_ms = static_cast<int>(std::max(in_time * 1000.0f, 1000.0f));
+        warning_duration_ms = static_cast<int>(std::max(1000.0f, std::min(in_time * 1000.0f, k_max_config_timer_ms)));
     }
 };
 
@@ -130,16 +149,17 @@ struct BagmanConfig
     int bag_spawn_delay_ms = 7500;
     int bag_score_limit = 150;
     int tbag_score_limit = 300;
+    bool bag_multiple_spawns = true;
 
     void set_bag_return_time(float in_seconds)
     {
         // 2 bytes (uint16_t) on the wire
-        bag_return_time_ms = std::clamp(static_cast<int>(in_seconds * 1000.0f), 1000, 60000);
+        bag_return_time_ms = static_cast<int>(std::max(1000.0f, std::min(in_seconds * 1000.0f, 60000.0f)));
     }
 
     void set_bag_spawn_delay(float in_seconds)
     {
-        bag_spawn_delay_ms = std::clamp(static_cast<int>(in_seconds * 1000.0f), 0, 60000);
+        bag_spawn_delay_ms = static_cast<int>(std::max(0.0f, std::min(in_seconds * 1000.0f, 60000.0f)));
     }
 
     void set_bag_score_limit(int count)
@@ -168,17 +188,17 @@ struct SalvageConfig
     void set_flag_spawn_delay(float in_seconds)
     {
         // 2 bytes (uint16_t) on the wire
-        flag_spawn_delay_ms = std::clamp(static_cast<int>(in_seconds * 1000.0f), 0, 60000);
+        flag_spawn_delay_ms = static_cast<int>(std::max(0.0f, std::min(in_seconds * 1000.0f, 60000.0f)));
     }
 
     void set_flag_capture_respawn_delay(float in_seconds)
     {
-        flag_capture_respawn_delay_ms = std::clamp(static_cast<int>(in_seconds * 1000.0f), 0, 60000);
+        flag_capture_respawn_delay_ms = static_cast<int>(std::max(0.0f, std::min(in_seconds * 1000.0f, 60000.0f)));
     }
 
     void set_flag_return_time(float in_seconds)
     {
-        flag_return_time_ms = std::clamp(static_cast<int>(in_seconds * 1000.0f), 1000, 60000);
+        flag_return_time_ms = static_cast<int>(std::max(1000.0f, std::min(in_seconds * 1000.0f, 60000.0f)));
     }
 };
 
@@ -545,8 +565,8 @@ struct SpawnDelayConfig
 
     void set_base_value(float in_value)
     {
-        int value_int = static_cast<int>(in_value * 1000);
-        base_value = std::clamp(value_int, min_delay_ms, max_delay_ms);
+        base_value = static_cast<int>(std::max(static_cast<float>(min_delay_ms),
+            std::min(in_value * 1000.0f, static_cast<float>(max_delay_ms))));
     }
 };
 
@@ -864,6 +884,9 @@ struct MutatorConfig
     std::string join_bots_skill;
     std::string join_bots_personality;
 
+    // Item Replacement: the item_replacements entries it wrote, so a narrower scope's redeclaration can take them back.
+    std::map<std::string, std::string> item_replace_entries;
+
     // Display only: human-readable names of the mutators applied to these rules.
     std::vector<std::string> active_labels;
 
@@ -937,7 +960,7 @@ struct AlpineServerConfigRules
     bool gungame_rampage_rewards = true;
     std::vector<std::vector<std::string>> gungame_tiers; // uses built-in tiers if not specified
     std::string gungame_final_weapon = "Riot Stick";
-    bool gungame_end_with_fusion = true;
+    bool gungame_end_with_fusion = false;
     bool geo_chunk_physics = true;
     bool clear_stale_movement_input = false;
     MutatorConfig mutators;
@@ -1095,7 +1118,8 @@ struct AlpineServerConfigRules
     }
     void set_flag_return_time(float in_time)
     {
-        ctf_flag_return_time_ms = static_cast<int>(std::max(in_time * 1000.0f, 1000.0f));
+        ctf_flag_return_time_ms =
+            static_cast<int>(std::max(1000.0f, std::min(in_time * 1000.0f, k_max_config_timer_ms)));
     }
     void set_pvp_damage_modifier(float modifier)
     {
@@ -1107,6 +1131,9 @@ struct AlpineServerConfigRules
         if (orig_idx < 0) {
             // check if original name is invalid
             // replacement name being blank is fine, removes item
+            return false;
+        }
+        if (!replacement.empty() && rf::item_lookup_type(replacement.c_str()) < 0) {
             return false;
         }
         item_replacements[std::string(original)] = std::string(replacement);
@@ -1152,6 +1179,7 @@ struct BotProfileSlotTracker {
     std::unordered_map<const rf::Player*, int> assignments;
 
     int assign_slot(const rf::Player* player, int num_profiles);
+    int least_used_slot(int num_profiles) const;
     void assign_explicit(const rf::Player* player, int slot);
     void release_slot(const rf::Player* player);
     int get_slot(const rf::Player* player) const;
@@ -1161,6 +1189,14 @@ struct BotProfileSlotTracker {
 extern BotProfileSlotTracker g_bot_profile_slots;
 
 constexpr int k_max_server_bots = 31;
+
+// The name and character a bot profile that names neither joins with, picked from those no player uses.
+struct DefaultBotIdentity
+{
+    const char* name;
+    const char* character;
+};
+std::span<const DefaultBotIdentity> default_bot_identities();
 
 void resolve_bot_identity(const ServerBotConfig& config, const rf::Player* self, std::string& out_name,
                           int32_t& out_character);
@@ -1176,6 +1212,8 @@ struct AlpineServerConfig
     uint32_t bot_shared_secret = 0;
     std::string fflink_gsk = "";
     std::vector<ServerBotConfig> bot_configs;
+    // Parallel to bot_configs: the team a server bot that takes the profile joins, -1 for automatic.
+    std::vector<int> bot_teams;
     int server_bots = 0;
     bool upnp_enabled = false;
     bool demo_auto_record = false;
@@ -1254,6 +1292,11 @@ struct AlpineServerConfig
         server_bots = std::clamp(count, 0, k_max_server_bots);
     }
 
+    int bot_team_for_profile(int profile) const
+    {
+        return profile >= 0 && profile < static_cast<int>(bot_teams.size()) ? bot_teams[profile] : -1;
+    }
+
     void set_fflink_gsk(std::string_view new_gsk) {
         fflink_gsk.assign(new_gsk);
     }
@@ -1319,6 +1362,11 @@ extern AlpineServerConfig g_alpine_server_config;
 extern AlpineServerConfigRules g_alpine_server_config_active_rules;
 extern std::optional<ManualRulesOverride> g_manual_rules_override;
 extern bool g_dedicated_launched_from_ads;
+// A server config is in force: a dedicated server's -ads file, or a listen server's Host Game setup.
+bool server_config_active();
+// A bot_teams value: "auto" (-1), "red" or "blue".
+std::string_view bot_team_config_name(int team);
+std::optional<int> bot_team_from_config_name(std::string_view name);
 extern bool g_manually_loaded_level;
 extern std::string g_ads_config_name;
 extern AFGameInfoFlags g_game_info_server_flags;
@@ -1422,6 +1470,11 @@ void init_server_commands();
 // sv_bot_add / sv_bot_remove for an rcon caller: the result line is returned instead of printed.
 std::string run_server_bot_rcon_command(std::string_view command, std::string_view args);
 void rebuild_rotation_from_cfg();
+// The netgame's rotation from the config's levels, shuffled for a dynamic rotation.
+void start_rotation_from_cfg();
+// The netgame's time and score limits, geomod limit and stock flags from `rules`; also the RF2 geomod limit and the
+// mutators' no-clip weapon.
+void apply_alpine_dedicated_server_rules(rf::NetGameInfo& netgame, const AlpineServerConfigRules& rules);
 void on_dedicated_server_launch_post();
 void extend_round_time(int minutes);
 void restart_current_level();
@@ -1468,6 +1521,11 @@ std::string build_info_command_output();
 // swing's deferred projectile connects, so melee hits can never outrun melee swings. Keyed per
 // weapon, because accuracy buckets are.
 void melee_grant_hit_credit(rf::Player* attacker, int weapon_type);
+
+// The number shown to `attacker` (and their first-person spectators and the demo) for damage dealt to,
+// or with `repair` life restored to, a vehicle or turret hull.
+void send_hull_damage_notify(rf::Player* attacker, const AfDamageNotifyHull& hull, float amount, bool died,
+                             bool repair);
 
 // Combined accuracy/efficiency exclude flamethrower, riot stick, riot shield.
 bool accuracy_excluded_from_combined(int weapon_type);

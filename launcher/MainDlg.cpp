@@ -2,7 +2,6 @@
 #include "LauncherApp.h"
 #include "OptionsDlg.h"
 #include "AboutDlg.h"
-#include "FFLinkReminderDlg.h"
 #include "FFLinkProgressDlg.h"
 #include "FFLinkHelper.h"
 #include <wxx_wincore.h>
@@ -27,6 +26,80 @@
 #define WM_SHOW_WHATS_NEW (WM_USER + 30)
 #define WM_FFLINK_COMPLETE (WM_USER + 41)
 #define WM_FFLINK_CANCELLED (WM_USER + 42)
+
+namespace
+{
+    enum FirstLaunchButton
+    {
+        first_launch_discord_btn = 1001,
+        first_launch_fflink_btn,
+        first_launch_factionfiles_btn,
+    };
+
+    struct FirstLaunchItem
+    {
+        const wchar_t* label;
+        const wchar_t* note;
+    };
+
+    // Indexed by FirstLaunchButton - first_launch_discord_btn
+    constexpr FirstLaunchItem first_launch_items[] = {
+        {L"Join the Red Faction Community Discord", L"Get support, chat about the series, and find other players."},
+        {L"Link your FactionFiles account", L"Enable achievements and other optional features."},
+        {L"Find new levels and mods", L"Browse over 5000 community-made levels and mods."},
+    };
+    constexpr unsigned first_launch_all_done = (1u << std::size(first_launch_items)) - 1;
+
+    struct FirstLaunchState
+    {
+        MainDlg* dlg;
+        unsigned done_mask = 0;
+    };
+
+    BOOL CALLBACK check_off_command_link(HWND hwnd, LPARAM lparam)
+    {
+        const wchar_t* label = reinterpret_cast<const wchar_t*>(lparam);
+        wchar_t class_name[16];
+        wchar_t text[128];
+        if (GetClassNameW(hwnd, class_name, std::size(class_name)) && wcscmp(class_name, L"Button") == 0
+            && GetWindowTextW(hwnd, text, std::size(text)) && wcscmp(text, label) == 0) {
+            SetWindowTextW(hwnd, (std::wstring{L"✓ "} + label).c_str());
+            return FALSE;
+        }
+        return TRUE;
+    }
+
+    void mark_first_launch_item_done(HWND task_dlg, FirstLaunchState& state, size_t index)
+    {
+        if (state.done_mask & (1u << index)) {
+            return;
+        }
+        state.done_mask |= 1u << index;
+        // Command links are child Button windows titled with their label
+        EnumChildWindows(task_dlg, check_off_command_link, reinterpret_cast<LPARAM>(first_launch_items[index].label));
+    }
+
+    bool is_fflink_linked()
+    {
+        try {
+            GameConfig config;
+            config.load();
+            return !config.fflink_username.value().empty();
+        }
+        catch (const std::exception& e) {
+            xlog::warn("Failed to read FactionFiles link state: {}", e.what());
+            return false;
+        }
+    }
+
+    HRESULT CALLBACK open_task_dialog_link(HWND, UINT msg, WPARAM, LPARAM lparam, LONG_PTR)
+    {
+        if (msg == TDN_HYPERLINK_CLICKED) {
+            ShellExecuteW(nullptr, L"open", reinterpret_cast<LPCWSTR>(lparam), nullptr, nullptr, SW_SHOW);
+        }
+        return S_OK;
+    }
+}
 
 MainDlg::MainDlg() : CDialog(IDD_MAIN)
 {
@@ -132,36 +205,102 @@ BOOL MainDlg::OnInitDialog()
     SendMessage(m_mod_selector.GetHwnd(), CB_SETCUEBANNER, 0, (LPARAM)L"No mod selected...");
 
     // show "what's new" popup if first launch since installing an update
-    if (ShouldShowWhatsNew()) {
+    if (ShouldDisplay("DisplayWhatsNew", false)) {
         HWND hwnd = GetHwnd();
         PostMessageA(hwnd, WM_SHOW_WHATS_NEW, 0, 0);
     }
 
     // show reminder if first launch
-    if (!game_config.suppress_first_launch_window) {
+    if (ShouldDisplay("DisplayFirstLaunch", true)) {
         HWND hwnd = GetHwnd();
         PostMessageA(hwnd, WM_SHOW_FFLINK_REMINDER, 0, 0);
-
-        game_config.suppress_first_launch_window = true;
-        game_config.save();
     }
 
     return TRUE; // return TRUE  unless you set the focus to a control
 }
 
+HRESULT CALLBACK MainDlg::FirstLaunchCallback(HWND hwnd, UINT msg, WPARAM wparam, LPARAM, LONG_PTR data)
+{
+    auto& state = *reinterpret_cast<FirstLaunchState*>(data);
+    const size_t fflink_index = first_launch_fflink_btn - first_launch_discord_btn;
+    if (msg == TDN_CREATED && is_fflink_linked()) {
+        mark_first_launch_item_done(hwnd, state, fflink_index);
+    }
+    if (msg != TDN_BUTTON_CLICKED) {
+        return S_OK;
+    }
+    switch (wparam) {
+    case first_launch_discord_btn:
+    case first_launch_factionfiles_btn:
+        state.dlg->OnSupportLinkClick(wparam == first_launch_discord_btn ? 0 : 1);
+        mark_first_launch_item_done(hwnd, state, wparam - first_launch_discord_btn);
+        break;
+    case first_launch_fflink_btn:
+        state.dlg->OnBnClickedFFLinkBtn(hwnd);
+        if (is_fflink_linked()) {
+            mark_first_launch_item_done(hwnd, state, fflink_index);
+        }
+        break;
+    default:
+        return S_OK;
+    }
+    return S_FALSE; // keep the dialog open
+}
+
 LRESULT MainDlg::OnShowFFLinkReminder(WPARAM wparam, LPARAM lparam)
 {
-    FFLinkReminderDlg reminderDlg;
-    reminderDlg.DoModal(GetHwnd());
+    std::wstring button_texts[std::size(first_launch_items)];
+    TASKDIALOG_BUTTON buttons[std::size(first_launch_items)];
+    for (size_t i = 0; i < std::size(first_launch_items); ++i) {
+        button_texts[i] = std::wstring{first_launch_items[i].label} + L"\n" + first_launch_items[i].note;
+        buttons[i] = {static_cast<int>(first_launch_discord_btn + i), button_texts[i].c_str()};
+    }
+    FirstLaunchState state{this};
+    TASKDIALOGCONFIG cfg = {};
+    cfg.cbSize = sizeof(cfg);
+    cfg.hwndParent = GetHwnd();
+    cfg.hInstance = GetModuleHandle(nullptr);
+    cfg.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION | TDF_USE_COMMAND_LINKS | TDF_POSITION_RELATIVE_TO_WINDOW;
+    cfg.pszWindowTitle = L"Alpine Faction";
+    cfg.pszMainIcon = MAKEINTRESOURCEW(IDR_ICON);
+    cfg.pszMainInstruction = L"Welcome to Alpine Faction!";
+    cfg.pszContent = L"The Red Faction community is active, and you're invited to join us!";
+    cfg.pButtons = buttons;
+    cfg.cButtons = static_cast<UINT>(ARRAYSIZE(buttons));
+    cfg.nDefaultButton = first_launch_discord_btn;
+    cfg.dwCommonButtons = TDCBF_CLOSE_BUTTON;
+    cfg.pszVerificationText = L"Don't show this again";
+    cfg.pfCallback = FirstLaunchCallback;
+    cfg.lpCallbackData = reinterpret_cast<LONG_PTR>(&state);
+    BOOL dont_show_again = FALSE;
+    // Closing without ticking the box reminds the player on the next launch, unless the whole checklist is done
+    if (SUCCEEDED(TaskDialogIndirect(&cfg, nullptr, nullptr, &dont_show_again))
+        && (dont_show_again || state.done_mask == first_launch_all_done)) {
+        ClearDisplayFlag("DisplayFirstLaunch");
+    }
 
     return 0;
 }
 
 LRESULT MainDlg::OnShowWhatsNew(WPARAM wparam, LPARAM lparam)
 {
-    ClearWhatsNewFlag();
-    std::string content = FetchWhatsNewContent();
-    MessageBoxA(content.c_str(), "What's new?", MB_OK | MB_ICONINFORMATION);
+    ClearDisplayFlag("DisplayWhatsNew");
+    std::wstring content = FetchWhatsNewContent();
+    TASKDIALOGCONFIG cfg = {};
+    cfg.cbSize = sizeof(cfg);
+    cfg.hwndParent = GetHwnd();
+    cfg.hInstance = GetModuleHandle(nullptr);
+    cfg.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION | TDF_ENABLE_HYPERLINKS | TDF_POSITION_RELATIVE_TO_WINDOW;
+    cfg.pszWindowTitle = L"What's new?";
+    cfg.pszMainIcon = MAKEINTRESOURCEW(IDR_ICON);
+    cfg.pszMainInstruction = L"Welcome to Alpine Faction v1.5.0!";
+    cfg.pszContent = content.c_str();
+    cfg.dwCommonButtons = TDCBF_OK_BUTTON;
+    cfg.pszFooterIcon = TD_INFORMATION_ICON;
+    cfg.pszFooter = L"Questions or issues? Drop by the "
+                    L"<a href=\"https://discord.gg/factionfiles\">Red Faction Community Discord</a>.";
+    cfg.pfCallback = open_task_dialog_link;
+    TaskDialogIndirect(&cfg, nullptr, nullptr, nullptr);
 
     // Prompt to switch to D3D11 if not already using it and D3D11 hardware is available
     try {
@@ -169,13 +308,11 @@ LRESULT MainDlg::OnShowWhatsNew(WPARAM wparam, LPARAM lparam)
         game_config.load();
         if (game_config.renderer.value() != GameConfig::Renderer::d3d11
             && is_d3d11_device_available()) {
-            int result = MessageBoxA(
-                "Direct3D 11 is now the recommended renderer.\n\n"
-                "Do you want to switch to it now?\n\n"
-                "You can configure the renderer at any time via the settings panel (gear icon) "
-                "in the Alpine Faction launcher.",
-                "Recommended Renderer",
-                MB_YESNO | MB_ICONINFORMATION);
+            int result = 0;
+            TaskDialog(GetHwnd(), nullptr, L"Recommended Renderer", L"Switch to Direct3D 11?",
+                L"Direct3D 11 is now the recommended renderer.\n\n"
+                L"You can change the renderer at any time in the settings panel (gear icon) of the launcher.",
+                TDCBF_YES_BUTTON | TDCBF_NO_BUTTON, TD_INFORMATION_ICON, &result);
             if (result == IDYES) {
                 game_config.renderer = GameConfig::Renderer::d3d11;
                 game_config.save();
@@ -436,65 +573,64 @@ void MainDlg::FetchNews()
     }
 }
 
-bool MainDlg::ShouldShowWhatsNew()
+bool MainDlg::ShouldDisplay(const char* value_name, bool default_value)
 {
     try {
-        RegKey reg_key(HKEY_CURRENT_USER, "SOFTWARE\\Volition\\Red Faction\\Alpine Faction", KEY_READ | KEY_WRITE);
+        RegKey reg_key(HKEY_CURRENT_USER, "SOFTWARE\\Volition\\Red Faction\\Alpine Faction", KEY_READ);
         if (!reg_key.is_open()) {
-            return false;
+            return default_value;
         }
 
-        bool should_show = false;
+        bool should_show = default_value;
         uint32_t value = 0;
         std::string value_string;
-        if (reg_key.read_value("DisplayWhatsNew", &value)) {
+        if (reg_key.read_value(value_name, &value)) {
             should_show = value != 0;
         }
-        else if (reg_key.read_value("DisplayWhatsNew", &value_string)) {
+        else if (reg_key.read_value(value_name, &value_string)) {
             std::string lower_value = string_to_lower(value_string);
-            should_show = (lower_value == "1");
+            should_show = (lower_value == "1" || lower_value == "true");
         }
 
         return should_show;
     }
     catch (const std::exception& e) {
-        xlog::error("Failed to read DisplayWhatsNew registry value: {}", e.what());
+        xlog::error("Failed to read {} registry value: {}", value_name, e.what());
         return false;
     }
 }
 
-std::string MainDlg::FetchWhatsNewContent()
+std::wstring MainDlg::FetchWhatsNewContent()
 {
-    constexpr std::string_view content = R"(
-Thanks for updating, and welcome to Alpine Faction v1.4.0!
+    constexpr std::wstring_view content = LR"(Highlights from this release are listed below.
+This is not a complete changelog.
 
-Highlights from this release are listed below. This is not a complete changelog.
+- All-new menus, including a new server browser
+- Multiplayer vehicles and turrets
+- New powerups: Haste, Vampire, Jetpack, and more
+- Local botmatch and advanced multiplayer bots
+- Scavenger and Payload gametypes
+- Netcode overhaul with projectile lag compensation
+- Multiplayer minimap and ragdoll deaths
+- Underwater caustics, fog, and distortion
+- Realistic lighting and heightmap terrain in the level editor
+- Many stability and performance improvements
 
-- 6 new multiplayer gametypes
-- Demo (replay) record and playback
-- FactionFiles-integrated multiplayer statistics
-- Sprays
-- Server-configured (and votable) mutators
-- GUI panel for calling votes
-- Weather regions (rain and snow)
-- Many stability, performance, and netcode improvements
+<a href="https://www.redfactionwiki.com/wiki/Alpine_Faction_Release_Highlights#Alpine_Faction_1.5.0">See more highlights from this release</a>)";
 
-If you run into issues, have questions, or just want to join the active community, click the Discord icon in the main launcher window to drop by the Red Faction Community Discord.
-)";
-
-    return std::string{content};
+    return std::wstring{content};
 }
 
-void MainDlg::ClearWhatsNewFlag()
+void MainDlg::ClearDisplayFlag(const char* value_name)
 {
     try {
         RegKey reg_key(HKEY_CURRENT_USER, "SOFTWARE\\Volition\\Red Faction\\Alpine Faction", KEY_WRITE);
         if (reg_key.is_open()) {
-            reg_key.write_value("DisplayWhatsNew", 0u);
+            reg_key.write_value(value_name, 0u);
         }
     }
     catch (const std::exception& e) {
-        xlog::error("Failed to clear DisplayWhatsNew registry value: {}", e.what());
+        xlog::error("Failed to clear {} registry value: {}", value_name, e.what());
     }
 }
 
@@ -642,16 +778,18 @@ void MainDlg::AfterLaunch()
     }
 }
 
-void MainDlg::OnBnClickedFFLinkBtn()
+void MainDlg::OnBnClickedFFLinkBtn(HWND owner)
 {
     xlog::info("FactionFiles Link button clicked");
+    m_fflink_owner = owner ? owner : GetHwnd();
 
     // Check if already linked
     GameConfig config;
     config.load();
     if (!config.fflink_username.value().empty()) {
         std::string message = "Your account is already linked as: " + config.fflink_username.value() + "\n\nTo unlink, please open the options panel.";
-        MessageBoxA(message.c_str(), "Already Linked", MB_OK | MB_ICONINFORMATION);
+        ::MessageBoxA(m_fflink_owner, message.c_str(), "Already Linked", MB_OK | MB_ICONINFORMATION);
+        m_fflink_owner = nullptr;
         return;
     }
 
@@ -666,7 +804,8 @@ void MainDlg::OnBnClickedFFLinkBtn()
 
     if (result_int <= 32) {
         xlog::error("Could not open browser to attempt FFLink. Error code: {}", result_int);
-        MessageBoxA("Could not open browser. Please visit FactionFiles.com manually to link your account.", "Error", MB_OK | MB_ICONERROR);
+        ::MessageBoxA(m_fflink_owner, "Could not open browser. Please visit FactionFiles.com manually to link your account.", "Error", MB_OK | MB_ICONERROR);
+        m_fflink_owner = nullptr;
         return;
     }
 
@@ -721,13 +860,14 @@ void MainDlg::OnBnClickedFFLinkBtn()
     });
 
     // Show modal dialog
-    progressDlg.DoModal(GetHwnd());
+    progressDlg.DoModal(m_fflink_owner);
 
     // Clean up thread
     if (m_fflink_poll_thread && m_fflink_poll_thread->joinable()) {
         m_fflink_polling_active = false;
         m_fflink_poll_thread->join();
     }
+    m_fflink_owner = nullptr;
 }
 
 LRESULT MainDlg::OnFFLinkComplete(WPARAM wparam, LPARAM lparam)
@@ -739,6 +879,8 @@ LRESULT MainDlg::OnFFLinkComplete(WPARAM wparam, LPARAM lparam)
     if (progressDlg) {
         SendMessage(progressDlg, WM_FFLINK_CLOSE_DIALOG, 0, 0);
     }
+
+    HWND owner = m_fflink_owner ? m_fflink_owner : GetHwnd();
 
     // Save to config
     try {
@@ -756,15 +898,15 @@ LRESULT MainDlg::OnFFLinkComplete(WPARAM wparam, LPARAM lparam)
         m_fflink_button.ShowWindow(SW_HIDE);
 
         // Show success message
-        MessageBoxA("Alpine Faction has successfully been linked to your FactionFiles account!\n\n"
-                    "Features that depend on FF account linking such as achievements and map ranking are now available.",
-                    "Success! FactionFiles Account Linked", MB_OK | MB_ICONINFORMATION);
+        ::MessageBoxA(owner, "Alpine Faction has successfully been linked to your FactionFiles account!\n\n"
+                      "Features that depend on FF account linking such as achievements and map ranking are now available.",
+                      "Success! FactionFiles Account Linked", MB_OK | MB_ICONINFORMATION);
     }
     catch (const std::exception& e) {
         xlog::error("Failed to save FFLink configuration: {}", e.what());
-        MessageBoxA("Failed to save your FactionFiles account link to the configuration.\n\n"
-                    "Please try linking your account again from the Options dialog.",
-                    "Configuration Error", MB_OK | MB_ICONERROR);
+        ::MessageBoxA(owner, "Failed to save your FactionFiles account link to the configuration.\n\n"
+                      "Please try linking your account again from the Options dialog.",
+                      "Configuration Error", MB_OK | MB_ICONERROR);
     }
 
     // Clean up

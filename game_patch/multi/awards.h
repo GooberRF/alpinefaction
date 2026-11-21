@@ -11,6 +11,11 @@ namespace rf
     struct Vector3;
 }
 
+namespace afstats
+{
+    enum class Powerup : uint8_t;
+}
+
 // Wire-frozen registry: the id is what goes on the af_sreq_award packet and into the afstats
 // `award` event, so entries are APPEND-ONLY and existing values never change meaning. The client
 // owns the text and sound for each id (see the table in awards.cpp).
@@ -44,9 +49,18 @@ enum class AwardId : uint8_t
     x_ray = 25,
     depth_charge = 26,
     censored = 27,
+    special_delivery = 28,
+    roadkill = 29,
+    scrap_metal = 30,
+    wrecking_crew = 31,
+    grand_theft_auto = 32,
+    air_superiority = 33,
+    power_trip = 34,
+    stacked = 35,
+    mechanic = 36,
 };
 
-constexpr uint8_t award_id_count = 28;
+constexpr uint8_t award_id_count = 37;
 
 // Wire sentinel for "this award has no opposing player", in the award packet's victim id.
 constexpr uint8_t award_no_victim = 0xFF;
@@ -70,14 +84,26 @@ void grant_award(rf::Player* recipient, AwardId id, rf::Player* victim = nullptr
 // Server frame tick. Samples the per-player state that only exists as a live flag..
 void awards_server_do_frame();
 
-// Lethal transition, from entity_damage_hook. Runs for every death, killer included or not: the
-// victim-side resets (streak, sniper/rail chain) must fire on world deaths and suicides too.
+// The vehicles behind a kill, as the kill site resolved them. -1 for none throughout.
+struct AwardKillVehicles
+{
+    // The VehicleDamageClass the kill is credited to: a seated shot, a run-over or a ram.
+    int kill_class = -1;
+    // The class of the hull that ran the victim over or drilled them.
+    int roadkill_class = -1;
+    // The handle of the hull whose destruction killed the victim through its occupant blast.
+    int blast_hull = -1;
+};
+
+// Lethal transition, from entity_damage_hook and the direct suicides. Runs for every death, killer
+// included or not: the victim-side resets (streak, sniper/rail chain) must fire on world deaths and
+// suicides too.
 // `victim_team` is the team the victim had when the damage landed - death processing can move
 // them (auto team balance) before this runs. `damage` is the killing event's post-modifier damage;
 // `victim_life` and `victim_armor` are the victim's values from before that hit landed.
 void awards_on_kill(rf::Player* victim, rf::Player* killer, int weapon_type, bool splash,
                     int killer_entity_handle, int victim_team, float damage, float victim_life,
-                    float victim_armor);
+                    float victim_armor, const AwardKillVehicles& vehicles);
 
 // Any counted shot leaving a player's weapon, from the afstats fired sites.
 void awards_on_weapon_fired(rf::Player* player, int weapon_type);
@@ -104,6 +130,29 @@ private:
 // kill count toward it alongside the splash kills.
 void awards_detonation_begin(int weapon_type);
 void awards_detonation_end();
+
+// One hull's destruction, around the entity_die loop that deals its occupant blast, so the riders it
+// takes can be judged together. `destroyer` is the player credited with the hull, null when nobody
+// is, and `destroyer_vehicle_class` the class of the hull they dealt the blow from, -1 on foot.
+class AwardsVehicleBlastScope
+{
+public:
+    AwardsVehicleBlastScope(const rf::Entity* hull, rf::Player* destroyer, int destroyer_vehicle_class);
+    ~AwardsVehicleBlastScope();
+
+    AwardsVehicleBlastScope(const AwardsVehicleBlastScope&) = delete;
+    AwardsVehicleBlastScope& operator=(const AwardsVehicleBlastScope&) = delete;
+
+private:
+    bool active_ = false;
+};
+
+// A boarder took an empty hull from the other team for their own.
+void awards_on_vehicle_claimed(const rf::Player* player, int hull_handle);
+// A timed powerup picked up from an item, never one AF grants itself.
+void awards_on_powerup_pickup(rf::Player* player, afstats::Powerup powerup);
+// `player` repaired a vehicle or turret hull by this much life.
+void awards_on_vehicle_repair(rf::Player* player, float repaired);
 
 // Flag carrying. CTF distinguishes a steal from a ground pickup by `from_base`; Salvage by whether
 // the flag was taken from its spawn.

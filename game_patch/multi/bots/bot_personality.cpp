@@ -590,6 +590,7 @@ SkillPresetDef make_beginner_skill()
     s.crouch_likelihood = 0.04f;
     s.jump_likelihood = 0.03f;
     s.dodge_likelihood = 0.04f;
+    s.spawn_grace_ms = 4000.0f;
     return def;
 }
 
@@ -609,6 +610,7 @@ SkillPresetDef make_easy_skill()
     s.crouch_likelihood = 0.07f;
     s.jump_likelihood = 0.06f;
     s.dodge_likelihood = 0.07f;
+    s.spawn_grace_ms = 2500.0f;
     return def;
 }
 
@@ -640,6 +642,7 @@ SkillPresetDef make_hard_skill()
     s.aim_error_hold_ms = 200.0f;
     s.aim_settle_error = 2.2f;
     s.aim_settle_ms = 550.0f;
+    s.spawn_grace_ms = 500.0f;
     return def;
 }
 
@@ -664,6 +667,7 @@ SkillPresetDef make_expert_skill()
     s.aim_blend_alpha_max = 0.38f;
     s.aim_settle_error = 1.9f;
     s.aim_settle_ms = 500.0f;
+    s.spawn_grace_ms = 0.0f;
     return def;
 }
 
@@ -688,6 +692,7 @@ SkillPresetDef make_nightmare_skill()
     s.aim_blend_alpha_max = 0.45f;
     s.aim_settle_error = 1.6f;
     s.aim_settle_ms = 450.0f;
+    s.spawn_grace_ms = 0.0f;
     return def;
 }
 
@@ -778,10 +783,10 @@ void initialize_weights_from_game_data(BotContext& ctx)
         if (contains_case_insensitive(item.cls_name.c_str(), "health")
             || contains_case_insensitive(item.cls_name.c_str(), "med")
             || contains_case_insensitive(item.cls_name.c_str(), "armor")
-            || (item.hud_msg_name
-                && (contains_case_insensitive(item.hud_msg_name, "health")
-                    || contains_case_insensitive(item.hud_msg_name, "med")
-                    || contains_case_insensitive(item.hud_msg_name, "armor")))) {
+            || (item.hud_msg_name && *item.hud_msg_name
+                && (contains_case_insensitive(*item.hud_msg_name, "health")
+                    || contains_case_insensitive(*item.hud_msg_name, "med")
+                    || contains_case_insensitive(*item.hud_msg_name, "armor")))) {
             weight += 0.45f;
         }
         ctx.personality.item_weights[static_cast<size_t>(item_type)] = weight;
@@ -966,6 +971,9 @@ bool bot_skill_apply_field_override(BotContext& ctx, uint8_t field_id, float val
             return true;
         case af_skill_field::aim_error_hold_ms:
             s.aim_error_hold_ms = std::clamp(value, 1.0f, 5000.0f);
+            return true;
+        case af_skill_field::spawn_grace_ms:
+            s.spawn_grace_ms = std::clamp(value, 0.0f, 10000.0f);
             return true;
         default:
             return false;
@@ -1242,6 +1250,7 @@ static const FieldNameMapping g_skill_field_map[] = {
     {"fire_alignment_threshold",      static_cast<uint8_t>(af_skill_field::fire_alignment_threshold)},
     {"semi_auto_click_interval_scale", static_cast<uint8_t>(af_skill_field::semi_auto_click_interval_scale)},
     {"aim_prediction",                static_cast<uint8_t>(af_skill_field::aim_prediction)},
+    {"spawn_grace_ms",                static_cast<uint8_t>(af_skill_field::spawn_grace_ms)},
 };
 
 int bot_personality_field_id_from_name(const char* name)

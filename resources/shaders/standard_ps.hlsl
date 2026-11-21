@@ -387,6 +387,11 @@ float3 apply_colorblind(float3 color)
 #define ARRAY_GRAD(g) (g)
 #endif
 
+// Caustics stop just below the surface, so geometry flush with it never picks them up
+static const float caustic_surface_cutoff = 0.02f;
+// Depth below the cutoff over which caustics ramp in; a hard start reads as a second waterline
+static const float caustic_edge_fade = 0.25f;
+
 // One triplanar plane: two drifting layers, each blended across two animation frames.
 float caustic_sample_plane(float2 p, float2 drift, float s0, float s1, float sf,
                            float2 dpdx, float2 dpdy)
@@ -696,7 +701,7 @@ float4 finish_fragment(VsOutput input, float4 target, float3 tex0_rgb, float3 li
                     in_volume = liquid_mask_at(v.mask, wp + mask_dir * (0.5f / v.mask.inv_cell)) > 0.25f;
                 }
             }
-            bool inside = in_volume && wp.y < v.surface_y - 0.02f;
+            bool inside = in_volume && wp.y < v.surface_y - caustic_surface_cutoff;
             if (inside && mask == 0.0f) { mask = 1.0f; depth = v.surface_y - wp.y; tint = v.color; }
         }
         float  slice = frac(caustic_time * caustic_speed) * 16.0f;
@@ -728,7 +733,8 @@ float4 finish_fragment(VsOutput input, float4 target, float3 tex0_rgb, float3 li
             float  c_mix = c_xz * tw.y + c_zy * tw.x + c_xy * tw.z;
             float  c = saturate((c_mix - caustic_floor) / max(1.0f - caustic_floor, 0.001f));
             c = pow(c, caustic_exponent);
-            float atten  = saturate(1.0f - depth / max(caustic_depth_fade, 0.01f));
+            float atten  = saturate(1.0f - depth / max(caustic_depth_fade, 0.01f))
+                         * saturate((depth - caustic_surface_cutoff) / caustic_edge_fade);
             float facing = saturate(norm.y) * 0.75f + 0.25f;
             float lit    = saturate(dot(light_color, float3(0.2126f, 0.7152f, 0.0722f)) * 2.0f);
             light_color += tint * (c * caustic_intensity * caustic_above_water * atten * facing * lit);
@@ -865,9 +871,10 @@ float4 finish_fragment(VsOutput input, float4 target, float3 tex0_rgb, float3 li
         else {
             // Clip the eye->pixel segment against every nearby liquid room of the camera room's
             // type, each capped at its own surface plane and masked to the room itself, and add the
-            // segments. Boxes of neighbouring rooms of one liquid still overlap and count twice
-            // there. A single box would end the fogged length at the camera room's walls and step
-            // at every boundary; without any box the surface plane would extend level-wide.
+            // segments. Where a room has no mask, boxes of neighboring rooms of one liquid still
+            // overlap and count twice. A single box would end the fogged length at the camera
+            // room's walls and step at every boundary; without any box the surface plane would
+            // extend level-wide.
             float3 seg_vec = liq_pixel_pos - liq_eye_pos;
             float geo_len = length(seg_vec);
             float3 seg_dir = seg_vec / max(geo_len, 1e-6f);
@@ -1159,7 +1166,10 @@ float4 main(VsOutput input) : SV_TARGET
         }
         float3 mesh_ambient = ambient_light;
 #endif
-        light_color = add_scene_lights(light_color, input.world_pos_and_depth.xyz, input.norm, mesh_ambient);
+        // Pre-transformed vertices (dynamic decals, particles) have no world position to light
+        if (dot(input.norm, input.norm) != 0.0f) {
+            light_color = add_scene_lights(light_color, input.world_pos_and_depth.xyz, input.norm, mesh_ambient);
+        }
     }
     return finish_fragment(input, target, tex0_color.rgb, light_color, input.norm);
 }

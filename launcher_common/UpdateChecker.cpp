@@ -4,7 +4,7 @@
 #include <shellapi.h>
 #include <xlog/xlog.h>
 
-#define BUILDNUM "9" // build number - tick up during release process
+#define BUILDNUM "10" // build number - tick up during release process
 // 1 = dev/beta builds
 // 2 = 1.0.0 (Maple)
 // 3 = 1.1.0 (Tamarack)
@@ -15,6 +15,7 @@
 // 8 = 1.3.0 (Bakeapple)
 // 9 = 1.4.0 (Lupin)
 // 10 = 1.5.0 (Trillium)
+// 11 = TBD
 
 bool UpdateChecker::CheckForUpdates()
 {

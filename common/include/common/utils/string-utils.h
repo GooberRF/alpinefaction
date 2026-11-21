@@ -88,11 +88,39 @@ inline std::string string_to_upper(std::string_view str)
     return output;
 }
 
+inline std::string string_capitalize(std::string_view str)
+{
+    std::string output{str};
+    if (!output.empty()) {
+        output[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(output[0])));
+    }
+    return output;
+}
+
 inline bool string_iequals(std::string_view left, std::string_view right)
 {
     return left.size() == right.size() && std::equal(left.begin(), left.end(), right.begin(), [](unsigned char a, unsigned char b) {
         return std::tolower(a) == std::tolower(b);
     });
+}
+
+// Negative, zero or positive as `left` sorts before, with or after `right`, ignoring case
+inline int string_icompare(std::string_view left, std::string_view right)
+{
+    const size_t n = std::min(left.size(), right.size());
+    for (size_t i = 0; i < n; ++i) {
+        const int a = std::tolower(static_cast<unsigned char>(left[i]));
+        const int b = std::tolower(static_cast<unsigned char>(right[i]));
+        if (a != b) {
+            return a < b ? -1 : 1;
+        }
+    }
+    return left.size() == right.size() ? 0 : (left.size() < right.size() ? -1 : 1);
+}
+
+inline bool string_iless(std::string_view left, std::string_view right)
+{
+    return string_icompare(left, right) < 0;
 }
 
 inline bool string_starts_with(std::string_view str, std::string_view prefix)
@@ -132,6 +160,14 @@ inline bool string_icontains(std::string_view str, std::string_view infix)
         return std::tolower(a) == std::tolower(b);
     });
     return it != str.end();
+}
+
+// Every space-separated word of the query has to appear somewhere, in any order.
+template<typename Fn>
+bool all_words_match(std::string_view query, Fn&& word_matches)
+{
+    const std::vector<std::string_view> words = string_split(query);
+    return !words.empty() && std::all_of(words.begin(), words.end(), word_matches);
 }
 
 inline std::string string_replace(const std::string_view& str, const std::string_view& search, const std::string_view& replacement)
