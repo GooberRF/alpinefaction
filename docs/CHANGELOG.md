@@ -1,7 +1,7 @@
 ⚙️⛏ Alpine Faction Changelog ⛏⚙️
 ===================================
 
-Version 1.6.0: Not yet released
+Version 1.6.0 (TBD): Not yet released
 --------------------------------
 ### Major features
 [@AL2009man](https://github.com/AL2009man) & [@nickalreadyinuse](https://github.com/nickalreadyinuse)
@@ -30,7 +30,11 @@ Version 1.6.0: Not yet released
     - if using SteamInput's supported Input Camera styles: We recommend selecting `ms_scale`'s Modern (`2`) and change the mouse sensitivity to `2.50`. If it's set to ``6545px`` (default slider on SteamInput): this will skip "[Input] Angles/Degrees to Mouse Pixels" slider.
   - Partial controller menu navigation support (Cursor and Scrollbar are handled by Joystick. If supported: Gyro and Touchpad Cursors are included)
 
-  ### Imported libraries
+### Minor features, changes, and enhancements
+
+### Bug fixes
+
+### Imported libraries
 - [SDL 3.4.20](https://github.com/libsdl-org/SDL) by Sam Lantinga and many Contributors
 - [GamepadMotionHelpers Version 10](https://github.com/JibbSmart/GamepadMotionHelpers) by Jibb Smart
 

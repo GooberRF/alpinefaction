@@ -1444,17 +1444,6 @@ void do_action_choice_widget(UiContext& ctx, const SettingRow& row, const FormLi
     }
 }
 
-// Most enums with at most this many offered values cycle in place.
-constexpr int cycler_max_options = 4;
-
-bool is_controller_debug_action(std::string_view action)
-{
-    return action == "gyro_reset_partial" || action == "gyro_reset_full" || action == "joy_reset";
-}
-
-// Most enums with at most this many offered values cycle in place.
-constexpr int cycler_max_options = 4;
-
 bool is_controller_debug_action(std::string_view action)
 {
     return action == "gyro_reset_partial" || action == "gyro_reset_full" || action == "joy_reset";
@@ -1560,26 +1549,17 @@ void do_row_widget(UiContext& ctx, const SettingRow& row, const FormLine& line, 
                     break;
                 }
             }
-            if (count <= cycler_max_options && pos >= 0
-                && std::string_view{row.id} != "gamepad_gyro_autocalibration"
-                && std::string_view{row.id} != "gamepad_gyro_ratcheting") {
-                const UiRect r = right_rect(ctx, line.ctl_right, line.rect, skin::control_w, skin::widget_h);
-                const int delta = skin_cycler(ctx, r, row.enum_labels[offered[pos]], font, enabled, id, line.hot);
-                if (delta != 0 && enabled) {
-                    pos = (pos + delta + count) % count;
-                    write_row(row, std::to_string(setting_enum_value(row, offered[pos])));
-                    ui_play_click();
-                }
+            std::vector<std::string> items;
+            items.reserve(count);
+            for (const int i : offered) {
+                items.emplace_back(row.enum_labels[i]);
             }
-            else {
-                std::vector<std::string> items;
-                items.reserve(count);
-                for (const int i : offered) {
-                    items.emplace_back(row.enum_labels[i]);
-                }
-                if (form_choice(ctx, line, id, items, pos, font)) {
-                    write_row(row, std::to_string(setting_enum_value(row, offered[pos])));
-                }
+            const std::string_view row_id{row.id};
+            const bool dropdown = pos < 0 || row_id == "gamepad_gyro_autocalibration"
+                || row_id == "gamepad_gyro_ratcheting";
+            if (dropdown ? form_dropdown(ctx, line, id, items, pos, font)
+                         : form_choice(ctx, line, id, items, pos, font)) {
+                write_row(row, std::to_string(setting_enum_value(row, offered[pos])));
             }
             break;
         }
@@ -1650,7 +1630,7 @@ void do_row_widget(UiContext& ctx, const SettingRow& row, const FormLine& line, 
                 }
             }
             else if (is_controller_debug_action(action)) {
-                const UiRect r = right_rect(ctx, ctl_right, row_rect, skin::control_w, 44.0f);
+                const UiRect r = form_control_rect(ctx, line, skin::control_w, 44.0f);
                 if (skin_button(ctx, r, "RESET", fonts.body_bold, SkinButton::Secondary, enabled, id)) {
                     if (action == "gyro_reset_partial") {
                         rf::console::do_command("gyro_reset partial");
@@ -1875,7 +1855,7 @@ void do_bind_override_badge(UiContext& ctx, const UiRect& r, int key_x, int inde
 // A controller row: BUTTON and ALT each hold one button or trigger.
 void do_pad_bind_row(UiContext& ctx, const UiRect& r, int index, const Fonts& fonts)
 {
-    const int inset = skin_px(ctx, row_inset);
+    const int inset = skin_px(ctx, form_row_inset);
     int key_x = 0;
     int mouse_x = 0;
     int col_w = 0;
@@ -1901,8 +1881,8 @@ void do_pad_bind_row(UiContext& ctx, const UiRect& r, int index, const Fonts& fo
 
     if (ctx.draw) {
         const UiRect d = ui_draw_rect(ctx, r);
-        draw_row_backing(ctx, d, focused);
-        rf::gr::set_color(row_label_color(true, hovered, focused));
+        form_draw_row_backing(ctx, d, focused);
+        rf::gr::set_color(form_label_color(true, hovered, focused));
         const int label_w = std::max(0, (key_x - r.x) - inset - skin_px(ctx, 12.0f));
         rf::gr::string(d.x + inset, d.y + (d.h - rf::gr::get_font_height(fonts.body)) / 2,
                        ui_fit_middle(bind_action_name(index), label_w, fonts.body).c_str(), fonts.body);
@@ -2817,9 +2797,9 @@ void build_bindings_header(UiContext& ctx, const UiRect& line, const Fonts& font
         ctx_total += ctx_w[i];
     }
 
-    // Controller and VR bindings are planned for 1.6; until then the keyboard alone is offered, which needs no strip.
+    // VR bindings are planned for 1.6; until then the keyboard alone is offered, which needs no strip.
     // constexpr int dev_count = static_cast<int>(BindDevice::_count);
-    constexpr int dev_count = 1;
+    constexpr int dev_count = static_cast<int>(BindDevice::_count);
     static const char* const dev_long[] = {"KEYBOARD", "CONTROLLER", "VR"};
     static const char* const dev_short[] = {"KB", "PAD", "VR"};
     const char* const* dev_labels = dev_long;
