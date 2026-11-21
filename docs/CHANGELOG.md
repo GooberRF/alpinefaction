@@ -34,10 +34,9 @@ Version 1.6.0: Not yet released
 - [SDL 3.4.20](https://github.com/libsdl-org/SDL) by Sam Lantinga and many Contributors
 - [GamepadMotionHelpers Version 10](https://github.com/JibbSmart/GamepadMotionHelpers) by Jibb Smart
 
-
-Version 1.5.0 (Trillium): Not yet released
+Version 1.5.0 (Trillium): Released Nov-20-2026
 --------------------------------
-
+### Major features
 [@GooberRF](https://github.com/GooberRF)
 - Add ray cast lightmap baking to level editor
   - Add `Invisible faces block light` and `Alpha-textured faces block light` level properties to control whether those faces occlude baked light
@@ -61,20 +60,33 @@ Version 1.5.0 (Trillium): Not yet released
   - Mirror `Terrain Tools` brush strokes across the terrain's X and/or Z axis, with movable mirror lines
   - Up to 4 detail overlays (leaves, debris) and 8 mesh decoration layers per terrain (grass, rocks, bushes)
   - `Geoable` terrains are carved by RF2-style geomod craters, with their own underside and crater textures
-- Replace the stock options screens with a fully new options menu
-  - Context-specific bindings for vehicles, spectator, and demo playback
-  - `af_set` and `af_get` console commands to read and write any setting by name
-  - Draw menus from resolution-independent vector artwork
-  - Redraw the extras menu in the same style, with the demo browser as one of its panels
-  - `Use deprecated legacy menus` launcher option to use the stock options and extras screens instead of the new menus
 - Add server-side bots, which run inside the dedicated or listen server process in addition to (or instead of) bot clients
   - `server_bots` ADS option (0-31) sets how many server bots join; they use the `bot_profiles` profiles and follow `ideal_player_count` like bot clients
+  - Add `bot_teams` ADS option to put the server bots using each bot profile on a chosen team
   - Add `sv_bot_add [profile_index] [red|blue]`, `sv_bot_remove <name|all>` and `sv_bot_list` server console commands, which also work through rcon
+- Add new powerups `Haste`, `Vampire`, `Jetpack`, `Health Shard`, and `Armor Shard`
 - Add new multiplayer game types:
   - Scavenger (`SCAV`)
   - Payload (`PAY`)
 
 [@GooberRF](https://github.com/GooberRF) & [@nickalreadyinuse](https://github.com/nickalreadyinuse)
+- Replace the stock menus with new ones drawn from resolution-independent vector artwork
+  - Add a fully new options menu, with context-specific bindings for vehicles, spectator, and demo playback
+  - Add `af_set` and `af_get` console commands to read and write any setting by name
+  - Redraw the main menu, the single player pause, new game, save and load menus, the message log, and the game's popups
+  - Allow deleting saved games from the save and load menus
+  - Redraw the extras menu, with the demo browser as one of its panels
+  - Redraw the in-game multiplayer menu, with a `Player` panel for picking your name and character and `Join` to switch servers
+  - Add a new server browser with a details card showing each server's players
+  - Add a new `Host Game` screen that sets server rules, per-level rules, bots and mutators
+  - Run games hosted from `Host Game` with the same server rules as a dedicated server
+  - Save `Host Game` setups in the dedicated server config format
+  - Move the vote panel onto the new menus as the `Call Vote` menu
+  - Show the path to the current menu along the top of the screen, with clickable steps and your character's portrait to open the `Player` panel
+  - Show a level running live behind the main menu, toggleable with `ui_menu_background` (Direct3D 11 renderer only)
+  - Add `Menu music` option to choose the music that plays in the menus
+  - Show the game behind the in-game menus instead of the Mars background (Direct3D 11 renderer only)
+  - Add `Use deprecated legacy menus` launcher option to use the stock menus instead
 - Add multiplayer vehicles and turrets
   - Jeeps, APCs, drillers, fighters, submarines, and stationary turrets, spawned by the new `Vehicle Factory` object
   - Simulate vehicle physics with the Bullet physics engine
@@ -106,8 +118,13 @@ Version 1.5.0 (Trillium): Not yet released
 - Add `Display_Projection` event and `Projection Camera` object for rendering live camera views onto ATX textures (Direct3D 11 renderer only)
 - Add `Rope_State` event to switch `Rope Emitter` objects on and off at runtime
 - Add `Rope Emitter` object for ropes, cables, power lines, and zip lines that players and bots can ride, with optional decorations
+- Add `Ambience Region` object that plays a looping, non-directional sound while the player is inside it
+- Add `Ambience_Region_State` event to switch `Ambience Region` objects on and off at runtime
 - Add flames to gib chunks thrown by exploding entities, toggleable with `cl_gibflames`
 - Add `Jetpacks explode` option to the Jetpacks mutator
+- Add `Players start with jetpacks` setting to level properties in level editor
+- Add `Texture PPM` setting to the GeoMod section of level properties in level editor, as an alternative to `$Crater Texture PPM` in `mapname_info.tbl`
+- Ignore `item_replacements` entries whose `replacement` names an unknown item
 - Add `Scrapyard mode` option to the Gibbing mutator
 - Add underwater rendering effects — animated caustics, depth-based water fog with a waterline, screen tint/vignette and distortion — with quality levels 0-3 via `r_underwater` (Direct3D 11 renderer only)
 - Extend view distance while submerged at `r_underwater` 2 or higher, up to 4x the liquid visibility, with the extension capped at the normal far clip
@@ -125,6 +142,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Add `dbg_collision_pairs` console command to print object collision pair pool statistics
 - Add `sv_afstats_events_reset` console command to clear a stuck stats event send, a 401 pause, or a stretched retry pulse and resume the stream without discarding queued events
 - Add rcon profile access to `sv_afstats` and `sv_fflink` commands and make status commands return their output to the rcon holder
+- Expand FactionFiles stats reporting with vehicle, objective, powerup and award events
 - Use the modern Windows file dialogs for every open and save in the level editor
 - Always render meshes at their highest LOD in the level editor
 - Make a mesh exported from a brush in the level editor immediately usable as a `Mesh` object
@@ -148,6 +166,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Switching from a spectated player to free look starts the free look camera at the current view instead of where free look was last left
 - Show the spectated player's jetpack fuel gauge in third person spectate and when `spectate_minui` is enabled
 - Add `cl_dominationmsgs` console command to toggle display of dominating and revenge server messages in chat
+- Add Special Delivery, Roadkill, Scrap Metal, Wrecking Crew, Grand Theft Auto, Air Superiority, Power Trip, Stacked and Mechanic multiplayer awards
 - Add `dbg_terrain_batches` console command to tint terrain faces by render batch (Direct3D 11 renderer only)
 - Add `dbg_terrain_decorations` console command to toggle terrain mesh decorations and print their draw statistics
 - Add `Require Direct3D 11` level property
@@ -195,7 +214,7 @@ Version 1.5.0 (Trillium): Not yet released
   - Raise the particle emitter limit from 128 to 8192
   - Render particles, plankton, rain and snow on the GPU with instancing, and simulate rain and snow motion on the GPU (Direct3D 11 renderer only), toggleable with `dbg_particlegpu`
   - Add `dbg_particles` overlay and `dbg_particles_log` to measure particle performance, and `dbg_particlewarmup` to toggle replaying a hidden particle emitter when it comes back into view
-- Improve performance while a `Set_Liquid_Depth` event is moving a liquid surface, adjustable with `r_liquidsurface`
+- Improve performance while a `Set_Liquid_Depth` event is moving a liquid surface
 - Raise the pitch of hit sounds as consecutive hits land, toggleable with `cl_hitsounds_streakpitch`
 - Raise the limit of simultaneously playing sounds from 64 to 127
 - Ejected shell casings now bounce off the level and play their impact sounds instead of falling through it, toggleable with `cl_shellcollide`, and last 2 seconds by default, adjustable with `cl_shelllifetime`
@@ -212,7 +231,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Turn on `Level > Rebuild with hole lines` by default in the level editor and remember the setting
 - Speed up selecting and deselecting large numbers of brushes, faces, vertices and objects in the level editor, and drawing the viewports while many objects or vertices are selected
 - Speed up loading and duplicating groups with complex brushes in the level editor
-- End the Gun Game progression with a one-kill Fusion level after the one-kill final weapon, toggleable with `gg_end_with_fusion`
+- Add `gg_end_with_fusion` option to end the Gun Game progression with a one-kill Fusion level after the one-kill final weapon
 - Add `-nogsk` command line argument to make dedicated servers ignore `fflink_gsk` and skip FactionFiles registration
 - Implement shared Direct3D 11 renderer for game and level editor
 - Reduce the CPU time bots spend choosing goals and planning routes, and stop bots from repeatedly searching for routes to destinations they cannot reach
@@ -257,8 +276,12 @@ Version 1.5.0 (Trillium): Not yet released
 - Raise minimum `maxfps` from 1 to 10, for both the client and the dedicated server
 - Limit `r_gamma` to 0.7-2.2
 - Allow pasting text with `Ctrl+V` into vote panel text boxes
+- Add `Reference` screen to the extras and in-game multiplayer menus, describing weapons, vehicles, gametypes and powerups
+  - Allow mods to replace its descriptions with their own `af_reference.toml`
+  - Allow `af_reference.toml` to rename multiplayer characters with `[[mp_character]]` records
 - Show control points as spinning team medallions with a notched capture progress ring
-- Add `cl_wh_tethers`, `cl_wh_pushzone`, and `cl_wh_cartstatus` commands to toggle the world HUD beams from the players pushing or blocking the cart in Payload, the ring around it that shows where to push, and the status text over it
+- Add `cl_wh_tethers`, `cl_wh_pushzone`, `cl_wh_cartstatus`, and `cl_wh_trackpulse` commands to toggle the world HUD beams from the players pushing the cart in Payload, the ring around it that shows where to push, the status text over it, and the pulses along its track
+- Add world HUD arrows that lead from your spawn toward the objective in objective game types, with `cl_wh_routearrows` to toggle them and `cl_wh_routearrows_time` to set how long they stay
 - Add a scoreboard cursor to scroll long player lists and view player details
 - Add mute and rcon admin buttons to the scoreboard player popout
 - Add `sv_swap_team`, `sv_force_spectate`, `sv_force_unspectate` and `sv_toggle_ready` commands, usable over rcon
@@ -274,6 +297,18 @@ Version 1.5.0 (Trillium): Not yet released
 - Replace the launcher `Adapter` option with a `Display` option to choose the monitor the game opens on
 - Prefer the high-performance GPU on systems with more than one, unless `D3D11_PreferHighPerformanceGPU` is off in `alpine_system.ini` (Direct3D 11 renderer only)
 - Add `Use deprecated legacy console` launcher option to use the stock console instead of the new one
+- Redraw the Damage Amplifier and Invulnerability HUD icons and add Big HUD versions
+- Disable EAX sound by default
+- Add `Item Replacement` mutator, with sets that swap super pickups for other powerups or remove them
+- Add `bag_multiple_spawns` dedicated server config option to spawn the Bagman bag at a random `Bag` object or super item spot each time it returns
+- Add `connect` console command to join a server by address
+- Add `dbg_camera_pos` console command to print the camera's position and angles
+- Make an unreadable entry in `bot_profiles` use a default bot profile instead of being skipped
+- Improve validation of the `server_name` dedicated server config option
+- Make a dedicated server quit with an error when its UDP port is already in use, instead of hanging
+- Make the `disconnect` console command return to the multiplayer server list
+- Make lower skill bots leave a newly spawned player alone for a few seconds unless they shoot at or near the bot or carry an objective, adjustable with the `spawn_grace_ms` skill override
+- Redesign the launcher's first launch, What's New, and recommended renderer popups
 
 [@nickalreadyinuse](https://github.com/nickalreadyinuse)
 - Revamp the in-game console with a new font, search, mouse text selection and inline command suggestions
@@ -299,6 +334,7 @@ Version 1.5.0 (Trillium): Not yet released
 - Add `ui_show_netmeter` console command to show network statistics
 
 [@is-this-c](https://github.com/is-this-c)
+- Fix delay when switching back to the game window with DirectInput or Reduced Speed In Background enabled, and release held keys when the window loses focus
 - Add `bighud_health` and `bighud_ammo` console variables to disable `bighud` for health and ammo, which is useful for mods incompatible with `bighud`
 - Render `LOADING...` upon level changes in multi
 - Support TrueType fonts in 3D text rendering
@@ -315,6 +351,7 @@ Version 1.5.0 (Trillium): Not yet released
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
 - Fix phantom visual flag mesh being visible after Salvage flag is picked up on rare occasions
+- Fix custom reticles in `png`, `jpg`, `dds`, or `atx` format being tinted green like stock reticles
 - Fix a fatal error in fullscreen when Windows takes the game out of exclusive fullscreen while it keeps focus (Direct3D 11 renderer only)
 - Fix a fatal error or broken rendering when switching away from or back to the game in fullscreen if the anti-aliasing level in the settings file isn't supported (Direct3D 11 renderer only)
 - Fix liquid surfaces in a sky room not rendering (Direct3D 11 renderer only)
@@ -331,6 +368,8 @@ Version 1.5.0 (Trillium): Not yet released
   - Smooth faces only with faces sharing a smoothing group, stop darkening smoothed faces between their vertices, and fix over-bright streaks on smoothed faces
 - Fix object collision pairs silently running out on levels with many collidable clutter objects, triggers, and items when many players are connected
 - Fix FactionFiles stats event reporting stalling permanently when a send attempt hangs inside WinINet
+- Fix world damage and kills being attributed to a dead or spectating player in multiplayer
+- Fix deaths from the `kill` command, switching teams, or entering spectate mode not crediting assists, resetting award streaks, or being reported to FactionFiles stats
 - Fix level editor crashing when a mesh is played with an animation that does not fit its skeleton
 - Fix level editor crashing when a Direct3D buffer lock fails
 - Fix level editor crashing when a Weather Region's snow `Bitmap` names a loose file instead of one inside a packfile
@@ -457,6 +496,26 @@ Version 1.5.0 (Trillium): Not yet released
 - Fix players freezing in place in multiplayer for a moment after bumping into another player or mesh
 - Fix possible dedicated server crash when auto-downloading missing vote-allowed levels with `add_installed_to_allowed_levels` enabled
 - Improve handling of repeated join requests from connected players
+- Fix items swapped to or from stock powerups by `item_replacements`, or renamed in the level editor, giving the wrong powerup or refusing pickup
+- Fix items swapped in by `item_replacements` keeping the original item's respawn time, per-item server settings and bot handling
+- Fix `Corona` objects in a moving group staying behind instead of moving with the mover
+- Fix exploding grenades setting off their thrower's remote charges on clients in multiplayer
+- Fix game and level editor crashing when a decal lies on a face with many vertices
+- Fix decals on faces with many vertices showing only partly (Direct3D 11 renderer only)
+- Fix a listen server host's first spawn on each level ignoring the server's spawn rules
+- Fix random crashes when AI follows a waypoint list that refers to a missing node, such as on `L5S2`
+- Fix the game freezing in multiplayer when its UDP port is already in use
+- Fix dedicated server configs accepting out-of-range or non-finite time values
+- Fix clients of a King of the Hill listen server missing the final hill states when a round ends
+- Fix an open crash report dialog keeping the crashed game's network ports and files in use
+- Fix the game sometimes hanging on exit with anti-aliasing enabled (Direct3D 9 renderer only)
+- Fix screenshots taken in the menus being named after the last level played
+- Fix `disconnect` console command not fully leaving the game
+- Fix `info` console command showing the last server's game type outside multiplayer
+- Fix the scoreboard showing the last joined server's name during demo playback
+- Fix the Mars menu background being stretched on widescreen displays, and support custom `mars_background.tga` images of any size
+- Fix listen server host sometimes starting a team game with the other team's arm and player model colors
+- Fix fall damage feedback playing on servers with fall damage disabled, toggleable with `cl_hidenofalldamage`
 
 [@is-this-c](https://github.com/is-this-c)
 - Let `Caps Lock` capitalize
@@ -482,8 +541,6 @@ Version 1.5.0 (Trillium): Not yet released
 - [bc7enc_rdo](https://github.com/richgel999/bc7enc_rdo) by Richard Geldreich, Jr.
 - [LunaSVG 3.5.0](https://github.com/sammycage/lunasvg) by Samuel Ugochukwu
 - [PlutoVG 1.3.3](https://github.com/sammycage/plutovg) by Samuel Ugochukwu
-- [SDL 3.4.20](https://github.com/libsdl-org/SDL) by Sam Lantinga and many Contributors
-- [GamepadMotionHelpers 10](https://github.com/JibbSmart/GamepadMotionHelpers) by Jibb Smart
 
 Version 1.4.0 (Lupin): Released Aug-25-2026
 --------------------------------
