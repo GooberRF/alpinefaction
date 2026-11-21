@@ -160,8 +160,9 @@ void skin_screw(const UiContext& ctx, int cx, int cy, float size_ref);
 void skin_slot(const UiContext& ctx, int x, int y, int w, int h);
 // A capsule LED centred on (cx, cy); a lit one carries a halo.
 void skin_led(const UiContext& ctx, int cx, int cy, float w_ref, float h_ref, bool lit);
-// Stock list selection: a red glow fading out to the right, with a lit LED at its left end.
-void skin_selection_bar(const UiContext& ctx, int x, int y, int w, int h);
+// Stock list selection: a red glow fading out to the right, with a lit LED at its left end unless `with_led` is false
+// (for rows that draw their own LED there).
+void skin_selection_bar(const UiContext& ctx, int x, int y, int w, int h, bool with_led = true);
 // Keyboard focus where the stock highlight alone would be ambiguous.
 void skin_focus_ring(const UiContext& ctx, int x, int y, int w, int h);
 // A whole chrome SVG rasterized at exactly `r`'s draw-space size.

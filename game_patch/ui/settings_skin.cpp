@@ -328,11 +328,13 @@ void led(float scale, int cx, int cy, float w_ref, float h_ref, bool lit)
     }
 }
 
-void selection_bar(float scale, int x, int y, int w, int h)
+void selection_bar(float scale, int x, int y, int w, int h, bool with_led = true)
 {
     stretch_bitmap(glow_bar_bitmap(), UiRect{x, y, w, h}, rf::Color{255, 255, 255, 255}, false);
-    led(scale, x + scaled_px(scale, 12.0f), y + h / 2, 7.0f, std::min(26.0f, static_cast<float>(h) * 0.6f / scale),
-        true);
+    if (with_led) {
+        led(scale, x + scaled_px(scale, 12.0f), y + h / 2, 7.0f, std::min(26.0f, static_cast<float>(h) * 0.6f / scale),
+            true);
+    }
 }
 
 void slot(float scale, int x, int y, int w, int h)
@@ -698,9 +700,9 @@ void skin_led(const UiContext& ctx, int cx, int cy, float w_ref, float h_ref, bo
     led(ctx.scale(), cx, cy, w_ref, h_ref, lit);
 }
 
-void skin_selection_bar(const UiContext& ctx, int x, int y, int w, int h)
+void skin_selection_bar(const UiContext& ctx, int x, int y, int w, int h, bool with_led)
 {
-    selection_bar(ctx.scale(), x, y, w, h);
+    selection_bar(ctx.scale(), x, y, w, h, with_led);
 }
 
 void skin_focus_ring(const UiContext& ctx, int x, int y, int w, int h)

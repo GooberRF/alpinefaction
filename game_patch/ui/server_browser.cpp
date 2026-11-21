@@ -1166,7 +1166,7 @@ void ServerBrowserPanel::build(UiContext& ctx, const MenuPanel& panel, const Men
         const bool sel = entry == selected;
         const bool modded = server_entry_is_modded(e);
         if (sel) {
-            skin_selection_bar(ctx, r.x, r.y, r.w, r.h);
+            skin_selection_bar(ctx, r.x, r.y, r.w, r.h, false);
         }
         else if (over) {
             rf::gr::set_color(row_hover);
