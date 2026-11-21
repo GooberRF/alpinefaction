@@ -759,7 +759,9 @@ FunHook<void()> on_mult_btn_click_hook{
                 show_warning = false;
             } else if (gamepad_is_motionsensors_supported()) {
                 // Gyro available but not enabled
-                warning_message = "Controller with gyroscopic function (can be enabled via Options > Input > Controller) or using Simultaneous controller+keyboard/mouse inputs (Mixed Input) is recommended.";
+                warning_message = "Controller with gyroscopic function or using Simultaneous controller+keyboard/mouse inputs (Mixed Input) is recommended."
+                  "\n\n"
+                  "Gyro Camera is currently disabled, but can be enabled via Options > Input > Controller";
             } else {
                 // Controller doesn't have gyro
                 warning_message = "Controller with gyroscopic function or using Simultaneous controller+keyboard/mouse inputs (Mixed Input) is recommended.";
