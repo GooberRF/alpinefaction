@@ -33,7 +33,7 @@ private:
     void OnSupportLinkClick(int link_id);
     void OnOpenGameFolder(int folder_id);
     void OnAboutLinkClick();
-    void OnBnClickedFFLinkBtn();
+    void OnBnClickedFFLinkBtn(HWND owner = nullptr);
     LRESULT OnFFLinkComplete(WPARAM wparam, LPARAM lparam);
     LRESULT OnFFLinkCancelled(WPARAM wparam, LPARAM lparam);
     void RefreshModSelector();
@@ -49,6 +49,7 @@ private:
 
     // FactionFiles Link
     std::string m_fflink_token;
+    HWND m_fflink_owner = nullptr; // parent window for the link flow's dialogs
     std::unique_ptr<std::thread> m_fflink_poll_thread;
     std::atomic<bool> m_fflink_polling_active{false};
     std::string m_fflink_result_username;

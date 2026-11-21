@@ -36,6 +36,62 @@ namespace
         first_launch_factionfiles_btn,
     };
 
+    struct FirstLaunchItem
+    {
+        const wchar_t* label;
+        const wchar_t* note;
+    };
+
+    // Indexed by FirstLaunchButton - first_launch_discord_btn
+    constexpr FirstLaunchItem first_launch_items[] = {
+        {L"Join the Red Faction Community Discord", L"Get support, chat about the series, and find other players."},
+        {L"Link your FactionFiles account", L"Enable achievements and other optional features."},
+        {L"Find new levels and mods", L"Browse over 5000 community-made levels and mods."},
+    };
+    constexpr unsigned first_launch_all_done = (1u << std::size(first_launch_items)) - 1;
+
+    struct FirstLaunchState
+    {
+        MainDlg* dlg;
+        unsigned done_mask = 0;
+    };
+
+    BOOL CALLBACK check_off_command_link(HWND hwnd, LPARAM lparam)
+    {
+        const wchar_t* label = reinterpret_cast<const wchar_t*>(lparam);
+        wchar_t class_name[16];
+        wchar_t text[128];
+        if (GetClassNameW(hwnd, class_name, std::size(class_name)) && wcscmp(class_name, L"Button") == 0
+            && GetWindowTextW(hwnd, text, std::size(text)) && wcscmp(text, label) == 0) {
+            SetWindowTextW(hwnd, (std::wstring{L"✓ "} + label).c_str());
+            return FALSE;
+        }
+        return TRUE;
+    }
+
+    void mark_first_launch_item_done(HWND task_dlg, FirstLaunchState& state, size_t index)
+    {
+        if (state.done_mask & (1u << index)) {
+            return;
+        }
+        state.done_mask |= 1u << index;
+        // Command links are child Button windows titled with their label
+        EnumChildWindows(task_dlg, check_off_command_link, reinterpret_cast<LPARAM>(first_launch_items[index].label));
+    }
+
+    bool is_fflink_linked()
+    {
+        try {
+            GameConfig config;
+            config.load();
+            return !config.fflink_username.value().empty();
+        }
+        catch (const std::exception& e) {
+            xlog::warn("Failed to read FactionFiles link state: {}", e.what());
+            return false;
+        }
+    }
+
     HRESULT CALLBACK open_task_dialog_link(HWND, UINT msg, WPARAM, LPARAM lparam, LONG_PTR)
     {
         if (msg == TDN_HYPERLINK_CLICKED) {
@@ -163,27 +219,43 @@ BOOL MainDlg::OnInitDialog()
     return TRUE; // return TRUE  unless you set the focus to a control
 }
 
-HRESULT CALLBACK MainDlg::FirstLaunchCallback(HWND, UINT msg, WPARAM wparam, LPARAM, LONG_PTR data)
+HRESULT CALLBACK MainDlg::FirstLaunchCallback(HWND hwnd, UINT msg, WPARAM wparam, LPARAM, LONG_PTR data)
 {
-    if (msg != TDN_BUTTON_CLICKED
-        || (wparam != first_launch_discord_btn && wparam != first_launch_factionfiles_btn)) {
+    auto& state = *reinterpret_cast<FirstLaunchState*>(data);
+    const size_t fflink_index = first_launch_fflink_btn - first_launch_discord_btn;
+    if (msg == TDN_CREATED && is_fflink_linked()) {
+        mark_first_launch_item_done(hwnd, state, fflink_index);
+    }
+    if (msg != TDN_BUTTON_CLICKED) {
         return S_OK;
     }
-    reinterpret_cast<MainDlg*>(data)->OnSupportLinkClick(wparam == first_launch_discord_btn ? 0 : 1);
+    switch (wparam) {
+    case first_launch_discord_btn:
+    case first_launch_factionfiles_btn:
+        state.dlg->OnSupportLinkClick(wparam == first_launch_discord_btn ? 0 : 1);
+        mark_first_launch_item_done(hwnd, state, wparam - first_launch_discord_btn);
+        break;
+    case first_launch_fflink_btn:
+        state.dlg->OnBnClickedFFLinkBtn(hwnd);
+        if (is_fflink_linked()) {
+            mark_first_launch_item_done(hwnd, state, fflink_index);
+        }
+        break;
+    default:
+        return S_OK;
+    }
     return S_FALSE; // keep the dialog open
 }
 
 LRESULT MainDlg::OnShowFFLinkReminder(WPARAM wparam, LPARAM lparam)
 {
-    ClearDisplayFlag("DisplayFirstLaunch");
-    const TASKDIALOG_BUTTON buttons[] = {
-        {first_launch_discord_btn, L"Join the Red Faction Community Discord\n"
-                                   L"Get support, chat about the series, and find other players."},
-        {first_launch_fflink_btn, L"Link your FactionFiles account\n"
-                                  L"Enable achievements and other optional features."},
-        {first_launch_factionfiles_btn, L"Find new levels and mods\n"
-                                        L"Browse over 5000 community-made levels and mods."},
-    };
+    std::wstring button_texts[std::size(first_launch_items)];
+    TASKDIALOG_BUTTON buttons[std::size(first_launch_items)];
+    for (size_t i = 0; i < std::size(first_launch_items); ++i) {
+        button_texts[i] = std::wstring{first_launch_items[i].label} + L"\n" + first_launch_items[i].note;
+        buttons[i] = {static_cast<int>(first_launch_discord_btn + i), button_texts[i].c_str()};
+    }
+    FirstLaunchState state{this};
     TASKDIALOGCONFIG cfg = {};
     cfg.cbSize = sizeof(cfg);
     cfg.hwndParent = GetHwnd();
@@ -197,11 +269,14 @@ LRESULT MainDlg::OnShowFFLinkReminder(WPARAM wparam, LPARAM lparam)
     cfg.cButtons = static_cast<UINT>(ARRAYSIZE(buttons));
     cfg.nDefaultButton = first_launch_discord_btn;
     cfg.dwCommonButtons = TDCBF_CLOSE_BUTTON;
+    cfg.pszVerificationText = L"Don't show this again";
     cfg.pfCallback = FirstLaunchCallback;
-    cfg.lpCallbackData = reinterpret_cast<LONG_PTR>(this);
-    int pressed = 0;
-    if (SUCCEEDED(TaskDialogIndirect(&cfg, &pressed, nullptr, nullptr)) && pressed == first_launch_fflink_btn) {
-        OnBnClickedFFLinkBtn();
+    cfg.lpCallbackData = reinterpret_cast<LONG_PTR>(&state);
+    BOOL dont_show_again = FALSE;
+    // Closing without ticking the box reminds the player on the next launch, unless the whole checklist is done
+    if (SUCCEEDED(TaskDialogIndirect(&cfg, nullptr, nullptr, &dont_show_again))
+        && (dont_show_again || state.done_mask == first_launch_all_done)) {
+        ClearDisplayFlag("DisplayFirstLaunch");
     }
 
     return 0;
@@ -703,16 +778,18 @@ void MainDlg::AfterLaunch()
     }
 }
 
-void MainDlg::OnBnClickedFFLinkBtn()
+void MainDlg::OnBnClickedFFLinkBtn(HWND owner)
 {
     xlog::info("FactionFiles Link button clicked");
+    m_fflink_owner = owner ? owner : GetHwnd();
 
     // Check if already linked
     GameConfig config;
     config.load();
     if (!config.fflink_username.value().empty()) {
         std::string message = "Your account is already linked as: " + config.fflink_username.value() + "\n\nTo unlink, please open the options panel.";
-        MessageBoxA(message.c_str(), "Already Linked", MB_OK | MB_ICONINFORMATION);
+        ::MessageBoxA(m_fflink_owner, message.c_str(), "Already Linked", MB_OK | MB_ICONINFORMATION);
+        m_fflink_owner = nullptr;
         return;
     }
 
@@ -727,7 +804,8 @@ void MainDlg::OnBnClickedFFLinkBtn()
 
     if (result_int <= 32) {
         xlog::error("Could not open browser to attempt FFLink. Error code: {}", result_int);
-        MessageBoxA("Could not open browser. Please visit FactionFiles.com manually to link your account.", "Error", MB_OK | MB_ICONERROR);
+        ::MessageBoxA(m_fflink_owner, "Could not open browser. Please visit FactionFiles.com manually to link your account.", "Error", MB_OK | MB_ICONERROR);
+        m_fflink_owner = nullptr;
         return;
     }
 
@@ -782,13 +860,14 @@ void MainDlg::OnBnClickedFFLinkBtn()
     });
 
     // Show modal dialog
-    progressDlg.DoModal(GetHwnd());
+    progressDlg.DoModal(m_fflink_owner);
 
     // Clean up thread
     if (m_fflink_poll_thread && m_fflink_poll_thread->joinable()) {
         m_fflink_polling_active = false;
         m_fflink_poll_thread->join();
     }
+    m_fflink_owner = nullptr;
 }
 
 LRESULT MainDlg::OnFFLinkComplete(WPARAM wparam, LPARAM lparam)
@@ -800,6 +879,8 @@ LRESULT MainDlg::OnFFLinkComplete(WPARAM wparam, LPARAM lparam)
     if (progressDlg) {
         SendMessage(progressDlg, WM_FFLINK_CLOSE_DIALOG, 0, 0);
     }
+
+    HWND owner = m_fflink_owner ? m_fflink_owner : GetHwnd();
 
     // Save to config
     try {
@@ -817,15 +898,15 @@ LRESULT MainDlg::OnFFLinkComplete(WPARAM wparam, LPARAM lparam)
         m_fflink_button.ShowWindow(SW_HIDE);
 
         // Show success message
-        MessageBoxA("Alpine Faction has successfully been linked to your FactionFiles account!\n\n"
-                    "Features that depend on FF account linking such as achievements and map ranking are now available.",
-                    "Success! FactionFiles Account Linked", MB_OK | MB_ICONINFORMATION);
+        ::MessageBoxA(owner, "Alpine Faction has successfully been linked to your FactionFiles account!\n\n"
+                      "Features that depend on FF account linking such as achievements and map ranking are now available.",
+                      "Success! FactionFiles Account Linked", MB_OK | MB_ICONINFORMATION);
     }
     catch (const std::exception& e) {
         xlog::error("Failed to save FFLink configuration: {}", e.what());
-        MessageBoxA("Failed to save your FactionFiles account link to the configuration.\n\n"
-                    "Please try linking your account again from the Options dialog.",
-                    "Configuration Error", MB_OK | MB_ICONERROR);
+        ::MessageBoxA(owner, "Failed to save your FactionFiles account link to the configuration.\n\n"
+                      "Please try linking your account again from the Options dialog.",
+                      "Configuration Error", MB_OK | MB_ICONERROR);
     }
 
     // Clean up
