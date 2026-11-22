@@ -46,6 +46,7 @@ float gr_floored_half_width(float px_per_m, float min_half_width, float min_half
 // Rotates a world point into `v` with the colour's RGB; `alpha` (0-1) scales the colour's own alpha
 void gr_set_colored_vertex(rf::gr::Vertex& v, const rf::Vector3& pos, const rf::Color& color, float alpha);
 int gr_fit_string(std::string& text, int max_width, int font_id = -1, std::string_view suffix = "-");
+size_t gr_last_code_point_offset(std::string_view text);
 void explosion_flash_light_create(
     const rf::Vector3& pos, float radius, float intensity, float r, float g, float b, int duration_ms, bool fade_only);
 void explosion_flash_lights_level_init();

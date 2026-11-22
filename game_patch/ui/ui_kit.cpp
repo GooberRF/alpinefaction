@@ -5,6 +5,7 @@
 #include <common/utils/int-utils.h>
 #include <common/utils/string-utils.h>
 #include "ui_kit.h"
+#include "../graphics/gr.h"
 #include "../hud/hud_internal.h"
 #include "../os/os.h"
 #include "../rf/gr/gr_font.h"
@@ -154,7 +155,8 @@ std::string ui_fit_end(std::string_view text, int max_w, int font, bool trim_spa
     if (text.empty() || rf::gr::get_string_size(text, font).first <= max_w) {
         return std::string{text};
     }
-    for (size_t keep = text.size(); keep > 0; --keep) {
+    for (size_t keep = gr_last_code_point_offset(text); keep > 0;
+         keep = gr_last_code_point_offset(text.substr(0, keep))) {
         const std::string_view kept = trim_spaces ? rtrim(text.substr(0, keep)) : text.substr(0, keep);
         if (kept.empty()) {
             continue;
