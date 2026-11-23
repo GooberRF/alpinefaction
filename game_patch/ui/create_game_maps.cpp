@@ -77,21 +77,6 @@ int map_filter_for(rf::NetGameType game_type)
     return std::ranges::find(map_filters, game_type) != map_filters.end() ? game_type : rf::NG_TYPE_UNK;
 }
 
-// Stock levels lead an unsearched list in this order.
-constexpr auto stock_levels = std::to_array<std::string_view>({
-    "dm01", "dm02", "dm03", "dm04", "dm05", "dm06", "dm07", "dm08", "dm09", "dm10",
-    "dm11", "dm12", "dm13", "dm14", "dm15", "dm16", "dm17", "dm18", "dm19", "dm20",
-    "ctf01", "ctf02", "ctf03", "ctf04", "ctf05", "ctf06", "ctf07",
-});
-
-int stock_rank(std::string_view filename)
-{
-    const std::string name = level_filename_without_ext(filename);
-    return static_cast<int>(std::ranges::find_if(stock_levels, [&](std::string_view level) {
-        return string_iequals(level, name);
-    }) - stock_levels.begin());
-}
-
 } // namespace
 
 void CreateGameMapsPanel::reset()
@@ -148,8 +133,9 @@ void CreateGameMapsPanel::filter()
             shown_.push_back(i);
         }
     }
+    // Stock levels lead an unsearched list.
     if (search_.empty()) {
-        std::ranges::stable_sort(shown_, {}, [&](int i) { return stock_rank(maps[i].filename); });
+        std::ranges::stable_sort(shown_, {}, [&](int i) { return listen_server_stock_level_rank(maps[i].filename); });
     }
 }
 

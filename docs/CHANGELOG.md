@@ -6,6 +6,9 @@ Version 1.6.0 (TBD): Not yet released
 ### Major features
 
 ### Minor features, changes, and enhancements
+[@GooberRF](https://github.com/GooberRF)
+- Add `MP level` menu background, which runs a chosen multiplayer level behind the main menu and cycles through its cutscene cameras (Direct3D 11 renderer only)
+- Make the scrollbar of long dropdown lists in the menus draggable
 
 ### Bug fixes
 

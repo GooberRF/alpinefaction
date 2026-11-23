@@ -433,7 +433,13 @@ struct AlpineGameSettings
     bool autosave = true;
     bool af_branding = true;
     int seasonal_effect = 1; // 0=none, 1=auto, 2=always_snow
-    int main_menu_background = 1; // 0=Mars, 1=live level
+    int main_menu_background = 1; // 0=Mars, 1=live level, 2=MP level
+    std::string main_menu_mp_level = "dm01.rfl";
+    static constexpr float min_main_menu_mp_shot_seconds = 1.0f;
+    static constexpr float max_main_menu_mp_shot_seconds = 60.0f;
+    float main_menu_mp_shot_seconds = 12.0f;
+    static constexpr float max_main_menu_mp_fade_seconds = 5.0f;
+    float main_menu_mp_fade_seconds = 1.0f;
     int main_menu_music = 0; // index into main_menu_music_labels, 0=game.tbl's track
     bool player_join_beep = false;
     bool player_join_flash = true;

@@ -10,6 +10,7 @@ namespace
 {
 
 constexpr float crumb_gap = 4.0f;
+constexpr float sub_option_indent = 40.0f;
 
 } // namespace
 
@@ -44,6 +45,15 @@ FormLine form_row(UiContext& ctx, const FormRow& row, const FormFonts& fonts)
         form_draw_row_backing(ctx, d, focused);
 
         int tx = d.x + pad;
+        if (row.tree != FormTree::None) {
+            const int t = std::max(1, skin_px(ctx, 2.0f));
+            const int stem_x = tx + skin_px(ctx, 8.0f);
+            const int mid_y = d.y + d.h / 2;
+            rf::gr::set_color(skin::steel_dark);
+            rf::gr::rect(stem_x, d.y, t, row.tree == FormTree::Last ? mid_y - d.y + t : d.h);
+            rf::gr::rect(stem_x, mid_y, skin_px(ctx, 14.0f), t);
+            tx += skin_px(ctx, sub_option_indent);
+        }
         const int label_h = rf::gr::get_font_height(fonts.body);
         // The label and any crumb under it as one block, centered on the row.
         const int label_y = d.y + (d.h - label_h - (row.crumb ? form_crumb_line_h(ctx, fonts.caption) : 0)) / 2;

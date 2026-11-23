@@ -622,7 +622,8 @@ void setting_reset_to_default(const SettingRow& row)
 
 bool setting_hidden_in_menu(const SettingRow& row)
 {
-    return (row.flags & SF_HIDDEN) || ((row.flags & SF_ADVANCED) && !g_alpine_game_config.show_advanced_settings);
+    return (row.flags & SF_HIDDEN) || ((row.flags & SF_ADVANCED) && !g_alpine_game_config.show_advanced_settings)
+        || (row.sub_option_shown && !row.sub_option_shown());
 }
 
 void settings_reset_category(SettingCategory category)

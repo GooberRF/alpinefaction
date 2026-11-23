@@ -24,6 +24,7 @@
 #include "../multi/salvage.h"
 #include "../multi/server.h"
 #include "../multi/demo/demo.h"
+#include "../ui/menu_scene.h"
 #include "object.h"
 
 int item_lookup_type(const char* name)
@@ -223,11 +224,21 @@ CodeInjection item_touch_powerup_type_injection{
     },
 };
 
+bool items_spin()
+{
+    return rf::is_multi || menu_scene_runs_mp_level();
+}
+
 void item_do_frame()
 {
     if (rf::is_dedicated_server || !rf::is_multi || rf::game_paused) {
         return;
     }
+    items_advance_spin();
+}
+
+void items_advance_spin()
+{
     constexpr float spin_rate = 2.35619449f;
     constexpr float two_pi = 6.28318548f;
     const float delta = rf::frametime * demo_playback_sim_time_scale() * spin_rate;
@@ -263,4 +274,7 @@ void item_do_patch()
 
     // Skip item_render's spin advance in favour of item_do_frame.
     AsmWriter{0x00459071, 0x00459073}.jmp(0x004590A8);
+    // item_render's is_multi test for drawing an item spun, so the menus' MP level draws them spun too. Patched in
+    // place, as the site is a branch target.
+    AsmWriter{0x0045903B, 0x00459040}.call(items_spin);
 }

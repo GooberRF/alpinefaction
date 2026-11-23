@@ -547,3 +547,6 @@ struct UiScrollbarGeometry
     int thumb_h = 0;
 };
 UiScrollbarGeometry ui_scrollbar_geometry(const UiContext& ctx, const UiRect& view, int content_h, float scroll);
+// Hit-test pass: a click in `track` grabs the thumb for `id`, and while the button stays down this returns how far
+// along its travel the thumb has been dragged, 0 to 1.
+std::optional<float> ui_scrollbar_drag(UiContext& ctx, UiId id, const UiRect& track, int thumb_y, int thumb_h);

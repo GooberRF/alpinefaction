@@ -112,6 +112,8 @@ ListenServerSetup listen_server_default_setup();
 std::vector<rf::NetGameType> listen_server_game_types_for_level(std::string_view filename);
 // Levels installed for any game type, sorted.
 std::vector<std::string> listen_server_levels();
+// Where a stock level leads a list of levels; every other level ranks past them all.
+int listen_server_stock_level_rank(std::string_view filename);
 
 // Saved setups in <RF root>\saved\servers. Names are file names without the extension.
 bool listen_server_setup_name_char(char c);

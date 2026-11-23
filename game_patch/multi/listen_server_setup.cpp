@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <filesystem>
 #include <format>
@@ -1146,6 +1147,19 @@ std::vector<rf::NetGameType> listen_server_game_types_for_level(std::string_view
 std::vector<std::string> listen_server_levels()
 {
     return multi_installed_levels([](const char* name) { return !listen_server_game_types_for_level(name).empty(); });
+}
+
+int listen_server_stock_level_rank(std::string_view filename)
+{
+    static constexpr auto stock_levels = std::to_array<std::string_view>({
+        "dm01", "dm02", "dm03", "dm04", "dm05", "dm06", "dm07", "dm08", "dm09", "dm10",
+        "dm11", "dm12", "dm13", "dm14", "dm15", "dm16", "dm17", "dm18", "dm19", "dm20",
+        "ctf01", "ctf02", "ctf03", "ctf04", "ctf05", "ctf06", "ctf07",
+    });
+    const std::string name = level_filename_without_ext(filename);
+    return static_cast<int>(std::ranges::find_if(stock_levels, [&](std::string_view level) {
+        return string_iequals(level, name);
+    }) - stock_levels.begin());
 }
 
 bool listen_server_setup_name_char(char c)

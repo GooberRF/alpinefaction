@@ -998,31 +998,13 @@ void ui_scroll_end(UiContext& ctx, UiScrollRegion& region)
     const UiScrollbarGeometry bar = ui_scrollbar_geometry(ctx, region.view, region.content_h, *region.scroll);
 
     if (!ctx.draw && region.draggable && region.id != 0) {
-        // Where on the thumb the drag took hold, so grabbing it never makes it jump.
-        constexpr UiId grab_salt = 0x6AB5C0F1u;
-        float& grab = ctx.scroll_offset(region.id ^ grab_salt);
-        if (ctx.click && ui_point_in(ctx.mx, ctx.my, bar.gutter)) {
-            if (ctx.my < bar.track.y || ctx.my >= bar.track.y + bar.track.h) {
-                const float step = static_cast<float>(region.wheel_step);
-                *region.scroll = std::clamp(*region.scroll + (ctx.my < bar.track.y ? -step : step), 0.0f,
-                                            region.max_scroll);
-            }
-            else {
-                ctx.capture(region.id);
-                const bool on_thumb = ctx.my >= bar.thumb_y && ctx.my < bar.thumb_y + bar.thumb_h;
-                grab = static_cast<float>(on_thumb ? ctx.my - bar.thumb_y : bar.thumb_h / 2);
-            }
+        if (ctx.click && ui_point_in(ctx.mx, ctx.my, bar.gutter) && !ui_point_in(ctx.mx, ctx.my, bar.track)) {
+            const float step = static_cast<float>(region.wheel_step);
+            *region.scroll =
+                std::clamp(*region.scroll + (ctx.my < bar.track.y ? -step : step), 0.0f, region.max_scroll);
         }
-        if (ctx.captured_id() == region.id) {
-            if (ctx.lmb_down) {
-                const int travel = std::max(1, bar.track.h - bar.thumb_h);
-                const float t = std::clamp(
-                    (static_cast<float>(ctx.my - bar.track.y) - grab) / static_cast<float>(travel), 0.0f, 1.0f);
-                *region.scroll = t * region.max_scroll;
-            }
-            else {
-                ctx.release_capture();
-            }
+        if (const std::optional<float> t = ui_scrollbar_drag(ctx, region.id, bar.track, bar.thumb_y, bar.thumb_h)) {
+            *region.scroll = *t * region.max_scroll;
         }
     }
 
@@ -1075,4 +1057,25 @@ UiScrollbarGeometry ui_scrollbar_geometry(const UiContext& ctx, const UiRect& vi
     const float ratio = max_scroll > 0 ? std::clamp(scroll / static_cast<float>(max_scroll), 0.0f, 1.0f) : 0.0f;
     g.thumb_y = g.track.y + static_cast<int>(ratio * static_cast<float>(g.track.h - g.thumb_h));
     return g;
+}
+
+std::optional<float> ui_scrollbar_drag(UiContext& ctx, UiId id, const UiRect& track, int thumb_y, int thumb_h)
+{
+    // Where on the thumb the drag took hold, so grabbing it never makes it jump.
+    constexpr UiId grab_salt = 0x6AB5C0F1u;
+    float& grab = ctx.scroll_offset(id ^ grab_salt);
+    if (ctx.click && ui_point_in(ctx.mx, ctx.my, track)) {
+        ctx.capture(id);
+        const bool on_thumb = ctx.my >= thumb_y && ctx.my < thumb_y + thumb_h;
+        grab = static_cast<float>(on_thumb ? ctx.my - thumb_y : thumb_h / 2);
+    }
+    if (ctx.captured_id() != id) {
+        return std::nullopt;
+    }
+    if (!ctx.lmb_down) {
+        ctx.release_capture();
+        return std::nullopt;
+    }
+    const int travel = std::max(1, track.h - thumb_h);
+    return std::clamp((static_cast<float>(ctx.my - track.y) - grab) / static_cast<float>(travel), 0.0f, 1.0f);
 }

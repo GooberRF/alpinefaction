@@ -10,6 +10,7 @@
 #include <patch_common/FunHook.h>
 #include <toml++/toml.hpp>
 #include <xlog/xlog.h>
+#include <common/utils/string-utils.h>
 #include "menu_scene.h"
 #include "../graphics/gr.h"
 #include "../graphics/d3d11/gr_d3d11_hooks.h"
@@ -19,6 +20,7 @@
 #include "../misc/settings_registry.h"
 #include "../misc/vpackfile.h"
 #include "../multi/demo/demo.h"
+#include "../multi/listen_server_setup.h"
 #include "../object/object.h"
 #include "../os/console.h"
 #include "../rf/ai.h"
@@ -47,6 +49,7 @@ namespace
 
 constexpr const char* config_filename = "af_main_menu.toml";
 constexpr int background_live_level = 1;
+constexpr int background_mp_level = 2;
 constexpr int dim_alpha = 96;
 // Far beyond any level, yet small enough for the room search and the view setup.
 constexpr float max_coord = 100000.0f;
@@ -82,10 +85,16 @@ struct GameView
 std::optional<Config> g_normal_config;
 // Run instead while the menus' seasonal effect is on.
 std::optional<Config> g_seasonal_config;
+// The MP level background's, from its settings.
+Config g_mp_config;
 // The one the scene runs, picked as it starts.
 const Config* g_config = nullptr;
+// Set where the scene may run: outside a dedicated server and headless mode.
+bool g_enabled = false;
 // A load that failed is not retried until the setting is changed
 bool g_load_failed = false;
+// A setting changed that the next menu_scene_do_frame applies, outside the menu pass that changed it.
+bool g_change_pending = false;
 // Also set while the scene's own level loads, for the hooks below.
 bool g_active = false;
 std::vector<Shot> g_shots;
@@ -185,10 +194,64 @@ const Config* pick_config()
     return g_normal_config ? &*g_normal_config : nullptr;
 }
 
+void read_mp_shot_times()
+{
+    g_mp_config.shot_seconds = std::max(g_alpine_game_config.main_menu_mp_shot_seconds, min_shot_seconds);
+    g_mp_config.fade_seconds =
+        std::clamp(g_alpine_game_config.main_menu_mp_fade_seconds, 0.0f, g_mp_config.shot_seconds / 2.0f);
+}
+
+// The MP level background's level from its settings, else af_main_menu.toml's.
+const Config* wanted_config()
+{
+    if (g_alpine_game_config.main_menu_background != background_mp_level) {
+        return pick_config();
+    }
+    g_mp_config.level = g_alpine_game_config.main_menu_mp_level;
+    read_mp_shot_times();
+    return g_mp_config.level.empty() ? nullptr : &g_mp_config;
+}
+
+// The level's cutscene cameras, which multiplayer limbo cycles through. A level loads them only when it is flagged
+// as a multiplayer level.
+std::vector<Shot> level_camera_shots()
+{
+    std::vector<Shot> shots;
+    for (int i = 0; i < rf::fixed_camera_count; ++i) {
+        shots.push_back(Shot{*rf::fixed_camera_get_pos(i), *rf::fixed_camera_get_orient(i)});
+    }
+    // Without any, the level keeps the one game_level_init_pre (0x0040D690) put at the origin.
+    if (shots.size() == 1 && shots.front().pos == rf::Vector3{0.0f, 0.0f, 0.0f}) {
+        shots.clear();
+    }
+    return shots;
+}
+
 // Legacy menus always show the stock Mars background.
 bool background_wanted()
 {
-    return g_alpine_game_config.main_menu_background == background_live_level && !legacy_menus_enabled();
+    const int background = g_alpine_game_config.main_menu_background;
+    return (background == background_live_level || background == background_mp_level) && !legacy_menus_enabled();
+}
+
+// The running scene is not the one the settings ask for.
+bool scene_outdated()
+{
+    if (!g_active) {
+        return false;
+    }
+    // Read before wanted_config rewrites the MP level's config, which may be the one running.
+    const std::string level = g_config->level;
+    const Config* const wanted = background_wanted() ? wanted_config() : nullptr;
+    return wanted != g_config || !string_iequals(wanted->level, level);
+}
+
+// As the main menu's init (0x00443270) does, after a level load or close stopped the menu music.
+void restart_menu_music()
+{
+    rf::snd_eax_room_off();
+    rf::ui::main_menu_music_play(rf::ui::main_menu_music_filename.c_str());
+    rf::ui::main_menu_music_stopped = 0;
 }
 
 // The credits keep the scene loaded but draw their own screen.
@@ -422,17 +485,18 @@ ConsoleCommand2 menu_background_cmd{
         if (style) {
             setting_console_set("main_menu_background", std::to_string(style.value()));
         }
-        rf::console::print("Menu background: {} [0 = Mars, 1 = live level]",
+        rf::console::print("Menu background: {} [0 = Mars, 1 = live level, 2 = MP level]",
                            g_alpine_game_config.main_menu_background);
     },
     "Set the menu background",
-    "ui_menu_background [0-1]",
+    "ui_menu_background [0-2]",
 };
 
 } // namespace
 
 void menu_scene_load_config()
 {
+    g_enabled = true;
     const std::optional<std::string> content = read_game_file(config_filename);
     if (!content) {
         xlog::warn("[MenuScene] Could not read {}", config_filename);
@@ -476,16 +540,20 @@ bool menu_scene_state(rf::GameState state)
     }
 }
 
-void menu_scene_maybe_start()
+bool menu_scene_maybe_start()
 {
-    // The config is only loaded outside a dedicated server and headless mode.
-    if (g_active || g_load_failed || !background_wanted() || !is_d3d11() || rf::is_multi || !rf::local_player
-        || (rf::level.flags & rf::LEVEL_LOADED)) {
-        return;
+    if (!g_enabled || g_active || g_load_failed || !background_wanted() || !is_d3d11() || rf::is_multi
+        || !rf::local_player || (rf::level.flags & rf::LEVEL_LOADED)) {
+        return false;
     }
-    g_config = pick_config();
+    g_config = wanted_config();
     if (!g_config) {
-        return;
+        return false;
+    }
+    if (!rf::File{}.find(g_config->level.c_str())) {
+        xlog::warn("[MenuScene] {} is not installed", g_config->level);
+        g_load_failed = true;
+        return false;
     }
 
     rf::vmesh_static_cache_purge();
@@ -504,11 +572,11 @@ void menu_scene_maybe_start()
         xlog::warn("[MenuScene] Could not load {}: {}", g_config->level, error);
         g_active = false;
         g_load_failed = true;
-        return;
+        return true;
     }
 
     g_shots.clear();
-    for (const Shot& shot : g_config->shots) {
+    for (const Shot& shot : g_config == &g_mp_config ? level_camera_shots() : g_config->shots) {
         if (rf::find_room(rf::g_level_solid, &shot.pos)) {
             g_shots.push_back(shot);
         }
@@ -518,9 +586,10 @@ void menu_scene_maybe_start()
         }
     }
     if (g_shots.empty()) {
+        xlog::warn("[MenuScene] {} has no usable camera shot", g_config->level);
         menu_scene_stop();
         g_load_failed = true;
-        return;
+        return true;
     }
     if (g_config->berserk) {
         entities_go_berserk();
@@ -528,6 +597,7 @@ void menu_scene_maybe_start()
     g_shot_index = 0;
     g_shot_time = 0.0f;
     place_camera(g_shots.front());
+    return true;
 }
 
 void menu_scene_stop()
@@ -549,10 +619,24 @@ void menu_scene_on_level_closed()
 
 void menu_scene_do_frame(rf::GameState state)
 {
+    if (g_change_pending && menu_scene_state(state)) {
+        g_change_pending = false;
+        bool music_stopped = false;
+        if (scene_outdated()) {
+            menu_scene_stop();
+            music_stopped = true;
+        }
+        if (menu_scene_maybe_start() || music_stopped) {
+            restart_menu_music();
+        }
+    }
     if (!scene_shown(state)) {
         return;
     }
     rf::gameplay_sim_frame();
+    if (g_config == &g_mp_config) {
+        items_advance_spin();
+    }
     g_shot_time += rf::frametime;
     const float shot_seconds = g_config->shot_seconds;
     if (g_shot_time >= shot_seconds) {
@@ -591,13 +675,31 @@ bool menu_scene_draw_background()
 void menu_scene_on_setting_changed()
 {
     g_load_failed = false;
-    if (!background_wanted() && g_active) {
-        menu_scene_stop();
-        // Closing the level stopped the menu music; restarted as the main menu's init (0x00443270) does.
-        rf::snd_eax_room_off();
-        rf::ui::main_menu_music_play(rf::ui::main_menu_music_filename.c_str());
-        rf::ui::main_menu_music_stopped = 0;
+    g_change_pending = true;
+}
+
+void menu_scene_on_shot_setting_changed()
+{
+    if (g_active && g_config == &g_mp_config) {
+        read_mp_shot_times();
     }
+}
+
+bool menu_scene_runs_mp_level()
+{
+    return g_active && g_config == &g_mp_config;
+}
+
+std::vector<std::string> menu_scene_mp_levels()
+{
+    std::vector<std::string> levels = listen_server_levels();
+    std::ranges::stable_sort(levels, {}, listen_server_stock_level_rank);
+    return levels;
+}
+
+bool menu_scene_mp_level_background()
+{
+    return g_alpine_game_config.main_menu_background == background_mp_level;
 }
 
 void menu_scene_apply_patch()
