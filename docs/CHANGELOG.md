@@ -6,6 +6,11 @@ Version 1.6.0 (TBD): Not yet released
 ### Major features
 
 ### Minor features, changes, and enhancements
+[@nickalreadyinuse](https://github.com/nickalreadyinuse)
+- Add custom vector crosshairs, built from any mix of dot, cross, square, circle and triangle shapes
+  - Adjust each shape's size, thickness, gap, rotation, colors and outline in the options menu's crosshair editor
+  - Give individual weapons their own crosshair, or keep the stock weapon bitmaps
+  - Add `ui_reticle_*` console commands to set crosshair options, and `ui_reticle_weapon`, `ui_reticle_weapon_reset` and `ui_reticle_weapon_copy` to manage per-weapon crosshairs
 
 ### Bug fixes
 

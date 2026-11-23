@@ -4,6 +4,7 @@
 #include "../misc/alpine_settings.h"
 #include "../os/console.h"
 #include "../misc/settings_registry.h"
+#include "hud_internal.h"
 
 void print_hex_color_state(
     const std::string& label,
@@ -21,8 +22,8 @@ void print_hex_color_state(
 bool handle_hex_color_console_command(
     const std::optional<std::string>& input,
     const std::string& label,
-    const char* setting_id,
-    const std::optional<uint32_t>& target)
+    const char* setting_id, // null: write target directly (not a registry row)
+    std::optional<uint32_t>& target)
 {
     if (!input) {
         print_hex_color_state(label, target);
@@ -33,7 +34,12 @@ bool handle_hex_color_console_command(
     if (normalized_input == "clear" ||
         normalized_input == "default" ||
         normalized_input == "-1") {
-        setting_console_set(setting_id, "clear");
+        if (setting_id) {
+            setting_console_set(setting_id, "clear");
+        }
+        else {
+            target.reset();
+        }
         rf::console::print("{} cleared.", label);
         return false;
     }
@@ -46,7 +52,12 @@ bool handle_hex_color_console_command(
         return false;
     }
 
-    setting_console_set(setting_id, *input);
+    if (setting_id) {
+        setting_console_set(setting_id, *input);
+    }
+    else {
+        target = parsed_color;
+    }
     auto [r, g, b, a] = extract_color_components(*parsed_color);
     rf::console::print("{} set to {}, (RGBA {}, {}, {}, {})", label, format_hex_color_string(*parsed_color), r, g, b, a);
     return true;
@@ -200,11 +211,11 @@ ConsoleCommand2 reticle_color_cmd{
     [](std::optional<std::string> color_opt) {
         handle_hex_color_console_command(
             color_opt,
-            "Reticle color override",
-            "reticle_color",
-            g_alpine_game_config.reticle_color_override);
+            "Reticle color override (" + reticle_edit_target_label() + ")",
+            reticle_editing_default() ? "reticle_color" : nullptr,
+            reticle_edit_color(false));
 
-        if (g_alpine_game_config.reticle_color_override) {
+        if (reticle_edit_color(false)) {
             rf::console::print("Color override is {}being applied to custom reticles. Use ui_colorize_custom_reticles to change this behavior.", g_alpine_game_config.colorize_custom_reticles ? "" : "NOT ");
         }
     },
@@ -217,11 +228,11 @@ ConsoleCommand2 reticle_locked_color_cmd{
     [](std::optional<std::string> color_opt) {
         handle_hex_color_console_command(
             color_opt,
-            "Locked reticle color override",
-            "reticle_locked_color",
-            g_alpine_game_config.reticle_locked_color_override);
+            "Locked reticle color override (" + reticle_edit_target_label() + ")",
+            reticle_editing_default() ? "reticle_locked_color" : nullptr,
+            reticle_edit_color(true));
 
-        if (g_alpine_game_config.reticle_locked_color_override) {
+        if (reticle_edit_color(true)) {
             rf::console::print("Color override is {}being applied to custom reticles. Use ui_colorize_custom_reticles to change this behavior.", g_alpine_game_config.colorize_custom_reticles ? "" : "NOT ");
         }
     },
@@ -266,8 +277,8 @@ static void warn_outlines_if_not_d3d11()
 static void handle_required_color_command(
     const std::optional<std::string>& input,
     const std::string& label,
-    const char* setting_id,
-    const uint32_t& target,
+    const char* setting_id, // null: write target directly (not a registry row)
+    uint32_t& target,
     std::optional<uint32_t> default_value = std::nullopt)
 {
     if (!input) {
@@ -279,7 +290,12 @@ static void handle_required_color_command(
     auto normalized_input = string_to_lower(*input);
     if (normalized_input == "clear" || normalized_input == "default" || normalized_input == "-1") {
         if (default_value) {
-            setting_console_set(setting_id, format_hex_color_string(*default_value));
+            if (setting_id) {
+                setting_console_set(setting_id, format_hex_color_string(*default_value));
+            }
+            else {
+                target = *default_value;
+            }
             auto [r, g, b, a] = extract_color_components(target);
             rf::console::print("{} reset to default {} (RGBA {}, {}, {}, {})", label, format_hex_color_string(target), r, g, b, a);
         }
@@ -296,10 +312,25 @@ static void handle_required_color_command(
         return;
     }
 
-    setting_console_set(setting_id, *input);
+    if (setting_id) {
+        setting_console_set(setting_id, *input);
+    }
+    else {
+        target = *parsed_color;
+    }
     auto [r, g, b, a] = extract_color_components(*parsed_color);
     rf::console::print("{} set to {} (RGBA {}, {}, {}, {})", label, format_hex_color_string(*parsed_color), r, g, b, a);
 }
+
+ConsoleCommand2 reticle_outline_color_cmd{
+    "ui_color_reticle_outline",
+    [](std::optional<std::string> color_opt) {
+        handle_required_color_command(color_opt, "Vector reticle outline color (" + reticle_edit_target_label() + ")",
+                                      nullptr, reticle_edit_target().outline_color, ReticleConfig::default_outline_color);
+    },
+    "Set vector reticle outline color (clear resets to black).",
+    "ui_color_reticle_outline <RRGGBB|RRGGBBAA|clear>",
+};
 
 ConsoleCommand2 r_outlines_color_cmd{
     "r_outlines_color",
@@ -378,6 +409,7 @@ void hud_colors_apply_patch()
     teammate_label_color_cmd.register_cmd();
     reticle_color_cmd.register_cmd();
     reticle_locked_color_cmd.register_cmd();
+    reticle_outline_color_cmd.register_cmd();
     reticle_color_custom_cmd.register_cmd();
     thermal_entity_color_cmd.register_cmd();
     r_outlines_color_cmd.register_cmd();

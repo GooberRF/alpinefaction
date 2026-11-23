@@ -3,7 +3,10 @@
 #include <algorithm>
 #include <cmath>
 #include <iterator>
+#include <map>
 #include <optional>
+#include <string>
+#include <string_view>
 #include <common/utils/color-utils.h>
 #include "../rf/os/timestamp.h"
 #include "../hud/hud.h"
@@ -19,6 +22,72 @@ extern bool g_loaded_alpine_settings_file;
 
 // forward declaration (in sprays.cpp)
 int spray_count();
+
+// Reticle config. One default plus optional per-weapon overrides (keyed by weapon class name).
+// style bitmask: 0 = stock bitmap, 1 dot, 2 cross, 4 square, 8 circle, 16 triangle. Sizes in px.
+struct ReticleConfig
+{
+    int style = 0;
+    int dot_size = 3;
+    int cross_length = 8;
+    int cross_thickness = 1;
+    int cross_gap = 3;
+    int square_size = 10;   // half width
+    int circle_size = 10;   // radius
+    int triangle_size = 12; // center to tip
+    int square_thickness = 1;
+    int circle_thickness = 1;
+    int triangle_thickness = 1;
+    int square_angle = 0;   // degrees clockwise
+    int triangle_angle = 0; // degrees clockwise, 0 = tip up
+    int outline = 1;        // px, 0 = off
+    int outline_shapes = 31; // style bitmask of shapes that get the outline
+    static constexpr uint32_t default_outline_color = 0x000000FF;
+    uint32_t outline_color = default_outline_color;
+    // Per-weapon overrides only. The default config's colors are AlpineGameSettings::reticle_color_override /
+    // reticle_locked_color_override (registry rows); AlpineGameSettings::default_reticle() fills them in.
+    std::optional<uint32_t> color{};        // unset = green (bitmap path: engine default)
+    std::optional<uint32_t> locked_color{}; // unset = red
+};
+
+// Table driving console commands, ini load/save and per-weapon serialization for the int fields.
+struct ReticleIntField
+{
+    const char* cmd;     // console command suffix and per-weapon key, e.g. "dot_size"
+    const char* ini_key; // default-config ini key, e.g. "ReticleDotSize"
+    const char* label;
+    int ReticleConfig::* member;
+    int min;
+    int max;
+    bool wrap; // angle: wrap into [0, 360) instead of clamping
+};
+
+inline const ReticleIntField reticle_int_fields[] = {
+    {"style", "ReticleStyle", "Reticle style", &ReticleConfig::style, 0, 31, false},
+    {"dot_size", "ReticleDotSize", "Reticle dot size", &ReticleConfig::dot_size, 1, 100, false},
+    {"cross_length", "ReticleCrossLength", "Reticle crosshair arm length", &ReticleConfig::cross_length, 1, 100, false},
+    {"cross_thickness", "ReticleCrossThickness", "Reticle crosshair thickness", &ReticleConfig::cross_thickness, 1, 20, false},
+    {"cross_gap", "ReticleCrossGap", "Reticle crosshair center gap", &ReticleConfig::cross_gap, 0, 100, false},
+    {"square_size", "ReticleSquareSize", "Reticle square half-width", &ReticleConfig::square_size, 1, 200, false},
+    {"circle_size", "ReticleCircleSize", "Reticle circle radius", &ReticleConfig::circle_size, 1, 200, false},
+    {"triangle_size", "ReticleTriangleSize", "Reticle triangle size (center to tip)", &ReticleConfig::triangle_size, 1, 200, false},
+    {"square_thickness", "ReticleSquareThickness", "Reticle square line thickness", &ReticleConfig::square_thickness, 1, 20, false},
+    {"circle_thickness", "ReticleCircleThickness", "Reticle circle line thickness", &ReticleConfig::circle_thickness, 1, 20, false},
+    {"triangle_thickness", "ReticleTriangleThickness", "Reticle triangle line thickness", &ReticleConfig::triangle_thickness, 1, 20, false},
+    {"square_angle", "ReticleSquareAngle", "Reticle square rotation", &ReticleConfig::square_angle, 0, 359, true},
+    {"triangle_angle", "ReticleTriangleAngle", "Reticle triangle rotation", &ReticleConfig::triangle_angle, 0, 359, true},
+    {"outline", "ReticleOutline", "Reticle outline thickness", &ReticleConfig::outline, 0, 10, false},
+    {"outline_shapes", "ReticleOutlineShapes", "Reticle outline shapes", &ReticleConfig::outline_shapes, 0, 31, false},
+};
+
+inline void reticle_set_int(ReticleConfig& cfg, const ReticleIntField& f, int v)
+{
+    cfg.*f.member = f.wrap ? ((v % 360) + 360) % 360 : std::clamp(v, f.min, f.max);
+}
+
+// "style=3;dot_size=3;...;color=00FF00" (colors only when set)
+std::string reticle_config_to_string(const ReticleConfig& cfg);
+void reticle_config_from_string(ReticleConfig& cfg, const std::string& s);
 
 struct AlpineGameSettings
 {
@@ -556,6 +625,28 @@ struct AlpineGameSettings
     void clear_reticle_scale()
     {
         reticle_scale.reset();
+    }
+
+    // reticle: default config plus per-weapon overrides keyed by weapon class name (e.g. "Assault Rifle")
+    ReticleConfig reticle{};
+    std::map<std::string, ReticleConfig, std::less<>> weapon_reticles{};
+    ReticleConfig default_reticle() const
+    {
+        ReticleConfig cfg = reticle;
+        cfg.color = reticle_color_override;
+        cfg.locked_color = reticle_locked_color_override;
+        return cfg;
+    }
+    void set_default_reticle(const ReticleConfig& cfg)
+    {
+        reticle = cfg;
+        reticle_color_override = cfg.color;
+        reticle_locked_color_override = cfg.locked_color;
+    }
+    ReticleConfig reticle_for_weapon(std::string_view weapon_name) const
+    {
+        auto it = weapon_reticles.find(weapon_name);
+        return it != weapon_reticles.end() ? it->second : default_reticle();
     }
 
     std::optional<float> world_hud_damage_text_scale{};

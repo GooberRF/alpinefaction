@@ -119,6 +119,13 @@ void hud_personas_apply_patches();
 void hud_personas_set_big(bool is_big);
 void hud_weapons_apply_patches();
 void hud_weapons_set_big(bool is_big);
+struct ReticleConfig;
+// Target the ui_reticle_* / ui_color_reticle* commands modify: the default config or one weapon's override.
+ReticleConfig& reticle_edit_target();
+// The target's color. The default config's colors live in the reticle_color / reticle_locked_color settings.
+std::optional<uint32_t>& reticle_edit_color(bool locked);
+bool reticle_editing_default();
+std::string reticle_edit_target_label();
 void weapon_select_apply_patches();
 void weapon_select_set_big(bool is_big);
 void multi_hud_chat_apply_patches();

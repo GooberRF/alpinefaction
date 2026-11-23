@@ -178,7 +178,7 @@ SettingValueType setting_value_type(const SettingRow& row)
             else if constexpr (std::is_same_v<T, AccColor>) {
                 return SettingValueType::Color;
             }
-            else if constexpr (std::is_same_v<T, AccOptColor>) {
+            else if constexpr (std::is_same_v<T, AccOptColor> || std::is_same_v<T, AccFnOptColor>) {
                 return SettingValueType::OptionalColor;
             }
             else if constexpr (std::is_same_v<T, AccOptFloat>) {
@@ -358,6 +358,15 @@ void setting_load_ini_value(const SettingRow& row, const std::string& value, rf:
                 }
                 g_alpine_game_config.*acc.member = color;
             }
+            else if constexpr (std::is_same_v<T, AccFnOptColor>) {
+                const auto color = parse_hex_color_string(value);
+                if (!color) {
+                    throw std::invalid_argument{"not a color"};
+                }
+                if (acc.set) {
+                    acc.set(player, color);
+                }
+            }
             else if constexpr (std::is_same_v<T, AccOptFloat>) {
                 const float v = parse_finite_float(value);
                 // A stored 1.0 means no override.
@@ -456,6 +465,13 @@ bool setting_format_ini_value(const SettingRow& row, rf::Player* player, std::st
             else if constexpr (std::is_same_v<T, AccFnString>) {
                 out = acc.get(player);
             }
+            else if constexpr (std::is_same_v<T, AccFnOptColor>) {
+                const auto opt = acc.get(player);
+                has_value = opt.has_value();
+                if (has_value) {
+                    out = format_hex_color_string(*opt);
+                }
+            }
             else if constexpr (std::is_same_v<T, AccRegString>) {
                 out = acc.get();
             }
@@ -482,7 +498,7 @@ bool setting_has_setter(const SettingRow& row)
         [](const auto& acc) {
             using T = std::decay_t<decltype(acc)>;
             if constexpr (std::is_same_v<T, AccFnBool> || std::is_same_v<T, AccFnInt> || std::is_same_v<T, AccFnFloat>
-                          || std::is_same_v<T, AccFnString>) {
+                          || std::is_same_v<T, AccFnString> || std::is_same_v<T, AccFnOptColor>) {
                 return acc.set != nullptr;
             }
             else if constexpr (std::is_same_v<T, AccRegString> || std::is_same_v<T, AccNone>) {
@@ -604,6 +620,15 @@ void setting_reset_to_default(const SettingRow& row)
             }
             else if constexpr (std::is_same_v<T, AccCoreBool>) {
                 g_alpine_system_config.*acc.member = g_asc_defaults.*acc.member;
+            }
+            else if constexpr (std::is_same_v<T, AccFnOptColor>) {
+                // An optional colour's default is unset ("default"); a fixed one goes through default_str below.
+                if (acc.set && (!row.default_str || string_iequals(row.default_str, "default"))) {
+                    acc.set(nullptr, std::nullopt);
+                }
+                else {
+                    handled = false;
+                }
             }
             else {
                 handled = false;

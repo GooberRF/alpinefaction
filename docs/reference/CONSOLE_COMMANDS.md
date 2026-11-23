@@ -238,12 +238,31 @@ Colors are hex `RRGGBB` or `RRGGBBAA`, or comma-separated `R,G,B[,A]` values in 
 | `ui_color_multi_timer` | `[RRGGBB\|RRGGBBAA\|clear]` | Sets the multiplayer timer color override. Ignored if a client-side mod sets it. |
 | `ui_color_precision_scope` | `[RRGGBB\|RRGGBBAA\|clear]` | Sets the precision rifle scope color override. Ignored if a client-side mod sets it. |
 | `ui_color_rail_scope` | `[RRGGBB\|RRGGBBAA\|clear]` | Sets the rail driver scope color override. Ignored if a client-side mod sets it. |
-| `ui_color_reticle` | `[RRGGBB\|RRGGBBAA\|clear]` | Sets the reticle color override. |
-| `ui_color_reticle_locked` | `[RRGGBB\|RRGGBBAA\|clear]` | Sets the locked reticle color override (single player). |
+| `ui_color_reticle` | `[RRGGBB\|RRGGBBAA\|clear]` | Sets the reticle color override for the crosshair selected with `ui_reticle_weapon`. |
+| `ui_color_reticle_locked` | `[RRGGBB\|RRGGBBAA\|clear]` | Sets the locked reticle color override (single player) for the crosshair selected with `ui_reticle_weapon`. |
+| `ui_color_reticle_outline` | `[RRGGBB\|RRGGBBAA\|clear]` | Sets the vector crosshair outline color for the crosshair selected with `ui_reticle_weapon`. Default: black. |
 | `ui_color_sniper_scope` | `[RRGGBB\|RRGGBBAA\|clear]` | Sets the sniper scope color override. Ignored if a client-side mod sets it. |
 | `ui_color_team_label` | `[RRGGBB\|RRGGBBAA\|clear]` | Sets the teammate world label color override. |
 | `ui_color_thermal` | `[RRGGBB\|RRGGBBAA\|clear]` | Sets the thermal (IR) entity color override for the Rail Driver scanner. D3D11 only. |
 | `ui_colorize_custom_reticles` | | Toggles applying reticle color overrides to custom reticles (looks wrong on non-greyscale reticle textures). Default: off. |
+| `ui_reticle_circle_size` | `[px]` | Sets the vector crosshair circle radius (1-200). Default: 10. |
+| `ui_reticle_circle_thickness` | `[px]` | Sets the vector crosshair circle line thickness (1-20). Default: 1. |
+| `ui_reticle_cross_gap` | `[px]` | Sets the vector crosshair cross center gap (0-100). Default: 3. |
+| `ui_reticle_cross_length` | `[px]` | Sets the vector crosshair cross arm length (1-100). Default: 8. |
+| `ui_reticle_cross_thickness` | `[px]` | Sets the vector crosshair cross thickness (1-20). Default: 1. |
+| `ui_reticle_dot_size` | `[px]` | Sets the vector crosshair dot size (1-100). Default: 3. |
+| `ui_reticle_outline` | `[px]` | Sets the vector crosshair outline thickness (0-10, 0 disables). Default: 1. |
+| `ui_reticle_outline_shapes` | `<all\|none\|dot\|cross\|square\|circle\|triangle\|a+b+c>` | Selects which vector crosshair shapes get the outline. Default: all. |
+| `ui_reticle_square_angle` | `[degrees]` | Sets the vector crosshair square rotation, clockwise. Default: 0. |
+| `ui_reticle_square_size` | `[px]` | Sets the vector crosshair square half-width (1-200). Default: 10. |
+| `ui_reticle_square_thickness` | `[px]` | Sets the vector crosshair square line thickness (1-20). Default: 1. |
+| `ui_reticle_style` | `<default\|dot\|cross\|square\|circle\|triangle\|a+b+c>` | Selects the crosshair shapes: `default` (stock weapon bitmap) or any `+`-joined mix of vector shapes. Default: `default`. |
+| `ui_reticle_triangle_angle` | `[degrees]` | Sets the vector crosshair triangle rotation, clockwise (0 = tip up). Default: 0. |
+| `ui_reticle_triangle_size` | `[px]` | Sets the vector crosshair triangle size, center to tip (1-200). Default: 12. |
+| `ui_reticle_triangle_thickness` | `[px]` | Sets the vector crosshair triangle line thickness (1-20). Default: 1. |
+| `ui_reticle_weapon` | `[default\|current\|weapon name]` | Selects which crosshair the `ui_reticle_*` and `ui_color_reticle*` commands edit: the default, the held weapon, or a weapon class name. Creates the per-weapon crosshair if missing. No argument lists per-weapon crosshairs. |
+| `ui_reticle_weapon_copy` | `<from> <to>` | Copies a crosshair. `from` and `to` are `default`, `current` (held weapon), or a weapon class name. Copying to a weapon creates its per-weapon crosshair. |
+| `ui_reticle_weapon_reset` | `[current\|weapon name]` | Removes a per-weapon crosshair (the selected weapon, or the named one) so that weapon uses the default crosshair. |
 | `ui_scale_damage_notify` | `[scale\|clear]` | Scales damage notification text (0.5-3). Default: 1.0. |
 | `ui_scale_ping_label` | `[scale\|clear]` | Scales location ping label text (0.5-3). Default: 1.0. |
 | `ui_scale_player_label` | `[scale\|clear]` | Scales player label text (0.5-3). Default: 1.0. |

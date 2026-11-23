@@ -21,6 +21,7 @@
 #include "settings_skin.h"
 #include "ui_kit.h"
 #include "../input/bind_context.h"
+#include "../hud/hud.h"
 #include "../input/input.h"
 #include "../main/main.h"
 #include "../misc/alpine_settings.h"
@@ -75,6 +76,7 @@ enum class Modal
     RevertSession,
     GridPicker,
     ColorPicker,
+    ReticleEditor,
 };
 
 UiContext g_ui;
@@ -192,6 +194,8 @@ struct ColorPick
     std::string hex;
 };
 ColorPick g_color_pick;
+// The modal a colour pick opened from, which it hands back to: the crosshair editor, or None for the panel.
+Modal g_color_return = Modal::None;
 
 // Widget-local copies of every row that feeds a widget taking a reference. The kit's inline
 // numeric/hex editors keep a pointer to that reference in a commit callback which fires during
@@ -289,13 +293,39 @@ UiNumberFormat row_number_format(const SettingRow& row)
     return fmt;
 }
 
+// The crosshair editor's rows read and write whichever weapon the editor has selected, so a row's text says
+// nothing on its own; the editor is tracked (and reverted) as one block, the "reticle_editor" row.
+bool reticle_editor_row(const SettingRow& row);
+
+std::string reticle_state_key()
+{
+    std::string key = reticle_config_to_string(g_alpine_game_config.default_reticle());
+    for (const auto& [name, cfg] : g_alpine_game_config.weapon_reticles) {
+        key += "|" + name + "=" + reticle_config_to_string(cfg);
+    }
+    return key;
+}
+
+struct ReticleBaseline
+{
+    ReticleConfig default_cfg;
+    std::map<std::string, ReticleConfig, std::less<>> weapons;
+    std::string key;
+};
+ReticleBaseline g_reticle_baseline;
+// The crosshair editor's COPY / PASTE clipboard for the menu's visit: the copied crosshair as it is drawn.
+std::optional<ReticleConfig> g_reticle_clipboard;
+
 // Keeps g_changed in step with the baseline captured at menu entry. A write can move other rows
 // too (a preset expands over its members, a member edit makes it Custom), so every row is checked.
 // Rows without a setter (bindings, the autoswitch order) are tracked by their own blocks.
+void note_block_changed(const char* id, bool at_baseline);
+
 void note_rows_changed()
 {
+    note_block_changed("reticle_editor", reticle_state_key() == g_reticle_baseline.key);
     for (const SettingRow& row : settings_registry_all()) {
-        if (!setting_has_setter(row)) {
+        if (!setting_has_setter(row) || reticle_editor_row(row)) {
             continue;
         }
         const auto it = g_baseline.find(&row);
@@ -1435,6 +1465,7 @@ void do_row_widget(UiContext& ctx, const SettingRow& row, const FormLine& line, 
                 g_color_pick = ColorPick{&row, state.color.has_value(), !state.color.has_value(), start, start,
                                          skin_rgba_to_hsva(start),
                                          state.color ? format_hex_color_string(start) : std::string{}};
+                g_color_return = g_modal;
                 g_modal = Modal::ColorPicker;
                 ui_play_click();
             }
@@ -1484,6 +1515,13 @@ void do_row_widget(UiContext& ctx, const SettingRow& row, const FormLine& line, 
                 if (skin_button(ctx, r, "RESET BINDINGS", fonts.body_bold, SkinButton::Danger,
                                 enabled && bind_device_live(), id)) {
                     g_modal = Modal::ResetBindings;
+                    ui_play_click();
+                }
+            }
+            else if (action == "reticle_editor") {
+                const UiRect r = form_control_rect(ctx, line, skin::control_w, 44.0f);
+                if (skin_button(ctx, r, "EDIT", fonts.body_bold, SkinButton::Secondary, enabled, id)) {
+                    g_modal = Modal::ReticleEditor;
                     ui_play_click();
                 }
             }
@@ -1978,6 +2016,9 @@ void capture_session_baseline()
             g_bind_baseline.overrides[c].push_back(value ? std::optional<BindOverride>{*value} : std::nullopt);
         }
     }
+    g_reticle_baseline = ReticleBaseline{g_alpine_game_config.default_reticle(), g_alpine_game_config.weapon_reticles,
+                                         reticle_state_key()};
+    g_reticle_clipboard.reset();
     g_weapon_prefs_baseline.reset();
     if (rf::local_player) {
         g_weapon_prefs_baseline.emplace();
@@ -2016,6 +2057,15 @@ void revert_session(UiContext& ctx)
                 std::copy(g_weapon_prefs_baseline->begin(), g_weapon_prefs_baseline->end(),
                           std::begin(rf::local_player->weapon_prefs));
             }
+        }
+        else if (std::string_view{row.id} == "reticle_editor") {
+            if (g_changed.count(&row)) {
+                g_alpine_game_config.set_default_reticle(g_reticle_baseline.default_cfg);
+                g_alpine_game_config.weapon_reticles = g_reticle_baseline.weapons;
+            }
+        }
+        else if (reticle_editor_row(row)) {
+            continue;
         }
         else if (const auto it = g_baseline.find(&row);
                  it != g_baseline.end() && setting_has_setter(row) && it->second != setting_get_as_string(row)) {
@@ -2118,7 +2168,8 @@ void close_modal(UiContext& ctx)
     if (g_modal == Modal::GridPicker || g_modal == Modal::ColorPicker) {
         ctx.description().unpin();
     }
-    g_modal = Modal::None;
+    g_modal = g_modal == Modal::ColorPicker ? g_color_return : Modal::None;
+    g_color_return = Modal::None;
 }
 
 void build_grid_picker_modal(UiContext& ctx, const Fonts& fonts)
@@ -2364,6 +2415,312 @@ void register_offscreen_focus(UiContext& ctx, const Entry& entry)
         if (entry.kind != EntryKind::Bind) {
             break;
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Crosshair editor
+// ---------------------------------------------------------------------------
+
+// The popout's controls, in order; the rows are hidden registry rows editing g_reticle_menu_slot's crosshair.
+// `shapes` gates an item on the crosshair's style bits: 0 always, -1 any shape on, else that shape's bit.
+struct ReticleEditorItem
+{
+    const char* header;
+    const char* row_id;
+    int shapes;
+};
+
+constexpr ReticleEditorItem reticle_editor_items[] = {
+    {"Shapes", nullptr, 0},
+    {nullptr, "reticle_weapon_override", 0},
+    {nullptr, "reticle_shape_dot", 0},
+    {nullptr, "reticle_shape_cross", 0},
+    {nullptr, "reticle_shape_square", 0},
+    {nullptr, "reticle_shape_circle", 0},
+    {nullptr, "reticle_shape_triangle", 0},
+    {"Color", nullptr, 0},
+    {nullptr, "reticle_target_color", 0},
+    {nullptr, "reticle_target_locked_color", 0},
+    {"Dot", nullptr, 1},
+    {nullptr, "reticle_dot_size", 1},
+    {"Cross", nullptr, 2},
+    {nullptr, "reticle_cross_length", 2},
+    {nullptr, "reticle_cross_gap", 2},
+    {nullptr, "reticle_cross_thickness", 2},
+    {"Square", nullptr, 4},
+    {nullptr, "reticle_square_size", 4},
+    {nullptr, "reticle_square_thickness", 4},
+    {nullptr, "reticle_square_angle", 4},
+    {"Circle", nullptr, 8},
+    {nullptr, "reticle_circle_size", 8},
+    {nullptr, "reticle_circle_thickness", 8},
+    {"Triangle", nullptr, 16},
+    {nullptr, "reticle_triangle_size", 16},
+    {nullptr, "reticle_triangle_thickness", 16},
+    {nullptr, "reticle_triangle_angle", 16},
+    {"Outline", nullptr, -1},
+    {nullptr, "reticle_outline", -1},
+    {nullptr, "reticle_outline_color", -1},
+    {nullptr, "reticle_outline_dot", 1},
+    {nullptr, "reticle_outline_cross", 2},
+    {nullptr, "reticle_outline_square", 4},
+    {nullptr, "reticle_outline_circle", 8},
+    {nullptr, "reticle_outline_triangle", 16},
+};
+
+bool reticle_editor_row(const SettingRow& row)
+{
+    return std::ranges::any_of(reticle_editor_items, [&row](const ReticleEditorItem& item) {
+        return item.row_id && std::string_view{item.row_id} == row.id;
+    });
+}
+
+constexpr const char* reticle_shape_row_ids[] = {
+    "reticle_shape_dot", "reticle_shape_cross", "reticle_shape_square", "reticle_shape_circle", "reticle_shape_triangle",
+};
+
+float g_reticle_list_scroll = 0.0f;
+float g_reticle_rows_scroll = 0.0f;
+UiId g_reticle_list_scrolled_to = 0;
+UiId g_reticle_rows_scrolled_to = 0;
+
+bool reticle_slot_valid(int slot)
+{
+    return weapon_pref_visible(slot) && !rf::weapon_types[slot].name.empty();
+}
+
+const char* reticle_slot_label(int slot)
+{
+    const rf::WeaponInfo& info = rf::weapon_types[slot];
+    return info.display_name.empty() ? info.name.c_str() : info.display_name.c_str();
+}
+
+bool reticle_slot_has_own(int slot)
+{
+    return g_alpine_game_config.weapon_reticles.contains(std::string_view{rf::weapon_types[slot].name.c_str()});
+}
+
+void reticle_copy()
+{
+    const int slot = g_reticle_menu_slot;
+    g_reticle_clipboard = slot < 0 ? g_alpine_game_config.default_reticle()
+                                   : g_alpine_game_config.reticle_for_weapon(rf::weapon_types[slot].name.c_str());
+    ui_play_click();
+}
+
+void reticle_paste()
+{
+    // Replaces, never merges: the crosshair ends as the copied one was. A weapon gets a crosshair of its own.
+    const int slot = g_reticle_menu_slot;
+    if (slot < 0) {
+        g_alpine_game_config.set_default_reticle(*g_reticle_clipboard);
+    }
+    else {
+        g_alpine_game_config.weapon_reticles[rf::weapon_types[slot].name.c_str()] = *g_reticle_clipboard;
+    }
+    note_rows_changed();
+    ui_play_click();
+}
+
+int reticle_editor_style()
+{
+    int style = 0;
+    for (int i = 0; i < static_cast<int>(std::size(reticle_shape_row_ids)); ++i) {
+        const SettingRow* row = settings_find(reticle_shape_row_ids[i]);
+        if (row && setting_get_as_string(*row) == "1") {
+            style |= 1 << i;
+        }
+    }
+    return style;
+}
+
+// The selected crosshair at its in-game size, once on a dark backdrop and once on a light one, so the
+// crosshair and its outline read against both.
+void draw_reticle_preview_box(UiContext& ctx, const UiRect& box, bool locked, const char* caption, const Fonts& fonts)
+{
+    const UiRect d = ui_draw_rect(ctx, box);
+    rf::gr::set_color(24, 24, 24, 255);
+    rf::gr::rect(d.x, d.y, d.w / 2, d.h);
+    rf::gr::set_color(160, 160, 160, 255);
+    rf::gr::rect(d.x + d.w / 2, d.y, d.w - d.w / 2, d.h);
+    int clip_x = 0, clip_y = 0, clip_w = 0, clip_h = 0;
+    rf::gr::get_clip(&clip_x, &clip_y, &clip_w, &clip_h);
+    const int half_w[2] = {d.w / 2, d.w - d.w / 2};
+    for (int i = 0; i < 2; ++i) {
+        rf::gr::set_clip(clip_x + d.x + i * half_w[0], clip_y + d.y, half_w[i], d.h);
+        hud_draw_reticle_preview(g_reticle_menu_slot, locked, half_w[i] / 2, d.h / 2);
+    }
+    rf::gr::set_clip(clip_x, clip_y, clip_w, clip_h);
+    rf::gr::set_color(skin::txt);
+    rf::gr::string(d.x + skin_px(ctx, 10.0f), d.y + skin_px(ctx, 8.0f), caption, fonts.caption_bold);
+}
+
+// Weapon list on the left (the default first), live preview top right, the selected crosshair's controls below it.
+// Every control writes through at once, like the panel's rows.
+void build_reticle_editor_modal(UiContext& ctx, const Fonts& fonts, bool sync_state)
+{
+    const auto s = [&](float v) { return skin_px(ctx, v); };
+    if (!reticle_slot_valid(g_reticle_menu_slot)) {
+        g_reticle_menu_slot = -1;
+    }
+    const int slot = g_reticle_menu_slot;
+
+    const MenuDialog frame = menu_dialog(ctx, s(1560.0f), s(940.0f), "CUSTOM CROSSHAIRS", fonts.section);
+    const UiRect& dialog = frame.frame;
+    const int pad = s(24.0f);
+    const int top = frame.band.y + frame.band.h + pad;
+    const int btn_h = s(44.0f);
+    const int footer_y = dialog.y + dialog.h - pad - btn_h;
+    const int bottom = footer_y - pad;
+
+    // The whole body is the panel's steel, which the rows' dark ink is drawn for; the list and the preview are black
+    // wells in it, as the panel's values are.
+    if (ctx.draw) {
+        const int inset = s(10.0f);
+        const UiRect d = ui_draw_rect(ctx, UiRect{dialog.x + inset, top - inset, dialog.w - 2 * inset,
+                                                  dialog.y + dialog.h - inset - (top - inset)});
+        skin_steel_field(ctx, d.x, d.y, d.w, d.h);
+    }
+
+    // Weapon list. * marks a weapon with a crosshair of its own.
+    const UiRect list_view{dialog.x + pad, top, s(380.0f), bottom - top};
+    const int item_h = s(skin::list_row_h);
+    if (ctx.draw) {
+        const UiRect d = ui_draw_rect(ctx, list_view);
+        skin_slot(ctx, d.x, d.y, d.w, d.h);
+    }
+    int item_count = 1;
+    for (int i = 0; i < rf::num_weapon_types; ++i) {
+        item_count += reticle_slot_valid(i) ? 1 : 0;
+    }
+    FormScroll list = form_scroll_begin(ctx, list_view, item_count * item_h, g_reticle_list_scroll, item_h * 3,
+                                        ui_id("reticle_list"));
+    int y = list.region.start_y();
+    for (int i = -1; i < rf::num_weapon_types; ++i) {
+        if (i >= 0 && !reticle_slot_valid(i)) {
+            continue;
+        }
+        const UiId id = ui_id("reticle_weapon", i + 1);
+        const auto r = form_scroll_row(ctx, list, list_view.x, y, item_h, id, UiFocusKind::Activate);
+        if (!r) {
+            continue;
+        }
+        std::string label = i < 0 ? std::string{"All weapons"} : std::string{reticle_slot_label(i)};
+        if (i >= 0 && reticle_slot_has_own(i)) {
+            label += " *";
+        }
+        if (skin_reorder_row(ctx, *r, label.c_str(), i == slot, fonts.body, id)) {
+            g_reticle_menu_slot = i;
+            ui_play_click();
+        }
+    }
+    form_scroll_end(ctx, list, g_reticle_list_scrolled_to);
+
+    // Preview. The locked look only shows where the game can lock on: the rocket launcher (and the default).
+    const int right_x = list_view.x + list_view.w + pad;
+    const int right_w = dialog.x + dialog.w - pad - right_x;
+    const int preview_h = s(280.0f);
+    const int style = reticle_editor_style();
+    if (ctx.draw) {
+        if (slot < 0 || slot == rf::rocket_launcher_weapon_type) {
+            const int half = (right_w - s(16.0f)) / 2;
+            draw_reticle_preview_box(ctx, UiRect{right_x, top, half, preview_h}, false, "NORMAL", fonts);
+            draw_reticle_preview_box(ctx, UiRect{right_x + right_w - half, top, half, preview_h}, true, "LOCKED ON",
+                                     fonts);
+        }
+        else {
+            draw_reticle_preview_box(ctx, UiRect{right_x, top, right_w, preview_h}, false, "PREVIEW", fonts);
+        }
+        std::string status = slot < 0
+            ? std::string{"Used by every weapon unless overridden."}
+            : reticle_slot_has_own(slot)
+                ? std::format("{} has its own crosshair.", reticle_slot_label(slot))
+                : std::format("{} uses the default. Edit to override.", reticle_slot_label(slot));
+        if (!style) {
+            status += " No shapes: stock crosshair.";
+        }
+        const UiRect d = ui_draw_rect(ctx, UiRect{right_x, top + preview_h + s(10.0f), right_w, s(24.0f)});
+        rf::gr::set_color(skin::ink_status);
+        rf::gr::string(d.x, d.y, ui_fit_end(status, d.w, fonts.caption).c_str(), fonts.caption);
+    }
+
+    // Controls.
+    std::vector<Entry> entries;
+    for (const ReticleEditorItem& item : reticle_editor_items) {
+        if ((item.shapes < 0 && !style) || (item.shapes > 0 && !(style & item.shapes))) {
+            continue;
+        }
+        if (item.header) {
+            entries.push_back(Entry{EntryKind::SubHeader, item.header, nullptr, nullptr, -1, form_sub_header_h});
+            continue;
+        }
+        if (slot < 0 && std::string_view{item.row_id} == "reticle_weapon_override") {
+            continue;
+        }
+        if (const SettingRow* row = settings_find(item.row_id)) {
+            entries.push_back(Entry{EntryKind::Row, nullptr, row, nullptr, -1, skin::row_h});
+        }
+    }
+    const int rows_y = top + preview_h + s(44.0f);
+    const UiRect rows_view = form_rows_view(ctx, UiRect{right_x, rows_y, right_w, bottom - rows_y});
+    int readout_w = 0;
+    int content_h = 0;
+    for (const Entry& entry : entries) {
+        content_h += s(entry.ref_h);
+        if (entry.row) {
+            readout_w = std::max(readout_w, row_slider_readout_w(ctx, *entry.row, fonts.body));
+        }
+    }
+    FormScroll rows = form_scroll_begin(ctx, rows_view, content_h, g_reticle_rows_scroll, s(skin::row_h) * 3,
+                                        ui_id("reticle_rows"));
+    y = rows.region.start_y();
+    for (const Entry& entry : entries) {
+        const UiRect rect{rows_view.x, y, rows.inner_w, s(entry.ref_h)};
+        y += rect.h;
+        if (entry_owns_focus(entry, ctx.focus_id())) {
+            rows.focus_rect = rect;
+        }
+        if (form_scroll_culled(rows, rect)) {
+            register_offscreen_focus(ctx, entry);
+            continue;
+        }
+        if (entry.kind == EntryKind::SubHeader) {
+            form_draw_sub_header(ctx, rect, entry.header, fonts.body_bold);
+        }
+        else {
+            do_row(ctx, *entry.row, rect, nullptr, fonts, readout_w, sync_state);
+        }
+    }
+    form_scroll_end(ctx, rows, g_reticle_rows_scrolled_to);
+
+    // Footer: COPY / PASTE (as the create game screen's Map Settings), the hovered control's description, and DONE.
+    const int done_w = skin_button_width(ctx, "DONE", fonts.body_bold, 180.0f);
+    const int btn_w = s(200.0f);
+    const int btn_gap = s(16.0f);
+    const UiRect copy{dialog.x + pad, footer_y, btn_w, btn_h};
+    const UiRect paste{copy.x + btn_w + btn_gap, footer_y, btn_w, btn_h};
+    if (ctx.draw) {
+        const SettingRow* desc_row = desc_row_from_id(ctx.description().id);
+        const std::string text = desc_row && desc_row->tooltip
+            ? std::string{desc_row->tooltip}
+            : std::string{"The preview is at in-game size."};
+        const int desc_x = paste.x + paste.w + pad;
+        form_draw_description(ctx, UiRect{desc_x, footer_y, dialog.x + dialog.w - 2 * pad - done_w - desc_x, btn_h},
+                              text, fonts.caption);
+    }
+    if (skin_button(ctx, copy, "COPY", fonts.body_bold, SkinButton::Secondary, true, ui_id("reticle_copy"))) {
+        reticle_copy();
+    }
+    if (skin_button(ctx, paste, "PASTE", fonts.body_bold, SkinButton::Secondary, g_reticle_clipboard.has_value(),
+                    ui_id("reticle_paste"))
+        && g_reticle_clipboard) {
+        reticle_paste();
+    }
+    if (skin_button(ctx, UiRect{dialog.x + dialog.w - pad - done_w, footer_y, done_w, btn_h}, "DONE",
+                    fonts.body_bold, SkinButton::Secondary, true, ui_id("reticle_done"))) {
+        close_modal(ctx);
+        ui_play_click();
     }
 }
 
@@ -2783,6 +3140,13 @@ std::vector<MenuHint> frame_hints(const UiContext& ctx, Modal modal)
     else if (modal == Modal::None) {
         menu_add_nav_hints(ctx, hints, g_search.empty() ? "Back" : "Clear search");
     }
+    else if (modal == Modal::ReticleEditor) {
+        // As settings_menu_key_callback(), and the create game screen's map list.
+        hints.push_back({"CTRL+C", "Copy crosshair"});
+        if (g_reticle_clipboard) {
+            hints.push_back({"CTRL+V", "Paste crosshair"});
+        }
+    }
     return hints;
 }
 
@@ -2833,9 +3197,16 @@ void settings_menu_build(UiContext& ctx)
         }
     }
     else if (modal == Modal::ColorPicker) {
+        // A pick from the crosshair editor keeps the editor painted (only) behind it.
+        if (ctx.draw && g_color_return == Modal::ReticleEditor) {
+            build_reticle_editor_modal(ctx, fonts, false);
+        }
         if (g_color_pick.row) {
             build_color_picker_modal(ctx, fonts);
         }
+    }
+    else if (modal == Modal::ReticleEditor) {
+        build_reticle_editor_modal(ctx, fonts, sync_state);
     }
     else if (modal != Modal::None) {
         build_modal(ctx, fonts);
@@ -2885,6 +3256,17 @@ void __cdecl settings_menu_key_callback(int key)
         ui_play_click();
         request_close();
         return;
+    }
+
+    if (g_modal == Modal::ReticleEditor) {
+        if (key == (rf::KEY_C | rf::KEY_CTRLED)) {
+            reticle_copy();
+            return;
+        }
+        if (key == (rf::KEY_V | rf::KEY_CTRLED) && g_reticle_clipboard) {
+            reticle_paste();
+            return;
+        }
     }
 
     // Tab / Shift+Tab (0x100F) / arrows / Enter, resolved against the previous frame's widgets.

@@ -80,6 +80,11 @@ const char* hud_element_label(HudElement element);
 // The line under the reticle, shared by the vehicle Use prompt and the zip line hint.
 void hud_render_reticle_prompt();
 void hud_reticle_prompt_clear();
+// Weapon type the options menu's crosshair editor edits, -1 = the default crosshair.
+extern int g_reticle_menu_slot;
+// Draws the crosshair `weapon_slot` (-1 = default) shows in game, centered on clip-relative cx, cy, at the in-game
+// size: the vector reticle, or the stock bitmap tinted as in game.
+void hud_draw_reticle_preview(int weapon_slot, bool locked, int cx, int cy);
 
 void hud_apply_patches();
 int hud_get_small_font();

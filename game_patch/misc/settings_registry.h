@@ -190,6 +190,12 @@ struct AccFnString
     std::string (*get)(rf::Player*);
     void (*set)(rf::Player*, const std::string&) = nullptr;
 };
+// Colour held outside AlpineGameSettings' top level. nullopt is "unset" (a stored nullopt reads back as "default").
+struct AccFnOptColor
+{
+    std::optional<uint32_t> (*get)(rf::Player*);
+    void (*set)(rf::Player*, std::optional<uint32_t>) = nullptr;
+};
 struct AccRegString
 {
     std::string (*get)();
@@ -200,7 +206,7 @@ struct AccNone
 
 using SettingAccess = std::variant<AccBool, AccInt, AccUint, AccFloat, AccColor, AccOptColor, AccOptFloat,
                                    AccString, AccCoreBool, AccFnBool, AccFnInt, AccFnFloat, AccFnString,
-                                   AccRegString, AccNone>;
+                                   AccFnOptColor, AccRegString, AccNone>;
 
 struct SettingRow
 {

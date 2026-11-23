@@ -583,6 +583,33 @@ bool alpine_player_settings_load(rf::Player* player)
         }
     }
 
+    // Vector reticle: default config fields plus per-weapon overrides. The default colors are registry rows
+    // (ReticleColor/ReticleLockedColor), loaded above.
+    for (const auto& f : reticle_int_fields) {
+        if (settings.count(f.ini_key)) {
+            reticle_set_int(g_alpine_game_config.reticle, f, std::atoi(settings[f.ini_key].c_str()));
+            processed_keys.insert(f.ini_key);
+        }
+    }
+    if (settings.count("ReticleOutlineColor")) {
+        if (auto color = parse_hex_color_string(settings["ReticleOutlineColor"])) {
+            g_alpine_game_config.reticle.outline_color = *color;
+        }
+        else {
+            xlog::warn("Invalid reticle outline color: {}", settings["ReticleOutlineColor"]);
+        }
+        processed_keys.insert("ReticleOutlineColor");
+    }
+    // WeaponReticle_<weapon class name>=style=3;dot_size=3;...
+    for (const auto& [key, value] : settings) {
+        if (string_starts_with(key, "WeaponReticle_") && key.size() > 14) {
+            ReticleConfig cfg = g_alpine_game_config.reticle;
+            reticle_config_from_string(cfg, value);
+            g_alpine_game_config.weapon_reticles[key.substr(14)] = cfg;
+            processed_keys.insert(key);
+        }
+    }
+
     // Apply hooks run once every value is in place, in table order, so a hook that reads another
     // row sees its loaded value.
     for (const auto& row : settings_registry_all()) {
@@ -774,6 +801,20 @@ static void alpine_settings_serialize_header(std::ostream& file)
     }
 }
 
+static void alpine_settings_serialize_reticles(std::ostream& file)
+{
+    const ReticleConfig& cfg = g_alpine_game_config.reticle;
+    file << "\n[Reticles]\n";
+    file << "; Default colors are ReticleColor / ReticleLockedColor under [HUDSettings].\n";
+    for (const auto& f : reticle_int_fields) {
+        file << f.ini_key << "=" << cfg.*f.member << "\n";
+    }
+    file << "ReticleOutlineColor=" << format_hex_color_string(cfg.outline_color) << "\n";
+    for (const auto& [name, weapon_cfg] : g_alpine_game_config.weapon_reticles) {
+        file << "WeaponReticle_" << name << "=" << reticle_config_to_string(weapon_cfg) << "\n";
+    }
+}
+
 static void alpine_settings_serialize_saved_votes(std::ostream& file)
 {
     // Saved votes. Reindexed from the store every save, so a deletion leaves no gap.
@@ -801,6 +842,7 @@ static void alpine_player_settings_serialize(std::ostream& file, rf::Player* pla
 {
     alpine_settings_serialize_header(file);
     serialize_setting_rows(file, player);
+    alpine_settings_serialize_reticles(file);
     alpine_settings_serialize_saved_votes(file);
 
     alpine_control_config_serialize(file, player);
@@ -1227,4 +1269,52 @@ void alpine_settings_apply_patch()
 
     // Init cmd line
     get_afs_cmd_line_param();
+}
+
+std::string reticle_config_to_string(const ReticleConfig& cfg)
+{
+    std::string s;
+    for (const auto& f : reticle_int_fields) {
+        s += std::format("{}={};", f.cmd, cfg.*f.member);
+    }
+    s += "outline_color=" + format_hex_color_string(cfg.outline_color);
+    if (cfg.color) {
+        s += ";color=" + format_hex_color_string(*cfg.color);
+    }
+    if (cfg.locked_color) {
+        s += ";locked_color=" + format_hex_color_string(*cfg.locked_color);
+    }
+    return s;
+}
+
+void reticle_config_from_string(ReticleConfig& cfg, const std::string& s)
+{
+    std::istringstream ss(s);
+    std::string item;
+    while (std::getline(ss, item, ';')) {
+        const auto eq = item.find('=');
+        if (eq == std::string::npos) {
+            continue;
+        }
+        const std::string key = item.substr(0, eq);
+        const std::string val = item.substr(eq + 1);
+        if (key == "color") {
+            cfg.color = parse_hex_color_string(val);
+        }
+        else if (key == "locked_color") {
+            cfg.locked_color = parse_hex_color_string(val);
+        }
+        else if (key == "outline_color") {
+            if (auto c = parse_hex_color_string(val)) {
+                cfg.outline_color = *c;
+            }
+        }
+        else {
+            for (const auto& f : reticle_int_fields) {
+                if (key == f.cmd) {
+                    reticle_set_int(cfg, f, std::atoi(val.c_str()));
+                }
+            }
+        }
+    }
 }
