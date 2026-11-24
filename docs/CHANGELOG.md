@@ -8,6 +8,9 @@ Version 1.6.0 (TBD): Not yet released
 ### Minor features, changes, and enhancements
 
 ### Bug fixes
+[@GooberRF](https://github.com/GooberRF)
+- Fix Scavenger objective failing to spawn on levels with many items
+- Fix Scavenger capture zone and Salvage flag spawn sometimes being placed on the floor below a grating, mesh or clutter
 
 Version 1.5.0 (Trillium): Released Nov-20-2026
 --------------------------------
