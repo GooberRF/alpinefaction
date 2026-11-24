@@ -12,6 +12,7 @@ Version 1.6.0 (TBD): Not yet released
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
 - Fix the level editor's minimap preview not showing a new `Bake from level` until `Level Properties` is reopened (Direct3D 11 renderer only)
+- Fix animated ATX textures on first-person weapons freezing after a level change
 
 Version 1.5.0 (Trillium): Released Nov-20-2026
 --------------------------------

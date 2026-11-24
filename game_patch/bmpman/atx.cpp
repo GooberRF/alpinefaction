@@ -711,6 +711,11 @@ void atx_do_frame()
 
 void atx_level_reset()
 {
+    // A bitmap that outlives the level (a first-person weapon mesh, ...) keeps its GPU texture through the level load's
+    // cache flush, so nothing would lock it again to rebuild its controller
+    for (auto& [key, c] : g_controllers) {
+        dirty_atx(*c);
+    }
     g_controllers.clear();
     g_by_handle.clear();
     g_failed.clear();
