@@ -13,6 +13,7 @@ Version 1.6.0 (TBD): Not yet released
 [@GooberRF](https://github.com/GooberRF)
 - Fix the level editor's minimap preview not showing a new `Bake from level` until `Level Properties` is reopened (Direct3D 11 renderer only)
 - Fix animated ATX textures on first-person weapons freezing after a level change
+- Fix the level editor's `Select Objects` and `Show/Hide Objects` lists naming respawn points, triggers and non-geo regions differently depending on whether they were placed in the current session
 
 Version 1.5.0 (Trillium): Released Nov-20-2026
 --------------------------------
