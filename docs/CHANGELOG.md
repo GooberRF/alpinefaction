@@ -6,6 +6,8 @@ Version 1.6.0 (TBD): Not yet released
 ### Major features
 
 ### Minor features, changes, and enhancements
+[@GooberRF](https://github.com/GooberRF)
+- Show terrain textures at full resolution in the level editor, as the game draws them (Direct3D 11 renderer only)
 
 ### Bug fixes
 

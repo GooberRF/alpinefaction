@@ -27,6 +27,7 @@
 #include "../../terrain_preview.h"
 #include "gr_d3d11_editor.h"
 #include "gr_d3d11_editor_faces.h"
+#include "gr_d3d11_editor_terrain_renderer.h"
 
 namespace gr::d3d11
 {
@@ -330,6 +331,8 @@ namespace gr::d3d11
                                                               *dyn_geo_renderer_, *af_lightmap_renderer_);
         solid_renderer_ = std::make_unique<SolidRenderer>(device_, *shader_manager_, *state_manager_,
                                                           *dyn_geo_renderer_, *render_context_, *af_lightmap_renderer_);
+        terrain_renderer_ = std::make_unique<EditorTerrainRenderer>(device_, *shader_manager_, *render_context_,
+                                                                    *af_lightmap_renderer_);
         mesh_renderer_ = std::make_unique<MeshRenderer>(device_, *shader_manager_, *state_manager_, *render_context_);
         particle_renderer_ = std::make_unique<ParticleRenderer>(device_, *shader_manager_, *render_context_);
 
@@ -1250,6 +1253,14 @@ namespace gr::d3d11
     void EditorRenderer::reset_solid_cache_after_boolean()
     {
         solid_renderer_->reset_cache_after_boolean();
+    }
+
+    bool EditorRenderer::draw_terrain(const EditorTerrainDraw& draw)
+    {
+        // What RED queued before the terrain draws under it
+        flush_batches();
+        return terrain_renderer_->draw(draw, prepare_draw(rf::gr::solid_mode, false),
+                                       g_editor_settings.show_back_faces ? D3D11_CULL_NONE : D3D11_CULL_BACK);
     }
 
     bool EditorRenderer::upload_af_lightmap_atlas(const alpine_lightmap::ReadResult& section,
