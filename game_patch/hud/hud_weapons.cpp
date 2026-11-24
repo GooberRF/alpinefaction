@@ -906,6 +906,93 @@ ConsoleCommand2 reticle_weapon_copy_cmd{
     "ui_reticle_weapon_copy <from> <to>",
 };
 
+// The edit target with its effective colors: the default's live in the ReticleColor / ReticleLockedColor rows.
+static ReticleConfig reticle_edit_target_effective()
+{
+    return reticle_editing_default() ? g_alpine_game_config.default_reticle() : reticle_edit_target();
+}
+
+ConsoleCommand2 reticle_code_cmd{
+    "ui_reticle_code",
+    []() {
+        const std::string code = reticle_share_code(reticle_edit_target_effective());
+        write_clipboard_text(code);
+        rf::console::print("Crosshair code for {} (copied to clipboard): {}", reticle_edit_target_label(), code);
+    },
+    "Print the share code of the crosshair chosen with ui_reticle_weapon and copy it to the clipboard.",
+};
+
+ConsoleCommand2 reticle_load_cmd{
+    "ui_reticle_load",
+    [](std::optional<std::string> arg) {
+        const auto& saved = g_alpine_game_config.saved_reticles;
+        if (!arg) {
+            if (saved.empty()) {
+                rf::console::print("No saved crosshairs. Save one with ui_reticle_save.");
+            }
+            for (const auto& [name, code] : saved) {
+                rf::console::print("  {}: {}", name, code);
+            }
+            return;
+        }
+        auto cfg = reticle_from_share_code(*arg);
+        if (!cfg) {
+            const auto it = std::ranges::find_if(saved, [&](const auto& e) { return string_iequals(e.first, *arg); });
+            if (it == saved.end()) {
+                rf::console::print("'{}' is not a crosshair code or a saved crosshair name.", *arg);
+                return;
+            }
+            cfg = reticle_from_share_code(it->second);
+            if (!cfg) {
+                rf::console::print("Saved crosshair '{}' has an unreadable code: {}", it->first, it->second);
+                return;
+            }
+        }
+        if (reticle_editing_default()) {
+            g_alpine_game_config.set_default_reticle(*cfg);
+        }
+        else {
+            reticle_edit_target() = *cfg;
+        }
+        rf::console::print("Loaded crosshair into {}.", reticle_edit_target_label());
+    },
+    "Load a crosshair share code or saved crosshair into the target chosen with ui_reticle_weapon. No argument lists saved crosshairs.",
+    "ui_reticle_load [code|saved name]",
+};
+
+ConsoleCommand2 reticle_save_cmd{
+    "ui_reticle_save",
+    [](std::string name) {
+        auto& saved = g_alpine_game_config.saved_reticles;
+        if (!reticle_saved_name_valid(name)) {
+            rf::console::print("Invalid name. Use up to 32 letters, digits, spaces, '-', '_' or '.' (quote names with spaces).");
+            return;
+        }
+        if (!saved.contains(name) && saved.size() >= AlpineGameSettings::max_saved_reticles) {
+            rf::console::print("You have {} saved crosshairs, the most allowed. Delete one with ui_reticle_delete.", saved.size());
+            return;
+        }
+        saved[name] = reticle_share_code(reticle_edit_target_effective());
+        rf::console::print("Saved crosshair from {} as '{}'.", reticle_edit_target_label(), name);
+    },
+    "Save the crosshair chosen with ui_reticle_weapon under a name (replacing one of that name). Load it with ui_reticle_load.",
+    "ui_reticle_save <name>",
+};
+
+ConsoleCommand2 reticle_delete_cmd{
+    "ui_reticle_delete",
+    [](std::string name) {
+        if (g_alpine_game_config.saved_reticles.erase(name)) {
+            rf::console::print("Deleted saved crosshair '{}'.", name);
+        }
+        else {
+            rf::console::print("No saved crosshair named '{}'.", name);
+        }
+    },
+    "Delete a saved crosshair.",
+    "ui_reticle_delete <name>",
+};
+
 void hud_weapons_apply_patches()
 {
     // Big HUD support for ammo display
@@ -925,6 +1012,10 @@ void hud_weapons_apply_patches()
     reticle_weapon_cmd.register_cmd();
     reticle_weapon_reset_cmd.register_cmd();
     reticle_weapon_copy_cmd.register_cmd();
+    reticle_code_cmd.register_cmd();
+    reticle_load_cmd.register_cmd();
+    reticle_save_cmd.register_cmd();
+    reticle_delete_cmd.register_cmd();
     // one ui_reticle_<field> <value> command per int field (style/outline_shapes have string forms above)
     for (const auto& f : reticle_int_fields) {
         if (std::strcmp(f.cmd, "style") == 0 || std::strcmp(f.cmd, "outline_shapes") == 0) {

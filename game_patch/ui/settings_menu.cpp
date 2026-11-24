@@ -27,6 +27,7 @@
 #include "../misc/alpine_settings.h"
 #include "../misc/settings_registry.h"
 #include "../multi/sprays.h"
+#include "../os/os.h"
 #include "../rf/gameseq.h"
 #include "../rf/gr/gr.h"
 #include "../rf/gr/gr_font.h"
@@ -313,8 +314,6 @@ struct ReticleBaseline
     std::string key;
 };
 ReticleBaseline g_reticle_baseline;
-// The crosshair editor's COPY / PASTE clipboard for the menu's visit: the copied crosshair as it is drawn.
-std::optional<ReticleConfig> g_reticle_clipboard;
 
 // Keeps g_changed in step with the baseline captured at menu entry. A write can move other rows
 // too (a preset expands over its members, a member edit makes it Custom), so every row is checked.
@@ -2018,7 +2017,6 @@ void capture_session_baseline()
     }
     g_reticle_baseline = ReticleBaseline{g_alpine_game_config.default_reticle(), g_alpine_game_config.weapon_reticles,
                                          reticle_state_key()};
-    g_reticle_clipboard.reset();
     g_weapon_prefs_baseline.reset();
     if (rf::local_player) {
         g_weapon_prefs_baseline.emplace();
@@ -2501,26 +2499,135 @@ bool reticle_slot_has_own(int slot)
     return g_alpine_game_config.weapon_reticles.contains(std::string_view{rf::weapon_types[slot].name.c_str()});
 }
 
-void reticle_copy()
+// The selected crosshair as it is drawn.
+ReticleConfig reticle_selected()
 {
     const int slot = g_reticle_menu_slot;
-    g_reticle_clipboard = slot < 0 ? g_alpine_game_config.default_reticle()
-                                   : g_alpine_game_config.reticle_for_weapon(rf::weapon_types[slot].name.c_str());
-    ui_play_click();
+    return slot < 0 ? g_alpine_game_config.default_reticle()
+                    : g_alpine_game_config.reticle_for_weapon(rf::weapon_types[slot].name.c_str());
 }
 
-void reticle_paste()
+void reticle_apply(const ReticleConfig& cfg)
 {
-    // Replaces, never merges: the crosshair ends as the copied one was. A weapon gets a crosshair of its own.
+    // Replaces, never merges. A weapon gets a crosshair of its own.
     const int slot = g_reticle_menu_slot;
     if (slot < 0) {
-        g_alpine_game_config.set_default_reticle(*g_reticle_clipboard);
+        g_alpine_game_config.set_default_reticle(cfg);
     }
     else {
-        g_alpine_game_config.weapon_reticles[rf::weapon_types[slot].name.c_str()] = *g_reticle_clipboard;
+        g_alpine_game_config.weapon_reticles[rf::weapon_types[slot].name.c_str()] = cfg;
     }
     note_rows_changed();
     ui_play_click();
+}
+
+// COPY / PASTE go through the system clipboard as a share code, so a crosshair can be pasted to and from anywhere.
+void reticle_copy(UiContext& ctx)
+{
+    write_clipboard_text(reticle_share_code(reticle_selected()));
+    ctx.push_toast("CROSSHAIR CODE COPIED");
+    ui_play_click();
+}
+
+void reticle_paste(UiContext& ctx)
+{
+    if (const auto cfg = reticle_from_share_code(read_clipboard_text(512))) {
+        reticle_apply(*cfg);
+        return;
+    }
+    ctx.push_toast("NO CROSSHAIR CODE ON THE CLIPBOARD");
+    ui_play_error();
+}
+
+std::string g_reticle_save_name;
+float g_reticle_saved_scroll = 0.0f;
+UiId g_reticle_saved_scrolled_to = 0;
+
+// Saved crosshairs under the weapon list: a click loads one into the selected crosshair, the X deletes it, and the
+// name field below saves the selected crosshair (replacing one of that name).
+void build_reticle_saved(UiContext& ctx, const UiRect& area, const Fonts& fonts)
+{
+    const auto s = [&](float v) { return skin_px(ctx, v); };
+    auto& saved = g_alpine_game_config.saved_reticles;
+    const int caption_h = s(30.0f);
+    const int form_h = s(44.0f);
+    const int gap = s(10.0f);
+    if (ctx.draw) {
+        const UiRect d = ui_draw_rect(ctx, UiRect{area.x, area.y, area.w, caption_h});
+        rf::gr::set_color(skin::ink_title);
+        rf::gr::string(d.x, d.y, std::format("SAVED ({}/{})", saved.size(), AlpineGameSettings::max_saved_reticles).c_str(),
+                       fonts.caption_bold);
+    }
+
+    const UiRect well{area.x, area.y + caption_h, area.w, area.h - caption_h - gap - form_h};
+    const SkinScrollList list{
+        .count = static_cast<int>(saved.size()),
+        .row_h = s(skin::list_row_h),
+        .id_name = "reticle_saved_list",
+        .row_id_name = "reticle_saved",
+        .empty_text = saved.empty() ? "Name the crosshair\nbelow and SAVE." : nullptr,
+        .font = fonts.body,
+    };
+    std::optional<std::string> load, remove;
+    skin_scroll_list(ctx, well, list, g_reticle_saved_scroll, g_reticle_saved_scrolled_to, [&](const SkinScrollListRow& row) {
+        // ponytail: std::next per row is O(n^2), fine for max_saved_reticles
+        const auto& [name, code] = *std::next(saved.begin(), row.index);
+        if (!row.in_view) {
+            if (row.offscreen_activated) {
+                load = name;
+            }
+            return;
+        }
+        const SkinListRow r = skin_list_row(ctx, row.rect, false, row.id);
+        const int icon = s(skin::icon_size);
+        const UiRect del{row.rect.x + row.rect.w - s(14.0f) - icon, row.rect.y + (row.rect.h - icon) / 2, icon, icon};
+        const bool del_pressed =
+            skin_icon_button(ctx, del, "af_close_icon", skin::txt_hint, skin::warn, ui_id("reticle_saved_delete", row.index));
+        if (ctx.draw) {
+            const int text_x = r.draw.x + s(24.0f);
+            const int text_w = std::max(1, r.draw.x + r.draw.w - (row.rect.x + row.rect.w - del.x) - s(12.0f) - text_x);
+            rf::gr::set_color(r.lit ? skin::txt_hi : skin::txt);
+            rf::gr::string(text_x, r.draw.y + (r.draw.h - rf::gr::get_font_height(fonts.body)) / 2,
+                           ui_fit_end(name, text_w, fonts.body).c_str(), fonts.body);
+            return;
+        }
+        if (del_pressed) {
+            remove = name;
+        }
+        else if (r.clicked || r.activated) {
+            load = name;
+        }
+    });
+    if (load) {
+        if (const auto cfg = reticle_from_share_code(saved[*load])) {
+            reticle_apply(*cfg);
+        }
+        else {
+            ctx.push_toast("SAVED CROSSHAIR CODE IS UNREADABLE");
+            ui_play_error();
+        }
+    }
+    if (remove) {
+        saved.erase(*remove);
+        ctx.push_toast(std::format("DELETED {}", string_to_upper(*remove)));
+        ui_play_toggle(false);
+    }
+
+    const int save_w = skin_button_width(ctx, "SAVE", fonts.body_bold, 110.0f);
+    const int form_y = area.y + area.h - form_h;
+    const UiRect field{area.x, form_y, area.w - save_w - gap, form_h};
+    skin_field(ctx, field, ui_id("reticle_save_name"), g_reticle_save_name, 32, ui_char_filter_filename, "Name",
+               fonts.body, true, false, nullptr);
+    const std::string name{trim(g_reticle_save_name)};
+    const bool can_save = reticle_saved_name_valid(name)
+        && (saved.contains(name) || saved.size() < AlpineGameSettings::max_saved_reticles);
+    if (skin_button(ctx, UiRect{field.x + field.w + gap, form_y, save_w, form_h}, "SAVE", fonts.body_bold,
+                    SkinButton::Secondary, can_save, ui_id("reticle_save"))) {
+        saved[name] = reticle_share_code(reticle_selected());
+        ctx.push_toast(std::format("SAVED {}", string_to_upper(name)));
+        g_reticle_save_name.clear();
+        ui_play_click();
+    }
 }
 
 int reticle_editor_style()
@@ -2583,8 +2690,10 @@ void build_reticle_editor_modal(UiContext& ctx, const Fonts& fonts, bool sync_st
         skin_steel_field(ctx, d.x, d.y, d.w, d.h);
     }
 
-    // Weapon list. * marks a weapon with a crosshair of its own.
-    const UiRect list_view{dialog.x + pad, top, s(380.0f), bottom - top};
+    // Weapon list, saved crosshairs under it. * marks a weapon with a crosshair of its own.
+    const int saved_h = s(330.0f);
+    const UiRect list_view{dialog.x + pad, top, s(380.0f), bottom - top - saved_h - pad};
+    build_reticle_saved(ctx, UiRect{list_view.x, bottom - saved_h, list_view.w, saved_h}, fonts);
     const int item_h = s(skin::list_row_h);
     if (ctx.draw) {
         const UiRect d = ui_draw_rect(ctx, list_view);
@@ -2696,7 +2805,7 @@ void build_reticle_editor_modal(UiContext& ctx, const Fonts& fonts, bool sync_st
 
     // Footer: COPY / PASTE (as the create game screen's Map Settings), the hovered control's description, and DONE.
     const int done_w = skin_button_width(ctx, "DONE", fonts.body_bold, 180.0f);
-    const int btn_w = s(200.0f);
+    const int btn_w = skin_button_width(ctx, "PASTE CODE", fonts.body_bold, 200.0f);
     const int btn_gap = s(16.0f);
     const UiRect copy{dialog.x + pad, footer_y, btn_w, btn_h};
     const UiRect paste{copy.x + btn_w + btn_gap, footer_y, btn_w, btn_h};
@@ -2709,13 +2818,11 @@ void build_reticle_editor_modal(UiContext& ctx, const Fonts& fonts, bool sync_st
         form_draw_description(ctx, UiRect{desc_x, footer_y, dialog.x + dialog.w - 2 * pad - done_w - desc_x, btn_h},
                               text, fonts.caption);
     }
-    if (skin_button(ctx, copy, "COPY", fonts.body_bold, SkinButton::Secondary, true, ui_id("reticle_copy"))) {
-        reticle_copy();
+    if (skin_button(ctx, copy, "COPY CODE", fonts.body_bold, SkinButton::Secondary, true, ui_id("reticle_copy"))) {
+        reticle_copy(ctx);
     }
-    if (skin_button(ctx, paste, "PASTE", fonts.body_bold, SkinButton::Secondary, g_reticle_clipboard.has_value(),
-                    ui_id("reticle_paste"))
-        && g_reticle_clipboard) {
-        reticle_paste();
+    if (skin_button(ctx, paste, "PASTE CODE", fonts.body_bold, SkinButton::Secondary, true, ui_id("reticle_paste"))) {
+        reticle_paste(ctx);
     }
     if (skin_button(ctx, UiRect{dialog.x + dialog.w - pad - done_w, footer_y, done_w, btn_h}, "DONE",
                     fonts.body_bold, SkinButton::Secondary, true, ui_id("reticle_done"))) {
@@ -3142,10 +3249,8 @@ std::vector<MenuHint> frame_hints(const UiContext& ctx, Modal modal)
     }
     else if (modal == Modal::ReticleEditor) {
         // As settings_menu_key_callback(), and the create game screen's map list.
-        hints.push_back({"CTRL+C", "Copy crosshair"});
-        if (g_reticle_clipboard) {
-            hints.push_back({"CTRL+V", "Paste crosshair"});
-        }
+        hints.push_back({"CTRL+C", "Copy crosshair code"});
+        hints.push_back({"CTRL+V", "Paste crosshair code"});
     }
     return hints;
 }
@@ -3260,11 +3365,11 @@ void __cdecl settings_menu_key_callback(int key)
 
     if (g_modal == Modal::ReticleEditor) {
         if (key == (rf::KEY_C | rf::KEY_CTRLED)) {
-            reticle_copy();
+            reticle_copy(g_ui);
             return;
         }
-        if (key == (rf::KEY_V | rf::KEY_CTRLED) && g_reticle_clipboard) {
-            reticle_paste();
+        if (key == (rf::KEY_V | rf::KEY_CTRLED)) {
+            reticle_paste(g_ui);
             return;
         }
     }

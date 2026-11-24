@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <iterator>
 #include <map>
@@ -88,6 +89,22 @@ inline void reticle_set_int(ReticleConfig& cfg, const ReticleIntField& f, int v)
 // "style=3;dot_size=3;...;color=00FF00" (colors only when set)
 std::string reticle_config_to_string(const ReticleConfig& cfg);
 void reticle_config_from_string(ReticleConfig& cfg, const std::string& s);
+
+// Share code: "AFX" then Crockford base32 (letters and digits, case-insensitive) of a version byte, the
+// reticle_int_fields values in table order (2 bytes big-endian when the field's max exceeds 255, else 1), a flags byte
+// (1 outline color, 2 color, 4 locked color), those colors as 4 bytes RGBA each, and a checksum byte. Changing the
+// fields or their ranges changes the layout: bump the version and keep decoding the old one.
+std::string reticle_share_code(const ReticleConfig& cfg);
+std::optional<ReticleConfig> reticle_from_share_code(std::string_view code);
+
+// Saved crosshair names become ini keys (SavedReticle_<name>): letters, digits, space - _ . and no outer spaces.
+inline bool reticle_saved_name_valid(std::string_view name)
+{
+    return !name.empty() && name.size() <= 32 && name.front() != ' ' && name.back() != ' '
+        && std::ranges::all_of(name, [](char c) {
+               return std::isalnum(static_cast<unsigned char>(c)) || c == ' ' || c == '-' || c == '_' || c == '.';
+           });
+}
 
 struct AlpineGameSettings
 {
@@ -630,6 +647,9 @@ struct AlpineGameSettings
     // reticle: default config plus per-weapon overrides keyed by weapon class name (e.g. "Assault Rifle")
     ReticleConfig reticle{};
     std::map<std::string, ReticleConfig, std::less<>> weapon_reticles{};
+    // Saved crosshairs: name (reticle_saved_name_valid) -> share code, kept as text so a newer client's code survives.
+    static constexpr std::size_t max_saved_reticles = 128;
+    std::map<std::string, std::string, std::less<>> saved_reticles{};
     ReticleConfig default_reticle() const
     {
         ReticleConfig cfg = reticle;

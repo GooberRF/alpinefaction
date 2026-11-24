@@ -11,6 +11,8 @@ Version 1.6.0 (TBD): Not yet released
   - Adjust each shape's size, thickness, gap, rotation, colors and outline in the options menu's crosshair editor
   - Give individual weapons their own crosshair, or keep the stock weapon bitmaps
   - Crosshair edges are anti-aliased
+  - Share crosshairs as short codes (COPY CODE / PASTE CODE in the editor, `ui_reticle_code` / `ui_reticle_load`)
+  - Save up to 128 named crosshairs in the editor or with `ui_reticle_save`, `ui_reticle_load` and `ui_reticle_delete`
   - Add `ui_reticle_*` console commands to set crosshair options, and `ui_reticle_weapon`, `ui_reticle_weapon_reset` and `ui_reticle_weapon_copy` to manage per-weapon crosshairs
 - Mouse wheel over a menu slider adjusts its value
 

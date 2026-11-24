@@ -27,7 +27,11 @@
 #include <windows.h>
 #include <shellapi.h>
 #include <array>
+#include <bit>
+#include <cctype>
 #include <cstring>
+#include <span>
+#include <vector>
 #include <fstream>
 #include <iostream>
 #include <ostream>
@@ -601,11 +605,17 @@ bool alpine_player_settings_load(rf::Player* player)
         processed_keys.insert("ReticleOutlineColor");
     }
     // WeaponReticle_<weapon class name>=style=3;dot_size=3;...
+    // SavedReticle_<name>=<share code>
+    g_alpine_game_config.saved_reticles.clear();
     for (const auto& [key, value] : settings) {
         if (string_starts_with(key, "WeaponReticle_") && key.size() > 14) {
             ReticleConfig cfg = g_alpine_game_config.reticle;
             reticle_config_from_string(cfg, value);
             g_alpine_game_config.weapon_reticles[key.substr(14)] = cfg;
+            processed_keys.insert(key);
+        }
+        else if (string_starts_with(key, "SavedReticle_") && key.size() > 13) {
+            g_alpine_game_config.saved_reticles[key.substr(13)] = value;
             processed_keys.insert(key);
         }
     }
@@ -812,6 +822,9 @@ static void alpine_settings_serialize_reticles(std::ostream& file)
     file << "ReticleOutlineColor=" << format_hex_color_string(cfg.outline_color) << "\n";
     for (const auto& [name, weapon_cfg] : g_alpine_game_config.weapon_reticles) {
         file << "WeaponReticle_" << name << "=" << reticle_config_to_string(weapon_cfg) << "\n";
+    }
+    for (const auto& [name, code] : g_alpine_game_config.saved_reticles) {
+        file << "SavedReticle_" << name << "=" << code << "\n";
     }
 }
 
@@ -1317,4 +1330,127 @@ void reticle_config_from_string(ReticleConfig& cfg, const std::string& s)
             }
         }
     }
+}
+
+static constexpr std::string_view reticle_share_code_prefix = "AFX";
+static constexpr std::string_view reticle_share_code_digits = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"; // Crockford
+static constexpr uint8_t reticle_share_code_version = 1;
+
+static int reticle_share_code_width(const ReticleIntField& f)
+{
+    return f.max > 255 ? 2 : 1;
+}
+
+static uint8_t reticle_share_code_checksum(std::span<const uint8_t> bytes)
+{
+    uint8_t sum = 0;
+    for (const uint8_t b : bytes) {
+        sum = static_cast<uint8_t>(sum * 31 + b);
+    }
+    return sum;
+}
+
+std::string reticle_share_code(const ReticleConfig& cfg)
+{
+    std::vector<uint8_t> bytes{reticle_share_code_version};
+    for (const auto& f : reticle_int_fields) {
+        const int v = cfg.*f.member;
+        if (reticle_share_code_width(f) == 2) {
+            bytes.push_back(static_cast<uint8_t>(v >> 8));
+        }
+        bytes.push_back(static_cast<uint8_t>(v));
+    }
+    const std::optional<uint32_t> colors[] = {
+        cfg.outline_color != ReticleConfig::default_outline_color ? std::optional{cfg.outline_color} : std::nullopt,
+        cfg.color,
+        cfg.locked_color,
+    };
+    uint8_t flags = 0;
+    for (int i = 0; i < 3; ++i) {
+        flags |= colors[i] ? (1 << i) : 0;
+    }
+    bytes.push_back(flags);
+    for (const auto& color : colors) {
+        for (int shift = 24; color && shift >= 0; shift -= 8) {
+            bytes.push_back(static_cast<uint8_t>(*color >> shift));
+        }
+    }
+    bytes.push_back(reticle_share_code_checksum(bytes));
+
+    std::string s{reticle_share_code_prefix};
+    uint32_t acc = 0;
+    int bits = 0;
+    for (const uint8_t b : bytes) {
+        acc = (acc << 8) | b;
+        for (bits += 8; bits >= 5; bits -= 5) {
+            s += reticle_share_code_digits[(acc >> (bits - 5)) & 31];
+        }
+    }
+    if (bits > 0) {
+        s += reticle_share_code_digits[(acc << (5 - bits)) & 31];
+    }
+    return s;
+}
+
+std::optional<ReticleConfig> reticle_from_share_code(std::string_view code)
+{
+    code = trim(code);
+    if (code.size() > 128 || !string_istarts_with(code, reticle_share_code_prefix)) {
+        return {};
+    }
+    code.remove_prefix(reticle_share_code_prefix.size());
+    std::vector<uint8_t> bytes;
+    uint32_t acc = 0;
+    int bits = 0;
+    for (const char ch : code) {
+        // Crockford: case-insensitive, and the look-alikes O, I and L read as 0, 1 and 1.
+        char c = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+        c = c == 'O' ? '0' : (c == 'I' || c == 'L') ? '1' : c;
+        const std::size_t digit = reticle_share_code_digits.find(c);
+        if (digit == std::string_view::npos) {
+            return {};
+        }
+        acc = (acc << 5) | static_cast<uint32_t>(digit);
+        bits += 5;
+        if (bits >= 8) {
+            bits -= 8;
+            bytes.push_back(static_cast<uint8_t>(acc >> bits));
+        }
+    }
+
+    std::size_t int_bytes = 0;
+    for (const auto& f : reticle_int_fields) {
+        int_bytes += reticle_share_code_width(f);
+    }
+    // version, ints, flags, checksum
+    if (bytes.size() < int_bytes + 3 || bytes[0] != reticle_share_code_version
+        || bytes.back() != reticle_share_code_checksum(std::span{bytes}.first(bytes.size() - 1))) {
+        return {};
+    }
+    std::size_t pos = 1;
+    const auto read = [&](int n) {
+        uint32_t v = 0;
+        while (n-- > 0) {
+            v = (v << 8) | bytes[pos++];
+        }
+        return v;
+    };
+    ReticleConfig cfg;
+    for (const auto& f : reticle_int_fields) {
+        reticle_set_int(cfg, f, static_cast<int>(read(reticle_share_code_width(f))));
+    }
+    const uint32_t flags = read(1);
+    if (flags > 7 || bytes.size() != pos + 4 * std::popcount(flags) + 1) {
+        return {};
+    }
+    if (flags & 1) {
+        cfg.outline_color = read(4);
+    }
+    if (flags & 2) {
+        cfg.color = read(4);
+    }
+    if (flags & 4) {
+        cfg.locked_color = read(4);
+    }
+    return cfg;
 }

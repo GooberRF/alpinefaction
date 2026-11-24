@@ -247,12 +247,16 @@ Colors are hex `RRGGBB` or `RRGGBBAA`, or comma-separated `R,G,B[,A]` values in 
 | `ui_colorize_custom_reticles` | | Toggles applying reticle color overrides to custom reticles (looks wrong on non-greyscale reticle textures). Default: off. |
 | `ui_reticle_circle_size` | `[px]` | Sets the vector crosshair circle radius (1-200). Default: 10. |
 | `ui_reticle_circle_thickness` | `[px]` | Sets the vector crosshair circle line thickness (1-20). Default: 1. |
+| `ui_reticle_code` | | Prints the share code of the crosshair selected with `ui_reticle_weapon` and copies it to the clipboard. |
 | `ui_reticle_cross_gap` | `[px]` | Sets the vector crosshair cross center gap (0-100). Default: 3. |
 | `ui_reticle_cross_length` | `[px]` | Sets the vector crosshair cross arm length (1-100). Default: 8. |
 | `ui_reticle_cross_thickness` | `[px]` | Sets the vector crosshair cross thickness (1-20). Default: 1. |
+| `ui_reticle_delete` | `<name>` | Deletes a saved crosshair. |
 | `ui_reticle_dot_size` | `[px]` | Sets the vector crosshair dot size (1-100). Default: 3. |
+| `ui_reticle_load` | `[code\|saved name]` | Loads a crosshair share code or saved crosshair into the crosshair selected with `ui_reticle_weapon`. No argument lists saved crosshairs. |
 | `ui_reticle_outline` | `[px]` | Sets the vector crosshair outline thickness (0-10, 0 disables). Default: 1. |
 | `ui_reticle_outline_shapes` | `<all\|none\|dot\|cross\|square\|circle\|triangle\|a+b+c>` | Selects which vector crosshair shapes get the outline. Default: all. |
+| `ui_reticle_save` | `<name>` | Saves the crosshair selected with `ui_reticle_weapon` under a name (up to 128 saved crosshairs), replacing one of that name. |
 | `ui_reticle_square_angle` | `[degrees]` | Sets the vector crosshair square rotation, clockwise. Default: 0. |
 | `ui_reticle_square_size` | `[px]` | Sets the vector crosshair square half-width (1-200). Default: 10. |
 | `ui_reticle_square_thickness` | `[px]` | Sets the vector crosshair square line thickness (1-20). Default: 1. |
