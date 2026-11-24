@@ -10,6 +10,8 @@ Version 1.6.0 (TBD): Not yet released
 - Show terrain textures at full resolution in the level editor, as the game draws them (Direct3D 11 renderer only)
 
 ### Bug fixes
+[@GooberRF](https://github.com/GooberRF)
+- Fix the level editor's minimap preview not showing a new `Bake from level` until `Level Properties` is reopened (Direct3D 11 renderer only)
 
 Version 1.5.0 (Trillium): Released Nov-20-2026
 --------------------------------

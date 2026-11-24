@@ -18,7 +18,6 @@
 
 #include "atx.h"
 #include "bmpman.h"
-#include "../graphics/gr.h"
 #include "../rf/bmpman.h"
 #include "../rf/file/file.h"
 #include "../rf/gameseq.h"
@@ -199,10 +198,6 @@ namespace
 
     void dirty_atx(AtxController& c)
     {
-        // Dirtying only drops the texture; the render context still holds the handle pair
-        // that selected it, so it has to be told the answer moved. Doing it here covers every
-        // caller rather than each remembering to.
-        gr_invalidate_texture_cache();
         // Mark every bm_handle that maps to this controller. Without this, only the
         // most-recently-locked handle would re-upload to the GPU, freezing animation on any
         // other in-world instance that references this ATX through a different extension.

@@ -1049,6 +1049,9 @@ namespace gr::d3d11
     void EditorRenderer::texture_mark_dirty(int bm_handle)
     {
         texture_manager_->mark_dirty(bm_handle);
+        // The context still holds the handle pair that selected the dropped texture: a bitmap reloaded in place keeps
+        // its handle, and its next draw would sample the old texture
+        render_context_->invalidate_texture_cache();
     }
 
     void EditorRenderer::texture_free(int bm_handle)
