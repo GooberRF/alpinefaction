@@ -1,5 +1,6 @@
 #include "../../hud/hud.h"
 #include "../../rf/hud.h"
+#include "../../rf/weapon.h"
 #include "../waypoints.h"
 #include "settings_rows.h"
 
@@ -19,6 +20,92 @@ bool damage_flash_offered(const int value)
 {
     return value != 2 || is_d3d11();
 }
+
+// Crosshair editor rows (the options menu's crosshair popout). They edit g_reticle_menu_slot's crosshair: the default
+// (every weapon without its own) or one weapon's override, which the first edit creates from the default. SF_HIDDEN:
+// only the popout draws them. Persisted by the [Reticles] section of alpine_settings.ini, hence SF_BESPOKE_INI.
+const char* reticle_weapon_name(int slot)
+{
+    return slot >= 0 && slot < rf::num_weapon_types ? static_cast<const char*>(rf::weapon_types[slot].name) : nullptr;
+}
+
+// Effective config of the selected target, for display.
+ReticleConfig menu_reticle_view()
+{
+    const char* name = reticle_weapon_name(g_reticle_menu_slot);
+    return name ? g_alpine_game_config.reticle_for_weapon(name) : g_alpine_game_config.default_reticle();
+}
+
+ReticleConfig& menu_reticle_edit()
+{
+    const char* name = reticle_weapon_name(g_reticle_menu_slot);
+    if (!name) {
+        return g_alpine_game_config.reticle;
+    }
+    return g_alpine_game_config.weapon_reticles.try_emplace(name, g_alpine_game_config.default_reticle()).first->second;
+}
+
+// The default config's colours live in the ReticleColor / ReticleLockedColor rows' fields.
+std::optional<uint32_t>& menu_reticle_color(bool locked)
+{
+    if (!reticle_weapon_name(g_reticle_menu_slot)) {
+        return locked ? g_alpine_game_config.reticle_locked_color_override : g_alpine_game_config.reticle_color_override;
+    }
+    ReticleConfig& cfg = menu_reticle_edit();
+    return locked ? cfg.locked_color : cfg.color;
+}
+
+#define RETICLE_BIT_ROW(field, bit, row_id, row_label, row_tooltip, def)                                \
+    {                                                                                                  \
+        .id = row_id,                                                                                  \
+        .label = row_label,                                                                            \
+        .tooltip = row_tooltip,                                                                        \
+        .category = Cat::Hud,                                                                          \
+        .subcategory = "Crosshair",                                                                    \
+        .widget = Wid::Toggle,                                                                         \
+        .access = AccFnBool{                                                                           \
+            [](rf::Player*) { return (menu_reticle_view().field & (bit)) != 0; },                      \
+            [](rf::Player*, bool v) {                                                                  \
+                int& bits = menu_reticle_edit().field;                                                 \
+                bits = v ? (bits | (bit)) : (bits & ~(bit));                                           \
+            }},                                                                                        \
+        .flags = SF_HIDDEN | SF_BESPOKE_INI,                                                           \
+        .default_str = def,                                                                            \
+    }
+
+#define RETICLE_INT_ROW(field, row_label, row_tooltip, lo, hi, def, suffix, zero)                      \
+    {                                                                                                  \
+        .id = "reticle_" #field,                                                                       \
+        .label = row_label,                                                                            \
+        .tooltip = row_tooltip,                                                                        \
+        .category = Cat::Hud,                                                                          \
+        .subcategory = "Crosshair",                                                                    \
+        .widget = Wid::Slider,                                                                         \
+        .access = AccFnInt{                                                                            \
+            [](rf::Player*) { return menu_reticle_view().field; },                                     \
+            [](rf::Player*, int v) { menu_reticle_edit().field = v; },                                 \
+            (lo), (hi)},                                                                               \
+        .flags = SF_HIDDEN | SF_BESPOKE_INI,                                                           \
+        .console_cmd = "ui_reticle_" #field,                                                           \
+        .default_str = #def,                                                                           \
+        .ui_suffix = suffix,                                                                           \
+        .ui_zero_label = zero,                                                                         \
+    }
+
+#define RETICLE_COLOR_ROW(locked, row_id, row_label, row_tooltip, extra_flags)                         \
+    {                                                                                                  \
+        .id = row_id,                                                                                  \
+        .label = row_label,                                                                            \
+        .tooltip = row_tooltip,                                                                        \
+        .category = Cat::Hud,                                                                          \
+        .subcategory = "Crosshair",                                                                    \
+        .widget = Wid::OptionalColor,                                                                  \
+        .access = AccFnOptColor{                                                                       \
+            [](rf::Player*) { return (locked) ? menu_reticle_view().locked_color : menu_reticle_view().color; }, \
+            [](rf::Player*, std::optional<uint32_t> v) { menu_reticle_color(locked) = v; }},           \
+        .flags = SF_HIDDEN | SF_BESPOKE_INI | (extra_flags),                                           \
+        .default_str = "default",                                                                      \
+    }
 
 const char* const labels_damage_flash[] = {"Off", "Screen flash", "Edge vignette"};
 const char* const labels_scope_glass[] = {"Off", "Light", "Heavy"};
@@ -338,11 +425,12 @@ const SettingRow rows[] = {
         .id = "reticle_color",
         .key = "ReticleColor",
         .label = "Crosshair color",
-        .tooltip = "Tint for the crosshair; reset the row to use the stock colors.",
+        .tooltip = "Reset for the stock colors.",
         .category = Cat::Hud,
         .subcategory = "Crosshair",
         .widget = Wid::OptionalColor,
         .access = AccOptColor{&AGS::reticle_color_override},
+        .flags = SF_HIDDEN,
         .console_cmd = "ui_color_reticle",
     },
     {
@@ -354,7 +442,7 @@ const SettingRow rows[] = {
         .subcategory = "Crosshair",
         .widget = Wid::OptionalColor,
         .access = AccOptColor{&AGS::reticle_locked_color_override},
-        .flags = SF_SP_ONLY,
+        .flags = SF_SP_ONLY | SF_HIDDEN,
         .console_cmd = "ui_color_reticle_locked",
     },
     {
@@ -381,6 +469,81 @@ const SettingRow rows[] = {
         .flags = SF_MP_ONLY | SF_ADVANCED,
         .console_cmd = "mp_crit_flash",
     },
+    {
+        .id = "reticle_editor",
+        .label = "Custom crosshairs",
+        .tooltip = "Shapes, colors and outline, for all weapons or each one.",
+        .category = Cat::Hud,
+        .subcategory = "Crosshair",
+        .widget = Wid::Action,
+        .persistence = Pers::None,
+    },
+    {
+        .id = "reticle_weapon_override",
+        .label = "Own crosshair",
+        .tooltip = "Off: this weapon uses the default crosshair.",
+        .category = Cat::Hud,
+        .subcategory = "Crosshair",
+        .widget = Wid::Toggle,
+        .access = AccFnBool{
+            [](rf::Player*) {
+                const char* name = reticle_weapon_name(g_reticle_menu_slot);
+                return name && g_alpine_game_config.weapon_reticles.contains(std::string_view{name});
+            },
+            [](rf::Player*, bool v) {
+                if (const char* name = reticle_weapon_name(g_reticle_menu_slot)) {
+                    if (v) {
+                        menu_reticle_edit();
+                    }
+                    else {
+                        g_alpine_game_config.weapon_reticles.erase(std::string{name});
+                    }
+                }
+            }},
+        .flags = SF_HIDDEN | SF_BESPOKE_INI,
+        .console_cmd = "ui_reticle_weapon_reset",
+        .default_str = "0",
+    },
+    RETICLE_BIT_ROW(style, 1, "reticle_shape_dot", "Dot", "No shapes on: the stock crosshair is drawn.", "0"),
+    RETICLE_BIT_ROW(style, 2, "reticle_shape_cross", "Cross", "No shapes on: the stock crosshair is drawn.", "0"),
+    RETICLE_BIT_ROW(style, 4, "reticle_shape_square", "Square", "No shapes on: the stock crosshair is drawn.", "0"),
+    RETICLE_BIT_ROW(style, 8, "reticle_shape_circle", "Circle", "No shapes on: the stock crosshair is drawn.", "0"),
+    RETICLE_BIT_ROW(style, 16, "reticle_shape_triangle", "Triangle", "No shapes on: the stock crosshair is drawn.", "0"),
+    RETICLE_COLOR_ROW(false, "reticle_target_color", "Color", "Reset for stock green.", SF_NONE),
+    RETICLE_COLOR_ROW(true, "reticle_target_locked_color", "Locked color", "Rocket launcher lock-on. Reset for stock red.", SF_SP_ONLY),
+    RETICLE_INT_ROW(dot_size, "Dot size", "Width of the dot.", 1, 100, 3, " px", nullptr),
+    RETICLE_INT_ROW(cross_length, "Arm length", "Length of each arm.", 1, 100, 8, " px", nullptr),
+    RETICLE_INT_ROW(cross_gap, "Center gap", "Gap between the center and each arm.", 0, 100, 3, " px", nullptr),
+    RETICLE_INT_ROW(cross_thickness, "Thickness", "Line thickness.", 1, 20, 1, " px", nullptr),
+    RETICLE_INT_ROW(square_size, "Size", "Center to each side.", 1, 200, 10, " px", nullptr),
+    RETICLE_INT_ROW(square_thickness, "Thickness", "Line thickness.", 1, 20, 1, " px", nullptr),
+    RETICLE_INT_ROW(square_angle, "Rotation", "Clockwise.", 0, 359, 0, " deg", nullptr),
+    RETICLE_INT_ROW(circle_size, "Radius", "Center to the line.", 1, 200, 10, " px", nullptr),
+    RETICLE_INT_ROW(circle_thickness, "Thickness", "Line thickness.", 1, 20, 1, " px", nullptr),
+    RETICLE_INT_ROW(triangle_size, "Size", "Center to each tip.", 1, 200, 12, " px", nullptr),
+    RETICLE_INT_ROW(triangle_thickness, "Thickness", "Line thickness.", 1, 20, 1, " px", nullptr),
+    RETICLE_INT_ROW(triangle_angle, "Rotation", "Clockwise. 0 points a tip up.", 0, 359, 0, " deg", nullptr),
+    RETICLE_INT_ROW(outline, "Outline thickness", "Border drawn around the shapes.", 0, 10, 1, " px", "Off"),
+    {
+        .id = "reticle_outline_color",
+        .label = "Outline color",
+        .tooltip = "Color of the outline.",
+        .category = Cat::Hud,
+        .subcategory = "Crosshair",
+        .widget = Wid::Color,
+        .access = AccFnOptColor{
+            [](rf::Player*) { return std::optional{menu_reticle_view().outline_color}; },
+            [](rf::Player*, std::optional<uint32_t> v) {
+                menu_reticle_edit().outline_color = v.value_or(ReticleConfig::default_outline_color);
+            }},
+        .flags = SF_HIDDEN | SF_BESPOKE_INI,
+        .default_str = "000000FF",
+    },
+    RETICLE_BIT_ROW(outline_shapes, 1, "reticle_outline_dot", "Outline dot", "Outline the center dot.", "1"),
+    RETICLE_BIT_ROW(outline_shapes, 2, "reticle_outline_cross", "Outline cross", "Outline the cross.", "1"),
+    RETICLE_BIT_ROW(outline_shapes, 4, "reticle_outline_square", "Outline square", "Outline the square.", "1"),
+    RETICLE_BIT_ROW(outline_shapes, 8, "reticle_outline_circle", "Outline circle", "Outline the circle.", "1"),
+    RETICLE_BIT_ROW(outline_shapes, 16, "reticle_outline_triangle", "Outline triangle", "Outline the triangle.", "1"),
     {
         .id = "sniper_scope_color",
         .key = "SniperScopeColor",

@@ -367,6 +367,16 @@ public:
 
     // -------- per-widget scroll offsets --------
     float& scroll_offset(UiId id);
+    // A widget under the cursor that the wheel adjusts (a slider) claims it each hit-test pass. Scroll regions
+    // run before their rows, so they read the previous pass's claim and leave the wheel to that widget.
+    void claim_wheel()
+    {
+        wheel_claimed_ = true;
+    }
+    [[nodiscard]] bool wheel_claimed_prev() const
+    {
+        return wheel_claimed_prev_;
+    }
 
     // -------- toasts --------
     void push_toast(std::string text);
@@ -425,6 +435,8 @@ private:
     void insert_char(char c);
 
     float scale_ = 1.0f;
+    bool wheel_claimed_ = false;
+    bool wheel_claimed_prev_ = false;
 
     int prev_mx_ = 0;
     int prev_my_ = 0;
