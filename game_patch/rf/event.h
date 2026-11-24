@@ -171,6 +171,57 @@ namespace rf
     };
     static_assert(sizeof(GenericEvent) == 0x2D0);
 
+    // The state stock save/load keeps for some stock event types (loaders 0x004BE020..0x004BE2C0)
+    struct WhenDeadEvent : Event
+    {
+        char padding[3];
+        bool message_sent;
+    };
+    static_assert(offsetof(WhenDeadEvent, message_sent) == 0x2B8);
+
+    struct CyclicTimerEvent : Event
+    {
+        char padding[3];
+        bool active;
+        char unk_2b9[0x2C8 - 0x2B9];
+        Timestamp next_fire_timestamp;
+        int send_count;
+    };
+    static_assert(offsetof(CyclicTimerEvent, active) == 0x2B8);
+    static_assert(offsetof(CyclicTimerEvent, next_fire_timestamp) == 0x2C8);
+    static_assert(offsetof(CyclicTimerEvent, send_count) == 0x2CC);
+
+    struct MakeInvulnerableEvent : Event
+    {
+        char padding[3];
+        int unk_2b8;
+        Timestamp invulnerable_timestamp;
+    };
+    static_assert(offsetof(MakeInvulnerableEvent, invulnerable_timestamp) == 0x2BC);
+
+    struct GoalCreateEvent : Event
+    {
+        char padding[3];
+        int unk_2b8[2];
+        int count;
+    };
+    static_assert(offsetof(GoalCreateEvent, count) == 0x2C0);
+
+    struct AlarmSirenEvent : Event
+    {
+        char padding[3];
+        bool siren_playing;
+    };
+    static_assert(offsetof(AlarmSirenEvent, siren_playing) == 0x2B8);
+
+    struct SetLiquidDepthEvent : Event
+    {
+        char padding[3];
+        float depth;
+        float duration;
+    };
+    static_assert(offsetof(SetLiquidDepthEvent, depth) == 0x2B8);
+
     struct ContinuousDamageEvent : Event
     {
         char padding[3];

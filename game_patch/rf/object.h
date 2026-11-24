@@ -65,6 +65,7 @@ namespace rf
         OF_WAS_RENDERED = 0x10,
         OF_UNK_80 = 0x80,
         OF_MESH_NOT_OWNED = 0x400,       // obj_delete_mesh (0x00489FC0) leaves the vmesh alone: a corpse took it
+        OF_IN_LEVEL_TRANSITION = 0x800,  // carried in from the previous level; stock save/load skips it
         // An attached object keeps its own orientation (0x0048771B) and stays simulated
         // (obj_should_sim_physics 0x0048807C). Set 0x004A61BA / cleared 0x004A61D0, local player only.
         OF_KEEP_ORIENT_ON_HOST = 0x100,
@@ -76,7 +77,12 @@ namespace rf
         OF_WEAPON_ONLY_COLLIDE = 0x40000, // only collide with weapons (type 2)
         OF_IN_LIQUID = 0x80000,
         OF_HAS_ALPHA = 0x100000,
+        // Set each frame on the objects obj_move_all's attached-object pass has moved (0x004881A0)
+        OF_HOST_FOLLOWED = 0x1000000,
+        OF_UNK_2000000 = 0x2000000,    // set with OF_WAS_TELEPORTED when physics wakes (0x0040A420, 0x0048AE50)
         OF_WAS_TELEPORTED = 0x4000000, // forces physics/position update this frame
+        OF_SAVED_PHYSICS_ACTIVE = 0x8000000, // stock save (0x0042B340) sets it on entities whose physics is awake
+        OF_UNK_20000000 = 0x20000000, // stock save (0x004C8E20) skips weapons with it
     };
 
     // Uniform Catmull-Rom spline through points[1..num_points]; points[0] and points[num_points + 1] are
@@ -337,6 +343,7 @@ namespace rf
     static auto& obj_find_root_bone_pos = addr_as_ref<void(const Object&, Vector3&)>(0x0048AC70);
     static auto& obj_update_liquid_status = addr_as_ref<void(Object* obj)>(0x00486C30);
     static auto& obj_is_player = addr_as_ref<bool(Object* obj)>(0x004895D0);
+    static auto& obj_is_hidden = addr_as_ref<bool(Object* obj)>(0x0040A110);
     static auto& obj_hide = addr_as_ref<void(Object* obj)>(0x0048A570);
     static auto& obj_unhide = addr_as_ref<void(Object* obj)>(0x0048A660);
     static auto& obj_emit_sound2 = addr_as_ref<int(
@@ -355,6 +362,8 @@ namespace rf
         int weapon_type, int damage_type, Vector3* pos, int killer_uid, char flags)>(0x004892C0);
 
     static auto& object_list = addr_as_ref<Object>(0x0073D880);
+    // Uid of the next runtime object; obj_create (0x00486DA0) counts it down from 0x7FFFFFFF
+    static auto& obj_next_uid = addr_as_ref<int>(0x0059F7E4);
 
     static auto& debris_list = addr_as_ref<Debris>(0x005C98E8);
 

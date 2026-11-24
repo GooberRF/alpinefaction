@@ -412,6 +412,18 @@ const SettingRow rows[] = {
         .console_cmd = "sp_autosave",
     },
     {
+        .id = "alpine_savegame_format",
+        .key = "UseAlpineSavegameFormat",
+        .label = "Alpine savegame format",
+        .tooltip = "Save new games in the Alpine format (.asg) instead of the original one (.svl). Takes effect "
+                   "from the next new game.",
+        .category = Cat::Gameplay,
+        .subcategory = "Single-player",
+        .widget = Wid::Toggle,
+        .access = AccBool{&AGS::alpine_savegame_format},
+        .flags = SF_SP_ONLY | SF_ADVANCED,
+    },
+    {
         .id = "static_bomb_code",
         .key = "StaticBombCode",
         .label = "Random bomb code",

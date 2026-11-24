@@ -13,14 +13,34 @@
 #include "../rf/vmesh.h"
 #include "../rf/save_restore.h"
 #include "../multi/multi.h"
+#include "../multi/vehicles/physics/ragdoll.h"
+#include "../object/object.h"
+#include "../savegame/asg.h"
+#include "misc.h"
 
 struct LevelTransitionObject
 {
     int handle;
     std::string mesh_name;
+    // Alpine-format games keep the rest; stock-format games behave as stock
+    bool keep_state = false;
+    std::string skin;
+    std::string helmet_mesh_name;
+    EntityAnimState anim;
+    CharacterAnimRef custom_state_anim;
+    CharacterAnimRef custom_action_anim;
+};
+
+// A carried ragdoll's pose, its bodies relative to the corpse, which the transition moves
+struct LevelTransitionRagdoll
+{
+    int handle;
+    std::vector<rf::Matrix43> bodies;
+    std::vector<rf::Matrix43> bones;
 };
 
 static std::vector<LevelTransitionObject> g_level_transition_objects;
+static std::vector<LevelTransitionRagdoll> g_level_transition_ragdolls;
 
 FunHook<void()> do_quick_save_hook{
     0x004B5E20,
@@ -186,14 +206,98 @@ FunHook<void(int, int*)> sr_add_handle_for_delayed_resolution_hook{
 FunHook<void(rf::Object*)> sr_store_level_transition_object_mesh_hook{
     0x004B5660,
     [](rf::Object *obj) {
-        if (obj->vmesh) {
-            g_level_transition_objects.emplace_back(
-                obj->handle,
-                rf::vmesh_get_name(obj->vmesh)
-            );
+        if (!obj->vmesh) {
+            return;
+        }
+        auto& lto = g_level_transition_objects.emplace_back();
+        lto.handle = obj->handle;
+        lto.mesh_name = rf::vmesh_get_name(obj->vmesh);
+        // In every game: a carried corpse's helmet would otherwise be left pointing at a purged mesh
+        if (obj->type == rf::OT_CORPSE) {
+            if (auto helmet = static_cast<rf::Corpse*>(obj)->helmet_v3d_handle) {
+                lto.helmet_mesh_name = rf::vmesh_get_name(helmet);
+            }
+        }
+        lto.keep_state = asg_game_saves_asg();
+        if (!lto.keep_state) {
+            return;
+        }
+        lto.skin = obj_get_skin(*obj);
+        if (obj->type == rf::OT_ENTITY) {
+            auto& entity = *static_cast<rf::Entity*>(obj);
+            if (entity.helmet_v3d_handle) {
+                lto.helmet_mesh_name = rf::vmesh_get_name(entity.helmet_v3d_handle);
+            }
+            lto.anim = entity_get_anim_state(entity);
+            lto.custom_state_anim = character_anim_ref(entity.vmesh, lto.anim.custom_state_anim);
+            lto.custom_action_anim = character_anim_ref(entity.vmesh, lto.anim.custom_action_anim);
+        }
+        else if (obj->type == rf::OT_CORPSE) {
+            auto& corpse = *static_cast<rf::Corpse*>(obj);
+            LevelTransitionRagdoll ragdoll{corpse.handle};
+            if (ragdoll_get_pose(corpse, ragdoll.bodies, ragdoll.bones)) {
+                for (auto& body : ragdoll.bodies) {
+                    body.origin -= corpse.pos;
+                }
+                g_level_transition_ragdolls.push_back(std::move(ragdoll));
+            }
         }
     },
 };
+
+// After the new mesh from entity_restore_mesh (0x0042C570)
+static void restore_level_transition_entity(rf::Entity& entity, const LevelTransitionObject& lto)
+{
+    // The unload freed the helmet (0x0042CC71); entity_create loads it this way (0x004238F6)
+    if (!lto.helmet_mesh_name.empty() && !entity.helmet_v3d_handle) {
+        entity.helmet_v3d_handle = rf::vmesh_load(lto.helmet_mesh_name.c_str(), rf::MESH_TYPE_STATIC, -1);
+    }
+    // The restore leaves a dying entity's animation alone
+    if (rf::entity_is_dying(&entity)) {
+        return;
+    }
+    // By file: the previous level's character is freed, and the new one numbers its animations anew
+    EntityAnimState anim = lto.anim;
+    anim.custom_state_anim = character_anim_index(entity.vmesh, lto.custom_state_anim);
+    anim.custom_action_anim = character_anim_index(entity.vmesh, lto.custom_action_anim);
+    if (anim.custom_state_anim < 0
+        && (anim.current_state_anim == rf::ENTITY_STATE_CUSTOM || anim.next_state_anim == rf::ENTITY_STATE_CUSTOM)) {
+        const EntityAnimState fresh = entity_get_anim_state(entity);
+        anim.current_state_anim = fresh.current_state_anim;
+        anim.next_state_anim = fresh.next_state_anim;
+        anim.total_transition_time = fresh.total_transition_time;
+        anim.elapsed_transition_time = fresh.elapsed_transition_time;
+    }
+    entity_set_anim_state(entity, anim);
+}
+
+// The unload frees only the body mesh (0x0048A7C0), but the level load can purge the static mesh the helmet uses
+// (0x005043D0)
+static void restore_level_transition_corpse_helmet(rf::Corpse& corpse, const LevelTransitionObject& lto)
+{
+    if (corpse.helmet_v3d_handle) {
+        rf::vmesh_free(corpse.helmet_v3d_handle);
+        corpse.helmet_v3d_handle = nullptr;
+    }
+    if (!lto.helmet_mesh_name.empty()) {
+        corpse.helmet_v3d_handle = rf::vmesh_load(lto.helmet_mesh_name.c_str(), rf::MESH_TYPE_STATIC, -1);
+    }
+}
+
+void level_transition_restore_ragdolls()
+{
+    for (auto& ragdoll : g_level_transition_ragdolls) {
+        rf::Object* obj = rf::obj_from_handle(ragdoll.handle);
+        if (!obj || obj->type != rf::OT_CORPSE || (obj->obj_flags & rf::OF_DELAYED_DELETE)) {
+            continue;
+        }
+        for (auto& body : ragdoll.bodies) {
+            body.origin += obj->pos;
+        }
+        ragdoll_set_pose(*static_cast<rf::Corpse*>(obj), ragdoll.bodies, ragdoll.bones);
+    }
+    g_level_transition_ragdolls.clear();
+}
 
 FunHook<void()> sr_restore_level_transition_objects_meshes_hook{
     0x004B56E0,
@@ -219,12 +323,37 @@ FunHook<void()> sr_restore_level_transition_objects_meshes_hook{
                 case rf::OT_CLUTTER:
                     rf::clutter_restore_mesh(static_cast<rf::Clutter*>(obj), mesh_name);
                     break;
-                case rf::OT_CORPSE:
-                    rf::corpse_restore_mesh(static_cast<rf::Corpse*>(obj), mesh_name);
+                case rf::OT_CORPSE: {
+                    auto corpse = static_cast<rf::Corpse*>(obj);
+                    // As Alpine's fix to the stock load (0x004179E2): corpse_restore_mesh drops a corpse whose
+                    // character is not loaded, as after the previous level's is freed (0x0051D980), and poses it by
+                    // action index, which an entity of the class loading its animations makes valid
+                    if (lto.keep_state && corpse->entity_type >= 0 && corpse->entity_type < rf::num_entity_types) {
+                        rf::Entity* entity =
+                            rf::entity_create(corpse->entity_type, "", -1, corpse->pos, corpse->orient, 0, -1);
+                        rf::obj_flag_dead(entity);
+                    }
+                    rf::corpse_restore_mesh(corpse, mesh_name);
                     break;
+                }
                 default:
                     rf::obj_flag_dead(obj);
                     break;
+            }
+            // The restore makes a new mesh, which has the class's default skin. One that fails flags the object
+            // dead and may leave it the previous level's mesh.
+            if (obj->obj_flags & rf::OF_DELAYED_DELETE) {
+                continue;
+            }
+            if (obj->type == rf::OT_CORPSE) {
+                restore_level_transition_corpse_helmet(*static_cast<rf::Corpse*>(obj), lto);
+            }
+            if (!lto.keep_state) {
+                continue;
+            }
+            obj_set_skin(*obj, lto.skin);
+            if (obj->type == rf::OT_ENTITY) {
+                restore_level_transition_entity(*static_cast<rf::Entity*>(obj), lto);
             }
         }
         g_level_transition_objects.clear();

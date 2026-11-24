@@ -525,6 +525,16 @@ set(SRCS
     sound/sound_foley.h
     sound/sound_stretch.cpp
     sound/sound_stretch.h
+    savegame/asg.cpp
+    savegame/asg.h
+    savegame/asg_alpine.cpp
+    savegame/asg_capture.cpp
+    savegame/asg_events.cpp
+    savegame/asg_format.cpp
+    savegame/asg_format.h
+    savegame/asg_internal.h
+    savegame/asg_model.h
+    savegame/asg_restore.cpp
     res/resources.rc
     purefaction/pf.cpp
     purefaction/pf.h

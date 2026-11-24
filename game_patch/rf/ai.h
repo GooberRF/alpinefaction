@@ -52,6 +52,7 @@ namespace rf
     {
         AIF_DEAF = 0x800,
         AIF_ALT_FIRE = 0x2000,
+        AIF_UNDERCOVER = 0x10000, // stock save stores it as the player's undercover state (0x004B3EE0)
     };
 
     enum AiMode
@@ -216,6 +217,20 @@ namespace rf
         int ai_flags;
     };
     static_assert(sizeof(AiInfo) == 0x534);
+    static_assert(offsetof(AiInfo, hate_list) == 0x20C);
+    static_assert(offsetof(AiInfo, mode) == 0x280);
+    static_assert(offsetof(AiInfo, submode) == 0x2B4);
+    static_assert(offsetof(AiInfo, target_handle) == 0x2C0);
+    static_assert(offsetof(AiInfo, look_at_handle) == 0x2D4);
+    static_assert(offsetof(AiInfo, current_path) == 0x2E8);
+    static_assert(offsetof(AiPathInfo, end_node) == 0x98);
+    static_assert(offsetof(AiPathInfo, adjacent_node1) == 0x114);
+    static_assert(offsetof(AiInfo, ci) == 0x468);
+    static_assert(offsetof(AiInfo, on_turret_uid) == 0x4B0);
+    static_assert(offsetof(AiInfo, change_weapon_state_timestamp) == 0x4B4);
+    static_assert(offsetof(AiInfo, corpse_carry_handle) == 0x4BC);
+    static_assert(offsetof(AiInfo, steering_vector) == 0x500);
+    static_assert(offsetof(AiInfo, ai_flags) == 0x530);
 
     static auto& ai_get_attack_range = addr_as_ref<float(AiInfo& ai)>(0x004077A0);
     static auto& ai_has_weapon = addr_as_ref<bool(AiInfo *ai_info, int weapon_type)>(0x00403250);
@@ -227,6 +242,8 @@ namespace rf
     static auto& ai_set_submode =
         addr_as_ref<void(AiInfo* ai_info, AiSubmode submode)>(0x00407E80);
     static auto& ai_go_berserk = addr_as_ref<void(AiInfo* ai_info, float berserk_time_second, bool force)>(0x004089F0);
+    static auto& ai_path_create_to_pos = addr_as_ref<void(int entity_handle, Vector3* pos)>(0x0040AC90);
+    static auto& ai_path_create_from_waypoints = addr_as_ref<void(int entity_handle)>(0x0040A9B0);
     static auto& ai_enter_attack_mode = addr_as_ref<void(AiInfo* ai_info)>(0x00408AC0);
     static auto& ai_acquire_new_target = addr_as_ref<void(AiInfo* ai_info)>(0x00403A80);
     static auto& ai_update_animations = addr_as_ref<void(AiInfo* ai_info)>(0x004078E0);

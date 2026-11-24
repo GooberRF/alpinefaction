@@ -6,6 +6,8 @@
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <utility>
+#include <vector>
 #include <bit>
 
 // Values are copied in native byte order, which is the little-endian wire order on every supported target
@@ -93,6 +95,79 @@ private:
     size_t m_cap;
     size_t m_off;
     bool m_ok = true;
+};
+
+// Little-endian writer into a growable buffer. Never fails.
+class GrowableByteWriter
+{
+public:
+    template<typename T>
+        requires std::is_trivially_copyable_v<T>
+    void put(const T& v)
+    {
+        bytes(&v, sizeof(v));
+    }
+
+    void u8(uint8_t v)
+    {
+        put(v);
+    }
+
+    void u16(uint16_t v)
+    {
+        put(v);
+    }
+
+    void u32(uint32_t v)
+    {
+        put(v);
+    }
+
+    void i32(int32_t v)
+    {
+        put(v);
+    }
+
+    void f32(float v)
+    {
+        put(v);
+    }
+
+    void bytes(const void* src, size_t n)
+    {
+        if (n) {
+            const auto* p = static_cast<const uint8_t*>(src);
+            m_buf.insert(m_buf.end(), p, p + n);
+        }
+    }
+
+    // Overwrites a value written earlier, e.g. a size back-filled once its block is complete
+    template<typename T>
+        requires std::is_trivially_copyable_v<T>
+    void patch(size_t off, const T& v)
+    {
+        if (off <= m_buf.size() && sizeof(v) <= m_buf.size() - off) {
+            std::memcpy(m_buf.data() + off, &v, sizeof(v));
+        }
+    }
+
+    [[nodiscard]] size_t size() const
+    {
+        return m_buf.size();
+    }
+
+    [[nodiscard]] const std::vector<uint8_t>& buffer() const
+    {
+        return m_buf;
+    }
+
+    [[nodiscard]] std::vector<uint8_t> take()
+    {
+        return std::move(m_buf);
+    }
+
+private:
+    std::vector<uint8_t> m_buf;
 };
 
 // Bounds-checked little-endian reader. A read past the end fails the reader: it returns zero / false

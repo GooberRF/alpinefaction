@@ -1746,6 +1746,10 @@ void populate_world_hud_sprite_events()
     std::vector<rf::Event*> events = rf::find_all_events_by_type(rf::EventType::World_HUD_Sprite);
 
     for (rf::Event* event : events) {
+        // A savegame restore deletes events its level state does not list
+        if (event->obj_flags & rf::OF_DELAYED_DELETE) {
+            continue;
+        }
         if (auto* hud_sprite_event = dynamic_cast<EventWorldHUDSprite*>(event)) {
             world_hud_sprite_events.insert(hud_sprite_event);
             hud_sprite_event->build_sprite_ints();
@@ -1759,6 +1763,9 @@ void populate_fullscreen_overlay_events()
 
     auto image_events = rf::find_all_events_by_type(rf::EventType::AF_Fullscreen_Image);
     for (rf::Event* event : image_events) {
+        if (event->obj_flags & rf::OF_DELAYED_DELETE) {
+            continue;
+        }
         if (auto* overlay = dynamic_cast<EventFullscreenOverlayBase*>(event)) {
             fullscreen_overlay_events.insert(overlay);
         }
@@ -1766,6 +1773,9 @@ void populate_fullscreen_overlay_events()
 
     auto color_events = rf::find_all_events_by_type(rf::EventType::AF_Fullscreen_Color);
     for (rf::Event* event : color_events) {
+        if (event->obj_flags & rf::OF_DELAYED_DELETE) {
+            continue;
+        }
         if (auto* overlay = dynamic_cast<EventFullscreenOverlayBase*>(event)) {
             fullscreen_overlay_events.insert(overlay);
         }

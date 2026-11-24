@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 #include "../rf/geometry.h"
 #include "../rf/math/matrix.h"
 #include "../rf/math/vector.h"
@@ -13,3 +14,5 @@ bool projector_activate(int event_uid, int camera_handle, const std::string& atx
                         float fov, float interval_s, int w, int h);
 void projector_deactivate(int event_uid);
 void projector_clear_all();
+// The uids of the Display_Projection events projecting now
+std::vector<int> projector_active_event_uids();

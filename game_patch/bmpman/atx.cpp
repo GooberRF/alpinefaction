@@ -728,6 +728,35 @@ std::string atx_canonical_handle(const std::string& handle)
     return handle_from_filename(handle.c_str());
 }
 
+std::vector<AtxPlaybackState> atx_get_playback_states()
+{
+    std::vector<AtxPlaybackState> out;
+    for (const auto& [key, c] : g_controllers) {
+        out.push_back({key, c->current_frame, c->direction, c->playing, c->time_in_frame_s, c->base_frame_time_ms});
+    }
+    std::sort(out.begin(), out.end(), [](const auto& a, const auto& b) { return a.handle < b.handle; });
+    return out;
+}
+
+bool atx_set_playback_state(const AtxPlaybackState& state)
+{
+    AtxController* c = find_by_key(state.handle);
+    if (!c || c->frames.empty()) {
+        return false;
+    }
+    const int frame = std::clamp(state.current_frame, 0, static_cast<int>(c->frames.size()) - 1);
+    const bool changed = frame != c->current_frame;
+    c->current_frame = frame;
+    c->direction = state.direction < 0 ? -1 : 1;
+    c->playing = state.playing;
+    c->time_in_frame_s = std::max(state.time_in_frame_s, 0.0f);
+    c->base_frame_time_ms = std::max(state.base_frame_time_ms, 1);
+    if (changed) {
+        dirty_atx(*c);
+    }
+    return true;
+}
+
 // Takes a canonical key (atx_canonical_handle output), not a raw handle.
 bool atx_has_controller(const std::string& canonical_key)
 {

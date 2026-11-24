@@ -1284,6 +1284,15 @@ bool weather_set_region_enabled(int uid, bool enabled)
     return matched;
 }
 
+std::vector<std::pair<int, bool>> weather_get_region_states()
+{
+    std::vector<std::pair<int, bool>> out;
+    for (const auto& region : g_weather_regions) {
+        out.emplace_back(region.uid, region.enabled);
+    }
+    return out;
+}
+
 static void weather_drop_columns(std::size_t i)
 {
     if (i >= g_weather_states.size()) {

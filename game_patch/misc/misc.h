@@ -56,4 +56,6 @@ bool rocket_locked_reticle_is_customized(bool bighud);
 bool gameseq_is_stacked(rf::GameState state);
 bool gameseq_is_deep_stacked(rf::GameState state);
 bool gameseq_is_visible();
+// Puts the ragdolls a level transition carried back in their poses, once the corpses are in the new level
+void level_transition_restore_ragdolls();
 int letterbox_clip_height();

@@ -567,6 +567,27 @@ void climb_region_set_enabled(int uid, bool enabled)
     }
 }
 
+std::vector<std::pair<int, bool>> climb_region_get_states()
+{
+    std::vector<std::pair<int, bool>> out;
+    for (const auto& entry : g_climb_regions) {
+        const bool disabled = std::find(g_disabled_climb_regions.begin(), g_disabled_climb_regions.end(),
+                                        entry.region) != g_disabled_climb_regions.end();
+        out.emplace_back(entry.uid, !disabled);
+    }
+    return out;
+}
+
+const std::vector<GasRegionTransition>& gas_region_get_transitions()
+{
+    return g_gas_region_transitions;
+}
+
+void gas_region_set_transitions(std::vector<GasRegionTransition> transitions)
+{
+    g_gas_region_transitions = std::move(transitions);
+}
+
 const std::vector<GasRegionInfo>& gas_region_get_all()
 {
     return g_gas_regions;

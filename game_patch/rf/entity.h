@@ -19,11 +19,17 @@ namespace rf
     {
         EF_DYING = 0x1,
         EF_JUMP_START_ANIM = 0x2,
+        // Stock load replays last_cust_anim with it as hold_last_frame (0x0042BFDF)
+        EF_CUSTOM_ANIM_HOLD_LAST_FRAME = 0x8,
         EF_GIB_ON_DEATH = 0x80,
         EF_RELOADING = 0x100, // set by entity_reload_current_primary, cleared by entity_reload_do_frame
+        EF_CROUCHING = 0x400, // stock load re-crouches a player entity with it (0x004B4F89)
         EF_IN_WATER = 0x1000,
         EF_EYE_UNDER_WATER = 0x2000,
         EF_BOARDED = 0x10000, // set by boarding (0x004A1E7F) and the level's "boarded" property (0x0041895D)
+        EF_UNK_20000 = 0x20000, // cleared on the host when stock load re-boards the player (0x004B4EDE)
+        // Stock load launches the endgame named after a dying entity with it (0x0042C19F)
+        EF_ENDGAME_ON_DEATH = 0x400000,
         EF_CUSTOM_CORPSE = 0x2000000,
     };
 
@@ -32,6 +38,8 @@ namespace rf
         EF2_NO_SHADOW = 0x2,
         EF2_DRILL_CONTACT = 0x40, // the driller's bit is touching something (0x004214F0)
         EF2_NO_EXIT = 0x80,       // riders cannot get out of this host (0x004A19AB)
+        EF2_SAVE_RECREATE = 0x400, // stock load (0x0042C24A) recreates a saved entity with it that the level lacks
+        EF2_UNK_4000 = 0x4000,    // set by stock load after it rebuilds a waypoint path (0x0042C043)
         EF2_POWERUP_DAMAGE_AMP = 0x20000,
         EF2_POWERUP_INVULNERABLE = 0x40000,
         EF2_POWERUP_NANO_SHIELD = 0x80000,
@@ -139,6 +147,7 @@ namespace rf
         EIF_TURRET     = 0x2000,
         EIF_MOUSELOOK  = 0x4000,
         EIF_JEEP       = 0x400000,
+        EIF_NANO_SHIELD = 0x2000000,
     };
 
     // EntityInfo::use_function — parsed from "$Use:", value table at 0x0059F978.
@@ -471,8 +480,26 @@ namespace rf
         float custom_max_vel; // horizontal speed cap used instead of info->max_vel when p_data.flags & PF_USE_CUSTOM_MAX_VEL
         VMesh *respawn_vfx_handle;
         Timestamp field_1490;
+
+        void set_speed(EntitySpeed speed)
+        {
+            AddrCaller{0x00427450}.this_call(this, speed);
+        }
     };
     static_assert(sizeof(Entity) == 0x1494);
+    static_assert(offsetof(Entity, ai) == 0x2A0);
+    static_assert(offsetof(Entity, eye_pos) == 0x7D4);
+    static_assert(offsetof(Entity, current_speed) == 0x8C4);
+    static_assert(offsetof(Entity, state_anims) == 0x8E4);
+    static_assert(offsetof(Entity, last_cust_anim_index_maybe_unused) == 0x1368);
+    static_assert(offsetof(Entity, current_state_anim) == 0x138C);
+    static_assert(offsetof(Entity, total_transition_time) == 0x1394);
+    static_assert(offsetof(Entity, driller_rot_angle) == 0x13C4);
+    static_assert(offsetof(Entity, entity_fire_handle) == 0x13D8);
+    static_assert(offsetof(Entity, current_climb_region) == 0x13F0);
+    static_assert(offsetof(Entity, last_fired_timestamp) == 0x13FC);
+    static_assert(offsetof(Entity, weapon_custom_mode_bitmap) == 0x1428);
+    static_assert(offsetof(Entity, min_rel_eye_phb) == 0x1434);
     static_assert(offsetof(Entity, entity_flags) == 0x810);
     static_assert(offsetof(Entity, reload_done_timestamp) == 0x139C);
     static_assert(offsetof(Entity, interface_points) == 0x8CC);
@@ -572,6 +599,14 @@ namespace rf
     static auto& entity_is_crouching = addr_as_ref<bool(Entity* ep)>(0x0040A130);
     static auto& entity_can_crouch = addr_as_ref<bool(Entity* ep)>(0x00428010);
     static auto& entity_crouch = addr_as_ref<void(Entity* ep)>(0x004289D0);
+    static auto& entity_update_collision_spheres = addr_as_ref<void(Entity* ep)>(0x0041DA00);
+    // Drops a nano shield: restores info->max_vel and stops its sound (stock load calls it for EIF_NANO_SHIELD
+    // classes without one, 0x0042C0A3)
+    static auto& entity_end_nano_shield = addr_as_ref<void(Entity* ep, bool play_sound)>(0x00427DF0);
+    static auto& physics_stick_to_ground = addr_as_ref<void(Entity* ep)>(0x004A0840);
+    static auto& movemode_get_mode = addr_as_ref<MoveMode*(int mode)>(0x004339D0);
+    static auto& player_create_entity =
+        addr_as_ref<Entity*(Player* pp, int entity_type, Vector3* pos, Matrix3* orient, int mp_character)>(0x004A4130);
     static auto& entity_maybe_stop_crouching = addr_as_ref<bool(Entity* ep)>(0x00428A60);
     static auto& entity_is_falling = addr_as_ref<bool(Entity* ep)>(0x0042A020);
     static auto& entity_is_climbing = addr_as_ref<bool(Entity* ep)>(0x0042D8B0);

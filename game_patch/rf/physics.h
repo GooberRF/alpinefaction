@@ -109,10 +109,14 @@ namespace rf
                                          // object from its ObjInterp keyframes instead of simulating it
         PF_USE_CUSTOM_MAX_VEL = 0x200000, // movement clamps use Entity::custom_max_vel instead of EntityInfo::max_vel; cleared by entity_land (0x00419830)
         PF_SKIP_SIM_ONCE = 0x800000, // set by camera_enter_freelook/deadlook; obj_move_all skips one physics frame, then clears it
+        // Stock save/load keeps control_data.standing_on_obj_handle in a player's look_at slot while set
+        // (0x0042BB74)
+        PF_UNK_400000 = 0x400000,
         PF_ACCEL_APPLIED = 0x1000000, // dispatcher tail sets this; stock acceleration blocks bail when set (once-per-frame gate)
         PF_COLLIDE_DEFERRED = 0x20000000, // pair copied the other side's earlier hit; physics_update_entity skips the
                                           // move and keeps frame_time_left for the next pass (0x004A0124)
         PF_SIMULATED_THIS_FRAME = 0x40000000, // set before the physics tick in obj_move_all, cleared at the end of obj_process_physics
+        PF_ACTIVE = static_cast<int>(0x80000000u), // awake; obj_physics_activate (0x0040A420) sets it
     };
 
     // Cached material, else from the name prefix (and caches it)
@@ -129,4 +133,7 @@ namespace rf
     static auto& mp_ground_acceleration = addr_as_ref<float>(0x007C7084);
     static auto& physics_create_object = addr_as_ref<void(PhysicsData *pd, ObjectCreateInfo *oci)>(0x0049EC90);
     static auto& physics_delete_object = addr_as_ref<void(PhysicsData *pd)>(0x0049F1D0);
+    // Rebuilds a body from oci, as obj_deserialize (0x0048AE50) does with is_load_state set
+    static auto& physics_init_object =
+        addr_as_ref<void(PhysicsData* pd, ObjectCreateInfo* oci, bool is_load_state)>(0x0049F010);
 }

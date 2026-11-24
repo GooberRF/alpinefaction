@@ -12,7 +12,10 @@ namespace rf
     struct GSolid;
     struct ParticleEmitter;
     struct BoltEmitter;
-    struct LevelLight;
+    namespace gr
+    {
+        struct LevelLight;
+    }
     struct GeoRegion;
 
     struct ClimbRegion
@@ -118,7 +121,7 @@ namespace rf
         bool hard_level_break;
         VArray<ParticleEmitter*> pemitters;
         VArray<BoltEmitter*> bemitters;
-        VArray<LevelLight*> lights;
+        VArray<gr::LevelLight*> lights;
         VArray<GeoRegion*> regions;
         VArray<ClimbRegion*> ladders;
         VArray<PushRegion*> pushers;
@@ -132,6 +135,9 @@ namespace rf
         Matrix3 player_start_orient;
     };
     static_assert(sizeof(LevelInfo) == 0x154);
+    static_assert(offsetof(LevelInfo, ladders) == 0xD8);
+    static_assert(offsetof(LevelInfo, time) == 0x118);
+    static_assert(offsetof(LevelInfo, time_left) == 0x120);
 
     enum LevelFlags {
         LEVEL_LOADED = 1,

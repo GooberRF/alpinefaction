@@ -27,5 +27,8 @@ namespace rf
     static auto& gr_setup_frustum = addr_as_ref<void()>(0x00517E70);
 
     static auto& bomb_defuse_time_left = addr_as_ref<float>(0x006391B4);
+    // Fades out, then plays the named endgame ("call_credits" goes straight to the credits)
+    static auto& endgame_launch = addr_as_ref<void(const char* endgame_name)>(0x0043E9B0);
+    static auto& frand_range = addr_as_ref<float(float min, float max)>(0x00504E40);
 
 }

@@ -4,10 +4,20 @@
 Version 1.6.0 (TBD): Not yet released
 --------------------------------
 ### Major features
+[@GooberRF](https://github.com/GooberRF)
+- Add Alpine savegame format (`.asg`) for single player
+  - Removes the original format's object and level limits and saves positions at full precision
+  - Saves the state of Alpine features such as Alpine events, meshes, regions, RF2-style geomods and ragdolls
+  - Add `Alpine savegame format` setting to save in the original `.svl` format instead; both formats can be loaded
+  - Add `$Require Alpine Savegame Format` `af_game.tbl` option
+  - Save and load menus list both formats, with a level preview and details of the selected save
+  - Characters and corpses carried into the next level keep their skin, helmet, animation and ragdoll pose
 
 ### Minor features, changes, and enhancements
 
 ### Bug fixes
+[@GooberRF](https://github.com/GooberRF)
+- Fix possible crash from a corpse carried through a level transition keeping a freed helmet mesh
 
 Version 1.5.0 (Trillium): Released Nov-20-2026
 --------------------------------

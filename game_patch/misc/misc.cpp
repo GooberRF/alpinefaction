@@ -27,6 +27,7 @@
 #include "../multi/listen_server_setup.h"
 #include "../multi/server_browser_data.h"
 #include "../multi/server.h"
+#include "../savegame/asg.h"
 #include "../rf/gr/gr.h"
 #include "../rf/player/player.h"
 #include "../rf/multi.h"
@@ -1090,6 +1091,7 @@ void misc_init()
     alpine_settings_apply_patch();
     apply_main_menu_patches();
     apply_save_restore_patches();
+    asg_apply_patches();
     apply_sound_patches();
     player_do_patch();
     player_fpgun_do_patch();

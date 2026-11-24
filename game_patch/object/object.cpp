@@ -48,6 +48,7 @@
 #include "object_private.h"
 #include "particle_sim.h"
 #include "../misc/level.h"
+#include "../savegame/asg.h"
 
 std::string get_object_type_string(int type) {
     switch (type) {
@@ -715,7 +716,7 @@ FunHook<void(rf::Entity*)> entity_on_dead_hook{
     0x00418F80,
     [](rf::Entity* ep) {
         //xlog::warn("killing entity UID {}, name {}", ep->uid, ep->name);
-        if (!rf::is_multi) {
+        if (!rf::is_multi && !asg_restoring()) {
             if (is_achievement_system_initialized()) {
                 achievement_check_entity_death(ep);
             }
@@ -739,7 +740,8 @@ FunHook<void(rf::Object*)> obj_flag_dead_hook{
         // Crit tags are keyed by object handle, which the engine recycles.
         crits_on_object_dead(objp);
 
-        if (objp->type == rf::OT_CLUTTER && !(objp->obj_flags & rf::OF_DELAYED_DELETE)) {
+        // A savegame restore removing what the save does not list is not a death
+        if (objp->type == rf::OT_CLUTTER && !(objp->obj_flags & rf::OF_DELAYED_DELETE) && !asg_restoring()) {
             rf::Clutter* cp = reinterpret_cast<rf::Clutter*>(objp);
 
             if (!rf::is_multi && is_achievement_system_initialized()) {

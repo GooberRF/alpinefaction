@@ -1008,7 +1008,9 @@ void set_sky_room_uid_override(int room_uid, int anchor_uid, bool relative_posit
         return;
     }
 
-    if (auto* possible_new_sky_eye_anchor = rf::obj_lookup_from_uid(anchor_uid)) {
+    // The pointer is kept, so never to an anchor about to be deleted (one a savegame restore removed)
+    auto* possible_new_sky_eye_anchor = rf::obj_lookup_from_uid(anchor_uid);
+    if (possible_new_sky_eye_anchor && !(possible_new_sky_eye_anchor->obj_flags & rf::OF_DELAYED_DELETE)) {
         if (check_if_object_is_event_type(possible_new_sky_eye_anchor, rf::EventType::Anchor_Marker) ||
             check_if_object_is_event_type(possible_new_sky_eye_anchor, rf::EventType::Anchor_Marker_Orient)) {
             g_sky_room_eye_anchor = possible_new_sky_eye_anchor;
@@ -1019,6 +1021,14 @@ void set_sky_room_uid_override(int room_uid, int anchor_uid, bool relative_posit
                 : std::nullopt;
         }
     }
+}
+
+// The override in force, as set_sky_room_uid_override takes it: -1 for no room or anchor, 0 for no scale
+void get_sky_room_uid_override(int& room_uid, int& anchor_uid, float& position_scale)
+{
+    room_uid = g_sky_room_uid_override.value_or(-1);
+    anchor_uid = g_sky_room_eye_anchor && *g_sky_room_eye_anchor ? (*g_sky_room_eye_anchor)->uid : -1;
+    position_scale = g_sky_room_eye_offset_scale.value_or(0.0f);
 }
 
 FunHook<rf::GRoom*(rf::GSolid*)> find_sky_room_hook{

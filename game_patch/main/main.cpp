@@ -73,6 +73,7 @@
 #include "../object/alpine_corona.h"
 #include "../object/alpine_rope.h"
 #include "../object/zipline.h"
+#include "../savegame/asg.h"
 #include "../sound/sound.h"
 #include "../input/bind_context.h"
 #include "../input/input.h"
@@ -313,6 +314,7 @@ FunHook<int(rf::String&, rf::String&, char*)> level_load_hook{
         alpine_camera_clear_static_mode();
         if (!save_filename.empty())
             xlog::info("Restoring game from save file: {}", save_filename);
+        asg_level_load_begin(save_filename.c_str());
 
         // attempt to load level_info tbl file
         load_level_info_config(level_filename);
@@ -447,6 +449,8 @@ FunHook<void(bool)> level_init_post_hook{
         apply_geoable_flags();
         apply_breakable_materials();
         destruction_level_init_post();
+        asg_level_init_post();
+        level_transition_restore_ragdolls();
 
         if (!rf::is_dedicated_server && !is_headless_mode()) {
             alpine_terrain_decorations_level_init();

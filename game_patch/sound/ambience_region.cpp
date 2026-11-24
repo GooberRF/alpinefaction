@@ -172,6 +172,15 @@ bool ambience_region_set_enabled(int uid, bool enabled)
     return matched;
 }
 
+std::vector<std::pair<int, bool>> ambience_region_get_states()
+{
+    std::vector<std::pair<int, bool>> out;
+    for (const AmbienceRegion& region : g_regions) {
+        out.emplace_back(region.uid, region.enabled);
+    }
+    return out;
+}
+
 bool ambience_region_move(int uid, const rf::Vector3& pos)
 {
     bool matched = false;

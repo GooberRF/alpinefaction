@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <vector>
 
 // Forward declarations
 namespace rf {
@@ -66,5 +67,11 @@ bool brush_uid_is_breakable(int brush_uid);
 void apply_geoable_flags();
 void apply_breakable_materials();
 void g_solid_set_rf2_geo_limit(int limit);
+// The RF2-style carves of the level that cut geometry, in order, for the savegame
+const std::vector<rf::GeomodParams>& destruction_rf2_geomod_records();
+// A savegame load queues the carves of its level; level_init_post replays them
+void destruction_queue_rf2_geomod_replay(std::vector<rf::GeomodParams> records);
+// False when nothing was carved
+bool destruction_replay_rf2_geomods();
 // World radius of a geomod's crater; nullopt when its shape index has no solid.
 std::optional<float> geomod_crater_radius(const rf::GeomodParams& params);

@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <vector>
 #include <common/atx/spec.h>
 #include "../rf/bmpman.h"
 
@@ -62,6 +63,21 @@ bool atx_pause(const std::string& handle);
 bool atx_set_frame_time(const std::string& handle, int frame_time_ms);
 bool atx_set_live_feed(const std::string& canonical_key, int bm_handle);
 bool atx_clear_live_feed(const std::string& canonical_key, int expected_bm);
+
+// The playback of one controller, for savegames. A live feed is the projection's, which restores it itself.
+struct AtxPlaybackState
+{
+    std::string handle; // canonical key
+    int current_frame = 0;
+    int direction = 1;
+    bool playing = true;
+    float time_in_frame_s = 0.0f;
+    int base_frame_time_ms = 100;
+};
+// Sorted by handle
+std::vector<AtxPlaybackState> atx_get_playback_states();
+// False when no controller has that handle
+bool atx_set_playback_state(const AtxPlaybackState& state);
 
 namespace atx_detail
 {

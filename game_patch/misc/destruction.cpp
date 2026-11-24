@@ -54,6 +54,14 @@ static bool g_rf2_style_boolean_active = false;
 static int g_rf2_geo_limit = -1;
 static int g_rf2_geo_count = 0;
 
+// The parameters of each RF2-style carve of the level that cut geometry, for the savegame. The carve in progress
+// is committed in State 3 once it is known to have cut something.
+static std::vector<rf::GeomodParams> g_rf2_geomod_records;
+static std::optional<rf::GeomodParams> g_rf2_geomod_candidate;
+// Carves a savegame load replays once the level has initialized
+static std::vector<rf::GeomodParams> g_rf2_geomod_replay_queue;
+static bool g_rf2_replaying = false;
+
 // Tracks whether the boolean engine actually modified any detail room faces.
 // Set in boolean State 5 when a detail room appears in the affected rooms list.
 // Cleared at the start of each geomod (in geomod_init_hook).
@@ -3552,7 +3560,7 @@ FunHook<bool(float, int, rf::GRoom*, rf::Vector3*, rf::Vector3*, int, int)> geom
         auto& stock_limit = rf::multi_geo_limit;
         int saved_limit = stock_limit;
         int saved_crater_count = rf::g_num_geomods_this_level;
-        const auto saved_crater_record = std::to_array(rf::g_geomod_crater_records[0]);
+        const rf::GeomodCraterRecord saved_crater_record = rf::g_geomod_crater_records[0];
         const auto saved_crater_pushes = std::to_array(rf::g_geomod_crater_pushes[0]);
 
         if (is_rf2_geomod) {
@@ -3586,7 +3594,7 @@ FunHook<bool(float, int, rf::GRoom*, rf::Vector3*, rf::Vector3*, int, int)> geom
         auto result = geomod_create_hook.call_target(radius, parent_handle, src_room, pos, hit_normal, shape_index, flags);
         stock_limit = saved_limit;
         if (is_rf2_geomod) {
-            std::ranges::copy(saved_crater_record, rf::g_geomod_crater_records[0]);
+            rf::g_geomod_crater_records[0] = saved_crater_record;
             std::ranges::copy(saved_crater_pushes, rf::g_geomod_crater_pushes[0]);
         }
         g_rf2_suppress_geomod_create_effects = false;
@@ -3693,6 +3701,8 @@ FunHook<void(rf::GeomodParams*)> geomod_init_hook{
             }
         }
 
+        const rf::GeomodParams params_copy = *params;
+        g_rf2_geomod_candidate.reset();
         geomod_init_hook.call_target(params);
 
         // The carve can open or close a roof over a blocked-by-geometry weather region.
@@ -3731,6 +3741,9 @@ FunHook<void(rf::GeomodParams*)> geomod_init_hook{
             g_rf2_cascaded_rooms.clear();
             g_rf2_split_rooms.clear();
             if (!overlapping.empty()) {
+                if (!rf::is_multi && !g_rf2_replaying) {
+                    g_rf2_geomod_candidate = params_copy;
+                }
                 g_rf2_target_detail_room = overlapping[0];
                 for (size_t i = 1; i < overlapping.size(); i++) {
                     g_rf2_pending_detail_rooms.push_back(overlapping[i]);
@@ -4454,23 +4467,35 @@ CodeInjection geomod_state3_clear_detail_caches_injection{
         // when either no geoable room was targeted or the boolean didn't modify any faces.
         if (g_rf2_target_detail_room == nullptr || !g_rf2_boolean_modified_detail) {
             rf::g_geomod_outer_state = -1; // mark geomod as done
-            if (!g_rf2_smoke_pending.empty()) g_rf2_smoke_pending.pop_front();
+            if (!g_rf2_smoke_pending.empty() && !g_rf2_replaying) g_rf2_smoke_pending.pop_front();
             g_rf2_deferred_debris.pending = false;
             g_rf2_deferred_sound.pending = false;
             g_rf2_decal_deferred = false;
+            g_rf2_geomod_candidate.reset();
             regs.eip = 0x00466fb5;   // jump past all State 3 effects
             return;
         }
 
-        // Boolean carved geometry — replay suppressed effects.
+        if (g_rf2_geomod_candidate) {
+            g_rf2_geomod_records.push_back(*g_rf2_geomod_candidate);
+            g_rf2_geomod_candidate.reset();
+        }
+
+        // Boolean carved geometry — replay suppressed effects. A savegame replay only rebuilds the crater and its
+        // decal, as stock load does for its craters.
 
         // Direct replay in State 3 (safe — these were working here before):
-        replay_geomod_camera_shake();
-        replay_geomod_entity_proximity();
+        if (!g_rf2_replaying) {
+            replay_geomod_camera_shake();
+            replay_geomod_entity_proximity();
+        }
 
         if (g_rf2_decal_deferred) {
             rf::g_decal_add(&g_rf2_deferred_decal_info);
             g_rf2_decal_deferred = false;
+        }
+        if (g_rf2_replaying) {
+            return;
         }
 
         if (g_rf2_deferred_debris.pending) {
@@ -4602,6 +4627,9 @@ void destruction_level_cleanup()
     g_rf2_smoke_confirmed.clear();
     g_rf2_smoke_record_ptrs.clear();
     g_rf2_decal_deferred = false;
+    g_rf2_geomod_records.clear();
+    g_rf2_geomod_candidate.reset();
+    g_rf2_geomod_replay_queue.clear();
     g_brush_destruction.clear();
     g_brush_uid_to_room_uid.clear();
     g_breakable_brush_uids.clear();
@@ -4611,6 +4639,43 @@ void destruction_level_cleanup()
     props.breakable_room_uids.clear();
     props.breakable_brush_uids.clear();
     props.breakable_materials.clear();
+}
+
+const std::vector<rf::GeomodParams>& destruction_rf2_geomod_records()
+{
+    return g_rf2_geomod_records;
+}
+
+void destruction_queue_rf2_geomod_replay(std::vector<rf::GeomodParams> records)
+{
+    g_rf2_geomod_records = records;
+    g_rf2_geomod_replay_queue = std::move(records);
+}
+
+// Runs the queued carves synchronously through the geomod state machine, as stock load replays its craters
+// (levelmod_load_state 0x004674B0). The savegame runs it from level_init_post, which gives the rooms their geoable
+// flags.
+bool destruction_replay_rf2_geomods()
+{
+    std::vector<rf::GeomodParams> records = std::move(g_rf2_geomod_replay_queue);
+    g_rf2_geomod_replay_queue.clear();
+    if (records.empty() || rf::is_multi) {
+        return false;
+    }
+    if (!AlpineLevelProperties::instance().rf2_style_geomod) {
+        xlog::warn("[RF2] Not replaying {} saved carves: the level has no RF2-style geomods", records.size());
+        return false;
+    }
+    g_rf2_replaying = true;
+    for (rf::GeomodParams params : records) {
+        rf::geomod_init(&params);
+        while (rf::geomod_step()) {
+        }
+    }
+    g_rf2_replaying = false;
+    // g_rf2_geomod_records keeps the saved list, whether or not each carve cut again, so the next save keeps them
+    g_rf2_geo_count += static_cast<int>(records.size());
+    return true;
 }
 
 void g_solid_set_rf2_geo_limit(int limit)

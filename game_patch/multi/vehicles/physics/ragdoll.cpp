@@ -1444,6 +1444,60 @@ void ragdoll_destroy_all()
     g_ragdoll_blasts.fill({});
 }
 
+bool ragdoll_get_pose(const rf::Corpse& corpse, std::vector<rf::Matrix43>& bodies, std::vector<rf::Matrix43>& bones)
+{
+    const Ragdoll* r = ragdoll_from_vmesh(corpse.vmesh);
+    if (!r || r->phase == RagdollPhase::sampling || r->evicted || r->owner_handle != corpse.handle) {
+        return false;
+    }
+    const RagdollRig& rig = *r->rig;
+    bodies.clear();
+    bones.clear();
+    const auto to_matrix = [](const btTransform& t) {
+        return rf::Matrix43{from_bt(t.getBasis()), from_bt(t.getOrigin())};
+    };
+    for (size_t b = 0; b < rig.bodies.size(); ++b) {
+        bodies.push_back(to_matrix(r->head_world[b]));
+    }
+    for (int i = 0; i < rig.num_bones; ++i) {
+        bones.push_back(to_matrix(r->bone_in_head[i]));
+    }
+    return true;
+}
+
+bool ragdoll_set_pose(rf::Corpse& corpse, const std::vector<rf::Matrix43>& bodies,
+                      const std::vector<rf::Matrix43>& bones)
+{
+    if (!ragdolls_wanted() || ragdoll_from_vmesh(corpse.vmesh)) {
+        return false;
+    }
+    Ragdoll* r = track_instance(corpse.vmesh, corpse.handle);
+    if (!r) {
+        return false;
+    }
+    const RagdollRig& rig = *r->rig;
+    const bool fits = bodies.size() == rig.bodies.size() && bones.size() == static_cast<size_t>(rig.num_bones)
+        && std::all_of(bodies.begin(), bodies.end(),
+                       [](const rf::Matrix43& m) { return is_rigid(to_transform(m), ragdoll_max_world_extent); })
+        && std::all_of(bones.begin(), bones.end(),
+                       [](const rf::Matrix43& m) { return is_rigid(to_transform(m), ragdoll_max_model_extent); });
+    if (!fits) {
+        ragdoll_erase(*r);
+        return false;
+    }
+    for (size_t b = 0; b < bodies.size(); ++b) {
+        r->head_world[b] = to_transform(bodies[b]);
+    }
+    for (size_t i = 0; i < bones.size(); ++i) {
+        r->bone_in_head[i] = to_transform(bones[i]);
+    }
+    r->age = ragdoll_delay_ms / 1000.0f;
+    r->samples = 2;
+    r->phase = RagdollPhase::frozen;
+    bind_corpse(*r, corpse);
+    return true;
+}
+
 void ragdoll_apply_patches()
 {
     ci_update_combined_bones_hook.install();

@@ -319,6 +319,15 @@ void projector_clear_all()
     g_warned_activate_failed.clear();
 }
 
+std::vector<int> projector_active_event_uids()
+{
+    std::vector<int> out;
+    for (const auto& p : g_projectors) {
+        out.push_back(p.event_uid);
+    }
+    return out;
+}
+
 void scene_capture_apply_patch()
 {
     monitor_render_all_hook.install();

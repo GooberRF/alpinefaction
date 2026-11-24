@@ -15,11 +15,13 @@
 #include <utility>
 #include <vector>
 #include <xlog/xlog.h>
+#include <common/utils/string-utils.h>
 #include "../misc/achievements.h"
 #include "../misc/alpine_settings.h"
 #include "../misc/player.h"
 #include "../os/console.h"
 #include "../os/os.h"
+#include "../rf/bmpman.h"
 #include "../rf/gr/gr_light.h"
 #include "../rf/entity.h"
 #include "../rf/event.h"
@@ -30,6 +32,7 @@
 #include "../rf/particle_emitter.h"
 #include "../rf/os/frametime.h"
 #include "../rf/os/os.h"
+#include "../rf/file/file.h"
 #include "../rf/sound/sound.h"
 #include "../rf/object.h"
 #include "../rf/vmesh.h"
@@ -333,6 +336,121 @@ void entity_rate_limit_clear()
     g_entity_collision_push_last_ms.clear();
     g_entity_land_sound_last_ms.clear();
     g_server_bot_jump_timestamps.clear();
+}
+
+// The class whose alt skins entity_set_skin (0x00428FB0) can have put on the object's mesh
+static rf::EntityInfo* obj_skin_class(const rf::Object& obj)
+{
+    if (obj.type == rf::OT_ENTITY) {
+        return static_cast<const rf::Entity&>(obj).info2;
+    }
+    if (obj.type == rf::OT_CORPSE) {
+        const int type = static_cast<const rf::Corpse&>(obj).entity_type;
+        return type >= 0 && type < rf::num_entity_types ? &rf::entity_types[type] : nullptr;
+    }
+    return nullptr;
+}
+
+std::string obj_get_skin(rf::Object& obj)
+{
+    rf::EntityInfo* info = obj_skin_class(obj);
+    // vmesh_set_skin (0x0048AB90) keeps no record of the skin, only the textures it puts in the mesh's
+    // replacement materials
+    if (!info || !obj.vmesh || !obj.vmesh->use_replacement_materials) {
+        return {};
+    }
+    int num_materials = 0;
+    rf::MeshMaterial* materials = nullptr;
+    rf::vmesh_get_materials_array(obj.vmesh, &num_materials, &materials);
+    const int num_skins = std::min(info->num_alt_skins, static_cast<int>(std::size(info->alt_skins)));
+    for (int s = 0; s < num_skins; ++s) {
+        const rf::ObjSkinInfo& skin = info->alt_skins[s];
+        const int num_textures =
+            std::min({skin.num_textures, num_materials, static_cast<int>(std::size(skin.textures))});
+        bool applied = num_textures > 0;
+        for (int i = 0; applied && i < num_textures; ++i) {
+            const int bm_handle = materials[i].texture_maps[0].tex_handle;
+            // bm_load can swap the extension
+            applied = bm_handle >= 0
+                && string_iequals(get_filename_without_ext(rf::bm::get_filename(bm_handle)),
+                                  get_filename_without_ext(skin.textures[i].c_str()));
+        }
+        if (applied) {
+            return skin.name.c_str();
+        }
+    }
+    return {};
+}
+
+void obj_set_skin(rf::Object& obj, const std::string& skin)
+{
+    rf::EntityInfo* info = obj_skin_class(obj);
+    if (!skin.empty() && info && obj.vmesh) {
+        rf::vmesh_set_skin(obj.vmesh, info->num_alt_skins, info->alt_skins, skin.c_str());
+    }
+}
+
+EntityAnimState entity_get_anim_state(const rf::Entity& e)
+{
+    return {
+        .current_state_anim = e.current_state_anim,
+        .next_state_anim = e.next_state_anim,
+        .total_transition_time = e.total_transition_time,
+        .elapsed_transition_time = e.elapsed_transition_time,
+        .custom_state_anim = e.state_anims[rf::ENTITY_STATE_CUSTOM].vmesh_anim_index,
+        .custom_action_anim = e.last_cust_anim_index_maybe_unused,
+    };
+}
+
+void entity_set_anim_state(rf::Entity& e, const EntityAnimState& s)
+{
+    e.state_anims[rf::ENTITY_STATE_CUSTOM].vmesh_anim_index = s.custom_state_anim;
+    e.current_state_anim = s.current_state_anim;
+    e.next_state_anim = s.next_state_anim;
+    e.total_transition_time = s.total_transition_time;
+    e.elapsed_transition_time = s.elapsed_transition_time;
+    e.last_cust_anim_index_maybe_unused = s.custom_action_anim;
+    if (e.last_cust_anim_index_maybe_unused != -1 && e.vmesh) {
+        rf::vmesh_play_action_by_index(e.vmesh, e.last_cust_anim_index_maybe_unused, 1.0f,
+                                       (e.entity_flags & rf::EF_CUSTOM_ANIM_HOLD_LAST_FRAME) != 0);
+    }
+}
+
+static const rf::Character* vmesh_character(const rf::VMesh* vmesh)
+{
+    if (!vmesh || vmesh->type != rf::MESH_TYPE_CHARACTER || !vmesh->instance) {
+        return nullptr;
+    }
+    return static_cast<const rf::CharacterInstance*>(vmesh->instance)->base_character;
+}
+
+CharacterAnimRef character_anim_ref(const rf::VMesh* vmesh, int anim_index)
+{
+    const rf::Character* character = vmesh_character(vmesh);
+    if (!character || anim_index < 0 || anim_index >= character->num_anims || !character->animations[anim_index]) {
+        return {};
+    }
+    return {character->animations[anim_index]->mvf_filename, character->anim_is_state[anim_index]};
+}
+
+int character_anim_index(rf::VMesh* vmesh, const CharacterAnimRef& anim)
+{
+    const rf::Character* character = vmesh_character(vmesh);
+    if (!character || anim.filename.empty()) {
+        return -1;
+    }
+    for (int i = 0; i < character->num_anims; ++i) {
+        const rf::Skeleton* skeleton = character->animations[i];
+        if (skeleton && character->anim_is_state[i] == anim.is_state
+            && string_iequals(skeleton->mvf_filename, anim.filename)) {
+            return i;
+        }
+    }
+    // A missing file is a fatal error in character_mesh_load_action
+    if (!rf::File{}.find(anim.filename.c_str())) {
+        return -1;
+    }
+    return rf::character_mesh_load_action(vmesh->mesh, anim.filename.c_str(), anim.is_state, 0);
 }
 
 CodeInjection entity_process_post_hidden_injection{

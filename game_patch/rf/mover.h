@@ -119,7 +119,10 @@ namespace rf
     };
     static_assert(sizeof(Mover) == 0x32C);
 
+    static auto& mover_list = addr_as_ref<Mover>(0x0064E3B0);
     static auto& mover_brush_list = addr_as_ref<MoverBrush>(0x0064E6E0);
+    // Set by the stock mover load (0x0046B4A0) so the level's mover init (0x0046B620) keeps the loaded state
+    static auto& movers_loaded_from_save = addr_as_ref<bool>(0x0064E97C);
     static auto& mover_activate_from_trigger =
         addr_as_ref<void(int mover_handle, int trigger_handle, int activator_handle)>(0x0046ABA0);
     static auto& mover_is_obstructed = addr_as_ref<bool(Mover* mp)>(0x0046A280);

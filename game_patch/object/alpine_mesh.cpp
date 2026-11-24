@@ -56,6 +56,9 @@ struct MeshAnimPlayback {
     std::string anim_filename;
     int animate_type = 2;    // 0=Action, 1=Action Hold Last, 2=State
     bool paused = false;
+    int action_index = -1;
+    float blend_weight = 1.0f;
+    float elapsed = 0.0f;    // seconds the action has been processed for, for savegames
 };
 static std::unordered_map<int, MeshAnimPlayback> g_mesh_anim_playback;
 
@@ -65,12 +68,24 @@ static bool mesh_anim_paused(int obj_handle)
     return it != g_mesh_anim_playback.end() && it->second.paused;
 }
 
-static void mesh_anim_set_playing(int obj_handle, int animate_type, const std::string& anim_filename)
+static void mesh_anim_set_playing(int obj_handle, int animate_type, const std::string& anim_filename,
+    int action_index, float blend_weight)
 {
     auto& playback = g_mesh_anim_playback[obj_handle];
     playback.anim_filename = anim_filename;
     playback.animate_type = animate_type;
     playback.paused = false;
+    playback.action_index = action_index;
+    playback.blend_weight = blend_weight;
+    playback.elapsed = 0.0f;
+}
+
+static void mesh_anim_advance(int obj_handle, float frametime)
+{
+    auto it = g_mesh_anim_playback.find(obj_handle);
+    if (it != g_mesh_anim_playback.end()) {
+        it->second.elapsed += frametime;
+    }
 }
 
 // Any explicit attempt to start an animation unpauses, even if the start then fails
@@ -104,6 +119,8 @@ struct CorpseData {
     int8_t material = -1; // -1=automatic (inherit from base), 0-9=specific material
 };
 static std::unordered_map<int, CorpseData> g_alpine_corpse_data;
+// Corpse mesh handle -> uid of the mesh it replaced
+static std::unordered_map<int, int> g_corpse_mesh_sources;
 
 
 // Original texture handles saved before overrides are applied.
@@ -254,7 +271,7 @@ static void alpine_mesh_register_collision_mesh(rf::Object* objp)
     xlog::debug("[AlpineMesh] Registered mode-3 collision mesh for uid {} handle {}", objp->uid, objp->handle);
 }
 
-bool alpine_mesh_is_collision_mesh(rf::Object* objp)
+bool alpine_mesh_is_collision_mesh(const rf::Object* objp)
 {
     if (!objp) {
         return false;
@@ -902,7 +919,7 @@ static int alpine_mesh_create_object(const AlpineMeshInfo& info)
         anim_state.obj_handle = obj->handle;
         anim_state.state_anim = info.state_anim;
         g_mesh_anim_states.push_back(std::move(anim_state));
-        mesh_anim_set_playing(obj->handle, 2, info.state_anim);
+        mesh_anim_set_playing(obj->handle, 2, info.state_anim, -1, 1.0f);
     }
 
     // Store corpse data if specified (for mesh swap on death)
@@ -985,6 +1002,7 @@ void alpine_mesh_do_frame()
 
         // Advance animation — stock clutter process does NOT call vmesh_process
         rf::vmesh_process(obj->vmesh, rf::frametime, 0, &obj->pos, &obj->orient, 1);
+        mesh_anim_advance(it->obj_handle, rf::frametime);
         ++it;
     }
 
@@ -1029,6 +1047,7 @@ void alpine_mesh_do_frame()
 
         // Advance animation
         rf::vmesh_process(obj->vmesh, rf::frametime, 0, &obj->pos, &obj->orient, 1);
+        mesh_anim_advance(it->obj_handle, rf::frametime);
         ++it;
     }
 }
@@ -1045,6 +1064,7 @@ void alpine_mesh_clear_state()
     g_event_animated_meshes.clear();
     g_mesh_anim_playback.clear();
     g_alpine_corpse_data.clear();
+    g_corpse_mesh_sources.clear();
     g_original_tex_handles.clear();
     g_mesh_collision_meshes.clear();
     g_mesh_scales.clear();
@@ -1142,6 +1162,7 @@ bool alpine_mesh_spawn_corpse(rf::Object* obj)
     }
 
     g_alpine_mesh_handles.push_back(corpse_obj->handle);
+    g_corpse_mesh_sources[corpse_obj->handle] = obj->uid;
 
     xlog::debug("[AlpineMesh] Spawned corpse object: handle={} file='{}' at ({:.2f},{:.2f},{:.2f})",
         corpse_obj->handle, corpse_data.filename, corpse_obj->pos.x, corpse_obj->pos.y, corpse_obj->pos.z);
@@ -1226,7 +1247,7 @@ void alpine_mesh_animate(rf::Object* obj, int type, const std::string& anim_file
             g_event_animated_meshes.push_back({obj->handle, 0, action_index, blend_weight});
         }
 
-        mesh_anim_set_playing(obj->handle, 0, anim_filename);
+        mesh_anim_set_playing(obj->handle, 0, anim_filename, action_index, blend_weight);
         rf::vmesh_process(obj->vmesh, 0.0f, 0, &obj->pos, &obj->orient, 1);
 
         xlog::debug("[AlpineMesh] Playing animation '{}' (type=Action, action_index={}, weight={:.2f}) on handle {}",
@@ -1259,7 +1280,7 @@ void alpine_mesh_animate(rf::Object* obj, int type, const std::string& anim_file
             g_event_animated_meshes.end());
         g_event_animated_meshes.push_back({obj->handle, 1, action_index, blend_weight});
 
-        mesh_anim_set_playing(obj->handle, 1, anim_filename);
+        mesh_anim_set_playing(obj->handle, 1, anim_filename, action_index, blend_weight);
         rf::vmesh_process(obj->vmesh, 0.0f, 0, &obj->pos, &obj->orient, 1);
 
         xlog::debug("[AlpineMesh] Playing animation '{}' (type=Action Hold Last, action_index={}, weight={:.2f}) on handle {}",
@@ -1292,7 +1313,7 @@ void alpine_mesh_animate(rf::Object* obj, int type, const std::string& anim_file
             g_event_animated_meshes.end());
         g_event_animated_meshes.push_back({obj->handle, 2, action_index, blend_weight});
 
-        mesh_anim_set_playing(obj->handle, 2, anim_filename);
+        mesh_anim_set_playing(obj->handle, 2, anim_filename, action_index, blend_weight);
         rf::vmesh_process(obj->vmesh, 0.0f, 0, &obj->pos, &obj->orient, 1);
 
         xlog::debug("[AlpineMesh] Playing animation '{}' (type=State, action_index={}, weight={:.2f}) on handle {}",
@@ -1480,4 +1501,132 @@ void alpine_mesh_set_scale(rf::Object* obj, float scale)
         g_mesh_scale_by_vmesh[entry.render_vmesh] = scale;
     }
     xlog::debug("[AlpineMesh] Set draw scale {} on obj handle {}", scale, obj->handle);
+}
+
+// ─── Savegame State ─────────────────────────────────────────────────────────
+
+bool alpine_mesh_export_state(const rf::Object* obj, AlpineMeshSaveState& out)
+{
+    if (!obj || std::find(g_alpine_mesh_handles.begin(), g_alpine_mesh_handles.end(), obj->handle)
+                    == g_alpine_mesh_handles.end()) {
+        return false;
+    }
+    out = {};
+    if (auto it = g_mesh_anim_playback.find(obj->handle); it != g_mesh_anim_playback.end()) {
+        const MeshAnimPlayback& playback = it->second;
+        // A finished one-shot action has handed the mesh back to its state animation
+        const bool finished = playback.animate_type == 0 && obj->vmesh
+            && playback.elapsed >= rf::vmesh_anim_length(obj->vmesh, playback.action_index);
+        if (!finished) {
+            out.has_anim = true;
+            out.anim_type = playback.animate_type;
+            out.anim_filename = playback.anim_filename;
+            out.blend_weight = playback.blend_weight;
+            out.anim_paused = playback.paused;
+            out.anim_time = playback.elapsed;
+        }
+    }
+    int num_materials = 0;
+    rf::MeshMaterial* materials = nullptr;
+    for (const auto& [key, original] : g_original_tex_handles) {
+        if ((key & 0xFFFFFFFF00000000ull) != tex_key_handle(obj->handle) || !obj->vmesh) {
+            continue;
+        }
+        if (!materials && !get_replacement_materials(obj->vmesh, num_materials, materials)) {
+            break;
+        }
+        const int slot = static_cast<int>(key & 0xFFFFFFFF);
+        if (slot < num_materials) {
+            const char* name = rf::bm::get_filename(materials[slot].texture_maps[0].tex_handle);
+            out.textures.emplace_back(slot, name ? name : "");
+        }
+    }
+    std::sort(out.textures.begin(), out.textures.end());
+    if (alpine_mesh_is_collision_mesh(obj)) {
+        out.collision = 3;
+    }
+    else if (!(obj->p_data.flags & rf::PF_COLLIDE_OBJECTS)) {
+        out.collision = 0;
+    }
+    else {
+        out.collision = (obj->obj_flags & rf::OF_WEAPON_ONLY_COLLIDE) ? 1 : 2;
+    }
+    out.scale = alpine_mesh_draw_scale(obj);
+    if (auto it = g_corpse_mesh_sources.find(obj->handle); it != g_corpse_mesh_sources.end()) {
+        out.corpse_of_uid = it->second;
+    }
+    return true;
+}
+
+// Plays the playing animation on from where it is to where it was saved
+static void seek_anim(rf::Object* obj, float time)
+{
+    auto it = g_mesh_anim_playback.find(obj->handle);
+    if (it == g_mesh_anim_playback.end() || !obj->vmesh || !(time > it->second.elapsed)) {
+        return;
+    }
+    MeshAnimPlayback& playback = it->second;
+    const float length = rf::vmesh_anim_length(obj->vmesh, playback.action_index);
+    const float from = playback.elapsed;
+    // A looping state wraps; a one-shot action goes no further than its end
+    float advance = std::max(0.0f, std::min(time, length) - from);
+    if (playback.animate_type == 2) {
+        advance = length > 0.0f ? std::fmod(time - from, length) : 0.0f;
+    }
+    if (advance > 0.0f) {
+        rf::vmesh_process(obj->vmesh, advance, 0, &obj->pos, &obj->orient, 1);
+    }
+    playback.elapsed = time;
+}
+
+void alpine_mesh_import_state(rf::Object* obj, const AlpineMeshSaveState& state)
+{
+    AlpineMeshSaveState current;
+    if (!alpine_mesh_export_state(obj, current)) {
+        return;
+    }
+    if (state.scale != current.scale) {
+        alpine_mesh_set_scale(obj, state.scale);
+    }
+    // Brush collision only comes from the level file
+    if (state.collision != current.collision && state.collision >= 0 && state.collision <= 2) {
+        alpine_mesh_set_collision(obj, state.collision);
+    }
+    const auto has_slot = [](const auto& textures, int slot) {
+        return std::find_if(textures.begin(), textures.end(), [&](const auto& t) { return t.first == slot; });
+    };
+    for (const auto& [slot, name] : current.textures) {
+        if (has_slot(state.textures, slot) == state.textures.end()) {
+            alpine_mesh_clear_texture(obj, slot);
+        }
+    }
+    for (const auto& [slot, name] : state.textures) {
+        auto it = has_slot(current.textures, slot);
+        if (it == current.textures.end() || !string_iequals(it->second, name)) {
+            alpine_mesh_set_texture(obj, slot, name);
+        }
+    }
+    if (state.has_anim) {
+        const bool same = current.has_anim && current.anim_type == state.anim_type
+            && string_iequals(current.anim_filename, state.anim_filename) && current.blend_weight == state.blend_weight;
+        if (!same) {
+            alpine_mesh_animate(obj, state.anim_type, state.anim_filename, state.blend_weight);
+        }
+        seek_anim(obj, state.anim_time);
+        if (state.anim_paused) {
+            alpine_mesh_pause_anim(obj);
+        }
+    }
+}
+
+rf::Object* alpine_mesh_respawn_corpse(rf::Object* obj, int corpse_uid)
+{
+    if (!obj || !alpine_mesh_spawn_corpse(obj)) {
+        return nullptr;
+    }
+    rf::Object* corpse = rf::obj_from_handle(g_alpine_mesh_handles.back());
+    if (corpse) {
+        corpse->uid = corpse_uid;
+    }
+    return corpse;
 }

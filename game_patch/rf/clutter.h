@@ -128,6 +128,13 @@ namespace rf
     static auto& clutter_render_all_clocks = addr_as_ref<void()>(0x00411160);
 
     static auto& clutter_restore_mesh = addr_as_ref<void(Clutter *clutter, const char *mesh_name)>(0x00410ED0);
+    static auto& clutter_create = addr_as_ref<Clutter*(int info_index, const char* name, int parent_handle,
+                                                       const Vector3* pos, const Matrix3* orient, bool killable)>(0x004104A0);
+    // Index into the clutter.tbl classes, or -1
+    static auto& clutter_lookup_type = addr_as_ref<int(const char* cls_name)>(0x00410B60);
+    // The clutter.tbl classes that clutter_lookup_type searches
+    static const auto clutter_types = reinterpret_cast<ClutterInfo*>(0x005AFB88);
+    static auto& num_clutter_types = addr_as_ref<int>(0x005C97DC);
     static auto& clutter_damage = addr_as_ref<void(Clutter* cp, float damage, int responsible_entity_handle, int damage_type, PCollisionOut* collide_out)>(0x00410270);
     static auto& riot_shield_clutter_type = addr_as_ref<int>(0x005AFB78);
 }

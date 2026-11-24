@@ -219,7 +219,7 @@ std::string get_temp_path_name(const char* prefix)
 }
 
 // Written from memory, so no alternate data stream (mark of the web) comes along.
-void write_file_replacing(const std::string& path, const std::string& data)
+void write_file_replacing(const std::string& path, std::string_view data)
 {
     std::string temp_path = std::format("{}.{}.tmp", path, GetCurrentProcessId());
     HANDLE file =

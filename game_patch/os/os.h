@@ -183,4 +183,10 @@ public:
     void restart() {
         _start_time.emplace(clock::now());
     }
+
+    // A timer of `duration` that started `elapsed` ago
+    void set_started_ago(const std::chrono::nanoseconds duration, const std::chrono::nanoseconds elapsed) {
+        _duration = duration;
+        _start_time.emplace(clock::now() - elapsed);
+    }
 };

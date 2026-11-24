@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 #include <unordered_set>
+#include <utility>
 #include <xlog/xlog.h>
 #include <common/rfl_chunk_reader.h>
 #include <common/alpine_ambience_region.h>
@@ -518,7 +519,7 @@ void alpine_mesh_free_collision_proxies();
 
 // Mesh event helpers
 namespace rf { struct Object; struct PhysicsData; struct VMesh; struct VMeshCollisionInput; }
-bool alpine_mesh_is_collision_mesh(rf::Object* objp);
+bool alpine_mesh_is_collision_mesh(const rf::Object* objp);
 void alpine_mesh_free_collision_solid(int obj_handle);
 bool alpine_mesh_has_collision_solids();
 
@@ -557,6 +558,26 @@ void alpine_mesh_rebind_scale(rf::Object* obj);
 // Called when the object itself is deleted; its handle can be reused
 void alpine_mesh_free_scale(const rf::Object* obj);
 void alpine_mesh_scale_collision_input(rf::VMeshCollisionInput& in, float scale);
+
+// The state of a mesh that its events can change, for savegames
+struct AlpineMeshSaveState {
+    bool has_anim = false;
+    int anim_type = 2;
+    std::string anim_filename;
+    float blend_weight = 1.0f;
+    bool anim_paused = false;
+    float anim_time = 0.0f; // seconds the animation has played
+    std::vector<std::pair<int, std::string>> textures; // overridden slots and the texture each shows
+    int collision = 2; // 0 none, 1 weapons only, 2 all, 3 brush
+    float scale = 1.0f;
+    int corpse_of_uid = -1; // a corpse mesh: the uid of the mesh it replaced
+};
+// False when the object is not an Alpine mesh
+bool alpine_mesh_export_state(const rf::Object* obj, AlpineMeshSaveState& out);
+// Applies what differs from the mesh's current state
+void alpine_mesh_import_state(rf::Object* obj, const AlpineMeshSaveState& state);
+// The corpse mesh of a mesh, given the uid it had; null when the mesh has no corpse
+rf::Object* alpine_mesh_respawn_corpse(rf::Object* obj, int corpse_uid);
 
 // Alpine corona object info, loaded from RFL
 struct AlpineCoronaInfo {
@@ -609,6 +630,8 @@ GasRegionInfo* gas_region_get_by_uid(int uid);
 void climb_region_clear_state();
 rf::ClimbRegion* climb_region_get_by_uid(int uid);
 void climb_region_set_enabled(int uid, bool enabled);
+// Every climbing region's uid and whether it is enabled
+std::vector<std::pair<int, bool>> climb_region_get_states();
 
 // Gas region transitions (smooth interpolation over time)
 struct GasRegionTransition {
@@ -635,3 +658,6 @@ void gas_region_add_modify_transition(int32_t region_uid, rf::Color target_color
 void gas_region_add_resize_transition(int32_t region_uid, int target_shape, float target_radius,
                                        float target_height, float target_width, float target_depth, float duration_sec);
 void gas_region_transition_do_frame();
+// For savegames: the transitions in progress, replaced wholesale on restore
+const std::vector<GasRegionTransition>& gas_region_get_transitions();
+void gas_region_set_transitions(std::vector<GasRegionTransition> transitions);

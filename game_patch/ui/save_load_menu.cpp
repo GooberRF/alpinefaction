@@ -1,16 +1,19 @@
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <ctime>
 #include <filesystem>
 #include <format>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
 #include <utility>
 #include <vector>
+#include <windows.h>
 #include <common/utils/string-utils.h>
 #include <xlog/xlog.h>
 #include "save_load_menu.h"
@@ -20,15 +23,19 @@
 #include "menu_shell.h"
 #include "settings_skin.h"
 #include "ui_kit.h"
+#include "../multi/multi.h"
 #include "../rf/gr/gr.h"
 #include "../rf/gr/gr_font.h"
 #include "../rf/input.h"
 #include "../rf/localize.h"
 #include "../rf/os/console.h"
+#include "../rf/os/os.h"
 #include "../rf/player/player.h"
 #include "../rf/save_restore.h"
 #include "../rf/sound/sound.h"
 #include "../rf/ui.h"
+#include "../savegame/asg.h"
+#include "../savegame/asg_format.h"
 #include "../sound/sound.h"
 
 namespace
@@ -88,9 +95,9 @@ std::string trimmed(std::string_view text)
 }
 
 // strftime("%c") as stock's runtime prints it.
-std::string date_string(int write_time)
+std::string date_string(std::int64_t write_time)
 {
-    const std::time_t t = write_time;
+    const std::time_t t = static_cast<std::time_t>(write_time);
     const std::tm* tm = std::localtime(&t);
     if (!tm) {
         return {};
@@ -109,20 +116,99 @@ std::string game_time_string(float t)
     return std::format("{:02}:{:02}:{:02}", hours, minutes, seconds);
 }
 
-rf::VArray<rf::ui::SavegameListEntry>& saved_games()
+// A saved game in the list: an .svl from stock's list, or an Alpine .asg.
+struct SaveRow
 {
-    return g_save ? rf::ui::save_game_list : rf::ui::load_game_list;
+    std::string filename; // with its extension
+    std::string name;     // as listed: the extension only when a save of the other format has the same name
+    std::int64_t write_time = 0;
+    float game_time = 0.0f;
+    std::string level; // the level's file
+    std::string title;
+    // An .svl's index in stock's list, which loads it.
+    int stock_index = -1;
+    std::optional<asg::Header> header; // an .asg's
+};
+
+std::vector<SaveRow> g_rows;
+
+int row_count()
+{
+    return static_cast<int>(g_rows.size());
 }
 
+std::int64_t unix_time(const FILETIME& ft)
+{
+    const std::uint64_t ticks = static_cast<std::uint64_t>(ft.dwHighDateTime) << 32 | ft.dwLowDateTime;
+    return static_cast<std::int64_t>(ticks / 10000000ULL) - 11644473600LL;
+}
+
+void add_asg_rows()
+{
+    WIN32_FIND_DATAA data;
+    const std::string pattern = std::string{rf::sr::savegame_path} + "*.asg";
+    const HANDLE find = FindFirstFileA(pattern.c_str(), &data);
+    if (find == INVALID_HANDLE_VALUE) {
+        return;
+    }
+    do {
+        // The pattern also matches longer extensions through their short names.
+        if ((data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || !string_iends_with(data.cFileName, ".asg")) {
+            continue;
+        }
+        asg::Header header;
+        if (!asg_read_header(std::filesystem::path{rf::sr::savegame_path} / data.cFileName, header)) {
+            continue;
+        }
+        g_rows.push_back({
+            .filename = data.cFileName,
+            .write_time = unix_time(data.ftLastWriteTime),
+            .game_time = header.game_time,
+            .level = header.current_level,
+            .title = header.level_title,
+            .header = std::move(header),
+        });
+    } while (FindNextFileA(find, &data));
+    FindClose(find);
+}
+
+// Stock's builder lists only .svl saves, and its list is kept for loading them.
 void rebuild_list()
 {
-    saved_games().clear();
+    rf::VArray<rf::ui::SavegameListEntry>& stock = g_save ? rf::ui::save_game_list : rf::ui::load_game_list;
+    stock.clear();
     if (g_save) {
         rf::ui::save_game_build_list();
     }
     else {
         rf::ui::load_game_build_list();
     }
+    g_rows.clear();
+    for (int i = 0; i < stock.size(); ++i) {
+        const rf::ui::SavegameListEntry& entry = stock[static_cast<std::size_t>(i)];
+        SaveRow& row = g_rows.emplace_back();
+        row.filename = entry_name(entry);
+        row.write_time = entry.write_time;
+        row.game_time = entry.game_time;
+        row.stock_index = i;
+        char level[260]{};
+        char title[260]{};
+        const std::string path = std::string{rf::sr::savegame_path} + row.filename;
+        if (rf::sr::read_header(path.c_str(), level, nullptr, title)) {
+            row.level = level;
+            row.title = title;
+        }
+    }
+    add_asg_rows();
+    for (SaveRow& row : g_rows) {
+        const std::string_view row_stem = get_filename_without_ext(row.filename);
+        const bool shared = std::ranges::any_of(g_rows, [&](const SaveRow& other) {
+            return &other != &row && string_iequals(get_filename_without_ext(other.filename), row_stem);
+        });
+        row.name = shared ? row.filename : std::string{row_stem};
+    }
+    // Newest first, as stock's list.
+    std::ranges::stable_sort(g_rows, std::ranges::greater{}, &SaveRow::write_time);
 }
 
 void run_action(SaveLoadAction action);
@@ -134,7 +220,7 @@ public:
     void reset()
     {
         // Load starts on the newest save, as stock's list; Save on none until one is picked.
-        sel_ = !g_save && saved_games().size() > 0 ? 0 : -1;
+        sel_ = !g_save && row_count() > 0 ? 0 : -1;
         scroll_ = 0.0f;
         scrolled_to_ = 0;
         scroll_to_sel_ = false;
@@ -149,7 +235,7 @@ public:
     // After the list is rebuilt. Save's pick goes: a save has emptied its box, a delete has removed its row.
     void clamp_selection()
     {
-        const int count = saved_games().size();
+        const int count = row_count();
         sel_ = g_save || count == 0 ? -1 : std::clamp(sel_, 0, count - 1);
         scroll_to_sel_ = sel_ >= 0;
         last_click_row_ = -1;
@@ -183,7 +269,7 @@ private:
 
     [[nodiscard]] bool has_selection() const
     {
-        return sel_ >= 0 && sel_ < saved_games().size();
+        return sel_ >= 0 && sel_ < row_count();
     }
     [[nodiscard]] bool can_act() const
     {
@@ -209,7 +295,7 @@ void SavedGamesPanel::select(int row)
 {
     sel_ = row;
     if (g_save) {
-        const std::string_view name = entry_name(saved_games()[static_cast<std::size_t>(row)]);
+        const std::string_view name = g_rows[static_cast<std::size_t>(row)].filename;
         g_save_name = std::string{name.substr(0, save_name_max_len)};
     }
 }
@@ -238,7 +324,7 @@ void SavedGamesPanel::pick(const RowHit& hit)
 
 bool SavedGamesPanel::row_focused(const UiContext& ctx) const
 {
-    const int count = saved_games().size();
+    const int count = row_count();
     for (int i = 0; i < count; ++i) {
         if (ctx.focus_id() == ui_id(row_id_name, i)) {
             return true;
@@ -251,7 +337,7 @@ bool SavedGamesPanel::row_focused(const UiContext& ctx) const
 std::vector<UiId> SavedGamesPanel::tab_stops() const
 {
     std::vector<UiId> stops;
-    if (saved_games().size() > 0) {
+    if (row_count() > 0) {
         stops.push_back(ui_id(row_id_name, std::max(sel_, 0)));
     }
     if (g_save) {
@@ -287,7 +373,7 @@ void SavedGamesPanel::tab(UiContext& ctx, int key)
         }
         // Off an end of the panel, from the list's own end rather than the next of its rows.
         if (on_list) {
-            ctx.set_focus(ui_id(row_id_name, back ? 0 : saved_games().size() - 1), true);
+            ctx.set_focus(ui_id(row_id_name, back ? 0 : row_count() - 1), true);
         }
     }
     ctx.handle_nav_key(static_cast<rf::Key>(key));
@@ -302,7 +388,7 @@ void SavedGamesPanel::tab(UiContext& ctx, int key)
 void SavedGamesPanel::step(UiContext& ctx, int key)
 {
     last_click_row_ = -1;
-    if (const int count = saved_games().size(); count > 0) {
+    if (const int count = row_count(); count > 0) {
         const bool follow = row_focused(ctx);
         // The typing not yet applied goes with the name it was typed into.
         ctx.clear_pending_keys();
@@ -350,7 +436,7 @@ bool SavedGamesPanel::key(UiContext& ctx, int key)
 
 void SavedGamesPanel::hints(const UiContext& ctx, std::vector<MenuHint>& hints) const
 {
-    const bool has_rows = saved_games().size() > 0;
+    const bool has_rows = row_count() > 0;
     // key_callback's keys for the name box.
     if (ctx.focused_text_id() == save_name_id) {
         hints = {{"ESC", "Back"}};
@@ -387,7 +473,7 @@ void SavedGamesPanel::commit()
     // One of them a frame, so neither can open a popup over the other's.
     const std::optional<RowHit> hit = std::exchange(pending_, std::nullopt);
     const std::optional<SaveLoadAction> action = std::exchange(pending_action_, std::nullopt);
-    if (hit && hit->row < saved_games().size()) {
+    if (hit && hit->row < row_count()) {
         pick(*hit);
     }
     else if (action) {
@@ -431,37 +517,105 @@ void SavedGamesPanel::build_footer(UiContext& ctx, const UiRect& footer, const M
     }
 }
 
+// The picked save's level preview and details, as the demo browser's pane.
+void draw_preview(const UiContext& ctx, const UiRect& pane, const SaveRow* row, int font)
+{
+    const auto s = [&](float v) { return skin_px(ctx, v); };
+    const int pad = s(12.0f);
+    const int gap = s(6.0f);
+    const int fh = rf::gr::get_font_height(font);
+    const int x = pane.x + pad;
+    const int w = pane.w - 2 * pad;
+    skin_slot(ctx, pane.x, pane.y, pane.w, pane.h);
+    if (!row) {
+        rf::gr::set_color(skin::txt_hint);
+        rf::gr::string_aligned(rf::gr::ALIGN_CENTER, x + w / 2, pane.y + (pane.h - fh) / 2,
+                               ui_fit_end("Pick a save to see its details.", w, font).c_str(), font);
+        return;
+    }
+
+    static constexpr const char* difficulty_names[] = {"Easy", "Medium", "Hard", "Impossible"};
+    std::vector<std::pair<const char*, std::string>> lines;
+    lines.emplace_back("Level:", row->level.empty() ? "-" : row->level);
+    lines.emplace_back("Saved:", date_string(row->write_time));
+    lines.emplace_back("Game time:", game_time_string(row->game_time));
+    bool other_mod = false;
+    if (row->header) {
+        lines.emplace_back("Difficulty:", difficulty_names[std::min<int>(row->header->difficulty, 3)]);
+        if (!row->header->mod_name.empty()) {
+            lines.emplace_back("Mod:", row->header->mod_name);
+        }
+        // asg_load_game refuses it.
+        other_mod = !string_iequals(row->header->mod_name, asg_running_mod_name());
+    }
+    const int line_h = fh + gap;
+    const int text_h = (static_cast<int>(lines.size()) + (other_mod ? 1 : 0)) * line_h;
+
+    // The thumbnail gives way to the details in a short pane; with no level, the caption band alone.
+    const int cap_h = fh + 2 * gap;
+    const int thumb_h = row->level.empty()
+        ? cap_h
+        : std::max(cap_h, std::min(w * 9 / 16, pane.h - 2 * pad - 2 * gap - text_h));
+    const std::string title = row->title.empty() ? level_filename_without_ext(row->level) : row->title;
+    const MenuLevelCaption caption{
+        .level = title,
+        .type = row->header ? "Alpine" : "Stock",
+        .font = font,
+        .cap_h = cap_h,
+        .pad = pad,
+        .level_color = skin::txt_hi,
+        .type_color = skin::txt,
+    };
+    int y = pane.y + pad;
+    menu_draw_level_preview(row->level, UiRect{x, y, w, thumb_h}, caption);
+    y += thumb_h + 2 * gap;
+
+    int label_w = 0;
+    for (const auto& [label, value] : lines) {
+        label_w = std::max(label_w, rf::gr::get_string_size(label, font).first);
+    }
+    label_w += pad;
+    for (const auto& [label, value] : lines) {
+        rf::gr::set_color(skin::txt_hint);
+        rf::gr::string(x, y, label, font);
+        skin_draw_text(x + label_w, y, ui_fit_end(value, std::max(1, w - label_w), font), font, skin::txt_hi);
+        y += line_h;
+    }
+    if (other_mod) {
+        skin_draw_text(x, y, ui_fit_end("Saved with another mod", w, font), font, skin::warn);
+    }
+}
+
 void SavedGamesPanel::build(UiContext& ctx, const MenuPanel& panel, const MenuFonts& fonts)
 {
     const auto s = [&](float v) { return skin_px(ctx, v); };
-    const rf::VArray<rf::ui::SavegameListEntry>& list = saved_games();
     const UiRect& body = panel.body;
     const UiRect footer = form_panel_areas(ctx, panel, false).footer;
     const int hint_y = footer.y - s(10.0f) - rf::gr::get_font_height(fonts.caption);
-    const UiRect well{body.x, body.y, body.w, hint_y - s(10.0f) - body.y};
+    // The list, and the preview beside it as the demo browser's.
+    const int area_h = hint_y - s(10.0f) - body.y;
+    const int pane_gap = s(16.0f);
+    const int pane_w = (body.w - pane_gap) * 2 / 5;
+    const UiRect well{body.x, body.y, body.w - pane_gap - pane_w, area_h};
+    const UiRect pane{body.x + body.w - pane_w, body.y, pane_w, area_h};
     const int row_h = skin_list_row_h(ctx, fonts.body);
 
-    // The text columns, from where skin_scroll_list puts its rows in the well. The date and the game time are never
-    // cut, as stock sizes its columns to hold them.
+    // The text columns, from where skin_scroll_list puts its rows in the well. The game time is never cut, as stock
+    // sizes its column to hold it; the date is in the preview, which leaves the name the rest of the row.
     const int row_x = well.x + s(4.0f);
     const int row_w = well.w - s(8.0f) - ui_scrollbar_width(ctx) - s(4.0f);
     const int name_x = s(24.0f);
     const int gap = s(12.0f);
-    const auto column_w = [&](const char* widest_value, const char* header) {
-        return std::max(rf::gr::get_string_size(widest_value, fonts.body).first,
-                        rf::gr::get_string_size(trimmed(header), fonts.column).first)
-             + gap;
-    };
-    const int time_x = std::min(row_w * 78 / 100, row_w - column_w("00:00:00", rf::strings::game_time_column));
-    const int date_x =
-        std::min(row_w * 50 / 100, time_x - column_w("00/00/00 00:00:00", rf::strings::date_time_column));
+    const int time_w = std::max(rf::gr::get_string_size("00:00:00", fonts.body).first,
+                                rf::gr::get_string_size(trimmed(rf::strings::game_time_column), fonts.column).first)
+                     + gap;
+    const int time_x = row_w - time_w;
 
     if (ctx.draw) {
         const UiRect& header = panel.header;
         const int y = header.y + (header.h - rf::gr::get_font_height(fonts.column)) / 2;
         rf::gr::set_color(skin::ink_title);
         rf::gr::string(row_x + name_x, y, trimmed(rf::strings::name_column).c_str(), fonts.column);
-        rf::gr::string(row_x + date_x, y, trimmed(rf::strings::date_time_column).c_str(), fonts.column);
         rf::gr::string(row_x + time_x, y, trimmed(rf::strings::game_time_column).c_str(), fonts.column);
         menu_draw_panel_ridge(ctx, panel);
     }
@@ -477,11 +631,11 @@ void SavedGamesPanel::build(UiContext& ctx, const MenuPanel& panel, const MenuFo
     }
 
     const SkinScrollList scroll_list{
-        .count = list.size(),
+        .count = row_count(),
         .row_h = row_h,
         .id_name = "saved_games",
         .row_id_name = row_id_name,
-        .empty_text = list.size() == 0 ? "No saved games." : nullptr,
+        .empty_text = g_rows.empty() ? "No saved games." : nullptr,
         .font = fonts.body,
     };
     skin_scroll_list(ctx, well, scroll_list, scroll_, scrolled_to_, [&](const SkinScrollListRow& row) {
@@ -498,21 +652,24 @@ void SavedGamesPanel::build(UiContext& ctx, const MenuPanel& panel, const MenuFo
             }
             return;
         }
-        const rf::ui::SavegameListEntry& entry = list[static_cast<std::size_t>(row.index)];
+        const SaveRow& save = g_rows[static_cast<std::size_t>(row.index)];
         const rf::Color color = r.lit ? skin::txt_hi : skin::txt;
         const int text_y = r.draw.y + (r.draw.h - rf::gr::get_font_height(fonts.body)) / 2;
         const auto cell = [&](int x, int right, std::string_view text) {
             skin_draw_text(r.draw.x + x, text_y, ui_fit_end(text, std::max(1, right - x - gap), fonts.body),
                            fonts.body, color);
         };
-        cell(name_x, date_x, entry_name(entry));
-        cell(date_x, time_x, date_string(entry.write_time));
-        cell(time_x, row_w, game_time_string(entry.game_time));
+        cell(name_x, time_x, save.name);
+        cell(time_x, row_w, game_time_string(save.game_time));
     });
 
     if (ctx.draw) {
-        const char* hint =
-            g_save ? "Pick a save to overwrite, or type a new name." : "Double-click or press Enter to load.";
+        draw_preview(ctx, pane, has_selection() ? &g_rows[static_cast<std::size_t>(sel_)] : nullptr, fonts.caption);
+        // A picked save of the other format keeps its file: one of the name is written beside it.
+        const std::string hint = g_save
+            ? std::format("Pick a save to overwrite, or type a new name. Saves as {}.",
+                          asg_game_saves_asg() ? ".asg" : ".svl")
+            : "Double-click or press Enter to load.";
         rf::gr::set_color(skin::ink_hint);
         rf::gr::string(body.x, hint_y, ui_fit_end(hint, body.w, fonts.caption).c_str(), fonts.caption);
     }
@@ -569,7 +726,8 @@ void save_game()
     if (const std::size_t dot = file.rfind('.'); dot != std::string::npos) {
         file.resize(dot);
     }
-    const std::string path = std::string{rf::sr::savegame_path} + file + ".svl";
+    // The extension the save hook writes; the other format's file of the name is another save.
+    const std::string path = std::string{rf::sr::savegame_path} + file + (asg_game_saves_asg() ? ".asg" : ".svl");
     // A file that cannot be checked is asked about, as one that is there.
     std::error_code ec;
     if (!std::filesystem::exists(path, ec) && !ec) {
@@ -595,11 +753,32 @@ void save_game()
 void load_game()
 {
     const int sel = g_panel.selected();
-    if (sel < 0 || sel >= rf::ui::load_game_list.size()) {
+    if (sel < 0 || sel >= row_count()) {
         return;
     }
-    rf::ui::load_game_sel_idx = sel;
-    rf::ui::load_game_load_click();
+    const SaveRow& row = g_rows[static_cast<std::size_t>(sel)];
+    if (row.header) {
+        const std::filesystem::path path = std::filesystem::path{rf::sr::savegame_path} / row.filename;
+        if (asg_load_game(path)) {
+            asg_set_last_save(path);
+        }
+    }
+    else if (row.stock_index < rf::ui::load_game_list.size()) {
+        const auto load = [index = row.stock_index] {
+            rf::ui::load_game_sel_idx = index;
+            rf::ui::load_game_load_click();
+        };
+        if (!asg_svl_load_converts()) {
+            load();
+            return;
+        }
+        g_menu.popup().open(asg_svl_load_title, asg_svl_load_text, {{"CONTINUE", rf::KEY_C}, {"CANCEL"}}, 1, 0,
+                            [load](int button, const std::string&) {
+                                if (button == 0) {
+                                    load();
+                                }
+                            });
+    }
 }
 
 void delete_message(std::string text)
@@ -608,12 +787,13 @@ void delete_message(std::string text)
                         nullptr, MenuPopupStyle::Neutral);
 }
 
-// `name` is a row of the stock list: a file the builder found in the savegame folder and read as a save. A quick
+// `name` is a row of the list: a file found in the savegame folder and read as a save. A quick
 // save or an autosave is an ordinary one, and stock checks a save is still there before it offers to load it.
 void delete_save(const std::string& name)
 {
     // Never a path out of the folder, whatever the list holds.
-    const bool bare = string_iends_with(name, ".svl") && name.find_first_of("\\/:") == std::string::npos;
+    const bool bare = (string_iends_with(name, ".svl") || string_iends_with(name, ".asg"))
+        && name.find_first_of("\\/:") == std::string::npos;
     const std::filesystem::path path = std::string{rf::sr::savegame_path} + name;
     // MSVC's remove clears the read-only attribute first; a save marked read-only stays, as with DeleteFile.
     std::error_code status_ec;
@@ -644,11 +824,11 @@ void delete_save(const std::string& name)
 void confirm_delete()
 {
     const int sel = g_panel.selected();
-    if (sel < 0 || sel >= saved_games().size()) {
+    if (sel < 0 || sel >= row_count()) {
         return;
     }
     ui_play_click();
-    std::string name{entry_name(saved_games()[static_cast<std::size_t>(sel)])};
+    std::string name = g_rows[static_cast<std::size_t>(sel)].filename;
     std::string text = std::format("Delete the saved game \"{}\"?", name);
     // NO on Enter, as for an overwrite.
     g_menu.popup().open(delete_title, std::move(text),

@@ -373,6 +373,7 @@ namespace rf
 
     enum PlayerFlags
     {
+        PF_UNK_8 = 0x8, // stock load clears it (0x004B4DB3)
         PF_HIDE_FROM_CAMERA = 0x10,
         PF_KILL_AFTER_BLACKOUT = 0x200,
         PF_IN_ENCLOSED_VEHICLE = 0x400, // set while boarding a $Use: "vehicle" entity, not turrets
@@ -464,6 +465,12 @@ namespace rf
     // (with a message), or silently with no local player.
     static auto& player_change_name = addr_as_ref<bool(String::Pod name)>(0x004A7540);
     static auto& player_is_undercover = addr_as_ref<bool()>(0x004B0580);
+    static auto& player_undercover_start = addr_as_ref<void(int cover_team)>(0x004B00F0);
+    static auto& player_undercover_set_gun_skin = addr_as_ref<void()>(0x004B0610);
+    static auto& player_cover_id = addr_as_ref<int>(0x007CABBC);
+    static auto& undercover_weapon_type = addr_as_ref<int>(0x007CABC4);
+    // Loads the local player's first person mesh for a weapon and returns it
+    static auto& player_fpgun_set_weapon_mesh = addr_as_ref<VMesh*(Player* pp, int weapon_type)>(0x004AE0D0);
     static auto& player_undercover_alarm_is_on = addr_as_ref<bool()>(0x004B05F0);
     static auto& player_is_dead = addr_as_ref<bool(const Player *player)>(0x004A4920);
     static auto& player_is_dying = addr_as_ref<bool(const Player *player)>(0x004A4940);

@@ -61,6 +61,24 @@ namespace rf::sr {
     static auto& can_save_now = addr_as_ref<bool()>(0x004B61A0);
     // The Quick Load control: queues a load of the quick save, in single player.
     static auto& quick_load = addr_as_ref<void()>(0x004B6180);
+    // The save's current level file (32 bytes) and title (48 bytes); game_time receives the float's bits
+    static auto& read_header =
+        addr_as_ref<bool(const char* filename, char* level, int* game_time, char* title)>(0x004B3850);
 
     static auto& savegame_path = addr_as_ref<char[260]>(0x007DB3EC);
+    // The save the death popup offers to load: set by sr_save_game and the load menu, cleared by sr_init
+    static auto& last_save_filename = addr_as_ref<char[256]>(0x007DAFEC);
+
+    // The HUD message log: an 80-entry ring in the save data, read by the message log panel
+    struct LoggedHudMessage
+    {
+        char message[256];
+        int time_string;
+        int16_t persona_index;
+        int16_t display_height;
+    };
+    static_assert(sizeof(LoggedHudMessage) == 0x108);
+
+    static auto& logged_message_newest_index = addr_as_ref<int()>(0x004B57C0);
+    static auto& logged_message_get = addr_as_ref<LoggedHudMessage*(int index)>(0x004B5800);
 }

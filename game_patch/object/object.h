@@ -8,6 +8,7 @@
 namespace rf
 {
     struct GFace;
+    struct VMesh;
     struct Debris;
     struct Object;
     struct Player;
@@ -55,6 +56,32 @@ void riot_shield_reset_fp_decals(rf::Player* player);
 void riot_shield_on_multi_level_init();
 void entity_rate_limit_on_entity_delete(int handle);
 void entity_rate_limit_clear();
+// The alt skin on an entity or corpse mesh (entity_set_skin 0x00428FB0), empty for none or another object type
+std::string obj_get_skin(rf::Object& obj);
+void obj_set_skin(rf::Object& obj, const std::string& skin);
+
+// The animation state a savegame keeps, which entity_restore_mesh (0x0042C570) resets on a new mesh
+struct EntityAnimState
+{
+    int current_state_anim = 0;
+    int next_state_anim = -1;
+    float total_transition_time = 0.0f;
+    float elapsed_transition_time = 0.0f;
+    int custom_state_anim = -1;  // vmesh anim of the custom state
+    int custom_action_anim = -1; // last custom action, replayed on set
+};
+EntityAnimState entity_get_anim_state(const rf::Entity& e);
+void entity_set_anim_state(rf::Entity& e, const EntityAnimState& s);
+
+// A character animation by file, which unlike its index holds across a new load of the character
+struct CharacterAnimRef
+{
+    std::string filename;
+    bool is_state = false;
+};
+CharacterAnimRef character_anim_ref(const rf::VMesh* vmesh, int anim_index);
+// The index of the animation in the mesh's character, loading it if needed; -1 when it cannot be had
+int character_anim_index(rf::VMesh* vmesh, const CharacterAnimRef& anim);
 bool level_allows_extra_items();
 float liquid_depth_update_surface_y(const rf::GRoom* room);
 bool liquid_depth_update_moving_surface_y(const rf::GRoom* room, float& out_y);

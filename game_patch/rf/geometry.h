@@ -251,8 +251,17 @@ namespace rf
         {
             AddrCaller{0x004D2F80}.this_call(this);
         }
+
+        // Any room, detail rooms included
+        GRoom* find_room_by_uid(int uid)
+        {
+            return AddrCaller{0x004D2FC0}.this_call<GRoom*>(this, uid);
+        }
     };
     static_assert(sizeof(GSolid) == 0x378);
+    static_assert(offsetof(GSolid, bbox_min) == 0x48);
+    static_assert(offsetof(GSolid, bbox_max) == 0x54);
+    static_assert(offsetof(GSolid, nodes) == 0x300);
 
     // A legacy room-cache batch as geo_cache_prepare_room 0x004F0C00 builds it; the static solid
     // renderer 0x0055F5E0 draws it with `mode` and writes `color` into every vertex's diffuse.
@@ -758,10 +767,35 @@ namespace rf
     static auto& g_geomod_scale = addr_as_ref<float>(0x00648598);
     static auto& g_geomod_flags = addr_as_ref<uint8_t>(0x0064858C);       // bit 0x1=local, 0x8=driller
     static auto& g_num_geomods_this_level = addr_as_ref<int>(0x00647C9C);
+    // A g_geomod_crater_records entry. pos is compressed against the level solid's bbox (0x004B5820), the
+    // normal by 0x004B5B30 and the orientation as a short quaternion (0x0051A540).
+    struct GeomodCraterRecord
+    {
+        uint16_t shape_index;
+        uint16_t flags;
+        int room_index;
+        int16_t pos[3];
+        int16_t hit_normal[3];
+        int16_t orient[4];
+        float scale;
+    };
+    static_assert(sizeof(GeomodCraterRecord) == 0x20);
+    static_assert(offsetof(GeomodCraterRecord, hit_normal) == 0xE);
+    static_assert(offsetof(GeomodCraterRecord, orient) == 0x14);
+    static_assert(offsetof(GeomodCraterRecord, scale) == 0x1C);
     // geomod_create 0x00467020 writes each crater's records at index g_num_geomods_this_level.
     constexpr int max_geomod_craters = 128;
-    static auto& g_geomod_crater_records = addr_as_ref<uint8_t[max_geomod_craters][0x20]>(0x00648600);
+    static auto& g_geomod_crater_records = addr_as_ref<GeomodCraterRecord[max_geomod_craters]>(0x00648600);
     static auto& g_geomod_crater_pushes = addr_as_ref<uint8_t[max_geomod_craters][0x24]>(0x00646A28);
+    // Carves every crater record synchronously through geomod_init and geomod_step (stock load, 0x004B4AD0)
+    static auto& levelmod_load_state = addr_as_ref<void()>(0x004674B0);
+    // Starts the geomod state machine on a crater; geomod_step then runs it one state per call, false once done
+    static auto& geomod_init = addr_as_ref<void(GeomodParams* params)>(0x00466B00);
+    static auto& geomod_step = addr_as_ref<bool()>(0x00466C50);
+    // Destroys a detail room and appends its uid to killed_room_uids, which has no bound check
+    static auto& room_kill = addr_as_ref<void(GRoom* room)>(0x004921F0);
+    static auto& num_killed_rooms = addr_as_ref<int>(0x0076D034);
+    static const auto killed_room_uids = reinterpret_cast<const int*>(0x007822D0);
     static auto& g_geomod_separate_solids = addr_as_ref<bool>(0x00647C28);
 
     // Geomod emitter template indices (set by geomod_init FUN_00437130)

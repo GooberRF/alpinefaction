@@ -49,6 +49,7 @@ extern void set_sky_room_uid_override(
     bool relative_position,
     float position_scale
 );
+void get_sky_room_uid_override(int& room_uid, int& anchor_uid, float& position_scale);
 
 rf::Vector3 rotate_velocity(
     const rf::Vector3& old_velocity,
@@ -2768,7 +2769,7 @@ struct EventFullscreenOverlayBase : rf::Event
     FullscreenTransitionType transition_type = FullscreenTransitionType::disappear;
     int max_alpha_raw = 0; // 0 means 255 (full opacity)
 
-    // Runtime state (not serialized)
+    // Runtime state, kept by savegames but not the level file
     bool active = false;
     bool fading_out_early = false;
     HighResTimer main_timer;
