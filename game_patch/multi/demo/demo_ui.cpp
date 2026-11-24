@@ -1097,7 +1097,7 @@ bool demo_controls_ui_draws_nameplate()
 {
     // Compact is HUD and hides with it; expanded stays up for seeking
     return demo_playback_active() && demo_playback_in_level_view()
-        && (g_open || !is_hud_effectively_hidden());
+        && (g_open || (!is_hud_effectively_hidden() && hud_element_visible(HudElement::nameplate)));
 }
 
 int demo_controls_ui_top_y()

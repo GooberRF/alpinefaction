@@ -8,6 +8,7 @@ Version 1.6.0 (TBD): Not yet released
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)
 - Show terrain textures at full resolution in the level editor, as the game draws them (Direct3D 11 renderer only)
+- Add a `nameplate` HUD element (`cl_hudelement nameplate` and the spectate HUD elements menu) to hide the spectate nameplate and the compact demo playback bar
 
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)

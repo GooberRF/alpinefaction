@@ -168,7 +168,7 @@ Commands marked "D3D11 only" only have an effect with the Direct3D 11 renderer.
 | `cl_columnsegments` | `[segments]` | Sets the number of segments of control point light columns (3-256). Default: 8. |
 | `cl_dominationmsgs` | | Toggles dominating and revenge server messages in chat. Default: on. |
 | `cl_hud` | `[bool]` | Shows or hides the HUD. Not saved. |
-| `cl_hudelement` | `[element\|all] [bool]` | Shows or hides one HUD element (`health`, `ammo`, `reticle`, `powerups`, `gauges`, `names`, `killfeed`, `chat`, `timer`, `scores`, `messages`, `minimap`) for this session; an element alone toggles it, `all` alone shows all, no arguments lists them. Not saved. |
+| `cl_hudelement` | `[element\|all] [bool]` | Shows or hides one HUD element (`health`, `ammo`, `reticle`, `powerups`, `gauges`, `names`, `nameplate`, `killfeed`, `chat`, `timer`, `scores`, `messages`, `minimap`) for this session; an element alone toggles it, `all` alone shows all, no arguments lists them. Not saved. |
 | `cl_locationpings` | | Toggles location pinging (team game types and RUN only). Default: on. |
 | `cl_minimap` | `[bool]` | Shows the multiplayer minimap on levels that provide one. Default: on. |
 | `cl_minimap_labels` | `[bool]` | Shows control point names on the minimap. Default: on. |

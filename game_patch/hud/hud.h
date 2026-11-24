@@ -63,6 +63,7 @@ enum class HudElement : uint8_t
     powerups,
     gauges,       // jetpack fuel
     target_names,
+    nameplate,    // spectate nameplate and the mode label beside it; includes the compact demo playback bar
     killfeed,
     chat,
     timer,
