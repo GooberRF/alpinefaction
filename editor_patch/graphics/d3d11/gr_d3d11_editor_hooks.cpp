@@ -21,6 +21,8 @@
 #include "gr_d3d11_editor.h"
 #include "gr_d3d11_editor_hooks.h"
 #include "gr_d3d11_editor_lightmaps.h"
+#include "gr_d3d11_editor_terrain.h"
+#include "gr_d3d11_editor_terrain_renderer.h"
 
 namespace gr::d3d11
 {
@@ -659,6 +661,47 @@ namespace gr::d3d11
     {
         const EditorRenderer* r = live_renderer();
         return r ? r->level_view_style() : EditorLevelStyle{};
+    }
+
+    bool editor_terrain_draw(const EditorTerrainDraw& draw)
+    {
+        EditorRenderer* r = live_renderer();
+        return r && r->draw_terrain(draw);
+    }
+
+    void editor_terrain_cells_changed(const void* key, const TerrainCellRect* cells)
+    {
+        if (EditorRenderer* r = live_renderer()) {
+            r->terrains().cells_changed(key, cells);
+        }
+    }
+
+    void editor_terrain_heights_changed(const void* key, const TerrainCellRect* verts)
+    {
+        if (EditorRenderer* r = live_renderer()) {
+            r->terrains().heights_changed(key, verts);
+        }
+    }
+
+    void editor_terrain_rebind_grid(const void* key, const void* old_grid, const void* new_grid)
+    {
+        if (EditorRenderer* r = live_renderer()) {
+            r->terrains().rebind_grid(key, old_grid, new_grid);
+        }
+    }
+
+    void editor_terrain_textures_reloaded()
+    {
+        if (EditorRenderer* r = live_renderer()) {
+            r->terrains().textures_reloaded();
+        }
+    }
+
+    void editor_terrain_forget(const void* key)
+    {
+        if (EditorRenderer* r = live_renderer()) {
+            r->terrains().forget(key);
+        }
     }
 }
 

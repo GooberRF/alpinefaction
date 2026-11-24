@@ -2394,6 +2394,11 @@ std::uint32_t terrain_baked_light_generation()
     return g_terrain_light_generation;
 }
 
+std::uint64_t terrain_baked_light_fingerprint(const TerrainBakedLight& light)
+{
+    return light.chart.geometry_fingerprint;
+}
+
 const TerrainBakedLight* terrain_baked_light_find(int uid, const Vector3& pos, const DedTerrainData& data)
 {
     const auto it = g_terrain_light.find(uid);

@@ -242,20 +242,24 @@ inline bool alpine_dlg_combo_select(HWND hdlg, int idc, LPARAM data)
     return false;
 }
 
-// Names that aren't on disk or in a vpp stay at -1 rather than going through bm_load, which would
-// manufacture (and permanently cache) a placeholder entry for every half-typed name. A -1 handle
-// takes the same empty-preview path the stock panel uses when nothing is selected.
-inline int alpine_dlg_resolve_bitmap(const char* name)
+// Whether bm_load may be given `name`: for a name that isn't on disk or in a vpp it would manufacture (and
+// permanently cache) a placeholder entry, as it would for every half-typed name.
+inline bool alpine_dlg_bitmap_loadable(const char* name)
 {
-    if (!name || name[0] == '\0') return -1;
-    if (std::strlen(name) > rfl_name_max_len) return -1;
+    if (!name || name[0] == '\0') return false;
+    if (std::strlen(name) > rfl_name_max_len) return false;
     const char* ext = std::strrchr(name, '.');
-    if (ext && std::strlen(ext) > rfl_ext_max_len) return -1;
+    if (ext && std::strlen(ext) > rfl_ext_max_len) return false;
     // open (0x004CF9A0) locates the file without opening a stream, so no close belongs here:
     // close (0x004CFF60) would index the open file table at slot -1 (the constructor's value).
     rf::File file;
-    if (!file.open(name)) return -1;
-    return bm_load(name, -1, 1);
+    return file.open(name);
+}
+
+// A -1 handle takes the same empty-preview path the stock panel uses when nothing is selected.
+inline int alpine_dlg_resolve_bitmap(const char* name)
+{
+    return alpine_dlg_bitmap_loadable(name) ? bm_load(name, -1, 1) : -1;
 }
 
 // Mirrors CBitmapPreviewDialog::OnPaint (0x0044C1B0): the editor renderer draws into the control's

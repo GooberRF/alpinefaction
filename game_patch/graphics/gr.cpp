@@ -734,18 +734,10 @@ CodeInjection gr_d3d_render_lod_vif_injection{
 
 SunLightState gr_get_sun_state()
 {
-    SunLightState state;
     if (!(rf::level.flags & rf::LEVEL_LOADED)) {
-        return state;
+        return SunLightState{};
     }
-    const alpine_lighting::SunState sun = alpine_lighting::sun_state(AlpineLevelProperties::instance());
-    state.enabled = sun.enabled;
-    state.affects_meshes = sun.affects_meshes;
-    state.drives_shadowmap_dir = sun.drives_shadowmap_dir;
-    state.mesh_mode = sun.mesh_mode;
-    state.travel_dir = {sun.travel_dir[0], sun.travel_dir[1], sun.travel_dir[2]};
-    std::copy(std::begin(sun.color), std::end(sun.color), state.color);
-    return state;
+    return sun_light_state(alpine_lighting::sun_state(AlpineLevelProperties::instance()));
 }
 
 float gr_sun_get_mesh_scale(const float* ambient)
