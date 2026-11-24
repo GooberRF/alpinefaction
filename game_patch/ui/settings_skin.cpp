@@ -1238,9 +1238,16 @@ bool skin_slider(UiContext& ctx, const UiRect& r, float& value, float min_value,
     bool activated = false;
     if (!ctx.draw && enabled) {
         activated = ctx.consume_activation(id);
+        // The wheel over the track steps the value like Left / Right, instead of scrolling the page.
+        int adjust = ctx.consume_adjust(id);
+        if (hovered) {
+            ctx.claim_wheel();
+            if (adjust == 0 && ctx.wheel != 0) {
+                adjust = ctx.wheel > 0 ? 1 : -1;
+            }
+        }
         // A stored value can sit outside the track's range; a step must not clamp it the wrong way.
-        if (const int adjust = ctx.consume_adjust(id);
-            adjust != 0 && !(adjust > 0 && value >= max_value) && !(adjust < 0 && value <= min_value)) {
+        if (adjust != 0 && !(adjust > 0 && value >= max_value) && !(adjust < 0 && value <= min_value)) {
             const float delta = step > 0.0f ? step : (nudge > 0.0f ? nudge : span / 20.0f);
             value = snap(value + delta * static_cast<float>(adjust));
         }

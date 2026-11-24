@@ -340,6 +340,8 @@ void UiContext::begin_pass(UiPass pass_kind)
     }
 
     hovered_id_ = 0;
+    wheel_claimed_prev_ = wheel_claimed_;
+    wheel_claimed_ = false;
     focusables_.clear();
     text_seen_this_pass_ = false;
     popup_seen_this_pass_ = false;
@@ -953,7 +955,7 @@ UiScrollRegion ui_scroll_begin(UiContext& ctx, const UiRect& view, int content_h
     region.max_scroll = static_cast<float>(std::max(0, content_h - view.h));
 
     // An open popup owns the wheel, and scrolling would carry its owner away from under it.
-    if (!ctx.draw && region.max_scroll > 0.0f && ctx.wheel != 0 && ctx.popup_id() == 0
+    if (!ctx.draw && region.max_scroll > 0.0f && ctx.wheel != 0 && ctx.popup_id() == 0 && !ctx.wheel_claimed_prev()
         && ui_point_in(ctx.mx, ctx.my, view)) {
         scroll += (ctx.wheel > 0 ? -1.0f : 1.0f) * static_cast<float>(wheel_step);
     }

@@ -46,33 +46,86 @@ static ReticleConfig reticle_active_config()
     return g_alpine_game_config.default_reticle();
 }
 
+constexpr rf::gr::Mode reticle_aa_mode{
+    rf::gr::TEXTURE_SOURCE_NONE,
+    rf::gr::COLOR_SOURCE_VERTEX,
+    rf::gr::ALPHA_SOURCE_VERTEX,
+    rf::gr::ALPHA_BLEND_ALPHA,
+    rf::gr::ZBUFFER_TYPE_NONE,
+    rf::gr::FOG_NOT_ALLOWED,
+};
+
+// Fills the band between loop(s_in) and loop(s_out), built from n quads via tmapper, same as gr_rect does internally.
+// loop(s, i, x, y) gives vertex i of a closed n-point outline (clip-relative) pushed out by edge offset s.
+// Each real edge gets a 1 px alpha ramp centered on it (anti-aliasing): a pixel center half a pixel inside gets full alpha,
+// one half a pixel outside none, so pixel-aligned edges stay crisp. inner_edge: loop(s_in) is an edge (a ring's hole).
+template<typename Loop>
+static void reticle_draw_band(Loop loop, int n, float s_in, float s_out, bool inner_edge, rf::Color clr)
+{
+    rf::gr::set_texture(-1, -1);
+    constexpr auto flags = static_cast<rf::gr::TMapperFlags>(rf::gr::TMAP_FLAG_RGB | rf::gr::TMAP_FLAG_ALPHA);
+    // quads between loop(s0) at alpha f0 and loop(s1) at alpha f1, s1 > s0
+    auto band = [&](float s0, float f0, float s1, float f1) {
+        for (int i = 0; i < n; ++i) {
+            rf::gr::Vertex v[4]{};
+            rf::gr::Vertex* vp[4] = {&v[0], &v[1], &v[2], &v[3]};
+            auto set = [&](int idx, float s, int j, float f) {
+                loop(s, j % n, v[idx].sx, v[idx].sy);
+                v[idx].sx += rf::gr::screen.offset_x;
+                v[idx].sy += rf::gr::screen.offset_y;
+                v[idx].sw = 1.0f;
+                v[idx].r = clr.red;
+                v[idx].g = clr.green;
+                v[idx].b = clr.blue;
+                v[idx].a = static_cast<rf::ubyte>(clr.alpha * f + 0.5f);
+            };
+            set(0, s1, i, f1);
+            set(1, s1, i + 1, f1);
+            set(2, s0, i + 1, f0);
+            set(3, s0, i, f0);
+            rf::gr::tmapper(4, vp, flags, reticle_aa_mode);
+        }
+    };
+    constexpr float h = 0.5f;
+    float core_in = s_in;
+    if (inner_edge) {
+        band(std::max(0.0f, s_in - h), 0.0f, s_in + h, 1.0f);
+        core_in = s_in + h;
+    }
+    if (s_out - h > core_in) {
+        band(core_in, 1.0f, s_out - h, 1.0f);
+    }
+    band(s_out - h, 1.0f, s_out + h, 0.0f);
+}
+
 // Hollow regular n-gon (ring) centered at cx,cy (clip-relative, float) with inradius r and line thickness t.
-// Built from n quads via tmapper, same as gr_rect does internally. a0 = angle of first vertex.
-static void hud_draw_ngon_ring(float cx, float cy, int n, float r, float t, float a0)
+// a0 = angle of first vertex.
+static void hud_draw_ngon_ring(float cx, float cy, int n, float r, float t, float a0, rf::Color clr)
 {
     constexpr float pi = 3.14159265f;
     const float k = 1.0f / std::cos(pi / n); // inradius -> circumradius
-    const float ro = (r + t * 0.5f) * k;
-    const float ri = std::max(0.0f, r - t * 0.5f) * k;
-    cx += rf::gr::screen.offset_x;
-    cy += rf::gr::screen.offset_y;
-    rf::gr::set_texture(-1, -1);
-    for (int i = 0; i < n; ++i) {
-        const float a1 = a0 + 2 * pi * i / n;
-        const float a2 = a0 + 2 * pi * (i + 1) / n;
-        rf::gr::Vertex v[4]{};
-        rf::gr::Vertex* vp[4] = {&v[0], &v[1], &v[2], &v[3]};
-        auto set = [&](int idx, float radius, float ang) {
-            v[idx].sx = cx + radius * std::cos(ang);
-            v[idx].sy = cy + radius * std::sin(ang);
-            v[idx].sw = 1.0f;
-        };
-        set(0, ro, a1);
-        set(1, ro, a2);
-        set(2, ri, a2);
-        set(3, ri, a1);
-        rf::gr::tmapper(4, vp, static_cast<rf::gr::TMapperFlags>(0), rf::gr::rect_mode);
-    }
+    auto loop = [=](float s, int i, float& x, float& y) {
+        const float ang = a0 + 2 * pi * i / n;
+        x = cx + s * k * std::cos(ang);
+        y = cy + s * k * std::sin(ang);
+    };
+    const float ri = std::max(0.0f, r - t * 0.5f);
+    reticle_draw_band(loop, n, ri, r + t * 0.5f, ri > 0.0f, clr);
+}
+
+// Filled axis-aligned rect: a band out from its center line.
+static void hud_draw_reticle_rect(int x, int y, int w, int h, rf::Color clr)
+{
+    const float cx = x + w * 0.5f;
+    const float cy = y + h * 0.5f;
+    const float hw = w * 0.5f;
+    const float hh = h * 0.5f;
+    auto loop = [=](float s, int i, float& px, float& py) {
+        // clockwise from the top left, like the ring
+        px = cx + (i == 0 || i == 3 ? -1.0f : 1.0f) * (hw + s);
+        py = cy + (i < 2 ? -1.0f : 1.0f) * (hh + s);
+    };
+    reticle_draw_band(loop, 4, -std::min(hw, hh), 0.0f, false, clr);
 }
 
 // Reticle tint, as the stock render path's set_color hooks apply it. A mod-supplied bitmap stays white unless the
@@ -93,7 +146,7 @@ static rf::Color reticle_tint(const ReticleConfig& cfg, bool locked, bool custom
 }
 
 // Vector reticle: any mix of dot, crosshair, square, circle, triangle centered on clip-relative cx, cy.
-// Rects for dot/cross (pixel exact), n-gon rings for the outline shapes.
+// Rects for dot/cross, n-gon rings for the outline shapes, all with anti-aliased edges.
 static void hud_render_vector_reticle(const ReticleConfig& cfg, int cx, int cy, bool locked, float scale)
 {
     constexpr float pi = 3.14159265f;
@@ -148,24 +201,23 @@ static void hud_render_vector_reticle(const ReticleConfig& cfg, int cx, int cy, 
 
     if (o > 0) {
         const int om = cfg.outline_shapes;
-        rf::gr::set_color(rf::Color::from_hex(cfg.outline_color));
+        const rf::Color oclr = rf::Color::from_hex(cfg.outline_color);
         for (int i = 0; i < n; ++i) {
             if (rects[i].shape & om) {
-                rf::gr::rect(rects[i].x - o, rects[i].y - o, rects[i].w + 2 * o, rects[i].h + 2 * o);
+                hud_draw_reticle_rect(rects[i].x - o, rects[i].y - o, rects[i].w + 2 * o, rects[i].h + 2 * o, oclr);
             }
         }
         for (int i = 0; i < nr; ++i) {
             if (rings[i].shape & om) {
-                hud_draw_ngon_ring(fcx, fcy, rings[i].sides, rings[i].r, rings[i].t + 2 * o, rings[i].a0);
+                hud_draw_ngon_ring(fcx, fcy, rings[i].sides, rings[i].r, rings[i].t + 2 * o, rings[i].a0, oclr);
             }
         }
     }
-    rf::gr::set_color(clr);
     for (int i = 0; i < n; ++i) {
-        rf::gr::rect(rects[i].x, rects[i].y, rects[i].w, rects[i].h);
+        hud_draw_reticle_rect(rects[i].x, rects[i].y, rects[i].w, rects[i].h, clr);
     }
     for (int i = 0; i < nr; ++i) {
-        hud_draw_ngon_ring(fcx, fcy, rings[i].sides, rings[i].r, rings[i].t, rings[i].a0);
+        hud_draw_ngon_ring(fcx, fcy, rings[i].sides, rings[i].r, rings[i].t, rings[i].a0, clr);
     }
 }
 
