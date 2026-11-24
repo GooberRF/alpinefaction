@@ -31,6 +31,9 @@ set(SRCS
     graphics/d3d11/gr_d3d11_editor_hooks.h
     graphics/d3d11/gr_d3d11_editor_lightmaps.cpp
     graphics/d3d11/gr_d3d11_editor_lightmaps.h
+    graphics/d3d11/gr_d3d11_editor_terrain.cpp
+    graphics/d3d11/gr_d3d11_editor_terrain.h
+    graphics/d3d11/gr_d3d11_editor_terrain_renderer.h
     graphics/d3d11/engine/gr_d3d11_engine.h
     graphics/d3d11/engine/rf_geometry.h
     graphics/d3d11/engine/rf_gr.h

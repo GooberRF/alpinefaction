@@ -120,6 +120,7 @@ set(GR_D3D11_CORE_SRCS
     include/common/gr_d3d11/gr_d3d11_solid.h
     include/common/gr_d3d11/gr_d3d11_state.h
     include/common/gr_d3d11/gr_d3d11_terrain.h
+    include/common/gr_d3d11/gr_d3d11_terrain_source.h
     include/common/gr_d3d11/gr_d3d11_texture.h
     include/common/gr_d3d11/gr_d3d11_transform.h
     include/common/gr_d3d11/gr_d3d11_util.h

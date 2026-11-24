@@ -2,7 +2,9 @@
 #include <array>
 #include <cstddef>
 #include <cstring>
+#include <memory>
 #include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 #include <d3d11.h>
@@ -84,8 +86,10 @@ namespace
     constexpr UINT num_srvs = num_base_srvs + num_overlay_srvs + num_detail_textures;
     static_assert(overlay_srv_slot == 20 && detail_srv_slot == 25 && first_srv_slot + num_srvs - 1 == 33);
 
+    // `out_tex`, when given, receives the texture and makes it updatable (UpdateSubresource)
     ComPtr<ID3D11ShaderResourceView> create_map(ID3D11Device* device, DXGI_FORMAT format, UINT w, UINT h,
-                                                const void* data, UINT row_pitch)
+                                                const void* data, UINT row_pitch,
+                                                ComPtr<ID3D11Texture2D>* out_tex = nullptr)
     {
         D3D11_TEXTURE2D_DESC desc{};
         desc.Width = w;
@@ -94,7 +98,7 @@ namespace
         desc.ArraySize = 1;
         desc.Format = format;
         desc.SampleDesc.Count = 1;
-        desc.Usage = D3D11_USAGE_IMMUTABLE;
+        desc.Usage = out_tex ? D3D11_USAGE_DEFAULT : D3D11_USAGE_IMMUTABLE;
         desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
         D3D11_SUBRESOURCE_DATA init{data, row_pitch, 0};
         ComPtr<ID3D11Texture2D> tex;
@@ -103,12 +107,52 @@ namespace
             FAILED(device->CreateShaderResourceView(tex, nullptr, &srv))) {
             return {};
         }
+        if (out_tex) {
+            *out_tex = tex;
+        }
         return srv;
     }
 
-    int load_bitmap(const std::string& name)
+    // `data` is the whole map, w texels per row, not just the box
+    void update_map(ID3D11DeviceContext* context, ID3D11Texture2D* tex, const uint8_t* data, UINT w, UINT bpp,
+                    UINT x0, UINT y0, UINT x1, UINT y1)
     {
-        return name.empty() ? -1 : rf::bm::load(name.c_str(), -1, true);
+        if (!tex || x0 >= x1 || y0 >= y1) {
+            return;
+        }
+        const D3D11_BOX box{x0, y0, 0, x1, y1, 1};
+        context->UpdateSubresource(tex, 0, &box, data + (static_cast<std::size_t>(y0) * w + x0) * bpp, w * bpp, 0);
+    }
+
+    int load_bitmap(const char* name)
+    {
+        return !name || !*name ? -1 : rf::bm::load(name, -1, true);
+    }
+
+    gr::d3d11::TerrainSource level_terrain_source(const AlpineTerrain& t)
+    {
+        gr::d3d11::TerrainSource s;
+        s.header = t.header;
+        s.heights = t.heights;
+        s.weights = t.weights;
+        s.overlay_coverage = t.overlay_coverage;
+        s.num_layers = std::min<std::size_t>(t.layers.size(), at::max_layers);
+        for (std::size_t l = 0; l < s.num_layers; l++) {
+            s.layers[l] = {t.layers[l].texture.c_str(), t.layers[l].uv_scale, t.layers[l].triplanar, false};
+        }
+        s.num_overlays = std::min<std::size_t>(t.overlays.size(), at::max_overlays);
+        for (std::size_t o = 0; o < s.num_overlays; o++) {
+            s.overlays[o] = {t.overlays[o].texture.c_str(), t.overlays[o].uv_scale, t.overlays[o].triplanar,
+                             t.overlays[o].break_tiling};
+        }
+        s.underside_texture = t.underside_texture.c_str();
+        s.fullbright = t.fullbright();
+        return s;
+    }
+
+    bool same_name(const std::string& held, const char* name)
+    {
+        return held == (name ? name : "");
     }
 
     // Largest overlay texture given a premultiplied copy: its mip chain is built in memory first.
@@ -224,11 +268,22 @@ namespace gr::d3d11
         int layer_bm[at::max_layers] = {-1, -1, -1, -1, -1, -1, -1, -1};
         int underside_bm = -1;
         int overlay_bm[at::max_overlays] = {-1, -1, -1, -1};
+        // Keyed terrains only: the maps' textures, for update, and what the maps and bitmaps were made from
+        ComPtr<ID3D11Texture2D> weight_tex[2];
+        ComPtr<ID3D11Texture2D> height_tex;
+        ComPtr<ID3D11Texture2D> overlay_coverage_tex;
+        uint32_t nx = 0, nz = 0, weight_res_mul = 0;
+        std::vector<std::string> layer_names;
+        std::vector<std::string> overlay_names;
+        std::string underside_name;
+        bool has_overlay_coverage = false;
 
-        bool create(ID3D11Device* device, const AlpineTerrain& t);
+        bool create(ID3D11Device* device, const TerrainSource& t, bool updatable);
+        void record_shape(const TerrainSource& t);
+        bool same_shape(const TerrainSource& t) const;
     };
 
-    bool TerrainRenderer::TerrainGpu::create(ID3D11Device* device, const AlpineTerrain& t)
+    bool TerrainRenderer::TerrainGpu::create(ID3D11Device* device, const TerrainSource& t, bool updatable)
     {
         const at::Header& h = t.header;
         // Every texture format the shader samples has to filter, or the blend and normals step.
@@ -243,18 +298,20 @@ namespace gr::d3d11
         const UINT wh = at::weight_height(h.nz, h.weight_res_mul);
         const std::size_t map_bytes = at::weight_map_bytes(h.nx, h.nz, h.weight_res_mul);
         if (t.weights.size() != map_bytes * 2) return false;
+        if (t.heights.size() < static_cast<std::size_t>(h.nx) * h.nz) return false;
         for (int m = 0; m < 2; m++) {
-            weights[m] =
-                create_map(device, DXGI_FORMAT_R8G8B8A8_UNORM, ww, wh, t.weights.data() + m * map_bytes, ww * 4);
+            weights[m] = create_map(device, DXGI_FORMAT_R8G8B8A8_UNORM, ww, wh, t.weights.data() + m * map_bytes,
+                                    ww * 4, updatable ? std::addressof(weight_tex[m]) : nullptr);
             if (!weights[m]) return false;
         }
-        height = create_map(device, DXGI_FORMAT_R16_UNORM, h.nx, h.nz, t.heights.data(), h.nx * 2);
+        height = create_map(device, DXGI_FORMAT_R16_UNORM, h.nx, h.nz, t.heights.data(), h.nx * 2,
+                            updatable ? std::addressof(height_tex) : nullptr);
         if (!height) return false;
-        if (!t.overlays.empty() && t.overlay_coverage.size() == at::overlay_map_bytes(h.nx, h.nz, h.weight_res_mul)) {
-            overlay_coverage =
-                create_map(device, DXGI_FORMAT_R8G8B8A8_UNORM, ww, wh, t.overlay_coverage.data(), ww * 4);
+        if (t.num_overlays > 0 && t.overlay_coverage.size() == at::overlay_map_bytes(h.nx, h.nz, h.weight_res_mul)) {
+            overlay_coverage = create_map(device, DXGI_FORMAT_R8G8B8A8_UNORM, ww, wh, t.overlay_coverage.data(),
+                                          ww * 4, updatable ? std::addressof(overlay_coverage_tex) : nullptr);
             if (!overlay_coverage) return false;
-            for (std::size_t o = 0; o < t.overlays.size() && o < at::max_overlays; o++) {
+            for (std::size_t o = 0; o < t.num_overlays; o++) {
                 overlay_bm[o] = load_bitmap(t.overlays[o].texture);
                 if (overlay_bm[o] >= 0) {
                     overlay_premultiplied[o] = create_premultiplied(device, overlay_bm[o]);
@@ -262,10 +319,43 @@ namespace gr::d3d11
             }
         }
 
-        for (std::size_t l = 0; l < t.layers.size() && l < at::max_layers; l++) {
+        for (std::size_t l = 0; l < t.num_layers; l++) {
             layer_bm[l] = load_bitmap(t.layers[l].texture);
         }
         underside_bm = load_bitmap(t.underside_texture);
+        if (updatable) {
+            record_shape(t);
+        }
+        return true;
+    }
+
+    void TerrainRenderer::TerrainGpu::record_shape(const TerrainSource& t)
+    {
+        nx = t.header.nx;
+        nz = t.header.nz;
+        weight_res_mul = t.header.weight_res_mul;
+        layer_names.clear();
+        overlay_names.clear();
+        for (std::size_t l = 0; l < t.num_layers; l++) layer_names.emplace_back(t.layers[l].texture);
+        for (std::size_t o = 0; o < t.num_overlays; o++) overlay_names.emplace_back(t.overlays[o].texture);
+        underside_name = t.underside_texture;
+        has_overlay_coverage = t.num_overlays > 0 && !t.overlay_coverage.empty();
+    }
+
+    bool TerrainRenderer::TerrainGpu::same_shape(const TerrainSource& t) const
+    {
+        if (nx != t.header.nx || nz != t.header.nz || weight_res_mul != t.header.weight_res_mul ||
+            layer_names.size() != t.num_layers || overlay_names.size() != t.num_overlays ||
+            !same_name(underside_name, t.underside_texture) ||
+            has_overlay_coverage != (t.num_overlays > 0 && !t.overlay_coverage.empty())) {
+            return false;
+        }
+        for (std::size_t l = 0; l < t.num_layers; l++) {
+            if (!same_name(layer_names[l], t.layers[l].texture)) return false;
+        }
+        for (std::size_t o = 0; o < t.num_overlays; o++) {
+            if (!same_name(overlay_names[o], t.overlays[o].texture)) return false;
+        }
         return true;
     }
 
@@ -309,7 +399,7 @@ namespace gr::d3d11
         }
         TerrainGpu& gpu = gpu_[index];
         if (gpu.state == TerrainGpu::State::unknown) {
-            const bool ok = create_shared() && gpu.create(device_, terrains[index]);
+            const bool ok = create_shared() && gpu.create(device_, level_terrain_source(terrains[index]), false);
             gpu.state = ok ? TerrainGpu::State::ready : TerrainGpu::State::failed;
             if (!ok) {
                 xlog::warn("[AlpineTerrain] Terrain {} renders as plain geometry: its textures could not be created",
@@ -326,9 +416,106 @@ namespace gr::d3d11
             static_cast<std::size_t>(index) >= gpu_.size() || gpu_[index].state != TerrainGpu::State::ready) {
             return false;
         }
-        const AlpineTerrain& t = terrains[index];
+        AfTerrainChart chart;
+        std::optional<AfTerrainChart> found;
+        if (engine::af_lightmap_terrain_chart(index, chart)) {
+            found = chart;
+        }
+        return bind_gpu(context, render_context, gpu_[index], level_terrain_source(terrains[index]), found,
+                        engine::sun_state());
+    }
+
+    bool TerrainRenderer::prepare(const void* key, const TerrainSource& source)
+    {
+        std::unique_ptr<TerrainGpu>& gpu = keyed_[key];
+        if (gpu && gpu->state == TerrainGpu::State::ready && gpu->same_shape(source)) {
+            return true;
+        }
+        // A failed shape is not retried until it changes
+        if (gpu && gpu->state == TerrainGpu::State::failed && gpu->same_shape(source)) {
+            return false;
+        }
+        gpu = std::make_unique<TerrainGpu>();
+        if (!create_shared() || !gpu->create(device_, source, true)) {
+            // Only the shape is kept, so the failure is not retried every draw
+            gpu = std::make_unique<TerrainGpu>();
+            gpu->record_shape(source);
+            gpu->state = TerrainGpu::State::failed;
+            xlog::warn("[AlpineTerrain] A terrain cannot draw with the terrain shader: its textures could not be "
+                       "created");
+            return false;
+        }
+        gpu->state = TerrainGpu::State::ready;
+        return true;
+    }
+
+    bool TerrainRenderer::bind(ID3D11DeviceContext* context, RenderContext& render_context, const void* key,
+                               const TerrainSource& source)
+    {
+        const auto it = keyed_.find(key);
+        if (it == keyed_.end() || !it->second || it->second->state != TerrainGpu::State::ready) {
+            return false;
+        }
+        return bind_gpu(context, render_context, *it->second, source, source.chart,
+                        source.sun ? *source.sun : engine::sun_state());
+    }
+
+    const TerrainRenderer::TerrainGpu* TerrainRenderer::updatable(const void* key, const TerrainSource& source) const
+    {
+        const auto it = keyed_.find(key);
+        if (it == keyed_.end() || !it->second || it->second->state != TerrainGpu::State::ready ||
+            !it->second->same_shape(source)) {
+            return nullptr;
+        }
+        return it->second.get();
+    }
+
+    void TerrainRenderer::update_heights(ID3D11DeviceContext* context, const void* key, const TerrainSource& source,
+                                         uint32_t x0, uint32_t z0, uint32_t x1, uint32_t z1)
+    {
+        const TerrainGpu* gpu = updatable(key, source);
+        const at::Header& h = source.header;
+        if (!gpu || source.heights.size() < static_cast<std::size_t>(h.nx) * h.nz) {
+            return;
+        }
+        update_map(context, gpu->height_tex, reinterpret_cast<const uint8_t*>(source.heights.data()), h.nx, 2,
+                   std::min(x0, h.nx), std::min(z0, h.nz), std::min(x1, h.nx), std::min(z1, h.nz));
+    }
+
+    void TerrainRenderer::update_maps(ID3D11DeviceContext* context, const void* key, const TerrainSource& source,
+                                      uint32_t x0, uint32_t z0, uint32_t x1, uint32_t z1)
+    {
+        const TerrainGpu* gpu = updatable(key, source);
+        if (!gpu) {
+            return;
+        }
+        const at::Header& h = source.header;
+        const UINT ww = at::weight_width(h.nx, h.weight_res_mul);
+        const UINT wh = at::weight_height(h.nz, h.weight_res_mul);
+        const UINT tx0 = std::min(x0 * h.weight_res_mul, ww), tx1 = std::min(x1 * h.weight_res_mul, ww);
+        const UINT ty0 = std::min(z0 * h.weight_res_mul, wh), ty1 = std::min(z1 * h.weight_res_mul, wh);
+        const std::size_t map_bytes = at::weight_map_bytes(h.nx, h.nz, h.weight_res_mul);
+        if (source.weights.size() == map_bytes * 2) {
+            for (int m = 0; m < 2; m++) {
+                update_map(context, gpu->weight_tex[m], source.weights.data() + m * map_bytes, ww, 4, tx0, ty0, tx1,
+                           ty1);
+            }
+        }
+        if (source.overlay_coverage.size() == at::overlay_map_bytes(h.nx, h.nz, h.weight_res_mul)) {
+            update_map(context, gpu->overlay_coverage_tex, source.overlay_coverage.data(), ww, 4, tx0, ty0, tx1, ty1);
+        }
+    }
+
+    void TerrainRenderer::release(const void* key)
+    {
+        keyed_.erase(key);
+    }
+
+    bool TerrainRenderer::bind_gpu(ID3D11DeviceContext* context, RenderContext& render_context,
+                                   const TerrainGpu& gpu, const TerrainSource& t,
+                                   const std::optional<AfTerrainChart>& chart, const SunLightState& sun)
+    {
         const at::Header& h = t.header;
-        const TerrainGpu& gpu = gpu_[index];
 
         TerrainBufferData data{};
         std::memcpy(data.origin.data(), h.origin, sizeof(data.origin));
@@ -340,15 +527,14 @@ namespace gr::d3d11
         data.grid_size[0] = static_cast<float>(h.nx);
         data.grid_size[1] = static_cast<float>(h.nz);
         data.layer_count = static_cast<float>(h.layer_count);
-        const SunLightState sun = engine::sun_state();
         data.sun_travel_dir[0] = sun.travel_dir.x;
         data.sun_travel_dir[1] = sun.travel_dir.y;
         data.sun_travel_dir[2] = sun.travel_dir.z;
         std::memcpy(data.sun_color.data(), sun.color, sizeof(data.sun_color));
         data.debug = g_terrain_tint_batches ? 1.0f : 0.0f;
-        data.fullbright = t.fullbright() ? 1.0f : 0.0f;
+        data.fullbright = t.fullbright ? 1.0f : 0.0f;
         for (std::size_t l = 0; l < at::max_layers; l++) {
-            const bool has = l < t.layers.size();
+            const bool has = l < t.num_layers;
             data.layer_uv_scale[l] = has ? t.layers[l].uv_scale : at::default_uv_scale;
             data.layer_triplanar[l] = has && t.layers[l].triplanar ? 1.0f : 0.0f;
         }
@@ -365,11 +551,11 @@ namespace gr::d3d11
         }
         ID3D11ShaderResourceView* overlay_srvs[num_overlay_srvs] = {};
         if (gpu.overlay_coverage) {
-            data.overlay_count = static_cast<float>(std::min<std::size_t>(t.overlays.size(), at::max_overlays));
+            data.overlay_count = static_cast<float>(t.num_overlays);
             overlay_srvs[at::max_overlays] = gpu.overlay_coverage;
         }
         for (std::size_t o = 0; o < at::max_overlays; o++) {
-            const bool has = o < t.overlays.size();
+            const bool has = o < t.num_overlays;
             data.overlay_uv_scale[o] = has ? t.overlays[o].uv_scale : at::default_uv_scale;
             data.overlay_triplanar[o] = has && t.overlays[o].triplanar ? 1.0f : 0.0f;
             data.overlay_break_tiling[o] = has && t.overlays[o].break_tiling ? 1.0f : 0.0f;
@@ -379,12 +565,11 @@ namespace gr::d3d11
                                                        : nullptr;
             data.overlay_enabled[o] = static_cast<float>(o) < data.overlay_count && overlay_srvs[o] ? 1.0f : 0.0f;
         }
-        AfTerrainChart chart;
-        if (engine::af_lightmap_terrain_chart(index, chart)) {
-            data.lm_chart = static_cast<float>(chart.chart);
-            data.lm_origin[0] = chart.origin_x;
-            data.lm_origin[1] = chart.origin_z;
-            data.lm_texel_size = chart.texel_size;
+        if (chart) {
+            data.lm_chart = static_cast<float>(chart->chart);
+            data.lm_origin[0] = chart->origin_x;
+            data.lm_origin[1] = chart->origin_z;
+            data.lm_texel_size = chart->texel_size;
         }
         else {
             data.lm_chart = -1.0f;
@@ -434,6 +619,7 @@ namespace gr::d3d11
     void TerrainRenderer::release()
     {
         gpu_.clear();
+        keyed_.clear();
         cbuffer_.release();
         map_sampler_.release();
     }

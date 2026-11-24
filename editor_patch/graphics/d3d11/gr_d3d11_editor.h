@@ -36,7 +36,9 @@ namespace gr::d3d11
     class MeshRenderer;
     class ParticleRenderer;
     class EditorFaceRenderer;
+    class EditorTerrainRenderer;
     struct EditorLightmapVertex;
+    struct EditorTerrainDraw;
 
     // The selection RED outlines itself in the perspective view: the level faces built from a selected brush that still
     // lie on it, by face id, and the selected brushes' solids the per-face draw shows no edges of; both sorted
@@ -121,6 +123,13 @@ namespace gr::d3d11
         void render_room_liquid_surface(rf::GSolid* solid, rf::GRoom* room);
         void clear_solid_cache();
         void reset_solid_cache_after_boolean();
+
+        // The terrain preview's terrains (gr_d3d11_editor_terrain.h)
+        EditorTerrainRenderer& terrains()
+        {
+            return *terrain_renderer_;
+        }
+        bool draw_terrain(const EditorTerrainDraw& draw);
 
         bool upload_af_lightmap_atlas(const alpine_lightmap::ReadResult& section,
                                       const std::vector<std::uint8_t>& blocks);
@@ -219,6 +228,7 @@ namespace gr::d3d11
         std::unique_ptr<EditorFaceRenderer> face_renderer_;
         std::unique_ptr<AfLightmapRenderer> af_lightmap_renderer_;
         std::unique_ptr<SolidRenderer> solid_renderer_;
+        std::unique_ptr<EditorTerrainRenderer> terrain_renderer_;
         std::unique_ptr<MeshRenderer> mesh_renderer_;
         std::unique_ptr<ParticleRenderer> particle_renderer_;
         HWND hwnd_ = nullptr;

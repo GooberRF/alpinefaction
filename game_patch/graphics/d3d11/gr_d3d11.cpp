@@ -935,6 +935,9 @@ namespace gr::d3d11
     void Renderer::texture_mark_dirty(int bm_handle)
     {
         texture_manager_->mark_dirty(bm_handle);
+        // The context still holds the handle pair that selected the dropped texture, and a texture rewritten in place
+        // keeps its handle
+        render_context_->invalidate_texture_cache();
     }
 
     void Renderer::texture_add_ref(int bm_handle)

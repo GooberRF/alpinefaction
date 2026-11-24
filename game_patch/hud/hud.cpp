@@ -46,6 +46,7 @@ constexpr HudElementInfo hud_element_info[] = {
     {"powerups", "Powerups"},
     {"gauges", "Jetpack fuel"},
     {"names", "Target names"},
+    {"nameplate", "Nameplate"},
     {"killfeed", "Kill feed"},
     {"chat", "Chat"},
     {"timer", "Time left"},

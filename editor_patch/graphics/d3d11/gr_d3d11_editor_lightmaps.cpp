@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cstddef>
 #include <cstring>
 #include <new>
@@ -130,7 +131,9 @@ namespace
         if (level && level->GetAlpineLevelProperties().d3d11_only_lightmaps) {
             g_overflow_record = overflow_face_records(g_section, solid);
         }
-        if (!g_section.surfaces_ok && g_overflow_record.empty()) {
+        const bool terrain_charts = std::find(g_section.terrain_ok.begin(), g_section.terrain_ok.end(), 1)
+            != g_section.terrain_ok.end();
+        if (!g_section.surfaces_ok && g_overflow_record.empty() && !terrain_charts) {
             drop_section();
             return;
         }
@@ -241,6 +244,24 @@ bool editor_af_lightmap_overflow_face(const rf::GSolid* solid, const rf::GFace* 
     out.chart = static_cast<int>(alm::gpu_overflow_chart(g_section, record));
     out.record = record;
     return true;
+}
+
+bool editor_af_lightmap_terrain_chart(std::int32_t uid, std::uint64_t geometry_fingerprint, AfTerrainChart& out)
+{
+    if (!section_live()) {
+        return false;
+    }
+    for (std::uint32_t i = 0; i < g_section.terrain.size() && i < g_section.terrain_ok.size(); i++) {
+        const alm::TerrainChart& t = g_section.terrain[i];
+        if (g_section.terrain_ok[i] && t.terrain_uid == uid && t.geometry_fingerprint == geometry_fingerprint) {
+            out.chart = static_cast<int>(alm::gpu_terrain_chart(g_section, i));
+            out.origin_x = t.origin_x;
+            out.origin_z = t.origin_z;
+            out.texel_size = t.texel_size;
+            return true;
+        }
+    }
+    return false;
 }
 
 bool editor_af_lightmap_overflow_texel(const AfOverflowFace& face, const rf::Vector3& pos, float& out_u, float& out_v)
