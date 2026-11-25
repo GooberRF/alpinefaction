@@ -216,7 +216,9 @@ constexpr float liquid_surface_rebuild_step = 0.01f;
 // follows the moving surface through the hooks below.
 static bool liquid_face_rebuilt_when_stopped(const rf::GRoom* room)
 {
-    return rf::is_dedicated_server || is_headless_mode() || (is_d3d11() && !room->is_sky);
+    // is_d3d11 without its headless test, which goes last: collision asks this for every liquid face it tests.
+    return rf::is_dedicated_server || (g_game_config.renderer == GameConfig::Renderer::d3d11 && !room->is_sky)
+        || is_headless_mode();
 }
 
 // The depth the surface face is built at: whole steps from the start, so it can be found without state
