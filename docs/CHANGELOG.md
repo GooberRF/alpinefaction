@@ -10,13 +10,15 @@ Version 1.6.0 (TBD): Not yet released
 - Show terrain textures at full resolution in the level editor, as the game draws them (Direct3D 11 renderer only)
 - Add a `nameplate` HUD element (`cl_hudelement nameplate` and the spectate HUD elements menu) to hide the spectate nameplate and the compact demo playback bar
 - Reduce the CPU time spent on collisions with moving liquids
+- Reduce bot CPU cost and stuttering on large levels, especially after geomod craters
+- Stop server bots from stalling the game when the first one plans a route on a large level
 
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
 - Fix the level editor's minimap preview not showing a new `Bake from level` until `Level Properties` is reopened (Direct3D 11 renderer only)
 - Fix animated ATX textures on first-person weapons freezing after a level change
 - Fix the level editor's `Select Objects` and `Show/Hide Objects` lists naming respawn points, triggers and non-geo regions differently depending on whether they were placed in the current session
-
+- Fix bots misjudging routes next to RF2-style geomod craters and broken glass or other breakable brushes
 Version 1.5.0 (Trillium): Released Nov-20-2026
 --------------------------------
 ### Major features

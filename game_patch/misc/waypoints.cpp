@@ -11300,8 +11300,9 @@ void waypoints_init()
 }
 
 // Builds the spatial index and the route graph, with the floor probes of its ledge links, while the level loads
-// rather than at the first spawn. It must follow anything that invalidates them, such as invalidate_cache.
-static void warm_waypoints_for_route_arrows()
+// rather than at the first spawn or server bot think. It must follow anything that invalidates them, such as
+// invalidate_cache. A client bot builds them at its first think, after the server's pregame craters are carved.
+static void warm_loaded_waypoints()
 {
     if (g_has_loaded_wpt) {
         ensure_cache();
@@ -11357,8 +11358,8 @@ void waypoints_level_init()
     g_ctf_dropped_flag_packet_hints[1].active = false;
     invalidate_cache();
     waypoints_utils_level_init();
-    if (g_waypoints_for_route_arrows) {
-        warm_waypoints_for_route_arrows();
+    if (rf::is_server || g_waypoints_for_route_arrows) {
+        warm_loaded_waypoints();
     }
 }
 
@@ -11389,7 +11390,7 @@ void waypoints_on_route_arrows_toggled()
         start_awp_download_for_level();
     }
     load_waypoints_for_route_arrows();
-    warm_waypoints_for_route_arrows();
+    warm_loaded_waypoints();
 }
 
 void waypoints_level_reset()
@@ -11403,7 +11404,7 @@ void waypoints_level_reset()
     g_awp_load_retry_timer.invalidate();
     g_last_drop_waypoint_by_entity.clear();
     g_last_lift_uid_by_entity.clear();
-    bot_nav_clear_ledge_link_cache();
+    bot_nav_clear_probe_caches();
     waypoints_utils_level_reset();
 }
 
@@ -11447,8 +11448,8 @@ void waypoints_on_awp_download_resolved()
             }
         }
         g_missing_awp_from_level_init = !g_has_loaded_wpt;
-        if (waypoints_loaded_for_route_arrows_only()) {
-            warm_waypoints_for_route_arrows();
+        if (rf::is_server || waypoints_loaded_for_route_arrows_only()) {
+            warm_loaded_waypoints();
         }
         // Don't seed from objects here — bots either load an AWP or sit out
     }
@@ -11503,8 +11504,8 @@ void waypoints_do_frame()
             g_awp_load_retries_remaining = 0;
             g_awp_load_retry_timer.invalidate();
             g_missing_awp_from_level_init = false;
-            if (waypoints_loaded_for_route_arrows_only()) {
-                warm_waypoints_for_route_arrows();
+            if (rf::is_server || waypoints_loaded_for_route_arrows_only()) {
+                warm_loaded_waypoints();
             }
         }
         else if (g_awp_load_retries_remaining > 0) {
