@@ -148,12 +148,18 @@ namespace gr::d3d11
         }
     }
 
-    void Renderer::set_fullscreen_state(bool fullscreen)
+    bool Renderer::set_fullscreen_state(bool fullscreen)
     {
-        DF_GR_D3D11_CHECK_HR(
-            swap_chain_->SetFullscreenState(fullscreen, nullptr)
-        );
+        const HRESULT hr = swap_chain_->SetFullscreenState(fullscreen, nullptr);
+        // DXGI can refuse exclusive fullscreen, e.g. on hybrid laptops rendering on a GPU without outputs
+        if (FAILED(hr) && fullscreen) {
+            xlog::warn("[D3D11] Cannot enter exclusive fullscreen (hr=0x{:08x}); staying windowed",
+                       static_cast<unsigned>(hr));
+            return false;
+        }
+        DF_GR_D3D11_CHECK_HR(hr);
         resize_swap_chain_buffers();
+        return true;
     }
 
     void Renderer::resize_swap_chain_buffers()

@@ -19,6 +19,7 @@ Version 1.6.0 (TBD): Not yet released
 - Fix animated ATX textures on first-person weapons freezing after a level change
 - Fix the level editor's `Select Objects` and `Show/Hide Objects` lists naming respawn points, triggers and non-geo regions differently depending on whether they were placed in the current session
 - Fix bots misjudging routes next to RF2-style geomod craters and broken glass or other breakable brushes
+- Fix a fatal error when returning to the game in fullscreen on systems that refuse exclusive fullscreen, such as some laptops with switchable graphics (Direct3D 11 renderer only)
 Version 1.5.0 (Trillium): Released Nov-20-2026
 --------------------------------
 ### Major features

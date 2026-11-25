@@ -927,7 +927,9 @@ namespace gr::d3d11
             renderer->set_fullscreen_state(false);
             return;
         }
-        renderer->set_fullscreen_state(want_fullscreen);
+        if (!renderer->set_fullscreen_state(want_fullscreen)) {
+            rf::gr::screen.window_mode = rf::gr::WINDOWED;
+        }
     }
 
     rf::ubyte project_vertex_new(rf::gr::Vertex* v)
