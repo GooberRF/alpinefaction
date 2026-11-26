@@ -25,6 +25,9 @@ Version 1.6.0 (TBD): Not yet released
 - Fix terrain without calculated lighting getting half the sunlight that `Calculate Lighting` bakes into it, and getting twice the sunlight when drawing lightmaps without textures
 - Fix `Box` `Apply Map` in level editor texture mode taking an excessive amount of time on levels with a lot of geometry
 
+[@is-this-c](https://github.com/is-this-c)
+- Do not show blood spray, if blood splat decals are disabled
+
 Version 1.5.0 (Trillium): Released Nov-20-2026
 --------------------------------
 ### Major features
