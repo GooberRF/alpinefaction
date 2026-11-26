@@ -100,15 +100,15 @@ inline void mesh_blend_ambient(const float (&level_ambient)[3], const float (&li
     }
 }
 
-// A terrain's light where it has no baked chart (ter_base_light): the level ambient plus the sun's N.L, as a
-// lightmap texel, which is drawn doubled, hence the half; times `scale`.
+// A terrain's light where it has no baked chart (ter_base_light), as a lightmap texel, which is drawn doubled:
+// half the level ambient plus the sun's N.L, which the bake stores at full strength; times `scale`.
 inline void terrain_fallback_texel(const float (&ambient)[3], const float (&sun_travel)[3],
                                    const float (&sun_color)[3], const float (&n)[3], float scale, float (&texel)[3])
 {
     const float n_dot_l =
         std::clamp(-(n[0] * sun_travel[0] + n[1] * sun_travel[1] + n[2] * sun_travel[2]), 0.0f, 1.0f);
     for (int i = 0; i < 3; i++) {
-        texel[i] = (ambient[i] + sun_color[i] * n_dot_l) * 0.5f * scale;
+        texel[i] = (ambient[i] * 0.5f + sun_color[i] * n_dot_l) * scale;
     }
 }
 
