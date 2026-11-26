@@ -15,6 +15,8 @@ Version 1.6.0 (TBD): Not yet released
 
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
+- Fix Scavenger objective failing to spawn on levels with many items
+- Fix Scavenger capture zone and Salvage flag spawn sometimes being placed on the floor below a grating, mesh or clutter
 - Fix the level editor's minimap preview not showing a new `Bake from level` until `Level Properties` is reopened (Direct3D 11 renderer only)
 - Fix animated ATX textures on first-person weapons freezing after a level change
 - Fix the level editor's `Select Objects` and `Show/Hide Objects` lists naming respawn points, triggers and non-geo regions differently depending on whether they were placed in the current session
