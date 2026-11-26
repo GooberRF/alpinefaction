@@ -58,19 +58,29 @@ struct NodeProbeCache
 
     std::vector<Entry> entries;
     int waypoint_total = 0;
-    int num_geomods = 0;
 
     void sync()
     {
-        if (rf::g_num_geomods_this_level != num_geomods) {
-            num_geomods = rf::g_num_geomods_this_level;
-            entries.clear();
-            waypoint_total = 0;
-        }
         const int total = waypoints_count();
         if (total != waypoint_total) {
             entries.resize(static_cast<size_t>(std::max(total, 0)));
             waypoint_total = total;
+        }
+    }
+
+    void clear()
+    {
+        entries.clear();
+        waypoint_total = 0;
+    }
+
+    template<typename Affected>
+    void invalidate_if(Affected&& affected)
+    {
+        for (Entry& entry : entries) {
+            if (entry.value >= 0.0f && affected(entry.pos)) {
+                entry.value = -1.0f;
+            }
         }
     }
 };
@@ -86,7 +96,49 @@ struct GapSupportEntry
 };
 
 std::unordered_map<uint64_t, GapSupportEntry> g_route_gap_support_cache{};
-int g_route_gap_support_cache_num_geomods = 0;
+
+// The farthest a cached route probe reaches from the point it is kept against (the gap probe's drop).
+constexpr float kRouteProbeReach = kRouteGapProbeDownDistance + 0.1f;
+constexpr size_t kMaxPendingCraters = 64;
+
+struct PendingCrater
+{
+    rf::Vector3 pos{};
+    float radius = 0.0f;
+};
+
+// Applied once the carve is done, so probes taken while it runs are dropped too.
+std::vector<PendingCrater> g_pending_craters;
+bool g_pending_probe_reset = false;
+int g_level_geometry_revision = 0;
+
+void apply_pending_geometry_changes()
+{
+    if ((g_pending_craters.empty() && !g_pending_probe_reset) || rf::g_geomod_processing) {
+        return;
+    }
+    if (g_pending_probe_reset) {
+        g_corner_hug_penalty_cache.clear();
+        g_edge_exposure_penalty_cache.clear();
+        g_route_gap_support_cache.clear();
+    }
+    else {
+        const auto affected = [](const rf::Vector3& pos) {
+            return std::any_of(g_pending_craters.begin(), g_pending_craters.end(), [&](const PendingCrater& crater) {
+                const float reach = crater.radius + kRouteProbeReach;
+                return (pos - crater.pos).len_sq() <= reach * reach;
+            });
+        };
+        g_corner_hug_penalty_cache.invalidate_if(affected);
+        g_edge_exposure_penalty_cache.invalidate_if(affected);
+        std::erase_if(g_route_gap_support_cache, [&](const auto& entry) {
+            return affected((entry.second.low_index_pos + entry.second.high_index_pos) * 0.5f);
+        });
+    }
+    g_pending_craters.clear();
+    g_pending_probe_reset = false;
+    ++g_level_geometry_revision;
+}
 
 struct LedgeLinkEntry
 {
@@ -849,6 +901,7 @@ float compute_waypoint_path_power_position_bonus(const std::vector<int>& path)
 
 float get_waypoint_corner_hug_penalty(const int waypoint)
 {
+    apply_pending_geometry_changes();
     g_corner_hug_penalty_cache.sync();
     rf::Vector3 waypoint_pos{};
     if (waypoint <= 0 || waypoint >= g_corner_hug_penalty_cache.waypoint_total
@@ -862,6 +915,7 @@ float get_waypoint_corner_hug_penalty(const int waypoint)
     }
 
     constexpr float kProbeDistance = 0.90f;
+    static_assert(kProbeDistance <= kRouteProbeReach);
     constexpr float kInvSqrt2 = 0.70710678f;
     static const std::array<rf::Vector3, 8> kProbeDirs{
         rf::Vector3{1.0f, 0.0f, 0.0f},
@@ -922,6 +976,7 @@ float get_waypoint_corner_hug_penalty(const int waypoint)
 
 float get_waypoint_edge_exposure_penalty(const int waypoint)
 {
+    apply_pending_geometry_changes();
     g_edge_exposure_penalty_cache.sync();
     if (waypoint <= 0 || waypoint >= g_edge_exposure_penalty_cache.waypoint_total) {
         return 0.0f;
@@ -958,6 +1013,8 @@ float get_waypoint_edge_exposure_penalty(const int waypoint)
     constexpr float kProbeRadius = 0.75f;
     constexpr float kCenterProbeStartYOffset = 0.12f;
     constexpr float kProbeDownDistance = 2.2f;
+    static_assert(kProbeRadius * kProbeRadius + kProbeDownDistance * kProbeDownDistance
+        <= kRouteProbeReach * kRouteProbeReach);
     constexpr float kLedgeDropTolerance = 0.60f;
     constexpr float kTwoPi = 6.283185307f;
     constexpr int kProbeCount = 8;
@@ -1566,9 +1623,36 @@ bool bot_nav_link_climbs_ledge(const int from_waypoint, const int to_waypoint)
     return climbs_ledge;
 }
 
-void bot_nav_clear_ledge_link_cache()
+void bot_nav_clear_probe_caches()
 {
     g_ledge_link_cache.clear();
+    g_corner_hug_penalty_cache.clear();
+    g_edge_exposure_penalty_cache.clear();
+    g_route_gap_support_cache.clear();
+    g_pending_craters.clear();
+    g_pending_probe_reset = false;
+    ++g_level_geometry_revision;
+}
+
+void bot_nav_notify_level_change(const rf::Vector3& pos, const float radius)
+{
+    if (!(radius > 0.0f) || !std::isfinite(radius + pos.x + pos.y + pos.z)
+        || g_pending_craters.size() >= kMaxPendingCraters) {
+        g_pending_probe_reset = true;
+        return;
+    }
+    g_pending_craters.push_back({pos, radius});
+}
+
+void bot_nav_notify_level_pieces_separated()
+{
+    g_pending_probe_reset = true;
+}
+
+int bot_nav_level_geometry_revision()
+{
+    apply_pending_geometry_changes();
+    return g_level_geometry_revision;
 }
 
 bool bot_nav_path_has_unclimbable_upward_links(const std::vector<int>& path)
@@ -1604,11 +1688,10 @@ bool bot_nav_link_midpoint_has_support(const int from_waypoint, const int to_way
         return true;
     }
 
-    if (rf::g_num_geomods_this_level != g_route_gap_support_cache_num_geomods) {
-        g_route_gap_support_cache_num_geomods = rf::g_num_geomods_this_level;
-        g_route_gap_support_cache.clear();
-    }
-    if (static_cast<int>(g_route_gap_support_cache.size()) > kRouteGapEdgeCacheMaxEntries) {
+    apply_pending_geometry_changes();
+    // Room for every link, so a large level's routes do not keep probing links they already have.
+    if (static_cast<int>(g_route_gap_support_cache.size())
+        > std::max(kRouteGapEdgeCacheMaxEntries, waypoints_count() * kMaxWaypointLinks)) {
         bool keep = false;
         for (auto it = g_route_gap_support_cache.begin();
              it != g_route_gap_support_cache.end(); ) {
