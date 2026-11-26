@@ -55,10 +55,12 @@ here as closely as possible.
 - Functions, variables and constants are `snake_case`; types are `PascalCase`. Mutable file or global
   state takes a `g_` prefix. UPPER_CASE is only for lists that already use it (`DIK_*`, engine
   macros). No single-letter constant names.
-- File-local code goes in an anonymous namespace. It is the only way to make file-local types
-  local, so a same-named struct in two files can't break the one-definition rule. Older files that
-  use `static` functions may keep them, but new types go in the anonymous namespace. Keep one block
-  per file where practical, and don't reopen it for a single function.
+- File-local types (structs, classes, enums, aliases) go in an anonymous namespace, so a same-named
+  type in two files can't break the one-definition rule. Keep the block small and limited to type
+  declarations.
+- File-local functions and variables are `static`, so their linkage is visible at the declaration
+  and exporting one only means removing the keyword. Older files that put functions in an anonymous
+  namespace may keep them; don't convert them just for style.
 - No `using namespace` at file scope. Use an alias: `namespace at = alpine_terrain;`.
 - Includes: a sibling header uses `"name.h"`; any other directory uses the rooted form
   `<common/terrain/alpine_terrain.h>`. Include what you use.
