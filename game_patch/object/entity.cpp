@@ -725,6 +725,22 @@ FunHook<void(int)> entity_blood_throw_gibs_hook{
     }
 };
 
+FunHook<
+    void(const rf::Vector3&, rf::GRoom*, const rf::Vector3&, float)
+> entity_blood_do_hit_effect_hook{
+    0x0042E3D0,
+    [] (
+        const rf::Vector3& pos,
+        rf::GRoom* const room,
+        const rf::Vector3& src_pos,
+        const float damage
+    ) {
+        if (rf::game_get_gore_level() > 0) {
+            entity_blood_do_hit_effect_hook.call_target(pos, room, src_pos, damage);
+        }
+    },
+};
+
 ConsoleCommand2 cl_gorelevel_cmd{
     "cl_gorelevel",
     [](std::optional<int> gore_setting) {
@@ -1280,6 +1296,7 @@ void entity_do_patch()
 
 	// Restore cut stock game feature for entities and corpses exploding into chunks
 	entity_blood_throw_gibs_hook.install();
+    entity_blood_do_hit_effect_hook.install();
     entity_fire_update_all_call_hook.install();
 
     // Footstep fix: inject trigger frames for attack_run animations and mute dying entities

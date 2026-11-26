@@ -23,6 +23,9 @@ Version 1.6.0 (TBD): Not yet released
 - Fix bots misjudging routes next to RF2-style geomod craters and broken glass or other breakable brushes
 - Fix a fatal error when returning to the game in fullscreen on systems that refuse exclusive fullscreen, such as some laptops with switchable graphics (Direct3D 11 renderer only)
 
+[@is-this-c](https://github.com/is-this-c)
+- Do not show blood spray, if blood splat decals are disabled
+
 Version 1.5.0 (Trillium): Released Nov-20-2026
 --------------------------------
 ### Major features
