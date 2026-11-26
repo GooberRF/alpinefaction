@@ -799,6 +799,55 @@ void __fastcall texture_map_cylinder_faces_hooked(GSolid* solid, int edx, const 
     map_round_faces(*solid, *obj_pos, *obj_orient, *map_pos, *map_orient, radius, false, g_map_wraps);
 }
 
+// FUN_00499820: Box Map's UVs for a solid's selected faces. Stock takes the world corners and normals from a copy of
+// the whole solid, which takes seconds on a large level's geometry. RED's x87 runs at single precision, so in stock's
+// order of operations these UVs match stock's to the bit.
+void __fastcall texture_map_box_faces_hooked(GSolid* solid, int edx, const Vector3* obj_pos,
+                                             const Matrix3* obj_orient);
+FunHook<decltype(texture_map_box_faces_hooked)> texture_map_box_faces_hook{0x00499820, texture_map_box_faces_hooked};
+void __fastcall texture_map_box_faces_hooked(GSolid* solid, [[maybe_unused]] int edx, const Vector3* obj_pos,
+                                             const Matrix3* obj_orient)
+{
+    const Matrix3& o = *obj_orient;
+    // In FUN_004b4870's order
+    auto to_world = [&](const Vector3& v) {
+        return Vector3{o.fvec.x * v.z + o.uvec.x * v.y + o.rvec.x * v.x,
+                       o.fvec.y * v.z + o.uvec.y * v.y + o.rvec.y * v.x,
+                       o.fvec.z * v.z + o.uvec.z * v.y + o.rvec.z * v.x} +
+               *obj_pos;
+    };
+    std::vector<Vector3> corners;
+    for (int i = 0; i < solid->face_selection.size; ++i) {
+        GFace* face = solid->face_selection.data_ptr[i];
+        if (!face || face->bitmap_id < 0) {
+            continue;
+        }
+        corners.clear();
+        for_each_face_corner(*face, [&](GFaceVertex& fv) {
+            if (!fv.vertex) return;
+            corners.push_back(to_world(fv.vertex->pos));
+        });
+        Vector3 n = newell_normal(corners);
+        const float len = length(n);
+        // stock drops a degenerate face from its copy
+        if (len == 0.0f) {
+            continue;
+        }
+        n = n * (1.0f / len);
+        int width = 16, height = 16;
+        bm_get_dimensions(face->bitmap_id, &width, &height);
+        const float u_scale = texture_map_pixels_per_meter / (width > 0 ? static_cast<float>(width) : 16.0f);
+        const float v_scale = texture_map_pixels_per_meter / (height > 0 ? static_cast<float>(height) : 16.0f);
+        std::size_t c = 0;
+        for_each_face_corner(*face, [&](GFaceVertex& fv) {
+            if (!fv.vertex) return;
+            const auto [x, y] = box_map_point(n, corners[c++]);
+            fv.u = x * u_scale;
+            fv.v = y * v_scale;
+        });
+    }
+}
+
 // Sphere Map, as Cylinder Map (FUN_004392c0) runs: with a level geometry face selected, one undo step over every
 // brush's selected faces, then the level geometry's
 void sphere_map(CDedLevel& level, const TextureModePanel& panel)
@@ -2009,6 +2058,7 @@ void ApplyTextureModePatches()
     texture_paste_hook.install();
     face_properties_do_modal_hook.install();
     texture_map_cylinder_faces_hook.install();
+    texture_map_box_faces_hook.install();
     texture_apply_map_hook.install();
     texture_map_gizmo_draw_injection.install();
     texture_snap_map_hook.install();
