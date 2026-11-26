@@ -1205,7 +1205,7 @@ CodeInjection entity_set_next_state_anim_guard{
 
 void entity_do_patch()
 {
-    //player_create_entity_patch.install(); // force team skin experiment
+    // player_create_entity_patch.install(); // force team skin experiment
 
     // Handle toggle for pain sounds
     entity_maybe_play_pain_sound_hook.install();
@@ -1296,8 +1296,10 @@ void entity_do_patch()
 
 	// Restore cut stock game feature for entities and corpses exploding into chunks
 	entity_blood_throw_gibs_hook.install();
-    entity_blood_do_hit_effect_hook.install();
     entity_fire_update_all_call_hook.install();
+
+    // Do not show blood spray, if blood splat decals are disabled.
+    entity_blood_do_hit_effect_hook.install();
 
     // Footstep fix: inject trigger frames for attack_run animations and mute dying entities
     evaluate_footsteps();
