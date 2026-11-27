@@ -282,6 +282,7 @@ struct AlpineGameSettings
     bool play_global_rad_msg_sounds = true;
     bool play_team_rad_msg_sounds = true;
     bool unlimited_semi_auto = false;
+    bool sp_hit_notifications = false;
     bool gaussian_spread = false;
     bool geo_chunk_physics = true;
     bool show_run_timer = true;

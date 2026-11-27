@@ -256,6 +256,15 @@ FunHook<float(int, float, int, int, int, rf::Vector3*, int, char)> obj_damage_ho
     0x004892C0,
     [](int victim_handle, float damage, int killer_handle, int weapon_type, int damage_type,
        rf::Vector3* pos, int killer_uid, char flags) {
+        // Stock obj_damage checks Invulnerability only on a multiplayer server, so honor it here unless `flags`
+        // bypasses those checks.
+        if (!rf::is_multi && !flags) {
+            const rf::Entity* victim = rf::entity_from_handle(victim_handle);
+            if (victim && (victim->entity_flags2 & rf::EF2_POWERUP_INVULNERABLE)) {
+                return 0.0f;
+            }
+        }
+
         // On the RAW killer argument, before the remap below: the tuning table exempts every killer -1 blow.
         damage = vehicle_scale_damage(victim_handle, killer_handle, damage_type, damage, pos);
 

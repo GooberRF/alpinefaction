@@ -2396,6 +2396,20 @@ FunHook<float(rf::Entity*, float, int, int, int)> entity_damage_hook{
             send_hull_damage_notify(killer_player, hull, effective_damage, is_dead, false);
         }
 
+        // Single player: the local player's hits on anything that is not a player, from the vehicle or turret they
+        // occupy too, but not on it. A corpse gives nothing.
+        rf::Entity* const local_ep = rf::local_player_entity;
+        if (!rf::is_multi && local_ep && !damaged_player && life_before > 0.0f && real_damage > 0.0f
+            && damaged_ep_handle != local_ep->host_handle
+            && (killer_player == rf::local_player
+                || (local_ep->host_handle != -1 && killer_handle == local_ep->host_handle))) {
+            if (g_alpine_game_config.sp_hit_notifications) {
+                af_show_world_damage_notify(damaged_ep ? damaged_ep->pos : victim_pos_before_damage, damaged_ep_handle,
+                                            effective_damage, is_dead);
+            }
+            mutators_on_sp_damage_dealt(local_ep, effective_damage);
+        }
+
         if (is_achievement_system_initialized() &&
             !rf::is_multi &&
             damaged_ep &&

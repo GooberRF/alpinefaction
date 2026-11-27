@@ -1252,6 +1252,8 @@ static void af_process_ping_location_packet(const void* data, size_t len, const 
 // hull non-null replaces the victim player id with a non-player victim's position and handle
 void af_send_damage_notify_packet(uint8_t player_id, float damage, bool died, bool crit, rf::Player* player,
                                   const AfDamageNotifyHull* hull = nullptr, bool repair = false);
+// Shows a damage number and plays the hit sound for a local hit on a non-player victim, without a packet.
+void af_show_world_damage_notify(const rf::Vector3& pos, int32_t handle, float damage, bool died);
 // Demo-recorder variant: same payload plus a trailing attacker id, so playback can
 // filter notifications down to the player currently being spectated. Live clients
 // never receive this form (their copy is implicitly "attacker = you").

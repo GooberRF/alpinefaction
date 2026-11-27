@@ -491,6 +491,15 @@ static void af_show_damage_notify(uint8_t player_id, const rf::Vector3* world_po
     }
 }
 
+void af_show_world_damage_notify(const rf::Vector3& pos, int32_t handle, float damage, bool died)
+{
+    const int rounded_damage = static_cast<int>(std::round(damage));
+    if (rounded_damage > 0) {
+        af_show_damage_notify(af_damage_notify_no_player, &pos, handle, static_cast<uint16_t>(rounded_damage), died,
+                              false, false);
+    }
+}
+
 void af_send_damage_notify_packet(uint8_t player_id, float damage, bool died, bool crit, rf::Player* player,
                                   const AfDamageNotifyHull* hull, bool repair)
 {

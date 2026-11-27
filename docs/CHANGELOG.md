@@ -12,6 +12,8 @@ Version 1.6.0 (TBD): Not yet released
 - Reduce the CPU time spent on collisions with moving liquids
 - Reduce bot CPU cost and stuttering on large levels, especially after geomod craters
 - Stop server bots from stalling the game when the first one plans a route on a large level
+- Allow Damage Amplifier, Invulnerability, Jetpack, Haste and Vampire powerups in single player
+- Add `sp_hitnotifications` console command and setting to show hit numbers and play hit sounds when damaging NPCs in single player
 
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
@@ -24,6 +26,7 @@ Version 1.6.0 (TBD): Not yet released
 - Fix a fatal error when returning to the game in fullscreen on systems that refuse exclusive fullscreen, such as some laptops with switchable graphics (Direct3D 11 renderer only)
 - Fix terrain without calculated lighting getting half the sunlight that `Calculate Lighting` bakes into it, and getting twice the sunlight when drawing lightmaps without textures
 - Fix `Box` `Apply Map` in level editor texture mode taking an excessive amount of time on levels with a lot of geometry
+- Fix Super Health and Super Armor sometimes having no effect when picked up in single player
 
 Version 1.5.0 (Trillium): Released Nov-20-2026
 --------------------------------
