@@ -213,16 +213,13 @@ const Config* wanted_config()
 }
 
 // The level's cutscene cameras, which multiplayer limbo cycles through. A level loads them only when it is flagged
-// as a multiplayer level.
+// as a multiplayer level; otherwise, or without any, game_level_init_pre's camera reset (0x0040D690) leaves one at the
+// origin.
 std::vector<Shot> level_camera_shots()
 {
     std::vector<Shot> shots;
     for (int i = 0; i < rf::fixed_camera_count; ++i) {
         shots.push_back(Shot{*rf::fixed_camera_get_pos(i), *rf::fixed_camera_get_orient(i)});
-    }
-    // Without any, the level keeps the one game_level_init_pre's camera reset (0x0040D690) put at the origin.
-    if (shots.size() == 1 && shots.front().pos == rf::Vector3{0.0f, 0.0f, 0.0f}) {
-        shots.clear();
     }
     return shots;
 }
@@ -577,7 +574,8 @@ bool menu_scene_maybe_start()
 
     g_shots.clear();
     for (const Shot& shot : g_config == &g_mp_config ? level_camera_shots() : g_config->shots) {
-        if (rf::find_room(rf::g_level_solid, &shot.pos)) {
+        // Limbo uses the level's cameras even outside every room.
+        if (g_config == &g_mp_config || rf::find_room(rf::g_level_solid, &shot.pos)) {
             g_shots.push_back(shot);
         }
         else {
@@ -656,11 +654,9 @@ bool menu_scene_draw_background()
         return draw_game_beneath();
     }
     const Shot& shot = g_shots[g_shot_index];
-    // Looked up each frame, as the engine does for its own camera.
+    // Looked up each frame, as the engine does for its own camera. Outside every room it is null, which the portal
+    // renderer takes as every room visible.
     rf::GRoom* const eye_room = rf::find_room(rf::g_level_solid, &shot.pos);
-    if (!eye_room) {
-        return false;
-    }
     render_world(shot.pos, shot.orient, gr_scale_world_fov(90.0f), eye_room);
     fill_screen(dim_alpha);
     if (g_config->fade_seconds > 0.0f) {
