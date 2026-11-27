@@ -209,6 +209,14 @@ namespace
 
     // ─── Save and load ───
 
+    bool has_player_record(const asg::LevelState& lvl)
+    {
+        const auto& entities = lvl.entities.entities;
+        return std::any_of(entities.begin(), entities.end(), [](const asg::EntityRecord& r) {
+            return r.base.uid == asg::player_entity_uid;
+        });
+    }
+
     bool save_asg(const std::filesystem::path& path, rf::Player& player)
     {
         if (!rf::entity_from_handle(player.entity_handle)) {
@@ -224,11 +232,17 @@ namespace
             .game_time = rf::level.global_time,
             .saved_at = static_cast<uint64_t>(std::time(nullptr)),
         };
+        asg::LevelState current = asg::capture_level(true);
+        // A save without the player cannot be loaded
+        if (!has_player_record(current)) {
+            show_message(std::format("Cannot save {}: the player is not in the level", path.filename().string()));
+            return false;
+        }
         asg::capture_game(m.game);
         asg::capture_player(player, m.player);
         apply_ponr(g_levels, m.header.current_level);
         m.levels = g_levels;
-        upsert_level(m.levels, asg::capture_level(true));
+        upsert_level(m.levels, std::move(current));
 
         const std::optional<std::vector<uint8_t>> bytes = asg_encode(m);
         if (!bytes) {
@@ -286,9 +300,14 @@ namespace
             return fail(std::format("{} was saved with mod \"{}\", but the running mod is \"{}\"",
                                     path.filename().string(), m.header.mod_name, mod));
         }
-        if (!find_level(m.levels, m.header.current_level)) {
+        const asg::LevelState* current = find_level(m.levels, m.header.current_level);
+        if (!current) {
             return fail(std::format("{} holds no state for its level {}", path.filename().string(),
                                     m.header.current_level));
+        }
+        // restore_player needs it, and fails only once the level's objects have been restored
+        if (!has_player_record(*current)) {
+            return fail(std::format("{} holds no player", path.filename().string()));
         }
         return m;
     }
@@ -694,4 +713,5 @@ void asg_apply_patches()
     event_lookup_persistent_goal_event_hook.install();
     event_add_persistent_goal_event_hook.install();
     event_clear_persistent_goal_events_hook.install();
+
 }

@@ -1172,8 +1172,9 @@ bool asg::restore_player(const PlayerState& state, const EntityRecord& record, r
     }
 
     refs.resolve(true);
-    // Stock puts the player on the ground below, and makes one with none below fall (0x004A0840): not when swimming
-    const bool stick_to_ground = record.move_mode != rf::MOVE_MODE_SWIM;
+    // Stock puts the player on the ground below, and makes one with none below fall (0x004A0840): not when swimming,
+    // nor in a vehicle, where the probe finds the hull and leaves the rider standing on it (PF_UNK_400000)
+    const bool stick_to_ground = record.move_mode != rf::MOVE_MODE_SWIM && !rf::obj_from_handle(ent->host_handle);
     if (stick_to_ground) {
         rf::physics_stick_to_ground(ent);
     }
