@@ -293,7 +293,7 @@ LRESULT MainDlg::OnShowWhatsNew(WPARAM wparam, LPARAM lparam)
     cfg.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION | TDF_ENABLE_HYPERLINKS | TDF_POSITION_RELATIVE_TO_WINDOW;
     cfg.pszWindowTitle = L"What's new?";
     cfg.pszMainIcon = MAKEINTRESOURCEW(IDR_ICON);
-    cfg.pszMainInstruction = L"Welcome to Alpine Faction v1.5.0!";
+    cfg.pszMainInstruction = L"Welcome to Alpine Faction v1.5.1!";
     cfg.pszContent = content.c_str();
     cfg.dwCommonButtons = TDCBF_OK_BUTTON;
     cfg.pszFooterIcon = TD_INFORMATION_ICON;

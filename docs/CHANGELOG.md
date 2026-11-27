@@ -1,7 +1,7 @@
 ⚙️⛏ Alpine Faction Changelog ⛏⚙️
 ===================================
 
-Version 1.6.0 (TBD): Not yet released
+Version 1.5.1 (Trillium): Not yet released
 --------------------------------
 ### Major features
 
