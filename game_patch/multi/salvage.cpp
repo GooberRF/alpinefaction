@@ -24,6 +24,7 @@
 #include "../fflink/fflink_session.h"
 #include "../hud/multi_spectate.h"
 #include "../misc/waypoints.h"
+#include "../object/object.h"
 #include "../rf/entity.h"
 #include "../rf/file/file.h"
 #include "../rf/gameseq.h"
@@ -1063,6 +1064,7 @@ bool salvage_query_flag_outline(rf::VMesh** out_vmesh, rf::Vector3* out_pos, rf:
         // A spinning item is drawn from spin_angle, not from item->orient. Mirror the
         // stock renderer so the outline turns with the mesh.
         out_orient->set_from_angles(0.0f, 0.0f, -item->spin_angle);
+        *out_pos = item_spin_render_pos(*item);
     }
     else {
         *out_orient = item->orient;

@@ -1,10 +1,14 @@
 #include <patch_common/FunHook.h>
+#include <patch_common/CallHook.h>
 #include <patch_common/CodeInjection.h>
 #include <patch_common/AsmWriter.h>
 #include <common/utils/string-utils.h>
 #include <common/utils/list-utils.h>
 #include <xlog/xlog.h>
 #include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <string_view>
 #include "../fflink/afstats_events.h"
 #include "../rf/event.h"
@@ -15,8 +19,11 @@
 #include "../rf/multi.h"
 #include "../rf/weapon.h"
 #include "../rf/os/frametime.h"
+#include "../rf/vmesh.h"
 #include "../rf/player/player.h"
 #include "../misc/achievements.h"
+#include "../misc/alpine_settings.h"
+#include "../misc/settings_registry.h"
 #include "../misc/misc.h"
 #include "../multi/bagman.h"
 #include "../multi/gametype.h"
@@ -24,6 +31,7 @@
 #include "../multi/salvage.h"
 #include "../multi/server.h"
 #include "../multi/demo/demo.h"
+#include "../os/console.h"
 #include "../ui/menu_scene.h"
 #include "object.h"
 
@@ -237,10 +245,11 @@ void item_do_frame()
     items_advance_spin();
 }
 
+static constexpr float two_pi = 6.28318548f;
+
 void items_advance_spin()
 {
     constexpr float spin_rate = 2.35619449f;
-    constexpr float two_pi = 6.28318548f;
     const float delta = rf::frametime * demo_playback_sim_time_scale() * spin_rate;
     for (auto& item : DoublyLinkedList{rf::item_list}) {
         if (item.info && (item.info->flags & rf::IIF_SPINS_IN_MULTI)) {
@@ -249,6 +258,41 @@ void items_advance_spin()
         }
     }
 }
+
+rf::Vector3 item_spin_render_pos(const rf::Item& item)
+{
+    rf::Vector3 pos = item.pos;
+    if (g_alpine_game_config.multi_item_bob && items_spin()) {
+        // Driven by spin_angle so the bob follows the spin, pause and demo speed
+        constexpr float bob_amplitude = 0.1f;
+        // Per-item phase from a hash of the handle, so items don't bob in unison
+        const uint32_t hash = static_cast<uint32_t>(item.handle) * 2654435761u;
+        const float phase = static_cast<float>(hash >> 16) * (two_pi / 65536.0f);
+        pos.y += bob_amplitude * std::sin(2.0f * item.spin_angle + phase);
+    }
+    return pos;
+}
+
+// item_render's draw of a spinning item, given the item's own pos (ESI + 0x3C)
+static CallHook<void(rf::VMesh*, rf::Vector3*, rf::Matrix3*, rf::MeshRenderParams*)> item_render_spin_vmesh_render_hook{
+    0x004590CD,
+    [](rf::VMesh* vmesh, rf::Vector3* pos, rf::Matrix3* orient, rf::MeshRenderParams* params) {
+        const auto* item = reinterpret_cast<const rf::Item*>(
+            reinterpret_cast<const std::byte*>(pos) - offsetof(rf::Object, pos));
+        rf::Vector3 render_pos = item_spin_render_pos(*item);
+        item_render_spin_vmesh_render_hook.call_target(vmesh, &render_pos, orient, params);
+    },
+};
+
+static ConsoleCommand2 multi_item_bob_cmd{
+    "mp_itembob",
+    []() {
+        setting_console_set("multi_item_bob", "toggle");
+        rf::console::print("Multiplayer item bobbing is {}",
+            g_alpine_game_config.multi_item_bob ? "enabled" : "disabled");
+    },
+    "Toggles whether spinning items also bob up and down in multiplayer (strictly visual)",
+};
 
 void item_do_patch()
 {
@@ -277,4 +321,7 @@ void item_do_patch()
     // item_render's is_multi test for drawing an item spun, so the menus' MP level draws them spun too. Patched in
     // place, as the site is a branch target.
     AsmWriter{0x0045903B, 0x00459040}.call(items_spin);
+    item_render_spin_vmesh_render_hook.install();
+
+    multi_item_bob_cmd.register_cmd();
 }

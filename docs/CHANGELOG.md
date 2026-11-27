@@ -15,6 +15,7 @@ Version 1.5.1 (Trillium): Not yet released
 - Add browse buttons and previews for the corona and volumetric bitmaps in the level editor's `Corona Properties` dialog
 - Add `MP level` menu background, which runs a chosen multiplayer level behind the main menu and cycles through its cutscene cameras (Direct3D 11 renderer only)
 - Make the scrollbar of long dropdown lists in the menus draggable
+- Add `Item bobbing` option (`mp_itembob` console command) to make spinning items in multiplayer also bob up and down
 
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)

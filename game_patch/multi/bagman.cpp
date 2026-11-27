@@ -28,6 +28,7 @@
 #include "../rf/object.h"
 #include "../rf/level.h"
 #include "../object/alpine_bag.h"
+#include "../object/object.h"
 #include "../rf/bmpman.h"
 #include "../rf/file/file.h"
 #include "../rf/gameseq.h"
@@ -810,6 +811,7 @@ bool bagman_query_pickup_bag_outline(
     // in sync with the visible mesh.
     if (bag_item->info && (bag_item->info->flags & rf::IIF_SPINS_IN_MULTI)) {
         out_orient->set_from_angles(0.0f, 0.0f, -bag_item->spin_angle);
+        *out_pos = item_spin_render_pos(*bag_item);
     }
     else {
         *out_orient = bag_item->orient;

@@ -288,6 +288,7 @@ struct AlpineGameSettings
     bool show_gametype_help = true;
     bool show_mini_scoreboard_dm = true;
     bool multi_ricochet = false;
+    bool multi_item_bob = false;
     bool crit_reticle_flash = true;
     // 0=off, 1=stock red screen flash, 2=screen-edge vignette (d3d11 only)
     static constexpr int min_damage_flash = 0;

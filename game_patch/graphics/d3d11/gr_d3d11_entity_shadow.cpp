@@ -25,6 +25,7 @@
 #include "../gr.h"
 #include "../../hud/multi_spectate.h"
 #include "../../multi/salvage.h"
+#include "../../object/object.h"
 
 namespace gr::d3d11
 {
@@ -698,10 +699,13 @@ namespace gr::d3d11
 
             // Spinning items use a fresh orientation from spin_angle (matching stock renderer)
             rf::Matrix3 orient;
+            rf::Vector3 pos;
             if (item.info && (item.info->flags & rf::IIF_SPINS_IN_MULTI)) {
                 orient.set_from_angles(0.0f, 0.0f, -item.spin_angle);
+                pos = item_spin_render_pos(item);
             } else {
                 orient = item.orient;
+                pos = item.pos;
             }
 
             rf::VMesh* vmesh = item.vmesh;
@@ -713,7 +717,7 @@ namespace gr::d3d11
                 for (int m = 0; m < v3d->num_meshes; ++m) {
                     rf::VifLodMesh* lod_mesh = v3d->meshes[m].vu;
                     if (!lod_mesh) continue;
-                    mesh_renderer_.draw_shadow_v3d_mesh(lod_mesh, item.pos, orient, shadow_standard_vs, context,
+                    mesh_renderer_.draw_shadow_v3d_mesh(lod_mesh, pos, orient, shadow_standard_vs, context,
                                                         bounds);
                 }
                 add_caster_box(bounds);
@@ -779,7 +783,7 @@ namespace gr::d3d11
                                 gv.y = positions[vi].y;
                                 gv.z = positions[vi].z;
                             }
-                            bounds.add(orient.transform_vector(rf::Vector3{gv.x, gv.y, gv.z}) + item.pos);
+                            bounds.add(orient.transform_vector(rf::Vector3{gv.x, gv.y, gv.z}) + pos);
                         }
                     }
                 }
@@ -790,7 +794,7 @@ namespace gr::d3d11
                 context->VSSetShader(shadow_standard_vs.vertex_shader, nullptr, 0);
 
                 // Set model transform at b0
-                render_context.model_transform_cbuffer().update(item.pos, orient, context);
+                render_context.model_transform_cbuffer().update(pos, orient, context);
                 ID3D11Buffer* model_cb = render_context.model_transform_cbuffer();
                 context->VSSetConstantBuffers(0, 1, &model_cb);
 

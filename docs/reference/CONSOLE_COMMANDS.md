@@ -121,6 +121,7 @@ Commands marked "D3D11 only" only have an effect with the Direct3D 11 renderer.
 | `cl_showenemybullets` | | Toggles enemy bullet impact effects. Default: on. |
 | `cl_weaponsway` | | Toggles first person weapon aim sway. Default: off. |
 | `cl_weapshake` | | Toggles disabling camera shake from weapon fire. In multiplayer, only applies if the server allows it. Default: off (shake enabled). |
+| `mp_itembob` | | Toggles spinning items also bobbing up and down in multiplayer (visual only). Default: off. |
 | `mp_ricochet` | | Toggles bullet ricochets in multiplayer (visual only, no damage). Default: off. |
 
 ## Audio

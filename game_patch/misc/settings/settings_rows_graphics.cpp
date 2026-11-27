@@ -518,6 +518,18 @@ const SettingRow rows[] = {
         .console_cmd = "r_weather",
     },
     {
+        .id = "multi_item_bob",
+        .key = "MultiItemBob",
+        .label = "Item bobbing",
+        .tooltip = "Spinning items also bob up and down in multiplayer.",
+        .category = Cat::Graphics,
+        .subcategory = "Effects",
+        .widget = Wid::Toggle,
+        .access = AccBool{&AGS::multi_item_bob},
+        .flags = SF_MP_ONLY,
+        .console_cmd = "mp_itembob",
+    },
+    {
         .id = "underwater_fx",
         .key = "UnderwaterFx",
         .label = "Underwater effects",
