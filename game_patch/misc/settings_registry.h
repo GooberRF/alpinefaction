@@ -244,6 +244,10 @@ struct SettingRow
     // Adjusts the ui_* fields on a copy of the row before a slider is drawn, for a track that depends
     // on another setting. Only sliders call it; the value is still read and written through the row.
     void (*ui_adjust)(SettingRow&) = nullptr;
+    // An Enum row storing a string: the values the menu offers, in order, each shown as stored.
+    std::vector<std::string> (*string_choices)() = nullptr;
+    // A sub-option of the row above it: the menu nests it under that row and lists it only while this is true.
+    bool (*sub_option_shown)() = nullptr;
 };
 
 // Table access
@@ -268,8 +272,8 @@ std::vector<int> setting_enum_offered(const SettingRow& row);
 // setting applies, never whether it can be changed. Hidden rows are still "enabled"; visibility
 // is a separate concern.
 bool setting_is_enabled(const SettingRow& row);
-// True when the menu leaves the row out of its category: SF_HIDDEN, or SF_ADVANCED while advanced
-// settings are not shown.
+// True when the menu leaves the row out of its category: SF_HIDDEN, SF_ADVANCED while advanced
+// settings are not shown, or a sub-option its row does not currently offer.
 bool setting_hidden_in_menu(const SettingRow& row);
 // Reason the row is disabled, or nullptr when it is enabled.
 const char* setting_disabled_reason(const SettingRow& row);

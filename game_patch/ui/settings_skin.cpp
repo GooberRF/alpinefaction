@@ -54,6 +54,7 @@ void frame(int x, int y, int w, int h, int thickness, rf::Color color)
 
 // Salts that derive a widget's internal sub-ids from its own id.
 constexpr UiId dropdown_scroll_salt = 0xD30D0001u;
+constexpr UiId dropdown_bar_salt = 0xD30D0002u;
 constexpr UiId slider_edit_salt = 0x5D1E0001u;
 constexpr UiId stepper_up_salt = 0x57E9A001u;
 constexpr UiId stepper_down_salt = 0x57E9A002u;
@@ -1065,6 +1066,26 @@ bool skin_dropdown(UiContext& ctx, const UiRect& r, const std::vector<std::strin
         list_scroll = static_cast<float>(std::clamp(sel - shown_rows / 2, 0, max_first));
     };
 
+    // The scrollbar, grabbed anywhere in a strip wider than the bar itself.
+    const bool scrollable = count > shown_rows;
+    const UiId bar_id = sub_id(id, dropdown_bar_salt);
+    const int bar_w = skin_px(ctx, 6.0f);
+    const int strip_w = skin_px(ctx, 16.0f);
+    const UiRect bar_strip{list.x + list.w - pad - strip_w, list.y + pad, strip_w, list.h - 2 * pad};
+    const int track_y = bar_strip.y;
+    const int track_h = bar_strip.h;
+    const int thumb_h = std::min(track_h, std::max(bar_w * 2, track_h * shown_rows / std::max(1, count)));
+    const auto thumb_y = [&] {
+        const int first = std::clamp(static_cast<int>(list_scroll), 0, max_first);
+        return track_y + (max_first > 0 ? std::max(0, track_h - thumb_h) * first / max_first : 0);
+    };
+
+    if (!ctx.draw && !open && ctx.captured_id() == bar_id) {
+        ctx.release_capture();
+    }
+    // A press on the scrollbar must not pick a row or close the list.
+    const bool bar_clicked = open && scrollable && ctx.click && ui_point_in(ctx.mx, ctx.my, bar_strip);
+
     if (!ctx.draw && enabled) {
         if (open && ctx.wheel != 0 && ui_point_in(ctx.mx, ctx.my, list)) {
             list_scroll += ctx.wheel > 0 ? -1.0f : 1.0f;
@@ -1086,7 +1107,7 @@ bool skin_dropdown(UiContext& ctx, const UiRect& r, const std::vector<std::strin
                 centre_on_selection();
             }
         }
-        else if (ctx.click) {
+        else if (ctx.click && !bar_clicked) {
             if (open) {
                 if (ui_point_in(ctx.mx, ctx.my, list)) {
                     const int index = (ctx.my - list.y - pad) / row_h
@@ -1105,6 +1126,11 @@ bool skin_dropdown(UiContext& ctx, const UiRect& r, const std::vector<std::strin
                 ui_play_click();
             }
         }
+        if (open && scrollable) {
+            if (const std::optional<float> t = ui_scrollbar_drag(ctx, bar_id, bar_strip, thumb_y(), thumb_h)) {
+                list_scroll = std::round(*t * static_cast<float>(max_first));
+            }
+        }
         list_scroll = std::clamp(list_scroll, 0.0f, static_cast<float>(max_first));
     }
 
@@ -1118,15 +1144,14 @@ bool skin_dropdown(UiContext& ctx, const UiRect& r, const std::vector<std::strin
             const int first = std::clamp(static_cast<int>(list_scroll), 0, max_first);
             const std::vector<std::string> rows{items.begin() + first,
                                                 items.begin() + first + shown_rows};
-            const bool scrollable = count > shown_rows;
-            const float bar_t = max_first > 0 ? static_cast<float>(first) / static_cast<float>(max_first)
-                                              : 0.0f;
-            const float bar_frac = static_cast<float>(shown_rows) / static_cast<float>(count);
             const int mx = ctx.mx;
             const int my = ctx.my;
+            const bool on_bar = scrollable && ui_point_in(mx, my, bar_strip);
+            const bool bar_lit = on_bar || ctx.captured_id() == bar_id;
+            const int bar_y = thumb_y();
             const float scale = ctx.scale();
-            ctx.push_overlay([list, rows, selected, first, scrollable, bar_t, bar_frac, font, row_h,
-                              pad, mx, my, scale, text_x]() {
+            ctx.push_overlay([list, rows, selected, first, scrollable, on_bar, bar_lit, bar_w, bar_y, thumb_h,
+                              track_y, track_h, font, row_h, pad, mx, my, scale, text_x]() {
                 const rf::Color opaque{skin::popup.red, skin::popup.green, skin::popup.blue, 255};
                 fill(list.x, list.y, list.w, list.h, opaque);
                 frame(list.x, list.y, list.w, list.h, scaled_px(scale, 1.0f), skin::border);
@@ -1137,7 +1162,7 @@ bool skin_dropdown(UiContext& ctx, const UiRect& r, const std::vector<std::strin
                     const int iy = list.y + pad + i * row_h;
                     const int dy = i * row_h;
                     const bool row_hovered =
-                        ui_point_in(mx, my, UiRect{list.x, iy, list.w, row_h});
+                        !on_bar && ui_point_in(mx, my, UiRect{list.x, iy, list.w, row_h});
                     const bool row_selected = first + i == selected;
                     if (row_selected) {
                         selection_bar(scale, 0, dy, list.w - 2 * pad, row_h);
@@ -1148,16 +1173,9 @@ bool skin_dropdown(UiContext& ctx, const UiRect& r, const std::vector<std::strin
                 }
                 rf::gr::set_clip(save_x, save_y, save_w, save_h);
                 if (scrollable) {
-                    const int bar_w = std::max(2, static_cast<int>(4.0f * scale));
-                    const int track_h = list.h - 2 * pad;
-                    const int thumb_h = std::max(bar_w * 2,
-                                                 static_cast<int>(bar_frac * static_cast<float>(track_h)));
                     const int bx = list.x + list.w - pad - bar_w;
-                    fill(bx, list.y + pad, bar_w, track_h, rf::Color{0x18, 0x18, 0x18, 255});
-                    fill(bx,
-                         list.y + pad
-                             + static_cast<int>(bar_t * static_cast<float>(std::max(0, track_h - thumb_h))),
-                         bar_w, thumb_h, skin::steel_mid);
+                    fill(bx, track_y, bar_w, track_h, rf::Color{0x18, 0x18, 0x18, 255});
+                    fill(bx, bar_y, bar_w, thumb_h, bar_lit ? skin::steel_hi : skin::steel_mid);
                 }
             });
         }

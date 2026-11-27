@@ -38,6 +38,14 @@ struct FormBadge
     bool lamp = false;
 };
 
+// A sub-option's place under the row it belongs to, drawn as a branch off that row.
+enum class FormTree
+{
+    None,
+    Branch, // another sub-option follows
+    Last,
+};
+
 struct FormRow
 {
     UiRect rect;
@@ -53,6 +61,8 @@ struct FormRow
     std::span<const FormBadge> badges;
     // Hovering or focusing the row shows it in ctx.description(), and a click pins it; -1 for none.
     int desc_id = -1;
+    // A sub-option's label is indented, behind a branch down from the row above.
+    FormTree tree = FormTree::None;
 };
 
 // Where a row's control goes and how it shows.

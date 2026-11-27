@@ -13,6 +13,8 @@ Version 1.5.1 (Trillium): Not yet released
 - Reduce bot CPU cost and stuttering on large levels, especially after geomod craters
 - Stop server bots from stalling the game when the first one plans a route on a large level
 - Add browse buttons and previews for the corona and volumetric bitmaps in the level editor's `Corona Properties` dialog
+- Add `MP level` menu background, which runs a chosen multiplayer level behind the main menu and cycles through its cutscene cameras (Direct3D 11 renderer only)
+- Make the scrollbar of long dropdown lists in the menus draggable
 
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)

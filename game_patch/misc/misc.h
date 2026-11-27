@@ -32,6 +32,8 @@ void set_jump_to_multi_server_list(bool jump);
 void set_jump_to_demo_browser(bool jump);
 void start_join_multi_game_sequence(const rf::NetAddr& addr, const std::string& password);
 void start_levelm_load_sequence(std::string filename, std::optional<rf::NetGameType> game_type = std::nullopt);
+// A join, a -levelm load or a demo playback restart is about to take the game out of the main menu.
+bool start_sequence_pending();
 bool multi_join_game(const rf::NetAddr& addr, const std::string& password);
 void ui_get_string_size(int* w, int* h, const char* s, int s_len, int font_num);
 void g_solid_render_ui();

@@ -207,6 +207,7 @@ struct RowState
     float stored_f = 0.0f;
     std::optional<uint32_t> stored_color;
     bool held = false; // an SF_COMMIT_ON_RELEASE drag not yet written
+    std::vector<std::string> choices;
 };
 
 std::unordered_map<const SettingRow*, RowState> g_row_state;
@@ -1052,6 +1053,7 @@ struct Entry
     const char* crumb = nullptr;  // "Category > Subcategory", search results only
     int bind_index = -1;
     float ref_h = skin::row_h;    // reference-canvas height
+    FormTree tree = FormTree::None;
 };
 
 constexpr float bind_header_ref_h = 30.0f;
@@ -1128,7 +1130,16 @@ std::vector<Entry> build_category_entries(SettingCategory category)
             entries.push_back(Entry{EntryKind::Reorder, nullptr, row, nullptr, -1, reorder_block_ref_h()});
             continue;
         }
-        entries.push_back(Entry{EntryKind::Row, nullptr, row, nullptr, -1, skin::row_h});
+        Entry entry{EntryKind::Row, nullptr, row, nullptr, -1, skin::row_h};
+        if (row->sub_option_shown) {
+            entry.tree = FormTree::Branch;
+        }
+        entries.push_back(entry);
+    }
+    for (std::size_t i = 0; i < entries.size(); ++i) {
+        if (entries[i].tree == FormTree::Branch && (i + 1 == entries.size() || entries[i + 1].tree == FormTree::None)) {
+            entries[i].tree = FormTree::Last;
+        }
     }
     return entries;
 }
@@ -1377,6 +1388,21 @@ void do_row_widget(UiContext& ctx, const SettingRow& row, const FormLine& line, 
             break;
         }
         case SettingWidget::Enum: {
+            if (row.string_choices) {
+                // Listed once a visit to the menu, as the list can take a packfile search.
+                if (first_seen) {
+                    state.choices = row.string_choices();
+                }
+                const std::string value = setting_get_as_string(row);
+                const auto it = std::ranges::find_if(state.choices, [&](const std::string& choice) {
+                    return string_iequals(choice, value);
+                });
+                int pos = it == state.choices.end() ? -1 : static_cast<int>(it - state.choices.begin());
+                if (form_choice(ctx, line, id, state.choices, pos, font)) {
+                    write_row(row, state.choices[pos]);
+                }
+                break;
+            }
             if (const GridPicker* picker = picker_for_row(row)) {
                 do_picker_row_widget(ctx, row, *picker, line, fonts, id);
                 break;
@@ -1517,7 +1543,7 @@ bool row_widget_enabled(const SettingRow& row)
     return setting_disabled_reason(row) == nullptr && (bespoke_widget || setting_has_setter(row));
 }
 
-void do_row(UiContext& ctx, const SettingRow& row, const UiRect& row_rect, const char* crumb,
+void do_row(UiContext& ctx, const SettingRow& row, const UiRect& row_rect, const char* crumb, FormTree tree,
             const Fonts& fonts, int slider_readout_w, bool sync_state)
 {
     FormBadge badges[8];
@@ -1532,6 +1558,7 @@ void do_row(UiContext& ctx, const SettingRow& row, const UiRect& row_rect, const
         .reset_id = ui_id("rowreset", desc_id_for(row)),
         .badges = std::span{badges, static_cast<std::size_t>(badge_count)},
         .desc_id = desc_id_for(row),
+        .tree = tree,
     };
     const FormLine line = form_row(ctx, form, FormFonts{fonts.body, fonts.body_bold, fonts.caption});
     if (line.reset) {
@@ -2585,7 +2612,7 @@ void build_content(UiContext& ctx, const UiRect& view, const std::vector<Entry>&
                 form_draw_sub_header(ctx, rect, entry.header, fonts.body_bold);
                 break;
             case EntryKind::Row:
-                do_row(ctx, *entry.row, rect, entry.crumb, fonts, slider_readout_w, sync_state);
+                do_row(ctx, *entry.row, rect, entry.crumb, entry.tree, fonts, slider_readout_w, sync_state);
                 break;
             case EntryKind::BindHeader:
                 draw_bind_header(ctx, rect, fonts);

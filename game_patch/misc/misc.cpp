@@ -176,6 +176,11 @@ void start_levelm_load_sequence(std::string filename, std::optional<rf::NetGameT
     g_levelm_game_type = game_type;
 }
 
+bool start_sequence_pending()
+{
+    return g_join_mp_game_seq_data || g_levelm_filename || demo_playback_restart_pending();
+}
+
 bool multi_join_game(const rf::NetAddr& addr, const std::string& password)
 {
     auto multi_set_current_server_addr = addr_as_ref<void(const rf::NetAddr& addr)>(0x0044B380);
@@ -303,8 +308,7 @@ FunHook<void(rf::GameState, rf::GameState)> rf_init_state_hook{
             return;
         }
 
-        if (state == rf::GS_MAIN_MENU && !g_join_mp_game_seq_data && !g_levelm_filename
-            && !demo_playback_restart_pending()) {
+        if (state == rf::GS_MAIN_MENU && !start_sequence_pending()) {
             menu_scene_maybe_start();
         }
         rf_init_state_hook.call_target(state, old_state);
