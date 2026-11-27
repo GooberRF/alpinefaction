@@ -1061,6 +1061,9 @@ UiScrollbarGeometry ui_scrollbar_geometry(const UiContext& ctx, const UiRect& vi
 
 std::optional<float> ui_scrollbar_drag(UiContext& ctx, UiId id, const UiRect& track, int thumb_y, int thumb_h)
 {
+    if (id == 0) {
+        return std::nullopt;
+    }
     // Where on the thumb the drag took hold, so grabbing it never makes it jump.
     constexpr UiId grab_salt = 0x6AB5C0F1u;
     float& grab = ctx.scroll_offset(id ^ grab_salt);

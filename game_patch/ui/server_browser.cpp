@@ -528,7 +528,6 @@ void draw_card(const UiContext& ctx, const Card& card, const UiRect& row, int an
 void ServerBrowserPanel::open()
 {
     open_ = true;
-    dragging_ = false;
     keyboard_selection_ = false;
     last_click_entry_ = -1;
     hover_.clear();
@@ -547,7 +546,6 @@ void ServerBrowserPanel::close()
     }
     open_ = false;
     hover_.clear();
-    dragging_ = false;
     server_browser_close();
     map_thumbnails_release_bitmaps();
 }
@@ -1218,6 +1216,7 @@ void ServerBrowserPanel::build(UiContext& ctx, const MenuPanel& panel, const Men
     }
 
     if (has_bar) {
+        const UiId bar_id = ui_id("server_scrollbar");
         if (!ctx.draw) {
             if (live && ctx.click && ui_point_in(ctx.mx, ctx.my, bar.gutter)) {
                 if (ctx.my < bar.track.y) {
@@ -1226,22 +1225,17 @@ void ServerBrowserPanel::build(UiContext& ctx, const MenuPanel& panel, const Men
                 else if (ctx.my >= bar.track.y + bar.track.h) {
                     top_ = std::min(max_top, top_ + 1);
                 }
-                else {
-                    dragging_ = true;
+            }
+            // ui_scrollbar_drag grabs on any click in the track, which only a live panel may take.
+            if (live || ctx.captured_id() == bar_id) {
+                const std::optional<float> t = ui_scrollbar_drag(ctx, bar_id, bar.track, bar.thumb_y, bar.thumb_h);
+                if (t && bar.track.h > bar.thumb_h) {
+                    top_ = std::clamp(static_cast<int>(*t * static_cast<float>(max_top) + 0.5f), 0, max_top);
                 }
-            }
-            if (!ctx.lmb_down) {
-                dragging_ = false;
-            }
-            if (dragging_ && bar.track.h > bar.thumb_h) {
-                const float ratio = std::clamp(static_cast<float>(ctx.my - bar.track.y - bar.thumb_h / 2)
-                                                   / static_cast<float>(bar.track.h - bar.thumb_h),
-                                               0.0f, 1.0f);
-                top_ = static_cast<int>(ratio * static_cast<float>(max_top) + 0.5f);
             }
         }
         else {
-            skin_scrollbar(ctx, view, content_h, static_cast<float>(top_ * row_h), dragging_);
+            skin_scrollbar(ctx, view, content_h, static_cast<float>(top_ * row_h), ctx.captured_id() == bar_id);
         }
     }
     if (!ctx.draw && live && ctx.wheel != 0

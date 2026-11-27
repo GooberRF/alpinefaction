@@ -21,6 +21,7 @@
 #include "../misc/vpackfile.h"
 #include "../multi/demo/demo.h"
 #include "../multi/listen_server_setup.h"
+#include "../multi/multi.h"
 #include "../object/object.h"
 #include "../os/console.h"
 #include "../rf/ai.h"
@@ -85,7 +86,6 @@ struct GameView
 std::optional<Config> g_normal_config;
 // Run instead while the menus' seasonal effect is on.
 std::optional<Config> g_seasonal_config;
-// The MP level background's, from its settings.
 Config g_mp_config;
 // The one the scene runs, picked as it starts.
 const Config* g_config = nullptr;
@@ -207,7 +207,7 @@ const Config* wanted_config()
     if (g_alpine_game_config.main_menu_background != background_mp_level) {
         return pick_config();
     }
-    g_mp_config.level = g_alpine_game_config.main_menu_mp_level;
+    g_mp_config.level = normalize_level_filename(g_alpine_game_config.main_menu_mp_level);
     read_mp_shot_times();
     return g_mp_config.level.empty() ? nullptr : &g_mp_config;
 }
@@ -220,7 +220,7 @@ std::vector<Shot> level_camera_shots()
     for (int i = 0; i < rf::fixed_camera_count; ++i) {
         shots.push_back(Shot{*rf::fixed_camera_get_pos(i), *rf::fixed_camera_get_orient(i)});
     }
-    // Without any, the level keeps the one game_level_init_pre (0x0040D690) put at the origin.
+    // Without any, the level keeps the one game_level_init_pre's camera reset (0x0040D690) put at the origin.
     if (shots.size() == 1 && shots.front().pos == rf::Vector3{0.0f, 0.0f, 0.0f}) {
         shots.clear();
     }
@@ -626,7 +626,8 @@ void menu_scene_do_frame(rf::GameState state)
             menu_scene_stop();
             music_stopped = true;
         }
-        if (menu_scene_maybe_start() || music_stopped) {
+        // Not kept pending through a start sequence: applied later, it would load the scene after the game moved on.
+        if ((!start_sequence_pending() && menu_scene_maybe_start()) || music_stopped) {
             restart_menu_music();
         }
     }

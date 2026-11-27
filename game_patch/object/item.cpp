@@ -224,7 +224,7 @@ CodeInjection item_touch_powerup_type_injection{
     },
 };
 
-bool items_spin()
+static bool items_spin()
 {
     return rf::is_multi || menu_scene_runs_mp_level();
 }

@@ -41,7 +41,7 @@ const SettingRow rows[] = {
     {
         .id = "main_menu_mp_level",
         .key = "MainMenuMPLevel",
-        .label = "Level",
+        .label = "MP level",
         .tooltip = "The multiplayer level behind the main menu. It needs at least one cutscene camera.",
         .category = Cat::Interface,
         .subcategory = "Menus",
@@ -55,7 +55,7 @@ const SettingRow rows[] = {
     {
         .id = "main_menu_mp_shot_seconds",
         .key = "MainMenuMPShotSeconds",
-        .label = "Shot seconds",
+        .label = "MP level shot seconds",
         .tooltip = "How long the menu background holds each of the level's cutscene cameras.",
         .category = Cat::Interface,
         .subcategory = "Menus",
@@ -74,7 +74,7 @@ const SettingRow rows[] = {
     {
         .id = "main_menu_mp_fade_seconds",
         .key = "MainMenuMPFadeSeconds",
-        .label = "Fade seconds",
+        .label = "MP level fade seconds",
         .tooltip = "How long the menu background dips to black at each end of a shot; at most half the shot.",
         .category = Cat::Interface,
         .subcategory = "Menus",

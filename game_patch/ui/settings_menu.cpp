@@ -207,7 +207,7 @@ struct RowState
     float stored_f = 0.0f;
     std::optional<uint32_t> stored_color;
     bool held = false; // an SF_COMMIT_ON_RELEASE drag not yet written
-    std::vector<std::string> choices; // a string Enum row's
+    std::vector<std::string> choices;
 };
 
 std::unordered_map<const SettingRow*, RowState> g_row_state;

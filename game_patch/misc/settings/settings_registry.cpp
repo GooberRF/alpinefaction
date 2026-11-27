@@ -7,6 +7,7 @@
 #include <limits>
 #include <stdexcept>
 #include <type_traits>
+#include <vector>
 #include <xlog/xlog.h>
 #include <common/utils/string-utils.h>
 #include "settings_rows.h"
@@ -628,13 +629,18 @@ bool setting_hidden_in_menu(const SettingRow& row)
 
 void settings_reset_category(SettingCategory category)
 {
+    // Picked before any reset, which could hide a row that depends on an earlier one.
+    std::vector<const SettingRow*> rows;
     for (const auto& row : settings_registry_all()) {
         // Only what the user can see and change: a hidden row would be reset where nobody can see
         // it, and a disabled one would bypass its own gate.
         if (row.category == category && !(row.flags & SF_READ_ONLY) && !setting_hidden_in_menu(row)
             && setting_is_enabled(row)) {
-            setting_reset_to_default(row);
+            rows.push_back(&row);
         }
+    }
+    for (const SettingRow* row : rows) {
+        setting_reset_to_default(*row);
     }
 }
 

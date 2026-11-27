@@ -1083,7 +1083,7 @@ bool skin_dropdown(UiContext& ctx, const UiRect& r, const std::vector<std::strin
     if (!ctx.draw && !open && ctx.captured_id() == bar_id) {
         ctx.release_capture();
     }
-    // Taken by the scrollbar drag rather than the list.
+    // A press on the scrollbar must not pick a row or close the list.
     const bool bar_clicked = open && scrollable && ctx.click && ui_point_in(ctx.mx, ctx.my, bar_strip);
 
     if (!ctx.draw && enabled) {

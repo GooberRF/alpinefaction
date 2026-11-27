@@ -65,7 +65,6 @@ private:
     bool rebuild_view_ = false;
     int top_ = 0;
     int visible_ = 1;
-    bool dragging_ = false;
     bool scroll_to_selection_ = false;
     // The keyboard moved the selection last, so the card follows it.
     bool keyboard_selection_ = false;
