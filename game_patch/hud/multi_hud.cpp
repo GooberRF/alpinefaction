@@ -534,6 +534,7 @@ static const ChatMenuList spectate_player_hud_menu{
         hud_element_menu_item(HudElement::powerups),
         hud_element_menu_item(HudElement::gauges),
         hud_element_menu_item(HudElement::target_names),
+        hud_element_menu_item(HudElement::nameplate),
     }
 };
 

@@ -1634,6 +1634,92 @@ bool trace_ground_below_point(const rf::Vector3& pos, float max_downward_dist, r
     return world_hit;
 }
 
+namespace
+{
+// obj_pair_should_skip (0x0048BE00) pairs a player with clutter only above this radius (0x005893C0); mode-0
+// Alpine meshes and clutter without collision spheres have a smaller one
+constexpr float kPlayerCollideMinClutterRadius = 0.5f;
+
+bool clutter_is_player_floor(const rf::Object& obj)
+{
+    return obj.type == rf::OT_CLUTTER && obj.vmesh
+        && !(obj.obj_flags & (rf::OF_DELAYED_DELETE | rf::OF_WEAPON_ONLY_COLLIDE))
+        && obj.p_data.radius > kPlayerCollideMinClutterRadius;
+}
+
+bool obj_is_mover_member(const rf::Object& obj)
+{
+    for (rf::Object* o = rf::object_list.next_obj; o != &rf::object_list; o = o->next_obj) {
+        if (o->type != rf::OT_MOVER) {
+            continue;
+        }
+        const auto& handles = static_cast<const rf::Mover*>(o)->object_handles;
+        for (int i = 0; i < handles.size(); ++i) {
+            if (handles[i] == obj.handle) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+} // namespace
+
+bool trace_floor_below_point_with_objects(const rf::Vector3& pos, float max_downward_dist, rf::Vector3* out_hit_point)
+{
+    if (max_downward_dist <= 0.0f) {
+        return false;
+    }
+    const rf::Vector3 seg{0.0f, -max_downward_dist, 0.0f};
+    const rf::Vector3 end = pos + seg;
+
+    rf::Vector3 best_hit{};
+    bool hit = trace_ground_below_point(pos, max_downward_dist, &best_hit, true);
+    float best = hit ? (pos.y - best_hit.y) / max_downward_dist : 1.0f;
+
+    // Brush-mode meshes have their own solver and no object pair
+    AlpineMeshContact contact{};
+    if (alpine_mesh_collide_sphere_world(pos, end, 0.0f, nullptr, best, contact) && contact.obj_handle < 0) {
+        best = contact.fraction;
+        best_hit = contact.hit_point;
+        hit = true;
+    }
+
+    for (rf::Object* obj = rf::object_list.next_obj; obj != &rf::object_list; obj = obj->next_obj) {
+        if (!clutter_is_player_floor(*obj) || alpine_mesh_is_collision_mesh(obj)) {
+            continue;
+        }
+        const rf::Vector3& bmin = obj->p_data.bbox_min;
+        const rf::Vector3& bmax = obj->p_data.bbox_max;
+        if (pos.x < bmin.x || pos.x > bmax.x || pos.z < bmin.z || pos.z > bmax.z || end.y > bmax.y
+            || pos.y < bmin.y) {
+            continue;
+        }
+        // A floor that moves would leave the traced height stale
+        if (obj_is_mover_member(*obj)) {
+            continue;
+        }
+        // The same vmesh test the player pair runs (collide_object_object_mesh 0x0049AFE0)
+        rf::VMeshCollisionInput in;
+        rf::VMeshCollisionOutput out;
+        in.mesh_pos = obj->p_data.pos;
+        in.mesh_orient = obj->p_data.orient;
+        in.start_pos = pos;
+        in.dir = seg;
+        in.radius = 0.0f;
+        in.flags = 0;
+        if (rf::vmesh_collide(obj->vmesh, &in, &out, true) && out.fraction < best) {
+            best = out.fraction;
+            best_hit = pos + seg * out.fraction;
+            hit = true;
+        }
+    }
+
+    if (hit && out_hit_point) {
+        *out_hit_point = best_hit;
+    }
+    return hit;
+}
+
 float trace_upward_clearance_from_floor_hit(
     const rf::Vector3& floor_hit_pos,
     float max_upward_dist,
@@ -11300,8 +11386,9 @@ void waypoints_init()
 }
 
 // Builds the spatial index and the route graph, with the floor probes of its ledge links, while the level loads
-// rather than at the first spawn. It must follow anything that invalidates them, such as invalidate_cache.
-static void warm_waypoints_for_route_arrows()
+// rather than at the first spawn or server bot think. It must follow anything that invalidates them, such as
+// invalidate_cache. A client bot builds them at its first think, after the server's pregame craters are carved.
+static void warm_loaded_waypoints()
 {
     if (g_has_loaded_wpt) {
         ensure_cache();
@@ -11357,8 +11444,8 @@ void waypoints_level_init()
     g_ctf_dropped_flag_packet_hints[1].active = false;
     invalidate_cache();
     waypoints_utils_level_init();
-    if (g_waypoints_for_route_arrows) {
-        warm_waypoints_for_route_arrows();
+    if (rf::is_server || g_waypoints_for_route_arrows) {
+        warm_loaded_waypoints();
     }
 }
 
@@ -11389,7 +11476,7 @@ void waypoints_on_route_arrows_toggled()
         start_awp_download_for_level();
     }
     load_waypoints_for_route_arrows();
-    warm_waypoints_for_route_arrows();
+    warm_loaded_waypoints();
 }
 
 void waypoints_level_reset()
@@ -11403,7 +11490,7 @@ void waypoints_level_reset()
     g_awp_load_retry_timer.invalidate();
     g_last_drop_waypoint_by_entity.clear();
     g_last_lift_uid_by_entity.clear();
-    bot_nav_clear_ledge_link_cache();
+    bot_nav_clear_probe_caches();
     waypoints_utils_level_reset();
 }
 
@@ -11447,8 +11534,8 @@ void waypoints_on_awp_download_resolved()
             }
         }
         g_missing_awp_from_level_init = !g_has_loaded_wpt;
-        if (waypoints_loaded_for_route_arrows_only()) {
-            warm_waypoints_for_route_arrows();
+        if (rf::is_server || waypoints_loaded_for_route_arrows_only()) {
+            warm_loaded_waypoints();
         }
         // Don't seed from objects here — bots either load an AWP or sit out
     }
@@ -11503,8 +11590,8 @@ void waypoints_do_frame()
             g_awp_load_retries_remaining = 0;
             g_awp_load_retry_timer.invalidate();
             g_missing_awp_from_level_init = false;
-            if (waypoints_loaded_for_route_arrows_only()) {
-                warm_waypoints_for_route_arrows();
+            if (rf::is_server || waypoints_loaded_for_route_arrows_only()) {
+                warm_loaded_waypoints();
             }
         }
         else if (g_awp_load_retries_remaining > 0) {

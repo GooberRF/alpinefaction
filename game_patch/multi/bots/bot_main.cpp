@@ -1247,7 +1247,7 @@ bool waypoint_can_directly_approach_item_pos(const int waypoint_uid, const rf::V
     return !blocked;
 }
 
-bool find_item_goal_waypoint_internal(const rf::Vector3& item_pos, int& out_waypoint)
+bool find_item_goal_waypoint_uncached(const rf::Vector3& item_pos, int& out_waypoint)
 {
     out_waypoint = 0;
 
@@ -1292,6 +1292,59 @@ bool find_item_goal_waypoint_internal(const rf::Vector3& item_pos, int& out_wayp
     }
 
     return false;
+}
+
+struct ItemGoalWaypoint
+{
+    rf::Vector3 item_pos{};
+    int waypoint = 0;
+    bool found = false;
+};
+
+// The waypoint an item is reached from depends only on the waypoint graph and the level solid.
+struct ItemGoalWaypointCache
+{
+    int graph_version = -1;
+    int persistent_graph_version = -1;
+    int waypoint_total = -1;
+    int geometry_revision = -1;
+    std::vector<ItemGoalWaypoint> entries;
+};
+
+constexpr size_t kMaxItemGoalWaypointCacheEntries = 256;
+ItemGoalWaypointCache g_item_goal_waypoint_cache{};
+
+bool find_item_goal_waypoint_internal(const rf::Vector3& item_pos, int& out_waypoint)
+{
+    ItemGoalWaypointCache& cache = g_item_goal_waypoint_cache;
+    // An edited waypoint can move without a graph change.
+    if (g_alpine_game_config.waypoints_edit_mode) {
+        cache.graph_version = -1;
+        return find_item_goal_waypoint_uncached(item_pos, out_waypoint);
+    }
+    const int geometry_revision = bot_nav_level_geometry_revision();
+    if (cache.graph_version != waypoints_graph_version()
+        || cache.persistent_graph_version != waypoints_persistent_graph_version()
+        || cache.waypoint_total != waypoints_count()
+        || cache.geometry_revision != geometry_revision) {
+        cache.graph_version = waypoints_graph_version();
+        cache.persistent_graph_version = waypoints_persistent_graph_version();
+        cache.waypoint_total = waypoints_count();
+        cache.geometry_revision = geometry_revision;
+        cache.entries.clear();
+    }
+    for (const ItemGoalWaypoint& entry : cache.entries) {
+        if (entry.item_pos == item_pos) {
+            out_waypoint = entry.waypoint;
+            return entry.found;
+        }
+    }
+    const bool found = find_item_goal_waypoint_uncached(item_pos, out_waypoint);
+    if (cache.entries.size() >= kMaxItemGoalWaypointCacheEntries) {
+        cache.entries.clear();
+    }
+    cache.entries.push_back({item_pos, out_waypoint, found});
+    return found;
 }
 
 // find_closest_waypoint_with_los_fallback is defined in bot_utils.cpp

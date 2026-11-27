@@ -1499,18 +1499,18 @@ float ter_crater_factor(float3 wp)
     return 1.0f - (1.0f - 0.35f) * saturate(depth / 6.0f);
 }
 
-// A terrain fragment's base light: the baked chart at its XZ, doubled like a lightmap texel; with no
-// chart or on the underside, the level ambient plus the sun's N.L.
+// A terrain fragment's base light as a lightmap texel, doubled unless lightmaps are shown raw: the baked
+// chart at its XZ; with no chart or on the underside, terrain_fallback_texel's texel.
 float3 ter_base_light(float3 wp, float3 n, bool underside)
 {
     float3 light;
     [branch] if (ter_lm_chart >= 0.0f && af_lm_enabled > 0.5f && !underside) {
         light = af_lm_sample((wp.xz - ter_lm_origin) / ter_lm_texel_size, (uint)(ter_lm_chart + 0.5f));
-        if (disable_textures < 0.5f) {
-            light *= 2.0f;
-        }
     } else {
-        light = ambient_light + ter_sun_color * saturate(dot(n, -ter_sun_travel_dir));
+        light = ambient_light * 0.5f + ter_sun_color * saturate(dot(n, -ter_sun_travel_dir));
+    }
+    if (disable_textures < 0.5f) {
+        light *= 2.0f;
     }
     return light;
 }

@@ -15,8 +15,8 @@ namespace rf
 }
 
 // The Alpine lightmap section the Direct3D 11 viewport draws the level solid with: the editor's twin of the game's
-// lightmap runtime (game_patch/graphics/af_lightmap.cpp) for the surface and overflow charts. Movers and terrains keep
-// their stock lighting and the terrain preview's.
+// lightmap runtime (game_patch/graphics/af_lightmap.cpp) for the surface, overflow and terrain charts. Movers keep
+// their stock lighting.
 
 // Draws section `body`, as stored, over the surfaces of `solid`. A bake's body (`fresh`) carries no surface fingerprint
 // yet, so its surface count is taken as the solid's. `layer` holds a bake's pages when it still has them, a page per
@@ -34,3 +34,5 @@ bool editor_af_lightmap_face_setup(const rf::GSolid* solid, int surface_index, A
 void editor_af_lightmap_face_texel(const AfLightmapFace& face, const rf::Vector3& pos, float& out_u, float& out_v);
 bool editor_af_lightmap_overflow_face(const rf::GSolid* solid, const rf::GFace* face, AfOverflowFace& out);
 bool editor_af_lightmap_overflow_texel(const AfOverflowFace& face, const rf::Vector3& pos, float& out_u, float& out_v);
+// Terrain `uid`'s chart in the atlas, when the section charts it with `geometry_fingerprint`
+bool editor_af_lightmap_terrain_chart(std::int32_t uid, std::uint64_t geometry_fingerprint, AfTerrainChart& out);

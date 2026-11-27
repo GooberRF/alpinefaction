@@ -102,5 +102,7 @@ std::uint32_t terrain_baked_light_generation();
 const TerrainBakedLight* terrain_baked_light_find(int uid, const Vector3& pos, const DedTerrainData& data);
 // The chart's light at world (x, z) as a stock lightmap texel (0..1 per channel, drawn doubled), bilinear.
 void terrain_baked_light_sample(const TerrainBakedLight& light, float world_x, float world_z, float (&texel)[3]);
+// The geometry fingerprint the chart was baked for, which picks its record out of the section.
+std::uint64_t terrain_baked_light_fingerprint(const TerrainBakedLight& light);
 
 void ApplyAlpineLightmapPatches();

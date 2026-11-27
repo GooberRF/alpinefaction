@@ -1,7 +1,7 @@
 ⚙️⛏ Alpine Faction Changelog ⛏⚙️
 ===================================
 
-Version 1.6.0 (TBD): Not yet released
+Version 1.5.1 (Trillium): Not yet released
 --------------------------------
 ### Major features
 
@@ -9,8 +9,24 @@ Version 1.6.0 (TBD): Not yet released
 [@GooberRF](https://github.com/GooberRF)
 - Add `MP level` menu background, which runs a chosen multiplayer level behind the main menu and cycles through its cutscene cameras (Direct3D 11 renderer only)
 - Make the scrollbar of long dropdown lists in the menus draggable
+- Show terrain textures at full resolution in the level editor, as the game draws them (Direct3D 11 renderer only)
+- Add a `nameplate` HUD element (`cl_hudelement nameplate` and the spectate HUD elements menu) to hide the spectate nameplate and the compact demo playback bar
+- Reduce the CPU time spent on collisions with moving liquids
+- Reduce bot CPU cost and stuttering on large levels, especially after geomod craters
+- Stop server bots from stalling the game when the first one plans a route on a large level
+- Add browse buttons and previews for the corona and volumetric bitmaps in the level editor's `Corona Properties` dialog
 
 ### Bug fixes
+[@GooberRF](https://github.com/GooberRF)
+- Fix Scavenger objective failing to spawn on levels with many items
+- Fix Scavenger capture zone and Salvage flag spawn sometimes being placed on the floor below a grating, mesh or clutter
+- Fix the level editor's minimap preview not showing a new `Bake from level` until `Level Properties` is reopened (Direct3D 11 renderer only)
+- Fix animated ATX textures on first-person weapons freezing after a level change
+- Fix the level editor's `Select Objects` and `Show/Hide Objects` lists naming respawn points, triggers and non-geo regions differently depending on whether they were placed in the current session
+- Fix bots misjudging routes next to RF2-style geomod craters and broken glass or other breakable brushes
+- Fix a fatal error when returning to the game in fullscreen on systems that refuse exclusive fullscreen, such as some laptops with switchable graphics (Direct3D 11 renderer only)
+- Fix terrain without calculated lighting getting half the sunlight that `Calculate Lighting` bakes into it, and getting twice the sunlight when drawing lightmaps without textures
+- Fix `Box` `Apply Map` in level editor texture mode taking an excessive amount of time on levels with a lot of geometry
 
 Version 1.5.0 (Trillium): Released Nov-20-2026
 --------------------------------

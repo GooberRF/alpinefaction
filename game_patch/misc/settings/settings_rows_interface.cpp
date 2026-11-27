@@ -28,9 +28,7 @@ const SettingRow rows[] = {
         .id = "main_menu_background",
         .key = "MainMenuBackground",
         .label = "Menu background",
-        .tooltip = "Show the Mars backdrop behind the menus, or a live level: the game in progress, or a level running "
-                   "behind the main menu. MP level runs a multiplayer level of your choice, seen through its cutscene "
-                   "cameras.",
+        .tooltip = "Menu background: the Mars backdrop, or a live level (current game, menu level or an MP level).",
         .category = Cat::Interface,
         .subcategory = "Menus",
         .widget = Wid::Enum,
@@ -149,8 +147,7 @@ const SettingRow rows[] = {
         .id = "discord_rich_presence",
         .key = "DiscordRichPresence",
         .label = "Discord rich presence",
-        .tooltip = "Show what you are playing, including the server, map and player count in multiplayer, as "
-                   "your Discord activity.",
+        .tooltip = "Show your game as your Discord activity, with server, map and player count in multiplayer.",
         .category = Cat::Interface,
         .subcategory = "Discord",
         .widget = Wid::Toggle,
@@ -251,8 +248,7 @@ const SettingRow rows[] = {
         .id = "console_statusline",
         .key = "ConsoleStatusline",
         .label = "Console status line",
-        .tooltip = "Show player, level, server, players, time left and FactionFiles link status above the "
-                   "console input.",
+        .tooltip = "Show player, level, server, players, time left and FactionFiles status above the console input.",
         .category = Cat::Interface,
         .subcategory = "Console",
         .widget = Wid::Toggle,
@@ -274,8 +270,7 @@ const SettingRow rows[] = {
         .id = "console_mouse_wheel",
         .key = "ConsoleMouseWheel",
         .label = "Console mouse wheel scrolling",
-        .tooltip = "Scroll the open console with the mouse wheel. When off, the wheel keeps its usual bindings "
-                   "while the console is open.",
+        .tooltip = "Scroll the open console with the mouse wheel. Off, the wheel keeps its normal bindings.",
         .category = Cat::Interface,
         .subcategory = "Console",
         .widget = Wid::Toggle,

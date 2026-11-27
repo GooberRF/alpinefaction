@@ -2638,6 +2638,12 @@ void multi_spectate_render_nameplate_row(int center_x, int top_y, bool bare)
     render_spectate_powerup_icons(entity, text_left, top_y, spectate_name_plaque_height());
 }
 
+// The plaque spot at the bottom of the screen: the demo panel draws it during playback
+static bool spectate_draws_own_plaque()
+{
+    return hud_element_visible(HudElement::nameplate) && !demo_controls_ui_draws_nameplate();
+}
+
 static void render_spectate_name_plaque(rf::Entity* entity)
 {
     const int scr_w = rf::gr::screen_width();
@@ -2711,7 +2717,7 @@ void multi_spectate_render() {
             // No name plaque in static-camera view — the mode label block takes
             // the plaque's spot at the bottom of the screen (the demo panel's
             // nameplate row shows it instead during playback).
-            if (!demo_controls_ui_draws_nameplate()) {
+            if (spectate_draws_own_plaque()) {
                 int title_x = scr_w / 2;
                 int title_y = spectate_name_plaque_top_y();
                 draw_with_shadow(
@@ -2773,7 +2779,7 @@ void multi_spectate_render() {
             // No name plaque in free look — the mode label takes the plaque's
             // spot at the bottom of the screen (the demo panel's nameplate row
             // shows it instead during playback).
-            if (!demo_controls_ui_draws_nameplate()) {
+            if (spectate_draws_own_plaque()) {
                 int title_x = scr_w / 2;
                 int title_y = spectate_name_plaque_top_y();
                 draw_with_shadow(
@@ -2896,7 +2902,7 @@ void multi_spectate_render() {
         int title_y = spectate_name_plaque_top_y()
             - (large_font_h + medium_font_h)
             - (g_alpine_game_config.big_hud ? 10 : 6);
-        if (!demo_controls_ui_draws_nameplate()) {
+        if (spectate_draws_own_plaque()) {
             draw_with_shadow(
                 title_x,
                 title_y,
@@ -2958,7 +2964,7 @@ void multi_spectate_render() {
     rf::Entity* entity = rf::entity_from_handle(g_spectate_mode_target->entity_handle);
 
     // During demo playback the controls panel draws the nameplate in its bottom row
-    if (!demo_controls_ui_draws_nameplate()) {
+    if (spectate_draws_own_plaque()) {
         render_spectate_name_plaque(entity);
     }
 

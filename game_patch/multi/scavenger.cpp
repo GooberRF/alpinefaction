@@ -101,10 +101,28 @@ void collect_candidates()
     }
 }
 
+// Deleted rather than hidden: hidden items keep their pool slots, so a legacy level placing
+// 200 items left no room for the objective on the server or on clients. Like
+// remove_level_ctf_flags, nothing is replicated: clients only ever get items the server sends.
+void remove_level_items()
+{
+    rf::Item* it = rf::item_list.next;
+    while (it && it != &rf::item_list) {
+        rf::Item* next = it->next;
+        // CTF banners are decorative and stay.
+        const bool is_banner = it->info
+            && (it->info->cls_name == "CTF Banner Red" || it->info->cls_name == "CTF Banner Blue");
+        if (!is_banner) {
+            rf::obj_flag_dead(it);
+        }
+        it = next;
+    }
+}
+
 float trace_zone_floor_y(const rf::Vector3& pos)
 {
     rf::Vector3 hit{};
-    return trace_ground_below_point(pos, kScavZoneFloorTraceDist, &hit) ? hit.y : pos.y;
+    return trace_floor_below_point_with_objects(pos, kScavZoneFloorTraceDist, &hit) ? hit.y : pos.y;
 }
 
 // The one place the zone changes, on either side. Only the server traces floor_y: clients handle
@@ -264,7 +282,7 @@ void scavenger_level_init_post()
 
     collect_candidates();
     salvage_remove_level_ctf_flags();
-    multi_hide_level_items({}, false);
+    remove_level_items();
 
     if (g_scav_info.candidates.size() < 2) {
         xlog::warn("scavenger: level has {} usable item positions, at least 2 are needed; no objective",

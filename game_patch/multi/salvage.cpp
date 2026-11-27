@@ -151,6 +151,8 @@ void set_carrier(rf::Player* player)
 // Server-side recovery latch for the AtSpawn path (see salvage_do_frame).
 int g_respawn_retry_failures = 0;
 bool g_respawn_recovery_given_up = false;
+// The Delayed -> AtSpawn create failed, so the recovery spawn makes the announcement instead.
+bool g_respawn_recovery_announces = false;
 
 // Every file-scope piece of Salvage state, cleared in one place. Two sites have to
 // do this — salvage_level_init, and the "game type is no longer Salvage" branch of
@@ -171,6 +173,7 @@ void reset_salvage_local_state(bool delete_light)
 
     g_respawn_retry_failures = 0;
     g_respawn_recovery_given_up = false;
+    g_respawn_recovery_announces = false;
 
     if (delete_light && g_salvage_light_handle >= 0) {
         rf::gr::light_delete(g_salvage_light_handle, 0);
@@ -575,7 +578,7 @@ void resolve_flag_spawn_pos()
     if (g_salvage_info.bases_known) {
         const rf::Vector3 midpoint = (g_salvage_info.base_red_pos + g_salvage_info.base_blue_pos) * 0.5f;
         rf::Vector3 floor_hit{};
-        if (trace_ground_below_point(midpoint, kSalMidpointGroundTraceDist, &floor_hit)) {
+        if (trace_floor_below_point_with_objects(midpoint, kSalMidpointGroundTraceDist, &floor_hit)) {
             g_salvage_info.spawn_pos = floor_hit + rf::Vector3{0.0f, kWaypointGenerateGroundOffset, 0.0f};
             g_salvage_info.spawn_known = true;
             xlog::info("salvage: flag spawn from snapped base midpoint at ({},{},{})",
@@ -609,6 +612,7 @@ void enter_delayed_state(int delay_ms)
 {
     g_salvage_info.state = SalFlagState::Delayed;
     set_carrier(nullptr);
+    g_respawn_recovery_announces = false;
     g_salvage_info.return_timer.invalidate();
     g_salvage_info.spawn_delay_timer.set(std::max(0, delay_ms));
     g_salvage_info.refresh_timer.set(kSalStateRefreshIntervalMs);
@@ -1472,8 +1476,13 @@ void salvage_do_frame()
             spawn_flag_at_home();
             afstats::on_flag_event(afstats::FlagEventKind::reset, afstats::team_none, nullptr,
                                    g_salvage_info.spawn_pos);
-            announce(std::format("The {} is now available!", objective_noun()));
-            play_local_transition_sound(stock_sound_id::flag_respawn);
+            if (g_salvage_info.flag_item_handle >= 0) {
+                announce(std::format("The {} is now available!", objective_noun()));
+                play_local_transition_sound(stock_sound_id::flag_respawn);
+            }
+            else {
+                g_respawn_recovery_announces = true;
+            }
             salvage_broadcast_state();
             return;
         }
@@ -1503,6 +1512,11 @@ void salvage_do_frame()
             if (g_salvage_info.flag_item_handle >= 0) {
                 g_salvage_info.respawn_retry_timer.invalidate();
                 g_respawn_retry_failures = 0;
+                if (g_respawn_recovery_announces) {
+                    g_respawn_recovery_announces = false;
+                    announce(std::format("The {} is now available!", objective_noun()));
+                    play_local_transition_sound(stock_sound_id::flag_respawn);
+                }
             }
             else if (++g_respawn_retry_failures >= kSalMaxRespawnRetries) {
                 g_respawn_recovery_given_up = true;

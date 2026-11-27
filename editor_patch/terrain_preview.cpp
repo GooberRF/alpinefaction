@@ -12,6 +12,7 @@
 #include <patch_common/FunHook.h>
 #include <patch_common/MemUtils.h>
 #include <common/bitmap/formats.h>
+#include <common/lighting/alpine_lighting.h>
 #include <common/scope_guard.h>
 #include <common/terrain/alpine_terrain.h>
 #include <common/utils/string-utils.h>
@@ -19,6 +20,8 @@
 #include "alpine_lightmaps.h"
 #include "alpine_obj.h"
 #include "brush_preview.h"
+#include "graphics/d3d11/gr_d3d11_editor_lightmaps.h"
+#include "graphics/d3d11/gr_d3d11_editor_terrain.h"
 #include "graphics/editor_gr.h"
 #include "level.h"
 #include "mfc_types.h"
@@ -1212,6 +1215,65 @@ void draw_surface(CDedLevel& level, Preview& p, const DedTerrain& terrain, const
     draw_walls(p, v, textured, d.underside_texture);
 }
 
+// Cached because every paint asks, and cleared with the tiles
+std::unordered_map<std::string, bool> g_loadable_textures;
+
+// "" for a name bm_load must not be given, which the terrain shader draws as layer 0 (or white for layer 0)
+const char* loadable_texture(const std::string& name)
+{
+    auto it = g_loadable_textures.find(name);
+    if (it == g_loadable_textures.end()) {
+        it = g_loadable_textures.emplace(name, alpine_dlg_bitmap_loadable(name.c_str())).first;
+    }
+    return it->second ? name.c_str() : "";
+}
+
+// The Direct3D 11 renderer draws the terrain with the game's terrain shader, at full texture resolution: false when
+// it cannot, and draw_surface draws it instead. Rooms in Different Colors keeps draw_surface's tint.
+bool draw_surface_gpu(CDedLevel& level, Preview& p, const DedTerrain& terrain, const DedTerrainData& d,
+                      const at::GridView& v)
+{
+    if (!editor_gr_is_d3d11() || view_room_colors) return false;
+    update_baked_light(p, terrain, d);
+
+    const TerrainGrid& g = *d.grid;
+    gr::d3d11::EditorTerrainDraw draw{};
+    draw.key = &terrain;
+    draw.grid = &g;
+    draw.view = v;
+    draw.chunk_cells = p.edge;
+    draw.lightmaps_only = view_lightmaps_only;
+    gr::d3d11::TerrainSource& s = draw.source;
+    s.header = terrain_header(terrain.pos, d, &g);
+    s.heights = g.heights;
+    s.weights = g.weights;
+    s.overlay_coverage = g.overlay;
+    s.num_layers = std::min<std::size_t>(d.layers.size(), at::max_layers);
+    for (std::size_t l = 0; l < s.num_layers; l++) {
+        s.layers[l] = {loadable_texture(d.layers[l].texture), d.layers[l].uv_scale, d.layers[l].triplanar, false};
+    }
+    s.num_overlays = std::min<std::size_t>(d.overlays.size(), at::max_overlays);
+    for (std::size_t o = 0; o < s.num_overlays; o++) {
+        const DedTerrainOverlay& overlay = d.overlays[o];
+        s.overlays[o] = {loadable_texture(overlay.texture), overlay.uv_scale, overlay.triplanar, overlay.break_tiling};
+    }
+    s.underside_texture = loadable_texture(d.underside_texture);
+    // Show Just Textures draws the textures unlit, which is how the shader draws a fullbright terrain
+    const bool textures_only = !view_lightmaps_only && editor_textures_enabled;
+    s.fullbright = d.fullbright || textures_only;
+    if (!s.fullbright) {
+        if (const TerrainBakedLight* light = shown_light(p)) {
+            AfTerrainChart chart{};
+            if (editor_af_lightmap_terrain_chart(terrain.uid, terrain_baked_light_fingerprint(*light), chart)) {
+                s.chart = chart;
+            }
+        }
+    }
+    // The level's sun as the game lights the terrain with it: none leaves the level ambient alone
+    s.sun = sun_light_state(alpine_lighting::sun_state(level.GetAlpineLevelProperties()));
+    return gr::d3d11::editor_terrain_draw(draw);
+}
+
 void level_face_draw_hooked(GSolid* solid, GFace* face, char outline)
 {
     if (face && (terrain_preview_hides_room(face->which_room) || brush_preview_hides(*face))) {
@@ -1261,7 +1323,9 @@ void terrain_preview_draw(CDedLevel& level, const DedTerrain& terrain, const Ded
             draw_wireframe(v, selected);
             return;
         }
-        draw_surface(level, p, terrain, data, v);
+        if (!draw_surface_gpu(level, p, terrain, data, v)) {
+            draw_surface(level, p, terrain, data, v);
+        }
         if (style.edges) draw_wireframe(v, selected, surface_line_lift(v));
         if (selected) draw_outline(v, p.edge, true);
     }
@@ -1275,6 +1339,7 @@ void terrain_preview_frame_end(CDedLevel& level)
     const auto& terrains = level.GetAlpineLevelProperties().terrain_objects;
     for (auto it = g_previews.begin(); it != g_previews.end();) {
         if (std::find(terrains.begin(), terrains.end(), (*it)->owner) == terrains.end()) {
+            gr::d3d11::editor_terrain_forget((*it)->owner);
             release_preview(**it);
             it = g_previews.erase(it);
         }
@@ -1282,7 +1347,10 @@ void terrain_preview_frame_end(CDedLevel& level)
             ++it;
         }
     }
-    if (g_previews.empty()) g_tiles.clear();
+    if (g_previews.empty()) {
+        g_tiles.clear();
+        g_loadable_textures.clear();
+    }
 
     // Composites left over for the budget: this view paints again on the next idle tick.
     if (g_work_pending) editor_view_mark_repaint(editor_view_at(painting_view_index));
@@ -1302,6 +1370,13 @@ bool terrain_preview_take_pending_work()
 void terrain_preview_invalidate(const DedTerrain* terrain, const TerrainCellRect* cells, bool heights_changed)
 {
     terrain_decorations_invalidate(terrain, cells);
+    gr::d3d11::editor_terrain_cells_changed(terrain, cells);
+    if (heights_changed) {
+        // Cells [x0, x1) span vertices [x0, x1].
+        const TerrainCellRect verts = cells ? TerrainCellRect{cells->x0, cells->z0, cells->x1 + 1, cells->z1 + 1}
+                                            : TerrainCellRect{};
+        gr::d3d11::editor_terrain_heights_changed(terrain, cells ? &verts : nullptr);
+    }
     for (auto& p : g_previews) {
         if (p->owner != terrain) continue;
         p->shade_dirty = p->shade_dirty || heights_changed;
@@ -1322,6 +1397,7 @@ void terrain_preview_invalidate(const DedTerrain* terrain, const TerrainCellRect
 void terrain_preview_heights_changed(const DedTerrain* terrain, const TerrainCellRect* verts)
 {
     terrain_decorations_invalidate(terrain, verts);
+    gr::d3d11::editor_terrain_heights_changed(terrain, verts);
     terrain_preview_lighting_changed(terrain);
     for (auto& p : g_previews) {
         if (p->owner != terrain) continue;
@@ -1361,7 +1437,9 @@ void terrain_preview_lighting_changed(const DedTerrain* terrain)
 
 void terrain_preview_textures_reloaded()
 {
+    gr::d3d11::editor_terrain_textures_reloaded();
     g_tiles.clear();
+    g_loadable_textures.clear();
     for (auto& p : g_previews) {
         p->textures_failed = false;
         p->underside_name.clear();
@@ -1375,6 +1453,7 @@ void terrain_preview_rebind_grid(const DedTerrain* terrain, const TerrainGrid* o
                                  const std::shared_ptr<const TerrainGrid>& new_grid)
 {
     terrain_decorations_rebind_grid(terrain, old_grid, new_grid);
+    gr::d3d11::editor_terrain_rebind_grid(terrain, old_grid, new_grid.get());
     for (auto& p : g_previews) {
         if (p->owner == terrain && p->grid.get() == old_grid) p->grid = new_grid;
     }
@@ -1413,6 +1492,7 @@ bool terrain_preview_layer_color(const std::string& texture, std::uint8_t (&rgb)
 
 void terrain_preview_forget(const DedTerrain* terrain)
 {
+    gr::d3d11::editor_terrain_forget(terrain);
     for (auto it = g_previews.begin(); it != g_previews.end(); ++it) {
         if ((*it)->owner == terrain) {
             release_preview(**it);
@@ -1420,7 +1500,10 @@ void terrain_preview_forget(const DedTerrain* terrain)
             break;
         }
     }
-    if (g_previews.empty()) g_tiles.clear();
+    if (g_previews.empty()) {
+        g_tiles.clear();
+        g_loadable_textures.clear();
+    }
 }
 
 bool terrain_preview_hides_room(const GRoom* room)

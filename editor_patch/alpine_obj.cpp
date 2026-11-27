@@ -1842,16 +1842,18 @@ static void collect_all_objects(CDedLevel* level, bool include_hidden,
         if (!obj) return;
         if (!include_hidden && obj->hidden_in_editor) return;
         char buf[256];
-        const char* cls = obj->class_name.c_str();
+        // Only these types save a class. RED gives any other object placed from the tree that item's text as its
+        // class_name ("Multiplayer Respawn Point"), which the level file does not keep
+        const bool has_class = obj->type == DedObjectType::DED_CLUTTER || obj->type == DedObjectType::DED_ENTITY
+            || obj->type == DedObjectType::DED_ITEM || obj->type == DedObjectType::DED_EVENT;
+        const char* cls = has_class ? obj->class_name.c_str() : "";
+        if (!cls[0])
+            cls = get_type_display_name(obj->type);
         const char* scr = obj->script_name.c_str();
-        if (cls[0] && scr[0])
+        if (scr[0])
             snprintf(buf, sizeof(buf), "%s : %s (%d)", cls, scr, obj->uid);
-        else if (cls[0])
-            snprintf(buf, sizeof(buf), "%s (%d)", cls, obj->uid);
-        else if (scr[0])
-            snprintf(buf, sizeof(buf), "%s : %s (%d)", get_type_display_name(obj->type), scr, obj->uid);
         else
-            snprintf(buf, sizeof(buf), "%s (%d)", get_type_display_name(obj->type), obj->uid);
+            snprintf(buf, sizeof(buf), "%s (%d)", cls, obj->uid);
         out.push_back({obj, buf, obj->type, !obj->hidden_in_editor, selected_set.count(obj) > 0});
     };
 

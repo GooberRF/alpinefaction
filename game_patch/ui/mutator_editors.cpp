@@ -25,7 +25,7 @@ const MutatorDescription mutator_descriptions[] = {
     {"oneweapon",
      "Spawn with Baton. Weapon/ammo pickups based on the specified weapon. No other pickups."},
     {"arena",
-     "Spawn with AR and 100/100. Auto reload and reset to 100/100 on a frag. Weapon pickups only."},
+     "Spawn with AR and 100/100. Auto reload; back to 100/100 on a frag. Weapon pickups only."},
     {"vampire",
      "Damage enemies to regenerate health and armor."},
     {"crits",
@@ -65,7 +65,7 @@ const MutatorDescription mutator_descriptions[] = {
     {"joinbots",
      "Bots join for the level, or fill a match's open slots once the other players are ready."},
     {"itemreplace",
-     "Swaps super pickups for other powerups, or removes them. Pick one or more replacement sets."},
+     "Swaps super pickups for other powerups, or removes them. Pick one or more sets."},
 };
 
 int option_key(const MutatorEditor& mutator, std::size_t index)

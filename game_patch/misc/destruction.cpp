@@ -21,6 +21,7 @@
 #include "../graphics/d3d11/gr_d3d11_hooks.h"
 #include "../multi/multi.h"
 #include "../multi/server_internal.h"
+#include "../multi/bots/bot_navigation_routes.h"
 #include "../multi/vehicles/vehicle_physics.h"
 #include "../main/main.h"
 #include "../misc/misc.h"
@@ -2549,6 +2550,8 @@ CodeInjection glass_sound_entry_injection{
             const float dx = g_breaking_room->bbox_max.x - g_breaking_room->bbox_min.x;
             const float dz = g_breaking_room->bbox_max.z - g_breaking_room->bbox_min.z;
             weather_notify_geomod(room_center, 0.5f * std::sqrt(dx * dx + dz * dz));
+            bot_nav_notify_level_change(
+                room_center, 0.5f * (g_breaking_room->bbox_max - g_breaking_room->bbox_min).len());
 
             // When_Destroyed: glass_sound is the one point both break paths reach, and only
             // after validate_destroy succeeded, so a detail brush commits here exactly once
@@ -3694,6 +3697,7 @@ FunHook<void(rf::GeomodParams*)> geomod_init_hook{
         }
 
         geomod_init_hook.call_target(params);
+        bot_nav_notify_level_change(rf::g_geomod_pos, get_crater_extent_radius(*params));
 
         // The carve can open or close a roof over a blocked-by-geometry weather region.
         if (const auto radius = geomod_crater_radius(*params)) {
@@ -4371,6 +4375,17 @@ CodeInjection state2_rf2_separated_solids_injection{
     },
 };
 
+// ESI = how many pieces State 2 cuts loose, which can lie outside the crater. state2_rf2_separated_solids_injection
+// resumes at this site.
+CodeInjection state2_pieces_separated_injection{
+    0x00466dda,
+    [](auto& regs) {
+        if (static_cast<int>(regs.esi) > 0) {
+            bot_nav_notify_level_pieces_separated();
+        }
+    },
+};
+
 // Hook at the START of outer State 3 (0x00466f4e) in the geomod state machine.
 // State 3 is entered after State 2 (result collection + stock cache clearing).
 //
@@ -4647,6 +4662,7 @@ void destruction_do_patch()
     boolean_split_big_face_hook.install();
     state0_decal_defer_hook.install();
     state2_rf2_separated_solids_injection.install();
+    state2_pieces_separated_injection.install();
     geomod_state3_clear_detail_caches_injection.install();
     geomod_crater_decals_hook.install();
     geomod_impact_effects_hook.install();

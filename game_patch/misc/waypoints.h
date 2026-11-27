@@ -245,6 +245,10 @@ struct WpCacheNode
 // be the floor below; generation keeps the any-hit trace so the graphs it builds stay as they are.
 bool trace_ground_below_point(
     const rf::Vector3& pos, float max_downward_dist, rf::Vector3* out_hit_point = nullptr, bool nearest = false);
+// The highest floor in reach a player can stand on, including clutter and Alpine meshes. Objects on movers are
+// skipped. Not used by generation, whose traces only test level geometry and movers.
+bool trace_floor_below_point_with_objects(
+    const rf::Vector3& pos, float max_downward_dist, rf::Vector3* out_hit_point = nullptr);
 
 void waypoints_init();
 int get_local_awp_revision(const std::string& rfl_filename);
