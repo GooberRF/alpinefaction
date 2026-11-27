@@ -126,7 +126,7 @@ bool sample_count_offered(const int value)
     return gr_supports_sample_count(static_cast<uint32_t>(value));
 }
 
-const char* const labels_msaa[] = {"Off", "MSAA 2x", "MSAA 4x", "MSAA 8x"};
+const char* const labels_msaa[] = {"Off", "MSAAx2", "MSAAx4", "MSAAx8"};
 const int values_msaa[] = {1, 2, 4, 8};
 const char* const labels_colorblind[] = {"Off", "Protanopia", "Deuteranopia", "Tritanopia"};
 
