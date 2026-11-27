@@ -3067,6 +3067,8 @@ FunHook<void(int, rf::NetAddr*)> multi_start_hook{
             closesocket(rf::net_udp_socket);
             rf::net_init_socket(server_port);
         }
+        // A powerup left by single player or a past session must not be live in the frames before a level loads.
+        powerups_level_init();
         multi_start_hook.call_target(is_client, serv_addr);
     },
 };

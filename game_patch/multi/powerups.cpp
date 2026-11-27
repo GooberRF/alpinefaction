@@ -30,6 +30,7 @@
 #include "../rf/ai.h"
 #include "../rf/bmpman.h"
 #include "../rf/entity.h"
+#include "../rf/gameseq.h"
 #include "../rf/item.h"
 #include "../rf/multi.h"
 #include "../rf/physics.h"
@@ -187,17 +188,23 @@ int __cdecl powerup_item_touch(int entity_handle, int item_handle, int count)
     rf::Entity* ep = rf::entity_from_handle(entity_handle);
     rf::Item* item = rf::item_from_handle(item_handle);
     const auto powerup = item ? powerup_for_item_type(item->info_index) : std::nullopt;
-    if (!rf::is_multi || !ep || !powerup) {
+    if (!ep || !powerup) {
         return -1;
     }
 
-    // Clients only reach this through the server's item_apply, so they must always accept.
-    if (rf::is_server) {
+    const auto time_left_ms = static_cast<uint32_t>(std::clamp(count, 1, max_powerup_seconds)) * 1000u;
+    if (!rf::is_multi) {
+        if (!rf::local_player || entity_handle != rf::local_player->entity_handle) {
+            return -1;
+        }
+        set_time_left(entity_handle, 0, *powerup, time_left_ms / 1000.0f);
+    }
+    else if (rf::is_server) {
+        // Clients skip this: they only get here through the server's item_apply, so they must always accept.
         rf::Player* player = rf::player_from_entity_handle(entity_handle);
         if (!player || !player->net_data || (player->is_bot && item_type_is_bot_unusable_powerup(item->info_index))) {
             return -1;
         }
-        const auto time_left_ms = static_cast<uint32_t>(std::clamp(count, 1, max_powerup_seconds)) * 1000u;
         const uint8_t player_id = player->net_data->player_id;
         const bool was_held = powerup_is_active(ep, *powerup);
         set_time_left(entity_handle, player_id, *powerup, time_left_ms / 1000.0f);
@@ -459,6 +466,9 @@ FunHook<void(rf::Entity*)> entity_jump_haste_hook{
         if (ep == rf::local_player_entity && g_haste_jump_sound >= 0) {
             play_local_sound_2d(static_cast<uint16_t>(g_haste_jump_sound), 0, 1.0f);
         }
+        if (!rf::is_multi) {
+            return;
+        }
         if (rf::is_server) {
             powerups_server_on_haste_jump(rf::player_from_entity_handle(ep->handle));
         }
@@ -622,8 +632,7 @@ bool powerup_is_active(const rf::Entity* ep, AlpinePowerup powerup)
 
 float powerup_time_left(const rf::Entity* ep, AlpinePowerup powerup)
 {
-    // Only multiplayer level init clears the map, so a session that ended mid-powerup leaves it stale.
-    if (!ep || !rf::is_multi || g_powerups.empty()) {
+    if (!ep || g_powerups.empty()) {
         return 0.0f;
     }
     const auto it = g_powerups.find(ep->handle);
@@ -633,7 +642,7 @@ float powerup_time_left(const rf::Entity* ep, AlpinePowerup powerup)
 bool powerup_any_active(AlpinePowerup powerup)
 {
     const auto index = static_cast<size_t>(powerup);
-    return rf::is_multi && std::ranges::any_of(g_powerups,
+    return std::ranges::any_of(g_powerups,
         [index](const auto& entry) { return entry.second.time_left[index] > 0.0f; });
 }
 
@@ -860,7 +869,7 @@ void powerups_level_init_post()
 void powerups_do_frame()
 {
     haste_trails_do_frame();
-    if (!rf::is_multi || g_powerups.empty()) {
+    if (g_powerups.empty() || (!rf::is_multi && (rf::game_paused || !rf::gameseq_in_gameplay()))) {
         return;
     }
 
@@ -870,7 +879,7 @@ void powerups_do_frame()
     std::vector<std::tuple<int, AlpinePowerup, bool>> expired;
     for (auto& [entity_handle, state] : g_powerups) {
         rf::Entity* ep = rf::entity_from_handle(entity_handle);
-        rf::Player* player = rf::multi_find_player_by_id(state.player_id);
+        rf::Player* player = rf::is_multi ? rf::multi_find_player_by_id(state.player_id) : rf::local_player;
         const bool alive = ep && !rf::entity_is_dying(ep) && player && player->entity_handle == entity_handle;
         for (size_t i = 0; i < powerup_count; ++i) {
             float& time_left = state.time_left[i];
@@ -894,7 +903,7 @@ void powerups_do_frame()
         const uint8_t player_id = it->second.player_id;
         set_time_left(entity_handle, player_id, powerup, 0.0f);
         // A holder who left is no longer found; their holds ended as they left.
-        if (rf::Player* player = rf::is_server ? rf::multi_find_player_by_id(player_id) : nullptr) {
+        if (rf::Player* player = rf::is_multi && rf::is_server ? rf::multi_find_player_by_id(player_id) : nullptr) {
             af_send_powerup_state(nullptr, player_id, static_cast<uint8_t>(powerup), 0);
             afstats::on_powerup_end(player, stats_powerup(powerup),
                 alive ? afstats::PowerupEndReason::expired : afstats::PowerupEndReason::died);

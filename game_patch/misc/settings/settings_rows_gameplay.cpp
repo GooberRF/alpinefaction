@@ -376,6 +376,18 @@ const SettingRow rows[] = {
         .console_cmd = "sp_unlimitedsemiauto",
     },
     {
+        .id = "sp_hit_notifications",
+        .key = "SPHitNotifications",
+        .label = "Hit notifications",
+        .tooltip = "Show hit numbers and play hit sounds when you damage NPCs, as set for multiplayer.",
+        .category = Cat::Gameplay,
+        .subcategory = "Single-player",
+        .widget = Wid::Toggle,
+        .access = AccBool{&AGS::sp_hit_notifications},
+        .flags = SF_SP_ONLY,
+        .console_cmd = "sp_hitnotifications",
+    },
+    {
         .id = "gaussian_spread",
         .key = "GaussianSpread",
         .label = "Gaussian bullet spread",

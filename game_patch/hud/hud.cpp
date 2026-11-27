@@ -10,6 +10,7 @@
 #include "../misc/vote_panel.h"
 #include "../multi/demo/demo.h"
 #include "../multi/jetpack.h"
+#include "../multi/powerups.h"
 #include "../multi/vehicles/vehicle_view.h"
 #include "minimap.h"
 #include "multi_scoreboard.h"
@@ -552,9 +553,11 @@ CallHook hud_msg_render_gr_get_font_height_hook{
 
 void hud_render_00437BC0()
 {
-    // Single player jetpack HUD and reticle prompt. Multiplayer draws them from multi_hud_render.
+    // Single player jetpack HUD, powerup icons and reticle prompt. Multiplayer draws them from multi_hud_render.
     if (!rf::is_multi) {
         jetpack_render_hud();
+        rf::multi_powerup_render();
+        powerups_render_hud();
         hud_render_reticle_prompt();
     }
 

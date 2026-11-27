@@ -141,6 +141,8 @@ void mutators_set_no_clip_weapon(int weapon_type);
 // The weapon currently forced to no-clip, or -1 when there is none.
 int mutators_get_no_clip_weapon();
 void mutators_on_pvp_damage(rf::Player* attacker, rf::Player* victim, float effective_damage);
+// Single player: `attacker`, the local player's entity, dealt `effective_damage` to anything else.
+void mutators_on_sp_damage_dealt(rf::Entity* attacker, float effective_damage);
 void mutators_on_flame_damage(rf::Player* attacker, rf::Player* victim, int damage_type, float damage);
 void mutators_on_flame_victim_damage(rf::Player* victim, int damage_type, float damage);
 void mutators_on_item_picked_up(rf::Item* item, rf::Entity* entity);

@@ -869,6 +869,16 @@ ConsoleCommand2 localhitsound_cmd{
     "cl_hitsounds",
 };
 
+ConsoleCommand2 sp_hit_notifications_cmd{
+    "sp_hitnotifications",
+    []() {
+        setting_console_set("sp_hit_notifications", "toggle");
+        rf::console::print("Hit notifications in single player are {}",
+            g_alpine_game_config.sp_hit_notifications ? "enabled" : "disabled");
+    },
+    "Toggles hit numbers and hit sounds when you damage NPCs in single player",
+};
+
 ConsoleCommand2 hit_sound_interval_cmd{
     "cl_hitsounds_min_interval",
     [](std::optional<int> interval_ms) {
@@ -1257,6 +1267,7 @@ void player_do_patch()
     mp_join_flash_cmd.register_cmd();
     mp_set_character_cmd.register_cmd();
     localhitsound_cmd.register_cmd();
+    sp_hit_notifications_cmd.register_cmd();
     hit_sound_interval_cmd.register_cmd();
     hit_sound_streak_pitch_cmd.register_cmd();
     tauntsound_cmd.register_cmd();

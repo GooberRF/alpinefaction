@@ -6,6 +6,7 @@
 #include <xlog/xlog.h>
 #include <algorithm>
 #include <string_view>
+#include <utility>
 #include "../fflink/afstats_events.h"
 #include "../rf/event.h"
 #include "../rf/item.h"
@@ -21,6 +22,7 @@
 #include "../multi/bagman.h"
 #include "../multi/gametype.h"
 #include "../multi/mutators.h"
+#include "../multi/powerups.h"
 #include "../multi/salvage.h"
 #include "../multi/server.h"
 #include "../multi/demo/demo.h"
@@ -131,6 +133,7 @@ CodeInjection game_level_init_pre_patch{
 
         if (!rf::is_multi) {
             rf::multi_powerup_destroy_all();
+            powerups_level_init();
         }
     }
 };
@@ -193,15 +196,28 @@ CodeInjection item_touch_amp_multi_check {
     }
 };
 
+// Replaces all of `cmp is_multi, bl; jnz`, reached only for the powerups without a timer (Super Armor/Health), so no
+// trampoline is needed. The code past it compares is_multi and is_server against BL, so it has to be entered after
+// `mov ebx, 1`.
 CodeInjection multi_powerup_add_mp_check {
-    0x004800B5,
+    0x00480125,
     [](auto& regs) {
-        // eax bool is true if powerup has an associated timer (ie. amp/invuln)
-        // for some reason, only for powerups without timer, game checks again here for mp
-        if (!static_cast<bool>(regs.eax.value) && !rf::is_multi) {
-            regs.eip = 0x00480135;
+        regs.eip = rf::is_multi ? 0x0048012D : 0x00480135;
+    },
+    false,
+};
+
+// Area damage: the Damage Amplifier's damage is behind `if (is_multi && is_server)`. EAX is the killer entity.
+CodeInjection area_damage_amp_sp_injection{
+    0x0048922B,
+    [](auto& regs) {
+        const rf::Entity* killer = regs.eax;
+        if (!rf::is_multi && killer && (killer->entity_flags2 & rf::EF2_POWERUP_DAMAGE_AMP)) {
+            // The pushed entity_from_handle argument, which the skipped `add esp, 4` pops.
+            regs.esp += 4;
+            regs.eip = 0x00489252;
         }
-    }
+    },
 };
 
 // item_pickup's full Super Armor/Health check and the stock powerups' touch callback look the powerup up by the item's
@@ -223,8 +239,33 @@ CodeInjection item_touch_powerup_type_injection{
     },
 };
 
+// Multiplayer expires the stock powerups from multi_do_frame, which single player never calls, and a savegame or a
+// level transition restores a powerup's flag without its timer. Only the local player's are looked at: the list is
+// emptied at level init alone, so it can still hold the players of a multiplayer game that has ended.
+static void item_sp_powerups_do_frame()
+{
+    rf::Player* const pp = rf::local_player;
+    const rf::Entity* ep = pp ? rf::entity_from_handle(pp->entity_handle) : nullptr;
+    if (!ep) {
+        return;
+    }
+    constexpr std::pair<int, unsigned> powerup_flags[] = {
+        {rf::MULTI_POWERUP_INVULNERABILITY, rf::EF2_POWERUP_INVULNERABLE},
+        {rf::MULTI_POWERUP_DAMAGE_AMP, rf::EF2_POWERUP_DAMAGE_AMP},
+    };
+    for (const auto& [type, flag] : powerup_flags) {
+        // 0 with no timer, and not above it once the timer has run out.
+        if ((ep->entity_flags2 & flag) && rf::multi_powerup_get_time_until(pp, type) <= 0) {
+            rf::multi_powerup_remove(pp, type);
+        }
+    }
+}
+
 void item_do_frame()
 {
+    if (!rf::is_multi && !rf::game_paused) {
+        item_sp_powerups_do_frame();
+    }
     if (rf::is_dedicated_server || !rf::is_multi || rf::game_paused) {
         return;
     }
@@ -249,6 +290,12 @@ void item_do_patch()
     item_touch_amp_multi_check.install();   // touch
     multi_powerup_add_mp_check.install();   // apply effect
     game_level_init_pre_patch.install();    // initialize powerup vars
+    area_damage_amp_sp_injection.install();
+    // The Damage Amplifier's damage and the Invulnerability hit sound on a projectile hit, and the amp fire sound, are
+    // each behind `test al, al; jz` on is_multi, which is never taken in multiplayer.
+    for (uintptr_t addr : {0x0041AAA5, 0x0041ABAD, 0x00426129, 0x00426234, 0x00426A5E, 0x00426A95, 0x004C60B0}) {
+        AsmWriter{addr, addr + 2}.nop();
+    }
     item_pickup_powerup_type_injection.install();
     item_touch_powerup_type_injection.install();
 

@@ -422,6 +422,7 @@ Zone types (or their numeric id): `control_point` (`cp`), `damaging_liquid_room`
 | `sp_difficulty` | `<easy\|medium\|hard\|impossible>` | Stock RF command. Sets the game difficulty. |
 | `sp_exposuredamage` | | Toggles exposure damage when outside without armor in single player. In multiplayer the server's `exposure_damage` rule applies. Default: on. |
 | `sp_geochunkphysics` | | Toggles isolated geomod chunks falling as physics objects instead of disappearing. Default: on. |
+| `sp_hitnotifications` | | Toggles hit numbers and hit sounds when you damage NPCs in single player. The multiplayer `cl_wh_hitnumbers` and `cl_hitsounds` settings still apply. Default: off. |
 | `sp_levelhardness` | `[0-100]` | Stock RF command. Sets the default hardness for geomods. Not in multiplayer. |
 | `sp_spreadmode` | | Toggles bullet spread between the gaussian method and the legacy uniform method. Default: legacy (uniform). |
 | `sp_staticbombcode` | | Toggles the bomb code between randomized and static. Default: randomized. |

@@ -2245,6 +2245,16 @@ void mutators_on_player_frag(rf::Player* killer)
     frag_refill_current_clip(rf::entity_from_handle(killer->entity_handle));
 }
 
+// Heals `ep` by `heal_ratio` of `effective_damage`, health first, up to its normal max. Returns the amount healed.
+static float vampire_heal(rf::Entity* ep, float effective_damage, float heal_ratio)
+{
+    const float max_life_limit = std::max(ep->life, ep->info->max_life);
+    const float max_armor_limit = std::max(ep->armor, ep->info->max_armor);
+
+    // Same logic effective health kill reward uses.
+    return distribute_effective_health(ep, effective_damage * heal_ratio, max_life_limit, max_armor_limit);
+}
+
 void mutators_on_pvp_damage(rf::Player* attacker, rf::Player* victim, float effective_damage)
 {
     if (!rf::is_server || !rf::is_multi)
@@ -2272,15 +2282,19 @@ void mutators_on_pvp_damage(rf::Player* attacker, rf::Player* victim, float effe
     if (!(heal_ratio > 0.0f))
         return;
 
-    const float max_life_limit = std::max(ep->life, ep->info->max_life);
-    const float max_armor_limit = std::max(ep->armor, ep->info->max_armor);
-
-    // Same logic effective health kill reward uses.
-    const float healed =
-        distribute_effective_health(ep, effective_damage * heal_ratio, max_life_limit, max_armor_limit);
+    const float healed = vampire_heal(ep, effective_damage, heal_ratio);
     if (healed > 0.0f) {
         afstats::on_lifesteal(attacker, healed);
     }
+}
+
+void mutators_on_sp_damage_dealt(rf::Entity* attacker, float effective_damage)
+{
+    if (rf::is_multi || !attacker || !attacker->info || rf::entity_is_dying(attacker) || !(effective_damage > 0.0f))
+        return;
+
+    if (powerup_is_active(attacker, AlpinePowerup::vampire))
+        vampire_heal(attacker, effective_damage, VAMPIRE_FULL_LIFESTEAL_RATIO);
 }
 
 // Super Drain tick: one global timer drains every alive player's health and
