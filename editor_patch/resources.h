@@ -239,8 +239,8 @@
 #define IDC_CORONA_COLOR_B 3095
 #define IDC_CORONA_COLOR_A 3096
 #define IDC_CORONA_SHOW_IN_EDITOR 3097
-// Only 3098-3099 are left below IDD_TYPE_FILTER (3100), so the corona spinners take a fresh block
-// above every other Alpine dialog instead of straddling that boundary.
+// Only 3098-3099 are left below IDD_TYPE_FILTER (3100), so the corona's later controls take a fresh
+// block above every other Alpine dialog instead of straddling that boundary.
 #define IDC_CORONA_CONE_ANGLE_SPIN 3400
 #define IDC_CORONA_INTENSITY_SPIN 3401
 #define IDC_CORONA_RADIUS_DISTANCE_SPIN 3402
@@ -248,6 +248,10 @@
 #define IDC_CORONA_DIMINISH_DISTANCE_SPIN 3404
 #define IDC_CORONA_VOLUMETRIC_HEIGHT_SPIN 3405
 #define IDC_CORONA_VOLUMETRIC_LENGTH_SPIN 3406
+#define IDC_CORONA_BITMAP_BROWSE 3407
+#define IDC_CORONA_BITMAP_PREVIEW 3408
+#define IDC_CORONA_VOLUMETRIC_BITMAP_BROWSE 3409
+#define IDC_CORONA_VOLUMETRIC_BITMAP_PREVIEW 3410
 
 #define IDD_ALPINE_WEATHER_REGION_PROPERTIES 3150
 #define IDC_WEATHER_SCRIPT_NAME 3151

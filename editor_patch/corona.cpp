@@ -16,6 +16,7 @@
 #include "vtypes.h"
 #include "alpine_obj.h"
 #include "tbl.h"
+#include "textures.h"
 
 extern "C" IMAGE_DOS_HEADER __ImageBase;
 
@@ -271,6 +272,18 @@ static void corona_capture_preview_bitmaps(HWND hdlg)
     g_corona_preview.bitmap = alpine_dlg_resolve_bitmap(buf);
     GetDlgItemTextA(hdlg, IDC_CORONA_VOLUMETRIC_BITMAP, buf, sizeof(buf));
     g_corona_preview.volumetric_bitmap = alpine_dlg_resolve_bitmap(buf);
+    InvalidateRect(GetDlgItem(hdlg, IDC_CORONA_BITMAP_PREVIEW), nullptr, TRUE);
+    InvalidateRect(GetDlgItem(hdlg, IDC_CORONA_VOLUMETRIC_BITMAP_PREVIEW), nullptr, TRUE);
+}
+
+// Opens on the category holding the current bitmap; the pick lands in the field, whose EN_CHANGE
+// refreshes both previews.
+static void corona_browse_bitmap(HWND hdlg, int field_idc, int current_handle)
+{
+    char buf[256] = {};
+    GetDlgItemTextA(hdlg, field_idc, buf, sizeof(buf));
+    const char* category = texture_category_of(buf);
+    alpine_dlg_browse_bitmap(hdlg, field_idc, category ? category : "Effects", current_handle);
 }
 
 static void corona_refresh_preview(HWND hdlg)
@@ -361,6 +374,12 @@ static INT_PTR CALLBACK CoronaDialogProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM 
                 corona_refresh_preview(hdlg);
             }
             break;
+        case IDC_CORONA_BITMAP_BROWSE:
+            corona_browse_bitmap(hdlg, IDC_CORONA_BITMAP, g_corona_preview.bitmap);
+            return TRUE;
+        case IDC_CORONA_VOLUMETRIC_BITMAP_BROWSE:
+            corona_browse_bitmap(hdlg, IDC_CORONA_VOLUMETRIC_BITMAP, g_corona_preview.volumetric_bitmap);
+            return TRUE;
         case IDC_CORONA_COLOR_CHANGE: {
             COLORREF color = RGB(
                 std::min(GetDlgItemInt(hdlg, IDC_CORONA_COLOR_R, nullptr, FALSE), 255u),
@@ -444,6 +463,14 @@ static INT_PTR CALLBACK CoronaDialogProc(HWND hdlg, UINT msg, WPARAM wp, LPARAM 
             HBRUSH brush = CreateSolidBrush(RGB(r, g, b));
             FillRect(dis->hDC, &dis->rcItem, brush);
             DeleteObject(brush);
+            return TRUE;
+        }
+        if (dis && dis->CtlID == IDC_CORONA_BITMAP_PREVIEW) {
+            alpine_dlg_draw_bitmap_preview(dis->hwndItem, dis->rcItem, g_corona_preview.bitmap);
+            return TRUE;
+        }
+        if (dis && dis->CtlID == IDC_CORONA_VOLUMETRIC_BITMAP_PREVIEW) {
+            alpine_dlg_draw_bitmap_preview(dis->hwndItem, dis->rcItem, g_corona_preview.volumetric_bitmap);
             return TRUE;
         }
         break;

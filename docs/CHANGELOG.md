@@ -12,6 +12,7 @@ Version 1.6.0 (TBD): Not yet released
 - Reduce the CPU time spent on collisions with moving liquids
 - Reduce bot CPU cost and stuttering on large levels, especially after geomod craters
 - Stop server bots from stalling the game when the first one plans a route on a large level
+- Add browse buttons and previews for the corona and volumetric bitmaps in the level editor's `Corona Properties` dialog
 
 ### Bug fixes
 [@GooberRF](https://github.com/GooberRF)
