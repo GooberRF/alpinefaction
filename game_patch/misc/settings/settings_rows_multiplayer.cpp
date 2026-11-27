@@ -156,7 +156,7 @@ const SettingRow rows[] = {
     {
         .id = "fflink_status",
         .label = "FactionFiles account",
-        .tooltip = "Linked FactionFiles account, for achievements and map ratings. Link or unlink it in the launcher.",
+        .tooltip = "Linked FactionFiles account, for achievements and map ratings. Link or unlink in the launcher.",
         .category = Cat::Multiplayer,
         .subcategory = "FactionFiles",
         .widget = Wid::Label,
@@ -195,8 +195,7 @@ const SettingRow rows[] = {
         .id = "server_browser_details",
         .key = "ServerBrowserDetails",
         .label = "Server browser details",
-        .tooltip = "Show a card with a server's details and players when hovering over or selecting it in the server "
-                   "browser.",
+        .tooltip = "Show a card with a server's details and players on hover or selection in the server list.",
         .category = Cat::Multiplayer,
         .subcategory = "Network",
         .widget = Wid::Toggle,
@@ -208,9 +207,7 @@ const SettingRow rows[] = {
         .id = "server_browser_auto_refresh",
         .key = "ServerBrowserAutoRefresh",
         .label = "Server browser auto refresh",
-        .tooltip = "Keep re-querying the server shown in the server browser, and re-ping the list when the browser "
-                   "opens. Off, the list only changes on Refresh All, Get Servers, a tab switch, Add Server, or a "
-                   "reopen after closing the browser mid-refresh.",
+        .tooltip = "Re-query the shown server; re-ping the list on open. Off, the list updates on refresh only.",
         .category = Cat::Multiplayer,
         .subcategory = "Network",
         .widget = Wid::Toggle,
@@ -262,7 +259,7 @@ const SettingRow rows[] = {
         .id = "client_rate",
         .key = "ClientRate",
         .label = "Client rate for legacy servers",
-        .tooltip = "Connection speed in bytes/s. Servers older than Alpine Faction 1.5 set how often they send you updates by it.",
+        .tooltip = "Connection speed in bytes/s. Non-AF and pre-1.5 AF servers use it to set your update rate.",
         .category = Cat::Multiplayer,
         .subcategory = "Network",
         .widget = Wid::Stepper,

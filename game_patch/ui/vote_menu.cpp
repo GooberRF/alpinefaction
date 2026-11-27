@@ -122,8 +122,7 @@ const char* row_description(int id, const VoteOptionsData* options, const char* 
         case desc_team_size:
             return "Players on each team of the match.";
         case desc_gametype:
-            return "The game type the vote runs under. It follows the picked level until you change it; the reset "
-                   "icon puts it back.";
+            return "The vote's game type. Follows the picked level until you change it; the reset icon restores it.";
         case desc_filter:
             return options && options->gametype_prefix_restricted
                 ? "This server only accepts levels made for the game type, so only those are listed."

@@ -50,8 +50,7 @@ const SettingRow rows[] = {
         .id = "vehicle_effects",
         .key = "VehicleEffects",
         .label = "Vehicle effects",
-        .tooltip = "Dust, sparks, spray, smoke and fire effects, with their sounds and lights, and wingtip trails, "
-                   "for vehicles.",
+        .tooltip = "Vehicle dust, sparks, spray, smoke and fire, with their sounds and lights, and wingtip trails.",
         .category = Cat::Graphics,
         .subcategory = "Vehicles",
         .widget = Wid::Toggle,
