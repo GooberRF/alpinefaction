@@ -1,0 +1,83 @@
+#pragma once
+#include <array>
+#include <cstdint>
+#include <utility>
+#include <SDL3/SDL.h>
+#include "rumble.h"
+
+// Maximum number of simultaneously connected gamepads.
+// Note: if planning to add Local multiplayer support, please upgrade the rest of the gamepad input functionality 
+// to be per-gamepad instead of global, then increase the max gamepad to 4...or higher? (wink wink)
+inline constexpr int k_max_gamepads = 2;
+SDL_Gamepad* gamepad_get_slot(int idx);      // direct slot access by index
+SDL_Gamepad* gamepad_get_primary();          // first open slot
+SDL_Gamepad* gamepad_get_last_active();      // slot that most recently produced input
+bool         gamepad_any_open();             // true if at least one slot is occupied
+
+void gamepad_apply_patch();
+void gamepad_sdl_init();
+void process_gamepad_event(const SDL_Event& ev);
+
+void gamepad_rumble(uint16_t low_freq, uint16_t high_freq, uint32_t duration_ms, bool ignore_filter = false);
+void gamepad_play_rumble(const RumbleEffect& effect, bool is_alt_fire = false);
+void gamepad_stop_rumble(); // immediately silence all rumble motors
+
+void gamepad_do_frame();
+void gamepad_draw_menu_toasts();
+void consume_raw_gamepad_deltas(float& pitch_delta, float& yaw_delta);
+void consume_vehicle_orbit_gamepad_deltas(float& pitch_delta, float& yaw_delta);
+void flush_freelook_gamepad_deltas();
+
+namespace rf { struct ControlConfig; struct Entity; }
+void gamepad_apply_vehicle_driver_input(rf::Entity* vehicle);
+bool gamepad_is_motionsensors_supported();
+bool gamepad_is_trigger_rumble_supported();
+bool gamepad_is_touchpad_supported();
+bool gamepad_is_touchpad_touched();
+
+// Controller binding UI
+int         gamepad_get_button_for_action(int action_idx);  // -1 if unbound
+int         gamepad_get_trigger_for_action(int action_idx); // 0=LT, 1=RT, -1 if unbound
+const char* gamepad_get_action_bind_name(int action_idx);
+const char* gamepad_get_scan_code_name(int scan_code);
+const char* gamepad_get_menu_cancel_button_name();
+int         gamepad_get_button_count();
+void        gamepad_reset_to_defaults(const rf::ControlConfig* new_profile_controls = nullptr);
+void        gamepad_set_context_defaults(const rf::ControlConfig& controls);
+int         gamepad_vehicle_change_view_default_code();
+std::array<std::pair<int, int>, 4> gamepad_spectator_default_bindings();
+
+// Scan codes for controller inputs (unused gap in RF's key table)
+static constexpr int CTRL_GAMEPAD_SCAN_BASE    = 0x59; // SDL button 0
+static constexpr int CTRL_GAMEPAD_LEFT_TRIGGER  = 0x73; // SCAN_BASE + 26
+static constexpr int CTRL_GAMEPAD_RIGHT_TRIGGER = 0x74; // SCAN_BASE + 27
+// Separate scan-code namespace for menu-only actions (spectate, vote, menus).
+// Placed after the trigger slots so it never overlaps gameplay button codes.
+static constexpr int CTRL_GAMEPAD_MENU_BASE    = 0x75; // SCAN_BASE + 28
+
+// Returns true if an action index should live in g_menu_button_map
+bool gamepad_is_menu_only_action(int action_idx);
+// Returns true if an action index should live in the multiplayer-only gamepad maps.
+bool gamepad_is_multiplayer_action(int action_idx);
+
+// Per-input setters for legacy config keys.
+void gamepad_set_button_binding(int button_idx, int action_idx);
+void gamepad_set_trigger_action(int trigger_idx, int action_idx);
+
+// Menu binding capture: after begin, the next button or trigger press is held instead of acting.
+void gamepad_bind_capture_begin();
+void gamepad_bind_capture_end();
+bool gamepad_bind_capture_take(int& code); // true once per captured press
+
+// Two controller inputs per action (slot 0 = BUTTON, 1 = ALT). Codes: CTRL_GAMEPAD_SCAN_BASE +
+// button, or a trigger code.
+int  gamepad_get_action_code(int action_idx, int slot); // -1 if unbound
+// Binds the slot to the code (-1 unbinds). Returns the action that held the code in the same
+// table and lost it, or -1. A reserved or out-of-range code changes nothing.
+int  gamepad_bind_action(int action_idx, int slot, int code);
+// Raw write of one slot, with no exclusivity: for the bind context layer, which resolves
+// conflicts itself.
+void gamepad_set_action_code(int action_idx, int slot, int code);
+
+// Menu scroll direction and magnitude (-1=up, +1=down).
+float gamepad_consume_menu_scroll();

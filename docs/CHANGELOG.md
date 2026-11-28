@@ -4,6 +4,31 @@
 Version 1.5.1 (Trillium): Not yet released
 --------------------------------
 ### Major features
+[@AL2009man](https://github.com/AL2009man) & [@nickalreadyinuse](https://github.com/nickalreadyinuse)
+- Controller Support
+> [!WARNING]
+> When using Steam Input or Steam Hardware Inputs (Steam Deck, Steam Controller 2026, Steam Controller 2015): change the controller configuration to one of the many `Gamepad` templates to enable controller support.
+  - Full controller support via SDL3 Gamepad API
+  - Glyph support for Xbox, PlayStation, Nintendo, and Steam Hardware (Steam Controller 2015, Steam Deck, Steam Controller 2026)
+  - Dual-Analog support for movement and camera controls
+  - Cursor Menu navigation support for either Gyro (press ` Stick Click`, to toggle Gyro Cursor, off by default), Trackpad and Joystick Inputs
+  - Initial Rumble support
+    - only covers all Weapon Fire and select Environmental effects
+    - Trigger Rumble/Impulse Triggers are also supported
+    - Vibration Filtering system to reduce low-frequency rumble.
+      - Enabled by default whenever Gyro Aiming is active. 
+  - Motion Sensor / Gyro Aiming support
+    - Natural Sensitivity Scale / Real World Sensitivity support 
+    - Gyro Space orientation support
+      - Yaw, Roll, Local Space, Player Space, World Space
+    - Gyro Autocalibration system 
+    - Gyro Ratcheting support 
+      - most modes requires `Gyro Ratcheting` action to be bound
+  - Flick Stick support
+    - Best paired with Gyro Aiming or Mixed Input
+  - Simultaneous Controller+Keyboard/Mouse / Mixed Input support
+    - if using SteamInput's supported Input Camera styles: We recommend selecting `ms_scale`'s Modern (`2`) and change the mouse sensitivity to `2.50`. If it's set to ``6545px`` (default slider on SteamInput): this will skip "[Input] Angles/Degrees to Mouse Pixels" slider.
+  - Partial controller menu navigation support (Cursor and Scrollbar are handled by Joystick. If supported: Gyro and Touchpad Cursors are included)
 
 ### Minor features, changes, and enhancements
 [@GooberRF](https://github.com/GooberRF)
@@ -28,6 +53,10 @@ Version 1.5.1 (Trillium): Not yet released
 - Fix a fatal error when returning to the game in fullscreen on systems that refuse exclusive fullscreen, such as some laptops with switchable graphics (Direct3D 11 renderer only)
 - Fix terrain without calculated lighting getting half the sunlight that `Calculate Lighting` bakes into it, and getting twice the sunlight when drawing lightmaps without textures
 - Fix `Box` `Apply Map` in level editor texture mode taking an excessive amount of time on levels with a lot of geometry
+
+### Imported libraries
+- [SDL 3.4.20](https://github.com/libsdl-org/SDL) by Sam Lantinga and many Contributors
+- [GamepadMotionHelpers Version 10](https://github.com/JibbSmart/GamepadMotionHelpers) by Jibb Smart
 
 Version 1.5.0 (Trillium): Released Nov-20-2026
 --------------------------------

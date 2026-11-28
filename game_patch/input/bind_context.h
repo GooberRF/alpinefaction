@@ -31,6 +31,7 @@ struct BindOverride
 {
     int16_t scan_codes[2];
     int16_t mouse_btn_id;
+    int16_t pad_codes[2];
 };
 
 // The local player's live binding table, or null before the player exists.
